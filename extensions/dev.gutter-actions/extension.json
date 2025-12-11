@@ -1,0 +1,14 @@
+{
+  "name": "dev.gutter-actions",
+  "version": "0.0.1",
+  "main": "./main.js",
+  "contributes": {
+    "commands": [
+      { "id": "dev.gutter-actions.toggle", "title": "Toggle Gutter Actions" }
+    ]
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:dev.gutter-actions.toggle"
+  ]
+}

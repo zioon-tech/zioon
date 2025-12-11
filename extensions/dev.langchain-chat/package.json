@@ -1,0 +1,10 @@
+{
+  "name": "dev.langchain-chat",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "./main.js",
+  "dependencies": {
+    "langchain": "^0.2.0",
+    "@langchain/openai": "^0.0.22"
+  }
+}

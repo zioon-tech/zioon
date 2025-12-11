@@ -1,0 +1,391 @@
+import { gutter, GutterMarker, ViewPlugin } from "@codemirror/view";
+import { foldService, foldable } from "@codemirror/language";
+
+/**
+ * Copy helpers with fallback
+ */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+let menuGuard = null;
+
+function closeExistingMenu() {
+  const m = document.getElementById("zion-gutter-menu");
+  if (m) {
+    try { m.remove(); } catch {}
+  }
+  document.removeEventListener("click", onDocClickClose, true);
+  document.removeEventListener("keydown", onEscClose, true);
+  document.removeEventListener("scroll", onScrollClose, true);
+  document.removeEventListener("mousemove", onDocMouseMove, true);
+  menuGuard = null;
+}
+function onDocClickClose(ev) {
+  const m = document.getElementById("zion-gutter-menu");
+  if (!m) return;
+  if (!m.contains(ev.target)) {
+    closeExistingMenu();
+  }
+}
+function onEscClose(ev) {
+  if (ev.key === "Escape") closeExistingMenu();
+}
+function onScrollClose() {
+  closeExistingMenu();
+}
+function onDocMouseMove(ev) {
+  // Close when moving outside the menu before ever entering it,
+  // but only after a short grace period and sufficient movement
+  const g = menuGuard;
+  if (!g || !g.menuEl) return;
+  if (!g.monitorMove) return;
+  const rect = g.menuEl.getBoundingClientRect();
+  const inside = ev.clientX >= rect.left && ev.clientX <= rect.right && ev.clientY >= rect.top && ev.clientY <= rect.bottom;
+  if (!inside && !g.enteredMenu) {
+    const dx = ev.clientX - g.openAt.x;
+    const dy = ev.clientY - g.openAt.y;
+    const dist2 = dx * dx + dy * dy;
+    if (dist2 > (g.moveThreshold || 400)) {
+      closeExistingMenu();
+    }
+  }
+}
+
+function openMenu(view, clientX, clientY, line) {
+  closeExistingMenu();
+  const doc = view.state.doc;
+
+  // Determine foldable range at this line
+  const foldRange = (() => {
+    // 0) 角色块优先：如果是角色行，使用 roles.index 的整块范围（包含角色行）
+    try {
+      const idx = (window?.zion?.state?.get && window.zion.state.get('roles.index')) || null;
+      if (idx && Array.isArray(idx.blocks)) {
+        const ln0 = line.number - 1; // roles.index 使用 0-based 行号
+        const blk = idx.blocks.find(b => b.startLine === ln0);
+        if (blk && typeof blk.to === 'number') {
+          const from = line.from;   // 包含角色行
+          const to = blk.to;        // 到该角色块结束
+          if (to > from) return { from, to };
+        }
+      }
+    } catch {}
+
+    // 1) 优先用语言包显式折叠区间
+    try {
+      const fr = foldable(view.state, line.from);
+      if (fr && fr.to > fr.from) return fr;
+    } catch {}
+
+    // 2) 缩进折叠（列表/段落）回退
+    try {
+      const doc = view.state.doc;
+      const baseIndent = line.text.match(/^(\s*)/)[1].length;
+      let to = line.to;
+      for (let n = line.number; n <= doc.lines; n++) {
+        const ln = doc.line(n);
+        if (n === line.number) continue;          // 跳过自己
+        const indent = ln.text.match(/^(\s*)/)[1].length;
+        if (indent <= baseIndent) break;          // 同级或更浅，结束
+        to = ln.to;
+      }
+      if (to > line.to) return { from: line.from, to };
+    } catch {}
+
+    // 2) Markdown 回退：支持标题与围栏代码块的折叠（范围包含当前行）
+    try {
+      const text = doc.sliceString(line.from, line.to);
+
+      // 2.1 围栏代码块（```lang ... ```）
+      const fenceOpen = /^`{3,}/.test(text.trim());
+      if (fenceOpen) {
+        let pos = line.to + 1;
+        while (pos <= doc.length) {
+          const ln = doc.lineAt(pos);
+          const t = doc.sliceString(ln.from, ln.to).trim();
+          if (/^`{3,}\s*$/.test(t)) {
+            const from = line.from;      // 包含开围栏所在行
+            const to = ln.to;            // 包含闭围栏所在行
+            if (to > from) return { from, to };
+            break;
+          }
+          pos = ln.to + 1;
+        }
+      }
+
+      // 2.2 标题块（从当前标题到下一个同级或更高级标题之前，范围包含标题行）
+      const hm = /^(#{1,6})\s/.exec(text);
+      if (hm) {
+        const level = hm[1].length;
+        const from = line.from;  // 包含标题行
+        let to = doc.length;
+        let pos = line.to + 1;
+        while (pos <= doc.length) {
+          const ln = doc.lineAt(pos);
+          const t = doc.sliceString(ln.from, ln.to);
+          const nextHm = /^(#{1,6})\s/.exec(t);
+          if (nextHm && nextHm[1].length <= level) {
+            to = Math.max(from, ln.from - 1);  // 不包含下一个标题行
+            break;
+          }
+          pos = ln.to + 1;
+        }
+        if (to > from) return { from, to };
+      }
+    } catch {}
+
+    // 无可折叠范围
+    return null;
+  })();
+
+  const menu = document.createElement("div");
+  menu.id = "zion-gutter-menu";
+  menu.className = "zion-gutter-menu";
+  menu.style.position = "fixed";
+  menu.style.left = `${clientX + 6}px`;
+  menu.style.top = `${clientY + 6}px`;
+  // accessibility
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Gutter actions");
+  menu.tabIndex = -1;
+
+  // Guard state for movement/hover-driven close behavior
+  menuGuard = {
+    enteredMenu: false,
+    monitorMove: false,            // enable after a short grace so moving from dot to menu won't close it
+    openAt: { x: clientX, y: clientY },
+    menuEl: menu,
+    moveThreshold: 400             // ~20px squared distance (20^2)
+  };
+
+  // Track entering/leaving the menu; once entered, leaving closes
+  menu.addEventListener('mouseenter', () => {
+    if (menuGuard) menuGuard.enteredMenu = true;
+  });
+  menu.addEventListener('mouseleave', () => {
+    if (menuGuard && menuGuard.enteredMenu) {
+      closeExistingMenu();
+    }
+  });
+
+  const mkItem = (label, onClick, disabled = false) => {
+    const btn = document.createElement("button");
+    btn.className = "zion-gutter-menu-item" + (disabled ? " disabled" : "");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.setAttribute("role", "menuitem");
+    if (disabled) {
+      btn.setAttribute("aria-disabled", "true");
+      btn.tabIndex = -1;
+    } else {
+      btn.tabIndex = 0;
+      // 鼠标移入时自动 focus 到该项
+      btn.addEventListener("mouseenter", () => {
+        try { btn.focus(); } catch {}
+      });
+    }
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (disabled) return;
+      try {
+        await onClick();
+      } finally {
+        closeExistingMenu();
+      }
+    };
+    return btn;
+  };
+
+  // 复制当前行
+  const copyLine = () => {
+    const text = doc.sliceString(line.from, line.to);
+    return copyText(text);
+  };
+  menu.appendChild(mkItem("复制当前行", copyLine, false));
+
+  // 复制折叠块范围（如果有），范围需包含当前行
+  const copyFoldBlock = () => {
+    if (!foldRange) return Promise.resolve(false);
+    const start = Math.min(line.from, foldRange.from);
+    const end = Math.max(start, foldRange.to);
+    const text = doc.sliceString(start, end);
+    return copyText(text);
+  };
+  menu.appendChild(mkItem("复制折叠块范围", copyFoldBlock, !foldRange));
+
+  document.body.appendChild(menu);
+
+  // keep menu in viewport
+  try {
+    const rect = menu.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (rect.right > vw) menu.style.left = `${Math.max(4, vw - rect.width - 4)}px`;
+    if (rect.bottom > vh) menu.style.top = `${Math.max(4, vh - rect.height - 4)}px`;
+  } catch {}
+
+  // keyboard handling for menu: ArrowUp/ArrowDown/Enter/Escape
+  const onMenuKeyDown = (ev) => {
+    const items = Array.from(menu.querySelectorAll('.zion-gutter-menu-item')).filter(i => !i.classList.contains('disabled'));
+    if (!items.length) return;
+    const idx = items.indexOf(document.activeElement);
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeExistingMenu();
+      return;
+    }
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      const next = items[(idx + 1) % items.length] || items[0];
+      next.focus();
+      return;
+    }
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const prev = items[(idx - 1 + items.length) % items.length] || items[items.length - 1];
+      prev.focus();
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      if (document.activeElement && document.activeElement.classList.contains('zion-gutter-menu-item') && !document.activeElement.classList.contains('disabled')) {
+        ev.preventDefault();
+        document.activeElement.click();
+      }
+      return;
+    }
+  };
+  menu.addEventListener('keydown', onMenuKeyDown);
+
+  // focus first enabled item for keyboard users
+  setTimeout(() => {
+    const first = menu.querySelector('.zion-gutter-menu-item:not(.disabled)');
+    try { first && first.focus(); } catch {}
+  }, 0);
+
+  // install global closers
+  setTimeout(() => {
+    document.addEventListener("click", onDocClickClose, true);
+    document.addEventListener("keydown", onEscClose, true);
+    document.addEventListener("scroll", onScrollClose, true);
+    document.addEventListener("mousemove", onDocMouseMove, true);
+    // Enable movement guard after a short grace so pointer can travel from dot to menu
+    setTimeout(() => { if (menuGuard) menuGuard.monitorMove = true; }, 160);
+  }, 0);
+}
+
+/**
+ * A simple dot marker shown for each line in a custom gutter.
+ * The dot is only visible on hover (CSS), clicking opens a small menu.
+ */
+class DotMarker extends GutterMarker {
+  toDOM(view) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "zion-gutter-dot";
+    btn.title = "行操作";
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // Determine target line using coords
+      const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+      if (pos == null) return;
+      const line = view.state.doc.lineAt(pos);
+      openMenu(view, e.clientX, e.clientY, line);
+    });
+    return btn;
+  }
+}
+
+const dotMarker = new DotMarker();
+
+// Hover sync plugin: when hovering any gutter (fold/line numbers/etc.), highlight the corresponding
+// left custom gutter row to show the dot for that line.
+const hoverGutterPlugin = ViewPlugin.fromClass(class {
+  constructor(view) {
+    this.view = view;
+    this.hoverEl = null;
+    this.gutters = view.dom.querySelector(".cm-gutters");
+    this.onMouseMove = this.onMouseMove.bind(this);
+    this.onMouseLeave = this.onMouseLeave.bind(this);
+    if (this.gutters) {
+      this.gutters.addEventListener("mousemove", this.onMouseMove);
+      this.gutters.addEventListener("mouseleave", this.onMouseLeave);
+    }
+  }
+
+  setHoverEl(el) {
+    if (this.hoverEl === el) return;
+    if (this.hoverEl) try { this.hoverEl.classList.remove("zion-hover"); } catch {}
+    this.hoverEl = el || null;
+    if (this.hoverEl) try { this.hoverEl.classList.add("zion-hover"); } catch {}
+  }
+
+  onMouseMove(e) {
+    const leftG = this.view.dom.querySelector(".cm-gutter.zion-gutter-left");
+    if (!leftG) { this.setHoverEl(null); return; }
+    const rect = leftG.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) { this.setHoverEl(null); return; }
+    // Probe the left custom gutter row at the current Y via elementFromPoint
+    const x = rect.left + rect.width / 2;
+    const el = document.elementFromPoint(x, e.clientY);
+    if (!el || !leftG.contains(el)) { this.setHoverEl(null); return; }
+    const row = el.closest(".cm-gutterElement");
+    this.setHoverEl(row);
+  }
+
+  onMouseLeave() {
+    this.setHoverEl(null);
+  }
+
+  update(update) {
+    // if the currently marked row gets detached, clear it
+    if (this.hoverEl && !document.body.contains(this.hoverEl)) {
+      this.hoverEl = null;
+    }
+  }
+
+  destroy() {
+    if (this.gutters) {
+      this.gutters.removeEventListener("mousemove", this.onMouseMove);
+      this.gutters.removeEventListener("mouseleave", this.onMouseLeave);
+    }
+    this.setHoverEl(null);
+  }
+});
+
+export function gutterActions() {
+  return [
+    gutter({
+      class: "zion-gutter-left",
+      // show a dot on every line
+      lineMarker: () => dotMarker,
+      initialSpacer: () => {
+        // keep consistent width in empty docs
+        const s = document.createElement("div");
+        s.style.width = "12px";
+        s.style.height = "1em";
+        return s;
+      }
+    }),
+    hoverGutterPlugin
+  ];
+}

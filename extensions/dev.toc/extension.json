@@ -1,0 +1,28 @@
+{
+  "name": "dev.toc",
+  "version": "0.0.1",
+  "main": "./main.js",
+  "contributes": {
+    "commands": [
+      { "id": "toc.show", "title": "Show TOC" },
+      { "id": "toc.insert", "title": "Insert TOC (Markdown)" },
+      { "id": "toc.toggleGroupByRole", "title": "Toggle TOC Group by Role" }
+    ],
+    "keybindings": [
+      { "command": "toc.show", "key": "Mod-Shift-t", "when": "editorFocus" },
+      { "command": "toc.toggleGroupByRole", "key": "Mod-Shift-g", "when": "editorFocus" }
+    ],
+      "menus": {
+      "editor/context": [
+        { "command": "toc.show", "title": "Contents", "when": "editorFocus" },
+        { "command": "toc.toggleGroupByRole", "title": "TOC: Group by Role", "when": "editorFocus" }
+      ]
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:toc.show",
+    "onCommand:toc.insert",
+    "onCommand:toc.toggleGroupByRole"
+  ]
+}

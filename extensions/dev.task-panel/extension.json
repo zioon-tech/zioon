@@ -1,0 +1,13 @@
+{
+  "name": "dev.task-panel",
+  "version": "0.0.1",
+  "main": "./main.js",
+  "contributes": {
+    "commands": [
+      { "id": "tasks.togglePanel", "title": "Toggle Tasks Panel" },
+      { "id": "tasks.addTask", "title": "Add Task" },
+      { "id": "tasks.clearTasks", "title": "Clear All Tasks" }
+    ]
+  },
+  "activationEvents": ["onStartupFinished"]
+}

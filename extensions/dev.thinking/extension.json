@@ -1,0 +1,11 @@
+{
+  "name": "dev.thinking",
+  "version": "0.0.1",
+  "main": "./thinking-main.js",
+  "contributes": {
+    "commands": [
+      { "id": "thinking.toggleVisibility", "title": "Toggle Thinking Visibility" }
+    ]
+  },
+  "activationEvents": ["onStartupFinished"]
+}

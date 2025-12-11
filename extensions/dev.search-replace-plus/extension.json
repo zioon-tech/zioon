@@ -1,0 +1,16 @@
+{
+  "name": "dev.search-replace-plus",
+  "version": "0.0.2",
+  "main": "./main.js",
+  "contributes": {
+    "commands": [
+      { "id": "dev.srp.acceptAll", "title": "Accept all Search/Replace blocks" },
+      { "id": "dev.srp.revertAll", "title": "Revert all Search/Replace blocks" },
+      { "id": "dev.srp.toggleDiffAll", "title": "Toggle Diff (all blocks)" },
+      { "id": "dev.srp.acceptAllFiles", "title": "Accept in granted files" },
+      { "id": "dev.srp.revertAllFiles", "title": "Revert in granted files" }
+    ],
+    "keybindings": []
+  },
+  "activationEvents": ["onStartupFinished"]
+}

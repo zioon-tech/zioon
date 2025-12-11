@@ -1,0 +1,959 @@
+import { EventBus } from "../core/event-bus";
+import { StateBus } from "../core/state-bus";
+import type { Disposable, Keybinding, CommandHandler, PasteHandler, MenuItem, MessageContributor, Decorator } from "../types/zion";
+import type { EditorCore } from "../editor/EditorCore";
+import { EditorProxy } from "../editor/EditorProxy";
+import type { EditorProxy as IEditorProxy } from "../types/zion";
+import { findNext, findPrevious, selectMatches, replaceNext, replaceAll, SearchQuery } from "@codemirror/search";
+// setSearchQuery 实际是一个 StateEffect，不是函数，需要用 editorCore.view.dispatch({ effects: setSearchQuery.of(query) })
+import { setSearchQuery as setSearchQueryEffect } from "@codemirror/search";
+
+type CommandMap = Map<string, CommandHandler>;
+
+class Registry {
+  private commands: CommandMap = new Map();
+  private keybindings: Keybinding[] = [];
+  private events = new EventBus();
+  private state = new StateBus();
+  private statusItems = new Map<
+    string,
+    { id: string; el: HTMLButtonElement; onClick?: () => void }
+  >();
+  private editorCore: EditorCore | null = null;
+
+  // paste handlers
+  private pasteHandlers: PasteHandler[] = [];
+  private pasteAttached = false;
+
+  // menus
+  private menus: Record<string, MenuItem[]> = Object.create(null);
+  private contextMenuEl: HTMLDivElement | null = null;
+
+  // message contributors
+  private messageContribs: MessageContributor[] = [];
+
+  // decorators
+  private decorators: Decorator[] = [];
+  private decoratorDisposables = new Map<string, Disposable>();
+
+  // model providers (placeholder registry for future models integration)
+  private modelProviders: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }[] = [];
+
+  // Chat Runner (MVP) state
+  private activeModel: { providerId: string; modelId: string } | null = null;
+  private currentRun: { id: string; timer: number; endPos: number } | null = null;
+  private lastPrompt: string | null = null;
+
+  attachEditor(core: EditorCore) {
+    this.editorCore = core;
+    (window.zion as any).window.activeEditor = new EditorProxy(core);
+    this.applyKeymap();
+    this.attachPasteListener();
+    this.attachContextMenu();
+    this.applyDecorators();
+
+    // Bridge CM6 search/replace commands into the zion command namespace.
+    // This allows extensions to call window.zion.commands.executeCommand('findNext') etc.
+    try {
+      this.registerCommand("findNext", () => {
+        if (!this.editorCore) return false;
+        try {
+          return findNext(this.editorCore.view as any);
+        } catch (e) {
+          console.error("[zion] findNext error", e);
+          return false;
+        }
+      });
+
+      this.registerCommand("findPrev", () => {
+        if (!this.editorCore) return false;
+        try {
+          return findPrevious(this.editorCore.view as any);
+        } catch (e) {
+          console.error("[zion] findPrev error", e);
+          return false;
+        }
+      });
+
+      this.registerCommand("selectMatches", () => {
+        if (!this.editorCore) return false;
+        try {
+          return selectMatches(this.editorCore.view as any);
+        } catch (e) {
+          console.error("[zion] selectMatches error", e);
+          return false;
+        }
+      });
+
+      this.registerCommand("replaceNext", () => {
+        if (!this.editorCore) return false;
+        try {
+          return replaceNext(this.editorCore.view as any);
+        } catch (e) {
+          console.error("[zion] replaceNext error", e);
+          return false;
+        }
+      });
+
+      this.registerCommand("replaceAll", () => {
+        if (!this.editorCore) return false;
+        try {
+          return replaceAll(this.editorCore.view as any);
+        } catch (e) {
+          console.error("[zion] replaceAll error", e);
+          return false;
+        }
+      });
+
+      // Push a SearchQuery into CM6 so find/replace won't open the default panel
+      this.registerCommand("setSearchQuery", (opts: { search: string; replace?: string; caseSensitive?: boolean; regexp?: boolean; wholeWord?: boolean }) => {
+        if (!this.editorCore) return false;
+        try {
+          const q = new SearchQuery({
+            search: opts.search ?? "",
+            replace: opts.replace ?? "",
+            caseSensitive: !!opts.caseSensitive,
+            regexp: !!opts.regexp,
+            wholeWord: !!opts.wholeWord
+          });
+          this.editorCore.view.dispatch({
+            effects: setSearchQueryEffect.of(q)
+          });
+          return true;
+        } catch (e) {
+          console.error("[zion] setSearchQuery error", e);
+          return false;
+        }
+      });
+    } catch (e) {
+      console.error("[zion] failed to register CM6 search bridge commands", e);
+    }
+
+    // Register chat commands (MVP runner)
+    try {
+      this.registerCommand("chat.run", () => {
+        return (this as any).__chatRun({});
+      });
+      this.registerCommand("chat.stop", () => {
+        (this as any).__chatStop();
+        return true;
+      });
+      this.registerCommand("chat.retry", () => {
+        (this as any).__chatRetry();
+        return true;
+      });
+      // Select active model for later integration (LangChain-ready)
+      this.registerCommand("models.selectActive", (m: { providerId: string; modelId: string } | null) => {
+        (this as any).__chatSetActiveModel(m);
+        return true;
+      });
+    } catch (e) {
+      console.error("[zion] failed to register chat commands", e);
+    }
+
+    // Expose minimap control commands bridging to EditorCore
+    try {
+      this.registerCommand("zion.setMinimap", (enabled: boolean) => {
+        if (!this.editorCore) return false;
+        try {
+          this.editorCore.setMinimapEnabled(!!enabled);
+          this.state.set("ui.minimapEnabled", !!enabled);
+          return true;
+        } catch (e) {
+          console.error("[zion] setMinimap error", e);
+          return false;
+        }
+      });
+      this.registerCommand("zion.toggleMinimap", () => {
+        const cur = !!this.state.get("ui.minimapEnabled");
+        const next = !cur;
+        if (!this.editorCore) {
+          this.state.set("ui.minimapEnabled", next);
+          return next;
+        }
+        try {
+          this.editorCore.setMinimapEnabled(next);
+        } catch (e) {
+          console.error("[zion] toggleMinimap error", e);
+        }
+        this.state.set("ui.minimapEnabled", next);
+        return next;
+      });
+    } catch (e) {
+      console.error("[zion] failed to register minimap bridge commands", e);
+    }
+
+    // Selection highlight bridge
+    try {
+      this.registerCommand("zion.setSelectionHighlight", (enabled: boolean) => {
+        if (!this.editorCore) return false;
+        try {
+          this.editorCore.setSelectionHighlightEnabled(!!enabled);
+          this.state.set("ui.selectionHighlight", !!enabled);
+          return true;
+        } catch (e) {
+          console.error("[zion] setSelectionHighlight error", e);
+          return false;
+        }
+      });
+      this.registerCommand("zion.toggleSelectionHighlight", () => {
+        const cur = !!this.state.get("ui.selectionHighlight");
+        const next = !cur;
+        if (!this.editorCore) {
+          this.state.set("ui.selectionHighlight", next);
+          return next;
+        }
+        try {
+          this.editorCore.setSelectionHighlightEnabled(next);
+        } catch (e) {
+          console.error("[zion] toggleSelectionHighlight error", e);
+        }
+        this.state.set("ui.selectionHighlight", next);
+        return next;
+      });
+    } catch (e) {
+      console.error("[zion] failed to register selection highlight bridge commands", e);
+    }
+  }
+
+  private attachPasteListener() {
+    if (!this.editorCore || this.pasteAttached) return;
+    const dom = this.editorCore.view.dom;
+    dom.addEventListener("paste", async (e: ClipboardEvent) => {
+      try {
+        const cd = e.clipboardData;
+        const editor: IEditorProxy | null = (window as any).zion?.window?.activeEditor ?? null;
+        if (!cd || !editor) return;
+
+        // run handlers by priority (desc)
+        const handlers = [...this.pasteHandlers].sort(
+          (a, b) => (b.priority ?? 50) - (a.priority ?? 50)
+        );
+        for (const h of handlers) {
+          try {
+            const handled = await h.handle({ clipboardData: cd, editor });
+            if (handled) {
+              e.preventDefault();
+              return;
+            }
+          } catch (err) {
+            console.error("[zion] paste handler error:", h.id, err);
+          }
+        }
+      } catch (err) {
+        console.error("[zion] paste pipeline error:", err);
+      }
+    });
+    this.pasteAttached = true;
+  }
+
+  private attachContextMenu() {
+    if (!this.editorCore) return;
+    const dom = this.editorCore.view.dom;
+
+    const closeMenu = () => {
+      if (this.contextMenuEl && this.contextMenuEl.parentNode) {
+        this.contextMenuEl.parentNode.removeChild(this.contextMenuEl);
+      }
+      this.contextMenuEl = null;
+      document.removeEventListener("click", closeMenu);
+      document.removeEventListener("keydown", escHandler);
+    };
+
+    const escHandler = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        closeMenu();
+      }
+    };
+
+    dom.addEventListener("contextmenu", (e: MouseEvent) => {
+      const items = this.menus["editor/context"] || [];
+      if (items.length === 0) return; // nothing to show, let CM6 handle default
+      e.preventDefault();
+
+      const activeEditor: IEditorProxy | null = (window as any).zion?.window?.activeEditor ?? null;
+      const hasSelection =
+        !!this.editorCore &&
+        this.editorCore.view.state.selection.main.from !== this.editorCore.view.state.selection.main.to;
+      const editorFocus = !!this.editorCore && document.activeElement ? dom.contains(document.activeElement) : false;
+
+      const filtered = items.filter(it => {
+        if (!it.when) return true;
+        if (it.when === "hasSelection") return hasSelection;
+        if (it.when === "editorFocus") return editorFocus;
+        return true;
+      });
+
+      if (filtered.length === 0) return;
+
+      // close any existing menu
+      if (this.contextMenuEl) {
+        this.contextMenuEl.remove();
+        this.contextMenuEl = null;
+      }
+
+      const menu = document.createElement("div");
+      menu.style.position = "fixed";
+      menu.style.left = `${e.clientX}px`;
+      menu.style.top = `${e.clientY}px`;
+      menu.style.background = "var(--panel)";
+      menu.style.border = "1px solid var(--border)";
+      menu.style.borderRadius = "6px";
+      menu.style.padding = "4px";
+      menu.style.zIndex = "99999";
+      menu.style.minWidth = "160px";
+      menu.style.boxShadow = "0 4px 16px rgba(0,0,0,0.35)";
+      menu.style.fontSize = "12px";
+
+      filtered.forEach(it => {
+        const btn = document.createElement("button");
+        btn.textContent = it.title || it.command;
+        btn.style.display = "block";
+        btn.style.width = "100%";
+        btn.style.textAlign = "left";
+        btn.style.background = "transparent";
+        btn.style.border = "none";
+        btn.style.color = "var(--fg)";
+        btn.style.padding = "6px 8px";
+        btn.style.cursor = "pointer";
+        btn.onmouseenter = () => (btn.style.background = "var(--border)");
+        btn.onmouseleave = () => (btn.style.background = "transparent");
+        btn.onclick = () => {
+          try {
+            this.executeCommand(it.command);
+          } finally {
+            closeMenu();
+          }
+        };
+        menu.appendChild(btn);
+      });
+
+      document.body.appendChild(menu);
+      this.contextMenuEl = menu;
+
+      // keep menu in viewport
+      const rect = menu.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      if (rect.right > vw) menu.style.left = `${Math.max(4, vw - rect.width - 4)}px`;
+      if (rect.bottom > vh) menu.style.top = `${Math.max(4, vh - rect.height - 4)}px`;
+
+      document.addEventListener("click", closeMenu, { once: true });
+      document.addEventListener("keydown", escHandler);
+    });
+  }
+
+  private showMenuAt(menuId: string, x: number, y: number) {
+    if (!this.editorCore) {
+      console.warn("[zion] showMenuAt: editor not attached");
+      return;
+    }
+    if (menuId !== "editor/context") {
+      console.warn("[zion] showMenuAt: unsupported menuId", menuId);
+      return;
+    }
+    const dom = this.editorCore.view.dom;
+    const items = this.menus["editor/context"] || [];
+    if (items.length === 0) return;
+
+    const hasSelection =
+      this.editorCore.view.state.selection.main.from !== this.editorCore.view.state.selection.main.to;
+    const editorFocus = document.activeElement ? dom.contains(document.activeElement) : false;
+
+    const filtered = items.filter(it => {
+      if (!it.when) return true;
+      if (it.when === "hasSelection") return hasSelection;
+      if (it.when === "editorFocus") return editorFocus;
+      return true;
+    });
+    if (filtered.length === 0) return;
+
+    // Close existing menu if any
+    if (this.contextMenuEl) {
+      try { this.contextMenuEl.remove(); } catch {}
+      this.contextMenuEl = null;
+    }
+
+    const closeMenu = () => {
+      if (this.contextMenuEl && this.contextMenuEl.parentNode) {
+        this.contextMenuEl.parentNode.removeChild(this.contextMenuEl);
+      }
+      this.contextMenuEl = null;
+      document.removeEventListener("click", closeMenu);
+      document.removeEventListener("keydown", escHandler);
+    };
+    const escHandler = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") closeMenu();
+    };
+
+    const menu = document.createElement("div");
+    menu.style.position = "fixed";
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    menu.style.background = "var(--panel)";
+    menu.style.border = "1px solid var(--border)";
+    menu.style.borderRadius = "6px";
+    menu.style.padding = "4px";
+    menu.style.zIndex = "99999";
+    menu.style.minWidth = "160px";
+    menu.style.boxShadow = "0 4px 16px rgba(0,0,0,0.35)";
+    menu.style.fontSize = "12px";
+
+    filtered.forEach(it => {
+      const btn = document.createElement("button");
+      btn.textContent = it.title || it.command;
+      btn.style.display = "block";
+      btn.style.width = "100%";
+      btn.style.textAlign = "left";
+      btn.style.background = "transparent";
+      btn.style.border = "none";
+      btn.style.color = "var(--fg)";
+      btn.style.padding = "6px 8px";
+      btn.style.cursor = "pointer";
+      btn.onmouseenter = () => (btn.style.background = "var(--border)");
+      btn.onmouseleave = () => (btn.style.background = "transparent");
+      btn.onclick = () => {
+        try {
+          this.executeCommand(it.command);
+        } finally {
+          closeMenu();
+        }
+      };
+      menu.appendChild(btn);
+    });
+
+    document.body.appendChild(menu);
+    this.contextMenuEl = menu;
+
+    // keep menu in viewport
+    const rect = menu.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (rect.right > vw) menu.style.left = `${Math.max(4, vw - rect.width - 4)}px`;
+    if (rect.bottom > vh) menu.style.top = `${Math.max(4, vh - rect.height - 4)}px`;
+
+    document.addEventListener("click", closeMenu, { once: true });
+    document.addEventListener("keydown", escHandler);
+  }
+
+  private applyDecorators() {
+    if (!this.editorCore) return;
+    const editor: IEditorProxy | null = (window as any).zion?.window?.activeEditor ?? null;
+    if (!editor) return;
+    for (const dec of this.decorators) {
+      if (this.decoratorDisposables.has(dec.id)) continue;
+      try {
+        const disp = dec.apply(editor);
+        this.decoratorDisposables.set(dec.id, disp);
+      } catch (e) {
+        console.error("[zion] decorator apply error:", dec.id, e);
+      }
+    }
+  }
+
+  registerPasteHandler(handler: PasteHandler): Disposable {
+    this.pasteHandlers.push(handler);
+    // no need to sort now; sort on dispatch
+    return {
+      dispose: () => {
+        const idx = this.pasteHandlers.indexOf(handler);
+        if (idx >= 0) this.pasteHandlers.splice(idx, 1);
+      }
+    };
+  }
+
+  registerMenu(menuId: string, item: MenuItem): Disposable {
+    if (!this.menus[menuId]) this.menus[menuId] = [];
+    this.menus[menuId].push(item);
+    return {
+      dispose: () => {
+        const arr = this.menus[menuId];
+        if (!arr) return;
+        const idx = arr.indexOf(item);
+        if (idx >= 0) arr.splice(idx, 1);
+      }
+    };
+  }
+
+  registerDecorator(dec: Decorator): Disposable {
+    this.decorators.push(dec);
+    // if editor already attached, apply immediately
+    if (this.editorCore && (window as any).zion?.window?.activeEditor) {
+      try {
+        const disp = dec.apply(((window as any).zion.window.activeEditor as IEditorProxy));
+        this.decoratorDisposables.set(dec.id, disp);
+      } catch (e) {
+        console.error("[zion] decorator apply error:", dec.id, e);
+      }
+    }
+    return {
+      dispose: () => {
+        const idx = this.decorators.indexOf(dec);
+        if (idx >= 0) this.decorators.splice(idx, 1);
+        const d = this.decoratorDisposables.get(dec.id);
+        try { d?.dispose?.(); } catch {}
+        this.decoratorDisposables.delete(dec.id);
+      }
+    };
+  }
+
+  registerMessageContributor(contrib: MessageContributor): Disposable {
+    this.messageContribs.push(contrib);
+    return {
+      dispose: () => {
+        const i = this.messageContribs.indexOf(contrib);
+        if (i >= 0) this.messageContribs.splice(i, 1);
+      }
+    };
+  }
+
+  // models: provider registry (placeholder)
+  registerModelProvider(provider: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }): Disposable {
+    this.modelProviders.push(provider);
+    return {
+      dispose: () => {
+        const i = this.modelProviders.indexOf(provider);
+        if (i >= 0) this.modelProviders.splice(i, 1);
+      }
+    };
+  }
+  listModelProviders(): string[] {
+    return this.modelProviders.map(p => p.id);
+  }
+  getModelProvider(id: string) {
+    return this.modelProviders.find(p => p.id === id) || null;
+  }
+
+  async runMessageContributors(messages: any[], stage: "pre" | "post" = "pre"): Promise<any[]> {
+    const contribs = [...this.messageContribs]
+      .filter(c => (c.stage ?? "pre") === stage)
+      .sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+
+    const ctx = {
+      editor: ((window as any).zion?.window?.activeEditor ?? null) as IEditorProxy | null,
+      state: {
+        get: <T,>(key: string) => this.state.get<T>(key),
+        set: <T,>(key: string, v: T) => this.state.set<T>(key, v)
+      },
+      events: {
+        emit: (topic: string, payload?: any) => this.events.emit(topic, payload),
+        on: (topic: string, h: (p: any) => void) => this.events.on(topic, h)
+      }
+    };
+
+    let out = messages;
+    for (const c of contribs) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        out = await c.contribute(out, ctx);
+      } catch (e) {
+        console.error("[zion] message contributor error:", c.id, e);
+      }
+    }
+    return out;
+  }
+
+  registerCommand(id: string, fn: CommandHandler): Disposable {
+    if (this.commands.has(id)) {
+      console.warn("[zion] overwrite command", id);
+    }
+    this.commands.set(id, fn);
+    return { dispose: () => this.commands.delete(id) };
+  }
+
+  executeCommand<T = any>(id: string, ...args: any[]): T | undefined {
+    const fn = this.commands.get(id);
+    if (!fn) {
+      console.warn("[zion] command not found:", id);
+      return undefined;
+    }
+    try {
+      return fn(...args) as T;
+    } catch (e) {
+      console.error("[zion] command error:", id, e);
+      return undefined;
+    }
+  }
+
+  registerKeybinding(binding: Keybinding): Disposable {
+    this.keybindings.push(binding);
+    this.applyKeymap();
+    return {
+      dispose: () => {
+        const idx = this.keybindings.indexOf(binding);
+        if (idx >= 0) {
+          this.keybindings.splice(idx, 1);
+          this.applyKeymap();
+        }
+      }
+    };
+  }
+
+  listKeybindings(): Keybinding[] {
+    return [...this.keybindings];
+  }
+
+  private applyKeymap() {
+    if (!this.editorCore) return;
+    const bindings = this.keybindings.map(kb => ({
+      key: kb.key,
+      run: () => {
+        // evaluate simple 'when' conditions
+        const dom = this.editorCore!.view.dom;
+        const hasSelection =
+          this.editorCore!.view.state.selection.main.from !== this.editorCore!.view.state.selection.main.to;
+        const editorFocus = dom.contains(document.activeElement);
+
+        // Determine if the custom search panel is visible and focused.
+        const searchPanelEl = document.querySelector('.search-replace-panel') as HTMLElement | null;
+        const searchReplaceVisible = !!searchPanelEl && searchPanelEl.style.display !== 'none';
+        const searchPanelFocused = searchPanelEl ? searchPanelEl.contains(document.activeElement) : false;
+
+        if (kb.when === "hasSelection" && !hasSelection) return false;
+        if (kb.when === "editorFocus" && !editorFocus) return false;
+        // Only trigger searchReplaceVisible bindings when the search panel currently has focus.
+        if (kb.when === "searchReplaceVisible" && !searchPanelFocused) return false;
+
+        this.executeCommand(kb.command);
+        return true;
+      }
+    }));
+    this.editorCore.updateKeymap(bindings);
+  }
+
+  // events
+  on(topic: string, handler: (payload: any) => void): Disposable {
+    return this.events.on(topic, handler);
+  }
+  emit(topic: string, payload?: any): void {
+    this.events.emit(topic, payload);
+  }
+
+  // state
+  getState<T>(key: string): T | undefined {
+    return this.state.get<T>(key);
+  }
+  setState<T>(key: string, value: T): void {
+    this.state.set<T>(key, value);
+  }
+  updateState<T>(key: string, updater: (oldVal: T | undefined) => T): void {
+    this.state.update<T>(key, updater);
+  }
+  onStateChange<T>(
+    key: string,
+    handler: (nv: T | undefined, ov: T | undefined) => void
+  ): Disposable {
+    return this.state.onDidChange<T>(key, handler);
+  }
+
+  // statusbar
+  registerStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void }): Disposable {
+    const bar = document.getElementById("statusbar");
+    if (!bar) return { dispose: () => {} };
+
+    const existing = this.statusItems.get(opts.id);
+    if (existing) {
+      // Update in place to avoid re-appending and changing order
+      existing.el.textContent = opts.text;
+      if (typeof opts.tooltip === "string") {
+        existing.el.title = opts.tooltip;
+      } else {
+        existing.el.removeAttribute("title");
+      }
+      if (opts.onClick) {
+        existing.el.onclick = opts.onClick;
+      } else {
+        existing.el.onclick = null;
+      }
+      existing.onClick = opts.onClick;
+      return {
+        dispose: () => {
+          const item = this.statusItems.get(opts.id);
+          if (!item) return;
+          item.el.remove();
+          this.statusItems.delete(opts.id);
+        }
+      };
+    }
+
+    const el = document.createElement("button");
+    el.className = "status-item";
+    el.textContent = opts.text;
+    if (typeof opts.tooltip === "string") el.title = opts.tooltip;
+    if (opts.onClick) el.onclick = opts.onClick;
+    bar.appendChild(el);
+    this.statusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick });
+
+    return {
+      dispose: () => {
+        const item = this.statusItems.get(opts.id);
+        if (!item) return;
+        item.el.remove();
+        this.statusItems.delete(opts.id);
+      }
+    };
+  }
+  // ===== Chat Runner helpers (MVP, simulated streaming) =====
+
+  // Read role prefixes from env/localStorage, fallback to defaults
+  private __readRolePrefixes(): string[] {
+    const base = ["user", "assistant", "system"];
+    const out: string[] = [];
+    try {
+      const cfg = (window as any)?.zion?.config?.roles?.prefixes;
+      if (Array.isArray(cfg)) out.push(...cfg);
+    } catch {}
+    try {
+      const raw = localStorage.getItem("zion.roles.prefixes") || localStorage.getItem("dev.roles.prefixes");
+      if (raw) {
+        const j = JSON.parse(raw);
+        if (Array.isArray(j)) out.push(...j);
+      }
+    } catch {}
+    // normalize + dedupe
+    const seen = new Set<string>();
+    const result = [...base, ...out]
+      .map(s => (typeof s === "string" ? s.trim() : ""))
+      .filter(Boolean)
+      .filter(s => !seen.has(s) && seen.add(s));
+    return result;
+  }
+
+  // Convert document into role messages based on "role " line starts
+  private __parseRoleMessages(text: string): { role: "user" | "assistant" | "system"; content: string }[] {
+    const prefixes = this.__readRolePrefixes();
+    const lines = (text || "").split(/\r?\n/);
+    const out: { role: "user" | "assistant" | "system"; content: string }[] = [];
+    let curRole: "user" | "assistant" | "system" | null = null;
+    let buf: string[] = [];
+
+    const flush = () => {
+      if (curRole != null) {
+        out.push({ role: curRole, content: buf.join("\n").trimEnd() });
+      }
+      curRole = null;
+      buf = [];
+    };
+
+    for (const ln of lines) {
+      const match = prefixes.find(p => ln.startsWith(p + " "));
+      if (match) {
+        flush();
+        const role = (match as any) as "user" | "assistant" | "system";
+        curRole = role;
+        // skip the "role " marker on the head line; content starts after it
+        const head = ln.slice(match.length + 1);
+        buf.push(head);
+      } else {
+        buf.push(ln);
+      }
+    }
+    flush();
+    return out;
+  }
+
+  // Exposed via window.zion.chat.setActiveModel/getActiveModel
+  private __chatSetActiveModel(m: { providerId: string; modelId: string } | null) {
+    this.activeModel = m || null;
+    this.state.set("chat.activeModel", this.activeModel);
+  }
+  private __chatGetActiveModel(): { providerId: string; modelId: string } | null {
+    return this.activeModel;
+  }
+
+  // Start a chat run: parse messages, pick latest user (or selection), stream an echo response
+  private __chatRun(opts?: { useSelection?: boolean }): boolean {
+    try {
+      if (!this.editorCore) return false;
+      // Prevent concurrent runs
+      if (this.currentRun?.timer) {
+        console.warn("[zion] chat already running");
+        return false;
+      }
+      const view = this.editorCore.view;
+      const docText = view.state.doc.toString();
+
+      // 1) 优先使用传入的 prompt
+      let prompt = (opts?.prompt ?? "").trim();
+
+      // 2) 其次使用选区
+      if (!prompt) {
+        const sel = view.state.selection.main;
+        if (opts?.useSelection && !sel.empty) {
+          prompt = view.state.sliceDoc(sel.from, sel.to).trim();
+        }
+      }
+
+      // 3) 最后回退到文档中最新的 user 区块
+      if (!prompt) {
+        const msgs = this.__parseRoleMessages(docText);
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role === "user") {
+            prompt = (msgs[i].content || "").trim();
+            if (prompt) break;
+          }
+        }
+      }
+
+      if (!prompt) {
+        console.warn("[zion] chat.run: no user content to run");
+        return false;
+      }
+      this.lastPrompt = prompt;
+
+      // Compose a fake response (MVP); future: stream from selected provider via LangChain
+      const response = "Echo: " + prompt;
+
+      // Insert "assistant " block at document end and stream into it
+      const state = view.state;
+      const docLen = state.doc.length;
+      const endsWithNL = docLen === 0 ? true : state.sliceDoc(docLen - 1, docLen) === "\n";
+      const head = (endsWithNL ? "" : "\n") + "assistant \n";
+      this.editorCore.view.dispatch({ changes: { from: docLen, to: docLen, insert: head } });
+      let endPos = docLen + head.length;
+
+      // Mark run state
+      const runId = "run_" + Math.random().toString(36).slice(2);
+      this.state.set("chat.runId", runId);
+      this.state.set("chat.streaming", true);
+      this.state.set("chat.error", null);
+      this.events.emit("chat/runStarted", { runId, model: this.activeModel });
+
+      // Tokenize response into small chunks and stream
+      const chunks: string[] = [];
+      const chunkSize = 40;
+      for (let i = 0; i < response.length; i += chunkSize) {
+        chunks.push(response.slice(i, i + chunkSize));
+      }
+
+      let idx = 0;
+      const timer = window.setInterval(() => {
+        try {
+          if (idx < chunks.length) {
+            const piece = chunks[idx++];
+            this.editorCore!.view.dispatch({ changes: { from: endPos, to: endPos, insert: piece } });
+            endPos += piece.length;
+            this.events.emit("chat/token", { runId, token: piece });
+          } else {
+            // finalize with newline
+            this.editorCore!.view.dispatch({ changes: { from: endPos, to: endPos, insert: "\n" } });
+            window.clearInterval(this.currentRun!.timer);
+            const finishedRunId = this.currentRun!.id;
+            this.currentRun = null;
+            this.state.set("chat.streaming", false);
+            this.events.emit("chat/runFinished", { runId: finishedRunId });
+          }
+        } catch (e) {
+          try { window.clearInterval(this.currentRun!.timer); } catch {}
+          this.currentRun = null;
+          this.state.set("chat.streaming", false);
+          this.state.set("chat.error", (e as any)?.message || String(e));
+          this.events.emit("chat/runError", { runId, error: e });
+        }
+      }, 40);
+
+      this.currentRun = { id: runId, timer, endPos };
+      return true;
+    } catch (e) {
+      console.error("[zion] chat.run error", e);
+      this.state.set("chat.error", (e as any)?.message || String(e));
+      this.state.set("chat.streaming", false);
+      return false;
+    }
+  }
+
+  private __chatStop(): void {
+    try {
+      if (!this.currentRun) return;
+      const runId = this.currentRun.id;
+      try { window.clearInterval(this.currentRun.timer); } catch {}
+      this.currentRun = null;
+      this.state.set("chat.streaming", false);
+      this.events.emit("chat/aborted", { runId });
+    } catch (e) {
+      console.error("[zion] chat.stop error", e);
+    }
+  }
+
+  private __chatRetry(): void {
+    try {
+      if (this.currentRun) {
+        console.warn("[zion] chat is running; stop first");
+        return;
+      }
+      if (!this.lastPrompt || !this.editorCore) return;
+      // Re-run using last prompt; inject as selection-free run
+      (this as any).__chatRun({});
+    } catch (e) {
+      console.error("[zion] chat.retry error", e);
+    }
+  }
+}
+
+const registry = new Registry();
+
+// Expose window.zion API
+(function expose() {
+  const api = {
+    commands: {
+      registerCommand: (id: string, fn: CommandHandler) => registry.registerCommand(id, fn),
+      executeCommand: (id: string, ...args: any) => registry.executeCommand(id, ...args)
+    },
+    keybindings: {
+      register: (kb: Keybinding) => registry.registerKeybinding(kb),
+      list: () => registry.listKeybindings()
+    },
+    menus: {
+      register: (menuId: string, item: MenuItem) => (registry as any).registerMenu(menuId, item),
+      show: (menuId: string, x: number, y: number) => {
+        (registry as any).showMenuAt(menuId, x, y);
+      }
+    },
+    messages: {
+      registerContributor: (c: MessageContributor) => (registry as any).registerMessageContributor(c)
+    },
+    events: {
+      emit: (topic: string, payload?: any) => registry.emit(topic, payload),
+      on: (topic: string, handler: (payload: any) => void) => registry.on(topic, handler)
+    },
+    state: {
+      get: <T,>(key: string) => registry.getState<T>(key),
+      set: <T,>(key: string, v: T) => registry.setState<T>(key, v),
+      update: <T,>(key: string, u: (ov: T | undefined) => T) => registry.updateState<T>(key, u),
+      onDidChange: <T,>(key: string, h: (nv: T | undefined, ov: T | undefined) => void) =>
+        registry.onStateChange<T>(key, h)
+    },
+    statusBar: {
+      registerItem: (opts: { id: string; text: string; tooltip?: string; onClick?: () => void }) =>
+        registry.registerStatusItem(opts)
+    },
+    editor: {
+      registerPasteHandler: (handler: PasteHandler) => registry.registerPasteHandler(handler),
+      registerDecorator: (dec: Decorator) => (registry as any).registerDecorator(dec)
+    },
+    models: {
+      registerProvider: (p: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }) =>
+        (registry as any).registerModelProvider(p),
+      listProviders: () => (registry as any).listModelProviders(),
+      getProvider: (id: string) => (registry as any).getModelProvider(id)
+    },
+    chat: {
+      run: (opts?: { useSelection?: boolean }) => (registry as any).__chatRun(opts || {}),
+      stop: () => (registry as any).__chatStop(),
+      retry: () => (registry as any).__chatRetry(),
+      setActiveModel: (m: { providerId: string; modelId: string } | null) => (registry as any).__chatSetActiveModel(m),
+      getActiveModel: () => (registry as any).__chatGetActiveModel()
+    },
+    window: {
+      activeEditor: null as any
+    },
+    __applyKeymap: () => (registry as any).applyKeymap(),
+    __runMessageContributors: (messages: any[], stage: "pre" | "post" = "pre") =>
+      (registry as any).runMessageContributors(messages, stage)
+  };
+  (window as any).zion = api;
+})();
+
+export function attachEditor(core: EditorCore) {
+  (registry as any).attachEditor(core);
+}

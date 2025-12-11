@@ -1,0 +1,11 @@
+{
+  "name": "dev.paste-image",
+  "version": "0.0.1",
+  "main": "./main.js",
+  "contributes": {
+    "commands": [],
+    "keybindings": []
+  },
+  "activationEvents": ["onStartupFinished"],
+  "description": "Handle pasted images and insert as markdown images (data URL or remote src)."
+}
