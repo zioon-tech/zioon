@@ -1,5 +1,6 @@
 import { installToolCallCards } from "./tool-calls.js";
 import { installToolSwitcher } from "./tool-switcher.js";
+import { installMailConfigPanel } from "./mail-config.js";
 
 export async function activate(ctx) {
   // 注册默认工具与处理器
@@ -43,8 +44,28 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispOpen, dispClose);
 
+  // 邮件配置面板
+  let mailPanel = null;
+  const dispMailPanel = window.zion.editor.registerDecorator({
+    id: "dev.tools.mail-config",
+    apply(editor) {
+      mailPanel = installMailConfigPanel();
+      return { dispose() { mailPanel?.dispose?.(); mailPanel = null; } };
+    }
+  });
+  ctx.subscriptions.push(dispMailPanel);
+
+  const openMailCfg = window.zion.commands.registerCommand("tools.openMailConfig", () => {
+    mailPanel?.open?.();
+  });
+  const closeMailCfg = window.zion.commands.registerCommand("tools.closeMailConfig", () => {
+    mailPanel?.close?.();
+  });
+  ctx.subscriptions.push(openMailCfg, closeMailCfg);
+
   // 状态栏按钮：Tools
   let toolsBtnDisp = null;
+  let mailBtnDisp = null;
   const updateToolsBtn = () => {
     const all = window.zion.state.get("chat.tools") || [];
     const enabled = window.zion.state.get("chat.enabledTools");
@@ -56,6 +77,16 @@ export async function activate(ctx) {
       text: `Tools: ${n}`,
       tooltip: "Manage enabled tools (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
       onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
+    });
+
+    // 邮件配置按钮
+    mailBtnDisp?.dispose?.();
+    const mailBase = (window.zion.state.get("mail.baseUrl") || localStorage.getItem("zion.mail.baseUrl") || "http://127.0.0.1:8765");
+    mailBtnDisp = window.zion.statusBar.registerItem({
+      id: "dev.mail.button",
+      text: "MailCfg",
+      tooltip: `Configure mail (base: ${mailBase})`,
+      onClick: () => window.zion.commands.executeCommand("tools.openMailConfig")
     });
   };
 
@@ -305,7 +336,8 @@ function registerDefaultTools() {
             type: "object",
             properties: {
               pattern: { type: "string", description: "Glob pattern (e.g., **/*.js)" },
-              path: { type: "string", description: "Directory to search (optional, default cwd)" }
+              path: { type: "string", description: "Directory to search (optional, default cwd)" },
+              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
             },
             required: ["pattern"],
             additionalProperties: false
@@ -333,9 +365,85 @@ function registerDefaultTools() {
               type: { type: "string", description: "File type hint (rg --type js/py/rust...)" },
               head_limit: { type: "number", description: "Limit output to first N lines/entries" },
               offset: { type: "number", description: "Skip first N lines/entries" },
-              multiline: { type: "boolean", description: "Enable multiline search (rg -U --multiline --multiline-dotall)" }
+              multiline: { type: "boolean", description: "Enable multiline search (rg -U --multiline --multiline-dotall)" },
+              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
             },
             required: ["pattern"],
+            additionalProperties: false
+          }
+        }
+      },
+      // Read: read file content (local or session-aware)
+      {
+        type: "function",
+        function: {
+          name: "read",
+          description: "Read a file's content (supports local or SSH session via local tools service).",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path to read" },
+              offset: { type: "number", description: "Start line (1-based, optional)" },
+              limit: { type: "number", description: "Number of lines to read (optional)" },
+              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+            },
+            required: ["path"],
+            additionalProperties: false
+          }
+        }
+      },
+      // Write: overwrite a file (local or session-aware)
+      {
+        type: "function",
+        function: {
+          name: "write",
+          description: "Write content to a file (supports local or SSH session via local tools service).",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path to write" },
+              content: { type: "string", description: "Content to write" },
+              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+            },
+            required: ["path", "content"],
+            additionalProperties: false
+          }
+        }
+      },
+      // Edit: exact string replacement in a file (local or session-aware)
+      {
+        type: "function",
+        function: {
+          name: "edit",
+          description: "Edit a file by exact string replacement (supports local or SSH session via local tools service).",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "File path to edit" },
+              old_string: { type: "string", description: "Exact string to replace" },
+              new_string: { type: "string", description: "Replacement string" },
+              replace_all: { type: "boolean", description: "Replace all occurrences (default false)" },
+              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+            },
+            required: ["path", "old_string", "new_string"],
+            additionalProperties: false
+          }
+        }
+      },
+      // Tree: directory tree (local or session-aware)
+      {
+        type: "function",
+        function: {
+          name: "tree",
+          description: "Get directory tree structure (supports local or SSH session via local tools service).",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Directory path" },
+              max_depth: { type: "number", description: "Maximum traversal depth (default 1)" },
+              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+            },
+            required: ["path"],
             additionalProperties: false
           }
         }
@@ -364,6 +472,10 @@ function registerDefaultTools() {
               dangerouslyDisableSandbox: {
                 type: "boolean",
                 description: "Set this to true to dangerously override sandbox mode and run commands without sandboxing."
+              },
+              session_id: {
+                type: "string",
+                description: "Optional terminal session ID to execute within (see terminalManage)"
               }
             },
             required: ["command"],
@@ -388,7 +500,62 @@ function registerDefaultTools() {
             additionalProperties: false
           }
         }
-      }
+      },
+      // SendMail: 发送邮件
+      {
+        type: "function",
+        function: {
+          name: "sendMail",
+          description: "Send an email to specified recipients. Supports HTML/plain text and attachments. Requires mail service configuration.",
+          parameters: {
+            type: "object",
+            properties: {
+              to: { 
+                type: "array", 
+                items: { type: "string" }, 
+                description: "Recipient email addresses (required)" 
+              },
+              cc: { 
+                type: "array", 
+                items: { type: "string" }, 
+                description: "CC email addresses (optional)" 
+              },
+              bcc: { 
+                type: "array", 
+                items: { type: "string" }, 
+                description: "BCC email addresses (optional)" 
+              },
+              subject: { 
+                type: "string", 
+                description: "Email subject (required)" 
+              },
+              body: { 
+                type: "string", 
+                description: "Email body content (required)" 
+              },
+              html: { 
+                type: "boolean", 
+                description: "Whether body is HTML format (default: false)" 
+              },
+              attachments: { 
+                type: "array", 
+                items: { 
+                  type: "object",
+                  properties: {
+                    filename: { type: "string" },
+                    content: { type: "string", description: "Base64 encoded content" },
+                    content_type: { type: "string" }
+                  },
+                  required: ["filename", "content"]
+                },
+                description: "Email attachments (optional)"
+              }
+            },
+            required: ["to", "subject", "body"],
+            additionalProperties: false
+          }
+        }
+      },
     ];
 
     // 合并到 chat.tools（避免重复）
@@ -594,11 +761,12 @@ function registerDefaultTools() {
       };
     }
 
-    // Glob (local tools)
+    // Glob (local/remote via local tools service, session-aware)
     if (!handlers.glob) {
       handlers.glob = async (args) => {
         const pattern = String(args?.pattern || "").trim();
         const path = String(args?.path || "").trim();
+        const sessionId = String(args?.session_id || "").trim();
         if (!pattern) return "Missing pattern";
 
         const readBase = () => {
@@ -613,29 +781,31 @@ function registerDefaultTools() {
         const base = readBase();
         let url = `${base.replace(/\/$/, "")}/files/glob?pattern=${encodeURIComponent(pattern)}`;
         if (path) url += `&path=${encodeURIComponent(path)}`;
+        if (sessionId) url += `&session_id=${encodeURIComponent(sessionId)}`;
 
         try {
           const res = await fetch(url, { method: "GET" });
           if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
           const data = await res.json().catch(() => null);
           const results = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
-          return JSON.stringify({ pattern, path: path || undefined, results }, null, 2);
+          return JSON.stringify({ pattern, path: path || undefined, session_id: sessionId || undefined, results }, null, 2);
         } catch (e) {
           return `Glob error: ${e?.message || String(e)}`;
         }
       };
     }
 
-    // Grep (local tools, ripgrep-backed)
+    // Grep (local/remote via local tools service, ripgrep-backed)
     if (!handlers.grep) {
       handlers.grep = async (args) => {
         const pattern = String(args?.pattern || "").trim();
         if (!pattern) return "Missing pattern";
         const path = String(args?.path || "").trim();
+        const sessionId = String(args?.session_id || "").trim();
         const outputMode = String(args?.output_mode || "files_with_matches");
         const B = typeof args?.B === "number" ? args.B : undefined;
         const A = typeof args?.A === "number" ? args.A : undefined;
-        const C = typeof args?.C === "number" ? args.C : undefined;
+        const C = typeof args?.C === "number" ? args?.C : undefined;
         const n = args?.n === undefined ? true : !!args?.n;
         const i = !!args?.i;
         const type = typeof args?.type === "string" ? String(args.type).trim() : "";
@@ -655,8 +825,7 @@ function registerDefaultTools() {
         const base = readBase();
         let url = `${base.replace(/\/$/, "")}/files/grep?pattern=${encodeURIComponent(pattern)}&output_mode=${encodeURIComponent(outputMode)}`;
         if (path) url += `&path=${encodeURIComponent(path)}`;
-        const glb = Array.isArray(args?.glob) ? args.glob : (typeof args?.glob === "string" && args.glob.trim() ? [args.glob] : []);
-        // Inject default excludes when model didn't provide globs; otherwise merge them
+        const glb = Array.isArray(args?.glob) ? args.glob : (typeof args?.glob === "string" && args?.glob.trim() ? [args.glob] : []);
         const defaultExcludes = ["!**/node_modules/**","!**/.git/**","!**/dist/**","!**/build/**","!**/.next/**","!**/.cache/**","!**/.venv/**","!**/venv/**","!**/target/**","!**/out/**","!**/coverage/**","!**/.tox/**","!**/.pytest_cache/**","!**/.idea/**","!**/.vscode/**","!**/tmp/**"];
         const mergedGlobs = (glb && glb.length > 0) ? Array.from(new Set([...glb, ...defaultExcludes])) : defaultExcludes;
         try {
@@ -671,6 +840,7 @@ function registerDefaultTools() {
         if (headLimit != null) url += `&head_limit=${headLimit}`;
         if (offset != null) url += `&offset=${offset}`;
         if (multiline) url += `&multiline=true`;
+        if (sessionId) url += `&session_id=${encodeURIComponent(sessionId)}`;
 
         try {
           const res = await fetch(url, { method: "GET" });
@@ -680,19 +850,21 @@ function registerDefaultTools() {
           }
           const data = await res.json().catch(() => null);
           const results = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
-          return JSON.stringify({ pattern, path: path || undefined, output_mode: outputMode, results }, null, 2);
+          return JSON.stringify({ pattern, path: path || undefined, session_id: sessionId || undefined, output_mode: outputMode, results }, null, 2);
         } catch (e) {
           return `Grep error: ${e?.message || String(e)}`;
         }
       };
     }
 
-    // Bash (local tools)
-    if (!handlers.Bash) {
-      handlers.Bash = async (args) => {
-        const command = String(args?.command || "").trim();
-        if (!command) return "Missing command";
-        const timeout = typeof args?.timeout === "number" ? Math.min(Math.max(args.timeout, 1), 600000) : undefined;
+    // Read (local tools service, session-aware)
+    if (!handlers.read) {
+      handlers.read = async (args) => {
+        const path = String(args?.path || args?.file_path || "").trim();
+        const sessionId = String(args?.session_id || "").trim();
+        const offset = typeof args?.offset === "number" ? args.offset : undefined;
+        const limit = typeof args?.limit === "number" ? args.limit : undefined;
+        if (!path) return "Missing path";
 
         const readBase = () => {
           const st1 = window.zion?.state?.get("localTools.baseUrl");
@@ -704,10 +876,218 @@ function registerDefaultTools() {
           return "http://127.0.0.1:8765";
         };
         const base = readBase();
-        const url = `${base.replace(/\/$/, "")}/bash`;
-        const dangerouslyDisableSandbox = !!args?.dangerouslyDisableSandbox;
+        let url = `${base.replace(/\/$/, "")}/files/read?path=${encodeURIComponent(path)}`;
+        if (offset != null) url += `&offset=${offset}`;
+        if (limit != null) url += `&limit=${limit}`;
+        if (sessionId) url += `&session_id=${encodeURIComponent(sessionId)}`;
 
         try {
+          const res = await fetch(url, { method: "GET" });
+          const data = await res.json().catch(() => null);
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            return `HTTP ${res.status}: ${txt || data?.error || "read failed"}`;
+          }
+          const content = typeof data?.content === "string" ? data.content : "";
+          return content;
+        } catch (e) {
+          return `Read error: ${e?.message || String(e)}`;
+        }
+      };
+    }
+
+    // Write (local tools service, session-aware)
+    if (!handlers.write) {
+      handlers.write = async (args) => {
+        const path = String(args?.path || args?.file_path || "").trim();
+        const content = String(args?.content ?? "");
+        const sessionId = String(args?.session_id || "").trim();
+        if (!path) return "Missing path";
+
+        const readBase = () => {
+          const st1 = window.zion?.state?.get("localTools.baseUrl");
+          if (typeof st1 === "string" && st1.trim()) return st1.trim();
+          try {
+            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+            if (s) return s.trim();
+          } catch {}
+          return "http://127.0.0.1:8765";
+        };
+        const base = readBase();
+        const url = `${base.replace(/\/$/, "")}/files/write`;
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path, content, session_id: sessionId || undefined })
+          });
+          const data = await res.json().catch(() => null);
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            return `HTTP ${res.status}: ${txt || data?.error || "write failed"}`;
+          }
+          return JSON.stringify(data, null, 2);
+        } catch (e) {
+          return `Write error: ${e?.message || String(e)}`;
+        }
+      };
+    }
+
+    // Edit (local tools service, session-aware)
+    if (!handlers.edit) {
+      handlers.edit = async (args) => {
+        const path = String(args?.path || args?.file_path || "").trim();
+        const old_string = String(args?.old_string ?? "");
+        const new_string = String(args?.new_string ?? "");
+        const replace_all = !!args?.replace_all;
+        const sessionId = String(args?.session_id || "").trim();
+        if (!path) return "Missing path";
+        if (!old_string) return "Missing old_string";
+
+        const readBase = () => {
+          const st1 = window.zion?.state?.get("localTools.baseUrl");
+          if (typeof st1 === "string" && st1.trim()) return st1.trim();
+          try {
+            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+            if (s) return s.trim();
+          } catch {}
+          return "http://127.0.0.1:8765";
+        };
+        const base = readBase();
+        const url = `${base.replace(/\/$/, "")}/files/edit`;
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path, old_string, new_string, replace_all, session_id: sessionId || undefined })
+          });
+          const data = await res.json().catch(() => null);
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            return `HTTP ${res.status}: ${txt || data?.error || "edit failed"}`;
+          }
+          return JSON.stringify(data, null, 2);
+        } catch (e) {
+          return `Edit error: ${e?.message || String(e)}`;
+        }
+      };
+    }
+
+    // Tree (local tools service, session-aware)
+    if (!handlers.tree) {
+      handlers.tree = async (args) => {
+        const path = String(args?.path || "").trim();
+        const depth = typeof args?.max_depth === "number" ? args.max_depth : 1;
+        const sessionId = String(args?.session_id || "").trim();
+        if (!path) return "Missing path";
+
+        const readBase = () => {
+          const st1 = window.zion?.state?.get("localTools.baseUrl");
+          if (typeof st1 === "string" && st1.trim()) return st1.trim();
+          try {
+            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+            if (s) return s.trim();
+          } catch {}
+          return "http://127.0.0.1:8765";
+        };
+        const base = readBase();
+        let url = `${base.replace(/\/$/, "")}/files/entries?path=${encodeURIComponent(path)}&max_depth=${depth}`;
+        if (sessionId) url += `&session_id=${encodeURIComponent(sessionId)}`;
+
+        try {
+          const res = await fetch(url, { method: "GET" });
+          const data = await res.json().catch(() => null);
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            return `HTTP ${res.status}: ${txt || data?.error || "tree failed"}`;
+          }
+          // 直接返回 tree 的文本结果
+          const results = typeof data?.results === "string" ? data.results : "";
+          return results;
+        } catch (e) {
+          return `Tree error: ${e?.message || String(e)}`;
+        }
+      };
+    }
+
+    // Bash (local tools) with session support
+    if (!handlers.Bash) {
+      handlers.Bash = async (args) => {
+        const command = String(args?.command || "").trim();
+        if (!command) return "Missing command";
+        const timeout = typeof args?.timeout === "number" ? Math.min(Math.max(args.timeout, 1), 600000) : undefined;
+        const sessionId = String(args?.session_id || "").trim();
+        const dangerouslyDisableSandbox = !!args?.dangerouslyDisableSandbox;
+
+        const readBase = () => {
+          const st1 = window.zion?.state?.get("localTools.baseUrl");
+          if (typeof st1 === "string" && st1.trim()) return st1.trim();
+          try {
+            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+            if (s) return s.trim();
+          } catch {}
+          return "http://127.0.0.1:8765";
+        };
+        const base = readBase();
+        const baseClean = base.replace(/\/$/, "");
+
+        try {
+          // 如果带有 session_id，则调用 sessions/{id}/exec
+          if (sessionId) {
+            const urlSess = `${baseClean}/sessions/${encodeURIComponent(sessionId)}/exec`;
+            const res = await fetch(urlSess, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ command, timeout, dangerouslyDisableSandbox })
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+              const txt = typeof data === "string" ? data : (await res.text().catch(() => ""));
+              return `HTTP ${res.status}: ${txt}`;
+            }
+            if (!data) return "Empty response";
+            // sandbox blocked message unify
+            if (data.error && typeof data.error === 'string' && data.error.includes('blocked_by_sandbox')) {
+              const patternMatch = data.error.match(/pattern[:\s]+(.+)$/);
+              const matchedPattern = patternMatch ? patternMatch[1].trim() : 'unknown pattern';
+              const errorMsg = `Command blocked by sandbox security rules.\n` +
+                              `Reason: The command contains "${matchedPattern}" which matches a restricted pattern.\n` +
+                              `Command: ${command}\n` +
+                              `Session: ${sessionId}\n` +
+                              `\nTo bypass this restriction, you can:\n` +
+                              `1. Use a different path that doesn't contain restricted keywords\n` +
+                              `2. Add "dangerouslyDisableSandbox": true to the command arguments\n` +
+                              `3. Configure the local service to allow dangerous commands (ZION_ALLOW_DANGEROUS=1)`;
+              return JSON.stringify({
+                command,
+                session_id: sessionId,
+                ok: false,
+                error: data.error,
+                sandbox_blocked: true,
+                user_message: errorMsg,
+                sandbox: data.sandbox || true,
+                cwd: typeof data.cwd === "string" ? data.cwd : undefined
+              }, null, 2);
+            }
+            const out = {
+              command,
+              session_id: sessionId,
+              exit_code: typeof data.exit_code === "number" ? data.exit_code : undefined,
+              timeout_ms: typeof data.timeout_ms === "number" ? data.timeout_ms : undefined,
+              duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
+              stdout: String(data.stdout ?? ""),
+              stderr: String(data.stderr ?? ""),
+              ok: !!data.ok,
+              truncated: !!data.truncated,
+              ...(data.error ? { error: data.error } : {}),
+              ...(data.sandbox !== undefined ? { sandbox: data.sandbox } : {}),
+              ...(typeof data.cwd === "string" ? { cwd: data.cwd } : {})
+            };
+            return JSON.stringify(out, null, 2);
+          }
+
+          // 否则走原 /bash
+          const url = `${baseClean}/bash`;
           const res = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -720,32 +1100,27 @@ function registerDefaultTools() {
           const data = await res.json().catch(() => null);
           if (!data) return "Empty response";
 
-          // Check for sandbox blocking error
           if (data.error && typeof data.error === 'string' && data.error.includes('blocked_by_sandbox')) {
-            // Extract the pattern that caused the block
             const patternMatch = data.error.match(/pattern[:\s]+(.+)$/);
-            const pattern = patternMatch ? patternMatch[1].trim() : 'unknown pattern';
-            
-            // Create a user-friendly error message
+            const matchedPattern = patternMatch ? patternMatch[1].trim() : 'unknown pattern';
             const errorMsg = `Command blocked by sandbox security rules.\n` +
-                            `Reason: The command contains "${pattern}" which matches a restricted pattern.\n` +
+                            `Reason: The command contains "${matchedPattern}" which matches a restricted pattern.\n` +
                             `Command: ${command}\n` +
                             `\nTo bypass this restriction, you can:\n` +
                             `1. Use a different path that doesn't contain restricted keywords\n` +
                             `2. Add "dangerouslyDisableSandbox": true to the command arguments\n` +
                             `3. Configure the local service to allow dangerous commands (ZION_ALLOW_DANGEROUS=1)`;
-            
             return JSON.stringify({
               command,
               ok: false,
               error: data.error,
               sandbox_blocked: true,
               user_message: errorMsg,
-              sandbox: data.sandbox || true
+              sandbox: data.sandbox || true,
+              cwd: typeof data.cwd === "string" ? data.cwd : undefined
             }, null, 2);
           }
 
-          // Normalize response for non-blocked cases
           const out = {
             command,
             exit_code: typeof data.exit_code === "number" ? data.exit_code : undefined,
@@ -755,9 +1130,9 @@ function registerDefaultTools() {
             stderr: String(data.stderr ?? ""),
             ok: !!data.ok,
             truncated: !!data.truncated,
-            // Include original error if present (for other types of errors)
             ...(data.error ? { error: data.error } : {}),
-            ...(data.sandbox !== undefined ? { sandbox: data.sandbox } : {})
+            ...(data.sandbox !== undefined ? { sandbox: data.sandbox } : {}),
+            ...(typeof data.cwd === "string" ? { cwd: data.cwd } : {})
           };
           return JSON.stringify(out, null, 2);
         } catch (e) {
@@ -837,6 +1212,81 @@ function registerDefaultTools() {
           return "Unknown action";
         } catch (e) {
           return `toolsManage error: ${e?.message || String(e)}`;
+        }
+      };
+    }
+
+    // 移除 terminalManage 处理器（迁移到 dev.terminal-manager 扩展中）
+
+    // SendMail: 发送邮件（本地服务，SMTP）
+    if (!handlers.sendMail) {
+      handlers.sendMail = async (args) => {
+        try {
+          const base = (() => {
+            const st = window.zion?.state?.get("mail.baseUrl");
+            if (typeof st === "string" && st.trim()) return st.trim();
+            try { const s = localStorage.getItem("zion.mail.baseUrl") || ""; if (s) return s.trim(); } catch {}
+            return "http://127.0.0.1:8765";
+          })().replace(/\/$/, "");
+
+          // 推送（或刷新）服务端配置：读取 SMTP 设置并发送到服务端
+          const cfg = {
+            provider: "smtp",
+            smtp_host: "",
+            smtp_port: 587,
+            smtp_username: "",
+            smtp_password: "",
+            smtp_use_tls: true,
+            from_email: "",
+            from_name: ""
+          };
+          try {
+            cfg.smtp_host = (localStorage.getItem("zion.mail.smtp.host") || "").trim();
+            const p = (localStorage.getItem("zion.mail.smtp.port") || "").trim();
+            const pn = parseInt(p || "587", 10); cfg.smtp_port = isNaN(pn) ? 587 : pn;
+            cfg.smtp_username = (localStorage.getItem("zion.mail.smtp.username") || "").trim();
+            cfg.smtp_password = (localStorage.getItem("zion.mail.smtp.password") || "");
+            const tlsRaw = (localStorage.getItem("zion.mail.smtp.useTls") || "").toLowerCase();
+            cfg.smtp_use_tls = tlsRaw === "1" || tlsRaw === "true" || tlsRaw === "yes";
+            cfg.from_email = (localStorage.getItem("zion.mail.fromEmail") || "").trim() || "zion@zion.ai";
+            cfg.from_name = (localStorage.getItem("zion.mail.fromName") || "").trim() || "Zion AI";
+            if (cfg.smtp_host) {
+              await fetch(`${base}/mail/config`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(cfg)
+              }).catch(() => {});
+            }
+          } catch {}
+
+          // 映射参数：兼容 content/body
+          const to = Array.isArray(args?.to) ? args.to.map(String).filter(Boolean) : [];
+          const subject = String(args?.subject || "").trim();
+          const body = String((args?.body ?? args?.content ?? "")).trim();
+          const html = !!args?.html;
+          const cc = Array.isArray(args?.cc) ? args.cc.map(String).filter(Boolean) : undefined;
+          const bcc = Array.isArray(args?.bcc) ? args.bcc.map(String).filter(Boolean) : undefined;
+
+          if (!to.length) return "Missing to";
+          if (!subject) return "Missing subject";
+          if (!body) return "Missing body";
+
+          const payload = { to, subject, body, html, cc, bcc };
+          const res = await fetch(`${base}/mail/send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const txt = await res.text();
+          if (!res.ok) {
+            // 尝试解析错误
+            let detail = "";
+            try { const j = JSON.parse(txt); detail = j?.detail ? JSON.stringify(j.detail) : txt; } catch { detail = txt; }
+            return `HTTP ${res.status}: ${detail}`;
+          }
+          return txt;
+        } catch (e) {
+          return `sendMail error: ${e?.message || String(e)}`;
         }
       };
     }

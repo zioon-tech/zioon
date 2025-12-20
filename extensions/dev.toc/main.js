@@ -1314,6 +1314,9 @@ export async function activate(ctx) {
       };
       window.addEventListener("resize", onResize);
 
+      // Open TOC side panel by default
+      try { if (!sidePanelOpen) openSideTOC(); } catch {}
+
       // Return Disposable to cleanup on extension deactivate/reload
       return {
         dispose() {

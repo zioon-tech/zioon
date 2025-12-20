@@ -102,9 +102,52 @@ function summarizeToolArgs(name, args) {
         const len = String(a?.content ?? "").length;
         return `${clip(fp, 120)} (content=${len} chars)`;
       }
+      case "read": {
+        const fp = String(a?.path || a?.file_path || "").trim();
+        const off = typeof a?.offset === "number" ? a.offset : null;
+        const lim = typeof a?.limit === "number" ? a.limit : null;
+        if (!fp) return "";
+        let s = `${clip(fp, 120)}`;
+        if (off != null || lim != null) {
+          s += ` (offset=${off != null ? off : "-"}, limit=${lim != null ? lim : "-"})`;
+        }
+        return s;
+      }
+      case "write": {
+        const fp = String(a?.path || a?.file_path || "").trim();
+        if (!fp) return "";
+        const len = String(a?.content ?? "").length;
+        return `${clip(fp, 120)} (content=${len} chars)`;
+      }
+      case "edit": {
+        const fp = String(a?.path || a?.file_path || "").trim();
+        const os = String(a?.old_string ?? "");
+        const ns = String(a?.new_string ?? "");
+        const ra = !!a?.replace_all;
+        if (!fp && !os && !ns) return "";
+        let base = fp ? `${clip(fp, 120)}` : "";
+        if (os && ns) {
+          const rep = ` replace "${clip(os, 24)}" → "${clip(ns, 24)}"${ra ? " (all)" : ""}`;
+          base = base ? `${base};${rep}` : rep;
+        }
+        return base;
+      }
+      case "tree": {
+        const dir = String(a?.path || "").trim();
+        const md = typeof a?.max_depth === "number" ? a.max_depth : null;
+        if (!dir) return "";
+        return md ? `${clip(dir, 120)} (depth=${md})` : `${clip(dir, 120)}`;
+      }
       case "todoWrite": {
         const cnt = Array.isArray(a?.todos) ? a.todos.length : 0;
         return `todos ${cnt} 项`;
+      }
+      case "sendMail": {
+        const tos = Array.isArray(a?.to) ? a.to.filter(Boolean) : [];
+        const subj = String(a?.subject || "").trim();
+        const s1 = tos.length ? `to ${clip(tos.join(", "), 60)}` : "";
+        const s2 = subj ? `subject ${clip(subj, 60)}` : "";
+        return [s1, s2].filter(Boolean).join("; ");
       }
       default: {
         // 通用回退：优先挑选常见键的简短文本；否则输出压缩后的 JSON 片段

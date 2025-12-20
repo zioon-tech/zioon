@@ -1,0 +1,12 @@
+{
+  "name": "dev.terminal-manager",
+  "version": "0.0.1",
+  "main": "./main.js",
+  "contributes": {
+    "commands": [
+      { "id": "terminal.openManager", "title": "Open Terminal Manager" },
+      { "id": "terminal.closeManager", "title": "Close Terminal Manager" }
+    ]
+  },
+  "activationEvents": ["onStartupFinished"]
+}

@@ -1224,6 +1224,8 @@ html, body {
   box-sizing: border-box;             /* 让背景裁剪时以内容盒为准 */
   background-clip: content-box;       /* 根据缩进（padding-left）裁剪高亮宽度 */
   white-space: nowrap;                /* 强制单行展示，避免换行 */
+  /* 默认使用面板色，保证子元素可继承/取样到“非透明”的背景 */
+  background: var(--panel);
 }
 /* 根据层级缩进，缩短高亮宽度（仅占文字内容宽度，不覆盖缩进空白区） */
 .zion-session-row[data-level="0"], .zion-session-row[data-depth="0"] { padding-left: 0; }
@@ -1283,3 +1285,20 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-list:hover::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb-hover);
 }
+
+/* Status badge for sessions (compact, pill background) */
+.zion-session-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+/*   padding: 0 4px; */
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg);
+  /* 背景色由脚本动态设置为与行背景一致（并且为不透明的合成色） */
+}
+/* 状态颜色：回答中用 accent，小圆点完成用 ok 绿色 */
+.zion-session-status-badge.streaming { color: var(--accent); }

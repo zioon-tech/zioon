@@ -1462,12 +1462,74 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
 
             const rs = window.zion.state.get(`chat.runs.${ch.id}`) || null;
             let statusBadge = null;
+
+            // Compute an opaque background color that visually matches the row background.
+            // If the row background is semi-transparent (e.g., sessions highlight), blend with panel.
+            const parseColor = (str) => {
+              if (!str) return null;
+              str = String(str).trim();
+              // rgba()/rgb()
+              let m = str.match(/^rgba?\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/i);
+              if (m) return { r: +m[1], g: +m[2], b: +m[3], a: m[4] != null ? +m[4] : 1 };
+              // #rrggbb or #rgb
+              if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(str)) {
+                let hex = str.slice(1);
+                if (hex.length === 3) hex = hex.split("").map(c => c + c).join("");
+                const num = parseInt(hex, 16);
+                return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255, a: 1 };
+              }
+              return null;
+            };
+            const toRgb = (c) => `rgb(${Math.round(c.r)}, ${Math.round(c.g)}, ${Math.round(c.b)})`;
+            const getPanelColor = () => {
+              try {
+                const v = getComputedStyle(document.documentElement).getPropertyValue("--panel").trim();
+                const parsed = parseColor(v);
+                if (parsed) return parsed;
+                // allow hex without parsing via computed background
+                const bodyBg = getComputedStyle(document.body).backgroundColor;
+                return parseColor(bodyBg) || { r: 40, g: 42, b: 54, a: 1 };
+              } catch {
+                return { r: 40, g: 42, b: 54, a: 1 };
+              }
+            };
+            const blendOverPanel = (fg) => {
+              const base = getPanelColor();
+              const a = fg.a == null ? 1 : fg.a;
+              return {
+                r: fg.r * a + base.r * (1 - a),
+                g: fg.g * a + base.g * (1 - a),
+                b: fg.b * a + base.b * (1 - a),
+                a: 1
+              };
+            };
+            const computeOpaqueBg = (rowEl) => {
+              try {
+                const bg = getComputedStyle(rowEl).backgroundColor;
+                if (!bg || bg === "transparent" || bg === "rgba(0, 0, 0, 0)") {
+                  return toRgb(getPanelColor());
+                }
+                const c = parseColor(bg);
+                if (!c) return toRgb(getPanelColor());
+                if (c.a == null || c.a >= 1) return `rgb(${c.r}, ${c.g}, ${c.b})`;
+                const blended = blendOverPanel(c);
+                return toRgb(blended);
+              } catch {
+                return toRgb(getPanelColor());
+              }
+            };
+            const applyBadgeBg = (el) => {
+              try {
+                el.style.backgroundColor = computeOpaqueBg(srow);
+              } catch {}
+            };
+
             if (rs && (rs.streaming || rs.awaiting)) {
               statusBadge = document.createElement("span");
-              statusBadge.textContent = rs.streaming ? "⏳" : "●";
-              statusBadge.style.fontSize = "12px";
-              statusBadge.style.opacity = rs.streaming ? "0.9" : "0.7";
+              statusBadge.className = `zion-session-status-badge ${rs.streaming ? "streaming" : "ready"}`;
+              statusBadge.textContent = "●";
               statusBadge.title = rs.streaming ? "Model generating…" : "Answer ready";
+              applyBadgeBg(statusBadge);
             }
 
             rightWrap.appendChild(bMore2);
@@ -1479,22 +1541,26 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               srow.style.paddingRight = reserve + "px";
               rightWrap.style.pointerEvents = "auto";
               bMore2.style.opacity = "1";
+              try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
             srow.addEventListener("mouseleave", () => {
               srow.style.paddingRight = "";
               rightWrap.style.pointerEvents = "none";
               bMore2.style.opacity = "0";
+              try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
             srow.addEventListener("focus", () => {
               const reserve = (rightWrap.offsetWidth || 0) + 8;
               srow.style.paddingRight = reserve + "px";
               rightWrap.style.pointerEvents = "auto";
               bMore2.style.opacity = "1";
+              try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
             srow.addEventListener("blur", () => {
               srow.style.paddingRight = "";
               rightWrap.style.pointerEvents = "none";
               bMore2.style.opacity = "0";
+              try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
 
             srow.appendChild(rightWrap);
@@ -1557,6 +1623,8 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
 
             srow.append(labelWrap2);
             listEl.appendChild(srow);
+            // 追加到 DOM 后再计算一次徽标背景，确保读取到最终的行背景（含选中/当前状态）
+            try { if (statusBadge) requestAnimationFrame(() => requestAnimationFrame(() => applyBadgeBg(statusBadge))); } catch {}
           }
         }
       }
@@ -1816,7 +1884,18 @@ function openSessionsPanel() {
   }
 }
 
-// ========== Sidebar (left) ==========
+// Helper: refresh Sessions overlay panel if currently open
+function refreshSessionsOverlayIfOpen() {
+  try {
+    const overlay = document.getElementById("zion-sessions-panel-overlay");
+    if (overlay) {
+      overlay.remove();
+      openSessionsPanel();
+    }
+  } catch {}
+}
+
+ // ========== Sidebar (left) ==========
 function mountSessionsSidebar() {
   try {
     let bar = document.getElementById("zion-sessions-sidebar");
@@ -2699,8 +2778,23 @@ export async function activate(ctx) {
         window.zion.state.set(key, 0);
       }
     } catch {}
+    // Refresh UI to reflect "streaming" status badge immediately
+    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsOverlayIfOpen(); } catch {}
   });
-  ctx.subscriptions.push(dispRunStarted);
+  const dispRunFinishedUI = window.zion.events.on("chat/runFinished", ({ sessionId }) => {
+    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsOverlayIfOpen(); } catch {}
+  });
+  const dispRunErrorUI = window.zion.events.on("chat/runError", ({ sessionId }) => {
+    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsOverlayIfOpen(); } catch {}
+  });
+  const dispAbortedUI = window.zion.events.on("chat/aborted", ({ sessionId }) => {
+    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsOverlayIfOpen(); } catch {}
+  });
+  ctx.subscriptions.push(dispRunStarted, dispRunFinishedUI, dispRunErrorUI, dispAbortedUI);
 
   const dispReasoningStart = window.zion.events.on("chat/reasoningStart", ({ runId, sessionId }) => {
     try {

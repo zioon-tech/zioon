@@ -152,6 +152,48 @@ export async function activate(ctx) {
       return;
     }
 
+    // 根据开关注入终端上下文（默认开启；显式关闭时不注入）
+    try {
+      let includeTerminal = window.zion?.state?.get("chat.includeTerminalContext");
+      // 默认开启注入（若用户尚未显式设置）
+      if (includeTerminal === undefined) {
+        includeTerminal = true;
+        try { window.zion?.state?.set("chat.includeTerminalContext", true); } catch {}
+      }
+      if (includeTerminal !== false) {
+        // 若状态总线中暂时没有会话列表，主动获取一次，确保注入“所有会话信息”
+        const readBase = () => {
+          const st1 = window.zion?.state?.get("localTools.baseUrl");
+          if (typeof st1 === "string" && st1.trim()) return st1.trim();
+          try {
+            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+            if (s) return s.trim();
+          } catch {}
+          return "http://127.0.0.1:8765";
+        };
+        let sessions = window.zion?.state?.get("terminal.sessions");
+        if (!Array.isArray(sessions) || sessions.length === 0) {
+          try {
+            const base = readBase().replace(/\/$/, "");
+            const resp = await fetch(`${base}/sessions`, { method: "GET" });
+            const j = await resp.json().catch(() => null);
+            if (resp.ok && j && Array.isArray(j.sessions)) {
+              sessions = j.sessions;
+              try { window.zion?.state?.set("terminal.sessions", sessions); } catch {}
+            } else {
+              sessions = Array.isArray(sessions) ? sessions : [];
+            }
+          } catch {
+            sessions = Array.isArray(sessions) ? sessions : [];
+          }
+        }
+        const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
+        const ctxObj = { activeSessionId: activeId, sessions };
+        const text = `Terminal Context\n${JSON.stringify(ctxObj, null, 2)}`;
+        baseMessages.unshift({ role: "system", content: text });
+      }
+    } catch {}
+
     // 解析工具定义（委托给独立 tools 插件）
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
 
