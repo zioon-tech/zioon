@@ -22,7 +22,24 @@ export async function activate(ctx) {
         if (!prov) continue;
         const list = await prov.list();
         for (const m of (list || [])) {
-          models.push({ providerId: pid, id: m.id, label: m.label || m.id });
+          // 检查是否需要配置
+          let requiresConfig = false;
+          let configHint = "";
+          try {
+            const cfg = await prov.resolve(m.id);
+            if (cfg?._requiresConfig && (!cfg.key || !cfg.key.trim())) {
+              requiresConfig = true;
+              configHint = cfg._configHint || "需要配置 API key";
+            }
+          } catch {}
+          
+          models.push({ 
+            providerId: pid, 
+            id: m.id, 
+            label: m.label || m.id,
+            requiresConfig,
+            configHint
+          });
         }
       }
       window.zion.state.set("models.catalog", models);
@@ -772,18 +789,31 @@ export async function activate(ctx) {
   let modelBtnDisp = null;
   const updateModelBtn = () => {
     const active = window.zion.state.get("chat.activeModel");
-    const label = active?.label || active?.modelId || "unknown";
+    const catalog = window.zion.state.get("models.catalog") || [];
+    const activeItem = catalog.find(m => 
+      m.providerId === active?.providerId && m.id === active?.modelId
+    );
+    
+    let label = active?.label || active?.modelId || "unknown";
+    let tooltip = "Select Model (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)";
+    
+    if (activeItem?.requiresConfig) {
+      label = `⚠️ ${label}`;
+      tooltip = `${activeItem.configHint || "需要配置 API key"} - ${tooltip}`;
+    }
+    
     modelBtnDisp?.dispose?.();
     modelBtnDisp = window.zion.statusBar.registerItem({
       id: "langchain.chat.model",
       text: `Model: ${label}`,
-      tooltip: "Select Model (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
+      tooltip,
       onClick: () => window.zion.commands.executeCommand("models.openSwitcher")
     });
   };
   updateModelBtn();
   ctx.subscriptions.push(
-    window.zion.state.onDidChange("chat.activeModel", updateModelBtn)
+    window.zion.state.onDidChange("chat.activeModel", updateModelBtn),
+    window.zion.state.onDidChange("models.catalog", updateModelBtn)
   );
 
   // 注册“模型管理”工具（CRUD + 设置激活）

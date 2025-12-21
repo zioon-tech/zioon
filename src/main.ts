@@ -2,6 +2,8 @@ import "katex/dist/katex.min.css";
 import { EditorCore } from "./editor/EditorCore";
 import { attachEditor } from "./ext/registry";
 import type { Disposable } from "./types/zion";
+import { PluginManager } from "./plugin/manager";
+import { HttpPluginInstaller } from "./plugin/http-installer";
 
 // ---------- 自动保存 / 恢复 ----------
 const STORAGE_KEY = 'zion.autosave';
@@ -38,15 +40,23 @@ async function bootstrap() {
   editorContainer.style.height = "100%";
   host.appendChild(editorContainer);
 
+  // 初始化插件管理器
+  const pluginManager = new PluginManager({
+    pluginDir: '/plugins',
+    extensionsDir: '/extensions',
+    logLevel: 'info'
+  });
+
   // 优先读缓存，没有再给默认
   const cached = loadLastDoc();
   const initialDoc =
     cached.trim() ||
-    `# Zion Next (CodeMirror 6)
+    `# Zion Next (CodeMirror 6) - 插件化版本
 This is a minimal scaffold to validate:
 - CM6 editor core with safe proxy
 - Extension registry (commands / keybindings / status bar)
 - EventBus & StateBus for plugin interaction
+- New plugin system with backward compatibility
 
 Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
 `;
@@ -262,6 +272,39 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   // Auto-load all extensions under /extensions
   await autoLoadExtensions();
 
+  // Initialize new plugin system
+  try {
+    await pluginManager.initialize();
+    console.log('[PluginManager] 插件系统初始化完成');
+    
+    // Expose plugin manager to window.zion
+    (window as any).zion.plugins = pluginManager;
+
+    // 初始化 HTTP 插件安装器（服务地址可配置）
+    const defaultServiceUrl = (() => {
+      try {
+        return localStorage.getItem('zion.pluginServiceUrl') || 'http://127.0.0.1:8765';
+      } catch {
+        return 'http://127.0.0.1:8765';
+      }
+    })();
+    const pluginInstaller = new HttpPluginInstaller({
+      baseUrl: defaultServiceUrl,
+      timeout: 20000,
+      cache: true
+    });
+    (window as any).zion.pluginInstaller = pluginInstaller;
+    
+    // Add plugin management commands
+    window.zion.commands.registerCommand("zion.showPlugins", () => openPluginsPanel(pluginManager));
+    window.zion.commands.registerCommand("zion.reloadPlugins", () => {
+      location.reload();
+    });
+    
+  } catch (error) {
+    console.error('[PluginManager] 插件系统初始化失败:', error);
+  }
+
   // Status item example (core side)
   window.zion.statusBar.registerItem({
     id: "core.ready",
@@ -280,6 +323,14 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     onClick: () => openExtensionsPanel()
   });
 
+  // Plugin management panel launcher
+  window.zion.statusBar.registerItem({
+    id: "core.plugins",
+    text: "Plugins",
+    tooltip: "Manage plugins (new plugin system)",
+    onClick: () => openPluginsPanel(pluginManager)
+  });
+
   // Core convenience: reload extensions (page reload)
   window.zion.statusBar.registerItem({
     id: "core.reload",
@@ -291,6 +342,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   // Core commands
   window.zion.commands.registerCommand("zion.showExtensions", () => openExtensionsPanel());
   window.zion.commands.registerCommand("zion.reloadExtensions", () => location.reload());
+  window.zion.commands.registerCommand("zion.showPlugins", () => openPluginsPanel(pluginManager));
+  window.zion.commands.registerCommand("zion.reloadPlugins", () => location.reload());
 
   // Show extension load errors (if any)
   const extErr = (window as any).__ext_errors || 0;
@@ -521,6 +574,433 @@ function openExtensionsPanel() {
     document.body.appendChild(overlay);
   } catch (e) {
     console.error("openExtensionsPanel error:", e);
+  }
+}
+
+/**
+ * 打开插件管理面板
+ */
+function openPluginsPanel(pluginManager: PluginManager) {
+  try {
+    const existing = document.getElementById("zion-plugins-panel");
+    if (existing) {
+      existing.remove();
+    }
+
+    const overlay = document.createElement("div");
+    overlay.id = "zion-plugins-panel";
+    overlay.style.position = "fixed";
+    overlay.style.inset = "0";
+    overlay.style.background = "rgba(0,0,0,0.35)";
+    overlay.style.zIndex = "99998";
+    overlay.onclick = (e) => {
+      if (e.target === overlay) overlay.remove();
+    };
+
+    const panel = document.createElement("div");
+    panel.style.position = "fixed";
+    panel.style.right = "20px";
+    panel.style.top = "50px";
+    panel.style.width = "400px";
+    panel.style.maxHeight = "70vh";
+    panel.style.overflow = "auto";
+    panel.style.background = "var(--panel)";
+    panel.style.border = "1px solid var(--border)";
+    panel.style.borderRadius = "6px";
+    panel.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)";
+    panel.style.padding = "12px";
+    panel.style.zIndex = "99999";
+    panel.style.color = "var(--fg)";
+    panel.onclick = (e) => e.stopPropagation();
+
+    const title = document.createElement("div");
+    title.textContent = "Plugin Manager (New System)";
+    title.style.fontWeight = "600";
+    title.style.marginBottom = "8px";
+    title.style.fontSize = "14px";
+    panel.appendChild(title);
+
+    // 统计信息
+    const stats = pluginManager.getStats();
+    const statsDiv = document.createElement("div");
+    statsDiv.style.marginBottom = "12px";
+    statsDiv.style.fontSize = "12px";
+    statsDiv.style.opacity = "0.8";
+    statsDiv.innerHTML = `
+      Total: ${stats.total} | Enabled: ${stats.enabled} | Active: ${stats.active} | Errors: ${stats.errors}
+    `;
+    panel.appendChild(statsDiv);
+
+    // 插件列表
+    const list = document.createElement("div");
+    const plugins = pluginManager.list();
+    
+    if (plugins.length === 0) {
+      const empty = document.createElement("div");
+      empty.textContent = "No plugins found";
+      empty.style.opacity = "0.8";
+      empty.style.fontSize = "12px";
+      empty.style.marginBottom = "10px";
+      list.appendChild(empty);
+    } else {
+      plugins.forEach(plugin => {
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.justifyContent = "space-between";
+        row.style.padding = "6px 0";
+        row.style.borderBottom = "1px solid var(--border)";
+
+        const info = document.createElement("div");
+        info.style.flex = "1";
+        
+        const name = document.createElement("div");
+        name.textContent = plugin.name;
+        name.style.fontSize = "13px";
+        name.style.fontWeight = "500";
+        
+        const details = document.createElement("div");
+        details.style.fontSize = "11px";
+        details.style.opacity = "0.7";
+        details.textContent = `${plugin.id} v${plugin.version}`;
+        
+        if (plugin.error) {
+          const error = document.createElement("div");
+          error.style.fontSize = "10px";
+          error.style.color = "var(--error)";
+          error.textContent = `Error: ${plugin.error.message}`;
+          info.appendChild(error);
+        }
+        
+        info.appendChild(name);
+        info.appendChild(details);
+
+        const controls = document.createElement("div");
+        controls.style.display = "flex";
+        controls.style.gap = "8px";
+        controls.style.alignItems = "center";
+
+        // 状态指示器
+        const status = document.createElement("div");
+        status.style.width = "8px";
+        status.style.height = "8px";
+        status.style.borderRadius = "50%";
+        
+        if (plugin.state === 'error') {
+          status.style.background = "#f85149";
+        } else if (plugin.state === 'active') {
+          status.style.background = "#2ea043";
+        } else if (plugin.enabled) {
+          status.style.background = "#d29922";
+        } else {
+          status.style.background = "#6e7681";
+        }
+        controls.appendChild(status);
+
+        // 启用/禁用切换
+        const toggle = document.createElement("input");
+        toggle.type = "checkbox";
+        toggle.checked = plugin.enabled;
+        toggle.onchange = async () => {
+          try {
+            if (toggle.checked) {
+              await pluginManager.enable(plugin.id);
+            } else {
+              await pluginManager.disable(plugin.id);
+            }
+          } catch (error) {
+            console.error(`Failed to ${toggle.checked ? 'enable' : 'disable'} plugin:`, error);
+            toggle.checked = !toggle.checked; // 恢复状态
+          }
+        };
+        controls.appendChild(toggle);
+
+        row.appendChild(info);
+        row.appendChild(controls);
+        list.appendChild(row);
+      });
+    }
+
+    panel.appendChild(list);
+
+    // ===== HTTP 服务安装区域 =====
+    const serviceBox = document.createElement("div");
+    serviceBox.style.marginTop = "12px";
+    serviceBox.style.padding = "8px";
+    serviceBox.style.border = "1px dashed var(--border)";
+    serviceBox.style.borderRadius = "6px";
+
+    const serviceTitle = document.createElement("div");
+    serviceTitle.textContent = "Install from Service (zion-local-tools)";
+    serviceTitle.style.fontWeight = "600";
+    serviceTitle.style.marginBottom = "6px";
+    serviceTitle.style.fontSize = "12px";
+    serviceBox.appendChild(serviceTitle);
+
+    const urlRow = document.createElement("div");
+    urlRow.style.display = "flex";
+    urlRow.style.gap = "6px";
+    urlRow.style.marginBottom = "6px";
+
+    const urlInput = document.createElement("input");
+    urlInput.type = "text";
+    urlInput.placeholder = "http://127.0.0.1:8765";
+    urlInput.style.flex = "1";
+    urlInput.value = (() => {
+      try {
+        return localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8765";
+      } catch {
+        return "http://127.0.0.1:8765";
+      }
+    })();
+    urlInput.onchange = () => {
+      try {
+        localStorage.setItem("zion.pluginServiceUrl", urlInput.value.trim());
+      } catch {}
+      const installer = (window as any).zion.pluginInstaller;
+      if (installer && typeof installer.setBaseUrl === "function") installer.setBaseUrl(urlInput.value.trim());
+    };
+
+    const saveUrlBtn = document.createElement("button");
+    saveUrlBtn.textContent = "Save URL";
+    saveUrlBtn.onclick = () => {
+      try {
+        localStorage.setItem("zion.pluginServiceUrl", urlInput.value.trim());
+        const installer = (window as any).zion.pluginInstaller;
+        if (installer && typeof installer.setBaseUrl === "function") installer.setBaseUrl(urlInput.value.trim());
+        console.log("[plugins] service url set:", urlInput.value.trim());
+      } catch {}
+    };
+
+    urlRow.appendChild(urlInput);
+    urlRow.appendChild(saveUrlBtn);
+    serviceBox.appendChild(urlRow);
+
+    // 本地拖拽安装区域
+    const dropZone = document.createElement("div");
+    dropZone.style.border = "2px dashed var(--border)";
+    dropZone.style.borderRadius = "6px";
+    dropZone.style.padding = "12px";
+    dropZone.style.marginBottom = "8px";
+    dropZone.style.textAlign = "center";
+    dropZone.style.fontSize = "12px";
+    dropZone.style.opacity = "0.85";
+    dropZone.textContent = "拖拽 ZIP 插件包到此处进行安装";
+    dropZone.ondragover = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      dropZone.style.background = "rgba(0,0,0,0.1)";
+    };
+    dropZone.ondragleave = () => {
+      dropZone.style.background = "transparent";
+    };
+    dropZone.ondrop = async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      dropZone.style.background = "transparent";
+      try {
+        const files = e.dataTransfer?.files;
+        if (!files || files.length === 0) return;
+        const installer = (window as any).zion.pluginInstaller;
+        if (!installer || typeof installer.installFromFile !== "function") {
+          alert("Installer 不可用");
+          return;
+        }
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          if (!f.name.toLowerCase().endsWith(".zip")) continue;
+          const ret = await installer.installFromFile(f);
+          if (ret.success && ret.plugin) {
+            await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+            // 刷新面板以显示新插件
+            overlay.remove();
+            openPluginsPanel(pluginManager);
+          } else {
+            alert(`安装失败: ${ret.error?.message || "未知错误"}`);
+          }
+        }
+      } catch (err) {
+        console.error("[plugins] local drop install error:", err);
+        alert("安装过程中发生错误，请查看控制台");
+      }
+    };
+    serviceBox.appendChild(dropZone);
+
+    const actionRow = document.createElement("div");
+    actionRow.style.display = "flex";
+    actionRow.style.gap = "6px";
+
+    const queryInput = document.createElement("input");
+    queryInput.type = "text";
+    queryInput.placeholder = "Search query";
+    queryInput.style.flex = "1";
+
+    const searchBtn = document.createElement("button");
+    searchBtn.textContent = "Search";
+    const resultsList = document.createElement("div");
+    resultsList.style.marginTop = "6px";
+
+    searchBtn.onclick = async () => {
+      try {
+        resultsList.innerHTML = "";
+        const installer = (window as any).zion.pluginInstaller;
+        if (!installer) return;
+        const res = await installer.searchPlugins(queryInput.value.trim(), 50);
+        if (!res.success) {
+          const err = document.createElement("div");
+          err.style.color = "var(--error)";
+          err.style.fontSize = "12px";
+          err.textContent = `Search failed: ${res.error?.message || 'Unknown'}`;
+          resultsList.appendChild(err);
+          return;
+        }
+        res.data.forEach(item => {
+          const row = document.createElement("div");
+          row.style.display = "flex";
+          row.style.justifyContent = "space-between";
+          row.style.alignItems = "center";
+          row.style.padding = "4px 0";
+          const label = document.createElement("div");
+          label.textContent = `${item.name} (${item.id}) v${item.version}`;
+          label.style.fontSize = "12px";
+          const installBtn = document.createElement("button");
+          installBtn.textContent = "Install";
+          installBtn.onclick = async () => {
+            const installer2 = (window as any).zion.pluginInstaller;
+            const ret = await installer2.installFromService(item.id);
+            if (ret.success && ret.plugin) {
+              try {
+                await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+                overlay.remove();
+                openPluginsPanel(pluginManager);
+              } catch (e) {
+                console.error("[plugins] install error:", e);
+              }
+            } else {
+              alert(`Install failed: ${ret.error?.message || 'Unknown'}`);
+            }
+          };
+          row.appendChild(label);
+          row.appendChild(installBtn);
+          resultsList.appendChild(row);
+        });
+        if (res.data.length === 0) {
+          const empty = document.createElement("div");
+          empty.textContent = "No plugins matched";
+          empty.style.opacity = "0.8";
+          empty.style.fontSize = "12px";
+          resultsList.appendChild(empty);
+        }
+      } catch (e) {
+        console.error("[plugins] search error:", e);
+      }
+    };
+
+    const listBtn = document.createElement("button");
+    listBtn.textContent = "List All";
+    listBtn.onclick = async () => {
+      try {
+        resultsList.innerHTML = "";
+        const installer = (window as any).zion.pluginInstaller;
+        if (!installer) return;
+        const res = await installer.listPlugins(100, 0);
+        if (!res.success) {
+          const err = document.createElement("div");
+          err.style.color = "var(--error)";
+          err.style.fontSize = "12px";
+          err.textContent = `List failed: ${res.error?.message || 'Unknown'}`;
+          resultsList.appendChild(err);
+          return;
+        }
+        res.data.forEach(item => {
+          const row = document.createElement("div");
+          row.style.display = "flex";
+          row.style.justifyContent = "space-between";
+          row.style.alignItems = "center";
+          row.style.padding = "4px 0";
+          const label = document.createElement("div");
+          label.textContent = `${item.name} (${item.id}) v${item.version}`;
+          label.style.fontSize = "12px";
+          const installBtn = document.createElement("button");
+          installBtn.textContent = "Install";
+          installBtn.onclick = async () => {
+            const installer2 = (window as any).zion.pluginInstaller;
+            const ret = await installer2.installFromService(item.id);
+            if (ret.success && ret.plugin) {
+              try {
+                await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+                overlay.remove();
+                openPluginsPanel(pluginManager);
+              } catch (e) {
+                console.error("[plugins] install error:", e);
+              }
+            } else {
+              alert(`Install failed: ${ret.error?.message || 'Unknown'}`);
+            }
+          };
+          row.appendChild(label);
+          row.appendChild(installBtn);
+          resultsList.appendChild(row);
+        });
+        if (res.data.length === 0) {
+          const empty = document.createElement("div");
+          empty.textContent = "No plugins found";
+          empty.style.opacity = "0.8";
+          empty.style.fontSize = "12px";
+          resultsList.appendChild(empty);
+        }
+      } catch (e) {
+        console.error("[plugins] list error:", e);
+      }
+    };
+
+    actionRow.appendChild(queryInput);
+    actionRow.appendChild(searchBtn);
+    actionRow.appendChild(listBtn);
+    serviceBox.appendChild(actionRow);
+    serviceBox.appendChild(resultsList);
+
+    panel.appendChild(serviceBox);
+
+    // 操作按钮
+    const footer = document.createElement("div");
+    footer.style.marginTop = "12px";
+    footer.style.display = "flex";
+    footer.style.justifyContent = "space-between";
+
+    const leftButtons = document.createElement("div");
+    leftButtons.style.display = "flex";
+    leftButtons.style.gap = "8px";
+
+    const reloadBtn = document.createElement("button");
+    reloadBtn.textContent = "Reload All";
+    reloadBtn.style.background = "var(--border)";
+    reloadBtn.style.color = "var(--fg)";
+    reloadBtn.style.border = "1px solid var(--accent)";
+    reloadBtn.style.borderRadius = "4px";
+    reloadBtn.style.padding = "4px 8px";
+    reloadBtn.style.fontSize = "12px";
+    reloadBtn.onclick = () => location.reload();
+    leftButtons.appendChild(reloadBtn);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "Close";
+    closeBtn.style.background = "var(--border)";
+    closeBtn.style.color = "var(--fg)";
+    closeBtn.style.border = "1px solid var(--accent)";
+    closeBtn.style.borderRadius = "4px";
+    closeBtn.style.padding = "4px 8px";
+    closeBtn.style.fontSize = "12px";
+    closeBtn.onclick = () => overlay.remove();
+
+    footer.appendChild(leftButtons);
+    footer.appendChild(closeBtn);
+    panel.appendChild(footer);
+
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+  } catch (e) {
+    console.error("openPluginsPanel error:", e);
   }
 }
 

@@ -183,7 +183,7 @@ export function installModelSwitcher() {
     return a ? `${a.providerId}:${a.modelId}` : null;
   }
 
-  function rowStyle(div, active) {
+  function rowStyle(div, active, requiresConfig) {
     Object.assign(div.style, {
       padding: "4px 6px",
       borderRadius: "4px",
@@ -191,8 +191,9 @@ export function installModelSwitcher() {
       justifyContent: "space-between",
       alignItems: "center",
       cursor: "pointer",
-      background: active ? "var(--accent)" : "transparent",
-      color: active ? "var(--panel)" : "var(--fg)",
+      background: active ? "var(--accent)" : (requiresConfig ? "rgba(255, 200, 0, 0.1)" : "transparent"),
+      color: active ? "var(--panel)" : (requiresConfig ? "rgb(220, 150, 0)" : "var(--fg)"),
+      border: requiresConfig ? "1px solid rgba(255, 200, 0, 0.3)" : "none",
       transition: "background-color 120ms ease, color 120ms ease",
       fontFamily: "inherit",
       fontSize: "11px",
@@ -331,11 +332,18 @@ export function installModelSwitcher() {
     items.forEach((m, i) => {
       const row = document.createElement("div");
       row.dataset.index = String(i);
-      rowStyle(row, i === selectedIdx);
+      rowStyle(row, i === selectedIdx, m.requiresConfig);
 
       const left = document.createElement("div");
       const isActive = act === `${m.providerId}:${m.id}`;
-      left.textContent = (m.label || m.id) + (isActive ? " ✓" : "");
+      let labelText = (m.label || m.id);
+      if (m.requiresConfig) {
+        labelText += " ⚠️";
+      }
+      if (isActive) {
+        labelText += " ✓";
+      }
+      left.textContent = labelText;
       Object.assign(left.style, {
         flex: "1",
         minWidth: "0",
@@ -402,7 +410,8 @@ export function installModelSwitcher() {
     const rows = list.querySelectorAll('div[data-index]');
     rows.forEach((row) => {
       const idx = Number(row.dataset.index || -1);
-      rowStyle(row, idx === selectedIdx);
+      const item = currentItems[idx];
+      rowStyle(row, idx === selectedIdx, item?.requiresConfig);
       const right = row.querySelector(".meta-wrap");
       if (right) right.style.opacity = idx === selectedIdx ? "0.8" : "0.5";
     });
@@ -644,8 +653,11 @@ export function installModelSwitcher() {
     editorWrap.style.display = "block";
 
     const isNew = !spec;
-    const readonly = !!spec?.readonly;
     const providerId = spec?.providerId || DYN_PROVIDER_ID;
+    // 对于 deepseek 提供者，允许编辑 API Key，其他字段只读
+    const isDeepseekProvider = providerId === "deepseek";
+    const isDynamicProvider = providerId === DYN_PROVIDER_ID;
+    const readonly = !!spec?.readonly && !isDeepseekProvider;
 
     const title = document.createElement("div");
     title.textContent = isNew ? "Add Model" : (readonly ? "View Model" : "Edit Model");
@@ -685,18 +697,38 @@ export function installModelSwitcher() {
       inpMaxTok.value = cfg.max_tokens != null ? String(cfg.max_tokens) : "";
       cbStream.checked = cfg.stream !== false;
       cbImg.checked = !!cfg.supportsImage;
-      if (readonly) {
+      
+      // 对于 deepseek 提供者，允许编辑所有参数，但 Model ID、Base URL 保持只读
+      if (isDeepseekProvider) {
+        // Model ID 和 Base URL 保持只读（系统默认值）
+        inpId.disabled = true;
+        inpUrl.disabled = true;
+        // 其他字段都可编辑
+        inpLabel.disabled = false;
+        inpKey.disabled = false;
+        inpModelName.disabled = false;
+        inpTemp.disabled = false;
+        inpMaxTok.disabled = false;
+        cbStream.disabled = false;
+        cbImg.disabled = false;
+      } else if (readonly) {
         [inpId, inpLabel, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok].forEach(el => el.disabled = true);
         [cbStream, cbImg].forEach(el => el.disabled = true);
       }
     }
 
     // ID 只在新建时可编辑；编辑时避免改 keyPath 带来不一致
-    if (!isNew) inpId.disabled = true;
+    if (!isNew && !isDeepseekProvider) inpId.disabled = true;
 
     editorWrap.appendChild(fieldRow("Provider", (() => {
       const el = document.createElement("div");
-      el.textContent = providerId + (providerId !== DYN_PROVIDER_ID ? " (read-only)" : "");
+      let providerText = providerId;
+      if (isDeepseekProvider) {
+        providerText += " (edit parameters)";
+      } else if (providerId !== DYN_PROVIDER_ID) {
+        providerText += " (read-only)";
+      }
+      el.textContent = providerText;
       Object.assign(el.style, { fontSize: "11px", opacity: "0.8" });
       return el;
     })()));
@@ -732,7 +764,7 @@ export function installModelSwitcher() {
     });
 
     const btnSave = primaryButton(isNew ? "Save" : "Save Changes", "Save Model", svgCheck());
-    btnSave.disabled = providerId !== DYN_PROVIDER_ID || readonly;
+    btnSave.disabled = (providerId !== DYN_PROVIDER_ID && !isDeepseekProvider) || readonly;
     btnSave.addEventListener("click", async () => {
       const id = inpId.value.trim();
       const url = inpUrl.value.trim();
@@ -741,6 +773,39 @@ export function installModelSwitcher() {
       if (!url) { status.textContent = "Missing Base URL"; status.style.color = "rgb(220,80,80)"; return; }
       if (!key) { status.textContent = "Missing API Key"; status.style.color = "rgb(220,80,80)"; return; }
 
+      // 对于 deepseek 提供者，保存所有参数到 localStorage
+      if (isDeepseekProvider) {
+        try {
+          // 保存 API Key
+          localStorage.setItem("zion.deepseek.apiKey", key);
+          
+          // 保存其他参数
+          const deepseekConfig = {
+            label: inpLabel.value.trim() || undefined,
+            modelName: inpModelName.value.trim() || undefined,
+            temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
+            max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
+            stream: !!cbStream.checked,
+            supportsImage: !!cbImg.checked
+          };
+          localStorage.setItem("zion.deepseek.config", JSON.stringify(deepseekConfig));
+          
+          status.textContent = "DeepSeek configuration saved";
+          status.style.color = "rgb(60,180,90)";
+          // 刷新模型目录以更新状态
+          await refreshCatalog();
+          // 刷新列表并关闭编辑器
+          refresh();
+          setTimeout(() => closeEditor(), 300);
+          return;
+        } catch (e) {
+          status.textContent = `Failed to save: ${e?.message || String(e)}`;
+          status.style.color = "rgb(220,80,80)";
+          return;
+        }
+      }
+
+      // 对于 user.dynamic 提供者，保存到 localStorage 字典
       const dict = loadDynamicStore();
       if (isNew && dict[id]) {
         status.textContent = `Model already exists: ${id}`;
@@ -781,7 +846,7 @@ export function installModelSwitcher() {
 
     const btnDelete = dangerButton("Delete", "Delete Model", svgTrash());
     btnDelete.style.marginLeft = "auto";
-    btnDelete.disabled = isNew || providerId !== DYN_PROVIDER_ID || readonly;
+    btnDelete.disabled = isNew || providerId !== DYN_PROVIDER_ID || readonly || isDeepseekProvider;
     btnDelete.addEventListener("click", async () => {
       if (isNew) return;
       await doDeleteModel({ providerId, id: inpId.value.trim(), label: inpLabel.value.trim() });
@@ -791,8 +856,19 @@ export function installModelSwitcher() {
     editorWrap.appendChild(buttonsRow(btnTest, btnSave, btnCancel, btnDelete));
 
     // 焦点
-    (isNew ? inpId : inpLabel).focus();
-    (isNew ? inpId : inpLabel).select();
+    if (isDeepseekProvider) {
+      // 如果 API Key 为空，聚焦到 API Key 输入框；否则聚焦到 Label
+      if (!inpKey.value.trim()) {
+        inpKey.focus();
+        inpKey.select();
+      } else {
+        inpLabel.focus();
+        inpLabel.select();
+      }
+    } else {
+      (isNew ? inpId : inpLabel).focus();
+      (isNew ? inpId : inpLabel).select();
+    }
   }
 
   // ====== SVG 图标 ======

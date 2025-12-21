@@ -1,17 +1,68 @@
 export const deepseekProvider = {
   id: "deepseek",
   async list() {
-    return [{ id: "deepseek-chat", label: "DeepSeek Chat" }];
+    // 从 localStorage 读取配置，如果有自定义标签则使用
+    let label = "DeepSeek Chat";
+    try {
+      const configStr = localStorage.getItem("zion.deepseek.config");
+      if (configStr) {
+        const config = JSON.parse(configStr);
+        if (config.label && config.label.trim()) {
+          label = config.label.trim();
+        }
+      }
+    } catch (e) {
+      console.warn("[deepseek-provider] Failed to read config from localStorage", e);
+    }
+    return [{ id: "deepseek-chat", label }];
   },
   async resolve(modelId) {
     if (modelId !== "deepseek-chat") return null;
+    
+    // 从 localStorage 读取用户配置
+    let apiKey = null;
+    let config = {};
+    try {
+      const storedKey = localStorage.getItem("zion.deepseek.apiKey");
+      if (storedKey && storedKey.trim()) {
+        apiKey = storedKey.trim();
+      }
+      
+      const configStr = localStorage.getItem("zion.deepseek.config");
+      if (configStr) {
+        config = JSON.parse(configStr);
+      }
+    } catch (e) {
+      console.warn("[deepseek-provider] Failed to read config from localStorage", e);
+    }
+    
+    // 如果没有配置 API key，返回一个提示性的配置，让用户知道需要配置
+    if (!apiKey) {
+      return {
+        id: modelId,
+        url: "https://api.deepseek.com/chat/completions",
+        key: "", // 空 key，用户需要自己配置
+        modelName: config.modelName || "deepseek-chat",
+        temperature: config.temperature,
+        max_tokens: config.max_tokens,
+        stream: config.stream !== false,
+        supportsImage: !!config.supportsImage,
+        _requiresConfig: true,
+        _configHint: "请使用 modelsManage 工具配置 DeepSeek API key，或设置 localStorage 键 'zion.deepseek.apiKey'"
+      };
+    }
+    
     // Return OpenAI-compatible fields (url + key) so chat-service uses the generic fetch path (B)
     // instead of the LangChain path (A) which is not suitable for running in browser.
     return {
       id: modelId,
       url: "https://api.deepseek.com/chat/completions",
-      key: "sk-0ab2de3a2a4844acb579c1d1cf6580ce", // 后续可挪到配置面板或 .env
-      modelName: "deepseek-chat"
+      key: apiKey,
+      modelName: config.modelName || "deepseek-chat",
+      temperature: config.temperature,
+      max_tokens: config.max_tokens,
+      stream: config.stream !== false,
+      supportsImage: !!config.supportsImage
     };
   }
 };

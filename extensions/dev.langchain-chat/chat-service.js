@@ -25,6 +25,11 @@ export async function runStream({
   if (!provider) throw new Error(`Provider not found: ${active.providerId}`);
   const cfg = await provider.resolve(active.modelId);
   if (!cfg) throw new Error(`Model config not found: ${active.providerId}:${active.modelId}`);
+  
+  // 检查是否需要配置 API key
+  if (cfg._requiresConfig && (!cfg.key || !cfg.key.trim())) {
+    throw new Error(`模型 ${active.providerId}:${active.modelId} 需要配置 API key。${cfg._configHint || '请使用 modelsManage 工具配置 API key。'}`);
+  }
 
   // 创建 AbortController 用于停止请求
   const controller = new AbortController();
