@@ -5,13 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/copy-extensions.js",
+    "build": "vite build",
     "preview": "vite preview --port 5175",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "lint": "eslint src extensions --ext .ts,.js",
-    "lint:fix": "eslint src extensions --ext .ts,.js --fix",
-    "build:copy-extensions": "node scripts/copy-extensions.js"
+    "lint:fix": "eslint src extensions --ext .ts,.js --fix"
   },
   "dependencies": {
     "@codemirror/commands": "^6.3.3",
