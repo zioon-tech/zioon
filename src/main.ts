@@ -675,6 +675,32 @@ function openPluginsPanel(pluginManager: PluginManager) {
         info.appendChild(name);
         info.appendChild(details);
 
+        // 显示开发模式目录与基址（如存在）
+        try {
+          const sessionsState = (window as any).zion?.state?.get("plugins.devSessions") || {};
+          let devInfo: any = null;
+          for (const k in sessionsState) {
+            const s = sessionsState[k];
+            if (s && s.pluginId === plugin.id) { devInfo = s; break; }
+          }
+          if (!devInfo) {
+            try {
+              const saved = JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}");
+              if (saved && saved[plugin.id]) devInfo = saved[plugin.id];
+            } catch {}
+          }
+          if (devInfo && (devInfo.dir || devInfo.baseUrl)) {
+            const devLine = document.createElement("div");
+            devLine.style.fontSize = "10px";
+            devLine.style.opacity = "0.65";
+            devLine.style.fontFamily = "var(--font-mono)";
+            const dirText = devInfo.dir ? String(devInfo.dir) : "";
+            const baseText = devInfo.baseUrl ? ` (${String(devInfo.baseUrl)})` : "";
+            devLine.textContent = dirText ? `dev: ${dirText}${baseText}` : `dev:${baseText}`;
+            info.appendChild(devLine);
+          }
+        } catch {}
+
         const controls = document.createElement("div");
         controls.style.display = "flex";
         controls.style.gap = "8px";
@@ -961,6 +987,192 @@ function openPluginsPanel(pluginManager: PluginManager) {
     serviceBox.appendChild(resultsList);
 
     panel.appendChild(serviceBox);
+
+    // ===== 开发模式（本地目录 → HTTP 映射 → 热重载） =====
+    const devBox = document.createElement("div");
+    devBox.style.marginTop = "12px";
+    devBox.style.padding = "8px";
+    devBox.style.border = "1px dashed var(--border)";
+    devBox.style.borderRadius = "6px";
+
+    const devTitle = document.createElement("div");
+    devTitle.textContent = "Dev Mode (Local Directory → HTTP Mapping)";
+    devTitle.style.fontWeight = "600";
+    devTitle.style.marginBottom = "6px";
+    devTitle.style.fontSize = "12px";
+    devBox.appendChild(devTitle);
+
+    const devRow = document.createElement("div");
+    devRow.style.display = "flex";
+    devRow.style.gap = "6px";
+    devRow.style.marginBottom = "6px";
+
+    const devPathInput = document.createElement("input");
+    devPathInput.type = "text";
+    devPathInput.placeholder = "/absolute/path/to/your-plugin";
+    devPathInput.style.flex = "1";
+
+    const devStartBtn = document.createElement("button");
+    devStartBtn.textContent = "Start Dev";
+    const devStopBtn = document.createElement("button");
+    devStopBtn.textContent = "Stop Dev";
+    devStopBtn.disabled = true;
+
+    devRow.appendChild(devPathInput);
+    devRow.appendChild(devStartBtn);
+    devRow.appendChild(devStopBtn);
+    devBox.appendChild(devRow);
+
+    const devStatus = document.createElement("div");
+    devStatus.style.fontSize = "12px";
+    devStatus.style.opacity = "0.85";
+    devBox.appendChild(devStatus);
+
+    panel.appendChild(devBox);
+
+    // 维护活跃的开发会话
+    const activeDevSessions: Map<string, { ws: WebSocket; baseUrl: string; pluginId: string; dir?: string }> = new Map();
+
+    const getServiceBaseUrl = (): string => {
+      try {
+        return localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8765";
+      } catch {
+        return "http://127.0.0.1:8765";
+      }
+    };
+
+    const connectWebSocket = (serviceUrl: string, devId: string) => {
+      const wsUrl = serviceUrl.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
+      const ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        devStatus.textContent = `Dev websocket connected: ${wsUrl}`;
+      };
+      ws.onmessage = async (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "dev:change" && msg.devId === devId) {
+            // 变更事件：重新读取 manifest 并增量更新插件
+            const installer = (window as any).zion.pluginInstaller;
+            const baseUrl = getServiceBaseUrl() + `/plugins/dev/${devId}`;
+            const ret = await installer.installFromDevBase(baseUrl, devId);
+            if (ret.success && ret.plugin) {
+              // 如已安装则更新，否则安装
+              try {
+                await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+              } catch (e) {
+                console.error("[plugins] dev hot update error:", e);
+              }
+            } else {
+              console.warn("[plugins] dev install failed:", ret.error?.message);
+            }
+          } else if (msg.type === "dev:stop") {
+            devStatus.textContent = `Dev session stopped: ${devId}`;
+          }
+        } catch (e) {
+          // 非JSON消息或错误
+        }
+      };
+      ws.onclose = () => {
+        devStatus.textContent = `Dev websocket closed: ${devId}`;
+      };
+      return ws;
+    };
+
+    devStartBtn.onclick = async () => {
+      const p = devPathInput.value.trim();
+      if (!p) {
+        alert("请输入本地插件目录绝对路径");
+        return;
+      }
+      const serviceUrl = getServiceBaseUrl();
+      try {
+        const res = await fetch(`${serviceUrl}/plugins/dev/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: p })
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(txt || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        const devId = data?.data?.devId;
+        const baseUrlRel = data?.data?.baseUrl;
+        const devDir = data?.data?.dir;
+        if (!devId || !baseUrlRel) {
+          throw new Error("invalid dev start response");
+        }
+        const baseUrl = serviceUrl + baseUrlRel;
+
+        // 开发模式安装（manifest.json）
+        const installer = (window as any).zion.pluginInstaller;
+        const ret = await installer.installFromDevBase(baseUrl, devId);
+        if (ret.success && ret.plugin) {
+          await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+          devStatus.textContent = `Dev session started: ${devId} (${ret.plugin.id})`;
+          const ws = connectWebSocket(serviceUrl, devId);
+          activeDevSessions.set(devId, { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir });
+
+          // 记录到全局 state 与本地存储（便于页面刷新后仍能显示开发目录信息）
+          try {
+            const sessions = window.zion.state.get("plugins.devSessions") || {};
+            sessions[devId] = { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir };
+            window.zion.state.set("plugins.devSessions", sessions);
+
+            const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
+            const saved = JSON.parse(savedRaw);
+            saved[ret.plugin.id] = { devId, baseUrl, dir: devDir };
+            localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+          } catch {}
+
+          devStartBtn.disabled = true;
+          devStopBtn.disabled = false;
+        } else {
+          throw new Error(ret.error?.message || "开发模式安装失败");
+        }
+      } catch (e) {
+        console.error("[plugins] dev start error:", e);
+        alert(`启动开发模式失败：${(e as any)?.message || e}`);
+      }
+    };
+
+    devStopBtn.onclick = async () => {
+      // 简化：停止所有活跃会话
+      const serviceUrl = getServiceBaseUrl();
+      try {
+        for (const [devId, sess] of activeDevSessions.entries()) {
+          try {
+            const res = await fetch(`${serviceUrl}/plugins/dev/stop`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ devId })
+            });
+            sess.ws.close();
+          } catch {}
+          // 清理运行时会话映射
+          try {
+            const sessions = window.zion.state.get("plugins.devSessions") || {};
+            delete sessions[devId];
+            window.zion.state.set("plugins.devSessions", sessions);
+
+            // 清理本地存储映射（按 pluginId）
+            const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
+            const saved = JSON.parse(savedRaw);
+            if (sess.pluginId && saved[sess.pluginId]) {
+              delete saved[sess.pluginId];
+              localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+            }
+          } catch {}
+          activeDevSessions.delete(devId);
+        }
+        devStatus.textContent = "Dev sessions stopped.";
+      } catch (e) {
+        console.error("[plugins] dev stop error:", e);
+      } finally {
+        devStartBtn.disabled = false;
+        devStopBtn.disabled = true;
+      }
+    };
 
     // 操作按钮
     const footer = document.createElement("div");

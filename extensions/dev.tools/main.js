@@ -556,6 +556,26 @@ function registerDefaultTools() {
           }
         }
       },
+      // PluginsManage: 管理插件（开发模式/安装/启用/禁用/卸载/列表）
+      {
+        type: "function",
+        function: {
+          name: "pluginsManage",
+          description: "Manage plugins via Zion Next and local tools service: startDev/stopDev/list/installFromService/enable/disable/uninstall/setServiceUrl.",
+          parameters: {
+            type: "object",
+            properties: {
+              action: { type: "string", enum: ["startDev","stopDev","list","installFromService","enable","disable","uninstall","setServiceUrl"], description: "Operation" },
+              path: { type: "string", description: "Local plugin directory (for startDev)" },
+              plugin_id: { type: "string", description: "Plugin ID (for install/enable/disable/uninstall)" },
+              devId: { type: "string", description: "Dev session ID (for stopDev)" },
+              serviceUrl: { type: "string", description: "Override local tools service base URL (default from localStorage zion.pluginServiceUrl)" }
+            },
+            required: ["action"],
+            additionalProperties: false
+          }
+        }
+      },
     ];
 
     // 合并到 chat.tools（避免重复）
@@ -1287,6 +1307,163 @@ function registerDefaultTools() {
           return txt;
         } catch (e) {
           return `sendMail error: ${e?.message || String(e)}`;
+        }
+      };
+    }
+
+    // PluginsManage: 管理插件（开发模式/安装/启用/禁用/卸载/列表）
+    if (!handlers.pluginsManage) {
+      handlers.pluginsManage = async (args) => {
+        try {
+          const action = String(args?.action || "").trim();
+          const pm = (window.zion || {}).plugins;
+          const installer = (window.zion || {}).pluginInstaller;
+
+          const readServiceUrl = () => {
+            try { return (localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8765").replace(/\/$/, ""); }
+            catch { return "http://127.0.0.1:8765"; }
+          };
+
+          const ensurePM = () => {
+            if (!pm) throw new Error("PluginManager not ready");
+            if (!installer) throw new Error("PluginInstaller not ready");
+          };
+
+          const connectDevWS = (serviceBase, devId, baseUrlAbs, pluginId) => {
+            try {
+              const wsUrl = serviceBase.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
+              const ws = new WebSocket(wsUrl);
+              ws.onmessage = async (ev) => {
+                try {
+                  const msg = JSON.parse(ev.data);
+                  if (msg?.type === "dev:change" && msg?.devId === devId) {
+                    const ret = await installer.installFromDevBase(baseUrlAbs, devId);
+                    if (ret.success && ret.plugin) {
+                      try { await pm.installFromInfo(ret.plugin, { enabled: true }); } catch {}
+                    }
+                  }
+                } catch {}
+              };
+              ws.onopen = () => { /* optional log */ };
+              ws.onclose = () => { /* optional log */ };
+
+              const sessions = window.zion.state.get("plugins.devSessions") || {};
+              sessions[devId] = { ws, baseUrl: baseUrlAbs, pluginId };
+              window.zion.state.set("plugins.devSessions", sessions);
+            } catch (e) { /* ignore ws error */ }
+          };
+
+          if (action === "setServiceUrl") {
+            const url = String(args?.serviceUrl || "").trim();
+            if (!url) return "Missing serviceUrl";
+            try {
+              localStorage.setItem("zion.pluginServiceUrl", url);
+              if (installer?.setBaseUrl) installer.setBaseUrl(url);
+            } catch {}
+            return JSON.stringify({ ok: true, serviceUrl: url });
+          }
+
+          if (action === "list") {
+            ensurePM();
+            const items = pm.list().map(p => ({
+              id: p.id, name: p.name, version: p.version, enabled: !!p.enabled, state: p.state
+            }));
+            return JSON.stringify({ plugins: items }, null, 2);
+          }
+
+          if (action === "installFromService") {
+            ensurePM();
+            const pluginId = String(args?.plugin_id || "").trim();
+            if (!pluginId) return "Missing plugin_id";
+            const ret = await installer.installFromService(pluginId);
+            if (!ret.success || !ret.plugin) return `Install failed: ${ret.error?.message || "Unknown"}`;
+            await pm.installFromInfo(ret.plugin, { enabled: true });
+            return JSON.stringify({ ok: true, installed: ret.plugin.id }, null, 2);
+          }
+
+          if (action === "enable") {
+            ensurePM();
+            const pluginId = String(args?.plugin_id || "").trim();
+            if (!pluginId) return "Missing plugin_id";
+            await pm.enable(pluginId);
+            return JSON.stringify({ ok: true, enabled: pluginId }, null, 2);
+          }
+
+          if (action === "disable") {
+            ensurePM();
+            const pluginId = String(args?.plugin_id || "").trim();
+            if (!pluginId) return "Missing plugin_id";
+            await pm.disable(pluginId);
+            return JSON.stringify({ ok: true, disabled: pluginId }, null, 2);
+          }
+
+          if (action === "uninstall") {
+            ensurePM();
+            const pluginId = String(args?.plugin_id || "").trim();
+            if (!pluginId) return "Missing plugin_id";
+            await pm.uninstall(pluginId);
+            return JSON.stringify({ ok: true, uninstalled: pluginId }, null, 2);
+          }
+
+          if (action === "startDev") {
+            ensurePM();
+            const path = String(args?.path || "").trim();
+            const serviceUrl = String(args?.serviceUrl || "") || readServiceUrl();
+            if (!path) return "Missing path";
+
+            const res = await fetch(`${serviceUrl}/plugins/dev/start`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ path })
+            });
+            if (!res.ok) {
+              const txt = await res.text().catch(() => "");
+              return `HTTP ${res.status}: ${txt || "dev start failed"}`;
+            }
+            const data = await res.json().catch(() => null);
+            const devId = data?.data?.devId;
+            const baseUrlRel = data?.data?.baseUrl;
+            if (!devId || !baseUrlRel) return "Invalid dev start response";
+
+            const baseAbs = serviceUrl.replace(/\/$/, "") + baseUrlRel;
+            const ret = await installer.installFromDevBase(baseAbs, devId);
+            if (!ret.success || !ret.plugin) return `Install failed: ${ret.error?.message || "Unknown"}`;
+            await pm.installFromInfo(ret.plugin, { enabled: true });
+
+            connectDevWS(serviceUrl, devId, baseAbs, ret.plugin.id);
+
+            return JSON.stringify({ ok: true, devId, plugin: ret.plugin.id, baseUrl: baseAbs }, null, 2);
+          }
+
+          if (action === "stopDev") {
+            const devId = String(args?.devId || "").trim();
+            const serviceUrl = String(args?.serviceUrl || "") || readServiceUrl();
+            const sessions = window.zion.state.get("plugins.devSessions") || {};
+            const stopOne = async (id) => {
+              try {
+                await fetch(`${serviceUrl}/plugins/dev/stop`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ devId: id })
+                }).catch(() => {});
+              } catch {}
+              try { sessions[id]?.ws?.close?.(); } catch {}
+              delete sessions[id];
+            };
+
+            if (devId) {
+              await stopOne(devId);
+            } else {
+              const ids = Object.keys(sessions);
+              for (const id of ids) { await stopOne(id); }
+            }
+            window.zion.state.set("plugins.devSessions", sessions);
+            return JSON.stringify({ ok: true, stopped: devId || "all" }, null, 2);
+          }
+
+          return "Unknown action";
+        } catch (e) {
+          return `pluginsManage error: ${e?.message || String(e)}`;
         }
       };
     }

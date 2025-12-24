@@ -8,7 +8,8 @@ import type {
   PluginInfo,
   PluginInstallResult,
   PluginError,
-  PluginInstallOptions
+  PluginInstallOptions,
+  PluginManifest
 } from './types';
 import { VersionUtils } from './utils';
 
@@ -149,6 +150,102 @@ export class HttpPluginInstaller {
       return {
         success: false,
         error: pluginError,
+        warnings: []
+      };
+    }
+  }
+
+  /**
+   * 开发模式：直接从本地开发目录拉取 manifest.json 并构建 PluginInfo（无需ZIP）
+   * baseUrl 形如 http://127.0.0.1:8765/plugins/dev/{devId}
+   */
+  async installFromDevBase(
+    baseUrl: string,
+    devId: string
+  ): Promise<PluginInstallResult> {
+    try {
+      const manifestUrl = `${baseUrl}/manifest.json`;
+      console.log(`[HttpPluginInstaller] 开发模式安装: ${manifestUrl}`);
+
+      const res = await fetch(manifestUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'X-Zion-Dev-Id': devId,
+          'X-Zion-Dev-Mode': 'true'
+        },
+        signal: AbortSignal.timeout(this.options.timeout)
+      });
+      if (!res.ok) {
+        throw new Error(`读取开发清单失败: ${res.status} ${res.statusText}`);
+      }
+      const manifest = await res.json() as PluginManifest;
+
+      // 解析主入口（绝对URL）
+      let mainPath = manifest?.zion?.main || (manifest as any)?.main || 'dist/main.js';
+      if (!/^(blob:|data:|https?:)/i.test(mainPath)) {
+        mainPath = `${baseUrl}/${String(mainPath).replace(/^\.\//, '')}`;
+      }
+
+      // 构建 PluginInfo
+      const pluginInfo: PluginInfo = {
+        id: manifest?.zion?.id || (manifest as any)?.id || manifest?.name || 'unknown.plugin',
+        name: manifest?.zion?.name || manifest?.name || 'Unnamed Plugin',
+        version: manifest?.zion?.version || manifest?.version || '0.0.1',
+        description: manifest?.description,
+        author: manifest?.author,
+        license: manifest?.license,
+        path: baseUrl,
+        manifest: {
+          ...manifest,
+          zion: {
+            ...(manifest?.zion || {}),
+            main: mainPath
+          }
+        },
+        state: 'installed',
+        dependencies: manifest?.zion?.dependencies ? Object.keys(manifest.zion.dependencies) : [],
+        peerDependencies: manifest?.zion?.peerDependencies ? Object.keys(manifest.zion.peerDependencies) : [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        isLegacy: !manifest?.zion
+      };
+
+      // 验证
+      const validation = await this.validatePlugin(pluginInfo);
+      if (!validation.valid) {
+        return {
+          success: false,
+          error: {
+            type: 'validation_failed',
+            message: `开发清单验证失败: ${validation.errors.join(', ')}`,
+            timestamp: Date.now()
+          },
+          warnings: validation.warnings
+        };
+      }
+
+      // 缓存处理（按 id）
+      if (this.options.cache) {
+        const cached = this.cache.get(pluginInfo.id);
+        if (cached && cached.version === pluginInfo.version) {
+          this.cache.set(pluginInfo.id, { ...cached, manifest: pluginInfo.manifest, updatedAt: Date.now() });
+          return { success: true, plugin: this.cache.get(pluginInfo.id)!, warnings: validation.warnings };
+        }
+        this.cache.set(pluginInfo.id, pluginInfo);
+      }
+
+      return { success: true, plugin: pluginInfo, warnings: validation.warnings };
+    } catch (error) {
+      console.error(`[HttpPluginInstaller] 开发模式安装失败: ${baseUrl}`, error);
+      return {
+        success: false,
+        error: {
+          type: 'load_failed',
+          message: error instanceof Error ? error.message : '未知错误',
+          stack: error instanceof Error ? error.stack : undefined,
+          timestamp: Date.now()
+        },
         warnings: []
       };
     }
