@@ -1365,9 +1365,25 @@ function registerDefaultTools() {
 
           if (action === "list") {
             ensurePM();
-            const items = pm.list().map(p => ({
-              id: p.id, name: p.name, version: p.version, enabled: !!p.enabled, state: p.state
-            }));
+            // Gather dev sessions mapping (runtime + persisted)
+            const sessionsState = window.zion?.state?.get("plugins.devSessions") || {};
+            let persisted = {};
+            try { persisted = JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}"); } catch {}
+            const items = pm.list().map(p => {
+              const run = Object.values(sessionsState).find((s) => s && s.pluginId === p.id) || null;
+              const saved = persisted[p.id] || null;
+              const devDir = (run && run.dir) || (saved && saved.dir) || undefined;
+              const devBaseUrl = (run && run.baseUrl) || (saved && saved.baseUrl) || undefined;
+              return {
+                id: p.id,
+                name: p.name,
+                version: p.version,
+                enabled: !!p.enabled,
+                state: p.state,
+                devDir,
+                devBaseUrl
+              };
+            });
             return JSON.stringify({ plugins: items }, null, 2);
           }
 
