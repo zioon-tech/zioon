@@ -1663,6 +1663,7 @@ function openSessionsPanel() {
 
     // Panel
     const panel = document.createElement("div");
+    panel.className = "zion-sessions-panel-content";
     panel.style.position = "fixed";
     panel.style.right = "20px";
     panel.style.top = "60px";
@@ -2371,8 +2372,85 @@ async function importSessionsFromFile() {
   });
 }
 
+/** ========== CSS for custom scrollbars ========== */
+// Inject custom scrollbar styles to make them appear only when needed and with better styling
+function injectScrollbarStyles() {
+  try {
+    const styleId = "zion-session-manager-scrollbar-styles";
+    if (document.getElementById(styleId)) return;
+
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      /* Custom scrollbar for session list - hide when not scrolling */
+      #zion-sessions-sidebar .zion-sessions-list::-webkit-scrollbar,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+
+      /* Scrollbar track */
+      #zion-sessions-sidebar .zion-sessions-list::-webkit-scrollbar-track,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-track {
+        background: transparent;
+        border-radius: 4px;
+      }
+
+      /* Scrollbar thumb */
+      #zion-sessions-sidebar .zion-sessions-list::-webkit-scrollbar-thumb,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb {
+        background: transparent;
+        border-radius: 4px;
+        border: 2px solid transparent;
+        background-clip: padding-box;
+        transition: background 0.15s ease;
+      }
+
+      /* Show scrollbar thumb on hover */
+      #zion-sessions-sidebar .zion-sessions-list:hover::-webkit-scrollbar-thumb,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content:hover::-webkit-scrollbar-thumb {
+        background: var(--border, rgba(128, 128, 128, 0.4));
+        background-clip: padding-box;
+      }
+
+      /* Hover state for scrollbar thumb */
+      #zion-sessions-sidebar .zion-sessions-list::-webkit-scrollbar-thumb:hover,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb:hover {
+        background: rgba(128, 128, 128, 0.6);
+        background-clip: padding-box;
+      }
+
+      /* Firefox scrollbar */
+      #zion-sessions-sidebar .zion-sessions-list,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content {
+        scrollbar-width: thin;
+        scrollbar-color: transparent transparent;
+      }
+
+      #zion-sessions-sidebar .zion-sessions-list:hover,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content:hover {
+        scrollbar-color: var(--border, rgba(128, 128, 128, 0.4)) transparent;
+      }
+
+      /* Scroll container background - ensure clean background */
+      #zion-sessions-sidebar .zion-sessions-list {
+        background: var(--panel);
+      }
+
+      #zion-sessions-panel-overlay .zion-sessions-panel-content {
+        background: var(--panel);
+      }
+    `;
+    document.head.appendChild(style);
+  } catch (e) {
+    console.warn("[sessions] Failed to inject scrollbar styles:", e);
+  }
+}
+
 /** ========== Activate Extension ========== */
 export async function activate(ctx) {
+  // Inject custom scrollbar styles
+  injectScrollbarStyles();
   // 初始化 IndexedDB 并预载数据/迁移
   await initSessionsStorage();
 
