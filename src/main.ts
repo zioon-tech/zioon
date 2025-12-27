@@ -1337,12 +1337,23 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
       const expected = new Set(builtinPlugins.map(p => p.id));
       for (const p of pluginManager.list()) {
         if (!p || expected.has(p.id)) continue;
-        if (typeof p.path !== 'string' || !p.path.startsWith('/extensions/')) continue;
-        const dirName = p.path.split('/').pop() || '';
+
+        const id = String(p.id || '');
+        const path = typeof p.path === 'string' ? p.path : '';
+
+        if (id.startsWith('zion.dev.') && path.includes('/extensions/dev.')) {
+          try {
+            await pluginManager.uninstall(p.id);
+          } catch {}
+          continue;
+        }
+
+        if (!path.startsWith('/extensions/')) continue;
+        const dirName = path.split('/').pop() || '';
         if (!dirName) continue;
         const replacementId = `zion.${dirName.replace(/^dev\./, '')}`;
         if (!expected.has(replacementId)) continue;
-        if (p.id === replacementId) continue;
+        if (id === replacementId) continue;
         try {
           await pluginManager.uninstall(p.id);
         } catch {}

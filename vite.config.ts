@@ -51,11 +51,6 @@ export default defineConfig({
   optimizeDeps: {
     // 确保这些依赖被预构建
     include: [
-      "langchain",
-      "@langchain/openai",
-      "@langchain/core",
-      "openai",
-      "zod",
       "eventemitter3",
       "jszip",
       "katex",

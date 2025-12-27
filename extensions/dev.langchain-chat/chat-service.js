@@ -1,4 +1,3 @@
-import { ChatOpenAI } from "@langchain/openai";
 import { resolveAppImage } from "./img-db.js";
 
 /**
@@ -36,59 +35,18 @@ export async function runStream({
   if (getController) getController(controller);
 
   try {
-    // 若包含 tool_calls 或 tool 消息，使用通用 OpenAI 兼容分支以完整透传
-    const hasToolContext = Array.isArray(messages) && messages.some(m => (m && m.role === "assistant" && m.tool_calls) || (m && m.role === "tool"));
-    // 路径 A：LangChain + OpenAI 兼容（baseURL + apiKey + modelName）
-    if (!hasToolContext && cfg.baseURL && (cfg.apiKey || cfg.key) && (cfg.modelName || active.modelId)) {
-      const chat = new ChatOpenAI({
-        openAIApiKey: cfg.apiKey || cfg.key,
-        configuration: {
-          baseURL: cfg.baseURL,
-          fetch: (url, options) => fetch(url, { ...options, signal: controller.signal })
-        },
-        modelName: cfg.modelName || active.modelId,
-        streaming: true,
-        temperature: typeof cfg.temperature === "number" ? cfg.temperature : 0
-      });
-
-      // LangChain 输入格式：[role, content]。若包含 tool_calls/role:"tool"，直接透传 messages。
-      const langchainMessages = messages.map(msg => [msg.role, msg.content ?? ""]);
-
-      // 绑定 tools（如果提供）
-      const chatWithTools = tools ? chat.bindTools(tools) : chat;
-      const stream = await chatWithTools.stream(langchainMessages);
-      let emittedReasoningStart = false;
-
-      for await (const chunk of stream) {
-        if (controller.signal.aborted) break;
-
-        // 处理 tool calls（LangChain 的 AIMessageChunk）
-        const tc = chunk?.tool_call_chunks;
-        if (tc && Array.isArray(tc)) {
-          for (const t of tc) {
-            try {
-              const args = typeof t.args === "string" ? JSON.parse(t.args) : t.args;
-              onToolCall && onToolCall({ id: t.id, name: t.name, args });
-            } catch {
-              // 等待更多参数片段
-            }
-          }
-        }
-
-        const token = chunk?.content ?? "";
-        if (token) onToken(token);
-      }
+    const url = (() => {
+      if (cfg.url) return cfg.url;
+      if (!cfg.baseURL) return null;
+      const base = String(cfg.baseURL);
+      if (/\/chat\/completions\/?$/.test(base)) return base.replace(/\/+$/, "");
       try {
-        if (emittedReasoningStart) {
-          window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId });
-        }
-      } catch {}
-      onEnd();
-      return;
-    }
-
-    // 路径 B：通用 OpenAI 兼容接口（直接 fetch 到 url）
-    const url = cfg.url;
+        const normalized = base.endsWith("/") ? base : `${base}/`;
+        return new URL("chat/completions", normalized).toString();
+      } catch {
+        return null;
+      }
+    })();
     const apiKey = cfg.key || cfg.apiKey;
     if (!url || !apiKey) throw new Error("Invalid model config: missing url or key");
 

@@ -23,16 +23,24 @@ export function zionExtensionsPlugin() {
       // 添加extensions作为额外入口
       const extensionsInput = {};
       const extensionsDir = resolve(process.cwd(), 'extensions');
+
+      if (!existsSync(extensionsDir)) {
+        return config;
+      }
       
       // 扫描所有插件
       const extensions = readdirSync(extensionsDir)
         .filter(dir => {
           const dirPath = resolve(extensionsDir, dir);
-          return statSync(dirPath).isDirectory() && 
-                 (existsSync(resolve(dirPath, 'extension.json')) || 
-                  existsSync(resolve(dirPath, 'package.json')) ||
-                  existsSync(resolve(dirPath, 'main.js')) ||
-                  existsSync(resolve(dirPath, 'main.ts')));
+          try {
+            return statSync(dirPath).isDirectory() && 
+                   (existsSync(resolve(dirPath, 'extension.json')) || 
+                    existsSync(resolve(dirPath, 'package.json')) ||
+                    existsSync(resolve(dirPath, 'main.js')) ||
+                    existsSync(resolve(dirPath, 'main.ts')));
+          } catch {
+            return false;
+          }
         });
       
       console.log(`找到 ${extensions.length} 个插件:`, extensions);
@@ -187,7 +195,6 @@ export function zionExtensionsPlugin() {
       if (!config.optimizeDeps) config.optimizeDeps = {};
       if (!config.optimizeDeps.include) config.optimizeDeps.include = [];
       
-      // 添加langchain相关依赖到预构建
       const depsToInclude = [
         "langchain",
         "@langchain/openai",
@@ -198,6 +205,11 @@ export function zionExtensionsPlugin() {
       ];
       
       depsToInclude.forEach(dep => {
+        try {
+          require.resolve(dep, { paths: [process.cwd()] });
+        } catch {
+          return;
+        }
         if (!config.optimizeDeps.include.includes(dep)) {
           config.optimizeDeps.include.push(dep);
         }
