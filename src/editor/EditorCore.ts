@@ -1,11 +1,12 @@
-import { EditorState, Compartment, type Extension } from "@codemirror/state";
+import { EditorState, EditorSelection, Compartment, type Extension } from "@codemirror/state";
 import {
   EditorView,
   keymap,
   highlightActiveLine,
   highlightActiveLineGutter,
   drawSelection,
-  lineNumbers
+  lineNumbers,
+  scrollPastEnd
 } from "@codemirror/view";
 import { history, historyKeymap, defaultKeymap, indentWithTab, indentLess } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
@@ -19,6 +20,53 @@ import { wysiwyg } from "./wysiwyg";
 import { EditorView as CMEditorView } from "@codemirror/view";
 import { showMinimap } from "@replit/codemirror-minimap";
 import { highlightSelectionMatches } from "@codemirror/search";
+
+function selectNextOccurrenceDown(view: EditorView): boolean {
+  const { state } = view;
+  const main = state.selection.main;
+
+  if (main.empty) {
+    const word = state.wordAt(main.head);
+    if (!word) return false;
+    view.dispatch({ selection: { anchor: word.from, head: word.to }, scrollIntoView: true });
+    return true;
+  }
+
+  const query = state.sliceDoc(main.from, main.to);
+  if (!query) return false;
+
+  const docText = state.doc.toString();
+  const ranges = state.selection.ranges;
+  const ordered = [...ranges].sort((a, b) => a.from - b.from);
+  const startPos = ordered[ordered.length - 1]?.to ?? main.to;
+  const existingStarts = new Set(ranges.map(r => r.from));
+
+  let idx = docText.indexOf(query, startPos);
+  if (idx === -1) idx = docText.indexOf(query, 0);
+  if (idx === -1) return false;
+
+  let guard = 0;
+  while (idx !== -1 && existingStarts.has(idx) && guard < 2000) {
+    idx = docText.indexOf(query, idx + 1);
+    guard++;
+  }
+  if (idx === -1 || existingStarts.has(idx)) return false;
+
+  const nextRanges = [...ranges, EditorSelection.range(idx, idx + query.length)].sort((a, b) => a.from - b.from);
+  const selection = EditorSelection.create(nextRanges, nextRanges.length - 1);
+  view.dispatch({ selection, scrollIntoView: true });
+  return true;
+}
+
+const optionDSelectNext = EditorView.domEventHandlers({
+  keydown: (event, view) => {
+    if (event.defaultPrevented) return false;
+    if (!event.altKey || event.metaKey || event.ctrlKey) return false;
+    if (event.code !== "KeyD") return false;
+    event.preventDefault();
+    return selectNextOccurrenceDown(view);
+  }
+});
 
 export type CursorPos = { line: number; ch: number };
 
@@ -50,6 +98,7 @@ export class EditorCore {
       state: EditorState.create({
         doc: initialValue,
         extensions: [
+          EditorState.allowMultipleSelections.of(true),
           // features (line numbers, active line gutter/highlight, auto indent, folding) are placed
           // in a dedicated compartment so they can be toggled at runtime.
           this.featuresComp.of([
@@ -60,6 +109,8 @@ export class EditorCore {
             this.createFoldGutter()
           ]),
           drawSelection(),
+          scrollPastEnd(),
+          optionDSelectNext,
           history(),
           // markdown is put into its own compartment so code-language highlighting can
           // be enabled/disabled at runtime.
@@ -72,7 +123,14 @@ export class EditorCore {
           this.selectionHighlightComp.of([]),
           // external visual extensions compartment (extensions can push CM6 ViewPlugins)
           this.externalComp.of(this.externalExtensions),
-          this.keymapComp.of(keymap.of([indentWithTab, { key: "Shift-Tab", run: indentLess }, ...defaultKeymap, ...historyKeymap])),
+          this.keymapComp.of(
+            keymap.of([
+              indentWithTab,
+              { key: "Shift-Tab", run: indentLess },
+              ...defaultKeymap,
+              ...historyKeymap
+            ])
+          ),
           // line wrap compartment
           this.lineWrapComp.of(CMEditorView.lineWrapping)
         ]
@@ -143,6 +201,7 @@ export class EditorCore {
       effects: this.keymapComp.reconfigure(
         keymap.of([
           ...bindings,
+          { key: "Alt-d", run: () => selectNextOccurrenceDown(this.view), preventDefault: true },
           indentWithTab,
           { key: "Shift-Tab", run: indentLess },
           ...defaultKeymap,
