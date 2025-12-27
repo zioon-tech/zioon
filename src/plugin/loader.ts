@@ -334,13 +334,21 @@ export class PluginLoader {
       if (path.startsWith('internal:')) {
         const key = path.slice('internal:'.length);
         const internalLoaders: Record<string, () => Promise<any>> = {
-          'paste-image': () => import('../plugins/paste-image/index')
+          'paste-image': () => import('../plugins/paste-image/index'),
+          'langchain-chat': () => import('../plugins/langchain-chat/index')
         };
         const loader = internalLoaders[key];
-        if (!loader) {
-          throw new Error(`Unknown internal module: ${key}`);
-        }
-        return await loader();
+        if (loader) return await loader();
+
+        const extensionModules = (import.meta as any).glob('/extensions/**/main.js') as Record<
+          string,
+          () => Promise<any>
+        >;
+        const extPath = `/extensions/${key}/main.js`;
+        const extLoader = extensionModules[extPath];
+        if (extLoader) return await extLoader();
+
+        throw new Error(`Unknown internal module: ${key}`);
       }
 
       // 在浏览器环境中，我们需要使用不同的方式导入模块

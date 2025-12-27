@@ -44,7 +44,6 @@ async function bootstrap() {
   // 初始化插件管理器
   const pluginManager = new PluginManager({
     pluginDir: '/plugins',
-    extensionsDir: '/extensions',
     logLevel: 'info'
   });
 
@@ -271,7 +270,6 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   applyLineWrap(lineWrapEnabled);
 
   // Auto-load all extensions under /extensions
-  await autoLoadExtensions();
 
   // Initialize new plugin system
   try {
@@ -1267,8 +1265,178 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
         updatedAt: Date.now(),
         isLegacy: false,
         enabled: true
+      },
+      {
+        id: 'zion.langchain-chat',
+        name: 'LangChain Chat',
+        version: '0.1.0',
+        description: 'AI chat integration with model management and tool calling support',
+        author: 'Zion Team',
+        license: 'MIT',
+        path: '/plugins/langchain-chat',
+        manifest: {
+          name: '@zion/langchain-chat',
+          version: '0.1.0',
+          description: 'LangChain Chat plugin - AI chat integration with model management and tool calling support',
+          author: 'Zion Team',
+          license: 'MIT',
+          zion: {
+            id: 'zion.langchain-chat',
+            name: 'LangChain Chat',
+            version: '0.1.0',
+            main: 'internal:langchain-chat',
+            activationEvents: ['onStartupFinished'],
+            contributes: {
+              commands: [
+                { id: 'chat.runSelection', title: 'Run Chat (Selection)' },
+                { id: 'chat.run', title: 'Run Chat' },
+                { id: 'chat.stop', title: 'Stop Chat' },
+                { id: 'chat.retry', title: 'Retry Chat' },
+                { id: 'models.openSwitcher', title: 'Open Model Switcher' },
+                { id: 'models.closeSwitcher', title: 'Close Model Switcher' },
+                { id: 'models.listProviders', title: 'List Model Providers' },
+                { id: 'models.listModels', title: 'List Available Models' },
+                { id: 'models.selectModel', title: 'Select Model' },
+                { id: 'models.selectNextModel', title: 'Select Next Model' },
+                { id: 'models.selectPrevModel', title: 'Select Previous Model' }
+              ],
+              keybindings: [
+                { command: 'chat.runSelection', key: 'Mod-Enter', when: 'editorFocus' },
+                { command: 'chat.stop', key: 'Escape', when: 'editorFocus' },
+                { command: 'chat.retry', key: 'Mod-Shift-r', when: 'editorFocus' },
+                { command: 'models.openSwitcher', key: 'Mod-Shift-m', when: 'editorFocus' }
+              ],
+              menus: [
+                { location: 'editor/context', command: 'models.openSwitcher', title: 'Select Model...', when: 'editorFocus' },
+                { location: 'editor/context', command: 'chat.runSelection', title: 'Run Chat (Selection)', when: 'editorFocus' },
+                { location: 'editor/context', command: 'chat.stop', title: 'Stop Chat', when: 'editorFocus' },
+                { location: 'editor/context', command: 'chat.retry', title: 'Retry Chat', when: 'editorFocus' }
+              ]
+            },
+            engines: {
+              zion: '>=1.0.0'
+            },
+            dependencies: {},
+            peerDependencies: {
+              langchain: '^0.2.0',
+              '@langchain/openai': '^0.0.22'
+            }
+          }
+        },
+        state: 'installed',
+        dependencies: [],
+        peerDependencies: ['langchain', '@langchain/openai'],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        isLegacy: false,
+        enabled: true
       }
     ];
+
+    try {
+      const extensionJsons = (import.meta as any).glob('/extensions/**/extension.json', { eager: true }) as Record<
+        string,
+        any
+      >;
+      const extensionMains = (import.meta as any).glob('/extensions/**/main.js') as Record<string, any>;
+
+      const existingIds = new Set(builtinPlugins.map(p => p.id));
+      const seenDirs = new Set<string>();
+
+      for (const [manifestPath, mod] of Object.entries(extensionJsons)) {
+        const raw = (mod as any)?.default || mod;
+        const extDir = manifestPath.replace(/\/extension\.json$/, '').replace(/\/extension\.json$/, '');
+        const dirName = extDir.split('/').pop() || extDir;
+        seenDirs.add(dirName);
+
+        const pluginId = `zion.${String(raw?.name || dirName)}`;
+        if (existingIds.has(pluginId)) continue;
+        existingIds.add(pluginId);
+
+        const version = String(raw?.version || '0.0.1');
+        const displayName = String(raw?.name || dirName);
+
+        builtinPlugins.push({
+          id: pluginId,
+          name: displayName,
+          version,
+          description: raw?.description,
+          author: raw?.author,
+          license: raw?.license,
+          path: extDir,
+          manifest: {
+            name: raw?.name || `@zion/${dirName}`,
+            version,
+            description: raw?.description,
+            author: raw?.author,
+            license: raw?.license,
+            zion: {
+              id: pluginId,
+              name: displayName,
+              version,
+              main: `internal:${dirName}`,
+              activationEvents: Array.isArray(raw?.activationEvents) ? raw.activationEvents : ['onStartupFinished'],
+              contributes: raw?.contributes,
+              engines: { zion: '>=1.0.0' },
+              dependencies: {},
+              peerDependencies: {}
+            }
+          },
+          state: 'installed',
+          dependencies: [],
+          peerDependencies: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          isLegacy: false,
+          enabled: true
+        });
+      }
+
+      for (const mainPath of Object.keys(extensionMains)) {
+        const extDir = mainPath.replace(/\/main\.js$/, '').replace(/\/main\.js$/, '');
+        const dirName = extDir.split('/').pop() || extDir;
+        if (seenDirs.has(dirName)) continue;
+
+        const pluginId = `zion.${dirName}`;
+        if (existingIds.has(pluginId)) continue;
+        existingIds.add(pluginId);
+
+        builtinPlugins.push({
+          id: pluginId,
+          name: dirName,
+          version: '0.0.1',
+          description: undefined,
+          author: undefined,
+          license: undefined,
+          path: extDir,
+          manifest: {
+            name: `@zion/${dirName}`,
+            version: '0.0.1',
+            description: undefined,
+            author: undefined,
+            license: undefined,
+            zion: {
+              id: pluginId,
+              name: dirName,
+              version: '0.0.1',
+              main: `internal:${dirName}`,
+              activationEvents: ['onStartupFinished'],
+              contributes: {},
+              engines: { zion: '>=1.0.0' },
+              dependencies: {},
+              peerDependencies: {}
+            }
+          },
+          state: 'installed',
+          dependencies: [],
+          peerDependencies: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          isLegacy: false,
+          enabled: true
+        });
+      }
+    } catch {}
 
     // 检查并安装每个内置插件
     for (const pluginInfo of builtinPlugins) {
