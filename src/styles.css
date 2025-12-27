@@ -1121,16 +1121,16 @@ html, body {
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.28);
-  padding: 6px;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  padding: 4px;
   min-width: 140px;
   max-width: 320px;
   z-index: 9000;
-  font-size: 13px;              /* slightly larger for readability */
+  font-size: 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   transition: opacity 140ms ease, transform 140ms ease;
 }
 
@@ -1145,9 +1145,9 @@ html, body {
   color: var(--fg);
   border: none;
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1;
   box-sizing: border-box;
 }
@@ -1176,6 +1176,68 @@ html, body {
 .zion-gutter-menu-item:focus {
   box-shadow: 0 0 0 3px rgba(98,114,164,0.11);
   border-radius: 6px;
+}
+
+.zion-context-menu {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  padding: 4px;
+  min-width: 140px;
+  max-width: 320px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.zion-context-menu-row {
+  position: relative;
+}
+
+.zion-context-menu-item {
+  display: flex;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  box-sizing: border-box;
+}
+
+.zion-context-menu-row.has-submenu .zion-context-menu-item {
+  padding-right: 22px;
+}
+
+.zion-context-menu-row.has-submenu .zion-context-menu-item::after {
+  content: "›";
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.8;
+}
+
+.zion-context-menu-item:hover,
+.zion-context-menu-item:focus {
+  background: rgba(248,248,242,0.04);
+  outline: none;
+}
+
+:root[data-theme="light"] .zion-context-menu-item:hover,
+:root[data-theme="light"] .zion-context-menu-item:focus {
+  background: rgba(0,0,0,0.04);
+}
+
+.zion-context-submenu {
+  z-index: 100000;
 }
 
 /* Place custom gutter to the far left of other gutters (fold/lineNumbers) */

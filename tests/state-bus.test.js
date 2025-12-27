@@ -33,13 +33,13 @@ describe('StateBus', () => {
 
   it('update should read oldVal and write newVal atomically', () => {
     const bus = new StateBus();
-    const calls: any[] = [];
+    const calls = [];
     bus.onDidChange('counter', (nv, ov) => calls.push([nv, ov]));
 
-    bus.update<number>('counter', (oldVal) => (oldVal ?? 0) + 1);
+    bus.update('counter', (oldVal) => (oldVal ?? 0) + 1);
     expect(bus.get('counter')).toBe(1);
 
-    bus.update<number>('counter', (oldVal) => (oldVal ?? 0) + 5);
+    bus.update('counter', (oldVal) => (oldVal ?? 0) + 5);
     expect(bus.get('counter')).toBe(6);
 
     expect(calls.length).toBe(2);

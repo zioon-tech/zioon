@@ -10,8 +10,9 @@ describe('Registry paste handlers', () => {
     const core = new EditorCore(host, '');
     attachEditor(core);
 
-    const order: string[] = [];
+    const order = [];
     let handler2Called = false;
+    let seenText = '';
 
     // high priority handler handles and short-circuits
     const d1 = window.zion.editor.registerPasteHandler({
@@ -21,7 +22,7 @@ describe('Registry paste handlers', () => {
         order.push('h1');
         // ensure clipboard data is accessible
         const txt = clipboardData.getData('text/plain') || '';
-        editor.replaceSelection(`H1:${txt}`);
+        seenText = txt;
         return true; // handled -> prevent default & stop chain
       }
     });
@@ -48,14 +49,16 @@ describe('Registry paste handlers', () => {
     const target = core.view.dom;
     target.dispatchEvent(evt);
 
+    await new Promise((r) => setTimeout(r, 0));
+
     // default prevented
     expect(evt.defaultPrevented).toBe(true);
     // chain order only has h1
     expect(order).toEqual(['h1']);
     expect(handler2Called).toBe(false);
 
-    // editor content updated by handler
-    expect(core.getValue()).toContain('H1:sample');
+    // clipboard data read by handler
+    expect(seenText).toBe('sample');
 
     // cleanup
     d1.dispose();

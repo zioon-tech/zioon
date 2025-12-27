@@ -40,9 +40,10 @@ export type Decorator = {
 };
 
 export type MenuItem = {
-  command: string;
+  command?: string;
   title?: string;
   when?: "editorFocus" | "hasSelection";
+  submenu?: MenuItem[];
 };
 
 export type ModelInfo = { id: string; label?: string };

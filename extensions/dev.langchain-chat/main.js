@@ -50,11 +50,46 @@ export async function activate(ctx) {
   function ensureActiveModel() {
     const active = window.zion.state.get("chat.activeModel");
     if (!active) {
+      let restored = null;
+      try {
+        const raw = localStorage.getItem("zion.chat.defaultModel") || "";
+        if (raw) {
+          try {
+            const j = JSON.parse(raw);
+            if (j?.providerId && j?.modelId) restored = { providerId: String(j.providerId), modelId: String(j.modelId) };
+          } catch {
+            const parts = String(raw).split(":");
+            if (parts.length >= 2) restored = { providerId: parts[0], modelId: parts.slice(1).join(":") };
+          }
+        }
+      } catch {}
+
+      if (restored) {
+        const catalog = window.zion.state.get("models.catalog") || [];
+        const item = catalog.find((m) => m.providerId === restored.providerId && m.id === restored.modelId);
+        if (item) {
+          window.zion.state.set("chat.activeModel", { providerId: item.providerId, modelId: item.id, label: item.label || item.id });
+          return;
+        }
+      }
+
       window.zion.state.set("chat.activeModel", { providerId: "deepseek", modelId: "deepseek-chat", label: "DeepSeek Chat" });
     }
   }
   await refreshCatalog();
   ensureActiveModel();
+
+  ctx.subscriptions.push(
+    window.zion.state.onDidChange("chat.activeModel", (nv) => {
+      try {
+        if (!nv?.providerId || !nv?.modelId) return;
+        localStorage.setItem(
+          "zion.chat.defaultModel",
+          JSON.stringify({ providerId: String(nv.providerId), modelId: String(nv.modelId) })
+        );
+      } catch {}
+    })
+  );
 
   // 模型切换器装饰器（挂载面板）
   let modelSwitcher = null;
@@ -756,13 +791,101 @@ export async function activate(ctx) {
 
   // 右键菜单
   if (window.zion.menus?.register) {
-    const ms = [
-      window.zion.menus.register("editor/context", { command: "models.openSwitcher", title: "Select Model...", when: "editorFocus" }),
-      window.zion.menus.register("editor/context", { command: "chat.runSelection", title: "Run Chat (Selection)", when: "editorFocus" }),
-      window.zion.menus.register("editor/context", { command: "chat.stop", title: "Stop Chat", when: "editorFocus" }),
-      window.zion.menus.register("editor/context", { command: "chat.retry", title: "Retry Chat", when: "editorFocus" })
+    const safeIdPart = (s) => encodeURIComponent(String(s)).replace(/%/g, "_");
+
+    const modelCmdDisposables = new Map();
+    const ensureModelCmd = (id, fn) => {
+      if (modelCmdDisposables.has(id)) return;
+      modelCmdDisposables.set(id, window.zion.commands.registerCommand(id, fn));
+    };
+
+    const runChatMenuItem = {
+      command: "chat.run",
+      title: "Run Chat",
+      when: "editorFocus",
+      submenu: []
+    };
+    const selectModelMenuItem = {
+      command: "models.openSwitcher",
+      title: "Select Model...",
+      when: "editorFocus",
+      submenu: []
+    };
+
+    const menuDisposables = [
+      window.zion.menus.register("editor/context", runChatMenuItem),
+      window.zion.menus.register("editor/context", selectModelMenuItem),
+      window.zion.menus.register("editor/context", {
+        command: "chat.stop",
+        title: "Stop Chat",
+        when: "editorFocus"
+      }),
+      window.zion.menus.register("editor/context", {
+        command: "chat.retry",
+        title: "Retry Chat",
+        when: "editorFocus"
+      })
     ];
-    ctx.subscriptions.push(...ms);
+
+    const buildModelMenuItems = (mode) => {
+      const catalog = window.zion.state.get("models.catalog") || [];
+      const active = window.zion.state.get("chat.activeModel");
+      const keep = new Set();
+
+      const items = catalog.map((m) => {
+        const isActive = m.providerId === active?.providerId && m.id === active?.modelId;
+        const label = m.label || m.id;
+        const title = isActive ? `✓ ${label}` : label;
+        const cmdId = `${mode}.${safeIdPart(m.providerId)}.${safeIdPart(m.id)}`;
+        keep.add(cmdId);
+
+        ensureModelCmd(cmdId, () => {
+          window.zion.state.set("chat.activeModel", { providerId: m.providerId, modelId: m.id, label });
+          if (mode === "chat.runDefaultWithModel") {
+            window.zion.commands.executeCommand("chat.run");
+          }
+          return true;
+        });
+
+        return { command: cmdId, title, when: "editorFocus" };
+      });
+
+      for (const [id, disp] of modelCmdDisposables) {
+        if (!id.startsWith(`${mode}.`)) continue;
+        if (keep.has(id)) continue;
+        try {
+          disp?.dispose?.();
+        } catch {}
+        modelCmdDisposables.delete(id);
+      }
+
+      return items;
+    };
+
+    const rebuildContextMenu = () => {
+      const active = window.zion.state.get("chat.activeModel");
+      const defaultLabel = active?.label || active?.modelId || "unknown";
+      runChatMenuItem.title = `Run Chat (${defaultLabel})`;
+      runChatMenuItem.submenu = buildModelMenuItems("chat.runDefaultWithModel");
+      selectModelMenuItem.submenu = buildModelMenuItems("models.setDefaultModel");
+    };
+
+    rebuildContextMenu();
+    ctx.subscriptions.push(
+      ...menuDisposables,
+      {
+        dispose: () => {
+          for (const [, disp] of modelCmdDisposables) {
+            try {
+              disp?.dispose?.();
+            } catch {}
+          }
+          modelCmdDisposables.clear();
+        }
+      },
+      window.zion.state.onDidChange("chat.activeModel", rebuildContextMenu),
+      window.zion.state.onDidChange("models.catalog", rebuildContextMenu)
+    );
   }
 
   // 状态栏 Run/Stop 按钮

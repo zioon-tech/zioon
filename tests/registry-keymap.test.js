@@ -5,7 +5,7 @@ import { EditorCore } from '../src/editor/EditorCore';
 describe('Registry Keymap', () => {
   it('applies keybindings with when condition', () => {
     const parent = document.createElement('div');
-    const core = new EditorCore(parent);
+    const core = new EditorCore(parent, 'hello world');
     attachEditor(core);
 
     // 注册一个需要 hasSelection 的快捷键

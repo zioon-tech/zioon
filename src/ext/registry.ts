@@ -251,6 +251,186 @@ class Registry {
     if (!this.editorCore) return;
     const dom = this.editorCore.view.dom;
 
+    dom.addEventListener("contextmenu", (e: MouseEvent) => {
+      const items = this.menus["editor/context"] || [];
+      if (items.length === 0) return;
+      e.preventDefault();
+      this.showEditorContextMenuAt(e.clientX, e.clientY);
+    });
+  }
+
+  private shouldShowMenuItem(it: MenuItem, ctx: { hasSelection: boolean; editorFocus: boolean }): boolean {
+    if (!it.when) return true;
+    if (it.when === "hasSelection") return ctx.hasSelection;
+    if (it.when === "editorFocus") return ctx.editorFocus;
+    return true;
+  }
+
+  private filterMenuTree(items: MenuItem[], ctx: { hasSelection: boolean; editorFocus: boolean }): MenuItem[] {
+    const out: MenuItem[] = [];
+    for (const it of items) {
+      if (!this.shouldShowMenuItem(it, ctx)) continue;
+      const kids = Array.isArray(it.submenu) ? this.filterMenuTree(it.submenu, ctx) : undefined;
+      const hasKids = !!kids && kids.length > 0;
+      const hasCmd = typeof it.command === "string" && it.command.trim().length > 0;
+      if (!hasCmd && !hasKids) continue;
+      out.push({ ...it, submenu: hasKids ? kids : undefined });
+    }
+    return out;
+  }
+
+  private positionMenuInViewport(el: HTMLElement, x: number, y: number) {
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const nx = rect.right > vw ? Math.max(4, vw - rect.width - 4) : x;
+    const ny = rect.bottom > vh ? Math.max(4, vh - rect.height - 4) : y;
+    el.style.left = `${nx}px`;
+    el.style.top = `${ny}px`;
+  }
+
+  private buildContextMenuPanel(items: MenuItem[], closeMenu: () => void): HTMLDivElement {
+    const menu = document.createElement("div");
+    menu.className = "zion-context-menu";
+    menu.setAttribute("role", "menu");
+    menu.tabIndex = -1;
+
+    let activeCloser: (() => void) | null = null;
+
+    for (const it of items) {
+      const row = document.createElement("div");
+      const hasKids = Array.isArray(it.submenu) && it.submenu.length > 0;
+      row.className = hasKids ? "zion-context-menu-row has-submenu" : "zion-context-menu-row";
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "zion-context-menu-item";
+      btn.textContent = it.title || it.command || "";
+      btn.setAttribute("role", "menuitem");
+
+      if (hasKids) {
+        btn.setAttribute("aria-haspopup", "menu");
+        btn.setAttribute("aria-expanded", "false");
+        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu);
+        submenu.classList.add("zion-context-submenu");
+        submenu.style.position = "fixed";
+        submenu.style.display = "none";
+
+        let closeTimer: number | null = null;
+        const cancelClose = () => {
+          if (closeTimer !== null) {
+            clearTimeout(closeTimer);
+            closeTimer = null;
+          }
+        };
+        const doClose = () => {
+          cancelClose();
+          btn.setAttribute("aria-expanded", "false");
+          submenu.style.display = "none";
+          if (activeCloser === doClose) activeCloser = null;
+        };
+        const scheduleClose = () => {
+          cancelClose();
+          closeTimer = window.setTimeout(() => {
+            doClose();
+          }, 240);
+        };
+
+        const open = () => {
+          cancelClose();
+
+          if (activeCloser && activeCloser !== doClose) {
+            try {
+              activeCloser();
+            } catch {}
+          }
+          activeCloser = doClose;
+
+          btn.setAttribute("aria-expanded", "true");
+          submenu.style.display = "block";
+          const r = row.getBoundingClientRect();
+          const gap = 2;
+          let sx = r.right + gap;
+          let sy = r.top - 4;
+          submenu.style.left = `${sx}px`;
+          submenu.style.top = `${sy}px`;
+
+          const rect = submenu.getBoundingClientRect();
+          const vw = window.innerWidth;
+          const vh = window.innerHeight;
+          if (rect.right > vw) {
+            sx = Math.max(4, r.left - rect.width - gap);
+          }
+          if (rect.bottom > vh) {
+            sy = Math.max(4, vh - rect.height - 4);
+          }
+          if (sy < 4) sy = 4;
+          submenu.style.left = `${sx}px`;
+          submenu.style.top = `${sy}px`;
+        };
+
+        btn.onclick = () => {
+          const cmd = it.command;
+          if (!cmd) return;
+          try {
+            this.executeCommand(cmd);
+          } finally {
+            closeMenu();
+          }
+        };
+
+        row.addEventListener("mouseenter", open);
+        row.addEventListener("mouseleave", scheduleClose);
+        submenu.addEventListener("mouseenter", cancelClose);
+        submenu.addEventListener("mouseleave", scheduleClose);
+
+        row.appendChild(btn);
+        row.appendChild(submenu);
+      } else {
+        btn.onclick = () => {
+          const cmd = it.command;
+          if (!cmd) return;
+          try {
+            this.executeCommand(cmd);
+          } finally {
+            closeMenu();
+          }
+        };
+        row.appendChild(btn);
+      }
+
+      menu.appendChild(row);
+    }
+
+    return menu;
+  }
+
+  private showEditorContextMenuAt(x: number, y: number) {
+    if (!this.editorCore) return;
+    const dom = this.editorCore.view.dom;
+    const items = this.menus["editor/context"] || [];
+    if (items.length === 0) return;
+
+    const hasSelection =
+      this.editorCore.view.state.selection.main.from !== this.editorCore.view.state.selection.main.to;
+    const editorFocus = document.activeElement ? dom.contains(document.activeElement) : false;
+
+    const filtered = this.filterMenuTree(items, { hasSelection, editorFocus });
+    if (filtered.length === 0) return;
+
+    if (this.contextMenuEl) {
+      try {
+        this.contextMenuEl.remove();
+      } catch {}
+      this.contextMenuEl = null;
+    }
+
+    const escHandler = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") closeMenu();
+    };
+
     const closeMenu = () => {
       if (this.contextMenuEl && this.contextMenuEl.parentNode) {
         this.contextMenuEl.parentNode.removeChild(this.contextMenuEl);
@@ -260,87 +440,16 @@ class Registry {
       document.removeEventListener("keydown", escHandler);
     };
 
-    const escHandler = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") {
-        closeMenu();
-      }
-    };
+    const menu = this.buildContextMenuPanel(filtered, closeMenu);
+    menu.style.position = "fixed";
+    menu.style.zIndex = "99999";
 
-    dom.addEventListener("contextmenu", (e: MouseEvent) => {
-      const items = this.menus["editor/context"] || [];
-      if (items.length === 0) return; // nothing to show, let CM6 handle default
-      e.preventDefault();
+    document.body.appendChild(menu);
+    this.contextMenuEl = menu;
 
-      const activeEditor: IEditorProxy | null = (window as any).zion?.window?.activeEditor ?? null;
-      const hasSelection =
-        !!this.editorCore &&
-        this.editorCore.view.state.selection.main.from !== this.editorCore.view.state.selection.main.to;
-      const editorFocus = !!this.editorCore && document.activeElement ? dom.contains(document.activeElement) : false;
-
-      const filtered = items.filter(it => {
-        if (!it.when) return true;
-        if (it.when === "hasSelection") return hasSelection;
-        if (it.when === "editorFocus") return editorFocus;
-        return true;
-      });
-
-      if (filtered.length === 0) return;
-
-      // close any existing menu
-      if (this.contextMenuEl) {
-        this.contextMenuEl.remove();
-        this.contextMenuEl = null;
-      }
-
-      const menu = document.createElement("div");
-      menu.style.position = "fixed";
-      menu.style.left = `${e.clientX}px`;
-      menu.style.top = `${e.clientY}px`;
-      menu.style.background = "var(--panel)";
-      menu.style.border = "1px solid var(--border)";
-      menu.style.borderRadius = "6px";
-      menu.style.padding = "4px";
-      menu.style.zIndex = "99999";
-      menu.style.minWidth = "160px";
-      menu.style.boxShadow = "0 4px 16px rgba(0,0,0,0.35)";
-      menu.style.fontSize = "12px";
-
-      filtered.forEach(it => {
-        const btn = document.createElement("button");
-        btn.textContent = it.title || it.command;
-        btn.style.display = "block";
-        btn.style.width = "100%";
-        btn.style.textAlign = "left";
-        btn.style.background = "transparent";
-        btn.style.border = "none";
-        btn.style.color = "var(--fg)";
-        btn.style.padding = "6px 8px";
-        btn.style.cursor = "pointer";
-        btn.onmouseenter = () => (btn.style.background = "var(--border)");
-        btn.onmouseleave = () => (btn.style.background = "transparent");
-        btn.onclick = () => {
-          try {
-            this.executeCommand(it.command);
-          } finally {
-            closeMenu();
-          }
-        };
-        menu.appendChild(btn);
-      });
-
-      document.body.appendChild(menu);
-      this.contextMenuEl = menu;
-
-      // keep menu in viewport
-      const rect = menu.getBoundingClientRect();
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      if (rect.right > vw) menu.style.left = `${Math.max(4, vw - rect.width - 4)}px`;
-      if (rect.bottom > vh) menu.style.top = `${Math.max(4, vh - rect.height - 4)}px`;
-
-      document.addEventListener("click", closeMenu, { once: true });
-      document.addEventListener("keydown", escHandler);
-    });
+    this.positionMenuInViewport(menu, x, y);
+    document.addEventListener("click", closeMenu, { once: true });
+    document.addEventListener("keydown", escHandler);
   }
 
   private showMenuAt(menuId: string, x: number, y: number) {
@@ -352,88 +461,7 @@ class Registry {
       console.warn("[zion] showMenuAt: unsupported menuId", menuId);
       return;
     }
-    const dom = this.editorCore.view.dom;
-    const items = this.menus["editor/context"] || [];
-    if (items.length === 0) return;
-
-    const hasSelection =
-      this.editorCore.view.state.selection.main.from !== this.editorCore.view.state.selection.main.to;
-    const editorFocus = document.activeElement ? dom.contains(document.activeElement) : false;
-
-    const filtered = items.filter(it => {
-      if (!it.when) return true;
-      if (it.when === "hasSelection") return hasSelection;
-      if (it.when === "editorFocus") return editorFocus;
-      return true;
-    });
-    if (filtered.length === 0) return;
-
-    // Close existing menu if any
-    if (this.contextMenuEl) {
-      try { this.contextMenuEl.remove(); } catch {}
-      this.contextMenuEl = null;
-    }
-
-    const closeMenu = () => {
-      if (this.contextMenuEl && this.contextMenuEl.parentNode) {
-        this.contextMenuEl.parentNode.removeChild(this.contextMenuEl);
-      }
-      this.contextMenuEl = null;
-      document.removeEventListener("click", closeMenu);
-      document.removeEventListener("keydown", escHandler);
-    };
-    const escHandler = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") closeMenu();
-    };
-
-    const menu = document.createElement("div");
-    menu.style.position = "fixed";
-    menu.style.left = `${x}px`;
-    menu.style.top = `${y}px`;
-    menu.style.background = "var(--panel)";
-    menu.style.border = "1px solid var(--border)";
-    menu.style.borderRadius = "6px";
-    menu.style.padding = "4px";
-    menu.style.zIndex = "99999";
-    menu.style.minWidth = "160px";
-    menu.style.boxShadow = "0 4px 16px rgba(0,0,0,0.35)";
-    menu.style.fontSize = "12px";
-
-    filtered.forEach(it => {
-      const btn = document.createElement("button");
-      btn.textContent = it.title || it.command;
-      btn.style.display = "block";
-      btn.style.width = "100%";
-      btn.style.textAlign = "left";
-      btn.style.background = "transparent";
-      btn.style.border = "none";
-      btn.style.color = "var(--fg)";
-      btn.style.padding = "6px 8px";
-      btn.style.cursor = "pointer";
-      btn.onmouseenter = () => (btn.style.background = "var(--border)");
-      btn.onmouseleave = () => (btn.style.background = "transparent");
-      btn.onclick = () => {
-        try {
-          this.executeCommand(it.command);
-        } finally {
-          closeMenu();
-        }
-      };
-      menu.appendChild(btn);
-    });
-
-    document.body.appendChild(menu);
-    this.contextMenuEl = menu;
-
-    // keep menu in viewport
-    const rect = menu.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    if (rect.right > vw) menu.style.left = `${Math.max(4, vw - rect.width - 4)}px`;
-    if (rect.bottom > vh) menu.style.top = `${Math.max(4, vh - rect.height - 4)}px`;
-
-    document.addEventListener("click", closeMenu, { once: true });
-    document.addEventListener("keydown", escHandler);
+    this.showEditorContextMenuAt(x, y);
   }
 
   private applyDecorators() {
