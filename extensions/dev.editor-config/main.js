@@ -37,7 +37,7 @@ export async function activate(ctx) {
 
   // Editor width mode: full / wide / standard (same as before)
   const STATE_KEY = "ui.editorWidthMode";
-  const DEFAULT_MODE = "standard";
+  const DEFAULT_MODE = "full";
   const getMode = () => window.zion.state.get(STATE_KEY) || DEFAULT_MODE;
   const setMode = (mode) => {
     const m = mode === "full" || mode === "wide" || mode === "standard" ? mode : DEFAULT_MODE;
@@ -350,7 +350,7 @@ export async function activate(ctx) {
 
   /* ===== Heading Size (state + commands + init) ===== */
   const HEADING_STATE_KEY = "ui.headingSize";
-  const HEADING_DEFAULT = "medium";
+  const HEADING_DEFAULT = "xsmall";
   const getHeading = () => window.zion.state.get(HEADING_STATE_KEY) || HEADING_DEFAULT;
   const applyHeadingSize = () => {
     const mode = getHeading();
@@ -570,7 +570,7 @@ export async function activate(ctx) {
       panel.appendChild(headingGroup);
 
       const updateHeadingButtons = () => {
-        const m = window.zion.state.get("ui.headingSize") || "medium";
+        const m = window.zion.state.get("ui.headingSize") || HEADING_DEFAULT;
         const reset = (btn) => { btn.style.boxShadow = "none"; };
         [btnMedium, btnSmall, btnXSmall].forEach(reset);
         if (m === "medium") btnMedium.style.boxShadow = "inset 0 0 0 2px var(--accent)";
