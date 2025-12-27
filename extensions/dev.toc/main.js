@@ -345,6 +345,8 @@ export async function activate(ctx) {
     wrapper: null,
     panel: null,
     button: null,
+    groupBtn: null,
+    toggleAllBtn: null,
     editorEl: null,
     scrollerEl: null,
     prevScrollerMarginLeft: "",
@@ -357,11 +359,47 @@ export async function activate(ctx) {
   };
   // collapsed state set for headings: keep ids of collapsed nodes so updates can preserve UI state
   const tocState = {
-    collapsed: new Set()
+    collapsed: new Set(),
+    allCollapsibleIds: new Set()
   };
   let sidePanelOpen = false;
   let sideOverlayMode = false;
   const debouncedUpdate = debounce(() => updateTOCList(), 120);
+
+  const syncToggleAllBtn = () => {
+    try {
+      const btn = tocUI?.toggleAllBtn;
+      if (!btn) return;
+      const total = tocState.allCollapsibleIds.size;
+      let allCollapsed = total > 0;
+      if (allCollapsed) {
+        for (const id of tocState.allCollapsibleIds) {
+          if (!tocState.collapsed.has(id)) { allCollapsed = false; break; }
+        }
+      }
+      if (allCollapsed) {
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 5l-5 5h10l-5-5zm0 14l5-5H7l5 5z"/></svg>';
+        btn.setAttribute('aria-label', '展开全部');
+        btn.title = '展开全部';
+      } else {
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7 14l5 5 5-5H7zm0-4h10L12 5 7 10z"/></svg>';
+        btn.setAttribute('aria-label', '折叠全部');
+        btn.title = '折叠全部';
+      }
+    } catch {}
+  };
+
+  const syncGroupBtnUI = () => {
+    try {
+      const groupBtn = tocUI?.groupBtn;
+      if (!groupBtn) return;
+      const on = !!window?.zion?.state?.get?.('toc.groupByRole');
+      groupBtn.style.opacity = on ? "1" : "0.7";
+      groupBtn.style.background = on ? "var(--ext-toc-hover, var(--border))" : "transparent";
+      groupBtn.style.color = on ? "var(--ext-toc-active-fg, var(--accent))" : "var(--ext-toc-fg, var(--fg))";
+      groupBtn.title = on ? "按角色分组：开" : "按角色分组：关";
+    } catch {}
+  };
 
   // Layout the side panel to sit flush left of the editor content while keeping the whole group centered.
   // New logic: decide overlay by a simple threshold derived from width mode, not from current measured editor width.
@@ -458,6 +496,21 @@ export async function activate(ctx) {
       }
       list.innerHTML = '';
 
+      try { tocState.allCollapsibleIds.clear(); } catch { tocState.allCollapsibleIds = new Set(); }
+
+      const indexTree = (nodes) => {
+        try {
+          if (!nodes || nodes.length === 0) return;
+          nodes.forEach(n => {
+            if (!n || !n.id) return;
+            if (n.children && n.children.length > 0) {
+              tocState.allCollapsibleIds.add(n.id);
+              indexTree(n.children);
+            }
+          });
+        } catch {}
+      };
+
       // Build hierarchical tree from flat headings (stack-based)
       const buildTree = (headings, blockStartLineForId = null) => {
         const roots = [];
@@ -483,6 +536,10 @@ export async function activate(ctx) {
         nodes.forEach(item => {
           const row = document.createElement("div");
           row.className = "toc-row";
+          try {
+            row.dataset.tocId = item.id;
+            row.dataset.tocKind = 'heading';
+          } catch {}
           row.style.display = "flex";
           row.style.alignItems = "center";
           row.style.padding = "4px 8px";
@@ -587,6 +644,7 @@ export async function activate(ctx) {
           list.appendChild(empty);
         } else {
           const roots = buildTree(headings);
+          indexTree(roots);
           renderNodes(list, roots);
         }
       } else {
@@ -597,22 +655,38 @@ export async function activate(ctx) {
           // fallback to flat headings
           const headings = maybeView ? parseHeadingsFromView(maybeView) : parseHeadingsFromText(ed.getValue());
           const roots = buildTree(headings);
+          indexTree(roots);
           renderNodes(list, roots);
         } else {
           blocks.forEach((b) => {
+            let blockStartLine = b?.startLine;
+            if (blockStartLine == null && maybeView && typeof b?.from === 'number') {
+              try { blockStartLine = maybeView.state.doc.lineAt(b.from).number - 1; } catch {}
+            }
+            if (blockStartLine == null) blockStartLine = 0;
+
             // headings within this block
             let hs = [];
             if (maybeView && typeof b.from === 'number' && typeof b.to === 'number') {
               hs = parseHeadingsFromViewInRange(maybeView, b.from, b.to);
             } else {
-              hs = parseHeadingsFromTextInLines(ed.getValue(), b.startLine, b.endLine ?? b.startLine);
+              const s = typeof b?.startLine === 'number' ? b.startLine : blockStartLine;
+              const e = typeof b?.endLine === 'number' ? b.endLine : s;
+              hs = parseHeadingsFromTextInLines(ed.getValue(), s, e);
             }
-            const roots = buildTree(hs, b.startLine);
+            const roots = buildTree(hs, blockStartLine);
+
+            const blockId = `role::${(b?.role || '').toLowerCase()}::${blockStartLine}`;
+            if (roots.length > 0) tocState.allCollapsibleIds.add(blockId);
+            indexTree(roots);
 
             // block row as top-level
-            const blockId = `role::${b.role}::${b.startLine}`;
             const row = document.createElement("div");
             row.className = "toc-row";
+            try {
+              row.dataset.tocId = blockId;
+              row.dataset.tocKind = 'block';
+            } catch {}
             row.style.display = "flex";
             row.style.alignItems = "center";
             row.style.padding = "4px 8px";
@@ -676,18 +750,14 @@ export async function activate(ctx) {
             label.style.overflow = "hidden";
             label.style.marginLeft = "0";
 
-            // Active block highlight or USER role emphasis
-            // Styling is configurable via CSS variables:
-            // --ext-toc-active-fg
-            // --ext-toc-user-fg
+            row.style.fontWeight = "600";
+
             try {
               const activeBlockId = window?.zion?.state?.get?.('toc.activeBlockId');
-              if (activeBlockId && activeBlockId === blockId) {
+              const activeHeadingId = window?.zion?.state?.get?.('toc.activeHeadingId');
+              if (activeBlockId && activeBlockId === blockId && !activeHeadingId) {
                 label.style.fontWeight = "600";
                 label.style.color = "var(--ext-toc-active-fg, var(--accent))";
-              } else if ((b.role || '').toLowerCase() === 'user') {
-                label.style.fontWeight = "600";
-                label.style.color = "var(--ext-toc-user-fg, var(--ext-toc-active-fg, var(--accent)))";
               }
             } catch {}
 
@@ -697,7 +767,7 @@ export async function activate(ctx) {
               try {
                 window?.zion?.state?.set?.('toc.activeHeadingId', null);
                 const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
-                scrollLineIntoViewTop(ed, maybeView, b.startLine, 48);
+                scrollLineIntoViewTop(ed, maybeView, blockStartLine, 48);
               } catch {}
             };
 
@@ -711,6 +781,8 @@ export async function activate(ctx) {
           });
         }
       }
+
+      syncToggleAllBtn();
     } catch {}
   };
 
@@ -1149,14 +1221,45 @@ export async function activate(ctx) {
           groupBtn.style.cursor = "pointer";
           groupBtn.style.opacity = "0.7";
           groupBtn.style.transition = "opacity 120ms ease";
-          // sync only opacity for active state so it matches other buttons' behavior
-          const syncGroupBtn = () => {
-            const on = !!window?.zion?.state?.get?.('toc.groupByRole');
-            groupBtn.style.opacity = on ? "1" : "0.7";
-          };
+          tocUI.groupBtn = groupBtn;
           groupBtn.onclick = () => window.zion.commands.executeCommand("toc.toggleGroupByRole");
           toolbar.appendChild(groupBtn);
-          syncGroupBtn();
+          syncGroupBtnUI();
+
+          const toggleAllBtn = document.createElement("button");
+          toggleAllBtn.setAttribute('aria-label', '折叠全部');
+          toggleAllBtn.title = "折叠全部";
+          toggleAllBtn.style.background = "transparent";
+          toggleAllBtn.style.color = "var(--ext-toc-fg, var(--fg))";
+          toggleAllBtn.style.border = "none";
+          toggleAllBtn.style.borderRadius = "4px";
+          toggleAllBtn.style.padding = "4px";
+          toggleAllBtn.style.fontSize = "12px";
+          toggleAllBtn.style.cursor = "pointer";
+          toggleAllBtn.style.opacity = "0.7";
+          toggleAllBtn.style.transition = "opacity 120ms ease";
+          toggleAllBtn.onclick = () => {
+            try {
+              const total = tocState.allCollapsibleIds.size;
+              let allCollapsed = total > 0;
+              if (allCollapsed) {
+                for (const id of tocState.allCollapsibleIds) {
+                  if (!tocState.collapsed.has(id)) { allCollapsed = false; break; }
+                }
+              }
+              if (allCollapsed) {
+                tocState.collapsed.clear();
+              } else {
+                tocState.collapsed.clear();
+                for (const id of tocState.allCollapsibleIds) tocState.collapsed.add(id);
+              }
+              updateTOCList();
+            } catch {}
+          };
+          toolbar.appendChild(toggleAllBtn);
+
+          tocUI.toggleAllBtn = toggleAllBtn;
+          syncToggleAllBtn();
 
           // 复制按钮（内联 clipboard SVG）
           const copyBtn = document.createElement("button");
@@ -1237,7 +1340,7 @@ export async function activate(ctx) {
           toolbar.appendChild(collapseBtn);
 
           // Add hover effects for all buttons
-          const buttons = [groupBtn, copyBtn, insertBtn, collapseBtn];
+          const buttons = [groupBtn, toggleAllBtn, copyBtn, insertBtn, collapseBtn];
           buttons.forEach(btn => {
             btn.addEventListener('mouseenter', () => {
               btn.style.opacity = '1';
@@ -1291,9 +1394,7 @@ export async function activate(ctx) {
       // 监听分组模式状态变化以同步按钮样式与列表
       const groupModeSub = window.zion.state.onDidChange("toc.groupByRole", () => {
         try {
-          // 更新按钮样式
-          const on = !!window?.zion?.state?.get?.('toc.groupByRole');
-          // 按钮已在闭包中，触发一次渲染即可
+          try { syncGroupBtnUI(); } catch {}
           if (sidePanelOpen) debouncedUpdate();
         } catch {}
       });
