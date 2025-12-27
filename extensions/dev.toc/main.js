@@ -397,7 +397,7 @@ export async function activate(ctx) {
 
       // Minimal editor width threshold by mode (content + paddings)
       // standard ~ 720, wide ~ 960, full falls back to standard threshold (we let flex shrink)
-      const minEditor = widthMode === "standard" ? 680 : widthMode === "wide" ? 900 : 680;
+      const minEditor = widthMode === "standard" ? 560 : widthMode === "wide" ? 760 : 520;
 
       // Decide overlay only when viewport is too narrow to fit panel + minimal editor comfortably
       const shouldOverlay = available < (basis + minEditor + 16);

@@ -15,8 +15,8 @@ export async function activate(ctx) {
 
   const applyEnabled = (enabled) => {
     try { localStorage.setItem("zion.gutterActions", enabled ? "1" : "0"); } catch {}
-    window.zion.state.set(STATE_KEY, !!enabled);
-    if (!!enabled) {
+    window.zion.state.set(STATE_KEY, Boolean(enabled));
+    if (enabled) {
       document.body.classList.remove(CSS_DISABLED_CLASS);
     } else {
       document.body.classList.add(CSS_DISABLED_CLASS);

@@ -109,7 +109,7 @@ declare global {
         getProvider(id: string): ModelProvider | null;
       };
       chat?: {
-        run(opts?: { useSelection?: boolean }): void;
+        run(opts?: { useSelection?: boolean; prompt?: string }): void;
         stop(): void;
         retry(): void;
         setActiveModel(model: { providerId: string; modelId: string } | null): void;

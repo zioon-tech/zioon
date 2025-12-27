@@ -2336,7 +2336,8 @@ async function importSessionsFromFile() {
 
           for (const item of arr) {
             const id = genId();
-            let title = ((item?.meta?.title || item?.title || "Imported Session") || "").trim();
+            const rawTitle = item?.meta?.title ?? item?.title ?? "Imported Session";
+            let title = String(rawTitle).trim();
             const doc = item?.doc || "";
             const derived = deriveTitleFromText(doc);
             // 若原始没有显式标题或是默认样式，则派生并标记为自动

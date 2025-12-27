@@ -10,13 +10,14 @@ import {
 import { history, historyKeymap, defaultKeymap, indentWithTab, indentLess } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
+import { GFM } from "@lezer/markdown";
 import { indentOnInput } from "@codemirror/language";
 import { foldGutter } from "@codemirror/language";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { wysiwyg } from "./wysiwyg";
 import { EditorView as CMEditorView } from "@codemirror/view";
-import { showMinimap, minimapConfig } from "@replit/codemirror-minimap";
+import { showMinimap } from "@replit/codemirror-minimap";
 import { highlightSelectionMatches } from "@codemirror/search";
 
 export type CursorPos = { line: number; ch: number };
@@ -62,8 +63,7 @@ export class EditorCore {
           history(),
           // markdown is put into its own compartment so code-language highlighting can
           // be enabled/disabled at runtime.
-          // enable GFM features (tables/tasks) via gfm: true
-          this.mdComp.of(markdown({ codeLanguages: languages, gfm: true })),
+          this.mdComp.of(markdown({ codeLanguages: languages, extensions: [GFM] })),
           this.themeComp.of(oneDark),
           this.uiComp.of(wysiwyg()),
           // minimap compartment (can be toggled)
@@ -235,8 +235,8 @@ export class EditorCore {
     this.view.dispatch({
       effects: this.mdComp.reconfigure(
         this.syntaxHighlightEnabled
-          ? markdown({ codeLanguages: languages, gfm: true })
-          : markdown({ gfm: true })
+          ? markdown({ codeLanguages: languages, extensions: [GFM] })
+          : markdown({ extensions: [GFM] })
       )
     });
   }

@@ -762,7 +762,7 @@ class Registry {
   }
 
   // Start a chat run: parse messages, pick latest user (or selection), stream an echo response
-  private __chatRun(opts?: { useSelection?: boolean }): boolean {
+  private __chatRun(opts?: { useSelection?: boolean; prompt?: string }): boolean {
     try {
       if (!this.editorCore) return false;
       // Prevent concurrent runs

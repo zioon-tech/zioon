@@ -556,11 +556,12 @@ class DiagramWidget extends WidgetType {
     wrap.appendChild(toolbar);
 
     if (this.lang === "mermaid") {
+      let scratch: HTMLDivElement | null = null;
       try {
         ensureMermaidInit();
         const id = "mmd-" + Math.random().toString(36).slice(2);
         // Use an offscreen scratch container to prevent mermaid from appending error text to document.body
-        const scratch = document.createElement("div");
+        scratch = document.createElement("div");
         scratch.style.position = "fixed";
         scratch.style.left = "-9999px";
         scratch.style.top = "-9999px";
@@ -580,11 +581,10 @@ class DiagramWidget extends WidgetType {
         }).catch(() => {
           // swallow errors and avoid leaking scratch node
         }).finally(() => {
-          try { scratch.remove(); } catch {}
+          try { scratch?.remove(); } catch {}
         });
       } catch {
-        // Ensure scratch is cleaned up on unexpected errors
-        try { (typeof scratch !== "undefined") && scratch.remove(); } catch {}
+        try { scratch?.remove(); } catch {}
       }
     } else if (this.lang === "uml") {
       try {
