@@ -1,0 +1,11 @@
+{
+  "name": "@zion/langchain-chat",
+  "version": "0.1.0",
+  "description": "LangChain Chat plugin for Zion - AI chat with model management",
+  "main": "index.ts",
+  "type": "module",
+  "dependencies": {
+    "langchain": "^0.2.0",
+    "@langchain/openai": "^0.0.22"
+  }
+}

@@ -1,0 +1,121 @@
+{
+  "name": "@zion/langchain-chat",
+  "version": "0.1.0",
+  "description": "LangChain Chat plugin - AI chat integration with model management and tool calling support",
+  "author": "Zion Team",
+  "license": "MIT",
+  "zion": {
+    "id": "zion.langchain-chat",
+    "name": "LangChain Chat",
+    "version": "0.1.0",
+    "main": "index.js",
+    "description": "AI chat integration with LangChain, model management, and tool calling support",
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "contributes": {
+      "commands": [
+        {
+          "id": "chat.runSelection",
+          "title": "Run Chat (Selection)"
+        },
+        {
+          "id": "chat.run",
+          "title": "Run Chat"
+        },
+        {
+          "id": "chat.stop",
+          "title": "Stop Chat"
+        },
+        {
+          "id": "chat.retry",
+          "title": "Retry Chat"
+        },
+        {
+          "id": "models.openSwitcher",
+          "title": "Open Model Switcher"
+        },
+        {
+          "id": "models.closeSwitcher",
+          "title": "Close Model Switcher"
+        },
+        {
+          "id": "models.listProviders",
+          "title": "List Model Providers"
+        },
+        {
+          "id": "models.listModels",
+          "title": "List Available Models"
+        },
+        {
+          "id": "models.selectModel",
+          "title": "Select Model"
+        },
+        {
+          "id": "models.selectNextModel",
+          "title": "Select Next Model"
+        },
+        {
+          "id": "models.selectPrevModel",
+          "title": "Select Previous Model"
+        }
+      ],
+      "keybindings": [
+        {
+          "command": "chat.runSelection",
+          "key": "Mod-Enter",
+          "when": "editorFocus"
+        },
+        {
+          "command": "chat.stop",
+          "key": "Escape",
+          "when": "editorFocus"
+        },
+        {
+          "command": "chat.retry",
+          "key": "Mod-Shift-r",
+          "when": "editorFocus"
+        },
+        {
+          "command": "models.openSwitcher",
+          "key": "Mod-Shift-m",
+          "when": "editorFocus"
+        }
+      ],
+      "menus": [
+        {
+          "location": "editor/context",
+          "command": "models.openSwitcher",
+          "title": "Select Model...",
+          "when": "editorFocus"
+        },
+        {
+          "location": "editor/context",
+          "command": "chat.runSelection",
+          "title": "Run Chat (Selection)",
+          "when": "editorFocus"
+        },
+        {
+          "location": "editor/context",
+          "command": "chat.stop",
+          "title": "Stop Chat",
+          "when": "editorFocus"
+        },
+        {
+          "location": "editor/context",
+          "command": "chat.retry",
+          "title": "Retry Chat",
+          "when": "editorFocus"
+        }
+      ]
+    },
+    "engines": {
+      "zion": ">=1.0.0"
+    },
+    "dependencies": {},
+    "peerDependencies": {
+      "langchain": "^0.2.0",
+      "@langchain/openai": "^0.0.22"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "@zion/paste-image",
+  "version": "0.1.0",
+  "description": "Paste Image plugin for Zion - Handle pasted images and insert as markdown images",
+  "main": "index.ts",
+  "type": "module",
+  "dependencies": {}
+}

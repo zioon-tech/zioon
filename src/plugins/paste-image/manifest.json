@@ -1,0 +1,24 @@
+{
+  "name": "@zion/paste-image",
+  "version": "0.1.0",
+  "description": "Paste Image plugin - Handle pasted images and insert as markdown images (data URL or remote src)",
+  "author": "Zion Team",
+  "license": "MIT",
+  "zion": {
+    "id": "zion.paste-image",
+    "name": "Paste Image",
+    "version": "0.1.0",
+    "main": "index.ts",
+    "description": "Handle pasted images and insert as markdown images (data URL or remote src)",
+    "activationEvents": ["onStartupFinished"],
+    "contributes": {
+      "commands": [],
+      "keybindings": []
+    },
+    "engines": {
+      "zion": ">=1.0.0"
+    },
+    "dependencies": {},
+    "peerDependencies": {}
+  }
+}

@@ -4,6 +4,7 @@ import { attachEditor } from "./ext/registry";
 import type { Disposable } from "./types/zion";
 import { PluginManager } from "./plugin/manager";
 import { HttpPluginInstaller } from "./plugin/http-installer";
+import type { PluginInfo } from "./plugin/types";
 
 // ---------- 自动保存 / 恢复 ----------
 const STORAGE_KEY = 'zion.autosave';
@@ -70,7 +71,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     saveDoc(core.getValue());
   });
   // 兼容所有 CM6 变更（如命令/粘贴/撤销等）
-  core.view.updateListener = core.view.updateListener || ((update) => {
+  (core.view as any).updateListener = (core.view as any).updateListener || ((update: any) => {
     if (update.docChanged) {
       saveDoc(core.getValue());
     }
@@ -300,6 +301,9 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     window.zion.commands.registerCommand("zion.reloadPlugins", () => {
       location.reload();
     });
+
+    // 预安装内置插件
+    await preinstallBuiltinPlugins(pluginManager);
     
   } catch (error) {
     console.error('[PluginManager] 插件系统初始化失败:', error);
@@ -385,7 +389,7 @@ async function loadExtension(manifestPath: string) {
  // Auto-load all manifests under /extensions/**/extension.json via Vite glob
 async function autoLoadExtensions() {
   // Collect all manifest json files at build time (Vite)
-  const manifests = import.meta.glob("/extensions/**/extension.json", { eager: true }) as Record<
+  const manifests = (import.meta as any).glob("/extensions/**/extension.json", { eager: true }) as Record<
     string,
     any
   >;
@@ -726,7 +730,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
         // 启用/禁用切换
         const toggle = document.createElement("input");
         toggle.type = "checkbox";
-        toggle.checked = plugin.enabled;
+        toggle.checked = !!plugin.enabled;
         toggle.onchange = async () => {
           try {
             if (toggle.checked) {
@@ -880,7 +884,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
           resultsList.appendChild(err);
           return;
         }
-        res.data.forEach(item => {
+        res.data.forEach((item: any) => {
           const row = document.createElement("div");
           row.style.display = "flex";
           row.style.justifyContent = "space-between";
@@ -938,7 +942,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
           resultsList.appendChild(err);
           return;
         }
-        res.data.forEach(item => {
+        res.data.forEach((item: any) => {
           const row = document.createElement("div");
           row.style.display = "flex";
           row.style.justifyContent = "space-between";
@@ -1115,7 +1119,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
 
           // 记录到全局 state 与本地存储（便于页面刷新后仍能显示开发目录信息）
           try {
-            const sessions = window.zion.state.get("plugins.devSessions") || {};
+            const sessions = (window.zion.state.get("plugins.devSessions") || {}) as Record<string, any>;
             sessions[devId] = { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir };
             window.zion.state.set("plugins.devSessions", sessions);
 
@@ -1151,7 +1155,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
           } catch {}
           // 清理运行时会话映射
           try {
-            const sessions = window.zion.state.get("plugins.devSessions") || {};
+            const sessions = (window.zion.state.get("plugins.devSessions") || {}) as Record<string, any>;
             delete sessions[devId];
             window.zion.state.set("plugins.devSessions", sessions);
 
@@ -1213,6 +1217,72 @@ function openPluginsPanel(pluginManager: PluginManager) {
     document.body.appendChild(overlay);
   } catch (e) {
     console.error("openPluginsPanel error:", e);
+  }
+}
+
+/**
+ * 预安装内置插件
+ */
+async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
+  try {
+    console.log('[PluginManager] 开始预安装内置插件...');
+    
+    // 定义内置插件列表
+    const builtinPlugins: PluginInfo[] = [
+      {
+        id: 'zion.paste-image',
+        name: 'Paste Image',
+        version: '0.1.0',
+        description: 'Handle pasted images and insert as markdown images (data URL or remote src)',
+        author: 'Zion Team',
+        license: 'MIT',
+        path: '/plugins/paste-image',
+        manifest: {
+          name: '@zion/paste-image',
+          version: '0.1.0',
+          description: 'Paste Image plugin - Handle pasted images and insert as markdown images (data URL or remote src)',
+          author: 'Zion Team',
+          license: 'MIT',
+          zion: {
+            id: 'zion.paste-image',
+            name: 'Paste Image',
+            version: '0.1.0',
+            main: 'internal:paste-image',
+            activationEvents: ['onStartupFinished'],
+            contributes: {
+              commands: [],
+              keybindings: []
+            },
+            engines: {
+              zion: '>=1.0.0'
+            },
+            dependencies: {},
+            peerDependencies: {}
+          }
+        },
+        state: 'installed',
+        dependencies: [],
+        peerDependencies: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        isLegacy: false,
+        enabled: true
+      }
+    ];
+
+    // 检查并安装每个内置插件
+    for (const pluginInfo of builtinPlugins) {
+      try {
+        console.log(`[PluginManager] 同步内置插件信息: ${pluginInfo.id}`);
+        await pluginManager.updateFromInfo(pluginInfo, { enabled: true });
+      } catch (error) {
+        console.error(`[PluginManager] 安装内置插件失败 ${pluginInfo.id}:`, error);
+      }
+    }
+
+    console.log('[PluginManager] 内置插件预安装完成');
+  } catch (error) {
+    console.error('[PluginManager] 预安装内置插件失败:', error);
   }
 }
 

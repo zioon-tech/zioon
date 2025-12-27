@@ -293,14 +293,14 @@ export class PluginLoader {
       if (this.isModernManifest(manifest)) {
         const candidate = manifest.zion.main || 'index.js';
         // 支持绝对路径（blob:/data:/http(s):）
-        if (/^(blob:|data:|https?:)/i.test(candidate)) {
+        if (/^(blob:|data:|https?:|internal:)/i.test(candidate)) {
           mainPath = candidate;
         } else {
           mainPath = this.joinPath(pluginInfo.path, candidate);
         }
       } else {
         const candidate = (manifest as any).main || 'index.js';
-        if (/^(blob:|data:|https?:)/i.test(candidate)) {
+        if (/^(blob:|data:|https?:|internal:)/i.test(candidate)) {
           mainPath = candidate;
         } else {
           mainPath = this.joinPath(pluginInfo.path, candidate);
@@ -331,6 +331,18 @@ export class PluginLoader {
    */
   private async dynamicImport(path: string): Promise<any> {
     try {
+      if (path.startsWith('internal:')) {
+        const key = path.slice('internal:'.length);
+        const internalLoaders: Record<string, () => Promise<any>> = {
+          'paste-image': () => import('../plugins/paste-image/index')
+        };
+        const loader = internalLoaders[key];
+        if (!loader) {
+          throw new Error(`Unknown internal module: ${key}`);
+        }
+        return await loader();
+      }
+
       // 在浏览器环境中，我们需要使用不同的方式导入模块
       // 这里假设插件已经被构建为可以在浏览器中运行的格式
 
@@ -439,7 +451,10 @@ export class PluginLoader {
    * 获取插件许可证
    */
   private getPluginLicense(manifest: PluginManifest | ExtensionManifest): string | undefined {
-    return manifest.license;
+    if (this.isModernManifest(manifest)) {
+      return manifest.license;
+    }
+    return undefined;
   }
 
   /**
