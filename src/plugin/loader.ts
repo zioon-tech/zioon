@@ -333,13 +333,6 @@ export class PluginLoader {
     try {
       if (path.startsWith('internal:')) {
         const key = path.slice('internal:'.length);
-        const internalLoaders: Record<string, () => Promise<any>> = {
-          'paste-image': () => import('../plugins/paste-image/index'),
-          'langchain-chat': () => import('../plugins/langchain-chat/index')
-        };
-        const loader = internalLoaders[key];
-        if (loader) return await loader();
-
         const extensionModules = (import.meta as any).glob('/extensions/**/main.js') as Record<
           string,
           () => Promise<any>

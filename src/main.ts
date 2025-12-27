@@ -1226,112 +1226,7 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
     console.log('[PluginManager] 开始预安装内置插件...');
     
     // 定义内置插件列表
-    const builtinPlugins: PluginInfo[] = [
-      {
-        id: 'zion.paste-image',
-        name: 'Paste Image',
-        version: '0.1.0',
-        description: 'Handle pasted images and insert as markdown images (data URL or remote src)',
-        author: 'Zion Team',
-        license: 'MIT',
-        path: '/plugins/paste-image',
-        manifest: {
-          name: '@zion/paste-image',
-          version: '0.1.0',
-          description: 'Paste Image plugin - Handle pasted images and insert as markdown images (data URL or remote src)',
-          author: 'Zion Team',
-          license: 'MIT',
-          zion: {
-            id: 'zion.paste-image',
-            name: 'Paste Image',
-            version: '0.1.0',
-            main: 'internal:paste-image',
-            activationEvents: ['onStartupFinished'],
-            contributes: {
-              commands: [],
-              keybindings: []
-            },
-            engines: {
-              zion: '>=1.0.0'
-            },
-            dependencies: {},
-            peerDependencies: {}
-          }
-        },
-        state: 'installed',
-        dependencies: [],
-        peerDependencies: [],
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        isLegacy: false,
-        enabled: true
-      },
-      {
-        id: 'zion.langchain-chat',
-        name: 'LangChain Chat',
-        version: '0.1.0',
-        description: 'AI chat integration with model management and tool calling support',
-        author: 'Zion Team',
-        license: 'MIT',
-        path: '/plugins/langchain-chat',
-        manifest: {
-          name: '@zion/langchain-chat',
-          version: '0.1.0',
-          description: 'LangChain Chat plugin - AI chat integration with model management and tool calling support',
-          author: 'Zion Team',
-          license: 'MIT',
-          zion: {
-            id: 'zion.langchain-chat',
-            name: 'LangChain Chat',
-            version: '0.1.0',
-            main: 'internal:langchain-chat',
-            activationEvents: ['onStartupFinished'],
-            contributes: {
-              commands: [
-                { id: 'chat.runSelection', title: 'Run Chat (Selection)' },
-                { id: 'chat.run', title: 'Run Chat' },
-                { id: 'chat.stop', title: 'Stop Chat' },
-                { id: 'chat.retry', title: 'Retry Chat' },
-                { id: 'models.openSwitcher', title: 'Open Model Switcher' },
-                { id: 'models.closeSwitcher', title: 'Close Model Switcher' },
-                { id: 'models.listProviders', title: 'List Model Providers' },
-                { id: 'models.listModels', title: 'List Available Models' },
-                { id: 'models.selectModel', title: 'Select Model' },
-                { id: 'models.selectNextModel', title: 'Select Next Model' },
-                { id: 'models.selectPrevModel', title: 'Select Previous Model' }
-              ],
-              keybindings: [
-                { command: 'chat.runSelection', key: 'Mod-Enter', when: 'editorFocus' },
-                { command: 'chat.stop', key: 'Escape', when: 'editorFocus' },
-                { command: 'chat.retry', key: 'Mod-Shift-r', when: 'editorFocus' },
-                { command: 'models.openSwitcher', key: 'Mod-Shift-m', when: 'editorFocus' }
-              ],
-              menus: [
-                { location: 'editor/context', command: 'models.openSwitcher', title: 'Select Model...', when: 'editorFocus' },
-                { location: 'editor/context', command: 'chat.runSelection', title: 'Run Chat (Selection)', when: 'editorFocus' },
-                { location: 'editor/context', command: 'chat.stop', title: 'Stop Chat', when: 'editorFocus' },
-                { location: 'editor/context', command: 'chat.retry', title: 'Retry Chat', when: 'editorFocus' }
-              ]
-            },
-            engines: {
-              zion: '>=1.0.0'
-            },
-            dependencies: {},
-            peerDependencies: {
-              langchain: '^0.2.0',
-              '@langchain/openai': '^0.0.22'
-            }
-          }
-        },
-        state: 'installed',
-        dependencies: [],
-        peerDependencies: ['langchain', '@langchain/openai'],
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        isLegacy: false,
-        enabled: true
-      }
-    ];
+    const builtinPlugins: PluginInfo[] = [];
 
     try {
       const extensionJsons = (import.meta as any).glob('/extensions/**/extension.json', { eager: true }) as Record<
@@ -1349,12 +1244,12 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
         const dirName = extDir.split('/').pop() || extDir;
         seenDirs.add(dirName);
 
-        const pluginId = `zion.${String(raw?.name || dirName)}`;
+        const pluginId = `zion.${String(dirName).replace(/^dev\./, '')}`;
         if (existingIds.has(pluginId)) continue;
         existingIds.add(pluginId);
 
         const version = String(raw?.version || '0.0.1');
-        const displayName = String(raw?.name || dirName);
+        const displayName = String(raw?.name || dirName).replace(/^dev\./, '');
 
         builtinPlugins.push({
           id: pluginId,
@@ -1397,7 +1292,7 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
         const dirName = extDir.split('/').pop() || extDir;
         if (seenDirs.has(dirName)) continue;
 
-        const pluginId = `zion.${dirName}`;
+        const pluginId = `zion.${String(dirName).replace(/^dev\./, '')}`;
         if (existingIds.has(pluginId)) continue;
         existingIds.add(pluginId);
 
@@ -1435,6 +1330,22 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
           isLegacy: false,
           enabled: true
         });
+      }
+    } catch {}
+
+    try {
+      const expected = new Set(builtinPlugins.map(p => p.id));
+      for (const p of pluginManager.list()) {
+        if (!p || expected.has(p.id)) continue;
+        if (typeof p.path !== 'string' || !p.path.startsWith('/extensions/')) continue;
+        const dirName = p.path.split('/').pop() || '';
+        if (!dirName) continue;
+        const replacementId = `zion.${dirName.replace(/^dev\./, '')}`;
+        if (!expected.has(replacementId)) continue;
+        if (p.id === replacementId) continue;
+        try {
+          await pluginManager.uninstall(p.id);
+        } catch {}
       }
     } catch {}
 

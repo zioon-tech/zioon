@@ -14,7 +14,9 @@ import type {
   PluginInstallOptions,
   PluginEvent,
   PluginEventType,
-  Disposable
+  Disposable,
+  Memento,
+  PluginConfigurationManager
 } from './types';
 import { PluginLoader } from './loader';
 
@@ -50,7 +52,7 @@ export class PluginManager extends EventEmitter {
     
     this.options = {
       pluginDir: options.pluginDir,
-      extensionsDir: options.extensionsDir,
+      extensionsDir: options.extensionsDir ?? '',
       sandbox: options.sandbox ?? false,
       autoUpdate: options.autoUpdate ?? false,
       logLevel: options.logLevel ?? 'info'
@@ -96,7 +98,7 @@ export class PluginManager extends EventEmitter {
   private async scanPluginDirectories(): Promise<void> {
     this.log('info', '扫描插件目录...');
     
-    const directories = [
+    const directories: Array<{ path: string; type: 'plugins' | 'extensions' }> = [
       { path: this.options.pluginDir, type: 'plugins' },
       { path: this.options.extensionsDir, type: 'extensions' }
     ];
@@ -136,7 +138,7 @@ export class PluginManager extends EventEmitter {
   private async scanExtensionsDirectory(dirPath: string): Promise<void> {
     // 使用 Vite 的 glob 功能来扫描 extensions 目录
     try {
-      const manifests = import.meta.glob('/extensions/**/extension.json', { eager: true }) as Record<string, any>;
+      const manifests = (import.meta as any).glob('/extensions/**/extension.json', { eager: true }) as Record<string, any>;
       
       for (const [manifestPath, manifestData] of Object.entries(manifests)) {
         try {
@@ -213,7 +215,7 @@ export class PluginManager extends EventEmitter {
   /**
    * 安装插件
    */
-  async install(pluginPath: string, options: Partial<PluginInstallOptions> = {}): Promise<PluginInfo> {
+  async install(pluginPath: string, options: Partial<PluginInstallOptions> & { enabled?: boolean } = {}): Promise<PluginInfo> {
     const installOptions = {
       enabled: options.enabled ?? true
     } as { enabled: boolean };
@@ -329,6 +331,34 @@ export class PluginManager extends EventEmitter {
       return await this.installFromInfo(pluginInfo, { enabled: desiredEnabled });
     }
 
+    const getMainEntry = (p: PluginInfo): string => {
+      const m: any = p.manifest as any;
+      if (m && m.zion && typeof m.zion.main === 'string') return m.zion.main;
+      if (m && typeof m.main === 'string') return m.main;
+      return '';
+    };
+
+    const isEffectivelySame =
+      existing.version === pluginInfo.version &&
+      existing.path === pluginInfo.path &&
+      getMainEntry(existing) === getMainEntry(pluginInfo) &&
+      !!existing.enabled === !!desiredEnabled;
+
+    if (isEffectivelySame) {
+      const merged: PluginInfo = {
+        ...existing,
+        ...pluginInfo,
+        enabled: !!desiredEnabled,
+        state: existing.state,
+        error: existing.error,
+        createdAt: existing.createdAt,
+        updatedAt: Date.now()
+      };
+      this.plugins.set(pluginInfo.id, merged);
+      await this.savePluginStates();
+      return merged;
+    }
+
     this.log('info', `更新插件: ${pluginInfo.id} ${existing.version} -> ${pluginInfo.version}`);
 
     // 如处于激活状态，先停用
@@ -371,7 +401,7 @@ export class PluginManager extends EventEmitter {
   /**
    * 从路径更新插件（当已安装且版本变化）
    */
-  async update(pluginPath: string, options: Partial<PluginInstallOptions> = {}): Promise<PluginInfo> {
+  async update(pluginPath: string, options: Partial<PluginInstallOptions> & { enabled?: boolean } = {}): Promise<PluginInfo> {
     this.log('info', `从路径更新插件: ${pluginPath}`);
     const pluginInfo = await this.loader.loadPlugin(pluginPath);
     const enabled = options.enabled ?? (this.enabledPlugins.has(pluginInfo.id) || this.plugins.get(pluginInfo.id)?.enabled === true);

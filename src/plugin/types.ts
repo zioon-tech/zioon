@@ -203,7 +203,7 @@ export interface Memento {
  * 插件配置管理器
  */
 export interface PluginConfigurationManager {
-  get<T>(key: string, defaultValue?: T): T;
+  get<T>(key: string, defaultValue?: T): T | undefined;
   update(key: string, value: any): Promise<void>;
   onDidChange(key: string, callback: (value: any) => void): Disposable;
 }
