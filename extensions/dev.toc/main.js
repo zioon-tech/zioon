@@ -380,8 +380,8 @@ export async function activate(ctx) {
       wrapper.style.position = "relative";
 
       // Ensure the panel has a stable flex-basis/width
-      let basis = tocUI.panel.offsetWidth || 280;
-      if (basis <= 0) basis = 280;
+      let basis = tocUI.panel.offsetWidth || 240;
+      if (basis <= 0) basis = 240;
       basis = Math.max(220, Math.min(480, basis));
       tocUI.panel.style.flex = `0 0 ${basis}px`;
       tocUI.panel.style.width = `${basis}px`;
@@ -1062,7 +1062,8 @@ export async function activate(ctx) {
           const panel = document.createElement("div");
           panel.id = "zion-toc-sidepanel";
           panel.style.display = "none";
-          panel.style.flex = "0 0 280px";
+          panel.style.flex = "0 0 240px";
+          panel.style.width = "240px";
           panel.style.minWidth = "220px";
           panel.style.maxWidth = "480px";
           panel.style.height = "100%";
