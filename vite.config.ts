@@ -11,6 +11,7 @@ export default defineConfig({
     strictPort: true
   },
   build: {
+    emptyOutDir: false,
     // 增加chunk大小限制警告
     chunkSizeWarningLimit: 1000,
     rollupOptions: {

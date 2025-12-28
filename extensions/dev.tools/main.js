@@ -1,6 +1,5 @@
 import { installToolCallCards } from "./tool-calls.js";
 import { installToolSwitcher } from "./tool-switcher.js";
-import { installMailConfigPanel } from "./mail-config.js";
 
 export async function activate(ctx) {
   // 注册默认工具与处理器
@@ -44,28 +43,8 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispOpen, dispClose);
 
-  // 邮件配置面板
-  let mailPanel = null;
-  const dispMailPanel = window.zion.editor.registerDecorator({
-    id: "dev.tools.mail-config",
-    apply(editor) {
-      mailPanel = installMailConfigPanel();
-      return { dispose() { mailPanel?.dispose?.(); mailPanel = null; } };
-    }
-  });
-  ctx.subscriptions.push(dispMailPanel);
-
-  const openMailCfg = window.zion.commands.registerCommand("tools.openMailConfig", () => {
-    mailPanel?.open?.();
-  });
-  const closeMailCfg = window.zion.commands.registerCommand("tools.closeMailConfig", () => {
-    mailPanel?.close?.();
-  });
-  ctx.subscriptions.push(openMailCfg, closeMailCfg);
-
   // 状态栏按钮：Tools
   let toolsBtnDisp = null;
-  let mailBtnDisp = null;
   const updateToolsBtn = () => {
     const all = window.zion.state.get("chat.tools") || [];
     const enabled = window.zion.state.get("chat.enabledTools");
@@ -77,16 +56,6 @@ export async function activate(ctx) {
       text: `Tools: ${n}`,
       tooltip: "Manage enabled tools (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
       onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
-    });
-
-    // 邮件配置按钮
-    mailBtnDisp?.dispose?.();
-    const mailBase = (window.zion.state.get("mail.baseUrl") || localStorage.getItem("zion.mail.baseUrl") || "http://127.0.0.1:8765");
-    mailBtnDisp = window.zion.statusBar.registerItem({
-      id: "dev.mail.button",
-      text: "MailCfg",
-      tooltip: `Configure mail (base: ${mailBase})`,
-      onClick: () => window.zion.commands.executeCommand("tools.openMailConfig")
     });
   };
 
@@ -136,6 +105,7 @@ export async function activate(ctx) {
     window.zion.state.onDidChange("chat.tools", () => { ensureEnabledTools(); updateToolsBtn(); }),
     window.zion.state.onDidChange("chat.enabledTools", () => { persistEnabledTools(); updateToolsBtn(); })
   );
+
 }
 
 /**
@@ -497,61 +467,6 @@ function registerDefaultTools() {
               names: { type: "array", items: { type: "string" }, description: "工具名称数组（enable/disable/set_enabled时可用）" }
             },
             required: ["action"],
-            additionalProperties: false
-          }
-        }
-      },
-      // SendMail: 发送邮件
-      {
-        type: "function",
-        function: {
-          name: "sendMail",
-          description: "Send an email to specified recipients. Supports HTML/plain text and attachments. Requires mail service configuration.",
-          parameters: {
-            type: "object",
-            properties: {
-              to: { 
-                type: "array", 
-                items: { type: "string" }, 
-                description: "Recipient email addresses (required)" 
-              },
-              cc: { 
-                type: "array", 
-                items: { type: "string" }, 
-                description: "CC email addresses (optional)" 
-              },
-              bcc: { 
-                type: "array", 
-                items: { type: "string" }, 
-                description: "BCC email addresses (optional)" 
-              },
-              subject: { 
-                type: "string", 
-                description: "Email subject (required)" 
-              },
-              body: { 
-                type: "string", 
-                description: "Email body content (required)" 
-              },
-              html: { 
-                type: "boolean", 
-                description: "Whether body is HTML format (default: false)" 
-              },
-              attachments: { 
-                type: "array", 
-                items: { 
-                  type: "object",
-                  properties: {
-                    filename: { type: "string" },
-                    content: { type: "string", description: "Base64 encoded content" },
-                    content_type: { type: "string" }
-                  },
-                  required: ["filename", "content"]
-                },
-                description: "Email attachments (optional)"
-              }
-            },
-            required: ["to", "subject", "body"],
             additionalProperties: false
           }
         }
@@ -1237,79 +1152,6 @@ function registerDefaultTools() {
     }
 
     // 移除 terminalManage 处理器（迁移到 dev.terminal-manager 扩展中）
-
-    // SendMail: 发送邮件（本地服务，SMTP）
-    if (!handlers.sendMail) {
-      handlers.sendMail = async (args) => {
-        try {
-          const base = (() => {
-            const st = window.zion?.state?.get("mail.baseUrl");
-            if (typeof st === "string" && st.trim()) return st.trim();
-            try { const s = localStorage.getItem("zion.mail.baseUrl") || ""; if (s) return s.trim(); } catch {}
-            return "http://127.0.0.1:8765";
-          })().replace(/\/$/, "");
-
-          // 推送（或刷新）服务端配置：读取 SMTP 设置并发送到服务端
-          const cfg = {
-            provider: "smtp",
-            smtp_host: "",
-            smtp_port: 587,
-            smtp_username: "",
-            smtp_password: "",
-            smtp_use_tls: true,
-            from_email: "",
-            from_name: ""
-          };
-          try {
-            cfg.smtp_host = (localStorage.getItem("zion.mail.smtp.host") || "").trim();
-            const p = (localStorage.getItem("zion.mail.smtp.port") || "").trim();
-            const pn = parseInt(p || "587", 10); cfg.smtp_port = isNaN(pn) ? 587 : pn;
-            cfg.smtp_username = (localStorage.getItem("zion.mail.smtp.username") || "").trim();
-            cfg.smtp_password = (localStorage.getItem("zion.mail.smtp.password") || "");
-            const tlsRaw = (localStorage.getItem("zion.mail.smtp.useTls") || "").toLowerCase();
-            cfg.smtp_use_tls = tlsRaw === "1" || tlsRaw === "true" || tlsRaw === "yes";
-            cfg.from_email = (localStorage.getItem("zion.mail.fromEmail") || "").trim() || "zion@zion.ai";
-            cfg.from_name = (localStorage.getItem("zion.mail.fromName") || "").trim() || "Zion AI";
-            if (cfg.smtp_host) {
-              await fetch(`${base}/mail/config`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(cfg)
-              }).catch(() => {});
-            }
-          } catch {}
-
-          // 映射参数：兼容 content/body
-          const to = Array.isArray(args?.to) ? args.to.map(String).filter(Boolean) : [];
-          const subject = String(args?.subject || "").trim();
-          const body = String((args?.body ?? args?.content ?? "")).trim();
-          const html = !!args?.html;
-          const cc = Array.isArray(args?.cc) ? args.cc.map(String).filter(Boolean) : undefined;
-          const bcc = Array.isArray(args?.bcc) ? args.bcc.map(String).filter(Boolean) : undefined;
-
-          if (!to.length) return "Missing to";
-          if (!subject) return "Missing subject";
-          if (!body) return "Missing body";
-
-          const payload = { to, subject, body, html, cc, bcc };
-          const res = await fetch(`${base}/mail/send`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-          });
-          const txt = await res.text();
-          if (!res.ok) {
-            // 尝试解析错误
-            let detail = "";
-            try { const j = JSON.parse(txt); detail = j?.detail ? JSON.stringify(j.detail) : txt; } catch { detail = txt; }
-            return `HTTP ${res.status}: ${detail}`;
-          }
-          return txt;
-        } catch (e) {
-          return `sendMail error: ${e?.message || String(e)}`;
-        }
-      };
-    }
 
     // PluginsManage: 管理插件（开发模式/安装/启用/禁用/卸载/列表）
     if (!handlers.pluginsManage) {
