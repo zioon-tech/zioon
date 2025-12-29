@@ -2889,7 +2889,7 @@ export async function activate(ctx) {
 
       const prevChar = pos > 0 ? doc.slice(pos - 1, pos) : "";
       const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-      const text = `${prefix}思考\n`;
+      const text = `${prefix}思考\n\n`;
       const start = pos + prefix.length;
       const end = start + "思考".length;
       const newDoc = doc.slice(0, pos) + text + doc.slice(pos);

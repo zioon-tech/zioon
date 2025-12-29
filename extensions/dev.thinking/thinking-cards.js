@@ -347,7 +347,7 @@ export function installThinkingCards() {
       const pos = typeof hint === "number" ? findAssistantBlockEndNear(this.view, hint) : findAssistantBlockEnd(this.view);
       const prevChar = pos > 0 ? doc.sliceString(pos - 1, pos) : "";
       const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-      const text = `${prefix}思考\n`;
+      const text = `${prefix}思考\n\n`;
       const start = pos + prefix.length;
       const end = start + "思考".length;
 
@@ -430,7 +430,7 @@ export function installThinkingCards() {
           const pos = findAssistantBlockEnd(this.view);
           const prevChar = pos > 0 ? docNow.sliceString(pos - 1, pos) : "";
           const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-          const text = `${prefix}思考\n`;
+          const text = `${prefix}思考\n\n`;
           const start = pos + prefix.length;
           const end = start + "思考".length;
 

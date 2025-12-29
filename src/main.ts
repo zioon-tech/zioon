@@ -1251,6 +1251,8 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
         const version = String(raw?.version || '0.0.1');
         const displayName = String(raw?.name || dirName).replace(/^dev\./, '');
 
+        const extMain = String(raw?.main || './main.js');
+
         builtinPlugins.push({
           id: pluginId,
           name: displayName,
@@ -1269,7 +1271,7 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
               id: pluginId,
               name: displayName,
               version,
-              main: `internal:${dirName}`,
+              main: extMain,
               activationEvents: Array.isArray(raw?.activationEvents) ? raw.activationEvents : ['onStartupFinished'],
               contributes: raw?.contributes,
               engines: { zion: '>=1.0.0' },
