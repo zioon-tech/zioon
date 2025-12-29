@@ -1252,6 +1252,8 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
         const displayName = String(raw?.name || dirName).replace(/^dev\./, '');
 
         const extMain = String(raw?.main || './main.js');
+        const normalizedExtMain = extMain.replace(/^\.\//, '');
+        const resolvedMain = normalizedExtMain === 'main.js' ? `internal:${dirName}` : `internal:${dirName}/${normalizedExtMain}`;
 
         builtinPlugins.push({
           id: pluginId,
@@ -1271,7 +1273,7 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
               id: pluginId,
               name: displayName,
               version,
-              main: extMain,
+              main: resolvedMain,
               activationEvents: Array.isArray(raw?.activationEvents) ? raw.activationEvents : ['onStartupFinished'],
               contributes: raw?.contributes,
               engines: { zion: '>=1.0.0' },

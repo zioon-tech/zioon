@@ -333,13 +333,20 @@ export class PluginLoader {
     try {
       if (path.startsWith('internal:')) {
         const key = path.slice('internal:'.length);
-        const extensionModules = (import.meta as any).glob('/extensions/**/main.js') as Record<
+        const extensionModules = (import.meta as any).glob('/extensions/**/*.{js,ts,jsx,tsx}') as Record<
           string,
           () => Promise<any>
         >;
-        const extPath = `/extensions/${key}/main.js`;
-        const extLoader = extensionModules[extPath];
-        if (extLoader) return await extLoader();
+
+        const trimmedKey = key.replace(/^\//, '');
+        const candidates = trimmedKey.includes('/')
+          ? [`/extensions/${trimmedKey}`]
+          : [`/extensions/${trimmedKey}/main.js`, `/extensions/${trimmedKey}/index.js`];
+
+        for (const extPath of candidates) {
+          const extLoader = extensionModules[extPath];
+          if (extLoader) return await extLoader();
+        }
 
         throw new Error(`Unknown internal module: ${key}`);
       }
