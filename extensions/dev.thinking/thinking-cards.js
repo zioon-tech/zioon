@@ -257,6 +257,14 @@ export function installThinkingCards() {
       this.disps.push(window.zion.state.onDidChange("sessions.currentId", this.onSessionChanged));
       // 初始快照
       this.snapshot();
+
+      Promise.resolve().then(() => {
+        try {
+          const sid = window.zion?.state?.get("sessions.currentId");
+          const pending = sid ? window.zion?.state?.get(`sessions.pendingRestore.thinking.${sid}`) : null;
+          if (Array.isArray(pending) && pending.length) this.onRestore({ items: pending });
+        } catch {}
+      });
     }
     update(update) {
       // 每次状态更新后持久化快照
@@ -398,6 +406,11 @@ export function installThinkingCards() {
     onRestore = (payload) => {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
+
+      try {
+        const sid = window.zion?.state?.get("sessions.currentId");
+        if (sid) window.zion?.state?.set(`sessions.pendingRestore.thinking.${sid}`, null);
+      } catch {}
 
       const docLen = this.view.state.doc.length;
       const batchedEffects = [];

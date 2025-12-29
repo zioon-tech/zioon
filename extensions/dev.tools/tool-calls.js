@@ -572,6 +572,14 @@ export function installToolCallCards() {
       this.disps.push(window.zion.state.onDidChange("sessions.currentId", this.onSessionChanged));
       // 初始快照
       this.snapshot();
+
+      Promise.resolve().then(() => {
+        try {
+          const sid = window.zion?.state?.get("sessions.currentId");
+          const pending = sid ? window.zion?.state?.get(`sessions.pendingRestore.tools.${sid}`) : null;
+          if (Array.isArray(pending) && pending.length) this.onRestore({ items: pending });
+        } catch {}
+      });
     }
     update(update) {
       if (update.docChanged) {
@@ -700,6 +708,11 @@ export function installToolCallCards() {
 onRestore = (payload) => {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
+
+      try {
+        const sid = window.zion?.state?.get("sessions.currentId");
+        if (sid) window.zion?.state?.set(`sessions.pendingRestore.tools.${sid}`, null);
+      } catch {}
 
       // 从会话注解读取“已删除条目”，避免复活
       let deletedSet = new Set();

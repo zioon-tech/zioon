@@ -776,9 +776,11 @@ function applyAnnotationsForSession(id) {
     const tools = Array.isArray(ann.tools) ? ann.tools : [];
     const thinking = Array.isArray(ann.thinking) ? ann.thinking : [];
     if (tools.length) {
+      try { window.zion?.state?.set(`sessions.pendingRestore.tools.${id}`, tools); } catch {}
       try { window.zion?.events?.emit("toolcards/restore", { items: tools }); } catch {}
     }
     if (thinking.length) {
+      try { window.zion?.state?.set(`sessions.pendingRestore.thinking.${id}`, thinking); } catch {}
       try { window.zion?.events?.emit("thinking/restore", { items: thinking }); } catch {}
     }
   } catch (e) {
