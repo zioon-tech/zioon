@@ -68,10 +68,13 @@ export async function activate(ctx) {
       // 从 localStorage 读取持久化的启用列表与用户是否自定义过
       let persisted = [];
       try { persisted = JSON.parse(localStorage.getItem("zion.enabledTools") || "[]"); } catch {}
-      const userCustomized = localStorage.getItem("zion.enabledTools.userCustomized") === "1";
+      const userCustomizedStored = localStorage.getItem("zion.enabledTools.userCustomized") === "1";
 
       const filtered = Array.isArray(persisted) ? persisted.filter(n => names.includes(n)) : [];
       let finalEnabled = filtered;
+
+      const userCustomized = userCustomizedStored || filtered.length < names.length;
+      try { localStorage.setItem("zion.enabledTools.userCustomized", userCustomized ? "1" : "0"); } catch {}
 
       if (!Array.isArray(persisted) || persisted.length === 0) {
         // 首次或无持久化：默认全开，并记录为“未自定义”
@@ -93,11 +96,20 @@ export async function activate(ctx) {
   // 持久化启用列表到 localStorage，并在每次变更时更新状态按钮
   const persistEnabledTools = () => {
     try {
-      const enabled = window.zion.state.get("chat.enabledTools") || [];
-      localStorage.setItem("zion.enabledTools", JSON.stringify(enabled));
+      const enabled = window.zion.state.get("chat.enabledTools");
+      const enabledArr = Array.isArray(enabled) ? enabled.filter(Boolean) : [];
       const names = (window.zion.state.get("chat.tools") || []).map(t => t?.function?.name).filter(Boolean);
-      const customized = Array.isArray(enabled) && enabled.length < names.length;
-      localStorage.setItem("zion.enabledTools.userCustomized", customized ? "1" : "0");
+
+      let prev = [];
+      try { prev = JSON.parse(localStorage.getItem("zion.enabledTools") || "[]"); } catch {}
+      const prevArr = Array.isArray(prev) ? prev.filter(Boolean) : [];
+      const keepUnknown = prevArr.filter(n => !names.includes(n));
+      const merged = Array.from(new Set([...keepUnknown, ...enabledArr]));
+      localStorage.setItem("zion.enabledTools", JSON.stringify(merged));
+
+      const prevCustomized = localStorage.getItem("zion.enabledTools.userCustomized") === "1";
+      const customizedNow = enabledArr.length < names.length;
+      localStorage.setItem("zion.enabledTools.userCustomized", (prevCustomized || customizedNow) ? "1" : "0");
     } catch {}
   };
 
@@ -175,11 +187,22 @@ function ensureEnabledTools(forceAll = false) {
 
     let cur = window.zion?.state?.get("chat.enabledTools") || [];
     let known = window.zion?.state?.get("chat.toolsKnownNames");
+    let persisted = [];
+    try { persisted = JSON.parse(localStorage.getItem("zion.enabledTools") || "[]"); } catch {}
+    const persistedArr = Array.isArray(persisted) ? persisted.filter(Boolean) : [];
     const userCustomized = (() => {
       try { return localStorage.getItem("zion.enabledTools.userCustomized") === "1"; } catch { return false; }
     })();
 
     const isInitialized = Array.isArray(known) && known.length > 0;
+
+    if (persistedArr.length > 0 && !forceAll) {
+      const filtered = persistedArr.filter(n => names.includes(n));
+      const next = userCustomized ? filtered : Array.from(new Set([...filtered, ...names]));
+      window.zion?.state?.set("chat.enabledTools", next);
+      window.zion?.state?.set("chat.toolsKnownNames", names.slice());
+      return;
+    }
 
     if (forceAll || !isInitialized) {
       window.zion?.state?.set("chat.enabledTools", names.slice());

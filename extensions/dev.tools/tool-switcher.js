@@ -274,6 +274,7 @@ export function installToolSwitcher() {
     if (!m?.name) return;
     const set = enabledSet();
     if (set.has(m.name)) set.delete(m.name); else set.add(m.name);
+    try { localStorage.setItem("zion.enabledTools.userCustomized", "1"); } catch {}
     setEnabled(set);
     refresh();
   }
