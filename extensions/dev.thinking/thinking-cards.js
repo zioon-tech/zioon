@@ -173,8 +173,53 @@ const thinkingField = StateField.define({
           }
         });
         items.delete(base);
+
+        try {
+          const sid = window?.zion?.state?.get("sessions.currentId");
+          if (sid) {
+            const ann = window?.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+            const del = Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds.slice() : [];
+            if (!del.includes(base)) del.push(base);
+            window?.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, deletedThinkingIds: del });
+          }
+        } catch {}
       }
     }
+
+    try {
+      const doc = tr.state.doc;
+      const toRemove = [];
+      items.forEach((it, id) => {
+        const invalidPos = typeof it.from !== "number" || typeof it.to !== "number" || it.from < 0 || it.to > doc.length || it.from >= it.to;
+        if (invalidPos) {
+          toRemove.push(id);
+          return;
+        }
+        const anchor = doc.sliceString(it.from, it.to);
+        if (String(anchor).trim() !== "思考") {
+          toRemove.push(id);
+        }
+      });
+      if (toRemove.length) {
+        deco = deco.update({
+          filter: (_f, _t, value) => {
+            const wid = value?.spec?.widget?.id || "";
+            return !toRemove.some(id => wid === (id + ":inline") || wid === (id + ":card"));
+          }
+        });
+        toRemove.forEach(id => items.delete(id));
+
+        try {
+          const sid = window?.zion?.state?.get("sessions.currentId");
+          if (sid) {
+            const ann = window?.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+            const del = Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds.slice() : [];
+            toRemove.forEach(id => { if (!del.includes(id)) del.push(id); });
+            window?.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, deletedThinkingIds: del });
+          }
+        } catch {}
+      }
+    } catch {}
 
     return { deco, items };
   },
@@ -267,7 +312,6 @@ export function installThinkingCards() {
       });
     }
     update(update) {
-      // 每次状态更新后持久化快照
       this.snapshot();
     }
     snapshot = () => {
@@ -412,11 +456,20 @@ export function installThinkingCards() {
         if (sid) window.zion?.state?.set(`sessions.pendingRestore.thinking.${sid}`, null);
       } catch {}
 
+      let deletedSet = new Set();
+      try {
+        const sid = window.zion?.state?.get("sessions.currentId");
+        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+        const del = Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [];
+        deletedSet = new Set(del);
+      } catch {}
+
       const docLen = this.view.state.doc.length;
       const batchedEffects = [];
       const batchedToggles = [];
 
       for (const it of list) {
+        if (deletedSet.has(it?.id)) continue;
         const hasRange = typeof it?.from === "number" && typeof it?.to === "number";
         const validRange = hasRange && it.from >= 0 && it.from < it.to && it.to <= docLen;
 

@@ -773,6 +773,8 @@ function applyAnnotationsForSession(id) {
     const meta = loadMeta(id);
     const ann = meta?.annotations;
     if (!ann) return;
+
+    try { window.zion?.state?.set(`sessions.annotations.${id}`, ann); } catch {}
     const tools = Array.isArray(ann.tools) ? ann.tools : [];
     const thinking = Array.isArray(ann.thinking) ? ann.thinking : [];
     if (tools.length) {
