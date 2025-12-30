@@ -866,7 +866,7 @@ export async function activate(ctx) {
       const active = window.zion.state.get("chat.activeModel");
       const defaultLabel = active?.label || active?.modelId || "unknown";
       runChatMenuItem.title = `Run Chat (${defaultLabel})`;
-      runChatMenuItem.submenu = buildModelMenuItems("chat.runDefaultWithModel");
+      runChatMenuItem.submenu = [];
       selectModelMenuItem.submenu = buildModelMenuItems("models.setDefaultModel");
     };
 

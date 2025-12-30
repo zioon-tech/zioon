@@ -27,27 +27,15 @@ export function registerSessionTools() {
       {
         type: "function",
         function: {
-          name: "sessionsIndex",
-          description: "List all sessions (flat index). Returns id, title, updatedAt, size, hash, createdAt.",
+          name: "sessionList",
+          description: "List sessions. Supports two view modes: 'index' (flat list) or 'tree' (folder hierarchy). Returns id, title, updatedAt, size, hash, createdAt for each session.",
           parameters: {
             type: "object",
             properties: {
-              sort_by: { type: "string", enum: ["updated", "title"], description: "Sort order (default: updated)" },
-              limit: { type: "number", description: "Limit the number of items (optional)" }
-            },
-            additionalProperties: false
-          }
-        }
-      },
-      {
-        type: "function",
-        function: {
-          name: "sessionsTree",
-          description: "Get sessions tree (folders + sessions). Optionally return a subtree by folder_id.",
-          parameters: {
-            type: "object",
-            properties: {
-              folder_id: { type: "string", description: "Folder id to return only its subtree (optional)" }
+              view_type: { type: "string", enum: ["index", "tree"], description: "View type: 'index' for flat list, 'tree' for folder hierarchy (default: index)" },
+              sort_by: { type: "string", enum: ["updated", "title"], description: "Sort order for 'index' view (default: updated)" },
+              limit: { type: "number", description: "Limit the number of items for 'index' view (optional)" },
+              folder_id: { type: "string", description: "For 'tree' view, return only the subtree of this folder (optional)" }
             },
             additionalProperties: false
           }
@@ -89,33 +77,19 @@ export function registerSessionTools() {
       {
         type: "function",
         function: {
-          name: "sessionEdit",
-          description: "Edit a session's content (append or overwrite). Ensure that the provided id is an existing session id when calling this function.",
+          name: "sessionUpdate",
+          description: "Update a session: either content (append or overwrite) or title (rename). Ensure that the provided id is an existing session id when calling this function.",
           parameters: {
             type: "object",
             properties: {
               id: { type: "string", minLength: 1, description: "Session id" },
-              mode: { type: "string", enum: ["append", "overwrite"], description: "Edit mode: append or overwrite" },
-              content: { type: "string", description: "Text to append or full content to overwrite with" },
-              newline: { type: "boolean", description: "If appending, whether to append a newline before content (default true)" }
+              update_type: { type: "string", enum: ["content", "title"], description: "What to update: 'content' or 'title'" },
+              mode: { type: "string", enum: ["append", "overwrite"], description: "For content update: 'append' or 'overwrite'" },
+              content: { type: "string", description: "For content update: text to append or full content to overwrite with" },
+              newline: { type: "boolean", description: "For content append: whether to add a newline before content (default true)" },
+              title: { type: "string", description: "For title update: new title" }
             },
-            required: ["id", "mode", "content"],
-            additionalProperties: false
-          }
-        }
-      },
-      {
-        type: "function",
-        function: {
-          name: "sessionRename",
-          description: "Rename a session's title. Ensure that the provided id is an existing session id when calling this function.",
-          parameters: {
-            type: "object",
-            properties: {
-              id: { type: "string", minLength: 1, description: "Session id" },
-              title: { type: "string", minLength: 1, description: "New title" }
-            },
-            required: ["id", "title"],
+            required: ["id", "update_type"],
             additionalProperties: false
           }
         }
@@ -150,44 +124,43 @@ export function registerSessionTools() {
     /* Handlers */
     const handlers = { ...(window.zion?.state?.get("chat.toolHandlers") || {}) };
 
-    handlers.sessionsIndex = async (args) => {
+    handlers.sessionList = async (args) => {
       try {
-        let idx = (window.zion?.state?.get("sessions.catalog") || []).slice();
-        const sortBy = (args?.sort_by || "updated") === "title" ? "title" : "updated";
-        if (sortBy === "updated") idx.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-        else idx.sort((a, b) => (String(a.title || a.id)).localeCompare(String(b.title || b.id)));
-        const limit = typeof args?.limit === "number" && args.limit > 0 ? args.limit : null;
-        if (limit) idx = idx.slice(0, limit);
-        return JSON.stringify(idx, null, 2);
-      } catch (e) {
-        return `sessionsIndex error: ${e?.message || String(e)}`;
-      }
-    };
+        const viewType = String(args?.view_type || "index").trim();
+        if (viewType === "tree") {
+          // Tree view (merged from sessionsTree)
+          const tree = window.zion?.state?.get("sessions.treeMem") || { id: "root", type: "folder", title: "Sessions", children: [] };
+          const fid = String(args?.folder_id || "").trim();
+          const currentId = window.zion?.state?.get("sessions.currentId") || null;
 
-    handlers.sessionsTree = async (args) => {
-      try {
-        const tree = window.zion?.state?.get("sessions.treeMem") || { id: "root", type: "folder", title: "Sessions", children: [] };
-        const fid = String(args?.folder_id || "").trim();
-        const currentId = window.zion?.state?.get("sessions.currentId") || null;
-
-        const ret = deepCloneNode(tree);
-        if (fid) {
-          // naive subtree pick
-          const stack = [ret];
-          let found = null;
-          while (stack.length) {
-            const n = stack.pop();
-            if (n.id === fid) { found = n; break; }
-            if (n.type === "folder" && Array.isArray(n.children)) stack.push(...n.children);
+          const ret = deepCloneNode(tree);
+          if (fid) {
+            // naive subtree pick
+            const stack = [ret];
+            let found = null;
+            while (stack.length) {
+              const n = stack.pop();
+              if (n.id === fid) { found = n; break; }
+              if (n.type === "folder" && Array.isArray(n.children)) stack.push(...n.children);
+            }
+            if (!found) return "Folder not found";
+            markCurrentInTree(found, currentId);
+            return JSON.stringify(found, null, 2);
           }
-          if (!found) return "Folder not found";
-          markCurrentInTree(found, currentId);
-          return JSON.stringify(found, null, 2);
+          markCurrentInTree(ret, currentId);
+          return JSON.stringify(ret, null, 2);
+        } else {
+          // Index view (merged from sessionsIndex)
+          let idx = (window.zion?.state?.get("sessions.catalog") || []).slice();
+          const sortBy = (args?.sort_by || "updated") === "title" ? "title" : "updated";
+          if (sortBy === "updated") idx.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+          else idx.sort((a, b) => (String(a.title || a.id)).localeCompare(String(b.title || b.id)));
+          const limit = typeof args?.limit === "number" && args.limit > 0 ? args.limit : null;
+          if (limit) idx = idx.slice(0, limit);
+          return JSON.stringify(idx, null, 2);
         }
-        markCurrentInTree(ret, currentId);
-        return JSON.stringify(ret, null, 2);
       } catch (e) {
-        return `sessionsTree error: ${e?.message || String(e)}`;
+        return `sessionList error: ${e?.message || String(e)}`;
       }
     };
 
@@ -220,35 +193,34 @@ export function registerSessionTools() {
       }
     };
 
-    handlers.sessionEdit = async (args) => {
+    handlers.sessionUpdate = async (args) => {
       try {
         const id = String(args?.id || "").trim();
-        const mode = String(args?.mode || "").trim();
-        const content = String(args?.content ?? "");
-        const newline = args?.newline !== false;
+        const updateType = String(args?.update_type || "").trim();
         if (!id) return "Missing id";
-        if (mode !== "append" && mode !== "overwrite") return "Invalid mode (use 'append' or 'overwrite')";
-        const cur = window.zion?.commands?.executeCommand("zion.sessions.getDoc", id) || "";
-        const text = mode === "append" ? (cur + ((newline && cur && !cur.endsWith("\n")) ? "\n" : "") + content) : content;
-        window.zion?.commands?.executeCommand("zion.sessions.setDoc", { id, text });
-        // update meta.updatedAt similar to edit path
-        window.zion?.commands?.executeCommand("zion.sessions.bumpUpdatedAt", id);
-        return JSON.stringify({ ok: true, id }, null, 2);
-      } catch (e) {
-        return `sessionEdit error: ${e?.message || String(e)}`;
-      }
-    };
+        if (updateType !== "content" && updateType !== "title") return "Missing or invalid update_type (use 'content' or 'title')";
 
-    handlers.sessionRename = async (args) => {
-      try {
-        const id = String(args?.id || "").trim();
-        const title = String(args?.title || "").trim();
-        if (!id) return "Missing id";
-        if (!title) return "Missing title";
-        window.zion?.commands?.executeCommand("zion.sessions.rename", { id, title });
-        return JSON.stringify({ ok: true, id }, null, 2);
+        if (updateType === "title") {
+          // Rename (merged from sessionRename)
+          const title = String(args?.title || "").trim();
+          if (!title) return "Missing title for rename";
+          window.zion?.commands?.executeCommand("zion.sessions.rename", { id, title });
+          return JSON.stringify({ ok: true, id }, null, 2);
+        } else {
+          // Edit content (merged from sessionEdit)
+          const mode = String(args?.mode || "").trim();
+          const content = String(args?.content ?? "");
+          const newline = args?.newline !== false;
+          if (mode !== "append" && mode !== "overwrite") return "Invalid mode (use 'append' or 'overwrite')";
+          const cur = window.zion?.commands?.executeCommand("zion.sessions.getDoc", id) || "";
+          const text = mode === "append" ? (cur + ((newline && cur && !cur.endsWith("\n")) ? "\n" : "") + content) : content;
+          window.zion?.commands?.executeCommand("zion.sessions.setDoc", { id, text });
+          // update meta.updatedAt similar to edit path
+          window.zion?.commands?.executeCommand("zion.sessions.bumpUpdatedAt", id);
+          return JSON.stringify({ ok: true, id }, null, 2);
+        }
       } catch (e) {
-        return `sessionRename error: ${e?.message || String(e)}`;
+        return `sessionUpdate error: ${e?.message || String(e)}`;
       }
     };
 

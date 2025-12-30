@@ -748,6 +748,25 @@ html, body {
   background-color: var(--scrollbar-thumb-hover);
 }
 
+/* Context menu/submenu scrollbar theming */
+.zion-context-submenu {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+.zion-context-submenu::-webkit-scrollbar {
+  width: 8px;
+}
+.zion-context-submenu::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+.zion-context-submenu::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+}
+.zion-context-submenu:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
 /* ===== Markdown-friendly Gutters (line numbers + folds) ===== */
 .cm-gutters {
   background: transparent;                  /* 融入内容背景，降低存在感 */
@@ -1185,8 +1204,8 @@ html, body {
   border-radius: 6px;
   box-shadow: 0 4px 16px rgba(0,0,0,0.30);
   padding: 4px;
-  min-width: 140px;
-  max-width: 320px;
+  min-width: 120px;
+  max-width: 220px;
   font-size: 12px;
   display: flex;
   flex-direction: column;
@@ -1200,6 +1219,7 @@ html, body {
 .zion-context-menu-item {
   display: flex;
   width: 100%;
+  max-width: 200px;
   text-align: left;
   background: transparent;
   color: var(--fg);
@@ -1210,6 +1230,24 @@ html, body {
   font-size: 12px;
   line-height: 1;
   box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 菜单项内部文本容器，确保省略号生效 */
+.zion-context-menu-item > span,
+.zion-context-menu-item > div {
+  flex: 1 0 0; /* 允许收缩以触发省略号 */
+  min-width: 0; /* 关键：允许 flex item 收缩到内容宽度以下 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 强制限制二级菜单中菜单项的宽度 */
+.zion-context-submenu .zion-context-menu-item {
+  max-width: 180px;
 }
 
 .zion-context-menu-row.has-submenu .zion-context-menu-item {
@@ -1238,6 +1276,9 @@ html, body {
 
 .zion-context-submenu {
   z-index: 100000;
+  max-height: 320px;
+  max-width: 220px;
+  overflow-y: auto;
 }
 
 /* Place custom gutter to the far left of other gutters (fold/lineNumbers) */

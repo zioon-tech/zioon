@@ -295,7 +295,8 @@ class Registry {
       const hasKids = !!kids && kids.length > 0;
       const hasCmd = typeof it.command === "string" && it.command.trim().length > 0;
       if (!hasCmd && !hasKids) continue;
-      out.push({ ...it, submenu: hasKids ? kids : undefined });
+      // 确保没有子菜单的菜单项不会有 submenu 属性
+      out.push({ command: it.command, title: it.title, when: it.when, submenu: hasKids ? kids : undefined });
     }
     return out;
   }
@@ -322,13 +323,15 @@ class Registry {
 
     for (const it of items) {
       const row = document.createElement("div");
-      const hasKids = Array.isArray(it.submenu) && it.submenu.length > 0;
+      const hasKids = !!it.submenu && Array.isArray(it.submenu) && it.submenu.length > 0;
       row.className = hasKids ? "zion-context-menu-row has-submenu" : "zion-context-menu-row";
 
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "zion-context-menu-item";
-      btn.textContent = it.title || it.command || "";
+      const span = document.createElement("span");
+      span.textContent = it.title || it.command || "";
+      btn.appendChild(span);
       btn.setAttribute("role", "menuitem");
 
       if (hasKids) {
@@ -392,7 +395,8 @@ class Registry {
           submenu.style.top = `${sy}px`;
         };
 
-        btn.onclick = () => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
           const cmd = it.command;
           if (!cmd) return;
           try {
