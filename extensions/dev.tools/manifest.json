@@ -1,0 +1,27 @@
+{
+  "name": "dev.tools",
+  "version": "0.0.1",
+  "description": "Tool management: parse, switch, and call tools from AI assistant responses",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.tools",
+    "name": "Tools",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "tools.parseFromContent",
+          "title": "Parse Tools From Content"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

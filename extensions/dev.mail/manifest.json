@@ -1,0 +1,31 @@
+{
+  "name": "dev.mail",
+  "version": "0.0.1",
+  "description": "Zion Next Plugin: dev.mail",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.mail",
+    "name": "dev.mail",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "tools.openMailConfig",
+          "title": "Open Mail Configuration"
+        },
+        {
+          "id": "tools.closeMailConfig",
+          "title": "Close Mail Configuration"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

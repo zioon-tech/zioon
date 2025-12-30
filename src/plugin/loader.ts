@@ -104,17 +104,6 @@ export class PluginLoader {
       // 忽略错误，继续检查其他格式
     }
 
-    try {
-      // 检查是否存在 extension.json
-      const extensionPath = this.joinPath(pluginPath, 'extension.json');
-      const response = await fetch(extensionPath);
-      if (response.ok) {
-        return 'legacy';
-      }
-    } catch {
-      // 忽略错误
-    }
-
     // 检查是否存在 package.json
     try {
       const packagePath = this.joinPath(pluginPath, 'package.json');
@@ -181,16 +170,10 @@ export class PluginLoader {
   }
 
   /**
-   * 加载旧格式清单
+   * 加载旧格式清单（已废弃）
    */
   private async loadLegacyManifest(pluginPath: string): Promise<ExtensionManifest> {
-    const extensionPath = this.joinPath(pluginPath, 'extension.json');
-    const response = await fetch(extensionPath);
-    if (!response.ok) {
-      throw new Error(`Failed to load extension.json from ${extensionPath}`);
-    }
-
-    return await response.json();
+    throw new Error('Extension format is no longer supported. Please use manifest.json format.');
   }
 
   /**
@@ -249,18 +232,8 @@ export class PluginLoader {
         }
 
       } else {
-        // 验证旧格式
-        if (!manifest.id) {
-          errors.push('Extension ID is required');
-        }
-
-        if (!manifest.name) {
-          errors.push('Extension name is required');
-        }
-
-        if (!manifest.version) {
-          errors.push('Extension version is required');
-        }
+        // 验证旧格式（已废弃）
+        errors.push('Extension format is no longer supported. Please use manifest.json format.');
       }
 
       // 通用验证

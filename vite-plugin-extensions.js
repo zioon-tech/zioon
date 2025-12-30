@@ -2,8 +2,9 @@ import { resolve } from 'path';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 
 /**
- * Zion Extensions 打包插件
- * 处理extensions目录下插件的依赖打包
+ * Zion Plugins 打包插件
+ * 处理 extensions 目录下插件的打包
+ * 仅支持 manifest.json（新格式）
  */
 export function zionExtensionsPlugin() {
   return {
@@ -20,25 +21,20 @@ export function zionExtensionsPlugin() {
       const extensionsInput = {};
       const extensionsDir = resolve(process.cwd(), 'extensions');
       
-      // 扫描所有插件
+      // 扫描所有插件（仅支持 manifest.json）
       const extensions = readdirSync(extensionsDir)
-        .filter(dir => existsSync(resolve(extensionsDir, dir, 'extension.json')) || 
-                        existsSync(resolve(extensionsDir, dir, 'package.json')));
-      
+        .filter(dir => existsSync(resolve(extensionsDir, dir, 'manifest.json')));
+
       extensions.forEach(extName => {
         const extPath = resolve(extensionsDir, extName);
         let mainFile = 'main.js';
+
+        // 读取插件配置（仅支持 manifest.json）
+        const manifestJsonPath = resolve(extPath, 'manifest.json');
         
-        // 读取插件配置
-        const extJsonPath = resolve(extPath, 'extension.json');
-        const pkgJsonPath = resolve(extPath, 'package.json');
-        
-        if (existsSync(extJsonPath)) {
-          const extConfig = JSON.parse(readFileSync(extJsonPath, 'utf8'));
-          mainFile = extConfig.main || mainFile;
-        } else if (existsSync(pkgJsonPath)) {
-          const pkgConfig = JSON.parse(readFileSync(pkgJsonPath, 'utf8'));
-          mainFile = pkgConfig.main || mainFile;
+        if (existsSync(manifestJsonPath)) {
+          const manifest = JSON.parse(readFileSync(manifestJsonPath, 'utf8'));
+          mainFile = manifest.zion?.main || manifest.main || mainFile;
         }
         
         const mainPath = resolve(extPath, mainFile);

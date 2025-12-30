@@ -1,0 +1,23 @@
+{
+  "name": "dev.paste-image",
+  "version": "0.0.1",
+  "description": "Handle pasted images and insert as markdown images (data URL or remote src).",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.paste-image",
+    "name": "dev.paste-image",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [],
+      "keybindings": []
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

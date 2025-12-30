@@ -105,7 +105,7 @@ export interface PluginManifest {
 }
 
 /**
- * 扩展清单（旧格式）
+ * 扩展清单（旧格式 - 已废弃）
  */
 export interface ExtensionManifest {
   id: string;

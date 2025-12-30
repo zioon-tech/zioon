@@ -1,0 +1,56 @@
+{
+  "name": "dev.langchain-chat",
+  "version": "0.0.1",
+  "description": "Zion Next Plugin: dev.langchain-chat",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.langchain-chat",
+    "name": "dev.langchain-chat",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "chat.runSelection",
+          "title": "Run Chat (Selection)"
+        },
+        {
+          "id": "chat.run",
+          "title": "Run Chat"
+        },
+        {
+          "id": "chat.stop",
+          "title": "Stop Chat"
+        },
+        {
+          "id": "chat.retry",
+          "title": "Retry Chat"
+        }
+      ],
+      "keybindings": [
+        {
+          "command": "chat.runSelection",
+          "key": "Mod-Enter",
+          "when": "editorFocus"
+        },
+        {
+          "command": "chat.stop",
+          "key": "Escape",
+          "when": "editorFocus"
+        },
+        {
+          "command": "chat.retry",
+          "key": "Mod-Shift-r",
+          "when": "editorFocus"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

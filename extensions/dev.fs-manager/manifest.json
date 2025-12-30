@@ -1,0 +1,44 @@
+{
+  "name": "dev.fs-manager",
+  "version": "0.0.1",
+  "description": "Zion Next Plugin: dev.fs-manager",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.fs-manager",
+    "name": "dev.fs-manager",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "fs.showManager",
+          "title": "Open Files Access Manager"
+        },
+        {
+          "id": "fs.addFile",
+          "title": "Add File Access"
+        },
+        {
+          "id": "fs.addFolder",
+          "title": "Add Folder Access"
+        },
+        {
+          "id": "fs.getEntries",
+          "title": "Get FS Entries"
+        },
+        {
+          "id": "fs.clearAll",
+          "title": "Clear All FS Entries"
+        }
+      ],
+      "keybindings": []
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

@@ -1271,106 +1271,38 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
     const builtinPlugins: PluginInfo[] = [];
 
     try {
-      const extensionJsons = (import.meta as any).glob('/extensions/**/extension.json', { eager: true }) as Record<
-        string,
-        any
-      >;
-      const extensionMains = (import.meta as any).glob('/extensions/**/main.js') as Record<string, any>;
+      // 加载 manifest.json（新格式）
+      const manifestJsons = (import.meta as any).glob('/extensions/**/manifest.json', { eager: true }) as Record<string, any>;
 
       const existingIds = new Set(builtinPlugins.map(p => p.id));
-      const seenDirs = new Set<string>();
 
-      for (const [manifestPath, mod] of Object.entries(extensionJsons)) {
-        const raw = (mod as any)?.default || mod;
-        const extDir = manifestPath.replace(/\/extension\.json$/, '').replace(/\/extension\.json$/, '');
+      // 处理 manifest.json（新格式）
+      for (const [manifestPath, mod] of Object.entries(manifestJsons)) {
+        const manifest = (mod as any)?.default || mod;
+        const extDir = manifestPath.replace(/\/manifest\.json$/, '');
         const dirName = extDir.split('/').pop() || extDir;
-        seenDirs.add(dirName);
 
-        const pluginId = `zion.${String(dirName).replace(/^dev\./, '')}`;
+        const zionData = manifest.zion || {};
+        const pluginId = zionData.id || manifest.name || `zion.${dirName.replace(/^dev\./, '')}`;
         if (existingIds.has(pluginId)) continue;
         existingIds.add(pluginId);
 
-        const version = String(raw?.version || '0.0.1');
-        const displayName = String(raw?.name || dirName).replace(/^dev\./, '');
-
-        const extMain = String(raw?.main || './main.js');
+        const extMain = zionData.main || manifest.main || './main.js';
         const normalizedExtMain = extMain.replace(/^\.\//, '');
         const resolvedMain = normalizedExtMain === 'main.js' ? `internal:${dirName}` : `internal:${dirName}/${normalizedExtMain}`;
 
         builtinPlugins.push({
           id: pluginId,
-          name: displayName,
-          version,
-          description: raw?.description,
-          author: raw?.author,
-          license: raw?.license,
+          name: zionData.name || manifest.name || dirName,
+          version: zionData.version || manifest.version || '0.0.1',
+          description: manifest.description,
+          author: manifest.author,
+          license: manifest.license,
           path: extDir,
-          manifest: {
-            name: raw?.name || `@zion/${dirName}`,
-            version,
-            description: raw?.description,
-            author: raw?.author,
-            license: raw?.license,
-            zion: {
-              id: pluginId,
-              name: displayName,
-              version,
-              main: resolvedMain,
-              activationEvents: Array.isArray(raw?.activationEvents) ? raw.activationEvents : ['onStartupFinished'],
-              contributes: raw?.contributes,
-              engines: { zion: '>=1.0.0' },
-              dependencies: {},
-              peerDependencies: {}
-            }
-          },
+          manifest: manifest,
           state: 'installed',
-          dependencies: [],
-          peerDependencies: [],
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          isLegacy: false,
-          enabled: true
-        });
-      }
-
-      for (const mainPath of Object.keys(extensionMains)) {
-        const extDir = mainPath.replace(/\/main\.js$/, '').replace(/\/main\.js$/, '');
-        const dirName = extDir.split('/').pop() || extDir;
-        if (seenDirs.has(dirName)) continue;
-
-        const pluginId = `zion.${String(dirName).replace(/^dev\./, '')}`;
-        if (existingIds.has(pluginId)) continue;
-        existingIds.add(pluginId);
-
-        builtinPlugins.push({
-          id: pluginId,
-          name: dirName,
-          version: '0.0.1',
-          description: undefined,
-          author: undefined,
-          license: undefined,
-          path: extDir,
-          manifest: {
-            name: `@zion/${dirName}`,
-            version: '0.0.1',
-            description: undefined,
-            author: undefined,
-            license: undefined,
-            zion: {
-              id: pluginId,
-              name: dirName,
-              version: '0.0.1',
-              main: `internal:${dirName}`,
-              activationEvents: ['onStartupFinished'],
-              contributes: {},
-              engines: { zion: '>=1.0.0' },
-              dependencies: {},
-              peerDependencies: {}
-            }
-          },
-          state: 'installed',
-          dependencies: [],
-          peerDependencies: [],
+          dependencies: Object.keys(zionData.dependencies || {}),
+          peerDependencies: Object.keys(zionData.peerDependencies || {}),
           createdAt: Date.now(),
           updatedAt: Date.now(),
           isLegacy: false,

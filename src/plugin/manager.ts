@@ -133,27 +133,26 @@ export class PluginManager extends EventEmitter {
   }
 
   /**
-   * 扫描 extensions 目录（向后兼容）
+   * 扫描 extensions 目录（仅支持 manifest.json）
    */
   private async scanExtensionsDirectory(dirPath: string): Promise<void> {
-    // 使用 Vite 的 glob 功能来扫描 extensions 目录
     try {
-      const manifests = (import.meta as any).glob('/extensions/**/extension.json', { eager: true }) as Record<string, any>;
-      
-      for (const [manifestPath, manifestData] of Object.entries(manifests)) {
+      // 扫描 manifest.json（新格式）
+      const manifestJsons = (import.meta as any).glob('/extensions/**/manifest.json', { eager: true }) as Record<string, any>;
+
+      // 处理 manifest.json（新格式）
+      for (const [manifestPath, manifestData] of Object.entries(manifestJsons)) {
         try {
           const manifest = manifestData.default || manifestData;
-          const pluginPath = manifestPath.replace('/extension.json', '');
-          
-          // 转换旧格式
-          const pluginInfo = await this.loadAndConvertExtension(manifest, pluginPath);
-          
-          if (pluginInfo) {
-            this.plugins.set(pluginInfo.id, pluginInfo);
-            this.log('info', `发现扩展插件: ${pluginInfo.id}`);
-          }
+          const pluginPath = manifestPath.replace('/manifest.json', '');
+          const dirName = pluginPath.split('/').pop();
+          if (!dirName) continue;
+
+          const pluginInfo = await this.loader.loadPlugin(pluginPath);
+          this.plugins.set(pluginInfo.id, pluginInfo);
+          this.log('info', `发现插件: ${pluginInfo.id}`);
         } catch (error) {
-          this.log('warn', `加载扩展插件失败: ${manifestPath}`, error);
+          this.log('warn', `加载插件失败: ${manifestPath}`, error);
         }
       }
     } catch (error) {

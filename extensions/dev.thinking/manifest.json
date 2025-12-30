@@ -1,0 +1,27 @@
+{
+  "name": "dev.thinking",
+  "version": "0.0.1",
+  "description": "Zion Next Plugin: dev.thinking",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.thinking",
+    "name": "dev.thinking",
+    "version": "0.0.1",
+    "main": "./thinking-main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "thinking.toggleVisibility",
+          "title": "Toggle Thinking Visibility"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}
