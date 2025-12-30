@@ -220,10 +220,11 @@ export interface PluginInstallOptions {
 /**
  * 插件事件类型
  */
-export type PluginEventType = 
+export type PluginEventType =
   | 'installed'
   | 'uninstalled'
   | 'updated'
+  | 'hotReloaded'
   | 'enabled'
   | 'disabled'
   | 'activated'

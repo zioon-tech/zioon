@@ -5,6 +5,7 @@ import type { Disposable } from "./types/zion";
 import { PluginManager } from "./plugin/manager";
 import { HttpPluginInstaller } from "./plugin/http-installer";
 import type { PluginInfo } from "./plugin/types";
+import { notificationManager } from "./notification/manager";
 
 // ---------- 自动保存 / 恢复 ----------
 const STORAGE_KEY = 'zion.autosave';
@@ -275,9 +276,37 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   try {
     await pluginManager.initialize();
     console.log('[PluginManager] 插件系统初始化完成');
-    
+
     // Expose plugin manager to window.zion
     (window as any).zion.plugins = pluginManager;
+
+    // 监听插件热重载事件并显示通知
+    pluginManager.on('hotReloaded', (event: any) => {
+      const { plugin, previous } = event;
+      try {
+        // 从开发会话信息中获取目录
+        const sessions = (window as any).zion.state.get("plugins.devSessions") || {};
+        const devInfo = Object.values(sessions).find((s: any) => s?.pluginId === plugin.id) || null;
+
+        // 尝试从 localStorage 获取开发目录信息
+        let devDir: string | undefined;
+        if (!devInfo) {
+          try {
+            const saved = JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}");
+            devInfo = saved[plugin.id] || null;
+          } catch {}
+        }
+
+        if (devInfo?.dir) {
+          devDir = devInfo.dir;
+        }
+
+        // 显示热重载通知
+        notificationManager.showPluginHotReload(plugin, devDir);
+      } catch (error) {
+        console.error('[PluginManager] 显示热重载通知失败:', error);
+      }
+    });
 
     // 初始化 HTTP 插件安装器（服务地址可配置）
     const defaultServiceUrl = (() => {
@@ -1053,16 +1082,20 @@ function openPluginsPanel(pluginManager: PluginManager) {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === "dev:change" && msg.devId === devId) {
-            // 变更事件：重新读取 manifest 并增量更新插件
+            // 变更事件：重新读取 manifest 并热重载插件
             const installer = (window as any).zion.pluginInstaller;
             const baseUrl = getServiceBaseUrl() + `/plugins/dev/${devId}`;
             const ret = await installer.installFromDevBase(baseUrl, devId);
             if (ret.success && ret.plugin) {
-              // 如已安装则更新，否则安装
+              // 使用热重载方法（不检查版本变化）
               try {
-                await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+                await pluginManager.hotReloadFromInfo(ret.plugin, { enabled: true });
               } catch (e) {
-                console.error("[plugins] dev hot update error:", e);
+                console.error("[plugins] dev hot reload error:", e);
+                notificationManager.showHotReloadError(
+                  ret.plugin.name,
+                  (e as any)?.message || String(e)
+                );
               }
             } else {
               console.warn("[plugins] dev install failed:", ret.error?.message);
@@ -1114,6 +1147,9 @@ function openPluginsPanel(pluginManager: PluginManager) {
           devStatus.textContent = `Dev session started: ${devId} (${ret.plugin.id})`;
           const ws = connectWebSocket(serviceUrl, devId);
           activeDevSessions.set(devId, { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir });
+          
+          // 显示开发模式启动通知
+          notificationManager.showDevModeStarted(ret.plugin.name, devDir);
 
           // 记录到全局 state 与本地存储（便于页面刷新后仍能显示开发目录信息）
           try {
@@ -1168,6 +1204,9 @@ function openPluginsPanel(pluginManager: PluginManager) {
           activeDevSessions.delete(devId);
         }
         devStatus.textContent = "Dev sessions stopped.";
+        
+        // 显示开发模式停止通知
+        notificationManager.showDevModeStopped("All plugins");
       } catch (e) {
         console.error("[plugins] dev stop error:", e);
       } finally {

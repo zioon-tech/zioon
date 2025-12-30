@@ -1204,7 +1204,12 @@ function registerDefaultTools() {
                   if (msg?.type === "dev:change" && msg?.devId === devId) {
                     const ret = await installer.installFromDevBase(baseUrlAbs, devId);
                     if (ret.success && ret.plugin) {
-                      try { await pm.installFromInfo(ret.plugin, { enabled: true }); } catch {}
+                      try {
+                        // 使用热重载方法（不检查版本变化）
+                        await pm.hotReloadFromInfo(ret.plugin, { enabled: true });
+                      } catch (e) {
+                        console.warn("[pluginsManage] dev hot reload failed:", e);
+                      }
                     }
                   }
                 } catch {}

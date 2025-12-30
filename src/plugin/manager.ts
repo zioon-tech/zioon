@@ -399,6 +399,67 @@ export class PluginManager extends EventEmitter {
   }
 
   /**
+   * 从 PluginInfo 热重载插件（开发模式专用）
+   * 不检查版本变化，直接重新激活插件
+   */
+  async hotReloadFromInfo(pluginInfo: PluginInfo, options: { enabled?: boolean } = {}): Promise<PluginInfo> {
+    const existing = this.plugins.get(pluginInfo.id);
+    if (!existing) {
+      // 不存在则执行安装
+      return await this.installFromInfo(pluginInfo, options);
+    }
+
+    this.log('info', `热重载插件: ${pluginInfo.id}`);
+
+    // 如处于激活状态，先停用
+    if (this.activePlugins.has(pluginInfo.id)) {
+      try {
+        await this.deactivate(pluginInfo.id);
+      } catch (e) {
+        this.log('warn', `热重载前停用失败: ${pluginInfo.id}`, e);
+      }
+    }
+
+    // 替换信息（保留启用状态）
+    this.plugins.set(pluginInfo.id, {
+      ...existing,
+      ...pluginInfo,
+      enabled: existing.enabled, // 保持原有启用状态
+      state: existing.state,
+      error: existing.error,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now()
+    });
+
+    // 触发热重载事件（区别于 updated 事件）
+    this.emit('hotReloaded', {
+      plugin: this.plugins.get(pluginInfo.id)!,
+      previous: existing,
+      timestamp: Date.now()
+    });
+
+    // 如启用则重新激活
+    if (existing.enabled) {
+      try {
+        await this.activate(pluginInfo.id);
+        this.enabledPlugins.add(pluginInfo.id);
+        this.disabledPlugins.delete(pluginInfo.id);
+      } catch (e) {
+        this.log('error', `热重载后激活失败: ${pluginInfo.id}`, e);
+      }
+    } else {
+      this.disabledPlugins.add(pluginInfo.id);
+      this.enabledPlugins.delete(pluginInfo.id);
+    }
+
+    // 保存状态
+    await this.savePluginStates();
+
+    this.log('info', `插件热重载完成: ${pluginInfo.id}`);
+    return this.plugins.get(pluginInfo.id)!;
+  }
+
+  /**
    * 从路径更新插件（当已安装且版本变化）
    */
   async update(pluginPath: string, options: Partial<PluginInstallOptions> & { enabled?: boolean } = {}): Promise<PluginInfo> {
