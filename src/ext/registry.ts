@@ -7,6 +7,7 @@ import type { EditorProxy as IEditorProxy } from "../types/zion";
 import { findNext, findPrevious, selectMatches, replaceNext, replaceAll, SearchQuery } from "@codemirror/search";
 // setSearchQuery 实际是一个 StateEffect，不是函数，需要用 editorCore.view.dispatch({ effects: setSearchQuery.of(query) })
 import { setSearchQuery as setSearchQueryEffect } from "@codemirror/search";
+import { EditorView } from "@codemirror/view";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -51,6 +52,26 @@ class Registry {
     this.attachPasteListener();
     this.attachContextMenu();
     this.applyDecorators();
+
+    // Wire CM6 update events to Zion EventBus so plugins can react to input/cursor changes.
+    try {
+      const ext = EditorView.updateListener.of((update) => {
+        try {
+          if (!this.editorCore) return;
+          if (update.docChanged) {
+            this.events.emit("editor.change", { update, view: this.editorCore.view });
+          }
+          if (update.selectionSet) {
+            this.events.emit("editor.cursorActivity", { selection: this.editorCore.view.state.selection, view: this.editorCore.view });
+          }
+        } catch (e) {
+          console.error("[zion] editor update listener error", e);
+        }
+      });
+      this.editorCore.addExternalExtension(ext as any);
+    } catch (e) {
+      console.error("[zion] failed to attach editor update listener", e);
+    }
 
     // Bridge CM6 search/replace commands into the zion command namespace.
     // This allows extensions to call window.zion.commands.executeCommand('findNext') etc.
