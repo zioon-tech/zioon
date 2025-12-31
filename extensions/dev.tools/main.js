@@ -1354,11 +1354,67 @@ function registerDefaultTools() {
       };
     }
 
-    window.zion.state.set("chat.toolHandlers", handlers);
+    // 包装工具处理器：自动注入 terminal 上下文
+    const wrappedHandlers = wrapHandlersWithTerminalContext(handlers);
+    window.zion.state.set("chat.toolHandlers", wrappedHandlers);
 
     // 同步启用列表（默认启用全部；新增/移除时更新）
     try { ensureEnabledTools(); } catch {}
   } catch (e) {
     console.warn("[dev.tools] registerDefaultTools failed", e);
   }
+}
+
+/**
+ * 包装工具处理器：自动注入当前 active terminal 的 session_id
+ * 
+ * 设计原则：
+ * 1. 插件间依赖最小：只读取状态，不依赖具体实现
+ * 2. 向后兼容：用户仍可显式传递 session_id 来覆盖
+ * 3. 集中管理：便于维护和扩展
+ */
+function wrapHandlersWithTerminalContext(handlers) {
+  // 需要自动注入 session_id 的工具列表
+  const terminalAwareTools = [
+    'tree',      // 目录树
+    'read',      // 读取文件
+    'write',     // 写入文件
+    'edit',      // 编辑文件
+    'glob',      // 文件模式匹配
+    'grep',      // 内容搜索
+    'Bash'       // Shell 命令
+  ];
+  
+  for (const toolName of terminalAwareTools) {
+    if (handlers[toolName]) {
+      const originalHandler = handlers[toolName];
+      
+      // 创建包装后的处理器
+      handlers[toolName] = async function(args) {
+        try {
+          // 如果用户没有显式传递 session_id，则自动从 terminal.activeSessionId 获取
+          // 注意：只在 args 不存在或为 undefined 时自动注入
+          // 如果用户显式传递了 null 或空字符串，则视为用户意图不使用 session
+          if (args && args.session_id === undefined) {
+            const activeSessionId = window.zion?.state?.get("terminal.activeSessionId");
+            if (activeSessionId) {
+              // 创建新的 args 对象，避免修改原参数
+              args = { ...args, session_id: activeSessionId };
+            }
+          }
+          
+          // 调用原始处理器
+          return originalHandler(args);
+        } catch (e) {
+          console.error(`[dev.tools] Wrapped handler for ${toolName} failed:`, e);
+          throw e;
+        }
+      };
+      
+      // 保持原始处理器的引用（便于调试）
+      handlers[toolName].originalHandler = originalHandler;
+    }
+  }
+  
+  return handlers;
 }
