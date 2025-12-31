@@ -12,6 +12,47 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispParse);
 
+  // 暴露工具调用查询 API
+  // 提供给其他插件（如 tool-preview）查询工具调用信息
+  window.zion.tools = {
+    /**
+     * 获取指定 ID 的工具调用信息
+     * @param {string} toolId - 工具调用 ID
+     * @returns {object|null} 工具调用对象 { id, name, args, result, expanded, from, to } 或 null
+     */
+    getToolCall(toolId) {
+      if (!toolId) return null;
+      const sid = window.zion?.state?.get("sessions.currentId");
+      if (!sid) return null;
+
+      const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+      const tools = ann.tools || [];
+      return tools.find(t => t.id === toolId) || null;
+    },
+
+    /**
+     * 获取当前会话的所有工具调用
+     * @returns {Array} 工具调用列表
+     */
+    getAllToolCalls() {
+      const sid = window.zion?.state?.get("sessions.currentId");
+      if (!sid) return [];
+
+      const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+      return ann.tools || [];
+    },
+
+    /**
+     * 查找符合条件的工具调用
+     * @param {Function} predicate - 过滤函数，接收一个工具调用对象，返回 boolean
+     * @returns {Array} 符合条件的工具调用列表
+     */
+    findToolCalls(predicate) {
+      const tools = this.getAllToolCalls();
+      return tools.filter(predicate);
+    }
+  };
+
   // 注入工具调用卡片（ViewPlugin）
   const dispDec = window.zion.editor.registerDecorator({
     id: "dev.tools.tool-cards",
