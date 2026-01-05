@@ -481,6 +481,15 @@ export async function activate(ctx) {
       // 多步链式：直到本步不再产生 tool_calls 为止
       let msgs = baseMessages;
 
+      // 在进入链式调用之前，运行消息贡献者（如 Skills），以便按需注入 System 指令（渐进式披露）
+      if (window.zion?.__runMessageContributors) {
+        try {
+          msgs = await window.zion.__runMessageContributors(msgs, "pre");
+        } catch (e) {
+          console.warn("[langchain-chat] pre contributors error:", e);
+        }
+      }
+
       // 根据“发起会话位置（光标）上方”的内容，按编辑器顺序把历史工具调用插入到对应的 assistant 消息之后
       if (window.zion?.state?.get("chat.includeToolHistory") || window.zion?.state?.get("chat.includeThinkingHistory")) {
         try {

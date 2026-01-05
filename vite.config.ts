@@ -56,7 +56,8 @@ export default defineConfig({
       "jszip",
       "katex",
       "mermaid",
-      "plantuml-encoder"
+      "plantuml-encoder",
+      "@codemirror/lang-json"
     ]
   }
 });
