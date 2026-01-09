@@ -401,7 +401,7 @@ export class PluginManager extends EventEmitter {
    * 从 PluginInfo 热重载插件（开发模式专用）
    * 不检查版本变化，直接重新激活插件
    */
-  async hotReloadFromInfo(pluginInfo: PluginInfo, options: { enabled?: boolean } = {}): Promise<PluginInfo> {
+  async hotReloadFromInfo(pluginInfo: PluginInfo, options: { enabled?: boolean; skipNotification?: boolean } = {}): Promise<PluginInfo> {
     const existing = this.plugins.get(pluginInfo.id);
     if (!existing) {
       // 不存在则执行安装
@@ -434,7 +434,8 @@ export class PluginManager extends EventEmitter {
     this.emit('hotReloaded', {
       plugin: this.plugins.get(pluginInfo.id)!,
       previous: existing,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      shouldNotify: !options.skipNotification
     });
 
     // 如启用则重新激活
@@ -789,22 +790,26 @@ export class PluginManager extends EventEmitter {
   }
 
   /**
-   * 激活所有启用的插件
+   * 激活所有启用的插件（优化：并行启动，不等待每个插件完全初始化）
    */
   private async activateEnabledPlugins(): Promise<void> {
-    this.log('info', '激活启用的插件...');
-    
+    this.log('info', '启动启用的插件...');
+
     const enabledPlugins = Array.from(this.enabledPlugins);
-    
-    for (const pluginId of enabledPlugins) {
-      try {
-        await this.activate(pluginId);
-      } catch (error) {
+
+    // 【关键修改】并行启动插件，不等待每个插件完全激活完成
+    // 这样某个插件（如 MCP 客户端）需要时间初始化时，不会阻塞其他插件
+    const activationPromises = enabledPlugins.map(pluginId =>
+      this.activate(pluginId).catch(error => {
         this.log('warn', `激活插件失败: ${pluginId}`, error);
-      }
-    }
-    
-    this.log('info', `已激活 ${enabledPlugins.length} 个插件`);
+      })
+    );
+
+    // 使用 Promise.allSettled 等待所有插件启动尝试完成
+    // 即使某个插件失败，也不会影响其他插件
+    await Promise.allSettled(activationPromises);
+
+    this.log('info', `已启动 ${enabledPlugins.length} 个插件的激活流程`);
   }
 
   /**
