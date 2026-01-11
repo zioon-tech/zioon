@@ -1,0 +1,27 @@
+{
+  "name": "dev.slash-commands",
+  "version": "0.0.1",
+  "description": "Zion Next Plugin: Slash commands for quick action invocation",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.slash-commands",
+    "name": "Slash Commands",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "slash.show",
+          "title": "Show Slash Commands"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

@@ -1088,6 +1088,50 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dToggle);
 
+  // Register slash commands
+  const dSlash1 = window.zion.slash?.registerCommand?.({
+    id: "toc.show",
+    trigger: ["toc", "table-of-contents"],
+    title: "显示目录",
+    description: "打开文档目录侧边栏",
+    category: "navigation",
+    icon: "📑",
+    priority: 100,
+    execute: () => {
+      window.zion.commands.executeCommand("toc.show");
+    }
+  });
+
+  const dSlash2 = window.zion.slash?.registerCommand?.({
+    id: "toc.insert",
+    trigger: ["insert-toc", "toc-insert"],
+    title: "插入目录",
+    description: "在光标位置插入 Markdown 目录",
+    category: "markdown",
+    icon: "📋",
+    priority: 90,
+    execute: () => {
+      window.zion.commands.executeCommand("toc.insert");
+    }
+  });
+
+  const dSlash3 = window.zion.slash?.registerCommand?.({
+    id: "toc.toggleGroupByRole",
+    trigger: ["toc-group", "group-toc"],
+    title: "切换目录分组",
+    description: "按角色分组显示目录",
+    category: "navigation",
+    icon: "📑",
+    priority: 80,
+    execute: () => {
+      window.zion.commands.executeCommand("toc.toggleGroupByRole");
+    }
+  });
+
+  if (dSlash1) ctx.subscriptions.push(dSlash1);
+  if (dSlash2) ctx.subscriptions.push(dSlash2);
+  if (dSlash3) ctx.subscriptions.push(dSlash3);
+
   // 分组模式快捷键
   const dKBGroup = window.zion.keybindings.register({
     command: "toc.toggleGroupByRole",

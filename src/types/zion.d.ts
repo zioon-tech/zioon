@@ -56,6 +56,34 @@ export type ModelProvider = {
   resolve(modelId: string): any | Promise<any>;
 };
 
+// Slash Commands
+export type SlashParamType = 'string' | 'number' | 'boolean' | 'select';
+
+export interface SlashParamSchema {
+  name: string;
+  type: SlashParamType;
+  label: string;
+  placeholder?: string;
+  default?: any;
+  min?: number; // for number
+  max?: number; // for number
+  options?: Array<{ value: string | number; label: string }>; // for select
+  asyncOptions?: () => Promise<Array<{ value: string | number; label: string }>>; // async options for select
+}
+
+export interface SlashCommand {
+  id: string;
+  trigger: string | string[]; // Single trigger string or array of triggers
+  title: string;
+  description?: string;
+  category: string;
+  icon?: string;
+  aliases?: string[];
+  priority?: number;
+  params?: SlashParamSchema[];
+  execute: (params?: Record<string, any>, editor?: EditorProxy) => void | Promise<void>;
+}
+
 declare global {
   interface Window {
     zion: {
@@ -111,6 +139,14 @@ declare global {
         registerProvider(provider: ModelProvider): Disposable;
         listProviders(): string[];
         getProvider(id: string): ModelProvider | null;
+      };
+      // slash commands registry
+      slash?: {
+        registerCommand(cmd: SlashCommand): Disposable;
+        getAllCommands(): SlashCommand[];
+        getCommand(id: string): SlashCommand | undefined;
+        executeCommand(id: string, params?: Record<string, any>): Promise<void>;
+        onCommandsChanged(handler: () => void): Disposable;
       };
       chat?: {
         run(opts?: { useSelection?: boolean; prompt?: string }): void;

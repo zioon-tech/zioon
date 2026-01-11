@@ -620,4 +620,64 @@ export async function activate(ctx) {
   }
   // Register the aggregated editor-config tools for LLM usage
   try { registerEditorTools(); } catch {}
+
+  // Register slash commands for editor features
+  try {
+    const slashCommands = [
+      {
+        id: "dev.editor.toggleLineNumbers",
+        triggers: ["linenumbers", "ln", "line-numbers"],
+        title: "切换行号",
+        description: "显示/隐藏行号"
+      },
+      {
+        id: "dev.editor.toggleSyntaxHighlight",
+        triggers: ["syntax", "sh", "syntax-highlight"],
+        title: "切换语法高亮",
+        description: "显示/隐藏语法高亮"
+      },
+      {
+        id: "dev.editor.toggleActiveLineHighlight",
+        triggers: ["highlight", "ah", "active-highlight"],
+        title: "切换行高亮",
+        description: "显示/隐藏当前行高亮"
+      },
+      {
+        id: "dev.editor.toggleLineWrap",
+        triggers: ["wrap", "line-wrap", "autowrap"],
+        title: "切换自动换行",
+        description: "启用/禁用自动换行"
+      },
+      {
+        id: "dev.editor.cycleWidthMode",
+        triggers: ["width", "editor-width", "cycle-width"],
+        title: "切换编辑器宽度",
+        description: "循环切换编辑器宽度 (标准/宽/全屏)"
+      },
+      {
+        id: "dev.editor.toggleSelectionHighlight",
+        triggers: ["selection-highlight", "sel-highlight"],
+        title: "切换选择高亮",
+        description: "显示/隐藏选择内容高亮"
+      }
+    ];
+
+    slashCommands.forEach(cmd => {
+      const d = window.zion.slash?.registerCommand?.({
+        id: cmd.id,
+        trigger: cmd.triggers,
+        title: cmd.title,
+        description: cmd.description,
+        category: "editor",
+        icon: "⚙️",
+        priority: 50,
+        execute: () => {
+          window.zion.commands.executeCommand(cmd.id);
+        }
+      });
+      if (d) ctx.subscriptions.push(d);
+    });
+  } catch (e) {
+    console.error("[dev.editor-config] Error registering slash commands:", e);
+  }
 }

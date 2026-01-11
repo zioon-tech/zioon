@@ -3265,4 +3265,56 @@ export async function activate(ctx) {
     const kb2 = window.zion.keybindings.register({ command: "zion.sessions.toggleSidebar", key: "Mod-Shift-s", when: "editorFocus" });
     ctx.subscriptions.push(kb1, kb2);
   } catch {}
+
+  // Register slash commands
+  try {
+    const slashCommands = [
+      {
+        id: "zion.sessions.new",
+        triggers: ["new", "new-session", "ns"],
+        title: "新建会话",
+        description: "创建新的会话",
+        priority: 100
+      },
+      {
+        id: "zion.sessions.showPanel",
+        triggers: ["sessions", "show-sessions", "session-panel"],
+        title: "显示会话面板",
+        description: "打开会话管理面板",
+        priority: 90
+      },
+      {
+        id: "zion.sessions.toggleSidebar",
+        triggers: ["sidebar", "sessions-sidebar"],
+        title: "切换会话侧边栏",
+        description: "显示/隐藏会话侧边栏",
+        priority: 80
+      },
+      {
+        id: "zion.sessions.saveAsNew",
+        triggers: ["save-as", "save-session"],
+        title: "另存为新会话",
+        description: "将当前内容另存为新会话",
+        priority: 70
+      }
+    ];
+
+    slashCommands.forEach(cmd => {
+      const d = window.zion.slash?.registerCommand?.({
+        id: cmd.id,
+        trigger: cmd.triggers,
+        title: cmd.title,
+        description: cmd.description,
+        category: "session",
+        icon: "📄",
+        priority: cmd.priority,
+        execute: () => {
+          window.zion.commands.executeCommand(cmd.id);
+        }
+      });
+      if (d) ctx.subscriptions.push(d);
+    });
+  } catch (e) {
+    console.error("[dev.session-manager] Error registering slash commands:", e);
+  }
 }

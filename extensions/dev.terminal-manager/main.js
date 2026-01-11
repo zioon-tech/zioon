@@ -189,4 +189,42 @@ export async function activate(ctx) {
       }
     } catch {}
   })();
+
+  // Register slash commands
+  try {
+    const slashCommands = [
+      {
+        id: "terminal.openManager",
+        triggers: ["terminal", "term", "terminals"],
+        title: "打开终端管理器",
+        description: "打开终端会话管理面板",
+        priority: 100
+      },
+      {
+        id: "terminal.closeManager",
+        triggers: ["close-terminal", "close-term"],
+        title: "关闭终端管理器",
+        description: "关闭终端会话管理面板",
+        priority: 90
+      }
+    ];
+
+    slashCommands.forEach(cmd => {
+      const d = window.zion.slash?.registerCommand?.({
+        id: cmd.id,
+        trigger: cmd.triggers,
+        title: cmd.title,
+        description: cmd.description,
+        category: "terminal",
+        icon: "💻",
+        priority: cmd.priority,
+        execute: () => {
+          window.zion.commands.executeCommand(cmd.id);
+        }
+      });
+      if (d) ctx.subscriptions.push(d);
+    });
+  } catch (e) {
+    console.error("[dev.terminal-manager] Error registering slash commands:", e);
+  }
 }
