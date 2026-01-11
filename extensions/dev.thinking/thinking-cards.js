@@ -10,7 +10,7 @@ import { StateField, StateEffect } from "@codemirror/state";
  */
 const addInline = StateEffect.define();     // { from, to, id }
 const toggleInline = StateEffect.define();  // { id }
-const updateText = StateEffect.define();    // { id, text }
+const updateText = StateEffect.define();    // { id, text, replace? }
 const removeItem = StateEffect.define();    // { id }
 const clearAll = StateEffect.define();
 
@@ -28,6 +28,15 @@ class ThinkingCardWidget extends WidgetType {
   }
   eq(other) {
     return other.id === this.id && other.text === this.text;
+  }
+  updateDOM(dom) {
+    try {
+      const pre = dom?.querySelector?.("pre");
+      if (pre) pre.textContent = fmt(this.text, 5000);
+      return true;
+    } catch {
+      return false;
+    }
   }
   toDOM() {
     const wrap = document.createElement("div");
@@ -157,12 +166,21 @@ const thinkingField = StateField.define({
       }
       if (e.is(updateText)) {
         const { id, text } = e.value || {};
+        const replace = !!e.value?.replace;
         const it = id ? items.get(id) : null;
         if (!it) continue;
-        // 累加进现有文本，支持流式
-        const updated = { ...it, text: (it.text || "") + String(text || "") };
+        const updated = replace
+          ? { ...it, text: String(text || "") }
+          : { ...it, text: (it.text || "") + String(text || "") };
         items.set(id, updated);
-        // 若已展开，不在此处重建 widget，避免闪烁；由插件在 DOM 中原位追加文本
+        // 若已展开，刷新卡片 widget（通过 updateDOM 原位更新，避免闪烁）
+        if (updated.expanded) {
+          deco = deco.update({
+            filter: (_f, _t, value) => value?.spec?.widget?.id !== (id + ":card")
+          });
+          const widget = new ThinkingCardWidget(id, updated.text);
+          deco = deco.update({ add: [Decoration.widget({ widget, block: true }).range(updated.to)] });
+        }
       }
       if (e.is(removeItem)) {
         const base = String(e.value?.id || "");
@@ -208,16 +226,6 @@ const thinkingField = StateField.define({
           }
         });
         toRemove.forEach(id => items.delete(id));
-
-        try {
-          const sid = window?.zion?.state?.get("sessions.currentId");
-          if (sid) {
-            const ann = window?.zion?.state?.get(`sessions.annotations.${sid}`) || {};
-            const del = Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds.slice() : [];
-            toRemove.forEach(id => { if (!del.includes(id)) del.push(id); });
-            window?.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, deletedThinkingIds: del });
-          }
-        } catch {}
       }
     } catch {}
 
@@ -286,10 +294,13 @@ export function installThinkingCards() {
     constructor(view) {
       this.view = view;
       this.disps = [];
+      this.sessionId = null;
+      this.suspendSnapshot = false;
       this.currentId = null;
       this.buffer = "";
       this.timer = null;
-      this.seq = 0;
+
+      try { this.sessionId = window.zion?.state?.get("sessions.currentId") || null; } catch {}
 
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRunStarted));
       this.disps.push(window.zion.events.on("chat/reasoningStart", this.onReasoningStart));
@@ -312,11 +323,12 @@ export function installThinkingCards() {
       });
     }
     update(update) {
+      if (this.suspendSnapshot) return;
       this.snapshot();
     }
     snapshot = () => {
       try {
-        const id = window.zion?.state?.get("sessions.currentId");
+        const id = this.sessionId || window.zion?.state?.get("sessions.currentId");
         if (!id) return;
         const fieldVal = this.view.state.field(thinkingField);
         const arr = [];
@@ -341,19 +353,59 @@ export function installThinkingCards() {
       try {
         // 1) 更新状态（累加到 items 中）
         this.view.dispatch({ effects: [updateText.of({ id: this.currentId, text })] });
-        // 2) 若卡片已展开，原位把新片段追加到 DOM，避免闪烁
-        this.appendToCardDOM(this.currentId, text);
         // 持久化快照
         this.snapshot();
       } catch {}
     }
+    seqKey(sid, runId) {
+      return `thinking.seq.${sid}.${runId}`;
+    }
+    getSeq(sid, runId) {
+      try {
+        const v = window.zion?.state?.get(this.seqKey(sid, runId));
+        return typeof v === "number" && Number.isFinite(v) ? v : 0;
+      } catch {
+        return 0;
+      }
+    }
+    setSeq(sid, runId, seq) {
+      try { window.zion?.state?.set(this.seqKey(sid, runId), seq); } catch {}
+    }
+    ensureInlineForThinkingId(sid, id) {
+      try {
+        const fieldVal = this.view.state.field(thinkingField);
+        if (fieldVal?.items?.has?.(id)) return true;
+      } catch {}
+
+      try {
+        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+        const list = Array.isArray(ann.thinking) ? ann.thinking : [];
+        const it = list.find(x => x?.id === id);
+        if (!it) return false;
+        const docLen = this.view.state.doc.length;
+        const hasRange = typeof it.from === "number" && typeof it.to === "number";
+        const validRange = hasRange && it.from >= 0 && it.from < it.to && it.to <= docLen;
+        if (!validRange) return false;
+        this.view.dispatch({ effects: [addInline.of({ from: it.from, to: it.to, id })] });
+        if (it.text) this.view.dispatch({ effects: [updateText.of({ id, text: it.text, replace: true })] });
+        if (it.expanded) this.view.dispatch({ effects: [toggleInline.of({ id })] });
+        return true;
+      } catch {
+        return false;
+      }
+    }
     onRunStarted = (payload) => {
       const cur = window.zion?.state?.get("sessions.currentId");
       if (payload?.sessionId && payload.sessionId !== cur) return;
+      this.sessionId = cur || this.sessionId;
+      try {
+        const sid = this.sessionId;
+        const runId = payload?.runId;
+        if (sid && runId) this.setSeq(sid, runId, 0);
+      } catch {}
       // 新一轮运行，清空缓冲（保留历史思考行）
       this.currentId = null;
       this.buffer = "";
-      this.seq = 0;
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     };
     ensureAssistantHead() {
@@ -377,15 +429,18 @@ export function installThinkingCards() {
       if (!visible) return;
       const cur = window.zion?.state?.get("sessions.currentId");
       if (payload?.sessionId && payload.sessionId !== cur) return;
+      this.sessionId = cur || this.sessionId;
+      this.suspendSnapshot = false;
 
       const runId = payload?.runId || Math.random().toString(36).slice(2);
-      this.seq = (this.seq || 0) + 1;
-      const id = `thinking:${runId}:${this.seq}`;
+      const sid = this.sessionId;
+      const seq = sid ? (this.getSeq(sid, runId) + 1) : 1;
+      if (sid) this.setSeq(sid, runId, seq);
+      const id = `thinking:${runId}:${seq}`;
       this.currentId = id;
 
       this.ensureAssistantHead();
 
-      const sid = window.zion?.state?.get("sessions.currentId");
       const hint = (sid ? window.zion?.state?.get(`chat.answerAnchorPos.${sid}`) : undefined) ?? window.zion?.state?.get("chat.answerAnchorPos");
       const doc = this.view.state.doc;
       const pos = typeof hint === "number" ? findAssistantBlockEndNear(this.view, hint) : findAssistantBlockEnd(this.view);
@@ -406,6 +461,18 @@ export function installThinkingCards() {
       if (!visible) return;
       const cur = window.zion?.state?.get("sessions.currentId");
       if (payload?.sessionId && payload.sessionId !== cur) return;
+      this.sessionId = cur || this.sessionId;
+
+      const runId = payload?.runId;
+      const sid = this.sessionId;
+      if (!this.currentId && sid && runId) {
+        const seq = this.getSeq(sid, runId);
+        if (seq > 0) {
+          const id = `thinking:${runId}:${seq}`;
+          this.currentId = id;
+          this.ensureInlineForThinkingId(sid, id);
+        }
+      }
       if (!this.currentId) this.onReasoningStart({ runId: payload?.runId, sessionId: payload?.sessionId });
 
       const tk = String(payload?.token || "");
@@ -422,6 +489,7 @@ export function installThinkingCards() {
     onReasoningEnd = (payload) => {
       const cur = window.zion?.state?.get("sessions.currentId");
       if (payload?.sessionId && payload.sessionId !== cur) return;
+      this.sessionId = cur || this.sessionId;
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       this.flush();
     };
@@ -436,20 +504,28 @@ export function installThinkingCards() {
       this.view.dispatch({ effects: [clearAll.of({})] });
       this.snapshot();
     };
-    onSessionChanged = () => {
+    onSessionChanged = (nv) => {
+      this.suspendSnapshot = true;
+      try {
+        if (typeof nv === "string") this.sessionId = nv || null;
+        else this.sessionId = window.zion?.state?.get("sessions.currentId") || null;
+      } catch {}
       // 在会话切换时清空当前思考卡片，避免跨会话污染
       try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
       // 重置状态与缓冲
       this.currentId = null;
       this.buffer = "";
-      this.seq = 0;
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-      // 与新会话对齐快照（写空）
-      this.snapshot();
+
+      Promise.resolve().then(() => {
+        this.suspendSnapshot = false;
+      });
     };
     onRestore = (payload) => {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
+
+      this.suspendSnapshot = false;
 
       try {
         const sid = window.zion?.state?.get("sessions.currentId");
@@ -475,7 +551,7 @@ export function installThinkingCards() {
 
         if (validRange) {
           batchedEffects.push(addInline.of({ from: it.from, to: it.to, id: it.id }));
-          if (it?.text) batchedEffects.push(updateText.of({ id: it.id, text: it.text }));
+          if (it?.text) batchedEffects.push(updateText.of({ id: it.id, text: it.text, replace: true }));
           if (it.expanded) batchedToggles.push(it.id);
         } else {
           // 回退：在 assistant 区块末尾插入“思考”并重建装饰
@@ -492,7 +568,7 @@ export function installThinkingCards() {
             effects: [addInline.of({ from: start, to: end, id: it.id })]
           });
           if (it?.text) {
-            this.view.dispatch({ effects: [updateText.of({ id: it.id, text: it.text })] });
+            this.view.dispatch({ effects: [updateText.of({ id: it.id, text: it.text, replace: true })] });
           }
           if (it.expanded) {
             this.view.dispatch({ effects: [toggleInline.of({ id: it.id })] });
@@ -508,16 +584,6 @@ export function installThinkingCards() {
 
       this.snapshot();
     };
-    appendToCardDOM(id, increment) {
-      try {
-        if (!increment) return;
-        const root = this.view.dom;
-        const pre = root.querySelector(`[data-thinking-card-id="${id}"] pre`);
-        if (pre) {
-          pre.textContent += String(increment);
-        }
-      } catch {}
-    }
     destroy() {
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       for (const d of this.disps) { try { d?.dispose?.(); } catch {} }

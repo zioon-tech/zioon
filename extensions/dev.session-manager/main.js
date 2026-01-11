@@ -2790,6 +2790,17 @@ export async function activate(ctx) {
     try {
       const curPrev = window.zion.state.get("sessions.currentId");
       if (curPrev) {
+        try {
+          const ed = window.zion.window.activeEditor;
+          const text = ed?.getValue?.();
+          if (typeof text === "string") {
+            saveDoc(curPrev, text);
+            const metaPrev0 = loadMeta(curPrev);
+            metaPrev0.size = text.length;
+            metaPrev0.hash = hashString(text);
+            saveMeta(curPrev, metaPrev0);
+          }
+        } catch {}
         const ann = window.zion.state.get(`sessions.annotations.${curPrev}`);
         if (ann) {
           const metaPrev = loadMeta(curPrev);
