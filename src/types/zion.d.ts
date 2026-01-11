@@ -68,7 +68,7 @@ export interface SlashParamSchema {
   min?: number; // for number
   max?: number; // for number
   options?: Array<{ value: string | number; label: string }>; // for select
-  asyncOptions?: () => Promise<Array<{ value: string | number; label: string }>>; // async options for select
+  asyncOptions?: (params?: Record<string, any>) => Promise<Array<{ value: string | number; label: string }>>; // async options for select
 }
 
 export interface SlashCommand {
@@ -81,6 +81,7 @@ export interface SlashCommand {
   aliases?: string[];
   priority?: number;
   params?: SlashParamSchema[];
+  submenu?: any;
   execute: (params?: Record<string, any>, editor?: EditorProxy) => void | Promise<void>;
 }
 

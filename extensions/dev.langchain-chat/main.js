@@ -950,4 +950,175 @@ export async function activate(ctx) {
 
   // 注册“模型管理”工具（CRUD + 设置激活）
   try { registerModelsTools(); } catch {}
+
+  try {
+    let installed = false;
+
+    const installSlash = () => {
+      if (installed) return true;
+      const slash = window.zion?.slash;
+      if (!slash || typeof slash.registerCommand !== "function") return false;
+
+      const disp = [];
+
+      disp.push(
+        slash.registerCommand({
+          id: "langchain.chat.run",
+          trigger: ["chat", "ask"],
+          title: "Chat",
+          description: "Run chat with current context",
+          category: "chat",
+          icon: "💬",
+          execute: () => window.zion.commands.executeCommand("chat.run")
+        })
+      );
+
+      disp.push(
+        slash.registerCommand({
+          id: "langchain.chat.runSelection",
+          trigger: ["chatSelection", "chatSel"],
+          title: "Chat (Selection)",
+          description: "Run chat using current selection",
+          category: "chat",
+          icon: "📝",
+          execute: () => window.zion.commands.executeCommand("chat.runSelection")
+        })
+      );
+
+      disp.push(
+        slash.registerCommand({
+          id: "langchain.chat.stop",
+          trigger: ["stop", "stopChat"],
+          title: "Stop Chat",
+          description: "Abort current streaming run",
+          category: "chat",
+          icon: "⏹️",
+          execute: () => window.zion.commands.executeCommand("chat.stop")
+        })
+      );
+
+      disp.push(
+        slash.registerCommand({
+          id: "langchain.chat.retry",
+          trigger: ["retry", "chatRetry"],
+          title: "Retry Chat",
+          description: "Re-run chat with the last prompt",
+          category: "chat",
+          icon: "🔁",
+          execute: () => window.zion.commands.executeCommand("chat.retry")
+        })
+      );
+
+      disp.push(
+        slash.registerCommand({
+          id: "langchain.models.pick",
+          trigger: ["models", "model"],
+          title: "Select Model",
+          description: "Pick a model",
+          category: "models",
+          icon: "🧠",
+          submenu: async () => {
+            await refreshCatalog().catch(() => {});
+            const catalog = window.zion?.state?.get("models.catalog") || [];
+            const active = window.zion?.state?.get("chat.activeModel");
+            const items = (catalog || []).map((m) => {
+              const providerId = String(m.providerId || "");
+              const modelId = String(m.id || "");
+              const label = String(m.label || modelId);
+              const isActive = providerId === active?.providerId && modelId === active?.modelId;
+              const suffix = m?.requiresConfig ? " (needs config)" : "";
+              return {
+                title: `${isActive ? "✓ " : ""}${label}${suffix}${providerId ? ` — ${providerId}` : ""}`,
+                description: `${providerId}:${modelId}`,
+                icon: m?.requiresConfig ? "⚠️" : "🧠",
+                execute: () => {
+                  window.zion.commands.executeCommand("models.selectModel", `${providerId}:${modelId}`);
+                }
+              };
+            });
+
+            items.sort((a, b) => {
+              const ta = String(a.title || "").toLowerCase();
+              const tb = String(b.title || "").toLowerCase();
+              if (ta < tb) return -1;
+              if (ta > tb) return 1;
+              return String(a.description || "").localeCompare(String(b.description || ""));
+            });
+
+            return items;
+          },
+          execute: () => {}
+        })
+      );
+
+      disp.push(
+        slash.registerCommand({
+          id: "langchain.models.openSwitcher",
+          trigger: ["modelSwitcher"],
+          title: "Open Model Switcher",
+          description: "Open the model switcher panel",
+          category: "models",
+          icon: "🧠",
+          execute: () => window.zion.commands.executeCommand("models.openSwitcher")
+        })
+      );
+
+      disp.push(
+        slash.registerCommand({
+          id: "langchain.models.select",
+          trigger: ["modelSelect", "setModel"],
+          title: "Set Active Model",
+          description: "Pick a model",
+          category: "models",
+          icon: "🧠",
+          params: [
+            {
+              name: "model",
+              type: "select",
+              label: "Model",
+              asyncOptions: async () => {
+                await refreshCatalog().catch(() => {});
+                const catalog = window.zion?.state?.get("models.catalog") || [];
+                const active = window.zion?.state?.get("chat.activeModel");
+                const out = (catalog || []).map((m) => {
+                  const providerId = String(m.providerId || "");
+                  const modelId = String(m.id || "");
+                  const label = String(m.label || modelId);
+                  const isActive = providerId === active?.providerId && modelId === active?.modelId;
+                  const suffix = m?.requiresConfig ? " (needs config)" : "";
+                  return {
+                    value: `${providerId}:${modelId}`,
+                    label: `${isActive ? "✓ " : ""}${label}${suffix} — ${providerId}`
+                  };
+                });
+
+                out.sort((a, b) => String(a.label || "").localeCompare(String(b.label || "")));
+                return out;
+              }
+            }
+          ],
+          execute: async (p) => {
+            const key = p?.model ? String(p.model) : "";
+            if (!key || !key.includes(":")) return;
+            window.zion.commands.executeCommand("models.selectModel", key);
+          }
+        })
+      );
+
+      ctx.subscriptions.push(...disp);
+      installed = true;
+      return true;
+    };
+
+    if (!installSlash()) {
+      let tries = 0;
+      const timer = window.setInterval(() => {
+        tries++;
+        if (installSlash() || tries > 50) {
+          window.clearInterval(timer);
+        }
+      }, 200);
+      ctx.subscriptions.push({ dispose: () => window.clearInterval(timer) });
+    }
+  } catch {}
 }

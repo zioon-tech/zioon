@@ -30,6 +30,51 @@ export async function activate(ctx) {
   const commandsByTrigger = new Map(); // trigger -> SlashCommand[]
   const changeHandlers = new Set(); // Set<() => void>
 
+  const injectSlashStyles = () => {
+    try {
+      const styleId = 'zion-slash-commands-style';
+      if (document.getElementById(styleId)) return;
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+.zion-slash-panel{font-family:var(--font-sans,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif);font-size:12px;animation:zionSlashFadeIn .15s ease-out}
+@keyframes zionSlashFadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+.zion-slash-header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border,#3c3c3c)}
+.zion-slash-query{font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:11px;opacity:.9}
+.zion-slash-hint{font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:10px;opacity:.6;white-space:nowrap}
+.zion-slash-empty{color:rgba(248,248,242,.7)}
+:root[data-theme="light"] .zion-slash-empty{color:rgba(0,0,0,.55)}
+.zion-slash-category{color:rgba(248,248,242,.55)}
+:root[data-theme="light"] .zion-slash-category{color:rgba(0,0,0,.45)}
+.zion-slash-item{transition:background-color .1s ease;color:var(--fg,#cccccc);box-sizing:border-box}
+.zion-slash-item:hover{background-color:rgba(98,114,164,.10)}
+:root[data-theme="light"] .zion-slash-item:hover{background-color:rgba(59,130,246,.10)}
+.zion-slash-item:active{background-color:rgba(98,114,164,.14)}
+:root[data-theme="light"] .zion-slash-item:active{background-color:rgba(59,130,246,.14)}
+.zion-slash-item.is-active{background-color:var(--role-user-bg,rgba(98,114,164,.18));color:var(--fg,#cccccc)}
+.zion-slash-item.is-active:hover{background-color:var(--role-user-bg,rgba(98,114,164,.18))}
+.zion-slash-item.is-active:active{background-color:var(--role-user-bg,rgba(98,114,164,.18))}
+.zion-slash-title{color:inherit}
+.zion-slash-desc{color:rgba(248,248,242,.7)}
+:root[data-theme="light"] .zion-slash-desc{color:rgba(0,0,0,.6)}
+.zion-slash-item.is-active .zion-slash-desc{color:inherit;opacity:.85}
+.zion-slash-trigger{color:var(--accent,#007acc)}
+.zion-slash-item.is-active .zion-slash-trigger{color:var(--accent,#007acc);opacity:1}
+
+.zion-slash-list{padding:6px;box-sizing:border-box;scrollbar-color:transparent transparent;scrollbar-width:thin}
+.zion-slash-list:hover{scrollbar-color:var(--scrollbar-thumb,var(--border,#44475a)) transparent}
+.zion-slash-list::-webkit-scrollbar{width:10px;height:10px}
+.zion-slash-list::-webkit-scrollbar-track{background:transparent}
+.zion-slash-list::-webkit-scrollbar-thumb{background:transparent;border-radius:6px;border:2px solid transparent;background-clip:content-box;transition:background .15s ease}
+.zion-slash-list:hover::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb,var(--border,#44475a));background-clip:content-box}
+.zion-slash-list::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-thumb-hover,var(--accent,#6272a4));background-clip:content-box}
+      `;
+      document.head.appendChild(style);
+    } catch {}
+  };
+
+  injectSlashStyles();
+
   const registerSlashCommand = (cmd) => {
     // Validate command
     if (!cmd.id || typeof cmd.id !== 'string') {
@@ -468,13 +513,32 @@ export async function activate(ctx) {
   let slashStartPos = null;
   let slashTriggerText = '';
 
+  let slashNavStack = [];
+  let slashNavMode = 'root';
+  let slashSubFilter = '';
+
   let slashSelectedIndex = 0;
   let slashCurrentCommands = [];
   let slashCurrentItemEls = [];
 
   let slashDocKeydownAttached = false;
   let slashDocMousedownAttached = false;
+  let slashDocMousemoveAttached = false;
+  let slashLastMouseMoveAt = 0;
   let lastEditorView = null;
+
+  const onSlashGlobalMouseMove = (e) => {
+    if (!isSlashPanelOpen()) return;
+    if (!slashPanel || !e.target || !slashPanel.contains(e.target)) return;
+
+    slashLastMouseMoveAt = Date.now();
+
+    const el = e.target.closest ? e.target.closest('.zion-slash-item') : null;
+    if (!el) return;
+
+    const idx = Number(el.dataset && el.dataset.slashIndex);
+    if (Number.isFinite(idx)) setSlashActiveIndex(idx);
+  };
 
   const createSlashPanel = () => {
     if (slashPanel) return slashPanel;
@@ -531,6 +595,39 @@ export async function activate(ctx) {
     return !!slashPanel && slashPanel.style.display !== 'none';
   };
 
+  const hasSubmenu = (cmd) => {
+    return !!cmd && (typeof cmd.submenu === 'function' || Array.isArray(cmd.submenu));
+  };
+
+  const getNavTitle = (cmd) => {
+    if (!cmd) return '';
+    if (typeof cmd.title === 'string' && cmd.title.trim()) return cmd.title.trim();
+    if (Array.isArray(cmd._triggers) && cmd._triggers[0]) return String(cmd._triggers[0]);
+    if (Array.isArray(cmd.trigger) && cmd.trigger[0]) return String(cmd.trigger[0]);
+    if (typeof cmd.trigger === 'string') return cmd.trigger;
+    return String(cmd.id || '');
+  };
+
+  const getBreadcrumbText = () => {
+    if (!slashNavStack.length) return '';
+    return slashNavStack.map(getNavTitle).filter(Boolean).join(' / ');
+  };
+
+  const resolveSubmenuItems = async (cmd) => {
+    try {
+      if (!cmd) return [];
+      if (typeof cmd.submenu === 'function') {
+        const out = await cmd.submenu();
+        return Array.isArray(out) ? out : [];
+      }
+      if (Array.isArray(cmd.submenu)) return cmd.submenu;
+      return [];
+    } catch (e) {
+      console.error('[dev.slash-commands] resolveSubmenuItems error:', e);
+      return [];
+    }
+  };
+
   const setSlashActiveIndex = (nextIdx) => {
     if (!slashCurrentItemEls || slashCurrentItemEls.length === 0) return;
     const clamped = Math.max(0, Math.min(nextIdx, slashCurrentItemEls.length - 1));
@@ -551,6 +648,105 @@ export async function activate(ctx) {
 
   const renderSlashCommands = (filter = '') => {
     if (!slashList) return;
+
+    if (slashNavMode === 'submenu') {
+      const items = slashNavStack.length ? (slashNavStack[slashNavStack.length - 1]._submenuItems || []) : [];
+      const lowerFilter = (filter || '').toLowerCase();
+
+      const filtered = (items || []).filter((cmd) => {
+        if (!filter) return true;
+        const title = String(cmd.title || '').toLowerCase();
+        const desc = String(cmd.description || '').toLowerCase();
+        return title.includes(lowerFilter) || desc.includes(lowerFilter);
+      });
+
+      slashList.innerHTML = '';
+      slashCurrentCommands = [];
+      slashCurrentItemEls = [];
+
+      const renderItem = (cmd) => {
+        const itemIndex = slashCurrentCommands.length;
+        slashCurrentCommands.push(cmd);
+
+        const item = document.createElement('div');
+        item.className = 'zion-slash-item';
+        item.dataset.slashIndex = String(itemIndex);
+        item.style.padding = '8px 12px';
+        item.style.cursor = 'pointer';
+        item.style.display = 'flex';
+        item.style.alignItems = 'center';
+        item.style.gap = '12px';
+        item.style.borderRadius = '6px';
+
+        const icon = document.createElement('div');
+        icon.className = 'zion-slash-icon';
+        icon.textContent = cmd.icon || (cmd.__navBack ? '↩︎' : (hasSubmenu(cmd) ? '›' : '⚡'));
+        icon.style.fontSize = '18px';
+        icon.style.flexShrink = '0';
+
+        const text = document.createElement('div');
+        text.className = 'zion-slash-text';
+        text.style.flex = '1';
+        text.style.minWidth = '0';
+
+        const title = document.createElement('div');
+        title.className = 'zion-slash-title';
+        title.style.fontWeight = '500';
+        title.textContent = cmd.title || '';
+
+        const desc = document.createElement('div');
+        desc.className = 'zion-slash-desc';
+        desc.style.fontSize = '12px';
+        desc.style.whiteSpace = 'nowrap';
+        desc.style.overflow = 'hidden';
+        desc.style.textOverflow = 'ellipsis';
+        desc.style.marginTop = '2px';
+        desc.textContent = cmd.description || '';
+
+        text.appendChild(title);
+        if (cmd.description) text.appendChild(desc);
+        item.appendChild(icon);
+        item.appendChild(text);
+
+        item.onclick = () => {
+          selectCommand(cmd);
+        };
+
+        item.onmouseenter = () => {
+          if (Date.now() - slashLastMouseMoveAt < 120) {
+            setSlashActiveIndex(itemIndex);
+          }
+        };
+
+        slashCurrentItemEls.push(item);
+        slashList.appendChild(item);
+      };
+
+      if (slashNavStack.length > 0) {
+        renderItem({
+          __navBack: true,
+          title: 'Back',
+          description: getBreadcrumbText(),
+          icon: '←'
+        });
+      }
+
+      if (!filtered.length) {
+        const empty = document.createElement('div');
+        empty.className = 'zion-slash-empty';
+        empty.style.padding = '16px';
+        empty.style.textAlign = 'center';
+        empty.textContent = '没有找到匹配的命令';
+        slashList.appendChild(empty);
+        return;
+      }
+
+      filtered.forEach(renderItem);
+
+      if (slashSelectedIndex >= slashCurrentItemEls.length) slashSelectedIndex = 0;
+      setSlashActiveIndex(slashSelectedIndex);
+      return;
+    }
 
     const allCommands = getAllCommands();
     const lowerFilter = filter.toLowerCase();
@@ -671,7 +867,9 @@ export async function activate(ctx) {
         };
 
         item.onmouseenter = () => {
-          setSlashActiveIndex(itemIndex);
+          if (Date.now() - slashLastMouseMoveAt < 120) {
+            setSlashActiveIndex(itemIndex);
+          }
         };
 
         slashCurrentItemEls.push(item);
@@ -713,14 +911,21 @@ export async function activate(ctx) {
     panel.style.top = `${posY}px`;
 
     if (slashHeaderQuery) {
-      slashHeaderQuery.textContent = `/${triggerText || ''}`;
+      if (slashNavMode === 'submenu') {
+        const bc = getBreadcrumbText();
+        const suffix = slashSubFilter ? ` ${slashSubFilter}` : '';
+        slashHeaderQuery.textContent = `/${bc}${suffix}`;
+      } else {
+        slashHeaderQuery.textContent = `/${triggerText || ''}`;
+      }
     }
 
     if (prevTriggerText !== triggerText) {
       slashSelectedIndex = 0;
+      slashLastMouseMoveAt = 0;
     }
 
-    renderSlashCommands(triggerText);
+    renderSlashCommands(slashNavMode === 'submenu' ? slashSubFilter : triggerText);
 
     if (!slashDocKeydownAttached) {
       document.addEventListener('keydown', onSlashGlobalKeyDown, true);
@@ -730,6 +935,11 @@ export async function activate(ctx) {
     if (!slashDocMousedownAttached) {
       document.addEventListener('mousedown', onSlashGlobalMouseDown, true);
       slashDocMousedownAttached = true;
+    }
+
+    if (!slashDocMousemoveAttached) {
+      document.addEventListener('mousemove', onSlashGlobalMouseMove, true);
+      slashDocMousemoveAttached = true;
     }
   };
 
@@ -749,6 +959,38 @@ export async function activate(ctx) {
       e.stopPropagation();
       hideSlashPanel();
       return;
+    }
+
+    if (slashNavMode === 'submenu') {
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (slashSubFilter) {
+          slashSubFilter = slashSubFilter.slice(0, -1);
+          if (slashHeaderQuery) {
+            const bc = getBreadcrumbText();
+            const suffix = slashSubFilter ? ` ${slashSubFilter}` : '';
+            slashHeaderQuery.textContent = `/${bc}${suffix}`;
+          }
+          renderSlashCommands(slashSubFilter);
+        } else if (slashNavStack.length) {
+          selectCommand({ __navBack: true });
+        }
+        return;
+      }
+
+      if (e.key && e.key.length === 1 && !/\s/.test(e.key)) {
+        e.preventDefault();
+        e.stopPropagation();
+        slashSubFilter += e.key;
+        if (slashHeaderQuery) {
+          const bc = getBreadcrumbText();
+          const suffix = slashSubFilter ? ` ${slashSubFilter}` : '';
+          slashHeaderQuery.textContent = `/${bc}${suffix}`;
+        }
+        renderSlashCommands(slashSubFilter);
+        return;
+      }
     }
 
     if (e.key === 'ArrowDown') {
@@ -780,6 +1022,10 @@ export async function activate(ctx) {
       slashTriggerText = '';
     }
 
+    slashNavStack = [];
+    slashNavMode = 'root';
+    slashSubFilter = '';
+
     if (slashDocKeydownAttached) {
       document.removeEventListener('keydown', onSlashGlobalKeyDown, true);
       slashDocKeydownAttached = false;
@@ -788,9 +1034,56 @@ export async function activate(ctx) {
       document.removeEventListener('mousedown', onSlashGlobalMouseDown, true);
       slashDocMousedownAttached = false;
     }
+
+    if (slashDocMousemoveAttached) {
+      document.removeEventListener('mousemove', onSlashGlobalMouseMove, true);
+      slashDocMousemoveAttached = false;
+    }
   };
 
   const selectCommand = async (cmd) => {
+    if (cmd && cmd.__navBack) {
+      if (!slashNavStack.length) {
+        slashNavMode = 'root';
+        slashSubFilter = '';
+        if (slashHeaderQuery) slashHeaderQuery.textContent = `/${slashTriggerText || ''}`;
+        renderSlashCommands(slashTriggerText);
+        return;
+      }
+      slashNavStack.pop();
+      slashSubFilter = '';
+      if (!slashNavStack.length) {
+        slashNavMode = 'root';
+        if (slashHeaderQuery) slashHeaderQuery.textContent = `/${slashTriggerText || ''}`;
+        renderSlashCommands(slashTriggerText);
+        return;
+      }
+      const parent = slashNavStack[slashNavStack.length - 1];
+      parent._submenuItems = await resolveSubmenuItems(parent);
+      if (slashHeaderQuery) {
+        const bc = getBreadcrumbText();
+        slashHeaderQuery.textContent = `/${bc}`;
+      }
+      slashSelectedIndex = (parent._submenuItems && parent._submenuItems.length) ? 1 : 0;
+      renderSlashCommands('');
+      return;
+    }
+
+    if (hasSubmenu(cmd)) {
+      slashNavMode = 'submenu';
+      slashSubFilter = '';
+      const next = cmd;
+      next._submenuItems = await resolveSubmenuItems(next);
+      slashNavStack.push(next);
+      if (slashHeaderQuery) {
+        const bc = getBreadcrumbText();
+        slashHeaderQuery.textContent = `/${bc}`;
+      }
+      slashSelectedIndex = (next._submenuItems && next._submenuItems.length) ? 1 : 0;
+      renderSlashCommands('');
+      return;
+    }
+
     hideSlashPanel();
 
     const editor = window.zion?.window?.activeEditor || null;
@@ -805,7 +1098,9 @@ export async function activate(ctx) {
     cleanSlashTrigger();
 
     try {
-      await cmd.execute(params, editor);
+      if (typeof cmd.execute === 'function') {
+        await cmd.execute(params, editor);
+      }
     } catch (e) {
       console.error(`[dev.slash-commands] Error executing command ${cmd.id}:`, e);
     }
@@ -868,8 +1163,62 @@ export async function activate(ctx) {
 
     const params = {};
 
+    const fieldControls = [];
+
+    const loadSelectOptions = async (param, selectEl) => {
+      const prevValue = selectEl.value;
+
+      let opts = [];
+      if (typeof param.asyncOptions === 'function') {
+        try {
+          opts = await param.asyncOptions(params);
+        } catch (e) {
+          console.error('[dev.slash-commands] asyncOptions error:', e);
+          opts = [];
+        }
+      } else if (Array.isArray(param.options)) {
+        opts = param.options;
+      }
+
+      selectEl.innerHTML = '';
+      (opts || []).forEach(opt => {
+        const option = document.createElement('option');
+        option.value = opt.value;
+        option.textContent = opt.label;
+        selectEl.appendChild(option);
+      });
+
+      const hasPrev = opts && opts.some(o => String(o.value) === String(prevValue));
+      if (hasPrev) {
+        selectEl.value = prevValue;
+        return;
+      }
+
+      if (param.default !== undefined && opts && opts.some(o => String(o.value) === String(param.default))) {
+        selectEl.value = String(param.default);
+        params[param.name] = param.type === 'number' ? Number(selectEl.value) : selectEl.value;
+        return;
+      }
+
+      const first = opts && opts[0];
+      if (first) {
+        selectEl.value = String(first.value);
+        params[param.name] = param.type === 'number' ? Number(selectEl.value) : selectEl.value;
+      } else {
+        delete params[param.name];
+      }
+    };
+
+    const refreshDependentSelects = async (fromIndex) => {
+      for (let i = fromIndex; i < fieldControls.length; i++) {
+        const c = fieldControls[i];
+        if (!c || c.type !== 'select') continue;
+        await loadSelectOptions(c.param, c.el);
+      }
+    };
+
     // Render parameter fields
-    const renderParamField = async (param) => {
+    const renderParamField = async (param, idx) => {
       const container = document.createElement('div');
       container.style.marginBottom = '16px';
 
@@ -891,39 +1240,13 @@ export async function activate(ctx) {
           select.style.color = 'var(--fg, #cccccc)';
           select.style.outline = 'none';
 
-          // Load options
-          const loadOptions = async () => {
-            if (param.asyncOptions) {
-              const opts = await param.asyncOptions();
-              select.innerHTML = '';
-              opts.forEach(opt => {
-                const option = document.createElement('option');
-                option.value = opt.value;
-                option.textContent = opt.label;
-                if (opt.value === param.default) option.selected = true;
-                select.appendChild(option);
-              });
-            } else if (param.options) {
-              select.innerHTML = '';
-              param.options.forEach(opt => {
-                const option = document.createElement('option');
-                option.value = opt.value;
-                option.textContent = opt.label;
-                if (opt.value === param.default) option.selected = true;
-                select.appendChild(option);
-              });
-            }
-          };
-          await loadOptions();
+          fieldControls[idx] = { param, type: 'select', el: select };
+          await loadSelectOptions(param, select);
 
-          select.onchange = () => {
+          select.onchange = async () => {
             params[param.name] = param.type === 'number' ? Number(select.value) : select.value;
+            await refreshDependentSelects(idx + 1);
           };
-
-          // Set initial value
-          if (param.default !== undefined) {
-            params[param.name] = param.default;
-          }
 
           container.appendChild(select);
         } else if (param.type === 'boolean') {
@@ -932,8 +1255,9 @@ export async function activate(ctx) {
           checkbox.id = `slash-param-${param.name}`;
           if (param.default) checkbox.checked = true;
 
-          checkbox.onchange = () => {
+          checkbox.onchange = async () => {
             params[param.name] = checkbox.checked;
+            await refreshDependentSelects(idx + 1);
           };
 
           params[param.name] = !!param.default;
@@ -963,9 +1287,10 @@ export async function activate(ctx) {
           if (param.max !== undefined) input.max = param.max;
           if (param.default !== undefined) input.value = param.default;
 
-          input.oninput = () => {
+          input.oninput = async () => {
             const val = param.type === 'number' ? Number(input.value) : input.value;
             params[param.name] = val;
+            await refreshDependentSelects(idx + 1);
           };
 
           // Set initial value
@@ -980,8 +1305,9 @@ export async function activate(ctx) {
     };
 
     // Render all params
-    for (const param of cmd.params) {
-      const field = await renderParamField(param);
+    for (let i = 0; i < cmd.params.length; i++) {
+      const param = cmd.params[i];
+      const field = await renderParamField(param, i);
       content.appendChild(field);
     }
 
@@ -1040,24 +1366,32 @@ export async function activate(ctx) {
 
     editorUpdateListener = window.zion.events.on('editor.change', async ({ update, view }) => {
       try {
+        if (slashNavMode === 'submenu' && isSlashPanelOpen()) return;
         if (!view) return;
 
         lastEditorView = view;
 
-        // Check if user typed '/'
+        const triggerChars = ['/', '／', '、', '。'];
+
         const selection = view.state.selection.main;
         const pos = selection.head;
         const line = view.state.doc.lineAt(pos);
 
         const lineText = view.state.doc.sliceString(line.from, pos);
-        const slashIdx = lineText.lastIndexOf('/');
-        const validPrefix = slashIdx === 0 || (slashIdx > 0 && /\s/.test(lineText[slashIdx - 1]));
-        const query = slashIdx >= 0 ? lineText.slice(slashIdx + 1) : '';
-        const validQuery = !/\s/.test(query);
+        let triggerIdx = -1;
+        for (const ch of triggerChars) {
+          const idx = lineText.lastIndexOf(ch);
+          if (idx > triggerIdx) triggerIdx = idx;
+        }
 
-        if (slashIdx >= 0 && validPrefix && validQuery) {
+        const validPrefix = triggerIdx === 0 || (triggerIdx > 0 && /\s/.test(lineText[triggerIdx - 1]));
+        const query = triggerIdx >= 0 ? lineText.slice(triggerIdx + 1) : '';
+        const validQuery = !/\s/.test(query);
+        const validQueryChars = !query || /^[A-Za-z0-9_#`.-]+$/.test(query);
+
+        if (triggerIdx >= 0 && validPrefix && validQuery && validQueryChars) {
           const triggerText = query;
-          slashStartPos = { line: line.number - 1, ch: slashIdx };
+          slashStartPos = { line: line.number - 1, ch: triggerIdx };
 
           const coords = view.coordsAtPos(pos);
           if (coords) {
@@ -1068,6 +1402,7 @@ export async function activate(ctx) {
           if (slashPanel && slashPanel.style.display !== 'none') {
             hideSlashPanel();
           }
+          if (!validQueryChars) slashStartPos = null;
         }
       } catch (e) {
         console.error('[dev.slash-commands] Error in editor change handler:', e);

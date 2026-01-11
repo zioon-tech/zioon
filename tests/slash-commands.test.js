@@ -79,6 +79,40 @@ describe('Slash commands plugin', () => {
     expect(panel.style.display).toBe('block');
   });
 
+  it('shows panel when typing Chinese punctuation from slash key', async () => {
+    core.replaceSelection('。');
+
+    const panel = document.getElementById('zion-slash-panel');
+    expect(panel).toBeTruthy();
+    expect(panel.style.display).toBe('block');
+  });
+
+  it('hides panel when typing non-command characters after trigger', async () => {
+    core.replaceSelection('/');
+    let panel = document.getElementById('zion-slash-panel');
+    expect(panel).toBeTruthy();
+    expect(panel.style.display).toBe('block');
+
+    core.replaceSelection('你');
+    await new Promise((r) => setTimeout(r, 0));
+    panel = document.getElementById('zion-slash-panel');
+    expect(panel).toBeTruthy();
+    expect(panel.style.display).toBe('none');
+
+    core.setValue('');
+    core.setCursor({ line: 0, ch: 0 });
+    core.replaceSelection('。');
+    panel = document.getElementById('zion-slash-panel');
+    expect(panel).toBeTruthy();
+    expect(panel.style.display).toBe('block');
+
+    core.replaceSelection('好');
+    await new Promise((r) => setTimeout(r, 0));
+    panel = document.getElementById('zion-slash-panel');
+    expect(panel).toBeTruthy();
+    expect(panel.style.display).toBe('none');
+  });
+
   it('executes command without leaving slash trigger text', async () => {
     core.replaceSelection('/');
 
@@ -92,5 +126,120 @@ describe('Slash commands plugin', () => {
     boldItem.click();
 
     expect(core.getValue()).toBe('****');
+  });
+
+  it('injects styles and marks the first item active', async () => {
+    const style = document.getElementById('zion-slash-commands-style');
+    expect(style).toBeTruthy();
+
+    core.replaceSelection('/');
+
+    const items = Array.from(document.querySelectorAll('.zion-slash-item'));
+    expect(items.length).toBeGreaterThan(0);
+    expect(items[0].classList.contains('is-active')).toBe(true);
+  });
+
+  it('supports nested submenu navigation inside slash dropdown', async () => {
+    window.zion.slash.registerCommand({
+      id: 'test.models',
+      trigger: ['models'],
+      title: 'Models',
+      description: 'Pick provider then model',
+      category: 'test',
+      icon: '🧠',
+      submenu: async () => [
+        {
+          title: 'Provider A',
+          description: 'Select provider',
+          icon: '🧩',
+          submenu: async () => [
+            {
+              title: 'Model 1',
+              description: 'Select model',
+              icon: '🧠',
+              execute: () => {
+                window.zion.window.activeEditor.replaceSelection('MODEL1');
+              }
+            }
+          ]
+        }
+      ],
+      execute: () => {}
+    });
+
+    core.replaceSelection('/');
+
+    const panel = document.getElementById('zion-slash-panel');
+    expect(panel).toBeTruthy();
+
+    let items = Array.from(document.querySelectorAll('.zion-slash-item'));
+    const modelsItem = items.find((n) => (n.textContent || '').includes('Models'));
+    expect(modelsItem).toBeTruthy();
+    modelsItem.click();
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    items = Array.from(document.querySelectorAll('.zion-slash-item'));
+    const providerItem = items.find((n) => (n.textContent || '').includes('Provider A'));
+    expect(providerItem).toBeTruthy();
+    providerItem.click();
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    items = Array.from(document.querySelectorAll('.zion-slash-item'));
+    const modelItem = items.find((n) => (n.textContent || '').includes('Model 1'));
+    expect(modelItem).toBeTruthy();
+    modelItem.click();
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(core.getValue()).toBe('MODEL1');
+  });
+
+  it('does not let hover override active item while typing filters', async () => {
+    window.zion.slash.registerCommand({
+      id: 'test.flicker.one',
+      trigger: ['zzflicker-one'],
+      title: 'ZZ Flicker One',
+      description: 'flicker test',
+      category: 'test',
+      priority: 100,
+      icon: '🧪',
+      execute: () => {}
+    });
+
+    window.zion.slash.registerCommand({
+      id: 'test.flicker.two',
+      trigger: ['zzflicker-two'],
+      title: 'ZZ Flicker Two',
+      description: 'flicker test',
+      category: 'test',
+      priority: 90,
+      icon: '🧪',
+      execute: () => {}
+    });
+
+    core.replaceSelection('/');
+    core.replaceSelection('zzf');
+    await new Promise((r) => setTimeout(r, 0));
+
+    let items = Array.from(document.querySelectorAll('.zion-slash-item'));
+    expect(items.length).toBeGreaterThanOrEqual(2);
+
+    items[1].dispatchEvent(new MouseEvent('mousemove', { bubbles: true }));
+    expect(items[1].classList.contains('is-active')).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 150));
+
+    core.replaceSelection('l');
+    await new Promise((r) => setTimeout(r, 0));
+
+    items = Array.from(document.querySelectorAll('.zion-slash-item'));
+    expect(items.length).toBeGreaterThanOrEqual(2);
+    expect(items[0].classList.contains('is-active')).toBe(true);
+
+    items[1].dispatchEvent(new MouseEvent('mouseenter'));
+    expect(items[0].classList.contains('is-active')).toBe(true);
+    expect(items[1].classList.contains('is-active')).toBe(false);
   });
 });
