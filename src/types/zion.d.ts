@@ -44,6 +44,9 @@ export type MenuItem = {
   title?: string;
   when?: "editorFocus" | "hasSelection";
   submenu?: MenuItem[];
+  order?: number; // 默认 50，越小越靠前
+  pinned?: boolean; // 是否置顶
+  group?: string; // 分组标识，相同分组的可以一起拖拽
 };
 
 export type ModelInfo = { id: string; label?: string };

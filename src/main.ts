@@ -303,8 +303,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
           } catch {}
         }
 
-        if (devInfo?.dir) {
-          devDir = devInfo.dir;
+        if (devInfo && typeof devInfo === 'object' && 'dir' in devInfo && devInfo.dir) {
+          devDir = String(devInfo.dir);
         }
 
         // 显示热重载通知

@@ -30,6 +30,23 @@ class Registry {
   private menus: Record<string, MenuItem[]> = Object.create(null);
   private contextMenuEl: HTMLDivElement | null = null;
 
+  // 菜单项使用统计
+  private menuUsageStats: Record<string, {
+    clickCount: number;
+    lastClickTime: number;
+    pinned: boolean;
+    customOrder?: number;
+    groupId?: string;
+  }> = Object.create(null);
+
+  // 默认置顶的菜单项命令
+  private readonly DEFAULT_PINNED_COMMANDS = [
+    'chat.run',
+    'chat.stop',
+    'chat.retry',
+    'models.openSwitcher'
+  ];
+
   // message contributors
   private messageContribs: MessageContributor[] = [];
 
@@ -52,6 +69,9 @@ class Registry {
     this.attachPasteListener();
     this.attachContextMenu();
     this.applyDecorators();
+
+    // 加载菜单使用统计
+    (this as any).loadMenuUsageStats();
 
     // Wire CM6 update events to Zion EventBus so plugins can react to input/cursor changes.
     try {
@@ -296,7 +316,15 @@ class Registry {
       const hasCmd = typeof it.command === "string" && it.command.trim().length > 0;
       if (!hasCmd && !hasKids) continue;
       // 确保没有子菜单的菜单项不会有 submenu 属性
-      out.push({ command: it.command, title: it.title, when: it.when, submenu: hasKids ? kids : undefined });
+      out.push({
+        command: it.command,
+        title: it.title,
+        when: it.when,
+        submenu: hasKids ? kids : undefined,
+        order: it.order,
+        pinned: it.pinned,
+        group: it.group
+      });
     }
     return out;
   }
@@ -321,7 +349,34 @@ class Registry {
 
     let activeCloser: (() => void) | null = null;
 
+    const isPinnedItem = (item: MenuItem) => {
+      const cmd = item.command || "";
+      if (!cmd) return false;
+      const menuKey = `editor/context:${cmd}`;
+      const stats = this.menuUsageStats[menuKey];
+      if (typeof stats?.pinned === "boolean") return stats.pinned;
+      return !!item.pinned || this.DEFAULT_PINNED_COMMANDS.includes(cmd);
+    };
+
+    let pinnedCount = 0;
     for (const it of items) {
+      if (!isPinnedItem(it)) break;
+      pinnedCount++;
+    }
+
+    const dragAreaSeparator =
+      pinnedCount > 0 && pinnedCount < items.length ? document.createElement("div") : null;
+    if (dragAreaSeparator) {
+      dragAreaSeparator.className = "zion-drag-area-separator";
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+
+      if (dragAreaSeparator && i === pinnedCount) {
+        menu.appendChild(dragAreaSeparator);
+      }
+
       const row = document.createElement("div");
       const hasKids = !!it.submenu && Array.isArray(it.submenu) && it.submenu.length > 0;
       row.className = hasKids ? "zion-context-menu-row has-submenu" : "zion-context-menu-row";
@@ -419,6 +474,14 @@ class Registry {
           if (!cmd) return;
           try {
             this.executeCommand(cmd);
+            // 记录点击统计
+            const menuKey = `editor/context:${cmd}`;
+            if (this.menuUsageStats[menuKey]) {
+              this.menuUsageStats[menuKey].clickCount++;
+              this.menuUsageStats[menuKey].lastClickTime = Date.now();
+              // 保存统计信息
+              (this as any).saveMenuUsageStats();
+            }
           } finally {
             closeMenu();
           }
@@ -426,10 +489,471 @@ class Registry {
         row.appendChild(btn);
       }
 
+      // 添加拖拽手柄（仅对置顶区域）
+      const isPinned = isPinnedItem(it);
+      if (isPinned) {
+        row.classList.add("has-drag-zone");
+
+        // 创建左侧拖拽区域
+        const dragZone = document.createElement("div");
+        dragZone.className = "zion-drag-zone";
+
+        // 添加拖拽图标
+        const dragIcon = document.createElement("div");
+        dragIcon.innerHTML = `
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="3" cy="2" r="1.5" fill="currentColor"/>
+            <circle cx="9" cy="2" r="1.5" fill="currentColor"/>
+            <circle cx="3" cy="6" r="1.5" fill="currentColor"/>
+            <circle cx="9" cy="6" r="1.5" fill="currentColor"/>
+            <circle cx="3" cy="10" r="1.5" fill="currentColor"/>
+            <circle cx="9" cy="10" r="1.5" fill="currentColor"/>
+          </svg>
+        `;
+        dragZone.appendChild(dragIcon);
+
+        // 拖拽事件
+        row.setAttribute("draggable", "true");
+        row.dataset.menuIndex = String(i);
+        row.dataset.command = it.command || '';
+
+        // 防止点击按钮时触发拖拽
+        btn.addEventListener("mousedown", () => {
+          row.setAttribute("draggable", "false");
+        });
+        btn.addEventListener("mouseup", () => {
+          row.setAttribute("draggable", "true");
+        });
+
+        row.addEventListener("dragstart", (e: DragEvent) => {
+          row.style.opacity = "0.5";
+          dragZone.style.cursor = "grabbing";
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", i.toString());
+          }
+        });
+
+        row.addEventListener("dragend", () => {
+          row.style.opacity = "1";
+          dragZone.style.cursor = "grab";
+        });
+
+        row.addEventListener("dragover", (e: DragEvent) => {
+          e.preventDefault();
+          if (e.dataTransfer) {
+            e.dataTransfer.dropEffect = "move";
+          }
+        });
+
+        row.addEventListener("dragenter", (e: DragEvent) => {
+          const targetRow = (e.currentTarget as HTMLElement);
+          if (!targetRow.querySelector(".zion-drag-zone")) return;
+          targetRow.classList.add("is-drop-target");
+        });
+
+        row.addEventListener("dragleave", (e: DragEvent) => {
+          const targetRow = (e.currentTarget as HTMLElement);
+          targetRow.classList.remove("is-drop-target");
+        });
+
+        row.addEventListener("drop", (e: DragEvent) => {
+          e.preventDefault();
+          const targetRow = (e.currentTarget as HTMLElement);
+          targetRow.classList.remove("is-drop-target");
+
+          const fromIndex = parseInt(e.dataTransfer?.getData("text/plain") || "-1");
+          const toIndex = i;
+
+          if (fromIndex >= 0 && fromIndex !== toIndex && toIndex < pinnedCount) {
+            // 交换位置
+            const temp = items[fromIndex];
+            items.splice(fromIndex, 1);
+            items.splice(toIndex, 0, temp);
+
+            // 更新 customOrder
+            for (let j = 0; j < pinnedCount; j++) {
+              const item = items[j];
+              if (item.command) {
+                const menuKey = `editor/context:${item.command}`;
+                if (this.menuUsageStats[menuKey]) {
+                  this.menuUsageStats[menuKey].customOrder = j * 10;
+                  this.menuUsageStats[menuKey].pinned = true;
+                }
+              }
+            }
+
+            // 保存到 localStorage
+            (this as any).saveMenuUsageStats();
+
+            // 重新渲染菜单
+            menu.innerHTML = "";
+            this.rebuildMenuItems(menu, items, closeMenu, items);
+          }
+        });
+
+        row.insertBefore(dragZone, btn);
+      }
+
+      // 为每个菜单项添加置顶/取消置顶按钮
+      const pinBtn = document.createElement("button");
+      pinBtn.className = "zion-pin-button";
+      pinBtn.type = "button";
+
+      const cmd = it.command || "";
+      const isDefaultPinned = this.DEFAULT_PINNED_COMMANDS.includes(cmd);
+      const canTogglePin = cmd.trim().length > 0;
+
+      // 更新置顶按钮状态
+      const updatePinButtonState = () => {
+        if (!canTogglePin) return;
+        const menuKey = `editor/context:${cmd}`;
+        const stats = this.menuUsageStats[menuKey];
+        const currentPinned = typeof stats?.pinned === "boolean" ? stats.pinned : !!it.pinned || isDefaultPinned;
+
+        if (currentPinned) {
+          pinBtn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/>
+            </svg>
+          `;
+          pinBtn.style.color = "var(--accent, #007acc)";
+        } else {
+          pinBtn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z" fill="none" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          `;
+          pinBtn.style.color = "var(--fg, #333)";
+        }
+      };
+
+      updatePinButtonState();
+
+      // 鼠标悬停时显示置顶按钮
+      row.addEventListener("mouseenter", () => {
+        pinBtn.style.opacity = canTogglePin ? "1" : "0";
+      });
+      row.addEventListener("mouseleave", () => {
+        pinBtn.style.opacity = "0";
+      });
+
+      // 置顶/取消置顶点击事件
+      pinBtn.addEventListener("click", (e: MouseEvent) => {
+        e.stopPropagation();
+        e.preventDefault();
+
+        if (!canTogglePin) {
+          return;
+        }
+
+        const menuKey = `editor/context:${cmd}`;
+
+        if (!this.menuUsageStats[menuKey]) {
+          this.menuUsageStats[menuKey] = {
+            clickCount: 0,
+            lastClickTime: 0,
+            pinned: !!it.pinned || isDefaultPinned
+          };
+        }
+
+        // 切换置顶状态
+        this.menuUsageStats[menuKey].pinned = !this.menuUsageStats[menuKey].pinned;
+
+        // 如果置顶，设置一个合理的order
+        if (this.menuUsageStats[menuKey].pinned) {
+          this.menuUsageStats[menuKey].customOrder = this.menuUsageStats[menuKey].customOrder ?? 50;
+        }
+
+        // 保存到 localStorage
+        (this as any).saveMenuUsageStats();
+
+        // 重新渲染菜单
+        const sorted = this.sortMenuItems(items, "editor/context");
+        menu.innerHTML = "";
+        this.rebuildMenuItems(menu, sorted, closeMenu, sorted);
+      });
+
+      // 防止置顶按钮触发菜单点击
+      pinBtn.addEventListener("mousedown", (e: MouseEvent) => {
+        e.stopPropagation();
+      });
+
+      row.appendChild(pinBtn);
+
       menu.appendChild(row);
     }
 
     return menu;
+  }
+
+  // 重新构建菜单项（用于拖拽后刷新）
+  private rebuildMenuItems(menu: HTMLDivElement, items: MenuItem[], closeMenu: () => void, filtered: MenuItem[]): void {
+    const isPinnedItem = (item: MenuItem) => {
+      const cmd = item.command || "";
+      if (!cmd) return false;
+      const menuKey = `editor/context:${cmd}`;
+      const stats = this.menuUsageStats[menuKey];
+      if (typeof stats?.pinned === "boolean") return stats.pinned;
+      return !!item.pinned || this.DEFAULT_PINNED_COMMANDS.includes(cmd);
+    };
+
+    let pinnedCount = 0;
+    for (const it of filtered) {
+      if (!isPinnedItem(it)) break;
+      pinnedCount++;
+    }
+
+    const dragAreaSeparator =
+      pinnedCount > 0 && pinnedCount < filtered.length ? document.createElement("div") : null;
+    if (dragAreaSeparator) {
+      dragAreaSeparator.className = "zion-drag-area-separator";
+    }
+
+    for (let i = 0; i < filtered.length; i++) {
+      const it = filtered[i];
+
+      if (dragAreaSeparator && i === pinnedCount) {
+        menu.appendChild(dragAreaSeparator);
+      }
+
+      const row = document.createElement("div");
+      const hasKids = !!it.submenu && Array.isArray(it.submenu) && it.submenu.length > 0;
+      row.className = hasKids ? "zion-context-menu-row has-submenu" : "zion-context-menu-row";
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "zion-context-menu-item";
+      const span = document.createElement("span");
+      span.textContent = it.title || it.command || "";
+      btn.appendChild(span);
+      btn.setAttribute("role", "menuitem");
+
+      if (hasKids) {
+        // ... 子菜单处理逻辑（与之前相同）
+        btn.setAttribute("aria-haspopup", "menu");
+        btn.setAttribute("aria-expanded", "false");
+        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu);
+        submenu.classList.add("zion-context-submenu");
+        submenu.style.position = "fixed";
+        submenu.style.display = "none";
+        row.appendChild(submenu);
+      } else {
+        btn.onclick = () => {
+          const cmd = it.command;
+          if (!cmd) return;
+          try {
+            this.executeCommand(cmd);
+            // 记录点击统计
+            const menuKey = `editor/context:${cmd}`;
+            if (this.menuUsageStats[menuKey]) {
+              this.menuUsageStats[menuKey].clickCount++;
+              this.menuUsageStats[menuKey].lastClickTime = Date.now();
+              // 保存统计信息
+              (this as any).saveMenuUsageStats();
+            }
+          } finally {
+            closeMenu();
+          }
+        };
+      }
+
+      row.appendChild(btn);
+
+      // 添加拖拽手柄（仅对置顶区域）
+      const isPinned = isPinnedItem(it);
+      if (isPinned) {
+        row.classList.add("has-drag-zone");
+
+        // 创建左侧拖拽区域
+        const dragZone = document.createElement("div");
+        dragZone.className = "zion-drag-zone";
+
+        // 添加拖拽图标
+        const dragIcon = document.createElement("div");
+        dragIcon.innerHTML = `
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="3" cy="2" r="1.5" fill="currentColor"/>
+            <circle cx="9" cy="2" r="1.5" fill="currentColor"/>
+            <circle cx="3" cy="6" r="1.5" fill="currentColor"/>
+            <circle cx="9" cy="6" r="1.5" fill="currentColor"/>
+            <circle cx="3" cy="10" r="1.5" fill="currentColor"/>
+            <circle cx="9" cy="10" r="1.5" fill="currentColor"/>
+          </svg>
+        `;
+        dragZone.appendChild(dragIcon);
+
+        // 拖拽事件
+        row.setAttribute("draggable", "true");
+        row.dataset.menuIndex = String(i);
+        row.dataset.command = it.command || '';
+
+        // 防止点击按钮时触发拖拽
+        btn.addEventListener("mousedown", () => {
+          row.setAttribute("draggable", "false");
+        });
+        btn.addEventListener("mouseup", () => {
+          row.setAttribute("draggable", "true");
+        });
+
+        row.addEventListener("dragstart", (e: DragEvent) => {
+          row.style.opacity = "0.5";
+          dragZone.style.cursor = "grabbing";
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", i.toString());
+          }
+        });
+
+        row.addEventListener("dragend", () => {
+          row.style.opacity = "1";
+          dragZone.style.cursor = "grab";
+        });
+
+        row.addEventListener("dragover", (e: DragEvent) => {
+          e.preventDefault();
+          if (e.dataTransfer) {
+            e.dataTransfer.dropEffect = "move";
+          }
+        });
+
+        row.addEventListener("dragenter", (e: DragEvent) => {
+          const targetRow = (e.currentTarget as HTMLElement);
+          if (!targetRow.querySelector(".zion-drag-zone")) return;
+          targetRow.classList.add("is-drop-target");
+        });
+
+        row.addEventListener("dragleave", (e: DragEvent) => {
+          const targetRow = (e.currentTarget as HTMLElement);
+          targetRow.classList.remove("is-drop-target");
+        });
+
+        row.addEventListener("drop", (e: DragEvent) => {
+          e.preventDefault();
+          const targetRow = (e.currentTarget as HTMLElement);
+          targetRow.classList.remove("is-drop-target");
+
+          const fromIndex = parseInt(e.dataTransfer?.getData("text/plain") || "-1");
+          const toIndex = i;
+
+          if (fromIndex >= 0 && fromIndex !== toIndex && toIndex < pinnedCount) {
+            // 交换位置
+            const temp = filtered[fromIndex];
+            filtered.splice(fromIndex, 1);
+            filtered.splice(toIndex, 0, temp);
+
+            // 更新 customOrder
+            for (let j = 0; j < pinnedCount; j++) {
+              const item = filtered[j];
+              if (item.command) {
+                const menuKey = `editor/context:${item.command}`;
+                if (this.menuUsageStats[menuKey]) {
+                  this.menuUsageStats[menuKey].customOrder = j * 10;
+                  this.menuUsageStats[menuKey].pinned = true;
+                }
+              }
+            }
+
+            // 保存到 localStorage
+            (this as any).saveMenuUsageStats();
+
+            // 重新渲染菜单
+            menu.innerHTML = "";
+            this.rebuildMenuItems(menu, items, closeMenu, filtered);
+          }
+        });
+
+        row.insertBefore(dragZone, btn);
+      }
+
+      // 为每个菜单项添加置顶/取消置顶按钮
+      const pinBtn = document.createElement("button");
+      pinBtn.className = "zion-pin-button";
+      pinBtn.type = "button";
+
+      const cmd = it.command || "";
+      const isDefaultPinned = this.DEFAULT_PINNED_COMMANDS.includes(cmd);
+      const canTogglePin = cmd.trim().length > 0;
+
+      // 更新置顶按钮状态
+      const updatePinButtonState = () => {
+        if (!canTogglePin) return;
+        const menuKey = `editor/context:${cmd}`;
+        const stats = this.menuUsageStats[menuKey];
+        const currentPinned = typeof stats?.pinned === "boolean" ? stats.pinned : !!it.pinned || isDefaultPinned;
+
+        if (currentPinned) {
+          pinBtn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/>
+            </svg>
+          `;
+          pinBtn.style.color = "var(--accent, #007acc)";
+        } else {
+          pinBtn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z" fill="none" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          `;
+          pinBtn.style.color = "var(--fg, #333)";
+        }
+      };
+
+      updatePinButtonState();
+
+      // 鼠标悬停时显示置顶按钮
+      row.addEventListener("mouseenter", () => {
+        pinBtn.style.opacity = canTogglePin ? "1" : "0";
+      });
+      row.addEventListener("mouseleave", () => {
+        pinBtn.style.opacity = "0";
+      });
+
+      // 置顶/取消置顶点击事件
+      pinBtn.addEventListener("click", (e: MouseEvent) => {
+        e.stopPropagation();
+        e.preventDefault();
+
+        if (!canTogglePin) {
+          return;
+        }
+
+        const menuKey = `editor/context:${cmd}`;
+
+        if (!this.menuUsageStats[menuKey]) {
+          this.menuUsageStats[menuKey] = {
+            clickCount: 0,
+            lastClickTime: 0,
+            pinned: !!it.pinned || isDefaultPinned
+          };
+        }
+
+        // 切换置顶状态
+        this.menuUsageStats[menuKey].pinned = !this.menuUsageStats[menuKey].pinned;
+
+        // 如果置顶，设置一个合理的order
+        if (this.menuUsageStats[menuKey].pinned) {
+          this.menuUsageStats[menuKey].customOrder = this.menuUsageStats[menuKey].customOrder ?? 50;
+        }
+
+        // 保存到 localStorage
+        (this as any).saveMenuUsageStats();
+
+        // 重新渲染菜单
+        const sorted = this.sortMenuItems(filtered, "editor/context");
+        menu.innerHTML = "";
+        this.rebuildMenuItems(menu, sorted, closeMenu, sorted);
+      });
+
+      // 防止置顶按钮触发菜单点击
+      pinBtn.addEventListener("mousedown", (e: MouseEvent) => {
+        e.stopPropagation();
+      });
+
+      row.appendChild(pinBtn);
+
+      menu.appendChild(row);
+    }
   }
 
   private showEditorContextMenuAt(x: number, y: number) {
@@ -444,6 +968,9 @@ class Registry {
 
     const filtered = this.filterMenuTree(items, { hasSelection, editorFocus });
     if (filtered.length === 0) return;
+
+    // 应用排序
+    const sorted = this.sortMenuItems(filtered, "editor/context");
 
     if (this.contextMenuEl) {
       try {
@@ -465,7 +992,7 @@ class Registry {
       document.removeEventListener("keydown", escHandler);
     };
 
-    const menu = this.buildContextMenuPanel(filtered, closeMenu);
+    const menu = this.buildContextMenuPanel(sorted, closeMenu);
     menu.style.position = "fixed";
     menu.style.zIndex = "99999";
 
@@ -518,12 +1045,40 @@ class Registry {
   registerMenu(menuId: string, item: MenuItem): Disposable {
     if (!this.menus[menuId]) this.menus[menuId] = [];
     this.menus[menuId].push(item);
+
+    // 生成菜单项的唯一键（基于 menuId 和 command）
+    const menuKey = `${menuId}:${item.command || ''}`;
+
+    // 初始化使用统计
+    if (!this.menuUsageStats[menuKey]) {
+      this.menuUsageStats[menuKey] = {
+        clickCount: 0,
+        lastClickTime: 0,
+        pinned: item.pinned || false,
+        customOrder: item.order,
+        groupId: item.group
+      };
+    } else {
+      // 更新现有统计信息
+      if (item.pinned !== undefined) {
+        this.menuUsageStats[menuKey].pinned = item.pinned;
+      }
+      if (item.order !== undefined) {
+        this.menuUsageStats[menuKey].customOrder = item.order;
+      }
+      if (item.group !== undefined) {
+        this.menuUsageStats[menuKey].groupId = item.group;
+      }
+    }
+
     return {
       dispose: () => {
         const arr = this.menus[menuId];
         if (!arr) return;
         const idx = arr.indexOf(item);
         if (idx >= 0) arr.splice(idx, 1);
+        // 删除统计信息
+        delete this.menuUsageStats[menuKey];
       }
     };
   }
@@ -558,6 +1113,70 @@ class Registry {
         if (i >= 0) this.messageContribs.splice(i, 1);
       }
     };
+  }
+
+  // 对菜单项进行排序
+  private sortMenuItems(items: MenuItem[], menuId: string): MenuItem[] {
+    const itemsWithStats = items.map((item, index) => {
+      const cmd = item.command || "";
+      const menuKey = `${menuId}:${cmd}`;
+
+      const isDefaultPinned = this.DEFAULT_PINNED_COMMANDS.includes(cmd);
+      const stats = this.menuUsageStats[menuKey] || {
+        clickCount: 0,
+        lastClickTime: 0,
+        pinned: undefined,
+        customOrder: item.order,
+        groupId: item.group
+      };
+
+      const pinned =
+        typeof (stats as any).pinned === "boolean" ? (stats as any).pinned : !!item.pinned || isDefaultPinned;
+
+      return {
+        ...item,
+        ...stats,
+        pinned,
+        isDefaultPinned,
+        originalIndex: index
+      };
+    });
+
+    // 排序函数
+    const compare = (a: any, b: any) => {
+      const aDefaultPinnedActive = a.isDefaultPinned && a.pinned;
+      const bDefaultPinnedActive = b.isDefaultPinned && b.pinned;
+
+      if (aDefaultPinnedActive && bDefaultPinnedActive) {
+        const aIndex = this.DEFAULT_PINNED_COMMANDS.indexOf(a.command);
+        const bIndex = this.DEFAULT_PINNED_COMMANDS.indexOf(b.command);
+        return aIndex - bIndex;
+      }
+
+      if (aDefaultPinnedActive) return -1;
+      if (bDefaultPinnedActive) return 1;
+
+      // 用户置顶的命令在前面
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+
+      // 都是置顶的，按照自定义order排序
+      if (a.pinned && b.pinned) {
+        const aOrder = a.customOrder ?? 50;
+        const bOrder = b.customOrder ?? 50;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+      }
+
+      // 都没有置顶，按照自定义order排序
+      const aOrder = a.customOrder ?? 50;
+      const bOrder = b.customOrder ?? 50;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+
+      // 最后按照原始索引排序
+      return a.originalIndex - b.originalIndex;
+    };
+
+    return itemsWithStats.sort(compare).map(({ clickCount, lastClickTime, isDefaultPinned, originalIndex, ...item }) => item);
   }
 
   // models: provider registry (placeholder)
@@ -1006,6 +1625,32 @@ const registry = new Registry();
   };
   (window as any).zion = api;
 })();
+
+// ============ 菜单使用统计的辅助方法 ============
+
+// 保存菜单使用统计到 localStorage
+(registry as any).saveMenuUsageStats = function() {
+  try {
+    localStorage.setItem('zion.menuUsageStats', JSON.stringify((registry as any).menuUsageStats || {}));
+  } catch (e) {
+    console.error('[zion] 保存菜单使用统计失败', e);
+  }
+};
+
+// 加载菜单使用统计从 localStorage
+(registry as any).loadMenuUsageStats = function() {
+  try {
+    const raw = localStorage.getItem('zion.menuUsageStats');
+    if (raw) {
+      (registry as any).menuUsageStats = JSON.parse(raw) || {};
+    }
+  } catch (e) {
+    console.warn('[zion] 加载菜单使用统计失败', e);
+  }
+};
+
+// 加载统计
+(registry as any).loadMenuUsageStats();
 
 export function attachEditor(core: EditorCore) {
   (registry as any).attachEditor(core);

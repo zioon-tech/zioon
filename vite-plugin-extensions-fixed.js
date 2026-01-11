@@ -22,7 +22,7 @@ export function zionExtensionsPlugin() {
       
       // 添加extensions作为额外入口
       const extensionsInput = {};
-      const extensionsDir = resolve(process.cwd(), 'extensions');
+      const extensionsDir = resolve(globalThis.process.cwd(), 'extensions');
 
       if (!existsSync(extensionsDir)) {
         return config;
@@ -89,7 +89,7 @@ export function zionExtensionsPlugin() {
         }
         
         if (mainPath) {
-          const relativePath = relative(process.cwd(), mainPath);
+          const relativePath = relative(globalThis.process.cwd(), mainPath);
           const entryName = `extensions/${extName}/main`;
           extensionsInput[entryName] = mainPath;
           console.log(`添加插件入口: ${entryName} -> ${relativePath}`);
@@ -150,12 +150,12 @@ export function zionExtensionsPlugin() {
         
         if (existsSync(pluginNodeModules)) {
           try {
-            const resolved = require.resolve(source, { paths: [importerDir] });
+            const resolved = require.resolve(source, { paths: [globalThis.process.cwd(), importerDir] });
             return resolved;
           } catch (e) {
             // 如果插件node_modules中没有，回退到项目根目录的node_modules
             try {
-              const resolved = require.resolve(source, { paths: [process.cwd()] });
+              const resolved = require.resolve(source, { paths: [globalThis.process.cwd()] });
               return resolved;
             } catch (e2) {
               // 继续使用默认解析
@@ -178,7 +178,7 @@ export function zionExtensionsPlugin() {
                                    code.includes('import ') || code.includes('require(');
         
         if (hasExternalImports) {
-          console.log(`处理插件文件: ${relative(process.cwd(), id)}`);
+          console.log(`处理插件文件: ${relative(globalThis.process.cwd(), id)}`);
         }
         
         return {
@@ -206,7 +206,7 @@ export function zionExtensionsPlugin() {
       
       depsToInclude.forEach(dep => {
         try {
-          require.resolve(dep, { paths: [process.cwd()] });
+          require.resolve(dep, { paths: [globalThis.process.cwd()] });
         } catch {
           return;
         }

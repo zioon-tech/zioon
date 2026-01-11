@@ -1225,7 +1225,7 @@ html, body {
   color: var(--fg);
   border: none;
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 6px 32px 6px 8px;
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
@@ -1251,7 +1251,7 @@ html, body {
 }
 
 .zion-context-menu-row.has-submenu .zion-context-menu-item {
-  padding-right: 22px;
+  padding-right: 52px;
 }
 
 .zion-context-menu-row.has-submenu .zion-context-menu-item::after {
@@ -1261,6 +1261,10 @@ html, body {
   top: 50%;
   transform: translateY(-50%);
   opacity: 0.8;
+}
+
+.zion-context-menu-row.has-submenu .zion-pin-button {
+  right: 26px;
 }
 
 .zion-context-menu-item:hover,
@@ -1405,3 +1409,116 @@ body.zion-sessions-no-transitions .zion-session-row * {
 }
 /* 状态颜色：回答中用 accent，小圆点完成用 ok 绿色 */
 .zion-session-status-badge.streaming { color: var(--accent); }
+
+/* ===== Context Menu Drag Zone ===== */
+.zion-drag-zone {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  background: transparent;
+  color: var(--fg);
+  opacity: 0.6;
+  border-radius: 6px 0 0 6px;
+  border-right: 1px solid var(--border);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.zion-context-menu-row.has-drag-zone:hover .zion-drag-zone {
+  opacity: 1;
+  background: rgba(248,248,242,0.04);
+}
+
+.zion-drag-zone:active {
+  cursor: grabbing;
+  opacity: 1;
+}
+
+:root[data-theme="light"] .zion-context-menu-row.has-drag-zone:hover .zion-drag-zone {
+  background: rgba(0,0,0,0.04);
+}
+
+.zion-drag-zone svg {
+  opacity: 0.55;
+  transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.zion-context-menu-row.has-drag-zone:hover .zion-drag-zone svg {
+  opacity: 0.9;
+}
+
+/* Drag area separator */
+.zion-drag-area-separator {
+  position: relative;
+  margin: 6px 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.zion-drag-area-separator::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 10px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+/* Pin button */
+.zion-pin-button {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.zion-pin-button:hover {
+  background: rgba(98, 114, 164, 0.1);
+  transform: translateY(-50%) scale(1.1);
+}
+
+:root[data-theme="light"] .zion-pin-button:hover {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+/* Shake animation for non-pinnable items */
+@keyframes shake {
+  0%, 100% { transform: translateY(-50%) translateX(0); }
+  20%, 60% { transform: translateY(-50%) translateX(-3px); }
+  40%, 80% { transform: translateY(-50%) translateX(3px); }
+}
+
+/* Adjust menu item padding to accommodate drag zone */
+.zion-context-menu-row.has-drag-zone .zion-context-menu-item {
+  padding-left: 32px !important;
+}
+
+.zion-context-menu-row.is-drop-target .zion-context-menu-item {
+  background: rgba(248,248,242,0.06);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+}
+
+:root[data-theme="light"] .zion-context-menu-row.is-drop-target .zion-context-menu-item {
+  background: rgba(0,0,0,0.06);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05);
+}

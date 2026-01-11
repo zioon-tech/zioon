@@ -2219,6 +2219,26 @@ function mountSessionsSidebar() {
   }
 }
 
+/** ========== Page Title ========== */
+const DEFAULT_PAGE_TITLE = "Zion Next (CM6) Playground";
+
+function updatePageTitle(id) {
+  const sessionId = id || window.zion.state.get("sessions.currentId");
+  if (!sessionId) {
+    document.title = DEFAULT_PAGE_TITLE;
+    return;
+  }
+  const meta = loadMeta(sessionId);
+  const title = meta?.title;
+  if (!title || isDefaultTitle(title)) {
+    // 如果没有自定义标题，使用默认标题
+    document.title = DEFAULT_PAGE_TITLE;
+  } else {
+    // 使用会话标题作为页面标题
+    document.title = title;
+  }
+}
+
 /** ========== Status Bar ========== */
 function refreshStatusBar() {
   const id = window.zion.state.get("sessions.currentId");
@@ -2230,6 +2250,8 @@ function refreshStatusBar() {
     tooltip: `Updated: ${fmtTime(meta.updatedAt)}; Size: ${meta.size}`,
     onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleSidebar")
   });
+  // 同步页面标题
+  updatePageTitle(id);
 }
 
 /** ========== CM6 Plugin (auto-save) ========== */
@@ -2480,6 +2502,9 @@ export async function activate(ctx) {
   window.zion.state.set("sessions.currentId", currentId);
   window.zion.state.set("sessions.catalog", getIndex());
 
+  // 初始化页面标题
+  updatePageTitle(currentId);
+
   // 将当前会话内容加载到编辑器
   const ed = window.zion.window.activeEditor;
   if (ed) {
@@ -2662,6 +2687,8 @@ export async function activate(ctx) {
     refreshStatusBar();
     try { mountSessionsSidebar(); } catch (e) { console.log("new session failed:", e)}
     postSaved(id, meta.updatedAt, meta.hash);
+    // 更新页面标题
+    updatePageTitle(id);
   });
   ctx.subscriptions.push(dNew);
 
@@ -2694,6 +2721,8 @@ export async function activate(ctx) {
     refreshStatusBar();
     try { mountSessionsSidebar(); } catch {}
     postSaved(id, meta.updatedAt, meta.hash);
+    // 更新页面标题
+    updatePageTitle(id);
   });
   ctx.subscriptions.push(dSaveAsNew);
 
@@ -2719,6 +2748,8 @@ export async function activate(ctx) {
     window.zion.state.set("sessions.catalog", getIndex());
     refreshStatusBar();
     try { mountSessionsSidebar(); } catch {}
+    // 更新页面标题
+    updatePageTitle(id);
     return true;
   });
   ctx.subscriptions.push(dRename);
@@ -2746,6 +2777,8 @@ export async function activate(ctx) {
     }
     refreshStatusBar();
     try { mountSessionsSidebar(); } catch {}
+    // 更新页面标题（如果当前会话被删除，会切换到新会话）
+    updatePageTitle();
     return true;
   });
   ctx.subscriptions.push(dDelete);
@@ -3044,6 +3077,8 @@ export async function activate(ctx) {
     refreshStatusBar();
     try { mountSessionsSidebar(); } catch {}
     postSaved(newId, meta.updatedAt, meta.hash);
+    // 更新页面标题
+    updatePageTitle(newId);
     return true;
   });
   ctx.subscriptions.push(dClone);
