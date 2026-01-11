@@ -524,8 +524,20 @@ export async function activate(ctx) {
   let slashDocKeydownAttached = false;
   let slashDocMousedownAttached = false;
   let slashDocMousemoveAttached = false;
+  let slashDocCompositionAttached = false;
+  let slashCompositionActive = false;
   let slashLastMouseMoveAt = 0;
   let lastEditorView = null;
+
+  const onSlashGlobalCompositionStart = () => {
+    if (!isSlashPanelOpen()) return;
+    slashCompositionActive = true;
+  };
+
+  const onSlashGlobalCompositionEnd = () => {
+    if (!isSlashPanelOpen()) return;
+    slashCompositionActive = false;
+  };
 
   const onSlashGlobalMouseMove = (e) => {
     if (!isSlashPanelOpen()) return;
@@ -941,6 +953,12 @@ export async function activate(ctx) {
       document.addEventListener('mousemove', onSlashGlobalMouseMove, true);
       slashDocMousemoveAttached = true;
     }
+
+    if (!slashDocCompositionAttached) {
+      document.addEventListener('compositionstart', onSlashGlobalCompositionStart, true);
+      document.addEventListener('compositionend', onSlashGlobalCompositionEnd, true);
+      slashDocCompositionAttached = true;
+    }
   };
 
   const onSlashGlobalMouseDown = (e) => {
@@ -1012,7 +1030,8 @@ export async function activate(ctx) {
       if (!cmd) return;
       e.preventDefault();
       e.stopPropagation();
-      selectCommand(cmd);
+      const deferClean = slashCompositionActive || !!e.isComposing || (e.keyCode === 229);
+      selectCommand(cmd, { deferClean });
     }
   };
 
@@ -1039,9 +1058,31 @@ export async function activate(ctx) {
       document.removeEventListener('mousemove', onSlashGlobalMouseMove, true);
       slashDocMousemoveAttached = false;
     }
+
+    if (slashDocCompositionAttached) {
+      document.removeEventListener('compositionstart', onSlashGlobalCompositionStart, true);
+      document.removeEventListener('compositionend', onSlashGlobalCompositionEnd, true);
+      slashDocCompositionAttached = false;
+    }
+
+    slashCompositionActive = false;
   };
 
-  const selectCommand = async (cmd) => {
+  const waitForNextFrame = () => {
+    return new Promise((resolve) => {
+      const raf = globalThis.requestAnimationFrame;
+      if (typeof raf === 'function') {
+        raf(() => raf(resolve));
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+  };
+
+  const selectCommand = async (cmd, opts) => {
+    const deferClean = (opts && Object.prototype.hasOwnProperty.call(opts, 'deferClean'))
+      ? !!opts.deferClean
+      : slashCompositionActive;
     if (cmd && cmd.__navBack) {
       if (!slashNavStack.length) {
         slashNavMode = 'root';
@@ -1087,12 +1128,21 @@ export async function activate(ctx) {
     hideSlashPanel();
 
     const editor = window.zion?.window?.activeEditor || null;
+
+    try {
+      editor?.focus?.();
+    } catch {}
+
     let params = {};
 
     if (cmd.params && cmd.params.length > 0) {
       const inputParams = await showParameterDialog(cmd);
       if (!inputParams) return;
       params = inputParams;
+    }
+
+    if (deferClean) {
+      await waitForNextFrame();
     }
 
     cleanSlashTrigger();
