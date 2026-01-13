@@ -9,6 +9,8 @@ const LS_AUTO = "zion.autosave";
 const LS_SIDEBAR_PIN = "zion.sessions.sidebarPinned";
 const LS_SIDEBAR_W = "zion.sessions.sidebarWidth";
 const LS_FOLDER_OPEN = "zion.sessions.folderOpen";
+const URL_SESSION = "zionSession";
+const URL_SESSION_ALT = "session";
 function now() {
   return Date.now();
 }
@@ -315,10 +317,50 @@ function rebuildIndexFromTree() {
   const flat = flattenTree(tree);
   setIndex(flat);
 }
+function getSessionIdFromURL() {
+  try {
+    const url = new URL(window.location.href);
+    const q = url.searchParams.get(URL_SESSION) || url.searchParams.get(URL_SESSION_ALT);
+    if (q) return String(q);
+    const hash = (url.hash || "").replace(/^#/, "");
+    if (!hash) return null;
+    const hp = new window.URLSearchParams(hash.startsWith("?") ? hash.slice(1) : hash);
+    const h = hp.get(URL_SESSION) || hp.get(URL_SESSION_ALT);
+    return h ? String(h) : null;
+  } catch {
+    return null;
+  }
+}
+function setSessionIdToURL(id, opts) {
+  try {
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set(URL_SESSION, String(id));
+    else url.searchParams.delete(URL_SESSION);
+    const next = url.toString();
+    const push = !!opts?.push;
+    const st = { ...(window.history.state || {}), zionSessionId: id || null };
+    if (push) window.history.pushState(st, "", next);
+    else window.history.replaceState(st, "", next);
+  } catch {}
+}
+function buildSessionURL(id) {
+  try {
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set(URL_SESSION, String(id));
+    else url.searchParams.delete(URL_SESSION);
+    url.searchParams.delete(URL_SESSION_ALT);
+    return url.toString();
+  } catch {
+    return window.location.href;
+  }
+}
 function getLastActiveId() {
+  const fromUrl = getSessionIdFromURL();
+  if (fromUrl) return fromUrl;
   return localStorage.getItem(LS_LAST) || null;
 }
-function setLastActiveId(id) {
+function setLastActiveId(id, opts) {
+  try { setSessionIdToURL(id, opts); } catch {}
   try { localStorage.setItem(LS_LAST, id); } catch {}
 }
 
@@ -1036,6 +1078,15 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
         return it;
       };
 
+      menu.appendChild(mkItem("Open in New Tab", () => {
+        const u = buildSessionURL(item.id);
+        const a = document.createElement("a");
+        a.href = u;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.click();
+      }));
+
       menu.appendChild(mkItem("Rename", () => {
         const nv = prompt("Rename session:", item.title || "");
         if (nv && nv.trim()) {
@@ -1452,6 +1503,21 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
             srow.appendChild(sMenu);
             srow.addEventListener("click", () => { sMenu.style.display = "none"; });
 
+            const bOpenNewTab = mkIconBtn(
+              '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 4H4.5A1.5 1.5 0 0 0 3 5.5v6A1.5 1.5 0 0 0 4.5 13h6A1.5 1.5 0 0 0 12 11.5V10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9 3h4v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3L8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+              "Open in new tab",
+              (ev) => {
+                ev.stopPropagation();
+                const u = buildSessionURL(ch.id);
+                const a = document.createElement("a");
+                a.href = u;
+                a.target = "_blank";
+                a.rel = "noopener noreferrer";
+                a.click();
+              }
+            );
+            bOpenNewTab.style.opacity = "0";
+
             const bMore2 = mkIconBtn(
               '<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="4" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="12" cy="8" r="1.5" fill="currentColor"/></svg>',
               "More actions",
@@ -1536,6 +1602,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               applyBadgeBg(statusBadge);
             }
 
+            rightWrap.appendChild(bOpenNewTab);
             rightWrap.appendChild(bMore2);
             if (statusBadge) rightWrap.appendChild(statusBadge);
 
@@ -1544,12 +1611,14 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               const reserve = (rightWrap.offsetWidth || 0) + 8;
               srow.style.paddingRight = reserve + "px";
               rightWrap.style.pointerEvents = "auto";
+              bOpenNewTab.style.opacity = "1";
               bMore2.style.opacity = "1";
               try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
             srow.addEventListener("mouseleave", () => {
               srow.style.paddingRight = "";
               rightWrap.style.pointerEvents = "none";
+              bOpenNewTab.style.opacity = "0";
               bMore2.style.opacity = "0";
               try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
@@ -1557,12 +1626,14 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               const reserve = (rightWrap.offsetWidth || 0) + 8;
               srow.style.paddingRight = reserve + "px";
               rightWrap.style.pointerEvents = "auto";
+              bOpenNewTab.style.opacity = "1";
               bMore2.style.opacity = "1";
               try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
             srow.addEventListener("blur", () => {
               srow.style.paddingRight = "";
               rightWrap.style.pointerEvents = "none";
+              bOpenNewTab.style.opacity = "0";
               bMore2.style.opacity = "0";
               try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
@@ -1593,7 +1664,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
             });
 
             srow.addEventListener("click", (ev) => {
-              if (bMore2.contains(ev.target) || sMenu.contains(ev.target)) return;
+              if (bOpenNewTab.contains(ev.target) || bMore2.contains(ev.target) || sMenu.contains(ev.target)) return;
               const anchorId = getLastSelectedId();
               if (ev.shiftKey) {
                 if (anchorId) {
@@ -2487,6 +2558,11 @@ export async function activate(ctx) {
   // 注册会话相关工具（供大模型使用）
   try { registerSessionTools(); } catch {}
   let currentId = getLastActiveId() || getIndex()[0]?.id || null;
+  try {
+    if (currentId && !findInIndex(currentId)) {
+      currentId = getIndex()[0]?.id || null;
+    }
+  } catch {}
   if (!currentId) {
     // 没有会话，创建一个空的
     const id = genId();
@@ -2667,7 +2743,7 @@ export async function activate(ctx) {
     console.info("[sessions] new: creating", { id, parentId, title: meta.title });
     insertSessionNode(id, parentId, meta.title);
     rebuildIndexFromTree();
-    setLastActiveId(id);
+    setLastActiveId(id, { push: true });
     window.zion.state.set("sessions.currentId", id);
     window.zion.state.set("sessions.catalog", getIndex());
     try {
@@ -2714,7 +2790,7 @@ export async function activate(ctx) {
     const parentId = parent?.id || "root";
     insertSessionNode(id, parentId, meta.title);
     rebuildIndexFromTree();
-    setLastActiveId(id);
+    setLastActiveId(id, { push: true });
     window.zion.state.set("sessions.currentId", id);
     window.zion.state.set("sessions.catalog", getIndex());
     try { applyAnnotationsForSession(id); } catch {}
@@ -2784,7 +2860,9 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dDelete);
 
   // Switch
-  const dSwitch = window.zion.commands.registerCommand("zion.sessions.switch", async (id) => {
+  const dSwitch = window.zion.commands.registerCommand("zion.sessions.switch", async (idOrOpts, maybeOpts) => {
+    const id = typeof idOrOpts === "string" ? idOrOpts : idOrOpts?.id;
+    const opts = typeof idOrOpts === "string" ? (maybeOpts || {}) : (idOrOpts || {});
     if (!id) return false;
     // Persist annotations of current session before switching
     try {
@@ -2811,7 +2889,9 @@ export async function activate(ctx) {
         try { maybeUpdateAutoTitle(curPrev); } catch {}
       }
     } catch {}
-    setLastActiveId(id);
+    if (opts.writeUrl !== false) {
+      setLastActiveId(id, { push: opts.pushUrl !== false });
+    }
     window.zion.state.set("sessions.currentId", id);
     try {
       const text = await loadDocAsync(id);
@@ -2830,6 +2910,27 @@ export async function activate(ctx) {
     return true;
   });
   ctx.subscriptions.push(dSwitch);
+
+  try {
+    const onUrlChange = () => {
+      try {
+        const nextId = getSessionIdFromURL();
+        if (!nextId) return;
+        const curId = window.zion.state.get("sessions.currentId");
+        if (curId === nextId) return;
+        if (!findInIndex(nextId)) return;
+        window.zion.commands.executeCommand("zion.sessions.switch", { id: nextId, writeUrl: false, pushUrl: false });
+      } catch {}
+    };
+    window.addEventListener("popstate", onUrlChange);
+    window.addEventListener("hashchange", onUrlChange);
+    ctx.subscriptions.push({
+      dispose() {
+        try { window.removeEventListener("popstate", onUrlChange); } catch {}
+        try { window.removeEventListener("hashchange", onUrlChange); } catch {}
+      }
+    });
+  } catch {}
 
   // ===== Session doc APIs for background streaming =====
   const dGetDoc = window.zion.commands.registerCommand("zion.sessions.getDoc", (id) => {
@@ -3080,7 +3181,7 @@ export async function activate(ctx) {
     saveDoc(newId, text);
     saveMeta(newId, meta);
     upsertIndexEntry({ id: newId, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
-    setLastActiveId(newId);
+    setLastActiveId(newId, { push: true });
     window.zion.state.set("sessions.currentId", newId);
     window.zion.state.set("sessions.catalog", getIndex());
     window.zion.window.activeEditor?.setValue(text);
