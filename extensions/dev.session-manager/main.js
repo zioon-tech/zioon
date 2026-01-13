@@ -605,11 +605,18 @@ function setLastSelectedId(id) {
 }
 
 // Sidebar prefs
+function getTabStorage() {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return localStorage;
+  }
+}
 function getSidebarPinned() {
-  return localStorage.getItem(LS_SIDEBAR_PIN) === "1";
+  return getTabStorage().getItem(LS_SIDEBAR_PIN) === "1";
 }
 function setSidebarPinned(v) {
-  try { localStorage.setItem(LS_SIDEBAR_PIN, v ? "1" : "0"); } catch {}
+  try { getTabStorage().setItem(LS_SIDEBAR_PIN, v ? "1" : "0"); } catch {}
 }
 function getSidebarWidth() {
   const raw = localStorage.getItem(LS_SIDEBAR_W);
@@ -2707,7 +2714,7 @@ export async function activate(ctx) {
   } catch {}
 
   // 初始化侧边栏：默认首次启用时固定
-  if (localStorage.getItem(LS_SIDEBAR_PIN) == null) {
+  if (getTabStorage().getItem(LS_SIDEBAR_PIN) == null) {
     setSidebarPinned(true);
   }
   try { mountSessionsSidebar(); } catch {}
