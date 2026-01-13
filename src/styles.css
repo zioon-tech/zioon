@@ -1409,6 +1409,7 @@ body.zion-sessions-no-transitions .zion-session-row * {
 }
 /* 状态颜色：回答中用 accent，小圆点完成用 ok 绿色 */
 .zion-session-status-badge.streaming { color: var(--accent); }
+.zion-session-status-badge.ready { color: var(--ok); }
 
 /* ===== Context Menu Drag Zone ===== */
 .zion-drag-zone {
