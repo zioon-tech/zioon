@@ -375,33 +375,14 @@ export async function activate(ctx) {
 
     registerSlashCommand({
       id: 'markdown.codeblock',
-      trigger: ['codeblock', 'cb', '```'],
+      trigger: ['codeblock', 'code-block', 'cb', '```'],
       title: '代码块',
       description: '插入代码块',
       category: 'markdown',
       icon: '💻',
-      params: [
-        {
-          name: 'language',
-          type: 'select',
-          label: '语言',
-          options: [
-            { value: '', label: 'Plain Text' },
-            { value: 'javascript', label: 'JavaScript' },
-            { value: 'typescript', label: 'TypeScript' },
-            { value: 'python', label: 'Python' },
-            { value: 'java', label: 'Java' },
-            { value: 'bash', label: 'Bash' },
-            { value: 'json', label: 'JSON' },
-            { value: 'markdown', label: 'Markdown' }
-          ],
-          default: ''
-        }
-      ],
       execute: (params, editor) => {
         if (!editor) return;
-        const lang = params.language || '';
-        const codeblock = `\`\`\`${lang}\n\n\`\`\``;
+        const codeblock = `\`\`\`\n\n\`\`\``;
         editor.replaceSelection(codeblock);
         const cursor = editor.getCursor();
         editor.setCursor({ line: cursor.line - 1, ch: 0 });
