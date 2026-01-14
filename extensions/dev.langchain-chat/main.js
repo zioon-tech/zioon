@@ -484,7 +484,19 @@ export async function activate(ctx) {
       // 在进入链式调用之前，运行消息贡献者（如 Skills），以便按需注入 System 指令（渐进式披露）
       if (window.zion?.__runMessageContributors) {
         try {
+          let dbgCompression = false;
+          try {
+            dbgCompression = !!window.zion?.state?.get?.('compression.settings')?.debugLogging;
+          } catch {}
+          const beforeCount = Array.isArray(msgs) ? msgs.length : 0;
+          if (dbgCompression) {
+            console.log('[langchain-chat]', 'run contributors: pre (before send)', { stage: 'pre', messages: beforeCount });
+          }
           msgs = await window.zion.__runMessageContributors(msgs, "pre");
+          if (dbgCompression) {
+            const afterCount = Array.isArray(msgs) ? msgs.length : 0;
+            console.log('[langchain-chat]', 'run contributors: pre done', { stage: 'pre', beforeMessages: beforeCount, afterMessages: afterCount });
+          }
         } catch (e) {
           console.warn("[langchain-chat] pre contributors error:", e);
         }
@@ -627,6 +639,26 @@ export async function activate(ctx) {
       }
 
       while (true) {
+        if (window.zion?.__runMessageContributors) {
+          try {
+            let dbgCompression = false;
+            try {
+              dbgCompression = !!window.zion?.state?.get?.('compression.settings')?.debugLogging;
+            } catch {}
+            const beforeCount = Array.isArray(msgs) ? msgs.length : 0;
+            if (dbgCompression) {
+              console.log('[langchain-chat]', 'run contributors: post (before step)', { stage: 'post', messages: beforeCount });
+            }
+            msgs = await window.zion.__runMessageContributors(msgs, "post");
+            if (dbgCompression) {
+              const afterCount = Array.isArray(msgs) ? msgs.length : 0;
+              console.log('[langchain-chat]', 'run contributors: post done', { stage: 'post', beforeMessages: beforeCount, afterMessages: afterCount });
+            }
+          } catch (e) {
+            console.warn("[langchain-chat] post contributors error:", e);
+          }
+        }
+
         const step = await runStep(msgs);
         if (aborted) { finalize(); return; }
 

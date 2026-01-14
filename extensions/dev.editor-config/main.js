@@ -256,18 +256,62 @@ export async function activate(ctx) {
 
   // Minimap init: load persisted preference and delegate actual enabling to core via zion commands bridge.
   try {
-    let minV = true;
-    try {
-      const v = localStorage.getItem("zion.minimap");
-      if (v === "0" || v === "false") minV = false;
-      if (v === "1" || v === "true") minV = true;
-    } catch {}
-    window.zion.state.set("ui.minimapEnabled", minV);
-    try { window.zion.commands.executeCommand("zion.setMinimap", minV); } catch {}
+    const MINIMAP_KEY_GLOBAL = "zion.minimap";
+    const minimapKeyForSession = (sid) => sid ? `zion.minimap.session.${sid}` : MINIMAP_KEY_GLOBAL;
+    const getStoredBool = (key) => {
+      try {
+        const v = localStorage.getItem(key);
+        if (v == null) return undefined;
+        if (v === "0" || v === "false") return false;
+        if (v === "1" || v === "true") return true;
+        return undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    const getCurrentSessionId = () => {
+      try {
+        const sid = window.zion.state.get("sessions.currentId");
+        return sid ? String(sid) : "";
+      } catch {
+        return "";
+      }
+    };
+    const readMinimapPref = (sid) => {
+      const per = sid ? getStoredBool(minimapKeyForSession(sid)) : undefined;
+      if (typeof per === "boolean") return per;
+      const legacy = getStoredBool(MINIMAP_KEY_GLOBAL);
+      if (typeof legacy === "boolean") return legacy;
+      return true;
+    };
+    const persistMinimapPref = (sid, enabled) => {
+      try { localStorage.setItem(minimapKeyForSession(sid), enabled ? "1" : "0"); } catch {}
+    };
+    const applyMinimap = (enabled) => {
+      window.zion.state.set("ui.minimapEnabled", !!enabled);
+      try { window.zion.commands.executeCommand("zion.setMinimap", !!enabled); } catch {}
+    };
+    const applyMinimapForSession = (sid) => {
+      const v = readMinimapPref(sid);
+      applyMinimap(v);
+      return v;
+    };
+
+    const minV = applyMinimapForSession(getCurrentSessionId());
 
     // expose extension-level toggle that just calls the core bridge
     const dm = window.zion.commands.registerCommand("dev.editor.toggleMinimap", () => {
-      try { return window.zion.commands.executeCommand("zion.toggleMinimap"); } catch (e) { console.error(e); return false; }
+      try {
+        const sid = getCurrentSessionId();
+        const cur = !!window.zion.state.get("ui.minimapEnabled");
+        const next = !cur;
+        persistMinimapPref(sid, next);
+        window.zion.commands.executeCommand("zion.setMinimap", next);
+        return next;
+      } catch (e) {
+        console.error(e);
+        return false;
+      }
     });
     ctx.subscriptions.push(dm);
 
@@ -282,6 +326,7 @@ export async function activate(ctx) {
       ctx.subscriptions.push(minDisp);
       const minSub = window.zion.state.onDidChange("ui.minimapEnabled", (nv) => {
         try {
+          persistMinimapPref(getCurrentSessionId(), !!nv);
           window.zion.statusBar.registerItem({
             id: "dev.editor.minimap",
             text: `Minimap: ${nv ? "On" : "Off"}`,
@@ -291,6 +336,14 @@ export async function activate(ctx) {
         } catch {}
       });
       ctx.subscriptions.push({ dispose() { try { minSub.dispose?.(); } catch {} } });
+
+      const sessionSub = window.zion.state.onDidChange("sessions.currentId", (nv) => {
+        try {
+          const sid = nv ? String(nv) : "";
+          applyMinimapForSession(sid);
+        } catch {}
+      });
+      ctx.subscriptions.push({ dispose() { try { sessionSub.dispose?.(); } catch {} } });
     } catch (e) {
       // ignore if status bar unavailable
     }

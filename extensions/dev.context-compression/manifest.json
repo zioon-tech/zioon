@@ -1,0 +1,90 @@
+{
+  "name": "dev.context-compression",
+  "version": "0.0.1",
+  "description": "Zion Next Plugin: Multi-strategy context compression for AI conversations",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.context-compression",
+    "name": "Context Compression",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "compression.manual",
+          "title": "Compress Conversation (Manual)"
+        },
+        {
+          "id": "compression.strategy.opencode",
+          "title": "Compress with OpenCode Strategy"
+        },
+        {
+          "id": "compression.strategy.claude-code",
+          "title": "Compress with Claude Code Strategy"
+        },
+        {
+          "id": "compression.strategy.cursor",
+          "title": "Compress with Cursor Strategy"
+        },
+        {
+          "id": "compression.strategy.manus",
+          "title": "Compress with Manus Strategy"
+        },
+        {
+          "id": "compression.strategy.focus-agent",
+          "title": "Compress with Focus Agent Strategy"
+        },
+        {
+          "id": "compression.settings",
+          "title": "Open Compression Settings"
+        },
+        {
+          "id": "compression.stats",
+          "title": "Show Compression Statistics"
+        }
+      ],
+      "keybindings": [
+        {
+          "command": "compression.manual",
+          "key": "Mod-Shift-c",
+          "when": "editorFocus"
+        },
+        {
+          "command": "compression.settings",
+          "key": "Mod-Shift-s",
+          "when": "editorFocus"
+        }
+      ],
+      "menus": {
+        "editor/context": [
+          {
+            "command": "compression.manual",
+            "title": "Compress Conversation",
+            "when": "editorFocus"
+          },
+          {
+            "command": "compression.settings",
+            "title": "Compression Settings",
+            "when": "editorFocus"
+          }
+        ]
+      },
+      "views": {
+        "status-bar/compression": {
+          "type": "status-bar-item",
+          "title": "Compression"
+        }
+      }
+    },
+    "activationEvents": [
+      "onStartupFinished",
+      "onCommand:compression.manual",
+      "onCommand:compression.settings",
+      "onCommand:compression.stats"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}
