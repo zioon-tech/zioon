@@ -1,6 +1,6 @@
 /**
  * Compression Settings Panel
- * 
+ *
  * Provides UI for configuring compression settings
  */
 
@@ -9,6 +9,27 @@ export class CompressionSettingsPanel {
     this.engine = compressionEngine;
     this.settings = this.getDefaultSettings();
     this.panelElement = null;
+    this.root = null;
+    this.currentTab = 'general';
+  }
+
+  /**
+   * Show panel (using unified panel manager)
+   * @param {Object} options - Options
+   * @param {string} options.tab - Initial tab to show ('general', 'strategies', 'statistics')
+   */
+  show(options) {
+    this.openSettingsPanel(options?.tab);
+  }
+
+  /**
+   * Hide panel
+   */
+  hide() {
+    if (this.root) {
+      this.root.remove();
+      this.root = null;
+    }
   }
   
   /**
@@ -86,20 +107,47 @@ export class CompressionSettingsPanel {
    */
   render() {
     const strategies = ['auto', 'opencode', 'claude-code', 'cursor', 'manus', 'focus-agent'];
-    
+
     return `
       <div class="compression-settings-panel">
-        <h2>Context Compression Settings</h2>
-        
-        ${this.renderGeneralSettings()}
-        ${this.renderStrategySettings(strategies)}
-        ${this.renderAdvancedSettings()}
-        ${this.renderStatisticsPreview()}
-        
-        <div class="settings-actions">
-          <button id="save-settings" class="btn btn-primary">Save Settings</button>
-          <button id="reset-settings" class="btn btn-secondary">Reset to Defaults</button>
-          <button id="cancel-settings" class="btn btn-secondary">Cancel</button>
+        <div class="panel-header">
+          <div class="header-title">
+            <span class="title-icon">📦</span>
+            <span>Context Compression</span>
+          </div>
+          <button class="header-close" title="Close panel">✕</button>
+        </div>
+
+        <div class="panel-tabs">
+          <button class="tab-btn ${this.currentTab === 'general' ? 'active' : ''}" data-tab="general">
+            General
+          </button>
+          <button class="tab-btn ${this.currentTab === 'strategies' ? 'active' : ''}" data-tab="strategies">
+            Strategies
+          </button>
+          <button class="tab-btn ${this.currentTab === 'statistics' ? 'active' : ''}" data-tab="statistics">
+            Statistics
+          </button>
+        </div>
+
+        <div class="panel-content">
+          <div class="tab-content ${this.currentTab === 'general' ? 'active' : ''}" id="tab-general">
+            ${this.renderGeneralSettings()}
+            ${this.renderAdvancedSettings()}
+          </div>
+
+          <div class="tab-content ${this.currentTab === 'strategies' ? 'active' : ''}" id="tab-strategies">
+            ${this.renderStrategySettings(strategies)}
+          </div>
+
+          <div class="tab-content ${this.currentTab === 'statistics' ? 'active' : ''}" id="tab-statistics">
+            ${this.renderStatisticsPreview()}
+          </div>
+        </div>
+
+        <div class="panel-footer">
+          <button id="reset-settings" class="btn-secondary">Reset</button>
+          <button id="save-settings" class="btn-primary">Save</button>
         </div>
       </div>
     `;
@@ -112,78 +160,69 @@ export class CompressionSettingsPanel {
   renderGeneralSettings() {
     return `
       <div class="settings-section">
-        <h3>General Settings</h3>
-        
+        <div class="section-title">Auto Compression</div>
+
         <div class="setting-item">
-          <label>
-            <input type="checkbox" id="auto-compression" 
-                   ${this.settings.autoCompression ? 'checked' : ''}>
-            Enable Auto Compression
+          <label class="toggle-label">
+            <input type="checkbox" id="auto-compression" ${this.settings.autoCompression ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+            <span>Enable Auto Compression</span>
           </label>
-          <small>Automatically compress conversations when they reach threshold</small>
+          <small>Compress conversations when threshold is reached</small>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-col">
+            <label for="default-strategy" class="field-label">Strategy</label>
+            <select id="default-strategy" class="field-input">
+              <option value="auto" ${this.settings.defaultStrategy === 'auto' ? 'selected' : ''}>Auto (智能选择)</option>
+              <option value="opencode" ${this.settings.defaultStrategy === 'opencode' ? 'selected' : ''}>OpenCode</option>
+              <option value="claude-code" ${this.settings.defaultStrategy === 'claude-code' ? 'selected' : ''}>Claude Code</option>
+              <option value="cursor" ${this.settings.defaultStrategy === 'cursor' ? 'selected' : ''}>Cursor</option>
+              <option value="manus" ${this.settings.defaultStrategy === 'manus' ? 'selected' : ''}>Manus</option>
+              <option value="focus-agent" ${this.settings.defaultStrategy === 'focus-agent' ? 'selected' : ''}>Focus Agent</option>
+            </select>
+          </div>
+
+          <div class="setting-col">
+            <label for="threshold" class="field-label">Threshold</label>
+            <div class="range-wrapper">
+              <input type="range" id="threshold" min="0.5" max="1.0" step="0.05" value="${this.settings.threshold}">
+              <span id="threshold-value" class="range-value">${Math.round(this.settings.threshold * 100)}%</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-title">Limits</div>
+
+        <div class="setting-row">
+          <div class="setting-col">
+            <label for="context-limit-tokens" class="field-label">Context Limit</label>
+            <input type="number" id="context-limit-tokens" class="field-input"
+                   value="${this.settings.contextLimitTokens}" min="0" step="1024">
+          </div>
+
+          <div class="setting-col">
+            <label for="output-tokens" class="field-label">Output Budget</label>
+            <input type="number" id="output-tokens" class="field-input"
+                   value="${this.settings.outputTokens}" min="0" step="256">
+          </div>
         </div>
 
         <div class="setting-item">
-          <label>
-            <input type="checkbox" id="debug-logging" 
-                   ${this.settings.debugLogging ? 'checked' : ''}>
-            Enable Debug Logging
-          </label>
-          <small>Log compression decisions and before/after metrics to console</small>
-        </div>
-        
-        <div class="setting-item">
-          <label for="default-strategy">Default Strategy:</label>
-          <select id="default-strategy">
-            <option value="auto" ${this.settings.defaultStrategy === 'auto' ? 'selected' : ''}>
-              Auto (智能选择)
-            </option>
-            <option value="opencode" ${this.settings.defaultStrategy === 'opencode' ? 'selected' : ''}>
-              OpenCode (压缩+修剪)
-            </option>
-            <option value="claude-code" ${this.settings.defaultStrategy === 'claude-code' ? 'selected' : ''}>
-              Claude Code (简单总结)
-            </option>
-            <option value="cursor" ${this.settings.defaultStrategy === 'cursor' ? 'selected' : ''}>
-              Cursor (动态发现)
-            </option>
-            <option value="manus" ${this.settings.defaultStrategy === 'manus' ? 'selected' : ''}>
-              Manus (KV-Cache优化)
-            </option>
-            <option value="focus-agent" ${this.settings.defaultStrategy === 'focus-agent' ? 'selected' : ''}>
-              Focus Agent (主动压缩)
-            </option>
-          </select>
-          <small>Choose default compression strategy</small>
-        </div>
-        
-        <div class="setting-item">
-          <label for="threshold">Compression Threshold:</label>
-          <input type="range" id="threshold" min="0.5" max="1.0" step="0.05" 
-                 value="${this.settings.threshold}">
-          <span id="threshold-value">${Math.round(this.settings.threshold * 100)}%</span>
-          <small>Trigger compression when context reaches this percentage of limit</small>
-        </div>
-
-        <div class="setting-item">
-          <label for="context-limit-tokens">Context Limit (tokens):</label>
-          <input type="number" id="context-limit-tokens" 
-                 value="${this.settings.contextLimitTokens}" min="0" step="1024">
-          <small>Approximate model context window for auto-compression trigger</small>
-        </div>
-
-        <div class="setting-item">
-          <label for="output-tokens">Output Budget (tokens):</label>
-          <input type="number" id="output-tokens" 
-                 value="${this.settings.outputTokens}" min="0" step="256">
-          <small>Reserved output tokens for overflow calculations</small>
-        </div>
-
-        <div class="setting-item">
-          <label for="chars-per-token">Chars Per Token:</label>
-          <input type="number" id="chars-per-token" 
+          <label for="chars-per-token" class="field-label">Chars Per Token</label>
+          <input type="number" id="chars-per-token" class="field-input"
                  value="${this.settings.charsPerToken}" min="1" step="1">
           <small>Token estimation factor (default 4)</small>
+        </div>
+
+        <div class="setting-item">
+          <label class="toggle-label">
+            <input type="checkbox" id="debug-logging" ${this.settings.debugLogging ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+            <span>Debug Logging</span>
+          </label>
+          <small>Log compression decisions to console</small>
         </div>
       </div>
     `;
@@ -197,8 +236,8 @@ export class CompressionSettingsPanel {
   renderStrategySettings(strategies) {
     return `
       <div class="settings-section">
-        <h3>Strategy Details</h3>
-        
+        <div class="section-title">Strategy Configuration</div>
+
         ${this.renderOpenCodeSettings()}
         ${this.renderCursorSettings()}
         ${this.renderManusSettings()}
@@ -213,38 +252,33 @@ export class CompressionSettingsPanel {
    */
   renderOpenCodeSettings() {
     return `
-      <div class="strategy-settings ${this.settings.defaultStrategy === 'opencode' || this.settings.defaultStrategy === 'auto' ? '' : 'hidden'}" id="opencode-settings">
-        <h4>OpenCode Settings</h4>
-        
-        <div class="setting-item">
-          <label for="prune-protect">Prune Protect (tokens):</label>
-          <input type="number" id="prune-protect" 
-                 value="${this.settings.pruneProtect}" min="0" step="1000">
-          <small>Retain this many recent tokens (default: 40,000)</small>
+      <div class="strategy-card">
+        <div class="strategy-header">
+          <span class="strategy-name">OpenCode</span>
+          <span class="strategy-badge">Compaction + Pruning</span>
         </div>
-        
-        <div class="setting-item">
-          <label for="prune-minimum">Prune Minimum (tokens):</label>
-          <input type="number" id="prune-minimum" 
-                 value="${this.settings.pruneMinimum}" min="0" step="1000">
-          <small>Minimum tokens to save before pruning (default: 20,000)</small>
+
+        <div class="setting-row">
+          <div class="setting-col">
+            <label for="prune-protect" class="field-label">Prune Protect</label>
+            <input type="number" id="prune-protect" class="field-input"
+                   value="${this.settings.pruneProtect}" min="0" step="1000">
+            <small>Recent tokens to retain</small>
+          </div>
+
+          <div class="setting-col">
+            <label for="prune-minimum" class="field-label">Prune Minimum</label>
+            <input type="number" id="prune-minimum" class="field-input"
+                   value="${this.settings.pruneMinimum}" min="0" step="1000">
+            <small>Min tokens before pruning</small>
+          </div>
         </div>
-        
+
         <div class="setting-item">
-          <label for="protected-tools">Protected Tools:</label>
-          <input type="text" id="protected-tools" 
-                 value="${this.settings.protectedTools.join(', ')}">
-          <small>Tools to never prune (comma-separated, default: skill)</small>
-        </div>
-        
-        <div class="strategy-description">
-          <strong>OpenCode 策略说明:</strong>
-          <p>采用双层压缩策略：</p>
-          <ul>
-            <li><strong>修剪（Pruning）</strong>: 智能删除旧工具输出，保护最近40K tokens</li>
-            <li><strong>压缩（Compaction）</strong>: 生成总结，清空历史</li>
-          </ul>
-          <p><strong>触发条件:</strong> 当 tokens > context_limit - output_limit 时触发</p>
+          <label for="protected-tools" class="field-label">Protected Tools</label>
+          <input type="text" id="protected-tools" class="field-input"
+                 value="${this.settings.protectedTools.join(', ')}" placeholder="e.g., skill, search">
+          <small>Comma-separated tools to never prune</small>
         </div>
       </div>
     `;
@@ -256,23 +290,25 @@ export class CompressionSettingsPanel {
    */
   renderCursorSettings() {
     return `
-      <div class="strategy-settings ${this.settings.defaultStrategy === 'cursor' || this.settings.defaultStrategy === 'auto' ? '' : 'hidden'}" id="cursor-settings">
-        <h4>Cursor Settings</h4>
-        
-        <div class="setting-item">
-          <label for="max-tool-output">Max Tool Output Length:</label>
-          <input type="number" id="max-tool-output" 
-                 value="${this.settings.maxToolOutputLength}" min="1000" step="500">
-          <small>Characters before writing to file (default: 5000)</small>
+      <div class="strategy-card">
+        <div class="strategy-header">
+          <span class="strategy-name">Cursor</span>
+          <span class="strategy-badge">Dynamic Discovery</span>
         </div>
-        
+
+        <div class="setting-item">
+          <label for="max-tool-output" class="field-label">Max Tool Output</label>
+          <input type="number" id="max-tool-output" class="field-input"
+                 value="${this.settings.maxToolOutputLength}" min="1000" step="500">
+          <small>Characters before writing to file</small>
+        </div>
+
         <div class="strategy-description">
-          <strong>Cursor 策略说明:</strong>
-          <p>采用动态上下文发现策略：</p>
+          <p>Dynamic context discovery:</p>
           <ul>
-            <li><strong>长工具输出 → 文件</strong>: 超过阈值的输出写入文件，减少上下文膨胀</li>
-            <li><strong>MCP工具按需加载</strong>: 只加载需要的工具描述，减少46.9% tokens</li>
-            <li><strong>历史文件引用</strong>: 压缩时引用历史文件，可按需恢复细节</li>
+            <li>Long outputs → written to file</li>
+            <li>MCP tools loaded on demand</li>
+            <li>Historical file references</li>
           </ul>
         </div>
       </div>
@@ -285,45 +321,41 @@ export class CompressionSettingsPanel {
    */
   renderManusSettings() {
     return `
-      <div class="strategy-settings ${this.settings.defaultStrategy === 'manus' || this.settings.defaultStrategy === 'auto' ? '' : 'hidden'}" id="manus-settings">
-        <h4>Manus Settings</h4>
-        
-        <div class="setting-item">
-          <label>
-            <input type="checkbox" id="kv-cache-opt" 
-                   ${this.settings.kvCacheOptimization ? 'checked' : ''}>
-            Enable KV-Cache Optimization
-          </label>
-          <small>Reduce costs by 10x (Claude Sonnet: $0.30 vs $3/MTok)</small>
+      <div class="strategy-card">
+        <div class="strategy-header">
+          <span class="strategy-name">Manus</span>
+          <span class="strategy-badge">KV-Cache Optimization</span>
         </div>
-        
+
         <div class="setting-item">
-          <label>
-            <input type="checkbox" id="stable-prefix" 
-                   ${this.settings.stablePrefix ? 'checked' : ''}>
-            Stable System Prefix
+          <label class="toggle-label">
+            <input type="checkbox" id="kv-cache-opt" ${this.settings.kvCacheOptimization ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+            <span>KV-Cache Optimization</span>
           </label>
-          <small>Avoid timestamps and dynamic content for better cache hit rate</small>
+          <small>Reduce costs by 10x</small>
         </div>
-        
+
         <div class="setting-item">
-          <label>
-            <input type="checkbox" id="deterministic-serialization" 
-                   ${this.settings.deterministicSerialization ? 'checked' : ''}>
-            Deterministic Serialization
+          <label class="toggle-label">
+            <input type="checkbox" id="stable-prefix" ${this.settings.stablePrefix ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+            <span>Stable System Prefix</span>
           </label>
-          <small>Stable JSON key ordering for consistent caching</small>
+          <small>Avoid timestamps for better cache hits</small>
         </div>
-        
+
+        <div class="setting-item">
+          <label class="toggle-label">
+            <input type="checkbox" id="deterministic-serialization" ${this.settings.deterministicSerialization ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+            <span>Deterministic Serialization</span>
+          </label>
+          <small>Stable JSON key ordering</small>
+        </div>
+
         <div class="strategy-description">
-          <strong>Manus 策略说明:</strong>
-          <p>采用KV-Cache优化策略：</p>
-          <ul>
-            <li><strong>稳定系统提示前缀</strong>: 不包含时间戳等动态内容</li>
-            <li><strong>仅追加上下文</strong>: 不修改历史消息</li>
-            <li><strong>确定性序列化</strong>: 稳定的JSON key顺序</li>
-            <li><strong>可恢复压缩</strong>: 保留URL/路径引用，按需恢复内容</li>
-          </ul>
+          <p>KV-Cache optimization for consistent caching</p>
         </div>
       </div>
     `;
@@ -335,34 +367,30 @@ export class CompressionSettingsPanel {
    */
   renderFocusAgentSettings() {
     return `
-      <div class="strategy-settings ${this.settings.defaultStrategy === 'focus-agent' || this.settings.defaultStrategy === 'auto' ? '' : 'hidden'}" id="focus-agent-settings">
-        <h4>Focus Agent Settings</h4>
-        
-        <div class="setting-item">
-          <label for="compression-interval">Compression Interval:</label>
-          <input type="number" id="compression-interval" 
-                 value="${this.settings.compressionInterval}" min="5" step="5">
-          <small>Compress every N tool calls (default: 15)</small>
+      <div class="strategy-card">
+        <div class="strategy-header">
+          <span class="strategy-name">Focus Agent</span>
+          <span class="strategy-badge">Active Compression</span>
         </div>
-        
-        <div class="setting-item">
-          <label for="min-tool-calls">Min Tool Calls:</label>
-          <input type="number" id="min-tool-calls" 
-                 value="${this.settings.minToolCalls}" min="1" step="1">
-          <small>Minimum calls before first compression (default: 5)</small>
+
+        <div class="setting-row">
+          <div class="setting-col">
+            <label for="compression-interval" class="field-label">Interval</label>
+            <input type="number" id="compression-interval" class="field-input"
+                   value="${this.settings.compressionInterval}" min="5" step="5">
+            <small>Compress every N calls</small>
+          </div>
+
+          <div class="setting-col">
+            <label for="min-tool-calls" class="field-label">Min Calls</label>
+            <input type="number" id="min-tool-calls" class="field-input"
+                   value="${this.settings.minToolCalls}" min="1" step="1">
+            <small>Before first compression</small>
+          </div>
         </div>
-        
+
         <div class="strategy-description">
-          <strong>Focus Agent 策略说明:</strong>
-          <p>采用主动压缩策略：</p>
-          <ul>
-            <li><strong>start_focus</strong>: 声明调查主题</li>
-            <li><strong>explore</strong>: 使用标准工具探索</li>
-            <li><strong>consolidate</strong>: 生成知识块总结</li>
-            <li><strong>withdraw</strong>: 删除原始日志，保留知识</li>
-          </ul>
-          <p><strong>锯齿模式</strong>: 探索期间增长，压缩期间坍塌</p>
-          <p><strong>效果</strong>: 在SWE-bench Lite上节省22.7% tokens，保持相同准确率</p>
+          <p>Active compression with sawtooth pattern</p>
         </div>
       </div>
     `;
@@ -375,33 +403,33 @@ export class CompressionSettingsPanel {
   renderAdvancedSettings() {
     return `
       <div class="settings-section">
-        <h3>Advanced Settings</h3>
-        
+        <div class="section-title">Advanced</div>
+
         <div class="setting-item">
-          <label>
-            <input type="checkbox" id="dynamic-context-discovery" 
-                   ${this.settings.dynamicContextDiscovery ? 'checked' : ''}>
-            Enable Dynamic Context Discovery
+          <label class="toggle-label">
+            <input type="checkbox" id="dynamic-context-discovery" ${this.settings.dynamicContextDiscovery ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+            <span>Dynamic Context Discovery</span>
           </label>
-          <small>Cursor-style: load context on demand (46.9% token reduction)</small>
+          <small>Load context on demand (46.9% token reduction)</small>
         </div>
-        
+
         <div class="setting-item">
-          <label>
-            <input type="checkbox" id="show-statistics" 
-                   ${this.settings.showStatistics ? 'checked' : ''}>
-            Show Compression Statistics
+          <label class="toggle-label">
+            <input type="checkbox" id="show-statistics" ${this.settings.showStatistics ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+            <span>Show Statistics</span>
           </label>
-          <small>Display token savings and compression metrics</small>
+          <small>Display token savings and metrics</small>
         </div>
-        
+
         <div class="setting-item">
-          <label>
-            <input type="checkbox" id="show-compression-history" 
-                   ${this.settings.showCompressionHistory ? 'checked' : ''}>
-            Show Compression History
+          <label class="toggle-label">
+            <input type="checkbox" id="show-compression-history" ${this.settings.showCompressionHistory ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+            <span>Show History</span>
           </label>
-          <small>Track compression events and their outcomes</small>
+          <small>Track compression events</small>
         </div>
       </div>
     `;
@@ -413,37 +441,35 @@ export class CompressionSettingsPanel {
    */
   renderStatisticsPreview() {
     const stats = window.zion?.state?.get?.('compression.stats') || {};
-    
+
     return `
       <div class="settings-section">
-        <h3>Compression Statistics</h3>
-        
-        <div class="statistics-summary">
-          <div class="stat-item">
-            <span class="stat-label">Total Tokens Saved:</span>
-            <span class="stat-value">${this.formatTokens(stats.totalTokensSaved || 0)}</span>
+        <div class="section-title">Overview</div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Total Saved</div>
+            <div class="stat-value">${this.formatTokens(stats.totalTokensSaved || 0)}</div>
           </div>
-          
-          <div class="stat-item">
-            <span class="stat-label">Compression Count:</span>
-            <span class="stat-value">${stats.compressionCount || 0}</span>
+
+          <div class="stat-card">
+            <div class="stat-label">Compressions</div>
+            <div class="stat-value">${stats.compressionCount || 0}</div>
           </div>
-          
-          <div class="stat-item">
-            <span class="stat-label">Average Savings:</span>
-            <span class="stat-value">${this.formatTokens(stats.averageSavings || 0)}</span>
+
+          <div class="stat-card">
+            <div class="stat-label">Avg Savings</div>
+            <div class="stat-value">${this.formatTokens(stats.averageSavings || 0)}</div>
           </div>
-          
-          <div class="stat-item">
-            <span class="stat-label">Cost Savings:</span>
-            <span class="stat-value">$${(stats.costSavings || 0).toFixed(2)}</span>
+
+          <div class="stat-card">
+            <div class="stat-label">Cost Saved</div>
+            <div class="stat-value">$${(stats.costSavings || 0).toFixed(2)}</div>
           </div>
         </div>
-        
-        <div class="strategy-breakdown">
-          <h4>Strategy Usage</h4>
-          ${this.renderStrategyUsage(stats.strategyUsage || {})}
-        </div>
+
+        <div class="section-title" style="margin-top: 16px;">Strategy Usage</div>
+        ${this.renderStrategyUsage(stats.strategyUsage || {})}
       </div>
     `;
   }
@@ -455,25 +481,28 @@ export class CompressionSettingsPanel {
    */
   renderStrategyUsage(strategyUsage) {
     const strategies = Object.entries(strategyUsage);
-    
+
     if (strategies.length === 0) {
-      return '<p>No compression events yet.</p>';
+      return '<div class="empty-state">No compression events yet</div>';
     }
-    
-    let html = '<ul class="strategy-usage-list">';
-    
+
+    const total = Object.values(strategyUsage).reduce((a, b) => a + b, 0);
+    let html = '<div class="strategy-usage-list">';
+
     for (const [strategy, count] of strategies) {
-      const percent = count > 0 ? (count / Object.values(strategyUsage).reduce((a, b) => a + b, 0) * 100).toFixed(1) : 0;
+      const percent = count > 0 ? (count / total * 100).toFixed(1) : 0;
       html += `
-        <li>
-          <span class="strategy-name">${this.formatStrategyName(strategy)}</span>
-          <span class="strategy-count">${count}x</span>
-          <span class="strategy-percent">${percent}%</span>
-        </li>
+        <div class="usage-item">
+          <span class="usage-name">${this.formatStrategyName(strategy)}</span>
+          <div class="usage-bar">
+            <div class="usage-fill" style="width: ${percent}%"></div>
+          </div>
+          <span class="usage-count">${count}x</span>
+        </div>
       `;
     }
-    
-    html += '</ul>';
+
+    html += '</div>';
     return html;
   }
   
@@ -516,23 +545,60 @@ export class CompressionSettingsPanel {
     setTimeout(() => {
       const saveBtn = document.getElementById('save-settings');
       const resetBtn = document.getElementById('reset-settings');
-      const cancelBtn = document.getElementById('cancel-settings');
-      
+      const closeBtn = document.querySelector('.header-close');
+
       if (saveBtn) {
         saveBtn.addEventListener('click', () => this.saveSettings());
       }
-      
+
       if (resetBtn) {
         resetBtn.addEventListener('click', () => this.resetSettings());
       }
-      
-      if (cancelBtn) {
-        cancelBtn.addEventListener('click', () => this.hide());
+
+      if (closeBtn) {
+        closeBtn.addEventListener('click', () => this.hide());
       }
-      
+
+      // Tab switching
+      const tabBtns = this.panelElement?.querySelectorAll('.tab-btn');
+      tabBtns?.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.tab;
+          this.switchTab(tab);
+        });
+      });
+
       // Attach listeners for settings changes
       this.attachSettingListeners();
     }, 100);
+  }
+
+  /**
+   * Switch to a tab
+   * @param {string} tabName - Tab name
+   */
+  switchTab(tabName) {
+    this.currentTab = tabName;
+
+    // Update tab buttons
+    const tabBtns = this.panelElement?.querySelectorAll('.tab-btn');
+    tabBtns?.forEach(btn => {
+      if (btn.dataset.tab === tabName) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+
+    // Update tab contents
+    const tabContents = this.panelElement?.querySelectorAll('.tab-content');
+    tabContents?.forEach(content => {
+      if (content.id === `tab-${tabName}`) {
+        content.classList.add('active');
+      } else {
+        content.classList.remove('active');
+      }
+    });
   }
   
   /**
@@ -611,28 +677,454 @@ export class CompressionSettingsPanel {
   }
   
   /**
-   * Show panel
+   * Show panel (using unified panel manager)
    */
   show() {
-    if (this.panelElement) {
-      this.panelElement.classList.remove('hidden');
-    } else {
-      this.panelElement = document.createElement('div');
-      this.panelElement.className = 'compression-settings-panel-wrapper';
-      this.panelElement.innerHTML = this.render();
-      document.body.appendChild(this.panelElement);
-    }
-    
-    this.attachEventListeners();
+    this.openSettingsPanel();
   }
-  
+
   /**
    * Hide panel
    */
   hide() {
-    if (this.panelElement) {
-      this.panelElement.classList.add('hidden');
+    if (this.root) {
+      this.root.remove();
+      this.root = null;
     }
+  }
+
+  /**
+   * Open settings panel
+   * @param {string} initialTab - Initial tab to show (optional)
+   */
+  async openSettingsPanel(initialTab) {
+    // Set initial tab if provided
+    if (initialTab && ['general', 'strategies', 'statistics'].includes(initialTab)) {
+      this.currentTab = initialTab;
+    }
+
+    if (this.root) {
+      this.root.remove();
+    }
+
+    const root = document.createElement('div');
+    root.className = 'zion-compression-settings-root';
+    Object.assign(root.style, {
+      position: 'fixed',
+      inset: '0',
+      pointerEvents: 'none',
+      zIndex: '1000',
+      display: 'block'
+    });
+
+    const panel = document.createElement('div');
+    panel.className = 'zion-compression-settings-panel';
+    Object.assign(panel.style, {
+      position: 'fixed',
+      top: '48px',
+      right: '12px',
+      width: '400px',
+      maxHeight: '75vh',
+      overflow: 'auto',
+      background: 'var(--panel)',
+      color: 'var(--fg)',
+      border: '1px solid var(--border)',
+      borderRadius: '8px',
+      boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+      fontFamily: 'var(--font-sans)',
+      pointerEvents: 'auto'
+    });
+
+    // Load settings before rendering
+    await this.loadSettings();
+
+    const styles = document.createElement('style');
+    styles.textContent = this.getStyles();
+    panel.appendChild(styles);
+
+    this.panelElement = panel;
+    panel.insertAdjacentHTML('beforeend', this.render());
+
+    root.appendChild(panel);
+    document.body.appendChild(root);
+    this.root = root;
+
+    // Click outside to close
+    root.addEventListener('click', (e) => {
+      if (e.target === root) {
+        this.hide();
+      }
+    });
+
+    this.attachEventListeners();
+  }
+
+  /**
+   * Get CSS styles for the panel
+   * @returns {string} CSS content
+   */
+  getStyles() {
+    return `
+.zion-compression-settings-panel { font-size: 13px; }
+.zion-compression-settings-panel .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.zion-compression-settings-panel .header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.zion-compression-settings-panel .title-icon { font-size: 16px; }
+.zion-compression-settings-panel .header-close {
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0.7;
+}
+.zion-compression-settings-panel .header-close:hover {
+  background: var(--border);
+  opacity: 1;
+}
+
+/* Tabs */
+.zion-compression-settings-panel .panel-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  gap: 0;
+}
+.zion-compression-settings-panel .tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 10px 0;
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.7;
+  transition: all 0.15s ease;
+  border-radius: 0;
+}
+.zion-compression-settings-panel .tab-btn:hover {
+  opacity: 1;
+  background: rgba(248,248,242,0.03);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .tab-btn:hover {
+  background: rgba(0,0,0,0.03);
+}
+.zion-compression-settings-panel .tab-btn.active {
+  border-bottom-color: var(--accent);
+  opacity: 1;
+  background: rgba(98,114,164,0.08);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .tab-btn.active {
+  background: rgba(59,130,246,0.08);
+}
+
+/* Tab Content */
+.zion-compression-settings-panel .panel-content { padding: 12px; }
+.zion-compression-settings-panel .tab-content { display: none; }
+.zion-compression-settings-panel .tab-content.active { display: block; }
+
+/* Sections */
+.zion-compression-settings-panel .settings-section { margin-bottom: 16px; }
+.zion-compression-settings-panel .section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  opacity: 0.8;
+  margin: 0 0 8px 0;
+}
+
+/* Setting Items */
+.zion-compression-settings-panel .setting-item { margin-bottom: 12px; }
+.zion-compression-settings-panel .setting-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.zion-compression-settings-panel .setting-col { }
+
+/* Form Controls */
+.zion-compression-settings-panel .field-label {
+  display: block;
+  font-size: 11px;
+  opacity: 0.75;
+  margin-bottom: 4px;
+}
+.zion-compression-settings-panel .field-input,
+.zion-compression-settings-panel select {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.zion-compression-settings-panel .field-input:focus,
+.zion-compression-settings-panel select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(98,114,164,0.11);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .field-input:focus,
+:root[data-theme="light"] .zion-compression-settings-panel select:focus {
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.11);
+}
+.zion-compression-settings-panel small {
+  display: block;
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: 3px;
+}
+
+/* Toggle */
+.zion-compression-settings-panel .toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.zion-compression-settings-panel .toggle-label input[type="checkbox"] {
+  display: none;
+}
+.zion-compression-settings-panel .toggle-slider {
+  width: 36px;
+  height: 20px;
+  background: var(--border);
+  border-radius: 10px;
+  position: relative;
+  transition: background 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.15);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .toggle-slider {
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.08);
+}
+.zion-compression-settings-panel .toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  background: #f8f8f2;
+  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), background 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .toggle-slider::before {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+}
+.zion-compression-settings-panel .toggle-label input:checked + .toggle-slider {
+  background: var(--ok);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.2);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .toggle-label input:checked + .toggle-slider {
+  box-shadow: inset 0 1px 1px rgba(0,0,0,0.1);
+}
+.zion-compression-settings-panel .toggle-label input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+  background: #ffffff;
+}
+.zion-compression-settings-panel .toggle-slider:hover {
+  filter: brightness(1.15);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .toggle-slider:hover {
+  filter: brightness(0.95);
+}
+
+/* Range */
+.zion-compression-settings-panel .range-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.zion-compression-settings-panel .range-wrapper input[type="range"] {
+  flex: 1;
+}
+.zion-compression-settings-panel .range-value {
+  font-size: 11px;
+  opacity: 0.75;
+  min-width: 40px;
+  text-align: right;
+}
+
+/* Strategy Cards */
+.zion-compression-settings-panel .strategy-card {
+  background: rgba(0,0,0,0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+:root[data-theme="light"] .zion-compression-settings-panel .strategy-card {
+  background: rgba(0,0,0,0.02);
+}
+.zion-compression-settings-panel .strategy-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.zion-compression-settings-panel .strategy-name {
+  font-weight: 600;
+  font-size: 12px;
+}
+.zion-compression-settings-panel .strategy-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--accent);
+  color: var(--panel);
+  border-radius: 10px;
+  opacity: 0.8;
+}
+.zion-compression-settings-panel .strategy-description {
+  font-size: 11px;
+  opacity: 0.7;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.zion-compression-settings-panel .strategy-description p { margin: 0 0 4px 0; }
+.zion-compression-settings-panel .strategy-description ul {
+  margin: 4px 0;
+  padding-left: 16px;
+}
+.zion-compression-settings-panel .strategy-description li { margin: 2px 0; }
+
+/* Statistics Grid */
+.zion-compression-settings-panel .stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.zion-compression-settings-panel .stat-card {
+  background: rgba(0,0,0,0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  text-align: center;
+}
+:root[data-theme="light"] .zion-compression-settings-panel .stat-card {
+  background: rgba(0,0,0,0.02);
+}
+.zion-compression-settings-panel .stat-label {
+  font-size: 11px;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+.zion-compression-settings-panel .stat-value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* Strategy Usage List */
+.zion-compression-settings-panel .strategy-usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.zion-compression-settings-panel .usage-item {
+  display: grid;
+  grid-template-columns: 100px 1fr 40px;
+  gap: 8px;
+  align-items: center;
+}
+.zion-compression-settings-panel .usage-name {
+  font-size: 11px;
+  opacity: 0.8;
+}
+.zion-compression-settings-panel .usage-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.zion-compression-settings-panel .usage-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+.zion-compression-settings-panel .usage-count {
+  font-size: 11px;
+  opacity: 0.75;
+  text-align: right;
+}
+
+/* Empty State */
+.zion-compression-settings-panel .empty-state {
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: center;
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+/* Footer */
+.zion-compression-settings-panel .panel-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+.zion-compression-settings-panel .btn-primary,
+.zion-compression-settings-panel .btn-secondary {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: var(--font-sans);
+}
+.zion-compression-settings-panel .btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .btn-primary {
+  color: #fff;
+}
+.zion-compression-settings-panel .btn-secondary {
+  background: transparent;
+  color: var(--fg);
+}
+.zion-compression-settings-panel .btn-primary:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(98,114,164,0.25);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .btn-primary:hover {
+  box-shadow: 0 2px 6px rgba(59,130,246,0.25);
+}
+.zion-compression-settings-panel .btn-secondary:hover {
+  background: var(--border);
+  transform: translateY(-1px);
+}
+.zion-compression-settings-panel .btn-primary:active,
+.zion-compression-settings-panel .btn-secondary:active {
+  transform: translateY(0);
+}
+`;
   }
   
   /**

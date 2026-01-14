@@ -83,10 +83,18 @@ export async function activate(ctx) {
       showSettingsPanel();
     })
   );
-  
+
   ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.stats', () => {
       showCompressionStats();
+    })
+  );
+
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.panel', (opts) => {
+      const initialTab = opts?.tab || 'general';
+      const panel = new CompressionSettingsPanel();
+      panel.show({ tab: initialTab });
     })
   );
 
@@ -239,7 +247,7 @@ export async function activate(ctx) {
       id: 'compression.status',
       text: `📦 ${formatTokens(saved)}`,
       tooltip: `Tokens saved: ${saved}`,
-      onClick: () => window.zion.commands.executeCommand('compression.stats')
+      onClick: () => openCompressionPanel()
     });
   };
   updateStatus();
@@ -280,11 +288,11 @@ async function writeToFile(content) {
 }
 
 function showSettingsPanel() {
-  openSettingsOverlay();
+  openCompressionPanel();
 }
 
 function showCompressionStats() {
-  openStatsOverlay();
+  openCompressionPanel();
 }
 
 function formatTokens(tokens) {
@@ -563,69 +571,9 @@ function serializeContent(content) {
   return typeof content === 'object' ? JSON.stringify(content) : String(content);
 }
 
-function openSettingsOverlay() {
-  const id = 'zion-compression-settings-overlay';
-  const existing = document.getElementById(id);
-  if (existing) existing.remove();
-
-  const overlay = document.createElement('div');
-  overlay.id = id;
-  overlay.style.position = 'fixed';
-  overlay.style.inset = '0';
-  overlay.style.background = 'rgba(0,0,0,0.35)';
-  overlay.style.zIndex = '99998';
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-
-  const panel = document.createElement('div');
-  panel.style.position = 'fixed';
-  panel.style.right = '20px';
-  panel.style.top = '60px';
-  panel.style.width = '420px';
-  panel.style.maxHeight = '70vh';
-  panel.style.overflow = 'auto';
-  panel.style.background = 'var(--panel)';
-  panel.style.border = '1px solid var(--border)';
-  panel.style.borderRadius = '8px';
-  panel.style.boxShadow = '0 8px 24px rgba(0,0,0,0.35)';
-  panel.style.padding = '12px';
-  panel.style.zIndex = '99999';
-  panel.style.color = 'var(--fg)';
-  panel.onclick = (e) => e.stopPropagation();
-
-  const settingsPanel = new CompressionSettingsPanel();
-  settingsPanel.hide = () => overlay.remove();
-  const originalSave = settingsPanel.saveSettings.bind(settingsPanel);
-  settingsPanel.saveSettings = async () => {
-    await originalSave();
-    overlay.remove();
-  };
-
-  const styles = document.createElement('style');
-  styles.textContent = `
-.compression-settings-panel h2{margin:0 0 10px 0;font-size:14px}
-.compression-settings-panel h3{margin:14px 0 8px 0;font-size:12px;opacity:.9}
-.compression-settings-panel h4{margin:10px 0 6px 0;font-size:12px;opacity:.85}
-.compression-settings-panel small{display:block;opacity:.7;margin-top:4px}
-.compression-settings-panel .settings-section{padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;background:rgba(0,0,0,0.06)}
-:root[data-theme="light"] .compression-settings-panel .settings-section{background:rgba(0,0,0,0.03)}
-.compression-settings-panel .setting-item{margin:10px 0}
-.compression-settings-panel input[type="text"],.compression-settings-panel input[type="number"],.compression-settings-panel select{width:100%;box-sizing:border-box;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px}
-.compression-settings-panel input[type="range"]{width:100%}
-.compression-settings-panel .settings-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
-.compression-settings-panel button{background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer}
-.compression-settings-panel button:hover{filter:brightness(1.08)}
-.compression-settings-panel .hidden{display:none}
-`;
-  panel.appendChild(styles);
-
-  (async () => {
-    await settingsPanel.loadSettings();
-    panel.insertAdjacentHTML('beforeend', settingsPanel.render());
-    settingsPanel.attachEventListeners();
-  })();
-
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
+function openCompressionPanel() {
+  const panel = new CompressionSettingsPanel();
+  panel.show();
 }
 
 function openStatsOverlay() {
@@ -633,106 +581,141 @@ function openStatsOverlay() {
   const existing = document.getElementById(id);
   if (existing) existing.remove();
 
-  const overlay = document.createElement('div');
-  overlay.id = id;
-  overlay.style.position = 'fixed';
-  overlay.style.inset = '0';
-  overlay.style.background = 'rgba(0,0,0,0.35)';
-  overlay.style.zIndex = '99998';
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const root = document.createElement('div');
+  root.id = id;
+  Object.assign(root.style, {
+    position: 'fixed',
+    inset: '0',
+    pointerEvents: 'none',
+    zIndex: '1000',
+    display: 'block'
+  });
 
   const panel = document.createElement('div');
-  panel.style.position = 'fixed';
-  panel.style.right = '20px';
-  panel.style.top = '60px';
-  panel.style.width = '360px';
-  panel.style.maxHeight = '70vh';
-  panel.style.overflow = 'auto';
-  panel.style.background = 'var(--panel)';
-  panel.style.border = '1px solid var(--border)';
-  panel.style.borderRadius = '8px';
-  panel.style.boxShadow = '0 8px 24px rgba(0,0,0,0.35)';
-  panel.style.padding = '12px';
-  panel.style.zIndex = '99999';
-  panel.style.color = 'var(--fg)';
-  panel.onclick = (e) => e.stopPropagation();
-
-  const title = document.createElement('div');
-  title.textContent = 'Compression Statistics';
-  title.style.fontWeight = '600';
-  title.style.marginBottom = '8px';
-
-  const styles = document.createElement('style');
-  styles.textContent = `
-.compression-stats{font-size:12px}
-.compression-stats .kv{display:grid;grid-template-columns:140px 1fr;gap:6px 10px;margin:10px 0}
-.compression-stats .k{opacity:.75}
-.compression-stats table{width:100%;border-collapse:collapse;margin-top:10px}
-.compression-stats th,.compression-stats td{border:1px solid var(--border);padding:6px 8px;text-align:left}
-.compression-stats th{opacity:.85}
-`;
-  panel.appendChild(styles);
+  Object.assign(panel.style, {
+    position: 'fixed',
+    top: '48px',
+    right: '12px',
+    width: '380px',
+    maxHeight: '75vh',
+    overflow: 'auto',
+    background: 'var(--panel)',
+    color: 'var(--fg)',
+    border: '1px solid var(--border)',
+    borderRadius: '8px',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+    padding: '12px',
+    fontFamily: 'var(--font-sans)',
+    pointerEvents: 'auto'
+  });
 
   const stats = window.zion.state.get('compression.stats') || {};
   const strategies = stats.strategyUsage || {};
   const savingsByStrategy = stats.tokenSavingsByStrategy || {};
-
-  const container = document.createElement('div');
-  container.className = 'compression-stats';
-
-  const kv = document.createElement('div');
-  kv.className = 'kv';
   const last = stats.lastCompressionTime ? new Date(stats.lastCompressionTime).toLocaleString() : '-';
   const totalSaved = Number(stats.totalTokensSaved || 0);
   const count = Number(stats.compressionCount || 0);
-  kv.innerHTML = `
-    <div class="k">Total saved</div><div>${formatTokens(totalSaved)} (${totalSaved})</div>
-    <div class="k">Compressions</div><div>${count}</div>
-    <div class="k">Last</div><div>${last}</div>
+
+  const styles = document.createElement('style');
+  styles.textContent = `
+.compression-stats-view{font-size:13px}
+.compression-stats-view .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.compression-stats-view .header-title{font-weight:600;font-size:14px}
+.compression-stats-view .btn-close{background:transparent;border:none;color:var(--fg);cursor:pointer;font-size:18px;padding:2px 6px;border-radius:4px;opacity:0.7}
+.compression-stats-view .btn-close:hover{background:var(--border);opacity:1}
+.compression-stats-view .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px}
+.compression-stats-view .stat-card{background:rgba(0,0,0,0.04);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center}
+:root[data-theme="light"] .compression-stats-view .stat-card{background:rgba(0,0,0,0.02)}
+.compression-stats-view .stat-label{font-size:11px;opacity:0.7;margin-bottom:4px}
+.compression-stats-view .stat-value{font-size:16px;font-weight:600}
+.compression-stats-view .section-title{font-size:11px;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;opacity:0.8;margin:12px 0 8px 0}
+.compression-stats-view .usage-list{display:flex;flex-direction:column;gap:6px}
+.compression-stats-view .usage-item{display:grid;grid-template-columns:100px 1fr 60px;gap:8px;align-items:center}
+.compression-stats-view .usage-name{font-size:12px;opacity:0.8}
+.compression-stats-view .usage-bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.compression-stats-view .usage-fill{height:100%;background:var(--accent);transition:width 0.3s}
+.compression-stats-view .usage-count{font-size:11px;opacity:0.75;text-align:right}
+.compression-stats-view .footer{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
+.compression-stats-view .btn{padding:6px 12px;border-radius:6px;border:1px solid var(--border);font-size:12px;cursor:pointer}
+.compression-stats-view .btn:hover{filter:brightness(1.08)}
+.compression-stats-view .btn-primary{background:var(--accent);color:var(--panel)}
+.compression-stats-view .btn-secondary{background:transparent;color:var(--fg)}
+`;
+  panel.appendChild(styles);
+
+  const container = document.createElement('div');
+  container.className = 'compression-stats-view';
+
+  const total = Object.values(strategies).reduce((a, b) => a + b, 0);
+
+  container.innerHTML = `
+    <div class="header">
+      <div class="header-title">📊 Compression Statistics</div>
+      <button class="btn-close">✕</button>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Saved</div>
+        <div class="stat-value">${formatTokens(totalSaved)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Compressions</div>
+        <div class="stat-value">${count}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Last Compression</div>
+        <div class="stat-value" style="font-size:12px">${last}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Per Run</div>
+        <div class="stat-value">${count > 0 ? formatTokens(totalSaved / count) : '0'}</div>
+      </div>
+    </div>
+
+    <div class="section-title">Strategy Usage</div>
+    <div class="usage-list">
+      ${Object.entries(strategies).map(([k, c]) => {
+        const s = savingsByStrategy[k] || 0;
+        const pct = total > 0 ? (c / total * 100).toFixed(1) : 0;
+        return `
+          <div class="usage-item">
+            <div class="usage-name">${k}</div>
+            <div class="usage-bar">
+              <div class="usage-fill" style="width: ${pct}%"></div>
+            </div>
+            <div class="usage-count">${c}x</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+
+    <div class="footer">
+      <button class="btn btn-secondary" id="btn-reset">Reset</button>
+      <button class="btn btn-primary" id="btn-close">Close</button>
+    </div>
   `;
-  container.appendChild(kv);
 
-  const table = document.createElement('table');
-  table.innerHTML = `<thead><tr><th>Strategy</th><th>Count</th><th>Saved</th></tr></thead>`;
-  const tbody = document.createElement('tbody');
-  const keys = Array.from(new Set([...Object.keys(strategies), ...Object.keys(savingsByStrategy)])).sort();
-  for (const k of keys) {
-    const tr = document.createElement('tr');
-    const c = Number(strategies[k] || 0);
-    const s = Number(savingsByStrategy[k] || 0);
-    tr.innerHTML = `<td>${k}</td><td>${c}</td><td>${formatTokens(s)} (${s})</td>`;
-    tbody.appendChild(tr);
-  }
-  table.appendChild(tbody);
-  container.appendChild(table);
+  panel.appendChild(container);
+  root.appendChild(panel);
+  document.body.appendChild(root);
 
-  const row = document.createElement('div');
-  row.style.display = 'flex';
-  row.style.gap = '8px';
-  row.style.marginTop = '10px';
-  row.style.justifyContent = 'flex-end';
+  // Event handlers
+  root.addEventListener('click', (e) => {
+    if (e.target === root) {
+      root.remove();
+    }
+  });
 
-  const btnReset = document.createElement('button');
-  btnReset.textContent = 'Reset';
-  btnReset.onclick = () => {
+  panel.querySelector('.btn-close').addEventListener('click', () => root.remove());
+  panel.querySelector('#btn-close').addEventListener('click', () => root.remove());
+  panel.querySelector('#btn-reset').addEventListener('click', () => {
     window.zion.state.set('compression.stats', {
       totalTokensSaved: 0,
       compressionCount: 0,
       strategyUsage: {},
       tokenSavingsByStrategy: {}
     });
-    overlay.remove();
-  };
-
-  const btnClose = document.createElement('button');
-  btnClose.textContent = 'Close';
-  btnClose.onclick = () => overlay.remove();
-
-  row.appendChild(btnClose);
-  row.appendChild(btnReset);
-  panel.appendChild(title);
-  panel.appendChild(container);
-  panel.appendChild(row);
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
+    root.remove();
+  });
 }

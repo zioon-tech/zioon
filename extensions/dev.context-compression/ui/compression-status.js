@@ -17,20 +17,20 @@ export class CompressionStatus {
    */
   render() {
     const status = this.getCurrentStatus();
-    
+
     const element = document.createElement('div');
-    element.className = 'compression-status';
+    element.className = 'status-item compression-status';
     element.innerHTML = `
       <span class="status-icon" title="${status.title}">${status.icon}</span>
       <span class="status-text" title="${status.title}">${status.text}</span>
     `;
-    
+
     // Add tooltip
     if (status.hasTooltip) {
       element.addEventListener('mouseenter', () => this.showTooltip(status));
       element.addEventListener('mouseleave', () => this.hideTooltip());
     }
-    
+
     return element;
   }
   
@@ -77,13 +77,13 @@ export class CompressionStatus {
   showTooltip(status) {
     // Remove existing tooltip
     this.hideTooltip();
-    
+
     const tooltip = document.createElement('div');
-    tooltip.className = 'compression-tooltip';
-    
-    const timeSinceCompression = status.lastCompression ? 
+    tooltip.className = 'zion-compression-tooltip';
+
+    const timeSinceCompression = status.lastCompression ?
       this.formatTimeAgo(Date.now() - status.lastCompression) : 'Never';
-    
+
     tooltip.innerHTML = `
       <div class="tooltip-content">
         <h4>Compression Status</h4>
@@ -109,27 +109,32 @@ export class CompressionStatus {
         </div>
         <hr>
         <div class="tooltip-actions">
-          <button class="tooltip-action" data-action="compress">
-            🔄 Compress Now
+          <button class="zion-context-menu-item tooltip-action" data-action="compress">
+            <span>🔄 Compress Now</span>
           </button>
-          <button class="tooltip-action" data-action="settings">
-            ⚙️ Settings
+          <button class="zion-context-menu-item tooltip-action" data-action="settings">
+            <span>⚙️ Settings</span>
           </button>
-          <button class="tooltip-action" data-action="stats">
-            📊 Statistics
+          <button class="zion-context-menu-item tooltip-action" data-action="stats">
+            <span>📊 Statistics</span>
           </button>
         </div>
       </div>
     `;
-    
+
     // Position tooltip
     tooltip.style.position = 'absolute';
     tooltip.style.zIndex = '10000';
     tooltip.style.minWidth = '300px';
-    
+
+    // Add styles for the tooltip
+    const styles = document.createElement('style');
+    styles.textContent = this.getTooltipStyles();
+    tooltip.appendChild(styles);
+
     document.body.appendChild(tooltip);
     this.tooltipElement = tooltip;
-    
+
     // Add action handlers
     tooltip.querySelectorAll('.tooltip-action').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -160,10 +165,9 @@ export class CompressionStatus {
         window.zion?.commands?.execute?.('compression.manual');
         break;
       case 'settings':
-        window.zion?.commands?.execute?.('compression.settings');
-        break;
       case 'stats':
-        window.zion?.commands?.execute?.('compression.stats');
+        // Open the unified compression panel with the appropriate tab
+        window.zion?.commands?.execute?.('compression.panel', { tab: action === 'settings' ? 'general' : 'statistics' });
         break;
     }
   }
@@ -228,14 +232,14 @@ export class CompressionStatus {
   update() {
     if (this.statusElement) {
       const newStatus = this.getCurrentStatus();
-      
+
       // Update icon
       const iconElement = this.statusElement.querySelector('.status-icon');
       if (iconElement) {
         iconElement.textContent = newStatus.icon;
         iconElement.title = newStatus.title;
       }
-      
+
       // Update text
       const textElement = this.statusElement.querySelector('.status-text');
       if (textElement) {
@@ -243,6 +247,74 @@ export class CompressionStatus {
         textElement.title = newStatus.title;
       }
     }
+  }
+
+  /**
+   * Get CSS styles for the tooltip
+   * @returns {string} CSS content
+   */
+  getTooltipStyles() {
+    return `
+.zion-compression-tooltip {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  padding: 4px;
+  min-width: 280px;
+  max-width: 320px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: tooltip-fade-in 0.14s ease;
+}
+@keyframes tooltip-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.zion-compression-tooltip .tooltip-content h4 {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+.zion-compression-tooltip .tooltip-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.zion-compression-tooltip .tooltip-label {
+  opacity: 0.7;
+  min-width: 80px;
+}
+.zion-compression-tooltip .tooltip-value {
+  flex: 1;
+  opacity: 0.9;
+}
+.zion-compression-tooltip hr {
+  margin: 4px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.zion-compression-tooltip .tooltip-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 2px;
+}
+`;
   }
   
   /**

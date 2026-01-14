@@ -240,9 +240,8 @@ class ToolCallCardWidget extends WidgetType {
         fontFamily: "var(--font-mono)",
         fontSize: "11px",
         background: "rgba(128,128,128,0.05)",
-        padding: "6px",
-        borderRadius: "4px",
-        border: "1px solid var(--border)"
+        padding: "2px",
+        borderRadius: "4px"
       });
       requestSection.appendChild(requestBody);
       wrap.appendChild(requestSection);
@@ -271,9 +270,8 @@ class ToolCallCardWidget extends WidgetType {
         fontFamily: "var(--font-mono)",
         fontSize: "11px",
         background: "rgba(128,128,128,0.05)",
-        padding: "6px",
-        borderRadius: "4px",
-        border: "1px solid var(--border)"
+        padding: "2px",
+        borderRadius: "4px"
       });
       responseSection.appendChild(responseBody);
       wrap.appendChild(responseSection);
