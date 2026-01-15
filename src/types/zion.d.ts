@@ -156,6 +156,14 @@ declare global {
         setActiveModel(model: { providerId: string; modelId: string } | null): void;
         getActiveModel(): { providerId: string; modelId: string } | null;
       };
+      notification?: {
+        show(message: string, options?: {
+          type?: 'info' | 'success' | 'warning' | 'error';
+          duration?: number;
+          dismissible?: boolean;
+          actions?: Array<{ label: string; handler: () => void }>;
+        }): HTMLElement;
+      };
       // internal helper to refresh keymap after new bindings
       __applyKeymap?: () => void;
       // internal helpers (optional)

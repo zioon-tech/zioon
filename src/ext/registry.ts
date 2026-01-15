@@ -8,6 +8,7 @@ import { findNext, findPrevious, selectMatches, replaceNext, replaceAll, SearchQ
 // setSearchQuery 实际是一个 StateEffect，不是函数，需要用 editorCore.view.dispatch({ effects: setSearchQuery.of(query) })
 import { setSearchQuery as setSearchQueryEffect } from "@codemirror/search";
 import { EditorView } from "@codemirror/view";
+import { notificationManager } from "../notification/manager";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -1615,6 +1616,14 @@ const registry = new Registry();
       retry: () => (registry as any).__chatRetry(),
       setActiveModel: (m: { providerId: string; modelId: string } | null) => (registry as any).__chatSetActiveModel(m),
       getActiveModel: () => (registry as any).__chatGetActiveModel()
+    },
+    notification: {
+      show: (message: string, options?: {
+        type?: 'info' | 'success' | 'warning' | 'error';
+        duration?: number;
+        dismissible?: boolean;
+        actions?: Array<{ label: string; handler: () => void }>;
+      }) => notificationManager.show(message, options)
     },
     window: {
       activeEditor: null as any

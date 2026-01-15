@@ -21,6 +21,20 @@ function fmt(v, max = 8000) {
   return s;
 }
 
+function notify(message, options) {
+  try {
+    const fn = window.zion?.notification?.show;
+    if (typeof fn === "function") return fn(String(message ?? ""), options || {});
+  } catch {}
+  try {
+    if (typeof window.showToast === "function") return window.showToast(String(message ?? ""));
+  } catch {}
+  try {
+    console.info("[notify]", message);
+  } catch {}
+  return null;
+}
+
 // 简要摘要：根据工具名称与参数，生成单行提示（便于用户无需展开卡片也能知情）
 function clip(s, max = 80) {
   const t = String(s || "");
@@ -250,7 +264,7 @@ class ToolCallCardWidget extends WidgetType {
     // 响应结果部分
     if (this.result) {
       const responseSection = document.createElement("div");
-      
+
       const responseLabel = document.createElement("div");
       responseLabel.textContent = "响应结果:";
       Object.assign(responseLabel.style, {
@@ -260,7 +274,7 @@ class ToolCallCardWidget extends WidgetType {
         opacity: "0.8"
       });
       responseSection.appendChild(responseLabel);
-      
+
       const responseBody = document.createElement("pre");
       responseBody.textContent = fmt(this.result, 12000);
       Object.assign(responseBody.style, {
@@ -274,6 +288,79 @@ class ToolCallCardWidget extends WidgetType {
         borderRadius: "4px"
       });
       responseSection.appendChild(responseBody);
+
+      // 为 edit 工具添加 Revert 和 Accept 按钮
+      if (this.name === "edit" && this.args) {
+        const actionButtons = document.createElement("div");
+        actionButtons.style.cssText = "display:flex;gap:6px;margin-top:8px;";
+
+        // Revert 按钮
+        const revertBtn = document.createElement("button");
+        revertBtn.textContent = "Revert";
+        revertBtn.title = "回退编辑操作";
+        Object.assign(revertBtn.style, {
+          background: "rgba(255, 100, 100, 0.1)",
+          border: "1px solid rgba(255, 100, 100, 0.3)",
+          color: "var(--fg)",
+          borderRadius: "4px",
+          padding: "4px 10px",
+          fontSize: "10px",
+          cursor: "pointer",
+          fontWeight: "500"
+        });
+        revertBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const baseId = String(this.id).replace(/:card$/, "");
+          try {
+            window.zion?.events?.emit("toolcards/editRevert", {
+              id: baseId,
+              path: this.args.path,
+              old_string: this.args.old_string,
+              new_string: this.args.new_string,
+              replace_all: this.args.replace_all
+            });
+          } catch (err) {
+            console.error("[toolcards/editRevert] error:", err);
+          }
+        });
+
+        // Accept 按钮
+        const acceptBtn = document.createElement("button");
+        acceptBtn.textContent = "Accept";
+        acceptBtn.title = "接受编辑操作";
+        Object.assign(acceptBtn.style, {
+          background: "rgba(100, 200, 100, 0.1)",
+          border: "1px solid rgba(100, 200, 100, 0.3)",
+          color: "var(--fg)",
+          borderRadius: "4px",
+          padding: "4px 10px",
+          fontSize: "10px",
+          cursor: "pointer",
+          fontWeight: "500"
+        });
+        acceptBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const baseId = String(this.id).replace(/:card$/, "");
+          try {
+            window.zion?.events?.emit("toolcards/editAccept", {
+              id: baseId,
+              path: this.args.path,
+              old_string: this.args.old_string,
+              new_string: this.args.new_string,
+              replace_all: this.args.replace_all
+            });
+          } catch (err) {
+            console.error("[toolcards/editAccept] error:", err);
+          }
+        });
+
+        actionButtons.appendChild(revertBtn);
+        actionButtons.appendChild(acceptBtn);
+        responseSection.appendChild(actionButtons);
+      }
+
       wrap.appendChild(responseSection);
     }
 
@@ -566,6 +653,8 @@ export function installToolCallCards() {
       this.disps.push(window.zion.events.on("toolcards/remove", this.onRemove));
       this.disps.push(window.zion.events.on("toolcards/restore", this.onRestore));
       this.disps.push(window.zion.events.on("toolcards/clear", this.onClear));
+      this.disps.push(window.zion.events.on("toolcards/editRevert", this.onEditRevert));
+      this.disps.push(window.zion.events.on("toolcards/editAccept", this.onEditAccept));
       // 清理与会话切换联动
       this.disps.push(window.zion.state.onDidChange("sessions.currentId", this.onSessionChanged));
       // 初始快照
@@ -690,6 +779,123 @@ export function installToolCallCards() {
       if (!id) return;
       this.view.dispatch({ effects: [removeTool.of({ id })] });
     };
+    onEditRevert = async (payload) => {
+      // 处理 edit 工具的 Revert 操作
+      const { path, old_string, new_string, replace_all } = payload || {};
+      if (!path || typeof old_string !== "string" || typeof new_string !== "string") {
+        notify("Revert 参数缺失", { type: "error", duration: 3000 });
+        return;
+      }
+
+      try {
+        // 调用 edit 工具处理器来执行回退操作
+        // Revert 就是将 new_string 替换回 old_string
+        const sid = window.zion?.state?.get("terminal.activeSessionId");
+        const readBase = () => {
+          const st1 = window.zion?.state?.get("localTools.baseUrl");
+          if (typeof st1 === "string" && st1.trim()) return st1.trim();
+          try {
+            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+            if (s) return s.trim();
+          } catch {}
+          return "http://127.0.0.1:8765";
+        };
+        const base = readBase();
+        const url = `${base.replace(/\/$/, "")}/files/edit`;
+
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path,
+            old_string: new_string,
+            new_string: old_string,
+            replace_all,
+            session_id: sid || undefined
+          })
+        });
+
+        const raw = await res.text().catch(() => "");
+        const data = (() => {
+          try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+        })();
+        if (!res.ok) {
+          console.error("[onEditRevert] failed:", raw || data?.error || "edit failed");
+          notify("Revert 失败: " + (raw || data?.error || "未知错误"), { type: "error", duration: 6000 });
+          return;
+        }
+
+        // 根据 replaced 字段给出不同的反馈
+        if (data && data.replaced === 0) {
+          notify("Revert 未执行：未找到匹配的内容", { type: "warning", duration: 4000 });
+        } else if (data && data.replaced === 1) {
+          notify("Revert 成功！", { type: "success", duration: 3000 });
+        } else {
+          notify("Revert 完成（状态未知）", { type: "info", duration: 3000 });
+        }
+      } catch (e) {
+        console.error("[onEditRevert] error:", e);
+        notify("Revert 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
+      }
+    };
+    onEditAccept = async (payload) => {
+      // 处理 edit 工具的 Accept 操作
+      // Accept 执行正向编辑：old_string -> new_string
+      const { path, old_string, new_string, replace_all } = payload || {};
+      if (!path || typeof old_string !== "string" || typeof new_string !== "string") {
+        notify("Accept 参数缺失", { type: "error", duration: 3000 });
+        return;
+      }
+
+      try {
+        const sid = window.zion?.state?.get("terminal.activeSessionId");
+        const readBase = () => {
+          const st1 = window.zion?.state?.get("localTools.baseUrl");
+          if (typeof st1 === "string" && st1.trim()) return st1.trim();
+          try {
+            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+            if (s) return s.trim();
+          } catch {}
+          return "http://127.0.0.1:8765";
+        };
+        const base = readBase();
+        const url = `${base.replace(/\/$/, "")}/files/edit`;
+
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path,
+            old_string,
+            new_string,
+            replace_all,
+            session_id: sid || undefined
+          })
+        });
+
+        const raw = await res.text().catch(() => "");
+        const data = (() => {
+          try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+        })();
+        if (!res.ok) {
+          console.error("[onEditAccept] failed:", raw || data?.error || "edit failed");
+          notify("Accept 失败: " + (raw || data?.error || "未知错误"), { type: "error", duration: 6000 });
+          return;
+        }
+
+        // 根据 replaced 字段给出不同的反馈
+        if (data && data.replaced === 0) {
+          notify("Accept 未执行：未找到匹配的内容", { type: "warning", duration: 4000 });
+        } else if (data && data.replaced === 1) {
+          notify("Accept 成功！", { type: "success", duration: 3000 });
+        } else {
+          notify("Accept 完成（状态未知）", { type: "info", duration: 3000 });
+        }
+      } catch (e) {
+        console.error("[onEditAccept] error:", e);
+        notify("Accept 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
+      }
+    };
     onClear = () => {
       this.view.dispatch({ effects: [clearAll.of({})] });
       this.snapshot();
@@ -703,7 +909,7 @@ export function installToolCallCards() {
       // 让快照与新会话对齐（将当前插件状态写空）
       this.snapshot();
     };
-onRestore = (payload) => {
+    onRestore = (payload) => {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
 
