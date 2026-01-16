@@ -207,6 +207,78 @@ class ToolCallCardWidget extends WidgetType {
     const title = document.createElement("span");
     title.textContent = `调用 ${this.name}`;
     Object.assign(title.style, { fontSize: "11px", fontWeight: "600" });
+
+    header.appendChild(title);
+
+    if (this.name === "edit" && this.args) {
+      const actionButtons = document.createElement("div");
+      actionButtons.style.cssText = "display:flex;gap:6px;";
+
+      const revertBtn = document.createElement("button");
+      revertBtn.textContent = "Revert";
+      revertBtn.title = "回退编辑操作";
+      Object.assign(revertBtn.style, {
+        background: "rgba(255, 100, 100, 0.1)",
+        border: "1px solid rgba(255, 100, 100, 0.3)",
+        color: "var(--fg)",
+        borderRadius: "4px",
+        padding: "4px 10px",
+        fontSize: "10px",
+        cursor: "pointer",
+        fontWeight: "500"
+      });
+      revertBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const baseId = String(this.id).replace(/:card$/, "");
+        try {
+          window.zion?.events?.emit("toolcards/editRevert", {
+            id: baseId,
+            path: this.args.path,
+            old_string: this.args.old_string,
+            new_string: this.args.new_string,
+            replace_all: this.args.replace_all
+          });
+        } catch (err) {
+          console.error("[toolcards/editRevert] error:", err);
+        }
+      });
+
+      const acceptBtn = document.createElement("button");
+      acceptBtn.textContent = "Accept";
+      acceptBtn.title = "接受编辑操作";
+      Object.assign(acceptBtn.style, {
+        background: "rgba(100, 200, 100, 0.1)",
+        border: "1px solid rgba(100, 200, 100, 0.3)",
+        color: "var(--fg)",
+        borderRadius: "4px",
+        padding: "4px 10px",
+        fontSize: "10px",
+        cursor: "pointer",
+        fontWeight: "500"
+      });
+      acceptBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const baseId = String(this.id).replace(/:card$/, "");
+        try {
+          window.zion?.events?.emit("toolcards/editAccept", {
+            id: baseId,
+            path: this.args.path,
+            old_string: this.args.old_string,
+            new_string: this.args.new_string,
+            replace_all: this.args.replace_all
+          });
+        } catch (err) {
+          console.error("[toolcards/editAccept] error:", err);
+        }
+      });
+
+      actionButtons.appendChild(revertBtn);
+      actionButtons.appendChild(acceptBtn);
+      header.appendChild(actionButtons);
+    }
+
     const close = document.createElement("button");
     close.textContent = "×";
     close.title = "移除该工具记录";
@@ -226,7 +298,6 @@ class ToolCallCardWidget extends WidgetType {
       const baseId = String(this.id).replace(/:card$/, "");
       try { window.zion?.events?.emit("toolcards/remove", { id: baseId }); } catch {}
     });
-    header.appendChild(title);
     header.appendChild(close);
     wrap.appendChild(header);
 
@@ -288,78 +359,6 @@ class ToolCallCardWidget extends WidgetType {
         borderRadius: "4px"
       });
       responseSection.appendChild(responseBody);
-
-      // 为 edit 工具添加 Revert 和 Accept 按钮
-      if (this.name === "edit" && this.args) {
-        const actionButtons = document.createElement("div");
-        actionButtons.style.cssText = "display:flex;gap:6px;margin-top:8px;";
-
-        // Revert 按钮
-        const revertBtn = document.createElement("button");
-        revertBtn.textContent = "Revert";
-        revertBtn.title = "回退编辑操作";
-        Object.assign(revertBtn.style, {
-          background: "rgba(255, 100, 100, 0.1)",
-          border: "1px solid rgba(255, 100, 100, 0.3)",
-          color: "var(--fg)",
-          borderRadius: "4px",
-          padding: "4px 10px",
-          fontSize: "10px",
-          cursor: "pointer",
-          fontWeight: "500"
-        });
-        revertBtn.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const baseId = String(this.id).replace(/:card$/, "");
-          try {
-            window.zion?.events?.emit("toolcards/editRevert", {
-              id: baseId,
-              path: this.args.path,
-              old_string: this.args.old_string,
-              new_string: this.args.new_string,
-              replace_all: this.args.replace_all
-            });
-          } catch (err) {
-            console.error("[toolcards/editRevert] error:", err);
-          }
-        });
-
-        // Accept 按钮
-        const acceptBtn = document.createElement("button");
-        acceptBtn.textContent = "Accept";
-        acceptBtn.title = "接受编辑操作";
-        Object.assign(acceptBtn.style, {
-          background: "rgba(100, 200, 100, 0.1)",
-          border: "1px solid rgba(100, 200, 100, 0.3)",
-          color: "var(--fg)",
-          borderRadius: "4px",
-          padding: "4px 10px",
-          fontSize: "10px",
-          cursor: "pointer",
-          fontWeight: "500"
-        });
-        acceptBtn.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const baseId = String(this.id).replace(/:card$/, "");
-          try {
-            window.zion?.events?.emit("toolcards/editAccept", {
-              id: baseId,
-              path: this.args.path,
-              old_string: this.args.old_string,
-              new_string: this.args.new_string,
-              replace_all: this.args.replace_all
-            });
-          } catch (err) {
-            console.error("[toolcards/editAccept] error:", err);
-          }
-        });
-
-        actionButtons.appendChild(revertBtn);
-        actionButtons.appendChild(acceptBtn);
-        responseSection.appendChild(actionButtons);
-      }
 
       wrap.appendChild(responseSection);
     }
