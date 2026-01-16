@@ -423,6 +423,9 @@ export async function activate(ctx) {
       basis = Math.max(220, Math.min(480, basis));
       tocUI.panel.style.flex = `0 0 ${basis}px`;
       tocUI.panel.style.width = `${basis}px`;
+      // Ensure panel maintains flex column layout for sticky toolbar
+      tocUI.panel.style.display = 'flex';
+      tocUI.panel.style.flexDirection = 'column';
 
       const available = wrapper.clientWidth || window.innerWidth;
 
@@ -488,8 +491,10 @@ export async function activate(ctx) {
         list = document.createElement('div');
         list.id = 'zion-toc-list';
         // Prevent horizontal scrolling and ensure it fits the panel
+        list.style.flex = '1';
         list.style.overflowY = 'auto';
         list.style.overflowX = 'hidden';
+        list.style.minHeight = '0';
         list.style.maxWidth = '100%';
         list.style.boxSizing = 'border-box';
         tocUI.panel.appendChild(list);
@@ -1184,8 +1189,8 @@ export async function activate(ctx) {
           panel.style.maxWidth = "480px";
           panel.style.height = "100%";
           // Prevent horizontal scrolling in the TOC side panel; allow only vertical scrolling
-          panel.style.overflowY = "auto";
-          panel.style.overflowX = "hidden";
+          panel.style.display = "flex";
+          panel.style.flexDirection = "column";
           panel.style.background = "var(--ext-toc-bg, var(--bg))";
           // remove right border to avoid visual divider
           panel.style.borderRight = "none";
@@ -1247,6 +1252,8 @@ export async function activate(ctx) {
           toolbar.style.alignItems = "center";
           toolbar.style.gap = "6px";
           toolbar.style.padding = "8px 0px 8px 35px";
+          toolbar.style.flexShrink = "0";
+          toolbar.style.flexGrow = "0";
           // ensure toolbar spans full width and align buttons to the right
           toolbar.style.width = "100%";
 
@@ -1403,6 +1410,12 @@ export async function activate(ctx) {
 
           const list = document.createElement("div");
           list.id = "zion-toc-list";
+          list.style.flex = "1";
+          list.style.overflowY = "auto";
+          list.style.overflowX = "hidden";
+          list.style.minHeight = "0";
+          list.style.maxWidth = "100%";
+          list.style.boxSizing = "border-box";
           panel.appendChild(list);
 
           // Save refs
