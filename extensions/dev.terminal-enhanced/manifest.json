@@ -1,0 +1,29 @@
+{
+  "name": "dev.terminal-enhanced",
+  "version": "0.1.0",
+  "description": "AI-enhanced terminal with output visualization and smart assistance",
+  "author": "Zion Next Team",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.terminal-enhanced",
+    "name": "Terminal Enhanced",
+    "version": "0.1.0",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        { "id": "terminal.openPanel", "title": "Open Terminal Panel" },
+        { "id": "terminal.executeCommand", "title": "Execute Terminal Command" },
+        { "id": "terminal.quickCommand", "title": "Quick Command Selector" },
+        { "id": "terminal.toggleContext", "title": "Toggle Terminal Context in Chat" }
+      ],
+      "keybindings": [
+        { "command": "terminal.openPanel", "key": "Mod-`" },
+        { "command": "terminal.quickCommand", "key": "Mod-Shift-P" }
+      ]
+    },
+    "activationEvents": ["onStartupFinished"],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}
