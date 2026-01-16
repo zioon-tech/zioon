@@ -30,6 +30,7 @@ export class CompressionSettingsPanel {
       this.root.remove();
       this.root = null;
     }
+    this.panelElement = null;
   }
   
   /**
@@ -125,6 +126,9 @@ export class CompressionSettingsPanel {
           <button class="tab-btn ${this.currentTab === 'strategies' ? 'active' : ''}" data-tab="strategies">
             Strategies
           </button>
+          <button class="tab-btn ${this.currentTab === 'compress' ? 'active' : ''}" data-tab="compress">
+            Compress
+          </button>
           <button class="tab-btn ${this.currentTab === 'statistics' ? 'active' : ''}" data-tab="statistics">
             Statistics
           </button>
@@ -138,6 +142,10 @@ export class CompressionSettingsPanel {
 
           <div class="tab-content ${this.currentTab === 'strategies' ? 'active' : ''}" id="tab-strategies">
             ${this.renderStrategySettings(strategies)}
+          </div>
+
+          <div class="tab-content ${this.currentTab === 'compress' ? 'active' : ''}" id="tab-compress">
+            ${this.renderCompressionTab(strategies)}
           </div>
 
           <div class="tab-content ${this.currentTab === 'statistics' ? 'active' : ''}" id="tab-statistics">
@@ -434,6 +442,70 @@ export class CompressionSettingsPanel {
       </div>
     `;
   }
+
+  renderCompressionTab(strategies) {
+    return `
+      <div class="settings-section">
+        <div class="section-title">Compression</div>
+
+        <div class="setting-row">
+          <div class="setting-col">
+            <label for="compress-strategy" class="field-label">Strategy</label>
+            <select id="compress-strategy" class="field-input">
+              <option value="auto" ${this.settings.defaultStrategy === 'auto' ? 'selected' : ''}>Auto (智能选择)</option>
+              <option value="opencode" ${this.settings.defaultStrategy === 'opencode' ? 'selected' : ''}>OpenCode</option>
+              <option value="claude-code" ${this.settings.defaultStrategy === 'claude-code' ? 'selected' : ''}>Claude Code</option>
+              <option value="cursor" ${this.settings.defaultStrategy === 'cursor' ? 'selected' : ''}>Cursor</option>
+              <option value="manus" ${this.settings.defaultStrategy === 'manus' ? 'selected' : ''}>Manus</option>
+              <option value="focus-agent" ${this.settings.defaultStrategy === 'focus-agent' ? 'selected' : ''}>Focus Agent</option>
+            </select>
+          </div>
+
+          <div class="setting-col">
+            <label class="field-label">&nbsp;</label>
+            <button id="compress-preview-btn" class="btn-secondary" style="width:100%">Preview</button>
+          </div>
+        </div>
+
+        <div class="stats-grid" id="compress-stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Current</div>
+            <div class="stat-value" id="compress-stat-current">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">After</div>
+            <div class="stat-value" id="compress-stat-after">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Saved</div>
+            <div class="stat-value" id="compress-stat-saved">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Messages</div>
+            <div class="stat-value" id="compress-stat-messages">-</div>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <label class="field-label">Preview</label>
+          <textarea id="compress-preview-text" class="compression-preview" readonly placeholder="Click Preview to generate compressed text..."></textarea>
+          <small id="compress-preview-meta"></small>
+        </div>
+
+        <div class="panel-footer-inline">
+          <button id="compress-apply-btn" class="btn-primary" style="width:100%">Compress (Keep snapshot)</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="section-title">Versions</div>
+        <div id="compression-versions-list" class="compression-versions-list"></div>
+        <div class="panel-footer-inline">
+          <button id="compression-versions-clear" class="btn-secondary" style="width:100%">Clear all history</button>
+        </div>
+      </div>
+    `;
+  }
   
   /**
    * Render statistics preview
@@ -543,9 +615,9 @@ export class CompressionSettingsPanel {
   attachEventListeners() {
     // Wait for DOM to be ready
     setTimeout(() => {
-      const saveBtn = document.getElementById('save-settings');
-      const resetBtn = document.getElementById('reset-settings');
-      const closeBtn = document.querySelector('.header-close');
+      const saveBtn = this.panelElement?.querySelector?.('#save-settings');
+      const resetBtn = this.panelElement?.querySelector?.('#reset-settings');
+      const closeBtn = this.panelElement?.querySelector?.('.header-close');
 
       if (saveBtn) {
         saveBtn.addEventListener('click', () => this.saveSettings());
@@ -570,6 +642,11 @@ export class CompressionSettingsPanel {
 
       // Attach listeners for settings changes
       this.attachSettingListeners();
+
+      this.attachCompressionTabListeners();
+      if (this.currentTab === 'compress') {
+        this.refreshCompressionTab();
+      }
     }, 100);
   }
 
@@ -599,6 +676,129 @@ export class CompressionSettingsPanel {
         content.classList.remove('active');
       }
     });
+
+    if (tabName === 'compress') {
+      this.refreshCompressionTab();
+    }
+  }
+
+  attachCompressionTabListeners() {
+    const previewBtn = this.panelElement?.querySelector?.('#compress-preview-btn');
+    const applyBtn = this.panelElement?.querySelector?.('#compress-apply-btn');
+    const strategySel = this.panelElement?.querySelector?.('#compress-strategy');
+    const clearBtn = this.panelElement?.querySelector?.('#compression-versions-clear');
+    const list = this.panelElement?.querySelector?.('#compression-versions-list');
+
+    previewBtn?.addEventListener('click', () => this.refreshCompressionTab());
+    strategySel?.addEventListener('change', () => this.refreshCompressionTab());
+
+    applyBtn?.addEventListener('click', async () => {
+      try {
+        const strategy = String(strategySel?.value || 'auto');
+        await window.zion?.commands?.executeCommand?.('compression.apply', { strategy, openPanel: false });
+        await this.refreshCompressionTab();
+      } catch {}
+    });
+
+    clearBtn?.addEventListener('click', async () => {
+      try {
+        await window.zion?.commands?.executeCommand?.('compression.versions.clear');
+        await this.refreshCompressionTab();
+      } catch {}
+    });
+
+    list?.addEventListener('click', async (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      const btn = target.closest('button[data-action][data-id]');
+      if (!(btn instanceof HTMLElement)) return;
+      const action = btn.dataset.action;
+      const id = btn.dataset.id;
+      if (!action || !id) return;
+      try {
+        if (action === 'restore') {
+          await window.zion?.commands?.executeCommand?.('compression.versions.restore', id);
+        } else if (action === 'delete') {
+          await window.zion?.commands?.executeCommand?.('compression.versions.delete', id);
+        }
+      } catch {}
+      await this.refreshCompressionTab();
+    });
+  }
+
+  async refreshCompressionTab() {
+    const strategySel = this.panelElement?.querySelector?.('#compress-strategy');
+    const previewEl = this.panelElement?.querySelector?.('#compress-preview-text');
+    const metaEl = this.panelElement?.querySelector?.('#compress-preview-meta');
+    const statCurrent = this.panelElement?.querySelector?.('#compress-stat-current');
+    const statAfter = this.panelElement?.querySelector?.('#compress-stat-after');
+    const statSaved = this.panelElement?.querySelector?.('#compress-stat-saved');
+    const statMessages = this.panelElement?.querySelector?.('#compress-stat-messages');
+    const listEl = this.panelElement?.querySelector?.('#compression-versions-list');
+
+    const strategy = String(strategySel?.value || this.settings.defaultStrategy || 'auto');
+
+    try {
+      const preview = await window.zion?.commands?.executeCommand?.('compression.preview.compute', { strategy });
+      if (preview && previewEl) {
+        previewEl.value = String(preview.previewText || '');
+        if (metaEl) {
+          const tail = preview.truncated ? ' (truncated)' : '';
+          metaEl.textContent = `Strategy: ${preview.strategy} · ${preview.ms}ms${tail}`;
+        }
+        if (statCurrent) statCurrent.textContent = `${this.formatTokens(preview.originalTokens || 0)}`;
+        if (statAfter) statAfter.textContent = `${this.formatTokens(preview.compressedTokens || 0)}`;
+        if (statSaved) statSaved.textContent = `${this.formatTokens(preview.savedTokens || 0)} (${Math.round((preview.savedPercent || 0) * 100)}%)`;
+        if (statMessages) statMessages.textContent = `${preview.originalMessages || 0} → ${preview.compressedMessages || 0}`;
+      }
+    } catch {
+      if (previewEl) previewEl.value = '';
+      if (metaEl) metaEl.textContent = '';
+    }
+
+    try {
+      const data = await window.zion?.commands?.executeCommand?.('compression.versions.list');
+      const versions = Array.isArray(data?.versions) ? data.versions : [];
+      const activeId = data?.activeId ? String(data.activeId) : null;
+      if (listEl) {
+        listEl.innerHTML = this.renderVersionsList(versions, activeId);
+      }
+    } catch {
+      if (listEl) listEl.innerHTML = '<div class="empty-state">No versions yet</div>';
+    }
+  }
+
+  renderVersionsList(versions, activeId) {
+    if (!Array.isArray(versions) || versions.length === 0) {
+      return '<div class="empty-state">No versions yet</div>';
+    }
+
+    const rows = versions.map((v, i) => {
+      const id = String(v?.id || '');
+      const ts = v?.createdAt ? new Date(v.createdAt).toLocaleString() : '-';
+      const kind = v?.kind === 'before' ? 'History' : (v?.kind === 'after' ? 'Current' : 'Version');
+      const isActive = activeId && id === activeId;
+      const title = isActive ? `${kind} (active)` : kind;
+      const tokens = typeof v?.tokens === 'number' ? this.formatTokens(v.tokens) : '-';
+      const msgs = typeof v?.messages === 'number' ? String(v.messages) : '-';
+      const strat = v?.strategy ? String(v.strategy) : '-';
+      const saved = typeof v?.savedTokens === 'number' ? this.formatTokens(v.savedTokens) : '';
+
+      return `
+        <div class="compression-version-item ${isActive ? 'active' : ''}">
+          <div class="version-main">
+            <div class="version-title">${title}</div>
+            <div class="version-meta">${ts} · ${strat} · ${msgs} msgs · ${tokens}${saved ? ` · saved ${saved}` : ''}</div>
+          </div>
+          <div class="version-actions">
+            <button class="btn-mini" data-action="restore" data-id="${id}">Restore</button>
+            <button class="btn-mini btn-danger" data-action="delete" data-id="${id}">Delete</button>
+          </div>
+        </div>
+      `;
+    });
+
+    return rows.join('');
   }
   
   /**
@@ -628,7 +828,7 @@ export class CompressionSettingsPanel {
     };
     
     for (const [elementId, settingKey] of Object.entries(inputs)) {
-      const element = document.getElementById(elementId);
+      const element = this.panelElement?.querySelector?.(`#${elementId}`);
       if (element) {
         element.addEventListener('change', (e) => {
           this.updateSetting(settingKey, e.target);
@@ -637,7 +837,7 @@ export class CompressionSettingsPanel {
         // For range inputs, update display value
         if (element.type === 'range') {
           element.addEventListener('input', (e) => {
-            const display = document.getElementById(`${elementId}-value`);
+            const display = this.panelElement?.querySelector?.(`#${elementId}-value`);
             if (display) {
               display.textContent = `${Math.round(e.target.value * 100)}%`;
             }
@@ -677,30 +877,20 @@ export class CompressionSettingsPanel {
   }
   
   /**
-   * Show panel (using unified panel manager)
-   */
-  show() {
-    this.openSettingsPanel();
-  }
-
-  /**
-   * Hide panel
-   */
-  hide() {
-    if (this.root) {
-      this.root.remove();
-      this.root = null;
-    }
-  }
-
-  /**
    * Open settings panel
    * @param {string} initialTab - Initial tab to show (optional)
    */
   async openSettingsPanel(initialTab) {
     // Set initial tab if provided
-    if (initialTab && ['general', 'strategies', 'statistics'].includes(initialTab)) {
+    if (initialTab && ['general', 'strategies', 'compress', 'statistics'].includes(initialTab)) {
       this.currentTab = initialTab;
+    }
+
+    if (this.root && this.panelElement && document.body.contains(this.root)) {
+      try {
+        this.switchTab(this.currentTab);
+      } catch {}
+      return;
     }
 
     if (this.root) {
@@ -1124,6 +1314,54 @@ export class CompressionSettingsPanel {
 .zion-compression-settings-panel .btn-secondary:active {
   transform: translateY(0);
 }
+/* Compression tab */
+.zion-compression-settings-panel .compression-preview {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 140px;
+  max-height: 260px;
+  resize: vertical;
+  background: rgba(0,0,0,0.06);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .compression-preview {
+  background: rgba(0,0,0,0.03);
+}
+.zion-compression-settings-panel .panel-footer-inline { margin-top: 10px; }
+.zion-compression-settings-panel .compression-versions-list { display: flex; flex-direction: column; gap: 8px; }
+.zion-compression-settings-panel .compression-version-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(0,0,0,0.03);
+}
+:root[data-theme="light"] .zion-compression-settings-panel .compression-version-item {
+  background: rgba(0,0,0,0.02);
+}
+.zion-compression-settings-panel .compression-version-item.active { border-color: var(--accent); }
+.zion-compression-settings-panel .version-title { font-size: 12px; font-weight: 600; }
+.zion-compression-settings-panel .version-meta { font-size: 11px; opacity: 0.75; margin-top: 4px; }
+.zion-compression-settings-panel .version-actions { display: flex; gap: 6px; }
+.zion-compression-settings-panel .btn-mini {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.zion-compression-settings-panel .btn-mini:hover { filter: brightness(1.08); }
+.zion-compression-settings-panel .btn-mini.btn-danger { color: var(--danger, #ff6b6b); }
 `;
   }
   

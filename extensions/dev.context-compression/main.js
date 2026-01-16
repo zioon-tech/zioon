@@ -20,6 +20,378 @@ import { KVCacheOptimizer } from './kv-cache-optimizer.js';
 import { CompressionSettingsPanel } from './ui/settings-panel.js';
 import { CompressionStatus } from './ui/compression-status.js';
 
+let __settingsPanelSingleton = null;
+
+const __compressionMem = { kv: {}, versions: {} };
+
+function getSessionKey() {
+  try {
+    const sid = window.zion?.state?.get?.('sessions.currentId');
+    if (sid) return `session:${String(sid)}`;
+  } catch {}
+  return 'global';
+}
+
+function makeVersionId(sessionKey) {
+  const rand = Math.random().toString(16).slice(2);
+  return `${sessionKey}:${Date.now()}:${rand}`;
+}
+
+function canUseIDB() {
+  return typeof indexedDB !== 'undefined' && indexedDB;
+}
+
+const COMPRESSION_DB = 'zion.compression.db';
+let __dbPromise = null;
+
+function openCompressionDB() {
+  if (__dbPromise) return __dbPromise;
+  __dbPromise = new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(COMPRESSION_DB, 1);
+      req.onupgradeneeded = (e) => {
+        try {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('versions')) db.createObjectStore('versions', { keyPath: 'id' });
+          if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv', { keyPath: 'key' });
+        } catch {}
+      };
+      req.onsuccess = (e) => resolve(e.target.result);
+      req.onerror = (e) => reject(e.target.error || new Error('idb open error'));
+    } catch (err) {
+      reject(err);
+    }
+  });
+  return __dbPromise;
+}
+
+async function idbGet(store, key) {
+  const db = await openCompressionDB();
+  return new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction(store, 'readonly');
+      const st = tx.objectStore(store);
+      const req = st.get(key);
+      req.onsuccess = () => {
+        const v = req.result;
+        if (!v) return resolve(undefined);
+        if (store === 'kv') return resolve(v?.value);
+        return resolve(v);
+      };
+      req.onerror = () => reject(req.error);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function idbSet(store, record) {
+  const db = await openCompressionDB();
+  return new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction(store, 'readwrite');
+      const st = tx.objectStore(store);
+      const req = st.put(record);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function idbDel(store, key) {
+  const db = await openCompressionDB();
+  return new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction(store, 'readwrite');
+      const st = tx.objectStore(store);
+      const req = st.delete(key);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function storageGetKV(key) {
+  if (canUseIDB()) {
+    try {
+      return await idbGet('kv', key);
+    } catch {}
+  }
+  return __compressionMem.kv[key];
+}
+
+async function storageSetKV(key, value) {
+  if (canUseIDB()) {
+    try {
+      await idbSet('kv', { key, value });
+      return;
+    } catch {}
+  }
+  __compressionMem.kv[key] = value;
+}
+
+async function storageDelKV(key) {
+  if (canUseIDB()) {
+    try {
+      await idbDel('kv', key);
+      return;
+    } catch {}
+  }
+  delete __compressionMem.kv[key];
+}
+
+async function storagePutVersion(record) {
+  if (canUseIDB()) {
+    try {
+      await idbSet('versions', record);
+      return;
+    } catch {}
+  }
+  __compressionMem.versions[record.id] = record;
+}
+
+async function storageGetVersion(id) {
+  if (canUseIDB()) {
+    try {
+      return await idbGet('versions', id);
+    } catch {}
+  }
+  return __compressionMem.versions[id];
+}
+
+async function storageDelVersion(id) {
+  if (canUseIDB()) {
+    try {
+      await idbDel('versions', id);
+      return;
+    } catch {}
+  }
+  delete __compressionMem.versions[id];
+}
+
+async function getVersionsIndex(sessionKey) {
+  const v = await storageGetKV(`index:${sessionKey}`);
+  return Array.isArray(v) ? v : [];
+}
+
+async function setVersionsIndex(sessionKey, idx) {
+  await storageSetKV(`index:${sessionKey}`, Array.isArray(idx) ? idx : []);
+}
+
+async function getActiveVersionId(sessionKey) {
+  const v = await storageGetKV(`active:${sessionKey}`);
+  return v ? String(v) : null;
+}
+
+async function setActiveVersionId(sessionKey, id) {
+  if (!id) {
+    await storageDelKV(`active:${sessionKey}`);
+    return;
+  }
+  await storageSetKV(`active:${sessionKey}`, String(id));
+}
+
+async function listVersionsForActiveSession() {
+  const sessionKey = getSessionKey();
+  const index = await getVersionsIndex(sessionKey);
+  const activeId = await getActiveVersionId(sessionKey);
+  return { sessionKey, activeId, versions: index };
+}
+
+async function restoreVersionForActiveSession(id) {
+  const editor = window.zion.window.activeEditor;
+  if (!editor) return { ok: false, error: 'no_editor' };
+  const sessionKey = getSessionKey();
+  const rec = await storageGetVersion(String(id));
+  if (!rec || rec.sessionKey !== sessionKey) return { ok: false, error: 'not_found' };
+
+  const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
+  const annotations = rec.annotations && typeof rec.annotations === 'object' ? rec.annotations : null;
+
+  try { window.zion?.events?.emit('toolcards/clear'); } catch {}
+  try { window.zion?.events?.emit('thinking/clear'); } catch {}
+
+  editor.setValue(String(rec.text ?? ''));
+  await setActiveVersionId(sessionKey, String(id));
+
+  if (sessionId) {
+    try { window.zion?.state?.set(`sessions.annotations.${sessionId}`, annotations || {}); } catch {}
+    try { window.zion?.state?.set(`sessions.pendingRestore.tools.${sessionId}`, Array.isArray(annotations?.tools) ? annotations.tools : null); } catch {}
+    try { window.zion?.state?.set(`sessions.pendingRestore.thinking.${sessionId}`, Array.isArray(annotations?.thinking) ? annotations.thinking : null); } catch {}
+    setTimeout(() => {
+      try {
+        if (Array.isArray(annotations?.tools) && annotations.tools.length) {
+          window.zion?.events?.emit('toolcards/restore', { items: annotations.tools });
+        }
+      } catch {}
+      try {
+        if (Array.isArray(annotations?.thinking) && annotations.thinking.length) {
+          window.zion?.events?.emit('thinking/restore', { items: annotations.thinking });
+        }
+      } catch {}
+    }, 0);
+  }
+
+  return { ok: true };
+}
+
+function buildMessagesForCompression(docText, sessionId) {
+  const messages = parseMessages(docText);
+  if (!sessionId) return messages;
+
+  const ann = (() => {
+    try {
+      const v = window.zion?.state?.get?.(`sessions.annotations.${sessionId}`);
+      return v && typeof v === 'object' ? v : {};
+    } catch {
+      return {};
+    }
+  })();
+
+  const limitPos = String(docText || '').length;
+
+  const itemsToolsRaw = Array.isArray(ann.tools) ? ann.tools : [];
+  const deletedTool = new Set(Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : []);
+  const itemsTools = itemsToolsRaw
+    .filter(it => it && it.id && !deletedTool.has(it.id))
+    .filter(it => typeof it.from === 'number' && it.from >= 0 && it.from < limitPos)
+    .filter(it => it.name && it.args && it.result != null)
+    .sort((a, b) => (a.from || 0) - (b.from || 0));
+
+  const itemsThinkingRaw = Array.isArray(ann.thinking) ? ann.thinking : [];
+  const deletedThinking = new Set(Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : []);
+  const itemsThinking = itemsThinkingRaw
+    .filter(it => it && !deletedThinking.has(it.id))
+    .filter(it => typeof it.from === 'number' && it.from >= 0 && it.from < limitPos)
+    .filter(it => typeof it.text === 'string' && it.text.trim().length > 0)
+    .sort((a, b) => (a.from || 0) - (b.from || 0));
+
+  if (itemsTools.length === 0 && itemsThinking.length === 0) return messages;
+
+  const buildRanges = (text) => {
+    const lines = String(text || '').replace(/\r/g, '').split('\n');
+    const ranges = [];
+    let pos = 0;
+    let startPos = 0;
+    let currentRole = 'user';
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const m = line.match(/^(system|user|assistant)\s+(.*)$/);
+      if (m) {
+        if (pos > startPos) ranges.push({ role: currentRole, from: startPos, to: pos });
+        currentRole = m[1];
+        startPos = pos;
+      }
+      pos += line.length + 1;
+    }
+    if (pos > startPos) ranges.push({ role: currentRole, from: startPos, to: pos });
+    return ranges;
+  };
+
+  const ranges = buildRanges(docText);
+  const assistantRanges = ranges.filter(r => r.role === 'assistant');
+  const assistantMsgIdxs = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role === 'assistant') assistantMsgIdxs.push(i);
+  }
+
+  const groups = new Map();
+  const findAssistantIndexForPos = (p) => {
+    for (let i = 0; i < assistantRanges.length; i++) {
+      const r = assistantRanges[i];
+      if (p >= r.from && p < r.to) return assistantMsgIdxs[i] ?? -1;
+    }
+    let fallback = -1;
+    for (let i = 0; i < assistantRanges.length; i++) {
+      if (assistantRanges[i].to <= p) fallback = assistantMsgIdxs[i] ?? -1;
+    }
+    return fallback;
+  };
+
+  for (const it of itemsTools) {
+    const idx = findAssistantIndexForPos(it.from);
+    if (idx < 0) continue;
+    const arr = groups.get(idx) || [];
+    arr.push({
+      pos: it.from,
+      kind: 'tool',
+      data: {
+        id: it.id,
+        name: it.name,
+        args: it.args,
+        result: String(it.result)
+      }
+    });
+    groups.set(idx, arr);
+  }
+
+  for (const it of itemsThinking) {
+    const idx = findAssistantIndexForPos(it.from);
+    if (idx < 0) continue;
+    const arr = groups.get(idx) || [];
+    arr.push({ pos: it.from, kind: 'thinking', data: { content: String(it.text || '') } });
+    groups.set(idx, arr);
+  }
+
+  if (groups.size === 0) return messages;
+
+  const out = messages.slice();
+  const sortedIdxs = Array.from(groups.keys()).sort((a, b) => a - b);
+  let offset = 0;
+  for (const baseIdx of sortedIdxs) {
+    const idx = baseIdx + offset;
+    const units = (groups.get(baseIdx) || []).slice().sort((a, b) => (a.pos || 0) - (b.pos || 0));
+    for (const unit of units) {
+      if (unit.kind === 'thinking') {
+        out.splice(idx + 1 + offset, 0, { role: 'assistant', content: unit.data.content });
+        offset += 1;
+      } else if (unit.kind === 'tool') {
+        const tc = {
+          id: unit.data.id,
+          type: 'function',
+          function: { name: unit.data.name, arguments: JSON.stringify(unit.data.args || {}) }
+        };
+        out.splice(idx + 1 + offset, 0, { role: 'assistant', tool_calls: [tc] });
+        offset += 1;
+        out.splice(idx + 1 + offset, 0, { role: 'tool', tool_call_id: unit.data.id, content: unit.data.result });
+        offset += 1;
+      }
+    }
+  }
+
+  return out;
+}
+
+async function deleteVersionForActiveSession(id) {
+  const sessionKey = getSessionKey();
+  const idx = await getVersionsIndex(sessionKey);
+  const strId = String(id);
+  const nextIdx = idx.filter((v) => v?.id !== strId);
+  await setVersionsIndex(sessionKey, nextIdx);
+  await storageDelVersion(strId);
+  const activeId = await getActiveVersionId(sessionKey);
+  if (activeId === strId) {
+    const nextActive = nextIdx[0]?.id ? String(nextIdx[0].id) : null;
+    await setActiveVersionId(sessionKey, nextActive);
+  }
+  return { ok: true };
+}
+
+async function clearVersionsForActiveSession() {
+  const sessionKey = getSessionKey();
+  const idx = await getVersionsIndex(sessionKey);
+  for (const v of idx) {
+    if (v?.id) await storageDelVersion(String(v.id));
+  }
+  await setVersionsIndex(sessionKey, []);
+  await setActiveVersionId(sessionKey, null);
+  return { ok: true };
+}
+
 export async function activate(ctx) {
   console.log('dev.context-compression plugin activated');
   const log = (...args) => console.log('[context-compression]', ...args);
@@ -44,37 +416,82 @@ export async function activate(ctx) {
   // 注册命令
   ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.manual', async () => {
-      await compressEditorConversation(compressionEngine, 'auto');
+      await applyCompressionToActiveEditor(compressionEngine, { strategy: 'auto', openPanel: false });
     })
   );
   
   ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.strategy.opencode', async () => {
-      await compressEditorConversation(compressionEngine, 'opencode');
+      await applyCompressionToActiveEditor(compressionEngine, { strategy: 'opencode', openPanel: false });
     })
   );
   
   ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.strategy.claude-code', async () => {
-      await compressEditorConversation(compressionEngine, 'claude-code');
+      await applyCompressionToActiveEditor(compressionEngine, { strategy: 'claude-code', openPanel: false });
     })
   );
   
   ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.strategy.cursor', async () => {
-      await compressEditorConversation(compressionEngine, 'cursor');
+      await applyCompressionToActiveEditor(compressionEngine, { strategy: 'cursor', openPanel: false });
     })
   );
   
   ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.strategy.manus', async () => {
-      await compressEditorConversation(compressionEngine, 'manus');
+      await applyCompressionToActiveEditor(compressionEngine, { strategy: 'manus', openPanel: false });
     })
   );
   
   ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.strategy.focus-agent', async () => {
-      await compressEditorConversation(compressionEngine, 'focus-agent');
+      await applyCompressionToActiveEditor(compressionEngine, { strategy: 'focus-agent', openPanel: false });
+    })
+  );
+
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.preview', async () => {
+      openCompressionPanel({ tab: 'compress' });
+    })
+  );
+
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.preview.compute', async (opts) => {
+      const strategy = opts?.strategy || 'auto';
+      return await computeCompressionPreview(compressionEngine, { strategy });
+    })
+  );
+
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.apply', async (opts) => {
+      const strategy = opts?.strategy || 'auto';
+      const openPanel = opts?.openPanel !== false;
+      return await applyCompressionToActiveEditor(compressionEngine, { strategy, openPanel });
+    })
+  );
+
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.versions.list', async () => {
+      return await listVersionsForActiveSession();
+    })
+  );
+
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.versions.restore', async (id) => {
+      return await restoreVersionForActiveSession(id);
+    })
+  );
+
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.versions.delete', async (id) => {
+      return await deleteVersionForActiveSession(id);
+    })
+  );
+
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.versions.clear', async () => {
+      return await clearVersionsForActiveSession();
     })
   );
   
@@ -93,8 +510,7 @@ export async function activate(ctx) {
   ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.panel', (opts) => {
       const initialTab = opts?.tab || 'general';
-      const panel = new CompressionSettingsPanel();
-      panel.show({ tab: initialTab });
+      openCompressionPanel({ tab: initialTab });
     })
   );
 
@@ -106,7 +522,7 @@ export async function activate(ctx) {
         title: 'Compress',
         description: 'Compress current editor conversation',
         category: 'compression',
-        execute: () => window.zion.commands.executeCommand('compression.manual')
+        execute: () => window.zion.commands.executeCommand('compression.preview')
       }),
       window.zion.slash.registerCommand({
         id: 'compression.slash.settings',
@@ -330,41 +746,176 @@ function ensureDefaultSettings() {
   window.zion.state.set('compression.settings', panel.getDefaultSettings());
 }
 
-async function compressEditorConversation(compressionEngine, strategyName) {
+async function computeCompressionPreview(compressionEngine, opts) {
   const editor = window.zion.window.activeEditor;
-  if (!editor) return;
+  if (!editor) return null;
   const docText = editor.getValue();
-  const messages = parseMessages(docText);
-  if (!messages.length) return;
+  const sessionKey = getSessionKey();
+  const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
+  const messages = buildMessagesForCompression(docText, sessionId);
+  if (!messages.length) return null;
+
+  const settings = await getCompressionSettings();
+  syncEngineFromSettings(compressionEngine, settings);
+
+  const strategy = opts?.strategy || 'auto';
+  const context = compressionEngine.createCompressionContext(messages);
+  const originalTokens = Number(context?.tokens || 0);
+  const originalMessages = messages.length;
+
+  const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  let compressed = await compressionEngine.compress(messages, strategy);
+  compressed = sanitizeChatMessages(compressed, messages);
+  const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+  const cpt = Number(compressionEngine?.config?.charsPerToken || 4);
+  const compressedTokens = Math.floor(JSON.stringify(compressed).length / (cpt > 0 ? cpt : 4));
+  const compressedMessages = Array.isArray(compressed) ? compressed.length : 0;
+  const savedTokens = Math.max(0, originalTokens - compressedTokens);
+  const savedPercent = originalTokens > 0 ? (savedTokens / originalTokens) : 0;
+
+  const fullText = serializeMessages(compressed);
+  const maxPreviewChars = 20000;
+  const truncated = fullText.length > maxPreviewChars;
+  const previewText = truncated ? fullText.slice(0, maxPreviewChars) : fullText;
+
+  return {
+    strategy,
+    originalTokens,
+    compressedTokens,
+    savedTokens,
+    savedPercent,
+    originalMessages,
+    compressedMessages,
+    previewText,
+    truncated,
+    ms: Math.round((t1 - t0) * 100) / 100
+  };
+}
+
+async function applyCompressionToActiveEditor(compressionEngine, opts) {
+  const editor = window.zion.window.activeEditor;
+  if (!editor) return { ok: false, error: 'no_editor' };
+  const docText = editor.getValue();
+  const sessionKey = getSessionKey();
+  const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
+  const annotations = sessionId ? (window.zion?.state?.get?.(`sessions.annotations.${sessionId}`) || null) : null;
+  const messages = buildMessagesForCompression(docText, sessionId);
+  if (!messages.length) return { ok: false, error: 'no_messages' };
+
   const settings = await getCompressionSettings();
   syncEngineFromSettings(compressionEngine, settings);
   const debug = !!settings?.debugLogging;
-  const originalTokens = Math.floor(JSON.stringify(messages).length / 4);
+
+  const strategy = opts?.strategy || 'auto';
+  const openPanel = opts?.openPanel !== false;
+  const context = compressionEngine.createCompressionContext(messages);
+  const originalTokens = Number(context?.tokens || 0);
+  const originalMessages = messages.length;
+
   if (debug) {
     console.log('[context-compression]', 'manual compress: start', {
-      strategy: strategyName,
-      messages: messages.length,
-      estTokens: originalTokens
+      strategy,
+      messages: originalMessages,
+      estTokens: originalTokens,
+      sessionKey
     });
   }
+
   const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  const compressed = await compressionEngine.compress(messages, strategyName);
+  let compressed = await compressionEngine.compress(messages, strategy);
+  compressed = sanitizeChatMessages(compressed, messages);
   const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  const compressedTokens = Math.floor(JSON.stringify(compressed).length / 4);
+
+  const cpt = Number(compressionEngine?.config?.charsPerToken || 4);
+  const compressedTokens = Math.floor(JSON.stringify(compressed).length / (cpt > 0 ? cpt : 4));
+  const compressedMessages = Array.isArray(compressed) ? compressed.length : 0;
   const outText = serializeMessages(compressed);
+
+  const now = Date.now();
+  const groupId = makeVersionId(sessionKey);
+  const beforeId = makeVersionId(sessionKey);
+  const afterId = makeVersionId(sessionKey);
+  const savedTokens = Math.max(0, originalTokens - compressedTokens);
+
+  await storagePutVersion({
+    id: beforeId,
+    sessionKey,
+    text: docText,
+    annotations,
+    meta: {
+      createdAt: now,
+      kind: 'before',
+      groupId,
+      strategy,
+      tokens: originalTokens,
+      messages: originalMessages
+    }
+  });
+
+  await storagePutVersion({
+    id: afterId,
+    sessionKey,
+    text: outText,
+    annotations: null,
+    meta: {
+      createdAt: now,
+      kind: 'after',
+      groupId,
+      strategy,
+      tokens: compressedTokens,
+      messages: compressedMessages,
+      savedTokens,
+      originalTokens,
+      originalMessages
+    }
+  });
+
+  const idx = await getVersionsIndex(sessionKey);
+  const entryAfter = {
+    id: afterId,
+    createdAt: now,
+    kind: 'after',
+    groupId,
+    strategy,
+    tokens: compressedTokens,
+    messages: compressedMessages,
+    savedTokens,
+    originalTokens,
+    originalMessages
+  };
+  const entryBefore = {
+    id: beforeId,
+    createdAt: now,
+    kind: 'before',
+    groupId,
+    strategy,
+    tokens: originalTokens,
+    messages: originalMessages
+  };
+  await setVersionsIndex(sessionKey, [entryAfter, entryBefore, ...idx]);
+  await setActiveVersionId(sessionKey, afterId);
+
   editor.setValue(outText);
-  recordCompressionEvent({ strategy: strategyName, originalTokens, compressedTokens, timestamp: Date.now() });
+  recordCompressionEvent({ strategy, originalTokens, compressedTokens, timestamp: now });
+
   if (debug) {
     console.log('[context-compression]', 'manual compress: done', {
-      strategy: strategyName,
-      beforeMessages: messages.length,
-      afterMessages: Array.isArray(compressed) ? compressed.length : 0,
+      strategy,
+      beforeMessages: originalMessages,
+      afterMessages: compressedMessages,
       beforeTokens: originalTokens,
       afterTokens: compressedTokens,
-      savedTokens: originalTokens - compressedTokens,
+      savedTokens,
       ms: Math.round((t1 - t0) * 100) / 100
     });
   }
+
+  if (openPanel) {
+    openCompressionPanel({ tab: 'compress' });
+  }
+
+  return { ok: true, sessionKey, activeId: afterId };
 }
 
 function syncEngineFromSettings(compressionEngine, settings) {
@@ -571,9 +1122,9 @@ function serializeContent(content) {
   return typeof content === 'object' ? JSON.stringify(content) : String(content);
 }
 
-function openCompressionPanel() {
-  const panel = new CompressionSettingsPanel();
-  panel.show();
+function openCompressionPanel(opts) {
+  if (!__settingsPanelSingleton) __settingsPanelSingleton = new CompressionSettingsPanel();
+  __settingsPanelSingleton.show({ tab: opts?.tab });
 }
 
 function openStatsOverlay() {

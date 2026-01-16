@@ -461,6 +461,15 @@ export async function activate(ctx) {
           if (e?.name === "AbortError") { aborted = true; setRunState(sid, { aborted: true, streaming: false }); return; }
           window.zion.state.set("chat.error", e.message);
           window.zion.events.emit("chat/runError", { runId, error: e, sessionId: sid });
+          // 显示错误通知
+          try {
+            window.zion.notification.show(`大模型回答出错: ${e?.message || String(e)}`, {
+              type: 'error',
+              duration: 6000
+            });
+          } catch (err) {
+            console.error('[langchain-chat] failed to show error notification:', err);
+          }
           aborted = true;
           setRunState(sid, { aborted: true, streaming: false });
         },
