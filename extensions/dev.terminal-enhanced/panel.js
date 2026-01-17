@@ -21,6 +21,31 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   color: var(--fg);
 }
 
+/* xterm 内部元素间距重置 */
+.zte-panel > div:nth-child(3) {
+  margin: 0;
+  padding: 0;
+}
+.zte-panel > div:nth-child(3) > div {
+  margin: 0;
+  padding: 0;
+}
+.zte-panel .xterm-viewport {
+  top: 0;
+  padding: 0;
+  margin: 0;
+}
+.zte-panel .xterm-screen {
+  position: relative;
+  margin: 0;
+  padding: 0;
+}
+.zte-panel .xterm {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
 .zte-resize-handle {
   position: absolute;
   top: 0;
@@ -326,7 +351,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   Object.assign(content.style, {
     position: "relative",
     overflow: "hidden",
-    padding: "0"
+    padding: "0",
+    margin: "0"
   });
 
   // xterm container
@@ -335,7 +361,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     width: "100%",
     height: "100%",
     display: "none",
-    overflow: "hidden"
+    overflow: "hidden",
+    padding: "0",
+    margin: "0"
   });
   content.appendChild(termWrap);
 
@@ -583,6 +611,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     term.loadAddon(fitAddon);
     term.loadAddon(searchAddon);
     term.loadAddon(webLinksAddon);
+    // 清理 termWrap 中可能存在的旧 xterm DOM 元素，避免重复渲染导致空白
+    termWrap.innerHTML = '';
     term.open(termWrap);
     fitAddon.fit();
     installTerminalInteractions();
@@ -1054,6 +1084,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       try { termDataDisp?.dispose?.(); } catch {}
       termDataDisp = null;
       term.reset();
+      // 清理可能残留的 DOM 元素
+      try { termWrap.innerHTML = ''; term.open(termWrap); } catch {}
       ensureTermDataHandler();
       // Connect
       pty = api.connectPty(sessionId, term.cols, term.rows);
@@ -1961,8 +1993,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     if (sid) {
       const ok = await connectPtyForSession(sid);
       if (!ok) {
-        if (xtermLoaded && term) bootstrapExecForSession(sid);
-        else renderFallbackOutputs();
+        if (xtermLoaded && term) {
+          // 确保没有重复 DOM
+          try { termWrap.innerHTML = ''; term.open(termWrap); } catch {}
+          bootstrapExecForSession(sid);
+        } else {
+          renderFallbackOutputs();
+        }
       }
     } else {
       if (xtermLoaded && term) {
