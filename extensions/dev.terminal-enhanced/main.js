@@ -28,6 +28,29 @@ function pushOutput(record) {
   }
 }
 
+function pushHistory(record) {
+  try {
+    const key = "terminal.history";
+    const list = Array.isArray(window.zion?.state?.get(key)) ? window.zion.state.get(key) : [];
+    const next = [...list, {
+      id: record.id,
+      sessionId: record.sessionId,
+      command: record.command,
+      timestamp: record.timestamp,
+      duration: record.duration,
+      exitCode: record.exitCode,
+      success: record.success
+    }];
+    const trimmed = next.length > 500 ? next.slice(next.length - 500) : next;
+    window.zion?.state?.set(key, trimmed);
+    try {
+      localStorage.setItem("zion.terminal.history", JSON.stringify(trimmed));
+    } catch {}
+  } catch (e) {
+    console.warn("[dev.terminal-enhanced] pushHistory failed", e);
+  }
+}
+
 /**
  * Execute a command on a session (POST /sessions/{id}/exec)
  * - Uses server's stdout/stderr and duration_ms
@@ -38,7 +61,8 @@ async function executeInSession(sessionId, command, options = {}) {
   const payload = { command: String(command || ""), timeout: options.timeout && Number(options.timeout) || undefined };
   const started = Date.now();
   const url = `${base}/sessions/${encodeURIComponent(sessionId)}/exec`;
-  const ctrl = typeof AbortSignal?.timeout === "function" && options.timeout ? { signal: AbortSignal.timeout(options.timeout) } : {};
+  const AS = globalThis.AbortSignal;
+  const ctrl = typeof AS?.timeout === "function" && options.timeout ? { signal: AS.timeout(options.timeout) } : {};
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -84,6 +108,7 @@ async function executeInSession(sessionId, command, options = {}) {
   } catch {}
 
   pushOutput(rec);
+  pushHistory(rec);
   return rec;
 }
 
@@ -178,6 +203,21 @@ async function ensureSessions() {
 }
 
 export async function activate(ctx) {
+  try {
+    const st = window.zion?.state;
+    if (st && !Array.isArray(st.get("terminal.history"))) {
+      let saved = null;
+      try {
+        saved = JSON.parse(localStorage.getItem("zion.terminal.history") || "null");
+      } catch {}
+      if (Array.isArray(saved)) {
+        st.set("terminal.history", saved.slice(-500));
+      } else {
+        st.set("terminal.history", []);
+      }
+    }
+  } catch {}
+
   // 1) Quick Commands seed
   const defaultQuick = {
     build: "npm run build && npm test",
@@ -244,6 +284,9 @@ export async function activate(ctx) {
   const cmdOpen = window.zion.commands.registerCommand("terminal.openPanel", () => {
     try { panel?.open?.(); } catch {}
   });
+  const cmdOpenHistory = window.zion.commands.registerCommand("terminal.openHistory", () => {
+    try { panel?.open?.({ openHistory: true }); } catch {}
+  });
   const cmdExec = window.zion.commands.registerCommand("terminal.executeCommand", async (args) => {
     const command = typeof args === "string" ? args : String(args?.command || "").trim();
     const sessionId = typeof args === "object" && args?.session_id ? String(args.session_id) : (getActiveSessionId() || "");
@@ -258,7 +301,7 @@ export async function activate(ctx) {
     }
   });
   const cmdQuick = window.zion.commands.registerCommand("terminal.quickCommand", async () => {
-    panel?.open?.({ focusCommand: true });
+    panel?.open?.({ openQuick: true });
   });
   const cmdToggleCtx = window.zion.commands.registerCommand("terminal.toggleContext", () => {
     const cur = window.zion?.state?.get("chat.includeTerminalContext");
@@ -266,7 +309,7 @@ export async function activate(ctx) {
     window.zion?.state?.set("chat.includeTerminalContext", next);
     return next;
   });
-  ctx.subscriptions.push(cmdOpen, cmdExec, cmdQuick, cmdToggleCtx);
+  ctx.subscriptions.push(cmdOpen, cmdOpenHistory, cmdExec, cmdQuick, cmdToggleCtx);
 
   // 4) Register keybindings
   try {
@@ -275,6 +318,9 @@ export async function activate(ctx) {
     );
     ctx.subscriptions.push(
       window.zion.keybindings.register({ command: "terminal.quickCommand", key: "Mod-Shift-P", when: "editorFocus" })
+    );
+    ctx.subscriptions.push(
+      window.zion.keybindings.register({ command: "terminal.openHistory", key: "Mod-Shift-H", when: "editorFocus" })
     );
     window.zion.__applyKeymap?.();
   } catch (e) {
@@ -346,4 +392,55 @@ export async function activate(ctx) {
 
   // 8) Initial sessions sync to ensure panel has data
   try { await ensureSessions(); } catch {}
+
+  try {
+    for (let i = 1; i <= 9; i++) {
+      const id = `terminal.setActiveSession${i}`;
+      const idx = i - 1;
+      const cmd = window.zion.commands.registerCommand(id, async () => {
+        await ensureSessions();
+        const sessions = window.zion?.state?.get("terminal.sessions") || [];
+        const list = Array.isArray(sessions) ? sessions : [];
+        const s = list[idx];
+        const sid = String(s?.id || "").trim();
+        if (!sid) return false;
+        return window.zion.commands.executeCommand("terminal.setActiveSession", { session_id: sid });
+      });
+      ctx.subscriptions.push(cmd);
+      try {
+        ctx.subscriptions.push(
+          window.zion.keybindings.register({ command: id, key: `Mod-${i}`, when: "editorFocus" })
+        );
+      } catch {}
+    }
+    window.zion.__applyKeymap?.();
+  } catch {}
+
+  try {
+    const slash = window.zion.slash;
+    if (slash?.registerCommand) {
+      const d1 = slash.registerCommand({
+        id: "terminal.cmd",
+        trigger: ["cmd"],
+        title: "Command Palette (Terminal)",
+        description: "Open terminal quick command selector",
+        category: "terminal",
+        icon: "⌨️",
+        priority: 95,
+        execute: () => window.zion.commands.executeCommand("terminal.quickCommand")
+      });
+      const d2 = slash.registerCommand({
+        id: "terminal.history",
+        trigger: ["terminal-history", "term-history", "history"],
+        title: "Terminal History",
+        description: "Open terminal command history",
+        category: "terminal",
+        icon: "🕘",
+        priority: 94,
+        execute: () => window.zion.commands.executeCommand("terminal.openHistory")
+      });
+      if (d1) ctx.subscriptions.push(d1);
+      if (d2) ctx.subscriptions.push(d2);
+    }
+  } catch {}
 }
