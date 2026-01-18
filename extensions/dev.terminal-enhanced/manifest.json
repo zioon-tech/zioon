@@ -12,12 +12,14 @@
     "contributes": {
       "commands": [
         { "id": "terminal.openPanel", "title": "Open Terminal Panel" },
+        { "id": "terminal.togglePanel", "title": "Toggle Terminal Panel" },
         { "id": "terminal.executeCommand", "title": "Execute Terminal Command" },
         { "id": "terminal.quickCommand", "title": "Quick Command Selector" },
         { "id": "terminal.toggleContext", "title": "Toggle Terminal Context in Chat" }
       ],
       "keybindings": [
         { "command": "terminal.openPanel", "key": "Mod-`" },
+        { "command": "terminal.togglePanel", "key": "Mod-j" },
         { "command": "terminal.quickCommand", "key": "Mod-Shift-P" }
       ]
     },

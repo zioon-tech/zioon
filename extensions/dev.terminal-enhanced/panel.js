@@ -3,10 +3,13 @@
  */
 export function installTerminalEnhancedPanel(api = { execute: async () => {}, connectPty: null }) {
   const HEIGHT_KEY = "zion.terminalEnhanced.panelHeightPx";
+  const WIDTH_KEY = "zion.terminalEnhanced.panelWidthPx";
+  const DOCK_KEY = "zion.terminalEnhanced.dock";
   const STYLE_ID = "zion-terminal-enhanced-style";
 
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const viewportH = () => window.innerHeight || document.documentElement?.clientHeight || 800;
+  const viewportW = () => window.innerWidth || document.documentElement?.clientWidth || 1200;
 
   function ensurePanelStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -108,6 +111,16 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   z-index: 2;
 }
 
+#zion-terminal-enhanced-root[data-zte-dock="right"] .zte-resize-handle {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  height: auto;
+  right: auto;
+  cursor: col-resize;
+}
+
 /* 失活的 SSH 会话标签样式 */
 .zte-tab.is-inactive {
   opacity: 0.75;
@@ -126,6 +139,14 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   border-radius: 999px;
   background: color-mix(in srgb, var(--fg) 25%, transparent);
   opacity: 0.55;
+}
+
+#zion-terminal-enhanced-root[data-zte-dock="right"] .zte-resize-handle::after {
+  left: 1px;
+  top: 50%;
+  width: 4px;
+  height: 34px;
+  transform: translateY(-50%);
 }
 .zte-resize-handle:hover::after { opacity: 0.9; }
 
@@ -368,7 +389,78 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     return el instanceof HTMLElement ? el : null;
   }
 
-  function getDockRect() {
+  function getEditorContainerElement() {
+    try {
+      const el = document.querySelector("#app > div") || document.getElementById("app");
+      return el instanceof HTMLElement ? el : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function getAppElement() {
+    try {
+      const el = document.getElementById("app");
+      return el instanceof HTMLElement ? el : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function setRightDockShiftEnabled(enabled) {
+    const editorContainer = getEditorContainerElement();
+    if (!editorContainer) return;
+
+    const appEl = getAppElement();
+
+    if (!enabled) {
+      try {
+        if (typeof root?._ztePrevEditorContainerWidth === "string") editorContainer.style.width = root._ztePrevEditorContainerWidth;
+        else editorContainer.style.width = "";
+        if (typeof root?._ztePrevEditorContainerBoxSizing === "string") editorContainer.style.boxSizing = root._ztePrevEditorContainerBoxSizing;
+        else editorContainer.style.boxSizing = "";
+        if (typeof root?._ztePrevEditorContainerMaxWidth === "string") editorContainer.style.maxWidth = root._ztePrevEditorContainerMaxWidth;
+        else editorContainer.style.maxWidth = "";
+        if (typeof root?._ztePrevEditorContainerMarginRight === "string") editorContainer.style.marginRight = root._ztePrevEditorContainerMarginRight;
+        else editorContainer.style.marginRight = "";
+      } catch {}
+
+      if (appEl) {
+        try {
+          if (typeof root?._ztePrevAppOverflowX === "string") appEl.style.overflowX = root._ztePrevAppOverflowX;
+          else appEl.style.overflowX = "";
+        } catch {}
+      }
+      return;
+    }
+
+    try {
+      if (typeof root?._ztePrevEditorContainerWidth !== "string") root._ztePrevEditorContainerWidth = editorContainer.style.width || "";
+      if (typeof root?._ztePrevEditorContainerBoxSizing !== "string") root._ztePrevEditorContainerBoxSizing = editorContainer.style.boxSizing || "";
+      if (typeof root?._ztePrevEditorContainerMaxWidth !== "string") root._ztePrevEditorContainerMaxWidth = editorContainer.style.maxWidth || "";
+      if (typeof root?._ztePrevEditorContainerMarginRight !== "string") root._ztePrevEditorContainerMarginRight = editorContainer.style.marginRight || "";
+    } catch {}
+
+    if (appEl) {
+      try {
+        if (typeof root?._ztePrevAppOverflowX !== "string") root._ztePrevAppOverflowX = appEl.style.overflowX || "";
+      } catch {}
+    }
+
+    const w = Math.round(root.getBoundingClientRect().width || 0);
+    if (!w) return;
+
+    editorContainer.style.boxSizing = "border-box";
+    editorContainer.style.marginRight = "0";
+    editorContainer.style.maxWidth = "100%";
+    editorContainer.style.width = `calc(100% - ${w}px)`;
+
+    if (appEl) {
+      try { appEl.style.overflowX = "hidden"; } catch {}
+    }
+  }
+
+  function getDockBox() {
     const edEl = getActiveEditorElement();
     if (!edEl) return null;
     const r = edEl.getBoundingClientRect();
@@ -377,21 +469,47 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     const left = Math.max(0, Math.min(window.innerWidth, r.left));
     const right = Math.max(0, Math.min(window.innerWidth, r.right));
     if (right <= left) return null;
-    return { left, right };
+    const top = Math.max(0, Math.min(window.innerHeight, r.top));
+    const bottom = Math.max(0, Math.min(window.innerHeight, r.bottom));
+    if (bottom <= top) return null;
+    return { left, right, top, bottom };
   }
 
   function applyDocking(root) {
-    const rect = getDockRect();
-    if (!rect) {
-      root.style.left = "0";
-      root.style.right = "0";
+    const mode = root?.dataset?.zteDock === "right" ? "right" : "bottom";
+    const box = getDockBox();
+    const shouldShift = mode === "right" && root.style.display === "block";
+    try { setRightDockShiftEnabled(shouldShift); } catch {}
+    if (!box) {
+      if (mode === "right") {
+        root.style.left = "";
+        root.style.right = "0";
+        root.style.top = "0";
+        root.style.bottom = "0";
+      } else {
+        root.style.left = "0";
+        root.style.right = "0";
+        root.style.top = "";
+        root.style.bottom = "0";
+      }
       return;
     }
 
-    const leftPx = Math.round(rect.left);
-    const rightPx = Math.max(0, Math.round(window.innerWidth - rect.right));
-    root.style.left = `${leftPx}px`;
-    root.style.right = `${rightPx}px`;
+    const leftPx = Math.round(box.left);
+    if (mode === "right") {
+      const topPx = Math.round(box.top);
+      const bottomGapPx = Math.max(0, Math.round(window.innerHeight - box.bottom));
+      root.style.left = "";
+      root.style.right = "0";
+      root.style.top = `${topPx}px`;
+      root.style.bottom = `${bottomGapPx}px`;
+    } else {
+      const rightGapPx = Math.max(0, Math.round(window.innerWidth - box.right));
+      root.style.left = `${leftPx}px`;
+      root.style.right = `${rightGapPx}px`;
+      root.style.top = "";
+      root.style.bottom = "0";
+    }
   }
 
   function ensureDocking(root) {
@@ -471,6 +589,33 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     schedule();
   }
 
+  function readSavedDockMode() {
+    try {
+      const s = localStorage.getItem(DOCK_KEY);
+      return s === "right" ? "right" : "bottom";
+    } catch {
+      return "bottom";
+    }
+  }
+
+  function saveDockMode(mode) {
+    try { localStorage.setItem(DOCK_KEY, String(mode || "bottom")); } catch {}
+  }
+
+  function readSavedWidthPx() {
+    try {
+      const s = localStorage.getItem(WIDTH_KEY);
+      const n = s ? Number(s) : NaN;
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveWidthPx(px) {
+    try { localStorage.setItem(WIDTH_KEY, String(px)); } catch {}
+  }
+
   function readSavedHeightPx() {
     try {
       const s = localStorage.getItem(HEIGHT_KEY);
@@ -496,6 +641,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
   root = document.createElement("div");
   root.id = "zion-terminal-enhanced-root";
+  const initialDockMode = readSavedDockMode();
+  root.dataset.zteDock = initialDockMode;
   Object.assign(root.style, {
     position: "fixed",
     left: "0",
@@ -507,8 +654,17 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     display: "none"
   });
 
-  const savedH = readSavedHeightPx();
-  if (savedH) root.style.height = `${savedH}px`;
+  if (initialDockMode === "right") {
+    const savedW = readSavedWidthPx();
+    const w0 = Number.isFinite(savedW) ? savedW : 420;
+    const w = clamp(Math.floor(Number(w0 || 420)), 280, Math.floor(viewportW() * 0.75));
+    root.style.width = `${w}px`;
+    root.style.height = "";
+  } else {
+    const savedH = readSavedHeightPx();
+    if (savedH) root.style.height = `${savedH}px`;
+    root.style.width = "";
+  }
 
   const panel = document.createElement("div");
   panel.className = "zte-panel";
@@ -553,6 +709,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const ICONS = {
     plus: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10"/></svg>`,
     trash: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1M6 7v6M10 7v6"/></svg>`,
+    dockBottom: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 2.5h11v11h-11z"/><path d="M2.5 10.5h11"/></svg>`,
+    dockRight: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 2.5h11v11h-11z"/><path d="M10.5 2.5v11"/></svg>`,
     x: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>`
   };
 
@@ -562,20 +720,18 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   newBtn.innerHTML = ICONS.plus;
   newBtn.title = "New terminal session";
 
-  const killBtn = document.createElement("button");
-  killBtn.type = "button";
-  killBtn.className = "zte-icon-btn";
-  killBtn.innerHTML = ICONS.trash;
-  killBtn.title = "Kill active session";
-
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "zte-icon-btn";
   closeBtn.innerHTML = ICONS.x;
   closeBtn.title = "Hide terminal panel (Esc)";
 
+  const dockBtn = document.createElement("button");
+  dockBtn.type = "button";
+  dockBtn.className = "zte-icon-btn";
+
   actions.appendChild(newBtn);
-  actions.appendChild(killBtn);
+  actions.appendChild(dockBtn);
   actions.appendChild(closeBtn);
   topbar.appendChild(actions);
 
@@ -707,26 +863,83 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     const px = clamp(Math.floor(Number(nextPx || 0)), minPx, maxPx);
     root.style.height = `${px}px`;
     if (persist) saveHeightPx(px);
-    try { fitAddon?.fit?.(); } catch {}
+    try { fitActiveView(); } catch {}
+  }
+
+  function setPanelWidthPx(nextPx, persist = true) {
+    const maxPx = Math.floor(viewportW() * 0.75);
+    const minPx = 280;
+    const px = clamp(Math.floor(Number(nextPx || 0)), minPx, maxPx);
+    root.style.width = `${px}px`;
+    if (persist) saveWidthPx(px);
+    try { fitActiveView(); } catch {}
+    try {
+      if (dockMode === "right" && root.style.display === "block") {
+        setRightDockShiftEnabled(true);
+      }
+    } catch {}
+  }
+
+  let dockMode = root?.dataset?.zteDock === "right" ? "right" : "bottom";
+
+  function updateDockBtn() {
+    if (dockMode === "right") {
+      dockBtn.innerHTML = ICONS.dockBottom;
+      dockBtn.title = "Dock terminal panel to bottom";
+    } else {
+      dockBtn.innerHTML = ICONS.dockRight;
+      dockBtn.title = "Dock terminal panel to right";
+    }
+  }
+
+  function setDockMode(nextMode, persist = true) {
+    const next = nextMode === "right" ? "right" : "bottom";
+    dockMode = next;
+    root.dataset.zteDock = next;
+    if (persist) saveDockMode(next);
+
+    if (next === "right") {
+      root.style.height = "";
+      const savedW = readSavedWidthPx();
+      const w0 = Number.isFinite(savedW) ? savedW : 420;
+      setPanelWidthPx(w0, false);
+      panel.style.borderBottom = "1px solid var(--border)";
+    } else {
+      root.style.width = "";
+      const savedH = readSavedHeightPx();
+      const h0 = Number.isFinite(savedH) ? savedH : Math.floor(viewportH() * 0.35);
+      setPanelHeightPx(h0, false);
+      panel.style.borderBottom = "0";
+    }
+
+    try { applyDocking(root); } catch {}
+    updateDockBtn();
+    try { requestAnimationFrame(() => fitActiveView()); } catch {}
   }
 
   (function attachResize() {
     let dragging = false;
+    let startX = 0;
     let startY = 0;
-    let startH = 0;
+    let startSize = 0;
     let raf = 0;
     let pending = null;
 
     const onMove = (ev) => {
       if (!dragging) return;
-      const dy = startY - ev.clientY;
-      const h = startH + dy;
-      pending = h;
+      if (dockMode === "right") {
+        const dx = startX - ev.clientX;
+        pending = startSize + dx;
+      } else {
+        const dy = startY - ev.clientY;
+        pending = startSize + dy;
+      }
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
         if (pending == null) return;
-        setPanelHeightPx(pending, false);
+        if (dockMode === "right") setPanelWidthPx(pending, false);
+        else setPanelHeightPx(pending, false);
         pending = null;
       });
     };
@@ -739,52 +952,115 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       try { document.removeEventListener("mousemove", onMove); } catch {}
       try { document.removeEventListener("mouseup", onUp); } catch {}
       const rect = root.getBoundingClientRect();
-      setPanelHeightPx(rect.height, true);
+      if (dockMode === "right") setPanelWidthPx(rect.width, true);
+      else setPanelHeightPx(rect.height, true);
     };
 
     resizeHandle.addEventListener("mousedown", (ev) => {
       dragging = true;
+      startX = ev.clientX;
       startY = ev.clientY;
-      startH = root.getBoundingClientRect().height;
+      const rect = root.getBoundingClientRect();
+      startSize = dockMode === "right" ? rect.width : rect.height;
       try { document.body.style.userSelect = "none"; } catch {}
-      try { document.body.style.cursor = "row-resize"; } catch {}
+      try { document.body.style.cursor = dockMode === "right" ? "col-resize" : "row-resize"; } catch {}
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     });
 
     resizeHandle.addEventListener("dblclick", () => {
-      const cur = root.getBoundingClientRect().height;
-      const maxPx = Math.floor(viewportH() * 0.85);
-      const defPx = Math.floor(viewportH() * 0.35);
-      const nearMax = Math.abs(cur - maxPx) < 10;
-      setPanelHeightPx(nearMax ? defPx : maxPx, true);
+      const rect = root.getBoundingClientRect();
+      if (dockMode === "right") {
+        const cur = rect.width;
+        const maxPx = Math.floor(viewportW() * 0.75);
+        const defPx = 420;
+        const nearMax = Math.abs(cur - maxPx) < 10;
+        setPanelWidthPx(nearMax ? defPx : maxPx, true);
+      } else {
+        const cur = rect.height;
+        const maxPx = Math.floor(viewportH() * 0.85);
+        const defPx = Math.floor(viewportH() * 0.35);
+        const nearMax = Math.abs(cur - maxPx) < 10;
+        setPanelHeightPx(nearMax ? defPx : maxPx, true);
+      }
     });
   })();
 
+  updateDockBtn();
+  setDockMode(dockMode, false);
+
   // State
   let currentSessionId = window.zion?.state?.get("terminal.activeSessionId") || null;
-  let pty = null;           // { ws, ready, send, resize, onData, onError, onClose, dispose }
-  let term = null;          // xterm instance
-  let fitAddon = null;
-  let searchAddon = null;
-  let webLinksAddon = null;
+  const sessionViews = new Map();
+  let activeViewId = null;
+  let xtermCtors = null;
   let xtermLoaded = false;
-  let usingPty = false;
-  let usingExec = false;
-  let termDataDisp = null;
   let termContextMenu = null;
   let termFindWidget = null;
-  let execLine = "";
-  let execBusy = false;
-  let execBootSessionId = null;
-  let execEscState = 0;
-  let ptySessionId = null;
-  let ptyConnecting = false;
-  let ptyInputBuffer = "";
-  let ptyConnectNonce = 0;
-  let ptyRetryTimer = 0;
-  let ptyRetryCount = 0;
+  const MAX_PTY_RETRY = 3;
   let findState = { caseSensitive: false, regex: false, wholeWord: false };
+  let termWrapResizeObserver = null;
+  const onWindowResize = () => {
+    if (root.style.display === "none") return;
+    fitActiveView();
+  };
+
+  function getActiveView() {
+    const sid = String(activeViewId || currentSessionId || "").trim();
+    if (!sid) return null;
+    return sessionViews.get(sid) || null;
+  }
+
+  function fitActiveView() {
+    const v = getActiveView();
+    if (!v || !v.term || !v.fitAddon) return;
+    try {
+      v.fitAddon.fit();
+      if (v.usingPty && v.pty) {
+        const cols = v.term.cols || 80;
+        const rows = v.term.rows || 24;
+        v.pty.resize?.(cols, rows);
+      }
+    } catch {}
+  }
+
+  function isActiveUsingPty() {
+    const v = getActiveView();
+    return !!(v && v.usingPty);
+  }
+
+  function applyThemeToTerm(t) {
+    if (!t) return;
+    const newBg = getComputedStyle(document.documentElement).getPropertyValue('--panel')?.trim() || '#1e1e1e';
+    const newFg = getComputedStyle(document.documentElement).getPropertyValue('--fg')?.trim() || '#d4d4d4';
+    const newSelBg = getComputedStyle(document.documentElement).getPropertyValue('--selection-bg')?.trim() || 'rgba(98,114,164,0.35)';
+    try {
+      t.options.theme = { ...t.options.theme, background: newBg, foreground: newFg, selectionBackground: newSelBg };
+    } catch {}
+  }
+
+  function applyThemeToAllTerms() {
+    for (const v of sessionViews.values()) {
+      applyThemeToTerm(v?.term);
+    }
+  }
+
+  function getSessionById(sessionId) {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return null;
+    const sessions = window.zion?.state?.get("terminal.sessions") || [];
+    const list = Array.isArray(sessions) ? sessions : [];
+    return list.find(s => String(s?.id || "").trim() === sid) || null;
+  }
+
+  function isInactiveSshSession(sessionId) {
+    const s = getSessionById(sessionId);
+    return (s?.type === "ssh") && (s?.active === false);
+  }
+
+  function shellSingleQuote(s) {
+    return `'${String(s || "").replace(/'/g, `'\\''`)}'`;
+  }
 
   // Lazy load xterm (prefer local dependency; fallback to CDN)
   async function ensureXtermLoaded() {
@@ -846,7 +1122,28 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       throw new Error("xterm load failed");
     }
 
-    // ANSI color palette for terminal colors (git diff, ls colors, etc.)
+    xtermCtors = { Terminal, FitAddon, SearchAddon, WebLinksAddon };
+    const MO = globalThis.MutationObserver;
+    const observer = typeof MO === "function" ? new MO(() => applyThemeToAllTerms()) : null;
+    try { observer?.observe?.(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] }); } catch {}
+    xtermCtors._zionThemeObserver = observer;
+    xtermLoaded = true;
+  }
+
+  async function ensureView(sessionId) {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return null;
+    const existing = sessionViews.get(sid);
+    if (existing) return existing;
+    await ensureXtermLoaded();
+    if (!xtermCtors?.Terminal) return null;
+
+    const wrap = document.createElement("div");
+    wrap.className = "zte-term-view";
+    wrap.dataset.zteSessionId = sid;
+    Object.assign(wrap.style, { width: "100%", height: "100%", overflow: "hidden", display: "none" });
+    termWrap.appendChild(wrap);
+
     const ansiColors = {
       black: '#2e2e2e',
       red: '#e06c75',
@@ -866,7 +1163,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       brightWhite: '#ffffff'
     };
 
-    term = new Terminal({
+    const t = new xtermCtors.Terminal({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 12,
       cursorBlink: true,
@@ -881,7 +1178,6 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         cursorAccent: getComputedStyle(document.documentElement).getPropertyValue('--panel') || '#1e1e1e',
         selectionBackground: getComputedStyle(document.documentElement).getPropertyValue('--selection-bg') || 'rgba(98,114,164,0.35)',
         selectionForeground: getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#d4d4d4',
-        // ANSI color palette
         black: ansiColors.black,
         red: ansiColors.red,
         green: ansiColors.green,
@@ -900,74 +1196,104 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         brightWhite: ansiColors.brightWhite
       }
     });
-    fitAddon = new FitAddon();
-    searchAddon = new SearchAddon();
-    webLinksAddon = new WebLinksAddon();
-    term.loadAddon(fitAddon);
-    term.loadAddon(searchAddon);
-    term.loadAddon(webLinksAddon);
-    // 清理 termWrap 中可能存在的旧 xterm DOM 元素，避免重复渲染导致空白
-    termWrap.innerHTML = '';
-    term.open(termWrap);
-    fitAddon.fit();
-    installTerminalInteractions();
-    ensureTermDataHandler();
+    const fa = new xtermCtors.FitAddon();
+    const sa = new xtermCtors.SearchAddon();
+    const wa = new xtermCtors.WebLinksAddon();
+    t.loadAddon(fa);
+    t.loadAddon(sa);
+    t.loadAddon(wa);
+    t.open(wrap);
+    applyThemeToTerm(t);
 
-    // 监听主题切换，动态更新 xterm.js 颜色
-    const MO = globalThis.MutationObserver;
-    const observer = typeof MO === "function" ? new MO(() => {
-      if (!term) return;
-      const newBg = getComputedStyle(document.documentElement).getPropertyValue('--panel')?.trim() || '#1e1e1e';
-      const newFg = getComputedStyle(document.documentElement).getPropertyValue('--fg')?.trim() || '#d4d4d4';
-      const newSelBg = getComputedStyle(document.documentElement).getPropertyValue('--selection-bg')?.trim() || 'rgba(98,114,164,0.35)';
-      term.options.theme = { ...term.options.theme, background: newBg, foreground: newFg, selectionBackground: newSelBg };
-    }) : null;
+    const v = {
+      sessionId: sid,
+      container: wrap,
+      term: t,
+      fitAddon: fa,
+      searchAddon: sa,
+      webLinksAddon: wa,
+      usingPty: false,
+      usingExec: false,
+      pty: null,
+      ptyConnecting: false,
+      ptyInputBuffer: "",
+      ptyConnectNonce: 0,
+      ptyRetryTimer: 0,
+      ptyRetryCount: 0,
+      termDataDisp: null,
+      execLine: "",
+      execBusy: false,
+      execEscState: 0,
+      execBooted: false
+    };
 
-    // 开始监听 data-theme 属性变化
-    try { observer?.observe?.(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] }); } catch {}
-
-    // 保存 observer 供清理时使用
-    term._zionThemeObserver = observer;
-
-    xtermLoaded = true;
-  }
-
-  function ensureTermDataHandler() {
-    if (!term || termDataDisp) return;
-    termDataDisp = term.onData((data) => {
-      if (usingPty) {
-        const wsOpen = !!(pty?.ws && pty.ws.readyState === WebSocket.OPEN);
+    v.termDataDisp = t.onData((data) => {
+      if (v.usingPty) {
+        const wsOpen = !!(v.pty?.ws && v.pty.ws.readyState === WebSocket.OPEN);
         if (wsOpen) {
-          try { pty.send(data); } catch {}
+          try { v.pty.send(data); } catch {}
           return;
         }
-        if (ptyConnecting) {
-          if (ptyInputBuffer.length < 8192) ptyInputBuffer += String(data || "");
+        if (v.ptyConnecting) {
+          if (v.ptyInputBuffer.length < 8192) v.ptyInputBuffer += String(data || "");
           return;
         }
       }
-      if (usingExec) {
-        handleExecInput(data);
+      if (v.usingExec) {
+        handleExecInputForView(v, data);
       }
     });
+
+    installTerminalInteractionsForView(v);
+    sessionViews.set(sid, v);
+    return v;
+  }
+
+  function activateView(sessionId) {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return;
+    activeViewId = sid;
+    for (const v of sessionViews.values()) {
+      try { v.container.style.display = v.sessionId === sid ? "block" : "none"; } catch {}
+    }
+    try { fitActiveView(); } catch {}
+  }
+
+  function disposeView(sessionId) {
+    const sid = String(sessionId || "").trim();
+    const v = sid ? (sessionViews.get(sid) || null) : null;
+    if (!v) return;
+    try { clearTimeout(v.ptyRetryTimer); } catch {}
+    try { v.termDataDisp?.dispose?.(); } catch {}
+    try { v.pty?.dispose?.(); } catch {}
+    try { v.term?.dispose?.(); } catch {}
+    try { v.container?.remove?.(); } catch {}
+    sessionViews.delete(sid);
+    if (activeViewId === sid) activeViewId = null;
   }
 
   function schedulePtyReconnect(sessionId) {
-    try { clearTimeout(ptyRetryTimer); } catch {}
-    ptyRetryTimer = 0;
-    if (root.style.display === "none") return;
     const sid = String(sessionId || "").trim();
-    if (!sid) return;
-    if (ptyRetryCount >= 6) return;
-    const delay = Math.min(4000, 250 * (2 ** ptyRetryCount));
-    ptyRetryCount += 1;
-    ptyRetryTimer = setTimeout(() => {
-      ptyRetryTimer = 0;
+    const v = sid ? (sessionViews.get(sid) || null) : null;
+    if (!v) return;
+    try { clearTimeout(v.ptyRetryTimer); } catch {}
+    v.ptyRetryTimer = 0;
+    if (root.style.display === "none") return;
+    if (isInactiveSshSession(sid)) return;
+    if (v.ptyRetryCount >= MAX_PTY_RETRY) {
+      try { showToast("PTY 多次连接失败，已停止自动重连", 1600); } catch {}
+      return;
+    }
+    const delay = Math.min(4000, 250 * (2 ** v.ptyRetryCount));
+    v.ptyRetryCount += 1;
+    v.ptyRetryTimer = setTimeout(() => {
+      v.ptyRetryTimer = 0;
       if (root.style.display === "none") return;
-      if (ptySessionId && ptySessionId !== sid) return;
-      if (pty?.ws && pty.ws.readyState === WebSocket.OPEN) return;
-      if (ptyConnecting) return;
-      connectPtyForSession(sid);
+      const vv = sessionViews.get(sid);
+      if (!vv) return;
+      if (vv.pty?.ws && vv.pty.ws.readyState === WebSocket.OPEN) return;
+      if (vv.ptyConnecting) return;
+      connectPtyForSession(sid, { background: true });
     }, delay);
   }
 
@@ -1007,31 +1333,34 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     return s.id || "";
   }
 
-  function writeExecPrompt() {
-    execLine = "";
-    const sid = currentSessionId || window.zion?.state?.get("terminal.activeSessionId") || "";
-    const prompt = getPromptForSession(sid);
-    try { term?.write?.("\x1b[0m" + prompt); } catch {}
+  function writeExecPromptForView(v) {
+    if (!v?.term) return;
+    v.execLine = "";
+    const prompt = getPromptForSession(v.sessionId);
+    try { v.term.write("\x1b[0m" + prompt); } catch {}
   }
 
   function bootstrapExecForSession(sessionId) {
-    if (!term) return;
-    if (execBootSessionId === sessionId) return;
-    execBootSessionId = sessionId;
+    const sid = String(sessionId || "").trim();
+    const v = sid ? (sessionViews.get(sid) || null) : null;
+    if (!v?.term) return;
+    if (v.execBooted) return;
+    v.execBooted = true;
     try {
-      term.reset();
-      const text = currentOutputsToText();
+      v.term.reset();
+      const text = outputsToTextForSession(sid);
       const lines = String(text || "").replace(/\r/g, "").split("\n");
-      for (const ln of lines) term.writeln(ln);
-      term.writeln("");
+      for (const ln of lines) v.term.writeln(ln);
+      v.term.writeln("");
     } catch {}
-    writeExecPrompt();
+    writeExecPromptForView(v);
   }
 
-  async function runExecCommand(command) {
+  async function runExecCommandForView(v, command) {
+    if (!v?.term) return;
     const cmd = String(command || "").trim();
     if (!cmd) {
-      writeExecPrompt();
+      writeExecPromptForView(v);
       return;
     }
 
@@ -1044,13 +1373,14 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       if (/\s-c\s+color\.diff=/i.test(s)) return s;
       return s.replace(/^git\b/i, "git -c color.ui=always");
     };
-    const sid = currentSessionId || window.zion?.state?.get("terminal.activeSessionId") || null;
+
+    const sid = String(v.sessionId || "").trim();
     if (!sid) {
-      try { term?.writeln?.("No active session"); } catch {}
-      writeExecPrompt();
+      try { v.term.writeln("No active session"); } catch {}
+      writeExecPromptForView(v);
       return;
     }
-    execBusy = true;
+    v.execBusy = true;
     try {
       const finalCmd = maybeForceGitColor(cmd);
       const rec = await api.execute?.(finalCmd, sid);
@@ -1058,61 +1388,61 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       if (out) {
         const normalized = out.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
         for (const ln of normalized) {
-          try { term?.writeln?.(ln); } catch {}
+          try { v.term.writeln(ln); } catch {}
         }
       }
     } catch (e) {
-      try { term?.writeln?.(String(e?.message || e || "exec failed")); } catch {}
+      try { v.term.writeln(String(e?.message || e || "exec failed")); } catch {}
     } finally {
-      execBusy = false;
-      writeExecPrompt();
+      v.execBusy = false;
+      writeExecPromptForView(v);
     }
   }
 
-  function handleExecInput(data) {
-    if (!term) return;
-    if (execBusy) return;
+  function handleExecInputForView(v, data) {
+    if (!v?.term) return;
+    if (v.execBusy) return;
 
     const s = String(data || "");
     for (let i = 0; i < s.length; i++) {
       const ch = s[i];
 
-      if (execEscState !== 0) {
-        if (execEscState === 1) {
+      if (v.execEscState !== 0) {
+        if (v.execEscState === 1) {
           if (ch === "[" || ch === "O") {
-            execEscState = 2;
+            v.execEscState = 2;
             continue;
           }
-          execEscState = 0;
+          v.execEscState = 0;
           continue;
         }
         const code = ch.charCodeAt(0);
         if (code >= 0x40 && code <= 0x7e) {
-          execEscState = 0;
+          v.execEscState = 0;
         }
         continue;
       }
 
       if (ch === "\r") {
-        const cmd = execLine;
-        execLine = "";
-        try { term.write("\r\n"); } catch {}
-        runExecCommand(cmd);
+        const cmd = v.execLine;
+        v.execLine = "";
+        try { v.term.write("\r\n"); } catch {}
+        runExecCommandForView(v, cmd);
         continue;
       }
 
       if (ch === "\u007f") {
-        if (execLine.length) {
-          execLine = execLine.slice(0, -1);
-          try { term.write("\b \b"); } catch {}
+        if (v.execLine.length) {
+          v.execLine = v.execLine.slice(0, -1);
+          try { v.term.write("\b \b"); } catch {}
         }
         continue;
       }
 
       if (ch === "\u0003") {
-        execLine = "";
-        try { term.write("^C\r\n"); } catch {}
-        writeExecPrompt();
+        v.execLine = "";
+        try { v.term.write("^C\r\n"); } catch {}
+        writeExecPromptForView(v);
         continue;
       }
 
@@ -1125,13 +1455,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       }
 
       if (ch === "\u001b") {
-        execEscState = 1;
+        v.execEscState = 1;
         continue;
       }
 
       if (ch >= " ") {
-        execLine += ch;
-        try { term.write(ch); } catch {}
+        v.execLine += ch;
+        try { v.term.write(ch); } catch {}
       }
     }
   }
@@ -1247,8 +1577,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       if (!q) return;
       try {
         const opts = { caseSensitive: !!findState.caseSensitive, regex: !!findState.regex, wholeWord: !!findState.wholeWord };
-        if (dir < 0) searchAddon?.findPrevious?.(q, opts);
-        else searchAddon?.findNext?.(q, opts);
+        const v = getActiveView();
+        const sa = v?.searchAddon;
+        if (dir < 0) sa?.findPrevious?.(q, opts);
+        else sa?.findNext?.(q, opts);
       } catch {}
     };
 
@@ -1257,7 +1589,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       if (e.key === "Escape") {
         e.preventDefault();
         wrap.style.display = "none";
-        term?.focus?.();
+        getActiveView()?.term?.focus?.();
         return;
       }
       if (e.key === "Enter") {
@@ -1270,7 +1602,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     nextBtn.onclick = () => doFind(1);
     closeBtn2.onclick = () => {
       wrap.style.display = "none";
-      term?.focus?.();
+      getActiveView()?.term?.focus?.();
     };
 
     Object.assign(wrap.style, { display: "none", flexDirection: "row" });
@@ -1302,6 +1634,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
   function openTermContextMenu(x, y) {
     hideTermContextMenu();
+    const v = getActiveView();
+    const t = v?.term || null;
+    const p = v?.pty || null;
     const menu = document.createElement("div");
     menu.className = "zte-menu";
     Object.assign(menu.style, {
@@ -1347,21 +1682,21 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       return b;
     };
 
-    const hasSel = !!term?.hasSelection?.();
+    const hasSel = !!t?.hasSelection?.();
     menu.appendChild(mkItem("Copy", async () => {
-      const sel = term?.getSelection?.() || "";
+      const sel = t?.getSelection?.() || "";
       const ok = await setClipboardText(sel);
       showToast(ok ? "Copied" : "Copy failed");
     }, { disabled: !hasSel }));
     menu.appendChild(mkItem("Paste", async () => {
       const txt = await getClipboardText();
       if (!txt) return;
-      try { term?.paste?.(txt); } catch { try { pty?.send?.(txt); } catch {} }
+      try { t?.paste?.(txt); } catch { try { p?.send?.(txt); } catch {} }
       showToast("Pasted");
     }));
     menu.appendChild(mkItem("Find", async () => { openTermFind(); }));
-    menu.appendChild(mkItem("Select All", async () => { try { term?.selectAll?.(); } catch {} }));
-    menu.appendChild(mkItem("Clear", async () => { try { term?.clear?.(); } catch {} }));
+    menu.appendChild(mkItem("Select All", async () => { try { t?.selectAll?.(); } catch {} }));
+    menu.appendChild(mkItem("Clear", async () => { try { t?.clear?.(); } catch {} }));
 
     document.body.appendChild(menu);
     termContextMenu = menu;
@@ -1372,9 +1707,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     setTimeout(() => document.addEventListener("mousedown", onDoc, { once: true }), 0);
   }
 
-  function installTerminalInteractions() {
-    if (!term) return;
-    term.attachCustomKeyEventHandler((ev) => {
+  function installTerminalInteractionsForView(v) {
+    if (!v?.term) return;
+    v.term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
       const key = String(ev.key || "").toLowerCase();
@@ -1386,9 +1721,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         return false;
       }
 
-      if (mod && (key === "c" || key === "x") && term?.hasSelection?.()) {
+      if (mod && (key === "c" || key === "x") && v.term?.hasSelection?.()) {
         ev.preventDefault();
-        const sel = term?.getSelection?.() || "";
+        const sel = v.term?.getSelection?.() || "";
         setClipboardText(sel).then((ok) => showToast(ok ? "Copied" : "Copy failed"));
         return false;
       }
@@ -1397,15 +1732,15 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         ev.preventDefault();
         getClipboardText().then((txt) => {
           if (!txt) return;
-          try { term?.paste?.(txt); } catch { try { pty?.send?.(txt); } catch {} }
+          try { v.term?.paste?.(txt); } catch { try { v.pty?.send?.(txt); } catch {} }
           showToast("Pasted");
         });
         return false;
       }
 
-      if (mod && ev.shiftKey && key === "c" && term?.hasSelection?.()) {
+      if (mod && ev.shiftKey && key === "c" && v.term?.hasSelection?.()) {
         ev.preventDefault();
-        const sel = term?.getSelection?.() || "";
+        const sel = v.term?.getSelection?.() || "";
         setClipboardText(sel).then((ok) => showToast(ok ? "Copied" : "Copy failed"));
         return false;
       }
@@ -1414,7 +1749,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         ev.preventDefault();
         getClipboardText().then((txt) => {
           if (!txt) return;
-          try { term?.paste?.(txt); } catch { try { pty?.send?.(txt); } catch {} }
+          try { v.term?.paste?.(txt); } catch { try { v.pty?.send?.(txt); } catch {} }
           showToast("Pasted");
         });
         return false;
@@ -1422,22 +1757,17 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
       return true;
     });
-
-    termWrap.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      openTermContextMenu(e.clientX, e.clientY);
-    });
-    termWrap.addEventListener("mousedown", () => {
-      try { term?.focus?.(); } catch {}
-    });
   }
 
-  function setUiMode(mode) {
-    const xtermReady = !!(xtermLoaded && term);
+  function setPanelModeForActive(mode) {
+    const v = getActiveView();
+    const xtermReady = !!(xtermLoaded && v?.term);
     const resolvedMode = xtermReady ? String(mode || "exec") : "pre";
 
-    usingPty = resolvedMode === "pty";
-    usingExec = resolvedMode === "exec";
+    if (v) {
+      v.usingPty = resolvedMode === "pty";
+      v.usingExec = resolvedMode === "exec";
+    }
 
     const showXterm = xtermReady && (resolvedMode === "pty" || resolvedMode === "exec");
     termWrap.style.display = showXterm ? "block" : "none";
@@ -1446,24 +1776,35 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
     updateStatusText();
 
-    // 当切换到显示 xterm 时，需要重新计算尺寸
-    // 使用 setTimeout 确保 DOM 更新后再调用 fit
-    if (showXterm && fitAddon) {
+    if (showXterm) {
       setTimeout(() => {
-        try {
-          fitAddon.fit();
-        } catch {}
+        try { fitActiveView(); } catch {}
       }, 0);
     }
   }
+
+  termWrap.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    openTermContextMenu(e.clientX, e.clientY);
+  });
+  termWrap.addEventListener("mousedown", () => {
+    try { getActiveView()?.term?.focus?.(); } catch {}
+  });
+
+  try {
+    const RO = globalThis.ResizeObserver;
+    termWrapResizeObserver = typeof RO === "function" ? new RO(() => fitActiveView()) : null;
+    try { termWrapResizeObserver?.observe?.(termWrap); } catch {}
+    window.addEventListener("resize", onWindowResize);
+  } catch {}
 
   function updateStatusText() {
     // Status text removed as requested
   }
 
-  function currentOutputsToText() {
+  function outputsToTextForSession(sessionId) {
     const outputs = window.zion?.state?.get("terminal.outputs") || [];
-    const sid = currentSessionId || window.zion?.state?.get("terminal.activeSessionId") || null;
+    const sid = String(sessionId || "").trim();
     if (!sid) return "无活动会话。请先创建或切换会话。";
     const items = Array.isArray(outputs) ? outputs.filter(r => r.sessionId === sid) : [];
     const lines = items.map(r => {
@@ -1473,130 +1814,159 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     return lines.join("\n----------------------------------------\n");
   }
 
-  async function connectPtyForSession(sessionId) {
+  function currentOutputsToText() {
+    const sid = currentSessionId || window.zion?.state?.get("terminal.activeSessionId") || null;
+    return outputsToTextForSession(sid);
+  }
+
+  async function connectPtyForSession(sessionId, opts = {}) {
     if (!api.connectPty) return false;
     const sid = String(sessionId || "").trim();
     if (!sid) return false;
-    if (pty && ptySessionId === sid && pty.ws && pty.ws.readyState === WebSocket.OPEN) {
-      setUiMode("pty");
-      try { term?.focus?.(); } catch {}
-      return true;
-    }
-    if (ptyConnecting && ptySessionId === sid) {
-      setUiMode("pty");
-      return true;
-    }
-    try {
-      await ensureXtermLoaded();
 
-      ptySessionId = sid;
-      ptyConnecting = true;
-      ptyInputBuffer = "";
-      ptyConnectNonce += 1;
-      const nonce = ptyConnectNonce;
-      setUiMode("pty");
-      // Cleanup previous
-      try { pty?.dispose?.(); } catch {}
-      try { termDataDisp?.dispose?.(); } catch {}
-      termDataDisp = null;
-      term.reset();
-      // 清理可能残留的 DOM 元素
-      try { termWrap.innerHTML = ''; term.open(termWrap); } catch {}
-      ensureTermDataHandler();
-      // Connect
-      const localPty = api.connectPty(sid, term.cols, term.rows);
-      pty = localPty;
+    const background = !!opts.background;
+    const desiredCwd = String(getSessionById(sid)?.cwd || "").trim();
+
+    if (isInactiveSshSession(sid)) {
+      if (!background) {
+        activeViewId = sid;
+        activateView(sid);
+        setPanelModeForActive("exec");
+        bootstrapExecForSession(sid);
+        try { showToast("会话已失活，请点击“激活”重连", 1800); } catch {}
+      }
+      return false;
+    }
+
+    let v = null;
+    try {
+      v = await ensureView(sid);
+    } catch {
+      v = null;
+    }
+    if (!v) {
+      if (!background) {
+        setPanelModeForActive("pre");
+      }
+      return false;
+    }
+
+    if (!background) {
+      activateView(sid);
+      setPanelModeForActive("pty");
+    }
+
+    if (v.pty && v.pty.ws && v.pty.ws.readyState === WebSocket.OPEN) {
+      v.ptyConnecting = false;
+      v.ptyRetryCount = 0;
+      try { clearTimeout(v.ptyRetryTimer); } catch {}
+      v.ptyRetryTimer = 0;
+      v.usingPty = true;
+      v.usingExec = false;
+      if (!background) {
+        try { v.term.focus(); } catch {}
+        try { fitActiveView(); } catch {}
+      }
+      return true;
+    }
+
+    if (v.ptyConnecting) {
+      v.usingPty = true;
+      v.usingExec = false;
+      return true;
+    }
+
+    try {
+      v.ptyConnecting = true;
+      v.ptyInputBuffer = "";
+      v.ptyConnectNonce += 1;
+      const nonce = v.ptyConnectNonce;
+      v.usingPty = true;
+      v.usingExec = false;
+
+      try { v.pty?.dispose?.(); } catch {}
+      v.pty = null;
+
+      const localPty = api.connectPty(sid, v.term.cols, v.term.rows);
+      v.pty = localPty;
       localPty.onData((chunk) => {
-        try { term.write(chunk); } catch {}
+        try { v.term.write(chunk); } catch {}
       });
-      localPty.onError(() => {
-        if (nonce !== ptyConnectNonce) return;
-        if (pty !== localPty) return;
+
+      const onBroken = () => {
+        if (nonce !== v.ptyConnectNonce) return;
+        if (v.pty !== localPty) return;
         try { localPty?.dispose?.(); } catch {}
-        pty = null;
-        ptyConnecting = false;
-        setUiMode("exec");
-        bootstrapExecForSession(sid);
-        try { showToast("PTY 连接断开，正在重连…", 1200); } catch {}
+        v.pty = null;
+        v.ptyConnecting = false;
+        v.execBooted = false;
+        v.usingPty = false;
+        v.usingExec = true;
+        if (!background && activeViewId === sid) {
+          setPanelModeForActive("exec");
+          bootstrapExecForSession(sid);
+          try { showToast("PTY 连接断开，正在重连…", 1200); } catch {}
+        }
         schedulePtyReconnect(sid);
-      });
-      localPty.onClose(() => {
-        if (nonce !== ptyConnectNonce) return;
-        if (pty !== localPty) return;
-        try { localPty?.dispose?.(); } catch {}
-        pty = null;
-        ptyConnecting = false;
-        setUiMode("exec");
-        bootstrapExecForSession(sid);
-        try { showToast("PTY 连接断开，正在重连…", 1200); } catch {}
-        schedulePtyReconnect(sid);
-      });
+      };
+
+      localPty.onError(onBroken);
+      localPty.onClose(onBroken);
 
       await localPty.ready;
 
-      if (nonce !== ptyConnectNonce || pty !== localPty) {
+      if (nonce !== v.ptyConnectNonce || v.pty !== localPty) {
         try { localPty?.dispose?.(); } catch {}
-        if (pty === localPty) pty = null;
+        if (v.pty === localPty) v.pty = null;
+        v.ptyConnecting = false;
         return false;
       }
 
-      ptyConnecting = false;
-      ptyRetryCount = 0;
-      try { clearTimeout(ptyRetryTimer); } catch {}
-      ptyRetryTimer = 0;
+      v.ptyConnecting = false;
+      v.ptyRetryCount = 0;
+      try { clearTimeout(v.ptyRetryTimer); } catch {}
+      v.ptyRetryTimer = 0;
 
-      // Initialize terminal: set TERM to xterm-256color and force enable colors
-      // This helps ensure tools like git diff, ls, etc. use colors
       setTimeout(() => {
         try {
-          pty.send('export TERM=xterm-256color\r');
-          pty.send('export COLORTERM=truecolor\r');
-          // Force enable ls colors
-          pty.send('alias ls="ls --color=auto"\r');
+          localPty.send('export TERM=xterm-256color\r');
+          localPty.send('export COLORTERM=truecolor\r');
+          localPty.send('alias ls="ls --color=auto"\r');
         } catch {}
       }, 100);
       setTimeout(() => {
         try {
-          pty.send('export CLICOLOR=1\r');
-          pty.send('export FORCE_COLOR=1\r');
-          pty.send('ls --color=auto >/dev/null 2>&1 && alias ls="ls --color=auto" || alias ls="ls -G"\r');
+          localPty.send('export CLICOLOR=1\r');
+          localPty.send('export FORCE_COLOR=1\r');
+          localPty.send('ls --color=auto >/dev/null 2>&1 && alias ls="ls --color=auto" || alias ls="ls -G"\r');
+          if (desiredCwd) {
+            localPty.send(`cd -- ${shellSingleQuote(desiredCwd)}\r`);
+          }
         } catch {}
       }, 120);
 
-      if (ptyInputBuffer) {
-        try { pty.send(ptyInputBuffer); } catch {}
-        ptyInputBuffer = "";
+      if (v.ptyInputBuffer) {
+        try { localPty.send(v.ptyInputBuffer); } catch {}
+        v.ptyInputBuffer = "";
       }
 
-      try { term.focus(); } catch {}
-      // Resize handling
-      const doFit = () => {
-        try {
-          fitAddon.fit();
-          const cols = term.cols || 80;
-          const rows = term.rows || 24;
-          pty?.resize?.(cols, rows);
-        } catch {}
-      };
-      doFit();
-      const RO = globalThis.ResizeObserver;
-      const ro = typeof RO === "function" ? new RO(() => doFit()) : null;
-      try { ro?.observe?.(termWrap); } catch {}
-      window.addEventListener("resize", doFit);
-      // Save disposers to cleanup on dispose
-      term._zionCleanup = () => {
-        try { ro?.disconnect?.(); } catch {}
-        try { term._zionThemeObserver?.disconnect?.(); } catch {}
-        window.removeEventListener("resize", doFit);
-      };
+      if (!background && activeViewId === sid) {
+        try { v.term.focus(); } catch {}
+        try { fitActiveView(); } catch {}
+      }
       return true;
-    } catch (e) {
-      try { pty?.dispose?.(); } catch {}
-      pty = null;
-      ptyConnecting = false;
-      setUiMode("exec");
-      bootstrapExecForSession(sid);
-      try { showToast("PTY 连接失败，正在重试…", 1200); } catch {}
+    } catch {
+      try { v.pty?.dispose?.(); } catch {}
+      v.pty = null;
+      v.ptyConnecting = false;
+      v.execBooted = false;
+      v.usingPty = false;
+      v.usingExec = true;
+      if (!background && activeViewId === sid) {
+        setPanelModeForActive("exec");
+        bootstrapExecForSession(sid);
+        try { showToast("PTY 连接失败，正在重试…", 1200); } catch {}
+      }
       schedulePtyReconnect(sid);
       return false;
     }
@@ -1605,8 +1975,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   // Build tabs from sessions
   function renderTabs() {
     const sessions = window.zion?.state?.get("terminal.sessions") || [];
+    const sessionList = Array.isArray(sessions) ? sessions : [];
+    const existingIds = new Set(sessionList.map(s => String(s?.id || "").trim()).filter(Boolean));
+    for (const sid of Array.from(sessionViews.keys())) {
+      if (!existingIds.has(sid)) disposeView(sid);
+    }
     tabs.innerHTML = "";
-    if (!Array.isArray(sessions) || sessions.length === 0) {
+    if (!sessionList.length) {
       const empty = document.createElement("div");
       empty.textContent = "No sessions (use Terminal Manager to create)";
       empty.style.fontSize = "11px";
@@ -1615,7 +1990,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       updateStatusText();
       return;
     }
-    sessions.forEach((s) => {
+    sessionList.forEach((s) => {
       const id = String(s?.id || "").trim();
       if (!id) return;
       const tab = document.createElement("div");
@@ -1662,8 +2037,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
               if (isActive || id === currentSessionId) {
                 const ok = await connectPtyForSession(id);
                 if (!ok) {
-                  if (xtermLoaded && term) {
-                    setUiMode("exec");
+                  if (xtermLoaded) {
+                    activateView(id);
+                    setPanelModeForActive("exec");
                     bootstrapExecForSession(id);
                   } else {
                     fallbackPre.textContent = currentOutputsToText();
@@ -1685,6 +2061,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       tab.onclick = async () => {
         currentSessionId = id;
         try { window.zion?.state?.set("terminal.activeSessionId", id); } catch {}
+        activeViewId = id;
         renderTabs();
 
         if (isSsh && isInactive) {
@@ -1703,8 +2080,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
         const ok = await connectPtyForSession(id);
         if (!ok) {
-          if (xtermLoaded && term) {
-            setUiMode("exec");
+          if (xtermLoaded) {
+            activateView(id);
+            setPanelModeForActive("exec");
             bootstrapExecForSession(id);
           } else {
             fallbackPre.textContent = currentOutputsToText();
@@ -1737,9 +2115,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     }
     cmdInput.disabled = true;
     try {
-      if (usingPty && pty) {
-        // Send to PTY directly (append newline)
-        pty.send(cmd + "\r");
+      const v = getActiveView();
+      if (v?.usingPty && v?.pty) {
+        v.pty.send(cmd + "\r");
       } else {
         await api.execute?.(cmd, sid);
         renderFallbackOutputs();
@@ -2104,13 +2482,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     } catch {}
   };
 
-  killBtn.onclick = async () => {
-    try {
-      const sid = currentSessionId || window.zion?.state?.get("terminal.activeSessionId") || null;
-      const sessionId = String(sid || "").trim();
-      if (!sessionId) return;
-      await window.zion?.commands?.executeCommand?.("terminal.closeSession", { session_id: sessionId });
-    } catch {}
+  dockBtn.onclick = () => {
+    setDockMode(dockMode === "right" ? "bottom" : "right", true);
   };
 
   closeBtn.onclick = () => close();
@@ -2375,8 +2748,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
           overlay.remove();
           hideSuggest();
           cmdInput.value = "";
-          if (usingPty && pty) {
-            pty.send(cmd + "\r");
+          const v = getActiveView();
+          if (v?.usingPty && v?.pty) {
+            v.pty.send(cmd + "\r");
           } else {
             await api.execute?.(cmd, sid);
             renderFallbackOutputs();
@@ -2431,8 +2805,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         overlay.remove();
         hideSuggest();
         cmdInput.value = "";
-        if (usingPty && pty) {
-          pty.send(cmd + "\r");
+        const v = getActiveView();
+        if (v?.usingPty && v?.pty) {
+          v.pty.send(cmd + "\r");
         } else {
           await api.execute?.(cmd, sid);
           renderFallbackOutputs();
@@ -2453,12 +2828,14 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const disp1 = window.zion.state.onDidChange("terminal.sessions", () => { renderTabs(); });
   const disp2 = window.zion.state.onDidChange("terminal.activeSessionId", async (nv) => {
     currentSessionId = nv || currentSessionId;
+    if (currentSessionId) activeViewId = currentSessionId;
     renderTabs();
     if (currentSessionId) {
       const ok = await connectPtyForSession(currentSessionId);
       if (!ok) {
-        if (xtermLoaded && term) {
-          setUiMode("exec");
+        if (xtermLoaded) {
+          activateView(currentSessionId);
+          setPanelModeForActive("exec");
           bootstrapExecForSession(currentSessionId);
         } else {
           renderFallbackOutputs();
@@ -2466,23 +2843,25 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       }
     }
   });
-  const disp3 = window.zion.state.onDidChange("terminal.outputs", () => { if (!usingPty) renderFallbackOutputs(); });
-  const disp4 = window.zion.events.on("terminal/commandExecuted", () => { if (!usingPty) renderFallbackOutputs(); });
+  const disp3 = window.zion.state.onDidChange("terminal.outputs", () => { if (!isActiveUsingPty()) renderFallbackOutputs(); });
+  const disp4 = window.zion.events.on("terminal/commandExecuted", () => { if (!isActiveUsingPty()) renderFallbackOutputs(); });
 
   async function open(opts = {}) {
     // 先显示 root，确保 DOM 准备好
     const wasVisible = root.style.display === "block";
     root.style.display = "block";
+    try { applyDocking(root); } catch {}
 
-    if (wasVisible && pty?.ws?.readyState === WebSocket.OPEN) {
-      try { fitAddon?.fit?.(); } catch {}
+    const av = getActiveView();
+    if (wasVisible && av?.pty?.ws?.readyState === WebSocket.OPEN) {
+      try { fitActiveView(); } catch {}
       if (opts.openQuick) {
         setTimeout(() => openQuickPalette(), 0);
       } else if (opts.openHistory) {
         setTimeout(() => openHistoryPalette(), 0);
       } else {
         setTimeout(() => {
-          try { term?.focus?.(); } catch {}
+          try { getActiveView()?.term?.focus?.(); } catch {}
         }, 0);
       }
       return;
@@ -2522,36 +2901,34 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
     try {
       await ensureXtermLoaded();
-      setUiMode(sid && api.connectPty ? "pty" : "exec");
+      if (sid) {
+        await ensureView(sid);
+        activateView(sid);
+      }
+      if (sid && api.connectPty) setPanelModeForActive("pty");
+      else setPanelModeForActive("exec");
     } catch {
-      setUiMode("pre");
+      setPanelModeForActive("pre");
     }
 
     if (sid) {
       const ok = await connectPtyForSession(sid);
       if (!ok) {
-        if (xtermLoaded && term) {
-          // 确保没有重复 DOM
-          try { termWrap.innerHTML = ''; term.open(termWrap); } catch {}
+        if (xtermLoaded) {
+          activateView(sid);
+          setPanelModeForActive("exec");
           bootstrapExecForSession(sid);
         } else {
           renderFallbackOutputs();
         }
       }
     } else {
-      if (xtermLoaded && term) {
-        try { term.reset(); term.writeln("No active session"); term.writeln(""); } catch {}
-      } else {
-        renderFallbackOutputs();
-      }
+      renderFallbackOutputs();
     }
 
-    // 确保 xterm 尺寸正确计算
-    if (xtermLoaded && term && fitAddon) {
+    if (xtermLoaded) {
       setTimeout(() => {
-        try {
-          fitAddon.fit();
-        } catch {}
+        try { fitActiveView(); } catch {}
       }, 50);
     }
 
@@ -2561,8 +2938,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       setTimeout(() => openHistoryPalette(), 0);
     } else if (opts.focusCommand) {
       setTimeout(() => {
-        if (xtermLoaded && term) {
-          try { term.focus(); } catch {}
+        if (xtermLoaded && getActiveView()?.term) {
+          try { getActiveView().term.focus(); } catch {}
           return;
         }
         cmdInput.focus();
@@ -2571,16 +2948,23 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
   function close() {
     root.style.display = "none";
+    try { setRightDockShiftEnabled(false); } catch {}
     hideSuggest();
+    try { window.zion?.window?.activeEditor?.focus?.(); } catch {}
+    try { setTimeout(() => window.zion?.window?.activeEditor?.focus?.(), 0); } catch {}
   }
   function dispose() {
     try { disp1?.dispose?.(); disp2?.dispose?.(); disp3?.dispose?.(); disp4?.dispose?.(); } catch {}
-    try { term?._zionCleanup?.(); } catch {}
-    try { termDataDisp?.dispose?.(); } catch {}
+    try {
+      for (const sid of Array.from(sessionViews.keys())) disposeView(sid);
+    } catch {}
+    try { xtermCtors?._zionThemeObserver?.disconnect?.(); } catch {}
+    try { termWrapResizeObserver?.disconnect?.(); } catch {}
+    try { window.removeEventListener("resize", onWindowResize); } catch {}
     try { hideTermContextMenu(); } catch {}
     try { termFindWidget?.wrap?.remove?.(); } catch {}
-    try { pty?.dispose?.(); } catch {}
     try { root?._zteDockingDispose?.(); } catch {}
+    try { setRightDockShiftEnabled(false); } catch {}
     try { root.remove(); } catch {}
   }
 

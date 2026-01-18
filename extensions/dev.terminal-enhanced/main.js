@@ -312,6 +312,15 @@ export async function activate(ctx) {
   const cmdOpen = window.zion.commands.registerCommand("terminal.openPanel", () => {
     try { panel?.open?.(); } catch {}
   });
+  const cmdToggle = window.zion.commands.registerCommand("terminal.togglePanel", () => {
+    const root = document.getElementById("zion-terminal-enhanced-root");
+    if (!root) return;
+    if (root.style.display === "block") {
+      try { panel?.close?.(); } catch {}
+    } else {
+      try { panel?.open?.(); } catch {}
+    }
+  });
   const cmdOpenHistory = window.zion.commands.registerCommand("terminal.openHistory", () => {
     try { panel?.open?.({ openHistory: true }); } catch {}
   });
@@ -347,12 +356,15 @@ export async function activate(ctx) {
     window.zion?.state?.set("chat.includeTerminalContext", next);
     return next;
   });
-  ctx.subscriptions.push(cmdOpen, cmdOpenHistory, cmdExec, cmdQuick, cmdReactivate, cmdToggleCtx);
+  ctx.subscriptions.push(cmdOpen, cmdToggle, cmdOpenHistory, cmdExec, cmdQuick, cmdReactivate, cmdToggleCtx);
 
   // 4) Register keybindings
   try {
     ctx.subscriptions.push(
       window.zion.keybindings.register({ command: "terminal.openPanel", key: "Mod-`", when: "editorFocus" })
+    );
+    ctx.subscriptions.push(
+      window.zion.keybindings.register({ command: "terminal.togglePanel", key: "Mod-j", when: "editorFocus" })
     );
     ctx.subscriptions.push(
       window.zion.keybindings.register({ command: "terminal.quickCommand", key: "Mod-Shift-P", when: "editorFocus" })
@@ -364,6 +376,22 @@ export async function activate(ctx) {
   } catch (e) {
     console.warn("[dev.terminal-enhanced] keybindings register failed", e);
   }
+
+  const onGlobalKeydown = (e) => {
+    try {
+      if (!(e?.metaKey || e?.ctrlKey) || e?.altKey) return;
+      if (String(e.key || "").toLowerCase() !== "j") return;
+      const root = document.getElementById("zion-terminal-enhanced-root");
+      if (!root || root.style.display !== "block") return;
+      e.preventDefault();
+      e.stopPropagation();
+      window.zion?.commands?.executeCommand?.("terminal.togglePanel");
+    } catch {}
+  };
+  try {
+    window.addEventListener("keydown", onGlobalKeydown, true);
+    ctx.subscriptions.push({ dispose: () => window.removeEventListener("keydown", onGlobalKeydown, true) });
+  } catch {}
 
   // 5) Register message contributor for terminal context
   try {
@@ -400,12 +428,14 @@ export async function activate(ctx) {
   let statusDisp = null;
   const updateStatus = () => {
     const sid = getActiveSessionId();
+    const root = document.getElementById("zion-terminal-enhanced-root");
+    const isVisible = root && root.style.display === "block";
     statusDisp?.dispose?.();
     statusDisp = window.zion.statusBar.registerItem({
       id: "dev.terminal.enhanced.button",
       text: `Terminal+${sid ? `: ${sid}` : ""}`,
-      tooltip: "Open Terminal Enhanced Panel",
-      onClick: () => window.zion.commands.executeCommand("terminal.openPanel")
+      tooltip: isVisible ? "Hide Terminal Enhanced Panel" : "Open Terminal Enhanced Panel",
+      onClick: () => window.zion.commands.executeCommand("terminal.togglePanel")
     });
   };
   updateStatus();
