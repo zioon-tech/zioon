@@ -7,17 +7,17 @@ export async function activate(ctx) {
       type: "function",
       function: {
         name: "terminalManage",
-        description: "Manage persistent terminal sessions (local or SSH). Supports actions: create/list/get/close/set_cwd. For SSH, provide ssh_host, ssh_user?, ssh_port?.",
+        description: "Manage persistent terminal sessions (local or SSH). Supports actions: create/list/get/close/reactivate/set_cwd. For SSH, provide ssh_host, ssh_user?, ssh_port?.",
         parameters: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["create","list","get","close","set_cwd"], description: "Management action" },
+            action: { type: "string", enum: ["create","list","get","close","reactivate","set_cwd"], description: "Management action" },
             type: { type: "string", enum: ["local","ssh"], description: "Session type (default local)" },
             ssh_user: { type: "string", description: "SSH username (ssh sessions)" },
             ssh_host: { type: "string", description: "SSH host (ssh sessions)" },
             ssh_port: { type: "number", description: "SSH port (default 22)" },
             initial_cwd: { type: "string", description: "Initial working directory" },
-            session_id: { type: "string", description: "Target session id (get/close/set_cwd)" },
+            session_id: { type: "string", description: "Target session id (get/close/reactivate/set_cwd)" },
             cwd: { type: "string", description: "New working directory (set_cwd)" }
           },
           required: ["action"],
@@ -126,6 +126,27 @@ export async function activate(ctx) {
               }
             }
             window.zion?.state?.set("terminal.sessions", list);
+            return JSON.stringify(data, null, 2);
+          }
+
+          if (action === "reactivate") {
+            const sid = String(args?.session_id || "").trim();
+            if (!sid) return "Missing session_id";
+            const res = await fetch(`${base}/sessions/${encodeURIComponent(sid)}/activate`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" }
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
+            // 更新状态
+            if (data?.session) {
+              const list = (window.zion?.state?.get("terminal.sessions") || []).slice();
+              const idx = list.findIndex(s => s?.id === sid);
+              if (idx >= 0) {
+                list[idx] = data.session;
+              }
+              window.zion?.state?.set("terminal.sessions", list);
+            }
             return JSON.stringify(data, null, 2);
           }
 

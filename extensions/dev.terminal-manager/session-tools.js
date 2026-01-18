@@ -367,7 +367,7 @@ export function installTerminalManagerPanel() {
       details.appendChild(mkDetail("Last Activity", fa.text || "(unknown)", fa.title));
       card.appendChild(details);
 
-      // Actions: Set Active / Close / CWD input + Apply
+      // Actions: Set Active / Reactivate / Close / CWD input + Apply
       const actions = document.createElement("div");
       Object.assign(actions.style, { display: "flex", alignItems: "center", gap: "8px", marginTop: "2px", flexWrap: "wrap" });
 
@@ -389,6 +389,28 @@ export function installTerminalManagerPanel() {
         e.stopPropagation();
         setActiveSession(s.id);
         updateSelectedStyles();
+      });
+
+      // Show Reactivate button only for SSH sessions
+      const isSsh = (s.type || "local") === "ssh";
+      const btnReactivate = document.createElement("button");
+      btnReactivate.type = "button";
+      btnReactivate.title = "Reactivate Session (reconnect SSH)";
+      btnReactivate.setAttribute("aria-label", "Reactivate Session");
+      btnReactivate.textContent = "🔄 Reactivate";
+      btnReactivate.style.display = isSsh ? "inline-block" : "none";
+      Object.assign(btnReactivate.style, {
+        border: "1px solid var(--border)",
+        borderRadius: "4px",
+        background: isSsh && s.active === false ? "rgba(255,165,0,0.15)" : "transparent",
+        color: isSsh && s.active === false ? "orange" : "var(--fg)",
+        padding: "4px 8px",
+        fontSize: "11px",
+        cursor: "pointer"
+      });
+      btnReactivate.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await reactivateSession(s.id);
       });
 
       const btnClose = document.createElement("button");
@@ -450,6 +472,7 @@ export function installTerminalManagerPanel() {
       });
 
       actions.appendChild(btnActive);
+      actions.appendChild(btnReactivate);
       actions.appendChild(btnClose);
       actions.appendChild(cwdInp);
       actions.appendChild(btnApply);
@@ -555,6 +578,31 @@ export function installTerminalManagerPanel() {
       window.zion?.state?.set("terminal.sessions", listArr);
       renderList(listArr);
     } catch {}
+  }
+
+  async function reactivateSession(sid) {
+    if (!sid) return;
+    try {
+      const base = readBase().replace(/\/$/, "");
+      const res = await fetch(`${base}/sessions/${encodeURIComponent(sid)}/activate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.session) {
+        const listArr = (window.zion?.state?.get("terminal.sessions") || []).slice();
+        const idx = listArr.findIndex(s => s?.id === sid);
+        if (idx >= 0) {
+          listArr[idx] = data.session;
+        }
+        window.zion?.state?.set("terminal.sessions", listArr);
+        renderList(listArr);
+      } else {
+        alert("Reactivate failed: " + (data?.error || "Unknown error"));
+      }
+    } catch (e) {
+      alert("Reactivate error: " + (e?.message || String(e)));
+    }
   }
 
   createBtn.addEventListener("click", create);

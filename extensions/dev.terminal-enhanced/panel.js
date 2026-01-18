@@ -19,6 +19,31 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 .zte-panel {
   background: var(--panel);
   color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  min-height: 200px;
+}
+
+/* 滚动条主题化 (WebKit + Firefox) */
+.zte-panel {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+.zte-panel::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.zte-panel::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+.zte-panel::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.zte-panel:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-hover);
 }
 
 /* xterm 内部元素间距重置 */
@@ -32,7 +57,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 }
 .zte-panel .xterm-viewport {
   top: 0;
-  padding: 0;
+  padding: 0 8px;
   margin: 0;
 }
 .zte-panel .xterm-screen {
@@ -46,6 +71,33 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   padding: 0;
 }
 
+/* 隐藏 xterm 内部高度为 14px 的空白 div（xterm 生成的占位符） */
+.zte-panel .xterm-rows > div[style*="height: 14px"]:empty {
+  display: none !important;
+}
+
+/* xterm viewport 滚动条主题化 */
+.zte-panel .xterm-viewport {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+.zte-panel .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.zte-panel .xterm-viewport::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+.zte-panel .xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.zte-panel .xterm-viewport:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
 .zte-resize-handle {
   position: absolute;
   top: 0;
@@ -54,6 +106,14 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   height: 6px;
   cursor: row-resize;
   z-index: 2;
+}
+
+/* 失活的 SSH 会话标签样式 */
+.zte-tab.is-inactive {
+  opacity: 0.75;
+}
+.zte-tab.is-inactive:hover {
+  opacity: 1;
 }
 .zte-resize-handle::after {
   content: "";
@@ -70,49 +130,69 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 .zte-resize-handle:hover::after { opacity: 0.9; }
 
 .zte-topbar {
-  height: 32px;
+  height: 36px;
   padding: 0 8px;
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: none;
+  background: transparent;
 }
 
 .zte-tabs {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 4px;
   overflow-x: auto;
   flex: 1;
   min-width: 0;
-  scrollbar-width: thin;
+  /* 隐藏滚动条但保持滚动功能 */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+  padding: 5px 0;
 }
-.zte-tabs::-webkit-scrollbar { height: 8px; }
-.zte-tabs::-webkit-scrollbar-track { background: transparent; }
-.zte-tabs::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--fg) 18%, transparent);
-  border-radius: 999px;
+.zte-tabs::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Edge */
 }
 
 .zte-tab {
-  height: 26px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0 8px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  padding: 0 10px;
+  border-radius: 3px;
+  border: none;
   background: transparent;
   color: var(--fg);
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
   flex: 0 0 auto;
+  transition: all 80ms ease;
+  font-size: 12px;
+  line-height: 1;
+  position: relative;
+  opacity: 0.85;
 }
-.zte-tab:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.zte-tab:hover {
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+  opacity: 1;
+}
 .zte-tab.is-active {
-  background: color-mix(in srgb, var(--fg) 10%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 65%, var(--border));
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--fg);
+  font-weight: 500;
+  opacity: 1;
+}
+.zte-tab.is-active::before {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  left: 10px;
+  right: 10px;
+  height: 2px;
+  border-radius: 1px;
 }
 .zte-tab-label {
   font-size: 11px;
@@ -124,17 +204,42 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   border: none;
   background: transparent;
   color: var(--fg);
-  opacity: 0;
-  padding: 0 4px;
+  opacity: 0.5;
+  padding: 0 2px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1;
-  border-radius: 4px;
+  border-radius: 3px;
+  margin-left: 4px;
+  transition: all 80ms ease;
 }
-.zte-tab:hover .zte-tab-close { opacity: 0.85; }
+.zte-tab:hover .zte-tab-close { opacity: 0.7; }
 .zte-tab-close:hover {
   opacity: 1;
-  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  background: rgba(255, 100, 100, 0.2);
+  color: #ff6b6b;
+}
+
+.zte-tab-activate {
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 18px;
+  opacity: 0.85;
+  transition: all 120ms ease;
+}
+.zte-tab-activate:hover {
+  opacity: 1;
+  background: var(--border);
+}
+.zte-tab-activate[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .zte-actions {
@@ -145,38 +250,37 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 }
 
 .zte-icon-btn {
-  height: 24px;
+  width: 26px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
   color: var(--fg);
-  padding: 0 8px;
-  font-size: 12px;
+  padding: 0;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+  transition: all 120ms ease;
+}
+.zte-icon-btn svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0.75;
 }
 .zte-icon-btn:hover {
-  background: color-mix(in srgb, var(--fg) 7%, transparent);
-  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+  background: var(--border);
 }
-.zte-icon-btn:active { transform: translateY(0.5px); }
+.zte-icon-btn:hover svg {
+  opacity: 1;
+}
+.zte-icon-btn:active { transform: translateY(1px); }
 .zte-icon-btn[disabled] {
   cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.zte-status {
-  margin-left: 6px;
-  font-size: 11px;
-  opacity: 0.75;
-  max-width: 340px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  opacity: 0.4;
 }
 
 .zte-toast {
@@ -184,15 +288,14 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   right: 10px;
   bottom: 10px;
   z-index: 6;
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  backdrop-filter: blur(10px);
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel);
   color: var(--fg);
   font-size: 12px;
   pointer-events: none;
-  box-shadow: 0 10px 28px rgba(0,0,0,0.25);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
 }
 
 .zte-find {
@@ -202,22 +305,27 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   gap: 6px;
 }
 .zte-find-toggle {
-  height: 28px;
+  height: 24px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
   color: var(--fg);
   padding: 0 8px;
   cursor: pointer;
   font-size: 12px;
-  opacity: 0.8;
+  opacity: 0.75;
+  transition: all 120ms ease;
 }
 .zte-find-toggle.is-on {
   opacity: 1;
-  border-color: color-mix(in srgb, var(--accent) 65%, var(--border));
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--border);
+  background: var(--border);
+  color: var(--fg);
 }
-.zte-find-toggle:hover { opacity: 1; }
+.zte-find-toggle:hover {
+  opacity: 1;
+  background: var(--border);
+}
 
 .zte-menu {
   backdrop-filter: blur(10px);
@@ -225,8 +333,142 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 .zte-menu-item:hover { background: color-mix(in srgb, var(--fg) 7%, transparent); }
 
 .zte-palette-row:hover { background: color-mix(in srgb, var(--fg) 7%, transparent); }
+
+/* Suggest box 滚动条主题化 */
+.zte-suggest-box {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+.zte-suggest-box::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.zte-suggest-box::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+.zte-suggest-box::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+}
+.zte-suggest-box:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-hover);
+}
 `;
     document.head.appendChild(style);
+  }
+
+  function getActiveEditorElement() {
+    try {
+      const ed = window?.zion?.window?.activeEditor;
+      const dom = ed?.core?.view?.dom;
+      if (dom instanceof HTMLElement) return dom;
+    } catch {}
+
+    const el = document.querySelector(".cm-editor");
+    return el instanceof HTMLElement ? el : null;
+  }
+
+  function getDockRect() {
+    const edEl = getActiveEditorElement();
+    if (!edEl) return null;
+    const r = edEl.getBoundingClientRect();
+    if (!r || !Number.isFinite(r.left) || !Number.isFinite(r.right) || r.width <= 0) return null;
+
+    const left = Math.max(0, Math.min(window.innerWidth, r.left));
+    const right = Math.max(0, Math.min(window.innerWidth, r.right));
+    if (right <= left) return null;
+    return { left, right };
+  }
+
+  function applyDocking(root) {
+    const rect = getDockRect();
+    if (!rect) {
+      root.style.left = "0";
+      root.style.right = "0";
+      return;
+    }
+
+    const leftPx = Math.round(rect.left);
+    const rightPx = Math.max(0, Math.round(window.innerWidth - rect.right));
+    root.style.left = `${leftPx}px`;
+    root.style.right = `${rightPx}px`;
+  }
+
+  function ensureDocking(root) {
+    if (root?._zteDockingInstalled) return;
+    root._zteDockingInstalled = true;
+
+    let raf = 0;
+    let ro = null;
+    let observedEl = null;
+    const onRaf = () => {
+      raf = 0;
+      try {
+        const nextEl = getActiveEditorElement();
+        if (ro && nextEl !== observedEl) {
+          try { if (observedEl) ro.unobserve(observedEl); } catch {}
+          observedEl = nextEl;
+          try { if (observedEl) ro.observe(observedEl); } catch {}
+        }
+      } catch {}
+      try { applyDocking(root); } catch {}
+    };
+    const schedule = () => {
+      if (raf) return;
+      const rAF = globalThis?.requestAnimationFrame;
+      if (typeof rAF !== "function") {
+        onRaf();
+        return;
+      }
+      raf = rAF(onRaf);
+    };
+
+    const onResize = () => schedule();
+    const onScroll = () => schedule();
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, true);
+
+    let mo = null;
+    try {
+      const MO = globalThis?.MutationObserver;
+      if (typeof MO === "function") mo = new MO(schedule);
+      mo.observe(document.body, { attributes: true, attributeFilter: ["style", "class"] });
+    } catch {}
+
+    try {
+      const RO = globalThis?.ResizeObserver;
+      if (typeof RO === "function") ro = new RO(schedule);
+      observedEl = getActiveEditorElement();
+      if (observedEl) ro.observe(observedEl);
+    } catch {
+      ro = null;
+      observedEl = null;
+    }
+
+    let dispWm = null;
+    try {
+      dispWm = window?.zion?.state?.onDidChange?.("ui.editorWidthMode", schedule);
+    } catch {}
+
+    root._zteDockingDispose = () => {
+      try {
+        const cAF = globalThis?.cancelAnimationFrame;
+        if (raf && typeof cAF === "function") cAF(raf);
+      } catch {}
+      raf = 0;
+      try { window.removeEventListener("resize", onResize); } catch {}
+      try { window.removeEventListener("scroll", onScroll, true); } catch {}
+      try { mo?.disconnect?.(); } catch {}
+      try {
+        if (ro) {
+          try { if (observedEl) ro.unobserve(observedEl); } catch {}
+          ro.disconnect();
+        }
+      } catch {}
+      try { dispWm?.dispose?.(); } catch {}
+    };
+
+    schedule();
   }
 
   function readSavedHeightPx() {
@@ -244,7 +486,11 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   let root = document.getElementById("zion-terminal-enhanced-root");
-  if (root) return createHandle(root);
+  if (root) {
+    ensurePanelStyles();
+    ensureDocking(root);
+    return createHandle(root);
+  }
 
   ensurePanelStyles();
 
@@ -273,8 +519,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     background: "var(--panel)",
     color: "var(--fg)",
     borderTop: "1px solid var(--border)",
-    borderLeft: "0",
-    borderRight: "0",
+    borderLeft: "1px solid var(--border)",
+    borderRight: "1px solid var(--border)",
     borderBottom: "0",
     borderRadius: "0",
     boxShadow: "none",
@@ -303,47 +549,34 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const actions = document.createElement("div");
   actions.className = "zte-actions";
 
+  // SVG 图标定义
+  const ICONS = {
+    plus: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10"/></svg>`,
+    trash: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1M6 7v6M10 7v6"/></svg>`,
+    x: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>`
+  };
+
   const newBtn = document.createElement("button");
   newBtn.type = "button";
   newBtn.className = "zte-icon-btn";
-  newBtn.textContent = "New";
+  newBtn.innerHTML = ICONS.plus;
   newBtn.title = "New terminal session";
 
   const killBtn = document.createElement("button");
   killBtn.type = "button";
   killBtn.className = "zte-icon-btn";
-  killBtn.textContent = "Kill";
+  killBtn.innerHTML = ICONS.trash;
   killBtn.title = "Kill active session";
-
-  const findBtn = document.createElement("button");
-  findBtn.type = "button";
-  findBtn.className = "zte-icon-btn";
-  findBtn.textContent = "Find";
-  findBtn.title = "Find in terminal (Mod+F)";
-  findBtn.disabled = true;
-
-  const historyBtn = document.createElement("button");
-  historyBtn.type = "button";
-  historyBtn.className = "zte-icon-btn";
-  historyBtn.textContent = "History";
-  historyBtn.title = "Command history (Mod+R)";
 
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "zte-icon-btn";
-  closeBtn.textContent = "Close";
-  closeBtn.title = "Close terminal panel (Esc)";
-
-  const statusText = document.createElement("div");
-  statusText.className = "zte-status";
-  statusText.textContent = "";
+  closeBtn.innerHTML = ICONS.x;
+  closeBtn.title = "Hide terminal panel (Esc)";
 
   actions.appendChild(newBtn);
   actions.appendChild(killBtn);
-  actions.appendChild(findBtn);
-  actions.appendChild(historyBtn);
   actions.appendChild(closeBtn);
-  actions.appendChild(statusText);
   topbar.appendChild(actions);
 
   // Content (either xterm or fallback pre)
@@ -352,7 +585,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     position: "relative",
     overflow: "hidden",
     padding: "0",
-    margin: "0"
+    margin: "0",
+    background: "var(--panel)"
   });
 
   // xterm container
@@ -362,7 +596,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     height: "100%",
     display: "none",
     overflow: "hidden",
-    padding: "0",
+    padding: "0 8px",
     margin: "0"
   });
   content.appendChild(termWrap);
@@ -371,7 +605,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const fallbackPre = document.createElement("pre");
   Object.assign(fallbackPre.style, {
     margin: 0,
-    padding: "8px",
+    padding: "12px 16px",
     background: "transparent",
     border: "0",
     borderRadius: "0",
@@ -392,9 +626,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     display: "flex",
     alignItems: "center",
     gap: "6px",
-    padding: "8px",
+    padding: "6px 8px",
     borderTop: "1px solid var(--border)",
-    position: "relative"
+    position: "relative",
+    background: "transparent"
   });
   const cmdInput = document.createElement("input");
   cmdInput.type = "text";
@@ -407,13 +642,23 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     background: "var(--panel)",
     color: "var(--fg)",
     outline: "none",
-    padding: "6px 8px",
+    padding: "4px 8px",
     fontSize: "12px",
-    fontFamily: "var(--font-mono)"
+    fontFamily: "var(--font-mono)",
+    transition: "border-color 120ms ease"
+  });
+  // Add focus style via JS
+  cmdInput.addEventListener("focus", () => {
+    cmdInput.style.borderColor = "var(--border)";
+    cmdInput.style.background = "var(--panel)";
+  });
+  cmdInput.addEventListener("blur", () => {
+    cmdInput.style.borderColor = "var(--border)";
   });
   footer.appendChild(cmdInput);
 
   const suggestBox = document.createElement("div");
+  suggestBox.className = "zte-suggest-box";
   Object.assign(suggestBox.style, {
     position: "absolute",
     left: "8px",
@@ -436,6 +681,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   panel.appendChild(footer);
   root.appendChild(panel);
   document.body.appendChild(root);
+
+  ensureDocking(root);
 
   const toast = document.createElement("div");
   toast.className = "zte-toast";
@@ -530,6 +777,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   let execLine = "";
   let execBusy = false;
   let execBootSessionId = null;
+  let execEscState = 0;
+  let ptySessionId = null;
+  let ptyConnecting = false;
+  let ptyInputBuffer = "";
+  let ptyConnectNonce = 0;
+  let ptyRetryTimer = 0;
+  let ptyRetryCount = 0;
   let findState = { caseSensitive: false, regex: false, wholeWord: false };
 
   // Lazy load xterm (prefer local dependency; fallback to CDN)
@@ -592,6 +846,26 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       throw new Error("xterm load failed");
     }
 
+    // ANSI color palette for terminal colors (git diff, ls colors, etc.)
+    const ansiColors = {
+      black: '#2e2e2e',
+      red: '#e06c75',
+      green: '#98c379',
+      yellow: '#e5c07b',
+      blue: '#61afef',
+      magenta: '#c678dd',
+      cyan: '#56b6c2',
+      white: '#abb2bf',
+      brightBlack: '#5c6370',
+      brightRed: '#e06c75',
+      brightGreen: '#98c379',
+      brightYellow: '#e5c07b',
+      brightBlue: '#61afef',
+      brightMagenta: '#c678dd',
+      brightCyan: '#56b6c2',
+      brightWhite: '#ffffff'
+    };
+
     term = new Terminal({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 12,
@@ -602,7 +876,28 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       altClickMovesCursor: true,
       theme: {
         background: getComputedStyle(document.documentElement).getPropertyValue('--panel') || '#1e1e1e',
-        foreground: getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#d4d4d4'
+        foreground: getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#d4d4d4',
+        cursor: getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#d4d4d4',
+        cursorAccent: getComputedStyle(document.documentElement).getPropertyValue('--panel') || '#1e1e1e',
+        selectionBackground: getComputedStyle(document.documentElement).getPropertyValue('--selection-bg') || 'rgba(98,114,164,0.35)',
+        selectionForeground: getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#d4d4d4',
+        // ANSI color palette
+        black: ansiColors.black,
+        red: ansiColors.red,
+        green: ansiColors.green,
+        yellow: ansiColors.yellow,
+        blue: ansiColors.blue,
+        magenta: ansiColors.magenta,
+        cyan: ansiColors.cyan,
+        white: ansiColors.white,
+        brightBlack: ansiColors.brightBlack,
+        brightRed: ansiColors.brightRed,
+        brightGreen: ansiColors.brightGreen,
+        brightYellow: ansiColors.brightYellow,
+        brightBlue: ansiColors.brightBlue,
+        brightMagenta: ansiColors.brightMagenta,
+        brightCyan: ansiColors.brightCyan,
+        brightWhite: ansiColors.brightWhite
       }
     });
     fitAddon = new FitAddon();
@@ -617,20 +912,63 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     fitAddon.fit();
     installTerminalInteractions();
     ensureTermDataHandler();
+
+    // 监听主题切换，动态更新 xterm.js 颜色
+    const MO = globalThis.MutationObserver;
+    const observer = typeof MO === "function" ? new MO(() => {
+      if (!term) return;
+      const newBg = getComputedStyle(document.documentElement).getPropertyValue('--panel')?.trim() || '#1e1e1e';
+      const newFg = getComputedStyle(document.documentElement).getPropertyValue('--fg')?.trim() || '#d4d4d4';
+      const newSelBg = getComputedStyle(document.documentElement).getPropertyValue('--selection-bg')?.trim() || 'rgba(98,114,164,0.35)';
+      term.options.theme = { ...term.options.theme, background: newBg, foreground: newFg, selectionBackground: newSelBg };
+    }) : null;
+
+    // 开始监听 data-theme 属性变化
+    try { observer?.observe?.(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] }); } catch {}
+
+    // 保存 observer 供清理时使用
+    term._zionThemeObserver = observer;
+
     xtermLoaded = true;
   }
 
   function ensureTermDataHandler() {
     if (!term || termDataDisp) return;
     termDataDisp = term.onData((data) => {
-      if (usingPty && pty) {
-        try { pty.send(data); } catch {}
-        return;
+      if (usingPty) {
+        const wsOpen = !!(pty?.ws && pty.ws.readyState === WebSocket.OPEN);
+        if (wsOpen) {
+          try { pty.send(data); } catch {}
+          return;
+        }
+        if (ptyConnecting) {
+          if (ptyInputBuffer.length < 8192) ptyInputBuffer += String(data || "");
+          return;
+        }
       }
       if (usingExec) {
         handleExecInput(data);
       }
     });
+  }
+
+  function schedulePtyReconnect(sessionId) {
+    try { clearTimeout(ptyRetryTimer); } catch {}
+    ptyRetryTimer = 0;
+    if (root.style.display === "none") return;
+    const sid = String(sessionId || "").trim();
+    if (!sid) return;
+    if (ptyRetryCount >= 6) return;
+    const delay = Math.min(4000, 250 * (2 ** ptyRetryCount));
+    ptyRetryCount += 1;
+    ptyRetryTimer = setTimeout(() => {
+      ptyRetryTimer = 0;
+      if (root.style.display === "none") return;
+      if (ptySessionId && ptySessionId !== sid) return;
+      if (pty?.ws && pty.ws.readyState === WebSocket.OPEN) return;
+      if (ptyConnecting) return;
+      connectPtyForSession(sid);
+    }, delay);
   }
 
   function getPromptForSession(sessionId) {
@@ -643,11 +981,37 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     return cwdShort ? `${sid}:${cwdShort}$ ` : `${sid}$ `;
   }
 
+  function getTabLabelForSession(s) {
+    if (!s) return "";
+
+    const type = s.type || "local";
+    const cwd = String(s?.cwd || "").trim();
+
+    if (type === "ssh") {
+      const host = s.ssh_host || "unknown";
+      const port = s.ssh_port || 22;
+      const cwdShort = cwd ? cwd.split("/").filter(Boolean).slice(-2).join("/") : "";
+      if (cwdShort) {
+        return `${host}:${cwdShort}`;
+      }
+      return `${host}:${port}`;
+    }
+
+    // Local session - show cwd
+    const cwdShort = cwd ? cwd.split("/").filter(Boolean).slice(-2).join("/") : "";
+    if (cwdShort) {
+      return cwdShort;
+    }
+
+    // Fallback to ID
+    return s.id || "";
+  }
+
   function writeExecPrompt() {
     execLine = "";
     const sid = currentSessionId || window.zion?.state?.get("terminal.activeSessionId") || "";
     const prompt = getPromptForSession(sid);
-    try { term?.write?.(prompt); } catch {}
+    try { term?.write?.("\x1b[0m" + prompt); } catch {}
   }
 
   function bootstrapExecForSession(sessionId) {
@@ -670,6 +1034,16 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       writeExecPrompt();
       return;
     }
+
+    const maybeForceGitColor = (raw) => {
+      const s = String(raw || "");
+      if (!/^git\s+/i.test(s)) return s;
+      if (/\s--no-color\b/i.test(s)) return s;
+      if (/\s--color(?:=\w+)?\b/i.test(s)) return s;
+      if (/\s-c\s+color\.ui=/i.test(s)) return s;
+      if (/\s-c\s+color\.diff=/i.test(s)) return s;
+      return s.replace(/^git\b/i, "git -c color.ui=always");
+    };
     const sid = currentSessionId || window.zion?.state?.get("terminal.activeSessionId") || null;
     if (!sid) {
       try { term?.writeln?.("No active session"); } catch {}
@@ -678,7 +1052,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     }
     execBusy = true;
     try {
-      const rec = await api.execute?.(cmd, sid);
+      const finalCmd = maybeForceGitColor(cmd);
+      const rec = await api.execute?.(finalCmd, sid);
       const out = typeof rec?.output === "string" ? rec.output : "";
       if (out) {
         const normalized = out.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
@@ -701,6 +1076,22 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     const s = String(data || "");
     for (let i = 0; i < s.length; i++) {
       const ch = s[i];
+
+      if (execEscState !== 0) {
+        if (execEscState === 1) {
+          if (ch === "[" || ch === "O") {
+            execEscState = 2;
+            continue;
+          }
+          execEscState = 0;
+          continue;
+        }
+        const code = ch.charCodeAt(0);
+        if (code >= 0x40 && code <= 0x7e) {
+          execEscState = 0;
+        }
+        continue;
+      }
 
       if (ch === "\r") {
         const cmd = execLine;
@@ -734,6 +1125,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       }
 
       if (ch === "\u001b") {
+        execEscState = 1;
         continue;
       }
 
@@ -814,10 +1206,11 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         borderRadius: "4px",
         background: "transparent",
         color: "var(--fg)",
-        padding: "6px 10px",
+        padding: "4px 8px",
         fontSize: "12px",
         cursor: "pointer",
-        whiteSpace: "nowrap"
+        whiteSpace: "nowrap",
+        transition: "all 120ms ease"
       });
       return b;
     };
@@ -841,9 +1234,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       return b;
     };
 
-    const prevBtn = mkBtn("Prev");
-    const nextBtn = mkBtn("Next");
-    const closeBtn2 = mkBtn("Close");
+    const prevBtn = mkBtn("↑");
+    const nextBtn = mkBtn("↓");
+    const closeBtn2 = mkBtn("×");
 
     const caseBtn = mkToggle("Aa", "caseSensitive", "Case sensitive");
     const regexBtn = mkToggle(".*", "regex", "Regex");
@@ -1051,15 +1444,21 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     fallbackPre.style.display = showXterm ? "none" : "block";
     footer.style.display = showXterm ? "none" : "flex";
 
-    findBtn.disabled = !xtermReady;
     updateStatusText();
+
+    // 当切换到显示 xterm 时，需要重新计算尺寸
+    // 使用 setTimeout 确保 DOM 更新后再调用 fit
+    if (showXterm && fitAddon) {
+      setTimeout(() => {
+        try {
+          fitAddon.fit();
+        } catch {}
+      }, 0);
+    }
   }
 
   function updateStatusText() {
-    const sid = currentSessionId || window.zion?.state?.get("terminal.activeSessionId") || "";
-    const mode = usingPty ? "pty" : (usingExec ? "exec" : "pre");
-    const prompt = sid ? getPromptForSession(sid).replace(/\$\s*$/, "") : "";
-    statusText.textContent = sid ? `${prompt} · ${mode}` : `no session · ${mode}`;
+    // Status text removed as requested
   }
 
   function currentOutputsToText() {
@@ -1076,8 +1475,25 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
   async function connectPtyForSession(sessionId) {
     if (!api.connectPty) return false;
+    const sid = String(sessionId || "").trim();
+    if (!sid) return false;
+    if (pty && ptySessionId === sid && pty.ws && pty.ws.readyState === WebSocket.OPEN) {
+      setUiMode("pty");
+      try { term?.focus?.(); } catch {}
+      return true;
+    }
+    if (ptyConnecting && ptySessionId === sid) {
+      setUiMode("pty");
+      return true;
+    }
     try {
       await ensureXtermLoaded();
+
+      ptySessionId = sid;
+      ptyConnecting = true;
+      ptyInputBuffer = "";
+      ptyConnectNonce += 1;
+      const nonce = ptyConnectNonce;
       setUiMode("pty");
       // Cleanup previous
       try { pty?.dispose?.(); } catch {}
@@ -1088,23 +1504,70 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       try { termWrap.innerHTML = ''; term.open(termWrap); } catch {}
       ensureTermDataHandler();
       // Connect
-      pty = api.connectPty(sessionId, term.cols, term.rows);
-      pty.onData((chunk) => {
+      const localPty = api.connectPty(sid, term.cols, term.rows);
+      pty = localPty;
+      localPty.onData((chunk) => {
         try { term.write(chunk); } catch {}
       });
-      pty.onError(() => {
-        try { pty?.dispose?.(); } catch {}
+      localPty.onError(() => {
+        if (nonce !== ptyConnectNonce) return;
+        if (pty !== localPty) return;
+        try { localPty?.dispose?.(); } catch {}
         pty = null;
+        ptyConnecting = false;
         setUiMode("exec");
-        bootstrapExecForSession(sessionId);
+        bootstrapExecForSession(sid);
+        try { showToast("PTY 连接断开，正在重连…", 1200); } catch {}
+        schedulePtyReconnect(sid);
       });
-      pty.onClose(() => {
-        try { pty?.dispose?.(); } catch {}
+      localPty.onClose(() => {
+        if (nonce !== ptyConnectNonce) return;
+        if (pty !== localPty) return;
+        try { localPty?.dispose?.(); } catch {}
         pty = null;
+        ptyConnecting = false;
         setUiMode("exec");
-        bootstrapExecForSession(sessionId);
+        bootstrapExecForSession(sid);
+        try { showToast("PTY 连接断开，正在重连…", 1200); } catch {}
+        schedulePtyReconnect(sid);
       });
-      await pty.ready;
+
+      await localPty.ready;
+
+      if (nonce !== ptyConnectNonce || pty !== localPty) {
+        try { localPty?.dispose?.(); } catch {}
+        if (pty === localPty) pty = null;
+        return false;
+      }
+
+      ptyConnecting = false;
+      ptyRetryCount = 0;
+      try { clearTimeout(ptyRetryTimer); } catch {}
+      ptyRetryTimer = 0;
+
+      // Initialize terminal: set TERM to xterm-256color and force enable colors
+      // This helps ensure tools like git diff, ls, etc. use colors
+      setTimeout(() => {
+        try {
+          pty.send('export TERM=xterm-256color\r');
+          pty.send('export COLORTERM=truecolor\r');
+          // Force enable ls colors
+          pty.send('alias ls="ls --color=auto"\r');
+        } catch {}
+      }, 100);
+      setTimeout(() => {
+        try {
+          pty.send('export CLICOLOR=1\r');
+          pty.send('export FORCE_COLOR=1\r');
+          pty.send('ls --color=auto >/dev/null 2>&1 && alias ls="ls --color=auto" || alias ls="ls -G"\r');
+        } catch {}
+      }, 120);
+
+      if (ptyInputBuffer) {
+        try { pty.send(ptyInputBuffer); } catch {}
+        ptyInputBuffer = "";
+      }
+
       try { term.focus(); } catch {}
       // Resize handling
       const doFit = () => {
@@ -1123,14 +1586,18 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       // Save disposers to cleanup on dispose
       term._zionCleanup = () => {
         try { ro?.disconnect?.(); } catch {}
+        try { term._zionThemeObserver?.disconnect?.(); } catch {}
         window.removeEventListener("resize", doFit);
       };
       return true;
     } catch (e) {
       try { pty?.dispose?.(); } catch {}
       pty = null;
+      ptyConnecting = false;
       setUiMode("exec");
-      bootstrapExecForSession(sessionId);
+      bootstrapExecForSession(sid);
+      try { showToast("PTY 连接失败，正在重试…", 1200); } catch {}
+      schedulePtyReconnect(sid);
       return false;
     }
   }
@@ -1152,10 +1619,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       const id = String(s?.id || "").trim();
       if (!id) return;
       const tab = document.createElement("div");
-      tab.className = `zte-tab${currentSessionId === id ? " is-active" : ""}`;
+      const isActive = currentSessionId === id;
+      const isSsh = (s?.type || "local") === "ssh";
+      const isInactive = isSsh && s?.active === false;
+      tab.className = `zte-tab${isActive ? " is-active" : ""}${isInactive ? " is-inactive" : ""}`;
 
       const label = document.createElement("div");
-      label.textContent = s.type === "ssh" ? `${id} (ssh)` : id;
+      label.textContent = getTabLabelForSession(s);
       label.className = "zte-tab-label";
 
       const xbtn = document.createElement("button");
@@ -1170,10 +1640,67 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         } catch {}
       };
 
+      // Add reactivate button for inactive SSH sessions
+      if (isSsh && isInactive) {
+        const reactivateBtn = document.createElement("button");
+        reactivateBtn.type = "button";
+        reactivateBtn.textContent = "激活";
+        reactivateBtn.className = "zte-tab-activate";
+        reactivateBtn.title = "激活 SSH 会话";
+        reactivateBtn.onclick = async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            reactivateBtn.disabled = true;
+            reactivateBtn.textContent = "激活中";
+            const result = await window.zion?.commands?.executeCommand?.("terminal.reactivateSession", { session_id: id });
+            if (result) {
+              // Refresh sessions list and reconnect
+              await window.zion?.commands?.executeCommand?.("terminal.refreshSessions");
+              renderTabs();
+              // Try to connect to the reactivated session
+              if (isActive || id === currentSessionId) {
+                const ok = await connectPtyForSession(id);
+                if (!ok) {
+                  if (xtermLoaded && term) {
+                    setUiMode("exec");
+                    bootstrapExecForSession(id);
+                  } else {
+                    fallbackPre.textContent = currentOutputsToText();
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            console.error("Failed to reactivate session:", err);
+            alert("Failed to reactivate session: " + (err?.message || String(err)));
+          } finally {
+            reactivateBtn.disabled = false;
+            renderTabs();
+          }
+        };
+        tab.appendChild(reactivateBtn);
+      }
+
       tab.onclick = async () => {
         currentSessionId = id;
         try { window.zion?.state?.set("terminal.activeSessionId", id); } catch {}
         renderTabs();
+
+        if (isSsh && isInactive) {
+          try {
+            const result = await window.zion?.commands?.executeCommand?.("terminal.reactivateSession", { session_id: id });
+            if (result) {
+              await window.zion?.commands?.executeCommand?.("terminal.refreshSessions");
+              renderTabs();
+            } else {
+              try { showToast("会话已失活，可点击“激活”重连"); } catch {}
+            }
+          } catch {
+            try { showToast("会话已失活，可点击“激活”重连"); } catch {}
+          }
+        }
+
         const ok = await connectPtyForSession(id);
         if (!ok) {
           if (xtermLoaded && term) {
@@ -1586,15 +2113,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     } catch {}
   };
 
-  findBtn.onclick = async () => {
-    try {
-      await ensureXtermLoaded();
-      openTermFind();
-    } catch {}
-  };
-
   closeBtn.onclick = () => close();
-  historyBtn.onclick = () => openHistoryPalette();
 
   function openHistoryPalette() {
     const history = window.zion?.state?.get("terminal.history") || [];
@@ -1951,6 +2470,24 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const disp4 = window.zion.events.on("terminal/commandExecuted", () => { if (!usingPty) renderFallbackOutputs(); });
 
   async function open(opts = {}) {
+    // 先显示 root，确保 DOM 准备好
+    const wasVisible = root.style.display === "block";
+    root.style.display = "block";
+
+    if (wasVisible && pty?.ws?.readyState === WebSocket.OPEN) {
+      try { fitAddon?.fit?.(); } catch {}
+      if (opts.openQuick) {
+        setTimeout(() => openQuickPalette(), 0);
+      } else if (opts.openHistory) {
+        setTimeout(() => openHistoryPalette(), 0);
+      } else {
+        setTimeout(() => {
+          try { term?.focus?.(); } catch {}
+        }, 0);
+      }
+      return;
+    }
+
     try {
       const sessions0 = window.zion?.state?.get("terminal.sessions") || [];
       const list0 = Array.isArray(sessions0) ? sessions0 : [];
@@ -1985,7 +2522,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
     try {
       await ensureXtermLoaded();
-      setUiMode("exec");
+      setUiMode(sid && api.connectPty ? "pty" : "exec");
     } catch {
       setUiMode("pre");
     }
@@ -2008,7 +2545,16 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         renderFallbackOutputs();
       }
     }
-    root.style.display = "block";
+
+    // 确保 xterm 尺寸正确计算
+    if (xtermLoaded && term && fitAddon) {
+      setTimeout(() => {
+        try {
+          fitAddon.fit();
+        } catch {}
+      }, 50);
+    }
+
     if (opts.openQuick) {
       setTimeout(() => openQuickPalette(), 0);
     } else if (opts.openHistory) {
@@ -2034,6 +2580,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     try { hideTermContextMenu(); } catch {}
     try { termFindWidget?.wrap?.remove?.(); } catch {}
     try { pty?.dispose?.(); } catch {}
+    try { root?._zteDockingDispose?.(); } catch {}
     try { root.remove(); } catch {}
   }
 

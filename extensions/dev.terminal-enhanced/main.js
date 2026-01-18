@@ -184,6 +184,34 @@ function getActiveSessionId() {
 }
 
 /**
+ * Reactivate a session (for SSH sessions that have disconnected)
+ */
+async function reactivateSession(sessionId) {
+  try {
+    const base = readBaseUrl().replace(/\/$/, "");
+    const res = await fetch(`${base}/sessions/${encodeURIComponent(sessionId)}/activate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.session) {
+      // Update the session in the state
+      const sessions = window.zion?.state?.get("terminal.sessions") || [];
+      const list = Array.isArray(sessions) ? sessions : [];
+      const idx = list.findIndex(s => s?.id === sessionId);
+      if (idx >= 0) {
+        list[idx] = data.session;
+        window.zion?.state?.set("terminal.sessions", list);
+      }
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Ensure sessions list is populated at least once
  */
 async function ensureSessions() {
@@ -303,13 +331,23 @@ export async function activate(ctx) {
   const cmdQuick = window.zion.commands.registerCommand("terminal.quickCommand", async () => {
     panel?.open?.({ openQuick: true });
   });
+  const cmdReactivate = window.zion.commands.registerCommand("terminal.reactivateSession", async (args) => {
+    const sid = typeof args === "string" ? args : args?.session_id;
+    const sessionId = String(sid || "").trim();
+    if (!sessionId) return false;
+    try {
+      return await reactivateSession(sessionId);
+    } catch {
+      return false;
+    }
+  });
   const cmdToggleCtx = window.zion.commands.registerCommand("terminal.toggleContext", () => {
     const cur = window.zion?.state?.get("chat.includeTerminalContext");
     const next = cur === false ? true : false;
     window.zion?.state?.set("chat.includeTerminalContext", next);
     return next;
   });
-  ctx.subscriptions.push(cmdOpen, cmdOpenHistory, cmdExec, cmdQuick, cmdToggleCtx);
+  ctx.subscriptions.push(cmdOpen, cmdOpenHistory, cmdExec, cmdQuick, cmdReactivate, cmdToggleCtx);
 
   // 4) Register keybindings
   try {
