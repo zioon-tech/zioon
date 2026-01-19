@@ -1,5 +1,5 @@
 /**
- * Terminal Enhanced Panel with PTY WebSocket + xterm.js (fallback to exec panel)
+ * Terminal Enhanced Panel with PTY WebSocket + xterm.js
  */
 export function installTerminalEnhancedPanel(api = { execute: async () => {}, connectPty: null }) {
   const HEIGHT_KEY = "zion.terminalEnhanced.panelHeightPx";
@@ -1016,7 +1016,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     if (!v || !v.term || !v.fitAddon) return;
     try {
       v.fitAddon.fit();
-      if (v.usingPty && v.pty) {
+      if (v.pty) {
         const cols = v.term.cols || 80;
         const rows = v.term.rows || 24;
         v.pty.resize?.(cols, rows);
@@ -1026,7 +1026,49 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
   function isActiveUsingPty() {
     const v = getActiveView();
-    return !!(v && v.usingPty);
+    return !!(xtermLoaded && v?.term);
+  }
+
+  function writeTerminalNotice(v, message) {
+    if (!v?.term) return;
+    const msg = String(message || "").trim();
+    if (!msg) return;
+    try { v.term.writeln(""); } catch {}
+    try { v.term.writeln(msg); } catch {}
+  }
+
+  async function sendCommandToSessionPty(sessionId, command) {
+    const sid = String(sessionId || "").trim();
+    const raw = String(command || "");
+    const cmd = raw.endsWith("\r") ? raw : (raw + "\r");
+    if (!sid || !cmd.trim()) return false;
+
+    let v = null;
+    try {
+      v = await ensureView(sid);
+      activateView(sid);
+      setPanelModeForActive("pty");
+    } catch {
+      v = null;
+    }
+
+    try {
+      await connectPtyForSession(sid, { background: false });
+    } catch {}
+
+    const vv = v || sessionViews.get(sid) || getActiveView();
+    if (!vv) return false;
+    const wsOpen = !!(vv.pty?.ws && vv.pty.ws.readyState === WebSocket.OPEN);
+    if (wsOpen) {
+      try { vv.pty.send(cmd); } catch {}
+      return true;
+    }
+
+    if (vv.ptyInputBuffer.length < 8192) vv.ptyInputBuffer += cmd;
+    try { showToast("PTY 连接中…", 800); } catch {}
+    writeTerminalNotice(vv, "PTY 连接中…");
+    schedulePtyReconnect(sid);
+    return false;
   }
 
   function applyThemeToTerm(t) {
@@ -1212,36 +1254,24 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       fitAddon: fa,
       searchAddon: sa,
       webLinksAddon: wa,
-      usingPty: false,
-      usingExec: false,
+      usingPty: true,
       pty: null,
       ptyConnecting: false,
       ptyInputBuffer: "",
       ptyConnectNonce: 0,
       ptyRetryTimer: 0,
       ptyRetryCount: 0,
-      termDataDisp: null,
-      execLine: "",
-      execBusy: false,
-      execEscState: 0,
-      execBooted: false
+      termDataDisp: null
     };
 
     v.termDataDisp = t.onData((data) => {
-      if (v.usingPty) {
-        const wsOpen = !!(v.pty?.ws && v.pty.ws.readyState === WebSocket.OPEN);
-        if (wsOpen) {
-          try { v.pty.send(data); } catch {}
-          return;
-        }
-        if (v.ptyConnecting) {
-          if (v.ptyInputBuffer.length < 8192) v.ptyInputBuffer += String(data || "");
-          return;
-        }
+      const wsOpen = !!(v.pty?.ws && v.pty.ws.readyState === WebSocket.OPEN);
+      if (wsOpen) {
+        try { v.pty.send(data); } catch {}
+        return;
       }
-      if (v.usingExec) {
-        handleExecInputForView(v, data);
-      }
+      if (v.ptyInputBuffer.length < 8192) v.ptyInputBuffer += String(data || "");
+      if (!v.ptyConnecting) Promise.resolve(connectPtyForSession(v.sessionId, { background: true })).catch(() => {});
     });
 
     installTerminalInteractionsForView(v);
@@ -1297,16 +1327,6 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     }, delay);
   }
 
-  function getPromptForSession(sessionId) {
-    const sid = String(sessionId || "");
-    const sessions = window.zion?.state?.get("terminal.sessions") || [];
-    const list = Array.isArray(sessions) ? sessions : [];
-    const s = list.find(x => String(x?.id || "") === sid) || null;
-    const cwd = String(s?.cwd || "");
-    const cwdShort = cwd ? cwd.split("/").filter(Boolean).slice(-2).join("/") : "";
-    return cwdShort ? `${sid}:${cwdShort}$ ` : `${sid}$ `;
-  }
-
   function getTabLabelForSession(s) {
     if (!s) return "";
 
@@ -1331,139 +1351,6 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
     // Fallback to ID
     return s.id || "";
-  }
-
-  function writeExecPromptForView(v) {
-    if (!v?.term) return;
-    v.execLine = "";
-    const prompt = getPromptForSession(v.sessionId);
-    try { v.term.write("\x1b[0m" + prompt); } catch {}
-  }
-
-  function bootstrapExecForSession(sessionId) {
-    const sid = String(sessionId || "").trim();
-    const v = sid ? (sessionViews.get(sid) || null) : null;
-    if (!v?.term) return;
-    if (v.execBooted) return;
-    v.execBooted = true;
-    try {
-      v.term.reset();
-      const text = outputsToTextForSession(sid);
-      const lines = String(text || "").replace(/\r/g, "").split("\n");
-      for (const ln of lines) v.term.writeln(ln);
-      v.term.writeln("");
-    } catch {}
-    writeExecPromptForView(v);
-  }
-
-  async function runExecCommandForView(v, command) {
-    if (!v?.term) return;
-    const cmd = String(command || "").trim();
-    if (!cmd) {
-      writeExecPromptForView(v);
-      return;
-    }
-
-    const maybeForceGitColor = (raw) => {
-      const s = String(raw || "");
-      if (!/^git\s+/i.test(s)) return s;
-      if (/\s--no-color\b/i.test(s)) return s;
-      if (/\s--color(?:=\w+)?\b/i.test(s)) return s;
-      if (/\s-c\s+color\.ui=/i.test(s)) return s;
-      if (/\s-c\s+color\.diff=/i.test(s)) return s;
-      return s.replace(/^git\b/i, "git -c color.ui=always");
-    };
-
-    const sid = String(v.sessionId || "").trim();
-    if (!sid) {
-      try { v.term.writeln("No active session"); } catch {}
-      writeExecPromptForView(v);
-      return;
-    }
-    v.execBusy = true;
-    try {
-      const finalCmd = maybeForceGitColor(cmd);
-      const rec = await api.execute?.(finalCmd, sid);
-      const out = typeof rec?.output === "string" ? rec.output : "";
-      if (out) {
-        const normalized = out.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-        for (const ln of normalized) {
-          try { v.term.writeln(ln); } catch {}
-        }
-      }
-    } catch (e) {
-      try { v.term.writeln(String(e?.message || e || "exec failed")); } catch {}
-    } finally {
-      v.execBusy = false;
-      writeExecPromptForView(v);
-    }
-  }
-
-  function handleExecInputForView(v, data) {
-    if (!v?.term) return;
-    if (v.execBusy) return;
-
-    const s = String(data || "");
-    for (let i = 0; i < s.length; i++) {
-      const ch = s[i];
-
-      if (v.execEscState !== 0) {
-        if (v.execEscState === 1) {
-          if (ch === "[" || ch === "O") {
-            v.execEscState = 2;
-            continue;
-          }
-          v.execEscState = 0;
-          continue;
-        }
-        const code = ch.charCodeAt(0);
-        if (code >= 0x40 && code <= 0x7e) {
-          v.execEscState = 0;
-        }
-        continue;
-      }
-
-      if (ch === "\r") {
-        const cmd = v.execLine;
-        v.execLine = "";
-        try { v.term.write("\r\n"); } catch {}
-        runExecCommandForView(v, cmd);
-        continue;
-      }
-
-      if (ch === "\u007f") {
-        if (v.execLine.length) {
-          v.execLine = v.execLine.slice(0, -1);
-          try { v.term.write("\b \b"); } catch {}
-        }
-        continue;
-      }
-
-      if (ch === "\u0003") {
-        v.execLine = "";
-        try { v.term.write("^C\r\n"); } catch {}
-        writeExecPromptForView(v);
-        continue;
-      }
-
-      if (ch === "\t") {
-        continue;
-      }
-
-      if (ch === "\n") {
-        continue;
-      }
-
-      if (ch === "\u001b") {
-        v.execEscState = 1;
-        continue;
-      }
-
-      if (ch >= " ") {
-        v.execLine += ch;
-        try { v.term.write(ch); } catch {}
-      }
-    }
   }
 
   function setClipboardText(text) {
@@ -1715,6 +1602,178 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       const key = String(ev.key || "").toLowerCase();
       const mod = !!(ev.ctrlKey || ev.metaKey);
 
+      // Cmd/Ctrl + ArrowLeft: Move to start of command line (like VSCode terminal)
+      if (mod && key === "arrowleft") {
+        ev.preventDefault();
+        try {
+          // Send Ctrl+A sequence (start of line)
+          v.pty?.send?.("\x01");
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + ArrowRight: Move to end of command line (like VSCode terminal)
+      if (mod && key === "arrowright") {
+        ev.preventDefault();
+        try {
+          // Send Ctrl+E sequence (end of line)
+          v.pty?.send?.("\x05");
+        } catch {}
+        return false;
+      }
+
+      // Option + ArrowLeft: Move cursor left by one word
+      if (ev.altKey && key === "arrowleft") {
+        ev.preventDefault();
+        try {
+          // Send Alt+B sequence (bash/readline word backward)
+          v.pty?.send?.("\x1bb");
+        } catch {}
+        return false;
+      }
+
+      // Option + ArrowRight: Move cursor right by one word
+      if (ev.altKey && key === "arrowright") {
+        ev.preventDefault();
+        try {
+          // Send Alt+F sequence (bash/readline word forward)
+          v.pty?.send?.("\x1bf");
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + Backspace: Delete word before cursor
+      if (mod && key === "backspace") {
+        ev.preventDefault();
+        try {
+          // Send Ctrl+W sequence (kill word backward)
+          v.pty?.send?.("\x17");
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + Delete: Delete word after cursor
+      if (mod && key === "delete") {
+        ev.preventDefault();
+        try {
+          // Send Alt+D sequence (kill word forward)
+          v.pty?.send?.("\x1bd");
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + A: Select all (xterm built-in)
+      // Already handled by xterm.js, no need to override
+
+      // Cmd/Ctrl + K: Clear from cursor to end of line
+      if (mod && key === "k") {
+        ev.preventDefault();
+        try {
+          // Send Ctrl+K sequence
+          v.pty?.send?.("\x0b");
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + U: Clear from cursor to start of line
+      if (mod && key === "u") {
+        ev.preventDefault();
+        try {
+          // Send Ctrl+U sequence
+          v.pty?.send?.("\x15");
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + L: Clear screen (keep command history)
+      if (mod && key === "l") {
+        ev.preventDefault();
+        try {
+          // Send Ctrl+L sequence (clear screen)
+          v.pty?.send?.("\x0c");
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + Y: Restore (yank) previously deleted text
+      if (mod && key === "y") {
+        ev.preventDefault();
+        try {
+          v.pty?.send?.("\x19"); // Ctrl+Y
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + T: Transpose (swap) the last two characters
+      if (mod && key === "t") {
+        ev.preventDefault();
+        try {
+          v.pty?.send?.("\x14"); // Ctrl+T
+        } catch {}
+        return false;
+      }
+
+      // Home: Move cursor to start of line
+      if (key === "home" && !mod) {
+        ev.preventDefault();
+        try {
+          v.pty?.send?.("\x01"); // Ctrl+A
+        } catch {}
+        return false;
+      }
+
+      // End: Move cursor to end of line
+      if (key === "end" && !mod) {
+        ev.preventDefault();
+        try {
+          v.pty?.send?.("\x05"); // Ctrl+E
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + H: Delete character before cursor (same as Backspace)
+      // Already handled by xterm.js
+
+      // Cmd/Ctrl + D: Delete character at cursor or exit if empty
+      // Already handled by xterm.js
+
+      // Cmd/Ctrl + P: Previous command in history (same as Up arrow)
+      if (mod && key === "p") {
+        ev.preventDefault();
+        try {
+          v.pty?.send?.("\x1b[A");
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + N: Next command in history (same as Down arrow)
+      if (mod && key === "n") {
+        ev.preventDefault();
+        try {
+          v.pty?.send?.("\x1b[B");
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + R: Reverse search in history
+      // Already handled by input area, but also useful in PTY mode
+      if (mod && key === "r") {
+        ev.preventDefault();
+        try {
+          v.pty?.send?.("\x12"); // Ctrl+R
+        } catch {}
+        return false;
+      }
+
+      // Cmd/Ctrl + Z: Suspend current process (background)
+      // Let xterm handle this natively
+
+      // Cmd/Ctrl + C: Copy or interrupt
+      if (mod && key === "c" && !v.term?.hasSelection?.()) {
+        // If no selection, let xterm handle Ctrl+C (interrupt signal)
+        return true;
+      }
+
       if (mod && key === "f") {
         ev.preventDefault();
         openTermFind();
@@ -1762,14 +1821,11 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   function setPanelModeForActive(mode) {
     const v = getActiveView();
     const xtermReady = !!(xtermLoaded && v?.term);
-    const resolvedMode = xtermReady ? String(mode || "exec") : "pre";
+    const resolvedMode = xtermReady ? String(mode || "pty") : "pre";
 
-    if (v) {
-      v.usingPty = resolvedMode === "pty";
-      v.usingExec = resolvedMode === "exec";
-    }
+    if (v) v.usingPty = resolvedMode === "pty";
 
-    const showXterm = xtermReady && (resolvedMode === "pty" || resolvedMode === "exec");
+    const showXterm = xtermReady && resolvedMode === "pty";
     termWrap.style.display = showXterm ? "block" : "none";
     fallbackPre.style.display = showXterm ? "none" : "block";
     footer.style.display = showXterm ? "none" : "flex";
@@ -1829,10 +1885,11 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
     if (isInactiveSshSession(sid)) {
       if (!background) {
+        const v = await ensureView(sid).catch(() => null);
         activeViewId = sid;
         activateView(sid);
-        setPanelModeForActive("exec");
-        bootstrapExecForSession(sid);
+        setPanelModeForActive("pty");
+        writeTerminalNotice(v, "会话已失活，请点击标签上的“激活”重连");
         try { showToast("会话已失活，请点击“激活”重连", 1800); } catch {}
       }
       return false;
@@ -1862,7 +1919,6 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       try { clearTimeout(v.ptyRetryTimer); } catch {}
       v.ptyRetryTimer = 0;
       v.usingPty = true;
-      v.usingExec = false;
       if (!background) {
         try { v.term.focus(); } catch {}
         try { fitActiveView(); } catch {}
@@ -1872,7 +1928,6 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
     if (v.ptyConnecting) {
       v.usingPty = true;
-      v.usingExec = false;
       return true;
     }
 
@@ -1882,7 +1937,6 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       v.ptyConnectNonce += 1;
       const nonce = v.ptyConnectNonce;
       v.usingPty = true;
-      v.usingExec = false;
 
       try { v.pty?.dispose?.(); } catch {}
       v.pty = null;
@@ -1899,12 +1953,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         try { localPty?.dispose?.(); } catch {}
         v.pty = null;
         v.ptyConnecting = false;
-        v.execBooted = false;
-        v.usingPty = false;
-        v.usingExec = true;
+        v.usingPty = true;
         if (!background && activeViewId === sid) {
-          setPanelModeForActive("exec");
-          bootstrapExecForSession(sid);
+          setPanelModeForActive("pty");
+          writeTerminalNotice(v, "PTY 连接断开，正在重连…");
           try { showToast("PTY 连接断开，正在重连…", 1200); } catch {}
         }
         schedulePtyReconnect(sid);
@@ -1959,12 +2011,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       try { v.pty?.dispose?.(); } catch {}
       v.pty = null;
       v.ptyConnecting = false;
-      v.execBooted = false;
-      v.usingPty = false;
-      v.usingExec = true;
+      v.usingPty = true;
       if (!background && activeViewId === sid) {
-        setPanelModeForActive("exec");
-        bootstrapExecForSession(sid);
+        setPanelModeForActive("pty");
+        writeTerminalNotice(v, "PTY 连接失败，正在重试…");
         try { showToast("PTY 连接失败，正在重试…", 1200); } catch {}
       }
       schedulePtyReconnect(sid);
@@ -2039,8 +2089,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
                 if (!ok) {
                   if (xtermLoaded) {
                     activateView(id);
-                    setPanelModeForActive("exec");
-                    bootstrapExecForSession(id);
+                    setPanelModeForActive("pty");
+                    writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
                   } else {
                     fallbackPre.textContent = currentOutputsToText();
                   }
@@ -2082,8 +2132,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         if (!ok) {
           if (xtermLoaded) {
             activateView(id);
-            setPanelModeForActive("exec");
-            bootstrapExecForSession(id);
+            setPanelModeForActive("pty");
+            writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
           } else {
             fallbackPre.textContent = currentOutputsToText();
           }
@@ -2104,7 +2154,6 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     fallbackPre.scrollTop = fallbackPre.scrollHeight;
   }
 
-  // Exec handlers
   async function runCommandFromInput() {
     const cmd = cmdInput.value.trim();
     if (!cmd) return;
@@ -2115,13 +2164,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     }
     cmdInput.disabled = true;
     try {
-      const v = getActiveView();
-      if (v?.usingPty && v?.pty) {
-        v.pty.send(cmd + "\r");
-      } else {
-        await api.execute?.(cmd, sid);
-        renderFallbackOutputs();
-      }
+      await sendCommandToSessionPty(sid, cmd);
       cmdInput.value = "";
     } finally {
       cmdInput.disabled = false;
@@ -2748,13 +2791,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
           overlay.remove();
           hideSuggest();
           cmdInput.value = "";
-          const v = getActiveView();
-          if (v?.usingPty && v?.pty) {
-            v.pty.send(cmd + "\r");
-          } else {
-            await api.execute?.(cmd, sid);
-            renderFallbackOutputs();
-          }
+          await sendCommandToSessionPty(sid, cmd);
           cmdInput.focus();
         };
         body.appendChild(row);
@@ -2805,13 +2842,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         overlay.remove();
         hideSuggest();
         cmdInput.value = "";
-        const v = getActiveView();
-        if (v?.usingPty && v?.pty) {
-          v.pty.send(cmd + "\r");
-        } else {
-          await api.execute?.(cmd, sid);
-          renderFallbackOutputs();
-        }
+        await sendCommandToSessionPty(sid, cmd);
         cmdInput.focus();
       }
     });
@@ -2835,8 +2866,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       if (!ok) {
         if (xtermLoaded) {
           activateView(currentSessionId);
-          setPanelModeForActive("exec");
-          bootstrapExecForSession(currentSessionId);
+          setPanelModeForActive("pty");
+          writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
         } else {
           renderFallbackOutputs();
         }
@@ -2906,7 +2937,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         activateView(sid);
       }
       if (sid && api.connectPty) setPanelModeForActive("pty");
-      else setPanelModeForActive("exec");
+      else setPanelModeForActive("pre");
     } catch {
       setPanelModeForActive("pre");
     }
@@ -2916,8 +2947,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       if (!ok) {
         if (xtermLoaded) {
           activateView(sid);
-          setPanelModeForActive("exec");
-          bootstrapExecForSession(sid);
+          setPanelModeForActive("pty");
+          writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
         } else {
           renderFallbackOutputs();
         }
