@@ -398,6 +398,15 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     }
   }
 
+  function getEditorAreaElement() {
+    try {
+      const el = document.querySelector("#app > div");
+      return el instanceof HTMLElement ? el : null;
+    } catch {
+      return null;
+    }
+  }
+
   function getAppElement() {
     try {
       const el = document.getElementById("app");
@@ -460,6 +469,36 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     }
   }
 
+  function setBottomDockShiftEnabled(enabled) {
+    const editorArea = getEditorAreaElement();
+    if (!editorArea) return;
+
+    if (!enabled) {
+      try {
+        if (typeof root?._ztePrevEditorAreaHeight === "string") editorArea.style.height = root._ztePrevEditorAreaHeight;
+        else editorArea.style.height = "";
+        if (typeof root?._ztePrevEditorAreaMaxHeight === "string") editorArea.style.maxHeight = root._ztePrevEditorAreaMaxHeight;
+        else editorArea.style.maxHeight = "";
+        if (typeof root?._ztePrevEditorAreaBoxSizing === "string") editorArea.style.boxSizing = root._ztePrevEditorAreaBoxSizing;
+        else editorArea.style.boxSizing = "";
+      } catch {}
+      return;
+    }
+
+    try {
+      if (typeof root?._ztePrevEditorAreaHeight !== "string") root._ztePrevEditorAreaHeight = editorArea.style.height || "";
+      if (typeof root?._ztePrevEditorAreaMaxHeight !== "string") root._ztePrevEditorAreaMaxHeight = editorArea.style.maxHeight || "";
+      if (typeof root?._ztePrevEditorAreaBoxSizing !== "string") root._ztePrevEditorAreaBoxSizing = editorArea.style.boxSizing || "";
+    } catch {}
+
+    const h = Math.round(root.getBoundingClientRect().height || 0);
+    if (!h) return;
+
+    editorArea.style.boxSizing = "border-box";
+    editorArea.style.maxHeight = "none";
+    editorArea.style.height = `calc(100% - ${h}px)`;
+  }
+
   function getDockBox() {
     const edEl = getActiveEditorElement();
     if (!edEl) return null;
@@ -478,8 +517,16 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   function applyDocking(root) {
     const mode = root?.dataset?.zteDock === "right" ? "right" : "bottom";
     const box = getDockBox();
-    const shouldShift = mode === "right" && root.style.display === "block";
-    try { setRightDockShiftEnabled(shouldShift); } catch {}
+    const shouldShift = root.style.display === "block";
+    try {
+      if (mode === "right") {
+        setRightDockShiftEnabled(shouldShift);
+        setBottomDockShiftEnabled(false);
+      } else {
+        setRightDockShiftEnabled(false);
+        setBottomDockShiftEnabled(shouldShift);
+      }
+    } catch {}
     if (!box) {
       if (mode === "right") {
         root.style.left = "";
@@ -504,9 +551,16 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       root.style.top = `${topPx}px`;
       root.style.bottom = `${bottomGapPx}px`;
     } else {
-      const rightGapPx = Math.max(0, Math.round(window.innerWidth - box.right));
-      root.style.left = `${leftPx}px`;
-      root.style.right = `${rightGapPx}px`;
+      // Check for sessions sidebar and adjust left position to avoid being covered
+      const sidebar = document.getElementById("zion-sessions-sidebar");
+      let sidebarWidth = 0;
+      if (sidebar && sidebar.style.display !== "none") {
+        try {
+          sidebarWidth = parseInt(sidebar.style.width || "0", 10) || 0;
+        } catch {}
+      }
+      root.style.left = `${sidebarWidth}px`;
+      root.style.right = "0";
       root.style.top = "";
       root.style.bottom = "0";
     }
@@ -518,7 +572,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
     let raf = 0;
     let ro = null;
+    let roEditorArea = null;
     let observedEl = null;
+    let observedEditorArea = null;
     const onRaf = () => {
       raf = 0;
       try {
@@ -563,6 +619,16 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       observedEl = null;
     }
 
+    try {
+      const RO = globalThis?.ResizeObserver;
+      if (typeof RO === "function") roEditorArea = new RO(schedule);
+      observedEditorArea = getEditorAreaElement();
+      if (observedEditorArea) roEditorArea.observe(observedEditorArea);
+    } catch {
+      roEditorArea = null;
+      observedEditorArea = null;
+    }
+
     let dispWm = null;
     try {
       dispWm = window?.zion?.state?.onDidChange?.("ui.editorWidthMode", schedule);
@@ -581,6 +647,12 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         if (ro) {
           try { if (observedEl) ro.unobserve(observedEl); } catch {}
           ro.disconnect();
+        }
+      } catch {}
+      try {
+        if (roEditorArea) {
+          try { if (observedEditorArea) roEditorArea.unobserve(observedEditorArea); } catch {}
+          roEditorArea.disconnect();
         }
       } catch {}
       try { dispWm?.dispose?.(); } catch {}
@@ -769,7 +841,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     fontSize: "12px",
     whiteSpace: "pre-wrap",
     wordBreak: "break-word",
-    minHeight: "280px",
+    minHeight: "180px",
     maxHeight: "100%",
     overflow: "auto",
     display: "block"
@@ -2980,6 +3052,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   function close() {
     root.style.display = "none";
     try { setRightDockShiftEnabled(false); } catch {}
+    try { setBottomDockShiftEnabled(false); } catch {}
     hideSuggest();
     try { window.zion?.window?.activeEditor?.focus?.(); } catch {}
     try { setTimeout(() => window.zion?.window?.activeEditor?.focus?.(), 0); } catch {}
@@ -2996,6 +3069,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     try { termFindWidget?.wrap?.remove?.(); } catch {}
     try { root?._zteDockingDispose?.(); } catch {}
     try { setRightDockShiftEnabled(false); } catch {}
+    try { setBottomDockShiftEnabled(false); } catch {}
     try { root.remove(); } catch {}
   }
 
