@@ -765,6 +765,104 @@ function attachLifecyclePersistence(ctx) {
   }
 }
 
+function attachAnnotationsAutoPersistence(ctx) {
+  let curId = null;
+  let dispAnn = null;
+  let dispCur = null;
+  let timer = null;
+  let lastJson = "";
+
+  const clearTimer = () => {
+    if (timer) {
+      try { clearTimeout(timer); } catch {}
+      timer = null;
+    }
+  };
+
+  const persist = async (id) => {
+    try {
+      const ann = getAnnotationsState(id);
+      if (!ann) return;
+      let json = "";
+      try { json = JSON.stringify(ann); } catch { json = ""; }
+      if (json && json === lastJson) return;
+      if (json) lastJson = json;
+
+      let meta = null;
+      try {
+        const mem = window.zion?.state?.get(`sessions.meta.${id}`);
+        if (mem && typeof mem === "object") meta = mem;
+      } catch {}
+
+      if (!meta || typeof meta !== "object") {
+        try {
+          const rec = await idbGet("metas", id);
+          if (rec && rec.meta && typeof rec.meta === "object") meta = rec.meta;
+        } catch {}
+      }
+
+      if (!meta || typeof meta !== "object") {
+        meta = { id, title: `Session ${id}`, createdAt: now(), updatedAt: now(), size: 0, hash: "", titleAuto: true };
+      } else {
+        meta = { ...meta };
+      }
+
+      meta.annotations = ann;
+      meta.updatedAt = now();
+      saveMeta(id, meta);
+    } catch (e) {
+      try { console.warn("[sessions] auto persist annotations error:", e); } catch {}
+    }
+  };
+
+  const schedule = (id) => {
+    if (!id) return;
+    clearTimer();
+    timer = setTimeout(() => {
+      timer = null;
+      persist(id);
+    }, 800);
+  };
+
+  const setWatch = (id) => {
+    if (id === curId) return;
+    curId = id || null;
+    lastJson = "";
+    try { dispAnn?.dispose?.(); } catch {}
+    dispAnn = null;
+    if (!curId) return;
+    try {
+      dispAnn = window.zion.state.onDidChange(`sessions.annotations.${curId}`, () => schedule(curId));
+    } catch {
+      dispAnn = null;
+    }
+    schedule(curId);
+  };
+
+  try {
+    const initial = window.zion?.state?.get("sessions.currentId");
+    setWatch(typeof initial === "string" ? initial : null);
+  } catch {}
+
+  try {
+    dispCur = window.zion.state.onDidChange("sessions.currentId", (nv, ov) => {
+      const prev = typeof ov === "string" ? ov : null;
+      if (prev) schedule(prev);
+      setWatch(typeof nv === "string" ? nv : null);
+    });
+  } catch {
+    dispCur = null;
+  }
+
+  ctx.subscriptions.push({
+    dispose() {
+      clearTimer();
+      try { dispAnn?.dispose?.(); } catch {}
+      try { dispCur?.dispose?.(); } catch {}
+    }
+  });
+}
+
 /** Compute assistant block end position in a plain text document. If hintPos provided, use nearest assistant block. */
 function findAssistantBlockEndInText(text, hintPos) {
   const src = String(text || "").replace(/\r/g, "");
@@ -2720,6 +2818,7 @@ export async function activate(ctx) {
   try { mountSessionsSidebar(); } catch {}
   // 注册页面生命周期持久化（刷新/隐藏前保存当前会话注解）
   attachLifecyclePersistence(ctx);
+  attachAnnotationsAutoPersistence(ctx);
 
   // 在所有扩展加载完成后，重新应用当前会话的注解（确保相关插件已注册）
   try {

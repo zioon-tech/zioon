@@ -171,6 +171,72 @@ export async function activate(ctx) {
     }
   }
 
+  function inferToolOk(toolName, result) {
+    const tn = String(toolName || "").toLowerCase();
+    const isEdit = tn === "edit" || tn === "fsedit";
+    const isWrite = tn === "write" || tn === "fswrite";
+
+    let obj = null;
+    if (result != null && typeof result === "object") obj = result;
+    if (!obj) {
+      try {
+        const parsed = JSON.parse(String(result ?? ""));
+        if (parsed && typeof parsed === "object") obj = parsed;
+      } catch {}
+    }
+
+    if (isEdit && obj && typeof obj.replaced === "number") return obj.replaced > 0;
+    if (isWrite && obj && typeof obj.ok === "boolean") return obj.ok;
+    if (isWrite && obj && typeof obj.success === "boolean") return obj.success;
+
+    if (result == null) return null;
+    if (typeof result === "object") {
+      if (typeof result.ok === "boolean") return result.ok;
+      if (typeof result.success === "boolean") return result.success;
+      try {
+        const s = JSON.stringify(result);
+        result = s;
+      } catch {
+        return true;
+      }
+    }
+    const text = String(result ?? "");
+    const head = text.slice(0, 240).toLowerCase().trim();
+
+    try {
+      const obj = JSON.parse(text);
+      if (obj && typeof obj === "object") {
+        if (typeof obj.ok === "boolean") return obj.ok;
+        if (typeof obj.success === "boolean") return obj.success;
+      }
+    } catch {}
+
+    if (!head) return true;
+    if (head.startsWith("http ")) return false;
+    if (head.startsWith("tool \"") && head.includes(" failed:")) return false;
+    if (head.startsWith("tool \"") && head.includes(" error:")) return false;
+    if (head.startsWith("read error:")) return false;
+    if (head.startsWith("write error:")) return false;
+    if (head.startsWith("edit error:")) return false;
+    if (head.startsWith("edit failed:")) return false;
+    if (head.startsWith("write failed:")) return false;
+    if (head.startsWith("write blocked:")) return false;
+    if (head.startsWith("webfetch error:")) return false;
+    if (head.startsWith("websearch error:")) return false;
+    if (head.startsWith("localsearch error:")) return false;
+    if (head.startsWith("glob error:")) return false;
+    if (head.startsWith("grep error:")) return false;
+    if (head.startsWith("tree error:")) return false;
+    if (head.startsWith("unknown tool:")) return false;
+    if (head.startsWith("invalid args")) return false;
+    if (head.startsWith("missing ")) return false;
+    if (head.includes("permission denied")) return false;
+    if (head.includes("blocked")) return false;
+    if (head.includes("aborted")) return false;
+
+    return true;
+  }
+
   // 通用运行逻辑（含 Tool Calls 链式继续）
   const doRun = async (opts = {}) => {
     const ed = getEd();
@@ -446,13 +512,14 @@ export async function activate(ctx) {
               if (aborted || getRunState(sid)?.aborted) return;
               const content = String(res || "");
               results.push({ id: tc.id, content });
-              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: res, sessionId: sid });
+              const ok = inferToolOk(tc.name, res);
+              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: res, ok, sessionId: sid });
             })
             .catch(err => {
               if (aborted || getRunState(sid)?.aborted) return;
               const msg = `Tool "${tc.name}" failed: ${err?.message || String(err)}`;
               results.push({ id: tc.id, content: msg });
-              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: msg, sessionId: sid });
+              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: msg, ok: false, sessionId: sid });
             });
           promises.push(p);
         },

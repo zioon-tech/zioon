@@ -342,7 +342,7 @@ class Registry {
     el.style.top = `${ny}px`;
   }
 
-  private buildContextMenuPanel(items: MenuItem[], closeMenu: () => void): HTMLDivElement {
+  private buildContextMenuPanel(items: MenuItem[], closeMenu: () => void, menuId: string = "editor/context"): HTMLDivElement {
     const menu = document.createElement("div");
     menu.className = "zion-context-menu";
     menu.setAttribute("role", "menu");
@@ -350,10 +350,12 @@ class Registry {
 
     let activeCloser: (() => void) | null = null;
 
+    items = this.sortMenuItems(items, menuId);
+
     const isPinnedItem = (item: MenuItem) => {
       const cmd = item.command || "";
       if (!cmd) return false;
-      const menuKey = `editor/context:${cmd}`;
+      const menuKey = `${menuId}:${cmd}`;
       const stats = this.menuUsageStats[menuKey];
       if (typeof stats?.pinned === "boolean") return stats.pinned;
       return !!item.pinned || this.DEFAULT_PINNED_COMMANDS.includes(cmd);
@@ -393,7 +395,7 @@ class Registry {
       if (hasKids) {
         btn.setAttribute("aria-haspopup", "menu");
         btn.setAttribute("aria-expanded", "false");
-        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu);
+        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu, menuId);
         submenu.classList.add("zion-context-submenu");
         submenu.style.position = "fixed";
         submenu.style.display = "none";

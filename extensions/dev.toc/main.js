@@ -748,14 +748,23 @@ export async function activate(ctx) {
 
             const label = document.createElement("span");
             label.className = "toc-label";
-            label.textContent = `${b.role}: ${(b.preview || '').trim() || '(empty)'}`;
+            // Use color dot to mark role (方案4) - more subtle
+            const roleColors = { user: '#4caf50', assistant: '#2196f3', system: '#9e9e9e' };
+            const dotColor = roleColors[b.role?.toLowerCase()] || roleColors.user;
+            label.innerHTML = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dotColor};margin-right:6px;flex-shrink:0;opacity:0.6;"></span>${(b.preview || '').trim() || '(empty)'}`;
             label.style.fontSize = "12px";
             label.style.whiteSpace = "nowrap";
             label.style.textOverflow = "ellipsis";
             label.style.overflow = "hidden";
             label.style.marginLeft = "0";
+            label.style.display = "flex";
+            label.style.alignItems = "center";
+            // Add tooltip to show role name on hover
+            label.title = `${b.role || 'unknown'}: ${(b.preview || '').trim() || '(empty)'}`;
+            // Show tooltip only on hover, prevent it from showing on screen readers (optional)
+            // label.setAttribute('aria-label', `${b.role} role block`);
 
-            row.style.fontWeight = "600";
+
 
             try {
               const activeBlockId = window?.zion?.state?.get?.('toc.activeBlockId');

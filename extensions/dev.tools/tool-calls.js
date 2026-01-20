@@ -11,9 +11,110 @@ import { StateField, StateEffect } from "@codemirror/state";
  */
 const addInline = StateEffect.define();   // { from, to, id, name, args }
 const toggleInline = StateEffect.define(); // { id }
-const updateResult = StateEffect.define(); // { id, result }
+const updateResult = StateEffect.define(); // { id, result, ok? }
 const removeTool = StateEffect.define();   // { id }
 const clearAll = StateEffect.define();
+
+function inferToolOkFromResult(toolName, result, ok) {
+  const tn = String(toolName || "").toLowerCase();
+  const isEdit = tn === "edit" || tn === "fsedit";
+  const isWrite = tn === "write" || tn === "fswrite";
+  const isRead = tn === "read" || tn === "fsread";
+
+  let obj = null;
+  if (result != null && typeof result === "object") obj = result;
+
+  if (!obj) {
+    try {
+      const parsed = JSON.parse(String(result ?? ""));
+      if (parsed && typeof parsed === "object") obj = parsed;
+    } catch {}
+  }
+
+  if (isEdit) {
+    if (obj && typeof obj.replaced === "number") return obj.replaced > 0;
+    const head = String(result ?? "").slice(0, 240).toLowerCase().trim();
+    if (head.startsWith("edit ok:")) return true;
+    if (head.startsWith("edit failed:")) return false;
+    if (head.startsWith("edit blocked:")) return false;
+  }
+
+  if (isWrite) {
+    if (obj && typeof obj.ok === "boolean") return obj.ok;
+    if (obj && typeof obj.success === "boolean") return obj.success;
+    const head = String(result ?? "").slice(0, 240).toLowerCase().trim();
+    if (head.startsWith("write blocked:")) return false;
+    if (head.startsWith("write failed:")) return false;
+    if (head.startsWith("write error:")) return false;
+  }
+
+  if (isRead) {
+    const head = String(result ?? "").slice(0, 240).toLowerCase().trim();
+    if (head.startsWith("read error:")) return false;
+    if (head.startsWith("permission denied")) return false;
+  }
+
+  if (typeof ok === "boolean") return ok;
+  if (ok === null) return null;
+  if (result == null) return null;
+  if (obj && typeof obj.ok === "boolean") return obj.ok;
+  if (obj && typeof obj.success === "boolean") return obj.success;
+
+  const head = String(result ?? "").slice(0, 240).toLowerCase().trim();
+
+  if (!head) return true;
+  if (head.startsWith("http ")) return false;
+  if (head.startsWith("tool \"") && head.includes(" failed:")) return false;
+  if (head.startsWith("tool \"") && head.includes(" error:")) return false;
+  if (head.startsWith("read error:")) return false;
+  if (head.startsWith("write error:")) return false;
+  if (head.startsWith("edit error:")) return false;
+  if (head.startsWith("edit failed:")) return false;
+  if (head.startsWith("write failed:")) return false;
+  if (head.startsWith("write blocked:")) return false;
+  if (head.startsWith("webfetch error:")) return false;
+  if (head.startsWith("websearch error:")) return false;
+  if (head.startsWith("localsearch error:")) return false;
+  if (head.startsWith("glob error:")) return false;
+  if (head.startsWith("grep error:")) return false;
+  if (head.startsWith("tree error:")) return false;
+  if (head.startsWith("unknown tool:")) return false;
+  if (head.startsWith("invalid args")) return false;
+  if (head.startsWith("missing ")) return false;
+  if (head.includes("permission denied")) return false;
+  if (head.includes("blocked")) return false;
+  if (head.includes("aborted")) return false;
+
+  return true;
+}
+
+function toolStatusLabel(ok, done) {
+  if (!done) return "执行中";
+  if (ok === false) return "失败";
+  if (ok === true) return "成功";
+  return "完成";
+}
+
+function toolStatusAttr(ok, done) {
+  if (!done) return "pending";
+  if (ok === false) return "error";
+  if (ok === true) return "ok";
+  return "unknown";
+}
+
+function toolStatusIcon(status) {
+  const s = String(status || "");
+  if (s === "ok") {
+    return `<svg class="zion-tool-call-status-icon" width="8" height="8" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 8.2l2.7 2.7L12.4 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  if (s === "error") {
+    return `<svg class="zion-tool-call-status-icon" width="8" height="8" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+  }
+  if (s === "pending") {
+    return `<svg class="zion-tool-call-status-icon zion-tool-call-status-icon--pending" width="8" height="8" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="18 10"/></svg>`;
+  }
+  return `<svg class="zion-tool-call-status-icon" width="8" height="8" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="1.6" fill="currentColor"/></svg>`;
+}
 
 function fmt(v, max = 8000) {
   let s = typeof v === "string" ? v : JSON.stringify(v, null, 2);
@@ -135,16 +236,8 @@ function summarizeToolArgs(name, args) {
       }
       case "edit": {
         const fp = String(a?.path || a?.file_path || "").trim();
-        const os = String(a?.old_string ?? "");
-        const ns = String(a?.new_string ?? "");
-        const ra = !!a?.replace_all;
-        if (!fp && !os && !ns) return "";
-        let base = fp ? `${clip(fp, 120)}` : "";
-        if (os && ns) {
-          const rep = ` replace "${clip(os, 24)}" → "${clip(ns, 24)}"${ra ? " (all)" : ""}`;
-          base = base ? `${base};${rep}` : rep;
-        }
-        return base;
+        if (!fp) return "";
+        return clip(fp, 120);
       }
       case "tree": {
         const dir = String(a?.path || "").trim();
@@ -188,15 +281,16 @@ function summarizeToolArgs(name, args) {
 }
 
 class ToolCallCardWidget extends WidgetType {
-  constructor(id, name, args, result) {
+  constructor(id, name, args, result, ok) {
     super();
     this.id = id + ":card";
     this.name = name;
     this.args = args;
     this.result = result;
+    this.ok = ok;
   }
   eq(other) {
-    return other.id === this.id && other.name === this.name && other.result === this.result && JSON.stringify(other.args) === JSON.stringify(this.args);
+    return other.id === this.id && other.name === this.name && other.result === this.result && other.ok === this.ok && JSON.stringify(other.args) === JSON.stringify(this.args);
   }
   toDOM() {
     const wrap = document.createElement("div");
@@ -209,6 +303,17 @@ class ToolCallCardWidget extends WidgetType {
     Object.assign(title.style, { fontSize: "11px", fontWeight: "600" });
 
     header.appendChild(title);
+
+    const ok = inferToolOkFromResult(this.name, this.result, this.ok);
+    const badge = document.createElement("span");
+    badge.className = "zion-tool-call-status";
+    const status = toolStatusAttr(ok, this.result != null);
+    const label = toolStatusLabel(ok, this.result != null);
+    badge.setAttribute("data-status", status);
+    badge.innerHTML = toolStatusIcon(status);
+    badge.title = label;
+    badge.setAttribute("aria-label", `工具调用状态：${label}`);
+    header.appendChild(badge);
 
     if (this.name === "edit" && this.args) {
       const actionButtons = document.createElement("div");
@@ -373,14 +478,16 @@ class ToolCallCardWidget extends WidgetType {
  * handled by the existing domEventHandlers to dispatch toggleInline.
  */
 class ToolInlineWidget extends WidgetType {
-  constructor(id, name, args) {
+  constructor(id, name, args, ok, done) {
     super();
     this.id = id + ":inline";
     this.name = name;
     this.args = args;
+    this.ok = ok;
+    this.done = !!done;
   }
   eq(other) {
-    return other.id === this.id && other.name === this.name && JSON.stringify(other.args) === JSON.stringify(this.args);
+    return other.id === this.id && other.name === this.name && other.ok === this.ok && other.done === this.done && JSON.stringify(other.args) === JSON.stringify(this.args);
   }
   toDOM() {
     const span = document.createElement("span");
@@ -424,6 +531,16 @@ class ToolInlineWidget extends WidgetType {
 
     span.appendChild(info);
 
+    const badge = document.createElement("span");
+    badge.className = "zion-tool-call-status";
+    const status = toolStatusAttr(this.ok, this.done);
+    const label = toolStatusLabel(this.ok, this.done);
+    badge.setAttribute("data-status", status);
+    badge.innerHTML = toolStatusIcon(status);
+    badge.title = label;
+    badge.setAttribute("aria-label", `工具调用状态：${label}`);
+    span.appendChild(badge);
+
     return span;
   }
   ignoreEvent() { return false; }
@@ -457,10 +574,10 @@ const toolInlineField = StateField.define({
       if (e.is(addInline)) {
         const { from, to, id, name, args } = e.value;
         // replace 原始文本为 inline widget（不可编辑、可定制样式）
-        const widget = new ToolInlineWidget(id, name, args);
+        const widget = new ToolInlineWidget(id, name, args, null, false);
         const repl = Decoration.replace({ widget }).range(from, to);
         deco = deco.update({ add: [repl] });
-        items.set(id, { from, to, name, args, result: null, expanded: false });
+        items.set(id, { from, to, name, args, result: null, ok: null, expanded: false });
       }
       if (e.is(toggleInline)) {
         const id = e.value?.id;
@@ -474,24 +591,32 @@ const toolInlineField = StateField.define({
           items.set(id, { ...it, expanded: false });
         } else {
           // 展开：插入卡片（块级，行内末尾）
-          const widget = new ToolCallCardWidget(id, it.name, it.args, it.result);
+          const widget = new ToolCallCardWidget(id, it.name, it.args, it.result, it.ok);
           deco = deco.update({ add: [Decoration.widget({ widget, block: true }).range(it.to)] });
           items.set(id, { ...it, expanded: true });
         }
       }
       if (e.is(updateResult)) {
-        const { id, result } = e.value || {};
+        const { id, result, ok } = e.value || {};
         const it = id ? items.get(id) : null;
         if (!it) continue;
-        // 更新记录
-        const updated = { ...it, result };
+        const inferredOk = inferToolOkFromResult(it.name, result, ok);
+        const updated = { ...it, result, ok: inferredOk };
         items.set(id, updated);
+
+        deco = deco.update({
+          filter: (_f, _t, value) => value?.spec?.widget?.id !== (id + ":inline")
+        });
+        const inlineWidget = new ToolInlineWidget(id, updated.name, updated.args, updated.ok, true);
+        const repl = Decoration.replace({ widget: inlineWidget }).range(updated.from, updated.to);
+        deco = deco.update({ add: [repl] });
+
         // 若已展开，刷新卡片 widget
         if (updated.expanded) {
           deco = deco.update({
             filter: (_f, _t, value) => value?.spec?.widget?.id !== (id + ":card")
           });
-          const widget = new ToolCallCardWidget(id, updated.name, updated.args, updated.result);
+          const widget = new ToolCallCardWidget(id, updated.name, updated.args, updated.result, updated.ok);
           deco = deco.update({ add: [Decoration.widget({ widget, block: true }).range(updated.to)] });
         }
       }
@@ -701,6 +826,7 @@ export function installToolCallCards() {
             name: it.name,
             args: it.args,
             result: it.result,
+            ok: it.ok,
             expanded: it.expanded,
             from: it.from,
             to: it.to
@@ -771,7 +897,8 @@ export function installToolCallCards() {
       const id = payload?.toolCallId || payload?.id;
       if (!id) return;
       const result = payload?.result;
-      this.view.dispatch({ effects: [updateResult.of({ id, result })] });
+      const ok = payload?.ok;
+      this.view.dispatch({ effects: [updateResult.of({ id, result, ok })] });
     };
     onRemove = (payload) => {
       const id = payload?.id || payload;
@@ -940,7 +1067,7 @@ export function installToolCallCards() {
 
         if (validRange) {
           batchedEffects.push(addInline.of({ from: it.from, to: it.to, id: it.id, name, args: it.args }));
-          if (it?.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result }));
+          if (it?.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
           if (it.expanded) batchedToggles.push(it.id);
         } else {
           // 回退：在当前 assistant 区块末尾插入“调用 name”并重建装饰
@@ -957,7 +1084,7 @@ export function installToolCallCards() {
             effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args })]
           });
           if (it?.result != null) {
-            this.view.dispatch({ effects: [updateResult.of({ id: it.id, result: it.result })] });
+            this.view.dispatch({ effects: [updateResult.of({ id: it.id, result: it.result, ok: it.ok })] });
           }
           if (it.expanded) {
             this.view.dispatch({ effects: [toggleInline.of({ id: it.id })] });
