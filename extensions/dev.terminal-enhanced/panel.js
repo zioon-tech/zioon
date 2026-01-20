@@ -164,15 +164,27 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   display: flex;
   align-items: center;
   gap: 4px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  position: relative;
+}
+
+/* 标签页滚动容器 */
+.zte-tabs-scroll {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   overflow-x: auto;
+  overflow-y: hidden;
   flex: 1;
   min-width: 0;
   /* 隐藏滚动条但保持滚动功能 */
   scrollbar-width: none; /* Firefox */
   -ms-overflow-style: none; /* IE/Edge */
-  padding: 5px 0;
 }
-.zte-tabs::-webkit-scrollbar {
+.zte-tabs-scroll::-webkit-scrollbar {
   display: none; /* Chrome/Safari/Edge */
 }
 
@@ -261,6 +273,150 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 .zte-tab-activate[disabled] {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* 标签页导航按钮 */
+.zte-tabs-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-left: 4px;
+  padding: 0 4px;
+  background: transparent;
+  border-radius: 4px;
+}
+
+.zte-tab-nav-btn {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 3px;
+  opacity: 0.55;
+  transition: all 80ms ease;
+  padding: 0;
+}
+
+.zte-tab-nav-btn:hover {
+  opacity: 1;
+  background: var(--border);
+}
+
+.zte-tab-nav-btn:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
+}
+
+.zte-tab-nav-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* 标签页下拉菜单 */
+.zte-tabs-dropdown {
+  position: relative;
+}
+
+.zte-tabs-menu {
+  position: fixed;
+  min-width: 240px;
+  max-width: 320px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  padding: 4px;
+  z-index: 2000;
+  display: none;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+
+.zte-tabs-menu.show {
+  display: block;
+}
+
+.zte-tabs-menu::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.zte-tabs-menu::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+.zte-tabs-menu::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+}
+
+.zte-tabs-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zte-tabs-menu-item:hover {
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+
+.zte-tabs-menu-item.is-active {
+  background: color-mix(in srgb, var(--border) 50%, transparent);
+  font-weight: 500;
+}
+
+.zte-tabs-menu-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zte-tabs-menu-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.zte-tabs-menu-item-close {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 3px;
+  opacity: 0.5;
+  transition: all 80ms ease;
+}
+
+.zte-tabs-menu-item-close:hover {
+  opacity: 1;
+  background: rgba(255, 100, 100, 0.2);
+  color: #ff6b6b;
 }
 
 .zte-actions {
@@ -774,6 +930,11 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   tabs.className = "zte-tabs";
   topbar.appendChild(tabs);
 
+  // 创建标签页滚动容器
+  const tabsScroll = document.createElement("div");
+  tabsScroll.className = "zte-tabs-scroll";
+  tabs.appendChild(tabsScroll);
+
   const actions = document.createElement("div");
   actions.className = "zte-actions";
 
@@ -783,8 +944,50 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     trash: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1M6 7v6M10 7v6"/></svg>`,
     dockBottom: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 2.5h11v11h-11z"/><path d="M2.5 10.5h11"/></svg>`,
     dockRight: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 2.5h11v11h-11z"/><path d="M10.5 2.5v11"/></svg>`,
-    x: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>`
+    x: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>`,
+    chevronLeft: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 3L5 8l5 5"/></svg>`,
+    chevronRight: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3l5 5-5 5"/></svg>`,
+    chevronDown: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg>`
   };
+
+  // 创建标签页导航按钮（左/右滚动）
+  const tabsNav = document.createElement("div");
+  tabsNav.className = "zte-tabs-nav";
+
+  const tabNavLeft = document.createElement("button");
+  tabNavLeft.type = "button";
+  tabNavLeft.className = "zte-tab-nav-btn";
+  tabNavLeft.innerHTML = ICONS.chevronLeft;
+  tabNavLeft.title = "Scroll tabs left";
+  tabNavLeft.disabled = true;
+  tabsNav.appendChild(tabNavLeft);
+
+  const tabNavRight = document.createElement("button");
+  tabNavRight.type = "button";
+  tabNavRight.className = "zte-tab-nav-btn";
+  tabNavRight.innerHTML = ICONS.chevronRight;
+  tabNavRight.title = "Scroll tabs right";
+  tabNavRight.disabled = true;
+  tabsNav.appendChild(tabNavRight);
+
+  // 创建标签页下拉菜单容器
+  const tabsDropdown = document.createElement("div");
+  tabsDropdown.className = "zte-tabs-dropdown";
+
+  const tabDropdownBtn = document.createElement("button");
+  tabDropdownBtn.type = "button";
+  tabDropdownBtn.className = "zte-tab-nav-btn";
+  tabDropdownBtn.innerHTML = ICONS.chevronDown;
+  tabDropdownBtn.title = "Show all sessions";
+  tabsDropdown.appendChild(tabDropdownBtn);
+
+  const tabsMenu = document.createElement("div");
+  tabsMenu.className = "zte-tabs-menu";
+  // 将下拉菜单添加到 body 而不是 dropdown 内部，以避免被 terminal 遮挡
+  document.body.appendChild(tabsMenu);
+
+  tabsNav.appendChild(tabsDropdown);
+  tabs.appendChild(tabsNav);
 
   const newBtn = document.createElement("button");
   newBtn.type = "button";
@@ -1072,6 +1275,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const MAX_PTY_RETRY = 3;
   let findState = { caseSensitive: false, regex: false, wholeWord: false };
   let termWrapResizeObserver = null;
+  const reactivateInFlight = new Map();
+  let refreshSessionsInFlight = null;
+  let refreshSessionsInFlightAt = 0;
+  const ptyNoticeAt = new Map();
   const onWindowResize = () => {
     if (root.style.display === "none") return;
     fitActiveView();
@@ -1083,16 +1290,142 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     return sessionViews.get(sid) || null;
   }
 
+  async function refreshSessionsOnce() {
+    const now = Date.now();
+    if (refreshSessionsInFlight && now - refreshSessionsInFlightAt < 1500) return refreshSessionsInFlight;
+    refreshSessionsInFlightAt = now;
+    refreshSessionsInFlight = Promise.resolve(window.zion?.commands?.executeCommand?.("terminal.refreshSessions")).catch(() => null).finally(() => {
+      refreshSessionsInFlight = null;
+    });
+    return refreshSessionsInFlight;
+  }
+
+  async function reactivateSessionOnce(sessionId) {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return false;
+    const existing = reactivateInFlight.get(sid);
+    if (existing) return existing;
+    const p = Promise.resolve(window.zion?.commands?.executeCommand?.("terminal.reactivateSession", { session_id: sid }))
+      .then((v) => !!v)
+      .catch(() => false)
+      .finally(() => {
+        reactivateInFlight.delete(sid);
+      });
+    reactivateInFlight.set(sid, p);
+    return p;
+  }
+
+  async function connectSelectedSession(sessionId) {
+    const id = String(sessionId || "").trim();
+    if (!id) return;
+    if (currentSessionId !== id) return;
+    if (root.style.display === "none") return;
+
+    try {
+      const s2 = getSessionById(id);
+      const isSsh2 = (s2?.type || "local") === "ssh";
+      const isInactive2 = isSsh2 && s2?.active === false;
+
+      if (isSsh2 && isInactive2) {
+        const result = await reactivateSessionOnce(id);
+        if (currentSessionId !== id) return;
+        if (result) {
+          await refreshSessionsOnce();
+          renderTabs();
+        } else {
+          try { showToast("会话已失活，可点击“激活”重连"); } catch {}
+          return;
+        }
+      }
+
+      if (currentSessionId !== id) return;
+      const ok = await connectPtyForSession(id);
+      if (!ok && currentSessionId === id) {
+        if (xtermLoaded) {
+          activateView(id);
+          setPanelModeForActive("pty");
+          writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
+        } else {
+          fallbackPre.textContent = currentOutputsToText();
+        }
+      }
+    } catch (e) {
+      try { console.warn("[terminal] Session connect error:", e); } catch {}
+    }
+  }
+
+  function scheduleConnectSelectedSession(sessionId) {
+    const id = String(sessionId || "").trim();
+    if (!id) return;
+    setTimeout(() => {
+      connectSelectedSession(id);
+    }, 0);
+  }
+
+  function switchToSession(sid) {
+    const id = String(sid || "").trim();
+    if (!id) return;
+    currentSessionId = id;
+    try { window.zion?.state?.set("terminal.activeSessionId", id); } catch {}
+    activeViewId = id;
+    renderTabs();
+
+    const existing = sessionViews.get(id);
+    if (existing) {
+      activateView(id);
+      setPanelModeForActive("pty");
+      setTimeout(() => {
+        if (currentSessionId !== id) return;
+        try { getActiveView()?.term?.focus?.(); } catch {}
+      }, 0);
+      return;
+    }
+
+    setPanelModeForActive("pre");
+    renderFallbackOutputs();
+    setTimeout(() => {
+      if (currentSessionId !== id) return;
+      try { cmdInput?.focus?.(); } catch {}
+    }, 0);
+    Promise.resolve(ensureView(id))
+      .then(() => {
+        if (currentSessionId !== id) return;
+        activeViewId = id;
+        activateView(id);
+        setPanelModeForActive("pty");
+        setTimeout(() => {
+          if (currentSessionId !== id) return;
+          try { getActiveView()?.term?.focus?.(); } catch {}
+        }, 0);
+      })
+      .catch(() => {
+        if (currentSessionId !== id) return;
+        setPanelModeForActive("pre");
+        renderFallbackOutputs();
+        setTimeout(() => {
+          if (currentSessionId !== id) return;
+          try { cmdInput?.focus?.(); } catch {}
+        }, 0);
+      });
+  }
+
   function fitActiveView() {
     const v = getActiveView();
     if (!v || !v.term || !v.fitAddon) return;
     try {
-      v.fitAddon.fit();
-      if (v.pty) {
-        const cols = v.term.cols || 80;
-        const rows = v.term.rows || 24;
-        v.pty.resize?.(cols, rows);
-      }
+      // 使用 setTimeout 避免 xterm.js 的 fit 操作阻塞主线程
+      setTimeout(() => {
+        try {
+          v.fitAddon.fit();
+          if (v.pty) {
+            const cols = v.term.cols || 80;
+            const rows = v.term.rows || 24;
+            v.pty.resize?.(cols, rows);
+          }
+        } catch (e) {
+          console.warn('[terminal] fitActiveView error:', e);
+        }
+      }, 0);
     } catch {}
   }
 
@@ -1136,11 +1469,29 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       return true;
     }
 
-    if (vv.ptyInputBuffer.length < 8192) vv.ptyInputBuffer += cmd;
-    try { showToast("PTY 连接中…", 800); } catch {}
-    writeTerminalNotice(vv, "PTY 连接中…");
-    schedulePtyReconnect(sid);
-    return false;
+    try {
+      const execRet = await api.execute?.(raw, sid);
+      const out = typeof execRet === "string" ? execRet : (execRet && typeof execRet === "object" ? (execRet.output ?? execRet.stdout ?? execRet.stderr ?? "") : "");
+      const outText = String(out ?? "");
+
+      if (xtermLoaded && vv?.term) {
+        try { vv.term.writeln(""); } catch {}
+        try { vv.term.writeln(`$ ${raw}`); } catch {}
+        for (const line of outText.split("\n")) {
+          try { vv.term.writeln(line); } catch {}
+        }
+        try { vv.term.focus(); } catch {}
+      } else {
+        renderFallbackOutputs();
+      }
+      return true;
+    } catch {
+      if (vv.ptyInputBuffer.length < 8192) vv.ptyInputBuffer += cmd;
+      try { showToast("PTY 连接中…", 800); } catch {}
+      writeTerminalNotice(vv, "PTY 连接中…");
+      schedulePtyReconnect(sid);
+      return false;
+    }
   }
 
   function applyThemeToTerm(t) {
@@ -1381,6 +1732,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     try { clearTimeout(v.ptyRetryTimer); } catch {}
     v.ptyRetryTimer = 0;
     if (root.style.display === "none") return;
+    if (sid !== String(activeViewId || currentSessionId || "").trim()) return;
     if (isInactiveSshSession(sid)) return;
     if (v.ptyRetryCount >= MAX_PTY_RETRY) {
       try { showToast("PTY 多次连接失败，已停止自动重连", 1600); } catch {}
@@ -2026,18 +2378,29 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         v.pty = null;
         v.ptyConnecting = false;
         v.usingPty = true;
-        if (!background && activeViewId === sid) {
+        const isActive = String(activeViewId || currentSessionId || "").trim() === sid;
+        if (!background && isActive) {
           setPanelModeForActive("pty");
-          writeTerminalNotice(v, "PTY 连接断开，正在重连…");
-          try { showToast("PTY 连接断开，正在重连…", 1200); } catch {}
+          const now = Date.now();
+          const last = ptyNoticeAt.get(sid) || 0;
+          if (now - last > 1200) {
+            ptyNoticeAt.set(sid, now);
+            writeTerminalNotice(v, "PTY 连接断开，正在重连…");
+            try { showToast("PTY 连接断开，正在重连…", 1200); } catch {}
+          }
         }
-        schedulePtyReconnect(sid);
+        if (isActive) schedulePtyReconnect(sid);
       };
 
       localPty.onError(onBroken);
       localPty.onClose(onBroken);
 
-      await localPty.ready;
+      let readyTimer = 0;
+      const readyTimeout = new Promise((_, rej) => {
+        readyTimer = setTimeout(() => rej(new Error("PTY ready timeout")), 12000);
+      });
+      await Promise.race([localPty.ready, readyTimeout]);
+      try { clearTimeout(readyTimer); } catch {}
 
       if (nonce !== v.ptyConnectNonce || v.pty !== localPty) {
         try { localPty?.dispose?.(); } catch {}
@@ -2084,12 +2447,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       v.pty = null;
       v.ptyConnecting = false;
       v.usingPty = true;
-      if (!background && activeViewId === sid) {
+      const isActive = String(activeViewId || currentSessionId || "").trim() === sid;
+      if (!background && isActive) {
         setPanelModeForActive("pty");
         writeTerminalNotice(v, "PTY 连接失败，正在重试…");
         try { showToast("PTY 连接失败，正在重试…", 1200); } catch {}
       }
-      schedulePtyReconnect(sid);
+      if (isActive) schedulePtyReconnect(sid);
       return false;
     }
   }
@@ -2102,14 +2466,15 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     for (const sid of Array.from(sessionViews.keys())) {
       if (!existingIds.has(sid)) disposeView(sid);
     }
-    tabs.innerHTML = "";
+    tabsScroll.innerHTML = "";
     if (!sessionList.length) {
       const empty = document.createElement("div");
       empty.textContent = "No sessions (use Terminal Manager to create)";
       empty.style.fontSize = "11px";
       empty.style.opacity = "0.75";
-      tabs.appendChild(empty);
+      tabsScroll.appendChild(empty);
       updateStatusText();
+      updateTabsNavState();
       return;
     }
     sessionList.forEach((s) => {
@@ -2150,13 +2515,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
           try {
             reactivateBtn.disabled = true;
             reactivateBtn.textContent = "激活中";
-            const result = await window.zion?.commands?.executeCommand?.("terminal.reactivateSession", { session_id: id });
+            const result = await reactivateSessionOnce(id);
             if (result) {
               // Refresh sessions list and reconnect
-              await window.zion?.commands?.executeCommand?.("terminal.refreshSessions");
+              await refreshSessionsOnce();
               renderTabs();
               // Try to connect to the reactivated session
-              if (isActive || id === currentSessionId) {
+              if (id === currentSessionId) {
                 const ok = await connectPtyForSession(id);
                 if (!ok) {
                   if (xtermLoaded) {
@@ -2180,42 +2545,50 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         tab.appendChild(reactivateBtn);
       }
 
-      tab.onclick = async () => {
-        currentSessionId = id;
-        try { window.zion?.state?.set("terminal.activeSessionId", id); } catch {}
-        activeViewId = id;
-        renderTabs();
-
-        if (isSsh && isInactive) {
-          try {
-            const result = await window.zion?.commands?.executeCommand?.("terminal.reactivateSession", { session_id: id });
-            if (result) {
-              await window.zion?.commands?.executeCommand?.("terminal.refreshSessions");
-              renderTabs();
-            } else {
-              try { showToast("会话已失活，可点击“激活”重连"); } catch {}
-            }
-          } catch {
-            try { showToast("会话已失活，可点击“激活”重连"); } catch {}
-          }
-        }
-
-        const ok = await connectPtyForSession(id);
-        if (!ok) {
-          if (xtermLoaded) {
-            activateView(id);
-            setPanelModeForActive("pty");
-            writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
-          } else {
-            fallbackPre.textContent = currentOutputsToText();
-          }
-        }
+      tab.onclick = () => {
+        switchToSession(id);
+        scheduleConnectSelectedSession(id);
       };
 
       tab.appendChild(label);
       tab.appendChild(xbtn);
-      tabs.appendChild(tab);
+      tabsScroll.appendChild(tab);
     });
+
+    // Scroll active tab into view immediately
+    const activeTabElement = tabsScroll.querySelector('.zte-tab.is-active');
+    if (activeTabElement) {
+      requestAnimationFrame(() => {
+        try {
+          activeTabElement.scrollIntoView({
+            behavior: 'auto',
+            block: 'nearest',
+            inline: 'nearest'
+          });
+        } catch (e) {
+          // Fallback: manual scroll calculation if scrollIntoView fails
+          try {
+            const scrollLeft = tabsScroll.scrollLeft;
+            const clientWidth = tabsScroll.clientWidth;
+            const tabLeft = activeTabElement.offsetLeft;
+            const tabRight = tabLeft + activeTabElement.offsetWidth;
+
+            // If tab is not fully visible, scroll it into view
+            if (tabLeft < scrollLeft) {
+              tabsScroll.scrollTo({ left: tabLeft - 8, behavior: 'auto' });
+            } else if (tabRight > scrollLeft + clientWidth) {
+              // Center the tab in the visible area
+              const targetLeft = tabLeft - (clientWidth - activeTabElement.offsetWidth) / 2;
+              tabsScroll.scrollTo({ left: targetLeft, behavior: 'auto' });
+            }
+          } catch (e2) {
+            // Ignore scroll errors
+          }
+        }
+      });
+    }
+
+    updateTabsNavState();
     updateStatusText();
   }
 
@@ -2603,6 +2976,128 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
   closeBtn.onclick = () => close();
 
+  // 标签页滚动导航事件
+  function updateTabsNavState() {
+    if (!tabsScroll) return;
+    const canScrollLeft = tabsScroll.scrollLeft > 0;
+    const canScrollRight = tabsScroll.scrollLeft < (tabsScroll.scrollWidth - tabsScroll.clientWidth - 1);
+    if (tabNavLeft) tabNavLeft.disabled = !canScrollLeft;
+    if (tabNavRight) tabNavRight.disabled = !canScrollRight;
+  }
+
+  tabNavLeft.onclick = () => {
+    if (!tabsScroll) return;
+    tabsScroll.scrollBy({ left: -200, behavior: "smooth" });
+  };
+
+  tabNavRight.onclick = () => {
+    if (!tabsScroll) return;
+    tabsScroll.scrollBy({ left: 200, behavior: "smooth" });
+  };
+
+  tabsScroll.addEventListener("scroll", () => {
+    updateTabsNavState();
+  });
+
+  // 标签页下拉菜单
+  tabDropdownBtn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // 动态计算菜单位置
+    const rect = tabDropdownBtn.getBoundingClientRect();
+    const menuWidth = 280; // 估算的菜单宽度
+    const menuHeight = 300; // 最大高度
+
+    // 默认位置：按钮下方，右侧对齐
+    let top = rect.bottom + 4;
+    let left = rect.right - menuWidth;
+
+    // 如果右边超出屏幕，则左对齐
+    if (left + menuWidth > window.innerWidth) {
+      left = rect.left;
+    }
+
+    // 如果下方超出屏幕，则显示在按钮上方
+    if (top + menuHeight > window.innerHeight) {
+      top = rect.top - menuHeight - 4;
+    }
+
+    tabsMenu.style.top = `${top}px`;
+    tabsMenu.style.left = `${left}px`;
+    tabsMenu.style.right = "auto";
+
+    tabsMenu.classList.toggle("show");
+    renderTabsMenu();
+  };
+
+  function hideTabsMenu() {
+    tabsMenu.classList.remove("show");
+  }
+
+  document.addEventListener("mousedown", (e) => {
+    // 如果点击不在下拉按钮和菜单内部，则隐藏菜单
+    if (!tabsDropdown.contains(e.target) && !tabsMenu.contains(e.target)) {
+      hideTabsMenu();
+    }
+  });
+
+  function renderTabsMenu() {
+    const sessions = window.zion?.state?.get("terminal.sessions") || [];
+    const sessionList = Array.isArray(sessions) ? sessions : [];
+    tabsMenu.innerHTML = "";
+
+    if (!sessionList.length) {
+      const empty = document.createElement("div");
+      empty.textContent = "No sessions";
+      empty.style.padding = "8px";
+      empty.style.fontSize = "11px";
+      empty.style.opacity = "0.75";
+      tabsMenu.appendChild(empty);
+      return;
+    }
+
+    sessionList.forEach((s) => {
+      const id = String(s?.id || "").trim();
+      if (!id) return;
+      const isActive = currentSessionId === id;
+      const item = document.createElement("div");
+      item.className = `zte-tabs-menu-item${isActive ? " is-active" : ""}`;
+
+      const label = document.createElement("div");
+      label.className = "zte-tabs-menu-item-label";
+      label.textContent = getTabLabelForSession(s);
+
+      const actions = document.createElement("div");
+      actions.className = "zte-tabs-menu-item-actions";
+
+      const closeBtn2 = document.createElement("button");
+      closeBtn2.type = "button";
+      closeBtn2.className = "zte-tabs-menu-item-close";
+      closeBtn2.textContent = "×";
+      closeBtn2.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          await window.zion?.commands?.executeCommand?.("terminal.closeSession", { session_id: id });
+          renderTabsMenu();
+        } catch {}
+      };
+
+      actions.appendChild(closeBtn2);
+      item.appendChild(label);
+      item.appendChild(actions);
+
+      item.onclick = () => {
+        hideTabsMenu();
+        switchToSession(id);
+        scheduleConnectSelectedSession(id);
+      };
+
+      tabsMenu.appendChild(item);
+    });
+  }
+
   function openHistoryPalette() {
     const history = window.zion?.state?.get("terminal.history") || [];
     const list = Array.isArray(history) ? history.slice() : [];
@@ -2933,17 +3428,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     currentSessionId = nv || currentSessionId;
     if (currentSessionId) activeViewId = currentSessionId;
     renderTabs();
+    if (root.style.display === "none") return;
     if (currentSessionId) {
-      const ok = await connectPtyForSession(currentSessionId);
-      if (!ok) {
-        if (xtermLoaded) {
-          activateView(currentSessionId);
-          setPanelModeForActive("pty");
-          writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
-        } else {
-          renderFallbackOutputs();
-        }
-      }
+      scheduleConnectSelectedSession(currentSessionId);
     }
   });
   const disp3 = window.zion.state.onDidChange("terminal.outputs", () => { if (!isActiveUsingPty()) renderFallbackOutputs(); });
@@ -3015,16 +3502,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     }
 
     if (sid) {
-      const ok = await connectPtyForSession(sid);
-      if (!ok) {
-        if (xtermLoaded) {
-          activateView(sid);
-          setPanelModeForActive("pty");
-          writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
-        } else {
-          renderFallbackOutputs();
-        }
-      }
+      scheduleConnectSelectedSession(sid);
     } else {
       renderFallbackOutputs();
     }

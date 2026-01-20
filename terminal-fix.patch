@@ -1,0 +1,76 @@
+diff --git extensions/dev.terminal-enhanced/panel.js extensions/dev.terminal-enhanced/panel.js
+index xxx..xxx 100644
+--- extensions/dev.terminal-enhanced/panel.js
++++ extensions/dev.terminal-enhanced/panel.js
+@@ -2391,28 +2391,38 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, con
+         tab.appendChild(reactivateBtn);
+       }
+
+       tab.onclick = async () => {
+-        currentSessionId = id;
+-        try { window.zion?.state?.set("terminal.activeSessionId", id); } catch {}
+-        activeViewId = id;
+-        renderTabs();
+
+-        if (isSsh && isInactive) {
+-          try {
+-            const result = await window.zion?.commands?.executeCommand?.("terminal.reactivateSession", { session_id: id });
+-            if (result) {
+-              await window.zion?.commands?.executeCommand?.("terminal.refreshSessions");
+-              renderTabs();
+-            } else {
+-              try { showToast("会话已失活，可点击"激活"重连"); } catch {}
+-            }
+-          } catch {
+-            try { showToast("会话已失活，可点击"激活"重连"); } catch {}
+-          }
+-        }
+
+-        const ok = await connectPtyForSession(id);
+-        if (!ok) {
+-          if (xtermLoaded) {
+-            activateView(id);
+-            setPanelModeForActive("pty");
+-            writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
+-          } else {
+-            fallbackPre.textContent = currentOutputsToText();
+-          }
+-        }
++        // 立即更新状态并切换视图，不等待异步操作
++        currentSessionId = id;
++        try { window.zion?.state?.set("terminal.activeSessionId", id); } catch {}
++        activeViewId = id;
++        activateView(id);
++        renderTabs();
+
++        // 使用 setTimeout 将连接操作推迟到下一个事件循环，避免阻塞 UI
++        // 这样即使某个会话卡住，切换标签也能立即响应
++        setTimeout(async () => {
++          try {
++            if (isSsh && isInactive) {
++              const result = await window.zion?.commands?.executeCommand?.("terminal.reactivateSession", { session_id: id });
++              if (result) {
++                await window.zion?.commands?.executeCommand?.("terminal.refreshSessions");
++                renderTabs();
++              } else {
++                try { showToast("会话已失活，可点击"激活"重连"); } catch {}
++              }
++            }
+
++            const ok = await connectPtyForSession(id);
++            if (!ok) {
++              if (xtermLoaded) {
++                activateView(id);
++                setPanelModeForActive("pty");
++                writeTerminalNotice(getActiveView(), "PTY 未连接，已触发重连");
++              } else {
++                fallbackPre.textContent = currentOutputsToText();
++              }
++            }
++          } catch (e) {
++            console.warn("[terminal] Tab switch error:", e);
++          }
++        }, 0);
+       };
+
+       tab.appendChild(label);

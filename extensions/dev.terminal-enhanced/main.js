@@ -123,14 +123,32 @@ function connectPty(sessionId, cols = 80, rows = 24) {
   ws.binaryType = "arraybuffer";
 
   let openResolve;
-  const ready = new Promise(res => { openResolve = res; });
+  let openReject;
+  let opened = false;
+  const ready = new Promise((res, rej) => {
+    openResolve = res;
+    openReject = rej;
+  });
 
   ws.onopen = () => {
+    opened = true;
     // Send initial resize
     try {
       ws.send(JSON.stringify({ type: "resize", cols, rows }));
     } catch {}
     openResolve?.();
+  };
+
+  ws.onerror = (e) => {
+    try {
+      if (!opened) openReject?.(e instanceof Error ? e : new Error("WebSocket error"));
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    try {
+      if (!opened) openReject?.(new Error("WebSocket closed"));
+    } catch {}
   };
 
   return {
@@ -164,10 +182,10 @@ function connectPty(sessionId, cols = 80, rows = 24) {
       };
     },
     onError(handler) {
-      ws.onerror = (e) => handler(e);
+      ws.addEventListener("error", (e) => handler(e));
     },
     onClose(handler) {
-      ws.onclose = () => handler();
+      ws.addEventListener("close", () => handler());
     },
     dispose() {
       try { ws.close(); } catch {}
