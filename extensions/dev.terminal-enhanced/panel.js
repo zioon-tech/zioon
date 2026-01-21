@@ -577,38 +577,51 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     if (!editorContainer) return;
 
     const appEl = getAppElement();
+    const active = !!root?._zteRightShiftActive;
 
     if (!enabled) {
+      if (!active) return;
+
       try {
         if (typeof root?._ztePrevEditorContainerWidth === "string") editorContainer.style.width = root._ztePrevEditorContainerWidth;
-        else editorContainer.style.width = "";
         if (typeof root?._ztePrevEditorContainerBoxSizing === "string") editorContainer.style.boxSizing = root._ztePrevEditorContainerBoxSizing;
-        else editorContainer.style.boxSizing = "";
         if (typeof root?._ztePrevEditorContainerMaxWidth === "string") editorContainer.style.maxWidth = root._ztePrevEditorContainerMaxWidth;
-        else editorContainer.style.maxWidth = "";
         if (typeof root?._ztePrevEditorContainerMarginRight === "string") editorContainer.style.marginRight = root._ztePrevEditorContainerMarginRight;
-        else editorContainer.style.marginRight = "";
       } catch {}
 
       if (appEl) {
         try {
           if (typeof root?._ztePrevAppOverflowX === "string") appEl.style.overflowX = root._ztePrevAppOverflowX;
-          else appEl.style.overflowX = "";
         } catch {}
       }
+
+      try {
+        root._zteRightShiftActive = false;
+        delete root._ztePrevEditorContainerWidth;
+        delete root._ztePrevEditorContainerBoxSizing;
+        delete root._ztePrevEditorContainerMaxWidth;
+        delete root._ztePrevEditorContainerMarginRight;
+        delete root._ztePrevAppOverflowX;
+      } catch {}
       return;
     }
 
-    try {
-      if (typeof root?._ztePrevEditorContainerWidth !== "string") root._ztePrevEditorContainerWidth = editorContainer.style.width || "";
-      if (typeof root?._ztePrevEditorContainerBoxSizing !== "string") root._ztePrevEditorContainerBoxSizing = editorContainer.style.boxSizing || "";
-      if (typeof root?._ztePrevEditorContainerMaxWidth !== "string") root._ztePrevEditorContainerMaxWidth = editorContainer.style.maxWidth || "";
-      if (typeof root?._ztePrevEditorContainerMarginRight !== "string") root._ztePrevEditorContainerMarginRight = editorContainer.style.marginRight || "";
-    } catch {}
-
-    if (appEl) {
+    if (!active) {
       try {
-        if (typeof root?._ztePrevAppOverflowX !== "string") root._ztePrevAppOverflowX = appEl.style.overflowX || "";
+        root._ztePrevEditorContainerWidth = editorContainer.style.width || "";
+        root._ztePrevEditorContainerBoxSizing = editorContainer.style.boxSizing || "";
+        root._ztePrevEditorContainerMaxWidth = editorContainer.style.maxWidth || "";
+        root._ztePrevEditorContainerMarginRight = editorContainer.style.marginRight || "";
+      } catch {}
+
+      if (appEl) {
+        try {
+          root._ztePrevAppOverflowX = appEl.style.overflowX || "";
+        } catch {}
+      }
+
+      try {
+        root._zteRightShiftActive = true;
       } catch {}
     }
 
@@ -629,23 +642,37 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     const editorArea = getEditorAreaElement();
     if (!editorArea) return;
 
+    const active = !!root?._zteBottomShiftActive;
+
     if (!enabled) {
+      if (!active) return;
+
       try {
         if (typeof root?._ztePrevEditorAreaHeight === "string") editorArea.style.height = root._ztePrevEditorAreaHeight;
-        else editorArea.style.height = "";
         if (typeof root?._ztePrevEditorAreaMaxHeight === "string") editorArea.style.maxHeight = root._ztePrevEditorAreaMaxHeight;
-        else editorArea.style.maxHeight = "";
         if (typeof root?._ztePrevEditorAreaBoxSizing === "string") editorArea.style.boxSizing = root._ztePrevEditorAreaBoxSizing;
-        else editorArea.style.boxSizing = "";
+      } catch {}
+
+      try {
+        root._zteBottomShiftActive = false;
+        delete root._ztePrevEditorAreaHeight;
+        delete root._ztePrevEditorAreaMaxHeight;
+        delete root._ztePrevEditorAreaBoxSizing;
       } catch {}
       return;
     }
 
-    try {
-      if (typeof root?._ztePrevEditorAreaHeight !== "string") root._ztePrevEditorAreaHeight = editorArea.style.height || "";
-      if (typeof root?._ztePrevEditorAreaMaxHeight !== "string") root._ztePrevEditorAreaMaxHeight = editorArea.style.maxHeight || "";
-      if (typeof root?._ztePrevEditorAreaBoxSizing !== "string") root._ztePrevEditorAreaBoxSizing = editorArea.style.boxSizing || "";
-    } catch {}
+    if (!active) {
+      try {
+        root._ztePrevEditorAreaHeight = editorArea.style.height || "";
+        root._ztePrevEditorAreaMaxHeight = editorArea.style.maxHeight || "";
+        root._ztePrevEditorAreaBoxSizing = editorArea.style.boxSizing || "";
+      } catch {}
+
+      try {
+        root._zteBottomShiftActive = true;
+      } catch {}
+    }
 
     const h = Math.round(root.getBoundingClientRect().height || 0);
     if (!h) return;
