@@ -1275,6 +1275,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const MAX_PTY_RETRY = 3;
   let findState = { caseSensitive: false, regex: false, wholeWord: false };
   let termWrapResizeObserver = null;
+  const normId = (v) => String(v || "").trim();
   const reactivateInFlight = new Map();
   let refreshSessionsInFlight = null;
   let refreshSessionsInFlightAt = 0;
@@ -1285,7 +1286,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   };
 
   function getActiveView() {
-    const sid = String(activeViewId || currentSessionId || "").trim();
+    const sid = normId(activeViewId || currentSessionId || "");
     if (!sid) return null;
     return sessionViews.get(sid) || null;
   }
@@ -1301,7 +1302,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   async function reactivateSessionOnce(sessionId) {
-    const sid = String(sessionId || "").trim();
+    const sid = normId(sessionId);
     if (!sid) return false;
     const existing = reactivateInFlight.get(sid);
     if (existing) return existing;
@@ -1316,7 +1317,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   async function connectSelectedSession(sessionId) {
-    const id = String(sessionId || "").trim();
+    const id = normId(sessionId);
     if (!id) return;
     if (currentSessionId !== id) return;
     if (root.style.display === "none") return;
@@ -1355,7 +1356,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   function scheduleConnectSelectedSession(sessionId) {
-    const id = String(sessionId || "").trim();
+    const id = normId(sessionId);
     if (!id) return;
     setTimeout(() => {
       connectSelectedSession(id);
@@ -1726,13 +1727,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   function schedulePtyReconnect(sessionId) {
-    const sid = String(sessionId || "").trim();
+    const sid = normId(sessionId);
     const v = sid ? (sessionViews.get(sid) || null) : null;
     if (!v) return;
     try { clearTimeout(v.ptyRetryTimer); } catch {}
     v.ptyRetryTimer = 0;
     if (root.style.display === "none") return;
-    if (sid !== String(activeViewId || currentSessionId || "").trim()) return;
+    if (sid !== normId(activeViewId || currentSessionId || "")) return;
     if (isInactiveSshSession(sid)) return;
     if (v.ptyRetryCount >= MAX_PTY_RETRY) {
       try { showToast("PTY 多次连接失败，已停止自动重连", 1600); } catch {}
@@ -2378,7 +2379,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         v.pty = null;
         v.ptyConnecting = false;
         v.usingPty = true;
-        const isActive = String(activeViewId || currentSessionId || "").trim() === sid;
+        const isActive = normId(activeViewId || currentSessionId || "") === sid;
         if (!background && isActive) {
           setPanelModeForActive("pty");
           const now = Date.now();
@@ -2447,7 +2448,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       v.pty = null;
       v.ptyConnecting = false;
       v.usingPty = true;
-      const isActive = String(activeViewId || currentSessionId || "").trim() === sid;
+      const isActive = normId(activeViewId || currentSessionId || "") === sid;
       if (!background && isActive) {
         setPanelModeForActive("pty");
         writeTerminalNotice(v, "PTY 连接失败，正在重试…");
