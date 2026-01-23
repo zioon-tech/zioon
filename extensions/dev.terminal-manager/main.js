@@ -313,16 +313,43 @@ export async function activate(ctx) {
   let statusDisp = null;
   const updateStatus = () => {
     const sid = window.zion?.state?.get("terminal.activeSessionId");
+    const sessions = window.zion?.state?.get("terminal.sessions") || [];
+    const activeSession = sessions.find(s => s.id === sid);
+    
+    // 提取目录名辅助函数
+    const getDirName = (path) => {
+      if (!path) return "";
+      // 处理 Windows/Unix 路径分隔符，去除末尾斜杠
+      const normalized = path.replace(/[/\\]+$/, "");
+      if (!normalized) return path; // 根目录
+      const parts = normalized.split(/[/\\]/);
+      return parts[parts.length - 1] || path;
+    };
+
+    let displayText = sid || "";
+    if (activeSession) {
+      const dirName = getDirName(activeSession.cwd);
+      
+      if (activeSession.type === "ssh") {
+        // SSH 会话：优先显示项目名 (SSH: project)，如果没有 cwd 则显示主机名
+        displayText = dirName ? `SSH: ${dirName}` : `SSH: ${activeSession.ssh_host}`;
+      } else {
+        // 本地会话：优先显示项目名
+        displayText = dirName || displayText;
+      }
+    }
+
     statusDisp?.dispose?.();
     statusDisp = window.zion.statusBar.registerItem({
       id: "dev.terminal.button",
-      text: `Terminal${sid ? `: ${sid}` : ""}`,
-      tooltip: "Open Terminal Manager",
+      text: `Terminal${displayText ? `: ${displayText}` : ""}`,
+      tooltip: `Open Terminal Manager${sid ? ` (Active: ${sid})` : ""}`,
       onClick: () => window.zion.commands.executeCommand("terminal.openManager")
     });
   };
   updateStatus();
   ctx.subscriptions.push(window.zion.state.onDidChange("terminal.activeSessionId", () => updateStatus()));
+  ctx.subscriptions.push(window.zion.state.onDidChange("terminal.sessions", () => updateStatus()));
 
   // 启动时同步一次会话列表，确保“注入终端上下文”时能拿到全部会话
   (async () => {

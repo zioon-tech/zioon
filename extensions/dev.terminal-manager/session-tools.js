@@ -191,7 +191,8 @@ export function installTerminalManagerPanel() {
   typeWrap.appendChild(typeSel);
 
   const sshUser = mkInput("SSH User", "root");
-  const sshHost = mkInput("SSH Host", "example.com");
+  const sshHost = mkInput("SSH Host (or alias)", "e.g., las-dev");
+  sshHost.inp.title = "You can use SSH config alias (e.g., las-dev) or direct hostname (e.g., 101.126.47.38)";
   const sshPort = mkInput("SSH Port", "22", "number");
   const initialCwd = mkInput("Initial CWD", "/");
 

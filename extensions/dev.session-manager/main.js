@@ -563,6 +563,23 @@ function isFolderOpen(id) {
   return id === "root";
 }
 
+/** Open all ancestor folders for a given node id (session or folder), ensuring path is visible */
+function openAncestors(id) {
+  try {
+    if (!id) return;
+    const tree = loadTree() || ensureInitialTree();
+    const { node, parent } = findNodeAndParent(tree, id);
+    if (!node) return;
+    let cur = parent;
+    while (cur && cur.id && cur.type === "folder") {
+      try { setFolderOpen(cur.id, true); } catch {}
+      const up = findNodeAndParent(tree, cur.id)?.parent || null;
+      cur = up;
+    }
+    try { setFolderOpen("root", true); } catch {}
+  } catch {}
+}
+
 /** ========== Selection helpers (multi-select) ========== */
 function getSelection() {
   return window.zion.state.get("sessions.selection") || [];
@@ -1286,14 +1303,14 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
       row.style.display = "flex";
       row.style.alignItems = "center";
       row.style.justifyContent = "space-between";
-      row.style.padding = "8px 10px";
+      row.style.padding = "8px 10px 8px 0";
       row.style.gap = "8px";
       row.style.borderRadius = "8px";
       row.style.transition = "background 120ms ease";
       row.style.position = "relative";
       row.className = "zion-session-row";
       row.style.whiteSpace = "nowrap";
-      row.style.paddingLeft = `${depth * 12}px`;
+      row.style.borderLeft = `${depth * 12}px solid transparent`;
       row.dataset.depth = String(depth);
       visibleOrder.push({ id: folder.id, type: "folder" });
 
@@ -1303,6 +1320,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
       labelWrap.style.gap = "8px";
       labelWrap.style.flex = "1 1 auto";
       labelWrap.style.minWidth = "0";
+      labelWrap.style.paddingRight = "10px";
 
       const chevron = document.createElement("span");
       chevron.innerHTML = isFolderOpen(folder.id)
@@ -1534,7 +1552,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
             srow.style.display = "flex";
             srow.style.alignItems = "center";
             srow.style.justifyContent = "space-between";
-            srow.style.padding = "8px 10px";
+            srow.style.padding = "8px 0 8px 0";
             srow.style.gap = "8px";
             srow.style.borderRadius = "8px";
             srow.style.transition = "background 120ms ease";
@@ -1566,6 +1584,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
             labelWrap2.style.flexDirection = "column";
             labelWrap2.style.flex = "1 1 auto";
             labelWrap2.style.minWidth = "0";
+            labelWrap2.style.paddingRight = "10px";
 
             const titleLine = document.createElement("span");
             titleLine.style.fontSize = "12px";
@@ -1639,64 +1658,9 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
             let statusBadge = null;
 
             // Compute an opaque background color that visually matches the row background.
-            // If the row background is semi-transparent (e.g., sessions highlight), blend with panel.
-            const parseColor = (str) => {
-              if (!str) return null;
-              str = String(str).trim();
-              // rgba()/rgb()
-              let m = str.match(/^rgba?\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/i);
-              if (m) return { r: +m[1], g: +m[2], b: +m[3], a: m[4] != null ? +m[4] : 1 };
-              // #rrggbb or #rgb
-              if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(str)) {
-                let hex = str.slice(1);
-                if (hex.length === 3) hex = hex.split("").map(c => c + c).join("");
-                const num = parseInt(hex, 16);
-                return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255, a: 1 };
-              }
-              return null;
-            };
-            const toRgb = (c) => `rgb(${Math.round(c.r)}, ${Math.round(c.g)}, ${Math.round(c.b)})`;
-            const getPanelColor = () => {
-              try {
-                const v = getComputedStyle(document.documentElement).getPropertyValue("--panel").trim();
-                const parsed = parseColor(v);
-                if (parsed) return parsed;
-                // allow hex without parsing via computed background
-                const bodyBg = getComputedStyle(document.body).backgroundColor;
-                return parseColor(bodyBg) || { r: 40, g: 42, b: 54, a: 1 };
-              } catch {
-                return { r: 40, g: 42, b: 54, a: 1 };
-              }
-            };
-            const blendOverPanel = (fg) => {
-              const base = getPanelColor();
-              const a = fg.a == null ? 1 : fg.a;
-              return {
-                r: fg.r * a + base.r * (1 - a),
-                g: fg.g * a + base.g * (1 - a),
-                b: fg.b * a + base.b * (1 - a),
-                a: 1
-              };
-            };
-            const computeOpaqueBg = (rowEl) => {
-              try {
-                const bg = getComputedStyle(rowEl).backgroundColor;
-                if (!bg || bg === "transparent" || bg === "rgba(0, 0, 0, 0)") {
-                  return toRgb(getPanelColor());
-                }
-                const c = parseColor(bg);
-                if (!c) return toRgb(getPanelColor());
-                if (c.a == null || c.a >= 1) return `rgb(${c.r}, ${c.g}, ${c.b})`;
-                const blended = blendOverPanel(c);
-                return toRgb(blended);
-              } catch {
-                return toRgb(getPanelColor());
-              }
-            };
+            // (Functionality removed in favor of masking title text)
             const applyBadgeBg = (el) => {
-              try {
-                el.style.backgroundColor = computeOpaqueBg(srow);
-              } catch {}
+              // no-op
             };
 
             if (rs && (rs.streaming || rs.awaiting)) {
@@ -1704,7 +1668,14 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               statusBadge.className = `zion-session-status-badge ${rs.streaming ? "streaming" : "ready"}`;
               statusBadge.textContent = "●";
               statusBadge.title = rs.streaming ? "Model generating…" : "Answer ready";
-              applyBadgeBg(statusBadge);
+              // Transparent background; text below is masked
+              statusBadge.style.background = "transparent";
+              
+              // Apply mask to titleLine to prevent text overlap
+              try {
+                titleLine.style.maskImage = "linear-gradient(to right, black calc(100% - 80px), transparent 100%)";
+                titleLine.style.webkitMaskImage = "linear-gradient(to right, black calc(100% - 80px), transparent 100%)";
+              } catch {}
             }
 
             rightWrap.appendChild(bOpenNewTab);
@@ -1718,14 +1689,15 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               rightWrap.style.pointerEvents = "auto";
               bOpenNewTab.style.opacity = "1";
               bMore2.style.opacity = "1";
-              try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
+              // remove mask on hover to allow full text if buttons push layout?
+              // Actually on hover padding increases, so text wraps/truncates earlier. Mask might still be needed if padding calculation is slightly off, but usually padding handles it.
+              // We can keep the mask or remove it. If padding is sufficient, mask is redundant but harmless.
             });
             srow.addEventListener("mouseleave", () => {
               srow.style.paddingRight = "";
               rightWrap.style.pointerEvents = "none";
               bOpenNewTab.style.opacity = "0";
               bMore2.style.opacity = "0";
-              try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
             srow.addEventListener("focus", () => {
               const reserve = (rightWrap.offsetWidth || 0) + 8;
@@ -1733,14 +1705,12 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               rightWrap.style.pointerEvents = "auto";
               bOpenNewTab.style.opacity = "1";
               bMore2.style.opacity = "1";
-              try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
             srow.addEventListener("blur", () => {
               srow.style.paddingRight = "";
               rightWrap.style.pointerEvents = "none";
               bOpenNewTab.style.opacity = "0";
               bMore2.style.opacity = "0";
-              try { if (statusBadge) applyBadgeBg(statusBadge); } catch {}
             });
 
             srow.appendChild(rightWrap);
@@ -1904,12 +1874,12 @@ function openSessionsPanel() {
     header.appendChild(closeBtn);
     panel.appendChild(header);
 
-    // Controls: search, sort, actions (合并为下拉菜单)
-    const controls = document.createElement("div");
-    controls.style.display = "grid";
-    controls.style.gridTemplateColumns = "1fr auto auto";
-    controls.style.gap = "6px";
-    controls.style.marginBottom = "8px";
+  // Controls: search, sort, actions (合并为下拉菜单)
+  const controls = document.createElement("div");
+  controls.style.display = "grid";
+  controls.style.gridTemplateColumns = "1fr auto auto auto";
+  controls.style.gap = "6px";
+  controls.style.marginBottom = "8px";
 
     // 搜索框
     const searchInput = document.createElement("input");
@@ -1924,7 +1894,7 @@ function openSessionsPanel() {
     searchInput.style.fontSize = "12px";
 
     // 排序下拉
-    const sortSelect = document.createElement("select");
+  const sortSelect = document.createElement("select");
     sortSelect.setAttribute("aria-label", "Sort sessions");
     sortSelect.title = "Sort";
     sortSelect.style.background = "var(--panel)";
@@ -1945,11 +1915,32 @@ function openSessionsPanel() {
     optTitle.title = "Sort by title (A→Z)";
     sortSelect.append(optUpdated, optTitle);
 
-    // 操作下拉按钮（三点图标）
-    const actions = document.createElement("div");
-    actions.style.position = "relative";
-    const actionBtn = document.createElement("button");
-    actionBtn.innerHTML = "&#x22EE;"; // 三点竖排
+  // Anchor: locate current editor session in list and open its folders
+  const anchorBtn = document.createElement("button");
+  const ICON_TARGET = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>';
+  anchorBtn.innerHTML = ICON_TARGET;
+  anchorBtn.title = "定位到当前会话";
+  anchorBtn.setAttribute("aria-label", anchorBtn.title);
+  anchorBtn.style.background = "transparent";
+  anchorBtn.style.color = "var(--fg)";
+  anchorBtn.style.border = "none";
+  anchorBtn.style.borderRadius = "6px";
+  anchorBtn.style.padding = "2px";
+  anchorBtn.style.cursor = "pointer";
+  anchorBtn.style.fontSize = "14px";
+  anchorBtn.style.width = "24px";
+  anchorBtn.style.height = "24px";
+  anchorBtn.style.display = "flex";
+  anchorBtn.style.alignItems = "center";
+  anchorBtn.style.justifyContent = "center";
+  anchorBtn.onmouseenter = () => { anchorBtn.style.background = "var(--border)"; };
+  anchorBtn.onmouseleave = () => { anchorBtn.style.background = "transparent"; };
+
+  // 操作下拉按钮（三点图标）
+  const actions = document.createElement("div");
+  actions.style.position = "relative";
+  const actionBtn = document.createElement("button");
+  actionBtn.innerHTML = "&#x22EE;"; // 三点竖排
     actionBtn.title = "More actions";
     actionBtn.setAttribute("aria-label", "More actions");
     actionBtn.style.background = "transparent";
@@ -2029,18 +2020,18 @@ function openSessionsPanel() {
     // 点击面板其他区域关闭菜单
     panel.addEventListener("click", () => { menu.style.display = "none"; });
 
-    controls.append(searchInput, sortSelect, actions);
-    panel.appendChild(controls);
+  controls.append(searchInput, sortSelect, anchorBtn, actions);
+  panel.appendChild(controls);
 
     // List container
     const list = document.createElement("div");
     panel.appendChild(list);
 
-    const render = createSessionsListRenderer({
-      listEl: list,
-      hostElement: panel,
-      getQuery: () => (searchInput.value || "").trim().toLowerCase(),
-      getSort: () => sortSelect.value || "updated",
+  const render = createSessionsListRenderer({
+    listEl: list,
+    hostElement: panel,
+    getQuery: () => (searchInput.value || "").trim().toLowerCase(),
+    getSort: () => sortSelect.value || "updated",
       onSwitchSession: (id) => {
         window.zion.commands.executeCommand("zion.sessions.switch", id);
         setTimeout(() => { overlay.remove(); }, 30);
@@ -2048,12 +2039,34 @@ function openSessionsPanel() {
       onAfterChange: () => {
         try { mountSessionsSidebar(); } catch {}
         count.textContent = `(${getIndex().length})`;
-      }
-    });
+    }
+  });
 
-    // react to search/sort changes
-    searchInput.addEventListener("input", () => render());
-    sortSelect.addEventListener("change", () => render());
+  // wire anchor click after render is available
+  anchorBtn.onclick = () => {
+    try {
+      const cid = window.zion?.state?.get("sessions.currentId");
+      if (!cid) return;
+      openAncestors(cid);
+      try { searchInput.value = ""; } catch {}
+      render();
+      try {
+        const row = panel.querySelector(".zion-session-row.is-current");
+        if (row) {
+          row.scrollIntoView({ block: "center" });
+          try {
+            const prev = row.style.background;
+            row.style.background = "var(--border)";
+            setTimeout(() => { row.style.background = prev; }, 600);
+          } catch {}
+        }
+      } catch {}
+    } catch {}
+  };
+
+  // react to search/sort changes
+  searchInput.addEventListener("input", () => render());
+  sortSelect.addEventListener("change", () => render());
 
     // initial render
     render();
@@ -2201,6 +2214,44 @@ function mountSessionsSidebar() {
     };
     controlsRight.appendChild(newBtn);
 
+    // Anchor: locate current editor session in list and open its folders
+    const anchorBtn = document.createElement("button");
+    const ICON_TARGET = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>';
+    anchorBtn.innerHTML = ICON_TARGET;
+    anchorBtn.title = "定位到当前会话";
+    anchorBtn.setAttribute("aria-label", anchorBtn.title);
+    anchorBtn.style.background = "transparent";
+    anchorBtn.style.color = "var(--fg)";
+    anchorBtn.style.border = "none";
+    anchorBtn.style.borderRadius = "6px";
+    anchorBtn.style.padding = "2px 6px";
+    anchorBtn.style.cursor = "pointer";
+    anchorBtn.style.fontSize = "12px";
+    anchorBtn.onmouseenter = () => { anchorBtn.style.background = "var(--border)"; };
+    anchorBtn.onmouseleave = () => { anchorBtn.style.background = "transparent"; };
+    anchorBtn.onclick = () => {
+      try {
+        const cid = window.zion?.state?.get("sessions.currentId");
+        if (!cid) return;
+        openAncestors(cid);
+        try { searchInput.value = ""; } catch {}
+        render();
+        try {
+          const row = bar.querySelector(".zion-session-row.is-current");
+          const sc = listWrap;
+          if (row && sc) {
+            row.scrollIntoView({ block: "center" });
+            try {
+              const prev = row.style.background;
+              row.style.background = "var(--border)";
+              setTimeout(() => { row.style.background = prev; }, 600);
+            } catch {}
+          }
+        } catch {}
+      } catch {}
+    };
+    controlsRight.appendChild(anchorBtn);
+
     // Header actions (move the compact actions/menu here so it won't be clipped in narrow sidebar)
     const headerActions = document.createElement("div");
     headerActions.style.position = "relative";
@@ -2285,7 +2336,7 @@ function mountSessionsSidebar() {
     // Top controls (search + sort only; actions moved to header to avoid clipping)
     const controls = document.createElement("div");
     controls.style.display = "grid";
-    controls.style.gridTemplateColumns = "1fr auto";
+    controls.style.gridTemplateColumns = "1fr auto auto";
     controls.style.gap = "6px";
     controls.style.padding = "8px 10px";
     // controls.style.borderBottom = "1px solid var(--border)";
@@ -2727,6 +2778,19 @@ function injectScrollbarStyles() {
       #zion-sessions-panel-overlay .zion-sessions-panel-content {
         background: var(--panel);
       }
+
+      /* Highlight styles for current session */
+      .zion-session-row.is-current {
+        background: var(--ext-session-active-bg, rgba(128, 128, 128, 0.15));
+        border: none !important;
+        outline: none !important;
+      }
+      .zion-session-row.is-current:hover {
+        background: var(--ext-session-active-hover-bg, rgba(128, 128, 128, 0.25));
+      }
+      .zion-session-row.is-selected {
+        background: var(--ext-session-selected-bg, rgba(33, 150, 243, 0.2));
+      }
     `;
     document.head.appendChild(style);
   } catch (e) {
@@ -2955,7 +3019,16 @@ export async function activate(ctx) {
     };
     saveDoc(id, text);
     saveMeta(id, meta);
-    const parentId = opts?.parentId || window.zion.state.get("sessions.selectedFolderId") || "root";
+    const parentId = (() => {
+      if (opts?.parentId) return opts.parentId;
+      const curId = window.zion.state.get("sessions.currentId");
+      if (curId) {
+        const tree = loadTree() || ensureInitialTree();
+        const { parent } = findNodeAndParent(tree, curId);
+        if (parent && parent.type === "folder") return parent.id;
+      }
+      return window.zion.state.get("sessions.selectedFolderId") || "root";
+    })();
     console.info("[sessions] new: creating", { id, parentId, title: meta.title });
     insertSessionNode(id, parentId, meta.title);
     rebuildIndexFromTree();

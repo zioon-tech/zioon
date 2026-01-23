@@ -19,8 +19,10 @@ class Registry {
   private state = new StateBus();
   private statusItems = new Map<
     string,
-    { id: string; el: HTMLButtonElement; onClick?: () => void }
+    { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number; pinned: boolean }
   >();
+  private statusPinned: Set<string> = new Set();
+  private readonly STATUS_PINNED_KEY = 'zion.statusBar.pinned';
   private editorCore: EditorCore | null = null;
 
   // paste handlers
@@ -1321,26 +1323,98 @@ class Registry {
     return this.state.onDidChange<T>(key, handler);
   }
 
+  constructor() {
+    this.loadStatusPinned();
+  }
+
+  private loadStatusPinned() {
+    try {
+      const raw = localStorage.getItem(this.STATUS_PINNED_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          this.statusPinned = new Set(arr);
+        }
+      }
+    } catch (e) {
+      console.error('[registry] load status pinned error:', e);
+    }
+  }
+
+  private saveStatusPinned() {
+    try {
+      localStorage.setItem(this.STATUS_PINNED_KEY, JSON.stringify(Array.from(this.statusPinned)));
+    } catch (e) {
+      console.error('[registry] save status pinned error:', e);
+    }
+  }
+
   // statusbar
-  registerStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void }): Disposable {
+  registerStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }): Disposable {
     const bar = document.getElementById("statusbar");
     if (!bar) return { dispose: () => {} };
 
+    const priority = opts.priority ?? 0;
+    const pinned = this.statusPinned.has(opts.id);
+
     const existing = this.statusItems.get(opts.id);
     if (existing) {
-      // Update in place to avoid re-appending and changing order
-      existing.el.textContent = opts.text;
+      // Update in place
+      existing.el.innerHTML = ''; // Clear for rebuild
+      
+      const span = document.createElement("span");
+      span.textContent = opts.text;
+      existing.el.appendChild(span);
+      
       if (typeof opts.tooltip === "string") {
         existing.el.title = opts.tooltip;
       } else {
         existing.el.removeAttribute("title");
       }
-      if (opts.onClick) {
-        existing.el.onclick = opts.onClick;
-      } else {
-        existing.el.onclick = null;
-      }
+      
+      // Re-bind click
+      existing.el.onclick = (e) => {
+        if (opts.onClick) opts.onClick();
+      };
+      existing.el.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.toggleStatusPin(opts.id, bar);
+      };
+
       existing.onClick = opts.onClick;
+      existing.pinned = pinned;
+
+      // Add pin button
+      const pinBtn = document.createElement("span");
+      pinBtn.className = "status-pin-btn";
+      // Use different icons based on state? Or same icon but styled differently.
+      // User said: "以固定的就显示取消固定按钮" (Show unpin button if pinned)
+      // We can use a filled pin for pinned, outline for unpinned.
+      if (pinned) {
+        pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
+        pinBtn.title = "取消固定 (Unpin)";
+      } else {
+        pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
+        pinBtn.title = "固定 (Pin)";
+      }
+      
+      pinBtn.onclick = (e) => {
+        e.stopPropagation(); // Prevent main button click
+        this.toggleStatusPin(opts.id, bar);
+      };
+      
+      existing.el.appendChild(pinBtn);
+
+      // Update priority and re-sort if changed
+      if (existing.priority !== priority) {
+        existing.priority = priority;
+        this.sortStatusItems(bar);
+      } else {
+        // Just in case pin state changed via other means (though usually via context menu which triggers sort)
+        this.sortStatusItems(bar);
+      }
+
       return {
         dispose: () => {
           const item = this.statusItems.get(opts.id);
@@ -1353,11 +1427,45 @@ class Registry {
 
     const el = document.createElement("button");
     el.className = "status-item";
-    el.textContent = opts.text;
+    if (pinned) {
+      el.classList.add('pinned');
+    }
+    
+    const span = document.createElement("span");
+    span.textContent = opts.text;
+    el.appendChild(span);
+
+    // Add pin button
+    const pinBtn = document.createElement("span");
+    pinBtn.className = "status-pin-btn";
+    if (pinned) {
+      pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
+      pinBtn.title = "取消固定 (Unpin)";
+    } else {
+      pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
+      pinBtn.title = "固定 (Pin)";
+    }
+    
+    pinBtn.onclick = (e) => {
+      e.stopPropagation(); // Prevent main button click
+      this.toggleStatusPin(opts.id, bar);
+    };
+    el.appendChild(pinBtn);
+ 
     if (typeof opts.tooltip === "string") el.title = opts.tooltip;
-    if (opts.onClick) el.onclick = opts.onClick;
+    
+    el.onclick = (e) => {
+      if (opts.onClick) opts.onClick();
+    };
+    el.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.toggleStatusPin(opts.id, bar);
+    };
+    
     bar.appendChild(el);
-    this.statusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick });
+    this.statusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority, pinned });
+    this.sortStatusItems(bar);
 
     return {
       dispose: () => {
@@ -1367,6 +1475,63 @@ class Registry {
         this.statusItems.delete(opts.id);
       }
     };
+  }
+
+  private toggleStatusPin(id: string, bar: HTMLElement) {
+    const item = this.statusItems.get(id);
+    if (!item) return;
+
+    if (this.statusPinned.has(id)) {
+      this.statusPinned.delete(id);
+      item.pinned = false;
+      item.el.classList.remove('pinned');
+      // Remove icon
+      const icon = item.el.querySelector('svg');
+      if (icon) {
+        // SVG wrapper (span)
+        const wrapper = icon.parentElement;
+        if (wrapper && wrapper.tagName === 'SPAN') {
+            wrapper.remove();
+        } else {
+            icon.remove();
+        }
+      }
+    } else {
+      this.statusPinned.add(id);
+      item.pinned = true;
+      item.el.classList.add('pinned');
+    }
+    
+    // Rebuild the button content to update icon
+    // Simple rebuild: find the pin btn and update its icon/title
+    const pinBtn = item.el.querySelector('.status-pin-btn') as HTMLElement;
+    if (pinBtn) {
+        if (item.pinned) {
+            pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
+            pinBtn.title = "取消固定 (Unpin)";
+        } else {
+            pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
+            pinBtn.title = "固定 (Pin)";
+        }
+    }
+
+    this.saveStatusPinned();
+    this.sortStatusItems(bar);
+  }
+
+  private sortStatusItems(bar: HTMLElement) {
+    const items = Array.from(this.statusItems.values());
+    // Sort logic:
+    // 1. Pinned items first
+    // 2. Then by Priority (descending)
+    // 3. Then by ID (ascending)
+    items.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return a.id.localeCompare(b.id);
+    });
+    // Re-append to DOM in order (appendChild moves existing nodes)
+    items.forEach(item => bar.appendChild(item.el));
   }
   // ===== Chat Runner helpers (MVP, simulated streaming) =====
 
@@ -1599,7 +1764,7 @@ const registry = new Registry();
         registry.onStateChange<T>(key, h)
     },
     statusBar: {
-      registerItem: (opts: { id: string; text: string; tooltip?: string; onClick?: () => void }) =>
+      registerItem: (opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }) =>
         registry.registerStatusItem(opts)
     },
     editor: {

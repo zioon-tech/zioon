@@ -442,23 +442,56 @@ export async function activate(ctx) {
     console.warn("[dev.terminal-enhanced] message contributor failed", e);
   }
 
-  // 6) Status bar item
+  // 6) Status bar item (showing current session)
   let statusDisp = null;
   const updateStatus = () => {
     const sid = getActiveSessionId();
-    const root = document.getElementById("zion-terminal-enhanced-root");
-    const isVisible = root && root.style.display === "block";
+    const sessions = window.zion?.state?.get("terminal.sessions") || [];
+    const activeSession = sessions.find(s => s.id === sid);
+
+    // 提取目录名辅助函数
+    const getDirName = (path) => {
+      if (!path) return "";
+      const normalized = path.replace(/[/\\]+$/, "");
+      if (!normalized) return path;
+      const parts = normalized.split(/[/\\]/);
+      return parts[parts.length - 1] || path;
+    };
+
+    let displayText = sid || "No Active Terminal";
+    if (activeSession) {
+      const dirName = getDirName(activeSession.cwd);
+      if (activeSession.type === "ssh") {
+        displayText = dirName ? `SSH: ${dirName}` : `SSH: ${activeSession.ssh_host}`;
+      } else {
+        displayText = dirName || displayText;
+      }
+    } else if (!sid) {
+      // 尝试获取第一个可用的 session
+      const first = sessions[0];
+      if (first) {
+        // 如果没有 active，显示第一个（但不标记为 active）
+        const dirName = getDirName(first.cwd);
+        if (first.type === "ssh") {
+          displayText = dirName ? `SSH: ${dirName} (Inactive)` : `SSH: ${first.ssh_host} (Inactive)`;
+        } else {
+          displayText = `${dirName || first.id} (Inactive)`;
+        }
+      }
+    }
+
     statusDisp?.dispose?.();
     statusDisp = window.zion.statusBar.registerItem({
-      id: "dev.terminal.enhanced.button",
-      text: `Terminal+${sid ? `: ${sid}` : ""}`,
-      tooltip: isVisible ? "Hide Terminal Enhanced Panel" : "Open Terminal Enhanced Panel",
+      id: "dev.terminal.enhanced.status",
+      text: `Term+: ${displayText}`,
+      tooltip: `Toggle Terminal Panel${sid ? ` (Active: ${sid})` : ""}`,
       onClick: () => window.zion.commands.executeCommand("terminal.togglePanel")
     });
   };
+  
   updateStatus();
-  ctx.subscriptions.push({ dispose: () => statusDisp?.dispose?.() });
   ctx.subscriptions.push(window.zion.state.onDidChange("terminal.activeSessionId", updateStatus));
+  ctx.subscriptions.push(window.zion.state.onDidChange("terminal.sessions", updateStatus));
 
   // 7) Install panel as decorator (with PTY connector)
   let panel = null;

@@ -1,0 +1,63 @@
+{
+  "name": "dev.export-editor",
+  "version": "0.0.1",
+  "description": "Export current editor content to PNG or PDF.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.export-editor",
+    "name": "dev.export-editor",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "exportEditor.asPng",
+          "title": "Export Editor as PNG"
+        },
+        {
+          "id": "exportEditor.asPngMulti",
+          "title": "Export Editor as PNG (pages)"
+        },
+        {
+          "id": "exportEditor.asPdf",
+          "title": "Export Editor as PDF"
+        }
+      ],
+      "menus": {
+        "editor/context": [
+          {
+            "title": "Export",
+            "when": "editorFocus",
+            "submenu": [
+              {
+                "command": "exportEditor.asPng",
+                "title": "Export as PNG",
+                "when": "editorFocus"
+              },
+              {
+                "command": "exportEditor.asPngMulti",
+                "title": "Export as PNG (pages)",
+                "when": "editorFocus"
+              },
+              {
+                "command": "exportEditor.asPdf",
+                "title": "Export as PDF",
+                "when": "editorFocus"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "activationEvents": [
+      "onStartupFinished",
+      "onCommand:exportEditor.asPng",
+      "onCommand:exportEditor.asPngMulti",
+      "onCommand:exportEditor.asPdf"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

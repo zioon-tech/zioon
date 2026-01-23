@@ -1,5 +1,6 @@
 import "katex/dist/katex.min.css";
 import { EditorCore } from "./editor/EditorCore";
+import "./pwa-test";
 import { attachEditor } from "./ext/registry";
 import type { Disposable } from "./types/zion";
 import { PluginManager } from "./plugin/manager";
@@ -98,7 +99,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       id: "core.theme",
       text: `Theme: ${t === "dark" ? "Dark" : "Light"}`,
       tooltip: "Click to toggle theme",
-      onClick: () => window.zion.commands.executeCommand("zion.toggleTheme")
+      onClick: () => window.zion.commands.executeCommand("zion.toggleTheme"),
+      priority: 80
     });
   };
 
@@ -131,7 +133,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       id: "core.wysiwyg",
       text: `WYSIWYG: ${enabled ? "On" : "Off"}`,
       tooltip: "Click to toggle WYSIWYG mode",
-      onClick: () => window.zion.commands.executeCommand("zion.toggleWysiwyg")
+      onClick: () => window.zion.commands.executeCommand("zion.toggleWysiwyg"),
+      priority: 79
     });
   };
 
@@ -352,7 +355,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     tooltip: "Zion Next is running",
     onClick: () => {
       console.log("Core ready clicked");
-    }
+    },
+    priority: 90
   });
 
   // Simple Extensions panel launcher
@@ -360,7 +364,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     id: "core.extensions",
     text: "Extensions",
     tooltip: "Manage extensions (enable/disable)",
-    onClick: () => openExtensionsPanel()
+    onClick: () => openExtensionsPanel(),
+    priority: 69
   });
 
   // Plugin management panel launcher
@@ -368,7 +373,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     id: "core.plugins",
     text: "Plugins",
     tooltip: "Manage plugins (new plugin system)",
-    onClick: () => openPluginsPanel(pluginManager)
+    onClick: () => openPluginsPanel(pluginManager),
+    priority: 70
   });
 
   // Core convenience: reload extensions (page reload)
@@ -376,7 +382,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     id: "core.reload",
     text: "Reload",
     tooltip: "Reload extensions and page",
-    onClick: () => location.reload()
+    onClick: () => location.reload(),
+    priority: -10
   });
 
   // Core commands
@@ -391,7 +398,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     window.zion.statusBar.registerItem({
       id: "core.extErrors",
       text: `● ExtErr(${extErr})`,
-      tooltip: "Some extensions failed to load (check console)"
+      tooltip: "Some extensions failed to load (check console)",
+      priority: 100
     });
   }
 }

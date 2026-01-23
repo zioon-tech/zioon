@@ -50,17 +50,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 }
 
 /* xterm 内部元素间距重置 */
-.zte-panel > div:nth-child(3) {
-  margin: 0;
-  padding: 0;
-}
-.zte-panel > div:nth-child(3) > div {
-  margin: 0;
-  padding: 0;
-}
 .zte-panel .xterm-viewport {
   top: 0;
-  padding: 0 8px;
   margin: 0;
 }
 .zte-panel .xterm-screen {
@@ -74,10 +65,12 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   padding: 0;
 }
 
-/* 隐藏 xterm 内部高度为 14px 的空白 div（xterm 生成的占位符） */
+/* 隐藏 xterm 内部高度为 14px 的空白 div（xterm 生成的占位符）- 已移除，可能导致 DOM 偏移 */
+/*
 .zte-panel .xterm-rows > div[style*="height: 14px"]:empty {
   display: none !important;
 }
+*/
 
 /* xterm viewport 滚动条主题化 */
 .zte-panel .xterm-viewport {
@@ -337,7 +330,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
   padding: 4px;
-  z-index: 2000;
+  z-index: 960;
   display: none;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   scrollbar-width: thin;
@@ -529,6 +522,22 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 }
 .zte-suggest-box:hover::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb-hover);
+}
+
+/* Links (xterm web-links addon) - Canvas 模式下 CSS 无效，仅保留 tooltip 样式 */
+.zte-link-tooltip {
+  position: absolute;
+  z-index: 1005;
+  display: none;
+  pointer-events: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 92%, black);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  color: var(--fg);
+  font-size: 12px;
+  white-space: nowrap;
 }
 `;
     document.head.appendChild(style);
@@ -905,7 +914,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     bottom: "0",
     height: "35vh",
     background: "transparent",
-    zIndex: "1001",
+    zIndex: "900",
     display: "none"
   });
 
@@ -1147,6 +1156,11 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   toast.style.display = "none";
   panel.appendChild(toast);
 
+  const linkTooltip = document.createElement("div");
+  linkTooltip.className = "zte-link-tooltip";
+  linkTooltip.textContent = "Follow link (Cmd+Click)";
+  panel.appendChild(linkTooltip);
+
   let toastTimer = 0;
   function showToast(message, ms = 1200) {
     const text = String(message || "").trim();
@@ -1157,6 +1171,46 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     toastTimer = setTimeout(() => {
       toast.style.display = "none";
     }, ms);
+  }
+
+  let linkHoverTimer = 0;
+  let hoveringLink = false;
+
+  function hideLinkTooltip() {
+    try { clearTimeout(linkHoverTimer); } catch {}
+    linkHoverTimer = 0;
+    hoveringLink = false;
+    try { linkTooltip.style.display = "none"; } catch {}
+  }
+
+  function positionLinkTooltip(clientX, clientY) {
+    if (linkTooltip.style.display !== "block") return;
+    const rect = panel.getBoundingClientRect();
+    const panelW = rect.width || 1;
+    const panelH = rect.height || 1;
+    const padding = 8;
+    const offset = 12;
+    let x = clientX - rect.left + offset;
+    let y = clientY - rect.top + offset;
+    const w = linkTooltip.offsetWidth || 1;
+    const h = linkTooltip.offsetHeight || 1;
+    if (x + w + padding > panelW) x = panelW - w - padding;
+    if (y + h + padding > panelH) y = panelH - h - padding;
+    if (x < padding) x = padding;
+    if (y < padding) y = padding;
+    linkTooltip.style.left = `${Math.floor(x)}px`;
+    linkTooltip.style.top = `${Math.floor(y)}px`;
+  }
+
+  function scheduleLinkTooltip(clientX, clientY) {
+    try { clearTimeout(linkHoverTimer); } catch {}
+    linkHoverTimer = setTimeout(() => {
+      linkHoverTimer = 0;
+      if (!hoveringLink) return;
+      if (root.style.display === "none") return;
+      linkTooltip.style.display = "block";
+      positionLinkTooltip(clientX, clientY);
+    }, 500);
   }
 
   function setPanelHeightPx(nextPx, persist = true) {
@@ -1437,24 +1491,45 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       });
   }
 
-  function fitActiveView() {
+  function fitActiveView(immediate = false, retryCount = 0) {
     const v = getActiveView();
     if (!v || !v.term || !v.fitAddon) return;
-    try {
-      // 使用 setTimeout 避免 xterm.js 的 fit 操作阻塞主线程
-      setTimeout(() => {
-        try {
-          v.fitAddon.fit();
-          if (v.pty) {
-            const cols = v.term.cols || 80;
-            const rows = v.term.rows || 24;
-            v.pty.resize?.(cols, rows);
+
+    const doFit = () => {
+      try {
+        // Force reflow
+        try { v.container.offsetHeight; } catch {}
+        
+        try { v.fitAddon.fit(); } catch {}
+        
+        if (v.pty) {
+          const cols = v.term.cols;
+          const rows = v.term.rows;
+          // Avoid resizing to invalid/too small dimensions which causes shell prompt wrapping artifacts
+          if (!cols || !rows || cols < 20 || rows < 2) {
+             if (retryCount < 5 && root.style.display !== "none") {
+               setTimeout(() => fitActiveView(true, retryCount + 1), 100);
+             }
+             return;
           }
-        } catch (e) {
-          console.warn('[terminal] fitActiveView error:', e);
+
+          // Check if dimensions actually changed
+          if (v.lastCols === cols && v.lastRows === rows) return;
+          v.lastCols = cols;
+          v.lastRows = rows;
+
+          v.pty.resize?.(cols, rows);
         }
-      }, 0);
-    } catch {}
+      } catch (e) {
+        console.warn('[terminal] fitActiveView error:', e);
+      }
+    };
+
+    if (immediate) {
+      doFit();
+    } else {
+      setTimeout(doFit, 0);
+    }
   }
 
   function isActiveUsingPty() {
@@ -1556,71 +1631,82 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   // Lazy load xterm (prefer local dependency; fallback to CDN)
+  let xtermLoadingPromise = null;
   async function ensureXtermLoaded() {
     if (xtermLoaded) return;
-    const ensureCss = (href) => {
-      if (!href) return;
-      if (document.getElementById("xterm-css")) return;
-      const link = document.createElement("link");
-      link.id = "xterm-css";
-      link.rel = "stylesheet";
-      link.href = href;
-      document.head.appendChild(link);
-    };
+    if (xtermLoadingPromise) return xtermLoadingPromise;
 
-    let Terminal = null;
-    let FitAddon = null;
-    let SearchAddon = null;
-    let WebLinksAddon = null;
+    xtermLoadingPromise = (async () => {
+      const ensureCss = (href) => {
+        if (!href) return;
+        if (document.getElementById("xterm-css")) return;
+        const link = document.createElement("link");
+        link.id = "xterm-css";
+        link.rel = "stylesheet";
+        link.href = href;
+        document.head.appendChild(link);
+      };
 
-    const loadFromLocal = async () => {
+      let Terminal = null;
+      let FitAddon = null;
+      let SearchAddon = null;
+      let WebLinksAddon = null;
+
+      const loadFromLocal = async () => {
+        try {
+          const cssMod = await import("xterm/css/xterm.css?url");
+          ensureCss(cssMod?.default || cssMod);
+        } catch {}
+
+        const xtermMod = await import("xterm");
+        Terminal = xtermMod?.Terminal || xtermMod?.default?.Terminal || xtermMod?.default;
+
+        const fitMod = await import("xterm-addon-fit");
+        FitAddon = fitMod?.FitAddon || fitMod?.default?.FitAddon || fitMod?.default;
+
+        const searchMod = await import("xterm-addon-search");
+        SearchAddon = searchMod?.SearchAddon || searchMod?.default?.SearchAddon || searchMod?.default;
+
+        const webLinksMod = await import("xterm-addon-web-links");
+        WebLinksAddon = webLinksMod?.WebLinksAddon || webLinksMod?.default?.WebLinksAddon || webLinksMod?.default;
+      };
+
+      const loadFromCdn = async () => {
+        ensureCss("https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css");
+        const xtermMod = await import("https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js");
+        const fitMod = await import("https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js");
+        const searchMod = await import("https://cdn.jsdelivr.net/npm/xterm-addon-search@0.15.0/lib/xterm-addon-search.js");
+        const webLinksMod = await import("https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.11.0/lib/xterm-addon-web-links.js");
+
+        Terminal = xtermMod?.Terminal || xtermMod?.default?.Terminal || xtermMod?.default;
+        FitAddon = fitMod?.FitAddon || fitMod?.default?.FitAddon || fitMod?.default;
+        SearchAddon = searchMod?.SearchAddon || searchMod?.default?.SearchAddon || searchMod?.default;
+        WebLinksAddon = webLinksMod?.WebLinksAddon || webLinksMod?.default?.WebLinksAddon || webLinksMod?.default;
+      };
+
       try {
-        const cssMod = await import("xterm/css/xterm.css?url");
-        ensureCss(cssMod?.default || cssMod);
-      } catch {}
+        await loadFromLocal();
+      } catch {
+        await loadFromCdn();
+      }
 
-      const xtermMod = await import("xterm");
-      Terminal = xtermMod?.Terminal || xtermMod?.default?.Terminal || xtermMod?.default;
+      if (!Terminal || !FitAddon || !SearchAddon || !WebLinksAddon) {
+        throw new Error("xterm load failed");
+      }
 
-      const fitMod = await import("xterm-addon-fit");
-      FitAddon = fitMod?.FitAddon || fitMod?.default?.FitAddon || fitMod?.default;
-
-      const searchMod = await import("xterm-addon-search");
-      SearchAddon = searchMod?.SearchAddon || searchMod?.default?.SearchAddon || searchMod?.default;
-
-      const webLinksMod = await import("xterm-addon-web-links");
-      WebLinksAddon = webLinksMod?.WebLinksAddon || webLinksMod?.default?.WebLinksAddon || webLinksMod?.default;
-    };
-
-    const loadFromCdn = async () => {
-      ensureCss("https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css");
-      const xtermMod = await import("https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js");
-      const fitMod = await import("https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js");
-      const searchMod = await import("https://cdn.jsdelivr.net/npm/xterm-addon-search@0.15.0/lib/xterm-addon-search.js");
-      const webLinksMod = await import("https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.11.0/lib/xterm-addon-web-links.js");
-
-      Terminal = xtermMod?.Terminal || xtermMod?.default?.Terminal || xtermMod?.default;
-      FitAddon = fitMod?.FitAddon || fitMod?.default?.FitAddon || fitMod?.default;
-      SearchAddon = searchMod?.SearchAddon || searchMod?.default?.SearchAddon || searchMod?.default;
-      WebLinksAddon = webLinksMod?.WebLinksAddon || webLinksMod?.default?.WebLinksAddon || webLinksMod?.default;
-    };
+      xtermCtors = { Terminal, FitAddon, SearchAddon, WebLinksAddon };
+      const MO = globalThis.MutationObserver;
+      const observer = typeof MO === "function" ? new MO(() => applyThemeToAllTerms()) : null;
+      try { observer?.observe?.(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] }); } catch {}
+      xtermCtors._zionThemeObserver = observer;
+      xtermLoaded = true;
+    })();
 
     try {
-      await loadFromLocal();
-    } catch {
-      await loadFromCdn();
+      await xtermLoadingPromise;
+    } finally {
+      xtermLoadingPromise = null;
     }
-
-    if (!Terminal || !FitAddon || !SearchAddon || !WebLinksAddon) {
-      throw new Error("xterm load failed");
-    }
-
-    xtermCtors = { Terminal, FitAddon, SearchAddon, WebLinksAddon };
-    const MO = globalThis.MutationObserver;
-    const observer = typeof MO === "function" ? new MO(() => applyThemeToAllTerms()) : null;
-    try { observer?.observe?.(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] }); } catch {}
-    xtermCtors._zionThemeObserver = observer;
-    xtermLoaded = true;
   }
 
   async function ensureView(sessionId) {
@@ -1691,7 +1777,30 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     });
     const fa = new xtermCtors.FitAddon();
     const sa = new xtermCtors.SearchAddon();
-    const wa = new xtermCtors.WebLinksAddon();
+    const wa = new xtermCtors.WebLinksAddon(
+      (event, uri) => {
+        const allow = !!(event?.metaKey || event?.ctrlKey);
+        if (!allow) return;
+        try { event.preventDefault(); } catch {}
+        try { event.stopPropagation(); } catch {}
+        const url = String(uri || "");
+        if (!url) return;
+        try {
+          window.open(url, "_blank", "noopener,noreferrer");
+        } catch {
+          try { location.href = url; } catch {}
+        }
+      },
+      {
+        hover: (event, uri) => {
+          hoveringLink = true;
+          scheduleLinkTooltip(event.clientX, event.clientY);
+        },
+        leave: (event, uri) => {
+          hideLinkTooltip();
+        }
+      }
+    );
     t.loadAddon(fa);
     t.loadAddon(sa);
     t.loadAddon(wa);
@@ -1712,7 +1821,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       ptyConnectNonce: 0,
       ptyRetryTimer: 0,
       ptyRetryCount: 0,
-      termDataDisp: null
+      termDataDisp: null,
+      lastCols: 0,
+      lastRows: 0
     };
 
     v.termDataDisp = t.onData((data) => {
@@ -1982,7 +2093,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       position: "fixed",
       left: `${x}px`,
       top: `${y}px`,
-      zIndex: "1005",
+      zIndex: "960",
       minWidth: "160px",
       background: "var(--panel)",
       color: "var(--fg)",
@@ -2298,6 +2409,31 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   termWrap.addEventListener("mousedown", () => {
     try { getActiveView()?.term?.focus?.(); } catch {}
   });
+
+  /*
+  const onTermWrapMouseMove = (e) => {
+    // ...
+  };
+  */
+
+  const onTermWrapMouseLeave = () => hideLinkTooltip();
+  const onTermWrapWheel = () => hideLinkTooltip();
+  const onTermWrapMouseDownForTip = () => hideLinkTooltip();
+
+  // termWrap.addEventListener("mousemove", onTermWrapMouseMove);
+  termWrap.addEventListener("mouseleave", onTermWrapMouseLeave);
+  termWrap.addEventListener("wheel", onTermWrapWheel, { passive: true });
+  termWrap.addEventListener("mousedown", onTermWrapMouseDownForTip);
+
+  // const onGlobalKeyForLink = (e) => setModLinkActive(!!(e.metaKey || e.ctrlKey));
+  // const onGlobalBlurForLink = () => setModLinkActive(false);
+  /*
+  try {
+    window.addEventListener("keydown", onGlobalKeyForLink, true);
+    window.addEventListener("keyup", onGlobalKeyForLink, true);
+    window.addEventListener("blur", onGlobalBlurForLink, true);
+  } catch {}
+  */
 
   try {
     const RO = globalThis.ResizeObserver;
@@ -2623,7 +2759,15 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   // Fallback render outputs
   function renderFallbackOutputs() {
     const text = currentOutputsToText();
-    fallbackPre.textContent = text;
+    if (!text) {
+      if (!xtermLoaded) {
+        fallbackPre.textContent = "正在加载终端组件…\n(Loading terminal components...)";
+      } else {
+        fallbackPre.textContent = "终端已就绪。输入命令以开始。\n(Terminal ready. Type a command to start.)";
+      }
+    } else {
+      fallbackPre.textContent = text;
+    }
     fallbackPre.scrollTop = fallbackPre.scrollHeight;
   }
 
@@ -3134,7 +3278,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       position: "fixed",
       inset: "0",
       background: "rgba(0,0,0,0.35)",
-      zIndex: "1003"
+      zIndex: "960"
     });
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
@@ -3288,7 +3432,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       position: "fixed",
       inset: "0",
       background: "rgba(0,0,0,0.35)",
-      zIndex: "1003"
+      zIndex: "960"
     });
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
@@ -3468,11 +3612,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     // 先显示 root，确保 DOM 准备好
     const wasVisible = root.style.display === "block";
     root.style.display = "block";
+    try { root.offsetHeight; } catch {} // Force reflow
     try { applyDocking(root); } catch {}
+    try { if (xtermLoaded && getActiveView()?.term) fitActiveView(true); } catch {}
 
     const av = getActiveView();
     if (wasVisible && av?.pty?.ws?.readyState === WebSocket.OPEN) {
-      try { fitActiveView(); } catch {}
+      try { fitActiveView(true); } catch {}
       if (opts.openQuick) {
         setTimeout(() => openQuickPalette(), 0);
       } else if (opts.openHistory) {
@@ -3565,6 +3711,17 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
   function dispose() {
     try { disp1?.dispose?.(); disp2?.dispose?.(); disp3?.dispose?.(); disp4?.dispose?.(); } catch {}
+    try {
+      // termWrap.removeEventListener("mousemove", onTermWrapMouseMove);
+      termWrap.removeEventListener("mouseleave", onTermWrapMouseLeave);
+      termWrap.removeEventListener("wheel", onTermWrapWheel);
+      termWrap.removeEventListener("mousedown", onTermWrapMouseDownForTip);
+    } catch {}
+    try {
+      // window.removeEventListener("keydown", onGlobalKeyForLink, true);
+      // window.removeEventListener("keyup", onGlobalKeyForLink, true);
+      // window.removeEventListener("blur", onGlobalBlurForLink, true);
+    } catch {}
     try {
       for (const sid of Array.from(sessionViews.keys())) disposeView(sid);
     } catch {}

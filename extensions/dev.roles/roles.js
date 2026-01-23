@@ -96,8 +96,11 @@ function getRoleForLine(text, prefixes) {
 
 /** @param {string} role */
 function tokenClass(role) {
-  // 统一使用 user 的样式，简化管理
-  return "cm-role-token-user";
+  // 根据 TOC 插件中的颜色方案返回对应的类名
+  // user: '#4caf50' (绿色), assistant: '#2196f3' (蓝色), system: '#9e9e9e' (灰色)
+  if (role === 'assistant') return "cm-role-token-assistant";
+  if (role === 'system') return "cm-role-token-system";
+  return "cm-role-token-user"; // 默认为 user
 }
 
 /** @param {import('@codemirror/view').EditorView} view @param {string[]} prefixes @param {string[]} highlightBlockRoles @param {RegExp|null} atRegex */

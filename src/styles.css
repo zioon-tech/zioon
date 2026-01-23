@@ -10,18 +10,19 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Noto Sans", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", "Source Han Sans SC", Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 
-  /* Role tokens (Dark defaults) */
-  --role-user-fg: var(--accent);
-  --role-user-bg: rgba(98,114,164,0.18);
-  --role-user-border: rgba(98,114,164,0.25);
+  /* Role tokens (Dark defaults) - 与 TOC 插件颜色对应 */
+  /* user: #4caf50 (绿色), assistant: #2196f3 (蓝色), system: #9e9e9e (灰色) */
+  --role-user-fg: #4caf50;
+  --role-user-bg: rgba(76,175,80,0.18);
+  --role-user-border: rgba(76,175,80,0.25);
 
-  --role-assistant-fg: var(--ok);
-  --role-assistant-bg: rgba(80,255,120,0.12);
-  --role-assistant-border: rgba(80,255,120,0.22);
+  --role-assistant-fg: #2196f3;
+  --role-assistant-bg: rgba(33,150,243,0.12);
+  --role-assistant-border: rgba(33,150,243,0.22);
 
-  --role-system-fg: var(--fg);
-  --role-system-bg: rgba(68,71,90,0.18);
-  --role-system-border: rgba(68,71,90,0.28);
+  --role-system-fg: #9e9e9e;
+  --role-system-bg: rgba(158,158,158,0.18);
+  --role-system-border: rgba(158,158,158,0.28);
 
   /* WYSIWYG heading sizes (GitHub-like but a bit tighter) */
   --md-h1-size: 1.8em;
@@ -63,18 +64,19 @@
   --accent: #3b82f6;
   --ok: #16a34a;
 
-  /* Role tokens (Light overrides) */
-  --role-user-fg: var(--accent);
-  --role-user-bg: rgba(59,130,246,0.15);
-  --role-user-border: rgba(59,130,246,0.28);
+  /* Role tokens (Light overrides) - 与 TOC 插件颜色对应 */
+  /* user: #4caf50 (绿色), assistant: #2196f3 (蓝色), system: #9e9e9e (灰色) */
+  --role-user-fg: #4caf50;
+  --role-user-bg: rgba(76,175,80,0.12);
+  --role-user-border: rgba(76,175,80,0.20);
 
-  --role-assistant-fg: var(--ok);
-  --role-assistant-bg: rgba(22,163,74,0.15);
-  --role-assistant-border: rgba(22,163,74,0.28);
+  --role-assistant-fg: #2196f3;
+  --role-assistant-bg: rgba(33,150,243,0.12);
+  --role-assistant-border: rgba(33,150,243,0.20);
 
-  --role-system-fg: var(--fg);
-  --role-system-bg: rgba(0,0,0,0.08);
-  --role-system-border: rgba(0,0,0,0.16);
+  --role-system-fg: #6b7280;
+  --role-system-bg: rgba(107,114,128,0.08);
+  --role-system-border: rgba(107,114,128,0.16);
 
   /* Markdown UI tokens (light theme overrides) */
   --md-code-bg: #f6f8fa;
@@ -152,6 +154,7 @@ html, body {
   border-radius: 6px;
 }
 .status-item {
+  position: relative;
   background: transparent;
   border: 1px solid var(--border);
   color: var(--fg);
@@ -161,6 +164,52 @@ html, body {
   cursor: pointer;
   white-space: nowrap; /* 按钮内文字不换行，保持单行紧凑 */
   flex: 0 0 auto;      /* 防止被压缩成极小宽度 */
+  transition: all 0.2s ease;
+}
+.status-item:hover {
+  background: rgba(128,128,128,0.1);
+  padding-right: 24px; /* Only expand padding on hover */
+}
+.status-item.pinned {
+  /* border-color: var(--accent); Remove border color for pinned */
+  background: rgba(98,114,164,0.1);
+  /* padding-right: 24px;  Don't keep padding for pinned items unless hovered */
+}
+.status-item.pinned:hover {
+  padding-right: 24px;
+}
+.status-pin-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.2s;
+  color: var(--fg);
+}
+.status-pin-btn:hover {
+  background: rgba(255,255,255,0.2);
+  color: var(--accent);
+}
+.status-item:hover .status-pin-btn {
+  opacity: 0.6;
+}
+.status-item:hover .status-pin-btn:hover {
+  opacity: 1;
+}
+/* Only show pin button on hover, even if pinned */
+.status-item.pinned .status-pin-btn {
+  opacity: 0;
+  color: var(--accent);
+}
+.status-item.pinned:hover .status-pin-btn {
+  opacity: 1;
 }
 #app {
   height: calc(100vh - 36px);
@@ -537,25 +586,25 @@ html, body {
   margin-top: 0;
 }
 
-/* User token: accent foreground with subtle background */
+/* User token: green (对应 TOC 中的 #4caf50) */
 .cm-role-token-user {
   color: var(--fg);
   background: var(--role-user-bg);
-/*   border: 1px solid var(--role-user-border); */
+  border: none;
 }
 
-/* Assistant token: use ok color, lighter background */
+/* Assistant token: blue (对应 TOC 中的 #2196f3) */
 .cm-role-token-assistant {
   color: var(--fg);
   background: var(--role-assistant-bg);
-/*   border: 1px solid var(--role-assistant-border); */
+  border: none;
 }
 
-/* System token: neutral tone */
+/* System token: gray (对应 TOC 中的 #9e9e9e) */
 .cm-role-token-system {
   color: var(--fg);
   background: var(--role-system-bg);
-/*   border: 1px solid var(--role-system-border); */
+  border: none;
 }
 
 
@@ -709,23 +758,29 @@ html, body {
 
 /* Editor scrollbar theming (WebKit + Firefox) */
 .cm-scroller {
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); /* Firefox */
+  scrollbar-color: transparent transparent; /* Firefox */
   scrollbar-width: thin; /* Firefox */
+}
+.cm-scroller:hover {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 .cm-scroller::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 .cm-scroller::-webkit-scrollbar-track {
-  background: var(--scrollbar-track);
+  background: transparent;
 }
 .cm-scroller::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
+  background-color: transparent;
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 .cm-scroller:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+.cm-scroller:hover::-webkit-scrollbar-thumb:hover {
   background-color: var(--scrollbar-thumb-hover);
 }
 
@@ -913,11 +968,13 @@ html, body {
   justify-content: center;
   height: 12px;
   width: 12px;
+  min-width: 12px; /* 强制最小宽度防止压缩 */
   border-radius: 999px;
   border: 1px solid var(--border);
   white-space: nowrap;
   user-select: none;
   opacity: 0.85;
+  flex: 0 0 auto; /* 防止 flex 压缩 */
 }
 .zion-tool-call-status .zion-tool-call-status-icon {
   width: 8px;
@@ -1368,7 +1425,7 @@ html, body {
   border-radius: 8px;
   transition: background 120ms ease;
   box-sizing: border-box;             /* 让背景裁剪时以内容盒为准 */
-  background-clip: content-box;       /* 根据缩进（padding-left）裁剪高亮宽度 */
+  background-clip: padding-box;       /* 根据缩进（border-left）裁剪高亮宽度 */
   white-space: nowrap;                /* 强制单行展示，避免换行 */
   /* 默认使用面板色，保证子元素可继承/取样到“非透明”的背景 */
   background: var(--panel);
@@ -1444,6 +1501,7 @@ body.zion-sessions-no-transitions .zion-session-row * {
   font-size: 12px;
   line-height: 1;
   color: var(--fg);
+  background: transparent;
   /* 背景色由脚本动态设置为与行背景一致（并且为不透明的合成色） */
 }
 /* 状态颜色：回答中用 accent，小圆点完成用 ok 绿色 */

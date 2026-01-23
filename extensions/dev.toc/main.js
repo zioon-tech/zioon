@@ -10,7 +10,10 @@
 import { syntaxTree } from "@codemirror/language";
 import { ViewPlugin } from "@codemirror/view";
 
+let extensionCtx = null;
+
 export async function activate(ctx) {
+  extensionCtx = ctx;
   // Inject TOC scrollbar hiding style (WebKit + Firefox + IE) to hide vertical scrollbar in TOC area
   try {
     if (!document.getElementById('zion-toc-scrollbar-style')) {
@@ -19,6 +22,10 @@ export async function activate(ctx) {
       style.textContent = `
 #zion-toc-sidepanel, #zion-toc-list, #zion-toc-panel { -ms-overflow-style: none; scrollbar-width: none; }
 #zion-toc-sidepanel::-webkit-scrollbar, #zion-toc-list::-webkit-scrollbar, #zion-toc-panel::-webkit-scrollbar { display: none; width: 0; height: 0; }
+@keyframes toc-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.6; box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4); }
+  50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px rgba(33, 150, 243, 0); }
+}
       `;
       document.head.appendChild(style);
     }
@@ -360,11 +367,60 @@ export async function activate(ctx) {
   // collapsed state set for headings: keep ids of collapsed nodes so updates can preserve UI state
   const tocState = {
     collapsed: new Set(),
-    allCollapsibleIds: new Set()
+    allCollapsibleIds: new Set(),
+    generatingBlockId: null, // 当前正在生成的块ID（用于显示动画）
+    lastGeneratedBlockId: null // 上一次生成的块ID（用于持久化指示）
   };
   let sidePanelOpen = false;
   let sideOverlayMode = false;
   const debouncedUpdate = debounce(() => updateTOCList(), 120);
+
+  // Helper: 根据会话ID获取对应的TOC块ID
+  const getTOCBlockIdForSession = (sessionId) => {
+    try {
+      const answerHeadLine = window?.zion?.state?.get?.(`chat.answerHeadLine.${sessionId}`);
+      if (typeof answerHeadLine === 'number') {
+        return `role::assistant::${answerHeadLine}`;
+      }
+    } catch {}
+    return null;
+  };
+
+  // 监听大模型回答开始/结束事件
+  try {
+    const onRunStarted = ({ sessionId }) => {
+      const blockId = getTOCBlockIdForSession(sessionId);
+      if (blockId) {
+        tocState.generatingBlockId = blockId;
+        // 开始新生成时清除旧的指示器
+        if (tocState.lastGeneratedBlockId) {
+          tocState.lastGeneratedBlockId = null;
+        }
+        if (sidePanelOpen) debouncedUpdate();
+      }
+    };
+
+    const onRunFinished = ({ sessionId }) => {
+      // 记录最后生成的块ID
+      if (tocState.generatingBlockId) {
+        tocState.lastGeneratedBlockId = tocState.generatingBlockId;
+      }
+      tocState.generatingBlockId = null;
+      if (sidePanelOpen) debouncedUpdate();
+    };
+
+    window.zion.events.on("chat/runStarted", onRunStarted);
+    window.zion.events.on("chat/runFinished", onRunFinished);
+    // 记录订阅以便清理
+    const chatEventsCleanup = () => {
+      try {
+        window.zion.events.off("chat/runStarted", onRunStarted);
+        window.zion.events.off("chat/runFinished", onRunFinished);
+      } catch {}
+    };
+    // 将清理函数存储在 ctx 上，用于 deactivate 时调用
+    ctx.chatEventsCleanup = chatEventsCleanup;
+  } catch {}
 
   const syncToggleAllBtn = () => {
     try {
@@ -751,25 +807,79 @@ export async function activate(ctx) {
             // Use color dot to mark role (方案4) - more subtle
             const roleColors = { user: '#4caf50', assistant: '#2196f3', system: '#9e9e9e' };
             const dotColor = roleColors[b.role?.toLowerCase()] || roleColors.user;
-            label.innerHTML = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dotColor};margin-right:6px;flex-shrink:0;opacity:0.6;"></span>${(b.preview || '').trim() || '(empty)'}`;
-            label.style.fontSize = "12px";
-            label.style.whiteSpace = "nowrap";
-            label.style.textOverflow = "ellipsis";
-            label.style.overflow = "hidden";
+            // 判断是否是正在生成的块
+            const isGenerating = tocState.generatingBlockId === blockId;
+            const isLastGenerated = tocState.lastGeneratedBlockId === blockId;
+
+            // 创建小圆点容器，给它留出空间
+            const dotContainer = document.createElement("span");
+            dotContainer.style.display = "inline-flex";
+            dotContainer.style.alignItems = "center";
+            dotContainer.style.justifyContent = "center";
+            dotContainer.style.width = "16px"; // 增加宽度以容纳放大效果
+            dotContainer.style.height = "16px";
+            dotContainer.style.flexShrink = "0";
+            dotContainer.style.marginRight = "4px";
+
+            if (isLastGenerated) {
+              // 持久化指示器 - 使用 SVG 图标代替字符
+              const indicator = document.createElement("span");
+              indicator.style.display = "flex";
+              indicator.style.alignItems = "center";
+              indicator.style.justifyContent = "center";
+              indicator.style.width = "14px";
+              indicator.style.height = "14px";
+              indicator.style.color = "var(--ext-toc-active-fg, var(--accent))";
+              indicator.title = "New answer here";
+              // 使用一个实心圆点带外圈的图标，或者一个漂亮的箭头
+              // 这里选用一个向左的箭头，或者一个定位图标。
+              // 考虑到 "new answer"，使用一个小圆点带光晕效果的 SVG 可能更好，或者简单的 Left Arrow Icon
+              // 试用 Right Arrow
+              indicator.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>';
+              dotContainer.appendChild(indicator);
+            } else {
+              const dot = document.createElement("span");
+              dot.style.display = "inline-block";
+              dot.style.width = "6px";
+              dot.style.height = "6px";
+              dot.style.borderRadius = "50%";
+              dot.style.background = dotColor;
+              dot.style.opacity = isGenerating ? "0.8" : "0.6";
+              dot.style.transition = "opacity 120ms ease";
+              if (isGenerating) {
+                dot.style.animation = "toc-pulse 1.5s ease-in-out infinite";
+              }
+              dotContainer.appendChild(dot);
+            }
+
+            const textSpan = document.createElement("span");
+            textSpan.textContent = (b.preview || '').trim() || '(empty)';
+            textSpan.style.fontSize = "12px";
+            textSpan.style.whiteSpace = "nowrap";
+            textSpan.style.textOverflow = "ellipsis";
+            textSpan.style.overflow = "hidden";
+            textSpan.style.flex = "1";
+
+            label.appendChild(dotContainer);
+            label.appendChild(textSpan);
             label.style.marginLeft = "0";
             label.style.display = "flex";
             label.style.alignItems = "center";
+            label.style.justifyContent = "flex-start"; // 确保从左侧开始布局
             // Add tooltip to show role name on hover
             label.title = `${b.role || 'unknown'}: ${(b.preview || '').trim() || '(empty)'}`;
-            // Show tooltip only on hover, prevent it from showing on screen readers (optional)
-            // label.setAttribute('aria-label', `${b.role} role block`);
 
-
+            // 生成中的块有额外样式
+            if (isGenerating) {
+              label.style.color = "var(--ext-toc-active-fg, var(--accent))";
+              label.style.fontWeight = "500";
+            }
 
             try {
               const activeBlockId = window?.zion?.state?.get?.('toc.activeBlockId');
               const activeHeadingId = window?.zion?.state?.get?.('toc.activeHeadingId');
-              if (activeBlockId && activeBlockId === blockId && !activeHeadingId) {
+              // 活跃块的高亮（生成中状态优先级更高）
+              if (activeBlockId && activeBlockId === blockId && !activeHeadingId && !isGenerating) {
                 label.style.fontWeight = "600";
                 label.style.color = "var(--ext-toc-active-fg, var(--accent))";
               }
@@ -778,6 +888,11 @@ export async function activate(ctx) {
             row.appendChild(label);
 
             row.onclick = () => {
+              // Clear persistent indicator on click
+              if (tocState.lastGeneratedBlockId === blockId) {
+                tocState.lastGeneratedBlockId = null;
+                setTimeout(() => debouncedUpdate(), 0);
+              }
               try {
                 window?.zion?.state?.set?.('toc.activeHeadingId', null);
                 const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
@@ -1530,4 +1645,11 @@ export async function activate(ctx) {
   // but we ensure command exists even if menus are filtered.
 }
 
-export function deactivate() {}
+export function deactivate() {
+  // 清理事件监听
+  try {
+    if (extensionCtx && extensionCtx.chatEventsCleanup) {
+      extensionCtx.chatEventsCleanup();
+    }
+  } catch {}
+}

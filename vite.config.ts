@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { zionExtensionsPlugin } from "./vite-plugin-extensions-fixed.js";
+import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
   server: {
@@ -47,7 +48,35 @@ export default defineConfig({
     copyPublicDir: true
   },
   plugins: [
-    zionExtensionsPlugin() as any
+    zionExtensionsPlugin() as any,
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png'],
+      manifest: {
+        name: 'Zion Next',
+        short_name: 'Zion',
+        description: 'Zion Next - A modern editor playground',
+        theme_color: '#2563eb',
+        background_color: '#ffffff',
+        display: 'standalone',
+        icons: [
+          {
+            src: 'icon-192.png',
+            sizes: '192x192',
+            type: 'image/png'
+          },
+          {
+            src: 'icon-512.png',
+            sizes: '512x512',
+            type: 'image/png'
+          }
+        ]
+      },
+      devOptions: {
+        enabled: true,
+        type: 'module'
+      }
+    })
   ],
   optimizeDeps: {
     // 确保这些依赖被预构建
