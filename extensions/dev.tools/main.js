@@ -437,6 +437,7 @@ function registerDefaultTools() {
             properties: {
               path: { type: "string", description: "File path to write" },
               content: { type: "string", description: "Content to write" },
+              prompt: { type: "string", description: "Short summary of what is being written (<=100 chars)" },
               session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
             },
             required: ["path", "content"],
@@ -457,9 +458,26 @@ function registerDefaultTools() {
               old_string: { type: "string", description: "Exact string to replace" },
               new_string: { type: "string", description: "Replacement string" },
               replace_all: { type: "boolean", description: "Replace all occurrences (default false)" },
+              prompt: { type: "string", description: "Short summary of what is being edited (<=100 chars)" },
               session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
             },
             required: ["path", "old_string", "new_string"],
+            additionalProperties: false
+          }
+        }
+      },
+      // ViewToolResult: view original tool result by tool_call_id
+      {
+        type: "function",
+        function: {
+          name: "viewToolResult",
+          description: "View the original tool output by tool_call_id from the current session annotations.",
+          parameters: {
+            type: "object",
+            properties: {
+              tool_call_id: { type: "string", description: "The tool_call_id to view" }
+            },
+            required: ["tool_call_id"],
             additionalProperties: false
           }
         }
@@ -900,6 +918,7 @@ function registerDefaultTools() {
       handlers.write = async (args) => {
         const path = String(args?.path || args?.file_path || "").trim();
         const content = String(args?.content ?? "");
+        const prompt = typeof args?.prompt === "string" ? args.prompt : undefined;
         const sessionId = String(args?.session_id || "").trim();
         if (!path) return "Missing path";
 
@@ -925,7 +944,8 @@ function registerDefaultTools() {
             const txt = await res.text().catch(() => "");
             return `HTTP ${res.status}: ${txt || data?.error || "write failed"}`;
           }
-          return JSON.stringify(data, null, 2);
+          const out = { ...(data || {}), path, prompt };
+          return JSON.stringify(out, null, 2);
         } catch (e) {
           return `Write error: ${e?.message || String(e)}`;
         }
@@ -939,6 +959,7 @@ function registerDefaultTools() {
         const old_string = String(args?.old_string ?? "");
         const new_string = String(args?.new_string ?? "");
         const replace_all = !!args?.replace_all;
+        const prompt = typeof args?.prompt === "string" ? args.prompt : undefined;
         const sessionId = String(args?.session_id || "").trim();
         if (!path) return "Missing path";
         if (!old_string) return "Missing old_string";
@@ -965,7 +986,8 @@ function registerDefaultTools() {
             const txt = await res.text().catch(() => "");
             return `HTTP ${res.status}: ${txt || data?.error || "edit failed"}`;
           }
-          return JSON.stringify(data, null, 2);
+          const out = { ...(data || {}), path, old_string, new_string, replace_all, prompt };
+          return JSON.stringify(out, null, 2);
         } catch (e) {
           return `Edit error: ${e?.message || String(e)}`;
         }
@@ -1009,6 +1031,24 @@ function registerDefaultTools() {
       };
     }
 
+    // ViewToolResult: return original tool result by id
+    if (!handlers.viewToolResult) {
+      handlers.viewToolResult = async (args) => {
+        const toolId = String(args?.tool_call_id || args?.id || "").trim();
+        if (!toolId) return "Missing tool_call_id";
+        try {
+          const sid = window.zion?.state?.get("sessions.currentId");
+          if (!sid) return "No session";
+          const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+          const items = Array.isArray(ann.tools) ? ann.tools : [];
+          const it = items.find(x => String(x.id) === toolId);
+          if (!it) return "Not found";
+          return String(it.result ?? "");
+        } catch (e) {
+          return `ViewToolResult error: ${e?.message || String(e)}`;
+        }
+      };
+    }
     // Bash (local tools) with session support
     if (!handlers.Bash) {
       handlers.Bash = async (args) => {

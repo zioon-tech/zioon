@@ -363,13 +363,29 @@ ${keyInfo.constraints.join('\n')}`;
   
   /**
    * Estimate tokens in text (simplified)
-   * @param {string} text - Text to estimate
+   * @param {any} text - Text or messages to estimate
    * @returns {Promise<number>} Estimated token count
    */
   async estimateTokens(text) {
     if (!text) return 0;
-    // Rough estimate: 1 token ≈ 4 characters for English
-    return Math.ceil(text.length / 4);
+    if (Array.isArray(text)) {
+      let total = 0;
+      for (const msg of text) {
+        const s = JSON.stringify(msg);
+        total += Math.ceil(s.length / 4);
+      }
+      return total;
+    }
+    if (typeof text === 'object') {
+      try {
+        const s = JSON.stringify(text);
+        return Math.ceil(s.length / 4);
+      } catch {
+        const s = String(text);
+        return Math.ceil(s.length / 4);
+      }
+    }
+    return Math.ceil(String(text).length / 4);
   }
   
   /**

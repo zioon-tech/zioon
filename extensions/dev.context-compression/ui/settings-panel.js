@@ -66,6 +66,13 @@ export class CompressionSettingsPanel {
       compressionInterval: 15,
       minToolCalls: 5,
       
+      // Progressive strategy
+      progressiveTokensProtect: 0,
+      progressiveTokensCompact: 0,
+      progressiveRecentProtectTokens: 20000,
+      progressiveMaxRecordPromptChars: 100,
+      progressiveKeepRecentTurns: 2,
+      
       // UI settings
       showStatistics: true,
       showCompressionHistory: true
@@ -78,10 +85,14 @@ export class CompressionSettingsPanel {
    */
   async loadSettings() {
     try {
-      const saved = window.zion?.state?.get?.('compression.settings');
-      if (saved) {
-        this.settings = { ...this.settings, ...saved };
-      }
+      let saved = null;
+      try {
+        const ls = localStorage.getItem('zion.compression.settings');
+        if (ls) saved = JSON.parse(ls);
+      } catch {}
+      const st = window.zion?.state?.get?.('compression.settings');
+      const merged = { ...this.settings, ...(saved || {}), ...(st || {}) };
+      this.settings = merged;
     } catch (error) {
       console.error('Failed to load compression settings:', error);
     }
@@ -96,6 +107,9 @@ export class CompressionSettingsPanel {
   async saveSettings() {
     try {
       await window.zion?.state?.set?.('compression.settings', this.settings);
+      try {
+        localStorage.setItem('zion.compression.settings', JSON.stringify(this.settings));
+      } catch {}
       console.log('Compression settings saved:', this.settings);
     } catch (error) {
       console.error('Failed to save compression settings:', error);
@@ -107,7 +121,7 @@ export class CompressionSettingsPanel {
    * @returns {string} HTML content
    */
   render() {
-    const strategies = ['auto', 'opencode', 'claude-code', 'cursor', 'manus', 'focus-agent'];
+    const strategies = ['auto', 'opencode', 'claude-code', 'cursor', 'manus', 'focus-agent', 'progressive'];
 
     return `
       <div class="compression-settings-panel">
@@ -189,6 +203,7 @@ export class CompressionSettingsPanel {
               <option value="cursor" ${this.settings.defaultStrategy === 'cursor' ? 'selected' : ''}>Cursor</option>
               <option value="manus" ${this.settings.defaultStrategy === 'manus' ? 'selected' : ''}>Manus</option>
               <option value="focus-agent" ${this.settings.defaultStrategy === 'focus-agent' ? 'selected' : ''}>Focus Agent</option>
+              <option value="progressive" ${this.settings.defaultStrategy === 'progressive' ? 'selected' : ''}>Progressive</option>
             </select>
           </div>
 
@@ -250,6 +265,7 @@ export class CompressionSettingsPanel {
         ${this.renderCursorSettings()}
         ${this.renderManusSettings()}
         ${this.renderFocusAgentSettings()}
+        ${this.renderProgressiveSettings()}
       </div>
     `;
   }
@@ -404,6 +420,51 @@ export class CompressionSettingsPanel {
     `;
   }
   
+  renderProgressiveSettings() {
+    return `
+      <div class="strategy-card">
+        <div class="strategy-header">
+          <span class="strategy-name">Progressive</span>
+          <span class="strategy-badge">Minimal Tool Records</span>
+        </div>
+        <div class="setting-row">
+          <div class="setting-col">
+            <label for="progressive-tokens-protect" class="field-label">Tokens Protect</label>
+            <input type="number" id="progressive-tokens-protect" class="field-input"
+                   value="${this.settings.progressiveTokensProtect}" min="0" step="1000">
+            <small>Skip compression if total tokens below</small>
+          </div>
+          <div class="setting-col">
+            <label for="progressive-tokens-compact" class="field-label">Tokens Compact</label>
+            <input type="number" id="progressive-tokens-compact" class="field-input"
+                   value="${this.settings.progressiveTokensCompact}" min="0" step="1000">
+            <small>Require savings above threshold</small>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-col">
+            <label for="progressive-recent-protect" class="field-label">Recent Protect Tokens</label>
+            <input type="number" id="progressive-recent-protect" class="field-input"
+                   value="${this.settings.progressiveRecentProtectTokens}" min="0" step="1000">
+            <small>Keep recent tokens uncompressed</small>
+          </div>
+          <div class="setting-col">
+            <label for="progressive-max-prompt" class="field-label">Max Prompt Chars</label>
+            <input type="number" id="progressive-max-prompt" class="field-input"
+                   value="${this.settings.progressiveMaxRecordPromptChars}" min="10" step="10">
+            <small>Record prompt length limit</small>
+          </div>
+        </div>
+        <div class="setting-item">
+          <label for="progressive-keep-turns" class="field-label">Keep Recent Turns</label>
+          <input type="number" id="progressive-keep-turns" class="field-input"
+                 value="${this.settings.progressiveKeepRecentTurns}" min="0" step="1">
+          <small>Assistant-tool pairs to keep in full</small>
+        </div>
+      </div>
+    `;
+  }
+  
   /**
    * Render advanced settings
    * @returns {string} HTML content
@@ -458,6 +519,7 @@ export class CompressionSettingsPanel {
               <option value="cursor" ${this.settings.defaultStrategy === 'cursor' ? 'selected' : ''}>Cursor</option>
               <option value="manus" ${this.settings.defaultStrategy === 'manus' ? 'selected' : ''}>Manus</option>
               <option value="focus-agent" ${this.settings.defaultStrategy === 'focus-agent' ? 'selected' : ''}>Focus Agent</option>
+              <option value="progressive" ${this.settings.defaultStrategy === 'progressive' ? 'selected' : ''}>Progressive</option>
             </select>
           </div>
 
@@ -603,7 +665,8 @@ export class CompressionSettingsPanel {
       'claude-code': 'Claude Code',
       'cursor': 'Cursor',
       'manus': 'Manus',
-      'focus-agent': 'Focus Agent'
+      'focus-agent': 'Focus Agent',
+      'progressive': 'Progressive'
     };
     
     return names[strategy] || strategy;
@@ -824,7 +887,12 @@ export class CompressionSettingsPanel {
       'min-tool-calls': 'minToolCalls',
       'dynamic-context-discovery': 'dynamicContextDiscovery',
       'show-statistics': 'showStatistics',
-      'show-compression-history': 'showCompressionHistory'
+      'show-compression-history': 'showCompressionHistory',
+      'progressive-tokens-protect': 'progressiveTokensProtect',
+      'progressive-tokens-compact': 'progressiveTokensCompact',
+      'progressive-recent-protect': 'progressiveRecentProtectTokens',
+      'progressive-max-prompt': 'progressiveMaxRecordPromptChars',
+      'progressive-keep-turns': 'progressiveKeepRecentTurns'
     };
     
     for (const [elementId, settingKey] of Object.entries(inputs)) {

@@ -232,12 +232,16 @@ function summarizeToolArgs(name, args) {
         const fp = String(a?.path || a?.file_path || "").trim();
         if (!fp) return "";
         const len = String(a?.content ?? "").length;
-        return `${clip(fp, 120)} (content=${len} chars)`;
+        const pmt = String(a?.prompt || "").trim();
+        const base = `${clip(fp, 120)} (content=${len} chars)`;
+        return pmt ? `${base}; ${clip(pmt, 100)}` : base;
       }
       case "edit": {
         const fp = String(a?.path || a?.file_path || "").trim();
         if (!fp) return "";
-        return clip(fp, 120);
+        const pmt = String(a?.prompt || "").trim();
+        const base = clip(fp, 120);
+        return pmt ? `${base}; ${clip(pmt, 100)}` : base;
       }
       case "tree": {
         const dir = String(a?.path || "").trim();

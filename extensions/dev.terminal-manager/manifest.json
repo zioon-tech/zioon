@@ -18,6 +18,11 @@
         {
           "id": "terminal.closeManager",
           "title": "Close Terminal Manager"
+        },
+        {
+          "id": "terminal.newSessionAtSameLevel",
+          "title": "New Session at Same Level",
+          "keybinding": "Alt+N"
         }
       ]
     },

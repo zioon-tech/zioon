@@ -68,30 +68,29 @@ export class ClaudeCodeStrategy {
    * @returns {Promise<string>} Generated summary
    */
   async generateSummary(messages) {
-    // In a real implementation, this would call an LLM with the summary prompt
-    // For now, simulate the process
-    
     const prompt = this.options.summaryPrompt;
-    
-    // Extract structured information
     const extracted = this.extractConversationDetails(messages);
-    
+    const accomplished = extracted.accomplished.length > 0 ? extracted.accomplished : this.fallbackAccomplished(messages);
+    const inProgress = extracted.inProgress.length > 0 ? extracted.inProgress : this.fallbackInProgress(messages);
+    const files = extracted.files.length > 0 ? extracted.files : [];
+    const nextSteps = extracted.nextSteps.length > 0 ? extracted.nextSteps : this.fallbackNextSteps(messages);
+    const constraints = extracted.constraints.length > 0 ? extracted.constraints : ['None detected'];
     return `Conversation Summary:
 
 What was accomplished:
-${extracted.accomplished.map(item => `• ${item}`).join('\n')}
+${accomplished.map(item => `• ${item}`).join('\n')}
 
 Current work in progress:
-${extracted.inProgress.map(item => `• ${item}`).join('\n')}
+${inProgress.map(item => `• ${item}`).join('\n')}
 
 Files involved:
-${extracted.files.map(file => `• ${file}`).join('\n')}
+${files.map(file => `• ${file}`).join('\n')}
 
 Next steps:
-${extracted.nextSteps.map(step => `• ${step}`).join('\n')}
+${nextSteps.map(step => `• ${step}`).join('\n')}
 
 Key user requests or constraints:
-${extracted.constraints.map(constraint => `• ${constraint}`).join('\n')}`;
+${constraints.map(constraint => `• ${constraint}`).join('\n')}`;
   }
   
   /**
@@ -113,20 +112,38 @@ ${extracted.constraints.map(constraint => `• ${constraint}`).join('\n')}`;
     
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      const content = msg.content || '';
+      let content = '';
+      if (Array.isArray(msg.content)) {
+        const parts = [];
+        for (const p of msg.content) {
+          if (typeof p === 'string') parts.push(p);
+          else if (p?.type === 'text' && p?.text) parts.push(String(p.text));
+          else if (typeof p === 'object') {
+            try { parts.push(JSON.stringify(p)); } catch { parts.push(String(p)); }
+          }
+        }
+        content = parts.join('\n');
+      } else if (typeof msg.content === 'object') {
+        try { content = JSON.stringify(msg.content); } catch { content = String(msg.content || ''); }
+      } else {
+        content = String(msg.content || '');
+      }
       
       if (msg.role === 'user') {
         lastUserRequest = content;
         
         // Extract constraints
         if (content.includes('don\'t') || content.includes('avoid') || 
-            content.includes('must') || content.includes('should')) {
+            content.includes('must') || content.includes('should') ||
+            content.includes('不要') || content.includes('避免') ||
+            content.includes('必须') || content.includes('应该')) {
           details.constraints.push(content.substring(0, 150) + '...');
         }
         
         // Extract next steps from user requests
         if (content.includes('next') || content.includes('then') || 
-            content.includes('after') || content.includes('please')) {
+            content.includes('after') || content.includes('please') ||
+            content.includes('下一步') || content.includes('然后') || content.includes('之后')) {
           details.nextSteps.push(content.substring(0, 150) + '...');
         }
       }
@@ -134,21 +151,23 @@ ${extracted.constraints.map(constraint => `• ${constraint}`).join('\n')}`;
       if (msg.role === 'assistant') {
         // Check if this is a completion of a task
         if (content.includes('done') || content.includes('completed') || 
-            content.includes('finished') || content.includes('successfully')) {
+            content.includes('finished') || content.includes('successfully') ||
+            content.includes('已完成') || content.includes('完成') || content.includes('成功')) {
           details.accomplished.push(`Completed: ${lastUserRequest.substring(0, 100)}...`);
         }
         
         // Check for work in progress
         if (content.includes('working on') || content.includes('currently') || 
-            content.includes('now') || content.includes('next I will')) {
+            content.includes('now') || content.includes('next I will') ||
+            content.includes('正在') || content.includes('目前') || content.includes('接下来')) {
           details.inProgress.push(content.substring(0, 150) + '...');
         }
       }
       
       // Extract file references (simple pattern matching)
-      const fileMatches = content.match(/\b[\w\-]+\.[\w]{1,10}\b/g) || [];
+      const fileMatches = content.match(/\b[\w./-]+\.(js|ts|tsx|jsx|py|md|json|yaml|yml|html|css|scss|go|rs|java|kt|c|h|cpp|cc|cs|sh|bash|zsh|ps1)\b/gi) || [];
       fileMatches.forEach(file => {
-        if (file.length > 3 && file.length < 50 && !file.includes('http')) {
+        if (file.length > 3 && file.length < 120) {
           details.files.add(file);
         }
       });
@@ -161,6 +180,9 @@ ${extracted.constraints.map(constraint => `• ${constraint}`).join('\n')}`;
         if (toolOutput.includes('success') || toolOutput.includes('created') || 
             toolOutput.includes('updated') || toolOutput.includes('modified')) {
           details.accomplished.push(`Tool ${toolName}: ${toolOutput.substring(0, 100)}...`);
+        }
+        if (toolOutput && toolOutput.length > 1000) {
+          details.inProgress.push(`Tool ${toolName} output summarized`);
         }
       }
     }
@@ -269,5 +291,35 @@ ${extracted.constraints.map(constraint => `• ${constraint}`).join('\n')}`;
       reductionPercent: `${reductionPercent}%`,
       strategy: this.name
     };
+  }
+
+  fallbackAccomplished(messages) {
+    const out = [];
+    for (let i = messages.length - 1; i >= 0 && out.length < 3; i--) {
+      const m = messages[i];
+      if (m.role === 'assistant') {
+        const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+        if (text) out.push(text.substring(0, 120) + '...');
+      }
+    }
+    return out.length > 0 ? out.reverse() : ['No clear completions detected'];
+  }
+
+  fallbackInProgress(messages) {
+    const out = [];
+    for (let i = messages.length - 1; i >= 0 && out.length < 3; i--) {
+      const m = messages[i];
+      if (m.role === 'user') {
+        const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+        if (text) out.push(text.substring(0, 120) + '...');
+      }
+    }
+    return out.length > 0 ? out.reverse() : ['Continuing with latest user request'];
+  }
+
+  fallbackNextSteps(messages) {
+    const lastUser = messages.filter(m => m.role === 'user').slice(-1)[0];
+    const text = lastUser ? (typeof lastUser.content === 'string' ? lastUser.content : JSON.stringify(lastUser.content || '')) : '';
+    return text ? [`Address: ${text.substring(0, 120)}...`] : ['Proceed with current objective'];
   }
 }

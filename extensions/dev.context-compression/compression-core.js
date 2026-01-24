@@ -14,7 +14,9 @@ export class CompressionEngine {
       maxTokens: 200000, // Default context window
       outputTokens: 4096,
       charsPerToken: 4,
-      minTokensToCompress: 1000
+      minTokensToCompress: 1000,
+      savingsCalibration: 1.0,
+      requireMeaningfulSavings: false
     };
   }
   
@@ -49,6 +51,10 @@ export class CompressionEngine {
     
     // Check token threshold
     if (tokens > this.config.maxTokens * this.config.threshold) {
+      if (this.config.requireMeaningfulSavings) {
+        const est = await this.estimateSavings(messages, 'auto');
+        return est > this.config.minTokensToCompress;
+      }
       return true;
     }
     
@@ -109,7 +115,9 @@ export class CompressionEngine {
     
     try {
       const context = this.createCompressionContext(messages);
-      return await strategy.estimateSavings(context);
+      const base = await strategy.estimateSavings(context);
+      const factor = Number(this.config.savingsCalibration || 1);
+      return Math.max(0, Math.floor(base * (factor > 0 ? factor : 1)));
     } catch (error) {
       console.error('Failed to estimate savings:', error);
       return 0;

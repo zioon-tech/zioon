@@ -345,22 +345,50 @@ function buildMessagesForCompression(docText, sessionId) {
   for (const baseIdx of sortedIdxs) {
     const idx = baseIdx + offset;
     const units = (groups.get(baseIdx) || []).slice().sort((a, b) => (a.pos || 0) - (b.pos || 0));
+    const range = assistantRanges[sortedIdxs.indexOf(baseIdx)] || null;
+    const origMsg = out[idx];
+    const segments = [];
+    const sliceClean = (from, to) => {
+      const seg = String(docText || '').slice(from, to);
+      const cleaned = stripWidgetStubs(seg);
+      return cleaned.trim();
+    };
+    let prevPos = range ? range.from : null;
+    const lineEndAt = (p) => {
+      const text = String(docText || '');
+      const end = text.indexOf('\n', p);
+      return end === -1 ? text.length : end + 1;
+    };
     for (const unit of units) {
+      if (prevPos != null && unit.pos > prevPos) {
+        const pre = sliceClean(prevPos, unit.pos);
+        if (pre) segments.push({ role: 'assistant', content: pre });
+      }
       if (unit.kind === 'thinking') {
-        out.splice(idx + 1 + offset, 0, { role: 'assistant', content: unit.data.content });
-        offset += 1;
+        const text = String(unit.data.content || '').trim();
+        if (text && !/^思考$/.test(text)) {
+          segments.push({ role: 'assistant', content: text });
+        }
+        // advance prevPos past the widget line
+        prevPos = lineEndAt(unit.pos);
       } else if (unit.kind === 'tool') {
         const tc = {
           id: unit.data.id,
           type: 'function',
           function: { name: unit.data.name, arguments: JSON.stringify(unit.data.args || {}) }
         };
-        out.splice(idx + 1 + offset, 0, { role: 'assistant', tool_calls: [tc] });
-        offset += 1;
-        out.splice(idx + 1 + offset, 0, { role: 'tool', tool_call_id: unit.data.id, content: unit.data.result });
-        offset += 1;
+        segments.push({ role: 'assistant', tool_calls: [tc] });
+        segments.push({ role: 'tool', tool_call_id: unit.data.id, content: unit.data.result });
+        prevPos = lineEndAt(unit.pos);
       }
     }
+    if (prevPos != null && range && prevPos < range.to) {
+      const tail = sliceClean(prevPos, range.to);
+      if (tail) segments.push({ role: 'assistant', content: tail });
+    }
+    // Replace original assistant message with segmented series placed at widget positions
+    out.splice(idx, 1, ...segments);
+    offset += Math.max(0, segments.length - 1);
   }
 
   return out;
@@ -406,6 +434,40 @@ export async function activate(ctx) {
   compressionEngine.registerStrategy('cursor', new CursorStrategy());
   compressionEngine.registerStrategy('manus', new ManusStrategy());
   compressionEngine.registerStrategy('focus-agent', new FocusAgentStrategy());
+  try {
+    const { ProgressiveStrategy } = await import('./strategies/progressive.js');
+    compressionEngine.registerStrategy('progressive', new ProgressiveStrategy());
+  } catch {}
+  
+  try {
+    let saved = null;
+    try {
+      const ls = localStorage.getItem('zion.compression.settings');
+      if (ls) saved = JSON.parse(ls);
+    } catch {}
+    const st = window.zion?.state?.get?.('compression.settings');
+    const merged = { ...(saved || {}), ...(st || {}) };
+    if (merged && Object.keys(merged).length) {
+      syncEngineFromSettings(compressionEngine, {
+        autoCompression: merged.autoCompression,
+        threshold: merged.threshold,
+        contextLimitTokens: merged.contextLimitTokens,
+        outputTokens: merged.outputTokens,
+        charsPerToken: merged.charsPerToken,
+        pruneProtect: merged.pruneProtect,
+        pruneMinimum: merged.pruneMinimum,
+        protectedTools: merged.protectedTools,
+        compressionInterval: merged.compressionInterval,
+        minToolCalls: merged.minToolCalls,
+        maxToolOutputLength: merged.maxToolOutputLength,
+        progressiveTokensProtect: merged.progressiveTokensProtect,
+        progressiveTokensCompact: merged.progressiveTokensCompact,
+        progressiveRecentProtectTokens: merged.progressiveRecentProtectTokens,
+        progressiveMaxRecordPromptChars: merged.progressiveMaxRecordPromptChars,
+        progressiveKeepRecentTurns: merged.progressiveKeepRecentTurns
+      });
+    }
+  } catch {}
   
   // 初始化 Token 计数器
   const tokenCounter = new TokenCounter();
@@ -447,6 +509,30 @@ export async function activate(ctx) {
   ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.strategy.focus-agent', async () => {
       await applyCompressionToActiveEditor(compressionEngine, { strategy: 'focus-agent', openPanel: false });
+    })
+  );
+  
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.strategy.progressive', async () => {
+      await applyCompressionToActiveEditor(compressionEngine, { strategy: 'progressive', openPanel: false });
+    })
+  );
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.tool.view', async (args) => {
+      try {
+        const toolId = String(args?.tool_call_id || args?.id || '');
+        if (!toolId) return { ok: false, error: 'invalid_id' };
+        const sessionKey = getSessionKey();
+        const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
+        if (!sessionId) return { ok: false, error: 'no_session' };
+        const ann = window.zion?.state?.get?.(`sessions.annotations.${sessionId}`) || {};
+        const items = Array.isArray(ann.tools) ? ann.tools : [];
+        const it = items.find(x => String(x.id) === toolId);
+        if (!it) return { ok: false, error: 'not_found' };
+        return { ok: true, content: String(it.result ?? '') };
+      } catch (e) {
+        return { ok: false, error: 'exception' };
+      }
     })
   );
 
@@ -956,6 +1042,18 @@ function syncEngineFromSettings(compressionEngine, settings) {
       cursor.options.maxToolOutputLength = Number(settings.maxToolOutputLength);
     }
   } catch {}
+
+  try {
+    const progressive = compressionEngine.strategies?.get?.('progressive');
+    progressive?.updateOptions?.({
+      threshold: settings.threshold,
+      keepRecentTurns: Number(settings.progressiveKeepRecentTurns),
+      maxRecordPromptChars: Number(settings.progressiveMaxRecordPromptChars),
+      tokensProtect: Number(settings.progressiveTokensProtect),
+      tokensCompact: Number(settings.progressiveTokensCompact),
+      recentProtectTokens: Number(settings.progressiveRecentProtectTokens)
+    });
+  } catch {}
 }
 
 function sanitizeChatMessages(compressed, original) {
@@ -999,13 +1097,21 @@ function sanitizeChatMessages(compressed, original) {
           return { id, type: 'function', function: { name, arguments: args || '{}' } };
         })
         .filter(Boolean);
-      const content = normalizeContent(m?.content);
-      if (tool_calls.length > 0) out.push({ role: 'assistant', content, tool_calls });
-      else out.push({ role: 'assistant', content });
+      let content = normalizeContent(m?.content);
+      content = stripWidgetStubs(content);
+      if (tool_calls.length > 0) {
+        out.push(content ? { role: 'assistant', content, tool_calls } : { role: 'assistant', tool_calls });
+      } else {
+        if (content) out.push({ role: 'assistant', content });
+      }
       continue;
     }
 
-    const content = normalizeContent(m?.content);
+    let content = normalizeContent(m?.content);
+    if (role === 'assistant') {
+      content = stripWidgetStubs(content);
+      if (!content) continue;
+    }
     out.push({ role, content });
   }
 
@@ -1031,6 +1137,27 @@ function normalizeContent(content) {
     try { return JSON.stringify(content); } catch { return String(content); }
   }
   return String(content);
+}
+
+function stripWidgetStubs(text) {
+  if (text == null) return '';
+  const s = String(text);
+  const lines = s.replace(/\r/g, '').split('\n');
+  const out = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^(思考|调用\s+\S+|Thinking|Call\s+\S+)/.test(trimmed)) continue;
+    // Strip leading role headers like "system|user|assistant <content>"
+    const roleMatch = trimmed.match(/^(system|user|assistant)\s+(.*)$/);
+    if (roleMatch) {
+      const body = roleMatch[2].trim();
+      if (body) out.push(body);
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n').trim();
 }
 
 function parseMessages(content) {

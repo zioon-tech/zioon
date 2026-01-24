@@ -782,6 +782,63 @@ function attachLifecyclePersistence(ctx) {
   }
 }
 
+/** After resume/return to page, re-apply current session's annotations into editor widgets */
+function attachLifecycleRestore(ctx) {
+  try {
+    const doRestore = async () => {
+      try {
+        const id = window.zion?.state?.get("sessions.currentId");
+        if (!id) return;
+        const ed = window.zion?.window?.activeEditor;
+        if (!ed) return;
+        try { window.zion?.events?.emit("toolcards/clear"); } catch {}
+        try { window.zion?.events?.emit("thinking/clear"); } catch {}
+        let ann = null;
+        try {
+          const rec = await idbGet("metas", id);
+          const meta = rec?.meta;
+          if (meta && meta.annotations) {
+            ann = meta.annotations;
+            try { window.zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
+          }
+        } catch {}
+        if (!ann) {
+          try { ann = window.zion?.state?.get(`sessions.annotations.${id}`) || null; } catch {}
+        }
+        if (!ann) {
+          try { ann = loadMeta(id)?.annotations || null; } catch {}
+        }
+        if (!ann) return;
+        try { window.zion?.state?.set(`sessions.annotations.${id}`, ann); } catch {}
+        const tools = Array.isArray(ann.tools) ? ann.tools : [];
+        const thinking = Array.isArray(ann.thinking) ? ann.thinking : [];
+        if (tools.length) {
+          try { window.zion?.state?.set(`sessions.pendingRestore.tools.${id}`, tools); } catch {}
+          try { window.zion?.events?.emit("toolcards/restore", { items: tools }); } catch {}
+        }
+        if (thinking.length) {
+          try { window.zion?.state?.set(`sessions.pendingRestore.thinking.${id}`, thinking); } catch {}
+          try { window.zion?.events?.emit("thinking/restore", { items: thinking }); } catch {}
+        }
+      } catch {}
+    };
+    const onPageShow = () => { doRestore(); };
+    const onFocus = () => { doRestore(); };
+    const onVisible = () => { try { if (!document.hidden) doRestore(); } catch {} };
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    ctx.subscriptions.push({
+      dispose() {
+        try { window.removeEventListener("pageshow", onPageShow); } catch {}
+        try { window.removeEventListener("focus", onFocus); } catch {}
+        try { document.removeEventListener("visibilitychange", onVisible); } catch {}
+      }
+    });
+  } catch (e) {
+    console.warn("[sessions] attachLifecycleRestore error:", e);
+  }
+}
 function attachAnnotationsAutoPersistence(ctx) {
   let curId = null;
   let dispAnn = null;
@@ -825,7 +882,6 @@ function attachAnnotationsAutoPersistence(ctx) {
       }
 
       meta.annotations = ann;
-      meta.updatedAt = now();
       saveMeta(id, meta);
     } catch (e) {
       try { console.warn("[sessions] auto persist annotations error:", e); } catch {}
@@ -2858,7 +2914,10 @@ export async function activate(ctx) {
       try { dispRun?.dispose?.(); } catch {}
       if (!sid) { dispRun = null; return; }
       try {
-        dispRun = window.zion.state.onDidChange(`chat.runs.${sid}`, () => updateTitle());
+        dispRun = window.zion.state.onDidChange(`chat.runs.${sid}`, () => {
+          updateTitle();
+          try { maybeUpdateAutoTitle(sid); } catch {}
+        });
       } catch {
         dispRun = null;
       }
@@ -2883,6 +2942,7 @@ export async function activate(ctx) {
   // 注册页面生命周期持久化（刷新/隐藏前保存当前会话注解）
   attachLifecyclePersistence(ctx);
   attachAnnotationsAutoPersistence(ctx);
+  attachLifecycleRestore(ctx);
 
   // 在所有扩展加载完成后，重新应用当前会话的注解（确保相关插件已注册）
   try {

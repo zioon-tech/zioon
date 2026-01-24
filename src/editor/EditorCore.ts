@@ -20,6 +20,7 @@ import { wysiwyg } from "./wysiwyg";
 import { EditorView as CMEditorView } from "@codemirror/view";
 import { showMinimap } from "@replit/codemirror-minimap";
 import { highlightSelectionMatches } from "@codemirror/search";
+import { linkDetector, linkStyles } from "./link-detector";
 
 function selectNextOccurrenceDown(view: EditorView): boolean {
   const { state } = view;
@@ -117,6 +118,8 @@ export class EditorCore {
           this.mdComp.of(markdown({ codeLanguages: languages, extensions: [GFM] })),
           this.themeComp.of(oneDark),
           this.uiComp.of(wysiwyg()),
+          linkDetector,
+          linkStyles,
           // minimap compartment (can be toggled)
           this.minimapComp.of([]),
           // selection highlight compartment

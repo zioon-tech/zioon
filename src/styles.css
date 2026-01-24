@@ -158,59 +158,26 @@ html, body {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--fg);
-  padding: 2px 6px;
+  padding: 2px 8px;
   border-radius: 4px;
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap; /* 按钮内文字不换行，保持单行紧凑 */
   flex: 0 0 auto;      /* 防止被压缩成极小宽度 */
   transition: all 0.2s ease;
+  overflow: hidden;    /* Ensure pin button doesn't overflow if we mess up, and text clips */
 }
 .status-item:hover {
   background: rgba(128,128,128,0.1);
-  padding-right: 24px; /* Only expand padding on hover */
 }
 .status-item.pinned {
   /* border-color: var(--accent); Remove border color for pinned */
   background: rgba(98,114,164,0.1);
-  /* padding-right: 24px;  Don't keep padding for pinned items unless hovered */
 }
 .status-item.pinned:hover {
-  padding-right: 24px;
+  /* No extra padding */
 }
-.status-pin-btn {
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
-  opacity: 0;
-  transition: opacity 0.2s, background 0.2s;
-  color: var(--fg);
-}
-.status-pin-btn:hover {
-  background: rgba(255,255,255,0.2);
-  color: var(--accent);
-}
-.status-item:hover .status-pin-btn {
-  opacity: 0.6;
-}
-.status-item:hover .status-pin-btn:hover {
-  opacity: 1;
-}
-/* Only show pin button on hover, even if pinned */
-.status-item.pinned .status-pin-btn {
-  opacity: 0;
-  color: var(--accent);
-}
-.status-item.pinned:hover .status-pin-btn {
-  opacity: 1;
-}
+/* Removed .status-pin-btn styles as we moved to Right-Click interaction */
 #app {
   height: calc(100vh - 36px);
 }

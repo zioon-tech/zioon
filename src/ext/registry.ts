@@ -1359,18 +1359,23 @@ class Registry {
 
     const existing = this.statusItems.get(opts.id);
     if (existing) {
-      // Update in place
-      existing.el.innerHTML = ''; // Clear for rebuild
-      
-      const span = document.createElement("span");
-      span.textContent = opts.text;
-      existing.el.appendChild(span);
-      
-      if (typeof opts.tooltip === "string") {
-        existing.el.title = opts.tooltip;
+      // Update in place without clearing innerHTML to preserve hover state and reduce flicker
+      const textSpan = existing.el.querySelector("span:not(.status-pin-btn)");
+      if (textSpan) {
+        textSpan.textContent = opts.text;
       } else {
-        existing.el.removeAttribute("title");
+        const span = document.createElement("span");
+        span.textContent = opts.text;
+        if (existing.el.firstChild) {
+          existing.el.insertBefore(span, existing.el.firstChild);
+        } else {
+          existing.el.appendChild(span);
+        }
       }
+      
+      const tooltipBase = typeof opts.tooltip === "string" ? opts.tooltip : "";
+      const tooltip = (tooltipBase ? tooltipBase + "\n" : "") + "Right-click to " + (pinned ? "Unpin" : "Pin");
+      existing.el.title = tooltip;
       
       // Re-bind click
       existing.el.onclick = (e) => {
@@ -1385,33 +1390,16 @@ class Registry {
       existing.onClick = opts.onClick;
       existing.pinned = pinned;
 
-      // Add pin button
-      const pinBtn = document.createElement("span");
-      pinBtn.className = "status-pin-btn";
-      // Use different icons based on state? Or same icon but styled differently.
-      // User said: "以固定的就显示取消固定按钮" (Show unpin button if pinned)
-      // We can use a filled pin for pinned, outline for unpinned.
-      if (pinned) {
-        pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
-        pinBtn.title = "取消固定 (Unpin)";
-      } else {
-        pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
-        pinBtn.title = "固定 (Pin)";
-      }
-      
-      pinBtn.onclick = (e) => {
-        e.stopPropagation(); // Prevent main button click
-        this.toggleStatusPin(opts.id, bar);
-      };
-      
-      existing.el.appendChild(pinBtn);
+      // Remove pin button if exists (migration)
+      const pinBtn = existing.el.querySelector(".status-pin-btn");
+      if (pinBtn) pinBtn.remove();
 
       // Update priority and re-sort if changed
       if (existing.priority !== priority) {
         existing.priority = priority;
         this.sortStatusItems(bar);
       } else {
-        // Just in case pin state changed via other means (though usually via context menu which triggers sort)
+        // Just in case pin state changed via other means
         this.sortStatusItems(bar);
       }
 
@@ -1435,24 +1423,11 @@ class Registry {
     span.textContent = opts.text;
     el.appendChild(span);
 
-    // Add pin button
-    const pinBtn = document.createElement("span");
-    pinBtn.className = "status-pin-btn";
-    if (pinned) {
-      pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
-      pinBtn.title = "取消固定 (Unpin)";
-    } else {
-      pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
-      pinBtn.title = "固定 (Pin)";
-    }
+    // No dedicated pin button - use Context Menu
     
-    pinBtn.onclick = (e) => {
-      e.stopPropagation(); // Prevent main button click
-      this.toggleStatusPin(opts.id, bar);
-    };
-    el.appendChild(pinBtn);
- 
-    if (typeof opts.tooltip === "string") el.title = opts.tooltip;
+    const tooltipBase = typeof opts.tooltip === "string" ? opts.tooltip : "";
+    const tooltip = (tooltipBase ? tooltipBase + "\n" : "") + "Right-click to " + (pinned ? "Unpin" : "Pin");
+    el.title = tooltip;
     
     el.onclick = (e) => {
       if (opts.onClick) opts.onClick();
@@ -1485,33 +1460,34 @@ class Registry {
       this.statusPinned.delete(id);
       item.pinned = false;
       item.el.classList.remove('pinned');
-      // Remove icon
-      const icon = item.el.querySelector('svg');
-      if (icon) {
-        // SVG wrapper (span)
-        const wrapper = icon.parentElement;
-        if (wrapper && wrapper.tagName === 'SPAN') {
-            wrapper.remove();
-        } else {
-            icon.remove();
-        }
-      }
     } else {
       this.statusPinned.add(id);
       item.pinned = true;
       item.el.classList.add('pinned');
     }
     
-    // Rebuild the button content to update icon
-    // Simple rebuild: find the pin btn and update its icon/title
-    const pinBtn = item.el.querySelector('.status-pin-btn') as HTMLElement;
-    if (pinBtn) {
-        if (item.pinned) {
-            pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
-            pinBtn.title = "取消固定 (Unpin)";
-        } else {
-            pinBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`;
-            pinBtn.title = "固定 (Pin)";
+    // Update tooltip
+    // Need to reconstruct the original tooltip base
+    // We don't store the raw tooltipBase in 'item', so let's try to extract it or just keep it simple
+    // Actually, 'item' object in map has what properties? { id, el, onClick, priority, pinned }
+    // It doesn't have the original text/tooltip.
+    // But since we are toggling, we can just flip the last line of the title if it matches our pattern.
+    
+    const currentTitle = item.el.title || "";
+    const suffixPin = "\nRight-click to Pin";
+    const suffixUnpin = "\nRight-click to Unpin";
+    
+    if (item.pinned) {
+        if (currentTitle.endsWith(suffixPin)) {
+            item.el.title = currentTitle.slice(0, -suffixPin.length) + suffixUnpin;
+        } else if (!currentTitle.endsWith(suffixUnpin)) {
+            item.el.title = currentTitle + suffixUnpin;
+        }
+    } else {
+        if (currentTitle.endsWith(suffixUnpin)) {
+            item.el.title = currentTitle.slice(0, -suffixUnpin.length) + suffixPin;
+        } else if (!currentTitle.endsWith(suffixPin)) {
+            item.el.title = currentTitle + suffixPin;
         }
     }
 
