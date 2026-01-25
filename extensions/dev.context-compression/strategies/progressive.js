@@ -77,6 +77,18 @@ export class ProgressiveStrategy {
     const out = [];
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
+      if (msg.role === 'assistant' && !Array.isArray(msg.tool_calls)) {
+        if (i < protectStart) {
+          const c = Array.isArray(msg.content) ? msg.content : null;
+          if (c) {
+            const filtered = c.filter((part) => part?.type !== 'thinking');
+            if (filtered.length > 0) {
+              out.push({ ...msg, content: filtered });
+            }
+            continue;
+          }
+        }
+      }
       if (msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
         out.push(msg);
         continue;

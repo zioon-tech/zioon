@@ -567,12 +567,29 @@ export function installThinkingCards() {
             changes: { from: pos, insert: text },
             effects: [addInline.of({ from: start, to: end, id: it.id })]
           });
+          try {
+            const sid = window.zion?.state?.get("sessions.currentId");
+            const prev = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+            const list2 = Array.isArray(prev.thinking)
+              ? prev.thinking.map(x => x?.id === it.id ? { ...x, from: start, to: end } : x)
+              : [{ id: it.id, text: it?.text || "", expanded: !!it?.expanded, from: start, to: end }];
+            if (sid) window.zion?.state?.set(`sessions.annotations.${sid}`, { ...prev, thinking: list2 });
+          } catch {}
           if (it?.text) {
             this.view.dispatch({ effects: [updateText.of({ id: it.id, text: it.text, replace: true })] });
           }
           if (it.expanded) {
             this.view.dispatch({ effects: [toggleInline.of({ id: it.id })] });
           }
+          try {
+            const sid = window.zion?.state?.get("sessions.currentId");
+            const ok = this.ensureInlineForThinkingId(sid, it.id);
+            if (!ok) {
+              setTimeout(() => {
+                try { this.ensureInlineForThinkingId(sid, it.id); } catch {}
+              }, 30);
+            }
+          } catch {}
         }
       }
 

@@ -362,12 +362,12 @@ function buildMessagesForCompression(docText, sessionId) {
     for (const unit of units) {
       if (prevPos != null && unit.pos > prevPos) {
         const pre = sliceClean(prevPos, unit.pos);
-        if (pre) segments.push({ role: 'assistant', content: pre });
+        if (pre) segments.push({ role: 'assistant', content: [{ type: 'text', text: pre }] });
       }
       if (unit.kind === 'thinking') {
         const text = String(unit.data.content || '').trim();
         if (text && !/^思考$/.test(text)) {
-          segments.push({ role: 'assistant', content: text });
+          segments.push({ role: 'assistant', content: [{ type: 'thinking', text }] });
         }
         // advance prevPos past the widget line
         prevPos = lineEndAt(unit.pos);
@@ -384,7 +384,7 @@ function buildMessagesForCompression(docText, sessionId) {
     }
     if (prevPos != null && range && prevPos < range.to) {
       const tail = sliceClean(prevPos, range.to);
-      if (tail) segments.push({ role: 'assistant', content: tail });
+      if (tail) segments.push({ role: 'assistant', content: [{ type: 'text', text: tail }] });
     }
     // Replace original assistant message with segmented series placed at widget positions
     out.splice(idx, 1, ...segments);
@@ -424,6 +424,7 @@ export async function activate(ctx) {
   console.log('dev.context-compression plugin activated');
   const log = (...args) => console.log('[context-compression]', ...args);
   const warn = (...args) => console.warn('[context-compression]', ...args);
+  const SETTINGS_KV_KEY = 'compression.settings';
   
   // 初始化压缩引擎
   const compressionEngine = new CompressionEngine();
@@ -437,36 +438,6 @@ export async function activate(ctx) {
   try {
     const { ProgressiveStrategy } = await import('./strategies/progressive.js');
     compressionEngine.registerStrategy('progressive', new ProgressiveStrategy());
-  } catch {}
-  
-  try {
-    let saved = null;
-    try {
-      const ls = localStorage.getItem('zion.compression.settings');
-      if (ls) saved = JSON.parse(ls);
-    } catch {}
-    const st = window.zion?.state?.get?.('compression.settings');
-    const merged = { ...(saved || {}), ...(st || {}) };
-    if (merged && Object.keys(merged).length) {
-      syncEngineFromSettings(compressionEngine, {
-        autoCompression: merged.autoCompression,
-        threshold: merged.threshold,
-        contextLimitTokens: merged.contextLimitTokens,
-        outputTokens: merged.outputTokens,
-        charsPerToken: merged.charsPerToken,
-        pruneProtect: merged.pruneProtect,
-        pruneMinimum: merged.pruneMinimum,
-        protectedTools: merged.protectedTools,
-        compressionInterval: merged.compressionInterval,
-        minToolCalls: merged.minToolCalls,
-        maxToolOutputLength: merged.maxToolOutputLength,
-        progressiveTokensProtect: merged.progressiveTokensProtect,
-        progressiveTokensCompact: merged.progressiveTokensCompact,
-        progressiveRecentProtectTokens: merged.progressiveRecentProtectTokens,
-        progressiveMaxRecordPromptChars: merged.progressiveMaxRecordPromptChars,
-        progressiveKeepRecentTurns: merged.progressiveKeepRecentTurns
-      });
-    }
   } catch {}
   
   // 初始化 Token 计数器
@@ -594,6 +565,38 @@ export async function activate(ctx) {
   );
 
   ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.settings.save', async (settings) => {
+      try {
+        if (settings && typeof settings === 'object') {
+          try { window.zion?.state?.set?.('compression.settings', settings); } catch {}
+          await storageSetKV(SETTINGS_KV_KEY, settings);
+          return { ok: true };
+        }
+        return { ok: false, error: 'invalid_settings' };
+      } catch (e) {
+        warn('settings.save failed', e);
+        return { ok: false, error: 'exception' };
+      }
+    })
+  );
+
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand('compression.settings.load', async () => {
+      try {
+        const persisted = await storageGetKV(SETTINGS_KV_KEY);
+        const inState = window.zion?.state?.get?.('compression.settings');
+        const panel = new CompressionSettingsPanel();
+        const defaults = panel.getDefaultSettings();
+        const merged = { ...defaults, ...(persisted || inState || {}) };
+        try { window.zion?.state?.set?.('compression.settings', merged); } catch {}
+        return { ok: true, settings: merged };
+      } catch (e) {
+        return { ok: false, error: 'exception' };
+      }
+    })
+  );
+
+  ctx.subscriptions.push(
     window.zion.commands.registerCommand('compression.panel', (opts) => {
       const initialTab = opts?.tab || 'general';
       openCompressionPanel({ tab: initialTab });
@@ -629,7 +632,7 @@ export async function activate(ctx) {
     );
   }
   
-  ensureDefaultSettings();
+  ensureDefaultSettings(SETTINGS_KV_KEY);
 
   try {
     const initialSettings = await getCompressionSettings();
@@ -706,7 +709,7 @@ export async function activate(ctx) {
       }
 
       try {
-        compressed = sanitizeChatMessages(compressed, messages);
+        compressed = sanitizeChatMessages(compressed, messages, { appendFinalUser: strategy !== 'progressive' });
       } catch (e) {
         warn('post contribute: sanitize failed', { error: e?.message || String(e) });
         return messages;
@@ -776,10 +779,20 @@ export async function activate(ctx) {
 }
 
 async function getCompressionSettings() {
-  const v = window.zion.state.get('compression.settings');
-  if (v) return v;
-  const panel = new CompressionSettingsPanel();
-  return panel.getDefaultSettings();
+  try {
+    const panel = new CompressionSettingsPanel();
+    const defaults = panel.getDefaultSettings();
+    const persisted = await storageGetKV('compression.settings');
+    const inState = window.zion?.state?.get?.('compression.settings');
+    const merged = { ...defaults, ...(persisted || inState || {}) };
+    if (!inState) {
+      try { window.zion?.state?.set?.('compression.settings', merged); } catch {}
+    }
+    return merged;
+  } catch {
+    const panel = new CompressionSettingsPanel();
+    return panel.getDefaultSettings();
+  }
 }
 
 async function writeToFile(content) {
@@ -825,11 +838,19 @@ function recordCompressionEvent(event) {
   window.zion.state.set('compression.stats', stats);
 }
 
-function ensureDefaultSettings() {
-  const existing = window.zion.state.get('compression.settings');
-  if (existing) return;
-  const panel = new CompressionSettingsPanel();
-  window.zion.state.set('compression.settings', panel.getDefaultSettings());
+async function ensureDefaultSettings(SETTINGS_KV_KEY) {
+  try {
+    const existing = window.zion?.state?.get?.('compression.settings');
+    if (existing) return;
+    const persisted = await storageGetKV(SETTINGS_KV_KEY || 'compression.settings');
+    const panel = new CompressionSettingsPanel();
+    const defaults = panel.getDefaultSettings();
+    const base = persisted || defaults;
+    try { window.zion?.state?.set?.('compression.settings', base); } catch {}
+    if (!persisted) {
+      try { await storageSetKV(SETTINGS_KV_KEY || 'compression.settings', base); } catch {}
+    }
+  } catch {}
 }
 
 async function computeCompressionPreview(compressionEngine, opts) {
@@ -851,7 +872,7 @@ async function computeCompressionPreview(compressionEngine, opts) {
 
   const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   let compressed = await compressionEngine.compress(messages, strategy);
-  compressed = sanitizeChatMessages(compressed, messages);
+  compressed = sanitizeChatMessages(compressed, messages, { appendFinalUser: strategy !== 'progressive' });
   const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 
   const cpt = Number(compressionEngine?.config?.charsPerToken || 4);
@@ -910,7 +931,7 @@ async function applyCompressionToActiveEditor(compressionEngine, opts) {
 
   const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   let compressed = await compressionEngine.compress(messages, strategy);
-  compressed = sanitizeChatMessages(compressed, messages);
+  compressed = sanitizeChatMessages(compressed, messages, { appendFinalUser: strategy !== 'progressive' });
   const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 
   const cpt = Number(compressionEngine?.config?.charsPerToken || 4);
@@ -1056,7 +1077,7 @@ function syncEngineFromSettings(compressionEngine, settings) {
   } catch {}
 }
 
-function sanitizeChatMessages(compressed, original) {
+function sanitizeChatMessages(compressed, original, opts = {}) {
   const inMsgs = Array.isArray(compressed) ? compressed : [];
   const allowedRoles = new Set(['system', 'user', 'assistant', 'tool']);
 
@@ -1070,6 +1091,31 @@ function sanitizeChatMessages(compressed, original) {
   }
 
   const out = [];
+  const flattenContentToText = (content) => {
+    if (content == null) return '';
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      const parts = [];
+      for (const part of content) {
+        if (typeof part === 'string') { parts.push(part); continue; }
+        const t = part?.type;
+        if (t === 'text' || t === 'thinking') {
+          parts.push(String(part?.text || ''));
+        } else if (t === 'image_url') {
+          const url = part?.image_url?.url || '';
+          if (url) parts.push(`![image](${url})`);
+        } else {
+          try { parts.push(JSON.stringify(part)); } catch { parts.push(String(part)); }
+        }
+      }
+      return parts.join('\n');
+    }
+    if (typeof content === 'object') {
+      try { return JSON.stringify(content); } catch { return String(content); }
+    }
+    return String(content);
+  };
+
   for (const m of inMsgs) {
     const role = String(m?.role || '');
     if (!allowedRoles.has(role)) continue;
@@ -1079,7 +1125,7 @@ function sanitizeChatMessages(compressed, original) {
       if (!id || !assistantToolCallIds.has(id)) {
         continue;
       }
-      const content = normalizeContent(m?.content);
+      const content = flattenContentToText(m?.content);
       out.push({ role: 'tool', tool_call_id: id, content });
       continue;
     }
@@ -1097,7 +1143,7 @@ function sanitizeChatMessages(compressed, original) {
           return { id, type: 'function', function: { name, arguments: args || '{}' } };
         })
         .filter(Boolean);
-      let content = normalizeContent(m?.content);
+      let content = flattenContentToText(m?.content);
       content = stripWidgetStubs(content);
       if (tool_calls.length > 0) {
         out.push(content ? { role: 'assistant', content, tool_calls } : { role: 'assistant', tool_calls });
@@ -1107,7 +1153,7 @@ function sanitizeChatMessages(compressed, original) {
       continue;
     }
 
-    let content = normalizeContent(m?.content);
+    let content = flattenContentToText(m?.content);
     if (role === 'assistant') {
       content = stripWidgetStubs(content);
       if (!content) continue;
@@ -1116,7 +1162,8 @@ function sanitizeChatMessages(compressed, original) {
   }
 
   const lastRole = out.length > 0 ? out[out.length - 1].role : null;
-  if (lastRole !== 'user') {
+  const shouldAppendFinalUser = opts?.appendFinalUser !== false;
+  if (shouldAppendFinalUser && lastRole !== 'user') {
     const orig = Array.isArray(original) ? original : [];
     for (let i = orig.length - 1; i >= 0; i--) {
       if (orig[i]?.role === 'user') {
@@ -1241,6 +1288,7 @@ function serializeContent(content) {
     const out = [];
     for (const part of content) {
       if (part?.type === 'text') out.push(String(part.text || ''));
+      else if (part?.type === 'thinking') out.push(String(part.text || ''));
       else if (part?.type === 'image_url') out.push(`![image](${part?.image_url?.url || ''})`);
       else out.push(typeof part === 'string' ? part : JSON.stringify(part));
     }

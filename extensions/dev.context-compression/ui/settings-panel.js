@@ -85,14 +85,9 @@ export class CompressionSettingsPanel {
    */
   async loadSettings() {
     try {
-      let saved = null;
-      try {
-        const ls = localStorage.getItem('zion.compression.settings');
-        if (ls) saved = JSON.parse(ls);
-      } catch {}
-      const st = window.zion?.state?.get?.('compression.settings');
-      const merged = { ...this.settings, ...(saved || {}), ...(st || {}) };
-      this.settings = merged;
+      const res = await window.zion?.commands?.executeCommand?.('compression.settings.load');
+      const saved = res?.settings || window.zion?.state?.get?.('compression.settings');
+      if (saved) this.settings = { ...this.settings, ...saved };
     } catch (error) {
       console.error('Failed to load compression settings:', error);
     }
@@ -106,11 +101,8 @@ export class CompressionSettingsPanel {
    */
   async saveSettings() {
     try {
-      await window.zion?.state?.set?.('compression.settings', this.settings);
-      try {
-        localStorage.setItem('zion.compression.settings', JSON.stringify(this.settings));
-      } catch {}
-      console.log('Compression settings saved:', this.settings);
+      const res = await window.zion?.commands?.executeCommand?.('compression.settings.save', this.settings);
+      if (!res?.ok) throw new Error('save_failed');
     } catch (error) {
       console.error('Failed to save compression settings:', error);
     }

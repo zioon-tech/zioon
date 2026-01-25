@@ -1087,12 +1087,31 @@ export function installToolCallCards() {
             changes: { from: pos, insert: text },
             effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args })]
           });
+          try {
+            const sid = window.zion?.state?.get("sessions.currentId");
+            const prev = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+            const list2 = Array.isArray(prev.tools)
+              ? prev.tools.map(x => x?.id === it.id ? { ...x, from: start, to: end } : x)
+              : [{ id: it.id, name, args: it?.args, result: it?.result, ok: it?.ok, expanded: !!it?.expanded, from: start, to: end }];
+            if (sid) window.zion?.state?.set(`sessions.annotations.${sid}`, { ...prev, tools: list2 });
+          } catch {}
           if (it?.result != null) {
             this.view.dispatch({ effects: [updateResult.of({ id: it.id, result: it.result, ok: it.ok })] });
           }
           if (it.expanded) {
             this.view.dispatch({ effects: [toggleInline.of({ id: it.id })] });
           }
+          try {
+            const fieldVal = this.view.state.field(toolInlineField);
+            const has = fieldVal?.items?.has?.(it.id);
+            if (!has) {
+              setTimeout(() => {
+                try {
+                  this.view.dispatch({ effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args })] });
+                } catch {}
+              }, 30);
+            }
+          } catch {}
         }
       }
 

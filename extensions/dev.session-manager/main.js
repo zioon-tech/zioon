@@ -768,12 +768,14 @@ function attachLifecyclePersistence(ctx) {
     };
     window.addEventListener("beforeunload", handler);
     window.addEventListener("pagehide", handler);
+    window.addEventListener("blur", handler);
     document.addEventListener("visibilitychange", visHandler);
     // cleanup on deactivate
     ctx.subscriptions.push({
       dispose() {
         try { window.removeEventListener("beforeunload", handler); } catch {}
         try { window.removeEventListener("pagehide", handler); } catch {}
+        try { window.removeEventListener("blur", handler); } catch {}
         try { document.removeEventListener("visibilitychange", visHandler); } catch {}
       }
     });
@@ -785,14 +787,30 @@ function attachLifecyclePersistence(ctx) {
 /** After resume/return to page, re-apply current session's annotations into editor widgets */
 function attachLifecycleRestore(ctx) {
   try {
+    let lastHidden = typeof document?.hidden === "boolean" ? document.hidden : false;
+    const needsRestore = (id, ann) => {
+      try {
+        const tools = Array.isArray(ann?.tools) ? ann.tools : [];
+        const thinking = Array.isArray(ann?.thinking) ? ann.thinking : [];
+        const domTools = document.querySelectorAll(".zion-tool-call-inline").length;
+        const domThinking = document.querySelectorAll(".zion-thinking-inline").length;
+        const pendTools = window.zion?.state?.get(`sessions.pendingRestore.tools.${id}`) || null;
+        const pendThinking = window.zion?.state?.get(`sessions.pendingRestore.thinking.${id}`) || null;
+        if (Array.isArray(pendTools) && pendTools.length) return true;
+        if (Array.isArray(pendThinking) && pendThinking.length) return true;
+        if (tools.length !== domTools) return true;
+        if (thinking.length !== domThinking) return true;
+        return false;
+      } catch {
+        return true;
+      }
+    };
     const doRestore = async () => {
       try {
         const id = window.zion?.state?.get("sessions.currentId");
         if (!id) return;
         const ed = window.zion?.window?.activeEditor;
         if (!ed) return;
-        try { window.zion?.events?.emit("toolcards/clear"); } catch {}
-        try { window.zion?.events?.emit("thinking/clear"); } catch {}
         let ann = null;
         try {
           const rec = await idbGet("metas", id);
@@ -810,6 +828,11 @@ function attachLifecycleRestore(ctx) {
         }
         if (!ann) return;
         try { window.zion?.state?.set(`sessions.annotations.${id}`, ann); } catch {}
+        const should = needsRestore(id, ann);
+        if (!should) return;
+        // 仅在需要时做清理，减少闪烁
+        try { window.zion?.events?.emit("toolcards/clear"); } catch {}
+        try { window.zion?.events?.emit("thinking/clear"); } catch {}
         const tools = Array.isArray(ann.tools) ? ann.tools : [];
         const thinking = Array.isArray(ann.thinking) ? ann.thinking : [];
         if (tools.length) {
@@ -823,15 +846,19 @@ function attachLifecycleRestore(ctx) {
       } catch {}
     };
     const onPageShow = () => { doRestore(); };
-    const onFocus = () => { doRestore(); };
-    const onVisible = () => { try { if (!document.hidden) doRestore(); } catch {} };
+    const onVisible = () => {
+      try {
+        const nowHidden = !!document.hidden;
+        const becameVisible = lastHidden && !nowHidden;
+        lastHidden = nowHidden;
+        if (becameVisible) doRestore();
+      } catch {}
+    };
     window.addEventListener("pageshow", onPageShow);
-    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
     ctx.subscriptions.push({
       dispose() {
         try { window.removeEventListener("pageshow", onPageShow); } catch {}
-        try { window.removeEventListener("focus", onFocus); } catch {}
         try { document.removeEventListener("visibilitychange", onVisible); } catch {}
       }
     });
