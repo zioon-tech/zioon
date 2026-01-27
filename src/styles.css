@@ -425,6 +425,39 @@ html, body {
   min-width: 0;
   overflow: hidden;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.zion-editor-header {
+  height: 28px;
+  min-height: 28px;
+  flex: 0 0 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1;
+  box-sizing: border-box;
+}
+
+.zion-editor-session-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
+  cursor: pointer;
+}
+
+.zion-editor-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 .cm-editor {
   height: 100%;

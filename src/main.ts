@@ -35,12 +35,119 @@ function saveDoc(text: string) {
   );
 }
 
+function mountCurrentSessionPath(pathEl: HTMLElement) {
+  const safeParse = <T,>(raw: string | null, fallback: T): T => {
+    if (!raw) return fallback;
+    try {
+      const v = JSON.parse(raw);
+      return (v ?? fallback) as T;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const findNodeAndParent = (root: any, id: string) => {
+    let found: any = null;
+    let parent: any = null;
+    const dfs = (node: any, p: any) => {
+      if (!node) return;
+      if (node.id === id) {
+        found = node;
+        parent = p;
+        return;
+      }
+      if (node.type === "folder" && Array.isArray(node.children)) {
+        for (const ch of node.children) {
+          dfs(ch, node);
+          if (found) return;
+        }
+      }
+    };
+    dfs(root, null);
+    return { node: found, parent };
+  };
+
+  const computePath = (sessionId: string): string => {
+    const treeFromState = window.zion.state.get<any>("sessions.treeMem");
+    const tree = treeFromState && treeFromState.type === "folder" ? treeFromState : safeParse<any>(localStorage.getItem("zion.sessions.tree"), null);
+    const meta = window.zion.state.get<any>(`sessions.meta.${sessionId}`);
+    const sessionTitle = String(meta?.title || "").trim() || sessionId;
+    if (!tree) return `Sessions / ${sessionTitle}`;
+
+    const parts: string[] = [sessionTitle];
+    let curId: string | null = sessionId;
+    let guard = 0;
+    while (curId && guard++ < 64) {
+      const { parent } = findNodeAndParent(tree, curId);
+      if (!parent || parent.type !== "folder") break;
+      if (parent.id === "root") break;
+      parts.unshift(String(parent.title || "Folder").trim() || "Folder");
+      curId = parent.id;
+    }
+
+    parts.unshift(String(tree?.title || "Sessions").trim() || "Sessions");
+
+    return parts.join(" / ");
+  };
+
+  let metaDisp: Disposable | null = null;
+  const bindMeta = (id: string | undefined) => {
+    try {
+      metaDisp?.dispose();
+    } catch {}
+    metaDisp = null;
+    if (!id) return;
+    try {
+      metaDisp = window.zion.state.onDidChange(`sessions.meta.${id}`, () => update());
+    } catch {}
+  };
+
+  const update = () => {
+    const id = window.zion.state.get<string>("sessions.currentId");
+    if (!id) {
+      pathEl.textContent = "";
+      pathEl.title = "";
+      return;
+    }
+    const p = computePath(id);
+    pathEl.textContent = p;
+    pathEl.title = p;
+  };
+
+  try {
+    pathEl.onclick = () => {
+      try {
+        window.zion.commands.executeCommand("zion.sessions.toggleSidebar");
+      } catch {}
+    };
+  } catch {}
+
+  try {
+    window.zion.state.onDidChange<string>("sessions.currentId", (nv) => {
+      bindMeta(nv);
+      update();
+    });
+  } catch {}
+
+  try {
+    window.zion.state.onDidChange("sessions.catalog", () => update());
+  } catch {}
+
+  try {
+    window.zion.state.onDidChange("sessions.treeMem", () => update());
+  } catch {}
+
+  bindMeta(window.zion.state.get<string>("sessions.currentId"));
+  update();
+}
+
 async function bootstrap() {
   const host = document.getElementById("app")!;
   host.innerHTML = "";
 
   const wb = initWorkbench(host);
   const editorContainer = wb.editorHost;
+  const editorHeaderPathEl = wb.editorHeaderPathEl;
 
   // 初始化插件管理器
   const pluginManager = new PluginManager({
@@ -64,6 +171,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
 
   const core = new EditorCore(editorContainer, initialDoc);
   attachEditor(core);
+  mountCurrentSessionPath(editorHeaderPathEl);
 
   // 监听内容变化，自动保存
   core.view.state.field && core.view.state.field; // 保证 view 已初始化
@@ -358,24 +466,6 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     priority: 90
   });
 
-  // Simple Extensions panel launcher
-  window.zion.statusBar.registerItem({
-    id: "core.extensions",
-    text: "Extensions",
-    tooltip: "Manage extensions (enable/disable)",
-    onClick: () => openExtensionsPanel(),
-    priority: 69
-  });
-
-  // Plugin management panel launcher
-  window.zion.statusBar.registerItem({
-    id: "core.plugins",
-    text: "Plugins",
-    tooltip: "Manage plugins (new plugin system)",
-    onClick: () => openPluginsPanel(pluginManager),
-    priority: 70
-  });
-
   // Core convenience: reload extensions (page reload)
   window.zion.statusBar.registerItem({
     id: "core.reload",
@@ -386,8 +476,6 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   });
 
   // Core commands
-  window.zion.commands.registerCommand("zion.showExtensions", () => openExtensionsPanel());
-  window.zion.commands.registerCommand("zion.reloadExtensions", () => location.reload());
   window.zion.commands.registerCommand("zion.showPlugins", () => openPluginsPanel(pluginManager));
   window.zion.commands.registerCommand("zion.reloadPlugins", () => location.reload());
 
@@ -536,134 +624,6 @@ async function autoLoadExtensions() {
 
   // ① 广播「扩展已加载完」
   window.zion.events.emit('extensions:loaded');
-}
-
-function openExtensionsPanel() {
-  try {
-    const existing = document.getElementById("zion-ext-panel");
-    if (existing) {
-      existing.remove();
-    }
-    const overlay = document.createElement("div");
-    overlay.id = "zion-ext-panel";
-    overlay.style.position = "fixed";
-    overlay.style.inset = "0";
-    overlay.style.background = "rgba(0,0,0,0.35)";
-    overlay.style.zIndex = "99998";
-    overlay.onclick = (e) => {
-      if (e.target === overlay) overlay.remove();
-    };
-
-    const panel = document.createElement("div");
-    panel.style.position = "fixed";
-    panel.style.right = "20px";
-    panel.style.top = "50px";
-    panel.style.width = "320px";
-    panel.style.maxHeight = "60vh";
-    panel.style.overflow = "auto";
-    panel.style.background = "var(--panel)";
-    panel.style.border = "1px solid var(--border)";
-    panel.style.borderRadius = "6px";
-    panel.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)";
-    panel.style.padding = "10px";
-    panel.style.zIndex = "99999";
-    panel.style.color = "var(--fg)";
-    panel.onclick = (e) => e.stopPropagation();
-
-    const title = document.createElement("div");
-    title.textContent = "Extensions";
-    title.style.fontWeight = "600";
-    title.style.marginBottom = "8px";
-    panel.appendChild(title);
-
-    const list = document.createElement("div");
-    const catalog: { name: string; path: string; version?: string }[] = (window as any).__ext_catalog || [];
-    const disabledNames: string[] = (() => {
-      try {
-        const raw = localStorage.getItem("zion.disabledExtensions");
-        const arr = raw ? JSON.parse(raw) : [];
-        return Array.isArray(arr) ? arr : [];
-      } catch {
-        return [];
-      }
-    })();
-
-    catalog
-      .slice()
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .forEach(item => {
-        const row = document.createElement("div");
-        row.style.display = "flex";
-        row.style.alignItems = "center";
-        row.style.justifyContent = "space-between";
-        row.style.padding = "6px 2px";
-
-        const label = document.createElement("span");
-        label.textContent = item.version ? `${item.name} v${item.version}` : item.name;
-        label.title = item.path;
-        label.style.fontSize = "12px";
-
-        const toggle = document.createElement("input");
-        toggle.type = "checkbox";
-        toggle.checked = !disabledNames.includes(item.name);
-        toggle.onchange = () => {
-          const set = new Set(disabledNames);
-          if (toggle.checked) {
-            set.delete(item.name);
-          } else {
-            set.add(item.name);
-          }
-          localStorage.setItem("zion.disabledExtensions", JSON.stringify(Array.from(set)));
-          location.reload();
-        };
-
-        row.appendChild(label);
-        row.appendChild(toggle);
-        list.appendChild(row);
-      });
-
-    if (catalog.length === 0) {
-      const empty = document.createElement("div");
-      empty.textContent = "No extensions found under /extensions";
-      empty.style.opacity = "0.8";
-      empty.style.fontSize = "12px";
-      list.appendChild(empty);
-    }
-
-    panel.appendChild(list);
-
-    const footer = document.createElement("div");
-    footer.style.marginTop = "10px";
-    footer.style.display = "flex";
-    footer.style.justifyContent = "space-between";
-
-    const reloadBtn = document.createElement("button");
-    reloadBtn.textContent = "Reload";
-    reloadBtn.style.background = "var(--border)";
-    reloadBtn.style.color = "var(--fg)";
-    reloadBtn.style.border = "1px solid var(--accent)";
-    reloadBtn.style.borderRadius = "4px";
-    reloadBtn.style.padding = "4px 8px";
-    reloadBtn.onclick = () => location.reload();
-
-    const closeBtn = document.createElement("button");
-    closeBtn.textContent = "Close";
-    closeBtn.style.background = "var(--border)";
-    closeBtn.style.color = "var(--fg)";
-    closeBtn.style.border = "1px solid var(--accent)";
-    closeBtn.style.borderRadius = "4px";
-    closeBtn.style.padding = "4px 8px";
-    closeBtn.onclick = () => overlay.remove();
-
-    footer.appendChild(reloadBtn);
-    footer.appendChild(closeBtn);
-    panel.appendChild(footer);
-
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
-  } catch (e) {
-    console.error("openExtensionsPanel error:", e);
-  }
 }
 
 /**

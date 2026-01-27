@@ -2820,12 +2820,6 @@ function refreshStatusBar() {
   const id = window.zion.state.get("sessions.currentId");
   if (!id) return;
   const meta = loadMeta(id);
-  window.zion.statusBar.registerItem({
-    id: "session.current",
-    text: `Session: ${meta.title || id}`,
-    tooltip: `Updated: ${fmtTime(meta.updatedAt)}; Size: ${meta.size}`,
-    onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleSidebar")
-  });
   // 同步页面标题
   updatePageTitle(id);
 }
@@ -3232,7 +3226,12 @@ export async function activate(ctx) {
     try {
       window.zion.sideBar.show();
       window.zion.sideBar.activateView("sessions.list");
-      window.zion.activityBar.activateItem("sessions.activity");
+      try {
+        const active = window.zion?.state?.get("ui.activityBar.activeItemId");
+        if (active !== "sessions.activity") {
+          window.zion.activityBar.activateItem("sessions.activity");
+        }
+      } catch {}
     } catch {}
     return true;
   });
@@ -3247,7 +3246,12 @@ export async function activate(ctx) {
       const next = window.zion.sideBar.toggle();
       if (next) {
         window.zion.sideBar.activateView("sessions.list");
-        window.zion.activityBar.activateItem("sessions.activity");
+        try {
+          const active = window.zion?.state?.get("ui.activityBar.activeItemId");
+          if (active !== "sessions.activity") {
+            window.zion.activityBar.activateItem("sessions.activity");
+          }
+        } catch {}
       }
       return next;
     } catch {

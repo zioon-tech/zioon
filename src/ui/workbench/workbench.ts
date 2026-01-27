@@ -31,11 +31,18 @@ function findScrollableTarget(start: EventTarget | null, root: HTMLElement): HTM
   return null;
 }
 
-export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; dispose: () => void } {
+export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; editorHeaderPathEl: HTMLElement; dispose: () => void } {
   const root = el("div", "zion-workbench");
   const activityBarEl = el("div", "zion-activitybar");
   const sideBarEl = el("div", "zion-sidebar");
   const editorEl = el("div", "zion-editor");
+
+  const editorHeaderEl = el("div", "zion-editor-header");
+  const editorHeaderPathEl = el("div", "zion-editor-session-path");
+  editorHeaderEl.appendChild(editorHeaderPathEl);
+  const editorHost = el("div", "zion-editor-host");
+  editorEl.appendChild(editorHeaderEl);
+  editorEl.appendChild(editorHost);
 
   root.appendChild(activityBarEl);
   root.appendChild(sideBarEl);
@@ -282,7 +289,8 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; dis
   renderSideBar();
 
   return {
-    editorHost: editorEl,
+    editorHost,
+    editorHeaderPathEl,
     dispose: () => {
       try {
         dispA.dispose();
