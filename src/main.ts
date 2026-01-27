@@ -7,6 +7,7 @@ import { PluginManager } from "./plugin/manager";
 import { HttpPluginInstaller } from "./plugin/http-installer";
 import type { PluginInfo } from "./plugin/types";
 import { notificationManager } from "./notification/manager";
+import { initWorkbench } from "./ui/workbench/workbench";
 
 // ---------- 自动保存 / 恢复 ----------
 const STORAGE_KEY = 'zion.autosave';
@@ -38,10 +39,8 @@ async function bootstrap() {
   const host = document.getElementById("app")!;
   host.innerHTML = "";
 
-  // Create a container for editor
-  const editorContainer = document.createElement("div");
-  editorContainer.style.height = "100%";
-  host.appendChild(editorContainer);
+  const wb = initWorkbench(host);
+  const editorContainer = wb.editorHost;
 
   // 初始化插件管理器
   const pluginManager = new PluginManager({
@@ -401,6 +400,48 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       tooltip: "Some extensions failed to load (check console)",
       priority: 100
     });
+  }
+
+  // Bottom status bar: 右侧显示行列与字符统计
+  try {
+    const bar = document.getElementById("bottombar");
+    if (bar) {
+      let right = document.getElementById("bottombar-right") as HTMLDivElement | null;
+      if (!right) {
+        right = document.createElement("div");
+        right.id = "bottombar-right";
+        bar.appendChild(right);
+      }
+
+      const mLnCol = document.createElement("span");
+      const mBefore = document.createElement("span");
+      const mTotal = document.createElement("span");
+      right.appendChild(mLnCol);
+      right.appendChild(mBefore);
+      right.appendChild(mTotal);
+
+      const updateMetrics = () => {
+        try {
+          const view = core.view;
+          const doc = view.state.doc;
+          const head = view.state.selection.main.head;
+          const line = doc.lineAt(head);
+          const ln = line.number;
+          const col = head - line.from + 1;
+          const before = head;
+          const total = doc.length;
+          mLnCol.textContent = `Ln ${ln}, Col ${col}`;
+          mBefore.textContent = `Before ${before}`;
+          mTotal.textContent = `Total ${total}`;
+        } catch {}
+      };
+
+      updateMetrics();
+      (window as any).zion.events.on("editor.cursorActivity", updateMetrics);
+      (window as any).zion.events.on("editor.change", updateMetrics);
+    }
+  } catch (e) {
+    console.error("Init bottom status bar metrics error:", e);
   }
 }
 

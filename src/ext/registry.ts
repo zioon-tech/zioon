@@ -9,6 +9,7 @@ import { findNext, findPrevious, selectMatches, replaceNext, replaceAll, SearchQ
 import { setSearchQuery as setSearchQueryEffect } from "@codemirror/search";
 import { EditorView } from "@codemirror/view";
 import { notificationManager } from "../notification/manager";
+import { activityBarRuntime, bindWorkbenchCore, sideBarRuntime } from "../ui/workbench/runtime";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -23,6 +24,12 @@ class Registry {
   >();
   private statusPinned: Set<string> = new Set();
   private readonly STATUS_PINNED_KEY = 'zion.statusBar.pinned';
+  private bottomStatusItems = new Map<
+    string,
+    { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number; pinned: boolean }
+  >();
+  private bottomStatusPinned: Set<string> = new Set();
+  private readonly BOTTOM_STATUS_PINNED_KEY = 'zion.bottomStatusBar.pinned';
   private editorCore: EditorCore | null = null;
 
   // paste handlers
@@ -1325,6 +1332,7 @@ class Registry {
 
   constructor() {
     this.loadStatusPinned();
+    this.loadBottomStatusPinned();
   }
 
   private loadStatusPinned() {
@@ -1346,6 +1354,28 @@ class Registry {
       localStorage.setItem(this.STATUS_PINNED_KEY, JSON.stringify(Array.from(this.statusPinned)));
     } catch (e) {
       console.error('[registry] save status pinned error:', e);
+    }
+  }
+
+  private loadBottomStatusPinned() {
+    try {
+      const raw = localStorage.getItem(this.BOTTOM_STATUS_PINNED_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          this.bottomStatusPinned = new Set(arr);
+        }
+      }
+    } catch (e) {
+      console.error('[registry] load bottom status pinned error:', e);
+    }
+  }
+
+  private saveBottomStatusPinned() {
+    try {
+      localStorage.setItem(this.BOTTOM_STATUS_PINNED_KEY, JSON.stringify(Array.from(this.bottomStatusPinned)));
+    } catch (e) {
+      console.error('[registry] save bottom status pinned error:', e);
     }
   }
 
@@ -1450,6 +1480,141 @@ class Registry {
         this.statusItems.delete(opts.id);
       }
     };
+  }
+
+  // bottombar
+  registerBottomStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }): Disposable {
+    const bar = document.getElementById("bottombar");
+    if (!bar) return { dispose: () => {} };
+
+    const priority = opts.priority ?? 0;
+    const pinned = this.bottomStatusPinned.has(opts.id);
+
+    const existing = this.bottomStatusItems.get(opts.id);
+    if (existing) {
+      const textSpan = existing.el.querySelector("span:not(.status-pin-btn)");
+      if (textSpan) {
+        textSpan.textContent = opts.text;
+      } else {
+        const span = document.createElement("span");
+        span.textContent = opts.text;
+        if (existing.el.firstChild) {
+          existing.el.insertBefore(span, existing.el.firstChild as any);
+        } else {
+          existing.el.appendChild(span);
+        }
+      }
+
+      const tooltipBase = typeof opts.tooltip === "string" ? opts.tooltip : "";
+      const tooltip = (tooltipBase ? tooltipBase + "\n" : "") + "Right-click to " + (pinned ? "Unpin" : "Pin");
+      existing.el.title = tooltip;
+
+      existing.el.onclick = (e) => { if (opts.onClick) opts.onClick(); };
+      existing.el.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.toggleBottomStatusPin(opts.id, bar);
+      };
+
+      existing.onClick = opts.onClick;
+      existing.pinned = pinned;
+
+      const pinBtn = existing.el.querySelector(".status-pin-btn");
+      if (pinBtn) (pinBtn as any).remove();
+
+      if (existing.priority !== priority) {
+        existing.priority = priority;
+        this.sortBottomStatusItems(bar);
+      } else {
+        this.sortBottomStatusItems(bar);
+      }
+
+      return {
+        dispose: () => {
+          const item = this.bottomStatusItems.get(opts.id);
+          if (!item) return;
+          item.el.remove();
+          this.bottomStatusItems.delete(opts.id);
+        }
+      };
+    }
+
+    const el = document.createElement("button");
+    el.className = "status-item";
+    if (pinned) el.classList.add("pinned");
+
+    const span = document.createElement("span");
+    span.textContent = opts.text;
+    el.appendChild(span);
+
+    const tooltipBase = typeof opts.tooltip === "string" ? opts.tooltip : "";
+    const tooltip = (tooltipBase ? tooltipBase + "\n" : "") + "Right-click to " + (pinned ? "Unpin" : "Pin");
+    el.title = tooltip;
+
+    el.onclick = (e) => { if (opts.onClick) opts.onClick(); };
+    el.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.toggleBottomStatusPin(opts.id, bar);
+    };
+
+    bar.appendChild(el);
+    this.bottomStatusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority, pinned });
+    this.sortBottomStatusItems(bar);
+
+    return {
+      dispose: () => {
+        const item = this.bottomStatusItems.get(opts.id);
+        if (!item) return;
+        item.el.remove();
+        this.bottomStatusItems.delete(opts.id);
+      }
+    };
+  }
+
+  private toggleBottomStatusPin(id: string, bar: HTMLElement) {
+    const item = this.bottomStatusItems.get(id);
+    if (!item) return;
+
+    if (this.bottomStatusPinned.has(id)) {
+      this.bottomStatusPinned.delete(id);
+      item.pinned = false;
+      item.el.classList.remove('pinned');
+    } else {
+      this.bottomStatusPinned.add(id);
+      item.pinned = true;
+      item.el.classList.add('pinned');
+    }
+
+    const currentTitle = item.el.title || "";
+    const suffixPin = "\nRight-click to Pin";
+    const suffixUnpin = "\nRight-click to Unpin";
+    if (item.pinned) {
+      if (currentTitle.endsWith(suffixPin)) {
+        item.el.title = currentTitle.slice(0, -suffixPin.length) + suffixUnpin;
+      } else if (!currentTitle.endsWith(suffixUnpin)) {
+        item.el.title = currentTitle + suffixUnpin;
+      }
+    } else {
+      if (currentTitle.endsWith(suffixUnpin)) {
+        item.el.title = currentTitle.slice(0, -suffixUnpin.length) + suffixPin;
+      } else if (!currentTitle.endsWith(suffixPin)) {
+        item.el.title = currentTitle + suffixPin;
+      }
+    }
+
+    this.saveBottomStatusPinned();
+    this.sortBottomStatusItems(bar);
+  }
+
+  private sortBottomStatusItems(bar: HTMLElement) {
+    const items = Array.from(this.bottomStatusItems.values());
+    items.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return a.id.localeCompare(b.id);
+    });
+    items.forEach(item => bar.appendChild(item.el));
   }
 
   private toggleStatusPin(id: string, bar: HTMLElement) {
@@ -1743,6 +1908,10 @@ const registry = new Registry();
       registerItem: (opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }) =>
         registry.registerStatusItem(opts)
     },
+    bottomStatusBar: {
+      registerItem: (opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }) =>
+        (registry as any).registerBottomStatusItem(opts)
+    },
     editor: {
       registerPasteHandler: (handler: PasteHandler) => registry.registerPasteHandler(handler),
       registerDecorator: (dec: Decorator) => (registry as any).registerDecorator(dec)
@@ -1768,6 +1937,23 @@ const registry = new Registry();
         actions?: Array<{ label: string; handler: () => void }>;
       }) => notificationManager.show(message, options)
     },
+    activityBar: {
+      registerItem: (opts: any) => activityBarRuntime.registerItem(opts),
+      activateItem: (id: string) => activityBarRuntime.activateItem(id),
+      getItems: () => activityBarRuntime.getItems(),
+      show: () => activityBarRuntime.show(),
+      hide: () => activityBarRuntime.hide(),
+      toggle: () => activityBarRuntime.toggle()
+    },
+    sideBar: {
+      registerView: (opts: any) => sideBarRuntime.registerView(opts),
+      activateView: (id: string) => sideBarRuntime.activateView(id),
+      getViews: () => sideBarRuntime.getViews(),
+      show: () => sideBarRuntime.show(),
+      hide: () => sideBarRuntime.hide(),
+      toggle: () => sideBarRuntime.toggle(),
+      setWidth: (w: number) => sideBarRuntime.setWidth(w)
+    },
     window: {
       activeEditor: null as any
     },
@@ -1776,6 +1962,9 @@ const registry = new Registry();
       (registry as any).runMessageContributors(messages, stage)
   };
   (window as any).zion = api;
+  try {
+    bindWorkbenchCore({ state: api.state as any, events: api.events as any });
+  } catch {}
 })();
 
 // ============ 菜单使用统计的辅助方法 ============

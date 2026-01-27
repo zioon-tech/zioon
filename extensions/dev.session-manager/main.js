@@ -2120,7 +2120,7 @@ function openSessionsPanel() {
         setTimeout(() => { overlay.remove(); }, 30);
       },
       onAfterChange: () => {
-        try { mountSessionsSidebar(); } catch {}
+        try { refreshSessionsSidebarViewIfOpen(); } catch {}
         count.textContent = `(${getIndex().length})`;
     }
   });
@@ -2170,6 +2170,188 @@ function refreshSessionsOverlayIfOpen() {
       openSessionsPanel();
     }
   } catch {}
+}
+
+let __sessionsSidebarView = null;
+
+function refreshSessionsSidebarViewIfOpen() {
+  try {
+    __sessionsSidebarView?.render?.();
+  } catch {}
+}
+
+function mountSessionsSidebarViewInto(container) {
+  container.innerHTML = "";
+  container.style.display = "flex";
+  container.style.flexDirection = "column";
+  container.style.height = "100%";
+  container.style.overflow = "hidden";
+
+  let prevScroll = 0;
+  try {
+    const prevList = container.querySelector(".zion-sessions-list");
+    if (prevList) prevScroll = prevList.scrollTop || 0;
+  } catch {}
+
+  const headerMenu = document.createElement("div");
+  headerMenu.style.position = "absolute";
+  headerMenu.style.top = "30px";
+  headerMenu.style.right = "4px";
+  headerMenu.style.background = "var(--panel)";
+  headerMenu.style.border = "1px solid var(--border)";
+  headerMenu.style.borderRadius = "6px";
+  headerMenu.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
+  headerMenu.style.padding = "4px 0";
+  headerMenu.style.zIndex = "100000";
+  headerMenu.style.display = "none";
+  headerMenu.style.minWidth = "140px";
+
+  const mkHeaderMenuItem = (text, onClick) => {
+    const item = document.createElement("div");
+    item.textContent = text;
+    item.style.padding = "6px 16px";
+    item.style.cursor = "pointer";
+    item.style.fontSize = "13px";
+    item.style.color = "var(--fg)";
+    item.onmouseenter = () => { item.style.background = "var(--border)"; };
+    item.onmouseleave = () => { item.style.background = "transparent"; };
+    item.onclick = () => { headerMenu.style.display = "none"; onClick(); };
+    return item;
+  };
+
+  headerMenu.appendChild(mkHeaderMenuItem("Import Sessions", () => window.zion.commands.executeCommand("zion.sessions.import")));
+  headerMenu.appendChild(mkHeaderMenuItem("Export All Sessions", () => window.zion.commands.executeCommand("zion.sessions.export")));
+  headerMenu.appendChild(mkHeaderMenuItem("Export Selected", () => window.zion.commands.executeCommand("zion.sessions.exportSelected")));
+  headerMenu.appendChild(mkHeaderMenuItem("Delete Selected", () => window.zion.commands.executeCommand("zion.sessions.deleteSelected")));
+
+  const controls = document.createElement("div");
+  controls.style.display = "grid";
+  controls.style.gridTemplateColumns = "1fr auto auto";
+  controls.style.gap = "6px";
+  controls.style.padding = "8px 10px";
+
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.placeholder = "Search by title…";
+  searchInput.setAttribute("aria-label", "Search sessions by title");
+  searchInput.style.background = "var(--panel)";
+  searchInput.style.color = "var(--fg)";
+  searchInput.style.border = "1px solid var(--border)";
+  searchInput.style.borderRadius = "6px";
+  searchInput.style.padding = "6px 8px";
+  searchInput.style.fontSize = "12px";
+
+  const sortSelect = document.createElement("select");
+  sortSelect.setAttribute("aria-label", "Sort sessions");
+  sortSelect.title = "Sort";
+  sortSelect.style.background = "var(--panel)";
+  sortSelect.style.color = "var(--fg)";
+  sortSelect.style.border = "1px solid var(--border)";
+  sortSelect.style.borderRadius = "4px";
+  sortSelect.style.padding = "2px 6px";
+  sortSelect.style.fontSize = "11px";
+  sortSelect.style.minWidth = "48px";
+  sortSelect.style.width = "auto";
+  const optUpdated = document.createElement("option");
+  optUpdated.value = "updated";
+  optUpdated.textContent = "🕒";
+  optUpdated.title = "Sort by updated (newest first)";
+  const optTitle = document.createElement("option");
+  optTitle.value = "title";
+  optTitle.textContent = "Aa";
+  optTitle.title = "Sort by title (A→Z)";
+  sortSelect.append(optUpdated, optTitle);
+
+  const menuWrap = document.createElement("div");
+  menuWrap.style.position = "relative";
+
+  const menuBtn = document.createElement("button");
+  menuBtn.innerHTML = "&#x22EE;";
+  menuBtn.title = "Actions";
+  menuBtn.setAttribute("aria-label", "Actions");
+  menuBtn.style.background = "transparent";
+  menuBtn.style.color = "var(--fg)";
+  menuBtn.style.border = "1px solid var(--border)";
+  menuBtn.style.borderRadius = "6px";
+  menuBtn.style.padding = "0";
+  menuBtn.style.cursor = "pointer";
+  menuBtn.style.fontSize = "14px";
+  menuBtn.style.width = "28px";
+  menuBtn.style.height = "28px";
+  menuBtn.style.display = "flex";
+  menuBtn.style.alignItems = "center";
+  menuBtn.style.justifyContent = "center";
+  menuBtn.onmouseenter = () => { menuBtn.style.background = "var(--border)"; };
+  menuBtn.onmouseleave = () => { menuBtn.style.background = "transparent"; };
+  menuBtn.onclick = (e) => {
+    e.stopPropagation();
+    headerMenu.style.display = headerMenu.style.display === "none" ? "block" : "none";
+  };
+
+  menuWrap.appendChild(menuBtn);
+  menuWrap.appendChild(headerMenu);
+  container.addEventListener("click", () => { headerMenu.style.display = "none"; });
+
+  controls.append(searchInput, sortSelect, menuWrap);
+  container.appendChild(controls);
+
+  const listWrap = document.createElement("div");
+  listWrap.className = "zion-sessions-list";
+  listWrap.style.flex = "1 1 auto";
+  listWrap.style.overflow = "auto";
+  listWrap.style.padding = "6px 6px";
+  const list = document.createElement("div");
+  listWrap.appendChild(list);
+  container.appendChild(listWrap);
+
+  const innerRender = createSessionsListRenderer({
+    listEl: list,
+    hostElement: container,
+    getQuery: () => (searchInput.value || "").trim().toLowerCase(),
+    getSort: () => sortSelect.value || "updated",
+    onSwitchSession: (id) => window.zion.commands.executeCommand("zion.sessions.switch", id),
+    onAfterChange: () => {
+      refreshSessionsSidebarViewIfOpen();
+    }
+  });
+
+  const renderAll = () => {
+    innerRender();
+  };
+
+  searchInput.addEventListener("input", () => renderAll());
+  sortSelect.addEventListener("change", () => renderAll());
+  renderAll();
+  try { listWrap.scrollTop = prevScroll; } catch {}
+
+  const anchorToCurrent = () => {
+    try {
+      const cid = window.zion?.state?.get("sessions.currentId");
+      if (!cid) return;
+      openAncestors(cid);
+      try { searchInput.value = ""; } catch {}
+      renderAll();
+      try {
+        const row = container.querySelector(".zion-session-row.is-current");
+        if (row && listWrap) {
+          row.scrollIntoView({ block: "center" });
+          try {
+            const prev = row.style.background;
+            row.style.background = "var(--border)";
+            setTimeout(() => { row.style.background = prev; }, 600);
+          } catch {}
+        }
+      } catch {}
+    } catch {}
+  };
+
+  return {
+    render: renderAll,
+    anchorToCurrent,
+    dispose: () => {
+      try { container.innerHTML = ""; } catch {}
+    }
+  };
 }
 
  // ========== Sidebar (left) ==========
@@ -2478,7 +2660,7 @@ function mountSessionsSidebar() {
         window.zion.commands.executeCommand("zion.sessions.switch", id);
       },
       onAfterChange: () => {
-        try { mountSessionsSidebar(); } catch {}
+        try { refreshSessionsSidebarViewIfOpen(); } catch {}
       }
     });
 
@@ -2961,11 +3143,74 @@ export async function activate(ctx) {
     ctx.subscriptions.push(dispCur, dispStreaming, { dispose() { try { dispRun?.dispose?.(); } catch {} } });
   } catch {}
 
-  // 初始化侧边栏：默认首次启用时固定
-  if (getTabStorage().getItem(LS_SIDEBAR_PIN) == null) {
-    setSidebarPinned(true);
-  }
-  try { mountSessionsSidebar(); } catch {}
+  try {
+    const focusCurrentSessionInSidebar = () => {
+      let tries = 0;
+      const tick = () => {
+        tries += 1;
+        try {
+          if (__sessionsSidebarView && typeof __sessionsSidebarView.anchorToCurrent === "function") {
+            __sessionsSidebarView.anchorToCurrent();
+            return;
+          }
+        } catch {}
+        if (tries < 20) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    };
+
+    const dispItem = window.zion.activityBar.registerItem({
+      id: "sessions.activity",
+      pluginId: "dev.session-manager",
+      icon: "💬",
+      tooltip: "Sessions",
+      sideBarViewId: "sessions.list",
+      order: 10
+    });
+    const dispView = window.zion.sideBar.registerView({
+      id: "sessions.list",
+      pluginId: "dev.session-manager",
+      title: "Sessions",
+      icon: "💬",
+      order: 10,
+      location: "sidebar",
+      headerActions: [
+        {
+          id: "sessions.new",
+          title: "Create new session",
+          ariaLabel: "Create new session",
+          icon: "+",
+          onClick: () => window.zion.commands.executeCommand("zion.sessions.new")
+        },
+        {
+          id: "sessions.anchor",
+          title: "定位到当前会话",
+          ariaLabel: "定位到当前会话",
+          icon: "◎",
+          onClick: () => {
+            try {
+              __sessionsSidebarView?.anchorToCurrent?.();
+            } catch {}
+          }
+        }
+      ],
+      component: {
+        render: (container) => {
+          const inst = mountSessionsSidebarViewInto(container);
+          __sessionsSidebarView = inst;
+          return {
+            dispose: () => {
+              try { inst?.dispose?.(); } catch {}
+              if (__sessionsSidebarView === inst) __sessionsSidebarView = null;
+            }
+          };
+        }
+      }
+    });
+    ctx.subscriptions.push(dispItem, dispView);
+    try { window.zion.activityBar.activateItem("sessions.activity"); } catch {}
+    focusCurrentSessionInSidebar();
+  } catch {}
   // 注册页面生命周期持久化（刷新/隐藏前保存当前会话注解）
   attachLifecyclePersistence(ctx);
   attachAnnotationsAutoPersistence(ctx);
@@ -2984,23 +3229,30 @@ export async function activate(ctx) {
 
   // 侧边栏显示/隐藏/切换命令
   const dShowSidebar = window.zion.commands.registerCommand("zion.sessions.showSidebar", () => {
-    setSidebarPinned(true);
-    document.body.style.marginLeft = getSidebarWidth() + "px";
-    try { mountSessionsSidebar(); } catch {}
+    try {
+      window.zion.sideBar.show();
+      window.zion.sideBar.activateView("sessions.list");
+      window.zion.activityBar.activateItem("sessions.activity");
+    } catch {}
     return true;
   });
   const dHideSidebar = window.zion.commands.registerCommand("zion.sessions.hideSidebar", () => {
-    setSidebarPinned(false);
-    document.body.style.marginLeft = "";
-    try { mountSessionsSidebar(); } catch {}
+    try {
+      window.zion.sideBar.hide();
+    } catch {}
     return true;
   });
   const dToggleSidebar = window.zion.commands.registerCommand("zion.sessions.toggleSidebar", () => {
-    const pinned = getSidebarPinned();
-    setSidebarPinned(!pinned);
-    document.body.style.marginLeft = !pinned ? getSidebarWidth() + "px" : "";
-    try { mountSessionsSidebar(); } catch {}
-    return true;
+    try {
+      const next = window.zion.sideBar.toggle();
+      if (next) {
+        window.zion.sideBar.activateView("sessions.list");
+        window.zion.activityBar.activateItem("sessions.activity");
+      }
+      return next;
+    } catch {
+      return false;
+    }
   });
   ctx.subscriptions.push(dShowSidebar, dHideSidebar, dToggleSidebar);
 
@@ -3047,7 +3299,7 @@ export async function activate(ctx) {
                     window.zion.state.set("sessions.externalUpdate", null);
                     // 刷新状态
                     refreshStatusBar();
-                    try { mountSessionsSidebar(); } catch {}
+                    try { refreshSessionsSidebarViewIfOpen(); } catch {}
                   } catch (e) {
                     console.error("[sessions] refresh on external update error:", e);
                   }
@@ -3070,7 +3322,7 @@ export async function activate(ctx) {
       try {
         const streaming = !!window.zion.state.get("chat.streaming");
         if (!streaming) {
-          mountSessionsSidebar();
+          refreshSessionsSidebarViewIfOpen();
         }
       } catch {}
     }
@@ -3137,7 +3389,7 @@ export async function activate(ctx) {
     try { applyAnnotationsForSession(id); } catch {}
     ed?.focus?.();
     refreshStatusBar();
-    try { mountSessionsSidebar(); } catch (e) { console.log("new session failed:", e)}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     postSaved(id, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(id);
@@ -3171,7 +3423,7 @@ export async function activate(ctx) {
     window.zion.state.set("sessions.catalog", getIndex());
     try { applyAnnotationsForSession(id); } catch {}
     refreshStatusBar();
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     postSaved(id, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(id);
@@ -3199,7 +3451,7 @@ export async function activate(ctx) {
     rebuildIndexFromTree();
     window.zion.state.set("sessions.catalog", getIndex());
     refreshStatusBar();
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     // 更新页面标题
     updatePageTitle(id);
     return true;
@@ -3228,7 +3480,7 @@ export async function activate(ctx) {
       }
     }
     refreshStatusBar();
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     // 更新页面标题（如果当前会话被删除，会切换到新会话）
     updatePageTitle();
     return true;
@@ -3282,7 +3534,7 @@ export async function activate(ctx) {
     const rs = window.zion.state.get(`chat.runs.${id}`);
     window.zion.state.set("chat.streaming", !!rs?.streaming);
     refreshStatusBar();
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return true;
   });
   ctx.subscriptions.push(dSwitch);
@@ -3367,7 +3619,7 @@ export async function activate(ctx) {
     saveMeta(id, meta);
     upsertIndexEntry({ id, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
     window.zion.state.set("sessions.catalog", getIndex());
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return true;
   });
   ctx.subscriptions.push(dGetDoc, dGetMeta, dSetDoc, dAppendToken, dBumpUpdated);
@@ -3383,19 +3635,19 @@ export async function activate(ctx) {
       }
     } catch {}
     // Refresh UI to reflect "streaming" status badge immediately
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
   const dispRunFinishedUI = window.zion.events.on("chat/runFinished", ({ sessionId }) => {
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
   const dispRunErrorUI = window.zion.events.on("chat/runError", ({ sessionId }) => {
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
   const dispAbortedUI = window.zion.events.on("chat/aborted", ({ sessionId }) => {
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
   ctx.subscriptions.push(dispRunStarted, dispRunFinishedUI, dispRunErrorUI, dispAbortedUI);
@@ -3563,7 +3815,7 @@ export async function activate(ctx) {
     window.zion.window.activeEditor?.setValue(text);
     try { applyAnnotationsForSession(newId); } catch {}
     refreshStatusBar();
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     postSaved(newId, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(newId);
@@ -3621,7 +3873,7 @@ export async function activate(ctx) {
     if (ok) {
       window.zion.state.set("sessions.catalog", getIndex());
       refreshStatusBar();
-      try { mountSessionsSidebar(); } catch {}
+      try { refreshSessionsSidebarViewIfOpen(); } catch {}
       // notify
       window.zion.statusBar.registerItem({
         id: "session.import.ok",
@@ -3671,7 +3923,7 @@ export async function activate(ctx) {
     }
     window.zion.state.set("sessions.catalog", getIndex());
     refreshStatusBar();
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return true;
   });
   const dExportSelected = window.zion.commands.registerCommand("zion.sessions.exportSelected", () => {
@@ -3719,7 +3971,7 @@ export async function activate(ctx) {
     }
     const id = insertFolder(opts?.parentId || window.zion.state.get("sessions.selectedFolderId") || "root", title);
     window.zion.state.set("sessions.catalog", getIndex());
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return id;
   });
   const dRenameFolder = window.zion.commands.registerCommand("zion.sessions.renameFolder", (opts) => {
@@ -3729,13 +3981,13 @@ export async function activate(ctx) {
     node.title = String(opts?.title || node.title || "Folder");
     saveTree(tree);
     window.zion.state.set("sessions.catalog", getIndex());
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return true;
   });
   const dDeleteFolder = window.zion.commands.registerCommand("zion.sessions.deleteFolder", (id) => {
     const ok = removeNodeRecursive(id);
     window.zion.state.set("sessions.catalog", getIndex());
-    try { mountSessionsSidebar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return ok;
   });
   ctx.subscriptions.push(dNewFolder, dRenameFolder, dDeleteFolder, dExportFolder);

@@ -126,6 +126,51 @@ declare global {
       statusBar: {
         registerItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }): Disposable;
       };
+      activityBar?: {
+        registerItem(opts: {
+          id: string;
+          pluginId: string;
+          icon: string;
+          tooltip?: string;
+          order?: number;
+          when?: string;
+          sideBarViewId?: string;
+          auxiliaryBarViewId?: string;
+          bottomPanelViewId?: string;
+          onClick?: () => void;
+        }): Disposable;
+        activateItem(id: string): void;
+        getItems(): any[];
+        show(): void;
+        hide(): void;
+        toggle(): boolean;
+      };
+      sideBar?: {
+        registerView(opts: {
+          id: string;
+          pluginId: string;
+          title: string;
+          icon?: string;
+          location?: 'sidebar' | string;
+          order?: number;
+          when?: string;
+          canClose?: boolean;
+          headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+          component: {
+            render: (container: HTMLElement) => { dispose?: () => void } | void;
+          };
+          onActivate?: () => void | Promise<void>;
+          onDeactivate?: () => void | Promise<void>;
+          onResize?: (size: { width: number; height: number }) => void;
+          onDispose?: () => void;
+        }): Disposable;
+        activateView(id: string): void;
+        getViews(): any[];
+        show(): void;
+        hide(): void;
+        toggle(): boolean;
+        setWidth(w: number): void;
+      };
       // editor-level APIs
       editor: {
         registerPasteHandler(handler: PasteHandler): Disposable;

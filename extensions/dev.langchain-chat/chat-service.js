@@ -1,11 +1,117 @@
 import { resolveAppImage } from "./img-db.js";
 
 /**
+ * 判断是否为速率限制错误
+ */
+function isRateLimitError(status, text) {
+  if (status !== 429) return false;
+  const lowerText = String(text).toLowerCase();
+  const keywords = [
+    'rate limit',
+    'too many requests',
+    '频率过高',
+    '并发',
+    '余额',
+    'concurrent',
+    'frequency',
+    'quota',
+    'rpm limit',
+    '流量限制',
+    '调用次数',
+    '使用上限',
+    'quota exceeded',
+    '请降低'
+  ];
+  return keywords.some(keyword => lowerText.includes(keyword));
+}
+
+/**
+ * 带自动重试的 fetch（针对速率限制）
+ * @param {string} url - 请求 URL
+ * @param {RequestInit} options - fetch 选项
+ * @param {number} maxRetries - 最大重试次数
+ * @param {number} baseDelay - 基础延迟（毫秒）
+ * @returns {Promise<Response>}
+ */
+async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
+  let lastError;
+  let retryCount = 0;
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const response = await fetch(url, options);
+
+      // 如果响应成功，直接返回
+      if (response.ok) {
+        if (retryCount > 0) {
+          console.log(`[RateLimit] 重试成功，第 ${retryCount} 次重试后恢复正常`);
+        }
+        return response;
+      }
+
+      // 检查是否为速率限制错误
+      const text = await response.text().catch(() => "");
+      if (response.status === 429 && isRateLimitError(429, text)) {
+        retryCount++;
+        // 指数退避：2s, 4s, 8s
+        const delay = baseDelay * Math.pow(2, i);
+
+        // 显示警告通知
+        try {
+          window.zion.notification.show(
+            `⚠️ 请求速率过高，正在等待 ${delay/1000} 秒后重试 (${retryCount}/${maxRetries})...`,
+            {
+              type: 'warning',
+              duration: 3000
+            }
+          );
+        } catch {}
+
+        console.warn(`[RateLimit] 检测到速率限制，第 ${retryCount} 次重试，等待 ${delay}ms...`);
+        console.warn(`[RateLimit] 错误信息: ${text.slice(0, 200)}`);
+
+        // 等待后继续重试
+        await new Promise(resolve => setTimeout(resolve, delay));
+        lastError = new Error(`请求速率过高: ${text.slice(0, 100)}`);
+        continue;
+      }
+
+      // 非 429 错误，直接抛出
+      throw new Error(`HTTP ${response.status}: ${text.slice(0, 256)}`);
+
+    } catch (error) {
+      // 如果是最后一次循环，抛出错误
+      if (i === maxRetries - 1) {
+        // 显示错误通知
+        try {
+          window.zion.notification.show(
+            `❌ 请求失败（已重试 ${maxRetries} 次）: ${error.message}`,
+            {
+              type: 'error',
+              duration: 6000
+            }
+          );
+        } catch {}
+        throw error;
+      }
+
+      // 记录错误并继续
+      lastError = error;
+      console.error(`[RateLimit] 请求失败，准备重试:`, error.message);
+    }
+  }
+
+  // 理论上不会执行到这里
+  throw lastError || new Error('请求失败，已达到最大重试次数');
+}
+
+/**
  * 统一的流式调用器，支持：
  * - tools：function calling（OpenAI 兼容）
  * - onToolCall：流式/非流式下接收工具调用并回调
  * - 多模态消息（content 数组）
  * - assistant 消息中的 tool_calls 与 role:"tool" 消息
+ * - 自动重试速率限制错误
  */
 export async function runStream({
   messages,
@@ -135,20 +241,21 @@ export async function runStream({
       body.tool_choice = "auto";
     }
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
+    // 使用带自动重试的 fetch（针对速率限制错误）
+    const res = await fetchWithRetry(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
       },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 256)}`);
-    }
+      3,  // 最大重试 3 次
+      2000  // 基础延迟 2 秒
+    );
 
     // 流式 SSE
     if (cfg.stream !== false && res.body) {

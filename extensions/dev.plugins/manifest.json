@@ -1,0 +1,22 @@
+{
+  "name": "dev.plugins",
+  "version": "0.0.1",
+  "description": "Zion Next Plugin: dev.plugins",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.plugins",
+    "name": "dev.plugins",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "zion.plugins.show",
+          "title": "Show Plugins"
+        }
+      ]
+    }
+  }
+}
+

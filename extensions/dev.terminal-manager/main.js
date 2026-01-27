@@ -1,4 +1,4 @@
-import { installTerminalManagerPanel } from "./session-tools.js";
+import { mountTerminalManagerSidebarViewInto } from "./session-tools.js";
 
 export async function activate(ctx) {
   // 注册 terminalManage 工具 schema 到 chat.tools
@@ -161,16 +161,7 @@ export async function activate(ctx) {
     console.warn("[dev.terminal-manager] register handler failed", e);
   }
 
-  // 面板与命令/状态栏
-  let panel = null;
-  const dispDec = window.zion.editor.registerDecorator({
-    id: "dev.terminal.manager.panel",
-    apply(editor) {
-      panel = installTerminalManagerPanel();
-      return { dispose() { panel?.dispose?.(); panel = null; } };
-    }
-  });
-  ctx.subscriptions.push(dispDec);
+  // 命令/状态栏
 
   const readBase = () => {
     const st1 = window.zion?.state?.get("localTools.baseUrl");
@@ -262,8 +253,20 @@ export async function activate(ctx) {
     return true;
   };
 
-  const openCmd = window.zion.commands.registerCommand("terminal.openManager", () => { panel?.open?.(); });
-  const closeCmd = window.zion.commands.registerCommand("terminal.closeManager", () => { panel?.close?.(); });
+  const openCmd = window.zion.commands.registerCommand("terminal.openManager", () => {
+    try {
+      window.zion.sideBar?.show?.();
+      window.zion.sideBar?.activateView?.("terminal.manager");
+      try {
+        window.zion.state.set("ui.activityBar.activeItemId", "terminal.activity");
+      } catch {}
+    } catch {}
+  });
+  const closeCmd = window.zion.commands.registerCommand("terminal.closeManager", () => {
+    try {
+      window.zion.sideBar?.hide?.();
+    } catch {}
+  });
   const refreshCmd = window.zion.commands.registerCommand("terminal.refreshSessions", async () => {
     try {
       return await refreshSessions();
@@ -309,6 +312,42 @@ export async function activate(ctx) {
     return !enabled;
   });
   ctx.subscriptions.push(openCmd, closeCmd, refreshCmd, createCmd, closeSessionCmd, setActiveCmd, setCwdCmd, toggleContextCmd);
+
+  try {
+    const dispItem = window.zion.activityBar.registerItem({
+      id: "terminal.activity",
+      pluginId: "dev.terminal-manager",
+      icon: "💻",
+      tooltip: "Terminal",
+      sideBarViewId: "terminal.manager",
+      order: 30
+    });
+    const dispView = window.zion.sideBar.registerView({
+      id: "terminal.manager",
+      pluginId: "dev.terminal-manager",
+      title: "Terminal",
+      icon: "💻",
+      order: 30,
+      location: "sidebar",
+      headerActions: [
+        {
+          id: "terminal.refresh",
+          title: "Refresh sessions",
+          ariaLabel: "Refresh sessions",
+          icon: "↻",
+          onClick: () => {
+            try {
+              window.zion.commands.executeCommand("terminal.refreshSessions");
+            } catch {}
+          }
+        }
+      ],
+      component: {
+        render: (container) => mountTerminalManagerSidebarViewInto(container)
+      }
+    });
+    ctx.subscriptions.push(dispItem, dispView);
+  } catch {}
 
   let statusDisp = null;
   const updateStatus = () => {
