@@ -12,6 +12,7 @@ export default defineConfig({
     strictPort: true
   },
   build: {
+    target: "es2022",
     emptyOutDir: false,
     // 增加chunk大小限制警告
     chunkSizeWarningLimit: 1000,
@@ -79,6 +80,9 @@ export default defineConfig({
     })
   ],
   optimizeDeps: {
+    esbuildOptions: {
+      target: "es2022"
+    },
     // 确保这些依赖被预构建
     include: [
       "eventemitter3",
