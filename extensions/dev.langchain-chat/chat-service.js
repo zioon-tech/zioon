@@ -217,7 +217,12 @@ export async function runStream({
 
       if (m && m.role === "assistant" && m.tool_calls) {
         const content = useArray ? await toArrayContent(m) : toStringContent(m);
-        return { role: "assistant", tool_calls: m.tool_calls, content };
+        const msg = { role: "assistant", tool_calls: m.tool_calls, content };
+        // Support reasoning models: preserve reasoning_content if present
+        if (m.reasoning_content != null) {
+          msg.reasoning_content = m.reasoning_content;
+        }
+        return msg;
       }
       if (m && m.role === "tool" && m.tool_call_id) {
         const content = useArray ? await toArrayContent(m) : toStringContent(m);

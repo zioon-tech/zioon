@@ -264,18 +264,20 @@ export class PluginLoader {
       let mainPath: string;
 
       if (this.isModernManifest(manifest)) {
-        const candidate = manifest.zion.main || 'index.js';
+        const rawCandidate = manifest.zion.main || 'index.js';
         // 支持绝对路径（blob:/data:/http(s):）
-        if (/^(blob:|data:|https?:|internal:)/i.test(candidate)) {
-          mainPath = candidate;
+        if (/^(blob:|data:|https?:|internal:)/i.test(rawCandidate)) {
+          mainPath = rawCandidate;
         } else {
+          const candidate = rawCandidate.replace(/^\.\/+/, '');
           mainPath = this.joinPath(pluginInfo.path, candidate);
         }
       } else {
-        const candidate = (manifest as any).main || 'index.js';
-        if (/^(blob:|data:|https?:|internal:)/i.test(candidate)) {
-          mainPath = candidate;
+        const rawCandidate = (manifest as any).main || 'index.js';
+        if (/^(blob:|data:|https?:|internal:)/i.test(rawCandidate)) {
+          mainPath = rawCandidate;
         } else {
+          const candidate = String(rawCandidate).replace(/^\.\/+/, '');
           mainPath = this.joinPath(pluginInfo.path, candidate);
         }
       }
@@ -324,6 +326,16 @@ export class PluginLoader {
         throw new Error(`Unknown internal module: ${key}`);
       }
 
+      const normalizedExtensionPath = this.normalizeExtensionsPath(path);
+      if (normalizedExtensionPath) {
+        const extensionModules = (import.meta as any).glob('/extensions/**/*.{js,ts,jsx,tsx}') as Record<
+          string,
+          () => Promise<any>
+        >;
+        const loader = extensionModules[normalizedExtensionPath];
+        if (loader) return await loader();
+      }
+
       // 在浏览器环境中，我们需要使用不同的方式导入模块
       // 这里假设插件已经被构建为可以在浏览器中运行的格式
 
@@ -356,6 +368,24 @@ export class PluginLoader {
     } catch (error) {
       throw new Error(`Dynamic import failed for ${path}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  private normalizeExtensionsPath(path: string): string | null {
+    if (/^(blob:|data:|internal:)/i.test(path)) return null;
+
+    let pathname: string = path;
+    try {
+      const base =
+        typeof location !== 'undefined' && location.origin ? location.origin : 'http://localhost';
+      pathname = new URL(path, base).pathname;
+    } catch {
+      pathname = path;
+    }
+
+    const index = pathname.indexOf('/extensions/');
+    if (index === -1) return null;
+
+    return pathname.slice(index).replace(/\/\.\//g, '/');
   }
 
   /**
