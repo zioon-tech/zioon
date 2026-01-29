@@ -5,7 +5,8 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig({
   server: {
     port: 5177,
-    strictPort: false
+    strictPort: false,
+    host: true  // 允许局域网访问
   },
   preview: {
     port: 5175,

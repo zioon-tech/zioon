@@ -5,3 +5,4 @@ dev-dist/sw.js
 .env*.local
 node_modules/
 .aider*
+.trae/

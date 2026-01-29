@@ -8,6 +8,7 @@ import { HttpPluginInstaller } from "./plugin/http-installer";
 import type { PluginInfo } from "./plugin/types";
 import { notificationManager } from "./notification/manager";
 import { initWorkbench } from "./ui/workbench/workbench";
+import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
 
 // ---------- 自动保存 / 恢复 ----------
 const STORAGE_KEY = 'zion.autosave';
@@ -172,6 +173,10 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   const core = new EditorCore(editorContainer, initialDoc);
   attachEditor(core);
   mountCurrentSessionPath(editorHeaderPathEl);
+
+  try {
+    initServiceBaseUrlConfig();
+  } catch {}
 
   // 监听内容变化，自动保存
   core.view.state.field && core.view.state.field; // 保证 view 已初始化
@@ -427,9 +432,9 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     // 初始化 HTTP 插件安装器（服务地址可配置）
     const defaultServiceUrl = (() => {
       try {
-        return localStorage.getItem('zion.pluginServiceUrl') || 'http://127.0.0.1:8765';
+        return localStorage.getItem('zion.pluginServiceUrl') || DEFAULT_BASE_URL;
       } catch {
-        return 'http://127.0.0.1:8765';
+        return DEFAULT_BASE_URL;
       }
     })();
     const pluginInstaller = new HttpPluginInstaller({
@@ -819,13 +824,13 @@ function openPluginsPanel(pluginManager: PluginManager) {
 
     const urlInput = document.createElement("input");
     urlInput.type = "text";
-    urlInput.placeholder = "http://127.0.0.1:8765";
+    urlInput.placeholder = DEFAULT_BASE_URL;
     urlInput.style.flex = "1";
     urlInput.value = (() => {
       try {
-        return localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8765";
+        return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_BASE_URL;
       } catch {
-        return "http://127.0.0.1:8765";
+        return DEFAULT_BASE_URL;
       }
     })();
     urlInput.onchange = () => {
@@ -1084,9 +1089,9 @@ function openPluginsPanel(pluginManager: PluginManager) {
 
     const getServiceBaseUrl = (): string => {
       try {
-        return localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8765";
+        return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_BASE_URL;
       } catch {
-        return "http://127.0.0.1:8765";
+        return DEFAULT_BASE_URL;
       }
     };
 
@@ -1389,9 +1394,9 @@ async function restoreDevSessions(pluginManager: PluginManager, pluginInstaller:
     
     const getServiceBaseUrl = (): string => {
       try {
-        return localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8765";
+        return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_BASE_URL;
       } catch {
-        return "http://127.0.0.1:8765";
+        return DEFAULT_BASE_URL;
       }
     };
     

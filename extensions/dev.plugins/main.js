@@ -1,3 +1,5 @@
+const DEFAULT_BASE_URL = "http://127.0.0.1:8765";
+
 function h(tag, props, ...children) {
   const el = document.createElement(tag);
   if (props) {
@@ -26,6 +28,7 @@ function h(tag, props, ...children) {
 
 function mountPluginsSidebarViewInto(container) {
   const pluginManager = window.zion && window.zion.plugins;
+  const pluginInstaller = window.zion && window.zion.pluginInstaller;
 
   const root = h(
     "div",
@@ -119,6 +122,255 @@ function mountPluginsSidebarViewInto(container) {
     }
   });
   root.appendChild(list);
+
+  const serviceBox = h("div", {
+    style: {
+      border: "1px dashed var(--border)",
+      borderRadius: "10px",
+      padding: "10px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px"
+    }
+  });
+
+  const serviceTitle = h("div", {
+    style: {
+      fontSize: "12px",
+      fontWeight: "600"
+    }
+  }, "Install from Service (zion-local-tools)");
+
+  const urlRow = h("div", {
+    style: {
+      display: "flex",
+      gap: "6px"
+    }
+  });
+
+  const urlInput = h("input", {
+    type: "text",
+    placeholder: DEFAULT_BASE_URL,
+    style: {
+      flex: "1",
+      height: "28px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      padding: "0 10px",
+      outline: "none",
+      boxSizing: "border-box",
+      fontSize: "12px"
+    }
+  });
+
+  const saveUrlBtn = h("button", {
+    style: {
+      height: "28px",
+      padding: "0 10px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      cursor: "pointer",
+      fontSize: "12px"
+    }
+  }, "Save URL");
+
+  urlRow.appendChild(urlInput);
+  urlRow.appendChild(saveUrlBtn);
+
+  const dropZone = h("div", {
+    style: {
+      border: "2px dashed var(--border)",
+      borderRadius: "10px",
+      padding: "12px",
+      textAlign: "center",
+      fontSize: "12px",
+      opacity: "0.85"
+    }
+  }, "拖拽 ZIP 插件包到此处进行安装");
+
+  const actionRow = h("div", {
+    style: {
+      display: "flex",
+      gap: "6px"
+    }
+  });
+
+  const queryInput = h("input", {
+    type: "text",
+    placeholder: "Search query",
+    style: {
+      flex: "1",
+      height: "28px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      padding: "0 10px",
+      outline: "none",
+      boxSizing: "border-box",
+      fontSize: "12px"
+    }
+  });
+
+  const searchBtn = h("button", {
+    style: {
+      height: "28px",
+      padding: "0 10px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      cursor: "pointer",
+      fontSize: "12px"
+    }
+  }, "Search");
+
+  const listBtn = h("button", {
+    style: {
+      height: "28px",
+      padding: "0 10px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      cursor: "pointer",
+      fontSize: "12px"
+    }
+  }, "List All");
+
+  const resultsList = h("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "6px"
+    }
+  });
+
+  actionRow.appendChild(queryInput);
+  actionRow.appendChild(searchBtn);
+  actionRow.appendChild(listBtn);
+
+  serviceBox.appendChild(serviceTitle);
+  serviceBox.appendChild(urlRow);
+  serviceBox.appendChild(dropZone);
+  serviceBox.appendChild(actionRow);
+  serviceBox.appendChild(resultsList);
+  root.appendChild(serviceBox);
+
+  const devBox = h("div", {
+    style: {
+      border: "1px dashed var(--border)",
+      borderRadius: "10px",
+      padding: "10px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px"
+    }
+  });
+
+  const devTitle = h("div", {
+    style: {
+      fontSize: "12px",
+      fontWeight: "600"
+    }
+  }, "Dev Mode (Local Directory → HTTP Mapping)");
+
+  const devRow = h("div", {
+    style: {
+      display: "flex",
+      gap: "6px"
+    }
+  });
+
+  const devPathInput = h("input", {
+    type: "text",
+    placeholder: "/absolute/path/to/your-plugin",
+    style: {
+      flex: "1",
+      height: "28px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      padding: "0 10px",
+      outline: "none",
+      boxSizing: "border-box",
+      fontSize: "12px"
+    }
+  });
+
+  const devStartBtn = h("button", {
+    style: {
+      height: "28px",
+      padding: "0 10px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      cursor: "pointer",
+      fontSize: "12px"
+    }
+  }, "Start Dev");
+
+  const devStopBtn = h("button", {
+    style: {
+      height: "28px",
+      padding: "0 10px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      cursor: "pointer",
+      fontSize: "12px",
+      opacity: "0.6"
+    },
+    disabled: true
+  }, "Stop Dev");
+
+  devRow.appendChild(devPathInput);
+  devRow.appendChild(devStartBtn);
+  devRow.appendChild(devStopBtn);
+
+  const devStatus = h("div", {
+    style: {
+      fontSize: "12px",
+      opacity: "0.8",
+      wordBreak: "break-word"
+    }
+  });
+
+  devBox.appendChild(devTitle);
+  devBox.appendChild(devRow);
+  devBox.appendChild(devStatus);
+  root.appendChild(devBox);
+
+  const footer = h("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center"
+    }
+  });
+
+  const reloadAllBtn = h("button", {
+    style: {
+      height: "28px",
+      padding: "0 10px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      cursor: "pointer",
+      fontSize: "12px"
+    }
+  }, "Reload All");
+
+  footer.appendChild(reloadAllBtn);
+  root.appendChild(footer);
 
   function renderEmpty(text) {
     list.innerHTML = "";
@@ -247,6 +499,36 @@ function mountPluginsSidebarViewInto(container) {
         );
       }
 
+      try {
+        const sessionsState = (window.zion && window.zion.state && window.zion.state.get("plugins.devSessions")) || {};
+        let devInfo = null;
+        for (const k in sessionsState) {
+          const s = sessionsState[k];
+          if (s && s.pluginId === plugin.id) {
+            devInfo = s;
+            break;
+          }
+        }
+        if (!devInfo) {
+          try {
+            const saved = JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}");
+            if (saved && saved[plugin.id]) devInfo = saved[plugin.id];
+          } catch {}
+        }
+        if (devInfo && (devInfo.dir || devInfo.baseUrl)) {
+          const devLine = h("div", {
+            style: {
+              fontSize: "11px",
+              opacity: "0.7",
+              fontFamily: "var(--font-mono)",
+              marginTop: "4px",
+              wordBreak: "break-word"
+            }
+          }, devInfo.dir ? `dev: ${String(devInfo.dir)}${devInfo.baseUrl ? ` (${String(devInfo.baseUrl)})` : ""}` : `dev:${String(devInfo.baseUrl)}`);
+          left.appendChild(devLine);
+        }
+      } catch {}
+
       const right = h("div", { style: { display: "flex", gap: "10px", alignItems: "center" } });
 
       const dot = h("div", {
@@ -302,7 +584,325 @@ function mountPluginsSidebarViewInto(container) {
     renderList();
   };
 
+  const readServiceUrl = () => {
+    try {
+      return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_BASE_URL;
+    } catch {
+      return DEFAULT_BASE_URL;
+    }
+  };
+
+  const setServiceUrl = (value) => {
+    const v = String(value || "").trim();
+    const next = v || DEFAULT_BASE_URL;
+    try {
+      localStorage.setItem("zion.pluginServiceUrl", next);
+    } catch {}
+    try {
+      if (pluginInstaller && typeof pluginInstaller.setBaseUrl === "function") {
+        pluginInstaller.setBaseUrl(next);
+      }
+    } catch {}
+    return next;
+  };
+
+  urlInput.value = readServiceUrl();
+  saveUrlBtn.onclick = () => {
+    setServiceUrl(urlInput.value);
+  };
+
+  dropZone.ondragover = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    dropZone.style.background = "rgba(0,0,0,0.08)";
+  };
+  dropZone.ondragleave = () => {
+    dropZone.style.background = "transparent";
+  };
+  dropZone.ondrop = async (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    dropZone.style.background = "transparent";
+    try {
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (!files || files.length === 0) return;
+      if (!pluginInstaller || typeof pluginInstaller.installFromFile !== "function") {
+        alert("Installer 不可用");
+        return;
+      }
+      if (!pluginManager || typeof pluginManager.installFromInfo !== "function") {
+        alert("PluginManager 不可用");
+        return;
+      }
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        if (!f.name.toLowerCase().endsWith(".zip")) continue;
+        const ret = await pluginInstaller.installFromFile(f);
+        if (ret.success && ret.plugin) {
+          await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+          doRefresh();
+        } else {
+          alert(`安装失败: ${ret.error?.message || "未知错误"}`);
+        }
+      }
+    } catch (err) {
+      alert("安装过程中发生错误，请查看控制台");
+    }
+  };
+
+    searchBtn.onclick = async () => {
+    try {
+      resultsList.innerHTML = "";
+      if (!pluginInstaller || typeof pluginInstaller.searchPlugins !== "function") return;
+      const res = await pluginInstaller.searchPlugins(queryInput.value.trim(), 50);
+      if (!res.success) {
+        resultsList.appendChild(
+          h("div", { style: { color: "var(--error)", fontSize: "12px" } }, `Search failed: ${res.error?.message || "Unknown"}`)
+        );
+        return;
+      }
+      if (!pluginManager || typeof pluginManager.installFromInfo !== "function") {
+        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, "PluginManager 不可用"));
+        return;
+      }
+      res.data.forEach((item) => {
+        const row = h("div", {
+          style: {
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "8px"
+          }
+        });
+        const label = h("div", { style: { fontSize: "12px" } }, `${item.name} (${item.id}) v${item.version}`);
+        const installBtn = h("button", {
+          style: {
+            height: "26px",
+            padding: "0 10px",
+            borderRadius: "8px",
+            border: "1px solid var(--border)",
+            background: "transparent",
+            color: "var(--fg)",
+            cursor: "pointer",
+            fontSize: "12px"
+          }
+        }, "Install");
+        installBtn.onclick = async () => {
+          const ret = await pluginInstaller.installFromService(item.id);
+          if (ret.success && ret.plugin) {
+            await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+            doRefresh();
+          } else {
+            alert(`Install failed: ${ret.error?.message || "Unknown"}`);
+          }
+        };
+        row.appendChild(label);
+        row.appendChild(installBtn);
+        resultsList.appendChild(row);
+      });
+      if (res.data.length === 0) {
+        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, "No plugins matched"));
+      }
+    } catch (e) {
+      resultsList.appendChild(h("div", { style: { color: "var(--error)", fontSize: "12px" } }, "Search error"));
+    }
+  };
+
+  listBtn.onclick = async () => {
+    try {
+      resultsList.innerHTML = "";
+      if (!pluginInstaller || typeof pluginInstaller.listPlugins !== "function") return;
+      const res = await pluginInstaller.listPlugins(100, 0);
+      if (!res.success) {
+        resultsList.appendChild(
+          h("div", { style: { color: "var(--error)", fontSize: "12px" } }, `List failed: ${res.error?.message || "Unknown"}`)
+        );
+        return;
+      }
+      if (!pluginManager || typeof pluginManager.installFromInfo !== "function") {
+        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, "PluginManager 不可用"));
+        return;
+      }
+      res.data.forEach((item) => {
+        const row = h("div", {
+          style: {
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "8px"
+          }
+        });
+        const label = h("div", { style: { fontSize: "12px" } }, `${item.name} (${item.id}) v${item.version}`);
+        const installBtn = h("button", {
+          style: {
+            height: "26px",
+            padding: "0 10px",
+            borderRadius: "8px",
+            border: "1px solid var(--border)",
+            background: "transparent",
+            color: "var(--fg)",
+            cursor: "pointer",
+            fontSize: "12px"
+          }
+        }, "Install");
+        installBtn.onclick = async () => {
+          const ret = await pluginInstaller.installFromService(item.id);
+          if (ret.success && ret.plugin) {
+            await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+            doRefresh();
+          } else {
+            alert(`Install failed: ${ret.error?.message || "Unknown"}`);
+          }
+        };
+        row.appendChild(label);
+        row.appendChild(installBtn);
+        resultsList.appendChild(row);
+      });
+      if (res.data.length === 0) {
+        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, "No plugins found"));
+      }
+    } catch (e) {
+      resultsList.appendChild(h("div", { style: { color: "var(--error)", fontSize: "12px" } }, "List error"));
+    }
+  };
+
+  const activeDevSessions = new Map();
+
+  const getServiceBaseUrl = () => readServiceUrl();
+
+  const connectWebSocket = (serviceUrl, devId) => {
+    const wsUrl = serviceUrl.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      devStatus.textContent = `Dev websocket connected: ${wsUrl}`;
+    };
+    ws.onmessage = async (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "dev:change" && msg.devId === devId) {
+          const baseUrl = getServiceBaseUrl() + `/plugins/dev/${devId}`;
+          if (!pluginInstaller || typeof pluginInstaller.installFromDevBase !== "function") return;
+          if (!pluginManager || typeof pluginManager.hotReloadFromInfo !== "function") return;
+          const ret = await pluginInstaller.installFromDevBase(baseUrl, devId);
+          if (ret.success && ret.plugin) {
+            try {
+              await pluginManager.hotReloadFromInfo(ret.plugin, { enabled: true });
+            } catch {}
+          }
+        } else if (msg.type === "dev:stop") {
+          devStatus.textContent = `Dev session stopped: ${devId}`;
+        }
+      } catch {}
+    };
+    ws.onclose = () => {
+      devStatus.textContent = `Dev websocket closed: ${devId}`;
+    };
+    return ws;
+  };
+
+  devStartBtn.onclick = async () => {
+    const p = devPathInput.value.trim();
+    if (!p) {
+      alert("请输入本地插件目录绝对路径");
+      return;
+    }
+    const serviceUrl = getServiceBaseUrl();
+    try {
+      if (!pluginManager || typeof pluginManager.installFromInfo !== "function") {
+        throw new Error("PluginManager 不可用");
+      }
+      if (!pluginManager.hotReloadFromInfo) {
+        throw new Error("Hot reload 不可用");
+      }
+      const res = await fetch(`${serviceUrl}/plugins/dev/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: p })
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const devId = data?.data?.devId;
+      const baseUrlRel = data?.data?.baseUrl;
+      const devDir = data?.data?.dir;
+      if (!devId || !baseUrlRel) {
+        throw new Error("invalid dev start response");
+      }
+      const baseUrl = serviceUrl + baseUrlRel;
+
+      if (!pluginInstaller || typeof pluginInstaller.installFromDevBase !== "function") {
+        throw new Error("Installer 不可用");
+      }
+
+      const ret = await pluginInstaller.installFromDevBase(baseUrl, devId);
+      if (ret.success && ret.plugin) {
+        await pluginManager.installFromInfo(ret.plugin, { enabled: true });
+        devStatus.textContent = `Dev session started: ${devId} (${ret.plugin.id})`;
+        const ws = connectWebSocket(serviceUrl, devId);
+        activeDevSessions.set(devId, { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir });
+        try {
+          const sessions = (window.zion.state.get("plugins.devSessions") || {});
+          sessions[devId] = { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir };
+          window.zion.state.set("plugins.devSessions", sessions);
+          const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
+          const saved = JSON.parse(savedRaw);
+          saved[ret.plugin.id] = { devId, baseUrl, dir: devDir };
+          localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+        } catch {}
+        devStartBtn.disabled = true;
+        devStopBtn.disabled = false;
+        devStopBtn.style.opacity = "1";
+      } else {
+        throw new Error(ret.error?.message || "开发模式安装失败");
+      }
+    } catch (e) {
+      devStatus.textContent = "启动开发模式失败";
+      alert(`启动开发模式失败：${e?.message || e}`);
+    }
+  };
+
+  devStopBtn.onclick = async () => {
+    const serviceUrl = getServiceBaseUrl();
+    try {
+      for (const [devId, sess] of activeDevSessions.entries()) {
+        try {
+          await fetch(`${serviceUrl}/plugins/dev/stop`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ devId })
+          });
+          sess.ws.close();
+        } catch {}
+        try {
+          const sessions = (window.zion.state.get("plugins.devSessions") || {});
+          delete sessions[devId];
+          window.zion.state.set("plugins.devSessions", sessions);
+          const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
+          const saved = JSON.parse(savedRaw);
+          if (sess.pluginId && saved[sess.pluginId]) {
+            delete saved[sess.pluginId];
+            localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+          }
+        } catch {}
+        activeDevSessions.delete(devId);
+      }
+      devStatus.textContent = "Dev sessions stopped.";
+    } catch {}
+    devStartBtn.disabled = false;
+    devStopBtn.disabled = true;
+    devStopBtn.style.opacity = "0.6";
+  };
+
   refreshBtn.onclick = doRefresh;
+  reloadAllBtn.onclick = () => {
+    try {
+      window.zion.commands.executeCommand("zion.reloadPlugins");
+    } catch {
+      location.reload();
+    }
+  };
   searchInput.addEventListener("input", () => {
     try {
       renderList();
@@ -404,4 +1004,3 @@ export async function activate(ctx) {
     ctx.subscriptions.push(dispItem, dispView);
   } catch {}
 }
-
