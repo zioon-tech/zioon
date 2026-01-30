@@ -254,6 +254,39 @@ export async function activate(ctx) {
     // ignore
   }
 
+  // Tool Calls reasoning_content mode init (persist + commands)
+  try {
+    const STATE_KEY = "chat.toolCallsReasoningContentMode";
+    const LS_KEY = "zion.toolCallsReasoningContentMode";
+    const normalize = (v) => {
+      const s = String(v || "").trim().toLowerCase();
+      if (s === "always" || s === "never" || s === "auto") return s;
+      return "auto";
+    };
+
+    let mode = "auto";
+    try {
+      mode = normalize(localStorage.getItem(LS_KEY));
+    } catch {}
+    window.zion.state.set(STATE_KEY, mode);
+
+    const setMode = window.zion.commands.registerCommand("dev.editor.setToolCallsReasoningContentMode", (val) => {
+      const m = normalize(val);
+      try { localStorage.setItem(LS_KEY, m); } catch {}
+      window.zion.state.set(STATE_KEY, m);
+      return m;
+    });
+
+    const cycleMode = window.zion.commands.registerCommand("dev.editor.cycleToolCallsReasoningContentMode", () => {
+      const cur = normalize(window.zion.state.get(STATE_KEY));
+      const next = cur === "auto" ? "always" : cur === "always" ? "never" : "auto";
+      return window.zion.commands.executeCommand("dev.editor.setToolCallsReasoningContentMode", next);
+    });
+    ctx.subscriptions.push(setMode, cycleMode);
+  } catch (e) {
+    // ignore
+  }
+
   // Minimap init: load persisted preference and delegate actual enabling to core via zion commands bridge.
   try {
     const MINIMAP_KEY_GLOBAL = "zion.minimap";
@@ -515,6 +548,49 @@ export async function activate(ctx) {
         return row;
       };
 
+      const makeSelectRow = (stateKey, labelText, options, commandToExecute) => {
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.justifyContent = "space-between";
+        row.style.padding = "6px 0";
+
+        const lbl = document.createElement("label");
+        lbl.textContent = labelText;
+        lbl.style.fontSize = "13px";
+
+        const sel = document.createElement("select");
+        sel.style.fontSize = "12px";
+        sel.style.padding = "4px 6px";
+        sel.style.border = "1px solid var(--border)";
+        sel.style.borderRadius = "4px";
+        sel.style.background = "var(--panel)";
+        sel.style.color = "var(--fg)";
+
+        for (const opt of options) {
+          const o = document.createElement("option");
+          o.value = opt.value;
+          o.textContent = opt.label;
+          sel.appendChild(o);
+        }
+
+        sel.value = String(window.zion.state.get(stateKey) || "auto");
+        sel.onchange = () => {
+          try {
+            window.zion.commands.executeCommand(commandToExecute, sel.value);
+          } catch (e) { console.error("select command failed", e); }
+        };
+
+        const sub = window.zion.state.onDidChange(stateKey, (nv) => {
+          try { sel.value = String(nv || "auto"); } catch {}
+        });
+        panelCleanup.push(() => { try { sub.dispose?.(); } catch {} });
+
+        row.appendChild(lbl);
+        row.appendChild(sel);
+        return row;
+      };
+
       // track panel-local disposables (listeners)
       const panelCleanup = [];
 
@@ -531,6 +607,16 @@ export async function activate(ctx) {
       togglesContainer.appendChild(makeToggleRow("ui.selectionHighlight", "Selection Highlight", "zion.toggleSelectionHighlight"));
       togglesContainer.appendChild(makeToggleRow("chat.includeToolHistory", "Include Tool History in Chat", "dev.editor.toggleIncludeToolHistory"));
       togglesContainer.appendChild(makeToggleRow("chat.includeThinkingHistory", "Include Thinking in Chat", "dev.editor.toggleIncludeThinkingHistory"));
+      togglesContainer.appendChild(makeSelectRow(
+        "chat.toolCallsReasoningContentMode",
+        "Tool Calls reasoning_content",
+        [
+          { value: "auto", label: "Auto" },
+          { value: "always", label: "Always" },
+          { value: "never", label: "Never" }
+        ],
+        "dev.editor.setToolCallsReasoningContentMode"
+      ));
       panel.appendChild(togglesContainer);
 
       // width mode controls

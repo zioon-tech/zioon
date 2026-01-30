@@ -1,4 +1,10 @@
 import { resolveAppImage } from "./img-db.js";
+import {
+  DEFAULT_REASONING_CONTENT_PLACEHOLDER,
+  patchMessagesForReasoningContentToolCalls,
+  resolveToolCallsReasoningContentMode,
+  shouldForceReasoningContentWithToolCalls
+} from "./reasoning-policy.js";
 
 /**
  * 判断是否为速率限制错误
@@ -77,6 +83,16 @@ async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
       }
 
       // 非 429 错误，直接抛出
+      if (response.status === 400) {
+        const lowerText = String(text).toLowerCase();
+        if (lowerText.includes("reasoning_content") && lowerText.includes("missing")) {
+          const err = new Error(`HTTP ${response.status}: ${text.slice(0, 256)}`);
+          err.code = "missing_reasoning_content";
+          err.httpStatus = 400;
+          err.responseText = text;
+          throw err;
+        }
+      }
       throw new Error(`HTTP ${response.status}: ${text.slice(0, 256)}`);
 
     } catch (error) {
@@ -140,6 +156,7 @@ export async function runStream({
   const controller = new AbortController();
   if (getController) getController(controller);
 
+  let reasoningBuf = "";
   try {
     const url = (() => {
       if (cfg.url) return cfg.url;
@@ -177,90 +194,135 @@ export async function runStream({
       return typeof m?.content === "string" ? (m.content || "") : (m?.content ?? "");
     };
 
-    // 当模型支持图片输入时，保留 content 为数组（OpenAI 兼容）；
-    // 否则统一转为字符串以避免后端不支持 "content: array" 的错误。
-    const formattedMessages = await Promise.all(messages.map(async (m) => {
-      const useArray = !!cfg.supportsImage;
+    const stateMode = window.zion?.state?.get?.("chat.toolCallsReasoningContentMode");
+    const mode = resolveToolCallsReasoningContentMode({ cfg, stateMode });
+    const baseForceReasoning = shouldForceReasoningContentWithToolCalls({
+      mode,
+      modelId: active?.modelId,
+      modelName: cfg?.modelName
+    });
 
-      const toArrayContent = async (mm) => {
-        if (Array.isArray(mm?.content)) {
-          const out = [];
-          for (const c of mm.content) {
-            if (c && typeof c === "object") {
-              if (c.type === "text" && typeof c.text === "string") {
-                out.push({ type: "text", text: c.text });
-              } else if (c.type === "image_url" && c.image_url?.url) {
-                let url = c.image_url.url;
-                if (typeof url === "string" && url.startsWith("app://")) {
-                  const dataUrl = await resolveAppImage(url);
-                  if (dataUrl) {
-                    out.push({ type: "image_url", image_url: { url: dataUrl } });
-                  } else {
-                    // 未能解析则降级为占位文本，避免服务端报错
-                    out.push({ type: "text", text: `[image:${url}]` });
-                  }
-                } else {
-                  out.push({ type: "image_url", image_url: { url } });
-                }
-              }
-            } else if (typeof c === "string") {
-              out.push({ type: "text", text: c });
+    const buildBody = async ({ forceReasoningContentWithToolCalls }) => {
+      const patched = patchMessagesForReasoningContentToolCalls(messages, { force: !!forceReasoningContentWithToolCalls });
+
+      const formattedMessages = await Promise.all(patched.map(async (m) => {
+        const useArray = !!cfg.supportsImage;
+
+        const isEmptyContent = (c) => {
+          if (c == null) return true;
+          if (typeof c === "string") return String(c).trim().length === 0;
+          if (Array.isArray(c)) {
+            for (const it of c) {
+              if (!it || typeof it !== "object") continue;
+              if (it.type === "image_url" && it.image_url?.url) return false;
+              if (it.type === "text" && typeof it.text === "string" && it.text.trim().length > 0) return false;
             }
+            return true;
           }
-          // 如果数组为空，回退为字符串
-          return out.length > 0 ? out : [{ type: "text", text: toStringContent(mm) }];
+          return String(c).trim().length === 0;
+        };
+
+        const toArrayContent = async (mm) => {
+          if (Array.isArray(mm?.content)) {
+            const out = [];
+            for (const c of mm.content) {
+              if (c && typeof c === "object") {
+                if (c.type === "text" && typeof c.text === "string") {
+                  if (c.text.trim().length > 0) out.push({ type: "text", text: c.text });
+                } else if (c.type === "image_url" && c.image_url?.url) {
+                  let url = c.image_url.url;
+                  if (typeof url === "string" && url.startsWith("app://")) {
+                    const dataUrl = await resolveAppImage(url);
+                    if (dataUrl) {
+                      out.push({ type: "image_url", image_url: { url: dataUrl } });
+                    } else {
+                      out.push({ type: "text", text: `[image:${url}]` });
+                    }
+                  } else {
+                    out.push({ type: "image_url", image_url: { url } });
+                  }
+                }
+              } else if (typeof c === "string") {
+                if (c.trim().length > 0) out.push({ type: "text", text: c });
+              }
+            }
+            if (out.length > 0) return out;
+            const fallback = String(toStringContent(mm) || "");
+            return fallback.trim().length > 0 ? [{ type: "text", text: fallback }] : [];
+          }
+          const s = typeof mm?.content === "string" ? (mm.content || "") : toStringContent(mm);
+          return String(s || "").trim().length > 0 ? [{ type: "text", text: String(s) }] : [];
+        };
+
+        if (m && m.role === "assistant" && m.tool_calls) {
+          const content = useArray ? await toArrayContent(m) : toStringContent(m);
+          const msg = { role: "assistant", tool_calls: m.tool_calls };
+          if (!isEmptyContent(content)) {
+            msg.content = content;
+          }
+          if (m.reasoning_content != null) {
+            msg.reasoning_content = m.reasoning_content;
+          } else if (forceReasoningContentWithToolCalls) {
+            msg.reasoning_content = DEFAULT_REASONING_CONTENT_PLACEHOLDER;
+          }
+          return msg;
         }
-        // 原始为字符串/非数组，包装为 text
-        const s = typeof mm?.content === "string" ? (mm.content || "") : toStringContent(mm);
-        return [{ type: "text", text: s }];
+        if (m && m.role === "tool" && m.tool_call_id) {
+          let content = useArray ? await toArrayContent(m) : toStringContent(m);
+          if (isEmptyContent(content)) {
+            content = useArray ? [{ type: "text", text: " " }] : " ";
+          }
+          return { role: "tool", tool_call_id: m.tool_call_id, content };
+        }
+        const content = useArray ? await toArrayContent(m) : toStringContent(m);
+        return isEmptyContent(content) ? { role: m.role, content: useArray ? [{ type: "text", text: " " }] : " " } : { role: m.role, content };
+      }));
+
+      const body = {
+        model: cfg.modelName || active.modelId,
+        messages: formattedMessages,
+        stream: cfg.stream !== false,
+        temperature: typeof cfg.temperature === "number" ? cfg.temperature : 0,
+        max_tokens: cfg.max_tokens
       };
 
-      if (m && m.role === "assistant" && m.tool_calls) {
-        const content = useArray ? await toArrayContent(m) : toStringContent(m);
-        const msg = { role: "assistant", tool_calls: m.tool_calls, content };
-        // Support reasoning models: preserve reasoning_content if present
-        if (m.reasoning_content != null) {
-          msg.reasoning_content = m.reasoning_content;
-        }
-        return msg;
+      if (tools && Array.isArray(tools) && tools.length > 0) {
+        body.tools = tools;
+        body.tool_choice = "auto";
       }
-      if (m && m.role === "tool" && m.tool_call_id) {
-        const content = useArray ? await toArrayContent(m) : toStringContent(m);
-        return { role: "tool", tool_call_id: m.tool_call_id, content };
-      }
-      const content = useArray ? await toArrayContent(m) : toStringContent(m);
-      return { role: m.role, content };
-    }));
 
-    const body = {
-      model: cfg.modelName || active.modelId,
-      messages: formattedMessages,
-      stream: cfg.stream !== false,
-      temperature: typeof cfg.temperature === "number" ? cfg.temperature : 0,
-      max_tokens: cfg.max_tokens
+      return body;
     };
 
-    // 添加 tools
-    if (tools && Array.isArray(tools) && tools.length > 0) {
-      body.tools = tools;
-      body.tool_choice = "auto";
-    }
-
-    // 使用带自动重试的 fetch（针对速率限制错误）
-    const res = await fetchWithRetry(
-      url,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
+    let forcedOnce = false;
+    const doFetch = async () => {
+      const body = await buildBody({ forceReasoningContentWithToolCalls: baseForceReasoning || forcedOnce });
+      return await fetchWithRetry(
+        url,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal
         },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      },
-      3,  // 最大重试 3 次
-      2000  // 基础延迟 2 秒
-    );
+        3,
+        2000
+      );
+    };
+    let res;
+    try {
+      res = await doFetch();
+    } catch (e) {
+      if (e?.code === "missing_reasoning_content") {
+        forcedOnce = true;
+        res = await doFetch();
+      } else {
+        throw e;
+      }
+    }
 
     // 流式 SSE
     if (cfg.stream !== false && res.body) {
@@ -294,7 +356,7 @@ export async function runStream({
               }
             } catch {}
             onEnd();
-            return;
+            return { reasoning_content: reasoningBuf };
           }
 
           try {
@@ -335,6 +397,7 @@ export async function runStream({
               delta?.thinking ??
               undefined;
             if (rTk) {
+              reasoningBuf += String(rTk);
               if (!emittedReasoningStart) {
                 emittedReasoningStart = true;
                 try { window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId }); } catch {}
@@ -361,6 +424,7 @@ export async function runStream({
         }
       } catch {}
       onEnd();
+      return { reasoning_content: reasoningBuf };
     } else {
       // 非流式：一次性返回
       const j = await res.json().catch(() => ({}));
@@ -391,6 +455,7 @@ export async function runStream({
         j?.reasoning_content ??
         "";
       if (rFull) {
+        reasoningBuf += String(rFull);
         try {
           window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId });
           window.zion?.events?.emit("chat/reasoningToken", { runId, token: rFull, sessionId });
@@ -407,12 +472,14 @@ export async function runStream({
         "";
       if (content) onToken(content);
       onEnd();
+      return { reasoning_content: reasoningBuf };
     }
   } catch (e) {
     if (e.name === "AbortError") {
       console.log("[langchain-chat] request aborted");
-      return;
+      return { reasoning_content: reasoningBuf };
     }
     onError(e);
+    return { reasoning_content: reasoningBuf };
   }
 }

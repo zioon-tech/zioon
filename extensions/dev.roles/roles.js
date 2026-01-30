@@ -1,5 +1,5 @@
-import { RangeSetBuilder } from "@codemirror/state";
-import { Decoration, ViewPlugin } from "@codemirror/view";
+import { Prec, RangeSetBuilder } from "@codemirror/state";
+import { Decoration, ViewPlugin, keymap } from "@codemirror/view";
 import { foldService } from "@codemirror/language";
 
 /**
@@ -269,6 +269,168 @@ function rolesView(opts = {}) {
 export function roles(opts = {}) {
   const prefixes = getEffectivePrefixes(opts);
 
+  const seq = { lastKey: null, lastAt: 0 };
+  const SEQ_WINDOW_MS = 450;
+
+  const jumpToPos = (view, pos) => {
+    const p = Math.max(0, Math.min(view.state.doc.length, pos));
+    view.dispatch({
+      selection: { anchor: p },
+      scrollIntoView: true
+    });
+    return true;
+  };
+
+  const getRolesBlocksFromIndex = () => {
+    const idx = window?.zion?.state?.get?.("roles.index");
+    if (!idx || !Array.isArray(idx.blocks) || !Array.isArray(idx.prefixes)) return null;
+    if (idx.prefixes.join("\n") !== prefixes.join("\n")) return null;
+    return idx.blocks;
+  };
+
+  const computeNav = (view, blocks) => {
+    const head = view.state.selection.main.head;
+    const curLine0 = view.state.doc.lineAt(head).number - 1;
+
+    let nextIndex = blocks.findIndex(b => typeof b?.startLine === "number" && b.startLine > curLine0);
+    if (nextIndex === -1) nextIndex = blocks.length;
+    const prevIndex = nextIndex - 1;
+
+    const inside =
+      prevIndex >= 0 &&
+      typeof blocks[prevIndex]?.startLine === "number" &&
+      typeof blocks[prevIndex]?.endLine === "number" &&
+      curLine0 >= blocks[prevIndex].startLine &&
+      curLine0 <= blocks[prevIndex].endLine;
+
+    const currentIndex = inside ? prevIndex : null;
+    const currentStartLine = inside ? blocks[currentIndex].startLine : null;
+    return { curLine0, nextIndex, prevIndex, inside, currentIndex, currentStartLine };
+  };
+
+  const clearSeq = () => {
+    seq.lastKey = null;
+    seq.lastAt = 0;
+  };
+
+  const setSelectionToPos = (view, pos) => {
+    const p = Math.max(0, Math.min(view.state.doc.length, pos));
+    const main = view.state.selection.main;
+    view.dispatch({
+      selection: { anchor: main.anchor, head: p },
+      scrollIntoView: true
+    });
+    return true;
+  };
+
+  const jumpUpSingle = (view) => {
+    const blocks = getRolesBlocksFromIndex();
+    if (!blocks || blocks.length === 0) return jumpToPos(view, 0);
+    const nav = computeNav(view, blocks);
+
+    if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
+      clearSeq();
+      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+    }
+
+    const targetIndex = nav.inside ? nav.currentIndex - 1 : nav.prevIndex;
+    if (targetIndex < 0) return jumpToPos(view, 0);
+    const line0 = blocks[targetIndex].startLine;
+    return jumpToPos(view, view.state.doc.line(line0 + 1).from);
+  };
+
+  const selectUpSingle = (view) => {
+    const blocks = getRolesBlocksFromIndex();
+    if (!blocks || blocks.length === 0) return setSelectionToPos(view, 0);
+    const nav = computeNav(view, blocks);
+
+    if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
+      clearSeq();
+      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+    }
+
+    const targetIndex = nav.inside ? nav.currentIndex - 1 : nav.prevIndex;
+    if (targetIndex < 0) return setSelectionToPos(view, 0);
+    const line0 = blocks[targetIndex].startLine;
+    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from);
+  };
+
+  const jumpDownSingle = (view) => {
+    const blocks = getRolesBlocksFromIndex();
+    if (!blocks || blocks.length === 0) return jumpToPos(view, view.state.doc.length);
+    const nav = computeNav(view, blocks);
+
+    if (nav.nextIndex >= blocks.length) {
+      return jumpToPos(view, view.state.doc.length);
+    }
+
+    if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
+      clearSeq();
+      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+    }
+
+    const targetIndex = nav.nextIndex;
+    if (targetIndex >= blocks.length) return jumpToPos(view, view.state.doc.length);
+    const line0 = blocks[targetIndex].startLine;
+    return jumpToPos(view, view.state.doc.line(line0 + 1).from);
+  };
+
+  const selectDownSingle = (view) => {
+    const blocks = getRolesBlocksFromIndex();
+    if (!blocks || blocks.length === 0) return setSelectionToPos(view, view.state.doc.length);
+    const nav = computeNav(view, blocks);
+
+    if (nav.nextIndex >= blocks.length) {
+      return setSelectionToPos(view, view.state.doc.length);
+    }
+
+    if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
+      clearSeq();
+      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+    }
+
+    const targetIndex = nav.nextIndex;
+    if (targetIndex >= blocks.length) return setSelectionToPos(view, view.state.doc.length);
+    const line0 = blocks[targetIndex].startLine;
+    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from);
+  };
+
+  const jumpDocTop = (view) => jumpToPos(view, 0);
+  const jumpDocBottom = (view) => jumpToPos(view, view.state.doc.length);
+  const selectDocTop = (view) => setSelectionToPos(view, 0);
+  const selectDocBottom = (view) => setSelectionToPos(view, view.state.doc.length);
+
+  const makeSeqHandler = (keyName, handlerSingle, handlerDouble) => {
+    return (view) => {
+      const now = Date.now();
+      const isDouble = seq.lastKey === keyName && now - seq.lastAt <= SEQ_WINDOW_MS;
+      seq.lastKey = keyName;
+      seq.lastAt = now;
+      return isDouble ? handlerDouble(view) : handlerSingle(view);
+    };
+  };
+
+  const navKeymap = Prec.highest(
+    keymap.of([
+      {
+        key: "Mod-ArrowUp",
+        run: makeSeqHandler("Mod-ArrowUp", jumpUpSingle, jumpDocTop)
+      },
+      {
+        key: "Mod-ArrowDown",
+        run: makeSeqHandler("Mod-ArrowDown", jumpDownSingle, jumpDocBottom)
+      },
+      {
+        key: "Mod-Shift-ArrowUp",
+        run: makeSeqHandler("Mod-Shift-ArrowUp", selectUpSingle, selectDocTop)
+      },
+      {
+        key: "Mod-Shift-ArrowDown",
+        run: makeSeqHandler("Mod-Shift-ArrowDown", selectDownSingle, selectDocBottom)
+      }
+    ])
+  );
+
   // 自定义折叠：当行首是角色前缀时，折叠该行后的区块直到下一个角色行（或文档末尾）
   const foldExt = foldService.of((state, start) => {
     try {
@@ -304,5 +466,5 @@ export function roles(opts = {}) {
     }
   });
 
-  return [foldExt, rolesView(opts)];
+  return [navKeymap, foldExt, rolesView(opts)];
 }

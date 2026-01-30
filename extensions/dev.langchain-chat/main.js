@@ -1,4 +1,9 @@
 import { runStream } from "./chat-service.js";
+import {
+  DEFAULT_REASONING_CONTENT_PLACEHOLDER,
+  normalizeToolCallsReasoningContentMode,
+  shouldForceReasoningContentWithToolCalls
+} from "./reasoning-policy.js";
 import { deepseekProvider } from "./deepseek-provider.js";
 import { userModelsProvider } from "./user-models-provider.js";
 import { installModelSwitcher } from "./model-switcher.js";
@@ -497,7 +502,9 @@ export async function activate(ctx) {
       const results = [];
       const promises = [];
 
-      await runStream({
+      let stepReasoning = "";
+
+      const streamResult = await runStream({
         messages: msgs,
         tools,
         onToken: appendToken,
@@ -545,12 +552,14 @@ export async function activate(ctx) {
         sessionId: sid
       });
 
+      stepReasoning = String(streamResult?.reasoning_content || "");
+
       // 等待工具执行完成，确保生成 tool 结果
       if (promises.length > 0) {
         try { await Promise.allSettled(promises); } catch {}
       }
 
-      return { calls, results };
+      return { calls, results, reasoning_content: stepReasoning };
     };
 
     try {
@@ -581,6 +590,10 @@ export async function activate(ctx) {
       // 根据“发起会话位置（光标）上方”的内容，按编辑器顺序把历史工具调用插入到对应的 assistant 消息之后
       if (window.zion?.state?.get("chat.includeToolHistory") || window.zion?.state?.get("chat.includeThinkingHistory")) {
         try {
+          const active = window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+          const mode = normalizeToolCallsReasoningContentMode(window.zion?.state?.get?.("chat.toolCallsReasoningContentMode"));
+          const forceReasoning = shouldForceReasoningContentWithToolCalls({ mode, modelId: active?.modelId, modelName: active?.modelId });
+
           const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
           const limitPos = contentBeforeCursor.length;
 
@@ -703,7 +716,9 @@ export async function activate(ctx) {
                     type: "function",
                     function: { name: unit.data.name, arguments: JSON.stringify(unit.data.args || {}) }
                   };
-                  msgs.splice(idx + 1 + offset, 0, { role: "assistant", tool_calls: [tc] });
+                  const aMsg = { role: "assistant", tool_calls: [tc] };
+                  if (forceReasoning) aMsg.reasoning_content = DEFAULT_REASONING_CONTENT_PLACEHOLDER;
+                  msgs.splice(idx + 1 + offset, 0, aMsg);
                   offset += 1;
                   msgs.splice(idx + 1 + offset, 0, { role: "tool", tool_call_id: unit.data.id, content: unit.data.result });
                   offset += 1;
@@ -740,6 +755,10 @@ export async function activate(ctx) {
 
         // 若本步产生了工具调用与结果，则构造下一步消息继续
         if (step.calls.length > 0) {
+          const active = window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+          const mode = normalizeToolCallsReasoningContentMode(window.zion?.state?.get?.("chat.toolCallsReasoningContentMode"));
+          const forceReasoning = shouldForceReasoningContentWithToolCalls({ mode, modelId: active?.modelId, modelName: active?.modelId });
+
           const assistantToolCalls = step.calls.map(tc => ({
             id: tc.id,
             type: "function",
@@ -751,9 +770,14 @@ export async function activate(ctx) {
             content: tr.content
           }));
 
+          const assistantMsg = { role: "assistant", tool_calls: assistantToolCalls };
+          if (step.reasoning_content || forceReasoning) {
+            assistantMsg.reasoning_content = step.reasoning_content || DEFAULT_REASONING_CONTENT_PLACEHOLDER;
+          }
+
           msgs = [
             ...msgs,
-            { role: "assistant", tool_calls: assistantToolCalls },
+            assistantMsg,
             ...toolMsgs
           ];
           // 继续下一步

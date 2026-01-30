@@ -26,7 +26,8 @@ export function registerEditorTools() {
               width_mode: { type: "string", enum: ["full", "wide", "standard"], description: "编辑器宽度模式" },
               heading_size: { type: "string", enum: ["medium", "small", "xsmall"], description: "标题字号模式" },
               include_tool_history: { type: "boolean", description: "聊天时是否携带历史工具调用信息（assistant.tool_calls 与 role:tool 消息）" },
-              include_thinking_history: { type: "boolean", description: "聊天时是否携带历史思考内容（基于思考卡片的文本）" }
+              include_thinking_history: { type: "boolean", description: "聊天时是否携带历史思考内容（基于思考卡片的文本）" },
+              tool_calls_reasoning_content_mode: { type: "string", enum: ["auto", "always", "never"], description: "assistant.tool_calls 消息是否补齐 reasoning_content（auto/always/never）" }
             },
             additionalProperties: false
           }
@@ -74,6 +75,16 @@ export function registerEditorTools() {
         await applyBool("include_tool_history", "dev.editor.setIncludeToolHistory");
         await applyBool("include_thinking_history", "dev.editor.setIncludeThinkingHistory");
 
+        const rcMode = String(args?.tool_calls_reasoning_content_mode || "").trim();
+        if (rcMode === "auto" || rcMode === "always" || rcMode === "never") {
+          try {
+            window.zion?.commands?.executeCommand("dev.editor.setToolCallsReasoningContentMode", rcMode);
+            changes.push(`tool_calls_reasoning_content_mode=${rcMode}`);
+          } catch (e) {
+            changes.push(`tool_calls_reasoning_content_mode=error:${e?.message || String(e)}`);
+          }
+        }
+
         const width = String(args?.width_mode || "").trim();
         if (width === "full" || width === "wide" || width === "standard") {
           const cmd =
@@ -116,7 +127,8 @@ export function registerEditorTools() {
           width_mode: String(window.zion?.state?.get("ui.editorWidthMode") || "full"),
           heading_size: String(window.zion?.state?.get("ui.headingSize") || "xsmall"),
           include_tool_history: !!window.zion?.state?.get("chat.includeToolHistory"),
-          include_thinking_history: !!window.zion?.state?.get("chat.includeThinkingHistory")
+          include_thinking_history: !!window.zion?.state?.get("chat.includeThinkingHistory"),
+          tool_calls_reasoning_content_mode: String(window.zion?.state?.get("chat.toolCallsReasoningContentMode") || "auto")
         };
 
         return JSON.stringify({ applied: changes, current: snapshot }, null, 2);
