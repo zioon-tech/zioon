@@ -318,7 +318,20 @@ export function installThinkingCards() {
         try {
           const sid = window.zion?.state?.get("sessions.currentId");
           const pending = sid ? window.zion?.state?.get(`sessions.pendingRestore.thinking.${sid}`) : null;
-          if (Array.isArray(pending) && pending.length) this.onRestore({ items: pending });
+          if (Array.isArray(pending) && pending.length) {
+            this.onRestore({ items: pending });
+            return;
+          }
+
+          const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+          const list = Array.isArray(ann.thinking) ? ann.thinking : [];
+          if (!list.length) return;
+          let size = 0;
+          try { size = this.view.state.field(thinkingField)?.items?.size || 0; } catch {}
+          let domCount = 0;
+          try { domCount = document.querySelectorAll(".zion-thinking-inline").length; } catch {}
+          if (size >= list.length && domCount >= list.length) return;
+          this.onRestore({ items: list });
         } catch {}
       });
     }

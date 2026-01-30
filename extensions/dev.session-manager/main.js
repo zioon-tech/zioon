@@ -788,6 +788,28 @@ function attachLifecyclePersistence(ctx) {
 function attachLifecycleRestore(ctx) {
   try {
     let lastHidden = typeof document?.hidden === "boolean" ? document.hidden : false;
+    let timer = null;
+    let running = false;
+    let queued = false;
+    const schedule = () => {
+      try {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = null;
+          if (running) { queued = true; return; }
+          running = true;
+          Promise.resolve()
+            .then(() => doRestore())
+            .finally(() => {
+              running = false;
+              if (queued) {
+                queued = false;
+                schedule();
+              }
+            });
+        }, 80);
+      } catch {}
+    };
     const needsRestore = (id, ann) => {
       try {
         const tools = Array.isArray(ann?.tools) ? ann.tools : [];
@@ -845,21 +867,28 @@ function attachLifecycleRestore(ctx) {
         }
       } catch {}
     };
-    const onPageShow = () => { doRestore(); };
+    const onPageShow = () => { schedule(); };
     const onVisible = () => {
       try {
         const nowHidden = !!document.hidden;
         const becameVisible = lastHidden && !nowHidden;
         lastHidden = nowHidden;
-        if (becameVisible) doRestore();
+        if (becameVisible) schedule();
       } catch {}
     };
+    const onFocus = () => { schedule(); };
+    const onResume = () => { schedule(); };
     window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
+    document.addEventListener("resume", onResume);
     ctx.subscriptions.push({
       dispose() {
         try { window.removeEventListener("pageshow", onPageShow); } catch {}
+        try { window.removeEventListener("focus", onFocus); } catch {}
         try { document.removeEventListener("visibilitychange", onVisible); } catch {}
+        try { document.removeEventListener("resume", onResume); } catch {}
+        try { if (timer) clearTimeout(timer); } catch {}
       }
     });
   } catch (e) {
