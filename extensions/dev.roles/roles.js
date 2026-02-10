@@ -269,8 +269,15 @@ function rolesView(opts = {}) {
 export function roles(opts = {}) {
   const prefixes = getEffectivePrefixes(opts);
 
-  const seq = { lastKey: null, lastAt: 0 };
-  const SEQ_WINDOW_MS = 450;
+  const isMacLike = (() => {
+    try {
+      const p = String(globalThis?.navigator?.platform || "");
+      const ua = String(globalThis?.navigator?.userAgent || "");
+      return /Mac|iPhone|iPad|iPod/i.test(p) || /Mac\s*OS\s*X|Macintosh|iPhone|iPad|iPod/i.test(ua);
+    } catch {
+      return false;
+    }
+  })();
 
   const jumpToPos = (view, pos) => {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
@@ -285,7 +292,7 @@ export function roles(opts = {}) {
     const idx = window?.zion?.state?.get?.("roles.index");
     if (!idx || !Array.isArray(idx.blocks) || !Array.isArray(idx.prefixes)) return null;
     if (idx.prefixes.join("\n") !== prefixes.join("\n")) return null;
-    return idx.blocks;
+    return idx.blocks.filter(b => b && b.role !== "system");
   };
 
   const computeNav = (view, blocks) => {
@@ -308,11 +315,6 @@ export function roles(opts = {}) {
     return { curLine0, nextIndex, prevIndex, inside, currentIndex, currentStartLine };
   };
 
-  const clearSeq = () => {
-    seq.lastKey = null;
-    seq.lastAt = 0;
-  };
-
   const setSelectionToPos = (view, pos) => {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
     const main = view.state.selection.main;
@@ -323,13 +325,12 @@ export function roles(opts = {}) {
     return true;
   };
 
-  const jumpUpSingle = (view) => {
+  const jumpToPrevRole = (view) => {
     const blocks = getRolesBlocksFromIndex();
     if (!blocks || blocks.length === 0) return jumpToPos(view, 0);
     const nav = computeNav(view, blocks);
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      clearSeq();
       return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
     }
 
@@ -339,13 +340,12 @@ export function roles(opts = {}) {
     return jumpToPos(view, view.state.doc.line(line0 + 1).from);
   };
 
-  const selectUpSingle = (view) => {
+  const selectToPrevRole = (view) => {
     const blocks = getRolesBlocksFromIndex();
     if (!blocks || blocks.length === 0) return setSelectionToPos(view, 0);
     const nav = computeNav(view, blocks);
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      clearSeq();
       return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
     }
 
@@ -355,7 +355,7 @@ export function roles(opts = {}) {
     return setSelectionToPos(view, view.state.doc.line(line0 + 1).from);
   };
 
-  const jumpDownSingle = (view) => {
+  const jumpToNextRole = (view) => {
     const blocks = getRolesBlocksFromIndex();
     if (!blocks || blocks.length === 0) return jumpToPos(view, view.state.doc.length);
     const nav = computeNav(view, blocks);
@@ -365,7 +365,6 @@ export function roles(opts = {}) {
     }
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      clearSeq();
       return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
     }
 
@@ -375,7 +374,7 @@ export function roles(opts = {}) {
     return jumpToPos(view, view.state.doc.line(line0 + 1).from);
   };
 
-  const selectDownSingle = (view) => {
+  const selectToNextRole = (view) => {
     const blocks = getRolesBlocksFromIndex();
     if (!blocks || blocks.length === 0) return setSelectionToPos(view, view.state.doc.length);
     const nav = computeNav(view, blocks);
@@ -385,7 +384,6 @@ export function roles(opts = {}) {
     }
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      clearSeq();
       return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
     }
 
@@ -395,41 +393,25 @@ export function roles(opts = {}) {
     return setSelectionToPos(view, view.state.doc.line(line0 + 1).from);
   };
 
-  const jumpDocTop = (view) => jumpToPos(view, 0);
-  const jumpDocBottom = (view) => jumpToPos(view, view.state.doc.length);
-  const selectDocTop = (view) => setSelectionToPos(view, 0);
-  const selectDocBottom = (view) => setSelectionToPos(view, view.state.doc.length);
+  const navBindings = [];
 
-  const makeSeqHandler = (keyName, handlerSingle, handlerDouble) => {
-    return (view) => {
-      const now = Date.now();
-      const isDouble = seq.lastKey === keyName && now - seq.lastAt <= SEQ_WINDOW_MS;
-      seq.lastKey = keyName;
-      seq.lastAt = now;
-      return isDouble ? handlerDouble(view) : handlerSingle(view);
-    };
-  };
+  if (isMacLike) {
+    navBindings.push(
+      { key: "Alt-ArrowUp", run: jumpToPrevRole },
+      { key: "Alt-ArrowDown", run: jumpToNextRole },
+      { key: "Alt-Shift-ArrowUp", run: selectToPrevRole },
+      { key: "Alt-Shift-ArrowDown", run: selectToNextRole }
+    );
+  } else {
+    navBindings.push(
+      { key: "Mod-ArrowUp", run: jumpToPrevRole },
+      { key: "Mod-ArrowDown", run: jumpToNextRole },
+      { key: "Mod-Shift-ArrowUp", run: selectToPrevRole },
+      { key: "Mod-Shift-ArrowDown", run: selectToNextRole }
+    );
+  }
 
-  const navKeymap = Prec.highest(
-    keymap.of([
-      {
-        key: "Mod-ArrowUp",
-        run: makeSeqHandler("Mod-ArrowUp", jumpUpSingle, jumpDocTop)
-      },
-      {
-        key: "Mod-ArrowDown",
-        run: makeSeqHandler("Mod-ArrowDown", jumpDownSingle, jumpDocBottom)
-      },
-      {
-        key: "Mod-Shift-ArrowUp",
-        run: makeSeqHandler("Mod-Shift-ArrowUp", selectUpSingle, selectDocTop)
-      },
-      {
-        key: "Mod-Shift-ArrowDown",
-        run: makeSeqHandler("Mod-Shift-ArrowDown", selectDownSingle, selectDocBottom)
-      }
-    ])
-  );
+  const navKeymap = Prec.highest(keymap.of(navBindings));
 
   // 自定义折叠：当行首是角色前缀时，折叠该行后的区块直到下一个角色行（或文档末尾）
   const foldExt = foldService.of((state, start) => {

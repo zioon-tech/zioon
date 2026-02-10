@@ -591,6 +591,34 @@ export async function activate(ctx) {
       if (window.zion?.state?.get("chat.includeToolHistory") || window.zion?.state?.get("chat.includeThinkingHistory")) {
         try {
           const active = window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+          let preservedThinking = false;
+          try {
+            const prov = window.zion?.models?.getProvider?.(active?.providerId);
+            const cfg = await prov?.resolve?.(active?.modelId);
+            preservedThinking = !!cfg?.preservedThinking;
+          } catch {}
+
+          const stripLeadingOmitted = (s) => {
+            const raw = String(s || "");
+            const trimmedStart = raw.replace(/^\s+/, "");
+            const lower = trimmedStart.toLowerCase();
+            const candidates = [
+              "[reasoning omitted]",
+              "reasoning_omitted",
+              "reasoning omitted",
+              "[reasoning_omitted]",
+              "reason_omitted",
+              "reason omitted",
+              "[reason omitted]",
+              "[reason_omitted]"
+            ];
+            for (const c of candidates) {
+              if (lower.startsWith(c)) {
+                return trimmedStart.slice(c.length).replace(/^\s+/, "");
+              }
+            }
+            return raw;
+          };
           const mode = normalizeToolCallsReasoningContentMode(window.zion?.state?.get?.("chat.toolCallsReasoningContentMode"));
           const forceReasoning = shouldForceReasoningContentWithToolCalls({ mode, modelId: active?.modelId, modelName: active?.modelId });
 
@@ -608,8 +636,10 @@ export async function activate(ctx) {
 
           // thinking
           const itemsThinkingRaw = Array.isArray(ann.thinking) ? ann.thinking : [];
+          const deletedThinking = new Set(Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : []);
           const itemsThinking = itemsThinkingRaw
-            .filter(it => it && typeof it.from === "number" && it.from >= 0 && it.from < limitPos)
+            .filter(it => it && it.id && !deletedThinking.has(it.id))
+            .filter(it => typeof it.from === "number" && it.from >= 0 && it.from < limitPos)
             .filter(it => typeof it.text === "string" && it.text.trim().length > 0)
             .sort((a, b) => (a.from || 0) - (b.from || 0));
 
@@ -622,8 +652,24 @@ export async function activate(ctx) {
             let currentRole = "user";
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i];
+              const trimmed = line.trim();
+              // Skip widget stubs (e.g., "思考", "调用 read")
+              if (/^(思考|Thinking)$/i.test(trimmed)) {
+                pos += line.length + 1;
+                continue;
+              }
+              if (/^(调用|Call)\s+\S+$/i.test(trimmed)) {
+                pos += line.length + 1;
+                continue;
+              }
               const m = line.match(/^(system|user|assistant)\s+(.*)$/);
               if (m) {
+                // If the body is a widget stub, treat as part of previous range
+                const body = m[2].trim();
+                if (/^(思考|Thinking|调用|Call)\s*/i.test(body)) {
+                  pos += line.length + 1;
+                  continue;
+                }
                 if (pos > startPos) {
                   ranges.push({ role: currentRole, from: startPos, to: pos });
                 }
@@ -704,11 +750,23 @@ export async function activate(ctx) {
             for (const baseIdx of sortedIdxs) {
               const idx = baseIdx + offset;
               const units = (groups.get(baseIdx) || []).slice().sort((a, b) => (a.pos || 0) - (b.pos || 0));
+              let localInserted = 0;
               for (const unit of units) {
                 if (unit.kind === "thinking") {
-                  // assistant text in order
-                  msgs.splice(idx + 1 + offset, 0, { role: "assistant", content: unit.data.content });
-                  offset += 1;
+                  if (preservedThinking) {
+                    const base = msgs[idx];
+                    if (base && base.role === "assistant") {
+                      const prevRaw = typeof base.reasoning_content === "string" ? base.reasoning_content : "";
+                      const prev = stripLeadingOmitted(prevRaw);
+                      const next = String(unit.data.content || "");
+                      base.reasoning_content = prev ? `${prev}\n\n${next}` : next;
+                    }
+                  } else {
+                    // assistant text in order
+                    msgs.splice(idx + 1 + localInserted, 0, { role: "assistant", content: unit.data.content });
+                    localInserted += 1;
+                    offset += 1;
+                  }
                 } else if (unit.kind === "tool") {
                   // assistant tool_calls block followed immediately by its tool result
                   const tc = {
@@ -718,10 +776,10 @@ export async function activate(ctx) {
                   };
                   const aMsg = { role: "assistant", tool_calls: [tc] };
                   if (forceReasoning) aMsg.reasoning_content = DEFAULT_REASONING_CONTENT_PLACEHOLDER;
-                  msgs.splice(idx + 1 + offset, 0, aMsg);
-                  offset += 1;
-                  msgs.splice(idx + 1 + offset, 0, { role: "tool", tool_call_id: unit.data.id, content: unit.data.result });
-                  offset += 1;
+                  msgs.splice(idx + 1 + localInserted, 0, aMsg);
+                  msgs.splice(idx + 2 + localInserted, 0, { role: "tool", tool_call_id: unit.data.id, content: unit.data.result });
+                  localInserted += 2;
+                  offset += 2;
                 }
               }
             }
@@ -807,8 +865,22 @@ export async function activate(ctx) {
     for (const line of lines) {
       const roleMatch = line.match(/^(system|user|assistant)\s+(.*)$/);
       const imageMatch = line.match(/^!\[.*\]\((.*)\)$/);
+      const trimmed = line.trim();
+
+      // Skip widget stubs (e.g., "思考", "调用 read")
+      if (/^(思考|Thinking)$/i.test(trimmed)) {
+        continue;
+      }
+      if (/^(调用|Call)\s+\S+$/i.test(trimmed)) {
+        continue;
+      }
 
       if (roleMatch) {
+        // If the body is a widget stub, skip this line
+        const body = roleMatch[2].trim();
+        if (/^(思考|Thinking|调用|Call)\s*/i.test(body)) {
+          continue;
+        }
         if (currentContent.length > 0 || currentImages.length > 0) {
           const message = { role: currentRole, content: [] };
           if (currentContent.length > 0) {

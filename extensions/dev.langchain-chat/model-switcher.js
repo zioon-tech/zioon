@@ -176,7 +176,7 @@ export function installModelSwitcher() {
 
   let selectedIdx = 0;
   let currentItems = [];
-  const metaCache = new Map(); // spec -> { stream?: boolean, supportsImage?: boolean }
+  const metaCache = new Map(); // spec -> { stream?: boolean, supportsImage?: boolean, preservedThinking?: boolean, interleavedThinking?: boolean }
 
   function activeSpec() {
     const a = window.zion?.state?.get("chat.activeModel");
@@ -266,6 +266,8 @@ export function installModelSwitcher() {
       if (metaWrap && m) {
         if (m.stream) metaWrap.appendChild(metaBadge("stream"));
         if (m.supportsImage) metaWrap.appendChild(metaBadge("img"));
+        if (m.preservedThinking) metaWrap.appendChild(metaBadge("pThink"));
+        if (m.interleavedThinking) metaWrap.appendChild(metaBadge("iThink"));
       }
       return;
     }
@@ -274,13 +276,17 @@ export function installModelSwitcher() {
       const cfg = await prov?.resolve?.(item.id);
       const m = {
         stream: cfg && cfg.stream !== false,
-        supportsImage: !!cfg?.supportsImage
+        supportsImage: !!cfg?.supportsImage,
+        preservedThinking: !!cfg?.preservedThinking,
+        interleavedThinking: !!cfg?.interleavedThinking
       };
       metaCache.set(spec, m);
       const metaWrap = row.querySelector(".meta-wrap");
       if (metaWrap && m) {
         if (m.stream) metaWrap.appendChild(metaBadge("stream"));
         if (m.supportsImage) metaWrap.appendChild(metaBadge("img"));
+        if (m.preservedThinking) metaWrap.appendChild(metaBadge("pThink"));
+        if (m.interleavedThinking) metaWrap.appendChild(metaBadge("iThink"));
       }
     } catch {
       // ignore
@@ -674,6 +680,8 @@ export function installModelSwitcher() {
     const inpMaxTok = numberInput("Max tokens (optional)");
     const { wrap: cbStreamWrap, cb: cbStream } = checkboxInput("Stream");
     const { wrap: cbImgWrap, cb: cbImg } = checkboxInput("Supports Image");
+    const { wrap: cbPreservedThinkingWrap, cb: cbPreservedThinking } = checkboxInput("Preserved Thinking");
+    const { wrap: cbInterleavedThinkingWrap, cb: cbInterleavedThinking } = checkboxInput("Interleaved Thinking");
 
     // 赋初值
     if (isNew) {
@@ -686,6 +694,8 @@ export function installModelSwitcher() {
       inpMaxTok.value = "";
       cbStream.checked = true;
       cbImg.checked = false;
+      cbPreservedThinking.checked = false;
+      cbInterleavedThinking.checked = false;
     } else {
       const cfg = spec?.cfg || {};
       inpId.value = spec.id || "";
@@ -697,6 +707,8 @@ export function installModelSwitcher() {
       inpMaxTok.value = cfg.max_tokens != null ? String(cfg.max_tokens) : "";
       cbStream.checked = cfg.stream !== false;
       cbImg.checked = !!cfg.supportsImage;
+      cbPreservedThinking.checked = !!cfg.preservedThinking;
+      cbInterleavedThinking.checked = !!cfg.interleavedThinking;
       
       // 对于 deepseek 提供者，允许编辑所有参数，但 Model ID、Base URL 保持只读
       if (isDeepseekProvider) {
@@ -711,9 +723,11 @@ export function installModelSwitcher() {
         inpMaxTok.disabled = false;
         cbStream.disabled = false;
         cbImg.disabled = false;
+        cbPreservedThinking.disabled = false;
+        cbInterleavedThinking.disabled = false;
       } else if (readonly) {
         [inpId, inpLabel, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok].forEach(el => el.disabled = true);
-        [cbStream, cbImg].forEach(el => el.disabled = true);
+        [cbStream, cbImg, cbPreservedThinking, cbInterleavedThinking].forEach(el => el.disabled = true);
       }
     }
 
@@ -745,6 +759,12 @@ export function installModelSwitcher() {
     flagsRow.appendChild(cbStreamWrap);
     flagsRow.appendChild(cbImgWrap);
     editorWrap.appendChild(flagsRow);
+
+    const thinkingRow = document.createElement("div");
+    Object.assign(thinkingRow.style, { display: "flex", gap: "12px", alignItems: "center", marginBottom: "2px" });
+    thinkingRow.appendChild(cbPreservedThinkingWrap);
+    thinkingRow.appendChild(cbInterleavedThinkingWrap);
+    editorWrap.appendChild(thinkingRow);
 
     // 状态行（测试结果）
     const status = document.createElement("div");
@@ -786,7 +806,9 @@ export function installModelSwitcher() {
             temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
             max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
             stream: !!cbStream.checked,
-            supportsImage: !!cbImg.checked
+            supportsImage: !!cbImg.checked,
+            preservedThinking: !!cbPreservedThinking.checked,
+            interleavedThinking: !!cbInterleavedThinking.checked
           };
           localStorage.setItem("zion.deepseek.config", JSON.stringify(deepseekConfig));
           
@@ -819,7 +841,9 @@ export function installModelSwitcher() {
         stream: !!cbStream.checked,
         temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
         max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
-        supportsImage: !!cbImg.checked
+        supportsImage: !!cbImg.checked,
+        preservedThinking: !!cbPreservedThinking.checked,
+        interleavedThinking: !!cbInterleavedThinking.checked
       };
       const modelName = inpModelName.value.trim();
       if (modelName) {

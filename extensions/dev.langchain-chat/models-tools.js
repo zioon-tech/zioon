@@ -98,6 +98,8 @@ export function registerModelsTools() {
               temperature: { type: "number", description: "采样温度" },
               max_tokens: { type: "number", description: "最大输出 tokens" },
               supportsImage: { type: "boolean", description: "是否支持图片输入" },
+              preservedThinking: { type: "boolean", description: "是否支持回传/保留思考（将思考作为 reasoning_content 输入给模型）" },
+              interleavedThinking: { type: "boolean", description: "是否支持交错思考（thinking 与 tool_calls 交错输出/处理）" },
               model: { type: "string", description: "后端自定义 model 字段（如 siliconflow）" },
               data: { type: "object", description: "导入的模型字典（或 JSON 字符串），仅用于 import" },
               merge: { type: "boolean", description: "导入时是否合并（默认 true）" }
@@ -193,6 +195,8 @@ export function registerModelsTools() {
             temperature: args?.temperature != null ? Number(args.temperature) : undefined,
             max_tokens: args?.max_tokens != null ? Number(args.max_tokens) : undefined,
             supportsImage: args?.supportsImage != null ? !!args.supportsImage : undefined,
+            preservedThinking: args?.preservedThinking != null ? !!args.preservedThinking : undefined,
+            interleavedThinking: args?.interleavedThinking != null ? !!args.interleavedThinking : undefined,
             model: args?.model != null ? String(args.model) : undefined
           };
           const cur = dict[modelId] || {};
