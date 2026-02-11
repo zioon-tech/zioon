@@ -1,0 +1,10 @@
+{
+  "id": "dev.sticky-header",
+  "name": "Sticky Header (Compatibility)",
+  "description": "兼容旧的 dev.sticky-header 插件 id，内部复用 dev.sticky-user-header",
+  "version": "1.0.0",
+  "author": "Zion Team",
+  "main": "main.js",
+  "enabled": true
+}
+

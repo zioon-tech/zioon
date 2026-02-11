@@ -193,9 +193,19 @@ export function registerFsTools() {
       return null;
     }
 
-    async function readFileText(handle) {
+    function getMetaMap() {
+      const v = window.zion?.state?.get("fs.lastReadMeta");
+      return v && typeof v === "object" ? v : {};
+    }
+    function setMetaMap(next) {
+      try {
+        window.zion?.state?.set("fs.lastReadMeta", next);
+      } catch {}
+    }
+    async function readFileWithMeta(handle) {
       const f = await handle.getFile();
-      return await f.text();
+      const text = await f.text();
+      return { text, lastModified: f.lastModified, size: f.size };
     }
     function catFormat(text, offset, limit) {
       const lines = String(text || "").replace(/\r/g, "").split("\n");
@@ -340,8 +350,12 @@ export function registerFsTools() {
         if (!resolved?.handle) return "File not accessible. Please grant access via fs-manager first.";
         const ok = await ensureFsPermission(resolved.handle, "read");
         if (!ok) return "Permission denied to read this file.";
-        const text = await readFileText(resolved.handle);
+        const { text, lastModified, size } = await readFileWithMeta(resolved.handle);
         const s = catFormat(text, args?.offset, args?.limit);
+
+        const meta = getMetaMap();
+        meta[resolved.key] = { lastModified, size, at: Date.now() };
+        setMetaMap(meta);
 
         // Track read files in session state
         const prev = window.zion?.state?.get("fs.lastReadPaths");
@@ -368,6 +382,15 @@ export function registerFsTools() {
           if (!Array.isArray(readList) || !readList.includes(resolved.key)) {
             return "Write blocked: you must read this file first (use fsRead).";
           }
+
+          const meta = getMetaMap();
+          const prev = meta?.[resolved.key];
+          if (prev && typeof prev.lastModified === "number") {
+            const f = await resolved.handle.getFile();
+            if (f.lastModified !== prev.lastModified || f.size !== prev.size) {
+              return "Write blocked: file changed since last read (likely edited in editor). Please fsRead again.";
+            }
+          }
         }
         const ok = await ensureFsPermission(resolved.handle, "readwrite");
         if (!ok) return "Permission denied to write this file.";
@@ -380,6 +403,13 @@ export function registerFsTools() {
           if (!arr.includes(resolved.key)) arr.push(resolved.key);
           window.zion?.state?.set("fs.lastReadPaths", arr);
         }
+
+        try {
+          const f2 = await resolved.handle.getFile();
+          const meta = getMetaMap();
+          meta[resolved.key] = { lastModified: f2.lastModified, size: f2.size, at: Date.now() };
+          setMetaMap(meta);
+        } catch {}
         return `Write OK: ${content.length} bytes -> ${resolved.key}`;
       } catch (e) {
         return `Write error: ${e?.message || String(e)}`;
@@ -402,10 +432,19 @@ export function registerFsTools() {
         if (!Array.isArray(readList) || !readList.includes(resolved.key)) {
           return "Edit blocked: you must read this file first (use fsRead).";
         }
+
+        const meta = getMetaMap();
+        const prev = meta?.[resolved.key];
+        if (prev && typeof prev.lastModified === "number") {
+          const f0 = await resolved.handle.getFile();
+          if (f0.lastModified !== prev.lastModified || f0.size !== prev.size) {
+            return "Edit blocked: file changed since last read (likely edited in editor). Please fsRead again.";
+          }
+        }
         const ok = await ensureFsPermission(resolved.handle, "readwrite");
         if (!ok) return "Permission denied to edit this file.";
 
-        const text = await readFileText(resolved.handle);
+        const { text } = await readFileWithMeta(resolved.handle);
         const count = countOccurrences(text, oldStr);
         if (count === 0) return "Edit failed: old_string not found in file";
         if (!replaceAll && count !== 1) {
@@ -423,6 +462,13 @@ export function registerFsTools() {
         const w = await resolved.handle.createWritable();
         await w.write(updated);
         await w.close();
+
+        try {
+          const f2 = await resolved.handle.getFile();
+          const meta2 = getMetaMap();
+          meta2[resolved.key] = { lastModified: f2.lastModified, size: f2.size, at: Date.now() };
+          setMetaMap(meta2);
+        } catch {}
 
         const changed = replaceAll ? count : 1;
         return `Edit OK: replaced ${changed} occurrence(s) in ${resolved.key}`;

@@ -1,0 +1,9 @@
+{
+  "id": "dev.sticky-user-header",
+  "name": "Sticky User Header",
+  "description": "滚动时将可视区域顶部对应的 user 消息置顶显示，帮助快速识别当前查看的是哪个问题的回答",
+  "version": "1.0.0",
+  "author": "Zion Team",
+  "main": "main.js",
+  "enabled": true
+}

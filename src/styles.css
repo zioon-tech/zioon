@@ -2011,3 +2011,84 @@ body.zion-sessions-no-transitions .zion-session-row * {
   background: rgba(0,0,0,0.06);
   box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05);
 }
+
+/* Sticky Header for User Messages */
+.cm-sticky-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 95; /* Above content, below minimap/scrollbars */
+  background: var(--bg); /* Match editor bg */
+  border-bottom: 1px solid var(--border);
+  padding: 6px 16px; /* Match editor padding */
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: transform 0.05s linear;
+  opacity: 0.98;
+}
+
+.cm-sticky-header::before {
+  content: "User";
+  display: inline-block;
+  margin-right: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: var(--role-user-bg);
+  color: var(--role-user-fg);
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.cm-sticky-header:hover {
+  background: var(--panel);
+}
+
+/* ===== Sticky User Header Extension ===== */
+.zion-sticky-user-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  backdrop-filter: blur(8px);
+  background: rgba(var(--panel-rgb, 255, 255, 255), 0.9);
+  transition: opacity 0.2s;
+}
+
+.zion-sticky-label {
+  color: var(--dim);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.zion-sticky-text {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.zion-sticky-user-header.has-content .zion-sticky-text {
+  color: var(--role-user-fg);
+  font-weight: 500;
+}
+
+.zion-sticky-user-header:not(.has-content) .zion-sticky-text {
+  color: var(--dim);
+  font-style: italic;
+}

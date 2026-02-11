@@ -883,6 +883,30 @@ function registerDefaultTools() {
         const limit = typeof args?.limit === "number" ? args.limit : undefined;
         if (!path) return "Missing path";
 
+        const getFpStore = () => {
+          const v = window.zion?.state?.get("localTools.fileFingerprints");
+          return v && typeof v === "object" ? v : {};
+        };
+        const setFpStore = (next) => {
+          try {
+            window.zion?.state?.set("localTools.fileFingerprints", next);
+          } catch {}
+        };
+        const sha256Hex = async (text) => {
+          try {
+            const TextEncoderCtor = globalThis?.TextEncoder;
+            if (!TextEncoderCtor) throw new Error("TextEncoder not available");
+            const enc = new TextEncoderCtor();
+            const buf = await crypto.subtle.digest("SHA-256", enc.encode(String(text)));
+            const bytes = new Uint8Array(buf);
+            let out = "";
+            for (const b of bytes) out += b.toString(16).padStart(2, "0");
+            return out;
+          } catch {
+            return `len:${String(text || "").length}`;
+          }
+        };
+
         const readBase = () => {
           const st1 = window.zion?.state?.get("localTools.baseUrl");
           if (typeof st1 === "string" && st1.trim()) return st1.trim();
@@ -906,6 +930,13 @@ function registerDefaultTools() {
             return `HTTP ${res.status}: ${txt || data?.error || "read failed"}`;
           }
           const content = typeof data?.content === "string" ? data.content : "";
+
+          const complete = offset == null && limit == null;
+          const fp = getFpStore();
+          fp[path] = complete
+            ? { complete: true, hash: await sha256Hex(content), at: Date.now() }
+            : { complete: false, hash: null, at: Date.now(), offset, limit };
+          setFpStore(fp);
           return content;
         } catch (e) {
           return `Read error: ${e?.message || String(e)}`;
@@ -922,6 +953,41 @@ function registerDefaultTools() {
         const sessionId = String(args?.session_id || "").trim();
         if (!path) return "Missing path";
 
+        const getFpStore = () => {
+          const v = window.zion?.state?.get("localTools.fileFingerprints");
+          return v && typeof v === "object" ? v : {};
+        };
+        const setFpStore = (next) => {
+          try {
+            window.zion?.state?.set("localTools.fileFingerprints", next);
+          } catch {}
+        };
+        const sha256Hex = async (text) => {
+          try {
+            const TextEncoderCtor = globalThis?.TextEncoder;
+            if (!TextEncoderCtor) throw new Error("TextEncoder not available");
+            const enc = new TextEncoderCtor();
+            const buf = await crypto.subtle.digest("SHA-256", enc.encode(String(text)));
+            const bytes = new Uint8Array(buf);
+            let out = "";
+            for (const b of bytes) out += b.toString(16).padStart(2, "0");
+            return out;
+          } catch {
+            return `len:${String(text || "").length}`;
+          }
+        };
+        const readCurrent = async (base) => {
+          let u = `${base.replace(/\/$/, "")}/files/read?path=${encodeURIComponent(path)}`;
+          if (sessionId) u += `&session_id=${encodeURIComponent(sessionId)}`;
+          const res = await fetch(u, { method: "GET" });
+          const data = await res.json().catch(() => null);
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            throw new Error(`HTTP ${res.status}: ${txt || data?.error || "read failed"}`);
+          }
+          return typeof data?.content === "string" ? data.content : "";
+        };
+
         const readBase = () => {
           const st1 = window.zion?.state?.get("localTools.baseUrl");
           if (typeof st1 === "string" && st1.trim()) return st1.trim();
@@ -934,6 +1000,18 @@ function registerDefaultTools() {
         const base = readBase();
         const url = `${base.replace(/\/$/, "")}/files/write`;
         try {
+          const fp = getFpStore();
+          const prev = fp[path];
+          if (!prev) return "Write blocked: you must read this file first (use read).";
+          if (!prev.complete) return "Write blocked: you must read the full file first (read without offset/limit).";
+          if (typeof prev.hash === "string" && prev.hash) {
+            const cur = await readCurrent(base);
+            const curHash = await sha256Hex(cur);
+            if (curHash !== prev.hash) {
+              return "Write blocked: file changed since last read (likely edited in editor). Please read again.";
+            }
+          }
+
           const res = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -944,6 +1022,9 @@ function registerDefaultTools() {
             const txt = await res.text().catch(() => "");
             return `HTTP ${res.status}: ${txt || data?.error || "write failed"}`;
           }
+
+          fp[path] = { complete: true, hash: await sha256Hex(content), at: Date.now() };
+          setFpStore(fp);
           const out = { ...(data || {}), path, prompt };
           return JSON.stringify(out, null, 2);
         } catch (e) {
@@ -964,6 +1045,41 @@ function registerDefaultTools() {
         if (!path) return "Missing path";
         if (!old_string) return "Missing old_string";
 
+        const getFpStore = () => {
+          const v = window.zion?.state?.get("localTools.fileFingerprints");
+          return v && typeof v === "object" ? v : {};
+        };
+        const setFpStore = (next) => {
+          try {
+            window.zion?.state?.set("localTools.fileFingerprints", next);
+          } catch {}
+        };
+        const sha256Hex = async (text) => {
+          try {
+            const TextEncoderCtor = globalThis?.TextEncoder;
+            if (!TextEncoderCtor) throw new Error("TextEncoder not available");
+            const enc = new TextEncoderCtor();
+            const buf = await crypto.subtle.digest("SHA-256", enc.encode(String(text)));
+            const bytes = new Uint8Array(buf);
+            let out = "";
+            for (const b of bytes) out += b.toString(16).padStart(2, "0");
+            return out;
+          } catch {
+            return `len:${String(text || "").length}`;
+          }
+        };
+        const readCurrent = async (base) => {
+          let u = `${base.replace(/\/$/, "")}/files/read?path=${encodeURIComponent(path)}`;
+          if (sessionId) u += `&session_id=${encodeURIComponent(sessionId)}`;
+          const res = await fetch(u, { method: "GET" });
+          const data = await res.json().catch(() => null);
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            throw new Error(`HTTP ${res.status}: ${txt || data?.error || "read failed"}`);
+          }
+          return typeof data?.content === "string" ? data.content : "";
+        };
+
         const readBase = () => {
           const st1 = window.zion?.state?.get("localTools.baseUrl");
           if (typeof st1 === "string" && st1.trim()) return st1.trim();
@@ -976,6 +1092,18 @@ function registerDefaultTools() {
         const base = readBase();
         const url = `${base.replace(/\/$/, "")}/files/edit`;
         try {
+          const fp = getFpStore();
+          const prev = fp[path];
+          if (!prev) return "Edit blocked: you must read this file first (use read).";
+          if (!prev.complete) return "Edit blocked: you must read the full file first (read without offset/limit).";
+          if (typeof prev.hash === "string" && prev.hash) {
+            const cur = await readCurrent(base);
+            const curHash = await sha256Hex(cur);
+            if (curHash !== prev.hash) {
+              return "Edit blocked: file changed since last read (likely edited in editor). Please read again.";
+            }
+          }
+
           const res = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -986,6 +1114,12 @@ function registerDefaultTools() {
             const txt = await res.text().catch(() => "");
             return `HTTP ${res.status}: ${txt || data?.error || "edit failed"}`;
           }
+
+          try {
+            const updated = await readCurrent(base);
+            fp[path] = { complete: true, hash: await sha256Hex(updated), at: Date.now() };
+            setFpStore(fp);
+          } catch {}
           const out = { ...(data || {}), path, old_string, new_string, replace_all, prompt };
           return JSON.stringify(out, null, 2);
         } catch (e) {
