@@ -321,6 +321,8 @@ export async function activate(ctx) {
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
 
     // 3. 插入 assistant 块（用于承载输出）
+    // 逻辑优化：如果光标下有内容（且不是 role 头行），说明是“中间插入”。
+    // 此时不仅插入 assistant，还应在 assistant 后面预先插入一个 user 占位符，以隔离后续旧文本。
     const insertLine = cursorLine + 1;
     if (insertLine >= lines.length) {
       // 在文档末尾安全插入 assistant 头行
@@ -336,8 +338,36 @@ export async function activate(ctx) {
       }
       ed.replaceRange("assistant ", { line: targetLine, ch: 0 });
     } else {
-      const currentLineLength = lines[cursorLine].length;
-      ed.replaceRange("\nassistant ", { line: cursorLine, ch: currentLineLength });
+      // 检查后续内容
+      let hasContentBelow = false;
+      for (let k = insertLine; k < lines.length; k++) {
+        const t = lines[k].trim();
+        if (t) {
+          // 如果紧接着就是 role 头行，不需要额外插入隔离
+          if (/^(system|user|assistant|tool)\b/.test(t)) break;
+          hasContentBelow = true;
+          break;
+        }
+      }
+
+      if (hasContentBelow) {
+        // 中间插入：插入 assistant + 两个换行 + user
+        // 这样新 assistant 的流式输出会被限制在这个空档里，不会吞掉下面的旧文本
+        const currentLineLength = lines[cursorLine].length;
+        ed.replaceRange("\nassistant \n\nuser ", { line: cursorLine, ch: currentLineLength });
+        
+        // 修正光标到 assistant 后的空行，准备输出
+        // 插入后：cursorLine -> 原行
+        // cursorLine+1 -> assistant
+        // cursorLine+2 -> (empty for streaming)
+        // cursorLine+3 -> user
+        // cursorLine+4 -> old text
+        // 我们不需要手动 setCursor，因为流式输出会自动寻找 assistant block 并追加。
+        // 但为了视觉效果，最好确保 assistant 下面有空行。
+      } else {
+        const currentLineLength = lines[cursorLine].length;
+        ed.replaceRange("\nassistant ", { line: cursorLine, ch: currentLineLength });
+      }
     }
 
     // 记录本次回答的 assistant 头行锚点（按会话存储，用于工具/思考插入定位）
@@ -482,8 +512,100 @@ export async function activate(ctx) {
             if (/^\s*(system|user|assistant|tool)\s+/.test(currentLines[i])) break;
             endLine = i;
           }
+
+          const nextLineText = currentLines[endLine + 1];
+          const hasNextRoleLine = typeof nextLineText === 'string' && /^\s*(system|user|assistant|tool)\s+/.test(nextLineText);
           const lastLineText = currentLines[endLine] || "";
-          try { ed.replaceRange("\n", { line: endLine, ch: lastLineText.length }); } catch {}
+          const shouldAddTrailingBlankLine = nextLineText === undefined && lastLineText.trim() !== "";
+
+          if (shouldAddTrailingBlankLine) {
+            try { ed.replaceRange("\n", { line: endLine, ch: lastLineText.length }); } catch {}
+          }
+
+          try {
+            let autoInsert = window.zion?.state?.get('chat.autoInsertUserPrompt');
+            if (autoInsert === undefined) {
+              autoInsert = true;
+              try { window.zion?.state?.set('chat.autoInsertUserPrompt', true); } catch {}
+            }
+            let autoFocus = window.zion?.state?.get('chat.autoFocusUserPrompt');
+            if (autoFocus === undefined) {
+              autoFocus = true;
+              try { window.zion?.state?.set('chat.autoFocusUserPrompt', true); } catch {}
+            }
+
+            // 解耦逻辑：根据最新的 doc 状态判断是否需要插入或聚焦
+            const docNow = String(ed.getValue() || "");
+            const linesNow = docNow.split("\n");
+            
+            // 重新定位 assistant block 的结束行
+            let blockEndLine = -1;
+            // 重新查找 assistant 头行（因为 doc 可能变化）
+            let newAssistantLine = -1;
+            for (let i = Math.max(0, insertLine - 1); i < linesNow.length; i++) {
+              if (/^\s*assistant\s+/.test(linesNow[i])) { newAssistantLine = i; break; }
+            }
+            if (newAssistantLine === -1) {
+              for (let i = 0; i < linesNow.length; i++) {
+                if (/^\s*assistant\s+/.test(linesNow[i])) { newAssistantLine = i; break; }
+              }
+            }
+
+            if (newAssistantLine !== -1) {
+              blockEndLine = newAssistantLine;
+              for (let i = newAssistantLine + 1; i < linesNow.length; i++) {
+                if (/^\s*(system|user|assistant|tool)\s+/.test(linesNow[i])) break;
+                blockEndLine = i;
+              }
+            }
+
+            if (blockEndLine !== -1) {
+              const targetLine = blockEndLine + 1;
+              let targetLineText = "";
+              if (targetLine < linesNow.length) {
+                targetLineText = linesNow[targetLine];
+              } else {
+                // 如果 blockEndLine 是最后一行且非空，可能需要追加新行
+                // 但上面的 shouldAddTrailingBlankLine 应该已经处理了换行追加
+                targetLineText = ""; // 视为新行
+              }
+
+              const isUser = /^\s*user\s+/.test(targetLineText);
+              const isOtherRole = /^\s*(system|assistant|tool)\s+/.test(targetLineText);
+
+              if (isUser) {
+                // 场景：下面已经是 user -> 聚焦
+                if (autoFocus) {
+                  try {
+                    const m = /^\s*user\s+/.exec(targetLineText);
+                    const ch = m ? m[0].length : 5;
+                    ed.setCursor?.({ line: targetLine, ch });
+                    ed.focus?.();
+                  } catch {}
+                }
+              } else if (!isOtherRole && autoInsert) {
+                // 场景：下面是空行或文末 -> 插入 user 并聚焦
+                // 确保 targetLine 存在
+                if (targetLine >= linesNow.length) {
+                  const last = String(linesNow[blockEndLine] || "");
+                  // 如果最后一行不为空，先换行
+                  if (last.trim() !== "") {
+                     try { ed.replaceRange("\n", { line: blockEndLine, ch: last.length }); } catch {}
+                  }
+                }
+                
+                // 重新获取该行文本（可能刚才加了换行）
+                // 简单起见，直接在新位置写入
+                try {
+                   ed.replaceRange("user ", { line: targetLine, ch: 0 }, { line: targetLine, ch: String(linesNow[targetLine]||"").length });
+                   if (autoFocus) {
+                     ed.setCursor?.({ line: targetLine, ch: 5 });
+                     ed.focus?.();
+                   }
+                } catch {}
+              }
+            }
+          } catch {}
         }
       } else {
         try { window.zion.commands.executeCommand("zion.sessions.appendAssistantToken", { id: sid, token: "\n", runId }); } catch {}
@@ -602,16 +724,7 @@ export async function activate(ctx) {
             const raw = String(s || "");
             const trimmedStart = raw.replace(/^\s+/, "");
             const lower = trimmedStart.toLowerCase();
-            const candidates = [
-              "[reasoning omitted]",
-              "reasoning_omitted",
-              "reasoning omitted",
-              "[reasoning_omitted]",
-              "reason_omitted",
-              "reason omitted",
-              "[reason omitted]",
-              "[reason_omitted]"
-            ];
+            const candidates = ["[reasoning omitted]", "reasoning_omitted", "reasoning omitted", "[reasoning_omitted]"];
             for (const c of candidates) {
               if (lower.startsWith(c)) {
                 return trimmedStart.slice(c.length).replace(/^\s+/, "");
@@ -946,6 +1059,46 @@ export async function activate(ctx) {
     window.zion.commands.registerCommand("chat.retry", () => doRun({}))
   ];
   ctx.subscriptions.push(...cmds);
+
+  const toggleStateBool = (key, defaultValue = true) => {
+    let v = window.zion?.state?.get?.(key);
+    if (v === undefined) v = defaultValue;
+    const next = !v;
+    try { window.zion?.state?.set?.(key, next); } catch {}
+    try {
+      window.zion?.notification?.show?.(`${key} = ${next}`, { type: 'info', duration: 2500 });
+    } catch {}
+    return next;
+  };
+
+  const dispToggleAutoInsert = window.zion.commands.registerCommand('chat.toggleAutoInsertUserPrompt', () => {
+    toggleStateBool('chat.autoInsertUserPrompt', true);
+  });
+  const dispToggleAutoFocus = window.zion.commands.registerCommand('chat.toggleAutoFocusUserPrompt', () => {
+    toggleStateBool('chat.autoFocusUserPrompt', true);
+  });
+  ctx.subscriptions.push(dispToggleAutoInsert, dispToggleAutoFocus);
+
+  const dSlashAutoInsert = window.zion.slash?.registerCommand?.({
+    id: 'chat.toggleAutoInsertUserPrompt',
+    trigger: ['autouser', 'auto.user', 'toggle.autouser'],
+    title: '切换自动插入 user',
+    description: '回答结束后自动插入下一行 user 角色前缀',
+    category: 'chat',
+    priority: 70,
+    execute: () => window.zion.commands.executeCommand('chat.toggleAutoInsertUserPrompt')
+  });
+  const dSlashAutoFocus = window.zion.slash?.registerCommand?.({
+    id: 'chat.toggleAutoFocusUserPrompt',
+    trigger: ['autofocus', 'auto.focus', 'toggle.autofocus'],
+    title: '切换自动聚焦 user',
+    description: '自动插入 user 后是否把光标移动到 user 后',
+    category: 'chat',
+    priority: 69,
+    execute: () => window.zion.commands.executeCommand('chat.toggleAutoFocusUserPrompt')
+  });
+  if (dSlashAutoInsert) ctx.subscriptions.push(dSlashAutoInsert);
+  if (dSlashAutoFocus) ctx.subscriptions.push(dSlashAutoFocus);
 
   // 模型选择相关命令
   const dispListProviders = window.zion.commands.registerCommand("models.listProviders", () => {

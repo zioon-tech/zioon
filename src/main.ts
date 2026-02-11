@@ -142,6 +142,37 @@ function mountCurrentSessionPath(pathEl: HTMLElement) {
   update();
 }
 
+function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
+  try {
+    const headerEl = pathEl.parentElement;
+    if (!headerEl) return;
+
+    let btn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-toc-button='1']");
+    const isNew = !btn;
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+    }
+
+    btn.className = "zion-editor-header-action is-icon zion-editor-toc-button";
+    btn.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M4 6h2v2H4V6zm4 0h12v2H8V6zM4 11h2v2H4v-2zm4 0h12v2H8v-2zM4 16h2v2H4v-2zm4 0h12v2H8v-2z"/></svg>';
+    btn.title = "目录";
+    btn.setAttribute("aria-label", "目录");
+    btn.setAttribute("data-zion-editor-toc-button", "1");
+    btn.onclick = (e) => {
+      try {
+        e.stopPropagation();
+      } catch {}
+      try {
+        window.zion.commands.executeCommand("toc.show");
+      } catch {}
+    };
+
+    if (isNew) headerEl.insertBefore(btn, pathEl);
+  } catch {}
+}
+
 async function bootstrap() {
   const host = document.getElementById("app")!;
   host.innerHTML = "";
@@ -173,6 +204,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   const core = new EditorCore(editorContainer, initialDoc);
   attachEditor(core);
   mountCurrentSessionPath(editorHeaderPathEl);
+  mountEditorHeaderTOCButton(editorHeaderPathEl);
 
   try {
     initServiceBaseUrlConfig();

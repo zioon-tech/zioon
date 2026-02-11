@@ -1,26 +1,4 @@
 import { resolveAppImage } from "./img-db.js";
-
-function stripLeadingOmitted(s) {
-  const raw = String(s || "");
-  const trimmedStart = raw.replace(/^\s+/, "");
-  const lower = trimmedStart.toLowerCase();
-  const candidates = [
-    "[reasoning omitted]",
-    "reasoning_omitted",
-    "reasoning omitted",
-    "[reasoning_omitted]",
-    "reason_omitted",
-    "reason omitted",
-    "[reason omitted]",
-    "[reason_omitted]"
-  ];
-  for (const c of candidates) {
-    if (lower.startsWith(c)) {
-      return trimmedStart.slice(c.length).replace(/^\s+/, "");
-    }
-  }
-  return raw;
-}
 import {
   DEFAULT_REASONING_CONTENT_PLACEHOLDER,
   patchMessagesForReasoningContentToolCalls,
@@ -353,9 +331,8 @@ export async function runStream({
       let buf = "";
       // tool calls 按 index 聚合（OpenAI 流式会分片）
       const toolCallsBuffer = [];
+      // reasoning/think 流式起止标志
       let emittedReasoningStart = false;
-      let reasoningRaw = "";
-      let reasoningEmitted = "";
 
       while (true) {
         const { value, done } = await reader.read();
@@ -420,17 +397,12 @@ export async function runStream({
               delta?.thinking ??
               undefined;
             if (rTk) {
-              reasoningRaw += String(rTk);
-              const sanitized = stripLeadingOmitted(reasoningRaw);
-              const deltaText = sanitized.slice(reasoningEmitted.length);
-              if (deltaText) {
-                if (!emittedReasoningStart) {
-                  emittedReasoningStart = true;
-                  try { window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId }); } catch {}
-                }
-                reasoningEmitted = sanitized;
-                try { window.zion?.events?.emit("chat/reasoningToken", { runId, token: deltaText, sessionId }); } catch {}
+              reasoningBuf += String(rTk);
+              if (!emittedReasoningStart) {
+                emittedReasoningStart = true;
+                try { window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId }); } catch {}
               }
+              try { window.zion?.events?.emit("chat/reasoningToken", { runId, token: rTk, sessionId }); } catch {}
             }
 
             // 常规内容 token
@@ -452,7 +424,6 @@ export async function runStream({
         }
       } catch {}
       onEnd();
-      reasoningBuf = reasoningEmitted;
       return { reasoning_content: reasoningBuf };
     } else {
       // 非流式：一次性返回
@@ -483,12 +454,11 @@ export async function runStream({
         (j?.choices?.[0]?.message?.reasoning && j?.choices?.[0]?.message?.reasoning?.content) ??
         j?.reasoning_content ??
         "";
-      const sanitizedReasoning = stripLeadingOmitted(rFull);
-      if (sanitizedReasoning) {
-        reasoningBuf += String(sanitizedReasoning);
+      if (rFull) {
+        reasoningBuf += String(rFull);
         try {
           window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId });
-          window.zion?.events?.emit("chat/reasoningToken", { runId, token: sanitizedReasoning, sessionId });
+          window.zion?.events?.emit("chat/reasoningToken", { runId, token: rFull, sessionId });
           window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId });
         } catch {}
       }

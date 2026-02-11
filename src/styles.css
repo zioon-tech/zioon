@@ -454,6 +454,43 @@ html, body {
   cursor: pointer;
 }
 
+.zion-editor-header-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 8px;
+  margin-right: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.zion-editor-header-action.is-icon {
+  width: 26px;
+  padding: 0;
+}
+
+.zion-editor-header-action svg {
+  display: block;
+}
+
+.zion-editor-header-action:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+.zion-editor-header-action:active {
+  background: rgba(255, 255, 255, 0.10);
+}
+
 .zion-editor-host {
   flex: 1 1 auto;
   min-height: 0;
@@ -1003,11 +1040,18 @@ html, body {
 
 /* Editor scrollbar theming (WebKit + Firefox) */
 .cm-scroller {
-  scrollbar-color: transparent transparent; /* Firefox */
+  scrollbar-color: var(--scrollbar-thumb) transparent; /* Firefox: always visible */
   scrollbar-width: thin; /* Firefox */
 }
-.cm-scroller:hover {
-  scrollbar-color: var(--scrollbar-thumb) transparent;
+/* Ensure scrollbar thumb is always visible */
+.cm-scroller::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.cm-scroller:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-hover);
 }
 .cm-scroller::-webkit-scrollbar {
   width: 10px;
@@ -1015,18 +1059,6 @@ html, body {
 }
 .cm-scroller::-webkit-scrollbar-track {
   background: transparent;
-}
-.cm-scroller::-webkit-scrollbar-thumb {
-  background-color: transparent;
-  border-radius: 6px;
-  border: 2px solid transparent;
-  background-clip: content-box;
-}
-.cm-scroller:hover::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
-}
-.cm-scroller:hover::-webkit-scrollbar-thumb:hover {
-  background-color: var(--scrollbar-thumb-hover);
 }
 
 /* Horizontal table scroller theming */
@@ -1515,8 +1547,8 @@ html, body {
 
 /* slightly larger dot for easier hit target, still compact */
 .zion-gutter-dot {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: var(--accent);
   border: 1px solid var(--border);
@@ -1534,6 +1566,60 @@ html, body {
   filter: brightness(1.06);
   box-shadow: 0 2px 6px rgba(0,0,0,0.22);
   transform: translateY(-1px);
+}
+
+.zion-gutter-dot.zion-gutter-dot-persistent {
+  opacity: 1;
+  background: var(--role-user-fg);
+  border-color: var(--role-user-border);
+}
+
+.zion-scrollbar-markers {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  pointer-events: none;
+  z-index: 100;
+}
+
+.zion-scrollbar-marker {
+  position: absolute;
+  right: 1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--role-user-fg);
+  opacity: 0.6;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.zion-scrollbar-marker:hover {
+  opacity: 1;
+  transform: scaleX(1.5);
+}
+
+.zion-scrollbar-tooltip {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  z-index: 10000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.zion-scrollbar-tooltip.visible {
+  opacity: 1;
 }
 
 /* Minimal, legible menu */
@@ -1688,7 +1774,7 @@ html, body {
 
 /* Place custom gutter to the far left of other gutters (fold/lineNumbers) */
 .cm-gutters .cm-gutter.zion-gutter-left {
-  min-width: 20px;
+  min-width: 22px;
   order: -100; /* ensure leftmost */
 }
 

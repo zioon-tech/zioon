@@ -27,6 +27,48 @@ async function copyText(text) {
 
 let menuGuard = null;
 
+function ensureUserPromptBelow(view, line) {
+  try {
+    const doc = view.state.doc;
+    const currentLineNo = line.number;
+
+    if (currentLineNo < doc.lines) {
+      const nextLine = doc.line(currentLineNo + 1);
+      const t = String(nextLine.text || "");
+      const m = /^\s*user\s+/.exec(t);
+      if (m) {
+        const pos = nextLine.from + m[0].length;
+        view.dispatch({
+          selection: { anchor: pos },
+          scrollIntoView: true
+        });
+        return true;
+      }
+
+      if (t.trim() === "" && !/^\s*(system|user|assistant|tool)\s+/.test(t)) {
+        const insert = "user ";
+        view.dispatch({
+          changes: { from: nextLine.from, to: nextLine.to, insert },
+          selection: { anchor: nextLine.from + insert.length },
+          scrollIntoView: true
+        });
+        return true;
+      }
+    }
+
+    const pos = line.to;
+    const insert = "\nuser ";
+    view.dispatch({
+      changes: { from: pos, insert },
+      selection: { anchor: pos + insert.length },
+      scrollIntoView: true
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function closeExistingMenu() {
   const m = document.getElementById("zion-gutter-menu");
   if (m) {
@@ -215,6 +257,11 @@ function openMenu(view, clientX, clientY, line) {
     return btn;
   };
 
+  menu.appendChild(mkItem("下一行插入 user", () => {
+    ensureUserPromptBelow(view, line);
+    return Promise.resolve(true);
+  }, false));
+
   // 复制当前行
   const copyLine = () => {
     const text = doc.sliceString(line.from, line.to);
@@ -301,7 +348,7 @@ class DotMarker extends GutterMarker {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "zion-gutter-dot";
-    btn.title = "行操作";
+    btn.title = "行操作（Shift-点击：下一行插入 user）";
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -309,13 +356,31 @@ class DotMarker extends GutterMarker {
       const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
       if (pos == null) return;
       const line = view.state.doc.lineAt(pos);
+
+      if (e.shiftKey) {
+        closeExistingMenu();
+        ensureUserPromptBelow(view, line);
+        try { view.focus(); } catch {}
+        return;
+      }
+
       openMenu(view, e.clientX, e.clientY, line);
     });
     return btn;
   }
 }
 
+class UserDotMarker extends DotMarker {
+  toDOM(view) {
+    const btn = super.toDOM(view);
+    btn.classList.add("zion-gutter-dot-persistent");
+    btn.title = "User message";
+    return btn;
+  }
+}
+
 const dotMarker = new DotMarker();
+const userDotMarker = new UserDotMarker();
 
 // Hover sync plugin: when hovering any gutter (fold/line numbers/etc.), highlight the corresponding
 // left custom gutter row to show the dot for that line.
@@ -372,20 +437,177 @@ const hoverGutterPlugin = ViewPlugin.fromClass(class {
   }
 });
 
+// Scrollbar markers for user messages
+const scrollbarMarkersPlugin = ViewPlugin.fromClass(class {
+  constructor(view) {
+    this.view = view;
+    this.container = document.createElement("div");
+    this.container.className = "zion-scrollbar-markers";
+    // Append to editor dom so it sits on top of scroller or inside the wrapper
+    view.dom.appendChild(this.container);
+    this.rafId = 0;
+    this.tooltip = null;
+    this.updateMarkers();
+  }
+
+  update(update) {
+    if (update.docChanged || update.geometryChanged || update.viewportChanged) {
+      this.updateMarkers();
+    }
+  }
+
+  destroy() {
+    this.container.remove();
+    this.hideTooltip();
+    if (this.rafId) window.cancelAnimationFrame(this.rafId);
+  }
+
+  hideTooltip() {
+    if (this.tooltip) {
+      this.tooltip.remove();
+      this.tooltip = null;
+    }
+  }
+
+  showTooltip(content, x, y) {
+    this.hideTooltip();
+    const tooltip = document.createElement("div");
+    tooltip.className = "zion-scrollbar-tooltip";
+    tooltip.textContent = content;
+    tooltip.style.position = "fixed";
+    tooltip.style.top = `${y}px`;
+    document.body.appendChild(tooltip);
+    this.tooltip = tooltip;
+    
+    // Position to the left of the scrollbar dynamically
+    const rect = tooltip.getBoundingClientRect();
+    tooltip.style.left = `${x - rect.width - 12}px`;
+    
+    // Trigger reflow
+    tooltip.offsetHeight;
+    tooltip.classList.add("visible");
+
+    // Auto hide on scroll/click, but keep while hovering tooltip
+    // We removed the 2s timeout so it stays as long as you hover
+    const hide = () => this.hideTooltip();
+    
+    // Only hide on actual scroll or click outside
+    this.view.dom.addEventListener("scroll", hide, { once: true });
+    
+    // Clicking outside hides it immediately
+    const onClick = (e) => {
+      if (this.tooltip && !this.tooltip.contains(e.target)) {
+        hide();
+        document.removeEventListener("click", onClick);
+      }
+    };
+    setTimeout(() => document.addEventListener("click", onClick), 0);
+  }
+
+  updateMarkers() {
+    if (this.rafId) window.cancelAnimationFrame(this.rafId);
+    this.rafId = window.requestAnimationFrame(() => {
+      if (!this.view.dom.contains(this.container)) {
+        this.view.dom.appendChild(this.container);
+      }
+      this.container.innerHTML = "";
+      const view = this.view;
+      const doc = view.state.doc;
+      const totalHeight = view.contentHeight;
+      if (totalHeight <= 0) return;
+
+      const lines = doc.lines;
+      const fragment = document.createDocumentFragment();
+      
+      // Store user line info for click/hover handlers
+      const userLines = [];
+      
+      // Iterate all lines to find user messages
+      for (let i = 1; i <= lines; i++) {
+        const line = doc.line(i);
+        // Check for user role pattern
+        if (/^\s*user\s+/.test(line.text)) {
+          const block = view.lineBlockAt(line.from);
+          const top = block.top;
+          const pct = (top / totalHeight) * 100;
+          
+          // Extract preview text (first 50 chars after "user ")
+          let previewText = line.text.replace(/^\s*user\s*/, "").trim();
+          if (!previewText) {
+             // Look ahead up to 5 lines for content
+             for (let j = 1; j <= 5 && i + j <= lines; j++) {
+               const nextLine = doc.line(i + j);
+               const t = nextLine.text.trim();
+               if (t) {
+                 previewText = t;
+                 break;
+               }
+             }
+          }
+          const preview = (previewText.slice(0, 50) || "User message") + (previewText.length > 50 ? "..." : "");
+          
+          const m = document.createElement("div");
+          m.className = "zion-scrollbar-marker";
+          m.style.top = `${pct}%`;
+          m.style.cursor = "pointer";
+          m.style.pointerEvents = "auto";
+          
+          // Store line info for click handler
+          m.dataset.lineNumber = i;
+          m.dataset.preview = preview;
+          
+          // Click to jump to line
+          m.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const lineNum = parseInt(m.dataset.lineNumber, 10);
+            const targetLine = doc.line(lineNum);
+            view.dispatch({
+              selection: { anchor: targetLine.from },
+              scrollIntoView: true
+            });
+          });
+          
+          // Hover to show preview
+          m.addEventListener("mouseenter", (e) => {
+            this.showTooltip(m.dataset.preview, e.clientX, e.clientY);
+          });
+          
+          m.addEventListener("mouseleave", () => {
+            this.hideTooltip();
+          });
+          
+          fragment.appendChild(m);
+        }
+      }
+      this.container.appendChild(fragment);
+    });
+  }
+});
+
 export function gutterActions() {
   return [
     gutter({
       class: "zion-gutter-left",
-      // show a dot on every line
-      lineMarker: () => dotMarker,
+      // show a dot on every line, persistent for user lines
+      lineMarker: (view, line) => {
+        const doc = view.state.doc;
+        // Check text content of the line
+        const text = doc.sliceString(line.from, Math.min(line.to, line.from + 100));
+        if (/^\s*user\s+/.test(text)) {
+          return userDotMarker;
+        }
+        return dotMarker;
+      },
       initialSpacer: () => {
         // keep consistent width in empty docs
         const s = document.createElement("div");
-        s.style.width = "12px";
+        s.style.width = "14px";
         s.style.height = "1em";
         return s;
       }
     }),
-    hoverGutterPlugin
+    hoverGutterPlugin,
+    scrollbarMarkersPlugin
   ];
 }

@@ -179,6 +179,48 @@ function showRolesConfigModal() {
   }
 }
 
+function setCurrentLineRole(editor, role) {
+  const ed = editor || window.zion?.window?.activeEditor;
+  if (!ed || typeof ed.getValue !== 'function' || typeof ed.replaceRange !== 'function') return;
+  const cursor = ed.getCursor?.();
+  const line = cursor?.line;
+  if (typeof line !== 'number' || line < 0) return;
+
+  const doc = String(ed.getValue() || "");
+  const lines = doc.split("\n");
+  if (line >= lines.length) return;
+
+  const original = String(lines[line] ?? "");
+  const stripped = original.replace(/^\s*(user|assistant|system|tool)\s+/, "");
+  const prefix = `${role} `;
+  const next = prefix + stripped;
+  try {
+    ed.replaceRange(next, { line, ch: 0 }, { line, ch: original.length });
+    ed.setCursor?.({ line, ch: prefix.length });
+    ed.focus?.();
+  } catch {}
+}
+
+function insertRoleLineBelow(editor, role) {
+  const ed = editor || window.zion?.window?.activeEditor;
+  if (!ed || typeof ed.getValue !== 'function' || typeof ed.replaceRange !== 'function') return;
+  const cursor = ed.getCursor?.();
+  const line = cursor?.line;
+  if (typeof line !== 'number' || line < 0) return;
+
+  const doc = String(ed.getValue() || "");
+  const lines = doc.split("\n");
+  const curLineText = String(lines[line] ?? "");
+  const insertAt = { line, ch: curLineText.length };
+  const text = `\n${role} `;
+
+  try {
+    ed.replaceRange(text, insertAt);
+    ed.setCursor?.({ line: line + 1, ch: `${role} `.length });
+    ed.focus?.();
+  } catch {}
+}
+
 export async function activate(ctx) {
   try {
     // Dynamically import roles() from local extension module
@@ -218,6 +260,92 @@ export async function activate(ctx) {
       showRolesConfigModal();
     });
     ctx.subscriptions.push(cmdCfg);
+
+    const cmdSetRole = window.zion.commands.registerCommand('roles.setRole', (role, editor) => {
+      if (typeof role !== 'string' || !role.trim()) return;
+      setCurrentLineRole(editor, role.trim());
+    });
+    ctx.subscriptions.push(cmdSetRole);
+
+    const cmdUser = window.zion.commands.registerCommand('roles.setUser', (editor) => setCurrentLineRole(editor, 'user'));
+    const cmdAssistant = window.zion.commands.registerCommand('roles.setAssistant', (editor) => setCurrentLineRole(editor, 'assistant'));
+    const cmdSystem = window.zion.commands.registerCommand('roles.setSystem', (editor) => setCurrentLineRole(editor, 'system'));
+    ctx.subscriptions.push(cmdUser, cmdAssistant, cmdSystem);
+
+    const cmdInsertUser = window.zion.commands.registerCommand('roles.insertUserBelow', (editor) => insertRoleLineBelow(editor, 'user'));
+    const cmdInsertAssistant = window.zion.commands.registerCommand('roles.insertAssistantBelow', (editor) => insertRoleLineBelow(editor, 'assistant'));
+    const cmdInsertSystem = window.zion.commands.registerCommand('roles.insertSystemBelow', (editor) => insertRoleLineBelow(editor, 'system'));
+    ctx.subscriptions.push(cmdInsertUser, cmdInsertAssistant, cmdInsertSystem);
+
+    const dSlashRoleUser = window.zion.slash?.registerCommand?.({
+      id: 'roles.setUser',
+      trigger: ['u', 'user', 'role.user'],
+      title: '当前行设为 user',
+      description: '将当前行开头设为 user 角色前缀',
+      category: 'chat',
+      priority: 95,
+      execute: (_params, editor) => setCurrentLineRole(editor, 'user')
+    });
+    const dSlashRoleAssistant = window.zion.slash?.registerCommand?.({
+      id: 'roles.setAssistant',
+      trigger: ['a', 'assistant', 'role.assistant'],
+      title: '当前行设为 assistant',
+      description: '将当前行开头设为 assistant 角色前缀',
+      category: 'chat',
+      priority: 94,
+      execute: (_params, editor) => setCurrentLineRole(editor, 'assistant')
+    });
+    const dSlashRoleSystem = window.zion.slash?.registerCommand?.({
+      id: 'roles.setSystem',
+      trigger: ['s', 'system', 'role.system'],
+      title: '当前行设为 system',
+      description: '将当前行开头设为 system 角色前缀',
+      category: 'chat',
+      priority: 93,
+      execute: (_params, editor) => setCurrentLineRole(editor, 'system')
+    });
+
+    const dSlashInsertUser = window.zion.slash?.registerCommand?.({
+      id: 'roles.insertUserBelow',
+      trigger: ['iu', 'insert.user', 'role.insert.user'],
+      title: '下一行插入 user',
+      description: '在下一行插入 user 角色前缀并把光标放到后面',
+      category: 'chat',
+      priority: 85,
+      execute: (_params, editor) => insertRoleLineBelow(editor, 'user')
+    });
+    const dSlashInsertAssistant = window.zion.slash?.registerCommand?.({
+      id: 'roles.insertAssistantBelow',
+      trigger: ['ia', 'insert.assistant', 'role.insert.assistant'],
+      title: '下一行插入 assistant',
+      description: '在下一行插入 assistant 角色前缀并把光标放到后面',
+      category: 'chat',
+      priority: 84,
+      execute: (_params, editor) => insertRoleLineBelow(editor, 'assistant')
+    });
+    const dSlashInsertSystem = window.zion.slash?.registerCommand?.({
+      id: 'roles.insertSystemBelow',
+      trigger: ['is', 'insert.system', 'role.insert.system'],
+      title: '下一行插入 system',
+      description: '在下一行插入 system 角色前缀并把光标放到后面',
+      category: 'chat',
+      priority: 83,
+      execute: (_params, editor) => insertRoleLineBelow(editor, 'system')
+    });
+
+    if (dSlashRoleUser) ctx.subscriptions.push(dSlashRoleUser);
+    if (dSlashRoleAssistant) ctx.subscriptions.push(dSlashRoleAssistant);
+    if (dSlashRoleSystem) ctx.subscriptions.push(dSlashRoleSystem);
+    if (dSlashInsertUser) ctx.subscriptions.push(dSlashInsertUser);
+    if (dSlashInsertAssistant) ctx.subscriptions.push(dSlashInsertAssistant);
+    if (dSlashInsertSystem) ctx.subscriptions.push(dSlashInsertSystem);
+
+    if (window.zion?.keybindings?.register) {
+      const dKBUser = window.zion.keybindings.register({ command: 'roles.setUser', key: 'Mod-Alt-u', when: 'editorFocus' });
+      const dKBAssistant = window.zion.keybindings.register({ command: 'roles.setAssistant', key: 'Mod-Alt-a', when: 'editorFocus' });
+      const dKBSystem = window.zion.keybindings.register({ command: 'roles.setSystem', key: 'Mod-Alt-s', when: 'editorFocus' });
+      ctx.subscriptions.push(dKBUser, dKBAssistant, dKBSystem);
+    }
 
     // 右键菜单入口
     if (window.zion?.menus?.register) {

@@ -1269,15 +1269,6 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dKBGroup);
 
-  // status bar button
-  const d4 = window.zion.statusBar.registerItem({
-    id: "dev.toc",
-    text: "TOC",
-    tooltip: "Show Table of Contents",
-    onClick: () => window.zion.commands.executeCommand("toc.show")
-  });
-  ctx.subscriptions.push(d4);
-
   // Decorator: mount floating button (top-left) and left side TOC panel (flex with editor)
   const d5 = window.zion.editor.registerDecorator({
     id: "dev.toc.ui",
