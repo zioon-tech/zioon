@@ -288,11 +288,18 @@ function stickyUserHeaderView() {
         }
         this.restoreBtn.style.display = "none";
 
+        // Hide at top to avoid duplication/jump
+        const scrollTop = this.view.scrollDOM.scrollTop;
+        if (scrollTop < 10) {
+          this.headerEl.classList.add("is-empty");
+          this.updateHeight(0);
+          return;
+        }
+
         const blocks = this.index?.blocks || [];
         // Calculate the exact document position at the top of the visible viewport
         // viewport.from includes buffer, so we use lineBlockAtHeight with scrollTop
-        const scrollTop = this.view.scrollDOM.scrollTop;
-        const y = scrollTop + (this.lastHeight || 0);
+        const y = scrollTop;
         const topBlock = this.view.lineBlockAtHeight(y);
         const topPos = topBlock.from;
 
@@ -302,6 +309,23 @@ function stickyUserHeaderView() {
         if (curIdx >= 0) {
           if (blocks[curIdx]?.role === targetRole) userIdx = curIdx;
           else userIdx = findPrevRoleIndex(blocks, curIdx, targetRole);
+        }
+
+        // Check if the target user block is still partially visible at top
+        // If so, we should NOT show sticky header yet (wait until it scrolls out)
+        if (userIdx >= 0) {
+          try {
+            const uBlock = blocks[userIdx];
+            // Use the block's start position to get the line info
+            const uLine = this.view.lineBlockAt(uBlock.from);
+            // If the bottom of the user line is still below scrollTop (meaning it's visible or below viewport top)
+            // we hide the sticky header.
+            if (uLine.bottom > scrollTop) {
+              this.headerEl.classList.add("is-empty");
+              this.updateHeight(0);
+              return;
+            }
+          } catch {}
         }
 
         const items = [];
@@ -326,7 +350,7 @@ function stickyUserHeaderView() {
         this.headerEl.textContent = "";
         if (!items.length) {
           this.headerEl.classList.add("is-empty");
-          this.applyHeight(0);
+          this.updateHeight(0);
           return;
         }
 
@@ -362,19 +386,16 @@ function stickyUserHeaderView() {
 
         requestAnimationFrame(() => {
           const h = this.headerEl.offsetHeight || 0;
-          this.applyHeight(h);
+          this.updateHeight(h);
         });
       }
 
-      applyHeight(h) {
-        const scroller = this.view.scrollDOM;
-        if (!scroller) return;
-        if (this.prevScrollerPaddingTop == null) this.prevScrollerPaddingTop = scroller.style.paddingTop || "";
-
+      updateHeight(h) {
+        // We only track height for scrollMargins, NO padding injection anymore
         const nextH = Math.max(0, Math.floor(h));
         if (nextH === this.lastHeight) return;
         this.lastHeight = nextH;
-        scroller.style.paddingTop = nextH ? `${nextH}px` : this.prevScrollerPaddingTop;
+        this.view.requestMeasure();
       }
 
       destroy() {
@@ -383,10 +404,6 @@ function stickyUserHeaderView() {
           if (this.syncRaf) window.cancelAnimationFrame(this.syncRaf);
           if (this.view?.scrollDOM && this.scrollHandler) {
             this.view.scrollDOM.removeEventListener("scroll", this.scrollHandler);
-          }
-          const scroller = this.view.scrollDOM;
-          if (scroller && typeof this.prevScrollerPaddingTop === "string") {
-            scroller.style.paddingTop = this.prevScrollerPaddingTop;
           }
         } catch {}
         try {
@@ -397,6 +414,12 @@ function stickyUserHeaderView() {
         try { this.headerEl?.remove?.(); } catch {}
         try { this.restoreBtn?.remove?.(); } catch {}
       }
+    },
+    {
+      provide: plugin => EditorView.scrollMargins.of(view => {
+        const value = view.plugin(plugin);
+        return { top: value?.lastHeight || 0 };
+      })
     }
   );
 }

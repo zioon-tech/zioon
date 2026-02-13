@@ -2270,58 +2270,10 @@ function mountSessionsSidebarViewInto(container) {
   searchInput.style.padding = "6px 8px";
   searchInput.style.fontSize = "12px";
 
-  const sortSelect = document.createElement("select");
-  sortSelect.setAttribute("aria-label", "Sort sessions");
-  sortSelect.title = "Sort";
-  sortSelect.style.background = "var(--panel)";
-  sortSelect.style.color = "var(--fg)";
-  sortSelect.style.border = "1px solid var(--border)";
-  sortSelect.style.borderRadius = "4px";
-  sortSelect.style.padding = "2px 6px";
-  sortSelect.style.fontSize = "11px";
-  sortSelect.style.minWidth = "48px";
-  sortSelect.style.width = "auto";
-  const optUpdated = document.createElement("option");
-  optUpdated.value = "updated";
-  optUpdated.textContent = "🕒";
-  optUpdated.title = "Sort by updated (newest first)";
-  const optTitle = document.createElement("option");
-  optTitle.value = "title";
-  optTitle.textContent = "Aa";
-  optTitle.title = "Sort by title (A→Z)";
-  sortSelect.append(optUpdated, optTitle);
-
-  const menuWrap = document.createElement("div");
-  menuWrap.style.position = "relative";
-
-  const menuBtn = document.createElement("button");
-  menuBtn.innerHTML = "&#x22EE;";
-  menuBtn.title = "Actions";
-  menuBtn.setAttribute("aria-label", "Actions");
-  menuBtn.style.background = "transparent";
-  menuBtn.style.color = "var(--fg)";
-  menuBtn.style.border = "1px solid var(--border)";
-  menuBtn.style.borderRadius = "6px";
-  menuBtn.style.padding = "0";
-  menuBtn.style.cursor = "pointer";
-  menuBtn.style.fontSize = "14px";
-  menuBtn.style.width = "28px";
-  menuBtn.style.height = "28px";
-  menuBtn.style.display = "flex";
-  menuBtn.style.alignItems = "center";
-  menuBtn.style.justifyContent = "center";
-  menuBtn.onmouseenter = () => { menuBtn.style.background = "var(--border)"; };
-  menuBtn.onmouseleave = () => { menuBtn.style.background = "transparent"; };
-  menuBtn.onclick = (e) => {
-    e.stopPropagation();
-    headerMenu.style.display = headerMenu.style.display === "none" ? "block" : "none";
-  };
-
-  menuWrap.appendChild(menuBtn);
-  menuWrap.appendChild(headerMenu);
+  container.appendChild(headerMenu);
   container.addEventListener("click", () => { headerMenu.style.display = "none"; });
 
-  controls.append(searchInput, sortSelect, menuWrap);
+  controls.append(searchInput);
   container.appendChild(controls);
 
   const listWrap = document.createElement("div");
@@ -2337,7 +2289,7 @@ function mountSessionsSidebarViewInto(container) {
     listEl: list,
     hostElement: container,
     getQuery: () => (searchInput.value || "").trim().toLowerCase(),
-    getSort: () => sortSelect.value || "updated",
+    getSort: () => "updated",
     onSwitchSession: (id) => window.zion.commands.executeCommand("zion.sessions.switch", id),
     onAfterChange: () => {
       refreshSessionsSidebarViewIfOpen();
@@ -2349,7 +2301,6 @@ function mountSessionsSidebarViewInto(container) {
   };
 
   searchInput.addEventListener("input", () => renderAll());
-  sortSelect.addEventListener("change", () => renderAll());
   renderAll();
   try { listWrap.scrollTop = prevScroll; } catch {}
 
@@ -2377,6 +2328,9 @@ function mountSessionsSidebarViewInto(container) {
   return {
     render: renderAll,
     anchorToCurrent,
+    toggleMenu: () => {
+      headerMenu.style.display = headerMenu.style.display === "none" ? "block" : "none";
+    },
     dispose: () => {
       try { container.innerHTML = ""; } catch {}
     }
@@ -2646,28 +2600,7 @@ function mountSessionsSidebar() {
     searchInput.style.padding = "6px 8px";
     searchInput.style.fontSize = "12px";
 
-    const sortSelect = document.createElement("select");
-    sortSelect.setAttribute("aria-label", "Sort sessions");
-    sortSelect.title = "Sort";
-    sortSelect.style.background = "var(--panel)";
-    sortSelect.style.color = "var(--fg)";
-    sortSelect.style.border = "1px solid var(--border)";
-    sortSelect.style.borderRadius = "4px";
-    sortSelect.style.padding = "2px 6px";
-    sortSelect.style.fontSize = "11px";
-    sortSelect.style.minWidth = "48px";
-    sortSelect.style.width = "auto";
-    const optUpdated = document.createElement("option");
-    optUpdated.value = "updated";
-    optUpdated.textContent = "🕒";
-    optUpdated.title = "Sort by updated (newest first)";
-    const optTitle = document.createElement("option");
-    optTitle.value = "title";
-    optTitle.textContent = "Aa";
-    optTitle.title = "Sort by title (A→Z)";
-    sortSelect.append(optUpdated, optTitle);
-
-    controls.append(searchInput, sortSelect);
+    controls.append(searchInput);
     bar.appendChild(controls);
 
     // List container (scroll)
@@ -2684,7 +2617,7 @@ function mountSessionsSidebar() {
       listEl: list,
       hostElement: bar,
       getQuery: () => (searchInput.value || "").trim().toLowerCase(),
-      getSort: () => sortSelect.value || "updated",
+      getSort: () => "updated",
       onSwitchSession: (id) => {
         window.zion.commands.executeCommand("zion.sessions.switch", id);
       },
@@ -2694,7 +2627,6 @@ function mountSessionsSidebar() {
     });
 
     searchInput.addEventListener("input", () => render());
-    sortSelect.addEventListener("change", () => render());
     render();
     // restore previous scrollTop after initial render
     try { listWrap.scrollTop = prevScroll; } catch {}
@@ -3213,6 +3145,17 @@ export async function activate(ctx) {
           onClick: () => {
             try {
               __sessionsSidebarView?.anchorToCurrent?.();
+            } catch {}
+          }
+        },
+        {
+          id: "sessions.actions",
+          title: "Actions",
+          ariaLabel: "Actions",
+          icon: "⋮",
+          onClick: () => {
+            try {
+              __sessionsSidebarView?.toggleMenu?.();
             } catch {}
           }
         }
