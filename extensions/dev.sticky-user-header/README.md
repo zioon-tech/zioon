@@ -12,7 +12,15 @@
 
 扩展会自动生效。当你滚动编辑器时，顶部的 sticky header 会自动更新显示对应的 user 问题。
 
-如果需要关闭此功能，可以在扩展管理中禁用 `dev.sticky-user-header` 扩展。
+### 命令
+
+当前 `zion-next` 可能还没有命令面板（Command Palette）。你仍然可以通过以下方式使用开关：
+
+- 直接点击 Sticky Header 右侧的 `×` 关闭按钮
+- 关闭后，编辑器右上角会出现一个半透明按钮，点击即可恢复开启
+- （可选）在浏览器控制台执行：`window.zion.commands.executeCommand('stickyHeader.toggle')`
+
+如果需要彻底关闭此功能，也可以在扩展管理中禁用 `dev.sticky-user-header` 扩展。
 
 ## 实现原理
 

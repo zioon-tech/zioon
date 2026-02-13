@@ -5,5 +5,23 @@
   "version": "1.0.0",
   "author": "Zion Team",
   "main": "main.js",
-  "enabled": true
+  "enabled": true,
+  "zion": {
+    "id": "dev.sticky-user-header",
+    "name": "Sticky User Header",
+    "version": "1.0.0",
+    "main": "main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "stickyHeader.toggle",
+          "title": "Toggle Sticky Header"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished",
+      "onCommand:stickyHeader.toggle"
+    ]
+  }
 }

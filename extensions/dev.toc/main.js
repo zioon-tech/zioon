@@ -90,6 +90,52 @@ export async function activate(ctx) {
 
   // Parse role blocks (fallback when roles.index is unavailable)
   const BASE_ROLE_PREFIXES = ["user", "assistant", "system"];
+
+  const getLeadingPreviewFromText = (text) => {
+    try {
+      const lines = String(text || "").split(/\r?\n/);
+      for (const l of lines) {
+        const t = String(l || "").trim();
+        if (t) return t.slice(0, 160);
+      }
+      return "";
+    } catch {
+      return "";
+    }
+  };
+
+  const ensureLeadingUserBlock = (blocks, docText, maybeView) => {
+    try {
+      if (!Array.isArray(blocks) || blocks.length === 0) {
+        const preview = getLeadingPreviewFromText(docText);
+        if (!preview) return blocks;
+        return [{ role: "user", startLine: 0, endLine: 0, preview }];
+      }
+
+      const first = blocks[0] || {};
+      let firstStartLine = typeof first.startLine === "number" ? first.startLine : null;
+      if (firstStartLine == null && maybeView && typeof first.from === "number") {
+        try { firstStartLine = maybeView.state.doc.lineAt(first.from).number - 1; } catch {}
+      }
+      if (typeof firstStartLine !== "number" || firstStartLine <= 0) return blocks;
+
+      const preview = getLeadingPreviewFromText(docText);
+      const lead = {
+        role: "user",
+        startLine: 0,
+        endLine: Math.max(0, firstStartLine - 1),
+        preview
+      };
+      if (maybeView && typeof first.from === "number") {
+        lead.from = 0;
+        lead.to = Math.max(0, first.from - 1);
+      }
+      return [lead, ...blocks];
+    } catch {
+      return blocks;
+    }
+  };
+
   const parseRoleBlocksFromText = (text, prefixes = BASE_ROLE_PREFIXES) => {
     const lines = text.split(/\r?\n/);
     const blocks = [];
@@ -100,6 +146,18 @@ export async function activate(ctx) {
       }
       return null;
     };
+    try {
+      const first = lines[0] ?? "";
+      if (!isRoleLine(first)) {
+        const tt = first.trim();
+        current = {
+          role: "user",
+          startLine: 0,
+          endLine: 0,
+          preview: tt ? tt.slice(0, 160) : ""
+        };
+      }
+    } catch {}
     for (let i = 0; i < lines.length; i++) {
       const t = lines[i];
       const roleHere = isRoleLine(t);
@@ -185,8 +243,10 @@ export async function activate(ctx) {
       .replace(/[^a-z0-9\u4e00-\u9fa5\-\_]/g, ""); // keep CJK basic, ascii, -, _
   };
 
-  // 根据当前光标位置计算应高亮的目录项（标题与块）
-  const computeActiveTOCAtCursor = (viewParam) => {
+  const ACTIVE_TOC_MODE_KEY = 'toc.activeMode';
+
+  // 根据给定行/位置计算应高亮的目录项（标题与块）
+  const computeActiveTOCAtCursor = (viewParam, opts = {}) => {
     try {
       const ed = window?.zion?.window?.activeEditor;
       if (!ed) return;
@@ -198,8 +258,12 @@ export async function activate(ctx) {
       let pos = 0;
       if (viewParam && viewParam.state) {
         const vstate = viewParam.state;
-        pos = vstate.selection.main.head;
-        currentLine = vstate.doc.lineAt(pos).number - 1;
+        pos = typeof opts.pos === "number" ? opts.pos : vstate.selection.main.head;
+        if (typeof opts.line === "number") {
+          currentLine = opts.line;
+        } else {
+          currentLine = vstate.doc.lineAt(pos).number - 1;
+        }
       } else {
         try {
           const cur = ed.getCursor?.();
@@ -214,9 +278,23 @@ export async function activate(ctx) {
         const idx = window?.zion?.state?.get?.('roles.index');
         let curBlock = null;
 
+        const idxUsable = (() => {
+          try {
+            if (!viewParam || !Array.isArray(idx?.blocks)) return false;
+            const docLen = viewParam.state.doc.length;
+            for (const b of idx.blocks) {
+              if (typeof b?.to === 'number' && b.to > docLen) return false;
+            }
+            return true;
+          } catch {
+            return false;
+          }
+        })();
+
         // 优先使用字符范围定位块
-        if (viewParam && Array.isArray(idx?.blocks)) {
-          for (const b of idx.blocks) {
+        if (idxUsable && viewParam && Array.isArray(idx?.blocks)) {
+          const blocks = ensureLeadingUserBlock(idx.blocks, docText, viewParam);
+          for (const b of blocks) {
             if (typeof b.from === "number" && typeof b.to === "number") {
               if (pos >= b.from && pos <= b.to) {
                 curBlock = b;
@@ -228,9 +306,10 @@ export async function activate(ctx) {
 
         // 退化为行范围定位块
         if (!curBlock) {
-          const blocks = Array.isArray(idx?.blocks) && typeof idx.blocks[0]?.startLine === "number"
+          const rawBlocks = (idxUsable && Array.isArray(idx?.blocks) && typeof idx.blocks[0]?.startLine === "number")
             ? idx.blocks
             : parseRoleBlocksFromText(docText);
+          const blocks = ensureLeadingUserBlock(rawBlocks, docText, viewParam);
           for (const b of blocks) {
             const s = b.startLine ?? 0;
             const e = b.endLine ?? s;
@@ -293,7 +372,66 @@ export async function activate(ctx) {
         const prevB = window?.zion?.state?.get?.('toc.activeBlockId');
         if (prevB !== activeBlockId) window.zion.state.set('toc.activeBlockId', activeBlockId || null);
       } catch {}
+
+      try {
+        const prevM = window?.zion?.state?.get?.(ACTIVE_TOC_MODE_KEY);
+        if (prevM !== opts?.mode) window.zion.state.set(ACTIVE_TOC_MODE_KEY, opts?.mode || null);
+      } catch {}
     } catch {}
+  };
+
+  const activeMeasurePending = new WeakMap();
+
+  const scheduleComputeActiveTOCByVisibility = (viewParam) => {
+    try {
+      if (!viewParam || !viewParam.state) return;
+      if (activeMeasurePending.get(viewParam)) return;
+      activeMeasurePending.set(viewParam, true);
+
+      if (typeof viewParam.requestMeasure !== 'function') {
+        activeMeasurePending.set(viewParam, false);
+        computeActiveTOCAtCursor(viewParam, { mode: 'cursor' });
+        return;
+      }
+
+      viewParam.requestMeasure({
+        read(view) {
+          try {
+            const scroller = view.scrollDOM;
+            const doc = view.state.doc;
+            const cursorPos = view.state.selection.main.head;
+            const cursorLine = doc.lineAt(cursorPos).number - 1;
+
+            const topY = scroller.scrollTop;
+            const bottomY = scroller.scrollTop + scroller.clientHeight;
+            const topBlock = view.lineBlockAtHeight(topY);
+            const bottomBlock = view.lineBlockAtHeight(bottomY);
+            const topLine = doc.lineAt(topBlock.from).number - 1;
+            const bottomLine = doc.lineAt(bottomBlock.from).number - 1;
+
+            const inView = cursorLine >= topLine && cursorLine <= bottomLine;
+            const usedLine = inView ? cursorLine : topLine;
+            const usedPos = inView ? cursorPos : doc.line(usedLine + 1).from;
+            return { usedLine, usedPos, mode: inView ? 'cursor' : 'viewport' };
+          } catch {
+            return { usedLine: null, usedPos: null, mode: 'cursor' };
+          }
+        },
+        write(data, _view) {
+          try {
+            const d = data || {};
+            if (typeof d.usedLine === 'number' && typeof d.usedPos === 'number') {
+              computeActiveTOCAtCursor(viewParam, { line: d.usedLine, pos: d.usedPos, mode: d.mode });
+            } else {
+              computeActiveTOCAtCursor(viewParam, { mode: 'cursor' });
+            }
+          } catch {}
+          activeMeasurePending.set(viewParam, false);
+        }
+      });
+    } catch {
+      try { activeMeasurePending.set(viewParam, false); } catch {}
+    }
   };
 
   // Scroll helper: set cursor and scroll so the target line appears near the top of the viewport.
@@ -711,7 +849,8 @@ export async function activate(ctx) {
       } else {
         // group by role blocks
         const idx = window?.zion?.state?.get?.('roles.index');
-        const blocks = Array.isArray(idx?.blocks) ? idx.blocks : parseRoleBlocksFromText(ed.getValue());
+        const rawBlocks = Array.isArray(idx?.blocks) ? idx.blocks : parseRoleBlocksFromText(ed.getValue());
+        const blocks = ensureLeadingUserBlock(rawBlocks, ed.getValue(), maybeView);
         if (!blocks || blocks.length === 0) {
           // fallback to flat headings
           const headings = maybeView ? parseHeadingsFromView(maybeView) : parseHeadingsFromText(ed.getValue());
@@ -912,6 +1051,38 @@ export async function activate(ctx) {
       }
 
       syncToggleAllBtn();
+
+      try {
+        const activeHeadingId = window?.zion?.state?.get?.('toc.activeHeadingId');
+        const activeBlockId = window?.zion?.state?.get?.('toc.activeBlockId');
+        const activeId = activeHeadingId || activeBlockId;
+        if (activeId) {
+          requestAnimationFrame(() => {
+            try {
+              const id = String(activeId).replace(/"/g, '\\"');
+              const el = list.querySelector(`[data-toc-id="${id}"]`);
+              if (!el) return;
+
+              const listRect = list.getBoundingClientRect();
+              const elRect = el.getBoundingClientRect();
+              const topSafe = listRect.top + listRect.height * 0.25;
+              const bottomSafe = listRect.bottom - listRect.height * 0.25;
+              const isOutOfSafeZone = elRect.top < topSafe || elRect.bottom > bottomSafe;
+              if (!isOutOfSafeZone) return;
+
+              const elTop = (elRect.top - listRect.top) + list.scrollTop;
+              const targetTop = elTop - list.clientHeight * 0.35;
+              const maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
+              const nextTop = Math.max(0, Math.min(maxTop, targetTop));
+              try {
+                list.scrollTo({ top: nextTop, left: 0, behavior: 'auto' });
+              } catch {
+                list.scrollTop = nextTop;
+              }
+            } catch {}
+          });
+        }
+      } catch {}
     } catch {}
   };
 
@@ -943,8 +1114,11 @@ export async function activate(ctx) {
     // Apply centered layout with panel snug to the editor content
     applySideLayout();
 
-    // Sync active heading/block based on current cursor, then build list
-    try { computeActiveTOCAtCursor(maybeView); } catch {}
+    // Sync active heading/block based on visible content (cursor-in-view prefers cursor)
+    try {
+      if (maybeView) scheduleComputeActiveTOCByVisibility(maybeView);
+      else computeActiveTOCAtCursor(null, { mode: 'cursor' });
+    } catch {}
 
     // Build list
     updateTOCList();
@@ -1135,7 +1309,8 @@ export async function activate(ctx) {
 
     // Group mode: build by role blocks
     const idx = window?.zion?.state?.get?.('roles.index');
-    const blocks = Array.isArray(idx?.blocks) ? idx.blocks : parseRoleBlocksFromText(ed.getValue());
+    const rawBlocks = Array.isArray(idx?.blocks) ? idx.blocks : parseRoleBlocksFromText(ed.getValue());
+    const blocks = ensureLeadingUserBlock(rawBlocks, ed.getValue(), maybeView);
     if (!blocks || blocks.length === 0) {
       // fallback to flat if no blocks found
       return buildFlat();
@@ -1545,15 +1720,31 @@ export async function activate(ctx) {
         }
       } catch {}
 
-      // Sync TOC with document updates
+      // Sync TOC active item with viewport/cursor
       editor.addVisualExtension(ViewPlugin.fromClass(class {
-        update(u) {
+        constructor(view) {
+          this.view = view;
+          this.scrollHandler = () => {
+            try { scheduleComputeActiveTOCByVisibility(this.view); } catch {}
+          };
           try {
-            computeActiveTOCAtCursor(u?.view);
+            view.scrollDOM?.addEventListener?.('scroll', this.scrollHandler, { passive: true });
+          } catch {}
+          try { scheduleComputeActiveTOCByVisibility(view); } catch {}
+        }
+        update(u) {
+          this.view = u.view;
+          try {
+            if (u.docChanged || u.viewportChanged || u.selectionSet) {
+              scheduleComputeActiveTOCByVisibility(u.view);
+            }
           } catch {}
           if (sidePanelOpen && tocUI.panel && (u.docChanged || u.viewportChanged || u.selectionSet)) {
             debouncedUpdate();
           }
+        }
+        destroy() {
+          try { this.view?.scrollDOM?.removeEventListener?.('scroll', this.scrollHandler); } catch {}
         }
       }));
 
