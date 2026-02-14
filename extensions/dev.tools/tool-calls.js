@@ -1070,68 +1070,116 @@ export function installToolCallCards() {
         deletedSet = new Set(del);
       } catch {}
 
-      // 先尝试批量恢复所有“范围合法”的条目；对非法范围条目采用逐条插入回退方案
-      const docLen = this.view.state.doc.length;
+      // 扫描文档寻找所有“调用 xxx”锚点，用于位置校准
+      const doc = this.view.state.doc;
+      const docLen = doc.length;
+      const docString = doc.toString();
+      const anchors = [];
+      const regex = /调用\s+([^\n]+)/g;
+      let match;
+      while ((match = regex.exec(docString)) !== null) {
+        if (match[0].length > 300) continue; // 忽略过长的异常行
+        anchors.push({
+          from: match.index,
+          to: match.index + match[0].length,
+          text: match[0],
+          name: match[1].trim(),
+          occupied: false
+        });
+      }
+
       const batchedEffects = [];
       const batchedToggles = [];
+      const itemsToProcess = list.filter(it => !deletedSet.has(it?.id));
+      const processedIds = new Set();
 
-      for (const it of list) {
-        if (deletedSet.has(it?.id)) continue;
-
-        const name = it?.name || "tool";
-        const hasRange = typeof it?.from === "number" && typeof it?.to === "number";
-        const validRange = hasRange && it.from >= 0 && it.from < it.to && it.to <= docLen;
-
-        if (validRange) {
-          batchedEffects.push(addInline.of({ from: it.from, to: it.to, id: it.id, name, args: it.args }));
-          if (it?.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
-          if (it.expanded) batchedToggles.push(it.id);
-        } else {
-          // 回退：在当前 assistant 区块末尾插入“调用 name”并重建装饰
-          const docNow = this.view.state.doc;
-          const pos = findAssistantBlockEnd(this.view);
-          const prevChar = pos > 0 ? docNow.sliceString(pos - 1, pos) : "";
-          const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-          const text = `${prefix}调用 ${name}\n`;
-          const start = pos + prefix.length;
-          const end = start + (`调用 ${name}`).length;
-
-          this.view.dispatch({
-            changes: { from: pos, insert: text },
-            effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args })]
-          });
-          try {
-            const sid = window.zion?.state?.get("sessions.currentId");
-            const prev = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
-            const list2 = Array.isArray(prev.tools)
-              ? prev.tools.map(x => x?.id === it.id ? { ...x, from: start, to: end } : x)
-              : [{ id: it.id, name, args: it?.args, result: it?.result, ok: it?.ok, expanded: !!it?.expanded, from: start, to: end }];
-            if (sid) window.zion?.state?.set(`sessions.annotations.${sid}`, { ...prev, tools: list2 });
-          } catch {}
-          if (it?.result != null) {
-            this.view.dispatch({ effects: [updateResult.of({ id: it.id, result: it.result, ok: it.ok })] });
+      // Phase 1: 精确位置匹配 (优先)
+      for (const it of itemsToProcess) {
+        const expected = `调用 ${it.name}`;
+        if (typeof it.from === "number" && typeof it.to === "number" && it.from >= 0 && it.to <= docLen && it.from < it.to) {
+          const text = doc.sliceString(it.from, it.to);
+          if (text === expected) {
+            // 标记锚点被占用
+            const anchor = anchors.find(a => a.from === it.from && a.to === it.to && !a.occupied);
+            if (anchor) anchor.occupied = true;
+            
+            batchedEffects.push(addInline.of({ from: it.from, to: it.to, id: it.id, name: it.name, args: it.args }));
+            if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
+            if (it.expanded) batchedToggles.push(it.id);
+            processedIds.add(it.id);
           }
-          if (it.expanded) {
-            this.view.dispatch({ effects: [toggleInline.of({ id: it.id })] });
-          }
-          try {
-            const fieldVal = this.view.state.field(toolInlineField);
-            const has = fieldVal?.items?.has?.(it.id);
-            if (!has) {
-              setTimeout(() => {
-                try {
-                  this.view.dispatch({ effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args })] });
-                } catch {}
-              }, 30);
-            }
-          } catch {}
         }
       }
 
+      // Phase 2: 模糊/最近位置匹配 (应对文本偏移)
+      for (const it of itemsToProcess) {
+        if (processedIds.has(it.id)) continue;
+
+        let bestAnchor = null;
+        let minDist = Infinity;
+        // 寻找同名且未占用的最近锚点
+        for (const anchor of anchors) {
+          if (anchor.occupied) continue;
+          if (anchor.name !== it.name) continue;
+          const dist = Math.abs(anchor.from - (it.from || 0));
+          if (dist < minDist) {
+            minDist = dist;
+            bestAnchor = anchor;
+          }
+        }
+
+        if (bestAnchor) {
+          bestAnchor.occupied = true;
+          // 使用新发现的位置
+          batchedEffects.push(addInline.of({ from: bestAnchor.from, to: bestAnchor.to, id: it.id, name: it.name, args: it.args }));
+          if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
+          if (it.expanded) batchedToggles.push(it.id);
+          processedIds.add(it.id);
+          
+          // 更新 item 位置以便 snapshot
+          it.from = bestAnchor.from;
+          it.to = bestAnchor.to;
+        }
+      }
+
+      // 批量应用 Phase 1 & 2 的效果
       if (batchedEffects.length) this.view.dispatch({ effects: batchedEffects });
       if (batchedToggles.length) {
         const eff2 = batchedToggles.map(id => toggleInline.of({ id }));
         this.view.dispatch({ effects: eff2 });
+      }
+
+      // Phase 3: 兜底 (创建新锚点)
+      for (const it of itemsToProcess) {
+        if (processedIds.has(it.id)) continue;
+
+        const name = it.name || "tool";
+        // 重新获取 doc，因为前面的 dispatch 可能没改变 doc (effects only)，但在 Phase 3 循环中我们会修改 doc
+        const docNow = this.view.state.doc;
+        const pos = findAssistantBlockEnd(this.view);
+        const prevChar = pos > 0 ? docNow.sliceString(pos - 1, pos) : "";
+        const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
+        const text = `${prefix}调用 ${name}\n`;
+        const start = pos + prefix.length;
+        const end = start + (`调用 ${name}`).length;
+
+        this.view.dispatch({
+          changes: { from: pos, insert: text },
+          effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args })]
+        });
+        
+        if (it.result != null) {
+          this.view.dispatch({ effects: [updateResult.of({ id: it.id, result: it.result, ok: it.ok })] });
+        }
+        if (it.expanded) {
+          this.view.dispatch({ effects: [toggleInline.of({ id: it.id })] });
+        }
+        
+        // 更新 item 位置
+        it.from = start;
+        it.to = end;
+        
+        processedIds.add(it.id);
       }
 
       this.snapshot();

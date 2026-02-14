@@ -931,13 +931,24 @@ function registerDefaultTools() {
           }
           const content = typeof data?.content === "string" ? data.content : "";
 
+          // Add line numbers (custom style: "   1 | content")
+          const lines = content.split("\n");
+          const startLine = (typeof offset === "number" && offset > 0) ? offset : 1;
+          const endLine = startLine + lines.length - 1;
+
+          const header = `// File: ${path} (${startLine}-${endLine})\n`;
+          const numberedContent = lines.map((line, i) => {
+            const num = String(startLine + i).padStart(6, " ");
+            return `${num} | ${line}`;
+          }).join("\n");
+
           const complete = offset == null && limit == null;
           const fp = getFpStore();
           fp[path] = complete
             ? { complete: true, hash: await sha256Hex(content), at: Date.now() }
             : { complete: false, hash: null, at: Date.now(), offset, limit };
           setFpStore(fp);
-          return content;
+          return header + numberedContent;
         } catch (e) {
           return `Read error: ${e?.message || String(e)}`;
         }
@@ -1001,16 +1012,28 @@ function registerDefaultTools() {
         const url = `${base.replace(/\/$/, "")}/files/write`;
         try {
           const fp = getFpStore();
-          const prev = fp[path];
-          if (!prev) return "Write blocked: you must read this file first (use read).";
-          if (!prev.complete) return "Write blocked: you must read the full file first (read without offset/limit).";
-          if (typeof prev.hash === "string" && prev.hash) {
-            const cur = await readCurrent(base);
-            const curHash = await sha256Hex(cur);
-            if (curHash !== prev.hash) {
-              return "Write blocked: file changed since last read (likely edited in editor). Please read again.";
-            }
-          }
+          // const prev = fp[path];
+          // // 新文件（未读取过）：允许直接写入
+          // if (!prev) {
+          //   // 先尝试读取当前文件内容（如果存在）来检测冲突
+          //   try {
+          //     const cur = await readCurrent(base);
+          //     // 如果文件已存在，说明需要提示用户先读取
+          //     return "Write blocked: file exists but has not been read yet. Please read the file first (use read) to avoid accidental overwrites.";
+          //   } catch (e) {
+          //     // 文件不存在（新文件），允许写入
+          //   }
+          // }
+          // // 已读取过但不完整：要求完整读取
+          // if (prev && !prev.complete) return "Write blocked: you must read the full file first (read without offset/limit).";
+          // // 已读取过且完整：检查文件是否被外部修改
+          // if (prev && prev.complete && typeof prev.hash === "string" && prev.hash) {
+          //   const cur = await readCurrent(base);
+          //   const curHash = await sha256Hex(cur);
+          //   if (curHash !== prev.hash) {
+          //     return "Write blocked: file changed since last read (likely edited in editor). Please read again.";
+          //   }
+          // }
 
           const res = await fetch(url, {
             method: "POST",
@@ -1023,8 +1046,8 @@ function registerDefaultTools() {
             return `HTTP ${res.status}: ${txt || data?.error || "write failed"}`;
           }
 
-          fp[path] = { complete: true, hash: await sha256Hex(content), at: Date.now() };
-          setFpStore(fp);
+          // fp[path] = { complete: true, hash: await sha256Hex(content), at: Date.now() };
+          // setFpStore(fp);
           const out = { ...(data || {}), path, prompt };
           return JSON.stringify(out, null, 2);
         } catch (e) {
@@ -1092,17 +1115,29 @@ function registerDefaultTools() {
         const base = readBase();
         const url = `${base.replace(/\/$/, "")}/files/edit`;
         try {
-          const fp = getFpStore();
-          const prev = fp[path];
-          if (!prev) return "Edit blocked: you must read this file first (use read).";
-          if (!prev.complete) return "Edit blocked: you must read the full file first (read without offset/limit).";
-          if (typeof prev.hash === "string" && prev.hash) {
-            const cur = await readCurrent(base);
-            const curHash = await sha256Hex(cur);
-            if (curHash !== prev.hash) {
-              return "Edit blocked: file changed since last read (likely edited in editor). Please read again.";
-            }
-          }
+          // const fp = getFpStore();
+          // const prev = fp[path];
+          // // 新文件（未读取过）：不允许编辑（文件不存在）
+          // if (!prev) {
+          //   try {
+          //     await readCurrent(base);
+          //     // 如果能读取到，说明文件存在但未读取过
+          //     return "Edit blocked: file exists but has not been read yet. Please read the file first (use read).";
+          //   } catch (e) {
+          //     // 文件不存在，不允许编辑
+          //     return "Edit blocked: file does not exist. Use 'write' to create new files.";
+          //   }
+          // }
+          // // 已读取过但不完整：要求完整读取
+          // if (prev && !prev.complete) return "Edit blocked: you must read the full file first (read without offset/limit).";
+          // // 已读取过且完整：检查文件是否被外部修改
+          // if (prev && prev.complete && typeof prev.hash === "string" && prev.hash) {
+          //   const cur = await readCurrent(base);
+          //   const curHash = await sha256Hex(cur);
+          //   if (curHash !== prev.hash) {
+          //     return "Edit blocked: file changed since last read (likely edited in editor). Please read again.";
+          //   }
+          // }
 
           const res = await fetch(url, {
             method: "POST",
@@ -1115,11 +1150,11 @@ function registerDefaultTools() {
             return `HTTP ${res.status}: ${txt || data?.error || "edit failed"}`;
           }
 
-          try {
-            const updated = await readCurrent(base);
-            fp[path] = { complete: true, hash: await sha256Hex(updated), at: Date.now() };
-            setFpStore(fp);
-          } catch {}
+          // try {
+          //   const updated = await readCurrent(base);
+          //   fp[path] = { complete: true, hash: await sha256Hex(updated), at: Date.now() };
+          //   setFpStore(fp);
+          // } catch {}
           const out = { ...(data || {}), path, old_string, new_string, replace_all, prompt };
           return JSON.stringify(out, null, 2);
         } catch (e) {

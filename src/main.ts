@@ -142,6 +142,108 @@ function mountCurrentSessionPath(pathEl: HTMLElement) {
   update();
 }
 
+function mountEditorHeaderNewSessionButton(pathEl: HTMLElement) {
+  try {
+    const headerEl = pathEl.parentElement;
+    if (!headerEl) return;
+
+    let btn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-new-session-button='1']");
+    const isNew = !btn;
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+    }
+
+    // 使用与 session-manager 插件一致的按钮样式
+    btn.className = "zion-editor-header-action is-icon zion-editor-new-session-button";
+    btn.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    btn.title = "新增会话（同级）";
+    btn.setAttribute("aria-label", "新增会话（同级）");
+    btn.setAttribute("data-zion-editor-new-session-button", "1");
+    
+    // 应用与 session-manager 一致的按钮样式
+    btn.style.background = "transparent";
+    btn.style.color = "var(--fg)";
+    btn.style.border = "none";
+    btn.style.borderRadius = "6px";
+    btn.style.padding = "2px";
+    btn.style.cursor = "pointer";
+    btn.style.fontSize = "14px";
+    btn.style.display = "flex";
+    btn.style.alignItems = "center";
+    btn.style.justifyContent = "center";
+    btn.style.transition = "background 120ms ease";
+    btn.style.marginLeft = "2px";
+    
+    // 鼠标悬停效果
+    btn.onmouseenter = () => { btn.style.background = "var(--border)"; };
+    btn.onmouseleave = () => { btn.style.background = "transparent"; };
+    
+    btn.onclick = (e) => {
+      try {
+        e.stopPropagation();
+      } catch {}
+      try {
+        // 获取当前会话的父级ID
+        const curId = window.zion.state.get<string>("sessions.currentId");
+        let parentId: string | undefined = undefined;
+        
+        if (curId) {
+          try {
+            // 从树结构中找到当前会话的父级
+            const tree = window.zion.state.get<any>("sessions.treeMem");
+            if (tree && tree.type === "folder") {
+              const findNodeAndParent = (root: any, id: string) => {
+                let found: any = null;
+                let parent: any = null;
+                const dfs = (node: any, p: any) => {
+                  if (!node) return;
+                  if (node.id === id) {
+                    found = node;
+                    parent = p;
+                    return;
+                  }
+                  if (node.type === "folder" && Array.isArray(node.children)) {
+                    for (const ch of node.children) {
+                      dfs(ch, node);
+                      if (found) return;
+                    }
+                  }
+                };
+                dfs(root, null);
+                return { node: found, parent };
+              };
+              
+              const { parent } = findNodeAndParent(tree, curId);
+              if (parent && parent.type === "folder") {
+                parentId = parent.id;
+              }
+            }
+          } catch (err) {
+            console.error("[new session button] error finding parent:", err);
+          }
+        }
+        
+        // 执行创建新会话命令，指定父级为当前会话的父级
+        window.zion.commands.executeCommand("zion.sessions.new", { parentId });
+      } catch {}
+    };
+
+    if (isNew) {
+      // 找到 TOC 按钮
+      const tocBtn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-toc-button='1']");
+      if (tocBtn && tocBtn.nextSibling) {
+        // 如果 TOC 按钮存在且有下一个兄弟，在 TOC 按钮后插入
+        headerEl.insertBefore(btn, tocBtn.nextSibling);
+      } else {
+        // 否则直接在 pathEl 前插入
+        headerEl.insertBefore(btn, pathEl);
+      }
+    }
+  } catch {}
+}
+
 function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
   try {
     const headerEl = pathEl.parentElement;
@@ -154,12 +256,30 @@ function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
       btn.type = "button";
     }
 
+    // 应用与 session-manager 一致的按钮样式
     btn.className = "zion-editor-header-action is-icon zion-editor-toc-button";
     btn.innerHTML =
       '<svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M4 6h2v2H4V6zm4 0h12v2H8V6zM4 11h2v2H4v-2zm4 0h12v2H8v-2zM4 16h2v2H4v-2zm4 0h12v2H8v-2z"/></svg>';
     btn.title = "目录";
     btn.setAttribute("aria-label", "目录");
     btn.setAttribute("data-zion-editor-toc-button", "1");
+    
+    // 应用与其他按钮一致的样式
+    btn.style.background = "transparent";
+    btn.style.color = "var(--fg)";
+    btn.style.border = "none";
+    btn.style.borderRadius = "6px";
+    btn.style.padding = "2px";
+    btn.style.cursor = "pointer";
+    btn.style.display = "flex";
+    btn.style.alignItems = "center";
+    btn.style.justifyContent = "center";
+    btn.style.transition = "background 120ms ease";
+    
+    // 鼠标悬停效果
+    btn.onmouseenter = () => { btn.style.background = "var(--border)"; };
+    btn.onmouseleave = () => { btn.style.background = "transparent"; };
+    
     btn.onclick = (e) => {
       try {
         e.stopPropagation();
@@ -205,6 +325,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   attachEditor(core);
   mountCurrentSessionPath(editorHeaderPathEl);
   mountEditorHeaderTOCButton(editorHeaderPathEl);
+  mountEditorHeaderNewSessionButton(editorHeaderPathEl);
 
   try {
     initServiceBaseUrlConfig();

@@ -4,7 +4,7 @@
  */
 
 export function checkPWAStatus() {
-  console.log('🔍 PWA Status Check');
+  console.log('� PWA Status Check');
   console.log('===================');
 
   // 检查 Service Worker 支持
@@ -13,7 +13,7 @@ export function checkPWAStatus() {
 
     // 检查已注册的 Service Worker
     navigator.serviceWorker.getRegistrations().then(registrations => {
-      console.log(`📋 Found ${registrations.length} registered Service Worker(s)`);
+      console.log(`� Found ${registrations.length} registered Service Worker(s)`);
       registrations.forEach((registration, index) => {
         console.log(`\n[${index + 1}] ${registration.scope}`);
         console.log(`   - Active: ${!!registration.active}`);
@@ -50,7 +50,7 @@ export function checkPWAStatus() {
   // 检查在线状态
   console.log(`\n📡 Network status: ${navigator.onLine ? 'Online' : 'Offline'}`);
 
-  window.addEventListener('online', () => console.log('🟢 Back online'));
+  window.addEventListener('online', () => console.log('� Back online'));
   window.addEventListener('offline', () => console.log('🔴 Gone offline'));
 
   // 检查是否可以作为应用安装
