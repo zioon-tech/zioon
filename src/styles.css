@@ -288,7 +288,7 @@ html, body {
   background: rgba(59, 130, 246, 0.14);
 }
 
-.zion-activitybar-item.is-active::before {
+/* .zion-activitybar-item.is-active::before {
   content: "";
   position: absolute;
   left: 0;
@@ -297,7 +297,7 @@ html, body {
   width: 2px;
   background: var(--accent);
   border-radius: 999px;
-}
+} */
 
 .zion-sidebar {
   display: flex;

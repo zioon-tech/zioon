@@ -201,6 +201,31 @@ function setCurrentLineRole(editor, role) {
   } catch {}
 }
 
+function toggleCurrentLineUser(editor) {
+  const ed = editor || window.zion?.window?.activeEditor;
+  if (!ed || typeof ed.getValue !== 'function' || typeof ed.replaceRange !== 'function') return;
+  const cursor = ed.getCursor?.();
+  const line = cursor?.line;
+  if (typeof line !== 'number' || line < 0) return;
+
+  const doc = String(ed.getValue() || "");
+  const lines = doc.split("\n");
+  if (line >= lines.length) return;
+
+  const original = String(lines[line] ?? "");
+  const m = /^(\s*)user\s+/.exec(original);
+  if (m) {
+    const next = m[1] + original.slice(m[0].length);
+    try {
+      ed.replaceRange(next, { line, ch: 0 }, { line, ch: original.length });
+      ed.setCursor?.({ line, ch: m[1].length });
+      ed.focus?.();
+    } catch {}
+    return;
+  }
+  setCurrentLineRole(ed, 'user');
+}
+
 function insertRoleLineBelow(editor, role) {
   const ed = editor || window.zion?.window?.activeEditor;
   if (!ed || typeof ed.getValue !== 'function' || typeof ed.replaceRange !== 'function') return;
@@ -268,9 +293,10 @@ export async function activate(ctx) {
     ctx.subscriptions.push(cmdSetRole);
 
     const cmdUser = window.zion.commands.registerCommand('roles.setUser', (editor) => setCurrentLineRole(editor, 'user'));
+    const cmdToggleUser = window.zion.commands.registerCommand('roles.toggleUser', (editor) => toggleCurrentLineUser(editor));
     const cmdAssistant = window.zion.commands.registerCommand('roles.setAssistant', (editor) => setCurrentLineRole(editor, 'assistant'));
     const cmdSystem = window.zion.commands.registerCommand('roles.setSystem', (editor) => setCurrentLineRole(editor, 'system'));
-    ctx.subscriptions.push(cmdUser, cmdAssistant, cmdSystem);
+    ctx.subscriptions.push(cmdUser, cmdToggleUser, cmdAssistant, cmdSystem);
 
     const cmdInsertUser = window.zion.commands.registerCommand('roles.insertUserBelow', (editor) => insertRoleLineBelow(editor, 'user'));
     const cmdInsertAssistant = window.zion.commands.registerCommand('roles.insertAssistantBelow', (editor) => insertRoleLineBelow(editor, 'assistant'));
@@ -342,9 +368,10 @@ export async function activate(ctx) {
 
     if (window.zion?.keybindings?.register) {
       const dKBUser = window.zion.keybindings.register({ command: 'roles.setUser', key: 'Mod-Alt-u', when: 'editorFocus' });
+      const dKBUserQuick = window.zion.keybindings.register({ command: 'roles.toggleUser', key: 'Mod-u', when: 'editorFocus' });
       const dKBAssistant = window.zion.keybindings.register({ command: 'roles.setAssistant', key: 'Mod-Alt-a', when: 'editorFocus' });
       const dKBSystem = window.zion.keybindings.register({ command: 'roles.setSystem', key: 'Mod-Alt-s', when: 'editorFocus' });
-      ctx.subscriptions.push(dKBUser, dKBAssistant, dKBSystem);
+      ctx.subscriptions.push(dKBUser, dKBUserQuick, dKBAssistant, dKBSystem);
     }
 
     // 右键菜单入口

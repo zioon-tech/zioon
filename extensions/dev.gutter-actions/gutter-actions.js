@@ -114,6 +114,85 @@ function onDocMouseMove(ev) {
 function openMenu(view, clientX, clientY, line) {
   closeExistingMenu();
   const doc = view.state.doc;
+  const isUserRoleLine = /^\s*user\s+/.test(line.text || "");
+  const isRoleHeader = (t) => /^\s*(system|user|assistant|tool)\s+/.test(String(t || ""));
+  const findImplicitUserMarkerLine = () => {
+    try {
+      let firstRoleLine = null;
+      for (let i = 1; i <= doc.lines; i++) {
+        const ln = doc.line(i);
+        if (isRoleHeader(ln.text)) {
+          firstRoleLine = i;
+          break;
+        }
+      }
+      const limit = firstRoleLine != null ? firstRoleLine : (doc.lines + 1);
+      if (limit <= 1) return null;
+      for (let i = 1; i < limit; i++) {
+        const ln = doc.line(i);
+        if (String(ln.text || "").trim()) return i;
+      }
+      return 1;
+    } catch {
+      return null;
+    }
+  };
+  const implicitMarkerLine = findImplicitUserMarkerLine();
+  const isImplicitUserLine = !isUserRoleLine && implicitMarkerLine != null && line.number === implicitMarkerLine && !isRoleHeader(line.text);
+  const isUserLikeLine = isUserRoleLine || isImplicitUserLine;
+
+  const computeBatchInfo = () => {
+    if (!isUserLikeLine) return null;
+    const sid = window.zion?.state?.get?.("sessions.currentId");
+    const ann = sid ? (window.zion?.state?.get?.(`sessions.annotations.${sid}`) || {}) : {};
+    const list = Array.isArray(ann.tools) ? ann.tools : [];
+    const toolActions = ann && typeof ann.toolActions === "object" ? ann.toolActions : {};
+
+    const userStartLine = isImplicitUserLine ? 0 : (line.number - 1);
+    let range = null;
+    try {
+      const idx = window.zion?.state?.get?.("roles.index");
+      const blocks = Array.isArray(idx?.blocks) ? idx.blocks : [];
+      const userIndex = blocks.findIndex(b => b && b.role === "user" && b.startLine === userStartLine);
+      if (userIndex >= 0) {
+        let assistantIndex = -1;
+        for (let i = userIndex + 1; i < blocks.length; i++) {
+          if (blocks[i]?.role === "assistant") { assistantIndex = i; break; }
+          if (blocks[i]?.role === "user") break;
+        }
+        if (assistantIndex >= 0) range = { from: blocks[assistantIndex].from, to: blocks[assistantIndex].to };
+      }
+    } catch {}
+
+    const filesSet = new Set();
+    let total = 0;
+    let acceptCount = 0;
+    let revertCount = 0;
+
+    const matchesUser = (it) => it && it.userStartLine === userStartLine;
+    const matchesRange = (it) => range && typeof it.from === "number" && it.from >= range.from && it.from <= range.to;
+    const isTargetName = (name) => name === "edit" || name === "write" || name === "fsedit" || name === "fswrite";
+
+    const pickAction = (id, fallback) => {
+      const v = id != null ? toolActions[String(id)] : null;
+      const a = v?.action || fallback;
+      return a === "accept" || a === "revert" ? a : null;
+    };
+
+    const matchedByUser = list.filter(it => matchesUser(it) && isTargetName(String(it?.name || "")));
+    const candidates = matchedByUser.length ? matchedByUser : list.filter(it => matchesRange(it) && isTargetName(String(it?.name || "")));
+    for (const it of candidates) {
+      total += 1;
+      const path = it.args?.path;
+      if (typeof path === "string" && path.trim()) filesSet.add(path);
+      const action = pickAction(it.id, it.action);
+      if (action === "accept") acceptCount += 1;
+      if (action === "revert") revertCount += 1;
+    }
+    if (!total) return null;
+    const state = acceptCount === total ? "accepted" : (revertCount === total ? "reverted" : "mixed");
+    return { total, acceptCount, revertCount, files: filesSet.size, userStartLine, range, state };
+  };
 
   // Determine foldable range at this line
   const foldRange = (() => {
@@ -278,6 +357,30 @@ function openMenu(view, clientX, clientY, line) {
     return copyText(text);
   };
   menu.appendChild(mkItem("复制折叠块范围", copyFoldBlock, !foldRange));
+
+  const batch = computeBatchInfo();
+  if (batch) {
+    const info = `涉及 ${batch.total} 处变更，${batch.files} 个文件`;
+    const acceptLabel = `批量 Accept (${batch.acceptCount}/${batch.total})`;
+    const revertLabel = `批量 Revert (${batch.revertCount}/${batch.total})`;
+    const acceptDisabled = batch.state === "accepted";
+    const revertDisabled = batch.state === "reverted";
+    menu.appendChild(mkItem(acceptLabel, () => {
+      try {
+        window.zion?.events?.emit("toolcards/batchAccept", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to });
+      } catch {}
+      return Promise.resolve(true);
+    }, acceptDisabled));
+    menu.appendChild(mkItem(revertLabel, () => {
+      try {
+        window.zion?.events?.emit("toolcards/batchRevert", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to });
+      } catch {}
+      return Promise.resolve(true);
+    }, revertDisabled));
+    try {
+      menu.appendChild(mkItem(info, () => Promise.resolve(true), true));
+    } catch {}
+  }
 
   document.body.appendChild(menu);
 
@@ -592,11 +695,33 @@ export function gutterActions() {
       // show a dot on every line, persistent for user lines
       lineMarker: (view, line) => {
         const doc = view.state.doc;
+        const lineNo = doc.lineAt(line.from).number;
         // Check text content of the line
         const text = doc.sliceString(line.from, Math.min(line.to, line.from + 100));
         if (/^\s*user\s+/.test(text)) {
           return userDotMarker;
         }
+        try {
+          const isRoleHeader = (t) => /^\s*(system|user|assistant|tool)\s+/.test(String(t || ""));
+          let firstRoleLine = null;
+          for (let i = 1; i <= doc.lines; i++) {
+            const ln = doc.line(i);
+            if (isRoleHeader(ln.text)) {
+              firstRoleLine = i;
+              break;
+            }
+          }
+          const limit = firstRoleLine != null ? firstRoleLine : (doc.lines + 1);
+          if (limit > 1 && !isRoleHeader(text)) {
+            let markerLine = null;
+            for (let i = 1; i < limit; i++) {
+              const ln = doc.line(i);
+              if (String(ln.text || "").trim()) { markerLine = i; break; }
+            }
+            if (markerLine == null) markerLine = 1;
+            if (lineNo === markerLine) return userDotMarker;
+          }
+        } catch {}
         return dotMarker;
       },
       initialSpacer: () => {

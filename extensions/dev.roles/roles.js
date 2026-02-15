@@ -103,6 +103,8 @@ function tokenClass(role) {
   return "cm-role-token-user"; // 默认为 user
 }
 
+ 
+
 /** @param {import('@codemirror/view').EditorView} view @param {string[]} prefixes @param {string[]} highlightBlockRoles @param {RegExp|null} atRegex */
 function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
   const doc = view.state.doc;
@@ -175,6 +177,8 @@ function buildRolesIndexFromState(state, prefixes) {
     const doc = state.doc;
     const blocks = [];
     let current = null;
+    let firstRoleLine0 = null;
+    let firstRoleFrom = null;
 
     for (let pos = 1; pos <= doc.length;) {
       const line = doc.lineAt(pos);
@@ -182,6 +186,10 @@ function buildRolesIndexFromState(state, prefixes) {
       const roleHere = getRoleForLine(text, prefixes);
 
       if (roleHere) {
+        if (firstRoleLine0 == null) {
+          firstRoleLine0 = line.number - 1;
+          firstRoleFrom = line.from;
+        }
         // finish previous block
         if (current) {
           current.to = doc.lineAt(current.endPos).to;
@@ -211,6 +219,47 @@ function buildRolesIndexFromState(state, prefixes) {
       }
 
       pos = line.to + 1;
+    }
+
+    if (!blocks.length && !current) {
+      const only = doc.toString().trim();
+      if (only) {
+        blocks.push({
+          role: "user",
+          startLine: 0,
+          from: 0,
+          startPos: 0,
+          endPos: doc.length,
+          to: doc.length,
+          endLine: doc.lines - 1,
+          preview: only.slice(0, 160),
+          implicit: true
+        });
+      }
+    } else if (firstRoleLine0 != null && firstRoleLine0 > 0 && typeof firstRoleFrom === "number" && firstRoleFrom > 0) {
+      const headText = doc.sliceString(0, firstRoleFrom).trim();
+      if (headText) {
+        const preview = (() => {
+          for (let i = 1; i <= doc.lines; i++) {
+            const ln = doc.line(i);
+            if (ln.to >= firstRoleFrom) break;
+            const t = ln.text.trim();
+            if (t) return t.slice(0, 160);
+          }
+          return headText.slice(0, 160);
+        })();
+        blocks.unshift({
+          role: "user",
+          startLine: 0,
+          from: 0,
+          startPos: 0,
+          endPos: Math.max(0, firstRoleFrom - 1),
+          to: Math.max(0, firstRoleFrom - 1),
+          endLine: Math.max(0, firstRoleLine0 - 1),
+          preview,
+          implicit: true
+        });
+      }
     }
 
     if (current) {

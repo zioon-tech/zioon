@@ -315,7 +315,7 @@ export async function activate(ctx) {
       if (typeof per === "boolean") return per;
       const legacy = getStoredBool(MINIMAP_KEY_GLOBAL);
       if (typeof legacy === "boolean") return legacy;
-      return true;
+      return false;
     };
     const persistMinimapPref = (sid, enabled) => {
       try { localStorage.setItem(minimapKeyForSession(sid), enabled ? "1" : "0"); } catch {}
@@ -348,37 +348,93 @@ export async function activate(ctx) {
     });
     ctx.subscriptions.push(dm);
 
-    // status item for quick toggle + keep it synced with state bus
+    // 在编辑器头部右侧添加 minimap 按钮
     try {
-      const minDisp = window.zion.statusBar.registerItem({
-        id: "dev.editor.minimap",
-        text: `Minimap: ${minV ? "On" : "Off"}`,
-        tooltip: "Toggle Minimap",
-        onClick: () => window.zion.commands.executeCommand("dev.editor.toggleMinimap")
-      });
-      ctx.subscriptions.push(minDisp);
+      const createMinimapButton = () => {
+        // 移除已存在的按钮
+        const existingBtn = document.getElementById("dev-editor-minimap-header-btn");
+        if (existingBtn) existingBtn.remove();
+
+        // 查找编辑器头部元素
+        const editorHeader = document.querySelector(".zion-editor-header");
+        if (!editorHeader) {
+          console.warn("Editor header not found, deferring minimap button creation");
+          return null;
+        }
+
+        const btn = document.createElement("button");
+        btn.id = "dev-editor-minimap-header-btn";
+        btn.className = "zion-editor-header-action is-icon";
+        btn.type = "button";
+        btn.title = minV ? "Hide Minimap" : "Show Minimap";
+        
+        // 创建 SVG 图标（与其他按钮风格一致）
+        btn.innerHTML = minV 
+          ? '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="2" width="12" height="12" rx="1" fill="currentColor" opacity="0.3"/><rect x="4" y="5" width="8" height="6" rx="0.5" fill="currentColor"/></svg>'
+          : '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="2" width="12" height="12" rx="1" fill="currentColor" opacity="0.25"/><path d="M4.5 11.5L11.5 4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        
+        btn.onclick = () => {
+          window.zion.commands.executeCommand("dev.editor.toggleMinimap");
+        };
+        
+        // 添加到头部右侧
+        editorHeader.appendChild(btn);
+        return btn;
+      };
+      
+      let minimapButton = createMinimapButton();
+      
+      // 如果找不到编辑器头部，延迟创建
+      if (!minimapButton) {
+        const deferred = setInterval(() => {
+          const btn = createMinimapButton();
+          if (btn) {
+            minimapButton = btn;
+            clearInterval(deferred);
+          }
+        }, 500);
+        
+        ctx.subscriptions.push({ dispose() { clearInterval(deferred); } });
+      }
+      
+      // 监听状态变化并更新按钮
+      const updateButtonIcon = (enabled) => {
+        if (!minimapButton) return;
+        const iconOn = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="2" width="12" height="12" rx="1" fill="currentColor" opacity="0.3"/><rect x="4" y="5" width="8" height="6" rx="0.5" fill="currentColor"/></svg>';
+        const iconOff = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="2" width="12" height="12" rx="1" fill="currentColor" opacity="0.25"/><path d="M4.5 11.5L11.5 4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        minimapButton.innerHTML = enabled ? iconOn : iconOff;
+        minimapButton.title = enabled ? "Hide Minimap" : "Show Minimap";
+      };
+      
       const minSub = window.zion.state.onDidChange("ui.minimapEnabled", (nv) => {
         try {
           persistMinimapPref(getCurrentSessionId(), !!nv);
-          window.zion.statusBar.registerItem({
-            id: "dev.editor.minimap",
-            text: `Minimap: ${nv ? "On" : "Off"}`,
-            tooltip: "Toggle Minimap",
-            onClick: () => window.zion.commands.executeCommand("dev.editor.toggleMinimap")
-          });
+          updateButtonIcon(!!nv);
         } catch {}
       });
       ctx.subscriptions.push({ dispose() { try { minSub.dispose?.(); } catch {} } });
 
+      // 监听 session 变化
       const sessionSub = window.zion.state.onDidChange("sessions.currentId", (nv) => {
         try {
           const sid = nv ? String(nv) : "";
-          applyMinimapForSession(sid);
+          const v = applyMinimapForSession(sid);
+          updateButtonIcon(v);
         } catch {}
       });
       ctx.subscriptions.push({ dispose() { try { sessionSub.dispose?.(); } catch {} } });
+      
+      // 清理按钮
+      ctx.subscriptions.push({
+        dispose() {
+          try {
+            const btn = document.getElementById("dev-editor-minimap-header-btn");
+            if (btn) btn.remove();
+          } catch {}
+        }
+      });
     } catch (e) {
-      // ignore if status bar unavailable
+      console.error("Failed to create minimap header button:", e);
     }
   } catch (e) {
     // ignore

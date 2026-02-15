@@ -130,7 +130,11 @@ export async function activate(ctx) {
     const handlers = window.zion?.state?.get("chat.toolHandlers") || {};
     if (handlers && typeof handlers[call.name] === "function") {
       try {
-        const out = await handlers[call.name](call.args);
+        const out = await handlers[call.name](call.args, {
+          toolCallId: call.id,
+          sessionId: sid,
+          toolName: call.name
+        });
         // 再次检查中断，避免在 handler 返回后继续处理
         if (isAborted()) {
           return `Tool "${call.name}" execution aborted`;

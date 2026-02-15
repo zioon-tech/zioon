@@ -957,12 +957,14 @@ function registerDefaultTools() {
 
     // Write (local tools service, session-aware)
     if (!handlers.write) {
-      handlers.write = async (args) => {
+      handlers.write = async (args, meta) => {
         const path = String(args?.path || args?.file_path || "").trim();
         const content = String(args?.content ?? "");
         const prompt = typeof args?.prompt === "string" ? args.prompt : undefined;
         const sessionId = String(args?.session_id || "").trim();
         if (!path) return "Missing path";
+        const chatSessionId = String(meta?.sessionId || "").trim() || window.zion?.state?.get("sessions.currentId");
+        const toolCallId = String(meta?.toolCallId || args?.tool_call_id || args?.toolCallId || "").trim() || undefined;
 
         const getFpStore = () => {
           const v = window.zion?.state?.get("localTools.fileFingerprints");
@@ -996,6 +998,9 @@ function registerDefaultTools() {
             const txt = await res.text().catch(() => "");
             throw new Error(`HTTP ${res.status}: ${txt || data?.error || "read failed"}`);
           }
+          if (data && data.error) {
+            throw new Error(String(data.error));
+          }
           return typeof data?.content === "string" ? data.content : "";
         };
 
@@ -1011,6 +1016,23 @@ function registerDefaultTools() {
         const base = readBase();
         const url = `${base.replace(/\/$/, "")}/files/write`;
         try {
+          let beforeContent = null;
+          let beforeExists = null;
+          let beforeHash = null;
+          let beforeSize = null;
+          let beforeError = null;
+          try {
+            const cur = await readCurrent(base);
+            beforeContent = cur;
+            beforeExists = true;
+            beforeHash = await sha256Hex(cur);
+            beforeSize = cur.length;
+          } catch (e) {
+            beforeError = e?.message || String(e);
+            if (/no such file|not found|enoent/i.test(String(beforeError || ""))) {
+              beforeExists = false;
+            }
+          }
           const fp = getFpStore();
           // const prev = fp[path];
           // // 新文件（未读取过）：允许直接写入
@@ -1043,11 +1065,49 @@ function registerDefaultTools() {
           const data = await res.json().catch(() => null);
           if (!res.ok) {
             const txt = await res.text().catch(() => "");
+            if (chatSessionId) {
+              const prev = window.zion?.state?.get(`sessions.annotations.${chatSessionId}`) || {};
+              const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
+              const entry = {
+                toolCallId,
+                path,
+                prompt,
+                beforeContent,
+                beforeExists,
+                beforeHash,
+                beforeSize,
+                beforeError,
+                ok: false,
+                error: txt || data?.error || "write failed",
+                at: Date.now()
+              };
+              window.zion?.state?.set(`sessions.annotations.${chatSessionId}`, { ...prev, writeHistory: [...list, entry] });
+            }
             return `HTTP ${res.status}: ${txt || data?.error || "write failed"}`;
           }
 
           // fp[path] = { complete: true, hash: await sha256Hex(content), at: Date.now() };
           // setFpStore(fp);
+          if (chatSessionId) {
+            const prev = window.zion?.state?.get(`sessions.annotations.${chatSessionId}`) || {};
+            const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
+            const entry = {
+              toolCallId,
+              path,
+              prompt,
+              beforeContent,
+              beforeExists,
+              beforeHash,
+              beforeSize,
+              beforeError,
+              afterContent: content,
+              afterHash: await sha256Hex(content),
+              afterSize: content.length,
+              ok: true,
+              at: Date.now()
+            };
+            window.zion?.state?.set(`sessions.annotations.${chatSessionId}`, { ...prev, writeHistory: [...list, entry] });
+          }
           const out = { ...(data || {}), path, prompt };
           return JSON.stringify(out, null, 2);
         } catch (e) {

@@ -15,7 +15,7 @@ export async function activate(ctx) {
     const dispItem = window.zion.activityBar.registerItem({
       id: "settings.activity",
       pluginId: "dev.settings",
-      icon: "⚙️",
+      icon: "⚙",
       tooltip: "Settings",
       sideBarViewId: "settings.baseUrl",
       order: 30

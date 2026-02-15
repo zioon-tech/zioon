@@ -387,6 +387,70 @@ class ToolCallCardWidget extends WidgetType {
       actionButtons.appendChild(acceptBtn);
       header.appendChild(actionButtons);
     }
+    if (this.name === "write" && this.args) {
+      const actionButtons = document.createElement("div");
+      actionButtons.style.cssText = "display:flex;gap:6px;";
+
+      const revertBtn = document.createElement("button");
+      revertBtn.textContent = "Revert";
+      revertBtn.title = "回退写入操作";
+      Object.assign(revertBtn.style, {
+        background: "rgba(255, 100, 100, 0.1)",
+        border: "1px solid rgba(255, 100, 100, 0.3)",
+        color: "var(--fg)",
+        borderRadius: "4px",
+        padding: "4px 10px",
+        fontSize: "10px",
+        cursor: "pointer",
+        fontWeight: "500"
+      });
+      revertBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const baseId = String(this.id).replace(/:card$/, "");
+        try {
+          window.zion?.events?.emit("toolcards/writeRevert", {
+            id: baseId,
+            path: this.args.path,
+            content: this.args.content
+          });
+        } catch (err) {
+          console.error("[toolcards/writeRevert] error:", err);
+        }
+      });
+
+      const acceptBtn = document.createElement("button");
+      acceptBtn.textContent = "Accept";
+      acceptBtn.title = "接受写入操作";
+      Object.assign(acceptBtn.style, {
+        background: "rgba(100, 200, 100, 0.1)",
+        border: "1px solid rgba(100, 200, 100, 0.3)",
+        color: "var(--fg)",
+        borderRadius: "4px",
+        padding: "4px 10px",
+        fontSize: "10px",
+        cursor: "pointer",
+        fontWeight: "500"
+      });
+      acceptBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const baseId = String(this.id).replace(/:card$/, "");
+        try {
+          window.zion?.events?.emit("toolcards/writeAccept", {
+            id: baseId,
+            path: this.args.path,
+            content: this.args.content
+          });
+        } catch (err) {
+          console.error("[toolcards/writeAccept] error:", err);
+        }
+      });
+
+      actionButtons.appendChild(revertBtn);
+      actionButtons.appendChild(acceptBtn);
+      header.appendChild(actionButtons);
+    }
 
     const close = document.createElement("button");
     close.textContent = "×";
@@ -576,12 +640,12 @@ const toolInlineField = StateField.define({
         items.clear();
       }
       if (e.is(addInline)) {
-        const { from, to, id, name, args } = e.value;
+        const { from, to, id, name, args, userStartLine } = e.value;
         // replace 原始文本为 inline widget（不可编辑、可定制样式）
         const widget = new ToolInlineWidget(id, name, args, null, false);
         const repl = Decoration.replace({ widget }).range(from, to);
         deco = deco.update({ add: [repl] });
-        items.set(id, { from, to, name, args, result: null, ok: null, expanded: false });
+        items.set(id, { from, to, name, args, result: null, ok: null, expanded: false, userStartLine: typeof userStartLine === "number" ? userStartLine : null });
       }
       if (e.is(toggleInline)) {
         const id = e.value?.id;
@@ -694,6 +758,20 @@ const toolInlineField = StateField.define({
   },
   provide: f => EditorView.decorations.from(f, v => v.deco)
 });
+function findPrevRoleStartLine(doc, pos, role) {
+  try {
+    const startLine = doc.lineAt(Math.max(0, Math.min(doc.length, pos))).number;
+    for (let ln = startLine; ln >= 1; ln--) {
+      const line = doc.line(ln);
+      const text = doc.sliceString(line.from, line.to);
+      const m = text.match(/^(system|user|assistant|tool)\s+/);
+      if (!m) continue;
+      if (m[1] === role) return ln - 1;
+    }
+  } catch {}
+  if (role === "user") return 0;
+  return null;
+}
 
 function findAssistantBlockEnd(view) {
   const { state } = view;
@@ -774,6 +852,7 @@ export function installToolCallCards() {
       this.disps = [];
       this.runActive = false;
       this.anchorPos = view.state.doc.length; // 当前回答插入锚点（随着变更映射）
+      this.toolActions = new Map();
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRun));
       this.disps.push(window.zion.events.on("chat/runFinished", this.onFinish));
       this.disps.push(window.zion.events.on("chat/toolCall", this.onCall));
@@ -783,9 +862,14 @@ export function installToolCallCards() {
       this.disps.push(window.zion.events.on("toolcards/clear", this.onClear));
       this.disps.push(window.zion.events.on("toolcards/editRevert", this.onEditRevert));
       this.disps.push(window.zion.events.on("toolcards/editAccept", this.onEditAccept));
+      this.disps.push(window.zion.events.on("toolcards/writeRevert", this.onWriteRevert));
+      this.disps.push(window.zion.events.on("toolcards/writeAccept", this.onWriteAccept));
+      this.disps.push(window.zion.events.on("toolcards/batchRevert", this.onBatchRevert));
+      this.disps.push(window.zion.events.on("toolcards/batchAccept", this.onBatchAccept));
       // 清理与会话切换联动
       this.disps.push(window.zion.state.onDidChange("sessions.currentId", this.onSessionChanged));
       // 初始快照
+      this.loadToolActions();
       this.snapshot();
 
       Promise.resolve().then(() => {
@@ -838,6 +922,7 @@ export function installToolCallCards() {
         const fieldVal = this.view.state.field(toolInlineField);
         const arr = [];
         fieldVal.items.forEach((it, key) => {
+          const act = this.toolActions.get(key);
           arr.push({
             id: key,
             name: it.name,
@@ -846,11 +931,48 @@ export function installToolCallCards() {
             ok: it.ok,
             expanded: it.expanded,
             from: it.from,
-            to: it.to
+            to: it.to,
+            userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null,
+            action: act?.action || null,
+            actionAt: typeof act?.at === "number" ? act.at : null
           });
         });
         const prev = window.zion?.state?.get(`sessions.annotations.${id}`) || {};
         window.zion?.state?.set(`sessions.annotations.${id}`, { ...prev, tools: arr });
+      } catch {}
+    };
+    loadToolActions = () => {
+      try {
+        const sid = window.zion?.state?.get("sessions.currentId");
+        if (!sid) return;
+        const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+        const ta = ann && typeof ann.toolActions === "object" ? ann.toolActions : {};
+        const next = new Map();
+        Object.keys(ta || {}).forEach((k) => {
+          const v = ta[k];
+          if (!v) return;
+          const action = v.action;
+          const at = v.at;
+          if (action === "accept" || action === "revert") {
+            next.set(k, { action, at: typeof at === "number" ? at : null });
+          }
+        });
+        this.toolActions = next;
+      } catch {}
+    };
+    setToolAction = (toolCallId, action) => {
+      if (!toolCallId || (action !== "accept" && action !== "revert")) return;
+      try {
+        const sid = window.zion?.state?.get("sessions.currentId");
+        if (!sid) return;
+        const prev = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+        const taPrev = prev && typeof prev.toolActions === "object" ? prev.toolActions : {};
+        const ta = { ...(taPrev || {}) };
+        const at = Date.now();
+        ta[String(toolCallId)] = { action, at };
+        window.zion?.state?.set(`sessions.annotations.${sid}`, { ...prev, toolActions: ta });
+        this.toolActions.set(String(toolCallId), { action, at });
+        try { window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid }); } catch {}
       } catch {}
     };
     onRun = (payload) => {
@@ -898,15 +1020,20 @@ export function installToolCallCards() {
       const text = `${prefix}调用 ${name}\n`; // 末尾也换行，避免与后续回答拼在一行
       const start = pos + prefix.length;
       const end = start + (`调用 ${name}`).length;
+      const userStartLine = findPrevRoleStartLine(doc, start, "user");
 
       // 对外暴露锚点：设置到换行后的位置，便于后续回答继续新起一行
       try { window.zion?.state?.set("chat.lastToolCallPos", end + 1); } catch {}
       this.view.dispatch({
         changes: { from: pos, insert: text },
-        effects: [addInline.of({ from: start, to: end, id: tc.id, name, args: tc.args })]
+        effects: [addInline.of({ from: start, to: end, id: tc.id, name, args: tc.args, userStartLine })]
       });
       // 插入后，将锚点推进到换行之后
       this.anchorPos = end + 1;
+      try {
+        const sid2 = window.zion?.state?.get("sessions.currentId");
+        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid2 });
+      } catch {}
     };
     onRes = (payload) => {
       const cur = window.zion?.state?.get("sessions.currentId");
@@ -916,15 +1043,31 @@ export function installToolCallCards() {
       const result = payload?.result;
       const ok = payload?.ok;
       this.view.dispatch({ effects: [updateResult.of({ id, result, ok })] });
+      try {
+        const sid2 = window.zion?.state?.get("sessions.currentId");
+        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid2 });
+      } catch {}
+      try {
+        const fieldVal = this.view.state.field(toolInlineField);
+        const it = fieldVal.items.get(String(id));
+        const nm = String(it?.name || "");
+        if ((nm === "edit" || nm === "write" || nm === "fsedit" || nm === "fswrite") && it?.ok === true && !this.toolActions.get(String(id))) {
+          this.setToolAction(String(id), "accept");
+        }
+      } catch {}
     };
     onRemove = (payload) => {
       const id = payload?.id || payload;
       if (!id) return;
       this.view.dispatch({ effects: [removeTool.of({ id })] });
+      try {
+        const sid2 = window.zion?.state?.get("sessions.currentId");
+        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid2 });
+      } catch {}
     };
     onEditRevert = async (payload) => {
       // 处理 edit 工具的 Revert 操作
-      const { path, old_string, new_string, replace_all } = payload || {};
+      const { id, path, old_string, new_string, replace_all } = payload || {};
       if (!path || typeof old_string !== "string" || typeof new_string !== "string") {
         notify("Revert 参数缺失", { type: "error", duration: 3000 });
         return;
@@ -976,6 +1119,8 @@ export function installToolCallCards() {
         } else {
           notify("Revert 完成（状态未知）", { type: "info", duration: 3000 });
         }
+        const baseId = String(id || "").trim();
+        if (baseId) this.setToolAction(baseId, "revert");
       } catch (e) {
         console.error("[onEditRevert] error:", e);
         notify("Revert 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
@@ -984,7 +1129,7 @@ export function installToolCallCards() {
     onEditAccept = async (payload) => {
       // 处理 edit 工具的 Accept 操作
       // Accept 执行正向编辑：old_string -> new_string
-      const { path, old_string, new_string, replace_all } = payload || {};
+      const { id, path, old_string, new_string, replace_all } = payload || {};
       if (!path || typeof old_string !== "string" || typeof new_string !== "string") {
         notify("Accept 参数缺失", { type: "error", duration: 3000 });
         return;
@@ -1034,9 +1179,278 @@ export function installToolCallCards() {
         } else {
           notify("Accept 完成（状态未知）", { type: "info", duration: 3000 });
         }
+        const baseId = String(id || "").trim();
+        if (baseId) this.setToolAction(baseId, "accept");
       } catch (e) {
         console.error("[onEditAccept] error:", e);
         notify("Accept 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
+      }
+    };
+    onWriteRevert = async (payload) => {
+      const { id, path } = payload || {};
+      if (!path) {
+        notify("Revert 参数缺失", { type: "error", duration: 3000 });
+        return;
+      }
+      try {
+        const sid = window.zion?.state?.get("sessions.currentId");
+        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+        const list = Array.isArray(ann.writeHistory) ? ann.writeHistory : [];
+        const baseId = String(id || "");
+        const contentHint = typeof payload?.content === "string" ? payload.content : null;
+        const findById = (it) => !!(baseId && it?.toolCallId && String(it.toolCallId) === baseId);
+        const findByContent = (it) => !!(path && contentHint != null && it?.path === path && it?.afterContent === contentHint);
+        const findByPath = (it) => !!(path && it?.path === path);
+        const byId = list.slice().reverse().find(findById);
+        const byContent = list.slice().reverse().find(findByContent);
+        const byPath = list.slice().reverse().find(findByPath);
+        const item = byId || byContent || byPath;
+        if (baseId && !byId) {
+          if (!byContent) {
+            notify("Revert 失败: 未找到对应的 write 记录（可能跨会话/已被清理）", { type: "error", duration: 6000 });
+            return;
+          }
+        }
+        const sid2 = window.zion?.state?.get("terminal.activeSessionId");
+        const readBase = () => {
+          const st1 = window.zion?.state?.get("localTools.baseUrl");
+          if (typeof st1 === "string" && st1.trim()) return st1.trim();
+          try {
+            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+            if (s) return s.trim();
+          } catch {}
+          return "http://127.0.0.1:8765";
+        };
+        const base = readBase();
+        if (item?.beforeExists === false) {
+          const delUrl = `${base.replace(/\/$/, "")}/files/delete`;
+          const res = await fetch(delUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              path,
+              session_id: sid2 || undefined
+            })
+          });
+          const raw = await res.text().catch(() => "");
+          const data = (() => {
+            try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+          })();
+          if (!res.ok) {
+            console.error("[onWriteRevert] delete failed:", raw || data?.error || "delete failed");
+            notify("Revert 失败: " + (raw || data?.error || "未知错误"), { type: "error", duration: 6000 });
+            return;
+          }
+          notify("Revert 成功！", { type: "success", duration: 3000 });
+          if (id) this.setToolAction(String(id), "revert");
+          return;
+        }
+        const beforeContent = item?.beforeContent;
+        if (typeof beforeContent !== "string") {
+          notify("Revert 失败: 未找到原内容", { type: "error", duration: 4000 });
+          return;
+        }
+        const url = `${base.replace(/\/$/, "")}/files/write`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path,
+            content: beforeContent,
+            session_id: sid2 || undefined
+          })
+        });
+        const raw = await res.text().catch(() => "");
+        const data = (() => {
+          try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+        })();
+        if (!res.ok) {
+          console.error("[onWriteRevert] failed:", raw || data?.error || "write failed");
+          notify("Revert 失败: " + (raw || data?.error || "未知错误"), { type: "error", duration: 6000 });
+          return;
+        }
+        notify("Revert 成功！", { type: "success", duration: 3000 });
+        if (id) this.setToolAction(String(id), "revert");
+      } catch (e) {
+        console.error("[onWriteRevert] error:", e);
+        notify("Revert 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
+      }
+    };
+    onWriteAccept = async (payload) => {
+      const { id, path } = payload || {};
+      if (!path) {
+        notify("Accept 参数缺失", { type: "error", duration: 3000 });
+        return;
+      }
+      try {
+        const sid = window.zion?.state?.get("sessions.currentId");
+        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+        const list = Array.isArray(ann.writeHistory) ? ann.writeHistory : [];
+        const baseId = String(id || "");
+        const contentHint = typeof payload?.content === "string" ? payload.content : null;
+        const findById = (it) => !!(baseId && it?.toolCallId && String(it.toolCallId) === baseId);
+        const findByContent = (it) => !!(path && contentHint != null && it?.path === path && it?.afterContent === contentHint);
+        const findByPath = (it) => !!(path && it?.path === path);
+        const byId = list.slice().reverse().find(findById);
+        const byContent = list.slice().reverse().find(findByContent);
+        const byPath = list.slice().reverse().find(findByPath);
+        const item = byId || byContent || byPath;
+        const content = typeof payload?.content === "string" ? payload.content : item?.afterContent;
+        if (baseId && !byId && typeof payload?.content !== "string") {
+          if (!byContent) {
+            notify("Accept 失败: 未找到对应的 write 记录（可能跨会话/已被清理）", { type: "error", duration: 6000 });
+            return;
+          }
+        }
+        if (typeof content !== "string") {
+          notify("Accept 失败: 未找到写入内容", { type: "error", duration: 4000 });
+          return;
+        }
+        const sid2 = window.zion?.state?.get("terminal.activeSessionId");
+        const readBase = () => {
+          const st1 = window.zion?.state?.get("localTools.baseUrl");
+          if (typeof st1 === "string" && st1.trim()) return st1.trim();
+          try {
+            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+            if (s) return s.trim();
+          } catch {}
+          return "http://127.0.0.1:8765";
+        };
+        const base = readBase();
+        const url = `${base.replace(/\/$/, "")}/files/write`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path,
+            content,
+            session_id: sid2 || undefined
+          })
+        });
+        const raw = await res.text().catch(() => "");
+        const data = (() => {
+          try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+        })();
+        if (!res.ok) {
+          console.error("[onWriteAccept] failed:", raw || data?.error || "write failed");
+          notify("Accept 失败: " + (raw || data?.error || "未知错误"), { type: "error", duration: 6000 });
+          return;
+        }
+        notify("Accept 成功！", { type: "success", duration: 3000 });
+        if (id) this.setToolAction(String(id), "accept");
+      } catch (e) {
+        console.error("[onWriteAccept] error:", e);
+        notify("Accept 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
+      }
+    };
+    onBatchAccept = async (payload) => {
+      const userStartLine = typeof payload?.userStartLine === "number" ? payload.userStartLine : null;
+      const from = typeof payload?.from === "number" ? payload.from : 0;
+      const to = typeof payload?.to === "number" ? payload.to : this.view.state.doc.length;
+      if (userStartLine == null && to <= from) return;
+      let items = [];
+      try {
+        const fieldVal = this.view.state.field(toolInlineField);
+        fieldVal.items.forEach((it, id) => {
+          if (!it) return;
+          if (userStartLine != null) {
+            if (it.userStartLine !== userStartLine) return;
+          } else {
+            if (it.from < from || it.from > to) return;
+          }
+          const name = String(it.name || "");
+          if (name !== "edit" && name !== "write" && name !== "fsedit" && name !== "fswrite") return;
+          items.push({ id, ...it });
+        });
+      } catch {}
+      if (!items.length && userStartLine != null && to > from) {
+        try {
+          const fieldVal = this.view.state.field(toolInlineField);
+          fieldVal.items.forEach((it, id) => {
+            if (!it) return;
+            if (it.from < from || it.from > to) return;
+            const name = String(it.name || "");
+            if (name !== "edit" && name !== "write" && name !== "fsedit" && name !== "fswrite") return;
+            items.push({ id, ...it });
+          });
+        } catch {}
+      }
+      if (!items.length) {
+        notify("当前消息没有可处理的工具调用", { type: "info", duration: 3000 });
+        return;
+      }
+      items.sort((a, b) => a.from - b.from);
+      for (const it of items) {
+        if (it.name === "edit" || it.name === "fsedit") {
+          await this.onEditAccept({
+            id: it.id,
+            path: it.args?.path,
+            old_string: it.args?.old_string,
+            new_string: it.args?.new_string,
+            replace_all: it.args?.replace_all
+          });
+        } else if (it.name === "write" || it.name === "fswrite") {
+          await this.onWriteAccept({
+            id: it.id,
+            path: it.args?.path,
+            content: it.args?.content
+          });
+        }
+      }
+    };
+    onBatchRevert = async (payload) => {
+      const userStartLine = typeof payload?.userStartLine === "number" ? payload.userStartLine : null;
+      const from = typeof payload?.from === "number" ? payload.from : 0;
+      const to = typeof payload?.to === "number" ? payload.to : this.view.state.doc.length;
+      if (userStartLine == null && to <= from) return;
+      let items = [];
+      try {
+        const fieldVal = this.view.state.field(toolInlineField);
+        fieldVal.items.forEach((it, id) => {
+          if (!it) return;
+          if (userStartLine != null) {
+            if (it.userStartLine !== userStartLine) return;
+          } else {
+            if (it.from < from || it.from > to) return;
+          }
+          const name = String(it.name || "");
+          if (name !== "edit" && name !== "write" && name !== "fsedit" && name !== "fswrite") return;
+          items.push({ id, ...it });
+        });
+      } catch {}
+      if (!items.length && userStartLine != null && to > from) {
+        try {
+          const fieldVal = this.view.state.field(toolInlineField);
+          fieldVal.items.forEach((it, id) => {
+            if (!it) return;
+            if (it.from < from || it.from > to) return;
+            const name = String(it.name || "");
+            if (name !== "edit" && name !== "write" && name !== "fsedit" && name !== "fswrite") return;
+            items.push({ id, ...it });
+          });
+        } catch {}
+      }
+      if (!items.length) {
+        notify("当前消息没有可处理的工具调用", { type: "info", duration: 3000 });
+        return;
+      }
+      items.sort((a, b) => b.from - a.from);
+      for (const it of items) {
+        if (it.name === "edit" || it.name === "fsedit") {
+          await this.onEditRevert({
+            id: it.id,
+            path: it.args?.path,
+            old_string: it.args?.old_string,
+            new_string: it.args?.new_string,
+            replace_all: it.args?.replace_all
+          });
+        } else if (it.name === "write" || it.name === "fswrite") {
+          await this.onWriteRevert({
+            id: it.id,
+            path: it.args?.path,
+            content: it.args?.content
+          });
+        }
       }
     };
     onClear = () => {
@@ -1049,6 +1463,7 @@ export function installToolCallCards() {
       // 重置运行状态与插入锚点
       this.runActive = false;
       this.anchorPos = this.view.state.doc.length;
+      this.loadToolActions();
       // 让快照与新会话对齐（将当前插件状态写空）
       this.snapshot();
     };
@@ -1103,7 +1518,7 @@ export function installToolCallCards() {
             const anchor = anchors.find(a => a.from === it.from && a.to === it.to && !a.occupied);
             if (anchor) anchor.occupied = true;
             
-            batchedEffects.push(addInline.of({ from: it.from, to: it.to, id: it.id, name: it.name, args: it.args }));
+            batchedEffects.push(addInline.of({ from: it.from, to: it.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null }));
             if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
             if (it.expanded) batchedToggles.push(it.id);
             processedIds.add(it.id);
@@ -1131,7 +1546,7 @@ export function installToolCallCards() {
         if (bestAnchor) {
           bestAnchor.occupied = true;
           // 使用新发现的位置
-          batchedEffects.push(addInline.of({ from: bestAnchor.from, to: bestAnchor.to, id: it.id, name: it.name, args: it.args }));
+          batchedEffects.push(addInline.of({ from: bestAnchor.from, to: bestAnchor.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null }));
           if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
           if (it.expanded) batchedToggles.push(it.id);
           processedIds.add(it.id);
@@ -1162,10 +1577,11 @@ export function installToolCallCards() {
         const text = `${prefix}调用 ${name}\n`;
         const start = pos + prefix.length;
         const end = start + (`调用 ${name}`).length;
+        const userStartLine = typeof it.userStartLine === "number" ? it.userStartLine : findPrevRoleStartLine(docNow, start, "user");
 
         this.view.dispatch({
           changes: { from: pos, insert: text },
-          effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args })]
+          effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args, userStartLine })]
         });
         
         if (it.result != null) {
@@ -1183,6 +1599,10 @@ export function installToolCallCards() {
       }
 
       this.snapshot();
+      try {
+        const sid2 = window.zion?.state?.get("sessions.currentId");
+        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid2 });
+      } catch {}
     };
     destroy() {
       for (const d of this.disps) { try { d?.dispose?.(); } catch {} }
