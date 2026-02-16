@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityBarRuntime, bindWorkbenchCore, sideBarRuntime } from "../src/ui/workbench/runtime";
+import { activityBarRuntime, bindWorkbenchCore, bottomPanelRuntime, sideBarRuntime } from "../src/ui/workbench/runtime";
 
 function createState() {
   const map = new Map();
@@ -108,6 +108,46 @@ describe("workbench runtime", () => {
     activityBarRuntime.activateItem("sessions.activity");
     expect(state.get("ui.sideBar.visible")).toBe(true);
     expect(state.get("ui.sideBar.activeViewId")).toBe("sessions.list");
+
+    dispItem.dispose();
+    dispView.dispose();
+  });
+
+  it("activityBar item with bottomPanelViewId should toggle bottom panel visibility", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    const dispView = bottomPanelRuntime.registerView({
+      id: "terminal.view",
+      pluginId: "dev.terminal-enhanced",
+      title: "Terminal",
+      component: { render: () => {} }
+    });
+    const dispItem = activityBarRuntime.registerItem({
+      id: "terminal.activity",
+      pluginId: "dev.terminal-enhanced",
+      icon: "⌨️",
+      bottomPanelViewId: "terminal.view",
+      order: 30
+    });
+
+    activityBarRuntime.activateItem("terminal.activity");
+    expect(state.get("ui.activityBar.activeItemId")).toBe("terminal.activity");
+    expect(state.get("ui.bottomPanel.visible")).toBe(true);
+    expect(state.get("ui.bottomPanel.activeViewId")).toBe("terminal.view");
+
+    activityBarRuntime.activateItem("terminal.activity");
+    expect(state.get("ui.bottomPanel.visible")).toBe(false);
+
+    activityBarRuntime.activateItem("terminal.activity");
+    expect(state.get("ui.bottomPanel.visible")).toBe(true);
+    expect(state.get("ui.bottomPanel.activeViewId")).toBe("terminal.view");
 
     dispItem.dispose();
     dispView.dispose();

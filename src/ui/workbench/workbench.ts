@@ -1,4 +1,4 @@
-import { activityBarRuntime, sideBarRuntime } from "./runtime";
+import { activityBarRuntime, bottomPanelRuntime, sideBarRuntime } from "./runtime";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -36,6 +36,7 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   const activityBarEl = el("div", "zion-activitybar");
   const sideBarEl = el("div", "zion-sidebar");
   const editorEl = el("div", "zion-editor");
+  const bottomPanelEl = el("div", "zion-bottompanel");
 
   const editorHeaderEl = el("div", "zion-editor-header");
   const editorHeaderPathEl = el("div", "zion-editor-session-path");
@@ -47,8 +48,24 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   root.appendChild(activityBarEl);
   root.appendChild(sideBarEl);
   root.appendChild(editorEl);
+  root.appendChild(bottomPanelEl);
 
   host.appendChild(root);
+
+  const applyRowHeights = () => {
+    const visible = bottomPanelRuntime.isVisible();
+    const hasViews = bottomPanelRuntime.getViews().length > 0;
+    const maximized = bottomPanelRuntime.isMaximized();
+    const h = bottomPanelRuntime.getHeight();
+    let out = visible && hasViews ? h : 0;
+    if (visible && hasViews && maximized) {
+      try {
+        const rh = root.getBoundingClientRect().height;
+        out = Math.max(160, Math.round(rh - 160));
+      } catch {}
+    }
+    root.style.setProperty("--bottompanel-h", `${Math.max(0, out)}px`);
+  };
 
   const applyColumnWidths = () => {
     const aVisible = activityBarRuntime.isVisible();
@@ -131,6 +148,248 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
 
   preventScrollChain(activityBarEl, activityBarEl);
   preventScrollChain(sideBarEl, content);
+  preventScrollChain(bottomPanelEl, bottomPanelEl);
+
+  bottomPanelEl.style.position = "relative";
+  const bottomHeader = el("div", "zion-bottompanel-header");
+  const bottomTabs = el("div", "zion-bottompanel-tabs");
+  const bottomActions = el("div", "zion-bottompanel-actions");
+  const bottomMaxBtn = el("button", "zion-bottompanel-action") as HTMLButtonElement;
+  bottomMaxBtn.type = "button";
+  bottomMaxBtn.title = "Maximize";
+  bottomMaxBtn.setAttribute("aria-label", "Maximize bottom panel");
+  bottomMaxBtn.textContent = "⬆";
+  bottomMaxBtn.onclick = () => {
+    try {
+      if (bottomPanelRuntime.isMaximized()) bottomPanelRuntime.restore();
+      else bottomPanelRuntime.maximize();
+    } catch {}
+  };
+  const bottomHideBtn = el("button", "zion-bottompanel-action") as HTMLButtonElement;
+  bottomHideBtn.type = "button";
+  bottomHideBtn.title = "Hide";
+  bottomHideBtn.setAttribute("aria-label", "Hide bottom panel");
+  bottomHideBtn.textContent = "×";
+  bottomHideBtn.onclick = () => {
+    try {
+      bottomPanelRuntime.hide();
+    } catch {}
+  };
+  bottomActions.appendChild(bottomMaxBtn);
+  bottomActions.appendChild(bottomHideBtn);
+  bottomHeader.appendChild(bottomTabs);
+  bottomHeader.appendChild(bottomActions);
+
+  const bottomContent = el("div", "zion-bottompanel-content");
+  const bottomEmpty = el("div", "zion-bottompanel-empty");
+  bottomEmpty.textContent = "暂无可用视图";
+  const bottomResizer = el("div", "zion-bottompanel-resizer");
+
+  bottomPanelEl.appendChild(bottomResizer);
+  bottomPanelEl.appendChild(bottomHeader);
+  bottomPanelEl.appendChild(bottomContent);
+
+  let bottomMountedViewId: string | null = null;
+  let bottomMountedDisposable: { dispose?: () => void } | null = null;
+  let bottomResizeObs: ResizeObserver | null = null;
+  const bottomKeepContainers = new Map<string, { container: HTMLElement; disposable: { dispose?: () => void } | null; obs: ResizeObserver | null }>();
+
+  const bottomUnmountView = async (viewId: string | null) => {
+    if (!viewId) return;
+    const prev = bottomPanelRuntime.getView(viewId);
+    try {
+      await prev?.onDeactivate?.();
+    } catch {}
+    const keep = !!prev?.keepWhenActive;
+    if (keep) {
+      const rec = bottomKeepContainers.get(viewId);
+      if (rec?.container) rec.container.style.display = "none";
+      return;
+    }
+    try {
+      bottomMountedDisposable?.dispose?.();
+    } catch {}
+    bottomMountedDisposable = null;
+    try {
+      bottomResizeObs?.disconnect();
+    } catch {}
+    bottomResizeObs = null;
+    try {
+      bottomContent.innerHTML = "";
+    } catch {}
+  };
+
+  const bottomMountView = async (viewId: string | null) => {
+    if (!viewId) {
+      bottomContent.innerHTML = "";
+      return;
+    }
+    const view = bottomPanelRuntime.getView(viewId);
+    if (!view) {
+      bottomContent.innerHTML = "";
+      return;
+    }
+
+    const keep = !!view.keepWhenActive;
+    if (keep) {
+      const existing = bottomKeepContainers.get(viewId);
+      if (existing) {
+        existing.container.style.display = "block";
+        try {
+          await view.onActivate?.();
+        } catch {}
+        return;
+      }
+      const container = el("div", "zion-bottompanel-view");
+      container.style.height = "100%";
+      container.style.width = "100%";
+      container.style.minHeight = "0";
+      bottomContent.appendChild(container);
+      let disp: any = null;
+      try {
+        disp = view.component.render(container) as any;
+      } catch {
+        container.innerHTML = "";
+      }
+      let obs: ResizeObserver | null = null;
+      try {
+        obs = new ResizeObserver(() => {
+          try {
+            const r = container.getBoundingClientRect();
+            view.onResize?.({ width: r.width, height: r.height });
+          } catch {}
+        });
+        obs.observe(container);
+      } catch {}
+      bottomKeepContainers.set(viewId, { container, disposable: disp, obs });
+      try {
+        await view.onActivate?.();
+      } catch {}
+      return;
+    }
+
+    bottomContent.innerHTML = "";
+    try {
+      const ret = view.component.render(bottomContent);
+      bottomMountedDisposable = (ret as any) || null;
+    } catch {
+      bottomContent.innerHTML = "";
+    }
+    try {
+      await view.onActivate?.();
+    } catch {}
+    try {
+      bottomResizeObs = new ResizeObserver(() => {
+        try {
+          const r = bottomContent.getBoundingClientRect();
+          view.onResize?.({ width: r.width, height: r.height });
+        } catch {}
+      });
+      bottomResizeObs.observe(bottomContent);
+    } catch {}
+  };
+
+  const renderBottomPanel = () => {
+    applyRowHeights();
+    applyColumnWidths();
+    const views = bottomPanelRuntime.getViews();
+    try {
+      const alive = new Set(views.map(v => v.id));
+      for (const [id, rec] of Array.from(bottomKeepContainers.entries())) {
+        if (alive.has(id)) continue;
+        try {
+          rec.obs?.disconnect();
+        } catch {}
+        try {
+          rec.disposable?.dispose?.();
+        } catch {}
+        try {
+          rec.container.remove();
+        } catch {}
+        bottomKeepContainers.delete(id);
+      }
+    } catch {}
+    const visible = bottomPanelRuntime.isVisible() && views.length > 0;
+    bottomPanelEl.style.display = visible ? "flex" : "none";
+    if (!visible) {
+      void bottomUnmountView(bottomMountedViewId);
+      bottomMountedViewId = null;
+      for (const rec of bottomKeepContainers.values()) {
+        try {
+          rec.container.style.display = "none";
+        } catch {}
+      }
+      return;
+    }
+
+    const activeViewId = bottomPanelRuntime.getActiveViewId();
+    const nextId = activeViewId && bottomPanelRuntime.getView(activeViewId) ? activeViewId : views[0]?.id ?? null;
+    if (nextId && nextId !== activeViewId) bottomPanelRuntime.activateView(nextId);
+
+    bottomTabs.innerHTML = "";
+    for (const v of views) {
+      const tab = el("button", "zion-bottompanel-tab") as HTMLButtonElement;
+      tab.type = "button";
+      tab.title = safeText(v.title);
+      tab.setAttribute("aria-label", safeText(v.title));
+      tab.textContent = safeText(v.icon ? `${v.icon} ${v.title}` : v.title);
+      if (v.id === nextId) tab.classList.add("is-active");
+      tab.onclick = () => bottomPanelRuntime.activateView(v.id);
+      bottomTabs.appendChild(tab);
+    }
+
+    bottomMaxBtn.textContent = bottomPanelRuntime.isMaximized() ? "⬇" : "⬆";
+    bottomMaxBtn.title = bottomPanelRuntime.isMaximized() ? "Restore" : "Maximize";
+    bottomMaxBtn.setAttribute("aria-label", bottomPanelRuntime.isMaximized() ? "Restore bottom panel" : "Maximize bottom panel");
+
+    if (views.length === 0) {
+      if (!bottomContent.contains(bottomEmpty)) {
+        bottomContent.innerHTML = "";
+        bottomContent.appendChild(bottomEmpty);
+      }
+      return;
+    }
+
+    if (bottomMountedViewId !== nextId) {
+      void (async () => {
+        await bottomUnmountView(bottomMountedViewId);
+        bottomMountedViewId = nextId;
+        for (const [id, rec] of bottomKeepContainers.entries()) {
+          if (id !== nextId) rec.container.style.display = "none";
+        }
+        await bottomMountView(bottomMountedViewId);
+      })();
+    }
+
+    let dragging = false;
+    let startY = 0;
+    let startH = bottomPanelRuntime.getHeight();
+
+    const onMove = (e: MouseEvent) => {
+      if (!dragging) return;
+      const dy = startY - e.clientY;
+      bottomPanelRuntime.setHeight(startH + dy);
+    };
+    const onUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      try {
+        localStorage.setItem("zion.ui.bottomPanelHeight", String(bottomPanelRuntime.getHeight()));
+      } catch {}
+    };
+
+    bottomResizer.onmousedown = (e) => {
+      dragging = true;
+      startY = e.clientY;
+      startH = bottomPanelRuntime.getHeight();
+      document.body.style.userSelect = "none";
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    };
+  };
 
   const unmountView = async (viewId: string | null) => {
     if (!viewId) return;
@@ -282,11 +541,23 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
     if (isFinite(w)) sideBarRuntime.setWidth(w);
   } catch {}
 
+  try {
+    const persisted = localStorage.getItem("zion.ui.bottomPanelHeight");
+    const h = persisted ? Number(persisted) : NaN;
+    if (isFinite(h)) bottomPanelRuntime.setHeight(h);
+    else bottomPanelRuntime.setHeight(bottomPanelRuntime.getHeight());
+    bottomPanelRuntime.hide();
+  } catch {}
+
   const dispA = activityBarRuntime.onDidChange(() => renderActivityBar());
   const dispS = sideBarRuntime.onDidChange(() => renderSideBar());
+  const dispB = bottomPanelRuntime.onDidChange(() => renderBottomPanel());
+  const onResize = () => renderBottomPanel();
+  window.addEventListener("resize", onResize);
 
   renderActivityBar();
   renderSideBar();
+  renderBottomPanel();
 
   return {
     editorHost,
@@ -299,7 +570,26 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
         dispS.dispose();
       } catch {}
       try {
+        dispB.dispose();
+      } catch {}
+      try {
+        window.removeEventListener("resize", onResize);
+      } catch {}
+      try {
         void unmountView(mountedViewId);
+      } catch {}
+      try {
+        void bottomUnmountView(bottomMountedViewId);
+      } catch {}
+      try {
+        for (const rec of bottomKeepContainers.values()) {
+          try {
+            rec.obs?.disconnect();
+          } catch {}
+          try {
+            rec.disposable?.dispose?.();
+          } catch {}
+        }
       } catch {}
       try {
         root.remove();

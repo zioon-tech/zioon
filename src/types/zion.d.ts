@@ -92,6 +92,7 @@ declare global {
       commands: {
         registerCommand(id: string, fn: CommandHandler): Disposable;
         executeCommand<T = any>(id: string, ...args: any[]): T | undefined;
+        list(): string[];
       };
       // keybindings
       keybindings: {
@@ -170,6 +171,35 @@ declare global {
         hide(): void;
         toggle(): boolean;
         setWidth(w: number): void;
+      };
+      bottomPanel?: {
+        registerView(opts: {
+          id: string;
+          pluginId: string;
+          title: string;
+          icon?: string;
+          location?: 'bottompanel' | string;
+          order?: number;
+          when?: string;
+          keepWhenActive?: boolean;
+          maximizable?: boolean;
+          component: {
+            render: (container: HTMLElement) => { dispose?: () => void } | void;
+          };
+          onActivate?: () => void | Promise<void>;
+          onDeactivate?: () => void | Promise<void>;
+          onResize?: (size: { width: number; height: number }) => void;
+          onDispose?: () => void;
+        }): Disposable;
+        activateView(id: string): void;
+        closeView(id: string): void;
+        getViews(): any[];
+        show(): void;
+        hide(): void;
+        toggle(): boolean;
+        setHeight(h: number): void;
+        maximize(): void;
+        restore(): void;
       };
       // editor-level APIs
       editor: {

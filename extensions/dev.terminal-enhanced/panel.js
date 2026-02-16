@@ -1,11 +1,13 @@
 /**
  * Terminal Enhanced Panel with PTY WebSocket + xterm.js
  */
-export function installTerminalEnhancedPanel(api = { execute: async () => {}, connectPty: null }) {
+export function installTerminalEnhancedPanel(api = { execute: async () => {}, connectPty: null }, opts = {}) {
   const HEIGHT_KEY = "zion.terminalEnhanced.panelHeightPx";
   const WIDTH_KEY = "zion.terminalEnhanced.panelWidthPx";
   const DOCK_KEY = "zion.terminalEnhanced.dock";
   const STYLE_ID = "zion-terminal-enhanced-style";
+  const mountEl = opts && opts.mount instanceof HTMLElement ? opts.mount : null;
+  const embedded = !!mountEl;
 
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const viewportH = () => window.innerHeight || document.documentElement?.clientHeight || 800;
@@ -894,40 +896,66 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     try { localStorage.setItem(HEIGHT_KEY, String(px)); } catch {}
   }
 
-  let root = document.getElementById("zion-terminal-enhanced-root");
-  if (root) {
-    ensurePanelStyles();
-    ensureDocking(root);
-    return createHandle(root);
+  let root = null;
+  if (!embedded) {
+    root = document.getElementById("zion-terminal-enhanced-root");
+    if (root) {
+      ensurePanelStyles();
+      ensureDocking(root);
+      return createHandle(root);
+    }
   }
 
   ensurePanelStyles();
 
+  try {
+    if (embedded) {
+      const existing = document.getElementById("zion-terminal-enhanced-root");
+      if (existing && existing.parentElement) existing.remove();
+    }
+  } catch {}
+
   root = document.createElement("div");
   root.id = "zion-terminal-enhanced-root";
-  const initialDockMode = readSavedDockMode();
+  const initialDockMode = embedded ? "bottom" : readSavedDockMode();
   root.dataset.zteDock = initialDockMode;
-  Object.assign(root.style, {
-    position: "fixed",
-    left: "0",
-    right: "0",
-    bottom: "0",
-    height: "35vh",
-    background: "transparent",
-    zIndex: "900",
-    display: "none"
-  });
+  if (embedded) {
+    Object.assign(root.style, {
+      position: "relative",
+      inset: "0",
+      height: "100%",
+      width: "100%",
+      background: "transparent",
+      zIndex: "",
+      display: "block",
+      minHeight: "0",
+      overflow: "hidden"
+    });
+  } else {
+    Object.assign(root.style, {
+      position: "fixed",
+      left: "0",
+      right: "0",
+      bottom: "0",
+      height: "35vh",
+      background: "transparent",
+      zIndex: "900",
+      display: "none"
+    });
+  }
 
-  if (initialDockMode === "right") {
+  if (!embedded && initialDockMode === "right") {
     const savedW = readSavedWidthPx();
     const w0 = Number.isFinite(savedW) ? savedW : 420;
     const w = clamp(Math.floor(Number(w0 || 420)), 280, Math.floor(viewportW() * 0.75));
     root.style.width = `${w}px`;
     root.style.height = "";
   } else {
-    const savedH = readSavedHeightPx();
-    if (savedH) root.style.height = `${savedH}px`;
-    root.style.width = "";
+    if (!embedded) {
+      const savedH = readSavedHeightPx();
+      if (savedH) root.style.height = `${savedH}px`;
+      root.style.width = "";
+    }
   }
 
   const panel = document.createElement("div");
@@ -938,7 +966,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     overflow: "hidden",
     background: "var(--panel)",
     color: "var(--fg)",
-    borderTop: "1px solid var(--border)",
+    borderTop: embedded ? "0" : "1px solid var(--border)",
     borderLeft: "1px solid var(--border)",
     borderRight: "1px solid var(--border)",
     borderBottom: "0",
@@ -954,6 +982,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const resizeHandle = document.createElement("div");
   resizeHandle.className = "zte-resize-handle";
   resizeHandle.title = "Drag to resize terminal";
+  if (embedded) resizeHandle.style.display = "none";
   panel.appendChild(resizeHandle);
 
   const topbar = document.createElement("div");
@@ -1035,11 +1064,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   closeBtn.type = "button";
   closeBtn.className = "zte-icon-btn";
   closeBtn.innerHTML = ICONS.x;
-  closeBtn.title = "Hide terminal panel (Esc)";
+  closeBtn.title = embedded ? "Hide terminal panel" : "Hide terminal panel (Esc)";
+  if (embedded) closeBtn.style.display = "none";
 
   const dockBtn = document.createElement("button");
   dockBtn.type = "button";
   dockBtn.className = "zte-icon-btn";
+  if (embedded) dockBtn.style.display = "none";
 
   actions.appendChild(newBtn);
   actions.appendChild(dockBtn);
@@ -1147,9 +1178,12 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   panel.appendChild(content);
   panel.appendChild(footer);
   root.appendChild(panel);
-  document.body.appendChild(root);
-
-  ensureDocking(root);
+  if (embedded) {
+    mountEl.appendChild(root);
+  } else {
+    document.body.appendChild(root);
+    ensureDocking(root);
+  }
 
   const toast = document.createElement("div");
   toast.className = "zte-toast";
@@ -1214,6 +1248,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   function setPanelHeightPx(nextPx, persist = true) {
+    if (embedded) {
+      try { fitActiveView(); } catch {}
+      return;
+    }
     const maxPx = Math.floor(viewportH() * 0.85);
     const minPx = 180;
     const px = clamp(Math.floor(Number(nextPx || 0)), minPx, maxPx);
@@ -1223,6 +1261,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   function setPanelWidthPx(nextPx, persist = true) {
+    if (embedded) {
+      try { fitActiveView(); } catch {}
+      return;
+    }
     const maxPx = Math.floor(viewportW() * 0.75);
     const minPx = 280;
     const px = clamp(Math.floor(Number(nextPx || 0)), minPx, maxPx);
@@ -1237,6 +1279,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   let dockMode = root?.dataset?.zteDock === "right" ? "right" : "bottom";
+  if (embedded) dockMode = "bottom";
 
   function updateDockBtn() {
     if (dockMode === "right") {
@@ -1249,6 +1292,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   function setDockMode(nextMode, persist = true) {
+    if (embedded) return;
     const next = nextMode === "right" ? "right" : "bottom";
     dockMode = next;
     root.dataset.zteDock = next;
@@ -1273,7 +1317,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     try { requestAnimationFrame(() => fitActiveView()); } catch {}
   }
 
-  (function attachResize() {
+  if (!embedded) (function attachResize() {
     let dragging = false;
     let startX = 0;
     let startY = 0;
@@ -3610,10 +3654,12 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
   async function open(opts = {}) {
     // 先显示 root，确保 DOM 准备好
-    const wasVisible = root.style.display === "block";
-    root.style.display = "block";
-    try { root.offsetHeight; } catch {} // Force reflow
-    try { applyDocking(root); } catch {}
+    const wasVisible = embedded ? true : root.style.display === "block";
+    if (!embedded) {
+      root.style.display = "block";
+      try { root.offsetHeight; } catch {} // Force reflow
+      try { applyDocking(root); } catch {}
+    }
     try { if (xtermLoaded && getActiveView()?.term) fitActiveView(true); } catch {}
 
     const av = getActiveView();
@@ -3702,6 +3748,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     }
   }
   function close() {
+    if (embedded) {
+      try { api?.requestClose?.(); } catch {}
+      return;
+    }
     root.style.display = "none";
     try { setRightDockShiftEnabled(false); } catch {}
     try { setBottomDockShiftEnabled(false); } catch {}

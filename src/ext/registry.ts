@@ -9,7 +9,7 @@ import { findNext, findPrevious, selectMatches, replaceNext, replaceAll, SearchQ
 import { setSearchQuery as setSearchQueryEffect } from "@codemirror/search";
 import { EditorView } from "@codemirror/view";
 import { notificationManager } from "../notification/manager";
-import { activityBarRuntime, bindWorkbenchCore, sideBarRuntime } from "../ui/workbench/runtime";
+import { activityBarRuntime, bindWorkbenchCore, bottomPanelRuntime, sideBarRuntime } from "../ui/workbench/runtime";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -1245,6 +1245,10 @@ class Registry {
     return { dispose: () => this.commands.delete(id) };
   }
 
+  listCommands(): string[] {
+    return Array.from(this.commands.keys());
+  }
+
   executeCommand<T = any>(id: string, ...args: any[]): T | undefined {
     const fn = this.commands.get(id);
     if (!fn) {
@@ -1878,7 +1882,8 @@ const registry = new Registry();
   const api = {
     commands: {
       registerCommand: (id: string, fn: CommandHandler) => registry.registerCommand(id, fn),
-      executeCommand: (id: string, ...args: any) => registry.executeCommand(id, ...args)
+      executeCommand: (id: string, ...args: any) => registry.executeCommand(id, ...args),
+      list: () => registry.listCommands()
     },
     keybindings: {
       register: (kb: Keybinding) => registry.registerKeybinding(kb),
@@ -1953,6 +1958,18 @@ const registry = new Registry();
       hide: () => sideBarRuntime.hide(),
       toggle: () => sideBarRuntime.toggle(),
       setWidth: (w: number) => sideBarRuntime.setWidth(w)
+    },
+    bottomPanel: {
+      registerView: (opts: any) => bottomPanelRuntime.registerView(opts),
+      activateView: (id: string) => bottomPanelRuntime.activateView(id),
+      closeView: (id: string) => bottomPanelRuntime.closeView(id),
+      getViews: () => bottomPanelRuntime.getViews(),
+      show: () => bottomPanelRuntime.show(),
+      hide: () => bottomPanelRuntime.hide(),
+      toggle: () => bottomPanelRuntime.toggle(),
+      setHeight: (h: number) => bottomPanelRuntime.setHeight(h),
+      maximize: () => bottomPanelRuntime.maximize(),
+      restore: () => bottomPanelRuntime.restore()
     },
     window: {
       activeEditor: null as any

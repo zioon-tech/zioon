@@ -8,6 +8,7 @@ import { HttpPluginInstaller } from "./plugin/http-installer";
 import type { PluginInfo } from "./plugin/types";
 import { notificationManager } from "./notification/manager";
 import { initWorkbench } from "./ui/workbench/workbench";
+import { initCommandPalette } from "./ui/workbench/commandPalette";
 import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
 
 // ---------- 自动保存 / 恢复 ----------
@@ -612,6 +613,63 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   } catch (error) {
     console.error('[PluginManager] 插件系统初始化失败:', error);
   }
+
+  try {
+    initCommandPalette();
+  } catch {}
+
+  try {
+    window.zion.commands.registerCommand("bottomPanel.show", () => window.zion.bottomPanel?.show());
+    window.zion.commands.registerCommand("bottomPanel.hide", () => window.zion.bottomPanel?.hide());
+    window.zion.commands.registerCommand("bottomPanel.toggle", () => window.zion.bottomPanel?.toggle());
+    window.zion.commands.registerCommand("bottomPanel.maximize", () => window.zion.bottomPanel?.maximize());
+    window.zion.commands.registerCommand("bottomPanel.restore", () => window.zion.bottomPanel?.restore());
+  } catch {}
+
+  try {
+    window.zion.bottomPanel?.registerView({
+      id: "core.output",
+      pluginId: "core",
+      title: "Output",
+      icon: "📄",
+      order: 10,
+      keepWhenActive: true,
+      maximizable: true,
+      component: {
+        render: (container: HTMLElement) => {
+          const wrap = document.createElement("div");
+          wrap.style.padding = "10px";
+          wrap.style.fontFamily = "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)";
+          wrap.style.fontSize = "12px";
+          wrap.style.whiteSpace = "pre-wrap";
+          wrap.style.lineHeight = "1.5";
+          wrap.textContent =
+            "Bottom Panel 已启用。\n\n" +
+            "可以：\n" +
+            "- 拖拽面板顶部的细条调整高度\n" +
+            '- 点左侧 ActivityBar 的 "🧰" 打开/关闭\n' +
+            '- Cmd/Ctrl + K 打开命令台，搜索 bottomPanel.toggle\n';
+          container.appendChild(wrap);
+          return {
+            dispose: () => {
+              try {
+                wrap.remove();
+              } catch {}
+            }
+          };
+        }
+      }
+    });
+
+    window.zion.activityBar?.registerItem({
+      id: "core.bottompanel",
+      pluginId: "core",
+      icon: "🧰",
+      tooltip: "Bottom Panel",
+      bottomPanelViewId: "core.output",
+      order: 90
+    });
+  } catch {}
 
   // Status item example (core side)
   window.zion.statusBar.registerItem({

@@ -33,6 +33,26 @@ export type SideBarView = {
   onDispose?: () => void;
 };
 
+export type BottomPanelViewComponent = {
+  render: (container: HTMLElement) => { dispose?: () => void } | void;
+};
+
+export type BottomPanelView = {
+  id: string;
+  pluginId: string;
+  title: string;
+  icon?: string;
+  order?: number;
+  when?: string;
+  keepWhenActive?: boolean;
+  maximizable?: boolean;
+  component: BottomPanelViewComponent;
+  onActivate?: () => void | Promise<void>;
+  onDeactivate?: () => void | Promise<void>;
+  onResize?: (size: { width: number; height: number }) => void;
+  onDispose?: () => void;
+};
+
 type StateLike = {
   get: <T = unknown>(key: string) => T | undefined;
   set: <T = unknown>(key: string, value: T) => void;
@@ -129,9 +149,16 @@ class ActivityBarRuntime {
     const prevActive = this.getActiveItemId();
     const sideVisible = sideBarRuntime.isVisible();
     const activeViewId = sideBarRuntime.getActiveViewId();
+    const bottomVisible = bottomPanelRuntime.isVisible();
+    const activeBottomViewId = bottomPanelRuntime.getActiveViewId();
 
     if (it.sideBarViewId && prevActive === id && sideVisible && activeViewId === it.sideBarViewId) {
       sideBarRuntime.hide();
+      this.emitter.emit();
+      return;
+    }
+    if (it.bottomPanelViewId && prevActive === id && bottomVisible && activeBottomViewId === it.bottomPanelViewId) {
+      bottomPanelRuntime.hide();
       this.emitter.emit();
       return;
     }
@@ -145,6 +172,10 @@ class ActivityBarRuntime {
     if (it.sideBarViewId) {
       sideBarRuntime.show();
       sideBarRuntime.activateView(it.sideBarViewId);
+    }
+    if (it.bottomPanelViewId) {
+      bottomPanelRuntime.show();
+      bottomPanelRuntime.activateView(it.bottomPanelViewId);
     }
     this.emitter.emit();
   }
@@ -265,5 +296,135 @@ class SideBarRuntime {
   }
 }
 
+class BottomPanelRuntime {
+  private views = new Map<string, BottomPanelView>();
+  private emitter = new ChangeEmitter();
+  private lastNonMaximizedHeight: number | null = null;
+
+  onDidChange(fn: () => void): Disposable {
+    return this.emitter.onDidChange(fn);
+  }
+
+  registerView(view: BottomPanelView): Disposable {
+    this.views.set(view.id, view);
+    if (!this.getActiveViewId()) {
+      core?.state.set("ui.bottomPanel.activeViewId", view.id);
+    }
+    this.emitter.emit();
+    return {
+      dispose: () => {
+        try {
+          view.onDispose?.();
+        } catch {}
+        this.views.delete(view.id);
+        if (this.getActiveViewId() === view.id) {
+          const next = this.getViews()[0]?.id ?? null;
+          core?.state.set("ui.bottomPanel.activeViewId", next as any);
+        }
+        if (this.getViews().length === 0) {
+          core?.state.set("ui.bottomPanel.visible", false);
+        }
+        this.emitter.emit();
+      }
+    };
+  }
+
+  getViews(): BottomPanelView[] {
+    const arr = Array.from(this.views.values()).filter(v => evalWhen(v.when));
+    arr.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
+    return arr;
+  }
+
+  getView(id: string): BottomPanelView | null {
+    return this.views.get(id) || null;
+  }
+
+  getActiveViewId(): string | null {
+    return (core?.state.get<string>("ui.bottomPanel.activeViewId") ?? null) as any;
+  }
+
+  activateView(id: string): void {
+    if (!this.views.has(id)) return;
+    this.show();
+    core?.state.set("ui.bottomPanel.activeViewId", id);
+    core?.events.emit("ui/bottomPanelActiveViewChanged", { id });
+    this.emitter.emit();
+  }
+
+  closeView(id: string): void {
+    const view = this.views.get(id);
+    if (!view) return;
+    try {
+      view.onDispose?.();
+    } catch {}
+    this.views.delete(id);
+    if (this.getActiveViewId() === id) {
+      const next = this.getViews()[0]?.id ?? null;
+      core?.state.set("ui.bottomPanel.activeViewId", next as any);
+      if (!next) core?.state.set("ui.bottomPanel.visible", false);
+    }
+    this.emitter.emit();
+  }
+
+  show() {
+    core?.state.set("ui.bottomPanel.visible", true);
+    this.emitter.emit();
+  }
+
+  hide() {
+    core?.state.set("ui.bottomPanel.visible", false);
+    this.emitter.emit();
+  }
+
+  toggle(): boolean {
+    const cur = this.isVisible();
+    const next = !cur;
+    core?.state.set("ui.bottomPanel.visible", next);
+    this.emitter.emit();
+    return next;
+  }
+
+  isVisible(): boolean {
+    const v = core?.state.get<boolean>("ui.bottomPanel.visible");
+    return v == null ? false : !!v;
+  }
+
+  setHeight(px: number): void {
+    const h = Math.max(120, Math.min(700, Math.round(px)));
+    core?.state.set("ui.bottomPanel.height", h);
+    core?.state.set("ui.bottomPanel.visible", true);
+    if (!this.isMaximized()) this.lastNonMaximizedHeight = h;
+    this.emitter.emit();
+  }
+
+  getHeight(): number {
+    const v = core?.state.get<number>("ui.bottomPanel.height");
+    return typeof v === "number" && isFinite(v) ? v : 200;
+  }
+
+  maximize(): void {
+    if (this.isMaximized()) return;
+    this.lastNonMaximizedHeight = this.getHeight();
+    core?.state.set("ui.bottomPanel.maximized", true);
+    core?.state.set("ui.bottomPanel.visible", true);
+    this.emitter.emit();
+  }
+
+  restore(): void {
+    if (!this.isMaximized()) return;
+    core?.state.set("ui.bottomPanel.maximized", false);
+    if (typeof this.lastNonMaximizedHeight === "number" && isFinite(this.lastNonMaximizedHeight)) {
+      core?.state.set("ui.bottomPanel.height", this.lastNonMaximizedHeight);
+    }
+    this.emitter.emit();
+  }
+
+  isMaximized(): boolean {
+    const v = core?.state.get<boolean>("ui.bottomPanel.maximized");
+    return v == null ? false : !!v;
+  }
+}
+
 export const activityBarRuntime = new ActivityBarRuntime();
 export const sideBarRuntime = new SideBarRuntime();
+export const bottomPanelRuntime = new BottomPanelRuntime();

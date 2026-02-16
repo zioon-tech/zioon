@@ -42,6 +42,7 @@ Zion Next 的布局系统设计参考了 VSCode 的成熟架构，为插件提�
 - [07 编辑器区域](./07-editor-area.md) - 编辑器标签和分组管理
 - [08 响应式设计](./08-responsive-design.md) - 跨设备适配策略
 - [09 插件开发指南](./09-plugin-guide.md) - 如何在插件中使用布局系统
+- [10 全局命令台](./10-command-palette.md) - Cmd+K 搜索并执行任意命令
 - [API 参考](./api-reference.md) - 完整的 API 文档
 
 ## 🔑 快速开始
