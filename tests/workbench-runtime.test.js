@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityBarRuntime, bindWorkbenchCore, bottomPanelRuntime, sideBarRuntime } from "../src/ui/workbench/runtime";
+import { activityBarRuntime, auxiliaryBarRuntime, bindWorkbenchCore, bottomPanelRuntime, sideBarRuntime } from "../src/ui/workbench/runtime";
 
 function createState() {
   const map = new Map();
@@ -148,6 +148,46 @@ describe("workbench runtime", () => {
     activityBarRuntime.activateItem("terminal.activity");
     expect(state.get("ui.bottomPanel.visible")).toBe(true);
     expect(state.get("ui.bottomPanel.activeViewId")).toBe("terminal.view");
+
+    dispItem.dispose();
+    dispView.dispose();
+  });
+
+  it("activityBar item with auxiliaryBarViewId should toggle auxiliary bar visibility", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    const dispView = auxiliaryBarRuntime.registerView({
+      id: "preview.view",
+      pluginId: "dev.preview",
+      title: "Preview",
+      component: { render: () => {} }
+    });
+    const dispItem = activityBarRuntime.registerItem({
+      id: "preview.activity",
+      pluginId: "dev.preview",
+      icon: "🌐",
+      auxiliaryBarViewId: "preview.view",
+      order: 30
+    });
+
+    activityBarRuntime.activateItem("preview.activity");
+    expect(state.get("ui.activityBar.activeItemId")).toBe("preview.activity");
+    expect(state.get("ui.auxiliaryBar.visible")).toBe(true);
+    expect(state.get("ui.auxiliaryBar.activeViewId")).toBe("preview.view");
+
+    activityBarRuntime.activateItem("preview.activity");
+    expect(state.get("ui.auxiliaryBar.visible")).toBe(false);
+
+    activityBarRuntime.activateItem("preview.activity");
+    expect(state.get("ui.auxiliaryBar.visible")).toBe(true);
+    expect(state.get("ui.auxiliaryBar.activeViewId")).toBe("preview.view");
 
     dispItem.dispose();
     dispView.dispose();

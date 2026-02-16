@@ -1,4 +1,4 @@
-import { activityBarRuntime, bottomPanelRuntime, sideBarRuntime } from "./runtime";
+import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, sideBarRuntime } from "./runtime";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -10,7 +10,7 @@ function safeText(text: string) {
   return String(text ?? "");
 }
 
-function isScrollable(el: HTMLElement): boolean {
+function isScrollableY(el: HTMLElement): boolean {
   try {
     const st = getComputedStyle(el);
     const oy = st.overflowY;
@@ -21,11 +21,22 @@ function isScrollable(el: HTMLElement): boolean {
   }
 }
 
-function findScrollableTarget(start: EventTarget | null, root: HTMLElement): HTMLElement | null {
+function isScrollableX(el: HTMLElement): boolean {
+  try {
+    const st = getComputedStyle(el);
+    const ox = st.overflowX;
+    if (ox !== "auto" && ox !== "scroll") return false;
+    return el.scrollWidth > el.clientWidth + 1;
+  } catch {
+    return false;
+  }
+}
+
+function findScrollableTarget(start: EventTarget | null, root: HTMLElement, axis: "x" | "y"): HTMLElement | null {
   let cur = start as any;
   while (cur && cur instanceof HTMLElement) {
     if (cur === root) return null;
-    if (root.contains(cur) && isScrollable(cur)) return cur;
+    if (root.contains(cur) && (axis === "x" ? isScrollableX(cur) : isScrollableY(cur))) return cur;
     cur = cur.parentElement;
   }
   return null;
@@ -36,6 +47,7 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   const activityBarEl = el("div", "zion-activitybar");
   const sideBarEl = el("div", "zion-sidebar");
   const editorEl = el("div", "zion-editor");
+  const auxiliaryBarEl = el("div", "zion-auxbar");
   const bottomPanelEl = el("div", "zion-bottompanel");
 
   const editorHeaderEl = el("div", "zion-editor-header");
@@ -48,6 +60,7 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   root.appendChild(activityBarEl);
   root.appendChild(sideBarEl);
   root.appendChild(editorEl);
+  root.appendChild(auxiliaryBarEl);
   root.appendChild(bottomPanelEl);
 
   host.appendChild(root);
@@ -70,13 +83,18 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   const applyColumnWidths = () => {
     const aVisible = activityBarRuntime.isVisible();
     const sVisible = sideBarRuntime.isVisible();
+    const xVisible = auxiliaryBarRuntime.isVisible() && auxiliaryBarRuntime.getViews().length > 0;
     const w = sideBarRuntime.getWidth();
+    const xw = auxiliaryBarRuntime.getWidth();
     root.style.setProperty("--activitybar-w", aVisible ? "48px" : "0px");
     root.style.setProperty("--sidebar-w", sVisible ? `${w}px` : "0px");
+    root.style.setProperty("--auxbar-w", xVisible ? `${xw}px` : "0px");
     activityBarEl.style.visibility = aVisible ? "visible" : "hidden";
     activityBarEl.style.pointerEvents = aVisible ? "auto" : "none";
     sideBarEl.style.visibility = sVisible ? "visible" : "hidden";
     sideBarEl.style.pointerEvents = sVisible ? "auto" : "none";
+    auxiliaryBarEl.style.visibility = xVisible ? "visible" : "hidden";
+    auxiliaryBarEl.style.pointerEvents = xVisible ? "auto" : "none";
   };
 
   const renderActivityBar = () => {
@@ -135,9 +153,19 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
       "wheel",
       (e) => {
         const we = e as WheelEvent;
-        const target = findScrollableTarget(we.target, rootEl) || fallback;
         try {
-          target.scrollTop += we.deltaY;
+          const absX = Math.abs(we.deltaX || 0);
+          const absY = Math.abs(we.deltaY || 0);
+          const useX = we.shiftKey || absX > absY;
+          const axis = useX ? "x" : "y";
+          const target = findScrollableTarget(we.target, rootEl, axis) || fallback;
+          if (axis === "x") {
+            const dx = we.deltaX || 0;
+            const dy = we.deltaY || 0;
+            target.scrollLeft += dx !== 0 ? dx : dy;
+          } else {
+            target.scrollTop += we.deltaY;
+          }
         } catch {}
         we.preventDefault();
         we.stopPropagation();
@@ -148,7 +176,230 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
 
   preventScrollChain(activityBarEl, activityBarEl);
   preventScrollChain(sideBarEl, content);
+  preventScrollChain(auxiliaryBarEl, auxiliaryBarEl);
   preventScrollChain(bottomPanelEl, bottomPanelEl);
+
+  auxiliaryBarEl.style.position = "relative";
+  const auxTabs = el("div", "zion-auxbar-tabs");
+  const auxContent = el("div", "zion-auxbar-content");
+  const auxEmpty = el("div", "zion-auxbar-empty");
+  auxEmpty.textContent = "暂无可用视图";
+  const auxResizer = el("div", "zion-auxbar-resizer");
+
+  auxiliaryBarEl.appendChild(auxTabs);
+  auxiliaryBarEl.appendChild(auxContent);
+  auxiliaryBarEl.appendChild(auxResizer);
+
+  let auxMountedViewId: string | null = null;
+  let auxTransientContainer: HTMLElement | null = null;
+  let auxTransientDisposable: { dispose?: () => void } | null = null;
+  let auxTransientResizeObs: ResizeObserver | null = null;
+  const auxKeepContainers = new Map<
+    string,
+    { container: HTMLElement; disposable: { dispose?: () => void } | null; obs: ResizeObserver | null }
+  >();
+
+  const auxUnmountView = async (viewId: string | null) => {
+    if (!viewId) return;
+    const prev = auxiliaryBarRuntime.getView(viewId);
+    try {
+      await prev?.onDeactivate?.();
+    } catch {}
+    const keep = !!prev?.keepWhenActive;
+    if (keep) {
+      const rec = auxKeepContainers.get(viewId);
+      if (rec?.container) rec.container.style.display = "none";
+      return;
+    }
+    try {
+      auxTransientDisposable?.dispose?.();
+    } catch {}
+    auxTransientDisposable = null;
+    try {
+      auxTransientResizeObs?.disconnect();
+    } catch {}
+    auxTransientResizeObs = null;
+    try {
+      auxTransientContainer?.remove();
+    } catch {}
+    auxTransientContainer = null;
+  };
+
+  const auxMountView = async (viewId: string | null, container: HTMLElement) => {
+    if (!viewId) {
+      return;
+    }
+    const view = auxiliaryBarRuntime.getView(viewId);
+    if (!view) {
+      return;
+    }
+    const keep = !!view.keepWhenActive;
+    if (keep) {
+      const existing = auxKeepContainers.get(viewId);
+      if (existing) {
+        existing.container.style.display = "block";
+        try {
+          await view.onActivate?.();
+        } catch {}
+        return;
+      }
+      const c = el("div", "zion-auxbar-view");
+      c.style.height = "100%";
+      c.style.width = "100%";
+      c.style.minHeight = "0";
+      container.appendChild(c);
+      let disp: any = null;
+      try {
+        disp = view.component.render(c) as any;
+      } catch {
+        c.innerHTML = "";
+      }
+      let obs: ResizeObserver | null = null;
+      try {
+        obs = new ResizeObserver(() => {
+          try {
+            const r = c.getBoundingClientRect();
+            view.onResize?.({ width: r.width, height: r.height });
+          } catch {}
+        });
+        obs.observe(c);
+      } catch {}
+      auxKeepContainers.set(viewId, { container: c, disposable: disp, obs });
+      try {
+        await view.onActivate?.();
+      } catch {}
+      return;
+    }
+
+    const c = el("div", "zion-auxbar-view");
+    c.style.height = "100%";
+    c.style.width = "100%";
+    c.style.minHeight = "0";
+    container.appendChild(c);
+    auxTransientContainer = c;
+    try {
+      const ret = view.component.render(c);
+      auxTransientDisposable = (ret as any) || null;
+    } catch {
+      c.innerHTML = "";
+    }
+    try {
+      await view.onActivate?.();
+    } catch {}
+    try {
+      auxTransientResizeObs = new ResizeObserver(() => {
+        try {
+          const r = c.getBoundingClientRect();
+          view.onResize?.({ width: r.width, height: r.height });
+        } catch {}
+      });
+      auxTransientResizeObs.observe(c);
+    } catch {}
+  };
+
+  const renderAuxiliaryBar = () => {
+    applyRowHeights();
+    applyColumnWidths();
+    const views = auxiliaryBarRuntime.getViews();
+    try {
+      const alive = new Set(views.map(v => v.id));
+      for (const [id, rec] of Array.from(auxKeepContainers.entries())) {
+        if (alive.has(id)) continue;
+        try {
+          rec.obs?.disconnect();
+        } catch {}
+        try {
+          rec.disposable?.dispose?.();
+        } catch {}
+        try {
+          rec.container.remove();
+        } catch {}
+        auxKeepContainers.delete(id);
+      }
+    } catch {}
+    const visible = auxiliaryBarRuntime.isVisible() && views.length > 0;
+    if (!visible) {
+      void auxUnmountView(auxMountedViewId);
+      auxMountedViewId = null;
+      auxTabs.innerHTML = "";
+      try {
+        for (const rec of auxKeepContainers.values()) rec.container.style.display = "none";
+      } catch {}
+      return;
+    }
+
+    const activeViewId = auxiliaryBarRuntime.getActiveViewId();
+
+    auxTabs.style.display = views.length > 1 ? "flex" : "none";
+    auxTabs.innerHTML = "";
+    if (auxTabs.style.display !== "none") {
+      for (const v of views) {
+        const tab = el("button", "zion-auxbar-tab");
+        (tab as HTMLButtonElement).type = "button";
+        tab.title = safeText(v.title);
+        tab.setAttribute("aria-label", safeText(v.title));
+        tab.textContent = safeText(v.icon ? `${v.icon} ${v.title}` : v.title);
+        if (v.id === activeViewId) tab.classList.add("is-active");
+        (tab as HTMLButtonElement).onclick = () => auxiliaryBarRuntime.activateView(v.id);
+        auxTabs.appendChild(tab);
+      }
+    }
+
+    const nextId = activeViewId && auxiliaryBarRuntime.getView(activeViewId) ? activeViewId : views[0]?.id ?? null;
+    if (nextId !== activeViewId && nextId) {
+      auxiliaryBarRuntime.activateView(nextId);
+    }
+
+    if (views.length === 0) {
+      if (!auxContent.contains(auxEmpty)) {
+        auxContent.appendChild(auxEmpty);
+      }
+    } else {
+      if (auxContent.contains(auxEmpty)) {
+        auxContent.removeChild(auxEmpty);
+      }
+    }
+
+    if (auxMountedViewId !== nextId) {
+      void (async () => {
+        await auxUnmountView(auxMountedViewId);
+        auxMountedViewId = nextId;
+        for (const [id, rec] of auxKeepContainers.entries()) {
+          if (id !== nextId) rec.container.style.display = "none";
+        }
+        await auxMountView(auxMountedViewId, auxContent);
+      })();
+    }
+
+    let dragging = false;
+    let startX = 0;
+    let startW = auxiliaryBarRuntime.getWidth();
+
+    const onMove = (e: MouseEvent) => {
+      if (!dragging) return;
+      const dx = startX - e.clientX;
+      auxiliaryBarRuntime.setWidth(startW + dx);
+    };
+    const onUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      try {
+        localStorage.setItem("zion.ui.auxBarWidth", String(auxiliaryBarRuntime.getWidth()));
+      } catch {}
+    };
+
+    auxResizer.onmousedown = (e) => {
+      dragging = true;
+      startX = e.clientX;
+      startW = auxiliaryBarRuntime.getWidth();
+      document.body.style.userSelect = "none";
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    };
+  };
 
   bottomPanelEl.style.position = "relative";
   const bottomHeader = el("div", "zion-bottompanel-header");
@@ -542,6 +793,13 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   } catch {}
 
   try {
+    const persisted = localStorage.getItem("zion.ui.auxBarWidth");
+    const w = persisted ? Number(persisted) : NaN;
+    if (isFinite(w)) auxiliaryBarRuntime.setWidth(w);
+    auxiliaryBarRuntime.hide();
+  } catch {}
+
+  try {
     const persisted = localStorage.getItem("zion.ui.bottomPanelHeight");
     const h = persisted ? Number(persisted) : NaN;
     if (isFinite(h)) bottomPanelRuntime.setHeight(h);
@@ -551,12 +809,14 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
 
   const dispA = activityBarRuntime.onDidChange(() => renderActivityBar());
   const dispS = sideBarRuntime.onDidChange(() => renderSideBar());
+  const dispX = auxiliaryBarRuntime.onDidChange(() => renderAuxiliaryBar());
   const dispB = bottomPanelRuntime.onDidChange(() => renderBottomPanel());
   const onResize = () => renderBottomPanel();
   window.addEventListener("resize", onResize);
 
   renderActivityBar();
   renderSideBar();
+  renderAuxiliaryBar();
   renderBottomPanel();
 
   return {
@@ -570,6 +830,9 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
         dispS.dispose();
       } catch {}
       try {
+        dispX.dispose();
+      } catch {}
+      try {
         dispB.dispose();
       } catch {}
       try {
@@ -577,6 +840,19 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
       } catch {}
       try {
         void unmountView(mountedViewId);
+      } catch {}
+      try {
+        void auxUnmountView(auxMountedViewId);
+      } catch {}
+      try {
+        for (const rec of auxKeepContainers.values()) {
+          try {
+            rec.obs?.disconnect();
+          } catch {}
+          try {
+            rec.disposable?.dispose?.();
+          } catch {}
+        }
       } catch {}
       try {
         void bottomUnmountView(bottomMountedViewId);

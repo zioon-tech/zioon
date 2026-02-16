@@ -671,6 +671,54 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     });
   } catch {}
 
+  try {
+    window.zion.commands.registerCommand("auxiliaryBar.show", () => window.zion.auxiliaryBar?.show());
+    window.zion.commands.registerCommand("auxiliaryBar.hide", () => window.zion.auxiliaryBar?.hide());
+    window.zion.commands.registerCommand("auxiliaryBar.toggle", () => window.zion.auxiliaryBar?.toggle());
+  } catch {}
+
+  try {
+    window.zion.auxiliaryBar?.registerView({
+      id: "core.context",
+      pluginId: "core",
+      title: "Context",
+      icon: "🧩",
+      order: 10,
+      component: {
+        render: (container: HTMLElement) => {
+          const wrap = document.createElement("div");
+          wrap.style.padding = "10px";
+          wrap.style.fontSize = "12px";
+          wrap.style.whiteSpace = "pre-wrap";
+          wrap.style.lineHeight = "1.5";
+          wrap.textContent =
+            "Auxiliary Bar 已启用。\n\n" +
+            "可以：\n" +
+            '- 点左侧 ActivityBar 的 "🧩" 打开/关闭\n' +
+            "- 拖拽右侧边栏左侧的细条调整宽度\n" +
+            "- Cmd/Ctrl + K 打开命令台，搜索 auxiliaryBar.toggle\n";
+          container.appendChild(wrap);
+          return {
+            dispose: () => {
+              try {
+                wrap.remove();
+              } catch {}
+            }
+          };
+        }
+      }
+    });
+
+    window.zion.activityBar?.registerItem({
+      id: "core.auxbar",
+      pluginId: "core",
+      icon: "🧩",
+      tooltip: "Auxiliary Bar",
+      auxiliaryBarViewId: "core.context",
+      order: 95
+    });
+  } catch {}
+
   // Status item example (core side)
   window.zion.statusBar.registerItem({
     id: "core.ready",

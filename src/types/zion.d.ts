@@ -172,6 +172,34 @@ declare global {
         toggle(): boolean;
         setWidth(w: number): void;
       };
+      auxiliaryBar?: {
+        registerView(opts: {
+          id: string;
+          pluginId: string;
+          title: string;
+          icon?: string;
+          location?: 'auxiliarybar' | string;
+          order?: number;
+          when?: string;
+          canClose?: boolean;
+          keepWhenActive?: boolean;
+          headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+          component: {
+            render: (container: HTMLElement) => { dispose?: () => void } | void;
+          };
+          onActivate?: () => void | Promise<void>;
+          onDeactivate?: () => void | Promise<void>;
+          onResize?: (size: { width: number; height: number }) => void;
+          onDispose?: () => void;
+        }): Disposable;
+        activateView(id: string): void;
+        closeView(id: string): void;
+        getViews(): any[];
+        show(): void;
+        hide(): void;
+        toggle(): boolean;
+        setWidth(w: number): void;
+      };
       bottomPanel?: {
         registerView(opts: {
           id: string;

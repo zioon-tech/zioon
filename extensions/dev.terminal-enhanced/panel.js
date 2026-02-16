@@ -8,6 +8,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const STYLE_ID = "zion-terminal-enhanced-style";
   const mountEl = opts && opts.mount instanceof HTMLElement ? opts.mount : null;
   const embedded = !!mountEl;
+  const rootId = typeof opts?.rootId === "string" && opts.rootId.trim() ? opts.rootId.trim() : null;
 
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const viewportH = () => window.innerHeight || document.documentElement?.clientHeight || 800;
@@ -18,8 +19,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
-#zion-terminal-enhanced-root { pointer-events: none; }
-#zion-terminal-enhanced-root .zte-panel { pointer-events: auto; }
+.zion-terminal-enhanced-root { pointer-events: none; }
+.zion-terminal-enhanced-root .zte-panel { pointer-events: auto; }
 
 .zte-panel {
   background: var(--panel);
@@ -106,7 +107,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   z-index: 2;
 }
 
-#zion-terminal-enhanced-root[data-zte-dock="right"] .zte-resize-handle {
+.zion-terminal-enhanced-root[data-zte-dock="right"] .zte-resize-handle {
   top: 0;
   bottom: 0;
   left: 0;
@@ -136,7 +137,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   opacity: 0.55;
 }
 
-#zion-terminal-enhanced-root[data-zte-dock="right"] .zte-resize-handle::after {
+.zion-terminal-enhanced-root[data-zte-dock="right"] .zte-resize-handle::after {
   left: 1px;
   top: 50%;
   width: 4px;
@@ -908,15 +909,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
   ensurePanelStyles();
 
-  try {
-    if (embedded) {
-      const existing = document.getElementById("zion-terminal-enhanced-root");
-      if (existing && existing.parentElement) existing.remove();
-    }
-  } catch {}
-
   root = document.createElement("div");
-  root.id = "zion-terminal-enhanced-root";
+  root.className = "zion-terminal-enhanced-root";
+  if (!embedded) root.id = "zion-terminal-enhanced-root";
+  else if (rootId) root.id = rootId;
   const initialDockMode = embedded ? "bottom" : readSavedDockMode();
   root.dataset.zteDock = initialDockMode;
   if (embedded) {
@@ -967,8 +963,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     background: "var(--panel)",
     color: "var(--fg)",
     borderTop: embedded ? "0" : "1px solid var(--border)",
-    borderLeft: "1px solid var(--border)",
-    borderRight: "1px solid var(--border)",
+    borderLeft: embedded ? "0" : "1px solid var(--border)",
+    borderRight: embedded ? "0" : "1px solid var(--border)",
     borderBottom: "0",
     borderRadius: "0",
     boxShadow: "none",

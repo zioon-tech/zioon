@@ -327,17 +327,43 @@ export async function activate(ctx) {
   }
 
   const VIEW_ID = "terminal.enhanced.view";
-  let panel = null;
+  const AUX_VIEW_ID = "terminal.enhanced.aux.view";
+  let bottomPanel = null;
+  let auxPanel = null;
 
-  const ensurePanelReady = async () => {
+  const ensureBottomPanelReady = async () => {
     try {
       window.zion.bottomPanel?.activateView?.(VIEW_ID);
     } catch {}
     for (let i = 0; i < 40; i++) {
-      if (panel) return panel;
+      if (bottomPanel) return bottomPanel;
       await new Promise((r) => setTimeout(r, 25));
     }
-    return panel;
+    return bottomPanel;
+  };
+
+  const ensureAuxPanelReady = async () => {
+    try {
+      window.zion.auxiliaryBar?.activateView?.(AUX_VIEW_ID);
+    } catch {}
+    for (let i = 0; i < 40; i++) {
+      if (auxPanel) return auxPanel;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return auxPanel;
+  };
+
+  const openWhenReady = async (getHandle) => {
+    for (let i = 0; i < 40; i++) {
+      const h = getHandle();
+      if (h && typeof h.open === "function") {
+        try {
+          h.open();
+        } catch {}
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
   };
 
   const isPanelVisible = () => {
@@ -359,7 +385,7 @@ export async function activate(ctx) {
 
   // 3) Register commands
   const cmdOpen = window.zion.commands.registerCommand("terminal.openPanel", async () => {
-    const h = await ensurePanelReady();
+    const h = await ensureBottomPanelReady();
     try { h?.open?.(); } catch {}
   });
   const cmdToggle = window.zion.commands.registerCommand("terminal.togglePanel", async () => {
@@ -367,12 +393,25 @@ export async function activate(ctx) {
       try { window.zion.bottomPanel?.hide?.(); } catch {}
       return;
     }
-    const h = await ensurePanelReady();
+    const h = await ensureBottomPanelReady();
     try { h?.open?.(); } catch {}
   });
   const cmdOpenHistory = window.zion.commands.registerCommand("terminal.openHistory", async () => {
-    const h = await ensurePanelReady();
+    const h = await ensureBottomPanelReady();
     try { h?.open?.({ openHistory: true }); } catch {}
+  });
+  const cmdOpenAux = window.zion.commands.registerCommand("terminal.openAuxPanel", async () => {
+    try {
+      window.zion.auxiliaryBar?.activateView?.(AUX_VIEW_ID);
+    } catch {}
+  });
+  const cmdToggleAux = window.zion.commands.registerCommand("terminal.toggleAuxPanel", async () => {
+    try {
+      const visible = window.zion?.state?.get("ui.auxiliaryBar.visible") === true;
+      const active = window.zion?.state?.get("ui.auxiliaryBar.activeViewId") === AUX_VIEW_ID;
+      if (visible && active) window.zion.auxiliaryBar?.hide?.();
+      else window.zion.auxiliaryBar?.activateView?.(AUX_VIEW_ID);
+    } catch {}
   });
   const cmdExec = window.zion.commands.registerCommand("terminal.executeCommand", async (args) => {
     const command = typeof args === "string" ? args : String(args?.command || "").trim();
@@ -388,7 +427,7 @@ export async function activate(ctx) {
     }
   });
   const cmdQuick = window.zion.commands.registerCommand("terminal.quickCommand", async () => {
-    const h = await ensurePanelReady();
+    const h = await ensureBottomPanelReady();
     try { h?.open?.({ openQuick: true }); } catch {}
   });
   const cmdReactivate = window.zion.commands.registerCommand("terminal.reactivateSession", async (args) => {
@@ -407,7 +446,7 @@ export async function activate(ctx) {
     window.zion?.state?.set("chat.includeTerminalContext", next);
     return next;
   });
-  ctx.subscriptions.push(cmdOpen, cmdToggle, cmdOpenHistory, cmdExec, cmdQuick, cmdReactivate, cmdToggleCtx);
+  ctx.subscriptions.push(cmdOpen, cmdToggle, cmdOpenHistory, cmdOpenAux, cmdToggleAux, cmdExec, cmdQuick, cmdReactivate, cmdToggleCtx);
 
   // 4) Register keybindings
   try {
@@ -505,7 +544,7 @@ export async function activate(ctx) {
       maximizable: true,
       component: {
         render: (container) => {
-          panel = installTerminalEnhancedPanel(
+          const h = installTerminalEnhancedPanel(
             {
               execute: async (command, sessionId) => {
                 return await window.zion.commands.executeCommand("terminal.executeCommand", { command, session_id: sessionId });
@@ -515,12 +554,20 @@ export async function activate(ctx) {
                 try { window.zion.bottomPanel?.hide?.(); } catch {}
               }
             },
-            { mount: container }
+            { mount: container, rootId: "zion-terminal-enhanced-root-bottom" }
           );
+          bottomPanel = h;
+          try {
+            setTimeout(() => {
+              try {
+                h?.open?.();
+              } catch {}
+            }, 0);
+          } catch {}
           return {
             dispose: () => {
-              try { panel?.dispose?.(); } catch {}
-              panel = null;
+              try { bottomPanel?.dispose?.(); } catch {}
+              bottomPanel = null;
             }
           };
         }
@@ -541,6 +588,63 @@ export async function activate(ctx) {
       order: 30
     });
     if (dispItem) ctx.subscriptions.push(dispItem);
+  } catch {}
+
+  // 7.1) Also register as auxiliary bar view (for evaluation)
+  try {
+    const dispAuxView = window.zion.auxiliaryBar?.registerView?.({
+      id: AUX_VIEW_ID,
+      pluginId: "dev.terminal-enhanced",
+      title: "Terminal",
+      icon: "⌨️",
+      order: 10,
+      keepWhenActive: true,
+      component: {
+        render: (container) => {
+          const h = installTerminalEnhancedPanel(
+            {
+              execute: async (command, sessionId) => {
+                return await window.zion.commands.executeCommand("terminal.executeCommand", { command, session_id: sessionId });
+              },
+              connectPty,
+              requestClose: () => {
+                try { window.zion.auxiliaryBar?.hide?.(); } catch {}
+              }
+            },
+            { mount: container, rootId: "zion-terminal-enhanced-root-aux" }
+          );
+          auxPanel = h;
+          try {
+            setTimeout(() => {
+              try {
+                h?.open?.();
+              } catch {}
+            }, 0);
+          } catch {}
+          return {
+            dispose: () => {
+              try { auxPanel?.dispose?.(); } catch {}
+              auxPanel = null;
+            }
+          };
+        }
+      }
+    });
+    if (dispAuxView) ctx.subscriptions.push(dispAuxView);
+  } catch (e) {
+    console.warn("[dev.terminal-enhanced] auxiliaryBar register failed", e);
+  }
+
+  try {
+    const dispAuxItem = window.zion.activityBar?.registerItem?.({
+      id: "terminal.activity.aux",
+      pluginId: "dev.terminal-enhanced",
+      icon: "➡️",
+      tooltip: "Terminal (Auxiliary Bar)",
+      auxiliaryBarViewId: AUX_VIEW_ID,
+      order: 31
+    });
+    if (dispAuxItem) ctx.subscriptions.push(dispAuxItem);
   } catch {}
 
   // 8) Initial sessions sync to ensure panel has data

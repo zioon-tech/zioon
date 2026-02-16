@@ -247,6 +247,27 @@ export function initCommandPalette() {
       category: "Zion",
       pluginId: "core"
     });
+    base.set("auxiliaryBar.toggle", {
+      id: "auxiliaryBar.toggle",
+      title: "右侧边栏：打开/关闭",
+      description: "打开或关闭右侧辅助边栏",
+      category: "Zion",
+      pluginId: "core"
+    });
+    base.set("auxiliaryBar.show", {
+      id: "auxiliaryBar.show",
+      title: "右侧边栏：打开",
+      description: "打开右侧辅助边栏",
+      category: "Zion",
+      pluginId: "core"
+    });
+    base.set("auxiliaryBar.hide", {
+      id: "auxiliaryBar.hide",
+      title: "右侧边栏：关闭",
+      description: "关闭右侧辅助边栏",
+      category: "Zion",
+      pluginId: "core"
+    });
     return base;
   })();
 

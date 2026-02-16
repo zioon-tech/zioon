@@ -9,7 +9,7 @@ import { findNext, findPrevious, selectMatches, replaceNext, replaceAll, SearchQ
 import { setSearchQuery as setSearchQueryEffect } from "@codemirror/search";
 import { EditorView } from "@codemirror/view";
 import { notificationManager } from "../notification/manager";
-import { activityBarRuntime, bindWorkbenchCore, bottomPanelRuntime, sideBarRuntime } from "../ui/workbench/runtime";
+import { activityBarRuntime, auxiliaryBarRuntime, bindWorkbenchCore, bottomPanelRuntime, sideBarRuntime } from "../ui/workbench/runtime";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -1958,6 +1958,16 @@ const registry = new Registry();
       hide: () => sideBarRuntime.hide(),
       toggle: () => sideBarRuntime.toggle(),
       setWidth: (w: number) => sideBarRuntime.setWidth(w)
+    },
+    auxiliaryBar: {
+      registerView: (opts: any) => auxiliaryBarRuntime.registerView(opts),
+      activateView: (id: string) => auxiliaryBarRuntime.activateView(id),
+      closeView: (id: string) => auxiliaryBarRuntime.closeView(id),
+      getViews: () => auxiliaryBarRuntime.getViews(),
+      show: () => auxiliaryBarRuntime.show(),
+      hide: () => auxiliaryBarRuntime.hide(),
+      toggle: () => auxiliaryBarRuntime.toggle(),
+      setWidth: (w: number) => auxiliaryBarRuntime.setWidth(w)
     },
     bottomPanel: {
       registerView: (opts: any) => bottomPanelRuntime.registerView(opts),

@@ -225,7 +225,7 @@ html, body {
   height: 100%;
   width: 100%;
   display: grid;
-  grid-template-columns: var(--activitybar-w) var(--sidebar-w) 1fr;
+  grid-template-columns: var(--activitybar-w) var(--sidebar-w) 1fr var(--auxbar-w, 0px);
   grid-template-rows: 1fr var(--bottompanel-h, 0px);
   background: var(--bg);
   overflow: hidden;
@@ -312,8 +312,88 @@ html, body {
   min-height: 0;
 }
 
+.zion-auxbar {
+  grid-column: 4 / 5;
+  grid-row: 1 / 2;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  overflow: hidden;
+  position: relative;
+  box-sizing: border-box;
+  min-height: 0;
+}
+
+.zion-auxbar-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  box-sizing: border-box;
+  overflow: auto;
+  min-height: 0;
+}
+
+.zion-auxbar-tab {
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.zion-auxbar-tab:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="light"] .zion-auxbar-tab:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.zion-auxbar-tab.is-active {
+  background: rgba(98, 114, 164, 0.18);
+}
+
+:root[data-theme="light"] .zion-auxbar-tab.is-active {
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.zion-auxbar-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.zion-auxbar-empty {
+  padding: 12px;
+  font-size: 12px;
+  opacity: 0.8;
+  text-align: center;
+}
+
+.zion-auxbar-resizer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.zion-auxbar-resizer:hover {
+  background: var(--border);
+}
+
 .zion-bottompanel {
-  grid-column: 1 / 4;
+  grid-column: 1 / 5;
   grid-row: 2 / 3;
   display: flex;
   flex-direction: column;

@@ -53,6 +53,27 @@ export type BottomPanelView = {
   onDispose?: () => void;
 };
 
+export type AuxiliaryBarViewComponent = {
+  render: (container: HTMLElement) => { dispose?: () => void } | void;
+};
+
+export type AuxiliaryBarView = {
+  id: string;
+  pluginId: string;
+  title: string;
+  icon?: string;
+  order?: number;
+  when?: string;
+  canClose?: boolean;
+  keepWhenActive?: boolean;
+  headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+  component: AuxiliaryBarViewComponent;
+  onActivate?: () => void | Promise<void>;
+  onDeactivate?: () => void | Promise<void>;
+  onResize?: (size: { width: number; height: number }) => void;
+  onDispose?: () => void;
+};
+
 type StateLike = {
   get: <T = unknown>(key: string) => T | undefined;
   set: <T = unknown>(key: string, value: T) => void;
@@ -151,6 +172,8 @@ class ActivityBarRuntime {
     const activeViewId = sideBarRuntime.getActiveViewId();
     const bottomVisible = bottomPanelRuntime.isVisible();
     const activeBottomViewId = bottomPanelRuntime.getActiveViewId();
+    const auxVisible = auxiliaryBarRuntime.isVisible();
+    const activeAuxViewId = auxiliaryBarRuntime.getActiveViewId();
 
     if (it.sideBarViewId && prevActive === id && sideVisible && activeViewId === it.sideBarViewId) {
       sideBarRuntime.hide();
@@ -159,6 +182,11 @@ class ActivityBarRuntime {
     }
     if (it.bottomPanelViewId && prevActive === id && bottomVisible && activeBottomViewId === it.bottomPanelViewId) {
       bottomPanelRuntime.hide();
+      this.emitter.emit();
+      return;
+    }
+    if (it.auxiliaryBarViewId && prevActive === id && auxVisible && activeAuxViewId === it.auxiliaryBarViewId) {
+      auxiliaryBarRuntime.hide();
       this.emitter.emit();
       return;
     }
@@ -172,6 +200,10 @@ class ActivityBarRuntime {
     if (it.sideBarViewId) {
       sideBarRuntime.show();
       sideBarRuntime.activateView(it.sideBarViewId);
+    }
+    if (it.auxiliaryBarViewId) {
+      auxiliaryBarRuntime.show();
+      auxiliaryBarRuntime.activateView(it.auxiliaryBarViewId);
     }
     if (it.bottomPanelViewId) {
       bottomPanelRuntime.show();
@@ -293,6 +325,111 @@ class SideBarRuntime {
   getWidth(): number {
     const v = core?.state.get<number>("ui.sideBar.width");
     return typeof v === "number" && isFinite(v) ? v : 240;
+  }
+}
+
+class AuxiliaryBarRuntime {
+  private views = new Map<string, AuxiliaryBarView>();
+  private emitter = new ChangeEmitter();
+
+  onDidChange(fn: () => void): Disposable {
+    return this.emitter.onDidChange(fn);
+  }
+
+  registerView(view: AuxiliaryBarView): Disposable {
+    this.views.set(view.id, view);
+    if (!this.getActiveViewId()) {
+      core?.state.set("ui.auxiliaryBar.activeViewId", view.id);
+    }
+    this.emitter.emit();
+    return {
+      dispose: () => {
+        try {
+          view.onDispose?.();
+        } catch {}
+        this.views.delete(view.id);
+        if (this.getActiveViewId() === view.id) {
+          const next = this.getViews()[0]?.id ?? null;
+          core?.state.set("ui.auxiliaryBar.activeViewId", next as any);
+        }
+        if (this.getViews().length === 0) {
+          core?.state.set("ui.auxiliaryBar.visible", false);
+        }
+        this.emitter.emit();
+      }
+    };
+  }
+
+  getViews(): AuxiliaryBarView[] {
+    const arr = Array.from(this.views.values()).filter(v => evalWhen(v.when));
+    arr.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
+    return arr;
+  }
+
+  getView(id: string): AuxiliaryBarView | null {
+    return this.views.get(id) || null;
+  }
+
+  getActiveViewId(): string | null {
+    return (core?.state.get<string>("ui.auxiliaryBar.activeViewId") ?? null) as any;
+  }
+
+  activateView(id: string): void {
+    if (!this.views.has(id)) return;
+    this.show();
+    core?.state.set("ui.auxiliaryBar.activeViewId", id);
+    core?.events.emit("ui/auxiliaryBarActiveViewChanged", { id });
+    this.emitter.emit();
+  }
+
+  closeView(id: string): void {
+    const view = this.views.get(id);
+    if (!view) return;
+    try {
+      view.onDispose?.();
+    } catch {}
+    this.views.delete(id);
+    if (this.getActiveViewId() === id) {
+      const next = this.getViews()[0]?.id ?? null;
+      core?.state.set("ui.auxiliaryBar.activeViewId", next as any);
+      if (!next) core?.state.set("ui.auxiliaryBar.visible", false);
+    }
+    this.emitter.emit();
+  }
+
+  show() {
+    core?.state.set("ui.auxiliaryBar.visible", true);
+    this.emitter.emit();
+  }
+
+  hide() {
+    core?.state.set("ui.auxiliaryBar.visible", false);
+    this.emitter.emit();
+  }
+
+  toggle(): boolean {
+    const cur = this.isVisible();
+    const next = !cur;
+    core?.state.set("ui.auxiliaryBar.visible", next);
+    this.emitter.emit();
+    return next;
+  }
+
+  isVisible(): boolean {
+    const v = core?.state.get<boolean>("ui.auxiliaryBar.visible");
+    return v == null ? false : !!v;
+  }
+
+  setWidth(px: number): void {
+    const w = Math.max(240, Math.min(560, Math.round(px)));
+    core?.state.set("ui.auxiliaryBar.width", w);
+    core?.state.set("ui.auxiliaryBar.visible", true);
+    this.emitter.emit();
+  }
+
+  getWidth(): number {
+    const v = core?.state.get<number>("ui.auxiliaryBar.width");
+    return typeof v === "number" && isFinite(v) ? v : 300;
   }
 }
 
@@ -427,4 +564,5 @@ class BottomPanelRuntime {
 
 export const activityBarRuntime = new ActivityBarRuntime();
 export const sideBarRuntime = new SideBarRuntime();
+export const auxiliaryBarRuntime = new AuxiliaryBarRuntime();
 export const bottomPanelRuntime = new BottomPanelRuntime();
