@@ -142,21 +142,50 @@ html, body {
 }
 #statusbar {
   display: flex;
+  align-items: center;
   gap: 8px;
-  overflow-x: auto;             /* 横向滚动以容纳更多按钮 */
-  overflow-y: hidden;
-  white-space: nowrap;           /* 防止换行 */
-  -webkit-overflow-scrolling: touch; /* 触摸设备顺滑滚动 */
-  scrollbar-width: none;         /* Firefox: 默认隐藏滚动条 */
+  width: 100%;
+  min-width: 0;
 }
-/* WebKit: 默认隐藏滚动条，hover 时显示更细的滚动条 */
-#statusbar::-webkit-scrollbar {
+#statusbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+#statusbar-left::-webkit-scrollbar {
   height: 6px;
   background: transparent;
 }
-#statusbar:hover::-webkit-scrollbar-thumb {
+#statusbar-left:hover::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 6px;
+}
+#statusbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+#statusbar-right .status-item {
+  border: none;
+  padding: 4px 6px;
+  background: transparent;
+}
+#statusbar-right .status-item:hover {
+  background: rgba(128,128,128,0.15);
+}
+#statusbar-right .status-item .codicon {
+  font-size: 16px;
+  line-height: 1;
 }
 .status-item {
   position: relative;
@@ -273,6 +302,11 @@ html, body {
   transition: background 120ms ease;
 }
 
+.zion-activitybar-item .codicon {
+  font-size: 20px;
+  line-height: 1;
+}
+
 .zion-activitybar-item:hover {
   background: rgba(255, 255, 255, 0.06);
 }
@@ -283,6 +317,17 @@ html, body {
 
 .zion-activitybar-item.is-active {
   background: rgba(98, 114, 164, 0.14);
+}
+
+.zion-activitybar-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 999px;
 }
 
 :root[data-theme="light"] .zion-activitybar-item.is-active {
@@ -692,6 +737,11 @@ html, body {
   padding: 0;
 }
 
+.zion-editor-header-action .codicon {
+  font-size: 16px;
+  line-height: 1;
+}
+
 .zion-editor-header-action svg {
   display: block;
 }
@@ -700,6 +750,11 @@ html, body {
   opacity: 1;
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.10);
+}
+
+.zion-editor-header-action.is-active {
+  opacity: 1;
+  background: rgba(98, 114, 164, 0.14);
 }
 
 .zion-editor-header-action:active {

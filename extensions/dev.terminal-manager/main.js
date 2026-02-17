@@ -317,7 +317,7 @@ export async function activate(ctx) {
     const dispItem = window.zion.activityBar.registerItem({
       id: "terminal.activity",
       pluginId: "dev.terminal-manager",
-      icon: ">_",
+      icon: "$(terminal)",
       tooltip: "Terminal",
       sideBarViewId: "terminal.manager",
       order: 30

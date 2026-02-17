@@ -112,7 +112,16 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
       btn.title = safeText(it.tooltip || "");
       btn.setAttribute("aria-label", safeText(it.tooltip || it.id));
       if (activeId === it.id) btn.classList.add("is-active");
-      btn.textContent = safeText(it.icon || "");
+      const icon = String(it.icon || "").trim();
+      btn.textContent = "";
+      const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
+      if (codiconMatch) {
+        const span = document.createElement("span");
+        span.className = `codicon codicon-${codiconMatch[1]}`;
+        btn.appendChild(span);
+      } else {
+        btn.textContent = safeText(icon);
+      }
       btn.onclick = () => activityBarRuntime.activateItem(it.id);
       list.appendChild(btn);
     }

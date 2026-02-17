@@ -972,7 +972,7 @@ export async function activate(ctx) {
     const dispItem = window.zion.activityBar.registerItem({
       id: "plugins.activity",
       pluginId: "dev.plugins",
-      icon: "⧉",
+      icon: "$(extensions)",
       tooltip: "Plugins",
       sideBarViewId: "plugins.manager",
       order: 20

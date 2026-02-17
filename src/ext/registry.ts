@@ -20,7 +20,7 @@ class Registry {
   private state = new StateBus();
   private statusItems = new Map<
     string,
-    { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number; pinned: boolean }
+    { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number; pinned: boolean; align: "left" | "right" }
   >();
   private statusPinned: Set<string> = new Set();
   private readonly STATUS_PINNED_KEY = 'zion.statusBar.pinned';
@@ -1384,9 +1384,13 @@ class Registry {
   }
 
   // statusbar
-  registerStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }): Disposable {
+  registerStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable {
     const bar = document.getElementById("statusbar");
     if (!bar) return { dispose: () => {} };
+    const left = document.getElementById("statusbar-left") ?? bar;
+    const right = document.getElementById("statusbar-right") ?? bar;
+    const align = opts.align ?? "left";
+    const target = align === "right" ? right : left;
 
     const priority = opts.priority ?? 0;
     const pinned = this.statusPinned.has(opts.id);
@@ -1396,10 +1400,22 @@ class Registry {
       // Update in place without clearing innerHTML to preserve hover state and reduce flicker
       const textSpan = existing.el.querySelector("span:not(.status-pin-btn)");
       if (textSpan) {
-        textSpan.textContent = opts.text;
+        const codiconMatch = opts.text.match(/^\$\(([^)]+)\)$/);
+        if (codiconMatch) {
+          textSpan.className = `codicon codicon-${codiconMatch[1]}`;
+          textSpan.textContent = "";
+        } else {
+          textSpan.className = "";
+          textSpan.textContent = opts.text;
+        }
       } else {
         const span = document.createElement("span");
-        span.textContent = opts.text;
+        const codiconMatch = opts.text.match(/^\$\(([^)]+)\)$/);
+        if (codiconMatch) {
+          span.className = `codicon codicon-${codiconMatch[1]}`;
+        } else {
+          span.textContent = opts.text;
+        }
         if (existing.el.firstChild) {
           existing.el.insertBefore(span, existing.el.firstChild);
         } else {
@@ -1418,11 +1434,18 @@ class Registry {
       existing.el.oncontextmenu = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.toggleStatusPin(opts.id, bar);
+        this.toggleStatusPin(opts.id);
       };
 
       existing.onClick = opts.onClick;
       existing.pinned = pinned;
+      const prevAlign = existing.align;
+      existing.align = align;
+      if (prevAlign !== align) {
+        target.appendChild(existing.el);
+        const prevBar = prevAlign === "right" ? right : left;
+        this.sortStatusItems(prevBar, prevAlign);
+      }
 
       // Remove pin button if exists (migration)
       const pinBtn = existing.el.querySelector(".status-pin-btn");
@@ -1431,10 +1454,9 @@ class Registry {
       // Update priority and re-sort if changed
       if (existing.priority !== priority) {
         existing.priority = priority;
-        this.sortStatusItems(bar);
+        this.sortStatusItems(target, align);
       } else {
-        // Just in case pin state changed via other means
-        this.sortStatusItems(bar);
+        this.sortStatusItems(target, align);
       }
 
       return {
@@ -1454,7 +1476,12 @@ class Registry {
     }
     
     const span = document.createElement("span");
-    span.textContent = opts.text;
+    const codiconMatch = opts.text.match(/^\$\(([^)]+)\)$/);
+    if (codiconMatch) {
+      span.className = `codicon codicon-${codiconMatch[1]}`;
+    } else {
+      span.textContent = opts.text;
+    }
     el.appendChild(span);
 
     // No dedicated pin button - use Context Menu
@@ -1469,12 +1496,12 @@ class Registry {
     el.oncontextmenu = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this.toggleStatusPin(opts.id, bar);
+      this.toggleStatusPin(opts.id);
     };
     
-    bar.appendChild(el);
-    this.statusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority, pinned });
-    this.sortStatusItems(bar);
+    target.appendChild(el);
+    this.statusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority, pinned, align });
+    this.sortStatusItems(target, align);
 
     return {
       dispose: () => {
@@ -1621,7 +1648,15 @@ class Registry {
     items.forEach(item => bar.appendChild(item.el));
   }
 
-  private toggleStatusPin(id: string, bar: HTMLElement) {
+  private getStatusBarContainer(align: "left" | "right"): HTMLElement | null {
+    const bar = document.getElementById("statusbar");
+    if (!bar) return null;
+    const left = document.getElementById("statusbar-left") ?? bar;
+    const right = document.getElementById("statusbar-right") ?? bar;
+    return align === "right" ? right : left;
+  }
+
+  private toggleStatusPin(id: string) {
     const item = this.statusItems.get(id);
     if (!item) return;
 
@@ -1661,11 +1696,12 @@ class Registry {
     }
 
     this.saveStatusPinned();
-    this.sortStatusItems(bar);
+    const container = this.getStatusBarContainer(item.align);
+    if (container) this.sortStatusItems(container, item.align);
   }
 
-  private sortStatusItems(bar: HTMLElement) {
-    const items = Array.from(this.statusItems.values());
+  private sortStatusItems(bar: HTMLElement, align: "left" | "right") {
+    const items = Array.from(this.statusItems.values()).filter(it => it.align === align);
     // Sort logic:
     // 1. Pinned items first
     // 2. Then by Priority (descending)

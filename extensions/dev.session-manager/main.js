@@ -3117,7 +3117,7 @@ export async function activate(ctx) {
     const dispItem = window.zion.activityBar.registerItem({
       id: "sessions.activity",
       pluginId: "dev.session-manager",
-      icon: "☰",
+      icon: "$(comment-discussion)",
       tooltip: "Sessions",
       sideBarViewId: "sessions.list",
       order: 10

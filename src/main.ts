@@ -157,29 +157,10 @@ function mountEditorHeaderNewSessionButton(pathEl: HTMLElement) {
 
     // 使用与 session-manager 插件一致的按钮样式
     btn.className = "zion-editor-header-action is-icon zion-editor-new-session-button";
-    btn.innerHTML =
-      '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    btn.innerHTML = '<span class="codicon codicon-add" aria-hidden="true"></span>';
     btn.title = "新增会话（同级）";
     btn.setAttribute("aria-label", "新增会话（同级）");
     btn.setAttribute("data-zion-editor-new-session-button", "1");
-    
-    // 应用与 session-manager 一致的按钮样式
-    btn.style.background = "transparent";
-    btn.style.color = "var(--fg)";
-    btn.style.border = "none";
-    btn.style.borderRadius = "6px";
-    btn.style.padding = "2px";
-    btn.style.cursor = "pointer";
-    btn.style.fontSize = "14px";
-    btn.style.display = "flex";
-    btn.style.alignItems = "center";
-    btn.style.justifyContent = "center";
-    btn.style.transition = "background 120ms ease";
-    btn.style.marginLeft = "2px";
-    
-    // 鼠标悬停效果
-    btn.onmouseenter = () => { btn.style.background = "var(--border)"; };
-    btn.onmouseleave = () => { btn.style.background = "transparent"; };
     
     btn.onclick = (e) => {
       try {
@@ -222,7 +203,6 @@ function mountEditorHeaderNewSessionButton(pathEl: HTMLElement) {
               }
             }
           } catch (err) {
-            console.error("[new session button] error finding parent:", err);
           }
         }
         
@@ -259,27 +239,10 @@ function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
 
     // 应用与 session-manager 一致的按钮样式
     btn.className = "zion-editor-header-action is-icon zion-editor-toc-button";
-    btn.innerHTML =
-      '<svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M4 6h2v2H4V6zm4 0h12v2H8V6zM4 11h2v2H4v-2zm4 0h12v2H8v-2zM4 16h2v2H4v-2zm4 0h12v2H8v-2z"/></svg>';
+    btn.innerHTML = '<span class="codicon codicon-list-tree" aria-hidden="true"></span>';
     btn.title = "目录";
     btn.setAttribute("aria-label", "目录");
     btn.setAttribute("data-zion-editor-toc-button", "1");
-    
-    // 应用与其他按钮一致的样式
-    btn.style.background = "transparent";
-    btn.style.color = "var(--fg)";
-    btn.style.border = "none";
-    btn.style.borderRadius = "6px";
-    btn.style.padding = "2px";
-    btn.style.cursor = "pointer";
-    btn.style.display = "flex";
-    btn.style.alignItems = "center";
-    btn.style.justifyContent = "center";
-    btn.style.transition = "background 120ms ease";
-    
-    // 鼠标悬停效果
-    btn.onmouseenter = () => { btn.style.background = "var(--border)"; };
-    btn.onmouseleave = () => { btn.style.background = "transparent"; };
     
     btn.onclick = (e) => {
       try {
@@ -647,7 +610,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
             "Bottom Panel 已启用。\n\n" +
             "可以：\n" +
             "- 拖拽面板顶部的细条调整高度\n" +
-            '- 点左侧 ActivityBar 的 "🧰" 打开/关闭\n' +
+            "- 点击顶部右侧按钮打开/关闭\n" +
             '- Cmd/Ctrl + K 打开命令台，搜索 bottomPanel.toggle\n';
           container.appendChild(wrap);
           return {
@@ -661,14 +624,6 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       }
     });
 
-    window.zion.activityBar?.registerItem({
-      id: "core.bottompanel",
-      pluginId: "core",
-      icon: "🧰",
-      tooltip: "Bottom Panel",
-      bottomPanelViewId: "core.output",
-      order: 90
-    });
   } catch {}
 
   try {
@@ -694,7 +649,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
           wrap.textContent =
             "Auxiliary Bar 已启用。\n\n" +
             "可以：\n" +
-            '- 点左侧 ActivityBar 的 "🧩" 打开/关闭\n' +
+            "- 点击顶部右侧按钮打开/关闭\n" +
             "- 拖拽右侧边栏左侧的细条调整宽度\n" +
             "- Cmd/Ctrl + K 打开命令台，搜索 auxiliaryBar.toggle\n";
           container.appendChild(wrap);
@@ -709,13 +664,71 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       }
     });
 
-    window.zion.activityBar?.registerItem({
-      id: "core.auxbar",
-      pluginId: "core",
-      icon: "🧩",
-      tooltip: "Auxiliary Bar",
-      auxiliaryBarViewId: "core.context",
-      order: 95
+  } catch {}
+
+  try {
+    const focusFirstFocusable = (root: Element | null): boolean => {
+      if (!root) return false;
+      const candidates = Array.from(
+        root.querySelectorAll<HTMLElement>(
+          'textarea, input, select, button, [contenteditable="true"], [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      for (const el of candidates) {
+        try {
+          const disabled = (el as any).disabled;
+          if (disabled) continue;
+          const r = el.getBoundingClientRect();
+          if (!r || r.width <= 0 || r.height <= 0) continue;
+          el.focus();
+          if (document.activeElement === el) return true;
+        } catch {}
+      }
+      try {
+        const h = root as HTMLElement;
+        if (!h.hasAttribute("tabindex")) h.setAttribute("tabindex", "-1");
+        h.focus();
+        return document.activeElement === h;
+      } catch {}
+      return false;
+    };
+
+    const focusWithRetry = (selector: string) => {
+      let tries = 0;
+      const tick = () => {
+        tries += 1;
+        const root = document.querySelector(selector);
+        if (focusFirstFocusable(root)) return;
+        if (tries < 12) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    };
+
+    window.zion.statusBar.registerItem({
+      id: "core.bottompanel.toggle",
+      text: "$(layout-panel)",
+      tooltip: "Toggle Bottom Panel",
+      onClick: () => {
+        const st = window.zion.state;
+        const wasVisible = !!st?.get?.("ui.bottomPanel.visible");
+        window.zion.bottomPanel?.toggle();
+        if (!wasVisible) focusWithRetry(".zion-bottompanel");
+      },
+      priority: 95,
+      align: "right"
+    });
+    window.zion.statusBar.registerItem({
+      id: "core.auxbar.toggle",
+      text: "$(layout-sidebar-right)",
+      tooltip: "Toggle Auxiliary Bar",
+      onClick: () => {
+        const st = window.zion.state;
+        const wasVisible = !!st?.get?.("ui.auxiliaryBar.visible");
+        window.zion.auxiliaryBar?.toggle();
+        if (!wasVisible) focusWithRetry(".zion-auxbar");
+      },
+      priority: 94,
+      align: "right"
     });
   } catch {}
 

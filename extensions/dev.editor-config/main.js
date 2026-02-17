@@ -368,10 +368,8 @@ export async function activate(ctx) {
         btn.type = "button";
         btn.title = minV ? "Hide Minimap" : "Show Minimap";
         
-        // 创建 SVG 图标（与其他按钮风格一致）
-        btn.innerHTML = minV 
-          ? '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="2" width="12" height="12" rx="1" fill="currentColor" opacity="0.3"/><rect x="4" y="5" width="8" height="6" rx="0.5" fill="currentColor"/></svg>'
-          : '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="2" width="12" height="12" rx="1" fill="currentColor" opacity="0.25"/><path d="M4.5 11.5L11.5 4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        btn.innerHTML = '<span class="codicon codicon-map" aria-hidden="true"></span>';
+        if (minV) btn.classList.add("is-active");
         
         btn.onclick = () => {
           window.zion.commands.executeCommand("dev.editor.toggleMinimap");
@@ -400,9 +398,8 @@ export async function activate(ctx) {
       // 监听状态变化并更新按钮
       const updateButtonIcon = (enabled) => {
         if (!minimapButton) return;
-        const iconOn = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="2" width="12" height="12" rx="1" fill="currentColor" opacity="0.3"/><rect x="4" y="5" width="8" height="6" rx="0.5" fill="currentColor"/></svg>';
-        const iconOff = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect x="2" y="2" width="12" height="12" rx="1" fill="currentColor" opacity="0.25"/><path d="M4.5 11.5L11.5 4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
-        minimapButton.innerHTML = enabled ? iconOn : iconOff;
+        minimapButton.innerHTML = '<span class="codicon codicon-map" aria-hidden="true"></span>';
+        minimapButton.classList.toggle("is-active", !!enabled);
         minimapButton.title = enabled ? "Hide Minimap" : "Show Minimap";
       };
       

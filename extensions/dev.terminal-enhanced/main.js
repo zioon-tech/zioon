@@ -542,6 +542,11 @@ export async function activate(ctx) {
       order: 10,
       keepWhenActive: true,
       maximizable: true,
+      onActivate: () => {
+        try {
+          bottomPanel?.open?.({ focusCommand: true });
+        } catch {}
+      },
       component: {
         render: (container) => {
           const h = installTerminalEnhancedPanel(
@@ -578,16 +583,22 @@ export async function activate(ctx) {
     console.warn("[dev.terminal-enhanced] bottomPanel register failed", e);
   }
 
+  // Prefer terminal as the default bottom panel view when opening Bottom Panel
   try {
-    const dispItem = window.zion.activityBar?.registerItem?.({
-      id: "terminal.activity",
-      pluginId: "dev.terminal-enhanced",
-      icon: "⌨️",
-      tooltip: "Terminal",
-      bottomPanelViewId: VIEW_ID,
-      order: 30
+    const st = window.zion.state;
+    const cur = st?.get?.("ui.bottomPanel.activeViewId");
+    if (!cur || cur === "core.output") {
+      st?.set?.("ui.bottomPanel.activeViewId", VIEW_ID);
+    }
+    const disp = st?.onDidChange?.("ui.bottomPanel.visible", (nv) => {
+      if (!nv) return;
+      const active = st?.get?.("ui.bottomPanel.activeViewId");
+      if (active === VIEW_ID) return;
+      if (!active || active === "core.output") {
+        window.zion.bottomPanel?.activateView?.(VIEW_ID);
+      }
     });
-    if (dispItem) ctx.subscriptions.push(dispItem);
+    if (disp) ctx.subscriptions.push(disp);
   } catch {}
 
   // 7.1) Also register as auxiliary bar view (for evaluation)
@@ -597,8 +608,13 @@ export async function activate(ctx) {
       pluginId: "dev.terminal-enhanced",
       title: "Terminal",
       icon: "⌨️",
-      order: 10,
+      order: 30,
       keepWhenActive: true,
+      onActivate: () => {
+        try {
+          auxPanel?.open?.({ focusCommand: true });
+        } catch {}
+      },
       component: {
         render: (container) => {
           const h = installTerminalEnhancedPanel(
@@ -634,18 +650,6 @@ export async function activate(ctx) {
   } catch (e) {
     console.warn("[dev.terminal-enhanced] auxiliaryBar register failed", e);
   }
-
-  try {
-    const dispAuxItem = window.zion.activityBar?.registerItem?.({
-      id: "terminal.activity.aux",
-      pluginId: "dev.terminal-enhanced",
-      icon: "➡️",
-      tooltip: "Terminal (Auxiliary Bar)",
-      auxiliaryBarViewId: AUX_VIEW_ID,
-      order: 31
-    });
-    if (dispAuxItem) ctx.subscriptions.push(dispAuxItem);
-  } catch {}
 
   // 8) Initial sessions sync to ensure panel has data
   try { await ensureSessions(); } catch {}

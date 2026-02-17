@@ -125,7 +125,7 @@ declare global {
       };
       // ui
       statusBar: {
-        registerItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }): Disposable;
+        registerItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable;
       };
       activityBar?: {
         registerItem(opts: {
