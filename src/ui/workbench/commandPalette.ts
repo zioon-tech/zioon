@@ -250,7 +250,7 @@ export function initCommandPalette() {
     base.set("auxiliaryBar.toggle", {
       id: "auxiliaryBar.toggle",
       title: "右侧边栏：打开/关闭",
-      description: "打开或关闭右侧辅助边栏",
+      description: "打开或关闭右侧辅助边栏 (Cmd/Ctrl + P)",
       category: "Zion",
       pluginId: "core"
     });
@@ -546,10 +546,15 @@ export function initCommandPalette() {
       const key = e.key;
       const isMod = e.metaKey || e.ctrlKey;
       if (!isMod || e.shiftKey || e.altKey) return;
-      if (key !== "k" && key !== "K") return;
-      e.preventDefault();
-      e.stopPropagation();
-      togglePalette();
+      if (key === "k" || key === "K") {
+        e.preventDefault();
+        e.stopPropagation();
+        togglePalette();
+      } else if (key === "p" || key === "P") {
+        e.preventDefault();
+        e.stopPropagation();
+        window.zion.auxiliaryBar?.toggle();
+      }
     },
     true
   );
