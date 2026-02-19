@@ -638,23 +638,22 @@ export async function activate(ctx) {
       const shouldOverlay = available < (basis + minEditor + 16);
 
       if (shouldOverlay) {
-        sideOverlayMode = false;
-        try { tocUI.panel.style.display = "none"; } catch {}
-        try {
-          wrapper.style.display = "block";
-          wrapper.style.justifyContent = tocUI.prevWrapperJustifyContent || "";
-        } catch {}
-        try {
-          edEl.style.flex = tocUI.prevEditorFlex || "";
-          edEl.style.width = tocUI.prevEditorWidth || "";
-        } catch {}
-        try {
-          if (scroller) {
-            scroller.style.marginLeft = tocUI.prevScrollerMarginLeft || "";
-            scroller.style.marginRight = tocUI.prevScrollerMarginRight || "";
-          }
-        } catch {}
-        sidePanelOpen = false;
+        // Overlay: panel floats; editor keeps its own width/margins (from width mode)
+        sideOverlayMode = true;
+        tocUI.panel.style.position = "absolute";
+        tocUI.panel.style.left = "0";
+        tocUI.panel.style.top = "0";
+        tocUI.panel.style.bottom = "0";
+        tocUI.panel.style.height = "100%";
+        tocUI.panel.style.zIndex = "2";
+
+        edEl.style.flex = "1 1 auto";
+        // restore previous editor inline width if any; otherwise let width-mode rules apply
+        edEl.style.width = tocUI.prevEditorWidth || "";
+        if (scroller) {
+          scroller.style.marginLeft = tocUI.prevScrollerMarginLeft || "";
+          scroller.style.marginRight = tocUI.prevScrollerMarginRight || "";
+        }
       } else {
         // Inline: panel sits left, editor takes remaining space; remove auto margins for proper side-by-side centering
         sideOverlayMode = false;
@@ -1090,16 +1089,17 @@ export async function activate(ctx) {
   const openSideTOC = () => {
     const ed = window.zion.window.activeEditor;
     const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
-    if (!ed) return;
+    if (!ed) return showOverlayTOC();
     try {
       const t = document?.documentElement?.dataset?.zionDeviceType;
-      if (t === "mobile") return;
+      if (t === "mobile") return showOverlayTOC();
     } catch {}
     try {
-      if (window.innerWidth < 768) return;
+      if (window.innerWidth < 768) return showOverlayTOC();
     } catch {}
     if (!tocUI.wrapper || !tocUI.panel || !tocUI.editorEl) {
-      return;
+      // UI not ready (editor DOM not found) -> fallback to overlay
+      return showOverlayTOC();
     }
     // Show panel
     tocUI.panel.style.display = "block";
@@ -1120,9 +1120,6 @@ export async function activate(ctx) {
 
     // Apply centered layout with panel snug to the editor content
     applySideLayout();
-    try {
-      if (tocUI.panel.style.display === "none") return;
-    } catch {}
 
     // Sync active heading/block based on visible content (cursor-in-view prefers cursor)
     try {
@@ -1138,6 +1135,7 @@ export async function activate(ctx) {
   const closeSideTOC = () => {
     if (!tocUI.wrapper || !tocUI.panel || !tocUI.editorEl) return;
     tocUI.panel.style.display = "none";
+    sideOverlayMode = false;
     // Restore wrapper layout
     if (tocUI.wrapper) {
       tocUI.wrapper.style.display = "block";
@@ -1168,7 +1166,7 @@ export async function activate(ctx) {
           const exist = document.getElementById("zion-toc-panel");
           if (exist) { exist.remove(); return; }
         } catch {}
-        return;
+        return showOverlayTOC();
       }
     } catch {}
     try {
@@ -1178,7 +1176,7 @@ export async function activate(ctx) {
           const exist = document.getElementById("zion-toc-panel");
           if (exist) { exist.remove(); return; }
         } catch {}
-        return;
+        return showOverlayTOC();
       }
     } catch {}
     if (sidePanelOpen) closeSideTOC();
@@ -1810,6 +1808,7 @@ export async function activate(ctx) {
           const t = document?.documentElement?.dataset?.zionDeviceType;
           if (t === "mobile" || window.innerWidth < 768) {
             try { closeSideTOC(); } catch {}
+            try { document.getElementById("zion-toc-panel")?.remove?.(); } catch {}
             return;
           }
         } catch {
@@ -1817,15 +1816,30 @@ export async function activate(ctx) {
         }
         if (!sidePanelOpen) return;
         applySideLayout();
+        try {
+          if (sideOverlayMode) closeSideTOC();
+        } catch {}
       };
       window.addEventListener("resize", onResize);
 
       // Open TOC side panel by default
       try {
         const t = document?.documentElement?.dataset?.zionDeviceType;
-        if (t !== "mobile" && !sidePanelOpen && window.innerWidth >= 768) openSideTOC();
+        if (t !== "mobile" && !sidePanelOpen && window.innerWidth >= 768) {
+          openSideTOC();
+          try {
+            if (sideOverlayMode) closeSideTOC();
+          } catch {}
+        }
       } catch {
-        try { if (!sidePanelOpen && window.innerWidth >= 768) openSideTOC(); } catch {}
+        try {
+          if (!sidePanelOpen && window.innerWidth >= 768) {
+            openSideTOC();
+            try {
+              if (sideOverlayMode) closeSideTOC();
+            } catch {}
+          }
+        } catch {}
       }
 
       // Return Disposable to cleanup on extension deactivate/reload
