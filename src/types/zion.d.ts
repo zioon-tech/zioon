@@ -229,6 +229,18 @@ declare global {
         maximize(): void;
         restore(): void;
       };
+      responsive?: {
+        getCurrentDeviceType(): 'mobile' | 'tablet' | 'desktop' | 'largedesktop';
+        getCurrentMode(): 'compact' | 'medium' | 'full' | 'split';
+        getScreenWidth(): number;
+        getScreenHeight(): number;
+        isMobile(): boolean;
+        isTablet(): boolean;
+        isDesktop(): boolean;
+        onDidChangeDeviceType(callback: (deviceType: 'mobile' | 'tablet' | 'desktop' | 'largedesktop') => void): Disposable;
+        onDidChangeMode(callback: (mode: 'compact' | 'medium' | 'full' | 'split') => void): Disposable;
+        setMode(mode: 'compact' | 'medium' | 'full' | 'split'): void;
+      };
       // editor-level APIs
       editor: {
         registerPasteHandler(handler: PasteHandler): Disposable;

@@ -511,27 +511,6 @@ export async function activate(ctx) {
     console.warn("[dev.terminal-enhanced] message contributor failed", e);
   }
 
-  // 6) Status bar item
-  let statusDisp = null;
-  const updateStatus = () => {
-    const sid = getActiveSessionId();
-    const isVisible = isPanelVisible() && isPanelActive();
-    statusDisp?.dispose?.();
-    statusDisp = window.zion.statusBar.registerItem({
-      id: "dev.terminal.enhanced.button",
-      text: `Terminal+${sid ? `: ${sid}` : ""}`,
-      tooltip: isVisible ? "Hide Terminal Enhanced Panel" : "Open Terminal Enhanced Panel",
-      onClick: () => window.zion.commands.executeCommand("terminal.togglePanel")
-    });
-  };
-  updateStatus();
-  ctx.subscriptions.push({ dispose: () => statusDisp?.dispose?.() });
-  ctx.subscriptions.push(window.zion.state.onDidChange("terminal.activeSessionId", updateStatus));
-  try {
-    ctx.subscriptions.push(window.zion.state.onDidChange("ui.bottomPanel.visible", updateStatus));
-    ctx.subscriptions.push(window.zion.state.onDidChange("ui.bottomPanel.activeViewId", updateStatus));
-  } catch {}
-
   // 7) Register as bottom panel view
   try {
     const dispView = window.zion.bottomPanel?.registerView?.({
@@ -654,6 +633,302 @@ export async function activate(ctx) {
   // 8) Initial sessions sync to ensure panel has data
   try { await ensureSessions(); } catch {}
 
+  // 9) Bottom bar: active terminal indicator + switcher
+  try {
+    let wrap = null;
+    let infoBtn = null;
+    let triggerBtn = null;
+    let menuEl = null;
+    let cleanupMenu = null;
+    let deferred = null;
+
+    const ensureBottomRight = () => {
+      const bar = document.getElementById("bottombar");
+      if (!bar) return null;
+      let right = document.getElementById("bottombar-right");
+      if (!right) {
+        right = document.createElement("div");
+        right.id = "bottombar-right";
+        bar.appendChild(right);
+      }
+      return right;
+    };
+
+    const getBasename = (p) => {
+      const s = String(p || "").trim();
+      if (!s) return "";
+      const parts = s.split("/").filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : s;
+    };
+
+    const getSessionDisplayName = (s) => {
+      if (!s || typeof s !== "object") return "Terminal";
+      const name = String(s.name || s.label || "").trim();
+      if (name) return name;
+      const type = String(s.type || "local").trim() || "local";
+      const cwd = String(s.cwd || "").trim();
+      const cwdBase = getBasename(cwd);
+      if (type === "ssh") {
+        const user = String(s.ssh_user || "").trim();
+        const host = String(s.ssh_host || "").trim();
+        const conn = `${user ? `${user}@` : ""}${host || "SSH"}`;
+        return cwdBase ? `${conn} · ${cwdBase}` : conn;
+      }
+      return cwdBase || "Local";
+    };
+
+    const getInfoText = () => {
+      const sid = window.zion?.state?.get("terminal.activeSessionId");
+      const activeId = typeof sid === "string" ? sid : "";
+      const sessions = window.zion?.state?.get("terminal.sessions");
+      const list = Array.isArray(sessions) ? sessions : [];
+      const cur = list.find(s => s?.id === activeId) || null;
+      const name = cur ? getSessionDisplayName(cur) : "No Terminal";
+      return name;
+    };
+
+    const setActiveSession = async (sid) => {
+      const sessionId = String(sid || "").trim();
+      if (!sessionId) return false;
+      try {
+        await window.zion.commands.executeCommand("terminal.setActiveSession", { session_id: sessionId });
+        return true;
+      } catch {
+        try { window.zion?.state?.set("terminal.activeSessionId", sessionId); } catch {}
+        return true;
+      }
+    };
+
+    const closeMenu = () => {
+      try { cleanupMenu?.(); } catch {}
+      cleanupMenu = null;
+      try { menuEl?.remove?.(); } catch {}
+      menuEl = null;
+    };
+
+    const positionMenu = () => {
+      if (!menuEl || !triggerBtn) return;
+      const r = triggerBtn.getBoundingClientRect();
+      const mw = menuEl.offsetWidth || 200;
+      const mh = menuEl.offsetHeight || 120;
+      const pad = 8;
+      const vw = window.innerWidth || 0;
+      const vh = window.innerHeight || 0;
+      let left = Math.round(r.right - mw);
+      let top = Math.round(r.top - 6 - mh);
+      if (top < pad) top = Math.round(r.bottom + 6);
+      left = Math.max(pad, Math.min(left, Math.max(pad, vw - mw - pad)));
+      top = Math.max(pad, Math.min(top, Math.max(pad, vh - mh - pad)));
+      menuEl.style.left = `${left}px`;
+      menuEl.style.top = `${top}px`;
+    };
+
+    const renderMenu = async () => {
+      if (!menuEl) return;
+      menuEl.innerHTML = "";
+
+      const addItem = (label, onClick, opts) => {
+        const row = document.createElement("div");
+        row.className = "zion-context-menu-row";
+        const it = document.createElement("button");
+        it.className = "zion-context-menu-item";
+        it.type = "button";
+        it.textContent = label;
+        if (opts?.disabled) {
+          it.style.opacity = "0.6";
+          it.style.cursor = "default";
+          it.disabled = true;
+        } else if (typeof onClick === "function") {
+          it.onclick = async (e) => {
+            try { e.stopPropagation(); } catch {}
+            try { await onClick(); } catch {}
+            closeMenu();
+          };
+        }
+        row.appendChild(it);
+        menuEl.appendChild(row);
+      };
+
+      const addDivider = () => {
+        const div = document.createElement("div");
+        div.style.height = "1px";
+        div.style.margin = "4px 6px";
+        div.style.background = "var(--border)";
+        menuEl.appendChild(div);
+      };
+
+      const sessions = await ensureSessions();
+      const list = Array.isArray(sessions) ? sessions : [];
+      const activeId = String(window.zion?.state?.get("terminal.activeSessionId") || "");
+      if (!list.length) {
+        addItem("No sessions", null, { disabled: true });
+        return;
+      }
+
+      for (const s of list.slice(0, 12)) {
+        const sid = String(s?.id || "").trim();
+        if (!sid) continue;
+        const prefix = sid === activeId ? "✓ " : "";
+        const label = `${prefix}${getSessionDisplayName(s)}`;
+        addItem(label, async () => {
+          await setActiveSession(sid);
+          try { await window.zion.commands.executeCommand("terminal.openPanel"); } catch {}
+        });
+      }
+
+      addDivider();
+      addItem("New Local Session", async () => {
+        try {
+          await window.zion.commands.executeCommand("terminal.createSession", { type: "local" });
+          await window.zion.commands.executeCommand("terminal.openPanel");
+        } catch {}
+      });
+      addItem("Open Terminal Manager", () => window.zion.commands.executeCommand("terminal.openManager"));
+    };
+
+    const openMenu = async () => {
+      if (menuEl) return closeMenu();
+      const menu = document.createElement("div");
+      menu.className = "zion-context-menu zion-terminal-bottombar-menu";
+      menu.style.position = "fixed";
+      menu.style.zIndex = "99999";
+      menu.style.maxWidth = "260px";
+      menu.style.width = "auto";
+      menu.style.minWidth = "200px";
+      menu.style.maxHeight = "60vh";
+      menu.style.overflowY = "auto";
+      document.body.appendChild(menu);
+      menuEl = menu;
+      await renderMenu();
+      positionMenu();
+
+      const escHandler = (ev) => {
+        if (ev.key === "Escape") closeMenu();
+      };
+      const clickAway = (ev) => {
+        try {
+          const t = ev.target;
+          if (!t) return closeMenu();
+          if (menuEl && menuEl.contains(t)) return;
+          if (wrap && wrap.contains(t)) return;
+          closeMenu();
+        } catch {
+          closeMenu();
+        }
+      };
+      const resizeHandler = () => {
+        try { positionMenu(); } catch {}
+      };
+
+      document.addEventListener("keydown", escHandler);
+      document.addEventListener("mousedown", clickAway, true);
+      window.addEventListener("resize", resizeHandler, { passive: true });
+
+      cleanupMenu = () => {
+        document.removeEventListener("keydown", escHandler);
+        document.removeEventListener("mousedown", clickAway, true);
+        window.removeEventListener("resize", resizeHandler);
+      };
+    };
+
+    const switchSession = async () => {
+      try { await ensureSessions(); } catch {}
+      try { ensureControl(); } catch {}
+      try { await openMenu(); } catch {}
+      return true;
+    };
+
+    const ensureControl = () => {
+      const right = ensureBottomRight();
+      if (!right) return null;
+      if (!wrap || !wrap.isConnected) {
+        wrap = document.createElement("div");
+        wrap.className = "zion-terminal-bottombar-switcher";
+        wrap.setAttribute("data-zion-bottombar-terminal", "1");
+
+        infoBtn = document.createElement("button");
+        infoBtn.type = "button";
+        infoBtn.className = "zion-terminal-bottombar-info";
+        infoBtn.onclick = (e) => {
+          try { e.stopPropagation(); } catch {}
+          try { window.zion.commands.executeCommand("terminal.togglePanel"); } catch {}
+        };
+
+        triggerBtn = document.createElement("button");
+        triggerBtn.type = "button";
+        triggerBtn.className = "zion-terminal-bottombar-trigger";
+        triggerBtn.setAttribute("aria-label", "Switch terminal session");
+        triggerBtn.innerHTML = '<span class="codicon codicon-chevron-up" aria-hidden="true"></span>';
+        triggerBtn.onclick = (e) => {
+          try { e.stopPropagation(); } catch {}
+          switchSession();
+        };
+
+        wrap.appendChild(infoBtn);
+        wrap.appendChild(triggerBtn);
+        right.insertBefore(wrap, right.firstChild);
+      }
+
+      if (infoBtn) infoBtn.textContent = getInfoText();
+      try {
+        const sid = window.zion?.state?.get("terminal.activeSessionId");
+        const activeId = typeof sid === "string" ? sid : "";
+        const sessions = window.zion?.state?.get("terminal.sessions");
+        const list = Array.isArray(sessions) ? sessions : [];
+        const cur = list.find(s => s?.id === activeId) || null;
+        const cwd = cur?.cwd ? String(cur.cwd) : "";
+        const disp = cur ? getSessionDisplayName(cur) : "";
+        if (infoBtn) infoBtn.title = `${disp || "Terminal"}\nActive: ${activeId || "None"}${cwd ? `\nCWD: ${cwd}` : ""}\n\nClick to open terminal panel`;
+        if (triggerBtn) triggerBtn.title = "Switch terminal session";
+      } catch {
+        if (infoBtn) infoBtn.title = "Click to open terminal panel";
+        if (triggerBtn) triggerBtn.title = "Switch terminal session";
+      }
+      return wrap;
+    };
+
+    try {
+      const cmd = window.zion.commands.registerCommand("terminal.switchSession", () => switchSession());
+      ctx.subscriptions.push(cmd);
+    } catch {}
+
+    const update = () => {
+      try {
+        ensureControl();
+      } catch {}
+      try {
+        if (menuEl) {
+          renderMenu().then(() => positionMenu()).catch(() => {});
+        }
+      } catch {}
+    };
+
+    if (!ensureControl()) {
+      deferred = window.setInterval(() => {
+        if (ensureControl()) {
+          try { window.clearInterval(deferred); } catch {}
+          deferred = null;
+        }
+      }, 500);
+    }
+
+    const sub1 = window.zion.state.onDidChange("terminal.activeSessionId", update);
+    const sub2 = window.zion.state.onDidChange("terminal.sessions", update);
+    ctx.subscriptions.push({ dispose: () => { try { sub1.dispose?.(); } catch {} } });
+    ctx.subscriptions.push({ dispose: () => { try { sub2.dispose?.(); } catch {} } });
+
+    ctx.subscriptions.push({
+      dispose: () => {
+        try { closeMenu(); } catch {}
+        try { if (deferred) window.clearInterval(deferred); } catch {}
+        try { wrap?.remove?.(); } catch {}
+        wrap = null;
+        infoBtn = null;
+        triggerBtn = null;
+      }
+    });
+  } catch {}
+
   try {
     for (let i = 1; i <= 9; i++) {
       const id = `terminal.setActiveSession${i}`;
@@ -700,8 +975,19 @@ export async function activate(ctx) {
         priority: 94,
         execute: () => window.zion.commands.executeCommand("terminal.openHistory")
       });
+      const d3 = slash.registerCommand({
+        id: "terminal.switchSession",
+        trigger: ["term", "terminal", "switch", "ts"],
+        title: "Switch Terminal Session",
+        description: "Open terminal session switcher",
+        category: "terminal",
+        icon: "🔼",
+        priority: 93,
+        execute: () => window.zion.commands.executeCommand("terminal.switchSession")
+      });
       if (d1) ctx.subscriptions.push(d1);
       if (d2) ctx.subscriptions.push(d2);
+      if (d3) ctx.subscriptions.push(d3);
     }
   } catch {}
 }

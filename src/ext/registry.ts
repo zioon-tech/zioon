@@ -9,7 +9,14 @@ import { findNext, findPrevious, selectMatches, replaceNext, replaceAll, SearchQ
 import { setSearchQuery as setSearchQueryEffect } from "@codemirror/search";
 import { EditorView } from "@codemirror/view";
 import { notificationManager } from "../notification/manager";
-import { activityBarRuntime, auxiliaryBarRuntime, bindWorkbenchCore, bottomPanelRuntime, sideBarRuntime } from "../ui/workbench/runtime";
+import {
+  activityBarRuntime,
+  auxiliaryBarRuntime,
+  bindWorkbenchCore,
+  bottomPanelRuntime,
+  responsiveRuntime,
+  sideBarRuntime
+} from "../ui/workbench/runtime";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -2016,6 +2023,18 @@ const registry = new Registry();
       setHeight: (h: number) => bottomPanelRuntime.setHeight(h),
       maximize: () => bottomPanelRuntime.maximize(),
       restore: () => bottomPanelRuntime.restore()
+    },
+    responsive: {
+      getCurrentDeviceType: () => responsiveRuntime.getCurrentDeviceType(),
+      getCurrentMode: () => responsiveRuntime.getCurrentMode(),
+      getScreenWidth: () => responsiveRuntime.getScreenWidth(),
+      getScreenHeight: () => responsiveRuntime.getScreenHeight(),
+      isMobile: () => responsiveRuntime.isMobile(),
+      isTablet: () => responsiveRuntime.isTablet(),
+      isDesktop: () => responsiveRuntime.isDesktop(),
+      onDidChangeDeviceType: (fn: any) => responsiveRuntime.onDidChangeDeviceType(fn),
+      onDidChangeMode: (fn: any) => responsiveRuntime.onDidChangeMode(fn),
+      setMode: (mode: any) => responsiveRuntime.setMode(mode)
     },
     window: {
       activeEditor: null as any

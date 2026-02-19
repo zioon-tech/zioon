@@ -3,6 +3,7 @@
   --panel: #282a36;
   --border: #44475a;
   --fg: #d1d5db;
+  --dim: rgba(209,213,219,0.60);
   --accent: #6272a4;
   --ok: #50fa7b;
 
@@ -64,6 +65,7 @@
   --panel: #ffffff;
   --border: #dcdfe6;
   --fg: #2a2a2a;
+  --dim: rgba(42,42,42,0.55);
   --accent: #3b82f6;
   --ok: #16a34a;
 
@@ -241,6 +243,48 @@ html, body {
   align-items: center;
   gap: 16px;
 }
+
+#bottombar-right .zion-terminal-bottombar-switcher {
+  display: inline-flex;
+  align-items: stretch;
+  background: transparent;
+}
+
+#bottombar-right .zion-terminal-bottombar-switcher button {
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  height: 22px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+#bottombar-right .zion-terminal-bottombar-info {
+  padding: 0 10px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#bottombar-right .zion-terminal-bottombar-trigger {
+  width: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0;
+}
+
+#bottombar-right .zion-terminal-bottombar-switcher:hover {
+  background: transparent;
+}
+
+#bottombar-right .zion-terminal-bottombar-trigger:hover {
+  background: rgba(128,128,128,0.12);
+}
 #bottombar::-webkit-scrollbar {
   height: 6px;
   background: transparent;
@@ -260,9 +304,132 @@ html, body {
   overflow: hidden;
   min-height: 0;
   overscroll-behavior: none;
+  position: relative;
+  --mobilebar-h: 48px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.zion-overlay-mask {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: calc(var(--mobilebar-h, 0px) + var(--safe-bottom, 0px));
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 40;
+}
+
+.zion-mobilebar {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--mobilebar-h, 48px) + var(--safe-bottom, 0px));
+  padding-bottom: var(--safe-bottom, 0px);
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  z-index: 60;
+  box-sizing: border-box;
+  gap: 8px;
+  align-items: center;
+}
+
+.zion-mobilebar-list {
+  display: flex;
+  gap: 4px;
+  overflow: auto;
+  padding: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.zion-mobilebar-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  flex: 0 0 auto;
+}
+
+.zion-mobilebar-item,
+.zion-mobilebar-action {
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  height: 36px;
+  min-width: 40px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  transition: background 120ms ease;
+}
+
+.zion-mobilebar-item .codicon,
+.zion-mobilebar-action .codicon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.zion-mobilebar-item:hover,
+.zion-mobilebar-action:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="light"] .zion-mobilebar-item:hover,
+:root[data-theme="light"] .zion-mobilebar-action:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.zion-mobilebar-item.is-active {
+  background: rgba(98, 114, 164, 0.14);
+}
+
+:root[data-theme="light"] .zion-mobilebar-item.is-active {
+  background: rgba(59, 130, 246, 0.14);
+}
+
+:root[data-zion-device-type="mobile"] .zion-sidebar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: calc(var(--mobilebar-h, 0px) + var(--safe-bottom, 0px));
+  width: min(var(--sidebar-overlay-w, 240px), 92vw);
+  z-index: 70;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-zion-device-type="mobile"] .zion-auxbar {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: calc(var(--mobilebar-h, 0px) + var(--safe-bottom, 0px));
+  width: min(var(--auxbar-overlay-w, 300px), 92vw);
+  z-index: 70;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-zion-device-type="mobile"] .zion-bottompanel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--mobilebar-h, 0px) + var(--safe-bottom, 0px));
+  height: var(--bottompanel-overlay-h, 0px);
+  max-height: calc(100% - var(--mobilebar-h, 0px) - var(--safe-bottom, 0px));
+  z-index: 70;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-zion-device-type="mobile"] .cm-content {
+  padding-bottom: calc(12px + var(--mobilebar-h, 0px) + var(--safe-bottom, 0px));
 }
 
 .zion-activitybar {
+  grid-row: 1 / 3;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -438,7 +605,7 @@ html, body {
 }
 
 .zion-bottompanel {
-  grid-column: 1 / 5;
+  grid-column: 2 / 5;
   grid-row: 2 / 3;
   display: flex;
   flex-direction: column;
@@ -755,6 +922,34 @@ html, body {
 .zion-editor-header-action.is-active {
   opacity: 1;
   background: rgba(98, 114, 164, 0.14);
+}
+
+.zion-editor-chat-runstop-button.is-stop {
+  opacity: 1;
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #ef4444;
+}
+
+:root .zion-editor-chat-runstop-button.is-stop:focus,
+:root .zion-editor-chat-runstop-button.is-stop:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+:root[data-theme="light"] .zion-editor-chat-runstop-button.is-stop {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.28);
+  color: #dc2626;
+}
+
+.zion-editor-chat-runstop-button.is-stop:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.zion-editor-chat-runstop-button.is-stop:active {
+  background: rgba(239, 68, 68, 0.28);
 }
 
 .zion-editor-header-action:active {
@@ -1973,6 +2168,92 @@ html, body {
   position: relative;
 }
 
+.zion-editor-header-menu .zion-editor-header-menu-section {
+  font-weight: 600;
+  padding-right: 8px;
+}
+
+.zion-editor-header-menu .zion-editor-header-menu-section-content,
+.zion-editor-header-menu .zion-editor-header-menu-item-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.zion-editor-header-menu .zion-editor-header-menu-item-content {
+  width: 100%;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.zion-editor-header-menu .zion-editor-header-menu-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.zion-editor-header-menu .zion-editor-header-menu-chevron {
+  width: 14px;
+  flex: 0 0 14px;
+  opacity: 0.75;
+  color: var(--dim);
+}
+
+.zion-editor-header-menu .zion-editor-header-menu-item-state {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.zion-editor-header-menu .zion-editor-header-menu-item-state.is-toggle.is-checked {
+  opacity: 0.9;
+}
+
+.zion-editor-header-menu .zion-editor-header-menu-item-state .codicon {
+  font-size: 13px;
+  line-height: 13px;
+}
+
+.zion-editor-header-menu .zion-editor-header-menu-section-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-editor-header-menu .zion-editor-header-menu-item-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-editor-header-menu .zion-context-menu-item {
+  max-width: none;
+  padding-right: 10px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.zion-editor-header-menu .zion-context-menu-item.zion-editor-header-menu-item {
+  padding-left: 22px;
+}
+
+.zion-editor-header-menu .zion-context-menu-item > span,
+.zion-editor-header-menu .zion-context-menu-item > div {
+  white-space: normal;
+}
+
 .zion-context-menu-item {
   display: flex;
   width: 100%;
@@ -2000,6 +2281,12 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.zion-editor-header-menu .zion-context-menu-item > .zion-editor-header-menu-item-content,
+.zion-editor-header-menu .zion-context-menu-item > .zion-editor-header-menu-section-content {
+  display: flex;
+  white-space: normal;
 }
 
 /* 强制限制二级菜单中菜单项的宽度 */

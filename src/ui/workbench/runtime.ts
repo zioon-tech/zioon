@@ -93,6 +93,9 @@ let core: { state: StateLike; events: EventsLike } | null = null;
 
 export function bindWorkbenchCore(input: { state: StateLike; events: EventsLike }) {
   core = input;
+  try {
+    responsiveRuntime.start();
+  } catch {}
 }
 
 function evalWhen(expr?: string): boolean {
@@ -116,6 +119,247 @@ class ChangeEmitter {
       try {
         fn();
       } catch {}
+    }
+  }
+}
+
+class PayloadEmitter<T> {
+  private listeners = new Set<(payload: T) => void>();
+
+  on(fn: (payload: T) => void): Disposable {
+    this.listeners.add(fn);
+    return { dispose: () => this.listeners.delete(fn) };
+  }
+
+  emit(payload: T) {
+    for (const fn of Array.from(this.listeners)) {
+      try {
+        fn(payload);
+      } catch {}
+    }
+  }
+}
+
+export type ResponsiveDeviceType = "mobile" | "tablet" | "desktop" | "largedesktop";
+export type ResponsiveMode = "compact" | "medium" | "full" | "split";
+
+export const RESPONSIVE_BREAKPOINTS = {
+  mobile: 768,
+  tablet: 1024,
+  largeDesktop: 1440
+} as const;
+
+class ResponsiveRuntime {
+  private started = false;
+  private deviceEmitter = new PayloadEmitter<ResponsiveDeviceType>();
+  private modeEmitter = new PayloadEmitter<ResponsiveMode>();
+
+  start() {
+    if (this.started) return;
+    this.started = true;
+    try {
+      window.addEventListener("resize", this.onResize, { passive: true });
+    } catch {}
+    this.updateFromViewport({ applyPolicy: true });
+  }
+
+  getCurrentDeviceType(): ResponsiveDeviceType {
+    const v = core?.state.get<ResponsiveDeviceType>("ui.responsive.deviceType");
+    if (v === "mobile" || v === "tablet" || v === "desktop" || v === "largedesktop") return v;
+    return this.computeDeviceType(this.getScreenWidth());
+  }
+
+  getCurrentMode(): ResponsiveMode {
+    const v = core?.state.get<ResponsiveMode>("ui.responsive.mode");
+    if (v === "compact" || v === "medium" || v === "full" || v === "split") return v;
+    return this.computeMode(this.getCurrentDeviceType());
+  }
+
+  getScreenWidth(): number {
+    try {
+      const w = window.innerWidth;
+      return typeof w === "number" && isFinite(w) ? w : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  getScreenHeight(): number {
+    try {
+      const h = window.innerHeight;
+      return typeof h === "number" && isFinite(h) ? h : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  isMobile(): boolean {
+    return this.getCurrentDeviceType() === "mobile";
+  }
+
+  isTablet(): boolean {
+    return this.getCurrentDeviceType() === "tablet";
+  }
+
+  isDesktop(): boolean {
+    const t = this.getCurrentDeviceType();
+    return t === "desktop" || t === "largedesktop";
+  }
+
+  onDidChangeDeviceType(fn: (deviceType: ResponsiveDeviceType) => void): Disposable {
+    return this.deviceEmitter.on(fn);
+  }
+
+  onDidChangeMode(fn: (mode: ResponsiveMode) => void): Disposable {
+    return this.modeEmitter.on(fn);
+  }
+
+  setMode(mode: ResponsiveMode): void {
+    if (mode !== "compact" && mode !== "medium" && mode !== "full" && mode !== "split") return;
+    core?.state.set("ui.responsive.modeOverride", mode);
+    this.updateFromViewport({ applyPolicy: true });
+  }
+
+  private onResize = () => {
+    this.updateFromViewport({ applyPolicy: true });
+  };
+
+  private computeDeviceType(width: number): ResponsiveDeviceType {
+    const w = typeof width === "number" && isFinite(width) ? width : 0;
+    if (w < RESPONSIVE_BREAKPOINTS.mobile) return "mobile";
+    if (w < RESPONSIVE_BREAKPOINTS.tablet) return "tablet";
+    if (w < RESPONSIVE_BREAKPOINTS.largeDesktop) return "desktop";
+    return "largedesktop";
+  }
+
+  private computeMode(deviceType: ResponsiveDeviceType): ResponsiveMode {
+    switch (deviceType) {
+      case "mobile":
+        return "compact";
+      case "tablet":
+        return "medium";
+      case "desktop":
+        return "full";
+      case "largedesktop":
+        return "split";
+    }
+  }
+
+  private updateFromViewport(opts: { applyPolicy: boolean }) {
+    const nextDevice = this.computeDeviceType(this.getScreenWidth());
+    const override = core?.state.get<ResponsiveMode>("ui.responsive.modeOverride");
+    const nextMode =
+      override === "compact" || override === "medium" || override === "full" || override === "split"
+        ? override
+        : this.computeMode(nextDevice);
+
+    const prevDevice = core?.state.get<ResponsiveDeviceType>("ui.responsive.deviceType");
+    const prevMode = core?.state.get<ResponsiveMode>("ui.responsive.mode");
+
+    core?.state.set("ui.responsive.deviceType", nextDevice);
+    core?.state.set("ui.responsive.mode", nextMode);
+
+    try {
+      const de = document.documentElement;
+      de.dataset.zionDeviceType = nextDevice;
+      de.dataset.zionResponsiveMode = nextMode;
+    } catch {}
+
+    if (prevDevice !== nextDevice) {
+      this.deviceEmitter.emit(nextDevice);
+    }
+    if (prevMode !== nextMode) {
+      this.modeEmitter.emit(nextMode);
+    }
+
+    if (opts.applyPolicy) {
+      this.applyLayoutPolicy({ prevDevice, nextDevice, nextMode });
+    }
+  }
+
+  private applyLayoutPolicy(input: {
+    prevDevice: ResponsiveDeviceType | undefined;
+    nextDevice: ResponsiveDeviceType;
+    nextMode: ResponsiveMode;
+  }) {
+    if (!core) return;
+
+    const deviceChanged = input.prevDevice !== input.nextDevice;
+
+    if (deviceChanged && input.nextDevice === "mobile") {
+      try {
+        core.state.set("ui.responsive.snapshot.activityBarVisible", activityBarRuntime.isVisible());
+        core.state.set("ui.responsive.snapshot.sideBarVisible", sideBarRuntime.isVisible());
+        core.state.set("ui.responsive.snapshot.auxVisible", auxiliaryBarRuntime.isVisible());
+        core.state.set("ui.responsive.snapshot.bottomVisible", bottomPanelRuntime.isVisible());
+      } catch {}
+      try {
+        activityBarRuntime.hide();
+      } catch {}
+      try {
+        sideBarRuntime.hide();
+      } catch {}
+      try {
+        auxiliaryBarRuntime.hide();
+      } catch {}
+      try {
+        bottomPanelRuntime.hide();
+      } catch {}
+      return;
+    }
+
+    if (input.prevDevice === "mobile") {
+      const prevAux = core.state.get<boolean>("ui.responsive.snapshot.auxVisible");
+      const prevBottom = core.state.get<boolean>("ui.responsive.snapshot.bottomVisible");
+      if (typeof prevAux === "boolean") {
+        try {
+          if (prevAux) auxiliaryBarRuntime.show();
+          else auxiliaryBarRuntime.hide();
+        } catch {}
+      }
+      if (typeof prevBottom === "boolean") {
+        try {
+          if (prevBottom) bottomPanelRuntime.show();
+          else bottomPanelRuntime.hide();
+        } catch {}
+      }
+    }
+
+    if (deviceChanged) {
+      try {
+        activityBarRuntime.show();
+      } catch {}
+      try {
+        sideBarRuntime.show();
+      } catch {}
+    }
+
+    const sideWidthRaw = core.state.get<number>("ui.sideBar.width");
+    if (deviceChanged && input.nextMode === "medium") {
+      if (!(typeof sideWidthRaw === "number" && isFinite(sideWidthRaw))) {
+        try {
+          sideBarRuntime.setWidth(180);
+        } catch {}
+      }
+      try {
+        auxiliaryBarRuntime.hide();
+      } catch {}
+    }
+
+    if (deviceChanged && input.nextMode === "full") {
+      if (!(typeof sideWidthRaw === "number" && isFinite(sideWidthRaw))) {
+        try {
+          sideBarRuntime.setWidth(240);
+        } catch {}
+      }
+    }
+
+    if (deviceChanged && input.nextMode === "split") {
+      if (!(typeof sideWidthRaw === "number" && isFinite(sideWidthRaw))) {
+        try {
+          sideBarRuntime.setWidth(280);
+        } catch {}
+      }
     }
   }
 }
@@ -566,3 +810,4 @@ export const activityBarRuntime = new ActivityBarRuntime();
 export const sideBarRuntime = new SideBarRuntime();
 export const auxiliaryBarRuntime = new AuxiliaryBarRuntime();
 export const bottomPanelRuntime = new BottomPanelRuntime();
+export const responsiveRuntime = new ResponsiveRuntime();

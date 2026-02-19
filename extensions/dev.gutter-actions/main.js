@@ -21,15 +21,6 @@ export async function activate(ctx) {
     } else {
       document.body.classList.add(CSS_DISABLED_CLASS);
     }
-    // status item reflect
-    try {
-      window.zion.statusBar.registerItem({
-        id: "dev.gutter-actions.status",
-        text: `Gutter: ${enabled ? "On" : "Off"}`,
-        tooltip: "Toggle gutter actions",
-        onClick: () => window.zion.commands.executeCommand("dev.gutter-actions.toggle")
-      });
-    } catch {}
   };
 
   // init state
@@ -50,16 +41,22 @@ export async function activate(ctx) {
     try { localStorage.setItem("zion.gutterActions", enabled ? "1" : "0"); } catch {}
     if (enabled) document.body.classList.remove(CSS_DISABLED_CLASS);
     else document.body.classList.add(CSS_DISABLED_CLASS);
-    try {
-      window.zion.statusBar.registerItem({
-        id: "dev.gutter-actions.status",
-        text: `Gutter: ${enabled ? "On" : "Off"}`,
-        tooltip: "Toggle gutter actions",
-        onClick: () => window.zion.commands.executeCommand("dev.gutter-actions.toggle")
-      });
-    } catch {}
   });
   ctx.subscriptions.push({ dispose() { try { sub.dispose?.(); } catch {} } });
+
+  try {
+    const reg = window.zion?.__editorHeaderMenuRegistry;
+    const disp = reg?.register?.({
+      id: "dev.gutter-actions.headerMenu",
+      title: "Gutter Actions",
+      section: "Editor",
+      order: 10,
+      kind: "toggle",
+      getChecked: () => !!window.zion.state.get(STATE_KEY),
+      onClick: () => window.zion.commands.executeCommand("dev.gutter-actions.toggle")
+    });
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
 
   // inject visual extension (custom gutter)
   const { gutterActions } = await import('./gutter-actions.js');

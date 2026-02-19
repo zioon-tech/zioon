@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { activityBarRuntime, auxiliaryBarRuntime, bindWorkbenchCore, bottomPanelRuntime, sideBarRuntime } from "../src/ui/workbench/runtime";
+import {
+  activityBarRuntime,
+  auxiliaryBarRuntime,
+  bindWorkbenchCore,
+  bottomPanelRuntime,
+  responsiveRuntime,
+  sideBarRuntime
+} from "../src/ui/workbench/runtime";
 
 function createState() {
   const map = new Map();
@@ -191,5 +198,45 @@ describe("workbench runtime", () => {
 
     dispItem.dispose();
     dispView.dispose();
+  });
+
+  it("responsive should hide panels on mobile and restore visibility on desktop", () => {
+    const state = createState();
+    globalThis.innerWidth = 1200;
+    globalThis.innerHeight = 800;
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    bottomPanelRuntime.registerView({
+      id: "output.view",
+      pluginId: "core",
+      title: "Output",
+      component: { render: () => {} }
+    });
+
+    bottomPanelRuntime.show();
+    expect(state.get("ui.bottomPanel.visible")).toBe(true);
+
+    globalThis.innerWidth = 600;
+    window.dispatchEvent(new Event("resize"));
+    expect(responsiveRuntime.getCurrentDeviceType()).toBe("mobile");
+    expect(state.get("ui.bottomPanel.visible")).toBe(false);
+
+    bottomPanelRuntime.show();
+    expect(state.get("ui.bottomPanel.visible")).toBe(true);
+    globalThis.innerWidth = 620;
+    window.dispatchEvent(new Event("resize"));
+    expect(responsiveRuntime.getCurrentDeviceType()).toBe("mobile");
+    expect(state.get("ui.bottomPanel.visible")).toBe(true);
+
+    globalThis.innerWidth = 1200;
+    window.dispatchEvent(new Event("resize"));
+    expect(responsiveRuntime.getCurrentDeviceType()).toBe("desktop");
+    expect(state.get("ui.bottomPanel.visible")).toBe(true);
   });
 });

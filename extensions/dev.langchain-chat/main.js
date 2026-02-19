@@ -1258,26 +1258,6 @@ export async function activate(ctx) {
     );
   }
 
-  // 状态栏 Run/Stop 按钮
-  let runBtnDisp = null;
-  const updateRunBtn = (streaming) => {
-    runBtnDisp?.dispose?.();
-    runBtnDisp = window.zion.statusBar.registerItem({
-      id: "langchain.chat.runstop",
-      text: streaming ? "Stop" : "Run",
-      tooltip: "Mod-Enter: Run selection | Esc: Stop | Mod-Shift-R: Retry",
-      onClick: () => {
-        const s = window.zion.state.get("chat.streaming");
-        if (s) window.zion.commands.executeCommand("chat.stop");
-        else window.zion.commands.executeCommand("chat.runSelection");
-      }
-    });
-  };
-  updateRunBtn(false);
-  ctx.subscriptions.push(
-    window.zion.state.onDidChange("chat.streaming", (s) => updateRunBtn(!!s))
-  );
-
   // 状态栏 Model 按钮（动态展示与切换）
   let modelBtnDisp = null;
   const updateModelBtn = () => {
@@ -1308,6 +1288,82 @@ export async function activate(ctx) {
     window.zion.state.onDidChange("chat.activeModel", updateModelBtn),
     window.zion.state.onDidChange("models.catalog", updateModelBtn)
   );
+
+  // Editor header Run/Stop button (only when this plugin is active)
+  try {
+    let btn = null;
+    let streamingSub = null;
+    let deferred = null;
+
+    const ensureButton = () => {
+      const headerEl = document.querySelector(".zion-editor-header");
+      if (!headerEl) return null;
+
+      const settingsBtn = headerEl.querySelector("button[data-zion-editor-settings-menu-button='1']");
+
+      if (!btn || !btn.isConnected) {
+        btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "zion-editor-header-action is-icon zion-editor-chat-runstop-button";
+        btn.setAttribute("data-zion-langchain-runstop-button", "1");
+        btn.setAttribute("aria-label", "Run/Stop");
+        btn.onclick = (e) => {
+          try { e.stopPropagation(); } catch {}
+          try {
+            const streaming = !!window.zion?.state?.get?.("chat.streaming");
+            if (streaming) window.zion.commands.executeCommand("chat.stop");
+            else window.zion.commands.executeCommand("chat.runSelection");
+          } catch {}
+        };
+      }
+
+      const update = () => {
+        const streaming = !!window.zion?.state?.get?.("chat.streaming");
+        btn.innerHTML = `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
+        btn.title = streaming ? "Stop (Esc)" : "Run selection (Mod-Enter)";
+        try { btn.classList.toggle("is-stop", streaming); } catch {}
+      };
+      update();
+
+      if (settingsBtn) headerEl.insertBefore(btn, settingsBtn);
+      else headerEl.appendChild(btn);
+
+      return btn;
+    };
+
+    if (!ensureButton()) {
+      deferred = window.setInterval(() => {
+        if (ensureButton()) {
+          try { window.clearInterval(deferred); } catch {}
+          deferred = null;
+        }
+      }, 500);
+    }
+
+    try {
+      streamingSub = window.zion.state.onDidChange("chat.streaming", () => {
+        try {
+          if (btn && btn.isConnected) {
+            const streaming = !!window.zion?.state?.get?.("chat.streaming");
+            btn.innerHTML = `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
+            btn.title = streaming ? "Stop (Esc)" : "Run selection (Mod-Enter)";
+            try { btn.classList.toggle("is-stop", streaming); } catch {}
+          }
+        } catch {}
+      });
+    } catch {}
+
+    ctx.subscriptions.push({
+      dispose: () => {
+        try { streamingSub?.dispose?.(); } catch {}
+        try { if (deferred) window.clearInterval(deferred); } catch {}
+        try { btn?.remove?.(); } catch {}
+        btn = null;
+        streamingSub = null;
+        deferred = null;
+      }
+    });
+  } catch {}
 
   // 注册“模型管理”工具（CRUD + 设置激活）
   try { registerModelsTools(); } catch {}

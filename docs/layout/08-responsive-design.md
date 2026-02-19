@@ -16,60 +16,45 @@ Zion Next 作为一个网页端应用，需要适配多种设备形态，包括�
 ### 断点配置
 
 ```typescript
-// src/layout/responsive.ts
-
-export const BREAKPOINTS = {
-  mobile: 768,      // 手机
-  tablet: 1024,     // 平板
-  largeDesktop: 1440 // 大屏
-};
+// src/ui/workbench/runtime.ts
+export const RESPONSIVE_BREAKPOINTS = {
+  mobile: 768,
+  tablet: 1024,
+  largeDesktop: 1440
+} as const;
 ```
 
 ## 🎨 不同设备的布局策略
 
+Zion Next 的响应式目标是让工作台在不同屏幕宽度下保持“可操控”。在小屏下会采用更接近飞书/IM 类应用的模式：底部提供主入口（来自 Activity Bar 的按钮），侧边栏/辅助栏/底部面板以覆盖层形式打开，点击遮罩可关闭。
+
 ### 手机端 (< 768px) - Compact Mode
+
+**特点**：
+- 左侧 Activity Bar 不占用布局列；底部显示「Mobile Bar」承载 Activity Bar 的入口（可横向滚动）
+- Side Bar / Auxiliary Bar / Bottom Panel 默认隐藏，但可作为覆盖层打开
+- 点击遮罩关闭当前打开的覆盖层（不影响底部 Mobile Bar）
+- 触屏与安全区：Mobile Bar 自动包含 iOS safe-area 底部安全区，编辑区也会预留底部空间避免被遮挡
 
 ```
 ┌───────────────────────────────────────┐
-│  Zion             [☰]          [⋯]   │
-├───────────────────────────────────────┤
+│              EDITOR AREA              │
 │                                       │
-│           EDITOR AREA                 │
-│         (100% height)                 │
+│      (side/aux/bottom as overlay)     │
 │                                       │
 ├───────────────────────────────────────┤
-│  [💬] [📁] [⚙️] [⌨️] [📦]            │  ← 底部导航
+│  [💬] [📁] [⚙️] [⌨️] ...        [⌘]   │  ← Mobile Bar
 └───────────────────────────────────────┘
-
-抽屉菜单（点击 ☰）:
-┌─────────────┐
-│ ☰           │ ← 左滑关闭
-│─────────────│
-│ Sessions    │
-│ Files       │
-│ TOC         │
-│ Settings    │
-└─────────────┘
 ```
-
-**特点**：
-- 侧边栏隐藏，改为抽屉菜单
-- 底部面板改为全屏覆盖
-- 编辑器占满 100% 高度
-- 底部导航栏显示核心功能
-- 右侧辅助边栏隐藏
 
 **布局配置**：
 
 ```typescript
 {
-  activityBar: { visible: false },
-  sideBar: { visible: false },
-  auxiliaryBar: { visible: false },
-  bottomPanel: { visible: false },
-  editorArea: { width: '100%', height: '100%' },
-  statusBar: { visible: true, compact: true },
-  bottomNav: { visible: true }
+  activityBar: { visible: '(左侧不占位，入口下沉到底部)' },
+  sideBar: { visible: false, mode: 'overlay' },
+  auxiliaryBar: { visible: false, mode: 'overlay' },
+  bottomPanel: { visible: false, mode: 'overlay' }
 }
 ```
 
@@ -77,38 +62,19 @@ export const BREAKPOINTS = {
 
 ### 平板端 (768px - 1024px) - Medium Mode
 
-```
-┌───────────────────────────────────────────────┐
-│  TITLE BAR                     [汉堡菜单 ☰]    │
-├──────┬───────────────────────────────────────┤
-│ACT   │  SIDE BAR (180px)                      │
-│BAR   │  ┌────────────────────────────────┐    │
-│💬📁  │  │ Session List                  │    │
-│⚙️    │  │                                │    │
-│      │  └────────────────────────────────┘    │
-├──────┴───────────────────────────────────────┤
-│  EDITOR AREA (flex-grow)                      │
-├───────────────────────────────────────────────┤
-│  [Terminal] [Output] [Problems]              │  ← 可滑动标签
-└───────────────────────────────────────────────┘
-```
-
 **特点**：
-- 左侧边栏缩小到 180px
-- 右侧辅助边栏默认隐藏，以覆盖层形式显示
-- 底部面板简化为可滑动的标签栏
-- 活动栏可能简化或隐藏
+- Side Bar 默认宽度调整为 180px（仍支持拖拽调整）
+- Auxiliary Bar 默认隐藏（需要时由用户/插件主动打开）
+- Bottom Panel 保持现有交互（多视图 + 拖拽高度 + 最大化/恢复）
 
 **布局配置**：
 
 ```typescript
 {
-  activityBar: { visible: true, simplified: true },
+  activityBar: { visible: true },
   sideBar: { visible: true, width: 180 },
-  auxiliaryBar: { visible: false, mode: 'overlay' },
-  bottomPanel: { visible: true, height: 180, mode: 'tabs' },
-  editorArea: { width: 'calc(100% - 180px)' },
-  statusBar: { visible: true, compact: false }
+  auxiliaryBar: { visible: false },
+  bottomPanel: { visible: '(遵循用户当前状态)' }
 }
 ```
 
@@ -116,30 +82,10 @@ export const BREAKPOINTS = {
 
 ### 桌面端 (1024px - 1440px) - Full Mode
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  TITLE BAR                                                   │
-├──────┬──────────────────────────────────────┬───────────┤
-│ACT   │  SIDE BAR (240px)                     │AUX(300px) │
-│BAR   │  ┌────────────┐                      │           │
-│💬📁  │  │ Sessions   │                      │ Preview  │
-│⚙️    │  │ Files      │                      │ Artifacts│
-│      │  └────────────┘                      │           │
-├──────┴──────────────────────────────────────┴───────────┤
-│  EDITOR AREA (flex-grow)                                     │
-├─────────────────────────────────────────────────────────────┤
-│  STATUS BAR (left | center | right)                         │
-└─────────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────────┐
-│  BOTTOM PANEL (200px) [Terminal] [Output] [Problems]        │
-└─────────────────────────────────────────────────────────────┘
-```
-
 **特点**：
-- 所有区域同时显示
-- 左侧边栏 240px，右侧辅助边栏 300px
-- 底部面板 200px，支持多个视图切换
-- 完整的状态栏
+- Activity Bar / Side Bar 默认显示
+- Side Bar 默认宽度 240px（支持拖拽调整）
+- Auxiliary Bar / Bottom Panel 按用户状态显示（可通过命令/Activity Bar 入口打开）
 
 **布局配置**：
 
@@ -147,10 +93,8 @@ export const BREAKPOINTS = {
 {
   activityBar: { visible: true },
   sideBar: { visible: true, width: 240 },
-  auxiliaryBar: { visible: true, width: 300 },
-  bottomPanel: { visible: true, height: 200 },
-  editorArea: { width: 'calc(100% - 540px)' },
-  statusBar: { visible: true, mode: 'full' }
+  auxiliaryBar: { visible: '(遵循用户当前状态)' },
+  bottomPanel: { visible: '(遵循用户当前状态)' }
 }
 ```
 
@@ -158,33 +102,9 @@ export const BREAKPOINTS = {
 
 ### 大屏端 (> 1440px) - Split Mode
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  TITLE BAR                                                   │
-├──────┬──────────────────────────────────────┬───────────┤
-│ACT   │  SIDE BAR (280px)                     │AUX(350px) │
-│BAR   │  ┌────────────┐                      │           │
-│💬📁  │  │ Sessions   │                      │ Preview  │
-│⚙️    │  │ Files      │                      │ Artifacts│
-│      │  └────────────┘                      │           │
-├──────┴──────────────────────────────────────┴───────────┤
-│  EDITOR AREA (flex-grow)                                     │
-│  ┌────────────────┬────────────────┐                       │
-│  │   Group A     │   Group B      │                       │
-│  │                │                │                       │
-│  └────────────────┴────────────────┘                       │
-├─────────────────────────────────────────────────────────────┤
-│  STATUS BAR                                                   │
-└─────────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────────┐
-│  BOTTOM PANEL (250px) [Terminal] [Output] [Problems]        │
-└─────────────────────────────────────────────────────────────┘
-```
-
 **特点**：
-- 更大的侧边栏和辅助边栏
-- 支持编辑器分屏
-- 更大的底部面板
+- Side Bar 默认宽度调整为 280px（支持拖拽调整）
+- 其它区域与桌面端一致（按用户状态显示）
 
 **布局配置**：
 
@@ -192,10 +112,8 @@ export const BREAKPOINTS = {
 {
   activityBar: { visible: true },
   sideBar: { visible: true, width: 280 },
-  auxiliaryBar: { visible: true, width: 350 },
-  bottomPanel: { visible: true, height: 250 },
-  editorArea: { width: 'calc(100% - 630px)', supportsSplit: true },
-  statusBar: { visible: true, mode: 'full' }
+  auxiliaryBar: { visible: '(遵循用户当前状态)' },
+  bottomPanel: { visible: '(遵循用户当前状态)' }
 }
 ```
 
@@ -266,61 +184,9 @@ window.zion.responsive.setMode('full');
 
 ## 🎨 插件适配响应式
 
-### 在 Manifest 中配置
-
-```json
-{
-  "zion": {
-    "contributes": {
-      "sideBarViews": [
-        {
-          "id": "session.list",
-          "title": "Sessions",
-          "icon": "💬",
-          "order": 10,
-          "responsive": {
-            "mobile": {
-              "visible": false,
-              "mode": "drawer"
-            },
-            "tablet": {
-              "visible": true,
-              "width": 180
-            },
-            "desktop": {
-              "visible": true,
-              "width": 240
-            }
-          }
-        }
-      ],
-      "auxiliaryBarViews": [
-        {
-          "id": "preview.view",
-          "title": "Preview",
-          "icon": "🌐",
-          "order": 10,
-          "responsive": {
-            "mobile": {
-              "visible": false,
-              "mode": "fullscreen"
-            },
-            "tablet": {
-              "visible": true,
-              "mode": "overlay",
-              "width": "50%"
-            },
-            "desktop": {
-              "visible": true,
-              "width": 300
-            }
-          }
-        }
-      ]
-    }
-  }
-}
-```
+目前不支持在 Manifest 中声明 `responsive` 字段（文档口径会以当前实现为准）。插件建议通过以下方式适配：
+- 使用 `window.zion.responsive` 读取设备类型/模式并响应变化
+- 使用 CSS 媒体查询（`@media`）和 `document.documentElement.dataset`（`data-zion-device-type` / `data-zion-responsive-mode`）做样式分支
 
 ### 在插件代码中适配
 
@@ -400,67 +266,6 @@ export async function activate(ctx) {
 }
 ```
 
-## 📱 手机端特定功能
-
-### 抽屉菜单
-
-```javascript
-// 打开抽屉菜单
-window.zion.mobile.openDrawer();
-
-// 关闭抽屉菜单
-window.zion.mobile.closeDrawer();
-
-// 切换抽屉菜单
-window.zion.mobile.toggleDrawer();
-
-// 监听抽屉菜单状态
-window.zion.mobile.onDrawerChanged((open) => {
-  console.log('Drawer:', open ? 'open' : 'closed');
-});
-```
-
-### 底部导航
-
-```javascript
-// 注册底部导航项目
-window.zion.mobile.registerBottomNavItems([
-  {
-    id: 'sessions',
-    icon: '💬',
-    label: 'Sessions',
-    onClick: () => window.zion.mobile.openDrawer()
-  },
-  {
-    id: 'files',
-    icon: '📁',
-    label: 'Files',
-    onClick: () => window.zion.sideBar.activateView('files.explorer')
-  },
-  {
-    id: 'terminal',
-    icon: '⌨️',
-    label: 'Terminal',
-    onClick: () => window.zion.mobile.openFullscreen('terminal.view')
-  }
-]);
-```
-
-### 全屏视图
-
-```javascript
-// 打开全屏视图
-window.zion.mobile.openFullscreen('preview.view');
-
-// 关闭全屏视图
-window.zion.mobile.closeFullscreen();
-
-// 监听全屏视图变化
-window.zion.mobile.onFullscreenChanged((viewId) => {
-  console.log('Fullscreen view:', viewId);
-});
-```
-
 ## 🎯 CSS 媒体查询
 
 ### 在组件样式中使用
@@ -504,128 +309,6 @@ class ResponsiveComponent {
     });
   }
 }
-```
-
-## 📊 触屏手势支持
-
-### 滑动手势
-
-```javascript
-class SwipeableComponent {
-  constructor(container) {
-    this.container = container;
-    this.touchStartX = 0;
-    this.touchStartY = 0;
-    this.bindSwipe();
-  }
-  
-  bindSwipe() {
-    this.container.addEventListener('touchstart', (e) => {
-      this.touchStartX = e.touches[0].clientX;
-      this.touchStartY = e.touches[0].clientY;
-    });
-    
-    this.container.addEventListener('touchend', (e) => {
-      const touchEndX = e.changedTouches[0].clientX;
-      const touchEndY = e.changedTouches[0].clientY;
-      
-      const deltaX = touchEndX - this.touchStartX;
-      const deltaY = touchEndY - this.touchStartY;
-      
-      // 判断滑动方向
-      if (Math.abs(deltaX) > Math.abs(deltaY)) {
-        // 水平滑动
-        if (deltaX > 50) {
-          this.onSwipeRight();
-        } else if (deltaX < -50) {
-          this.onSwipeLeft();
-        }
-      } else {
-        // 垂直滑动
-        if (deltaY > 50) {
-          this.onSwipeDown();
-        } else if (deltaY < -50) {
-          this.onSwipeUp();
-        }
-      }
-    });
-  }
-  
-  onSwipeRight() {
-    console.log('Swipe right');
-  }
-  
-  onSwipeLeft() {
-    console.log('Swipe left');
-  }
-  
-  onSwipeUp() {
-    console.log('Swipe up');
-  }
-  
-  onSwipeDown() {
-    console.log('Swipe down');
-  }
-}
-```
-
-### 长按手势
-
-```javascript
-class LongPressComponent {
-  constructor(container) {
-    this.container = container;
-    this.longPressTimer = null;
-    this.bindLongPress();
-  }
-  
-  bindLongPress() {
-    this.container.addEventListener('touchstart', () => {
-      this.longPressTimer = setTimeout(() => {
-        this.onLongPress();
-      }, 500);
-    });
-    
-    this.container.addEventListener('touchend', () => {
-      clearTimeout(this.longPressTimer);
-    });
-    
-    this.container.addEventListener('touchmove', () => {
-      clearTimeout(this.longPressTimer);
-    });
-  }
-  
-  onLongPress() {
-    console.log('Long press');
-    // 显示上下文菜单等
-  }
-}
-```
-
-## 🔄 布局持久化
-
-```javascript
-// 保存针对不同设备的布局配置
-window.zion.layout.saveResponsiveLayout({
-  mobile: {
-    sideBar: { visible: false },
-    auxiliaryBar: { visible: false },
-    bottomPanel: { visible: false }
-  },
-  tablet: {
-    sideBar: { visible: true, width: 180 },
-    auxiliaryBar: { visible: false },
-    bottomPanel: { visible: true, height: 180 }
-  },
-  desktop: {
-    sideBar: { visible: true, width: 240 },
-    auxiliaryBar: { visible: true, width: 300 },
-    bottomPanel: { visible: true, height: 200 }
-  }
-});
-
-// 加载适合当前设备的布局
-const layout = window.zion.layout.loadResponsiveLayout();
 ```
 
 ## 📊 最佳实践

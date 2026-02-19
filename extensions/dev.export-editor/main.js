@@ -37,6 +37,29 @@ function blobUrl(blob) {
   return URL.createObjectURL(blob);
 }
 
+function registerHeaderMenuItems(ctx) {
+  try {
+    const reg = window.zion?.__editorHeaderMenuRegistry;
+    if (!reg?.register) return;
+    const items = [
+      { id: "dev.export-editor.png", title: "Export as PNG", section: "Export", kind: "action", order: 81, command: "exportEditor.asPng" },
+      { id: "dev.export-editor.pngPages", title: "Export as PNG (pages)", section: "Export", kind: "action", order: 82, command: "exportEditor.asPngMulti" },
+      { id: "dev.export-editor.pdf", title: "Export as PDF", section: "Export", kind: "action", order: 83, command: "exportEditor.asPdf" }
+    ];
+    for (const it of items) {
+      const disp = reg.register({
+        id: it.id,
+        title: it.title,
+        section: it.section,
+        order: it.order,
+        kind: it.kind,
+        command: it.command
+      });
+      ctx?.subscriptions?.push?.(disp);
+    }
+  } catch {}
+}
+
 const STYLE_PROPS = [
   "display",
   "visibility",
@@ -466,6 +489,10 @@ function showQuickPick(actions) {
 }
 
 export async function activate(ctx) {
+  try {
+    registerHeaderMenuItems(ctx);
+  } catch {}
+
   const cmdPngSingle = window.zion.commands.registerCommand("exportEditor.asPng", async () => {
     try {
       await exportPngSingle();
@@ -512,22 +539,6 @@ export async function activate(ctx) {
       ]
     });
     ctx.subscriptions.push(menu);
-  } catch {}
-
-  try {
-    const status = window.zion.statusBar.registerItem({
-      id: "dev.export-editor",
-      text: "Export",
-      tooltip: "导出当前编辑器（保留渲染）",
-      onClick: () => {
-        showQuickPick([
-          { label: "Export as PNG", run: () => window.zion.commands.executeCommand("exportEditor.asPng") },
-          { label: "Export as PNG (pages)", run: () => window.zion.commands.executeCommand("exportEditor.asPngMulti") },
-          { label: "Export as PDF", run: () => window.zion.commands.executeCommand("exportEditor.asPdf") }
-        ]);
-      }
-    });
-    ctx.subscriptions.push(status);
   } catch {}
 
   try {

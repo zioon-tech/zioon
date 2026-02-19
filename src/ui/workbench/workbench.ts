@@ -1,4 +1,4 @@
-import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, sideBarRuntime } from "./runtime";
+import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -49,6 +49,12 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   const editorEl = el("div", "zion-editor");
   const auxiliaryBarEl = el("div", "zion-auxbar");
   const bottomPanelEl = el("div", "zion-bottompanel");
+  const overlayMaskEl = el("div", "zion-overlay-mask");
+  const mobileBarEl = el("div", "zion-mobilebar");
+  const mobileBarListEl = el("div", "zion-mobilebar-list");
+  const mobileBarActionsEl = el("div", "zion-mobilebar-actions");
+  mobileBarEl.appendChild(mobileBarListEl);
+  mobileBarEl.appendChild(mobileBarActionsEl);
 
   const editorHeaderEl = el("div", "zion-editor-header");
   const editorHeaderPathEl = el("div", "zion-editor-session-path");
@@ -62,10 +68,34 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   root.appendChild(editorEl);
   root.appendChild(auxiliaryBarEl);
   root.appendChild(bottomPanelEl);
+  root.appendChild(overlayMaskEl);
+  root.appendChild(mobileBarEl);
 
   host.appendChild(root);
 
+  const updateOverlayMask = () => {
+    const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
+    const hasSide = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0;
+    const hasAux = auxiliaryBarRuntime.isVisible() && auxiliaryBarRuntime.getViews().length > 0;
+    const hasBottom = bottomPanelRuntime.isVisible() && bottomPanelRuntime.getViews().length > 0;
+    overlayMaskEl.style.display = isMobile && (hasSide || hasAux || hasBottom) ? "block" : "none";
+  };
+
+  overlayMaskEl.onmousedown = (e) => {
+    if (e.target !== overlayMaskEl) return;
+    try {
+      sideBarRuntime.hide();
+    } catch {}
+    try {
+      auxiliaryBarRuntime.hide();
+    } catch {}
+    try {
+      bottomPanelRuntime.hide();
+    } catch {}
+  };
+
   const applyRowHeights = () => {
+    const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
     const visible = bottomPanelRuntime.isVisible();
     const hasViews = bottomPanelRuntime.getViews().length > 0;
     const maximized = bottomPanelRuntime.isMaximized();
@@ -77,24 +107,84 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
         out = Math.max(160, Math.round(rh - 160));
       } catch {}
     }
+    if (isMobile) {
+      root.style.setProperty("--bottompanel-h", `0px`);
+      root.style.setProperty("--bottompanel-overlay-h", `${Math.max(0, out)}px`);
+      updateOverlayMask();
+      return;
+    }
+    root.style.setProperty("--bottompanel-overlay-h", `0px`);
     root.style.setProperty("--bottompanel-h", `${Math.max(0, out)}px`);
+    updateOverlayMask();
   };
 
   const applyColumnWidths = () => {
+    const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
     const aVisible = activityBarRuntime.isVisible();
-    const sVisible = sideBarRuntime.isVisible();
+    const sVisible = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0;
     const xVisible = auxiliaryBarRuntime.isVisible() && auxiliaryBarRuntime.getViews().length > 0;
     const w = sideBarRuntime.getWidth();
     const xw = auxiliaryBarRuntime.getWidth();
-    root.style.setProperty("--activitybar-w", aVisible ? "48px" : "0px");
-    root.style.setProperty("--sidebar-w", sVisible ? `${w}px` : "0px");
-    root.style.setProperty("--auxbar-w", xVisible ? `${xw}px` : "0px");
-    activityBarEl.style.visibility = aVisible ? "visible" : "hidden";
-    activityBarEl.style.pointerEvents = aVisible ? "auto" : "none";
+    if (isMobile) {
+      root.style.setProperty("--activitybar-w", "0px");
+      root.style.setProperty("--sidebar-w", "0px");
+      root.style.setProperty("--auxbar-w", "0px");
+      root.style.setProperty("--sidebar-overlay-w", `${w}px`);
+      root.style.setProperty("--auxbar-overlay-w", `${xw}px`);
+      activityBarEl.style.visibility = "hidden";
+      activityBarEl.style.pointerEvents = "none";
+    } else {
+      root.style.setProperty("--activitybar-w", aVisible ? "48px" : "0px");
+      root.style.setProperty("--sidebar-w", sVisible ? `${w}px` : "0px");
+      root.style.setProperty("--auxbar-w", xVisible ? `${xw}px` : "0px");
+      activityBarEl.style.visibility = aVisible ? "visible" : "hidden";
+      activityBarEl.style.pointerEvents = aVisible ? "auto" : "none";
+    }
     sideBarEl.style.visibility = sVisible ? "visible" : "hidden";
     sideBarEl.style.pointerEvents = sVisible ? "auto" : "none";
     auxiliaryBarEl.style.visibility = xVisible ? "visible" : "hidden";
     auxiliaryBarEl.style.pointerEvents = xVisible ? "auto" : "none";
+    updateOverlayMask();
+  };
+
+  const renderMobileBar = () => {
+    const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
+    mobileBarEl.style.display = isMobile ? "flex" : "none";
+    if (!isMobile) return;
+    const items = activityBarRuntime.getItems();
+    const activeId = activityBarRuntime.getActiveItemId();
+    mobileBarListEl.innerHTML = "";
+    for (const it of items) {
+      const btn = el("button", "zion-mobilebar-item") as HTMLButtonElement;
+      btn.type = "button";
+      btn.title = safeText(it.tooltip || "");
+      btn.setAttribute("aria-label", safeText(it.tooltip || it.id));
+      if (activeId === it.id) btn.classList.add("is-active");
+      const icon = String(it.icon || "").trim();
+      btn.textContent = "";
+      const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
+      if (codiconMatch) {
+        const span = document.createElement("span");
+        span.className = `codicon codicon-${codiconMatch[1]}`;
+        btn.appendChild(span);
+      } else {
+        btn.textContent = safeText(icon);
+      }
+      btn.onclick = () => activityBarRuntime.activateItem(it.id);
+      mobileBarListEl.appendChild(btn);
+    }
+    mobileBarActionsEl.innerHTML = "";
+    const cmdBtn = el("button", "zion-mobilebar-action") as HTMLButtonElement;
+    cmdBtn.type = "button";
+    cmdBtn.title = "Commands";
+    cmdBtn.setAttribute("aria-label", "Commands");
+    cmdBtn.textContent = "⌘";
+    cmdBtn.onclick = () => {
+      try {
+        (window as any).zion?.commands?.executeCommand?.("commandPalette.open");
+      } catch {}
+    };
+    mobileBarActionsEl.appendChild(cmdBtn);
   };
 
   const renderActivityBar = () => {
@@ -820,13 +910,17 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   const dispS = sideBarRuntime.onDidChange(() => renderSideBar());
   const dispX = auxiliaryBarRuntime.onDidChange(() => renderAuxiliaryBar());
   const dispB = bottomPanelRuntime.onDidChange(() => renderBottomPanel());
-  const onResize = () => renderBottomPanel();
+  const onResize = () => {
+    renderMobileBar();
+    renderBottomPanel();
+  };
   window.addEventListener("resize", onResize);
 
   renderActivityBar();
   renderSideBar();
   renderAuxiliaryBar();
   renderBottomPanel();
+  renderMobileBar();
 
   return {
     editorHost,

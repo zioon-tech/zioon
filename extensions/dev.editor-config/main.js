@@ -148,19 +148,6 @@ export async function activate(ctx) {
   const kbCycle = window.zion.keybindings.register({ command: "dev.editor.cycleWidthMode", key: "Mod-Shift-B", when: "editorFocus" });
   ctx.subscriptions.push(kbCycle);
 
-  // Single consolidated status item that opens a config panel
-  try {
-    const cfgDisp = window.zion.statusBar.registerItem({
-      id: "dev.editor.config",
-      text: "Editor Config",
-      tooltip: "Editor settings",
-      onClick: () => openConfigPanel()
-    });
-    ctx.subscriptions.push(cfgDisp);
-  } catch (err) {
-    // ignore if status bar not available
-  }
-
   // Selection highlight init
   try {
     let selV = true;
@@ -177,32 +164,59 @@ export async function activate(ctx) {
     });
     ctx.subscriptions.push(toggleSel);
 
-    // status item
     try {
-      const selDisp = window.zion.statusBar.registerItem({
-        id: "dev.editor.selectionHighlight",
-        text: `SelHlt: ${selV ? "On" : "Off"}`,
-        tooltip: "Toggle Selection Highlight",
-        onClick: () => window.zion.commands.executeCommand("dev.editor.toggleSelectionHighlight")
+      const reg = window.zion?.__editorHeaderMenuRegistry;
+      const disp = reg?.register?.({
+        id: "dev.editor.selectionHighlight.headerMenu",
+        title: "Selection Highlight",
+        section: "Editor",
+        order: 20,
+        kind: "toggle",
+        getChecked: () => !!window.zion.state.get("ui.selectionHighlight"),
+        onClick: () => window.zion.commands.executeCommand("zion.toggleSelectionHighlight")
       });
-      ctx.subscriptions.push(selDisp);
-      const selSub = window.zion.state.onDidChange("ui.selectionHighlight", (nv) => {
-        try {
-          window.zion.statusBar.registerItem({
-            id: "dev.editor.selectionHighlight",
-            text: `SelHlt: ${nv ? "On" : "Off"}`,
-            tooltip: "Toggle Selection Highlight",
-            onClick: () => window.zion.commands.executeCommand("dev.editor.toggleSelectionHighlight")
-          });
-        } catch {}
-      });
-      ctx.subscriptions.push({ dispose() { try { selSub.dispose?.(); } catch {} } });
-    } catch (e) {
-      // ignore if status bar unavailable
-    }
+      if (disp) ctx.subscriptions.push(disp);
+    } catch {}
   } catch (e) {
     // ignore
   }
+
+  try {
+    const reg = window.zion?.__editorHeaderMenuRegistry;
+    if (reg?.register) {
+      const register = (it) => {
+        try {
+          const disp = reg.register(it);
+          if (disp) ctx.subscriptions.push(disp);
+        } catch {}
+      };
+
+      register({ id: "dev.editor.menu.openConfigPanel", title: "Editor Config…", section: "Editor", kind: "action", order: 40, onClick: () => openConfigPanel() });
+
+      register({ id: "dev.editor.menu.lineNumbers", title: "Line Numbers", section: "Editor", kind: "toggle", order: 41, getChecked: () => !!window.zion.state.get("ui.lineNumbers"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleLineNumbers") });
+      register({ id: "dev.editor.menu.activeLineHighlight", title: "Active Line Highlight", section: "Editor", kind: "toggle", order: 42, getChecked: () => !!window.zion.state.get("ui.activeLineHighlight"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleActiveLineHighlight") });
+      register({ id: "dev.editor.menu.syntaxHighlight", title: "Syntax Highlight", section: "Editor", kind: "toggle", order: 43, getChecked: () => !!window.zion.state.get("ui.syntaxHighlight"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleSyntaxHighlight") });
+      register({ id: "dev.editor.menu.autoIndent", title: "Auto Indent", section: "Editor", kind: "toggle", order: 44, getChecked: () => !!window.zion.state.get("ui.autoIndent"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleAutoIndent") });
+      register({ id: "dev.editor.menu.folding", title: "Folding", section: "Editor", kind: "toggle", order: 45, getChecked: () => !!window.zion.state.get("ui.folding"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleFolding") });
+      register({ id: "dev.editor.menu.lineWrap", title: "Line Wrap", section: "Editor", kind: "toggle", order: 46, getChecked: () => !!window.zion.state.get("ui.lineWrap"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleLineWrap") });
+      register({ id: "dev.editor.menu.minimap", title: "Minimap", section: "Editor", kind: "toggle", order: 47, getChecked: () => !!window.zion.state.get("ui.minimapEnabled"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleMinimap") });
+
+      register({ id: "dev.editor.menu.width.standard", title: "Width: Standard", section: "Layout", kind: "toggle", order: 50, getChecked: () => String(window.zion.state.get("ui.editorWidthMode") || "full") === "standard", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthStandard") });
+      register({ id: "dev.editor.menu.width.wide", title: "Width: Wide", section: "Layout", kind: "toggle", order: 51, getChecked: () => String(window.zion.state.get("ui.editorWidthMode") || "full") === "wide", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthWide") });
+      register({ id: "dev.editor.menu.width.full", title: "Width: Full", section: "Layout", kind: "toggle", order: 52, getChecked: () => String(window.zion.state.get("ui.editorWidthMode") || "full") === "full", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthFull") });
+
+      register({ id: "dev.editor.menu.heading.medium", title: "Heading: Medium", section: "Layout", kind: "toggle", order: 60, getChecked: () => String(window.zion.state.get("ui.headingSize") || "xsmall") === "medium", onClick: () => window.zion.commands.executeCommand("dev.editor.setHeadingSizeMedium") });
+      register({ id: "dev.editor.menu.heading.small", title: "Heading: Small", section: "Layout", kind: "toggle", order: 61, getChecked: () => String(window.zion.state.get("ui.headingSize") || "xsmall") === "small", onClick: () => window.zion.commands.executeCommand("dev.editor.setHeadingSizeSmall") });
+      register({ id: "dev.editor.menu.heading.xsmall", title: "Heading: XSmall", section: "Layout", kind: "toggle", order: 62, getChecked: () => String(window.zion.state.get("ui.headingSize") || "xsmall") === "xsmall", onClick: () => window.zion.commands.executeCommand("dev.editor.setHeadingSizeXSmall") });
+
+      register({ id: "dev.editor.menu.includeToolHistory", title: "Include Tool History", section: "Chat", kind: "toggle", order: 70, getChecked: () => !!window.zion.state.get("chat.includeToolHistory"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleIncludeToolHistory") });
+      register({ id: "dev.editor.menu.includeThinkingHistory", title: "Include Thinking History", section: "Chat", kind: "toggle", order: 71, getChecked: () => !!window.zion.state.get("chat.includeThinkingHistory"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleIncludeThinkingHistory") });
+      const getRcMode = () => String(window.zion.state.get("chat.toolCallsReasoningContentMode") || "auto");
+      register({ id: "dev.editor.menu.toolCallsRc.auto", title: "Tool Calls reasoning: Auto", section: "Chat", kind: "toggle", order: 73, getChecked: () => getRcMode() === "auto", onClick: () => window.zion.commands.executeCommand("dev.editor.setToolCallsReasoningContentMode", "auto") });
+      register({ id: "dev.editor.menu.toolCallsRc.always", title: "Tool Calls reasoning: Always", section: "Chat", kind: "toggle", order: 74, getChecked: () => getRcMode() === "always", onClick: () => window.zion.commands.executeCommand("dev.editor.setToolCallsReasoningContentMode", "always") });
+      register({ id: "dev.editor.menu.toolCallsRc.never", title: "Tool Calls reasoning: Never", section: "Chat", kind: "toggle", order: 75, getChecked: () => getRcMode() === "never", onClick: () => window.zion.commands.executeCommand("dev.editor.setToolCallsReasoningContentMode", "never") });
+    }
+  } catch {}
 
   // Include Tool History init (persist + commands)
   try {
@@ -348,141 +362,6 @@ export async function activate(ctx) {
     });
     ctx.subscriptions.push(dm);
 
-    // 在编辑器头部右侧添加 minimap 按钮
-    try {
-      const createMinimapButton = () => {
-        // 移除已存在的按钮
-        const existingBtn = document.getElementById("dev-editor-minimap-header-btn");
-        if (existingBtn) existingBtn.remove();
-
-        // 查找编辑器头部元素
-        const editorHeader = document.querySelector(".zion-editor-header");
-        if (!editorHeader) {
-          console.warn("Editor header not found, deferring minimap button creation");
-          return null;
-        }
-
-        const btn = document.createElement("button");
-        btn.id = "dev-editor-minimap-header-btn";
-        btn.className = "zion-editor-header-action is-icon";
-        btn.type = "button";
-        btn.title = minV ? "Hide Minimap" : "Show Minimap";
-        
-        btn.innerHTML = '<span class="codicon codicon-map" aria-hidden="true"></span>';
-        if (minV) btn.classList.add("is-active");
-        
-        btn.onclick = () => {
-          window.zion.commands.executeCommand("dev.editor.toggleMinimap");
-        };
-        
-        // 添加到头部右侧
-        editorHeader.appendChild(btn);
-        return btn;
-      };
-      
-      let minimapButton = createMinimapButton();
-      
-      // 如果找不到编辑器头部，延迟创建
-      if (!minimapButton) {
-        const deferred = setInterval(() => {
-          const btn = createMinimapButton();
-          if (btn) {
-            minimapButton = btn;
-            clearInterval(deferred);
-          }
-        }, 500);
-        
-        ctx.subscriptions.push({ dispose() { clearInterval(deferred); } });
-      }
-      
-      // 监听状态变化并更新按钮
-      const updateButtonIcon = (enabled) => {
-        if (!minimapButton) return;
-        minimapButton.innerHTML = '<span class="codicon codicon-map" aria-hidden="true"></span>';
-        minimapButton.classList.toggle("is-active", !!enabled);
-        minimapButton.title = enabled ? "Hide Minimap" : "Show Minimap";
-      };
-      
-      const minSub = window.zion.state.onDidChange("ui.minimapEnabled", (nv) => {
-        try {
-          persistMinimapPref(getCurrentSessionId(), !!nv);
-          updateButtonIcon(!!nv);
-        } catch {}
-      });
-      ctx.subscriptions.push({ dispose() { try { minSub.dispose?.(); } catch {} } });
-
-      // 监听 session 变化
-      const sessionSub = window.zion.state.onDidChange("sessions.currentId", (nv) => {
-        try {
-          const sid = nv ? String(nv) : "";
-          const v = applyMinimapForSession(sid);
-          updateButtonIcon(v);
-        } catch {}
-      });
-      ctx.subscriptions.push({ dispose() { try { sessionSub.dispose?.(); } catch {} } });
-      
-      // 清理按钮
-      ctx.subscriptions.push({
-        dispose() {
-          try {
-            const btn = document.getElementById("dev-editor-minimap-header-btn");
-            if (btn) btn.remove();
-          } catch {}
-        }
-      });
-    } catch (e) {
-      console.error("Failed to create minimap header button:", e);
-    }
-  } catch (e) {
-    // ignore
-  }
-
-  // Include Tool History init (persist + commands)
-  try {
-    let incV = true;
-    try {
-      const v = localStorage.getItem("zion.includeToolHistory");
-      if (v === "0" || v === "false") incV = false;
-      if (v === "1" || v === "true") incV = true;
-    } catch {}
-    window.zion.state.set("chat.includeToolHistory", incV);
-
-    const setInc = window.zion.commands.registerCommand("dev.editor.setIncludeToolHistory", (val) => {
-      const b = !!val;
-      try { localStorage.setItem("zion.includeToolHistory", b ? "1" : "0"); } catch {}
-      window.zion.state.set("chat.includeToolHistory", b);
-      return b;
-    });
-    const toggleInc = window.zion.commands.registerCommand("dev.editor.toggleIncludeToolHistory", () => {
-      const cur = !!window.zion.state.get("chat.includeToolHistory");
-      return window.zion.commands.executeCommand("dev.editor.setIncludeToolHistory", !cur);
-    });
-    ctx.subscriptions.push(setInc, toggleInc);
-  } catch (e) {
-    // ignore
-  }
-
-  // Include Thinking History init (persist + commands)
-  try {
-    let thV = true;
-    try {
-      const v = localStorage.getItem("zion.includeThinkingHistory");
-      if (v === "0" || v === "false") thV = false;
-      if (v === "1" || v === "true") thV = true;
-    } catch {}
-    window.zion.state.set("chat.includeThinkingHistory", thV);
-
-    const setThinking = window.zion.commands.registerCommand("dev.editor.setIncludeThinkingHistory", (val) => {
-      const b = !!val;
-      try { localStorage.setItem("zion.includeThinkingHistory", b ? "1" : "0"); } catch {}
-      window.zion.state.set("chat.includeThinkingHistory", b);
-      return b;
-    });
-    const toggleThinking = window.zion.commands.registerCommand("dev.editor.toggleIncludeThinkingHistory", () => {
-      const cur = !!window.zion.state.get("chat.includeThinkingHistory");
-      return window.zion.commands.executeCommand("dev.editor.setIncludeThinkingHistory", !cur);
-    });
-    ctx.subscriptions.push(setThinking, toggleThinking);
   } catch (e) {
     // ignore
   }

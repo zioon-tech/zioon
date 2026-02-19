@@ -189,6 +189,13 @@ function stickyUserHeaderView() {
         this.scrollHandler = this.onScroll.bind(this);
         this.configHandler = () => this.scheduleSync();
         window.addEventListener("zion-sticky-user-header-config-changed", this.configHandler);
+        this.resizeHandler = () => this.scheduleSync();
+        try {
+          window.addEventListener("resize", this.resizeHandler, { passive: true });
+        } catch {}
+        try {
+          this.widthModeSub = window?.zion?.state?.onDidChange?.("ui.editorWidthMode", () => this.scheduleSync());
+        } catch {}
         this.syncRaf = null;
 
         const root = view.dom;
@@ -280,9 +287,10 @@ function stickyUserHeaderView() {
 
       sync() {
         if (this.root?.dataset?.zionStickyUserHeaderOwner !== this.ownerId) return;
+        this.syncLayout();
         if (!isEnabled()) {
           this.headerEl.classList.add("is-empty");
-          this.applyHeight(0);
+          this.updateHeight(0);
           this.restoreBtn.style.display = "flex";
           return;
         }
@@ -390,6 +398,58 @@ function stickyUserHeaderView() {
         });
       }
 
+      syncLayout() {
+        try {
+          const root = this.root;
+          const header = this.headerEl;
+          const scroller = this.view?.scrollDOM || root?.querySelector?.(".cm-scroller");
+          if (!root || !header || !scroller) return;
+
+          const rootRect = root.getBoundingClientRect();
+          const scrollerRect = scroller.getBoundingClientRect();
+          let contentRight = scrollerRect.right;
+          try {
+            const minimapEl = scroller.querySelector?.(".cm-minimap-gutter");
+            if (minimapEl) {
+              const mmRect = minimapEl.getBoundingClientRect();
+              if (
+                mmRect &&
+                mmRect.width > 0 &&
+                mmRect.left >= scrollerRect.left &&
+                mmRect.left < contentRight
+              ) {
+                contentRight = mmRect.left;
+              }
+            }
+          } catch {}
+
+          const left = Math.round(scrollerRect.left - rootRect.left);
+          const width = Math.round(contentRight - scrollerRect.left);
+
+          if (Number.isFinite(left) && Number.isFinite(width) && width > 0) {
+            header.style.left = `${Math.max(0, left)}px`;
+            header.style.right = "auto";
+            header.style.width = `${width}px`;
+            header.style.boxSizing = "border-box";
+          }
+
+          try {
+            const css = getComputedStyle(scroller);
+            header.style.paddingLeft = css.paddingLeft || "";
+            header.style.paddingRight = css.paddingRight || "";
+          } catch {}
+
+          try {
+            if (this.restoreBtn) {
+              const rootRight = rootRect.right;
+              const rightOffset = Math.round(rootRight - contentRight);
+              const inset = 12;
+              this.restoreBtn.style.right = `${Math.max(0, rightOffset + inset)}px`;
+            }
+          } catch {}
+        } catch {}
+      }
+
       updateHeight(h) {
         // We only track height for scrollMargins, NO padding injection anymore
         const nextH = Math.max(0, Math.floor(h));
@@ -401,6 +461,8 @@ function stickyUserHeaderView() {
       destroy() {
         try {
           if (this.configHandler) window.removeEventListener("zion-sticky-user-header-config-changed", this.configHandler);
+          if (this.resizeHandler) window.removeEventListener("resize", this.resizeHandler);
+          try { this.widthModeSub?.dispose?.(); } catch {}
           if (this.syncRaf) window.cancelAnimationFrame(this.syncRaf);
           if (this.view?.scrollDOM && this.scrollHandler) {
             this.view.scrollDOM.removeEventListener("scroll", this.scrollHandler);

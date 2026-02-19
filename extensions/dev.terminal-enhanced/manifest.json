@@ -13,6 +13,7 @@
       "commands": [
         { "id": "terminal.openPanel", "title": "Open Terminal Panel" },
         { "id": "terminal.togglePanel", "title": "Toggle Terminal Panel" },
+        { "id": "terminal.switchSession", "title": "Terminal: Switch Session", "description": "Open terminal session switcher", "category": "Terminal" },
         { "id": "terminal.executeCommand", "title": "Execute Terminal Command" },
         { "id": "terminal.quickCommand", "title": "Quick Command Selector" },
         { "id": "terminal.toggleContext", "title": "Toggle Terminal Context in Chat" }

@@ -16,25 +16,24 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispDec);
 
-  // 状态栏按钮：Thinking On/Off
-  let btnDisp = null;
-  const updateBtn = () => {
-    const vis = !!window.zion.state.get("chat.thinkingVisible");
-    btnDisp?.dispose?.();
-    btnDisp = window.zion.statusBar.registerItem({
-      id: "dev.thinking.btn",
-      text: vis ? "Thinking: On" : "Thinking: Off",
-      tooltip: "Toggle rendering of model reasoning (思考内容)",
-      onClick: () => window.zion.commands.executeCommand("thinking.toggleVisibility")
-    });
-  };
-  updateBtn();
-  ctx.subscriptions.push(window.zion.state.onDidChange("chat.thinkingVisible", updateBtn));
-
   // 命令：切换可见性
   const dispToggle = window.zion.commands.registerCommand("thinking.toggleVisibility", () => {
     const cur = !!window.zion.state.get("chat.thinkingVisible");
     window.zion.state.set("chat.thinkingVisible", !cur);
   });
   ctx.subscriptions.push(dispToggle);
+
+  try {
+    const reg = window.zion?.__editorHeaderMenuRegistry;
+    const disp = reg?.register?.({
+      id: "dev.thinking.headerMenu",
+      title: "Thinking",
+      section: "Chat",
+      order: 30,
+      kind: "toggle",
+      getChecked: () => !!window.zion.state.get("chat.thinkingVisible"),
+      onClick: () => window.zion.commands.executeCommand("thinking.toggleVisibility")
+    });
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
 }

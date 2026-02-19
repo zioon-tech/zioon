@@ -257,6 +257,265 @@ function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
   } catch {}
 }
 
+type EditorHeaderMenuItem = {
+  id: string;
+  title?: string;
+  section?: string;
+  order?: number;
+  kind?: "action" | "toggle" | "separator";
+  command?: string;
+  args?: any[];
+  onClick?: () => void;
+  getChecked?: () => boolean;
+};
+
+function getEditorHeaderMenuRegistry() {
+  const z = window.zion as any;
+  if (z.__editorHeaderMenuRegistry) return z.__editorHeaderMenuRegistry as {
+    register: (item: EditorHeaderMenuItem) => Disposable;
+    list: () => EditorHeaderMenuItem[];
+  };
+
+  const items = new Map<string, EditorHeaderMenuItem>();
+  const registry = {
+    register(item: EditorHeaderMenuItem): Disposable {
+      if (!item || !item.id) return { dispose() {} };
+      items.set(item.id, item);
+      return { dispose() { items.delete(item.id); } };
+    },
+    list(): EditorHeaderMenuItem[] {
+      return Array.from(items.values()).sort((a, b) => {
+        const ao = typeof a.order === "number" ? a.order : 50;
+        const bo = typeof b.order === "number" ? b.order : 50;
+        if (ao !== bo) return ao - bo;
+        return String(a.id).localeCompare(String(b.id));
+      });
+    }
+  };
+  z.__editorHeaderMenuRegistry = registry;
+  return registry;
+}
+
+function mountEditorHeaderSettingsMenu(pathEl: HTMLElement) {
+  try {
+    const headerEl = pathEl.parentElement;
+    if (!headerEl) return;
+
+    const registry = getEditorHeaderMenuRegistry();
+
+    let btn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-settings-menu-button='1']");
+    const isNew = !btn;
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+    }
+
+    btn.className = "zion-editor-header-action is-icon zion-editor-settings-menu-button";
+    btn.innerHTML = '<span class="codicon codicon-ellipsis" aria-hidden="true"></span>';
+    btn.title = "设置";
+    btn.setAttribute("aria-label", "设置");
+    btn.setAttribute("data-zion-editor-settings-menu-button", "1");
+    btn.style.marginRight = "0";
+
+    let menuEl: HTMLDivElement | null = null;
+    let cleanup: (() => void) | null = null;
+    let collapsedSections: Record<string, boolean> = {};
+    const COLLAPSE_KEY = "zion.editorHeaderMenu.collapsedSections";
+
+    const closeMenu = () => {
+      try { cleanup?.(); } catch {}
+      cleanup = null;
+      try { menuEl?.remove(); } catch {}
+      menuEl = null;
+    };
+
+    const loadCollapsed = () => {
+      try {
+        const raw = localStorage.getItem(COLLAPSE_KEY);
+        if (!raw) return;
+        const v = JSON.parse(raw);
+        if (v && typeof v === "object") collapsedSections = v;
+      } catch {}
+    };
+
+    const persistCollapsed = () => {
+      try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsedSections)); } catch {}
+    };
+
+    const positionMenu = () => {
+      if (!menuEl) return;
+      const r = btn!.getBoundingClientRect();
+      const mw = menuEl.offsetWidth || 200;
+      const mh = menuEl.offsetHeight || 120;
+      const pad = 8;
+      const vw = window.innerWidth || 0;
+      const vh = window.innerHeight || 0;
+      let left = Math.round(r.right - mw);
+      let top = Math.round(r.bottom + 6);
+      left = Math.max(pad, Math.min(left, Math.max(pad, vw - mw - pad)));
+      if (top + mh + pad > vh) {
+        const above = Math.round(r.top - 6 - mh);
+        if (above >= pad) top = above;
+      }
+      top = Math.max(pad, Math.min(top, Math.max(pad, vh - mh - pad)));
+      menuEl.style.left = `${left}px`;
+      menuEl.style.top = `${top}px`;
+    };
+
+    const renderMenu = () => {
+      if (!menuEl) return;
+      menuEl.innerHTML = "";
+      const items = registry.list();
+      if (items.length === 0) {
+        const row = document.createElement("div");
+        row.className = "zion-context-menu-row";
+        const it = document.createElement("button");
+        it.className = "zion-context-menu-item";
+        it.type = "button";
+        it.textContent = "暂无设置项";
+        it.style.opacity = "0.7";
+        it.style.cursor = "default";
+        row.appendChild(it);
+        menuEl.appendChild(row);
+        return;
+      }
+
+      const filtered = items.filter(it => it && it.kind !== "separator");
+
+      const groups = new Map<string, EditorHeaderMenuItem[]>();
+      for (const it of filtered) {
+        const sec = String(it.section || "Other").trim() || "Other";
+        if (!groups.has(sec)) groups.set(sec, []);
+        groups.get(sec)!.push(it);
+      }
+
+      const sectionOrderHint = ["Editor", "Layout", "Chat", "Export", "Other"];
+      const sections = Array.from(groups.keys()).sort((a, b) => {
+        const ai = sectionOrderHint.indexOf(a);
+        const bi = sectionOrderHint.indexOf(b);
+        if (ai !== -1 || bi !== -1) {
+          if (ai === -1) return 1;
+          if (bi === -1) return -1;
+          return ai - bi;
+        }
+        return a.localeCompare(b);
+      });
+
+      for (const sec of sections) {
+        const secItems = (groups.get(sec) || []).slice().sort((a, b) => {
+          const ao = typeof a.order === "number" ? a.order : 50;
+          const bo = typeof b.order === "number" ? b.order : 50;
+          if (ao !== bo) return ao - bo;
+          return String(a.id).localeCompare(String(b.id));
+        });
+
+        const collapsed = !!collapsedSections[sec];
+        const secRow = document.createElement("div");
+        secRow.className = "zion-context-menu-row";
+        const secBtn = document.createElement("button");
+        secBtn.className = "zion-context-menu-item zion-editor-header-menu-section";
+        secBtn.type = "button";
+        secBtn.title = sec;
+        secBtn.innerHTML = `<span class="zion-editor-header-menu-section-content"><span class="zion-editor-header-menu-chevron codicon ${collapsed ? "codicon-chevron-right" : "codicon-chevron-down"}" aria-hidden="true"></span><span class="zion-editor-header-menu-section-title">${sec}</span></span>`;
+        secBtn.onclick = (e) => {
+          try { e.stopPropagation(); } catch {}
+          collapsedSections[sec] = !collapsed;
+          persistCollapsed();
+          try { renderMenu(); positionMenu(); } catch {}
+        };
+        secRow.appendChild(secBtn);
+        menuEl.appendChild(secRow);
+
+        if (collapsed) continue;
+
+        for (const item of secItems) {
+          const checked = item.kind === "toggle" ? !!item.getChecked?.() : false;
+
+          const row = document.createElement("div");
+          row.className = "zion-context-menu-row";
+          const it = document.createElement("button");
+          it.className = "zion-context-menu-item zion-editor-header-menu-item";
+          it.type = "button";
+
+          const label = String(item.title || item.id);
+          it.title = label;
+          const boxClass =
+            item.kind === "toggle"
+              ? `is-toggle${checked ? " is-checked" : ""}`
+              : "is-placeholder";
+          it.innerHTML = `<span class="zion-editor-header-menu-item-content"><span class="zion-editor-header-menu-item-left"><span class="zion-editor-header-menu-item-title">${label}</span></span><span class="zion-editor-header-menu-item-state ${boxClass}"><span class="codicon codicon-check" aria-hidden="true"></span></span></span>`;
+
+          it.onclick = (e) => {
+            try { e.stopPropagation(); } catch {}
+            try {
+              if (typeof item.onClick === "function") item.onClick();
+              else if (item.command) window.zion.commands.executeCommand(item.command, ...(Array.isArray(item.args) ? item.args : []));
+            } catch {}
+            try { renderMenu(); positionMenu(); } catch {}
+          };
+          row.appendChild(it);
+          menuEl.appendChild(row);
+        }
+      }
+    };
+
+    const openMenu = () => {
+      if (menuEl) return;
+      loadCollapsed();
+      const menu = document.createElement("div");
+      menu.className = "zion-context-menu zion-editor-header-menu";
+      menu.style.position = "fixed";
+      menu.style.zIndex = "99999";
+      menu.style.maxWidth = "280px";
+      menu.style.width = "min(280px, calc(100vw - 16px))";
+      menu.style.maxHeight = "70vh";
+      menu.style.overflowY = "auto";
+      document.body.appendChild(menu);
+      menuEl = menu;
+      renderMenu();
+      positionMenu();
+
+      const escHandler = (ev: KeyboardEvent) => {
+        if (ev.key === "Escape") closeMenu();
+      };
+      const clickAway = (ev: MouseEvent) => {
+        try {
+          const t = ev.target as Node | null;
+          if (!t) return closeMenu();
+          if (menuEl && menuEl.contains(t)) return;
+          if (btn && btn.contains(t)) return;
+          closeMenu();
+        } catch {
+          closeMenu();
+        }
+      };
+      const resizeHandler = () => {
+        try { renderMenu(); positionMenu(); } catch {}
+      };
+
+      document.addEventListener("keydown", escHandler);
+      document.addEventListener("mousedown", clickAway, true);
+      window.addEventListener("resize", resizeHandler, { passive: true });
+
+      cleanup = () => {
+        document.removeEventListener("keydown", escHandler);
+        document.removeEventListener("mousedown", clickAway, true);
+        window.removeEventListener("resize", resizeHandler as any);
+      };
+    };
+
+    btn.onclick = (e) => {
+      try { e.stopPropagation(); } catch {}
+      if (menuEl) closeMenu();
+      else openMenu();
+    };
+
+    if (isNew) {
+      headerEl.appendChild(btn);
+    }
+  } catch {}
+}
+
 async function bootstrap() {
   const host = document.getElementById("app")!;
   host.innerHTML = "";
@@ -290,6 +549,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   mountCurrentSessionPath(editorHeaderPathEl);
   mountEditorHeaderTOCButton(editorHeaderPathEl);
   mountEditorHeaderNewSessionButton(editorHeaderPathEl);
+  mountEditorHeaderSettingsMenu(editorHeaderPathEl);
 
   try {
     initServiceBaseUrlConfig();
@@ -358,18 +618,23 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     } catch {}
     core.setWysiwygEnabled(enabled);
     window.zion.state.set("ui.wysiwyg", enabled);
-    window.zion.statusBar.registerItem({
-      id: "core.wysiwyg",
-      text: `WYSIWYG: ${enabled ? "On" : "Off"}`,
-      tooltip: "Click to toggle WYSIWYG mode",
-      onClick: () => window.zion.commands.executeCommand("zion.toggleWysiwyg"),
-      priority: 79
-    });
   };
 
   window.zion.commands.registerCommand("zion.setWysiwyg", (enabled: boolean) => applyWysiwyg(!!enabled));
   window.zion.commands.registerCommand("zion.toggleWysiwyg", () => applyWysiwyg(!wysiwygEnabled));
   applyWysiwyg(wysiwygEnabled);
+  try {
+    const reg = getEditorHeaderMenuRegistry();
+    reg.register({
+      id: "core.wysiwyg.headerMenu",
+      title: "WYSIWYG",
+      section: "Editor",
+      order: 16,
+      kind: "toggle",
+      getChecked: () => !!window.zion.state.get("ui.wysiwyg"),
+      onClick: () => window.zion.commands.executeCommand("zion.toggleWysiwyg")
+    });
+  } catch {}
 
   // Editor runtime feature toggles (line numbers, active-line highlight, syntax highlight, auto-indent, folding)
   let lineNumbersEnabled: boolean = (() => {
@@ -731,26 +996,6 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       align: "right"
     });
   } catch {}
-
-  // Status item example (core side)
-  window.zion.statusBar.registerItem({
-    id: "core.ready",
-    text: "● Ready",
-    tooltip: "Zion Next is running",
-    onClick: () => {
-      console.log("Core ready clicked");
-    },
-    priority: 90
-  });
-
-  // Core convenience: reload extensions (page reload)
-  window.zion.statusBar.registerItem({
-    id: "core.reload",
-    text: "Reload",
-    tooltip: "Reload extensions and page",
-    onClick: () => location.reload(),
-    priority: -10
-  });
 
   // Core commands
   window.zion.commands.registerCommand("zion.showPlugins", () => openPluginsPanel(pluginManager));
