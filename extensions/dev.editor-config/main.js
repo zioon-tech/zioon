@@ -70,6 +70,7 @@ export async function activate(ctx) {
     scroller.style.paddingRight = "";
     scroller.style.boxSizing = "";
     scroller.style.display = "";
+    scroller.style.minWidth = "";
     cm.style.width = "";
 
     if (mode === "full") {
@@ -77,27 +78,25 @@ export async function activate(ctx) {
       cm.style.width = "100%";
       scroller.style.width = "100%";
     } else if (mode === "wide") {
-      // centered with limit
+      // wide mode: content centered with max-width, scrollbar on right edge
       cm.style.width = "100%";
       scroller.style.width = "100%";
-      scroller.style.maxWidth = "960px";
-      scroller.style.marginLeft = "auto";
-      scroller.style.marginRight = "auto";
-      scroller.style.paddingLeft = "12px";
-      scroller.style.paddingRight = "12px";
+      // Use padding on scroller to center content area
+      const maxWidth = 960;
       scroller.style.boxSizing = "border-box";
-      scroller.style.display = "block";
+      scroller.style.paddingLeft = "calc((100% - " + maxWidth + "px) / 2)";
+      scroller.style.paddingRight = "calc((100% - " + maxWidth + "px) / 2)";
+      scroller.style.minWidth = "0"; // Allow content to shrink
     } else {
-      // standard mode
+      // standard mode: content centered with max-width, scrollbar on right edge
       cm.style.width = "100%";
       scroller.style.width = "100%";
-      scroller.style.maxWidth = "720px";
-      scroller.style.marginLeft = "auto";
-      scroller.style.marginRight = "auto";
-      scroller.style.paddingLeft = "12px";
-      scroller.style.paddingRight = "12px";
+      // Use padding on scroller to center content area
+      const maxWidth = 720;
       scroller.style.boxSizing = "border-box";
-      scroller.style.display = "block";
+      scroller.style.paddingLeft = "calc((100% - " + maxWidth + "px) / 2)";
+      scroller.style.paddingRight = "calc((100% - " + maxWidth + "px) / 2)";
+      scroller.style.minWidth = "0"; // Allow content to shrink
     }
   };
 
@@ -121,6 +120,7 @@ export async function activate(ctx) {
               scroller.style.paddingRight = "";
               scroller.style.boxSizing = "";
               scroller.style.display = "";
+              scroller.style.minWidth = "";
             }
             if (cm) {
               cm.style.width = "";

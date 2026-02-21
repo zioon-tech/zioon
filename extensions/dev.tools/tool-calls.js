@@ -658,9 +658,9 @@ const toolInlineField = StateField.define({
           });
           items.set(id, { ...it, expanded: false });
         } else {
-          // 展开：插入卡片（块级，行内末尾）
+          // 展开：插入卡片（行内，行末）
           const widget = new ToolCallCardWidget(id, it.name, it.args, it.result, it.ok);
-          deco = deco.update({ add: [Decoration.widget({ widget, block: true }).range(it.to)] });
+          deco = deco.update({ add: [Decoration.widget({ widget, side: 1 }).range(it.to)] });
           items.set(id, { ...it, expanded: true });
         }
       }
@@ -685,7 +685,7 @@ const toolInlineField = StateField.define({
             filter: (_f, _t, value) => value?.spec?.widget?.id !== (id + ":card")
           });
           const widget = new ToolCallCardWidget(id, updated.name, updated.args, updated.result, updated.ok);
-          deco = deco.update({ add: [Decoration.widget({ widget, block: true }).range(updated.to)] });
+          deco = deco.update({ add: [Decoration.widget({ widget, side: 1 }).range(updated.to)] });
         }
       }
       if (e.is(removeTool)) {

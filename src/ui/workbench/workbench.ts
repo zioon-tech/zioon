@@ -216,6 +216,18 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
       list.appendChild(btn);
     }
     activityBarEl.appendChild(list);
+
+    const cmdBtn = el("button", "zion-activitybar-item zion-activitybar-command") as HTMLButtonElement;
+    cmdBtn.type = "button";
+    cmdBtn.title = "Commands";
+    cmdBtn.setAttribute("aria-label", "Commands");
+    cmdBtn.textContent = "⌘";
+    cmdBtn.onclick = () => {
+      try {
+        (window as any).zion?.commands?.executeCommand?.("commandPalette.open");
+      } catch {}
+    };
+    activityBarEl.appendChild(cmdBtn);
   };
 
   let mountedViewId: string | null = null;

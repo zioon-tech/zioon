@@ -158,16 +158,13 @@ function ensureStyle() {
   const style = document.createElement("style");
   style.id = id;
   style.textContent = `
-.zion-cm-sticky-user-header{position:absolute;top:0;left:0;right:0;z-index:95;background:var(--bg);border-bottom:none;padding:6px 16px;color:var(--fg);font-family:var(--font-sans);font-size:13px;box-shadow:0 1px 2px 0 rgba(0,0,0,0.05);clip-path:inset(0 0 -10px 0);opacity:0.98}
-.zion-cm-sticky-user-header{display:flex;flex-direction:column;gap:4px}
+.zion-cm-sticky-user-header{position:absolute;top:0;left:0;right:0;z-index:95;background:var(--bg);border-bottom:none;color:var(--fg);font-family:var(--font-sans);font-size:16px;line-height:1.7;box-shadow:0 1px 2px 0 rgba(0,0,0,0.05);clip-path:inset(0 0 -10px 0);opacity:0.98;display:flex;flex-direction:column;gap:0;padding:0}
+
 .zion-cm-sticky-user-header.is-empty{display:none}
-.zion-cm-sticky-user-header .zion-sticky-line{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer}
-.zion-cm-sticky-user-header .zion-sticky-badge{display:inline-block;flex:0 0 auto;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600;border:1px solid transparent}
+.zion-cm-sticky-user-header .zion-sticky-line{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;padding:2px 8px}
+.zion-cm-sticky-user-header .zion-sticky-badge{display:inline-flex;flex:0 0 auto;padding:1px 6px;border-radius:6px;font-size:0.8em;font-weight:500;vertical-align:middle;margin-right:6px;border:none}
 .zion-cm-sticky-user-header .zion-sticky-text{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.zion-sticky-close-btn{margin-left:auto;padding:0 6px;cursor:pointer;opacity:0.4;font-size:16px;line-height:1;display:flex;align-items:center;color:var(--fg);font-weight:bold}
-.zion-sticky-close-btn:hover{opacity:1;color:var(--accent)}
-.zion-cm-sticky-restore-btn{position:absolute;top:8px;right:24px;z-index:90;padding:4px;border-radius:4px;background:var(--panel);border:1px solid var(--border);color:var(--fg);cursor:pointer;opacity:0.4;transition:opacity 0.2s;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,0.1)}
-.zion-cm-sticky-restore-btn:hover{opacity:1;background:var(--bg)}
+
   `;
   document.head.appendChild(style);
 }
@@ -211,7 +208,7 @@ function stickyUserHeaderView() {
         } catch {}
 
         try {
-          root.querySelectorAll(".zion-cm-sticky-user-header, .zion-cm-sticky-restore-btn").forEach(n => n.remove());
+          root.querySelectorAll(".zion-cm-sticky-user-header").forEach(n => n.remove());
         } catch {}
 
         // Header Element
@@ -219,25 +216,7 @@ function stickyUserHeaderView() {
         this.headerEl.className = "zion-cm-sticky-user-header is-empty";
         this.headerEl.dataset.ownerId = this.ownerId;
         
-        // Restore Button (Floating)
-        this.restoreBtn = document.createElement("div");
-        this.restoreBtn.className = "zion-cm-sticky-restore-btn";
-        this.restoreBtn.dataset.ownerId = this.ownerId;
-        this.restoreBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 11v-4a2 2 0 0 0 -2 -2h-6a2 2 0 0 0 -2 2v4" /><rect x="7" y="11" width="10" height="8" rx="2" /><path d="M12 14v2" /></svg>'; // Lock icon like
-        this.restoreBtn.title = "Enable Sticky User Header";
-        this.restoreBtn.style.display = "none";
-        this.restoreBtn.onclick = () => {
-          window.zion.commands.executeCommand("stickyHeader.toggle");
-        };
-
         this.headerEl.addEventListener("click", (e) => {
-            // Check for close button click
-            if (e.target.closest(".zion-sticky-close-btn")) {
-              e.stopPropagation();
-              window.zion.commands.executeCommand("stickyHeader.toggle");
-              return;
-            }
-
           const lineEl = e.target?.closest?.("[data-pos]");
           if (!lineEl) return;
           const pos = Number(lineEl.getAttribute("data-pos"));
@@ -253,8 +232,7 @@ function stickyUserHeaderView() {
         });
         
         root.insertBefore(this.headerEl, root.firstChild);
-        root.appendChild(this.restoreBtn);
-        
+
         if (view.scrollDOM) {
           view.scrollDOM.addEventListener("scroll", this.scrollHandler, { passive: true });
         }
@@ -291,10 +269,8 @@ function stickyUserHeaderView() {
         if (!isEnabled()) {
           this.headerEl.classList.add("is-empty");
           this.updateHeight(0);
-          this.restoreBtn.style.display = "flex";
           return;
         }
-        this.restoreBtn.style.display = "none";
 
         // Hide at top to avoid duplication/jump
         const scrollTop = this.view.scrollDOM.scrollTop;
@@ -371,23 +347,16 @@ function stickyUserHeaderView() {
           badge.className = "zion-sticky-badge";
           badge.textContent = it.role;
           const theme = roleTheme(it.role);
-          badge.style.color = theme.fg;
+          badge.style.color = "var(--fg)";
           badge.style.background = theme.bg;
-          badge.style.borderColor = theme.bd;
 
           const text = document.createElement("span");
           text.className = "zion-sticky-text";
           const preview = it.preview || "(empty)";
           text.textContent = preview.length > 140 ? preview.slice(0, 137) + "..." : preview;
 
-          const closeBtn = document.createElement("span");
-          closeBtn.className = "zion-sticky-close-btn";
-          closeBtn.innerHTML = "&times;";
-          closeBtn.title = "Disable Sticky Header";
-
           line.appendChild(badge);
           line.appendChild(text);
-          line.appendChild(closeBtn);
           this.headerEl.appendChild(line);
         }
         this.headerEl.classList.remove("is-empty");
@@ -407,24 +376,29 @@ function stickyUserHeaderView() {
 
           const rootRect = root.getBoundingClientRect();
           const scrollerRect = scroller.getBoundingClientRect();
-          let contentRight = scrollerRect.right;
+          
+          // Get the content width by measuring the actual editor content area
+          // In standard/wide modes, scroller has padding for centering
+          // We need to calculate the actual content width
+          const scrollerStyle = getComputedStyle(scroller);
+          const scrollerWidth = scrollerRect.width;
+          
+          // Calculate padding values
+          let paddingLeft = 0;
+          let paddingRight = 0;
           try {
-            const minimapEl = scroller.querySelector?.(".cm-minimap-gutter");
-            if (minimapEl) {
-              const mmRect = minimapEl.getBoundingClientRect();
-              if (
-                mmRect &&
-                mmRect.width > 0 &&
-                mmRect.left >= scrollerRect.left &&
-                mmRect.left < contentRight
-              ) {
-                contentRight = mmRect.left;
-              }
-            }
+            paddingLeft = parseFloat(scrollerStyle.paddingLeft) || 0;
+            paddingRight = parseFloat(scrollerStyle.paddingRight) || 0;
           } catch {}
-
-          const left = Math.round(scrollerRect.left - rootRect.left);
-          const width = Math.round(contentRight - scrollerRect.left);
+          
+          // Content width = scroller width - padding (accounting for centering)
+          const contentWidth = scrollerWidth - paddingLeft - paddingRight;
+          
+          // Left position = scroller's left offset + left padding
+          const left = Math.round(scrollerRect.left - rootRect.left) + Math.round(paddingLeft);
+          
+          // Width = content width (scroller width minus padding)
+          const width = Math.round(contentWidth);
 
           if (Number.isFinite(left) && Number.isFinite(width) && width > 0) {
             header.style.left = `${Math.max(0, left)}px`;
@@ -433,20 +407,9 @@ function stickyUserHeaderView() {
             header.style.boxSizing = "border-box";
           }
 
-          try {
-            const css = getComputedStyle(scroller);
-            header.style.paddingLeft = css.paddingLeft || "";
-            header.style.paddingRight = css.paddingRight || "";
-          } catch {}
 
-          try {
-            if (this.restoreBtn) {
-              const rootRight = rootRect.right;
-              const rightOffset = Math.round(rootRight - contentRight);
-              const inset = 12;
-              this.restoreBtn.style.right = `${Math.max(0, rightOffset + inset)}px`;
-            }
-          } catch {}
+
+
         } catch {}
       }
 
@@ -474,7 +437,6 @@ function stickyUserHeaderView() {
           }
         } catch {}
         try { this.headerEl?.remove?.(); } catch {}
-        try { this.restoreBtn?.remove?.(); } catch {}
       }
     },
     {
@@ -510,4 +472,21 @@ export async function activate(ctx) {
     console.log("[dev.sticky-user-header] Toggled to:", next);
   });
   ctx.subscriptions.push(toggleCmd);
+
+  // Register editor header menu item
+  try {
+    const reg = window.zion?.__editorHeaderMenuRegistry;
+    if (reg?.register) {
+      const menuDisp = reg.register({
+        id: "dev.sticky-user-header.menu",
+        title: "Sticky User Header",
+        section: "Editor",
+        kind: "toggle",
+        order: 48,
+        getChecked: () => isEnabled(),
+        onClick: () => window.zion.commands.executeCommand("stickyHeader.toggle")
+      });
+      if (menuDisp) ctx.subscriptions.push(menuDisp);
+    }
+  } catch {}
 }

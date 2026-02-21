@@ -1583,28 +1583,11 @@ html, body {
   justify-content: flex-end; /* 保持数字靠近内容区，减少间距 */
   padding: 0 3px; /* 缩小左右内边距以靠近折叠 gutter */
   box-sizing: border-box;
-  transition: background 120ms ease, opacity 120ms ease;
-}
-
-/* subtle hover / focus visual so gutters feel integrated with theme */
-.cm-gutter.cm-lineNumbers .cm-gutterElement:hover {
-  background: rgba(255,255,255,0.02); /* very subtle, works for dark theme */
-  opacity: 0.7;
-  border-radius: 4px;
-}
-
-/* light theme tweak: use slightly darker hover on light background */
-:root[data-theme="light"] .cm-gutter.cm-lineNumbers .cm-gutterElement:hover {
-  background: rgba(0,0,0,0.04);
 }
 /* 激活行增强可读性 */
 .cm-activeLineGutter .cm-gutterElement {
   color: var(--fg);
   opacity: 0.85;
-}
-/* 鼠标悬停整体略提亮 */
-.cm-gutters:hover .cm-gutter.cm-lineNumbers {
-  opacity: 0.6;
 }
 
 /* Fold gutter: 更窄更轻的标记（更紧凑） */
