@@ -299,26 +299,6 @@ export async function activate(ctx) {
       }
     });
 
-    registerSlashCommand({
-      id: 'markdown.code',
-      trigger: ['code', 'c'],
-      title: '行内代码',
-      description: '插入行内代码 (`code`)',
-      category: 'markdown',
-      icon: '💻',
-      execute: (params, editor) => {
-        if (!editor) return;
-        const selection = editor.getSelection();
-        if (selection) {
-          editor.replaceSelection(`\`${selection}\``);
-        } else {
-          editor.replaceSelection('``');
-          const cursor = editor.getCursor();
-          editor.setCursor({ line: cursor.line, ch: cursor.ch - 1 });
-        }
-      }
-    });
-
     // List commands
     registerSlashCommand({
       id: 'markdown.ul',
@@ -375,7 +355,7 @@ export async function activate(ctx) {
 
     registerSlashCommand({
       id: 'markdown.codeblock',
-      trigger: ['codeblock', 'code-block', 'cb', '```'],
+      trigger: ['code', 'codeblock', 'code-block', 'cb', '```'],
       title: '代码块',
       description: '插入代码块',
       category: 'markdown',

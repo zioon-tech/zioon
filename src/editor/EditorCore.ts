@@ -4,7 +4,6 @@ import {
   keymap,
   highlightActiveLine,
   highlightActiveLineGutter,
-  drawSelection,
   lineNumbers,
   scrollPastEnd
 } from "@codemirror/view";
@@ -109,7 +108,6 @@ export class EditorCore {
             indentOnInput(),
             this.createFoldGutter()
           ]),
-          drawSelection(),
           scrollPastEnd(),
           optionDSelectNext,
           history(),

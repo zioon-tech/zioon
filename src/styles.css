@@ -1474,18 +1474,6 @@ html, body {
   background-color: var(--search-current-bg);
 }
 
-/* Text selection highlight (unified across normal lines and code blocks)
-   Ensure selection is visible in both focused/unfocused states */
-.cm-editor .cm-selectionBackground {
-  background-color: var(--selection-bg) !important;
-}
-.cm-editor .cm-content ::selection {
-  background-color: var(--selection-bg) !important;
-}
-.cm-editor .cm-content ::-moz-selection {
-  background-color: var(--selection-bg) !important;
-}
-
 /* 状态栏窄屏自适应：收紧间距与字号，减少视觉拥挤 */
 @media (max-width: 900px) {
   #statusbar { gap: 6px; }
