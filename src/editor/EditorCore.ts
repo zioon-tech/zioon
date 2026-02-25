@@ -15,11 +15,14 @@ import { indentOnInput } from "@codemirror/language";
 import { foldGutter } from "@codemirror/language";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import { completionKeymap } from "@codemirror/autocomplete";
+import { getAutocompletionExtension } from "./extensions/autocompletion";
 import { wysiwyg } from "./wysiwyg";
 import { EditorView as CMEditorView } from "@codemirror/view";
 import { showMinimap } from "@replit/codemirror-minimap";
 import { highlightSelectionMatches } from "@codemirror/search";
 import { linkDetector, linkStyles } from "./link-detector";
+import { autocompleteTheme } from "./AutocompleteTheme";
 
 function selectNextOccurrenceDown(view: EditorView): boolean {
   const { state } = view;
@@ -78,6 +81,7 @@ export class EditorCore {
   private mdComp = new Compartment();
   private featuresComp = new Compartment();
   private lineWrapComp = new Compartment();
+  private autocompletionComp = new Compartment();
   private externalComp = new Compartment();
   private externalExtensions: Extension[] = [];
   private minimapEnabled = true;
@@ -114,6 +118,7 @@ export class EditorCore {
           // markdown is put into its own compartment so code-language highlighting can
           // be enabled/disabled at runtime.
           this.mdComp.of(markdown({ codeLanguages: languages, extensions: [GFM] })),
+          this.autocompletionComp.of(getAutocompletionExtension()),
           this.themeComp.of(oneDark),
           this.uiComp.of(wysiwyg()),
           linkDetector,
@@ -126,6 +131,7 @@ export class EditorCore {
           this.externalComp.of(this.externalExtensions),
           this.keymapComp.of(
             keymap.of([
+              ...completionKeymap,
               indentWithTab,
               { key: "Shift-Tab", run: indentLess },
               ...defaultKeymap,
@@ -203,6 +209,7 @@ export class EditorCore {
         keymap.of([
           ...bindings,
           { key: "Alt-d", run: () => selectNextOccurrenceDown(this.view), preventDefault: true },
+          ...completionKeymap,
           indentWithTab,
           { key: "Shift-Tab", run: indentLess },
           ...defaultKeymap,
@@ -386,6 +393,14 @@ export class EditorCore {
               };
             })]
           : []
+      )
+    });
+  }
+
+  setAutocompletionEnabled(enabled: boolean): void {
+    this.view.dispatch({
+      effects: this.autocompletionComp.reconfigure(
+        enabled ? getAutocompletionExtension() : []
       )
     });
   }

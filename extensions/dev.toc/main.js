@@ -447,6 +447,15 @@ export async function activate(ctx) {
 
       if (maybeView && maybeView.coordsAtPos) {
         try {
+          let stickyHeight = 0;
+          try {
+            const root = maybeView.dom;
+            const sticky = root?.querySelector?.(".zion-cm-sticky-user-header:not(.is-empty)") ||
+              document.querySelector(".zion-cm-sticky-user-header:not(.is-empty)");
+            stickyHeight = sticky?.offsetHeight || 0;
+          } catch {}
+          const effectiveTopOffset = Math.max(topOffset || 0, (stickyHeight || 0) + 10);
+
           // Convert line to a document position
           const pos = maybeView.state.doc.line(line + 1).from;
           const coords = maybeView.coordsAtPos(pos);
@@ -458,7 +467,7 @@ export async function activate(ctx) {
           const currentScrollTop = scroller.scrollTop || 0;
 
           // coords.top is viewport-relative; compute desired scrollTop on scroller
-          const targetScrollTop = currentScrollTop + (coords.top - scrollerRect.top) - topOffset;
+          const targetScrollTop = currentScrollTop + (coords.top - scrollerRect.top) - effectiveTopOffset;
 
           if (typeof scroller.scrollTo === 'function') {
             try { scroller.scrollTo({ top: targetScrollTop, left: 0, behavior: 'smooth' }); } catch { scroller.scrollTop = targetScrollTop; }

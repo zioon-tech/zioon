@@ -106,6 +106,74 @@ function evalWhen(expr?: string): boolean {
   return true;
 }
 
+type FocusSnapshot =
+  | { kind: "element"; el: HTMLElement }
+  | { kind: "editor"; cursor: any | null }
+  | null;
+
+function captureFocusSnapshot(): FocusSnapshot {
+  try {
+    const el = document.activeElement;
+    const ed = (window as any)?.zion?.window?.activeEditor;
+    const elInEditor = (() => {
+      try {
+        if (!el || !(el instanceof HTMLElement)) return false;
+        return !!el.closest?.(".cm-editor, .zion-editor");
+      } catch {
+        return false;
+      }
+    })();
+
+    if (ed && (elInEditor || !el || el === document.body || el === document.documentElement)) {
+      let cursor: any = null;
+      try {
+        cursor = ed.getCursor?.();
+      } catch {}
+      return { kind: "editor", cursor };
+    }
+
+    if (el && el instanceof HTMLElement) return { kind: "element", el };
+    if (ed) return { kind: "editor", cursor: null };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function restoreFocusSnapshot(snap: FocusSnapshot): void {
+  if (!snap) return;
+  if (snap.kind === "editor") {
+    try {
+      const ed = (window as any)?.zion?.window?.activeEditor;
+      if (!ed) return;
+      if (snap.cursor && ed.setCursor) {
+        try {
+          ed.setCursor(snap.cursor);
+        } catch {}
+      }
+      ed.focus?.();
+    } catch {}
+    return;
+  }
+  if (snap.kind === "element") {
+    try {
+      const el = snap.el;
+      if (el && (el as any).isConnected) {
+        if (!el.hasAttribute("tabindex") && (el as any).tabIndex == null) {
+          try {
+            el.setAttribute("tabindex", "-1");
+          } catch {}
+        }
+        el.focus?.();
+        if (document.activeElement === el) return;
+      }
+    } catch {}
+    try {
+      (window as any)?.zion?.window?.activeEditor?.focus?.();
+    } catch {}
+  }
+}
+
 class ChangeEmitter {
   private listeners = new Set<() => void>();
 
@@ -479,6 +547,7 @@ class ActivityBarRuntime {
 class SideBarRuntime {
   private views = new Map<string, SideBarView>();
   private emitter = new ChangeEmitter();
+  private returnFocus: FocusSnapshot = null;
 
   onDidChange(fn: () => void): Disposable {
     return this.emitter.onDidChange(fn);
@@ -528,6 +597,8 @@ class SideBarRuntime {
   }
 
   show(): void {
+    const wasVisible = this.isVisible();
+    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.sideBar.visible", true);
     this.emitter.emit();
   }
@@ -535,13 +606,16 @@ class SideBarRuntime {
   hide(): void {
     core?.state.set("ui.sideBar.visible", false);
     this.emitter.emit();
+    const snap = this.returnFocus;
+    this.returnFocus = null;
+    if (snap) requestAnimationFrame(() => restoreFocusSnapshot(snap));
   }
 
   toggle(): boolean {
-    const cur = !!core?.state.get<boolean>("ui.sideBar.visible");
+    const cur = this.isVisible();
     const next = !cur;
-    core?.state.set("ui.sideBar.visible", next);
-    this.emitter.emit();
+    if (next) this.show();
+    else this.hide();
     return next;
   }
 
@@ -575,6 +649,7 @@ class SideBarRuntime {
 class AuxiliaryBarRuntime {
   private views = new Map<string, AuxiliaryBarView>();
   private emitter = new ChangeEmitter();
+  private returnFocus: FocusSnapshot = null;
 
   onDidChange(fn: () => void): Disposable {
     return this.emitter.onDidChange(fn);
@@ -642,6 +717,8 @@ class AuxiliaryBarRuntime {
   }
 
   show() {
+    const wasVisible = this.isVisible();
+    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.auxiliaryBar.visible", true);
     this.emitter.emit();
   }
@@ -649,13 +726,16 @@ class AuxiliaryBarRuntime {
   hide() {
     core?.state.set("ui.auxiliaryBar.visible", false);
     this.emitter.emit();
+    const snap = this.returnFocus;
+    this.returnFocus = null;
+    if (snap) requestAnimationFrame(() => restoreFocusSnapshot(snap));
   }
 
   toggle(): boolean {
     const cur = this.isVisible();
     const next = !cur;
-    core?.state.set("ui.auxiliaryBar.visible", next);
-    this.emitter.emit();
+    if (next) this.show();
+    else this.hide();
     return next;
   }
 
@@ -681,6 +761,7 @@ class BottomPanelRuntime {
   private views = new Map<string, BottomPanelView>();
   private emitter = new ChangeEmitter();
   private lastNonMaximizedHeight: number | null = null;
+  private returnFocus: FocusSnapshot = null;
 
   onDidChange(fn: () => void): Disposable {
     return this.emitter.onDidChange(fn);
@@ -748,6 +829,8 @@ class BottomPanelRuntime {
   }
 
   show() {
+    const wasVisible = this.isVisible();
+    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.bottomPanel.visible", true);
     this.emitter.emit();
   }
@@ -755,13 +838,16 @@ class BottomPanelRuntime {
   hide() {
     core?.state.set("ui.bottomPanel.visible", false);
     this.emitter.emit();
+    const snap = this.returnFocus;
+    this.returnFocus = null;
+    if (snap) requestAnimationFrame(() => restoreFocusSnapshot(snap));
   }
 
   toggle(): boolean {
     const cur = this.isVisible();
     const next = !cur;
-    core?.state.set("ui.bottomPanel.visible", next);
-    this.emitter.emit();
+    if (next) this.show();
+    else this.hide();
     return next;
   }
 

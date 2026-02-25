@@ -1,4 +1,4 @@
-import { gutter, GutterMarker, ViewPlugin } from "@codemirror/view";
+import { gutter, GutterMarker, ViewPlugin, EditorView } from "@codemirror/view";
 import { foldService, foldable } from "@codemirror/language";
 
 /**
@@ -665,10 +665,33 @@ const scrollbarMarkersPlugin = ViewPlugin.fromClass(class {
             e.stopPropagation();
             const lineNum = parseInt(m.dataset.lineNumber, 10);
             const targetLine = doc.line(lineNum);
-            view.dispatch({
-              selection: { anchor: targetLine.from },
-              scrollIntoView: true
-            });
+            try {
+              const pos = targetLine.from;
+              let stickyHeight = 0;
+              try {
+                const sticky = view.dom?.querySelector?.(".zion-cm-sticky-user-header:not(.is-empty)") ||
+                  document.querySelector(".zion-cm-sticky-user-header:not(.is-empty)");
+                stickyHeight = sticky?.offsetHeight || 0;
+              } catch {}
+              const yMargin = Math.max(48, (stickyHeight || 0) + 10);
+              view.dispatch({
+                selection: { anchor: pos },
+                effects: EditorView.scrollIntoView(pos, { y: "start", yMargin })
+              });
+              requestAnimationFrame(() => {
+                try {
+                  let stickyHeight2 = 0;
+                  try {
+                    const sticky2 = view.dom?.querySelector?.(".zion-cm-sticky-user-header:not(.is-empty)") ||
+                      document.querySelector(".zion-cm-sticky-user-header:not(.is-empty)");
+                    stickyHeight2 = sticky2?.offsetHeight || 0;
+                  } catch {}
+                  const yMargin2 = Math.max(48, (stickyHeight2 || 0) + 10);
+                  view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "start", yMargin: yMargin2 }) });
+                } catch {}
+              });
+              view.focus();
+            } catch {}
           });
           
           // Hover to show preview

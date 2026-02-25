@@ -1,0 +1,32 @@
+{
+  "name": "dev.autocompletion",
+  "version": "0.0.1",
+  "description": "Editor autocompletion extension",
+  "main": "./main.js",
+  "author": "Zion",
+  "license": "MIT",
+  "zion": {
+    "id": "zion.autocompletion",
+    "name": "Autocompletion",
+    "dependencies": {},
+    "contributes": {
+      "commands": [
+        {
+          "id": "editor.autocompletion.toggle",
+          "title": "编辑器：切换自动补全",
+          "category": "Editor"
+        },
+        {
+          "id": "editor.autocompletion.enable",
+          "title": "编辑器：启用自动补全",
+          "category": "Editor"
+        },
+        {
+          "id": "editor.autocompletion.disable",
+          "title": "编辑器：禁用自动补全",
+          "category": "Editor"
+        }
+      ]
+    }
+  }
+}

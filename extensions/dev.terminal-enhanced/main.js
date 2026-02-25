@@ -864,8 +864,8 @@ export async function activate(ctx) {
           switchSession();
         };
 
-        wrap.appendChild(infoBtn);
         wrap.appendChild(triggerBtn);
+        wrap.appendChild(infoBtn);
         right.insertBefore(wrap, right.firstChild);
       }
 

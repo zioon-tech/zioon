@@ -2280,7 +2280,7 @@ function mountSessionsSidebarViewInto(container) {
   listWrap.className = "zion-sessions-list";
   listWrap.style.flex = "1 1 auto";
   listWrap.style.overflow = "auto";
-  listWrap.style.padding = "6px 6px";
+  listWrap.style.padding = "6px 0 6px 6px";
   const list = document.createElement("div");
   listWrap.appendChild(list);
   container.appendChild(listWrap);
@@ -2608,7 +2608,7 @@ function mountSessionsSidebar() {
     listWrap.className = "zion-sessions-list";
     listWrap.style.flex = "1 1 auto";
     listWrap.style.overflow = "auto";
-    listWrap.style.padding = "6px 6px";
+    listWrap.style.padding = "6px 0 6px 6px";
     const list = document.createElement("div");
     listWrap.appendChild(list);
     bar.appendChild(listWrap);
@@ -2940,59 +2940,59 @@ function injectScrollbarStyles() {
     const style = document.createElement("style");
     style.id = styleId;
     style.textContent = `
-      /* Custom scrollbar for session list - hide when not scrolling */
+      /* Custom scrollbar for session list - match editor scrollbar theme */
       #zion-sessions-sidebar .zion-sessions-list::-webkit-scrollbar,
       #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
+        width: 0;
+        height: 0;
+      }
+      #zion-sessions-sidebar .zion-sessions-list:hover::-webkit-scrollbar,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content:hover::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
       }
 
       /* Scrollbar track */
       #zion-sessions-sidebar .zion-sessions-list::-webkit-scrollbar-track,
       #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-track {
         background: transparent;
-        border-radius: 4px;
+      }
+      #zion-sessions-sidebar .zion-sessions-list::-webkit-scrollbar-corner,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-corner {
+        background: transparent;
       }
 
       /* Scrollbar thumb */
       #zion-sessions-sidebar .zion-sessions-list::-webkit-scrollbar-thumb,
       #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb {
-        background: transparent;
-        border-radius: 4px;
+        background-color: var(--scrollbar-thumb, var(--border, rgba(128, 128, 128, 0.4)));
+        border-radius: 6px;
         border: 2px solid transparent;
-        background-clip: padding-box;
-        transition: background 0.15s ease;
-      }
-
-      /* Show scrollbar thumb on hover */
-      #zion-sessions-sidebar .zion-sessions-list:hover::-webkit-scrollbar-thumb,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content:hover::-webkit-scrollbar-thumb {
-        background: var(--border, rgba(128, 128, 128, 0.4));
-        background-clip: padding-box;
+        background-clip: content-box;
       }
 
       /* Hover state for scrollbar thumb */
       #zion-sessions-sidebar .zion-sessions-list::-webkit-scrollbar-thumb:hover,
       #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb:hover {
-        background: rgba(128, 128, 128, 0.6);
-        background-clip: padding-box;
+        background-color: var(--scrollbar-thumb-hover, var(--accent, rgba(128, 128, 128, 0.6)));
+        background-clip: content-box;
       }
 
       /* Firefox scrollbar */
       #zion-sessions-sidebar .zion-sessions-list,
       #zion-sessions-panel-overlay .zion-sessions-panel-content {
-        scrollbar-width: thin;
+        scrollbar-width: none;
         scrollbar-color: transparent transparent;
       }
-
       #zion-sessions-sidebar .zion-sessions-list:hover,
       #zion-sessions-panel-overlay .zion-sessions-panel-content:hover {
-        scrollbar-color: var(--border, rgba(128, 128, 128, 0.4)) transparent;
+        scrollbar-width: thin;
+        scrollbar-color: var(--scrollbar-thumb, var(--border, rgba(128, 128, 128, 0.4))) transparent;
       }
 
       /* Scroll container background - ensure clean background */
       #zion-sessions-sidebar .zion-sessions-list {
-        background: var(--panel);
+        background: transparent;
       }
 
       #zion-sessions-panel-overlay .zion-sessions-panel-content {
@@ -3050,6 +3050,7 @@ export async function activate(ctx) {
   setLastActiveId(currentId);
   window.zion.state.set("sessions.currentId", currentId);
   window.zion.state.set("sessions.catalog", getIndex());
+  const sessionUiState = new Map();
 
   // 初始化页面标题
   updatePageTitle(currentId);
@@ -3474,6 +3475,11 @@ export async function activate(ctx) {
       if (curPrev) {
         try {
           const ed = window.zion.window.activeEditor;
+          try {
+            const cursor = ed?.getCursor?.();
+            const scrollTop = ed?.core?.view?.scrollDOM?.scrollTop;
+            sessionUiState.set(curPrev, { cursor, scrollTop });
+          } catch {}
           const text = ed?.getValue?.();
           if (typeof text === "string") {
             saveDoc(curPrev, text);
@@ -3501,6 +3507,28 @@ export async function activate(ctx) {
       const text = await loadDocAsync(id);
       window.zion.window.activeEditor?.setValue(text);
       try { applyAnnotationsForSession(id); } catch {}
+    } catch {}
+    try {
+      const state = sessionUiState.get(id);
+      const ed = window.zion.window.activeEditor;
+      if (state && ed?.core?.view) {
+        requestAnimationFrame(() => {
+          try {
+            const view = ed.core.view;
+            const cursor = state?.cursor;
+            if (cursor && typeof cursor.line === "number" && typeof cursor.ch === "number") {
+              const doc = view.state.doc;
+              const line = doc.line(Math.max(1, Math.min(doc.lines, cursor.line + 1)));
+              const pos = line.from + Math.max(0, Math.min(line.length, cursor.ch));
+              view.dispatch({ selection: { anchor: pos } });
+            }
+            const st = state?.scrollTop;
+            if (typeof st === "number" && isFinite(st) && view.scrollDOM) {
+              view.scrollDOM.scrollTop = Math.max(0, st);
+            }
+          } catch {}
+        });
+      }
     } catch {}
     // 进入目标会话后尝试自动更新其标题（如仍为默认）
     try { maybeUpdateAutoTitle(id); } catch {}

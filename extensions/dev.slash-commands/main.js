@@ -541,7 +541,7 @@ export async function activate(ctx) {
 
     const hint = document.createElement('div');
     hint.className = 'zion-slash-hint';
-    hint.textContent = '↑↓ 选择 · Enter 执行 · Esc 关闭';
+    hint.textContent = '↑↓ 选择 · Enter 执行 · Tab 补全 · Esc 关闭';
 
     header.appendChild(query);
     header.appendChild(hint);
@@ -983,6 +983,44 @@ export async function activate(ctx) {
       e.preventDefault();
       e.stopPropagation();
       setSlashActiveIndex(slashSelectedIndex - 1);
+      return;
+    }
+
+    if (e.key === 'Tab') {
+      const cmd = slashCurrentCommands[slashSelectedIndex];
+      if (!cmd) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const editor = window.zion?.window?.activeEditor || null;
+      if (!editor || !slashStartPos) {
+        hideSlashPanel();
+        return;
+      }
+      const trigger = (() => {
+        try {
+          if (Array.isArray(cmd._triggers) && cmd._triggers[0]) return String(cmd._triggers[0]);
+          if (Array.isArray(cmd.trigger) && cmd.trigger[0]) return String(cmd.trigger[0]);
+          if (typeof cmd.trigger === "string") return cmd.trigger;
+        } catch {}
+        return "";
+      })();
+      if (!trigger) {
+        hideSlashPanel();
+        return;
+      }
+      try {
+        const from = slashStartPos;
+        const to = editor.getCursor();
+        if (to && to.line === from.line) {
+          const start = from.ch <= to.ch ? from : to;
+          const end = from.ch <= to.ch ? to : from;
+          const insert = `/${trigger} `;
+          editor.replaceRange(insert, start, end);
+          editor.setCursor({ line: start.line, ch: start.ch + insert.length });
+        }
+      } catch {}
+      slashStartPos = null;
+      hideSlashPanel();
       return;
     }
 

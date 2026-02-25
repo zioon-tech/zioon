@@ -233,16 +233,17 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   border: none;
   background: transparent;
   color: var(--fg);
-  opacity: 0.5;
+  opacity: 0;
   padding: 0 2px;
   cursor: pointer;
+  pointer-events: none;
   font-size: 12px;
   line-height: 1;
   border-radius: 3px;
   margin-left: 4px;
   transition: all 80ms ease;
 }
-.zte-tab:hover .zte-tab-close { opacity: 0.7; }
+.zte-tab:hover .zte-tab-close { opacity: 0.7; pointer-events: auto; }
 .zte-tab-close:hover {
   opacity: 1;
   background: rgba(255, 100, 100, 0.2);

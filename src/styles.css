@@ -244,6 +244,19 @@ html, body {
   gap: 16px;
 }
 
+#bottombar-right .bottombar-metric {
+  display: inline-block;
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  text-align: right;
+}
+
+#bottombar-right .zion-terminal-bottombar-info {
+  width: 220px;
+  flex: 0 0 220px;
+}
+
 #bottombar-right .zion-terminal-bottombar-switcher {
   display: inline-flex;
   align-items: stretch;
@@ -266,6 +279,7 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: left;
 }
 
 #bottombar-right .zion-terminal-bottombar-trigger {
@@ -2388,7 +2402,7 @@ body.zion-sessions-no-transitions .zion-session-row * {
 
 /* Sessions sidebar list scrollbar theming (consistent with editor/table) */
 .zion-sessions-list {
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); /* Firefox */
+  scrollbar-color: var(--scrollbar-thumb) transparent; /* Firefox */
   scrollbar-width: thin; /* Firefox */
 }
 .zion-sessions-list::-webkit-scrollbar {
@@ -2396,7 +2410,7 @@ body.zion-sessions-no-transitions .zion-session-row * {
   height: 10px;
 }
 .zion-sessions-list::-webkit-scrollbar-track {
-  background: var(--scrollbar-track);
+  background: transparent;
 }
 .zion-sessions-list::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb);

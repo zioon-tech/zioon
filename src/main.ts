@@ -1026,9 +1026,17 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       const mLnCol = document.createElement("span");
       const mBefore = document.createElement("span");
       const mTotal = document.createElement("span");
+      mLnCol.className = "bottombar-metric bottombar-metric-lncol";
+      mBefore.className = "bottombar-metric bottombar-metric-before";
+      mTotal.className = "bottombar-metric bottombar-metric-total";
       right.appendChild(mLnCol);
       right.appendChild(mBefore);
       right.appendChild(mTotal);
+
+      let maxLnDigits = 1;
+      let maxColDigits = 1;
+      let maxPosDigits = 1;
+      let maxTotalDigits = 1;
 
       const updateMetrics = () => {
         try {
@@ -1040,9 +1048,20 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
           const col = head - line.from + 1;
           const before = head;
           const total = doc.length;
-          mLnCol.textContent = `Ln ${ln}, Col ${col}`;
-          mBefore.textContent = `Before ${before}`;
-          mTotal.textContent = `Total ${total}`;
+
+          maxLnDigits = Math.max(maxLnDigits, String(doc.lines).length, String(ln).length);
+          maxColDigits = Math.max(maxColDigits, String(col).length);
+          maxPosDigits = Math.max(maxPosDigits, String(before).length);
+          maxTotalDigits = Math.max(maxTotalDigits, String(total).length);
+
+          const lnStr = String(ln).padStart(maxLnDigits, " ");
+          const colStr = String(col).padStart(maxColDigits, " ");
+          const beforeStr = String(before).padStart(maxPosDigits, " ");
+          const totalStr = String(total).padStart(maxTotalDigits, " ");
+
+          mLnCol.textContent = `Ln ${lnStr}, Col ${colStr}`;
+          mBefore.textContent = `Before ${beforeStr}`;
+          mTotal.textContent = `Total ${totalStr}`;
         } catch {}
       };
 
