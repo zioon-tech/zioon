@@ -5,6 +5,7 @@ import {
   resolveToolCallsReasoningContentMode,
   shouldForceReasoningContentWithToolCalls
 } from "./reasoning-policy.js";
+import { proxyLLMRequest } from "./llm-proxy.ts";
 
 /**
  * 判断是否为速率限制错误
@@ -45,7 +46,14 @@ async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
 
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const response = await fetch(url, options);
+      // 使用 LLM 代理（智能降级）
+      const response = await proxyLLMRequest({
+        url,
+        method: options.method || "POST",
+        headers: options.headers || {},
+        body: options.body,
+        signal: options.signal
+      });
 
       // 如果响应成功，直接返回
       if (response.ok) {
