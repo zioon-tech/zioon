@@ -299,6 +299,7 @@ export function installThinkingCards() {
       this.currentId = null;
       this.buffer = "";
       this.timer = null;
+      this.selRaf = 0;
 
       try { this.sessionId = window.zion?.state?.get("sessions.currentId") || null; } catch {}
 
@@ -334,11 +335,45 @@ export function installThinkingCards() {
           this.onRestore({ items: list });
         } catch {}
       });
+      this.syncSelectionHighlight();
     }
     update(update) {
       if (this.suspendSnapshot) return;
       this.snapshot();
+      if (update.selectionSet || update.docChanged || update.viewportChanged) {
+        this.syncSelectionHighlight();
+      }
     }
+    syncSelectionHighlight = () => {
+      try {
+        if (this.selRaf) window.cancelAnimationFrame(this.selRaf);
+      } catch {}
+      this.selRaf = window.requestAnimationFrame(() => {
+        this.selRaf = 0;
+        try {
+          const view = this.view;
+          const sel = view.state.selection;
+          const hasSelection = sel.ranges.some(r => !r.empty);
+          const all = view.dom.querySelectorAll(".zion-thinking-inline, .zion-thinking-card");
+          try { all.forEach(el => el.classList.remove("zion-selected")); } catch {}
+          if (!hasSelection) return;
+          const fieldVal = view.state.field(thinkingField);
+          const selected = new Set();
+          fieldVal.items.forEach((it, id) => {
+            for (const r of sel.ranges) {
+              if (r.empty) continue;
+              if (r.from < it.to && r.to > it.from) { selected.add(String(id)); break; }
+            }
+          });
+          selected.forEach((id) => {
+            try {
+              const els = view.dom.querySelectorAll(`.zion-thinking-inline[data-thinking-id="${id}"], .zion-thinking-card[data-thinking-card-id="${id}"]`);
+              els.forEach(el => el.classList.add("zion-selected"));
+            } catch {}
+          });
+        } catch {}
+      });
+    };
     snapshot = () => {
       try {
         const id = this.sessionId || window.zion?.state?.get("sessions.currentId");
@@ -656,6 +691,7 @@ export function installThinkingCards() {
     destroy() {
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       for (const d of this.disps) { try { d?.dispose?.(); } catch {} }
+      try { if (this.selRaf) window.cancelAnimationFrame(this.selRaf); } catch {}
     }
   });
 

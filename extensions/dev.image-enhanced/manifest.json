@@ -1,0 +1,40 @@
+{
+  "name": "dev.image-enhanced",
+  "version": "0.0.1",
+  "description": "Enhance markdown images with an in-editor toolbar (open/copy/delete).",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.image-enhanced",
+    "name": "dev.image-enhanced",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "imageEnhancer.copyImage",
+          "title": "图片增强: 复制图片到剪贴板"
+        },
+        {
+          "id": "imageEnhancer.downloadImage",
+          "title": "图片增强: 下载图片"
+        },
+        {
+          "id": "imageEnhancer.openInNewTab",
+          "title": "图片增强: 在新标签页打开图片"
+        },
+        {
+          "id": "imageEnhancer.showImageInfo",
+          "title": "图片增强: 显示图片信息"
+        }
+      ],
+      "keybindings": []
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

@@ -576,6 +576,22 @@ export async function activate(ctx) {
 
               const isUser = /^\s*user\s+/.test(targetLineText);
               const isOtherRole = /^\s*(system|assistant|tool)\s+/.test(targetLineText);
+              const focusUserPromptNoScroll = (line, ch) => {
+                try {
+                  const view = ed?.core?.view;
+                  const doc = view?.state?.doc;
+                  if (view && doc) {
+                    const ln = doc.line(Math.max(1, Math.min(doc.lines, line + 1)));
+                    const pos = ln.from + Math.max(0, Math.min(ln.length, ch));
+                    view.dispatch({ selection: { anchor: pos } });
+                    view.focus();
+                    return true;
+                  }
+                } catch {}
+                try { ed.setCursor?.({ line, ch }); } catch {}
+                try { ed.focus?.(); } catch {}
+                return true;
+              };
 
               if (isUser) {
                 // 场景：下面已经是 user -> 聚焦
@@ -583,8 +599,7 @@ export async function activate(ctx) {
                   try {
                     const m = /^\s*user\s+/.exec(targetLineText);
                     const ch = m ? m[0].length : 5;
-                    ed.setCursor?.({ line: targetLine, ch });
-                    ed.focus?.();
+                    focusUserPromptNoScroll(targetLine, ch);
                   } catch {}
                 }
               } else if (!isOtherRole && autoInsert) {
@@ -603,8 +618,7 @@ export async function activate(ctx) {
                 try {
                    ed.replaceRange("user ", { line: targetLine, ch: 0 }, { line: targetLine, ch: String(linesNow[targetLine]||"").length });
                    if (autoFocus) {
-                     ed.setCursor?.({ line: targetLine, ch: 5 });
-                     ed.focus?.();
+                     focusUserPromptNoScroll(targetLine, 5);
                    }
                 } catch {}
               }

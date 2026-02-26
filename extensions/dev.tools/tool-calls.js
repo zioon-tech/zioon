@@ -299,6 +299,7 @@ class ToolCallCardWidget extends WidgetType {
   toDOM() {
     const wrap = document.createElement("div");
     wrap.className = "zion-tool-call-card";
+    wrap.setAttribute("data-tool-id", String(this.id).replace(/:card$/, ""));
     // 头部：名称与移除按钮
     const header = document.createElement("div");
     header.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;";
@@ -853,6 +854,7 @@ export function installToolCallCards() {
       this.runActive = false;
       this.anchorPos = view.state.doc.length; // 当前回答插入锚点（随着变更映射）
       this.toolActions = new Map();
+      this.selRaf = 0;
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRun));
       this.disps.push(window.zion.events.on("chat/runFinished", this.onFinish));
       this.disps.push(window.zion.events.on("chat/toolCall", this.onCall));
@@ -892,6 +894,7 @@ export function installToolCallCards() {
           this.onRestore({ items: list });
         } catch {}
       });
+      this.syncSelectionHighlight();
     }
     update(update) {
       if (update.docChanged) {
@@ -914,7 +917,40 @@ export function installToolCallCards() {
       }
       // 每次更新后持久化快照（位置会被 StateField 自动映射）
       this.snapshot();
+      if (update.selectionSet || update.docChanged || update.viewportChanged) {
+        this.syncSelectionHighlight();
+      }
     }
+    syncSelectionHighlight = () => {
+      try {
+        if (this.selRaf) window.cancelAnimationFrame(this.selRaf);
+      } catch {}
+      this.selRaf = window.requestAnimationFrame(() => {
+        this.selRaf = 0;
+        try {
+          const view = this.view;
+          const sel = view.state.selection;
+          const hasSelection = sel.ranges.some(r => !r.empty);
+          const all = view.dom.querySelectorAll(".zion-tool-call-inline, .zion-tool-call-card");
+          try { all.forEach(el => el.classList.remove("zion-selected")); } catch {}
+          if (!hasSelection) return;
+          const fieldVal = view.state.field(toolInlineField);
+          const selected = new Set();
+          fieldVal.items.forEach((it, id) => {
+            for (const r of sel.ranges) {
+              if (r.empty) continue;
+              if (r.from < it.to && r.to > it.from) { selected.add(String(id)); break; }
+            }
+          });
+          selected.forEach((id) => {
+            try {
+              const els = view.dom.querySelectorAll(`.zion-tool-call-inline[data-tool-id="${id}"], .zion-tool-call-card[data-tool-id="${id}"]`);
+              els.forEach(el => el.classList.add("zion-selected"));
+            } catch {}
+          });
+        } catch {}
+      });
+    };
     snapshot = () => {
       try {
         const id = window.zion?.state?.get("sessions.currentId");
@@ -1606,6 +1642,7 @@ export function installToolCallCards() {
     };
     destroy() {
       for (const d of this.disps) { try { d?.dispose?.(); } catch {} }
+      try { if (this.selRaf) window.cancelAnimationFrame(this.selRaf); } catch {}
     }
   });
 

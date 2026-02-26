@@ -583,6 +583,28 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     document.documentElement.setAttribute("data-theme", t);
     core.setTheme(t);
     window.zion.state.set("ui.theme", t);
+    try {
+      const ensureMeta = () => {
+        let meta = document.querySelector('meta[name="theme-color"]');
+        if (!meta) {
+          meta = document.createElement("meta");
+          meta.setAttribute("name", "theme-color");
+          document.head.appendChild(meta);
+        }
+        return meta;
+      };
+      const updateThemeColor = () => {
+        try {
+          const meta = ensureMeta();
+          const cs = getComputedStyle(document.documentElement);
+          const panel = String(cs.getPropertyValue("--panel") || "").trim();
+          const fallback = t === "light" ? "#ffffff" : "#282a36";
+          meta.setAttribute("content", panel || fallback);
+        } catch {}
+      };
+      updateThemeColor();
+      requestAnimationFrame(updateThemeColor);
+    } catch {}
     // Update/Render status item (same id will replace)
     window.zion.statusBar.registerItem({
       id: "core.theme",

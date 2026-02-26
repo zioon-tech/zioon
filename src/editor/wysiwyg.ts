@@ -191,25 +191,30 @@ class HeadingWidget extends WidgetType {
 }
 
 class TaskWidget extends WidgetType {
-  constructor(private checked: boolean, private onToggle: () => void, private label: string) { super(); }
+  constructor(private checked: boolean, private label: string) { super(); }
   eq(other: TaskWidget) {
     return other.checked === this.checked && other.label === this.label;
   }
-  toDOM() {
+  toDOM(view: EditorView) {
     const container = document.createElement("span");
     container.className = "cm-md-task";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = !!this.checked;
+    if (this.label) checkbox.setAttribute("aria-label", `Task: ${this.label}`);
     checkbox.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      try { this.onToggle(); } catch (err) { console.error("[wysiwyg] task toggle", err); }
+      try {
+        const pos = view.posAtDOM(container);
+        const cur = view.state.doc.sliceString(pos + 1, pos + 2);
+        const replacement = /\bx\b/i.test(cur) ? " " : "x";
+        view.dispatch({ changes: { from: pos + 1, to: pos + 2, insert: replacement } });
+      } catch (err) {
+        console.error("[wysiwyg] task toggle", err);
+      }
     });
-    const label = document.createElement("span");
-    label.textContent = this.label;
     container.appendChild(checkbox);
-    container.appendChild(label);
     return container;
   }
   // Prevent editor from moving cursor when clicking diagram area, so toolbar stays clickable.
@@ -463,6 +468,32 @@ async function copyToClipboard(text: string) {
     try { document.execCommand("copy"); } finally { ta.remove(); }
   }
 }
+
+class CodeBlockToolbarWidget extends WidgetType {
+  constructor(private code: string, private lang: string) { super(); }
+  eq(other: CodeBlockToolbarWidget) { return other.code === this.code && other.lang === this.lang; }
+  toDOM() {
+    const toolbar = document.createElement("span");
+    toolbar.className = "cm-md-code-toolbar";
+    const mkBtn = (label: string, title: string, onClick: () => void) => {
+      const b = document.createElement("button");
+      b.className = "cm-md-code-btn";
+      b.textContent = label;
+      b.title = title;
+      b.type = "button";
+      b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); onClick(); };
+      return b;
+    };
+    const code = this.code || "";
+    const fenced = `\`\`\`${this.lang || ""}\n${code}\n\`\`\``;
+    toolbar.append(
+      mkBtn("复制", "复制代码", () => { copyToClipboard(code); }),
+      mkBtn("复制围栏", "复制为 Markdown 围栏代码块", () => { copyToClipboard(fenced); })
+    );
+    return toolbar;
+  }
+  ignoreEvent() { return true; }
+}
 function svgToDataUrl(svg: string): string {
   return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
 }
@@ -661,14 +692,14 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
   // track processed quote block starts to avoid duplicate processing when syntax tree yields multiple QuoteMark nodes
   const processedQuoteStarts = new Set<number>();
 
-  // Helper: is position inside fenced code
+  // Helper: is position inside fenced code or block math
   const isInsideFencedCode = (pos: number) => {
     let inside = false;
     try {
       tree.iterate({
         enter: (node: any) => {
           const name = node.name || node.type?.name;
-          if ((name === "FencedCode" || name === "CodeBlock") && isPosInsideNode(pos, node)) {
+          if ((name === "FencedCode" || name === "CodeBlock" || name === "BlockMath") && isPosInsideNode(pos, node)) {
             inside = true;
           }
         }
@@ -676,6 +707,9 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
     } catch {}
     return inside;
   };
+
+  // Track lines processed by fallback scanners to avoid overlap/conflicts
+  const processedFallbackLines = new Set<number>();
 
   // 1) Block-level via syntax tree (only for nodes within viewport)
   try {
@@ -712,13 +746,9 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           const checked = /\bx\b/i.test(markerText);
           if (!isActive) {
             add(node.from, node.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
-            const onToggle = () => {
-              const replacement = checked ? " " : "x";
-              try { view.dispatch({ changes: { from: node.from + 1, to: node.from + 2, insert: replacement } }); } catch {}
-            };
             const line = doc.lineAt(node.to);
             const rest = doc.sliceString(node.to, line.to).trimStart();
-            add(node.from, node.from, Decoration.widget({ widget: new TaskWidget(checked, onToggle, rest), side: 1 }));
+            add(node.from, node.from, Decoration.widget({ widget: new TaskWidget(checked, rest), side: 1 }));
           }
           return;
         }
@@ -881,6 +911,24 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
               }
             }
           }
+          if (hasClosingFence && !anyActive) {
+            const contentFrom = doc.lineAt(node.from).to;
+            const contentTo = doc.lineAt(node.to).from;
+            const raw = doc.sliceString(contentFrom, contentTo);
+            const code = raw.replace(/^\n/, "").replace(/\n$/, "");
+            const allowToolbar = !isDiagram || expandedDiagrams.has(node.from);
+            if (allowToolbar) {
+              add(firstLine.from, firstLine.from, Decoration.line({ class: "cm-md-codeblock-toolbar-anchor" }));
+              add(
+                firstLine.from,
+                firstLine.from,
+                Decoration.widget({
+                  widget: new CodeBlockToolbarWidget(code, lang),
+                  side: -1
+                })
+              );
+            }
+          }
           return;
         }
 
@@ -893,28 +941,6 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
             add(line.from, line.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
             // Apply a line-level class so the line's padding/height can be controlled by CSS
             add(line.from, line.from, Decoration.line({ class: "cm-md-hr-line" }));
-
-            // Insert a block widget at line start that renders the visual horizontal rule.
-            // Using side: 0 places it at the line start; the line-level class ensures compact layout.
-            add(
-              line.from,
-              line.from,
-              Decoration.widget({
-                widget: new (class extends WidgetType {
-                  eq(other: any) { return other && other instanceof Object; }
-                  toDOM() {
-                    const wrap = document.createElement("div");
-                    wrap.className = "cm-md-hr-wrap";
-                    const hr = document.createElement("div");
-                    hr.className = "cm-md-hr";
-                    wrap.appendChild(hr);
-                    return wrap;
-                  }
-                  ignoreEvent() { return true; }
-                })(),
-                side: 0
-              })
-            );
           }
           return;
         }
@@ -1067,70 +1093,89 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
 
     let ln = startLine;
     while (ln <= endLine) {
+      if (processedFallbackLines.has(ln)) { ln++; continue; }
       const line = doc.line(ln);
       const ltxt = doc.sliceString(line.from, line.to);
       if (isInsideFencedCode(line.from)) { ln++; continue; }
 
       if (isTableRow(ltxt)) {
-        const sepLn = ln + 1;
-        if (sepLn > doc.lines) { ln++; continue; }
-        const sepLine = doc.line(sepLn);
-        const sepTxt = doc.sliceString(sepLine.from, sepLine.to);
-        if (isSeparatorRow(sepTxt)) {
-          const headers = splitCells(ltxt);
-          const aligns = parseAligns(sepTxt);
-          const rows: string[][] = [];
-          let rowLn = sepLn + 1;
-          // 扫描整块表格，直到遇到非表格行/围栏或文档末尾（不受可见范围限制）
-          while (rowLn <= doc.lines) {
-            const rline = doc.line(rowLn);
-            const rtxt = doc.sliceString(rline.from, rline.to);
-            if (!isTableRow(rtxt) || isInsideFencedCode(rline.from)) break;
-            rows.push(splitCells(rtxt));
-            rowLn++;
+        try {
+          let start = ln;
+          while (start > 1) {
+            const prev = doc.line(start - 1);
+            const ptxt = doc.sliceString(prev.from, prev.to);
+            if (isInsideFencedCode(prev.from)) break;
+            if (processedFallbackLines.has(start - 1)) break;
+            if (!isTableRow(ptxt)) break;
+            start--;
           }
 
-          // If any line within the table block is active, skip widget for easy editing
-          let anyActive = false;
-          for (let n = ln; n < rowLn; n++) {
-            if (activeLines.has(n)) { anyActive = true; break; }
-          }
+          const sepLn = start + 1;
+          if (sepLn > doc.lines) { ln++; continue; }
+          const headerLine = doc.line(start);
+          const headerTxt = doc.sliceString(headerLine.from, headerLine.to);
+          const sepLine = doc.line(sepLn);
+          const sepTxt = doc.sliceString(sepLine.from, sepLine.to);
 
-          if (!anyActive) {
-            // Hide header/separator/rows, insert widget on header line, collapse subsequent lines
-            for (let hideLn = ln; hideLn < rowLn; hideLn++) {
-              const hline = doc.line(hideLn);
-              add(hline.from, hline.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
-              if (hideLn > ln) {
-                add(hline.from, hline.from, Decoration.line({ class: "cm-md-diagram-hiddenline" }));
-              }
+          if (isTableRow(headerTxt) && isSeparatorRow(sepTxt)) {
+            const headers = splitCells(headerTxt);
+            const aligns = parseAligns(sepTxt);
+            const rows: string[][] = [];
+            let rowLn = sepLn + 1;
+            // 扫描整块表格，直到遇到非表格行/围栏或文档末尾（不受可见范围限制）
+            while (rowLn <= doc.lines) {
+              const rline = doc.line(rowLn);
+              const rtxt = doc.sliceString(rline.from, rline.to);
+              if (!isTableRow(rtxt) || isInsideFencedCode(rline.from) || processedFallbackLines.has(rowLn)) break;
+              rows.push(splitCells(rtxt));
+              rowLn++;
             }
-            const sourceFrom = line.from;
-            const sourceTo = doc.line(rowLn - 1).to;
-            add(line.from, line.from, Decoration.widget({
-              widget: new TableWidget(
-                headers,
-                aligns,
-                rows,
-                sourceFrom,
-                sourceTo,
-                (newText: string) => {
-                  try {
-                    view.dispatch({
-                      changes: { from: sourceFrom, to: sourceTo, insert: newText }
-                    });
-                  } catch (e) {
-                    console.error("[wysiwyg] table commit dispatch error", e);
-                  }
-                }
-              ),
-              side: 1
-            }));
-          }
 
-          // 跳过整张表（可能越过当前可见范围的末尾），避免重复处理与视口震荡
-          ln = rowLn;
-          continue;
+            // Mark lines as processed to avoid overlap with other scanners
+            for (let k = start; k < rowLn; k++) processedFallbackLines.add(k);
+
+            // If any line within the table block is active, skip widget for easy editing
+            let anyActive = false;
+            for (let n = start; n < rowLn; n++) {
+              if (activeLines.has(n)) { anyActive = true; break; }
+            }
+
+            if (!anyActive) {
+              for (let hideLn = start; hideLn < rowLn; hideLn++) {
+                const hline = doc.line(hideLn);
+                add(hline.from, hline.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
+                if (hideLn > start) {
+                  add(hline.from, hline.from, Decoration.line({ class: "cm-md-diagram-hiddenline" }));
+                }
+              }
+              const sourceFrom = headerLine.from;
+              const sourceTo = doc.line(rowLn - 1).to;
+              add(headerLine.from, headerLine.from, Decoration.widget({
+                widget: new TableWidget(
+                  headers,
+                  aligns,
+                  rows,
+                  sourceFrom,
+                  sourceTo,
+                  (newText: string) => {
+                    try {
+                      view.dispatch({
+                        changes: { from: sourceFrom, to: sourceTo, insert: newText }
+                      });
+                    } catch (e) {
+                      console.error("[wysiwyg] table commit dispatch error", e);
+                    }
+                  }
+                ),
+                side: 1
+              }));
+            }
+
+            ln = rowLn;
+            continue;
+          }
+        } catch (err) {
+          console.error("[wysiwyg] table processing error", err);
         }
       }
       ln++;
@@ -1139,6 +1184,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
     // 2.3 block math ($ ... $)
     ln = startLine;
     while (ln <= endLine) {
+      if (processedFallbackLines.has(ln)) { ln++; continue; }
       const line = doc.line(ln);
       const t = doc.sliceString(line.from, line.to).trim();
       if (isInsideFencedCode(line.from)) { ln++; continue; }
@@ -1146,13 +1192,42 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       if (isFence) {
         // find closing fence
         let endFenceLn = ln + 1;
-        while (endFenceLn <= endLine) {
+        while (endFenceLn <= endLine) { // Restrict math block scan to visible range to avoid massive scans? Usually block math is short.
+          // Or allow full scan? Let's stick to endLine to be safe, or allow slight overflow.
+          // Ideally we should scan until end of block.
+          // But strict block math usually requires closing fence.
           const eline = doc.line(endFenceLn);
           const et = doc.sliceString(eline.from, eline.to).trim();
           if (/^\$\$\s*$/.test(et)) break;
           endFenceLn++;
         }
-        if (endFenceLn <= endLine) {
+        
+        // If we found the end fence within a reasonable distance (or at least within visible range + lookahead)
+        // Here we just use endLine logic for now, or maybe extend slightly?
+        // Let's stick to current logic: find closing fence.
+        // But if endFenceLn goes beyond endLine?
+        // We should probably allow it to go further if needed, but for performance, limit it.
+        // Let's change the loop condition to allow scanning a bit further?
+        // Actually, just checking up to doc.lines is safer for correctness, but slower.
+        // Let's use `doc.lines` but with a sanity check (e.g. max 500 lines).
+        
+        let foundEnd = false;
+        let scanLn = ln + 1;
+        while (scanLn <= doc.lines && scanLn < ln + 500) {
+             const sline = doc.line(scanLn);
+             const st = doc.sliceString(sline.from, sline.to).trim();
+             if (/^\$\$\s*$/.test(st)) {
+                 endFenceLn = scanLn;
+                 foundEnd = true;
+                 break;
+             }
+             scanLn++;
+        }
+
+        if (foundEnd) {
+          // Mark processed
+          for (let k = ln; k <= endFenceLn; k++) processedFallbackLines.add(k);
+
           const contentFrom = doc.line(ln + 1).from;
           const contentTo = doc.line(endFenceLn - 1).to;
           const expr = contentFrom <= contentTo ? doc.sliceString(contentFrom, contentTo) : "";
@@ -1185,7 +1260,11 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
   }
 
   // Build in order
-  pending.sort((a, b) => (a.from === b.from ? a.to - b.to : a.from - b.from));
+  pending.sort((a, b) => {
+    if (a.from !== b.from) return a.from - b.from;
+    if (a.dec.startSide !== b.dec.startSide) return a.dec.startSide - b.dec.startSide;
+    return a.to - b.to;
+  });
   const builder = new RangeSetBuilder<Decoration>();
   for (const it of pending) {
     builder.add(it.from, it.to, it.dec);
@@ -1199,7 +1278,12 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
   expandedDiagrams = new Set<number>();
 
   constructor(view: EditorView) {
-    this.decorations = buildDecorations(view, getActiveLines(view), this.expandedDiagrams);
+    try {
+      this.decorations = buildDecorations(view, getActiveLines(view), this.expandedDiagrams);
+    } catch (e) {
+      console.error("[wysiwyg] buildDecorations (constructor) error", e);
+      this.decorations = Decoration.none;
+    }
     this.bindEvents(view);
   }
 
@@ -1247,7 +1331,12 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
 
     if (needRebuild || selectionOnly || collapsed) {
       const activeLines = getActiveLines(update.view);
-      this.decorations = buildDecorations(update.view, activeLines, this.expandedDiagrams);
+      try {
+        this.decorations = buildDecorations(update.view, activeLines, this.expandedDiagrams);
+      } catch (e) {
+        console.error("[wysiwyg] buildDecorations (update) error", e);
+        this.decorations = Decoration.none;
+      }
     }
   }
 

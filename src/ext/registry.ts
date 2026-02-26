@@ -29,12 +29,14 @@ class Registry {
     string,
     { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number; pinned: boolean; align: "left" | "right" }
   >();
+  private statusItemMinWidth = new Map<string, number>();
   private statusPinned: Set<string> = new Set();
   private readonly STATUS_PINNED_KEY = 'zion.statusBar.pinned';
   private bottomStatusItems = new Map<
     string,
     { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number; pinned: boolean }
   >();
+  private bottomStatusItemMinWidth = new Map<string, number>();
   private bottomStatusPinned: Set<string> = new Set();
   private readonly BOTTOM_STATUS_PINNED_KEY = 'zion.bottomStatusBar.pinned';
   private editorCore: EditorCore | null = null;
@@ -1050,6 +1052,20 @@ class Registry {
     }
   }
 
+  private stabilizeItemWidth(store: Map<string, number>, id: string, el: HTMLElement) {
+    requestAnimationFrame(() => {
+      try {
+        const w = Math.ceil(el.getBoundingClientRect().width || 0);
+        const prev = store.get(id) || 0;
+        const next = Math.max(prev, w);
+        if (next > 0) {
+          store.set(id, next);
+          (el as any).style.minWidth = `${next}px`;
+        }
+      } catch {}
+    });
+  }
+
   registerPasteHandler(handler: PasteHandler): Disposable {
     this.pasteHandlers.push(handler);
     // no need to sort now; sort on dispatch
@@ -1465,6 +1481,7 @@ class Registry {
       } else {
         this.sortStatusItems(target, align);
       }
+      this.stabilizeItemWidth(this.statusItemMinWidth, opts.id, existing.el);
 
       return {
         dispose: () => {
@@ -1509,6 +1526,7 @@ class Registry {
     target.appendChild(el);
     this.statusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority, pinned, align });
     this.sortStatusItems(target, align);
+    this.stabilizeItemWidth(this.statusItemMinWidth, opts.id, el);
 
     return {
       dispose: () => {
@@ -1566,6 +1584,7 @@ class Registry {
       } else {
         this.sortBottomStatusItems(bar);
       }
+      this.stabilizeItemWidth(this.bottomStatusItemMinWidth, opts.id, existing.el);
 
       return {
         dispose: () => {
@@ -1599,6 +1618,7 @@ class Registry {
     bar.appendChild(el);
     this.bottomStatusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority, pinned });
     this.sortBottomStatusItems(bar);
+    this.stabilizeItemWidth(this.bottomStatusItemMinWidth, opts.id, el);
 
     return {
       dispose: () => {

@@ -3352,6 +3352,10 @@ export async function activate(ctx) {
     window.zion.state.set("sessions.currentId", id);
     window.zion.state.set("sessions.catalog", getIndex());
     try {
+      const rs = window.zion.state.get(`chat.runs.${id}`);
+      window.zion.state.set("chat.streaming", !!rs?.streaming);
+    } catch {}
+    try {
       const present = !!getIndex().find(s => s.id === id);
       if (!present) {
         console.error("[sessions] new: index missing new session; forcing rebuild", { id, parentId, tree: loadTree() });
@@ -3398,6 +3402,10 @@ export async function activate(ctx) {
     setLastActiveId(id, { push: true });
     window.zion.state.set("sessions.currentId", id);
     window.zion.state.set("sessions.catalog", getIndex());
+    try {
+      const rs = window.zion.state.get(`chat.runs.${id}`);
+      window.zion.state.set("chat.streaming", !!rs?.streaming);
+    } catch {}
     try { applyAnnotationsForSession(id); } catch {}
     refreshStatusBar();
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
@@ -3477,8 +3485,16 @@ export async function activate(ctx) {
           const ed = window.zion.window.activeEditor;
           try {
             const cursor = ed?.getCursor?.();
-            const scrollTop = ed?.core?.view?.scrollDOM?.scrollTop;
-            sessionUiState.set(curPrev, { cursor, scrollTop });
+            const view0 = ed?.core?.view;
+            const scrollTop = view0?.scrollDOM?.scrollTop;
+            let scrollAnchor = null;
+            try {
+              if (view0 && typeof scrollTop === "number" && isFinite(scrollTop)) {
+                const block = view0.lineBlockAtHeight(scrollTop);
+                scrollAnchor = { pos: block.from, yOffset: scrollTop - block.top };
+              }
+            } catch {}
+            sessionUiState.set(curPrev, { cursor, scrollTop, scrollAnchor });
           } catch {}
           const text = ed?.getValue?.();
           if (typeof text === "string") {
@@ -3512,7 +3528,7 @@ export async function activate(ctx) {
       const state = sessionUiState.get(id);
       const ed = window.zion.window.activeEditor;
       if (state && ed?.core?.view) {
-        requestAnimationFrame(() => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
           try {
             const view = ed.core.view;
             const cursor = state?.cursor;
@@ -3522,12 +3538,28 @@ export async function activate(ctx) {
               const pos = line.from + Math.max(0, Math.min(line.length, cursor.ch));
               view.dispatch({ selection: { anchor: pos } });
             }
-            const st = state?.scrollTop;
-            if (typeof st === "number" && isFinite(st) && view.scrollDOM) {
-              view.scrollDOM.scrollTop = Math.max(0, st);
-            }
+            const applyScroll = () => {
+              try {
+                if (!view?.scrollDOM) return;
+                const doc = view.state.doc;
+                const anchor = state?.scrollAnchor;
+                if (anchor && typeof anchor.pos === "number" && isFinite(anchor.pos)) {
+                  const p = Math.max(0, Math.min(doc.length, anchor.pos));
+                  const block = view.lineBlockAt(p);
+                  const yOff = typeof anchor.yOffset === "number" && isFinite(anchor.yOffset) ? anchor.yOffset : 0;
+                  view.scrollDOM.scrollTop = Math.max(0, block.top + yOff);
+                  return;
+                }
+                const st = state?.scrollTop;
+                if (typeof st === "number" && isFinite(st)) {
+                  view.scrollDOM.scrollTop = Math.max(0, st);
+                }
+              } catch {}
+            };
+            applyScroll();
+            requestAnimationFrame(() => { try { applyScroll(); } catch {} });
           } catch {}
-        });
+        }));
       }
     } catch {}
     // 进入目标会话后尝试自动更新其标题（如仍为默认）

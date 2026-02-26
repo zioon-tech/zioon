@@ -249,8 +249,12 @@ html, body {
   white-space: pre;
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
+  font-family: var(--font-mono);
   text-align: right;
 }
+#bottombar-right .bottombar-metric-lncol { min-width: 14ch; }
+#bottombar-right .bottombar-metric-before { min-width: 12ch; }
+#bottombar-right .bottombar-metric-total { min-width: 12ch; }
 
 #bottombar-right .zion-terminal-bottombar-info {
   width: 220px;
@@ -983,7 +987,7 @@ html, body {
 .cm-content {
   font-size: var(--editor-font-size);
   line-height: 1.7;
-  padding: 8px 16px;      /* tighter top padding to feel closer to topbar */
+  padding: 0 16px;
   font-family: var(--font-sans);
 }
 .cm-line {
@@ -1127,21 +1131,20 @@ html, body {
 
 .cm-md-ul-bullet {
   display: inline-block;
-  width: 0.2em;
+  width: 1ch;
   text-align: center;
   color: var(--fg);
-  opacity: 0.7;
-  /* tighter gap between bullet and content */
-  margin-right: 0.5ch;
+  opacity: 0.6;
+  margin-right: 0.75ch;
 }
 
 .cm-md-ol-num {
   display: inline-block;
-  min-width: 0.2em;
-  text-align: center;
-/*   margin-right: 0.25ch; */
+  min-width: 2.2ch;
+  text-align: right;
+  margin-right: 0.85ch;
   color: var(--fg);
-  opacity: 0.7;
+  opacity: 0.6;
 }
 
 /* Code fence block lines (tighter like GitHub) */
@@ -1246,6 +1249,15 @@ html, body {
   white-space: normal; /* 允许换行 */
   word-break: break-word; /* 长单词也换行 */
 }
+.cm-md-table tbody tr:nth-child(even) td {
+  background: rgba(0,0,0,0.06);
+}
+:root[data-theme="light"] .cm-md-table tbody tr:nth-child(even) td {
+  background: rgba(0,0,0,0.03);
+}
+.cm-md-table tbody tr:hover td {
+  background: var(--selection-bg);
+}
 
 .cm-md-table tbody tr:nth-child(odd) {
   background: rgba(98,114,164,0.03);
@@ -1320,6 +1332,45 @@ html, body {
 }
 .cm-md-diagram-btn:hover {
   background: var(--border);
+  border-color: var(--border);
+}
+.cm-md-code-btn {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.cm-md-code-btn:hover {
+  background: var(--border);
+  border-color: var(--border);
+}
+.cm-line.cm-md-codeblock-toolbar-anchor {
+  position: relative;
+}
+.cm-line.cm-md-codeblock-toolbar-anchor .cm-md-code-toolbar {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 2px 6px;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid var(--md-codeblock-border);
+  border-radius: 6px;
+  z-index: 3;
+  opacity: 0.9;
+}
+.cm-line.cm-md-codeblock-toolbar-anchor .cm-md-code-toolbar:hover {
+  opacity: 1;
+}
+
+:root[data-theme="light"] .cm-line.cm-md-codeblock-toolbar-anchor .cm-md-code-toolbar {
+  background: rgba(255,255,255,0.9);
   border-color: var(--border);
 }
 
@@ -1446,30 +1497,21 @@ html, body {
   margin-right: 6px;
 }
 
-/* Horizontal Rule: compact line replacement for --- / *** / ___
-   Use a line-level class (.cm-md-hr-line) to reset padding/line-height so the
-   horizontal rule occupies a single, stable line and doesn't introduce a taller row. */
+/* Horizontal Rule: draw using pseudo element to avoid adding extra DOM nodes (prevents gutter/line height drift) */
 .cm-line.cm-md-hr-line {
+  position: relative;
   padding-top: 0;
   padding-bottom: 0;
-  /* keep compact but allow the hr to be vertically centered */
-  line-height: 0;
 }
-
-/* wrapper for hr widget (block-level within the line) */
-.cm-md-hr-wrap {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-/* actual visual rule */
-.cm-md-hr {
-  height: 1px;
-  background: var(--border);
-  border: none;
-  margin: 6px 0;
-  width: 100%;
+.cm-line.cm-md-hr-line::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  border-top: 1px solid var(--border);
+  pointer-events: none;
 }
 
 /* 搜索替换面板样式 */
@@ -1509,6 +1551,7 @@ html, body {
 .cm-scroller {
   scrollbar-color: var(--scrollbar-thumb) transparent; /* Firefox: always visible */
   scrollbar-width: thin; /* Firefox */
+  padding: 8px 0;
 }
 /* Ensure scrollbar thumb is always visible */
 .cm-scroller::-webkit-scrollbar-thumb {
@@ -1844,6 +1887,16 @@ html, body {
   overflow: auto;
   font-family: var(--font-mono);
   font-size: 11px;
+}
+.zion-tool-call-inline.zion-selected,
+.zion-thinking-inline.zion-selected {
+  background: var(--selection-bg);
+  border-radius: 4px;
+}
+.zion-tool-call-card.zion-selected,
+.zion-thinking-card.zion-selected {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
 }
 
 /* ===== Thinking (dev.thinking) ===== */
