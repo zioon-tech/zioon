@@ -1326,7 +1326,12 @@ export async function activate(ctx) {
           try {
             const streaming = !!window.zion?.state?.get?.("chat.streaming");
             if (streaming) window.zion.commands.executeCommand("chat.stop");
-            else window.zion.commands.executeCommand("chat.runSelection");
+            else {
+              const ed = window.zion?.window?.activeEditor;
+              const sel = String(ed?.getSelection?.() || "");
+              if (sel.trim()) window.zion.commands.executeCommand("chat.runSelection");
+              else window.zion.commands.executeCommand("chat.run");
+            }
           } catch {}
         };
       }
@@ -1334,7 +1339,7 @@ export async function activate(ctx) {
       const update = () => {
         const streaming = !!window.zion?.state?.get?.("chat.streaming");
         btn.innerHTML = `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
-        btn.title = streaming ? "Stop (Esc)" : "Run selection (Mod-Enter)";
+        btn.title = streaming ? "Stop (Esc)" : "Run (Mod-Enter)";
         try { btn.classList.toggle("is-stop", streaming); } catch {}
       };
       update();
@@ -1360,7 +1365,7 @@ export async function activate(ctx) {
           if (btn && btn.isConnected) {
             const streaming = !!window.zion?.state?.get?.("chat.streaming");
             btn.innerHTML = `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
-            btn.title = streaming ? "Stop (Esc)" : "Run selection (Mod-Enter)";
+            btn.title = streaming ? "Stop (Esc)" : "Run (Mod-Enter)";
             try { btn.classList.toggle("is-stop", streaming); } catch {}
           }
         } catch {}

@@ -257,6 +257,679 @@ function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
   } catch {}
 }
 
+function mountEditorSessionTabsBar(containerEl: HTMLElement) {
+  try {
+    const existing = containerEl.querySelector<HTMLElement>("[data-zion-editor-session-tabs='1']");
+    const existingNewBtn = containerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-tabs-new-session-button='1']");
+    const existingDropdownBtn = containerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-tabs-dropdown-button='1']");
+    if (existing && existingNewBtn && existingDropdownBtn) return;
+
+    const STORAGE_KEY = "zion.ui.editorSessionTabs";
+
+    const safeParse = <T,>(raw: string | null, fallback: T): T => {
+      if (!raw) return fallback;
+      try {
+        const v = JSON.parse(raw);
+        return (v ?? fallback) as T;
+      } catch {
+        return fallback;
+      }
+    };
+
+    const normalizeIds = (ids: unknown): string[] => {
+      const arr = Array.isArray(ids) ? ids : [];
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const it of arr) {
+        const s = String(it ?? "").trim();
+        if (!s) continue;
+        if (seen.has(s)) continue;
+        seen.add(s);
+        out.push(s);
+      }
+      return out;
+    };
+
+    const loadOpenIds = (): string[] => {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = safeParse<any>(raw, null);
+        if (Array.isArray(parsed)) return normalizeIds(parsed);
+        if (parsed && typeof parsed === "object" && Array.isArray(parsed.ids)) return normalizeIds(parsed.ids);
+        return [];
+      } catch {
+        return [];
+      }
+    };
+
+    const persistOpenIds = (ids: string[]) => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
+      } catch {}
+    };
+
+    let openIds = loadOpenIds();
+
+    const getParentIdForNewSession = (): string | undefined => {
+      try {
+        const curId = window.zion.state.get<string>("sessions.currentId");
+        if (!curId) return undefined;
+        const tree = window.zion.state.get<any>("sessions.treeMem");
+        if (!tree || tree.type !== "folder") return undefined;
+        let found: any = null;
+        let parent: any = null;
+        const dfs = (node: any, p: any) => {
+          if (!node || found) return;
+          if (node.id === curId) {
+            found = node;
+            parent = p;
+            return;
+          }
+          if (node.type === "folder" && Array.isArray(node.children)) {
+            for (const ch of node.children) {
+              dfs(ch, node);
+              if (found) return;
+            }
+          }
+        };
+        dfs(tree, null);
+        if (parent && parent.type === "folder") return parent.id;
+        return undefined;
+      } catch {
+        return undefined;
+      }
+    };
+
+    let newBtn = existingNewBtn;
+    if (!newBtn) {
+      newBtn = document.createElement("button");
+      newBtn.type = "button";
+      newBtn.className = "zion-editor-header-action is-icon zion-editor-tabs-new-session-button";
+      newBtn.innerHTML = '<span class="codicon codicon-add" aria-hidden="true"></span>';
+      newBtn.title = "新增会话（同级）";
+      newBtn.setAttribute("aria-label", "新增会话（同级）");
+      newBtn.setAttribute("data-zion-editor-tabs-new-session-button", "1");
+      newBtn.onclick = (e) => {
+        try {
+          e.stopPropagation();
+          e.preventDefault();
+        } catch {}
+        try {
+          const parentId = getParentIdForNewSession();
+          window.zion.commands.executeCommand("zion.sessions.new", { parentId });
+        } catch {}
+      };
+      containerEl.insertBefore(newBtn, containerEl.firstChild);
+    }
+
+    try {
+      const oldBtn = document.querySelector<HTMLButtonElement>("button[data-zion-editor-new-session-button='1']");
+      oldBtn?.remove?.();
+    } catch {}
+
+    const tabsEl = existing || document.createElement("div");
+    if (!existing) {
+      tabsEl.className = "zion-editor-session-tabs";
+      tabsEl.setAttribute("data-zion-editor-session-tabs", "1");
+      tabsEl.setAttribute("role", "tablist");
+      containerEl.appendChild(tabsEl);
+    }
+
+    let dropdownBtn = existingDropdownBtn;
+    let dropdownMenu: HTMLDivElement | null = null;
+    const ensureDropdownMenu = () => {
+      if (dropdownMenu && dropdownMenu.isConnected) return dropdownMenu;
+      dropdownMenu = document.createElement("div");
+      dropdownMenu.className = "zion-editor-tabs-menu";
+      document.body.appendChild(dropdownMenu);
+      return dropdownMenu;
+    };
+    const hideDropdownMenu = () => {
+      if (!dropdownMenu) return;
+      dropdownMenu.classList.remove("show");
+      dropdownMenu.innerHTML = "";
+    };
+    const isDropdownOpen = () => !!dropdownMenu?.classList.contains("show");
+
+    const showDropdownMenu = () => {
+      const menu = ensureDropdownMenu();
+      if (!dropdownBtn) return;
+      menu.innerHTML = "";
+      const rect = dropdownBtn.getBoundingClientRect();
+      const gap = 6;
+      const top = Math.min(window.innerHeight - 10, rect.bottom + gap);
+      const left = Math.max(10, Math.min(window.innerWidth - 10, rect.right));
+      menu.style.top = `${top}px`;
+      menu.style.left = `${left}px`;
+      menu.style.right = "auto";
+      menu.style.transform = "translateX(-100%)";
+
+      const activeId = window.zion.state.get<string>("sessions.currentId") ?? null;
+      if (openIds.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "zion-editor-tabs-menu-empty";
+        empty.textContent = "暂无打开的标签页";
+        menu.appendChild(empty);
+      } else {
+        for (const id of openIds) {
+          const item = document.createElement("div");
+          item.className = "zion-editor-tabs-menu-item";
+          if (activeId === id) item.classList.add("is-active");
+
+          const label = document.createElement("div");
+          label.className = "zion-editor-tabs-menu-item-label";
+          const title = getTitleForSession(id);
+          label.textContent = title;
+          label.title = title;
+
+          const actions = document.createElement("div");
+          actions.className = "zion-editor-tabs-menu-item-actions";
+
+          const close = document.createElement("button");
+          close.type = "button";
+          close.className = "zion-editor-tabs-menu-item-close";
+          close.title = "关闭";
+          close.setAttribute("aria-label", "关闭标签页");
+          close.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>';
+          close.onclick = (e) => {
+            try {
+              e.stopPropagation();
+              e.preventDefault();
+            } catch {}
+            closeTab(id);
+            requestRender();
+            if (openIds.length <= 1) hideDropdownMenu();
+            else showDropdownMenu();
+          };
+
+          actions.appendChild(close);
+          item.appendChild(label);
+          item.appendChild(actions);
+          item.onclick = () => {
+            hideDropdownMenu();
+            activateTab(id);
+          };
+          menu.appendChild(item);
+        }
+      }
+
+      menu.classList.add("show");
+    };
+
+    if (!dropdownBtn) {
+      dropdownBtn = document.createElement("button");
+      dropdownBtn.type = "button";
+      dropdownBtn.className = "zion-editor-header-action is-icon zion-editor-tabs-dropdown-button";
+      dropdownBtn.innerHTML = '<span class="codicon codicon-chevron-down" aria-hidden="true"></span>';
+      dropdownBtn.title = "查看所有标签页";
+      dropdownBtn.setAttribute("aria-label", "查看所有标签页");
+      dropdownBtn.setAttribute("data-zion-editor-tabs-dropdown-button", "1");
+      dropdownBtn.onclick = (e) => {
+        try {
+          e.stopPropagation();
+          e.preventDefault();
+        } catch {}
+        if (isDropdownOpen()) hideDropdownMenu();
+        else showDropdownMenu();
+      };
+      containerEl.appendChild(dropdownBtn);
+    }
+
+    try {
+      window.addEventListener("resize", hideDropdownMenu);
+      window.addEventListener(
+        "scroll",
+        (e) => {
+          const t = (e as any)?.target as any;
+          if (dropdownMenu && (t === dropdownMenu || dropdownMenu.contains(t))) return;
+          hideDropdownMenu();
+        },
+        true
+      );
+      window.addEventListener("keydown", (e) => {
+        const ev = e as KeyboardEvent;
+        if (ev.key === "Escape") hideDropdownMenu();
+      });
+      window.addEventListener("mousedown", (e) => {
+        const t = e.target as any;
+        if (dropdownBtn && (dropdownBtn === t || dropdownBtn.contains(t))) return;
+        if (dropdownMenu && (dropdownMenu === t || dropdownMenu.contains(t))) return;
+        hideDropdownMenu();
+      });
+    } catch {}
+
+    const metaDisposables = new Map<string, Disposable>();
+    const runDisposables = new Map<string, Disposable>();
+    const tabNodes = new Map<string, HTMLElement>();
+    const tabStatusNodes = new Map<string, HTMLElement>();
+    const tabTitleNodes = new Map<string, HTMLElement>();
+    let draggingId: string | null = null;
+    let dropTargetId: string | null = null;
+    let dropPosition: "before" | "after" | null = null;
+    let lastDragEndAt = 0;
+
+    let lastBroadcastOpenKey = "";
+    let lastBroadcastActiveId: string | null = null;
+    let lastDomOrderKey = "";
+
+    let rafPending = false;
+    const requestRender = () => {
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(() => {
+        rafPending = false;
+        render();
+      });
+    };
+
+    const clearDropIndicators = () => {
+      if (!dropTargetId) return;
+      const el = tabNodes.get(dropTargetId);
+      if (el) {
+        el.classList.remove("is-drop-before");
+        el.classList.remove("is-drop-after");
+      }
+      dropTargetId = null;
+      dropPosition = null;
+    };
+
+    const reorderTabs = (fromId: string, toId: string, pos: "before" | "after") => {
+      if (!fromId || !toId) return;
+      if (fromId === toId) return;
+      const next = openIds.filter(x => x !== fromId);
+      const idx = next.indexOf(toId);
+      if (idx === -1) return;
+      const insertIdx = pos === "before" ? idx : idx + 1;
+      next.splice(insertIdx, 0, fromId);
+      openIds = next;
+      persistOpenIds(openIds);
+      render();
+    };
+
+    try {
+      tabsEl.addEventListener(
+        "wheel",
+        (e) => {
+          const ev = e as WheelEvent;
+          if (!tabsEl) return;
+          const canScroll = tabsEl.scrollWidth > tabsEl.clientWidth + 1;
+          if (!canScroll) return;
+          const dx = ev.deltaX || 0;
+          const dy = ev.deltaY || 0;
+          const delta = Math.abs(dy) >= Math.abs(dx) ? dy : dx;
+          if (!delta) return;
+          const prev = tabsEl.scrollLeft;
+          tabsEl.scrollLeft = prev + delta;
+          const moved = Math.abs(tabsEl.scrollLeft - prev) > 0.5;
+          if (moved) {
+            try {
+              ev.preventDefault();
+              ev.stopPropagation();
+            } catch {}
+          }
+        },
+        { passive: false } as any
+      );
+    } catch {}
+
+    const getTitleForSession = (id: string): string => {
+      try {
+        const meta = window.zion.state.get<any>(`sessions.meta.${id}`);
+        const t = String(meta?.title || "").trim();
+        return t || id;
+      } catch {
+        return id;
+      }
+    };
+
+    const ensureActiveInTabs = (activeId: string | null) => {
+      if (!activeId) return;
+      if (!openIds.includes(activeId)) {
+        openIds = [...openIds, activeId];
+        persistOpenIds(openIds);
+      }
+    };
+
+    const closeTab = (id: string) => {
+      const idx = openIds.indexOf(id);
+      if (idx === -1) return;
+      if (openIds.length <= 1) return;
+      const nextOpen = openIds.filter(x => x !== id);
+      const activeId = window.zion.state.get<string>("sessions.currentId") ?? null;
+      const isClosingActive = activeId === id;
+      openIds = nextOpen;
+      persistOpenIds(openIds);
+      render();
+      if (isClosingActive) {
+        const nextId = openIds[Math.min(idx, openIds.length - 1)] || openIds[openIds.length - 1] || null;
+        if (nextId) {
+          try {
+            window.zion.commands.executeCommand("zion.sessions.switch", nextId);
+          } catch {}
+        }
+      }
+    };
+
+    const activateTab = (id: string) => {
+      try {
+        window.zion.commands.executeCommand("zion.sessions.switch", id);
+      } catch {}
+    };
+
+    const syncMetaWatchers = () => {
+      const keep = new Set(openIds);
+      for (const [id, disp] of Array.from(metaDisposables.entries())) {
+        if (!keep.has(id)) {
+          try {
+            disp.dispose();
+          } catch {}
+          metaDisposables.delete(id);
+        }
+      }
+      for (const id of openIds) {
+        if (metaDisposables.has(id)) continue;
+        try {
+          const d = window.zion.state.onDidChange<any>(`sessions.meta.${id}`, (nv, ov) => {
+            const nt = String(nv?.title || "").trim();
+            const ot = String(ov?.title || "").trim();
+            if (nt !== ot) requestRender();
+          });
+          metaDisposables.set(id, d);
+        } catch {}
+      }
+    };
+    const syncRunWatchers = () => {
+      const keep = new Set(openIds);
+      for (const [id, disp] of Array.from(runDisposables.entries())) {
+        if (!keep.has(id)) {
+          try {
+            disp.dispose();
+          } catch {}
+          runDisposables.delete(id);
+        }
+      }
+      for (const id of openIds) {
+        if (runDisposables.has(id)) continue;
+        try {
+          const d = window.zion.state.onDidChange(`chat.runs.${id}`, () => requestRender());
+          runDisposables.set(id, d);
+        } catch {}
+      }
+    };
+
+    const getRunBadge = (id: string): "streaming" | "awaiting" | "aborted" | null => {
+      try {
+        const rs = window.zion.state.get<any>(`chat.runs.${id}`) || null;
+        if (!rs) return null;
+        if (rs.streaming) return "streaming";
+        if (rs.awaiting) return "awaiting";
+        if (rs.aborted) return "aborted";
+        return null;
+      } catch {
+        return null;
+      }
+    };
+
+    const render = () => {
+      const activeId = window.zion.state.get<string>("sessions.currentId") ?? null;
+      ensureActiveInTabs(activeId);
+      syncMetaWatchers();
+      syncRunWatchers();
+      const openKey = openIds.join("|");
+      try {
+        if (openKey !== lastBroadcastOpenKey) {
+          lastBroadcastOpenKey = openKey;
+          window.zion.state.set("ui.editorTabs.openSessionIds", [...openIds]);
+        }
+        if (activeId !== lastBroadcastActiveId) {
+          lastBroadcastActiveId = activeId;
+          window.zion.state.set("ui.editorTabs.activeSessionId", activeId);
+        }
+      } catch {}
+      try {
+        (window.zion.window as any).activeSessionId = activeId;
+        (window.zion.window as any).getActiveSessionId = () => window.zion.state.get<string>("sessions.currentId") ?? null;
+      } catch {}
+      const keep = new Set(openIds);
+      for (const [id, el] of Array.from(tabNodes.entries())) {
+        if (!keep.has(id)) {
+          try {
+            el.remove();
+          } catch {}
+          tabNodes.delete(id);
+          tabStatusNodes.delete(id);
+          tabTitleNodes.delete(id);
+        }
+      }
+
+      for (const id of openIds) {
+        let tabEl = tabNodes.get(id);
+        let statusEl = tabStatusNodes.get(id);
+        let titleEl = tabTitleNodes.get(id);
+        if (!tabEl || !tabEl.isConnected) {
+          tabEl = document.createElement("div");
+          tabEl.className = "zion-editor-session-tab";
+          tabEl.setAttribute("role", "tab");
+          tabEl.setAttribute("tabindex", "0");
+          tabEl.setAttribute("data-session-id", id);
+          tabEl.setAttribute("draggable", "true");
+
+          statusEl = document.createElement("span");
+          statusEl.className = "zion-editor-session-tab-status";
+          statusEl.setAttribute("aria-hidden", "true");
+
+          titleEl = document.createElement("span");
+          titleEl.className = "zion-editor-session-tab-title";
+
+          const closeBtn = document.createElement("button");
+          closeBtn.type = "button";
+          closeBtn.className = "zion-editor-session-tab-close";
+          closeBtn.setAttribute("draggable", "false");
+          closeBtn.setAttribute("aria-label", "关闭标签页");
+          closeBtn.title = "关闭";
+          closeBtn.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>';
+          closeBtn.onclick = (e) => {
+            try {
+              e.stopPropagation();
+              e.preventDefault();
+            } catch {}
+            closeTab(id);
+          };
+          closeBtn.ondragstart = (e) => {
+            try {
+              e.preventDefault();
+              e.stopPropagation();
+            } catch {}
+            return false;
+          };
+
+          tabEl.onclick = () => {
+            if (draggingId || Date.now() - lastDragEndAt < 150) return;
+            const curActive = window.zion.state.get<string>("sessions.currentId") ?? null;
+            if (curActive === id) return;
+            activateTab(id);
+          };
+          tabEl.onauxclick = (e) => {
+            try {
+              if ((e as any).button === 1) {
+                e.preventDefault();
+                closeTab(id);
+              }
+            } catch {}
+          };
+          tabEl.onkeydown = (e) => {
+            const ev = e as KeyboardEvent;
+            if (ev.key === "Enter" || ev.key === " ") {
+              try {
+                ev.preventDefault();
+              } catch {}
+              const curActive = window.zion.state.get<string>("sessions.currentId") ?? null;
+              if (curActive !== id) activateTab(id);
+            }
+            if (ev.key === "Backspace" || ev.key === "Delete") {
+              try {
+                ev.preventDefault();
+              } catch {}
+              closeTab(id);
+            }
+          };
+
+          tabEl.ondragstart = (e) => {
+            const ev = e as DragEvent;
+            draggingId = id;
+            try {
+              tabEl!.classList.add("is-dragging");
+            } catch {}
+            try {
+              ev.dataTransfer?.setData("text/plain", id);
+              if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+            } catch {}
+          };
+          tabEl.ondragend = () => {
+            lastDragEndAt = Date.now();
+            try {
+              tabEl!.classList.remove("is-dragging");
+            } catch {}
+            draggingId = null;
+            clearDropIndicators();
+          };
+          tabEl.ondragover = (e) => {
+            const ev = e as DragEvent;
+            if (!draggingId || draggingId === id) return;
+            try {
+              ev.preventDefault();
+            } catch {}
+            let pos: "before" | "after" = "after";
+            try {
+              const rect = tabEl!.getBoundingClientRect();
+              pos = ev.clientX < rect.left + rect.width / 2 ? "before" : "after";
+            } catch {}
+            if (dropTargetId !== id) {
+              clearDropIndicators();
+              dropTargetId = id;
+            }
+            if (dropPosition !== pos) {
+              dropPosition = pos;
+              tabEl!.classList.toggle("is-drop-before", pos === "before");
+              tabEl!.classList.toggle("is-drop-after", pos === "after");
+            }
+          };
+          tabEl.ondragleave = () => {
+            if (dropTargetId === id) {
+              try {
+                tabEl!.classList.remove("is-drop-before");
+                tabEl!.classList.remove("is-drop-after");
+              } catch {}
+              dropTargetId = null;
+              dropPosition = null;
+            }
+          };
+          tabEl.ondrop = (e) => {
+            const ev = e as DragEvent;
+            try {
+              ev.preventDefault();
+              ev.stopPropagation();
+            } catch {}
+            const src = draggingId || (() => {
+              try {
+                return ev.dataTransfer?.getData("text/plain") || "";
+              } catch {
+                return "";
+              }
+            })();
+            const pos = dropPosition || "after";
+            clearDropIndicators();
+            if (src) reorderTabs(src, id, pos);
+          };
+
+          tabEl.appendChild(statusEl);
+          tabEl.appendChild(titleEl);
+          tabEl.appendChild(closeBtn);
+
+          tabNodes.set(id, tabEl);
+          tabStatusNodes.set(id, statusEl);
+          tabTitleNodes.set(id, titleEl);
+        }
+
+        tabEl.classList.toggle("is-active", activeId === id);
+        const badge = getRunBadge(id);
+        tabEl.classList.toggle("is-streaming", badge === "streaming");
+        tabEl.classList.toggle("is-awaiting", badge === "awaiting");
+        tabEl.classList.toggle("is-aborted", badge === "aborted");
+        if (statusEl) {
+          statusEl.style.display = badge ? "inline-block" : "none";
+        }
+
+        const title = getTitleForSession(id);
+        if (titleEl && titleEl.textContent !== title) titleEl.textContent = title;
+        if (tabEl.title !== title) tabEl.title = title;
+
+        if (tabEl.parentElement !== tabsEl) {
+          tabsEl.appendChild(tabEl);
+        }
+      }
+      if (openKey !== lastDomOrderKey) {
+        lastDomOrderKey = openKey;
+        for (const id of openIds) {
+          const el = tabNodes.get(id);
+          if (el) tabsEl.appendChild(el);
+        }
+      }
+
+      try {
+        if (isDropdownOpen()) showDropdownMenu();
+      } catch {}
+
+      try {
+        if (activeId) {
+          const activeEl = tabNodes.get(activeId) || tabsEl.querySelector<HTMLElement>(".zion-editor-session-tab.is-active");
+          activeEl?.scrollIntoView?.({ block: "nearest", inline: "nearest" } as any);
+        }
+      } catch {}
+    };
+
+    try {
+      window.zion.commands.registerCommand("zion.editorTabs.closeActiveSession", () => {
+        const activeId = window.zion.state.get<string>("sessions.currentId") ?? null;
+        if (!activeId) return false;
+        closeTab(activeId);
+        return true;
+      });
+      window.zion.commands.registerCommand("zion.editorTabs.nextSessionTab", () => {
+        const activeId = window.zion.state.get<string>("sessions.currentId") ?? null;
+        if (!activeId) return false;
+        const idx = openIds.indexOf(activeId);
+        if (idx === -1 || openIds.length <= 1) return false;
+        const nextId = openIds[(idx + 1) % openIds.length];
+        activateTab(nextId);
+        return true;
+      });
+      window.zion.commands.registerCommand("zion.editorTabs.prevSessionTab", () => {
+        const activeId = window.zion.state.get<string>("sessions.currentId") ?? null;
+        if (!activeId) return false;
+        const idx = openIds.indexOf(activeId);
+        if (idx === -1 || openIds.length <= 1) return false;
+        const nextId = openIds[(idx - 1 + openIds.length) % openIds.length];
+        activateTab(nextId);
+        return true;
+      });
+    } catch {}
+
+    try {
+      window.zion.state.onDidChange<string>("sessions.currentId", (nv) => {
+        ensureActiveInTabs(nv ?? null);
+        requestRender();
+      });
+    } catch {}
+
+    try {
+      window.zion.state.onDidChange("sessions.catalog", () => requestRender());
+    } catch {}
+
+    render();
+  } catch {}
+}
+
 type EditorHeaderMenuItem = {
   id: string;
   title?: string;
@@ -523,6 +1196,7 @@ async function bootstrap() {
   const wb = initWorkbench(host);
   const editorContainer = wb.editorHost;
   const editorHeaderPathEl = wb.editorHeaderPathEl;
+  const editorTabsBarEl = wb.editorTabsBarEl;
 
   // 初始化插件管理器
   const pluginManager = new PluginManager({
@@ -547,8 +1221,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   const core = new EditorCore(editorContainer, initialDoc);
   attachEditor(core);
   mountCurrentSessionPath(editorHeaderPathEl);
+  mountEditorSessionTabsBar(editorTabsBarEl);
   mountEditorHeaderTOCButton(editorHeaderPathEl);
-  mountEditorHeaderNewSessionButton(editorHeaderPathEl);
   mountEditorHeaderSettingsMenu(editorHeaderPathEl);
 
   try {

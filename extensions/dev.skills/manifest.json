@@ -1,0 +1,43 @@
+{
+  "name": "dev.skills",
+  "version": "2.1.0",
+  "description": "Agent Skills standard implementation - injects skill metadata into system prompt, model autonomously reads full content when needed",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.skills",
+    "name": "Skills v2.1",
+    "version": "2.1.0",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "skills.openPanel",
+          "title": "Open Skills Panel",
+          "description": "Manage skills directories, scan SKILL.md, enable/disable skills"
+        },
+        {
+          "id": "skills.scanNow",
+          "title": "Scan Skills Now",
+          "description": "Scan configured directories for SKILL.md files"
+        },
+        {
+          "id": "skills.clearCache",
+          "title": "Clear Usage History",
+          "description": "Clear usage history statistics"
+        },
+        {
+          "id": "skills.showStats",
+          "title": "Show Skills Statistics",
+          "description": "Display usage statistics and performance metrics"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

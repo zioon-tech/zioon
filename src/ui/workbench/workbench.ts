@@ -42,7 +42,12 @@ function findScrollableTarget(start: EventTarget | null, root: HTMLElement, axis
   return null;
 }
 
-export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; editorHeaderPathEl: HTMLElement; dispose: () => void } {
+export function initWorkbench(host: HTMLElement): {
+  editorHost: HTMLElement;
+  editorHeaderPathEl: HTMLElement;
+  editorTabsBarEl: HTMLElement;
+  dispose: () => void;
+} {
   const root = el("div", "zion-workbench");
   const activityBarEl = el("div", "zion-activitybar");
   const sideBarEl = el("div", "zion-sidebar");
@@ -56,10 +61,12 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   mobileBarEl.appendChild(mobileBarListEl);
   mobileBarEl.appendChild(mobileBarActionsEl);
 
+  const editorTabsBarEl = el("div", "zion-editor-tabsbar");
   const editorHeaderEl = el("div", "zion-editor-header");
   const editorHeaderPathEl = el("div", "zion-editor-session-path");
   editorHeaderEl.appendChild(editorHeaderPathEl);
   const editorHost = el("div", "zion-editor-host");
+  editorEl.appendChild(editorTabsBarEl);
   editorEl.appendChild(editorHeaderEl);
   editorEl.appendChild(editorHost);
 
@@ -937,6 +944,7 @@ export function initWorkbench(host: HTMLElement): { editorHost: HTMLElement; edi
   return {
     editorHost,
     editorHeaderPathEl,
+    editorTabsBarEl,
     dispose: () => {
       try {
         dispA.dispose();

@@ -874,6 +874,19 @@ html, body {
   flex-direction: column;
 }
 
+.zion-editor-tabsbar {
+  height: 36px;
+  min-height: 36px;
+  flex: 0 0 36px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  box-sizing: border-box;
+}
+
 .zion-editor-header {
   height: 28px;
   min-height: 28px;
@@ -882,7 +895,7 @@ html, body {
   align-items: center;
   padding: 0 10px;
   background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  border-bottom: none;
   color: var(--fg);
   font-size: 13px;
   line-height: 1;
@@ -897,6 +910,263 @@ html, body {
   text-overflow: ellipsis;
   opacity: 0.85;
   cursor: pointer;
+}
+
+.zion-editor-session-tabs {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding: 5px 0;
+}
+.zion-editor-session-tabs::-webkit-scrollbar {
+  height: 0;
+}
+
+.zion-editor-session-tab {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  opacity: 0.75;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: all 80ms ease;
+  font-size: 13px;
+  line-height: 1;
+  position: relative;
+}
+.zion-editor-session-tab.is-dragging {
+  opacity: 0.35;
+}
+.zion-editor-session-tab.is-drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.zion-editor-session-tab.is-drop-after {
+  box-shadow: inset -2px 0 0 var(--accent);
+}
+
+.zion-editor-tabs-new-session-button {
+  margin-right: 6px;
+}
+
+.zion-editor-tabs-dropdown-button {
+  margin-left: 6px;
+}
+
+.zion-editor-tabs-menu {
+  position: fixed;
+  min-width: 260px;
+  max-width: 360px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  padding: 4px;
+  z-index: 960;
+  display: none;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+.zion-editor-tabs-menu.show {
+  display: block;
+}
+.zion-editor-tabs-menu::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.zion-editor-tabs-menu::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+.zion-editor-tabs-menu::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+}
+
+.zion-editor-tabs-menu-empty {
+  padding: 8px 10px;
+  opacity: 0.7;
+  font-size: 12px;
+}
+
+.zion-editor-tabs-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.92;
+}
+.zion-editor-tabs-menu-item:hover {
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+  opacity: 1;
+}
+.zion-editor-tabs-menu-item.is-active {
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+  opacity: 1;
+}
+.zion-editor-tabs-menu-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.zion-editor-tabs-menu-item-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.zion-editor-tabs-menu-item-close {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0.65;
+  padding: 0;
+}
+.zion-editor-tabs-menu-item-close:hover {
+  opacity: 1;
+  background: rgba(255, 100, 100, 0.2);
+  color: #ff6b6b;
+}
+.zion-editor-session-tab + .zion-editor-session-tab::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 14px;
+  background: color-mix(in srgb, var(--border) 85%, transparent);
+  opacity: 0.95;
+}
+.zion-editor-session-tab:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+}
+.zion-editor-session-tab.is-active {
+  opacity: 1;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--fg);
+  font-weight: 500;
+}
+.zion-editor-session-tab.is-active::before {
+  opacity: 0;
+}
+.zion-editor-session-tab.is-active + .zion-editor-session-tab::before {
+  opacity: 0;
+}
+.zion-editor-session-tab.is-active::after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  left: 10px;
+  right: 10px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.zion-editor-session-tab-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: transparent;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border) 70%, transparent);
+}
+.zion-editor-session-tab.is-streaming .zion-editor-session-tab-status {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent), 0 0 0 4px rgba(98, 114, 164, 0.10);
+  animation: zion-tab-pulse 1.1s ease-in-out infinite;
+}
+.zion-editor-session-tab.is-awaiting .zion-editor-session-tab-status {
+  background: var(--ok);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 40%, transparent);
+}
+.zion-editor-session-tab.is-aborted .zion-editor-session-tab-status {
+  background: #ff6b6b;
+  box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.45);
+}
+
+@keyframes zion-tab-pulse {
+  0% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 0.9; }
+}
+.zion-editor-session-tab:focus,
+.zion-editor-session-tab:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.zion-editor-session-tab-title {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: inherit;
+  line-height: 1;
+}
+
+.zion-editor-session-tab-close {
+  flex: 0 0 auto;
+  height: auto;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: none;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 3px;
+  margin-left: 4px;
+  transition: all 80ms ease;
+}
+.zion-editor-session-tab.is-active .zion-editor-session-tab-close,
+.zion-editor-session-tab:hover .zion-editor-session-tab-close {
+  opacity: 0.7;
+  pointer-events: auto;
+}
+.zion-editor-session-tab-close:hover {
+  opacity: 1;
+  background: rgba(255, 100, 100, 0.2);
+  color: #ff6b6b;
+}
+.zion-editor-session-tab-close .codicon {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .zion-editor-header-action {

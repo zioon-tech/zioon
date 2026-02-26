@@ -2788,55 +2788,69 @@ function refreshStatusBar() {
 /** ========== CM6 Plugin (auto-save) ========== */
 function sessionAutoSavePlugin(getCurrentId, onSaved) {
   let timer = 0;
-  let pendingText = null;
+  let pendingDoc = null;
+  let pendingId = null;
 
-  const scheduleSave = (view) => {
+  const clearTimer = () => {
     try { if (timer) cancelIdleCallback(timer); } catch {}
     try { if (timer) clearTimeout(timer); } catch {}
+    timer = 0;
+  };
+
+  const commit = (id, doc) => {
+    if (!id || !doc) return false;
+    const text = doc.toString();
+    // compare hash; avoid updating if no content change
+    const meta = loadMeta(id);
+    const newHash = hashString(text);
+    if (newHash === (meta.hash || "")) {
+      return false;
+    }
+    // write
+    saveDoc(id, text);
+    const rs = window.zion?.state?.get(`chat.runs.${id}`) || null;
+    if (rs && rs.streaming) {
+      // 流式进行中：仅更新 size/hash，不刷新 updatedAt 与索引，避免列表频繁跳动
+      meta.size = text.length;
+      meta.hash = newHash;
+      // carry persisted annotations (tool cards / thinking cards)
+      try {
+        const ann = getAnnotationsState(id);
+        if (ann) meta.annotations = ann;
+      } catch {}
+      // 首次自动标题在“切换会话”时处理；此处不再更新标题，也不触发侧边栏刷新
+      saveMeta(id, meta);
+      try { onSaved(meta); } catch {}
+      return true;
+    }
+    // 正常保存：更新时间与索引
+    meta.updatedAt = now();
+    meta.size = text.length;
+    meta.hash = newHash;
+    try {
+      const ann = getAnnotationsState(id);
+      if (ann) meta.annotations = ann;
+    } catch {}
+    // 首次自动标题在“切换会话”时处理；此处不再更新标题
+    saveMeta(id, meta);
+    // 重建索引，保持面板/列表同步
+    rebuildIndexFromTree();
+    upsertIndexEntry({ id, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
+    try { postSaved(id, meta.updatedAt, meta.hash); } catch {}
+    try { onSaved(meta); } catch {}
+    return true;
+  };
+
+  const scheduleSave = () => {
+    clearTimer();
     const idle = typeof requestIdleCallback === "function";
     const fn = () => {
-      const id = getCurrentId();
-      if (!id || pendingText == null) return;
-      const text = pendingText;
-      pendingText = null;
-      // compare hash; avoid updating if no content change
-      const meta = loadMeta(id);
-      const newHash = hashString(text);
-      if (newHash === (meta.hash || "")) {
-        return;
-      }
-      // write
-      saveDoc(id, text);
-      const rs = window.zion?.state?.get(`chat.runs.${id}`) || null;
-      if (rs && rs.streaming) {
-        // 流式进行中：仅更新 size/hash，不刷新 updatedAt 与索引，避免列表频繁跳动
-        meta.size = text.length;
-        meta.hash = newHash;
-        // carry persisted annotations (tool cards / thinking cards)
-        try {
-          const ann = getAnnotationsState(id);
-          if (ann) meta.annotations = ann;
-        } catch {}
-        // 首次自动标题在“切换会话”时处理；此处不再更新标题，也不触发侧边栏刷新
-        saveMeta(id, meta);
-        try { onSaved(meta); } catch {}
-      } else {
-        // 正常保存：更新时间与索引
-        meta.updatedAt = now();
-        meta.size = text.length;
-        meta.hash = newHash;
-        try {
-          const ann = getAnnotationsState(id);
-          if (ann) meta.annotations = ann;
-        } catch {}
-        // 首次自动标题在“切换会话”时处理；此处不再更新标题
-        saveMeta(id, meta);
-        // 重建索引，保持面板/列表同步
-        rebuildIndexFromTree();
-        upsertIndexEntry({ id, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
-        try { postSaved(id, meta.updatedAt, meta.hash); } catch {}
-        try { onSaved(meta); } catch {}
-      }
+      const id = pendingId || getCurrentId();
+      if (!id || !pendingDoc) return;
+      const doc = pendingDoc;
+      pendingDoc = null;
+      pendingId = null;
+      commit(id, doc);
     };
     if (idle) {
       timer = requestIdleCallback(fn, { timeout: 1200 });
@@ -2845,19 +2859,34 @@ function sessionAutoSavePlugin(getCurrentId, onSaved) {
     }
   };
 
-  return ViewPlugin.fromClass(class {
+  const flush = (idOverride) => {
+    const id = idOverride || pendingId || getCurrentId();
+    if (!id) return false;
+    if (!pendingDoc) return false;
+    if (pendingId && pendingId !== id) return false;
+    const doc = pendingDoc;
+    pendingDoc = null;
+    pendingId = null;
+    clearTimer();
+    return commit(id, doc);
+  };
+
+  return {
+    extension: ViewPlugin.fromClass(class {
     constructor(view) {}
     update(update) {
       if (update.docChanged) {
-        pendingText = update.state.doc.toString();
-        scheduleSave(update.view);
+        pendingId = getCurrentId();
+        pendingDoc = update.state.doc;
+        scheduleSave();
       }
     }
     destroy() {
-      try { if (timer) cancelIdleCallback(timer); } catch {}
-      try { if (timer) clearTimeout(timer); } catch {}
+      clearTimer();
     }
-  });
+  }),
+    flush
+  };
 }
 
 /** ========== Export / Import ========== */
@@ -3307,13 +3336,65 @@ export async function activate(ctx) {
   const dispDec = window.zion.editor.registerDecorator({
     id: "dev.session-manager.autosave",
     apply(editor) {
-      editor.addVisualExtension(plugin);
+      editor.addVisualExtension(plugin.extension);
       return { dispose() {} };
     }
   });
   ctx.subscriptions.push(dispDec);
 
   /** ========== Commands ========== */
+
+  const dFlush = window.zion.commands.registerCommand("zion.sessions.flushPendingSave", (id) => {
+    try {
+      return !!plugin.flush(id);
+    } catch {
+      return false;
+    }
+  });
+  ctx.subscriptions.push(dFlush);
+
+  try {
+    let prefetchTimer = 0;
+    const schedulePrefetch = () => {
+      try { if (prefetchTimer) cancelIdleCallback(prefetchTimer); } catch {}
+      try { if (prefetchTimer) clearTimeout(prefetchTimer); } catch {}
+      const idle = typeof requestIdleCallback === "function";
+      const fn = async () => {
+        const ids = window.zion.state.get("ui.editorTabs.openSessionIds");
+        const arr = Array.isArray(ids) ? ids : [];
+        const uniq = [];
+        const seen = new Set();
+        for (const it of arr) {
+          const s = String(it ?? "").trim();
+          if (!s) continue;
+          if (seen.has(s)) continue;
+          seen.add(s);
+          uniq.push(s);
+        }
+        const cur = window.zion.state.get("sessions.currentId");
+        if (cur && !seen.has(cur)) uniq.unshift(cur);
+        const max = 6;
+        const target = uniq.slice(0, max);
+        for (const id of target) {
+          try {
+            loadMeta(id);
+            await loadDocAsync(id);
+          } catch {}
+        }
+      };
+      if (idle) prefetchTimer = requestIdleCallback(() => void fn(), { timeout: 1200 });
+      else prefetchTimer = setTimeout(() => void fn(), 600);
+    };
+    const dispTabs = window.zion.state.onDidChange("ui.editorTabs.openSessionIds", () => schedulePrefetch());
+    ctx.subscriptions.push({
+      dispose() {
+        try { dispTabs?.dispose?.(); } catch {}
+        try { if (prefetchTimer) cancelIdleCallback(prefetchTimer); } catch {}
+        try { if (prefetchTimer) clearTimeout(prefetchTimer); } catch {}
+        prefetchTimer = 0;
+      }
+    });
+  } catch {}
 
   // New empty session
   const dNew = window.zion.commands.registerCommand("zion.sessions.new", (opts) => {
@@ -3484,6 +3565,9 @@ export async function activate(ctx) {
         try {
           const ed = window.zion.window.activeEditor;
           try {
+            window.zion.commands.executeCommand("zion.sessions.flushPendingSave", curPrev);
+          } catch {}
+          try {
             const cursor = ed?.getCursor?.();
             const view0 = ed?.core?.view;
             const scrollTop = view0?.scrollDOM?.scrollTop;
@@ -3496,14 +3580,6 @@ export async function activate(ctx) {
             } catch {}
             sessionUiState.set(curPrev, { cursor, scrollTop, scrollAnchor });
           } catch {}
-          const text = ed?.getValue?.();
-          if (typeof text === "string") {
-            saveDoc(curPrev, text);
-            const metaPrev0 = loadMeta(curPrev);
-            metaPrev0.size = text.length;
-            metaPrev0.hash = hashString(text);
-            saveMeta(curPrev, metaPrev0);
-          }
         } catch {}
         const ann = window.zion.state.get(`sessions.annotations.${curPrev}`);
         if (ann) {

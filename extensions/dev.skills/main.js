@@ -1,0 +1,820 @@
+const DEFAULT_CONFIG = {
+  maxActiveSkills: 3,
+  tokenBudget: 30000,
+  metadataScanTokens: 100,
+  safetyMargin: 5000,
+  enableUsageTracking: true,
+  enableDependencyResolution: true,
+  scoring: {
+    keywordMatchWeight: 2,
+    tagMatchWeight: 3,
+    categoryMatchWeight: 4,
+    historyBoostWeight: 0.5,
+    exactNameBoost: 5
+  }
+};
+
+function getState() {
+  return window.zion && window.zion.state;
+}
+
+function ensureDefaults() {
+  const state = getState();
+  if (!state) return;
+
+  if (!state.get("skills.paths")) state.set("skills.paths", []);
+  if (!state.get("skills.enabled")) state.set("skills.enabled", []);
+  if (!state.get("skills.catalog")) state.set("skills.catalog", []);
+  if (!state.get("skills.cacheContent")) state.set("skills.cacheContent", {});
+  if (!state.get("skills.usageHistory")) state.set("skills.usageHistory", {});
+  if (!state.get("skills.tokenBudget")) state.set("skills.tokenBudget", DEFAULT_CONFIG.tokenBudget);
+  if (!state.get("skills.config")) state.set("skills.config", DEFAULT_CONFIG);
+  if (!state.get("skills.dependencyGraph")) state.set("skills.dependencyGraph", {});
+  if (!state.get("skills.lastScan")) state.set("skills.lastScan", 0);
+}
+
+function getLocalToolsBase() {
+  const state = getState();
+  const raw = (state && state.get("localTools.baseUrl")) || "http://127.0.0.1:8765";
+  return String(raw || "http://127.0.0.1:8765").replace(/\/$/, "");
+}
+
+function getEnabledSet() {
+  const state = getState();
+  const enabled = (state && state.get("skills.enabled")) || [];
+  return new Set(Array.isArray(enabled) ? enabled : []);
+}
+
+function getCatalog() {
+  const state = getState();
+  const catalog = (state && state.get("skills.catalog")) || [];
+  return Array.isArray(catalog) ? catalog : [];
+}
+
+function escapeXML(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function generateAvailableSkillsXML(catalog, enabledSet) {
+  const enabledSkills = (catalog || []).filter((s) => enabledSet.has(s.id));
+  const skillXMLs = enabledSkills
+    .map((skill) => {
+      const name = escapeXML(skill.name || skill.id);
+      const desc = skill.description ? `<description>${escapeXML(skill.description)}</description>` : "";
+      const location = skill.path ? `<location>${escapeXML(`${skill.path}/SKILL.md`)}</location>` : "";
+      return `  <skill>\n    <name>${name}</name>\n    ${desc}\n    ${location}\n  </skill>`;
+    })
+    .join("\n");
+
+  return `<available_skills>\n${skillXMLs}\n</available_skills>\n\nWhen you need detailed instructions for a skill, use the Read tool to access the file at the specified location.`;
+}
+
+async function listDirEntries(base, dir) {
+  try {
+    const url = `${base}/files/entries?path=${encodeURIComponent(dir)}&max_depth=1`;
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) return [];
+
+    const j = await res.json().catch(() => null);
+    const rootPath = String((j && j.path) ? j.path : dir).replace(/\/$/, "");
+    const raw = (j && typeof j === "object" && "results" in j) ? j.results : j;
+    const entries = [];
+    const seen = new Set();
+    const addEntry = (path, type) => {
+      const key = path + "|" + type;
+      if (seen.has(key)) return;
+      seen.add(key);
+      entries.push({ path, type });
+    };
+
+    if (Array.isArray(raw)) {
+      raw.forEach((it) => {
+        const p = String(it?.path || it?.full_path || it || "").trim();
+        if (!p) return;
+        const isDir = p.endsWith("/");
+        const type = String(it?.type || it?.kind || "").toLowerCase() || (isDir ? "dir" : "file");
+        addEntry(p.replace(/\/$/, ""), isDir ? "dir" : type);
+      });
+      return entries;
+    }
+
+    if (typeof raw === "string") {
+      raw.split(/\r?\n/).forEach((ln) => {
+        if (!/^-\s+/.test(ln)) return;
+        const name = ln.replace(/^-\s+/, "").trim();
+        if (!name) return;
+        const isDir = /\/$/.test(name);
+        const cleanName = name.replace(/\/$/, "");
+        addEntry(`${rootPath}/${cleanName}`, isDir ? "dir" : "file");
+      });
+    }
+
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+async function fileExists(base, path) {
+  try {
+    const url = `${base}/files/read?path=${encodeURIComponent(path)}&offset=0&limit=1`;
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) return false;
+    const json = await res.json().catch(() => null);
+    return json !== null && !json.error;
+  } catch {
+    return false;
+  }
+}
+
+async function readFile(base, path, { headOnly = false } = {}) {
+  try {
+    const url = `${base}/files/read?path=${encodeURIComponent(path)}`;
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) return "";
+    const json = await res.json().catch(() => null);
+    if (!json) return "";
+    const text = json.content || "";
+    return headOnly ? text.slice(0, 6144) : text;
+  } catch {
+    return "";
+  }
+}
+
+function normalizeArray(val) {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  return String(val).split(/[,\s]+/).filter(Boolean);
+}
+
+function parseSkillFrontMatter(text) {
+  try {
+    const m = /^---\s*[\r\n]+([\s\S]*?)[\r\n]+---\s*/.exec(text || "");
+    if (!m) return {};
+    const meta = {};
+    m[1].split(/\r?\n/).forEach((ln) => {
+      const kv = ln.match(/^\s*([A-Za-z0-9_-]+)\s*:\s*(.+)\s*$/);
+      if (!kv) return;
+      const key = kv[1].trim();
+      let val = kv[2].trim();
+      const arr = val.match(/^\[(.*)\]$/);
+      if (arr) {
+        meta[key] = arr[1].split(",").map((s) => s.trim()).filter(Boolean);
+        return;
+      }
+      if (/^(true|false)$/i.test(val)) val = val.toLowerCase() === "true";
+      else if (/^-?\d+(\.\d+)?$/.test(val)) val = Number(val);
+      meta[key] = val;
+    });
+
+    return {
+      name: meta.name,
+      description: meta.description,
+      category: meta.category,
+      difficulty: meta.difficulty,
+      tags: normalizeArray(meta.tags || meta.tag),
+      allowedTools: normalizeArray(meta["allowed-tools"] || meta.allowedTools),
+      dependencies: normalizeArray(meta.dependencies)
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function scanAllSkills() {
+  const state = getState();
+  if (!state) return [];
+
+  const paths = state.get("skills.paths") || [];
+  const base = getLocalToolsBase();
+  const catalog = [];
+
+  for (const dir of Array.isArray(paths) ? paths : []) {
+    try {
+      const entries = await listDirEntries(base, dir);
+      for (const entry of entries) {
+        if (!entry || entry.type !== "dir") continue;
+        const skillDir = String(entry.path || "").replace(/\/$/, "");
+        if (!skillDir) continue;
+        const skillMd = `${skillDir}/SKILL.md`;
+        if (!(await fileExists(base, skillMd))) continue;
+
+        const headText = await readFile(base, skillMd, { headOnly: true });
+        const meta = parseSkillFrontMatter(headText);
+        const id = skillDir.split("/").filter(Boolean).pop();
+        if (!id) continue;
+
+        catalog.push({
+          id,
+          name: meta.name || id,
+          description: meta.description || "",
+          category: meta.category || "",
+          tags: meta.tags || [],
+          difficulty: meta.difficulty || "",
+          allowedTools: meta.allowedTools || [],
+          dependencies: meta.dependencies || [],
+          path: skillDir,
+          file: skillMd
+        });
+      }
+    } catch {}
+  }
+
+  state.set("skills.catalog", catalog);
+  state.set("skills.lastScan", Date.now());
+
+  const enabled = state.get("skills.enabled") || [];
+  if (!Array.isArray(enabled) || enabled.length === 0) {
+    state.set("skills.enabled", catalog.map((s) => s.id));
+  }
+
+  return catalog;
+}
+
+async function getCatalogOrScan() {
+  const catalog = getCatalog();
+  if (catalog.length > 0) return catalog;
+  return await scanAllSkills();
+}
+
+function registerMessageContributor() {
+  if (!window.zion || !window.zion.messages || typeof window.zion.messages.registerContributor !== "function") {
+    return { dispose: () => {} };
+  }
+
+  return window.zion.messages.registerContributor({
+    id: "dev.skills.standard",
+    order: 25,
+    stage: "pre",
+    contribute: async (messages) => {
+      try {
+        const catalog = await getCatalogOrScan();
+        const enabled = getEnabledSet();
+        if (enabled.size === 0) return messages;
+        const availableSkillsXML = generateAvailableSkillsXML(catalog, enabled);
+        const systemMessage = { role: "system", content: availableSkillsXML };
+        return [systemMessage, ...messages];
+      } catch {
+        return messages;
+      }
+    }
+  });
+}
+
+function updateStatusBar() {
+  try {
+    const catalog = getCatalog();
+    const enabled = getEnabledSet();
+    const text = `Skills: ${enabled.size}/${catalog.length}`;
+    window.zion.statusBar.registerItem({
+      id: "dev.skills.status",
+      text,
+      tooltip: "Manage Skills",
+      onClick: () => window.zion.commands.executeCommand("skills.openPanel"),
+      priority: 78
+    });
+  } catch {}
+}
+
+function createButton(text, style, onClick) {
+  const btn = document.createElement("button");
+  btn.textContent = text;
+  Object.assign(btn.style, style || {});
+  btn.onclick = onClick;
+  return btn;
+}
+
+function showModal(title, content) {
+  const overlay = document.createElement("div");
+  Object.assign(overlay.style, {
+    position: "fixed",
+    inset: "0",
+    background: "rgba(0,0,0,0.35)",
+    zIndex: "100000"
+  });
+  overlay.onclick = (e) => {
+    if (e.target === overlay) overlay.remove();
+  };
+
+  const modal = document.createElement("div");
+  Object.assign(modal.style, {
+    position: "fixed",
+    left: "50%",
+    top: "50%",
+    transform: "translate(-50%, -50%)",
+    width: "720px",
+    maxWidth: "92vw",
+    maxHeight: "72vh",
+    overflow: "auto",
+    background: "var(--panel)",
+    color: "var(--fg)",
+    border: "1px solid var(--border)",
+    borderRadius: "10px",
+    boxShadow: "0 16px 48px rgba(0,0,0,0.45)",
+    padding: "14px"
+  });
+  modal.onclick = (e) => e.stopPropagation();
+
+  const h = document.createElement("div");
+  h.textContent = title;
+  Object.assign(h.style, { fontWeight: "600", marginBottom: "10px", fontSize: "13px" });
+
+  const pre = document.createElement("pre");
+  pre.textContent = content;
+  Object.assign(pre.style, {
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    fontFamily: "var(--font-mono)",
+    fontSize: "12px",
+    lineHeight: "1.55",
+    margin: "0"
+  });
+
+  const close = createButton(
+    "Close",
+    {
+      marginTop: "12px",
+      padding: "6px 12px",
+      background: "var(--accent)",
+      color: "var(--panel)",
+      border: "none",
+      borderRadius: "8px",
+      cursor: "pointer"
+    },
+    () => overlay.remove()
+  );
+
+  modal.appendChild(h);
+  modal.appendChild(pre);
+  modal.appendChild(close);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+async function loadSkillBody(skill) {
+  const base = getLocalToolsBase();
+  const file = skill && (skill.file || (skill.path ? `${skill.path}/SKILL.md` : ""));
+  if (!file) return "";
+  const content = await readFile(base, file, { headOnly: false });
+  return content || "";
+}
+
+function renderSkillsList(container) {
+  const state = getState();
+  if (!state) return;
+
+  container.innerHTML = "";
+  const catalog = getCatalog();
+  const enabled = state.get("skills.enabled") || [];
+  const enabledSet = new Set(Array.isArray(enabled) ? enabled : []);
+
+  if (catalog.length === 0) {
+    const empty = document.createElement("div");
+    empty.textContent = 'No skills found. Add a directory path and click "Scan Now".';
+    Object.assign(empty.style, { fontSize: "12px", opacity: "0.7", padding: "10px 4px" });
+    container.appendChild(empty);
+    return;
+  }
+
+  const sorted = catalog.slice().sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+  for (const skill of sorted) {
+    const row = document.createElement("div");
+    Object.assign(row.style, {
+      border: "1px solid var(--border)",
+      borderRadius: "10px",
+      padding: "10px",
+      marginBottom: "8px",
+      background: enabledSet.has(skill.id) ? "rgba(128,128,128,0.06)" : "transparent"
+    });
+
+    const header = document.createElement("div");
+    Object.assign(header.style, { display: "flex", alignItems: "center", gap: "10px" });
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = enabledSet.has(skill.id);
+    toggle.onchange = () => {
+      const next = new Set(enabledSet);
+      if (toggle.checked) next.add(skill.id);
+      else next.delete(skill.id);
+      state.set("skills.enabled", Array.from(next));
+    };
+
+    const title = document.createElement("div");
+    title.textContent = skill.name || skill.id;
+    Object.assign(title.style, { fontSize: "13px", fontWeight: "600", flex: "1", minWidth: "0" });
+
+    header.appendChild(toggle);
+    header.appendChild(title);
+    row.appendChild(header);
+
+    const desc = document.createElement("div");
+    desc.textContent = skill.description || "No description";
+    Object.assign(desc.style, { fontSize: "12px", opacity: "0.8", marginTop: "6px", marginLeft: "22px" });
+    row.appendChild(desc);
+
+    const meta = document.createElement("div");
+    const parts = [];
+    if (skill.category) parts.push(String(skill.category));
+    if (skill.tags && skill.tags.length) parts.push(skill.tags.map((t) => `#${t}`).join(" "));
+    if (skill.difficulty) parts.push(String(skill.difficulty));
+    meta.textContent = parts.join(" · ");
+    Object.assign(meta.style, { fontSize: "11px", opacity: "0.65", marginTop: "6px", marginLeft: "22px" });
+    row.appendChild(meta);
+
+    const actions = document.createElement("div");
+    Object.assign(actions.style, { display: "flex", gap: "8px", marginTop: "8px", marginLeft: "22px" });
+
+    actions.appendChild(
+      createButton(
+        "Preview",
+        {
+          padding: "4px 10px",
+          borderRadius: "8px",
+          border: "1px solid var(--border)",
+          background: "transparent",
+          color: "var(--fg)",
+          cursor: "pointer",
+          fontSize: "12px"
+        },
+        async () => {
+          const body = await loadSkillBody(skill);
+          showModal(skill.name || skill.id, body || "(empty)");
+        }
+      )
+    );
+
+    row.appendChild(actions);
+    container.appendChild(row);
+  }
+}
+
+function renderPathsList(container) {
+  const state = getState();
+  if (!state) return;
+
+  container.innerHTML = "";
+  const paths = state.get("skills.paths") || [];
+  const list = Array.isArray(paths) ? paths : [];
+
+  if (list.length === 0) {
+    const empty = document.createElement("div");
+    empty.textContent = "No paths configured";
+    Object.assign(empty.style, { fontSize: "11px", opacity: "0.6" });
+    container.appendChild(empty);
+    return;
+  }
+
+  list.forEach((p, idx) => {
+    const row = document.createElement("div");
+    Object.assign(row.style, { display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" });
+
+    const label = document.createElement("div");
+    label.textContent = String(p);
+    Object.assign(label.style, {
+      flex: "1",
+      fontSize: "11px",
+      opacity: "0.8",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+      fontFamily: "var(--font-mono)"
+    });
+
+    const del = createButton(
+      "×",
+      {
+        width: "26px",
+        height: "26px",
+        borderRadius: "8px",
+        border: "1px solid var(--border)",
+        background: "transparent",
+        color: "var(--fg)",
+        cursor: "pointer",
+        opacity: "0.8"
+      },
+      () => {
+        const next = list.slice();
+        next.splice(idx, 1);
+        state.set("skills.paths", next);
+        renderPathsList(container);
+      }
+    );
+
+    row.appendChild(label);
+    row.appendChild(del);
+    container.appendChild(row);
+  });
+}
+
+function openSkillsPanel() {
+  const state = getState();
+  if (!state) return;
+
+  const existing = document.getElementById("zion-skills-panel");
+  if (existing) existing.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "zion-skills-panel";
+  Object.assign(overlay.style, {
+    position: "fixed",
+    inset: "0",
+    background: "rgba(0,0,0,0.35)",
+    zIndex: "99998"
+  });
+  let d1 = null;
+  let d2 = null;
+  const closePanel = () => {
+    try { d1 && d1.dispose && d1.dispose(); } catch {}
+    try { d2 && d2.dispose && d2.dispose(); } catch {}
+    try { overlay.remove(); } catch {}
+  };
+  overlay.onclick = (e) => {
+    if (e.target === overlay) closePanel();
+  };
+
+  const panel = document.createElement("div");
+  Object.assign(panel.style, {
+    position: "fixed",
+    right: "24px",
+    top: "60px",
+    width: "520px",
+    maxWidth: "92vw",
+    maxHeight: "78vh",
+    overflow: "auto",
+    background: "var(--panel)",
+    color: "var(--fg)",
+    border: "1px solid var(--border)",
+    borderRadius: "12px",
+    boxShadow: "0 12px 32px rgba(0,0,0,0.42)",
+    padding: "14px",
+    zIndex: "99999",
+    fontFamily: "var(--font-sans)"
+  });
+  panel.onclick = (e) => e.stopPropagation();
+
+  const title = document.createElement("div");
+  title.textContent = "Skills";
+  Object.assign(title.style, { fontWeight: "700", fontSize: "14px", marginBottom: "10px" });
+  panel.appendChild(title);
+
+  const stats = document.createElement("div");
+  Object.assign(stats.style, { fontSize: "12px", opacity: "0.75", marginBottom: "10px" });
+  const refreshStats = () => {
+    const catalog = getCatalog();
+    const enabled = getEnabledSet();
+    stats.textContent = `Enabled ${enabled.size}/${catalog.length} · Base ${getLocalToolsBase()}`;
+  };
+  refreshStats();
+  panel.appendChild(stats);
+
+  const pathsWrap = document.createElement("div");
+  Object.assign(pathsWrap.style, { marginBottom: "12px" });
+
+  const pathsHeader = document.createElement("div");
+  pathsHeader.textContent = "Skill Directories";
+  Object.assign(pathsHeader.style, { fontSize: "12px", fontWeight: "600", marginBottom: "6px" });
+  pathsWrap.appendChild(pathsHeader);
+
+  const inputRow = document.createElement("div");
+  Object.assign(inputRow.style, { display: "flex", gap: "8px", marginBottom: "8px" });
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "/absolute/path/to/skills";
+  Object.assign(input.style, {
+    flex: "1",
+    height: "30px",
+    borderRadius: "10px",
+    border: "1px solid var(--border)",
+    background: "transparent",
+    color: "var(--fg)",
+    padding: "0 10px",
+    outline: "none",
+    fontSize: "12px"
+  });
+  const addBtn = createButton(
+    "Add",
+    {
+      height: "30px",
+      padding: "0 12px",
+      borderRadius: "10px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      cursor: "pointer",
+      fontSize: "12px"
+    },
+    () => {
+      const p = String(input.value || "").trim();
+      if (!p) return;
+      const paths = state.get("skills.paths") || [];
+      const next = Array.isArray(paths) ? paths.slice() : [];
+      if (!next.includes(p)) next.push(p);
+      state.set("skills.paths", next);
+      input.value = "";
+      renderPathsList(pathsList);
+    }
+  );
+  inputRow.appendChild(input);
+  inputRow.appendChild(addBtn);
+  pathsWrap.appendChild(inputRow);
+
+  const pathsList = document.createElement("div");
+  renderPathsList(pathsList);
+  pathsWrap.appendChild(pathsList);
+  panel.appendChild(pathsWrap);
+
+  const actions = document.createElement("div");
+  Object.assign(actions.style, { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" });
+  actions.appendChild(
+    createButton(
+      "Scan Now",
+      {
+        height: "30px",
+        padding: "0 12px",
+        borderRadius: "10px",
+        border: "none",
+        background: "var(--accent)",
+        color: "var(--panel)",
+        cursor: "pointer",
+        fontSize: "12px",
+        fontWeight: "600"
+      },
+      async () => {
+        await window.zion.commands.executeCommand("skills.scanNow");
+        renderSkillsList(skillsList);
+        refreshStats();
+      }
+    )
+  );
+
+  actions.appendChild(
+    createButton(
+      "Enable All",
+      {
+        height: "30px",
+        padding: "0 12px",
+        borderRadius: "10px",
+        border: "1px solid var(--border)",
+        background: "transparent",
+        color: "var(--fg)",
+        cursor: "pointer",
+        fontSize: "12px"
+      },
+      () => {
+        const catalog = getCatalog();
+        state.set("skills.enabled", catalog.map((s) => s.id));
+        renderSkillsList(skillsList);
+        refreshStats();
+      }
+    )
+  );
+
+  actions.appendChild(
+    createButton(
+      "Disable All",
+      {
+        height: "30px",
+        padding: "0 12px",
+        borderRadius: "10px",
+        border: "1px solid var(--border)",
+        background: "transparent",
+        color: "var(--fg)",
+        cursor: "pointer",
+        fontSize: "12px"
+      },
+      () => {
+        state.set("skills.enabled", []);
+        renderSkillsList(skillsList);
+        refreshStats();
+      }
+    )
+  );
+
+  actions.appendChild(
+    createButton(
+      "Clear Usage",
+      {
+        height: "30px",
+        padding: "0 12px",
+        borderRadius: "10px",
+        border: "1px solid var(--border)",
+        background: "transparent",
+        color: "var(--fg)",
+        cursor: "pointer",
+        fontSize: "12px"
+      },
+      async () => {
+        await window.zion.commands.executeCommand("skills.clearCache");
+      }
+    )
+  );
+
+  const closeBtn = createButton(
+    "Close",
+    {
+      height: "30px",
+      padding: "0 12px",
+      borderRadius: "10px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      cursor: "pointer",
+      fontSize: "12px",
+      marginLeft: "auto"
+    },
+    () => closePanel()
+  );
+  actions.appendChild(closeBtn);
+  panel.appendChild(actions);
+
+  const skillsList = document.createElement("div");
+  renderSkillsList(skillsList);
+  panel.appendChild(skillsList);
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+
+  d1 = window.zion.state.onDidChange("skills.catalog", () => {
+    renderSkillsList(skillsList);
+    refreshStats();
+  });
+  d2 = window.zion.state.onDidChange("skills.enabled", () => {
+    renderSkillsList(skillsList);
+    refreshStats();
+  });
+  return { dispose: closePanel };
+}
+
+function registerCommands() {
+  const cmds = [];
+  try {
+    cmds.push(window.zion.commands.registerCommand("skills.openPanel", () => openSkillsPanel()));
+    cmds.push(
+      window.zion.commands.registerCommand("skills.scanNow", async () => {
+        await scanAllSkills();
+        updateStatusBar();
+      })
+    );
+    cmds.push(
+      window.zion.commands.registerCommand("skills.clearCache", () => {
+        const state = getState();
+        if (!state) return;
+        state.set("skills.cacheContent", {});
+        state.set("skills.usageHistory", {});
+      })
+    );
+    cmds.push(
+      window.zion.commands.registerCommand("skills.showStats", () => {
+        try {
+          const state = getState();
+          if (!state) return;
+          const history = state.get("skills.usageHistory") || {};
+          const catalog = getCatalog();
+          const lines = Object.entries(history || {}).map(([id, entries]) => {
+            const skill = catalog.find((s) => s.id === id);
+            const name = (skill && (skill.name || skill.id)) || id;
+            const total = Array.isArray(entries) ? entries.length : 0;
+            return `${name}: ${total}`;
+          });
+          alert(`Skills Statistics:\n\n${lines.length ? lines.join("\n") : "No usage data."}`);
+        } catch {}
+      })
+    );
+  } catch {}
+  return cmds;
+}
+
+function registerStateListeners() {
+  const disposers = [];
+  try {
+    disposers.push(window.zion.state.onDidChange("skills.enabled", () => updateStatusBar()));
+    disposers.push(window.zion.state.onDidChange("skills.catalog", () => updateStatusBar()));
+  } catch {}
+  return disposers;
+}
+
+export async function activate(ctx) {
+  ensureDefaults();
+
+  const commands = registerCommands();
+  const contributor = registerMessageContributor();
+  const listeners = registerStateListeners();
+
+  try { ctx.subscriptions.push(...commands); } catch {}
+  try { ctx.subscriptions.push(contributor); } catch {}
+  try { ctx.subscriptions.push(...listeners); } catch {}
+
+  try {
+    Promise.resolve().then(async () => {
+      try { await scanAllSkills(); } catch {}
+      try { updateStatusBar(); } catch {}
+    });
+  } catch {}
+
+  updateStatusBar();
+}
