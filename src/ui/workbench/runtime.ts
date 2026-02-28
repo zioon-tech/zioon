@@ -745,7 +745,7 @@ class AuxiliaryBarRuntime {
   }
 
   setWidth(px: number): void {
-    const w = Math.max(240, Math.min(560, Math.round(px)));
+    const w = Math.max(240, Math.min(960, Math.round(px)));
     core?.state.set("ui.auxiliaryBar.width", w);
     core?.state.set("ui.auxiliaryBar.visible", true);
     this.emitter.emit();

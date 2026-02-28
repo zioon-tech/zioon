@@ -438,8 +438,12 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
             } catch {}
             closeTab(id);
             requestRender();
-            if (openIds.length <= 1) hideDropdownMenu();
-            else showDropdownMenu();
+            requestAnimationFrame(() => {
+              try {
+                if (openIds.length === 0) hideDropdownMenu();
+                else showDropdownMenu();
+              } catch {}
+            });
           };
 
           actions.appendChild(close);
@@ -916,6 +920,13 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
     } catch {}
 
     try {
+      window.zion.keybindings.register({ command: "zion.sessions.new", key: "Mod-t", when: "editorFocus" });
+      window.zion.keybindings.register({ command: "zion.editorTabs.closeActiveSession", key: "Mod-w", when: "editorFocus" });
+      window.zion.keybindings.register({ command: "zion.editorTabs.prevSessionTab", key: "Mod-Shift-,", when: "editorFocus" });
+      window.zion.keybindings.register({ command: "zion.editorTabs.nextSessionTab", key: "Mod-Shift-.", when: "editorFocus" });
+    } catch {}
+
+    try {
       window.zion.state.onDidChange<string>("sessions.currentId", (nv) => {
         ensureActiveInTabs(nv ?? null);
         requestRender();
@@ -1189,6 +1200,133 @@ function mountEditorHeaderSettingsMenu(pathEl: HTMLElement) {
   } catch {}
 }
 
+function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement) {
+  try {
+    const headerEl = pathEl.parentElement;
+    if (!headerEl) return;
+
+    let btn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-session-rename-button='1']");
+    const isNew = !btn;
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+    }
+
+    btn.className = "zion-editor-header-action is-icon zion-editor-session-rename-button";
+    btn.innerHTML = '<span class="codicon codicon-edit" aria-hidden="true"></span>';
+    btn.title = "重命名会话";
+    btn.setAttribute("aria-label", "重命名会话");
+    btn.setAttribute("data-zion-editor-session-rename-button", "1");
+
+    let menuEl: HTMLDivElement | null = null;
+    let cleanup: (() => void) | null = null;
+
+    const closeMenu = () => {
+      try { cleanup?.(); } catch {}
+      cleanup = null;
+      try { menuEl?.remove(); } catch {}
+      menuEl = null;
+    };
+
+    const positionMenu = () => {
+      if (!menuEl) return;
+      const r = btn!.getBoundingClientRect();
+      const mw = menuEl.offsetWidth || 200;
+      const mh = menuEl.offsetHeight || 120;
+      const pad = 8;
+      const vw = window.innerWidth || 0;
+      const vh = window.innerHeight || 0;
+      let left = Math.round(r.right - mw);
+      let top = Math.round(r.bottom + 6);
+      left = Math.max(pad, Math.min(left, Math.max(pad, vw - mw - pad)));
+      if (top + mh + pad > vh) {
+        const above = Math.round(r.top - 6 - mh);
+        if (above >= pad) top = above;
+      }
+      top = Math.max(pad, Math.min(top, Math.max(pad, vh - mh - pad)));
+      menuEl.style.left = `${left}px`;
+      menuEl.style.top = `${top}px`;
+    };
+
+    const openMenu = () => {
+      if (menuEl) return;
+      const menu = document.createElement("div");
+      menu.className = "zion-context-menu zion-editor-header-session-menu";
+      menu.style.position = "fixed";
+      menu.style.zIndex = "99999";
+      menu.style.minWidth = "180px";
+      document.body.appendChild(menu);
+      menuEl = menu;
+
+      const addItem = (label: string, onClick: () => void) => {
+        const row = document.createElement("div");
+        row.className = "zion-context-menu-row";
+        const it = document.createElement("button");
+        it.className = "zion-context-menu-item";
+        it.type = "button";
+        it.textContent = label;
+        it.onclick = (e) => {
+          try { e.stopPropagation(); } catch {}
+          try { onClick(); } catch {}
+          closeMenu();
+        };
+        row.appendChild(it);
+        menu.appendChild(row);
+      };
+
+      addItem("Rename…", () => {
+        try { window.zion.commands.executeCommand("zion.sessions.rename"); } catch {}
+      });
+      addItem("Auto Rename (AI)", () => {
+        try { window.zion.commands.executeCommand("zion.sessions.autoRename"); } catch {}
+      });
+
+      positionMenu();
+
+      const escHandler = (ev: KeyboardEvent) => {
+        if (ev.key === "Escape") closeMenu();
+      };
+      const clickAway = (ev: MouseEvent) => {
+        try {
+          const t = ev.target as any;
+          if (!t) return closeMenu();
+          if (menuEl && menuEl.contains(t)) return;
+          if (btn && (btn === t || btn.contains(t))) return;
+          closeMenu();
+        } catch {
+          closeMenu();
+        }
+      };
+      const resizeHandler = () => {
+        try { positionMenu(); } catch {}
+      };
+
+      document.addEventListener("keydown", escHandler);
+      document.addEventListener("mousedown", clickAway, true);
+      window.addEventListener("resize", resizeHandler, { passive: true });
+
+      cleanup = () => {
+        document.removeEventListener("keydown", escHandler);
+        document.removeEventListener("mousedown", clickAway, true);
+        window.removeEventListener("resize", resizeHandler as any);
+      };
+    };
+
+    btn.onclick = (e) => {
+      try {
+        e.stopPropagation();
+        e.preventDefault();
+      } catch {}
+      if (menuEl) closeMenu();
+      else openMenu();
+    };
+
+    if (isNew) {
+      headerEl.appendChild(btn);
+    }
+  } catch {}
+}
+
 async function bootstrap() {
   const host = document.getElementById("app")!;
   host.innerHTML = "";
@@ -1223,6 +1361,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   mountCurrentSessionPath(editorHeaderPathEl);
   mountEditorSessionTabsBar(editorTabsBarEl);
   mountEditorHeaderTOCButton(editorHeaderPathEl);
+  mountEditorHeaderSessionRenameButton(editorHeaderPathEl);
   mountEditorHeaderSettingsMenu(editorHeaderPathEl);
 
   try {

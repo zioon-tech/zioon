@@ -1,4 +1,4 @@
-import { EditorState, EditorSelection, Compartment, type Extension } from "@codemirror/state";
+import { EditorState, EditorSelection, Compartment, Prec, type Extension } from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -7,7 +7,7 @@ import {
   lineNumbers,
   scrollPastEnd
 } from "@codemirror/view";
-import { history, historyKeymap, defaultKeymap, indentWithTab, indentLess } from "@codemirror/commands";
+import { history, historyKeymap, defaultKeymap, indentWithTab, indentLess, insertNewlineAndIndent } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { GFM } from "@lezer/markdown";
@@ -15,7 +15,7 @@ import { indentOnInput } from "@codemirror/language";
 import { foldGutter } from "@codemirror/language";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
-import { completionKeymap } from "@codemirror/autocomplete";
+import { acceptCompletion, completionKeymap } from "@codemirror/autocomplete";
 import { getAutocompletionExtension } from "./extensions/autocompletion";
 import { wysiwyg } from "./wysiwyg";
 import { EditorView as CMEditorView } from "@codemirror/view";
@@ -23,6 +23,8 @@ import { showMinimap } from "@replit/codemirror-minimap";
 import { highlightSelectionMatches } from "@codemirror/search";
 import { linkDetector, linkStyles } from "./link-detector";
 import { autocompleteTheme } from "./AutocompleteTheme";
+import { insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
+import { selectionToolbarExtension } from "./extensions/selection-toolbar";
 
 function selectNextOccurrenceDown(view: EditorView): boolean {
   const { state } = view;
@@ -103,6 +105,23 @@ export class EditorCore {
         doc: initialValue,
         extensions: [
           EditorState.allowMultipleSelections.of(true),
+          Prec.highest(
+            keymap.of([
+              {
+                key: "Enter",
+                run: (view) =>
+                  acceptCompletion(view) ||
+                  insertNewlineContinueMarkup(view) ||
+                  insertNewlineAndIndent(view),
+                preventDefault: true
+              },
+              {
+                key: "Tab",
+                run: (view) => acceptCompletion(view) || !!indentWithTab.run?.(view),
+                preventDefault: true
+              }
+            ])
+          ),
           // features (line numbers, active line gutter/highlight, auto indent, folding) are placed
           // in a dedicated compartment so they can be toggled at runtime.
           this.featuresComp.of([
@@ -121,6 +140,7 @@ export class EditorCore {
           this.autocompletionComp.of(getAutocompletionExtension()),
           this.themeComp.of(oneDark),
           this.uiComp.of(wysiwyg()),
+          selectionToolbarExtension(),
           linkDetector,
           linkStyles,
           // minimap compartment (can be toggled)

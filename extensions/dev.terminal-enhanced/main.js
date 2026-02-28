@@ -772,7 +772,6 @@ export async function activate(ctx) {
         const label = `${prefix}${getSessionDisplayName(s)}`;
         addItem(label, async () => {
           await setActiveSession(sid);
-          try { await window.zion.commands.executeCommand("terminal.openPanel"); } catch {}
         });
       }
 

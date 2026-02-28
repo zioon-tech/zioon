@@ -80,6 +80,22 @@ export function initWorkbench(host: HTMLElement): {
 
   host.appendChild(root);
 
+  const scrollTimers = new Map<HTMLElement, number>();
+  const onScrollCapture = (e: Event) => {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    try {
+      t.classList.add("zion-scroll-active");
+      const prev = scrollTimers.get(t);
+      if (prev) window.clearTimeout(prev);
+      const tid = window.setTimeout(() => {
+        try { t.classList.remove("zion-scroll-active"); } catch {}
+      }, 700);
+      scrollTimers.set(t, tid);
+    } catch {}
+  };
+  root.addEventListener("scroll", onScrollCapture, true);
+
   const updateOverlayMask = () => {
     const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
     const hasSide = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0;
@@ -992,6 +1008,15 @@ export function initWorkbench(host: HTMLElement): {
       } catch {}
       try {
         root.remove();
+      } catch {}
+      try {
+        root.removeEventListener("scroll", onScrollCapture, true);
+      } catch {}
+      try {
+        for (const tid of scrollTimers.values()) window.clearTimeout(tid);
+      } catch {}
+      try {
+        scrollTimers.clear();
       } catch {}
     }
   };

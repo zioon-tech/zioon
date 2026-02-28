@@ -1243,6 +1243,180 @@ function postSaved(id, updatedAt, hash) {
 }
 
 /** ========== Shared List Renderer (Panel & Sidebar) ========== */
+function openModalInput({ title, value, placeholder, okText, cancelText }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.position = "fixed";
+    overlay.style.inset = "0";
+    overlay.style.background = "rgba(0,0,0,0.25)";
+    overlay.style.zIndex = "100005";
+    overlay.style.display = "flex";
+    overlay.style.alignItems = "center";
+    overlay.style.justifyContent = "center";
+
+    const card = document.createElement("div");
+    card.style.width = "min(420px, calc(100vw - 40px))";
+    card.style.background = "var(--panel)";
+    card.style.border = "1px solid var(--border)";
+    card.style.borderRadius = "10px";
+    card.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
+    card.style.padding = "12px";
+    card.style.display = "flex";
+    card.style.flexDirection = "column";
+    card.style.gap = "10px";
+
+    const header = document.createElement("div");
+    header.textContent = title || "Input";
+    header.style.fontSize = "13px";
+    header.style.fontWeight = "600";
+    header.style.color = "var(--fg)";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = String(value || "");
+    input.placeholder = placeholder || "";
+    input.style.width = "100%";
+    input.style.boxSizing = "border-box";
+    input.style.padding = "8px 10px";
+    input.style.borderRadius = "8px";
+    input.style.border = "1px solid var(--border)";
+    input.style.background = "var(--bg)";
+    input.style.color = "var(--fg)";
+    input.style.outline = "none";
+
+    const actions = document.createElement("div");
+    actions.style.display = "flex";
+    actions.style.justifyContent = "flex-end";
+    actions.style.gap = "8px";
+
+    const mkBtn = (text, primary) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.style.padding = "6px 10px";
+      b.style.borderRadius = "8px";
+      b.style.border = "1px solid var(--border)";
+      b.style.cursor = "pointer";
+      b.style.background = primary ? "var(--fg)" : "transparent";
+      b.style.color = primary ? "var(--bg)" : "var(--fg)";
+      return b;
+    };
+
+    const cancel = mkBtn(cancelText || "Cancel", false);
+    const ok = mkBtn(okText || "OK", true);
+    actions.append(cancel, ok);
+
+    let cleanup = () => {};
+    const onKey = (e) => {
+      if (e.key === "Escape") cleanup(false);
+      if (e.key === "Enter") cleanup(true);
+    };
+
+    cleanup = (v) => {
+      try { document.removeEventListener("keydown", onKey, true); } catch {}
+      try { overlay.remove(); } catch {}
+      resolve(v);
+    };
+
+    cancel.onclick = () => cleanup(null);
+    ok.onclick = () => cleanup(input.value);
+    overlay.onclick = (e) => { if (e.target === overlay) cleanup(null); };
+    input.onkeydown = (e) => {
+      if (e.key === "Escape") cleanup(null);
+      if (e.key === "Enter") cleanup(input.value);
+    };
+
+    card.append(header, input, actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    setTimeout(() => {
+      try {
+        input.focus();
+        input.select();
+      } catch {}
+    }, 0);
+  });
+}
+
+function openModalConfirm({ title, message, okText, cancelText }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.position = "fixed";
+    overlay.style.inset = "0";
+    overlay.style.background = "rgba(0,0,0,0.25)";
+    overlay.style.zIndex = "100005";
+    overlay.style.display = "flex";
+    overlay.style.alignItems = "center";
+    overlay.style.justifyContent = "center";
+
+    const card = document.createElement("div");
+    card.style.width = "min(440px, calc(100vw - 40px))";
+    card.style.background = "var(--panel)";
+    card.style.border = "1px solid var(--border)";
+    card.style.borderRadius = "10px";
+    card.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
+    card.style.padding = "12px";
+    card.style.display = "flex";
+    card.style.flexDirection = "column";
+    card.style.gap = "10px";
+
+    const header = document.createElement("div");
+    header.textContent = title || "Confirm";
+    header.style.fontSize = "13px";
+    header.style.fontWeight = "600";
+    header.style.color = "var(--fg)";
+
+    const msg = document.createElement("div");
+    msg.textContent = message || "Are you sure?";
+    msg.style.fontSize = "12px";
+    msg.style.color = "var(--fg)";
+    msg.style.lineHeight = "1.45";
+
+    const actions = document.createElement("div");
+    actions.style.display = "flex";
+    actions.style.justifyContent = "flex-end";
+    actions.style.gap = "8px";
+
+    const mkBtn = (text, primary) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.style.padding = "6px 10px";
+      b.style.borderRadius = "8px";
+      b.style.border = "1px solid var(--border)";
+      b.style.cursor = "pointer";
+      b.style.background = primary ? "#cc3a3a" : "transparent";
+      b.style.color = primary ? "#fff" : "var(--fg)";
+      return b;
+    };
+
+    const cancel = mkBtn(cancelText || "Cancel", false);
+    const ok = mkBtn(okText || "OK", true);
+    actions.append(cancel, ok);
+
+    const onKey = (e) => {
+      if (e.key === "Escape") cleanup(false);
+      if (e.key === "Enter") cleanup(true);
+    };
+
+    const cleanup = (v) => {
+      try { document.removeEventListener("keydown", onKey, true); } catch {}
+      try { overlay.remove(); } catch {}
+      resolve(v);
+    };
+
+    cancel.onclick = () => cleanup(false);
+    ok.onclick = () => cleanup(true);
+    overlay.onclick = (e) => { if (e.target === overlay) cleanup(false); };
+    document.addEventListener("keydown", onKey, true);
+
+    card.append(header, msg, actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    setTimeout(() => { try { ok.focus(); } catch {} }, 0);
+  });
+}
+
 function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, onSwitchSession, onAfterChange }) {
   // Small icon button
   const mkIconBtn = (icon, title, onClick) => {
@@ -1265,6 +1439,136 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
     return b;
   };
 
+  let pendingEdit = null; // { id, type: "session"|"folder" }
+  let pendingConfirm = null; // { id, type: "session"|"folder" }
+
+  const isConfirming = (id, type) => !!pendingConfirm && pendingConfirm.id === id && pendingConfirm.type === type;
+
+  const mountInlineConfirm = ({ row, label, onCancel, onConfirm }) => {
+    try { row.querySelector(".zion-inline-confirm")?.remove?.(); } catch {}
+    const wrap = document.createElement("div");
+    wrap.className = "zion-inline-confirm";
+    wrap.tabIndex = 0;
+    wrap.onmousedown = (e) => { try { e.stopPropagation(); } catch {} };
+    wrap.onclick = (e) => { try { e.stopPropagation(); } catch {} };
+    wrap.onkeydown = (e) => {
+      try { e.stopPropagation(); } catch {}
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (typeof onCancel === "function") onCancel();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (typeof onConfirm === "function") onConfirm();
+      }
+    };
+
+    const lbl = document.createElement("span");
+    lbl.className = "zion-inline-confirm-label";
+    lbl.textContent = String(label || "Delete?");
+
+    const actions = document.createElement("span");
+    actions.className = "zion-inline-confirm-actions";
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "zion-inline-confirm-btn";
+    cancel.textContent = "Cancel";
+    cancel.onclick = (e) => {
+      try { e.stopPropagation(); } catch {}
+      if (typeof onCancel === "function") onCancel();
+    };
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "zion-inline-confirm-btn danger";
+    del.textContent = "Delete";
+    del.onclick = (e) => {
+      try { e.stopPropagation(); } catch {}
+      if (typeof onConfirm === "function") onConfirm();
+    };
+
+    actions.append(cancel, del);
+    wrap.append(lbl, actions);
+    row.appendChild(wrap);
+    setTimeout(() => {
+      try {
+        wrap.focus();
+      } catch {}
+    }, 0);
+    return wrap;
+  };
+
+  const startInlineEdit = ({ row, titleEl, initialValue, placeholder, onCommit }) => {
+    if (!row || !titleEl || row.querySelector("input[data-zion-inline-edit='1']")) return;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = String(initialValue || "");
+    input.placeholder = placeholder || "";
+    input.setAttribute("data-zion-inline-edit", "1");
+    input.style.width = "min(320px, 100%)";
+    input.style.maxWidth = "100%";
+    input.style.boxSizing = "border-box";
+    input.style.padding = "4px 8px";
+    input.style.borderRadius = "8px";
+    input.style.border = "1px solid var(--border)";
+    input.style.background = "var(--bg)";
+    input.style.color = "var(--fg)";
+    input.style.outline = "none";
+    input.style.fontSize = "12px";
+
+    const parent = titleEl.parentElement;
+    if (!parent) return;
+
+    const cleanup = () => {
+      try { input.remove(); } catch {}
+      try { titleEl.style.display = ""; } catch {}
+    };
+
+    const commit = () => {
+      const v = String(input.value || "").trim();
+      cleanup();
+      if (!v) return;
+      if (typeof onCommit === "function") onCommit(v);
+    };
+
+    const cancel = () => {
+      cleanup();
+      try { row.focus(); } catch {}
+    };
+
+    titleEl.style.display = "none";
+    parent.insertBefore(input, titleEl);
+
+    input.onmousedown = (e) => {
+      try { e.stopPropagation(); } catch {}
+    };
+    input.onclick = (e) => {
+      try { e.stopPropagation(); } catch {}
+    };
+    input.onkeydown = (e) => {
+      try { e.stopPropagation(); } catch {}
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancel();
+      }
+    };
+    input.onkeyup = (e) => {
+      try { e.stopPropagation(); } catch {}
+    };
+    input.onblur = () => commit();
+
+    setTimeout(() => {
+      try {
+        input.focus();
+        input.select();
+      } catch {}
+    }, 0);
+  };
+
   const render = () => {
     // prevent flicker
     document.body.classList.add("zion-sessions-no-transitions");
@@ -1284,7 +1588,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
       document.body.classList.remove("zion-sessions-no-transitions");
     }));
 
-    const mkRowMenu = (item) => {
+    const mkRowMenu = (item, row) => {
       // session row menu
       const menu = document.createElement("div");
       menu.style.position = "absolute";
@@ -1322,12 +1626,13 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
       }));
 
       menu.appendChild(mkItem("Rename", () => {
-        const nv = prompt("Rename session:", item.title || "");
-        if (nv && nv.trim()) {
-          window.zion.commands.executeCommand("zion.sessions.rename", { id: item.id, title: nv.trim() });
-          if (typeof onAfterChange === "function") onAfterChange();
-          render();
-        }
+        pendingEdit = { id: item.id, type: "session" };
+        render();
+      }));
+      menu.appendChild(mkItem("Auto Rename", async () => {
+        try { await window.zion.commands.executeCommand("zion.sessions.autoRename", { id: item.id }); } catch {}
+        if (typeof onAfterChange === "function") onAfterChange();
+        render();
       }));
       menu.appendChild(mkItem("Clone", () => {
         window.zion.commands.executeCommand("zion.sessions.clone", item.id);
@@ -1338,18 +1643,14 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
         window.zion.commands.executeCommand("zion.sessions.export", item.id);
       }));
       menu.appendChild(mkItem("Delete", () => {
-        const ok = confirm(`Delete session "${item.title}"? This cannot be undone.`);
-        if (ok) {
-          window.zion.commands.executeCommand("zion.sessions.delete", item.id);
-          if (typeof onAfterChange === "function") onAfterChange();
-          render();
-        }
+        pendingConfirm = { id: item.id, type: "session" };
+        render();
       }));
 
       return menu;
     };
 
-    const mkFolderMenu = (folder) => {
+    const mkFolderMenu = (folder, row) => {
       const menu = document.createElement("div");
       menu.style.position = "absolute";
       menu.style.top = "28px";
@@ -1382,28 +1683,24 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
         render();
       }));
       menu.appendChild(mkItem("New Folder", () => {
-        window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id });
+        try {
+          try { setFolderOpen(folder.id, true); } catch {}
+          const id = window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id, title: "New Folder" });
+          pendingEdit = { id, type: "folder" };
+        } catch {}
         if (typeof onAfterChange === "function") onAfterChange();
         render();
       }));
       menu.appendChild(mkItem("Rename Folder", () => {
-        const nv = prompt("Rename folder:", folder.title || "");
-        if (nv && nv.trim()) {
-          window.zion.commands.executeCommand("zion.sessions.renameFolder", { id: folder.id, title: nv.trim() });
-          if (typeof onAfterChange === "function") onAfterChange();
-          render();
-        }
+        pendingEdit = { id: folder.id, type: "folder" };
+        render();
       }));
       menu.appendChild(mkItem("Export Folder", () => {
         window.zion.commands.executeCommand("zion.sessions.exportFolder", folder.id);
       }));
       menu.appendChild(mkItem("Delete Folder", () => {
-        const ok = confirm(`Delete folder "${folder.title}" and all sessions inside? This cannot be undone.`);
-        if (ok) {
-          window.zion.commands.executeCommand("zion.sessions.deleteFolder", folder.id);
-          if (typeof onAfterChange === "function") onAfterChange();
-          render();
-        }
+        pendingConfirm = { id: folder.id, type: "folder" };
+        render();
       }));
 
       return menu;
@@ -1479,7 +1776,11 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
         "New folder here",
         (ev) => {
           ev.stopPropagation();
-          window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id });
+          try {
+            try { setFolderOpen(folder.id, true); } catch {}
+            const id = window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id, title: "New Folder" });
+            pendingEdit = { id, type: "folder" };
+          } catch {}
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }
@@ -1495,7 +1796,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
           folderMenu.style.display = isOpen ? "none" : "block";
         }
       );
-      const folderMenu = mkFolderMenu(folder);
+      const folderMenu = mkFolderMenu(folder, row);
       folderMenu.className = "session-row-menu";
       row.appendChild(folderMenu);
       row.addEventListener("click", () => { folderMenu.style.display = "none"; });
@@ -1555,6 +1856,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
       bNewFolder.style.opacity = "0";
       bMore.style.opacity = "0";
       row.addEventListener("mouseenter", () => {
+        if (isConfirming(folder.id, "folder")) return;
         const reserve = (btns.offsetWidth || 0) + 8;
         row.style.paddingRight = reserve + "px";
         btns.style.pointerEvents = "auto";
@@ -1563,6 +1865,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
         bMore.style.opacity = "1";
       });
       row.addEventListener("mouseleave", () => {
+        if (isConfirming(folder.id, "folder")) return;
         row.style.paddingRight = "";
         btns.style.pointerEvents = "none";
         bNewSession.style.opacity = "0";
@@ -1570,6 +1873,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
         bMore.style.opacity = "0";
       });
       row.addEventListener("focus", () => {
+        if (isConfirming(folder.id, "folder")) return;
         const reserve = (btns.offsetWidth || 0) + 8;
         row.style.paddingRight = reserve + "px";
         btns.style.pointerEvents = "auto";
@@ -1578,6 +1882,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
         bMore.style.opacity = "1";
       });
       row.addEventListener("blur", () => {
+        if (isConfirming(folder.id, "folder")) return;
         row.style.paddingRight = "";
         btns.style.pointerEvents = "none";
         bNewSession.style.opacity = "0";
@@ -1586,6 +1891,10 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
       });
 
       row.addEventListener("click", (ev) => {
+        const t = ev.target;
+        if (t && t.closest && t.closest("input[data-zion-inline-edit='1']")) return;
+        if (t && btns.contains(t)) return;
+        if (isConfirming(folder.id, "folder")) return;
         if (bMore.contains(ev.target) || folderMenu.contains(ev.target)) return;
         const anchorId = getLastSelectedId();
         if (ev.shiftKey) {
@@ -1623,6 +1932,45 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
 
       row.append(labelWrap, btns);
       listEl.appendChild(row);
+
+      if (pendingEdit && pendingEdit.id === folder.id && pendingEdit.type === "folder") {
+        const pid = pendingEdit;
+        pendingEdit = null;
+        startInlineEdit({
+          row,
+          titleEl: ttl,
+          initialValue: folder.title || "Folder",
+          placeholder: "Folder name",
+          onCommit: (title) => {
+            window.zion.commands.executeCommand("zion.sessions.renameFolder", { id: pid.id, title });
+            if (typeof onAfterChange === "function") onAfterChange();
+            render();
+          }
+        });
+      }
+
+      if (isConfirming(folder.id, "folder")) {
+        try {
+          btns.style.pointerEvents = "none";
+          bNewSession.style.opacity = "0";
+          bNewFolder.style.opacity = "0";
+          bMore.style.opacity = "0";
+          mountInlineConfirm({
+            row,
+            label: "Delete folder?",
+            onCancel: () => {
+              pendingConfirm = null;
+              render();
+            },
+            onConfirm: () => {
+              pendingConfirm = null;
+              window.zion.commands.executeCommand("zion.sessions.deleteFolder", folder.id);
+              if (typeof onAfterChange === "function") onAfterChange();
+              render();
+            }
+          });
+        } catch {}
+      }
 
       if (isFolderOpen(folder.id)) {
         const children = (folder.children || []).slice();
@@ -1734,10 +2082,12 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
             rightWrap.style.top = "50%";
             rightWrap.style.transform = "translateY(-50%)";
 
-            const sMenu = mkRowMenu(ch);
+            const sMenu = mkRowMenu(ch, srow);
             sMenu.className = "session-row-menu";
             srow.appendChild(sMenu);
             srow.addEventListener("click", () => { sMenu.style.display = "none"; });
+
+            const confirmSession = isConfirming(ch.id, "session");
 
             const bOpenNewTab = mkIconBtn(
               '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 4H4.5A1.5 1.5 0 0 0 3 5.5v6A1.5 1.5 0 0 0 4.5 13h6A1.5 1.5 0 0 0 12 11.5V10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9 3h4v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3L8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
@@ -1790,12 +2140,15 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               } catch {}
             }
 
-            rightWrap.appendChild(bOpenNewTab);
-            rightWrap.appendChild(bMore2);
-            if (statusBadge) rightWrap.appendChild(statusBadge);
+            if (!confirmSession) {
+              rightWrap.appendChild(bOpenNewTab);
+              rightWrap.appendChild(bMore2);
+              if (statusBadge) rightWrap.appendChild(statusBadge);
+            }
 
-            rightWrap.style.pointerEvents = "none";
+            if (!confirmSession) rightWrap.style.pointerEvents = "none";
             srow.addEventListener("mouseenter", () => {
+              if (confirmSession) return;
               const reserve = (rightWrap.offsetWidth || 0) + 8;
               srow.style.paddingRight = reserve + "px";
               rightWrap.style.pointerEvents = "auto";
@@ -1806,12 +2159,14 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               // We can keep the mask or remove it. If padding is sufficient, mask is redundant but harmless.
             });
             srow.addEventListener("mouseleave", () => {
+              if (confirmSession) return;
               srow.style.paddingRight = "";
               rightWrap.style.pointerEvents = "none";
               bOpenNewTab.style.opacity = "0";
               bMore2.style.opacity = "0";
             });
             srow.addEventListener("focus", () => {
+              if (confirmSession) return;
               const reserve = (rightWrap.offsetWidth || 0) + 8;
               srow.style.paddingRight = reserve + "px";
               rightWrap.style.pointerEvents = "auto";
@@ -1819,6 +2174,7 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
               bMore2.style.opacity = "1";
             });
             srow.addEventListener("blur", () => {
+              if (confirmSession) return;
               srow.style.paddingRight = "";
               rightWrap.style.pointerEvents = "none";
               bOpenNewTab.style.opacity = "0";
@@ -1826,17 +2182,72 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
             });
 
             srow.appendChild(rightWrap);
+            if (confirmSession) {
+              rightWrap.style.display = "none";
+              mountInlineConfirm({
+                row: srow,
+                label: "Delete session?",
+                onCancel: () => {
+                  pendingConfirm = null;
+                  render();
+                },
+                onConfirm: () => {
+                  pendingConfirm = null;
+                  window.zion.commands.executeCommand("zion.sessions.delete", ch.id);
+                  if (typeof onAfterChange === "function") onAfterChange();
+                  render();
+                }
+              });
+            }
+
+            if (pendingEdit && pendingEdit.id === ch.id && pendingEdit.type === "session") {
+              const pid = pendingEdit;
+              pendingEdit = null;
+              startInlineEdit({
+                row: srow,
+                titleEl: ttl2,
+                initialValue: ch.title || ch.id,
+                placeholder: "Session title",
+                onCommit: (title) => {
+                  window.zion.commands.executeCommand("zion.sessions.rename", { id: pid.id, title });
+                  if (typeof onAfterChange === "function") onAfterChange();
+                  render();
+                }
+              });
+            }
 
             srow.addEventListener("keydown", (ev) => {
+              if (isConfirming(ch.id, "session")) {
+                if (ev.key === "Escape") {
+                  ev.preventDefault();
+                  pendingConfirm = null;
+                  render();
+                  return;
+                }
+                if (ev.key === "Enter") {
+                  ev.preventDefault();
+                  pendingConfirm = null;
+                  window.zion.commands.executeCommand("zion.sessions.delete", ch.id);
+                  if (typeof onAfterChange === "function") onAfterChange();
+                  render();
+                  return;
+                }
+              }
               if (ev.key === "Enter") {
                 ev.preventDefault();
                 if (typeof onSwitchSession === "function") onSwitchSession(ch.id);
               } else if (ev.key.toLowerCase() === "r") {
-                ev.preventDefault(); sMenu.children[0]?.click();
+                ev.preventDefault();
+                pendingEdit = { id: ch.id, type: "session" };
+                render();
               } else if (ev.key.toLowerCase() === "c") {
-                ev.preventDefault(); sMenu.children[1]?.click();
+                ev.preventDefault();
+                window.zion.commands.executeCommand("zion.sessions.clone", ch.id);
+                if (typeof onAfterChange === "function") onAfterChange();
+                render();
               } else if (ev.key.toLowerCase() === "e") {
-                ev.preventDefault(); sMenu.children[2]?.click();
+                ev.preventDefault();
+                window.zion.commands.executeCommand("zion.sessions.export", ch.id);
               } else if (ev.key === "Delete" || ev.key === "Backspace") {
                 ev.preventDefault();
                 const sel = getSelection();
@@ -1851,6 +2262,10 @@ function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, on
             });
 
             srow.addEventListener("click", (ev) => {
+              const t = ev.target;
+              if (t && t.closest && t.closest("input[data-zion-inline-edit='1']")) return;
+              if (t && rightWrap.contains(t)) return;
+              if (isConfirming(ch.id, "session")) return;
               if (bOpenNewTab.contains(ev.target) || bMore2.contains(ev.target) || sMenu.contains(ev.target)) return;
               const anchorId = getLastSelectedId();
               if (ev.shiftKey) {
@@ -2104,8 +2519,19 @@ function openSessionsPanel() {
     }));
     menu.appendChild(mkMenuItem("New Folder", () => {
       const selFolder = window.zion.state.get("sessions.selectedFolderId") || "root";
-      window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: selFolder });
-      setTimeout(() => { overlay.remove(); openSessionsPanel(); }, 30);
+      (async () => {
+        const input = await openModalInput({
+          title: "Folder name",
+          value: "New Folder",
+          placeholder: "Folder name",
+          okText: "Create",
+          cancelText: "Cancel"
+        });
+        const title = String((input == null ? "" : input) || "").trim();
+        if (!title) return;
+        window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: selFolder, title });
+        setTimeout(() => { overlay.remove(); openSessionsPanel(); }, 30);
+      })();
     }));
     menu.appendChild(mkMenuItem("Import Sessions", () => {
       window.zion.commands.executeCommand("zion.sessions.import");
@@ -3459,15 +3885,22 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dNew);
 
   // Save current content as new session
-  const dSaveAsNew = window.zion.commands.registerCommand("zion.sessions.saveAsNew", () => {
+  const dSaveAsNew = window.zion.commands.registerCommand("zion.sessions.saveAsNew", async () => {
     const ed = window.zion.window.activeEditor;
     const text = ed?.getValue() || "";
     const suggested = `Session ${getIndex().length + 1}`;
-    const rawTitle = prompt("New session title:", suggested) || suggested;
+    const rawTitle = await openModalInput({
+      title: "New session title",
+      value: suggested,
+      placeholder: "Session title",
+      okText: "Create",
+      cancelText: "Use default"
+    });
+    const resolvedTitle = String((rawTitle == null ? suggested : rawTitle) || suggested).trim() || suggested;
     const prevId = window.zion.state.get("sessions.currentId");
     const id = genId();
-    const isManual = rawTitle.trim() !== suggested;
-    const meta = { id, title: rawTitle.trim(), createdAt: now(), updatedAt: now(), size: text.length, hash: hashString(text), titleAuto: !isManual };
+    const isManual = resolvedTitle !== suggested;
+    const meta = { id, title: resolvedTitle, createdAt: now(), updatedAt: now(), size: text.length, hash: hashString(text), titleAuto: !isManual };
     try {
       const prevAnn = window.zion?.state?.get(`sessions.annotations.${prevId}`) || loadMeta(prevId)?.annotations;
       if (prevAnn) meta.annotations = prevAnn;
@@ -3497,12 +3930,22 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dSaveAsNew);
 
   // Rename
-  const dRename = window.zion.commands.registerCommand("zion.sessions.rename", (opts) => {
+  const dRename = window.zion.commands.registerCommand("zion.sessions.rename", async (opts) => {
     const id = opts?.id || window.zion.state.get("sessions.currentId");
     if (!id) return false;
     const entry = findInIndex(id);
-    const nv = opts?.title || prompt("Rename session:", entry?.title || "") || (entry?.title || "");
-    const title = nv.trim();
+    const nv = String(opts?.title || "");
+    const raw = nv
+      ? nv
+      : await openModalInput({
+        title: "Rename session",
+        value: entry?.title || "",
+        placeholder: "Session title",
+        okText: "Rename",
+        cancelText: "Cancel"
+      });
+    const title = String((raw == null ? (entry?.title || "") : raw) || "").trim();
+    if (!title) return false;
     const meta = loadMeta(id);
     meta.title = title;
     meta.titleAuto = false;
@@ -3523,6 +3966,97 @@ export async function activate(ctx) {
     return true;
   });
   ctx.subscriptions.push(dRename);
+
+  const autoRenameInflight = new Set();
+  const cleanAutoTitle = (raw) => {
+    let t = String(raw || "");
+    t = t.split("\n").find(x => String(x || "").trim().length > 0) || "";
+    t = t.replace(/^\s*(title|session title)\s*[:：]\s*/i, "");
+    t = t.replace(/^\s*标题\s*[:：]\s*/i, "");
+    t = t.replace(/^["'“”‘’]+/, "").replace(/["'“”‘’]+$/, "");
+    t = t.replace(/\s+/g, " ").trim();
+    t = t.replace(/^[\-–—:：#*]+/, "").replace(/[\-–—:：#*]+$/, "").trim();
+    if (!t) return "";
+    const hasCJK = /[\u4e00-\u9fff]/.test(t);
+    const maxLen = hasCJK ? 18 : 36;
+    const arr = Array.from(t);
+    if (arr.length > maxLen) t = arr.slice(0, maxLen).join("");
+    return t.trim();
+  };
+
+  const dAutoRename = window.zion.commands.registerCommand("zion.sessions.autoRename", async (opts) => {
+    const id = opts?.id || window.zion.state.get("sessions.currentId");
+    if (!id) return false;
+    if (autoRenameInflight.has(id)) return false;
+    autoRenameInflight.add(id);
+    try {
+      const text = String(loadDoc(id) || "").trim();
+      if (!text) return false;
+
+      try {
+        window.zion.notification?.show?.("正在生成会话标题…", { type: "info", duration: 1600 });
+      } catch {}
+
+      let runStream = null;
+      try {
+        const mod = await import("/extensions/dev.langchain-chat/chat-service.js");
+        runStream = mod?.runStream || null;
+      } catch (e) {
+        try {
+          window.zion.notification?.show?.("未找到大模型服务（dev.langchain-chat）", { type: "warning", duration: 2400 });
+        } catch {}
+        return false;
+      }
+      if (typeof runStream !== "function") return false;
+
+      const excerpt = text.length > 6000 ? text.slice(0, 6000) : text;
+      const messages = [
+        {
+          role: "system",
+          content:
+            "你是一个为笔记/会话自动生成标题的助手。输出一个简短自然的标题，避免引号与换行，不要输出任何解释。中文标题尽量不超过18字，英文不超过36字符。"
+        },
+        {
+          role: "user",
+          content: `请根据以下内容生成标题：\n\n${excerpt}`
+        }
+      ];
+
+      let out = "";
+      let err = null;
+      await runStream({
+        messages,
+        tools: null,
+        onToken: (tk) => {
+          out += String(tk || "");
+        },
+        onEnd: () => {},
+        onError: (e) => {
+          err = e || new Error("LLM error");
+        },
+        runId: `autoRename-${Date.now()}`,
+        sessionId: id
+      });
+      if (err) throw err;
+
+      const title = cleanAutoTitle(out);
+      if (!title) {
+        try { window.zion.notification?.show?.("未生成有效标题", { type: "warning", duration: 2000 }); } catch {}
+        return false;
+      }
+      window.zion.commands.executeCommand("zion.sessions.rename", { id, title });
+      try { window.zion.notification?.show?.(`已重命名为：${title}`, { type: "success", duration: 1800 }); } catch {}
+      return true;
+    } catch (e) {
+      try {
+        window.zion.notification?.show?.(`自动重命名失败：${e?.message || String(e)}`, { type: "error", duration: 3200 });
+      } catch {}
+      return false;
+    } finally {
+      autoRenameInflight.delete(id);
+    }
+  });
+  ctx.subscriptions.push(dAutoRename);
 
   // Delete
   const dDelete = window.zion.commands.registerCommand("zion.sessions.delete", (id) => {
@@ -4004,10 +4538,15 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dImport);
 
   // Bulk selection commands
-  const dDeleteSelected = window.zion.commands.registerCommand("zion.sessions.deleteSelected", () => {
+  const dDeleteSelected = window.zion.commands.registerCommand("zion.sessions.deleteSelected", async () => {
     const sel = getSelection();
     if (!sel.length) return false;
-    const ok = confirm(`Delete ${sel.length} selected item(s)? This cannot be undone.`);
+    const ok = await openModalConfirm({
+      title: "Delete selected",
+      message: `Delete ${sel.length} selected item(s)? This cannot be undone.`,
+      okText: "Delete",
+      cancelText: "Cancel"
+    });
     if (!ok) return false;
     let affectedCurrent = false;
     const cur = window.zion.state.get("sessions.currentId");
@@ -4075,11 +4614,17 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dDeleteSelected, dExportSelected);
 
   // Folder commands
-  const dNewFolder = window.zion.commands.registerCommand("zion.sessions.newFolder", (opts) => {
+  const dNewFolder = window.zion.commands.registerCommand("zion.sessions.newFolder", async (opts) => {
     let title = String(opts?.title || "");
     if (!title) {
-      const input = prompt("Folder name:", "New Folder");
-      title = (input || "New Folder").trim();
+      const input = await openModalInput({
+        title: "Folder name",
+        value: "New Folder",
+        placeholder: "Folder name",
+        okText: "Create",
+        cancelText: "Use default"
+      });
+      title = String((input == null ? "New Folder" : input) || "New Folder").trim() || "New Folder";
     }
     const id = insertFolder(opts?.parentId || window.zion.state.get("sessions.selectedFolderId") || "root", title);
     window.zion.state.set("sessions.catalog", getIndex());
