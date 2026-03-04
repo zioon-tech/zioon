@@ -29,6 +29,13 @@ export const userModelsProvider = {
     const dict = loadStore();
     const cfg = dict[modelId];
     if (!cfg) return null;
-    return { id: modelId, ...cfg };
+    // 确保 modelName 字段存在，如果没有则使用 modelId 或 cfg.model 作为默认值
+    const resolved = {
+      id: modelId,
+      ...cfg,
+      // 优先使用 cfg.modelName，其次是 cfg.model，最后使用 modelId
+      modelName: cfg.modelName || cfg.model || modelId
+    };
+    return resolved;
   }
 };

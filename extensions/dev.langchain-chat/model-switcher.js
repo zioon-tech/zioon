@@ -673,6 +673,26 @@ export function installModelSwitcher() {
     // 字段
     const inpId = textInput("e.g. deepseek-chat");
     const inpLabel = textInput("Display label (optional)");
+    const selProviderType = document.createElement("select");
+    Object.assign(selProviderType.style, {
+      flex: "1",
+      minWidth: "0",
+      boxSizing: "border-box",
+      border: "1px solid var(--border)",
+      borderRadius: "4px",
+      background: "var(--panel)",
+      color: "var(--fg)",
+      outline: "none",
+      padding: "4px 6px",
+      fontSize: "11px",
+      fontFamily: "inherit"
+    });
+    ["openai", "claude", "gemini"].forEach(v => {
+      const opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = v === "openai" ? "OpenAI Compatible" : (v === "claude" ? "Claude (Anthropic)" : "Gemini (Google)");
+      selProviderType.appendChild(opt);
+    });
     const inpUrl = textInput("OpenAI-compatible base URL, e.g. https://api.openai.com/v1/chat/completions");
     const inpKey = textInput("API Key", "password");
     const inpModelName = textInput("Override body.model (optional)");
@@ -687,6 +707,7 @@ export function installModelSwitcher() {
     if (isNew) {
       inpId.value = "";
       inpLabel.value = "";
+      selProviderType.value = "openai";
       inpUrl.value = "";
       inpKey.value = "";
       inpModelName.value = "";
@@ -700,6 +721,7 @@ export function installModelSwitcher() {
       const cfg = spec?.cfg || {};
       inpId.value = spec.id || "";
       inpLabel.value = spec.label || "";
+      selProviderType.value = cfg.providerType || cfg.provider_type || "openai";
       inpUrl.value = cfg.url || cfg.baseURL || "";
       inpKey.value = cfg.key || cfg.apiKey || "";
       inpModelName.value = cfg.modelName || cfg.model || "";
@@ -726,7 +748,7 @@ export function installModelSwitcher() {
         cbPreservedThinking.disabled = false;
         cbInterleavedThinking.disabled = false;
       } else if (readonly) {
-        [inpId, inpLabel, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok].forEach(el => el.disabled = true);
+        [inpId, inpLabel, selProviderType, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok].forEach(el => el.disabled = true);
         [cbStream, cbImg, cbPreservedThinking, cbInterleavedThinking].forEach(el => el.disabled = true);
       }
     }
@@ -748,6 +770,7 @@ export function installModelSwitcher() {
     })()));
     editorWrap.appendChild(fieldRow("Model ID", inpId));
     editorWrap.appendChild(fieldRow("Label", inpLabel));
+    editorWrap.appendChild(fieldRow("Provider Type", selProviderType));
     editorWrap.appendChild(fieldRow("Base URL", inpUrl));
     editorWrap.appendChild(fieldRow("API Key", inpKey));
     editorWrap.appendChild(fieldRow("Model Param", inpModelName));
@@ -843,7 +866,8 @@ export function installModelSwitcher() {
         max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
         supportsImage: !!cbImg.checked,
         preservedThinking: !!cbPreservedThinking.checked,
-        interleavedThinking: !!cbInterleavedThinking.checked
+        interleavedThinking: !!cbInterleavedThinking.checked,
+        providerType: selProviderType.value || "openai"
       };
       const modelName = inpModelName.value.trim();
       if (modelName) {

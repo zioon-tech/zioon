@@ -163,7 +163,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   overflow: hidden;
   flex: 1;
   min-width: 0;
-  padding: 5px 0;
+  padding: 6px 0 4px;
   position: relative;
 }
 
@@ -190,7 +190,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   align-items: center;
   gap: 6px;
   padding: 0 10px;
-  border-radius: 3px;
+  border-radius: 6px;
   border: none;
   background: transparent;
   color: var(--fg);
@@ -1897,6 +1897,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     const v = sid ? (sessionViews.get(sid) || null) : null;
     if (!v) return;
     try { clearTimeout(v.ptyRetryTimer); } catch {}
+    try { clearTimeout(v.ptyStableTimer); } catch {}
     try { v.termDataDisp?.dispose?.(); } catch {}
     try { v.pty?.dispose?.(); } catch {}
     try { v.term?.dispose?.(); } catch {}
@@ -2544,10 +2545,19 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
     if (v.pty && v.pty.ws && v.pty.ws.readyState === WebSocket.OPEN) {
       v.ptyConnecting = false;
-      v.ptyRetryCount = 0;
       try { clearTimeout(v.ptyRetryTimer); } catch {}
       v.ptyRetryTimer = 0;
       v.usingPty = true;
+      try { clearTimeout(v.ptyStableTimer); } catch {}
+      v.ptyStableTimer = setTimeout(() => {
+        const vv = sessionViews.get(sid);
+        if (!vv || vv !== v) return;
+        if (vv.pty && vv.pty.ws && vv.pty.ws.readyState === WebSocket.OPEN) {
+          vv.ptyRetryCount = 0;
+          try { clearTimeout(vv.ptyRetryTimer); } catch {}
+          vv.ptyRetryTimer = 0;
+        }
+      }, 900);
       if (!background) {
         try { v.term.focus(); } catch {}
         try { fitActiveView(); } catch {}
@@ -2566,6 +2576,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       v.ptyConnectNonce += 1;
       const nonce = v.ptyConnectNonce;
       v.usingPty = true;
+      try { clearTimeout(v.ptyStableTimer); } catch {}
+      v.ptyStableTimer = 0;
 
       try { v.pty?.dispose?.(); } catch {}
       v.pty = null;
@@ -2579,6 +2591,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       const onBroken = () => {
         if (nonce !== v.ptyConnectNonce) return;
         if (v.pty !== localPty) return;
+        try { clearTimeout(v.ptyStableTimer); } catch {}
+        v.ptyStableTimer = 0;
         try { localPty?.dispose?.(); } catch {}
         v.pty = null;
         v.ptyConnecting = false;
@@ -2615,9 +2629,16 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       }
 
       v.ptyConnecting = false;
-      v.ptyRetryCount = 0;
-      try { clearTimeout(v.ptyRetryTimer); } catch {}
-      v.ptyRetryTimer = 0;
+      try { clearTimeout(v.ptyStableTimer); } catch {}
+      v.ptyStableTimer = setTimeout(() => {
+        const vv = sessionViews.get(sid);
+        if (!vv || vv.pty !== localPty) return;
+        if (vv.pty && vv.pty.ws && vv.pty.ws.readyState === WebSocket.OPEN) {
+          vv.ptyRetryCount = 0;
+          try { clearTimeout(vv.ptyRetryTimer); } catch {}
+          vv.ptyRetryTimer = 0;
+        }
+      }, 900);
 
       setTimeout(() => {
         try {
@@ -2652,6 +2673,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       v.pty = null;
       v.ptyConnecting = false;
       v.usingPty = true;
+      try { clearTimeout(v.ptyStableTimer); } catch {}
+      v.ptyStableTimer = 0;
       const isActive = normId(activeViewId || currentSessionId || "") === sid;
       if (!background && isActive) {
         setPanelModeForActive("pty");
@@ -2670,6 +2693,30 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     const existingIds = new Set(sessionList.map(s => String(s?.id || "").trim()).filter(Boolean));
     for (const sid of Array.from(sessionViews.keys())) {
       if (!existingIds.has(sid)) disposeView(sid);
+    }
+    if (sessionList.length) {
+      const stateActive = String(window.zion?.state?.get("terminal.activeSessionId") || "").trim();
+      const hasStateActive = stateActive && existingIds.has(stateActive);
+      const hasCurrent = currentSessionId && existingIds.has(currentSessionId);
+      const nextActive = hasStateActive ? stateActive : (hasCurrent ? currentSessionId : String(sessionList.find(s => String(s?.id || "").trim())?.id || "").trim());
+      if (nextActive && nextActive !== currentSessionId) {
+        currentSessionId = nextActive;
+        activeViewId = nextActive;
+        try {
+          if (String(window.zion?.state?.get("terminal.activeSessionId") || "").trim() !== nextActive) {
+            window.zion?.state?.set("terminal.activeSessionId", nextActive);
+          }
+        } catch {}
+      }
+      if (!nextActive) {
+        currentSessionId = null;
+        activeViewId = null;
+        try { window.zion?.state?.set("terminal.activeSessionId", null); } catch {}
+      }
+    } else {
+      currentSessionId = null;
+      activeViewId = null;
+      try { window.zion?.state?.set("terminal.activeSessionId", null); } catch {}
     }
     tabsScroll.innerHTML = "";
     if (!sessionList.length) {
@@ -3638,8 +3685,20 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   // Wiring state changes
   const disp1 = window.zion.state.onDidChange("terminal.sessions", () => { renderTabs(); });
   const disp2 = window.zion.state.onDidChange("terminal.activeSessionId", async (nv) => {
-    currentSessionId = nv || currentSessionId;
-    if (currentSessionId) activeViewId = currentSessionId;
+    const nextRaw = String(nv || "").trim();
+    if (nextRaw) {
+      currentSessionId = nextRaw;
+      activeViewId = nextRaw;
+    } else {
+      const sessions = window.zion?.state?.get("terminal.sessions") || [];
+      const list = Array.isArray(sessions) ? sessions : [];
+      const first = String(list.find(s => String(s?.id || "").trim())?.id || "").trim();
+      currentSessionId = first || null;
+      activeViewId = currentSessionId;
+      if (currentSessionId) {
+        try { window.zion?.state?.set("terminal.activeSessionId", currentSessionId); } catch {}
+      }
+    }
     renderTabs();
     if (root.style.display === "none") return;
     if (currentSessionId) {

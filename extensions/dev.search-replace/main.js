@@ -194,7 +194,7 @@ function ensureSearchPanel() {
     searchPanel.style.cssText = `
       position: absolute;
       top: 8px;
-      right: 40px;
+      right: 12px;
       left: auto;
       transform: none;
       background: var(--panel);
@@ -248,8 +248,8 @@ function ensureSearchPanel() {
       </div>
     `;
     
-    // Append the panel into the editor container so position:absolute is relative to the editor area
-    const editorHost = document.querySelector('#app > div') || document.getElementById('app');
+    // Append the panel into the editor host so position:absolute is relative to the editor content (not tabs bar)
+    const editorHost = document.querySelector('.zion-editor-host') || document.querySelector('#app > div') || document.getElementById('app');
     if (editorHost && editorHost instanceof HTMLElement) {
       // ensure positioning context so the panel sits inside editor area (not the topbar)
       const pos = getComputedStyle(editorHost).position;

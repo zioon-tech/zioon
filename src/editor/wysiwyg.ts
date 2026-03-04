@@ -28,6 +28,31 @@ const INLINE_FALLBACK = /(\*\*([^*\n]+)\*\*)|(_([^_\n]+)_)|(`([^`\n]+)`)|(\[([^\
 /* App image short link resolver: app://img/<id> -> DataURL from IndexedDB ("dev.paste-image-db"/"images") */
 const APP_IMG_PREFIX = "app://img/";
 const appImageCache = new Map<string, string>();
+const wysiwygHeightCache = new Map<string, number>();
+
+function hashString(s: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
+function applyCachedMinHeight(el: HTMLElement, key: string) {
+  const h = wysiwygHeightCache.get(key);
+  if (typeof h === "number" && isFinite(h) && h > 0) {
+    el.style.minHeight = `${h}px`;
+  }
+}
+
+function updateCachedHeight(el: HTMLElement, key: string) {
+  try {
+    const r = el.getBoundingClientRect();
+    const h = Math.round(r.height);
+    if (isFinite(h) && h > 0) wysiwygHeightCache.set(key, h);
+  } catch {}
+}
 
 function openPasteImageDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -112,6 +137,8 @@ class SimpleImageWidget extends WidgetType {
   toDOM() {
     const wrap = document.createElement("span");
     wrap.className = "cm-md-img-wrap";
+    const cacheKey = `img:${this.src || ""}`;
+    applyCachedMinHeight(wrap, cacheKey);
 
     const mkFallback = () => {
       const fallback = document.createElement("span");
@@ -135,11 +162,21 @@ class SimpleImageWidget extends WidgetType {
           img.referrerPolicy = "no-referrer";
           (img as any).loading = "lazy";
           img.src = url;
+          img.addEventListener("load", () => {
+            requestAnimationFrame(() => {
+              updateCachedHeight(wrap, cacheKey);
+              applyCachedMinHeight(wrap, cacheKey);
+            });
+          });
           img.addEventListener("error", () => {
             const fb = mkFallback();
-            if (img.parentNode) img.parentNode.replaceChild(fb, img);
+            requestAnimationFrame(() => {
+              if (img.parentNode) img.parentNode.replaceChild(fb, img);
+            });
           });
-          wrap.replaceChild(img, ph);
+          requestAnimationFrame(() => {
+            try { wrap.replaceChild(img, ph); } catch {}
+          });
         } catch {}
       }).catch(() => {
         // keep fallback if resolve fails
@@ -151,9 +188,17 @@ class SimpleImageWidget extends WidgetType {
       img.referrerPolicy = "no-referrer";
       (img as any).loading = "lazy";
       img.src = src;
+      img.addEventListener("load", () => {
+        requestAnimationFrame(() => {
+          updateCachedHeight(wrap, cacheKey);
+          applyCachedMinHeight(wrap, cacheKey);
+        });
+      });
       img.addEventListener("error", () => {
         const fb = mkFallback();
-        if (img.parentNode) img.parentNode.replaceChild(fb, img);
+        requestAnimationFrame(() => {
+          if (img.parentNode) img.parentNode.replaceChild(fb, img);
+        });
       });
       wrap.appendChild(img);
     }
@@ -340,7 +385,7 @@ class TableWidget extends WidgetType {
   private attachResizer(th: HTMLTableCellElement, table: HTMLTableElement, colIndex: number) {
     const res = document.createElement("span");
     res.className = "cm-md-col-resizer";
-    th.style.position = "relative";
+    // th.style.position = "relative"; // CSS handles this (sticky)
     th.appendChild(res);
 
     let dragging = false;
@@ -549,6 +594,8 @@ class DiagramWidget extends WidgetType {
   toDOM() {
     const wrap = document.createElement("div");
     wrap.className = "cm-md-diagram";
+    const cacheKey = `diagram:${this.lang}:${hashString(this.code || "")}`;
+    applyCachedMinHeight(wrap, cacheKey);
 
     // Toolbar
     const toolbar = document.createElement("div");
@@ -586,6 +633,10 @@ class DiagramWidget extends WidgetType {
     toolbar.append(editBtn, copySvgBtn, exportPngBtn, openBtn);
     wrap.appendChild(toolbar);
 
+    const body = document.createElement("div");
+    body.className = "cm-md-diagram-body";
+    wrap.appendChild(body);
+
     if (this.lang === "mermaid") {
       let scratch: HTMLDivElement | null = null;
       try {
@@ -604,11 +655,15 @@ class DiagramWidget extends WidgetType {
           const scripts = doc.querySelectorAll("script");
           scripts.forEach(s => s.remove());
           this.svgString = new XMLSerializer().serializeToString(doc.documentElement);
-          // Clear and insert svg (keep toolbar)
-          const children = Array.from(wrap.childNodes).filter(n => (n as HTMLElement)?.classList?.contains?.("cm-md-diagram-toolbar"));
-          wrap.innerHTML = "";
-          children.forEach(n => wrap.appendChild(n));
-          wrap.appendChild(document.importNode(doc.documentElement, true));
+          const svgNode = document.importNode(doc.documentElement, true);
+          requestAnimationFrame(() => {
+            try {
+              body.innerHTML = "";
+              body.appendChild(svgNode);
+              updateCachedHeight(wrap, cacheKey);
+              applyCachedMinHeight(wrap, cacheKey);
+            } catch {}
+          });
         }).catch(() => {
           // swallow errors and avoid leaking scratch node
         }).finally(() => {
@@ -626,8 +681,14 @@ class DiagramWidget extends WidgetType {
         img.referrerPolicy = "no-referrer";
         (img as any).loading = "lazy";
         img.src = server + encoded;
+        img.addEventListener("load", () => {
+          requestAnimationFrame(() => {
+            updateCachedHeight(wrap, cacheKey);
+            applyCachedMinHeight(wrap, cacheKey);
+          });
+        });
         img.addEventListener("error", () => { /* keep empty */ });
-        wrap.appendChild(img);
+        body.appendChild(img);
       } catch {}
     } else if (this.lang === "svg") {
       try {
@@ -655,18 +716,21 @@ class DiagramWidget extends WidgetType {
         });
 
         this.svgString = new XMLSerializer().serializeToString(doc.documentElement);
-        
-        // Clear and insert svg (keep toolbar)
-        const children = Array.from(wrap.childNodes).filter(n => (n as HTMLElement)?.classList?.contains?.("cm-md-diagram-toolbar"));
-        wrap.innerHTML = "";
-        children.forEach(n => wrap.appendChild(n));
-        wrap.appendChild(document.importNode(doc.documentElement, true));
+        const svgNode = document.importNode(doc.documentElement, true);
+        requestAnimationFrame(() => {
+          try {
+            body.innerHTML = "";
+            body.appendChild(svgNode);
+            updateCachedHeight(wrap, cacheKey);
+            applyCachedMinHeight(wrap, cacheKey);
+          } catch {}
+        });
       } catch (error) {
         // If parsing fails, show error message
         const errorDiv = document.createElement("div");
         errorDiv.className = "cm-md-svg-error";
         errorDiv.textContent = "SVG 解析错误";
-        wrap.appendChild(errorDiv);
+        body.appendChild(errorDiv);
       }
     }
 

@@ -8,6 +8,8 @@
   "zion": {
     "id": "zion.autocompletion",
     "name": "Autocompletion",
+    "version": "0.0.1",
+    "main": "./main.js",
     "dependencies": {},
     "contributes": {
       "commands": [

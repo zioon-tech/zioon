@@ -314,13 +314,32 @@ export function initWorkbench(host: HTMLElement): {
   preventScrollChain(bottomPanelEl, bottomPanelEl);
 
   auxiliaryBarEl.style.position = "relative";
+  const auxHeader = el("div", "zion-auxbar-header");
+  const auxHeadLeft = el("div", "zion-auxbar-headleft");
   const auxTabs = el("div", "zion-auxbar-tabs");
+  const auxTitle = el("div", "zion-auxbar-title");
+  const auxActions = el("div", "zion-auxbar-actions");
+  const auxHideBtn = el("button", "zion-auxbar-action") as HTMLButtonElement;
+  auxHideBtn.type = "button";
+  auxHideBtn.title = "Hide";
+  auxHideBtn.setAttribute("aria-label", "Hide auxiliary bar");
+  auxHideBtn.textContent = "×";
+  auxHideBtn.onclick = () => {
+    try {
+      auxiliaryBarRuntime.hide();
+    } catch {}
+  };
+  auxActions.appendChild(auxHideBtn);
+  auxHeadLeft.appendChild(auxTitle);
+  auxHeadLeft.appendChild(auxTabs);
+  auxHeader.appendChild(auxHeadLeft);
+  auxHeader.appendChild(auxActions);
   const auxContent = el("div", "zion-auxbar-content");
   const auxEmpty = el("div", "zion-auxbar-empty");
   auxEmpty.textContent = "暂无可用视图";
   const auxResizer = el("div", "zion-auxbar-resizer");
 
-  auxiliaryBarEl.appendChild(auxTabs);
+  auxiliaryBarEl.appendChild(auxHeader);
   auxiliaryBarEl.appendChild(auxContent);
   auxiliaryBarEl.appendChild(auxResizer);
 
@@ -465,6 +484,8 @@ export function initWorkbench(host: HTMLElement): {
     const activeViewId = auxiliaryBarRuntime.getActiveViewId();
 
     auxTabs.style.display = views.length > 1 ? "flex" : "none";
+    auxTitle.style.display = views.length > 1 ? "none" : "block";
+    auxTitle.textContent = safeText(views[0]?.title || "");
     auxTabs.innerHTML = "";
     if (auxTabs.style.display !== "none") {
       for (const v of views) {

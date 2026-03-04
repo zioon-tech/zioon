@@ -29,6 +29,14 @@ const LLM_PROVIDERS: Record<string, { name: string; baseURL: string }> = {
   zhipu: {
     name: '智谱AI',
     baseURL: 'https://open.bigmodel.cn/api/paas/v4'
+  },
+  anthropic: {
+    name: 'Anthropic Claude',
+    baseURL: 'https://api.anthropic.com'
+  },
+  google: {
+    name: 'Google Gemini',
+    baseURL: 'https://generativelanguage.googleapis.com'
   }
 };
 

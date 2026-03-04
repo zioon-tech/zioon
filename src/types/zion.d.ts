@@ -49,6 +49,24 @@ export type MenuItem = {
   group?: string; // 分组标识，相同分组的可以一起拖拽
 };
 
+export type SelectionToolbarContext = {
+  view: any;
+  selectionText: string;
+  from: number;
+  to: number;
+};
+
+export type SelectionToolbarItem = {
+  id: string;
+  order?: number;
+  title?: string;
+  label?: string;
+  codicon?: string;
+  when?: (ctx: SelectionToolbarContext) => boolean;
+  run?: (ctx: SelectionToolbarContext & { anchorEl: HTMLElement; event?: Event }) => void;
+  render?: (ctx: SelectionToolbarContext & { anchorEl: HTMLElement; event?: Event }) => HTMLElement;
+};
+
 export type ModelInfo = { id: string; label?: string };
 export type ModelProvider = {
   id: string;
@@ -245,6 +263,11 @@ declare global {
       editor: {
         registerPasteHandler(handler: PasteHandler): Disposable;
         registerDecorator(dec: { id: string; apply: (editor: EditorProxy) => Disposable }): Disposable;
+        selectionToolbar?: {
+          registerItem(item: SelectionToolbarItem): Disposable;
+          list(): SelectionToolbarItem[];
+          onDidChange(handler: () => void): Disposable;
+        };
       };
       // active editor
       window: {

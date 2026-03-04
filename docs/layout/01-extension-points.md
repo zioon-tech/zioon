@@ -12,6 +12,7 @@ Zion Next 提供了多个布局扩展点，允许插件在不同的 UI 区域注
 | `bottomPanelViews` | 底部面板 | 功能面板（终端、输出等） | 中 |
 | `statusBarItems` | 底部状态栏 | 状态信息显示 | 低 |
 | `editorTabs` | 编辑器区域 | 编辑器标签页 | 高 |
+| `selectionToolbar` | 编辑器选区浮动工具栏 | 选中文本时的快捷操作（可扩展按钮/下拉） | 中 |
 
 ## 📐 完整布局结构
 

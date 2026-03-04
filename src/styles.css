@@ -5,6 +5,7 @@
   --fg: #d1d5db;
   --dim: rgba(209,213,219,0.60);
   --accent: #6272a4;
+  --accent-rgb: 98, 114, 164;
   --ok: #50fa7b;
 
   /* Font stacks (system-first, CJK-friendly) */
@@ -67,6 +68,7 @@
   --fg: #2a2a2a;
   --dim: rgba(42,42,42,0.55);
   --accent: #3b82f6;
+  --accent-rgb: 59, 130, 246;
   --ok: #16a34a;
 
   /* Role tokens (Light overrides) - 与 TOC 插件颜色对应 */
@@ -556,10 +558,63 @@ html, body {
   min-height: 0;
 }
 
+.zion-auxbar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  gap: 8px;
+}
+
+.zion-auxbar-headleft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.zion-auxbar-title {
+  font-size: 12px;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zion-auxbar-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.zion-auxbar-action {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+
+.zion-auxbar-action:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="light"] .zion-auxbar-action:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
 .zion-auxbar-tabs {
   display: flex;
   gap: 4px;
-  padding: 6px 8px;
+  padding: 0;
   box-sizing: border-box;
   overflow: auto;
   min-height: 0;
@@ -1427,6 +1482,14 @@ html, body {
   font-size: 0.9em;
 }
 
+.cm-line.cm-md-codeblock.cm-activeLine {
+  background: color-mix(in srgb, var(--md-codeblock-bg) 70%, rgba(255,255,255,0.14));
+}
+
+:root[data-theme="light"] .cm-line.cm-md-codeblock.cm-activeLine {
+  background: color-mix(in srgb, var(--md-codeblock-bg) 80%, rgba(0,0,0,0.06));
+}
+
 /* Opening/closing fence lines (```lang / ```), dim a bit and tighter */
 .cm-line.cm-md-codeblock.cm-md-codeblock-fence {
   color: rgba(248, 248, 242, 0.8);
@@ -1486,91 +1549,120 @@ html, body {
   display: none !important;
 }
 
-/* Tables */
+/* Tables - Modern Style (GitHub/Typora inspired) */
 .cm-md-table-wrap {
-  overflow-x: auto;
-  margin: 6px 0;
+  overflow: auto;
+  margin: 16px 0;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: rgba(98,114,164,0.06);
+  border-radius: 6px;
+  background-color: var(--bg);
 }
 
 .cm-md-table {
   border-collapse: collapse;
+  border-spacing: 0;
   width: 100%;
-  max-width: 100%;
-  font-size: 0.95em;
-  table-layout: fixed; /* enable fixed column widths for resizer */
+  font-size: 14px;
+  line-height: 1.6;
+  table-layout: fixed;
+  color: var(--fg);
 }
 
+/* Header Styling */
 .cm-md-table thead th {
   position: sticky;
   top: 0;
-  background: var(--md-table-header-bg);
+  background-color: var(--md-table-header-bg, #f6f8fa);
   color: var(--fg);
-  z-index: 1;
-  border-bottom: 2px solid var(--accent);
+  font-weight: 600;
+  text-align: left;
+  z-index: 10;
+  border-bottom: 2px solid var(--border);
+  padding: 8px 12px;
 }
 
+:root[data-theme="dark"] .cm-md-table thead th {
+  background-color: #161b22;
+}
+
+/* Cell Styling */
 .cm-md-table th,
 .cm-md-table td {
   border: 1px solid var(--border);
-  padding: 8px 12px; /* slightly looser cells for readability */
-  white-space: normal; /* 允许换行 */
-  word-break: break-word; /* 长单词也换行 */
+  padding: 8px 12px;
+  white-space: normal;
+  word-break: break-word;
 }
-.cm-md-table tbody tr:nth-child(even) td {
-  background: rgba(0,0,0,0.06);
+
+.cm-md-table td {
+  background-color: var(--bg);
 }
-:root[data-theme="light"] .cm-md-table tbody tr:nth-child(even) td {
-  background: rgba(0,0,0,0.03);
+
+/* Zebra Striping */
+.cm-md-table tbody tr:nth-child(2n) td {
+  background-color: var(--md-table-stripe-bg, rgba(127,127,127,0.03));
 }
+
+/* Row Hover */
 .cm-md-table tbody tr:hover td {
-  background: var(--selection-bg);
+  background-color: var(--md-table-hover-bg, rgba(127,127,127,0.06));
 }
 
-.cm-md-table tbody tr:nth-child(odd) {
-  background: rgba(98,114,164,0.03);
-}
-
-.cm-md-table tbody tr:hover {
-  background: rgba(98,114,164,0.12);
-}
-
+/* Error State */
 .cm-md-table-error {
   display: inline-block;
-  padding: 4px 6px;
+  padding: 4px 8px;
   border: 1px dashed var(--border);
   border-radius: 4px;
-  color: #ffb86c;
-  background: rgba(255,184,108,0.08);
+  color: #d73a49;
+  background: rgba(215,58,73,0.05);
+  font-size: 12px;
 }
 
-/* Editable cell styling */
+/* Editable Cell */
 .cm-md-cell-edit {
-  outline: none;
-  min-width: 2ch;
-  display: inline-block;
+  display: block;
+  width: 100%;
+  min-height: 24px;
   padding: 2px 4px;
-  border-radius: 3px;
-}
-.cm-md-cell-edit:focus {
-  background: rgba(98,114,164,0.08);
-  box-shadow: 0 0 0 1px var(--border) inset;
+  border-radius: 4px;
+  outline: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  transition: all 0.2s ease-in-out;
 }
 
-/* Column resizer handle */
+.cm-md-cell-edit:focus {
+  background-color: var(--bg);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
+}
+
+/* Column Resizer */
 .cm-md-col-resizer {
   position: absolute;
   right: 0;
   top: 0;
-  width: 6px;
-  height: 100%;
+  bottom: 0;
+  width: 4px;
   cursor: col-resize;
-  background: transparent;
+  background-color: transparent;
+  transition: background-color 0.2s;
+  z-index: 20;
 }
+
 .cm-md-table th:hover .cm-md-col-resizer {
-  background: rgba(248,248,242,0.06);
+  background-color: rgba(127,127,127,0.2);
+}
+
+.cm-md-col-resizer:hover,
+.cm-md-col-resizer:active {
+  background-color: var(--accent) !important;
+  width: 4px;
 }
 
 /* Diagram toolbar */
@@ -2463,6 +2555,71 @@ html, body {
 .zion-inline-confirm-btn.danger {
   color: #cc3a3a;
   font-weight: 600;
+}
+
+.zion-selection-toolbar {
+  position: absolute;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.22);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  user-select: none;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+.zion-selection-toolbar.is-visible {
+  display: inline-flex;
+}
+.zion-selection-toolbar-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.zion-selection-toolbar-btn:hover {
+  background: rgba(98,114,164,0.16);
+  border-color: rgba(98,114,164,0.22);
+}
+:root[data-theme="light"] .zion-selection-toolbar-btn:hover {
+  background: rgba(59,130,246,0.12);
+  border-color: rgba(59,130,246,0.18);
+}
+.zion-selection-toolbar-btn:active {
+  transform: translateY(1px);
+}
+.zion-selection-toolbar-btn.is-strike {
+  font-weight: inherit;
+  text-decoration: line-through;
+}
+.zion-selection-toolbar-btn.is-ai {
+  width: auto;
+  padding: 0 10px;
+  font-weight: 600;
+}
+.zion-selection-toolbar-btn.is-ai:hover {
+  background: rgba(98,114,164,0.16);
+  border-color: rgba(98,114,164,0.22);
+}
+.zion-selection-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  opacity: 0.8;
 }
 
 /* Minimal, legible menu */

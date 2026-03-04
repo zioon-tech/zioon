@@ -5,6 +5,8 @@ import {
   shouldForceReasoningContentWithToolCalls
 } from "./reasoning-policy.js";
 import { deepseekProvider } from "./deepseek-provider.js";
+import { claudeProvider } from "./claude-provider.js";
+import { geminiProvider } from "./gemini-provider.js";
 import { userModelsProvider } from "./user-models-provider.js";
 import { installModelSwitcher } from "./model-switcher.js";
 import { registerModelsTools } from "./models-tools.js";
@@ -13,6 +15,12 @@ export async function activate(ctx) {
   // 注册模型提供者
   const dispProv = window.zion.models.registerProvider(deepseekProvider);
   ctx.subscriptions.push(dispProv);
+
+  const dispClaudeProv = window.zion.models.registerProvider(claudeProvider);
+  ctx.subscriptions.push(dispClaudeProv);
+
+  const dispGeminiProv = window.zion.models.registerProvider(geminiProvider);
+  ctx.subscriptions.push(dispGeminiProv);
 
   const dispUserProv = window.zion.models.registerProvider(userModelsProvider);
   ctx.subscriptions.push(dispUserProv);

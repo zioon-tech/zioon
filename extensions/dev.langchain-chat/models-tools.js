@@ -101,6 +101,8 @@ export function registerModelsTools() {
               preservedThinking: { type: "boolean", description: "是否支持回传/保留思考（将思考作为 reasoning_content 输入给模型）" },
               interleavedThinking: { type: "boolean", description: "是否支持交错思考（thinking 与 tool_calls 交错输出/处理）" },
               model: { type: "string", description: "后端自定义 model 字段（如 siliconflow）" },
+              provider_type: { type: "string", enum: ["openai", "claude", "gemini"], description: "模型提供者类型 (openai/claude/gemini)" },
+              anthropicVersion: { type: "string", description: "Claude API 版本 (默认 2023-06-01)" },
               data: { type: "object", description: "导入的模型字典（或 JSON 字符串），仅用于 import" },
               merge: { type: "boolean", description: "导入时是否合并（默认 true）" }
             },
@@ -185,7 +187,62 @@ export function registerModelsTools() {
 
         if (action === "add" || action === "update") {
           const pid = providerId || DYN_PROVIDER_ID;
-          if (pid !== DYN_PROVIDER_ID) return "Only user.dynamic provider is writable";
+
+          // 特殊处理：配置预定义 provider 的 API key
+          if (pid === "anthropic") {
+            // 配置 Claude API key
+            if (args?.key) {
+              localStorage.setItem("zion.claude.apiKey", String(args.key));
+            }
+            // 可选：更新其他配置
+            if (args?.temperature != null || args?.max_tokens != null) {
+              const configStr = localStorage.getItem("zion.claude.config") || "{}";
+              const config = JSON.parse(configStr);
+              if (args?.temperature != null) config.temperature = Number(args.temperature);
+              if (args?.max_tokens != null) config.max_tokens = Number(args.max_tokens);
+              localStorage.setItem("zion.claude.config", JSON.stringify(config));
+            }
+            await refresh();
+            return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "Claude API key configured" } }, null, 2);
+          }
+
+          if (pid === "google") {
+            // 配置 Gemini API key
+            if (args?.key) {
+              localStorage.setItem("zion.gemini.apiKey", String(args.key));
+            }
+            // 可选：更新其他配置
+            if (args?.temperature != null || args?.max_tokens != null) {
+              const configStr = localStorage.getItem("zion.gemini.config") || "{}";
+              const config = JSON.parse(configStr);
+              if (args?.temperature != null) config.temperature = Number(args.temperature);
+              if (args?.max_tokens != null) config.max_tokens = Number(args.max_tokens);
+              localStorage.setItem("zion.gemini.config", JSON.stringify(config));
+            }
+            await refresh();
+            return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "Gemini API key configured" } }, null, 2);
+          }
+
+          if (pid === "deepseek") {
+            // 配置 DeepSeek API key
+            if (args?.key) {
+              localStorage.setItem("zion.deepseek.apiKey", String(args.key));
+            }
+            // 可选：更新其他配置
+            if (args?.temperature != null || args?.max_tokens != null || args?.label != null) {
+              const configStr = localStorage.getItem("zion.deepseek.config") || "{}";
+              const config = JSON.parse(configStr);
+              if (args?.temperature != null) config.temperature = Number(args.temperature);
+              if (args?.max_tokens != null) config.max_tokens = Number(args.max_tokens);
+              if (args?.label != null) config.label = String(args.label);
+              localStorage.setItem("zion.deepseek.config", JSON.stringify(config));
+            }
+            await refresh();
+            return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "DeepSeek API key configured" } }, null, 2);
+          }
+
+          // user.dynamic provider 的处理
+          if (pid !== DYN_PROVIDER_ID) return "Only user.dynamic, anthropic, google, deepseek providers are supported for configuration";
           if (!modelId) return "Missing model_id";
           const patch = {
             label: args?.label != null ? String(args.label) : undefined,
@@ -197,7 +254,9 @@ export function registerModelsTools() {
             supportsImage: args?.supportsImage != null ? !!args.supportsImage : undefined,
             preservedThinking: args?.preservedThinking != null ? !!args.preservedThinking : undefined,
             interleavedThinking: args?.interleavedThinking != null ? !!args.interleavedThinking : undefined,
-            model: args?.model != null ? String(args.model) : undefined
+            model: args?.model != null ? String(args.model) : undefined,
+            providerType: args?.provider_type != null ? String(args.provider_type) : undefined,
+            anthropicVersion: args?.anthropicVersion != null ? String(args.anthropicVersion) : undefined
           };
           const cur = dict[modelId] || {};
           const next = { ...cur };

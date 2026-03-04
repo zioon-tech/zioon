@@ -19,6 +19,33 @@ export function isLikelyReasoningModelId(modelIdOrName) {
   if (s.includes("kimi") || s.includes("moonshot")) return true;
   if (s.includes("k2.5") || s.includes("k2")) return true;
   if (s.includes("o1") || s.includes("o3")) return true;
+  if (isClaudeThinkingModel(modelIdOrName)) return true;
+  if (isGeminiThinkingModel(modelIdOrName)) return true;
+  return false;
+}
+
+/**
+ * 检测是否为 Claude 思考模型
+ * Claude 3.5 Sonnet 和 Opus 支持 thinking 扩展
+ */
+export function isClaudeThinkingModel(modelIdOrName) {
+  const s = String(modelIdOrName || "").toLowerCase();
+  if (!s) return false;
+  // Claude 3.5 Sonnet 和 3 Opus 支持 thinking
+  if (s.includes("claude-3-5-sonnet")) return true;
+  if (s.includes("claude-3-opus")) return true;
+  return false;
+}
+
+/**
+ * 检测是否为 Gemini 思考模型
+ * Gemini 2.0 Flash Thinking 等支持 thinking
+ */
+export function isGeminiThinkingModel(modelIdOrName) {
+  const s = String(modelIdOrName || "").toLowerCase();
+  if (!s) return false;
+  // Gemini 2.0 Flash Thinking
+  if (s.includes("thinking")) return true;
   return false;
 }
 

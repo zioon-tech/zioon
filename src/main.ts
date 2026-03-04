@@ -586,8 +586,26 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
       }
     };
 
+    let suppressEnsureActiveId: string | null = null;
+    let suppressEnsureActiveUntil = 0;
+    const suppressEnsureActiveOnce = (id: string) => {
+      suppressEnsureActiveId = id;
+      suppressEnsureActiveUntil = Date.now() + 1500;
+    };
+    const isEnsureActiveSuppressed = (id: string | null) => {
+      if (!id) return false;
+      if (suppressEnsureActiveId !== id) return false;
+      if (Date.now() > suppressEnsureActiveUntil) {
+        suppressEnsureActiveId = null;
+        suppressEnsureActiveUntil = 0;
+        return false;
+      }
+      return true;
+    };
+
     const ensureActiveInTabs = (activeId: string | null) => {
       if (!activeId) return;
+      if (isEnsureActiveSuppressed(activeId)) return;
       if (!openIds.includes(activeId)) {
         openIds = [...openIds, activeId];
         persistOpenIds(openIds);
@@ -601,17 +619,20 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
       const nextOpen = openIds.filter(x => x !== id);
       const activeId = window.zion.state.get<string>("sessions.currentId") ?? null;
       const isClosingActive = activeId === id;
+      const nextId = isClosingActive
+        ? (nextOpen[Math.min(idx, nextOpen.length - 1)] || nextOpen[nextOpen.length - 1] || null)
+        : null;
       openIds = nextOpen;
       persistOpenIds(openIds);
-      render();
       if (isClosingActive) {
-        const nextId = openIds[Math.min(idx, openIds.length - 1)] || openIds[openIds.length - 1] || null;
+        suppressEnsureActiveOnce(id);
         if (nextId) {
           try {
             window.zion.commands.executeCommand("zion.sessions.switch", nextId);
           } catch {}
         }
       }
+      requestRender();
     };
 
     const activateTab = (id: string) => {
@@ -928,7 +949,12 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
 
     try {
       window.zion.state.onDidChange<string>("sessions.currentId", (nv) => {
-        ensureActiveInTabs(nv ?? null);
+        const next = nv ?? null;
+        if (suppressEnsureActiveId && next !== suppressEnsureActiveId) {
+          suppressEnsureActiveId = null;
+          suppressEnsureActiveUntil = 0;
+        }
+        ensureActiveInTabs(next);
         requestRender();
       });
     } catch {}
