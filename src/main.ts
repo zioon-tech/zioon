@@ -310,6 +310,33 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
 
     let openIds = loadOpenIds();
 
+    // 验证 openIds 中的会话是否仍然存在于会话目录中
+    const validateOpenIds = (): string[] => {
+      try {
+        const catalog = window.zion.state.get<any[]>("sessions.catalog") || [];
+        // 如果 catalog 还没有加载，暂时返回当前的 openIds
+        if (!catalog || catalog.length === 0) {
+          return openIds;
+        }
+        const validIds = new Set(catalog.map((s: any) => s.id).filter(Boolean));
+        const valid = openIds.filter(id => validIds.has(id));
+        // 如果有无效的 ID 被移除，持久化更新后的列表
+        if (valid.length !== openIds.length) {
+          openIds = valid;
+          persistOpenIds(openIds);
+        }
+        return valid;
+      } catch {
+        return openIds;
+      }
+    };
+
+    // 初始加载时验证 - 可能会在 catalog 加载前执行，所以暂时保留所有 ID
+    const initialCatalog = window.zion.state.get<any[]>("sessions.catalog");
+    if (initialCatalog && initialCatalog.length > 0) {
+      openIds = validateOpenIds();
+    }
+
     const getParentIdForNewSession = (): string | undefined => {
       try {
         const curId = window.zion.state.get<string>("sessions.currentId");
@@ -697,6 +724,27 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
 
     const render = () => {
       const activeId = window.zion.state.get<string>("sessions.currentId") ?? null;
+
+      // 每次渲染时都验证 openIds，清理已删除的会话
+      validateOpenIds();
+      // 使用验证后的 openIds（validateOpenIds 已经更新了 openIds）
+
+      // 如果当前激活的会话不在有效列表中，尝试切换到第一个有效的标签页
+      if (activeId && !openIds.includes(activeId) && openIds.length > 0) {
+        try {
+          window.zion.commands.executeCommand("zion.sessions.switch", openIds[0]);
+        } catch {}
+        return; // 等待下次渲染
+      }
+
+      // 如果没有有效的标签页但当前会话为空，创建新会话
+      if (openIds.length === 0 && !activeId) {
+        try {
+          window.zion.commands.executeCommand("zion.sessions.new");
+        } catch {}
+        return;
+      }
+
       ensureActiveInTabs(activeId);
       syncMetaWatchers();
       syncRunWatchers();
@@ -960,7 +1008,19 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
     } catch {}
 
     try {
-      window.zion.state.onDidChange("sessions.catalog", () => requestRender());
+      window.zion.state.onDidChange("sessions.catalog", () => {
+        // 当会话目录变化时（如删除/新增会话），验证并清理无效的 openIds
+        validateOpenIds();
+        requestRender();
+      });
+    } catch {}
+
+    try {
+      // 监听树结构变化，确保在会话被删除时也能及时清理标签页
+      window.zion.state.onDidChange("sessions.treeMem", () => {
+        validateOpenIds();
+        requestRender();
+      });
     } catch {}
 
     render();

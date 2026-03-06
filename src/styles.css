@@ -26,25 +26,30 @@
   --role-system-bg: rgba(158,158,158,0.18);
   --role-system-border: rgba(158,158,158,0.28);
 
-  /* WYSIWYG heading sizes (GitHub-like but a bit tighter) */
-  --md-h1-size: 1.8em;
-  --md-h2-size: 1.5em;
-  --md-h3-size: 1.3em;
-  --md-h4-size: 1.15em;
-  --md-h5-size: 1.05em;
-  --md-h6-size: 1.0em;
+  /* Editor typography - obsidian-like */
+  --editor-font-size: 15px;
+  --editor-line-height: 1.6;
+
+  /* Font stacks - refined for readability */
+  --font-sans: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Noto Sans SC", "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "SF Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* WYSIWYG heading sizes - obsidian-like, subtle */
+  --md-h1-size: 1.25em;
+  --md-h2-size: 1.15em;
+  --md-h3-size: 1.08em;
+  --md-h4-size: 1em;
+  --md-h5-size: 1em;
+  --md-h6-size: 1em;
 
   /* Markdown UI tokens (dark defaults) */
-  --md-code-bg: rgba(98,114,164,0.06);
-  --md-code-border: transparent;
-  --md-codeblock-bg: rgba(98,114,164,0.08);
-  --md-codeblock-border: var(--border);
-  --md-quote-bg: rgba(98,114,164,0.03);
-  --md-quote-border: var(--border);
-  --md-table-header-bg: rgba(98,114,164,0.10);
-
-  /* Base editor font size (compact) */
-  --editor-font-size: 16px;
+  --md-code-bg: rgba(98,114,164,0.08);
+  --md-code-border: rgba(98,114,164,0.2);
+  --md-codeblock-bg: rgba(0,0,0,0.2);
+  --md-codeblock-border: rgba(98,114,164,0.25);
+  --md-quote-bg: transparent;
+  --md-quote-border: var(--accent);
+  --md-table-header-bg: rgba(98,114,164,0.12);
 
   /* Scrollbar theme (dark defaults) */
   --scrollbar-track: rgba(248,248,242,0.06);
@@ -86,15 +91,16 @@
   --role-system-border: rgba(107,114,128,0.16);
 
   /* Markdown UI tokens (light theme overrides) */
-  --md-code-bg: #f6f8fa;
-  --md-code-border: #d0d7de;
-  --md-codeblock-bg: #f6f8fa;
-  --md-codeblock-border: #d0d7de;
-  --md-quote-bg: #f6f8fa;
-  --md-quote-border: #d0d7de;
-  --md-table-header-bg: #f6f8fa;
+  --md-code-bg: rgba(0,0,0,0.04);
+  --md-code-border: rgba(0,0,0,0.08);
+  --md-codeblock-bg: rgba(0,0,0,0.03);
+  --md-codeblock-border: rgba(0,0,0,0.1);
+  --md-quote-bg: transparent;
+  --md-quote-border: var(--accent);
+  --md-table-header-bg: rgba(0,0,0,0.04);
   /* Base editor font size override for light theme (keep consistent) */
-  --editor-font-size: 16px;
+  --editor-font-size: 15px;
+  --editor-line-height: 1.6;
 
   /* Scrollbar theme (light overrides, improved contrast for Chrome/WebKit) */
   --scrollbar-track: #f8f8fa;
@@ -1311,9 +1317,10 @@ html, body {
 }
 .cm-content {
   font-size: var(--editor-font-size);
-  line-height: 1.7;
+  line-height: var(--editor-line-height);
   padding: 0 16px;
   font-family: var(--font-sans);
+  letter-spacing: 0.01em; /* subtle letter spacing for better readability */
 }
 .cm-line {
   padding: 1px 0;         /* slightly tighter per-line padding */
@@ -1367,7 +1374,7 @@ html, body {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.cm-md-link:hover { color: #8be9fd; }
+.cm-md-link:hover { color: var(--accent); opacity: 0.8; }
 
 .cm-md-strong { font-weight: 600; }
 .cm-md-em { font-style: italic; }
@@ -1376,10 +1383,11 @@ html, body {
 .cm-md-code {
   font-family: var(--font-mono);
   background: var(--md-code-bg);
-  border: 1px solid var(--md-code-border);
-  padding: 0 4px;
-  border-radius: 4px;
-  font-size: 0.9em;
+  border: none;
+  padding: 0.1em 0.4em;
+  border-radius: 3px;
+  font-size: 0.88em;
+  color: var(--accent);
 }
 
 /* Image container: keep a stable wrapper so widget DOM updates don't replace the root node */
@@ -1415,15 +1423,16 @@ html, body {
 
 .cm-md-heading {
   font-weight: 600;
-  line-height: 1.25; /* headings look tighter like GitHub */
+  line-height: 1.3;
+  color: var(--fg);
 }
-/* heading level sizes (configurable via CSS variables: medium/small/xsmall) */
-.cm-md-h1 { font-size: var(--md-h1-size); }
-.cm-md-h2 { font-size: var(--md-h2-size); }
-.cm-md-h3 { font-size: var(--md-h3-size); }
-.cm-md-h4 { font-size: var(--md-h4-size); }
-.cm-md-h5 { font-size: var(--md-h5-size); }
-.cm-md-h6 { font-size: var(--md-h6-size); }
+/* heading level sizes (obsidian-like: subtle hierarchy) */
+.cm-md-h1 { font-size: var(--md-h1-size); font-weight: 700; letter-spacing: -0.01em; }
+.cm-md-h2 { font-size: var(--md-h2-size); font-weight: 600; }
+.cm-md-h3 { font-size: var(--md-h3-size); font-weight: 600; }
+.cm-md-h4 { font-size: var(--md-h4-size); font-weight: 600; }
+.cm-md-h5 { font-size: var(--md-h5-size); font-weight: 600; }
+.cm-md-h6 { font-size: var(--md-h6-size); font-weight: 600; }
 
 
 /* GitHub-style spacing around headings (tighter, use padding to保持与 gutter 对齐) */
@@ -1441,11 +1450,11 @@ html, body {
 
 .cm-md-quote {
   display: block;
-  border-left: 3px solid var(--accent);
-  padding: 8px 12px;
-/*   margin: 8px 0; */
+  border-left: 3px solid var(--md-quote-border);
+  padding: 4px 12px;
   background: var(--md-quote-bg);
-  color: var(--fg);
+  color: var(--dim);
+  font-style: italic;
 }
 
 .cm-md-task {
@@ -1472,30 +1481,32 @@ html, body {
   opacity: 0.6;
 }
 
-/* Code fence block lines (tighter like GitHub) */
+/* Code fence block lines - obsidian-style */
 .cm-line.cm-md-codeblock {
   background: var(--md-codeblock-bg);
-  border-left: none;
-  padding: 2px 8px;      /* reduce vertical padding */
-  line-height: 1.35;     /* tighter line spacing for code */
+  border: 1px solid var(--md-codeblock-border);
+  border-radius: 4px;
+  padding: 4px 12px;
+  line-height: 1.5;
   font-family: var(--font-mono);
-  font-size: 0.9em;
+  font-size: 0.85em;
 }
 
 .cm-line.cm-md-codeblock.cm-activeLine {
-  background: color-mix(in srgb, var(--md-codeblock-bg) 70%, rgba(255,255,255,0.14));
+  background: var(--md-codeblock-bg);
+  border-color: var(--accent);
 }
 
 :root[data-theme="light"] .cm-line.cm-md-codeblock.cm-activeLine {
-  background: color-mix(in srgb, var(--md-codeblock-bg) 80%, rgba(0,0,0,0.06));
+  border-color: var(--accent);
 }
 
-/* Opening/closing fence lines (```lang / ```), dim a bit and tighter */
+/* Opening/closing fence lines */
 .cm-line.cm-md-codeblock.cm-md-codeblock-fence {
-  color: rgba(248, 248, 242, 0.8);
-  line-height: 1.2;
-  padding-top: 0;
-  padding-bottom: 0;
+  color: var(--dim);
+  font-size: 0.8em;
+  border: none;
+  background: transparent;
 }
 
 /* Math (KaTeX) */

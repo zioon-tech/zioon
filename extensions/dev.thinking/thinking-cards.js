@@ -336,7 +336,69 @@ export function installThinkingCards() {
         } catch {}
       });
       this.syncSelectionHighlight();
+
+      // 页面可见性监听：休眠唤醒后自动恢复 widgets
+      this.setupVisibilityRecovery();
     }
+
+    // 页面休眠/唤醒后自动恢复丢失的 widgets
+    setupVisibilityRecovery = () => {
+      let wasHidden = document.hidden;
+      const checkAndRestore = () => {
+        const isHidden = document.hidden;
+        if (wasHidden && !isHidden) {
+          // 页面从休眠中唤醒，检查并恢复丢失的 widgets
+          this.checkAndRestoreWidgets();
+        }
+        wasHidden = isHidden;
+      };
+      // 监听 visibilitychange 事件
+      document.addEventListener("visibilitychange", checkAndRestore);
+      this.disps.push({
+        dispose: () => document.removeEventListener("visibilitychange", checkAndRestore)
+      });
+      // 也监听 window focus 事件作为备份
+      const onFocus = () => {
+        setTimeout(() => this.checkAndRestoreWidgets(), 100);
+      };
+      window.addEventListener("focus", onFocus);
+      this.disps.push({
+        dispose: () => window.removeEventListener("focus", onFocus)
+      });
+    };
+
+    // 检查并恢复丢失的 widgets
+    checkAndRestoreWidgets = () => {
+      try {
+        const sid = window.zion?.state?.get("sessions.currentId");
+        if (!sid) return;
+        const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+        const list = Array.isArray(ann.thinking) ? ann.thinking : [];
+        if (!list.length) return;
+
+        // 检查 StateField 中的 items 数量
+        let fieldCount = 0;
+        try {
+          const fieldVal = this.view.state.field(thinkingField);
+          fieldCount = fieldVal?.items?.size || 0;
+        } catch {}
+
+        // 检查 DOM 中的 widgets 数量
+        let domCount = 0;
+        try {
+          domCount = document.querySelectorAll(".zion-thinking-inline").length;
+        } catch {}
+
+        // 如果数量不匹配，说明有 widgets 丢失，需要恢复
+        if (fieldCount < list.length || domCount < list.length) {
+          console.log("[thinking] Widgets lost during sleep, restoring:", { fieldCount, domCount, listLength: list.length });
+          this.onRestore({ items: list });
+        }
+      } catch (e) {
+        console.error("[thinking] checkAndRestoreWidgets error:", e);
+      }
+    };
+
     update(update) {
       if (this.suspendSnapshot) return;
       this.snapshot();

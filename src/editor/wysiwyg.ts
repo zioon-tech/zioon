@@ -25,6 +25,11 @@ function isPosInsideNode(pos: number, node: { from: number; to: number } | null)
 /* Simple inline fallback regex (single-line, limited, executed only in visible ranges) */
 const INLINE_FALLBACK = /(\*\*([^*\n]+)\*\*)|(_([^_\n]+)_)|(`([^`\n]+)`)|(\[([^\]]+)\]\(([^)\n]+)\))|(!\[([^\]]*)\]\(([^)\n]+)\))|(\$([^\$\n]+)\$)|(~~([^~\n]+)~~)/g;
 
+/* Helper: Check if line contains tool call or thinking markers (skip WYSIWYG processing) */
+const isToolOrThinkingLine = (lineText: string): boolean => {
+  return /^\s*调用\s+/.test(lineText) || /^\s*思考\s*$/.test(lineText.trim());
+};
+
 /* App image short link resolver: app://img/<id> -> DataURL from IndexedDB ("dev.paste-image-db"/"images") */
 const APP_IMG_PREFIX = "app://img/";
 const appImageCache = new Map<string, string>();
@@ -783,6 +788,11 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         const from = node.from, to = node.to;
         if (!inViewport(view, from, to)) return;
 
+        // Skip tool call and thinking lines - let their own plugins handle rendering
+        const line = doc.lineAt(from);
+        const lineText = doc.sliceString(line.from, line.to);
+        if (isToolOrThinkingLine(lineText)) return;
+
         // Headers: style content; on active line keep '#' markers visible, off active line hide them
         if (name === "Header" || name === "HeaderMark") {
           const line = doc.lineAt(from);
@@ -1030,6 +1040,11 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       const lnNum = doc.lineAt(start).number;
       const isActive = activeLines.has(lnNum);
 
+      // Skip tool call and thinking lines
+      const line = doc.lineAt(start);
+      const lineText = doc.sliceString(line.from, line.to);
+      if (isToolOrThinkingLine(lineText)) continue;
+
       // bold (**...**)
       if (m[1]) {
         if (isActive) {
@@ -1161,6 +1176,8 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       const line = doc.line(ln);
       const ltxt = doc.sliceString(line.from, line.to);
       if (isInsideFencedCode(line.from)) { ln++; continue; }
+      // Skip tool call and thinking lines
+      if (isToolOrThinkingLine(ltxt)) { ln++; continue; }
 
       if (isTableRow(ltxt)) {
         try {
@@ -1252,6 +1269,8 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       const line = doc.line(ln);
       const t = doc.sliceString(line.from, line.to).trim();
       if (isInsideFencedCode(line.from)) { ln++; continue; }
+      // Skip tool call and thinking lines
+      if (isToolOrThinkingLine(t)) { ln++; continue; }
       const isFence = /^\$\$\s*$/.test(t);
       if (isFence) {
         // find closing fence
@@ -1362,7 +1381,32 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
       }
     });
     try { mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] }); } catch {}
-    (view as any)._wysiwyg_cleanup = () => { try { mo.disconnect(); } catch {} };
+
+    // 页面可见性监听：休眠唤醒后强制重建装饰
+    let wasHidden = document.hidden;
+    const onVisibilityChange = () => {
+      const isHidden = document.hidden;
+      if (wasHidden && !isHidden) {
+        // 页面从休眠中唤醒，强制刷新 WYSIWYG 装饰
+        try { view.dispatch({ annotations: Transaction.userEvent.of("wysiwyg-refresh") }); } catch {}
+      }
+      wasHidden = isHidden;
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    // Window focus 作为备份恢复机制
+    const onFocus = () => {
+      setTimeout(() => {
+        try { view.dispatch({ annotations: Transaction.userEvent.of("wysiwyg-refresh") }); } catch {}
+      }, 100);
+    };
+    window.addEventListener("focus", onFocus);
+
+    (view as any)._wysiwyg_cleanup = () => {
+      try { mo.disconnect(); } catch {}
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocus);
+    };
   }
 
   update(update: ViewUpdate) {
