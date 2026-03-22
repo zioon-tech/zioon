@@ -65,23 +65,32 @@ async function checkBackendAvailable(): Promise<boolean> {
   const now = Date.now();
   const backendUrl = getBackendUrl();
   
+  console.log('[LLM-Proxy] 🔍 开始检查后端服务:', backendUrl);
+  
   // 使用缓存（避免频繁检查）
   if (
     backendHealthCache &&
     backendHealthCache.backendUrl === backendUrl &&
     (now - backendHealthCache.checkedAt < HEALTH_CHECK_CACHE_TTL)
   ) {
+    console.log('[LLM-Proxy] 📦 使用缓存结果:', backendHealthCache.available);
     return backendHealthCache.available;
   }
   
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1500); // 1.5 秒超时
+    const timeoutId = setTimeout(() => {
+      console.log('[LLM-Proxy] ⏱️ health check 超时，准备 abort');
+      controller.abort('timeout');
+    }, 10000); // 10 秒超时
     
-    const response = await fetch(`${backendUrl}/health`, {
+    console.log('[LLM-Proxy] 📤 发起 health check 请求...');
+    const fetchPromise = fetch(`${backendUrl}/health`, {
       method: 'GET',
       signal: controller.signal
     });
+    
+    const response = await fetchPromise;
     
     clearTimeout(timeoutId);
     
@@ -91,13 +100,17 @@ async function checkBackendAvailable(): Promise<boolean> {
     if (available) {
       console.log('[LLM-Proxy] ✅ 后端服务可用');
     } else {
-      console.warn('[LLM-Proxy] ⚠️ 后端服务响应异常');
+      console.warn('[LLM-Proxy] ⚠️ 后端服务响应异常, status:', response.status);
     }
     
     return available;
-  } catch (error) {
+  } catch (error: any) {
     backendHealthCache = { available: false, checkedAt: now, backendUrl };
-    console.warn('[LLM-Proxy] ❌ 后端服务不可用', error);
+    console.warn('[LLM-Proxy] ❌ 后端服务不可用', {
+      name: error?.name,
+      message: error?.message,
+      stack: error?.stack?.slice(0, 500)
+    });
     return false;
   }
 }
