@@ -6,3 +6,4 @@ dev-dist/sw.js
 node_modules/
 .aider*
 .trae/
+.worktrees/
