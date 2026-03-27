@@ -182,6 +182,57 @@ export async function activate(ctx) {
   }
 
   try {
+    const STATE_KEY = "ui.roleUserBlockBackground";
+    const LS_KEY = "zion.roleUserBlockBackground";
+    const apply = (enabled) => {
+      try {
+        document.documentElement.setAttribute("data-role-user-block-bg", enabled ? "1" : "0");
+      } catch {}
+    };
+    const readStored = () => {
+      try {
+        const v = localStorage.getItem(LS_KEY);
+        if (v === "0" || v === "false") return false;
+        if (v === "1" || v === "true") return true;
+      } catch {}
+      return true;
+    };
+
+    const init = readStored();
+    window.zion.state.set(STATE_KEY, init);
+    apply(init);
+    const sub = window.zion.state.onDidChange(STATE_KEY, (nv) => apply(!!nv));
+    ctx.subscriptions.push({ dispose() { try { sub.dispose?.(); } catch {} } });
+
+    const setEnabled = window.zion.commands.registerCommand("dev.editor.setUserRoleBlockBackground", (val) => {
+      const b = !!val;
+      try { localStorage.setItem(LS_KEY, b ? "1" : "0"); } catch {}
+      window.zion.state.set(STATE_KEY, b);
+      apply(b);
+      return b;
+    });
+    const toggleEnabled = window.zion.commands.registerCommand("dev.editor.toggleUserRoleBlockBackground", () => {
+      const cur = !!window.zion.state.get(STATE_KEY);
+      return window.zion.commands.executeCommand("dev.editor.setUserRoleBlockBackground", !cur);
+    });
+    ctx.subscriptions.push(setEnabled, toggleEnabled);
+
+    try {
+      const reg = window.zion?.__editorHeaderMenuRegistry;
+      const disp = reg?.register?.({
+        id: "dev.editor.userRoleBlockBackground.headerMenu",
+        title: "User Block Background",
+        section: "Chat",
+        order: 76,
+        kind: "toggle",
+        getChecked: () => !!window.zion.state.get(STATE_KEY),
+        onClick: () => window.zion.commands.executeCommand("dev.editor.toggleUserRoleBlockBackground")
+      });
+      if (disp) ctx.subscriptions.push(disp);
+    } catch {}
+  } catch {}
+
+  try {
     const reg = window.zion?.__editorHeaderMenuRegistry;
     if (reg?.register) {
       const register = (it) => {

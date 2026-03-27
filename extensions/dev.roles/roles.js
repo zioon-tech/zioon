@@ -1,5 +1,5 @@
 import { Prec, RangeSetBuilder } from "@codemirror/state";
-import { Decoration, ViewPlugin, keymap } from "@codemirror/view";
+import { Decoration, ViewPlugin, keymap, gutter, GutterMarker } from "@codemirror/view";
 import { foldService } from "@codemirror/language";
 
 /**
@@ -77,11 +77,11 @@ function getEffectivePrefixes(opts) {
   return normalizePrefixes([...BASE_ROLE_PREFIXES, ...extra, ...readCustomPrefixesFromEnv()]);
 }
 
-/** 计算需要块级高亮的角色（默认为空数组，即不启用任何块级高亮） */
+/** 计算需要块级高亮的角色（默认 ["user"]，可被配置覆盖） */
 function getHighlightBlockRoles(opts) {
   const fromEnv = readHighlightBlockRolesFromEnv();
   let list = Array.isArray(opts?.highlightBlockRoles) ? opts.highlightBlockRoles : fromEnv;
-  list = Array.isArray(list) && list.length ? list : [];
+  list = Array.isArray(list) && list.length ? list : ["user"];
   return normalizePrefixes(list);
 }
 
@@ -103,6 +103,12 @@ function tokenClass(role) {
   return "cm-role-token-user"; // 默认为 user
 }
 
+function blockClass(role) {
+  const r = typeof role === "string" ? role : "";
+  const safe = r.trim().replace(/[^a-zA-Z0-9_-]+/g, "-") || "user";
+  return `cm-role-block cm-role-block-${safe}`;
+}
+
  
 
 /** @param {import('@codemirror/view').EditorView} view @param {string[]} prefixes @param {string[]} highlightBlockRoles @param {RegExp|null} atRegex */
@@ -117,6 +123,38 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
   let pos = Math.max(1, view.viewport.from);
   const endPos = view.viewport.to;
 
+  try {
+    const startLine0 = doc.lineAt(pos).number - 1;
+    const idx = window?.zion?.state?.get?.("roles.index");
+    const blocks = Array.isArray(idx?.blocks) ? idx.blocks : null;
+    const idxPrefixes = Array.isArray(idx?.prefixes) ? idx.prefixes : null;
+    if (blocks && idxPrefixes && idxPrefixes.join("\n") === prefixes.join("\n")) {
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (!b) continue;
+        const s = typeof b.startLine === "number" ? b.startLine : null;
+        const e = typeof b.endLine === "number" ? b.endLine : null;
+        if (s == null || e == null) continue;
+        if (startLine0 >= s && startLine0 <= e) {
+          currentRole = typeof b.role === "string" ? b.role : null;
+          break;
+        }
+      }
+    } else {
+      let scanPos = doc.lineAt(pos).from;
+      for (let k = 0; k < 200 && scanPos > 1; k++) {
+        const prevLine = doc.lineAt(Math.max(1, scanPos - 1));
+        const prevText = doc.sliceString(prevLine.from, prevLine.to);
+        const r = getRoleForLine(prevText, prefixes);
+        if (r) {
+          currentRole = r;
+          break;
+        }
+        scanPos = prevLine.from;
+      }
+    }
+  } catch {}
+
   while (pos <= endPos) {
     const line = doc.lineAt(pos);
     const text = doc.sliceString(line.from, line.to);
@@ -125,12 +163,34 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
     if (roleHere) {
       // 开启新块
       currentRole = roleHere;
+    }
 
-      // 同一位置先添加 line，再添加 mark，避免 RangeSetBuilder 顺序问题
-      if (highlightBlockRoles.includes(currentRole)) {
-        builder.add(line.from, line.from, Decoration.line({ class: "cm-role-user-block" }));
+    const inBlock = !!(currentRole && highlightBlockRoles.includes(currentRole));
+    const shouldStart = !!(roleHere && inBlock);
+    let shouldEnd = false;
+    if (inBlock) {
+      const nextPos = line.to + 1;
+      if (nextPos > doc.length) {
+        shouldEnd = true;
+      } else if (nextPos <= endPos) {
+        try {
+          const nextLine = doc.lineAt(nextPos);
+          const nextText = doc.sliceString(nextLine.from, nextLine.to);
+          const nextRole = getRoleForLine(nextText, prefixes);
+          if (nextRole) shouldEnd = true;
+        } catch {}
       }
+    }
 
+    // 同一位置先添加 line，再添加 mark，避免 RangeSetBuilder 顺序问题
+    if (inBlock) {
+      let cls = blockClass(currentRole);
+      if (shouldStart) cls += " cm-role-block-start";
+      if (shouldEnd) cls += " cm-role-block-end";
+      builder.add(line.from, line.from, Decoration.line({ class: cls }));
+    }
+
+    if (roleHere) {
       // 标记角色前缀为胶囊样式（仅角色词本身，不包含空格）
       // 行首角色 token 额外加 cm-role-token-head
       const tokenLen = roleHere.length;
@@ -139,11 +199,6 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
         line.from + tokenLen,
         Decoration.mark({ class: tokenClass(roleHere) + " cm-role-token-head" })
       );
-    } else {
-      // 在被配置为块级高亮的角色区块内，为后续非角色行添加背景
-      if (currentRole && highlightBlockRoles.includes(currentRole)) {
-        builder.add(line.from, line.from, Decoration.line({ class: "cm-role-user-block" }));
-      }
     }
 
     // 如果提供了 @role 正则，则在当前行内查找所有内联 @role 并标记（支持自定义前缀）
@@ -274,6 +329,61 @@ function buildRolesIndexFromState(state, prefixes) {
   } catch {
     return null;
   }
+}
+
+class RoleRailMarker extends GutterMarker {
+  constructor(role) {
+    super();
+    this.role = role;
+  }
+  toDOM() {
+    const div = document.createElement("div");
+    div.className = `zion-role-rail zion-role-rail-${this.role}`;
+    return div;
+  }
+}
+
+const userRailMarker = new RoleRailMarker("user");
+const assistantRailMarker = new RoleRailMarker("assistant");
+
+function rolesRailGutter(prefixes, highlightBlockRoles) {
+  return gutter({
+    class: "zion-gutter-role-rail",
+    lineMarker: (view, line) => {
+      try {
+        const lineNo = view.state.doc.lineAt(line.from).number - 1;
+        const idx = window?.zion?.state?.get?.("roles.index");
+        const blocks = Array.isArray(idx?.blocks) ? idx.blocks : null;
+        if (blocks) {
+          for (let i = blocks.length - 1; i >= 0; i--) {
+            const b = blocks[i];
+            if (!b) continue;
+            const s = typeof b.startLine === "number" ? b.startLine : null;
+            const e = typeof b.endLine === "number" ? b.endLine : null;
+            if (s == null || e == null) continue;
+            if (lineNo >= s && lineNo <= e) {
+              if (b.role === "user") return userRailMarker;
+              if (b.role === "assistant") return assistantRailMarker;
+              break;
+            }
+          }
+          return null;
+        }
+        let scanPos = line.from;
+        let currentRole = null;
+        for (let k = 0; k < 800 && scanPos > 1; k++) {
+          const prevLine = view.state.doc.lineAt(Math.max(1, scanPos - 1));
+          const r = getRoleForLine(prevLine.text, prefixes);
+          if (r) { currentRole = r; break; }
+          scanPos = prevLine.from;
+        }
+        if (!currentRole) currentRole = "user";
+        if (currentRole === "user") return userRailMarker;
+        if (currentRole === "assistant") return assistantRailMarker;
+      } catch {}
+      return null;
+    }
+  });
 }
 
 function rolesView(opts = {}) {
@@ -497,5 +607,5 @@ export function roles(opts = {}) {
     }
   });
 
-  return [navKeymap, foldExt, rolesView(opts)];
+  return [rolesView(opts), Prec.highest(rolesRailGutter(prefixes, getHighlightBlockRoles(opts))), navKeymap, foldExt];
 }

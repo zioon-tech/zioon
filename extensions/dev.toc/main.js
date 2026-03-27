@@ -654,7 +654,7 @@ export async function activate(ctx) {
         tocUI.panel.style.top = "0";
         tocUI.panel.style.bottom = "0";
         tocUI.panel.style.height = "100%";
-        tocUI.panel.style.zIndex = "2";
+        tocUI.panel.style.zIndex = "120";
 
         edEl.style.flex = "1 1 auto";
         // restore previous editor inline width if any; otherwise let width-mode rules apply

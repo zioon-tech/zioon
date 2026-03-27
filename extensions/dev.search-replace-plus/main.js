@@ -151,45 +151,5 @@ export async function activate(ctx) {
   window.zion.commands.registerCommand("dev.srp.acceptAllFiles", () => runAcrossFiles("accept"));
   window.zion.commands.registerCommand("dev.srp.revertAllFiles", () => runAcrossFiles("revert"));
 
-  // Add context menu entries
-  try {
-    ctx.subscriptions.push(
-      window.zion.menus.register("editor/context", {
-        command: "dev.srp.acceptAll",
-        title: "Accept all Search/Replace blocks",
-        when: "editorFocus"
-      })
-    );
-    ctx.subscriptions.push(
-      window.zion.menus.register("editor/context", {
-        command: "dev.srp.revertAll",
-        title: "Revert all Search/Replace blocks",
-        when: "editorFocus"
-      })
-    );
-    ctx.subscriptions.push(
-      window.zion.menus.register("editor/context", {
-        command: "dev.srp.toggleDiffAll",
-        title: "Toggle Diff (all blocks)",
-        when: "editorFocus"
-      })
-    );
-    // FS entries
-    ctx.subscriptions.push(
-      window.zion.menus.register("editor/context", {
-        command: "dev.srp.acceptAllFiles",
-        title: "Accept in granted files (FS)",
-        when: "editorFocus"
-      })
-    );
-    ctx.subscriptions.push(
-      window.zion.menus.register("editor/context", {
-        command: "dev.srp.revertAllFiles",
-        title: "Revert in granted files (FS)",
-        when: "editorFocus"
-      })
-    );
-  } catch (e) {
-    console.warn("[dev.srp] context menu registration failed", e);
-  }
+  // Note: context menu entries removed — accept/revert is now handled by gutter-actions plugin
 }

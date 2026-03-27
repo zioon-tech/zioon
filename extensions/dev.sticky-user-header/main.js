@@ -158,10 +158,12 @@ function ensureStyle() {
   const style = document.createElement("style");
   style.id = id;
   style.textContent = `
-.zion-cm-sticky-user-header{position:absolute;top:0;left:0;right:0;z-index:95;background:var(--bg);border-bottom:none;color:var(--fg);font-family:var(--font-sans);font-size:16px;line-height:1.7;box-shadow:0 1px 2px 0 rgba(0,0,0,0.05);clip-path:inset(0 0 -10px 0);opacity:0.98;display:flex;flex-direction:column;gap:0;padding:0}
+.zion-cm-sticky-user-header{position:absolute;top:0;left:0;right:0;z-index:95;background:var(--bg);border-bottom:none;color:var(--fg);font-family:var(--font-sans);font-size:var(--editor-font-size);line-height:var(--editor-line-height);letter-spacing:0.01em;box-shadow:0 1px 2px 0 rgba(0,0,0,0.05);clip-path:inset(0 0 -10px 0);opacity:0.98;display:flex;flex-direction:column;gap:0;padding:0}
 
 .zion-cm-sticky-user-header.is-empty{display:none}
-.zion-cm-sticky-user-header .zion-sticky-line{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;padding:2px 8px}
+.zion-cm-sticky-user-header .zion-sticky-content{display:flex;flex-direction:column;min-width:0}
+.zion-cm-sticky-user-header .zion-sticky-line{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;padding:2px 0;position:relative}
+.zion-cm-sticky-user-header .zion-sticky-rail{position:absolute;top:0;bottom:0;width:3px;left:calc(var(--zion-sticky-gutters-left,0px) - var(--zion-sticky-text-left,0px));pointer-events:none}
 .zion-cm-sticky-user-header .zion-sticky-badge{display:inline-flex;flex:0 0 auto;padding:1px 6px;border-radius:6px;font-size:0.8em;font-weight:500;vertical-align:middle;margin-right:6px;border:none}
 .zion-cm-sticky-user-header .zion-sticky-text{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
@@ -215,6 +217,10 @@ function stickyUserHeaderView() {
         this.headerEl = document.createElement("div");
         this.headerEl.className = "zion-cm-sticky-user-header is-empty";
         this.headerEl.dataset.ownerId = this.ownerId;
+
+        this.contentEl = document.createElement("div");
+        this.contentEl.className = "zion-sticky-content";
+        this.headerEl.appendChild(this.contentEl);
         
         this.headerEl.addEventListener("click", (e) => {
           const lineEl = e.target?.closest?.("[data-pos]");
@@ -331,7 +337,7 @@ function stickyUserHeaderView() {
         if (key === this.lastKey) return;
         this.lastKey = key;
 
-        this.headerEl.textContent = "";
+        this.contentEl.textContent = "";
         if (!items.length) {
           this.headerEl.classList.add("is-empty");
           this.updateHeight(0);
@@ -342,6 +348,9 @@ function stickyUserHeaderView() {
           const line = document.createElement("div");
           line.className = "zion-sticky-line";
           line.setAttribute("data-pos", String(Number(it.pos) || 0));
+
+          const rail = document.createElement("span");
+          rail.className = `zion-sticky-rail zion-sticky-rail-${it.role}`;
 
           const badge = document.createElement("span");
           badge.className = "zion-sticky-badge";
@@ -355,9 +364,10 @@ function stickyUserHeaderView() {
           const preview = it.preview || "(empty)";
           text.textContent = preview.length > 140 ? preview.slice(0, 137) + "..." : preview;
 
+          line.appendChild(rail);
           line.appendChild(badge);
           line.appendChild(text);
-          this.headerEl.appendChild(line);
+          this.contentEl.appendChild(line);
         }
         this.headerEl.classList.remove("is-empty");
 
@@ -372,39 +382,69 @@ function stickyUserHeaderView() {
           const root = this.root;
           const header = this.headerEl;
           const scroller = this.view?.scrollDOM || root?.querySelector?.(".cm-scroller");
-          if (!root || !header || !scroller) return;
+          const content = root?.querySelector?.(".cm-content");
+          if (!root || !header || !this.contentEl || !scroller) return;
 
           const rootRect = root.getBoundingClientRect();
-          const scrollerRect = scroller.getBoundingClientRect();
-          
-          // Get the content width by measuring the actual editor content area
-          // In standard/wide modes, scroller has padding for centering
-          // We need to calculate the actual content width
-          const scrollerStyle = getComputedStyle(scroller);
-          const scrollerWidth = scrollerRect.width;
-          
-          // Calculate padding values
-          let paddingLeft = 0;
-          let paddingRight = 0;
+          let textLeft = 0;
+          let textRight = 0;
+          if (content) {
+            const contentRect = content.getBoundingClientRect();
+            const contentStyle = getComputedStyle(content);
+            let pl = 0;
+            let pr = 0;
+            try {
+              pl = parseFloat(contentStyle.paddingLeft) || 0;
+              pr = parseFloat(contentStyle.paddingRight) || 0;
+            } catch {}
+            textLeft = contentRect.left + pl;
+            textRight = contentRect.right - pr;
+          } else {
+            const scrollerRect = scroller.getBoundingClientRect();
+            const scrollerStyle = getComputedStyle(scroller);
+            let paddingLeft = 0;
+            let paddingRight = 0;
+            try {
+              paddingLeft = parseFloat(scrollerStyle.paddingLeft) || 0;
+              paddingRight = parseFloat(scrollerStyle.paddingRight) || 0;
+            } catch {}
+
+            const clientWidth = Number(scroller.clientWidth) || scrollerRect.width;
+            const visibleContentLeft = scrollerRect.left + paddingLeft;
+            const visibleContentRight = scrollerRect.left + clientWidth - paddingRight;
+
+            const gutters = root?.querySelector?.(".cm-gutters");
+            textLeft = visibleContentLeft;
+            if (gutters) {
+              const guttersRect = gutters.getBoundingClientRect();
+              if (Number.isFinite(guttersRect.right)) textLeft = Math.max(textLeft, guttersRect.right);
+            }
+            textRight = visibleContentRight;
+          }
+
+          const left = Math.round(textLeft - rootRect.left);
+          const width = Math.round(Math.max(0, textRight - textLeft));
+          let guttersLeft = 0;
           try {
-            paddingLeft = parseFloat(scrollerStyle.paddingLeft) || 0;
-            paddingRight = parseFloat(scrollerStyle.paddingRight) || 0;
+            const gutters = root?.querySelector?.(".cm-gutters");
+            if (gutters) {
+              const guttersRect = gutters.getBoundingClientRect();
+              guttersLeft = Math.round(guttersRect.left - rootRect.left);
+            }
           } catch {}
-          
-          // Content width = scroller width - padding (accounting for centering)
-          const contentWidth = scrollerWidth - paddingLeft - paddingRight;
-          
-          // Left position = scroller's left offset + left padding
-          const left = Math.round(scrollerRect.left - rootRect.left) + Math.round(paddingLeft);
-          
-          // Width = content width (scroller width minus padding)
-          const width = Math.round(contentWidth);
+
+          header.style.left = "0px";
+          header.style.right = "0px";
+          header.style.width = "auto";
 
           if (Number.isFinite(left) && Number.isFinite(width) && width > 0) {
-            header.style.left = `${Math.max(0, left)}px`;
-            header.style.right = "auto";
-            header.style.width = `${width}px`;
-            header.style.boxSizing = "border-box";
+            this.contentEl.style.marginLeft = `${Math.max(0, left)}px`;
+            this.contentEl.style.width = `${width}px`;
+            this.contentEl.style.boxSizing = "border-box";
+            try {
+              this.contentEl.style.setProperty("--zion-sticky-text-left", `${Math.max(0, left)}px`);
+              this.contentEl.style.setProperty("--zion-sticky-gutters-left", `${Math.max(0, guttersLeft)}px`);
+            } catch {}
           }
 
 

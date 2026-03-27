@@ -22,7 +22,7 @@ import { EditorView as CMEditorView } from "@codemirror/view";
 import { showMinimap } from "@replit/codemirror-minimap";
 import { highlightSelectionMatches } from "@codemirror/search";
 import { linkDetector, linkStyles } from "./link-detector";
-import { autocompleteTheme } from "./AutocompleteTheme";
+import { autocompleteTheme } from "./extensions/autocompletion/AutocompleteTheme";
 import { insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import { selectionToolbarExtension } from "./extensions/selection-toolbar";
 

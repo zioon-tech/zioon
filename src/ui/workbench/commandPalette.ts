@@ -22,6 +22,7 @@ type PaletteItem =
       title: string;
       updatedAt?: number;
       open: boolean;
+      path?: string;
     };
 
 function safeText(v: any): string {
@@ -59,17 +60,19 @@ function injectStyles() {
   style.textContent = `
 .zion-cmdk-mask{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.38);display:none;align-items:flex-start;justify-content:center;padding-top:12vh}
 :root[data-theme="light"] .zion-cmdk-mask{background:rgba(0,0,0,.18)}
-.zion-cmdk-panel{width:min(680px,calc(100vw - 24px));max-height:min(520px,calc(100vh - 24px));background:var(--panel,var(--bg,#1e1e1e));border:1px solid var(--border,#3c3c3c);border-radius:10px;box-shadow:0 18px 70px rgba(0,0,0,.45);overflow:hidden;font-family:var(--font-sans,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif);font-size:12px}
+.zion-cmdk-panel{width:min(680px,calc(100vw - 24px));max-height:min(520px,calc(100vh - 24px));background:var(--panel,var(--bg,#1e1e1e));border:1px solid var(--border,#3c3c3c);border-radius:10px;box-shadow:0 18px 70px rgba(0,0,0,.45);overflow:hidden;font-family:var(--font-sans,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif);font-size:12px;display:flex;flex-direction:column}
 .zion-cmdk-header{display:flex;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--border,#3c3c3c)}
 .zion-cmdk-input{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--fg,#cccccc);font-size:13px}
 .zion-cmdk-hint{flex:0 0 auto;opacity:.65;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:11px;white-space:nowrap}
-.zion-cmdk-list{max-height:440px;overflow:auto;padding:6px;scrollbar-color:transparent transparent;scrollbar-width:thin}
+.zion-cmdk-footer{display:flex;align-items:center;justify-content:flex-end;padding:8px 12px;border-top:1px solid var(--border,#3c3c3c)}
+.zion-cmdk-list{flex:1;min-height:0;overflow:auto;padding:6px;scrollbar-color:transparent transparent;scrollbar-width:thin}
 .zion-cmdk-list:hover{scrollbar-color:var(--scrollbar-thumb,var(--border,#44475a)) transparent}
 .zion-cmdk-list::-webkit-scrollbar{width:10px;height:10px}
 .zion-cmdk-list::-webkit-scrollbar-track{background:transparent}
 .zion-cmdk-list::-webkit-scrollbar-thumb{background:transparent;border-radius:6px;border:2px solid transparent;background-clip:content-box;transition:background .15s ease}
 .zion-cmdk-list:hover::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb,var(--border,#44475a));background-clip:content-box}
 .zion-cmdk-item{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;cursor:pointer;color:var(--fg,#cccccc);transition:background-color .1s ease}
+.zion-cmdk-item.has-path{align-items:flex-start}
 .zion-cmdk-item:hover{background:rgba(98,114,164,.10)}
 :root[data-theme="light"] .zion-cmdk-item:hover{background:rgba(59,130,246,.10)}
 .zion-cmdk-item.is-active{background:var(--role-user-bg,rgba(98,114,164,.18))}
@@ -77,6 +80,9 @@ function injectStyles() {
 .zion-cmdk-title{font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .zion-cmdk-sub{display:flex;gap:8px;align-items:center;margin-top:2px;opacity:.72}
 .zion-cmdk-desc{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.zion-cmdk-path{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-top:2px;font-size:11px}
+.zion-cmdk-path-left{opacity:.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.zion-cmdk-path-right{flex:0 0 auto;opacity:.55;white-space:nowrap;margin-left:auto}
 .zion-cmdk-id{opacity:.7;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:11px;white-space:nowrap}
 .zion-cmdk-right{flex:0 0 auto;display:flex;gap:8px;align-items:center}
 .zion-cmdk-kbd{padding:2px 6px;border:1px solid var(--border,#3c3c3c);border-radius:6px;opacity:.9;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:11px}
@@ -141,16 +147,53 @@ function fmtRelTime(ts?: number): string {
   return `${dd}d`;
 }
 
-function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?: number }> {
+function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?: number; path?: string }> {
   try {
     const raw = (window as any).zion?.state?.get?.("sessions.catalog");
     if (!Array.isArray(raw)) return [];
+
+    // Build tree for path computation
+    const treeFromState = (window as any).zion?.state?.get?.("sessions.treeMem");
+    const tree = treeFromState && treeFromState.type === "folder" ? treeFromState : (() => {
+      try { const v = JSON.parse(localStorage.getItem("zion.sessions.tree") || "null"); return v ?? null; } catch { return null; }
+    })();
+
+    const computeSessionPath = (sessionId: string, sessionTitle: string): string => {
+      if (!tree) return sessionTitle;
+      const parts: string[] = [sessionTitle];
+      let curId: string | null = sessionId;
+      let guard = 0;
+      while (curId && guard++ < 64) {
+        let found: any = null;
+        let parent: any = null;
+        const dfs = (node: any, p: any) => {
+          if (!node || found) return;
+          if (node.id === curId) { found = node; parent = p; return; }
+          if (node.type === "folder" && Array.isArray(node.children)) {
+            for (const ch of node.children) { dfs(ch, node); if (found) return; }
+          }
+        };
+        dfs(tree, null);
+        if (!parent || parent.type !== "folder") break;
+        if (parent.id === "root") break;
+        parts.unshift(String(parent.title || "Folder").trim() || "Folder");
+        curId = parent.id;
+      }
+      parts.unshift(String(tree?.title || "Sessions").trim() || "Sessions");
+      return parts.join(" / ");
+    };
+
     return raw
-      .map((x: any) => ({
-        id: safeText(x?.id || ""),
-        title: safeText(x?.title || x?.id || ""),
-        updatedAt: typeof x?.updatedAt === "number" ? x.updatedAt : undefined
-      }))
+      .map((x: any) => {
+        const id = safeText(x?.id || "");
+        const title = safeText(x?.title || x?.id || "");
+        return {
+          id,
+          title,
+          updatedAt: typeof x?.updatedAt === "number" ? x.updatedAt : undefined,
+          path: id ? computeSessionPath(id, title) : undefined
+        };
+      })
       .filter(x => !!x.id);
   } catch {
     return [];
@@ -357,20 +400,23 @@ export function initCommandPalette() {
   hint.textContent = "↑↓ 选择 · Enter 执行 · Esc 关闭";
 
   header.appendChild(input);
-  header.appendChild(hint);
+  const footer = document.createElement("div");
+  footer.className = "zion-cmdk-footer";
+  footer.appendChild(hint);
 
   const list = document.createElement("div");
   list.className = "zion-cmdk-list";
 
   panel.appendChild(header);
   panel.appendChild(list);
+  panel.appendChild(footer);
   mask.appendChild(panel);
   document.body.appendChild(mask);
 
   let open = false;
   let lastActive: HTMLElement | null = null;
   let commands: CommandMeta[] = [];
-  let sessions: Array<{ id: string; title: string; updatedAt?: number }> = [];
+  let sessions: Array<{ id: string; title: string; updatedAt?: number; path?: string }> = [];
   let visible: PaletteItem[] = [];
   let activeIndex = 0;
   let itemEls: HTMLElement[] = [];
@@ -443,7 +489,7 @@ export function initCommandPalette() {
 
     const openSet = loadOpenSessionIds();
     const cmdItems = commands.map(meta => ({ kind: "command" as const, meta }));
-    const sesItems = sessions.map(s => ({ kind: "session" as const, id: s.id, title: s.title, updatedAt: s.updatedAt, open: openSet.has(s.id) }));
+    const sesItems = sessions.map(s => ({ kind: "session" as const, id: s.id, title: s.title, updatedAt: s.updatedAt, open: openSet.has(s.id), path: s.path }));
 
     const candidates: PaletteItem[] = isCommandMode ? cmdItems : [...sesItems, ...cmdItems];
     let scored: Array<{ item: PaletteItem; score: number; recentRank: number }> = [];
@@ -455,7 +501,10 @@ export function initCommandPalette() {
 
     if (!q) {
       const seen = new Set<string>();
-      for (const key of recent) {
+      // Split recent into sessions and commands so sessions always appear first
+      const recentSesKeys = recent.filter(k => k.startsWith("ses:"));
+      const recentCmdKeys = recent.filter(k => k.startsWith("cmd:"));
+      for (const key of [...recentSesKeys, ...recentCmdKeys]) {
         if (seen.has(key)) continue;
         const m = /^(\w+):(.*)$/.exec(key);
         const kind = m?.[1];
@@ -486,7 +535,7 @@ export function initCommandPalette() {
           scored.push({ item: it, score: score + (recent.includes(key) ? 5 : 0), recentRank: recentRankOf(key) });
         }
       }
-      scored.sort((a, b) => b.score - a.score || a.recentRank - b.recentRank || (a.item.kind === "command" && b.item.kind === "command" ? a.item.meta.title.localeCompare(b.item.meta.title) : a.item.kind.localeCompare(b.item.kind)));
+      scored.sort((a, b) => b.score - a.score || a.recentRank - b.recentRank || (a.item.kind === b.item.kind ? (a.item.kind === "command" ? a.item.meta.title.localeCompare(b.item.meta.title) : a.item.title.localeCompare(b.item.title)) : (a.item.kind === "session" ? -1 : 1)));
       scored = scored.slice(0, 240);
     }
 
@@ -508,6 +557,8 @@ export function initCommandPalette() {
       row.className = "zion-cmdk-item";
       row.dataset.index = String(i);
 
+      if (it.kind === "session" && it.path) row.classList.add("has-path");
+
       const main = document.createElement("div");
       main.className = "zion-cmdk-main";
 
@@ -518,22 +569,34 @@ export function initCommandPalette() {
       const sub = document.createElement("div");
       sub.className = "zion-cmdk-sub";
 
-      const desc = document.createElement("div");
-      desc.className = "zion-cmdk-desc";
-      desc.textContent =
-        it.kind === "command"
-          ? safeText(it.meta.description || "")
-          : (it.open ? "已打开的会话" : "会话") + (it.updatedAt ? ` · ${fmtRelTime(it.updatedAt)} ago` : "");
-
-      const id = document.createElement("div");
-      id.className = "zion-cmdk-id";
-      id.textContent = it.kind === "command" ? it.meta.id : it.id;
-
-      if (desc.textContent) sub.appendChild(desc);
-      sub.appendChild(id);
-
-      main.appendChild(title);
-      main.appendChild(sub);
+      if (it.kind === "command") {
+        const desc = document.createElement("div");
+        desc.className = "zion-cmdk-desc";
+        desc.textContent = safeText(it.meta.description || "");
+        const id = document.createElement("div");
+        id.className = "zion-cmdk-id";
+        id.textContent = it.meta.id;
+        if (desc.textContent) sub.appendChild(desc);
+        sub.appendChild(id);
+        main.appendChild(title);
+        main.appendChild(sub);
+      } else {
+        main.appendChild(title);
+        // path row: left=path, right=status+time+id
+        const pathRow = document.createElement("div");
+        pathRow.className = "zion-cmdk-path";
+        const pathLeft = document.createElement("span");
+        pathLeft.className = "zion-cmdk-path-left";
+        pathLeft.textContent = it.path || "";
+        const pathRight = document.createElement("span");
+        pathRight.className = "zion-cmdk-path-right";
+        pathRight.textContent = (it.open ? "已打开的会话" : "会话") + (it.updatedAt ? ` · ${fmtRelTime(it.updatedAt)} ago` : "") + ` · ${it.id}`;
+        pathLeft.title = it.path || "";
+        pathRight.title = pathRight.textContent;
+        pathRow.appendChild(pathLeft);
+        pathRow.appendChild(pathRight);
+        main.appendChild(pathRow);
+      }
 
       const right = document.createElement("div");
       right.className = "zion-cmdk-right";

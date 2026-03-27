@@ -342,7 +342,8 @@ class Registry {
         submenu: hasKids ? kids : undefined,
         order: it.order,
         pinned: it.pinned,
-        group: it.group
+        group: it.group,
+        dynamicTitle: it.dynamicTitle
       });
     }
     return out;
@@ -367,6 +368,7 @@ class Registry {
     menu.tabIndex = -1;
 
     let activeCloser: (() => void) | null = null;
+    let activeDropTarget: HTMLElement | null = null;
 
     items = this.sortMenuItems(items, menuId);
 
@@ -407,30 +409,43 @@ class Registry {
       btn.className = "zion-context-menu-item";
       const span = document.createElement("span");
       span.textContent = it.title || it.command || "";
+      // 支持动态标题
+      if (typeof it.dynamicTitle === "function") {
+        try {
+          const dt = it.dynamicTitle();
+          if (dt !== null) span.textContent = dt;
+        } catch {}
+      }
       btn.appendChild(span);
       btn.setAttribute("role", "menuitem");
 
       if (hasKids) {
         btn.setAttribute("aria-haspopup", "menu");
         btn.setAttribute("aria-expanded", "false");
-        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu, menuId);
+        const submenuId = `${menuId}:${it.command || 'submenu'}`;
+        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu, submenuId);
         submenu.classList.add("zion-context-submenu");
         submenu.style.position = "fixed";
         submenu.style.display = "none";
+        (submenu as any).dataset.menuId = submenuId;
 
         let closeTimer: number | null = null;
+        let openTimer: number | null = null;
+
         const cancelClose = () => {
           if (closeTimer !== null) {
             clearTimeout(closeTimer);
             closeTimer = null;
           }
         };
+
         const doClose = () => {
           cancelClose();
           btn.setAttribute("aria-expanded", "false");
           submenu.style.display = "none";
           if (activeCloser === doClose) activeCloser = null;
         };
+
         const scheduleClose = () => {
           cancelClose();
           closeTimer = window.setTimeout(() => {
@@ -482,8 +497,17 @@ class Registry {
           }
         };
 
-        row.addEventListener("mouseenter", open);
-        row.addEventListener("mouseleave", scheduleClose);
+        row.addEventListener("mouseenter", () => {
+          if (openTimer !== null) clearTimeout(openTimer);
+          openTimer = window.setTimeout(open, 150);
+        });
+        row.addEventListener("mouseleave", () => {
+          if (openTimer !== null) {
+            clearTimeout(openTimer);
+            openTimer = null;
+          }
+          scheduleClose();
+        });
         submenu.addEventListener("mouseenter", cancelClose);
         submenu.addEventListener("mouseleave", scheduleClose);
 
@@ -496,7 +520,7 @@ class Registry {
           try {
             this.executeCommand(cmd);
             // 记录点击统计
-            const menuKey = `editor/context:${cmd}`;
+            const menuKey = `${menuId}:${cmd}`;
             if (this.menuUsageStats[menuKey]) {
               this.menuUsageStats[menuKey].clickCount++;
               this.menuUsageStats[menuKey].lastClickTime = Date.now();
@@ -547,21 +571,49 @@ class Registry {
         });
 
         row.addEventListener("dragstart", (e: DragEvent) => {
-          row.style.opacity = "0.5";
+          e.stopPropagation();
+          row.classList.add("is-dragging");
           dragZone.style.cursor = "grabbing";
           if (e.dataTransfer) {
             e.dataTransfer.effectAllowed = "move";
-            e.dataTransfer.setData("text/plain", i.toString());
+            const dragToken = it.command ? `cmd:${it.command}` : `idx:${i}`;
+            e.dataTransfer.setData("text/plain", dragToken);
+            // 创建自定义拖拽图像，避免浏览器默认的半透明效果
+            const dragImage = row.cloneNode(true) as HTMLElement;
+            dragImage.style.position = "absolute";
+            dragImage.style.top = "-1000px";
+            dragImage.style.left = "-1000px";
+            dragImage.style.opacity = "1";
+            dragImage.style.pointerEvents = "none";
+            dragImage.classList.remove("is-dragging");
+            document.body.appendChild(dragImage);
+            e.dataTransfer.setDragImage(dragImage, 0, 0);
+            // 延迟移除，确保拖拽图像已被使用
+            setTimeout(() => dragImage.remove(), 0);
           }
         });
 
         row.addEventListener("dragend", () => {
-          row.style.opacity = "1";
+          row.classList.remove("is-dragging");
           dragZone.style.cursor = "grab";
+          if (activeDropTarget) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+            activeDropTarget = null;
+          }
         });
 
         row.addEventListener("dragover", (e: DragEvent) => {
           e.preventDefault();
+          const targetRow = e.currentTarget as HTMLElement;
+          const rect = targetRow.getBoundingClientRect();
+          const before = e.clientY < rect.top + rect.height / 2;
+          targetRow.classList.add("is-drop-target");
+          targetRow.classList.toggle("drop-before", before);
+          targetRow.classList.toggle("drop-after", !before);
+          if (activeDropTarget && activeDropTarget !== targetRow) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+          }
+          activeDropTarget = targetRow;
           if (e.dataTransfer) {
             e.dataTransfer.dropEffect = "move";
           }
@@ -570,33 +622,60 @@ class Registry {
         row.addEventListener("dragenter", (e: DragEvent) => {
           const targetRow = (e.currentTarget as HTMLElement);
           if (!targetRow.querySelector(".zion-drag-zone")) return;
+          if (activeDropTarget && activeDropTarget !== targetRow) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+          }
+          activeDropTarget = targetRow;
           targetRow.classList.add("is-drop-target");
         });
 
         row.addEventListener("dragleave", (e: DragEvent) => {
           const targetRow = (e.currentTarget as HTMLElement);
-          targetRow.classList.remove("is-drop-target");
+          const rt = (e as any).relatedTarget as Node | null;
+          if (rt && targetRow.contains(rt)) return;
+          targetRow.classList.remove("is-drop-target", "drop-before", "drop-after");
+          if (activeDropTarget === targetRow) activeDropTarget = null;
         });
 
         row.addEventListener("drop", (e: DragEvent) => {
+          e.stopPropagation();
           e.preventDefault();
           const targetRow = (e.currentTarget as HTMLElement);
-          targetRow.classList.remove("is-drop-target");
+          const dropAfter = targetRow.classList.contains("drop-after");
+          targetRow.classList.remove("is-drop-target", "drop-before", "drop-after");
+          if (activeDropTarget === targetRow) activeDropTarget = null;
 
-          const fromIndex = parseInt(e.dataTransfer?.getData("text/plain") || "-1");
+          const dragToken = e.dataTransfer?.getData("text/plain") || "";
+          let fromIndex = -1;
+          if (dragToken.startsWith("cmd:")) {
+            const fromCommand = dragToken.slice(4);
+            fromIndex = items.findIndex(item => item.command === fromCommand);
+          } else if (dragToken.startsWith("idx:")) {
+            fromIndex = parseInt(dragToken.slice(4));
+          } else {
+            fromIndex = items.findIndex(item => item.command === dragToken);
+          }
           const toIndex = i;
+          let insertIndex = toIndex + (dropAfter ? 1 : 0);
+          if (insertIndex > pinnedCount) insertIndex = pinnedCount;
 
-          if (fromIndex >= 0 && fromIndex !== toIndex && toIndex < pinnedCount) {
-            // 交换位置
-            const temp = items[fromIndex];
+          if (
+            fromIndex >= 0 &&
+            fromIndex < pinnedCount &&
+            fromIndex !== toIndex &&
+            toIndex < pinnedCount &&
+            isPinnedItem(items[fromIndex])
+          ) {
+            const moved = items[fromIndex];
             items.splice(fromIndex, 1);
-            items.splice(toIndex, 0, temp);
+            if (fromIndex < insertIndex) insertIndex--;
+            items.splice(insertIndex, 0, moved);
 
             // 更新 customOrder
             for (let j = 0; j < pinnedCount; j++) {
               const item = items[j];
               if (item.command) {
-                const menuKey = `editor/context:${item.command}`;
+                const menuKey = `${menuId}:${item.command}`;
                 if (this.menuUsageStats[menuKey]) {
                   this.menuUsageStats[menuKey].customOrder = j * 10;
                   this.menuUsageStats[menuKey].pinned = true;
@@ -609,7 +688,7 @@ class Registry {
 
             // 重新渲染菜单
             menu.innerHTML = "";
-            this.rebuildMenuItems(menu, items, closeMenu, items);
+            this.rebuildMenuItems(menu, items, closeMenu, items, menuId);
           }
         });
 
@@ -628,7 +707,7 @@ class Registry {
       // 更新置顶按钮状态
       const updatePinButtonState = () => {
         if (!canTogglePin) return;
-        const menuKey = `editor/context:${cmd}`;
+        const menuKey = `${menuId}:${cmd}`;
         const stats = this.menuUsageStats[menuKey];
         const currentPinned = typeof stats?.pinned === "boolean" ? stats.pinned : !!it.pinned || isDefaultPinned;
 
@@ -668,7 +747,7 @@ class Registry {
           return;
         }
 
-        const menuKey = `editor/context:${cmd}`;
+        const menuKey = `${menuId}:${cmd}`;
 
         if (!this.menuUsageStats[menuKey]) {
           this.menuUsageStats[menuKey] = {
@@ -681,18 +760,27 @@ class Registry {
         // 切换置顶状态
         this.menuUsageStats[menuKey].pinned = !this.menuUsageStats[menuKey].pinned;
 
-        // 如果置顶，设置一个合理的order
+        // 如果置顶，计算一个合适的 order（放在现有置顶项的最后）
         if (this.menuUsageStats[menuKey].pinned) {
-          this.menuUsageStats[menuKey].customOrder = this.menuUsageStats[menuKey].customOrder ?? 50;
+          // 找出当前所有置顶项的最大 customOrder
+          let maxOrder = -1;
+          for (const key in this.menuUsageStats) {
+            const stats = this.menuUsageStats[key];
+            if (stats.pinned && typeof stats.customOrder === 'number') {
+              maxOrder = Math.max(maxOrder, stats.customOrder);
+            }
+          }
+          // 新置顶项放在最后
+          this.menuUsageStats[menuKey].customOrder = maxOrder + 10;
         }
 
         // 保存到 localStorage
         (this as any).saveMenuUsageStats();
 
         // 重新渲染菜单
-        const sorted = this.sortMenuItems(items, "editor/context");
+        const sorted = this.sortMenuItems(items, menuId);
         menu.innerHTML = "";
-        this.rebuildMenuItems(menu, sorted, closeMenu, sorted);
+        this.rebuildMenuItems(menu, sorted, closeMenu, sorted, menuId);
       });
 
       // 防止置顶按钮触发菜单点击
@@ -709,11 +797,11 @@ class Registry {
   }
 
   // 重新构建菜单项（用于拖拽后刷新）
-  private rebuildMenuItems(menu: HTMLDivElement, items: MenuItem[], closeMenu: () => void, filtered: MenuItem[]): void {
+  private rebuildMenuItems(menu: HTMLDivElement, items: MenuItem[], closeMenu: () => void, filtered: MenuItem[], menuId: string = "editor/context"): void {
     const isPinnedItem = (item: MenuItem) => {
       const cmd = item.command || "";
       if (!cmd) return false;
-      const menuKey = `editor/context:${cmd}`;
+      const menuKey = `${menuId}:${cmd}`;
       const stats = this.menuUsageStats[menuKey];
       if (typeof stats?.pinned === "boolean") return stats.pinned;
       return !!item.pinned || this.DEFAULT_PINNED_COMMANDS.includes(cmd);
@@ -730,6 +818,7 @@ class Registry {
     if (dragAreaSeparator) {
       dragAreaSeparator.className = "zion-drag-area-separator";
     }
+    let activeDropTarget: HTMLElement | null = null;
 
     for (let i = 0; i < filtered.length; i++) {
       const it = filtered[i];
@@ -747,17 +836,24 @@ class Registry {
       btn.className = "zion-context-menu-item";
       const span = document.createElement("span");
       span.textContent = it.title || it.command || "";
+      // 支持动态标题
+      if (typeof it.dynamicTitle === "function") {
+        try {
+          const dt = it.dynamicTitle();
+          if (dt !== null) span.textContent = dt;
+        } catch {}
+      }
       btn.appendChild(span);
       btn.setAttribute("role", "menuitem");
 
       if (hasKids) {
-        // ... 子菜单处理逻辑（与之前相同）
-        btn.setAttribute("aria-haspopup", "menu");
-        btn.setAttribute("aria-expanded", "false");
-        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu);
+        // 为二级菜单生成唯一的 menuId，避免与一级菜单的 menuKey 冲突
+        const subMenuId = `${menuId}:${it.command || 'submenu'}`;
+        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu, subMenuId);
         submenu.classList.add("zion-context-submenu");
         submenu.style.position = "fixed";
         submenu.style.display = "none";
+        (submenu as any).dataset.menuId = subMenuId;
         row.appendChild(submenu);
       } else {
         btn.onclick = () => {
@@ -766,7 +862,7 @@ class Registry {
           try {
             this.executeCommand(cmd);
             // 记录点击统计
-            const menuKey = `editor/context:${cmd}`;
+            const menuKey = `${menuId}:${cmd}`;
             if (this.menuUsageStats[menuKey]) {
               this.menuUsageStats[menuKey].clickCount++;
               this.menuUsageStats[menuKey].lastClickTime = Date.now();
@@ -818,21 +914,49 @@ class Registry {
         });
 
         row.addEventListener("dragstart", (e: DragEvent) => {
-          row.style.opacity = "0.5";
+          e.stopPropagation();
+          row.classList.add("is-dragging");
           dragZone.style.cursor = "grabbing";
           if (e.dataTransfer) {
             e.dataTransfer.effectAllowed = "move";
-            e.dataTransfer.setData("text/plain", i.toString());
+            const dragToken = it.command ? `cmd:${it.command}` : `idx:${i}`;
+            e.dataTransfer.setData("text/plain", dragToken);
+            // 创建自定义拖拽图像，避免浏览器默认的半透明效果
+            const dragImage = row.cloneNode(true) as HTMLElement;
+            dragImage.style.position = "absolute";
+            dragImage.style.top = "-1000px";
+            dragImage.style.left = "-1000px";
+            dragImage.style.opacity = "1";
+            dragImage.style.pointerEvents = "none";
+            dragImage.classList.remove("is-dragging");
+            document.body.appendChild(dragImage);
+            e.dataTransfer.setDragImage(dragImage, 0, 0);
+            // 延迟移除，确保拖拽图像已被使用
+            setTimeout(() => dragImage.remove(), 0);
           }
         });
 
         row.addEventListener("dragend", () => {
-          row.style.opacity = "1";
+          row.classList.remove("is-dragging");
           dragZone.style.cursor = "grab";
+          if (activeDropTarget) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+            activeDropTarget = null;
+          }
         });
 
         row.addEventListener("dragover", (e: DragEvent) => {
           e.preventDefault();
+          const targetRow = e.currentTarget as HTMLElement;
+          const rect = targetRow.getBoundingClientRect();
+          const before = e.clientY < rect.top + rect.height / 2;
+          targetRow.classList.add("is-drop-target");
+          targetRow.classList.toggle("drop-before", before);
+          targetRow.classList.toggle("drop-after", !before);
+          if (activeDropTarget && activeDropTarget !== targetRow) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+          }
+          activeDropTarget = targetRow;
           if (e.dataTransfer) {
             e.dataTransfer.dropEffect = "move";
           }
@@ -841,33 +965,60 @@ class Registry {
         row.addEventListener("dragenter", (e: DragEvent) => {
           const targetRow = (e.currentTarget as HTMLElement);
           if (!targetRow.querySelector(".zion-drag-zone")) return;
+          if (activeDropTarget && activeDropTarget !== targetRow) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+          }
+          activeDropTarget = targetRow;
           targetRow.classList.add("is-drop-target");
         });
 
         row.addEventListener("dragleave", (e: DragEvent) => {
           const targetRow = (e.currentTarget as HTMLElement);
-          targetRow.classList.remove("is-drop-target");
+          const rt = (e as any).relatedTarget as Node | null;
+          if (rt && targetRow.contains(rt)) return;
+          targetRow.classList.remove("is-drop-target", "drop-before", "drop-after");
+          if (activeDropTarget === targetRow) activeDropTarget = null;
         });
 
         row.addEventListener("drop", (e: DragEvent) => {
+          e.stopPropagation();
           e.preventDefault();
           const targetRow = (e.currentTarget as HTMLElement);
-          targetRow.classList.remove("is-drop-target");
+          const dropAfter = targetRow.classList.contains("drop-after");
+          targetRow.classList.remove("is-drop-target", "drop-before", "drop-after");
+          if (activeDropTarget === targetRow) activeDropTarget = null;
 
-          const fromIndex = parseInt(e.dataTransfer?.getData("text/plain") || "-1");
+          const dragToken = e.dataTransfer?.getData("text/plain") || "";
+          let fromIndex = -1;
+          if (dragToken.startsWith("cmd:")) {
+            const fromCommand = dragToken.slice(4);
+            fromIndex = filtered.findIndex(item => item.command === fromCommand);
+          } else if (dragToken.startsWith("idx:")) {
+            fromIndex = parseInt(dragToken.slice(4));
+          } else {
+            fromIndex = filtered.findIndex(item => item.command === dragToken);
+          }
           const toIndex = i;
+          let insertIndex = toIndex + (dropAfter ? 1 : 0);
+          if (insertIndex > pinnedCount) insertIndex = pinnedCount;
 
-          if (fromIndex >= 0 && fromIndex !== toIndex && toIndex < pinnedCount) {
-            // 交换位置
-            const temp = filtered[fromIndex];
+          if (
+            fromIndex >= 0 &&
+            fromIndex < pinnedCount &&
+            fromIndex !== toIndex &&
+            toIndex < pinnedCount &&
+            isPinnedItem(filtered[fromIndex])
+          ) {
+            const moved = filtered[fromIndex];
             filtered.splice(fromIndex, 1);
-            filtered.splice(toIndex, 0, temp);
+            if (fromIndex < insertIndex) insertIndex--;
+            filtered.splice(insertIndex, 0, moved);
 
             // 更新 customOrder
             for (let j = 0; j < pinnedCount; j++) {
               const item = filtered[j];
               if (item.command) {
-                const menuKey = `editor/context:${item.command}`;
+                const menuKey = `${menuId}:${item.command}`;
                 if (this.menuUsageStats[menuKey]) {
                   this.menuUsageStats[menuKey].customOrder = j * 10;
                   this.menuUsageStats[menuKey].pinned = true;
@@ -880,7 +1031,7 @@ class Registry {
 
             // 重新渲染菜单
             menu.innerHTML = "";
-            this.rebuildMenuItems(menu, items, closeMenu, filtered);
+            this.rebuildMenuItems(menu, items, closeMenu, filtered, menuId);
           }
         });
 
@@ -899,7 +1050,7 @@ class Registry {
       // 更新置顶按钮状态
       const updatePinButtonState = () => {
         if (!canTogglePin) return;
-        const menuKey = `editor/context:${cmd}`;
+        const menuKey = `${menuId}:${cmd}`;
         const stats = this.menuUsageStats[menuKey];
         const currentPinned = typeof stats?.pinned === "boolean" ? stats.pinned : !!it.pinned || isDefaultPinned;
 
@@ -939,7 +1090,7 @@ class Registry {
           return;
         }
 
-        const menuKey = `editor/context:${cmd}`;
+        const menuKey = `${menuId}:${cmd}`;
 
         if (!this.menuUsageStats[menuKey]) {
           this.menuUsageStats[menuKey] = {
@@ -952,18 +1103,27 @@ class Registry {
         // 切换置顶状态
         this.menuUsageStats[menuKey].pinned = !this.menuUsageStats[menuKey].pinned;
 
-        // 如果置顶，设置一个合理的order
+        // 如果置顶，计算一个合适的 order（放在现有置顶项的最后）
         if (this.menuUsageStats[menuKey].pinned) {
-          this.menuUsageStats[menuKey].customOrder = this.menuUsageStats[menuKey].customOrder ?? 50;
+          // 找出当前所有置顶项的最大 customOrder
+          let maxOrder = -1;
+          for (const key in this.menuUsageStats) {
+            const stats = this.menuUsageStats[key];
+            if (stats.pinned && typeof stats.customOrder === 'number') {
+              maxOrder = Math.max(maxOrder, stats.customOrder);
+            }
+          }
+          // 新置顶项放在最后
+          this.menuUsageStats[menuKey].customOrder = maxOrder + 10;
         }
 
         // 保存到 localStorage
         (this as any).saveMenuUsageStats();
 
         // 重新渲染菜单
-        const sorted = this.sortMenuItems(filtered, "editor/context");
+        const sorted = this.sortMenuItems(filtered, menuId);
         menu.innerHTML = "";
-        this.rebuildMenuItems(menu, sorted, closeMenu, sorted);
+        this.rebuildMenuItems(menu, sorted, closeMenu, sorted, menuId);
       });
 
       // 防止置顶按钮触发菜单点击
@@ -1083,14 +1243,24 @@ class Registry {
 
     // 生成菜单项的唯一键（基于 menuId 和 command）
     const menuKey = `${menuId}:${item.command || ''}`;
+    const cmd = item.command || '';
+    const isDefaultPinned = this.DEFAULT_PINNED_COMMANDS.includes(cmd);
 
     // 初始化使用统计
     if (!this.menuUsageStats[menuKey]) {
+      // 计算初始 customOrder
+      let initialOrder = item.order;
+      if (initialOrder === undefined && isDefaultPinned) {
+        // 默认置顶的命令按照 DEFAULT_PINNED_COMMANDS 中的顺序设置 order
+        const defaultIndex = this.DEFAULT_PINNED_COMMANDS.indexOf(cmd);
+        initialOrder = defaultIndex * 10;
+      }
+
       this.menuUsageStats[menuKey] = {
         clickCount: 0,
         lastClickTime: 0,
-        pinned: item.pinned || false,
-        customOrder: item.order,
+        pinned: item.pinned || isDefaultPinned,
+        customOrder: initialOrder,
         groupId: item.group
       };
     } else {
@@ -1179,23 +1349,11 @@ class Registry {
 
     // 排序函数
     const compare = (a: any, b: any) => {
-      const aDefaultPinnedActive = a.isDefaultPinned && a.pinned;
-      const bDefaultPinnedActive = b.isDefaultPinned && b.pinned;
-
-      if (aDefaultPinnedActive && bDefaultPinnedActive) {
-        const aIndex = this.DEFAULT_PINNED_COMMANDS.indexOf(a.command);
-        const bIndex = this.DEFAULT_PINNED_COMMANDS.indexOf(b.command);
-        return aIndex - bIndex;
-      }
-
-      if (aDefaultPinnedActive) return -1;
-      if (bDefaultPinnedActive) return 1;
-
-      // 用户置顶的命令在前面
+      // 置顶的命令在前面
       if (a.pinned && !b.pinned) return -1;
       if (!a.pinned && b.pinned) return 1;
 
-      // 都是置顶的，按照自定义order排序
+      // 都是置顶的，统一按照 customOrder 排序
       if (a.pinned && b.pinned) {
         const aOrder = a.customOrder ?? 50;
         const bOrder = b.customOrder ?? 50;

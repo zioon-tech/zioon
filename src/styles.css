@@ -1310,6 +1310,28 @@ html, body {
   min-height: 0;
   overflow: hidden;
 }
+
+.zion-editor-group {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.zion-editor-context-container {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.zion-editor-context-container .cm-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 .cm-editor {
   height: 100%;
 /*   max-width: 860px; */
@@ -1481,32 +1503,50 @@ html, body {
   opacity: 0.6;
 }
 
-/* Code fence block lines - obsidian-style */
+/* Code fence block lines - Modern flat style */
 .cm-line.cm-md-codeblock {
-  background: var(--md-codeblock-bg);
-  border: 1px solid var(--md-codeblock-border);
-  border-radius: 4px;
-  padding: 4px 12px;
+  background-color: var(--md-codeblock-bg);
+  border: none;
+  border-radius: 0;
+  padding: 2px 16px;
   line-height: 1.5;
   font-family: var(--font-mono);
   font-size: 0.85em;
 }
 
+/* 块首：圆角 + 上间距 */
+.cm-content > .cm-line.cm-md-codeblock:first-child,
+.cm-content > .cm-line:not(.cm-md-codeblock) + .cm-line.cm-md-codeblock {
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  padding-top: 12px;
+}
+
+/* 块尾：圆角 + 下间距 */
+.cm-content > .cm-line.cm-md-codeblock:has(+ .cm-line:not(.cm-md-codeblock)),
+.cm-content > .cm-line.cm-md-codeblock:last-child {
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+  padding-bottom: 12px;
+}
+
 .cm-line.cm-md-codeblock.cm-activeLine {
-  background: var(--md-codeblock-bg);
-  border-color: var(--accent);
+  background-color: color-mix(in srgb, var(--md-codeblock-bg) 80%, var(--accent) 20%);
 }
 
 :root[data-theme="light"] .cm-line.cm-md-codeblock.cm-activeLine {
-  border-color: var(--accent);
+  background-color: color-mix(in srgb, var(--md-codeblock-bg) 90%, var(--accent) 10%);
 }
 
-/* Opening/closing fence lines */
+/* Opening/closing fence lines - subtle marker */
 .cm-line.cm-md-codeblock.cm-md-codeblock-fence {
   color: var(--dim);
-  font-size: 0.8em;
-  border: none;
-  background: transparent;
+  font-size: 0.75em;
+  opacity: 0.6;
+  background-color: var(--md-codeblock-bg);
+  padding-top: 2px;
+  padding-bottom: 2px;
+  user-select: none;
 }
 
 /* Math (KaTeX) */
@@ -1517,10 +1557,14 @@ html, body {
 .cm-md-math-block {
   display: block;
   padding: 0;
-  margin: 0.8em 0;
+  margin: 0;
   background: transparent;
   border: none;
   border-radius: 0;
+}
+.cm-line:has(.cm-md-math-block) {
+  padding-top: 0.8em;
+  padding-bottom: 0.8em;
 }
 .cm-md-math-error {
   color: #ff5555;
@@ -1530,9 +1574,13 @@ html, body {
 /* Diagrams (Mermaid / UML) */
 .cm-md-diagram {
   display: block;
-  margin: 6px 0;
+  margin: 0;
   overflow: auto;
   position: relative; /* for toolbar positioning */
+}
+.cm-line:has(.cm-md-diagram) {
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 /* UML/PlantUML image inside diagram wrapper */
 .cm-md-uml {
@@ -1563,10 +1611,14 @@ html, body {
 /* Tables - Modern Style (GitHub/Typora inspired) */
 .cm-md-table-wrap {
   overflow: auto;
-  margin: 16px 0;
+  margin: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
   background-color: var(--bg);
+}
+.cm-line:has(.cm-md-table-wrap) {
+  padding-top: 16px;
+  padding-bottom: 16px;
 }
 
 .cm-md-table {
@@ -1771,6 +1823,35 @@ html, body {
   margin-top: 0;
 }
 
+/* ===== Roles Rail Gutter ===== */
+.cm-gutter.zion-gutter-role-rail {
+  min-width: 4px;
+  background: transparent;
+  border-right: none;
+}
+.cm-gutter.zion-gutter-role-rail .cm-gutterElement {
+  padding: 0;
+  display: flex;
+  align-items: stretch;
+}
+.zion-role-rail {
+  width: 3px;
+  height: 100%;
+  margin-left: 0;
+}
+:root:not([data-role-user-block-bg="0"]) .zion-role-rail-user {
+  background-color: var(--role-user-fg);
+}
+:root:not([data-role-user-block-bg="0"]) .zion-role-rail-assistant {
+  background-color: color-mix(in srgb, var(--role-assistant-fg) 55%, var(--bg) 45%);
+}
+:root:not([data-role-user-block-bg="0"]) .zion-sticky-rail-user {
+  background-color: var(--role-user-fg);
+}
+:root:not([data-role-user-block-bg="0"]) .zion-sticky-rail-assistant {
+  background-color: color-mix(in srgb, var(--role-assistant-fg) 55%, var(--bg) 45%);
+}
+
 /* User token: green (对应 TOC 中的 #4caf50) */
 .cm-role-token-user {
   color: var(--fg);
@@ -1791,8 +1872,6 @@ html, body {
   background: var(--role-system-bg);
   border: none;
 }
-
-
 
 /* ===== Roles Config Modal ===== */
 .roles-config-panel {
@@ -2873,6 +2952,32 @@ html, body {
   max-height: 320px;
   max-width: 220px;
   overflow-y: auto;
+  /* 确保二级菜单有不透明背景 */
+  background: var(--panel);
+}
+
+/* 二级菜单中的拖拽状态 - 确保清晰可见 */
+.zion-context-submenu .zion-context-menu-row.is-dragging > .zion-context-menu-item {
+  background: rgba(98, 114, 164, 0.25) !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+  opacity: 1 !important;
+}
+
+:root[data-theme="light"] .zion-context-submenu .zion-context-menu-row.is-dragging > .zion-context-menu-item {
+  background: rgba(59, 130, 246, 0.2) !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+  opacity: 1 !important;
+}
+
+/* 二级菜单中的 drop target 状态 */
+.zion-context-submenu .zion-context-menu-row.is-drop-target > .zion-context-menu-item {
+  background: rgba(248,248,242,0.12) !important;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08) !important;
+}
+
+:root[data-theme="light"] .zion-context-submenu .zion-context-menu-row.is-drop-target > .zion-context-menu-item {
+  background: rgba(0,0,0,0.1) !important;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08) !important;
 }
 
 /* Place custom gutter to the far left of other gutters (fold/lineNumbers) */
@@ -3120,6 +3225,44 @@ body.zion-sessions-no-transitions .zion-session-row * {
 :root[data-theme="light"] .zion-context-menu-row.is-drop-target > .zion-context-menu-item {
   background: rgba(0,0,0,0.06);
   box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05);
+}
+
+.zion-context-menu-row.is-drop-target.drop-before::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 2px;
+  height: 2px;
+  background: var(--accent, #007acc);
+  border-radius: 2px;
+}
+
+.zion-context-menu-row.is-drop-target.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 2px;
+  height: 2px;
+  background: var(--accent, #007acc);
+  border-radius: 2px;
+}
+
+/* Dragging state - use background instead of opacity for better visibility */
+.zion-context-menu-row.is-dragging {
+  opacity: 1 !important;
+}
+
+.zion-context-menu-row.is-dragging > .zion-context-menu-item {
+  background: rgba(98, 114, 164, 0.15);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  opacity: 1 !important;
+}
+
+:root[data-theme="light"] .zion-context-menu-row.is-dragging > .zion-context-menu-item {
+  background: rgba(59, 130, 246, 0.12);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 /* Sticky Header for User Messages */

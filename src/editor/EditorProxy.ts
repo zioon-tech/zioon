@@ -41,4 +41,9 @@ export class EditorProxy implements IEditorProxy {
   addVisualExtension(ext: Extension): void {
     (this.core as any).addExternalExtension(ext);
   }
+
+  // Expose raw CM6 EditorView for advanced extensions
+  getView(): any {
+    return (this.core as any).view;
+  }
 }

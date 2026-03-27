@@ -19,6 +19,8 @@ export interface EditorProxy {
   focus(): void;
   /** Inject a custom CM6 visual extension (e.g., ViewPlugin/Decoration) */
   addVisualExtension(ext: any): void;
+  /** Get raw CM6 EditorView for advanced extensions */
+  getView(): any;
 }
 
 export type PasteHandler = {
@@ -47,6 +49,8 @@ export type MenuItem = {
   order?: number; // 默认 50，越小越靠前
   pinned?: boolean; // 是否置顶
   group?: string; // 分组标识，相同分组的可以一起拖拽
+  /** If provided, called when building the menu to compute the title dynamically */
+  dynamicTitle?: () => string | null;
 };
 
 export type SelectionToolbarContext = {
