@@ -283,6 +283,19 @@ declare global {
         listProviders(): string[];
         getProvider(id: string): ModelProvider | null;
       };
+      llm?: {
+        runStream(opts: {
+          messages: any[];
+          tools?: any;
+          onToken?: (token: any) => void;
+          onEnd?: () => void;
+          onError?: (error: any) => void;
+          getController?: (controller: any) => void;
+          onToolCall?: (toolCall: any) => void;
+          runId?: string;
+          sessionId?: string;
+        }): Promise<any>;
+      };
       // slash commands registry
       slash?: {
         registerCommand(cmd: SlashCommand): Disposable;

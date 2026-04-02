@@ -3997,17 +3997,13 @@ export async function activate(ctx) {
         window.zion.notification?.show?.("正在生成会话标题…", { type: "info", duration: 1600 });
       } catch {}
 
-      let runStream = null;
-      try {
-        const mod = await import("/extensions/dev.langchain-chat/chat-service.js");
-        runStream = mod?.runStream || null;
-      } catch (e) {
+      const runStream = window.zion?.llm?.runStream;
+      if (typeof runStream !== "function") {
         try {
-          window.zion.notification?.show?.("未找到大模型服务（dev.langchain-chat）", { type: "warning", duration: 2400 });
+          window.zion.notification?.show?.("未找到大模型服务（zion.llm.runStream）", { type: "warning", duration: 2400 });
         } catch {}
         return false;
       }
-      if (typeof runStream !== "function") return false;
 
       const excerpt = text.length > 6000 ? text.slice(0, 6000) : text;
       const messages = [

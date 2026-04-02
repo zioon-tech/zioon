@@ -12,6 +12,20 @@ import { installModelSwitcher } from "./model-switcher.js";
 import { registerModelsTools } from "./models-tools.js";
 
 export async function activate(ctx) {
+  const llm = window.zion.llm || (window.zion.llm = {});
+  const prevRunStream = llm.runStream;
+  llm.runStream = runStream;
+  ctx.subscriptions.push({
+    dispose() {
+      try {
+        if (window.zion?.llm?.runStream === runStream) {
+          if (prevRunStream) window.zion.llm.runStream = prevRunStream;
+          else delete window.zion.llm.runStream;
+        }
+      } catch {}
+    }
+  });
+
   // 注册模型提供者
   const dispProv = window.zion.models.registerProvider(deepseekProvider);
   ctx.subscriptions.push(dispProv);
@@ -121,10 +135,35 @@ export async function activate(ctx) {
   // 每会话运行状态 helpers
   const getSessionId = () => window.zion?.state?.get("sessions.currentId");
   const getRunState = (sid) => window.zion?.state?.get(`chat.runs.${sid}`) || null;
+  const runControllers = new Map();
+  function syncGlobalStreamingForActiveSession() {
+    const sid = getSessionId();
+    const streaming = sid ? !!getRunState(sid)?.streaming : false;
+    try { window.zion.state.set("chat.streaming", streaming); } catch {}
+    return streaming;
+  }
   const setRunState = (sid, patch) => {
     const cur = getRunState(sid) || {};
-    window.zion.state.set(`chat.runs.${sid}`, { ...cur, ...patch });
+    const { controller: _legacyController, ...curRest } = cur || {};
+    window.zion.state.set(`chat.runs.${sid}`, { ...curRest, ...patch });
+    if (sid && sid === getSessionId()) syncGlobalStreamingForActiveSession();
   };
+  try {
+    ctx.subscriptions.push(
+      window.zion.state.onDidChange("sessions.currentId", () => {
+        syncGlobalStreamingForActiveSession();
+      })
+    );
+  } catch {}
+  ctx.subscriptions.push({
+    dispose() {
+      for (const c of runControllers.values()) {
+        try { c?.abort?.(); } catch {}
+      }
+      runControllers.clear();
+    }
+  });
+  syncGlobalStreamingForActiveSession();
   // 简易工具执行器：支持外部注册与内置示例
   async function executeToolCall(call, sid) {
     const isAborted = () => !!getRunState(sid)?.aborted;
@@ -408,11 +447,10 @@ export async function activate(ctx) {
     window.zion.state.set("chat.runId", runId); // 兼容旧事件消费者
     setRunState(sid, { runId, streaming: true, aborted: false, awaiting: false });
     window.zion.state.set("chat.error", null);
-    window.zion.state.set("chat.streaming", true); // 兼容状态栏（当前会话）
     window.zion.events.emit("chat/runStarted", { runId, sessionId: sid });
 
     let streamController = null;
-    setRunState(sid, { controller: { abort: () => streamController?.abort?.() } });
+    runControllers.delete(sid);
 
     // 工具调用收集（多步链式调用在每一步内局部收集）
     let aborted = false;
@@ -637,8 +675,8 @@ export async function activate(ctx) {
         try { window.zion.commands.executeCommand("zion.sessions.appendAssistantToken", { id: sid, token: "\n", runId }); } catch {}
       }
       tokenBuffer.stop();
-      setRunState(sid, { streaming: false, awaiting: true, controller: null });
-      window.zion.state.set("chat.streaming", false); // 兼容
+      setRunState(sid, { streaming: false, awaiting: true });
+      runControllers.delete(sid);
       window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
       window.zion.events.emit("chat/runFinished", { runId, sessionId: sid });
     };
@@ -680,7 +718,7 @@ export async function activate(ctx) {
         },
         onEnd: () => { /* 中间步骤不清理，留到链式结束后统一 finalize */ },
         onError: (e) => {
-          if (e?.name === "AbortError") { aborted = true; setRunState(sid, { aborted: true, streaming: false }); return; }
+          if (e?.name === "AbortError") { aborted = true; setRunState(sid, { aborted: true, streaming: false }); runControllers.delete(sid); return; }
           window.zion.state.set("chat.error", e.message);
           window.zion.events.emit("chat/runError", { runId, error: e, sessionId: sid });
           // 显示错误通知
@@ -694,8 +732,16 @@ export async function activate(ctx) {
           }
           aborted = true;
           setRunState(sid, { aborted: true, streaming: false });
+          runControllers.delete(sid);
         },
-        getController: (controller) => { streamController = controller; },
+        getController: (controller) => {
+          streamController = controller;
+          if (getRunState(sid)?.aborted) {
+            try { controller?.abort?.(); } catch {}
+            return;
+          }
+          runControllers.set(sid, controller);
+        },
         runId,
         sessionId: sid
       });
@@ -1075,11 +1121,12 @@ export async function activate(ctx) {
     window.zion.commands.registerCommand("chat.stop", () => {
       // 仅停止当前会话的流式输出并中止其请求
       const sid = getSessionId();
+      if (!sid) return;
       const rs = getRunState(sid);
       setRunState(sid, { streaming: false, aborted: true });
-      window.zion.state.set("chat.streaming", false); // 兼容状态栏
-      const controller = rs?.controller;
+      const controller = runControllers.get(sid);
       if (controller?.abort) controller.abort();
+      runControllers.delete(sid);
       window.zion.events.emit("chat/aborted", { runId: rs?.runId, sessionId: sid });
     }),
     window.zion.commands.registerCommand("chat.retry", () => doRun({}))
