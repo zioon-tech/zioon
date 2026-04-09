@@ -89,15 +89,20 @@ export function createAnnotationsLifecycle(opts) {
         try {
           const tools = Array.isArray(ann?.tools) ? ann.tools : [];
           const thinking = Array.isArray(ann?.thinking) ? ann.thinking : [];
-          const domTools = document.querySelectorAll(".zion-tool-call-inline").length;
-          const domThinking = document.querySelectorAll(".zion-thinking-inline").length;
+          // 仍优先处理挂起的恢复队列
           const pendTools = getZion()?.state?.get(`sessions.pendingRestore.tools.${id}`) || null;
           const pendThinking = getZion()?.state?.get(`sessions.pendingRestore.thinking.${id}`) || null;
           if (Array.isArray(pendTools) && pendTools.length) return true;
           if (Array.isArray(pendThinking) && pendThinking.length) return true;
-          if (tools.length !== domTools) return true;
-          if (thinking.length !== domThinking) return true;
-          return false;
+          // 改为读取插件快照暴露的“已挂载 id 列表”，避免 DOM 计数
+          const mountedTools = getZion()?.state?.get(`sessions.widgets.tools.${id}`)?.ids || [];
+          const mountedThinking = getZion()?.state?.get(`sessions.widgets.thinking.${id}`)?.ids || [];
+          const wantToolIds = tools.map(t => t?.id).filter(Boolean);
+          const wantThinkingIds = thinking.map(t => t?.id).filter(Boolean);
+          // 若有任何目标 id 未挂载，则需要恢复
+          const missTool = wantToolIds.some(x => !mountedTools.includes(x));
+          const missThinking = wantThinkingIds.some(x => !mountedThinking.includes(x));
+          return missTool || missThinking;
         } catch {
           return true;
         }
@@ -275,4 +280,3 @@ export function createAnnotationsLifecycle(opts) {
     attachAnnotationsAutoPersistence
   };
 }
-

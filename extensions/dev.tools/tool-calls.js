@@ -886,11 +886,15 @@ export function installToolCallCards() {
           const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
           const list = Array.isArray(ann.tools) ? ann.tools : [];
           if (!list.length) return;
-          let size = 0;
-          try { size = this.view.state.field(toolInlineField)?.items?.size || 0; } catch {}
-          let domCount = 0;
-          try { domCount = document.querySelectorAll(".zion-tool-call-inline").length; } catch {}
-          if (size >= list.length && domCount >= list.length) return;
+          // 基于 StateField 中的已挂载 id 判断是否需要恢复
+          let mountedIds = [];
+          try {
+            const fieldVal = this.view.state.field(toolInlineField);
+            if (fieldVal?.items) fieldVal.items.forEach((_it, id) => mountedIds.push(String(id)));
+          } catch {}
+          const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
+          const missing = wantIds.some(id => !mountedIds.includes(id));
+          if (!missing) return;
           this.onRestore({ items: list });
         } catch {}
       });
@@ -936,22 +940,16 @@ export function installToolCallCards() {
         const list = Array.isArray(ann.tools) ? ann.tools : [];
         if (!list.length) return;
 
-        // 检查 StateField 中的 items 数量
-        let fieldCount = 0;
+        // 基于 StateField 中的已挂载 id 判断是否需要恢复
+        let mountedIds = [];
         try {
           const fieldVal = this.view.state.field(toolInlineField);
-          fieldCount = fieldVal?.items?.size || 0;
+          if (fieldVal?.items) fieldVal.items.forEach((_it, id) => mountedIds.push(String(id)));
         } catch {}
-
-        // 检查 DOM 中的 widgets 数量
-        let domCount = 0;
-        try {
-          domCount = document.querySelectorAll(".zion-tool-call-inline").length;
-        } catch {}
-
-        // 如果数量不匹配，说明有 widgets 丢失，需要恢复
-        if (fieldCount < list.length || domCount < list.length) {
-          console.log("[tool-calls] Widgets lost during sleep, restoring:", { fieldCount, domCount, listLength: list.length });
+        const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
+        const missing = wantIds.some(id => !mountedIds.includes(id));
+        if (missing) {
+          console.log("[tool-calls] restore needed (missing ids):", { missingIds: wantIds.filter(id => !mountedIds.includes(id)) });
           this.onRestore({ items: list });
         }
       } catch (e) {
@@ -1037,7 +1035,17 @@ export function installToolCallCards() {
           });
         });
         const prev = window.zion?.state?.get(`sessions.annotations.${id}`) || {};
+        // 将注解快照写回内存
         window.zion?.state?.set(`sessions.annotations.${id}`, { ...prev, tools: arr });
+        // 同步当前挂载的 widget id 列表与计数，供生命周期判定使用（避免依赖 DOM 计数）
+        try {
+          const mountedIds = arr.map(it => it.id).filter(Boolean);
+          window.zion?.state?.set(`sessions.widgets.tools.${id}`, {
+            ids: mountedIds,
+            count: mountedIds.length,
+            stamp: Date.now()
+          });
+        } catch {}
       } catch {}
     };
     loadToolActions = () => {
