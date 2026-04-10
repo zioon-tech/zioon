@@ -853,8 +853,10 @@ export function installToolCallCards() {
       this.disps = [];
       this.runActive = false;
       this.anchorPos = view.state.doc.length; // 当前回答插入锚点（随着变更映射）
+      this.sessionId = null;
       this.toolActions = new Map();
       this.selRaf = 0;
+      try { this.sessionId = window.zion?.state?.get("sessions.currentId") || null; } catch {}
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRun));
       this.disps.push(window.zion.events.on("chat/runFinished", this.onFinish));
       this.disps.push(window.zion.events.on("chat/toolCall", this.onCall));
@@ -876,7 +878,7 @@ export function installToolCallCards() {
 
       Promise.resolve().then(() => {
         try {
-          const sid = window.zion?.state?.get("sessions.currentId");
+          const sid = this.sessionId;
           const pending = sid ? window.zion?.state?.get(`sessions.pendingRestore.tools.${sid}`) : null;
           if (Array.isArray(pending) && pending.length) {
             this.onRestore({ items: pending });
@@ -1083,20 +1085,18 @@ export function installToolCallCards() {
       } catch {}
     };
     onRun = (payload) => {
-      const cur = window.zion?.state?.get("sessions.currentId");
-      if (payload?.sessionId && payload.sessionId !== cur) return;
+      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
       this.runActive = true;
       const sel = this.view.state.selection?.main?.head;
       this.anchorPos = typeof sel === "number" ? sel : this.view.state.doc.length;
     };
     onFinish = (payload) => {
-      const cur = window.zion?.state?.get("sessions.currentId");
-      if (payload?.sessionId && payload.sessionId !== cur) return;
+      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
       this.runActive = false;
     };
     onCall = (payload) => {
-      const cur = window.zion?.state?.get("sessions.currentId");
-      if (payload?.sessionId && payload.sessionId !== cur) return;
+      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
+      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
       const tc = payload?.toolCall || payload;
       if (!tc?.id) return;
       const name = tc.name || "tool";
@@ -1118,7 +1118,7 @@ export function installToolCallCards() {
       }
 
       // 2) 计算插入位置：基于当前会话锚点的 assistant 区块末尾
-      const sid = window.zion?.state?.get("sessions.currentId");
+      const sid = this.sessionId;
       const hint = (sid ? window.zion?.state?.get(`chat.answerAnchorPos.${sid}`) : undefined) ?? window.zion?.state?.get("chat.answerAnchorPos");
       const doc = this.view.state.doc;
       const pos = typeof hint === "number" ? findAssistantBlockEndNear(this.view, hint) : findAssistantBlockEnd(this.view);
@@ -1138,21 +1138,19 @@ export function installToolCallCards() {
       // 插入后，将锚点推进到换行之后
       this.anchorPos = end + 1;
       try {
-        const sid2 = window.zion?.state?.get("sessions.currentId");
-        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid2 });
+        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: this.sessionId });
       } catch {}
     };
     onRes = (payload) => {
-      const cur = window.zion?.state?.get("sessions.currentId");
-      if (payload?.sessionId && payload.sessionId !== cur) return;
+      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
+      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
       const id = payload?.toolCallId || payload?.id;
       if (!id) return;
       const result = payload?.result;
       const ok = payload?.ok;
       this.view.dispatch({ effects: [updateResult.of({ id, result, ok })] });
       try {
-        const sid2 = window.zion?.state?.get("sessions.currentId");
-        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid2 });
+        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: this.sessionId });
       } catch {}
       try {
         const fieldVal = this.view.state.field(toolInlineField);
@@ -1168,8 +1166,7 @@ export function installToolCallCards() {
       if (!id) return;
       this.view.dispatch({ effects: [removeTool.of({ id })] });
       try {
-        const sid2 = window.zion?.state?.get("sessions.currentId");
-        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid2 });
+        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: this.sessionId });
       } catch {}
     };
     onEditRevert = async (payload) => {

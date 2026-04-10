@@ -308,6 +308,7 @@ declare global {
         run(opts?: { useSelection?: boolean; prompt?: string }): void;
         stop(): void;
         retry(): void;
+        isStreaming(sessionId?: string): boolean;
         setActiveModel(model: { providerId: string; modelId: string } | null): void;
         getActiveModel(): { providerId: string; modelId: string } | null;
       };

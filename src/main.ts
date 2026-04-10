@@ -132,6 +132,16 @@ function mountCurrentSessionPath(pathEl: HTMLElement) {
   } catch {}
 
   try {
+    window.zion.events.on("panel/tabActivated", (payload: any) => {
+      const id = payload?.sessionId || payload?.tabId;
+      if (id) {
+        bindMeta(id);
+        update();
+      }
+    });
+  } catch {}
+
+  try {
     window.zion.state.onDidChange("sessions.catalog", () => update());
   } catch {}
 

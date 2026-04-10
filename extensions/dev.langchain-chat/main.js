@@ -10,9 +10,17 @@ import { geminiProvider } from "./gemini-provider.js";
 import { userModelsProvider } from "./user-models-provider.js";
 import { installModelSwitcher } from "./model-switcher.js";
 import { registerModelsTools } from "./models-tools.js";
+import {
+  appendAssistantToken as appendAssistantTokenToEditor,
+  finalizeAssistantBlock,
+  insertAssistantBlock,
+  parseMessages
+} from "../../src/chat/doc";
+import { createChatRuntime } from "../../src/chat/runtime";
 
 export async function activate(ctx) {
   const llm = window.zion.llm || (window.zion.llm = {});
+  const prevChatApi = window.zion.chat ? { ...window.zion.chat } : null;
   const prevRunStream = llm.runStream;
   llm.runStream = runStream;
   ctx.subscriptions.push({
@@ -132,38 +140,37 @@ export async function activate(ctx) {
   // 工具函数
   const getEd = () => window.zion?.window?.activeEditor;
 
-  // 每会话运行状态 helpers
   const getSessionId = () => window.zion?.state?.get("sessions.currentId");
-  const getRunState = (sid) => window.zion?.state?.get(`chat.runs.${sid}`) || null;
-  const runControllers = new Map();
-  function syncGlobalStreamingForActiveSession() {
-    const sid = getSessionId();
-    const streaming = sid ? !!getRunState(sid)?.streaming : false;
-    try { window.zion.state.set("chat.streaming", streaming); } catch {}
-    return streaming;
-  }
-  const setRunState = (sid, patch) => {
-    const cur = getRunState(sid) || {};
-    const { controller: _legacyController, ...curRest } = cur || {};
-    window.zion.state.set(`chat.runs.${sid}`, { ...curRest, ...patch });
-    if (sid && sid === getSessionId()) syncGlobalStreamingForActiveSession();
+  const runtime = createChatRuntime({
+    state: window.zion.state,
+    events: window.zion.events,
+    getSessionId
+  });
+  const getRunState = runtime.getRunState;
+  const setRunState = runtime.setRunState;
+  ctx.subscriptions.push(runtime);
+
+  window.zion.chat = {
+    ...(window.zion.chat || {}),
+    run: (opts = {}) => doRun(opts),
+    stop: () => runtime.stopSession(),
+    retry: () => doRun({}),
+    isStreaming: (sid) => {
+      const targetSid = sid || getSessionId();
+      return !!runtime.getRunState(targetSid)?.streaming;
+    },
+    setActiveModel: (m) => {
+      window.zion.state.set("chat.activeModel", m);
+    },
+    getActiveModel: () => window.zion.state.get("chat.activeModel") || null
   };
-  try {
-    ctx.subscriptions.push(
-      window.zion.state.onDidChange("sessions.currentId", () => {
-        syncGlobalStreamingForActiveSession();
-      })
-    );
-  } catch {}
   ctx.subscriptions.push({
     dispose() {
-      for (const c of runControllers.values()) {
-        try { c?.abort?.(); } catch {}
-      }
-      runControllers.clear();
+      try {
+        if (prevChatApi) window.zion.chat = prevChatApi;
+      } catch {}
     }
   });
-  syncGlobalStreamingForActiveSession();
   // 简易工具执行器：支持外部注册与内置示例
   async function executeToolCall(call, sid) {
     const isAborted = () => !!getRunState(sid)?.aborted;
@@ -372,85 +379,16 @@ export async function activate(ctx) {
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
 
     // 3. 插入 assistant 块（用于承载输出）
-    // 逻辑优化：如果光标下有内容（且不是 role 头行），说明是“中间插入”。
-    // 此时不仅插入 assistant，还应在 assistant 后面预先插入一个 user 占位符，以隔离后续旧文本。
-    const insertLine = cursorLine + 1;
-    if (insertLine >= lines.length) {
-      // 在文档末尾安全插入 assistant 头行
-      let targetLine = lines.length - 1;
-      if (fullDoc.length > 0 && !fullDoc.endsWith("\n")) {
-        // 追加一个换行，创建新的空行
-        ed.replaceRange("\n", { line: lines.length - 1, ch: lines[lines.length - 1].length });
-        // 新建的空行索引等于“旧的行数”
-        targetLine = lines.length;
-      } else {
-        // 文档已以换行结尾或为空：最后一行为空，使用最后一行
-        targetLine = Math.max(0, lines.length - 1);
-      }
-      ed.replaceRange("assistant ", { line: targetLine, ch: 0 });
-    } else {
-      // 检查后续内容
-      let hasContentBelow = false;
-      for (let k = insertLine; k < lines.length; k++) {
-        const t = lines[k].trim();
-        if (t) {
-          // 如果紧接着就是 role 头行，不需要额外插入隔离
-          if (/^(system|user|assistant|tool)\b/.test(t)) break;
-          hasContentBelow = true;
-          break;
-        }
-      }
-
-      if (hasContentBelow) {
-        // 中间插入：插入 assistant + 两个换行 + user
-        // 这样新 assistant 的流式输出会被限制在这个空档里，不会吞掉下面的旧文本
-        const currentLineLength = lines[cursorLine].length;
-        ed.replaceRange("\nassistant \n\nuser ", { line: cursorLine, ch: currentLineLength });
-        
-        // 修正光标到 assistant 后的空行，准备输出
-        // 插入后：cursorLine -> 原行
-        // cursorLine+1 -> assistant
-        // cursorLine+2 -> (empty for streaming)
-        // cursorLine+3 -> user
-        // cursorLine+4 -> old text
-        // 我们不需要手动 setCursor，因为流式输出会自动寻找 assistant block 并追加。
-        // 但为了视觉效果，最好确保 assistant 下面有空行。
-      } else {
-        const currentLineLength = lines[cursorLine].length;
-        ed.replaceRange("\nassistant ", { line: cursorLine, ch: currentLineLength });
-      }
-    }
-
-    // 记录本次回答的 assistant 头行锚点（按会话存储，用于工具/思考插入定位）
-    try {
-      const docAfter = ed.getValue();
-      const afterLines = docAfter.split("\n");
-      let headLine = -1;
-      for (let i = Math.max(0, insertLine); i < afterLines.length; i++) {
-        if (/^\s*assistant\s+/.test(afterLines[i])) { headLine = i; break; }
-      }
-      if (headLine < 0) {
-        for (let i = afterLines.length - 1; i >= 0; i--) {
-          if (/^\s*assistant\s+/.test(afterLines[i])) { headLine = i; break; }
-        }
-      }
-      if (headLine >= 0) {
-        let anchorPos = 0;
-        for (let i = 0; i < headLine; i++) anchorPos += afterLines[i].length + 1;
-        window.zion.state.set(`chat.answerHeadLine.${sid}`, headLine);
-        window.zion.state.set(`chat.answerAnchorPos.${sid}`, anchorPos);
-      }
-    } catch {}
+    const { anchor, insertLine } = insertAssistantBlock(ed, {
+      sessionId: sid,
+      state: window.zion.state,
+      cursor
+    });
 
     // 4. 状态 & 事件
     const runId = "run_" + Math.random().toString(36).slice(2);
-    window.zion.state.set("chat.runId", runId); // 兼容旧事件消费者
-    setRunState(sid, { runId, streaming: true, aborted: false, awaiting: false });
-    window.zion.state.set("chat.error", null);
+    runtime.beginRun(sid, runId);
     window.zion.events.emit("chat/runStarted", { runId, sessionId: sid });
-
-    let streamController = null;
-    runControllers.delete(sid);
 
     // 工具调用收集（多步链式调用在每一步内局部收集）
     let aborted = false;
@@ -482,29 +420,13 @@ export async function activate(ctx) {
           return;
         }
 
-        const currentDoc = ed.getValue();
-        const currentLines = currentDoc.split("\n");
-
-        let assistantLine = -1;
-        for (let i = Math.max(0, insertLine - 1); i < currentLines.length; i++) {
-          if (/^\s*assistant\s+/.test(currentLines[i])) { assistantLine = i; break; }
-        }
-        if (assistantLine === -1) {
-          // Fallback: full scan to be robust when indices shift
-          for (let i = 0; i < currentLines.length; i++) {
-            if (/^\s*assistant\s+/.test(currentLines[i])) { assistantLine = i; break; }
-          }
-        }
-        if (assistantLine === -1) return;
-
-        let endLine = assistantLine;
-        for (let i = assistantLine + 1; i < currentLines.length; i++) {
-          if (/^\s*(system|user|assistant|tool)\s+/.test(currentLines[i])) break;
-          endLine = i;
-        }
-        const lastLineText = currentLines[endLine] || "";
         try {
-          ed.replaceRange(text, { line: endLine, ch: lastLineText.length });
+          const appended = appendAssistantTokenToEditor(ed, {
+            token: text,
+            anchor,
+            startLineHint: insertLine
+          });
+          if (!appended) return;
           window.zion.events.emit("chat/token", { runId, token: text, sessionId: sid });
 
           // 触底才自动滚动（避免用户上拉时被抢滚）
@@ -543,140 +465,31 @@ export async function activate(ctx) {
     // 在最终阶段追加换行并清理（先 flush 剩余缓冲）
     const finalize = () => {
       try { tokenBuffer.flush(); } catch {}
-      const currentDoc = ed.getValue();
-      const currentLines = currentDoc.split("\n");
-      let assistantLine = -1;
-      for (let i = Math.max(0, insertLine - 1); i < currentLines.length; i++) {
-        if (/^\s*assistant\s+/.test(currentLines[i])) { assistantLine = i; break; }
-      }
-      if (assistantLine === -1) {
-        for (let i = 0; i < currentLines.length; i++) {
-          if (/^\s*assistant\s+/.test(currentLines[i])) { assistantLine = i; break; }
-        }
-      }
       const isActiveSession = getSessionId() === sid;
       if (isActiveSession) {
-        if (assistantLine !== -1) {
-          let endLine = assistantLine;
-          for (let i = assistantLine + 1; i < currentLines.length; i++) {
-            if (/^\s*(system|user|assistant|tool)\s+/.test(currentLines[i])) break;
-            endLine = i;
+        try {
+          let autoInsert = window.zion?.state?.get('chat.autoInsertUserPrompt');
+          if (autoInsert === undefined) {
+            autoInsert = true;
+            try { window.zion?.state?.set('chat.autoInsertUserPrompt', true); } catch {}
           }
-
-          const nextLineText = currentLines[endLine + 1];
-          const hasNextRoleLine = typeof nextLineText === 'string' && /^\s*(system|user|assistant|tool)\s+/.test(nextLineText);
-          const lastLineText = currentLines[endLine] || "";
-          const shouldAddTrailingBlankLine = nextLineText === undefined && lastLineText.trim() !== "";
-
-          if (shouldAddTrailingBlankLine) {
-            try { ed.replaceRange("\n", { line: endLine, ch: lastLineText.length }); } catch {}
+          let autoFocus = window.zion?.state?.get('chat.autoFocusUserPrompt');
+          if (autoFocus === undefined) {
+            autoFocus = true;
+            try { window.zion?.state?.set('chat.autoFocusUserPrompt', true); } catch {}
           }
-
-          try {
-            let autoInsert = window.zion?.state?.get('chat.autoInsertUserPrompt');
-            if (autoInsert === undefined) {
-              autoInsert = true;
-              try { window.zion?.state?.set('chat.autoInsertUserPrompt', true); } catch {}
-            }
-            let autoFocus = window.zion?.state?.get('chat.autoFocusUserPrompt');
-            if (autoFocus === undefined) {
-              autoFocus = true;
-              try { window.zion?.state?.set('chat.autoFocusUserPrompt', true); } catch {}
-            }
-
-            // 解耦逻辑：根据最新的 doc 状态判断是否需要插入或聚焦
-            const docNow = String(ed.getValue() || "");
-            const linesNow = docNow.split("\n");
-            
-            // 重新定位 assistant block 的结束行
-            let blockEndLine = -1;
-            // 重新查找 assistant 头行（因为 doc 可能变化）
-            let newAssistantLine = -1;
-            for (let i = Math.max(0, insertLine - 1); i < linesNow.length; i++) {
-              if (/^\s*assistant\s+/.test(linesNow[i])) { newAssistantLine = i; break; }
-            }
-            if (newAssistantLine === -1) {
-              for (let i = 0; i < linesNow.length; i++) {
-                if (/^\s*assistant\s+/.test(linesNow[i])) { newAssistantLine = i; break; }
-              }
-            }
-
-            if (newAssistantLine !== -1) {
-              blockEndLine = newAssistantLine;
-              for (let i = newAssistantLine + 1; i < linesNow.length; i++) {
-                if (/^\s*(system|user|assistant|tool)\s+/.test(linesNow[i])) break;
-                blockEndLine = i;
-              }
-            }
-
-            if (blockEndLine !== -1) {
-              const targetLine = blockEndLine + 1;
-              let targetLineText = "";
-              if (targetLine < linesNow.length) {
-                targetLineText = linesNow[targetLine];
-              } else {
-                // 如果 blockEndLine 是最后一行且非空，可能需要追加新行
-                // 但上面的 shouldAddTrailingBlankLine 应该已经处理了换行追加
-                targetLineText = ""; // 视为新行
-              }
-
-              const isUser = /^\s*user\s+/.test(targetLineText);
-              const isOtherRole = /^\s*(system|assistant|tool)\s+/.test(targetLineText);
-              const focusUserPromptNoScroll = (line, ch) => {
-                try {
-                  const view = ed?.core?.view;
-                  const doc = view?.state?.doc;
-                  if (view && doc) {
-                    const ln = doc.line(Math.max(1, Math.min(doc.lines, line + 1)));
-                    const pos = ln.from + Math.max(0, Math.min(ln.length, ch));
-                    view.dispatch({ selection: { anchor: pos } });
-                    view.focus();
-                    return true;
-                  }
-                } catch {}
-                try { ed.setCursor?.({ line, ch }); } catch {}
-                try { ed.focus?.(); } catch {}
-                return true;
-              };
-
-              if (isUser) {
-                // 场景：下面已经是 user -> 聚焦
-                if (autoFocus) {
-                  try {
-                    const m = /^\s*user\s+/.exec(targetLineText);
-                    const ch = m ? m[0].length : 5;
-                    focusUserPromptNoScroll(targetLine, ch);
-                  } catch {}
-                }
-              } else if (!isOtherRole && autoInsert) {
-                // 场景：下面是空行或文末 -> 插入 user 并聚焦
-                // 确保 targetLine 存在
-                if (targetLine >= linesNow.length) {
-                  const last = String(linesNow[blockEndLine] || "");
-                  // 如果最后一行不为空，先换行
-                  if (last.trim() !== "") {
-                     try { ed.replaceRange("\n", { line: blockEndLine, ch: last.length }); } catch {}
-                  }
-                }
-                
-                // 重新获取该行文本（可能刚才加了换行）
-                // 简单起见，直接在新位置写入
-                try {
-                   ed.replaceRange("user ", { line: targetLine, ch: 0 }, { line: targetLine, ch: String(linesNow[targetLine]||"").length });
-                   if (autoFocus) {
-                     focusUserPromptNoScroll(targetLine, 5);
-                   }
-                } catch {}
-              }
-            }
-          } catch {}
-        }
+          finalizeAssistantBlock(ed, {
+            anchor,
+            startLineHint: insertLine,
+            autoInsertUserPrompt: !!autoInsert,
+            autoFocusUserPrompt: !!autoFocus
+          });
+        } catch {}
       } else {
         try { window.zion.commands.executeCommand("zion.sessions.appendAssistantToken", { id: sid, token: "\n", runId }); } catch {}
       }
       tokenBuffer.stop();
-      setRunState(sid, { streaming: false, awaiting: true });
-      runControllers.delete(sid);
+      runtime.markAwaiting(sid);
       window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
       window.zion.events.emit("chat/runFinished", { runId, sessionId: sid });
     };
@@ -718,7 +531,7 @@ export async function activate(ctx) {
         },
         onEnd: () => { /* 中间步骤不清理，留到链式结束后统一 finalize */ },
         onError: (e) => {
-          if (e?.name === "AbortError") { aborted = true; setRunState(sid, { aborted: true, streaming: false }); runControllers.delete(sid); return; }
+          if (e?.name === "AbortError") { aborted = true; runtime.markAborted(sid); return; }
           window.zion.state.set("chat.error", e.message);
           window.zion.events.emit("chat/runError", { runId, error: e, sessionId: sid });
           // 显示错误通知
@@ -731,16 +544,10 @@ export async function activate(ctx) {
             console.error('[langchain-chat] failed to show error notification:', err);
           }
           aborted = true;
-          setRunState(sid, { aborted: true, streaming: false });
-          runControllers.delete(sid);
+          runtime.markError(sid, e);
         },
         getController: (controller) => {
-          streamController = controller;
-          if (getRunState(sid)?.aborted) {
-            try { controller?.abort?.(); } catch {}
-            return;
-          }
-          runControllers.set(sid, controller);
+          runtime.setController(sid, controller);
         },
         runId,
         sessionId: sid
@@ -1039,96 +846,11 @@ export async function activate(ctx) {
     }
   };
 
-  // 解析消息内容，组装 messages 数组（支持图片）
-  function parseMessages(content) {
-    const lines = content.split("\n");
-    const messages = [];
-    let currentRole = "user"; // 默认角色
-    let currentContent = [];
-    let currentImages = [];
-
-    for (const line of lines) {
-      const roleMatch = line.match(/^(system|user|assistant)\s+(.*)$/);
-      const imageMatch = line.match(/^!\[.*\]\((.*)\)$/);
-      const trimmed = line.trim();
-
-      // Skip widget stubs (e.g., "思考", "调用 read")
-      if (/^(思考|Thinking)$/i.test(trimmed)) {
-        continue;
-      }
-      if (/^(调用|Call)\s+\S+$/i.test(trimmed)) {
-        continue;
-      }
-
-      if (roleMatch) {
-        // If the body is a widget stub, skip this line
-        const body = roleMatch[2].trim();
-        if (/^(思考|Thinking|调用|Call)\s*/i.test(body)) {
-          continue;
-        }
-        if (currentContent.length > 0 || currentImages.length > 0) {
-          const message = { role: currentRole, content: [] };
-          if (currentContent.length > 0) {
-            message.content.push({ type: "text", text: currentContent.join("\n").trim() });
-          }
-          for (const img of currentImages) {
-            if (img.startsWith("http") || img.startsWith("app://")) {
-              message.content.push({ type: "image_url", image_url: { url: img } });
-            }
-          }
-          messages.push(message);
-          currentContent = [];
-          currentImages = [];
-        }
-        currentRole = roleMatch[1];
-        const contentPart = roleMatch[2];
-        if (contentPart.trim()) currentContent.push(contentPart);
-      } else if (imageMatch) {
-        const imageUrl = imageMatch[1];
-        currentImages.push(imageUrl);
-      } else {
-        currentContent.push(line);
-      }
-    }
-
-    if (currentContent.length > 0 || currentImages.length > 0) {
-      const message = { role: currentRole, content: [] };
-      if (currentContent.length > 0) {
-        message.content.push({ type: "text", text: currentContent.join("\n").trim() });
-      }
-      for (const img of currentImages) {
-        if (img.startsWith("http") || img.startsWith("app://")) {
-          message.content.push({ type: "image_url", image_url: { url: img } });
-        }
-      }
-      messages.push(message);
-    }
-
-    const simplifiedMessages = messages.map(msg => {
-      if (msg.content.length === 1 && msg.content[0].type === "text") {
-        return { role: msg.role, content: msg.content[0].text };
-      }
-      return msg;
-    });
-
-    return simplifiedMessages;
-  }
-
   // 注册命令（完全复用现有 ID）
   const cmds = [
     window.zion.commands.registerCommand("chat.runSelection", () => doRun({ useSelection: true })),
     window.zion.commands.registerCommand("chat.run", () => doRun({})),
-    window.zion.commands.registerCommand("chat.stop", () => {
-      // 仅停止当前会话的流式输出并中止其请求
-      const sid = getSessionId();
-      if (!sid) return;
-      const rs = getRunState(sid);
-      setRunState(sid, { streaming: false, aborted: true });
-      const controller = runControllers.get(sid);
-      if (controller?.abort) controller.abort();
-      runControllers.delete(sid);
-      window.zion.events.emit("chat/aborted", { runId: rs?.runId, sessionId: sid });
-    }),
+    window.zion.commands.registerCommand("chat.stop", () => runtime.stopSession()),
     window.zion.commands.registerCommand("chat.retry", () => doRun({}))
   ];
   ctx.subscriptions.push(...cmds);

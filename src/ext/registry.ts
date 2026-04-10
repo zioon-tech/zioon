@@ -78,7 +78,7 @@ class Registry {
 
   // Chat Runner (MVP) state
   private activeModel: { providerId: string; modelId: string } | null = null;
-  private currentRun: { id: string; timer: number; endPos: number } | null = null;
+  private currentRuns: Map<string, { id: string; timer: number; endPos: number }> = new Map();
   private lastPrompt: string | null = null;
 
   attachEditor(core: EditorCore) {
@@ -1966,23 +1966,28 @@ class Registry {
   private __chatGetActiveModel(): { providerId: string; modelId: string } | null {
     return this.activeModel;
   }
+  private __syncGlobalStreaming(): void {
+    let any = false;
+    for (const [, run] of this.currentRuns) {
+      if (run.timer) { any = true; break; }
+    }
+    this.state.set("chat.streaming", any);
+  }
 
   // Start a chat run: parse messages, pick latest user (or selection), stream an echo response
   private __chatRun(opts?: { useSelection?: boolean; prompt?: string }): boolean {
     try {
       if (!this.editorCore) return false;
-      // Prevent concurrent runs
-      if (this.currentRun?.timer) {
-        console.warn("[zion] chat already running");
+      const sessionId: string = this.state.get("sessions.currentId") || "__default__";
+      if (this.currentRuns.has(sessionId)) {
+        console.warn("[zion] chat already running for session", sessionId);
         return false;
       }
       const view = this.editorCore.view;
       const docText = view.state.doc.toString();
 
-      // 1) 优先使用传入的 prompt
       let prompt = (opts?.prompt ?? "").trim();
 
-      // 2) 其次使用选区
       if (!prompt) {
         const sel = view.state.selection.main;
         if (opts?.useSelection && !sel.empty) {
@@ -1990,7 +1995,6 @@ class Registry {
         }
       }
 
-      // 3) 最后回退到文档中最新的 user 区块
       if (!prompt) {
         const msgs = this.__parseRoleMessages(docText);
         for (let i = msgs.length - 1; i >= 0; i--) {
@@ -2007,10 +2011,8 @@ class Registry {
       }
       this.lastPrompt = prompt;
 
-      // Compose a fake response (MVP); future: stream from selected provider via LangChain
       const response = "Echo: " + prompt;
 
-      // Insert "assistant " block at document end and stream into it
       const state = view.state;
       const docLen = state.doc.length;
       const endsWithNL = docLen === 0 ? true : state.sliceDoc(docLen - 1, docLen) === "\n";
@@ -2018,14 +2020,11 @@ class Registry {
       this.editorCore.view.dispatch({ changes: { from: docLen, to: docLen, insert: head } });
       let endPos = docLen + head.length;
 
-      // Mark run state
       const runId = "run_" + Math.random().toString(36).slice(2);
       this.state.set("chat.runId", runId);
-      this.state.set("chat.streaming", true);
       this.state.set("chat.error", null);
-      this.events.emit("chat/runStarted", { runId, model: this.activeModel });
+      this.events.emit("chat/runStarted", { runId, model: this.activeModel, sessionId });
 
-      // Tokenize response into small chunks and stream
       const chunks: string[] = [];
       const chunkSize = 40;
       for (let i = 0; i < response.length; i += chunkSize) {
@@ -2035,47 +2034,58 @@ class Registry {
       let idx = 0;
       const timer = window.setInterval(() => {
         try {
+          const run = this.currentRuns.get(sessionId);
+          if (!run) {
+            window.clearInterval(timer);
+            return;
+          }
           if (idx < chunks.length) {
             const piece = chunks[idx++];
             this.editorCore!.view.dispatch({ changes: { from: endPos, to: endPos, insert: piece } });
             endPos += piece.length;
+            run.endPos = endPos;
             this.events.emit("chat/token", { runId, token: piece });
           } else {
-            // finalize with newline
             this.editorCore!.view.dispatch({ changes: { from: endPos, to: endPos, insert: "\n" } });
-            window.clearInterval(this.currentRun!.timer);
-            const finishedRunId = this.currentRun!.id;
-            this.currentRun = null;
-            this.state.set("chat.streaming", false);
+            window.clearInterval(run.timer);
+            const finishedRunId = run.id;
+            this.currentRuns.delete(sessionId);
+            this.__syncGlobalStreaming();
             this.events.emit("chat/runFinished", { runId: finishedRunId });
           }
         } catch (e) {
-          try { window.clearInterval(this.currentRun!.timer); } catch {}
-          this.currentRun = null;
-          this.state.set("chat.streaming", false);
+          const run = this.currentRuns.get(sessionId);
+          if (run) {
+            try { window.clearInterval(run.timer); } catch {}
+            this.currentRuns.delete(sessionId);
+          }
+          this.__syncGlobalStreaming();
           this.state.set("chat.error", (e as any)?.message || String(e));
           this.events.emit("chat/runError", { runId, error: e });
         }
       }, 40);
 
-      this.currentRun = { id: runId, timer, endPos };
+      this.currentRuns.set(sessionId, { id: runId, timer, endPos });
+      this.__syncGlobalStreaming();
       return true;
     } catch (e) {
       console.error("[zion] chat.run error", e);
       this.state.set("chat.error", (e as any)?.message || String(e));
-      this.state.set("chat.streaming", false);
+      this.__syncGlobalStreaming();
       return false;
     }
   }
 
   private __chatStop(): void {
     try {
-      if (!this.currentRun) return;
-      const runId = this.currentRun.id;
-      try { window.clearInterval(this.currentRun.timer); } catch {}
-      this.currentRun = null;
-      this.state.set("chat.streaming", false);
-      this.events.emit("chat/aborted", { runId });
+      const sessionId: string = this.state.get("sessions.currentId") || "__default__";
+      const run = this.currentRuns.get(sessionId);
+      if (!run) return;
+      const runId = run.id;
+      try { window.clearInterval(run.timer); } catch {}
+      this.currentRuns.delete(sessionId);
+      this.__syncGlobalStreaming();
+      this.events.emit("chat/aborted", { runId, sessionId });
     } catch (e) {
       console.error("[zion] chat.stop error", e);
     }
@@ -2083,7 +2093,7 @@ class Registry {
 
   private __chatRetry(): void {
     try {
-      if (this.currentRun) {
+      if (this.currentRuns.size > 0) {
         console.warn("[zion] chat is running; stop first");
         return;
       }

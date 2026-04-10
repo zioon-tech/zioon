@@ -513,9 +513,8 @@ export function installThinkingCards() {
       }
     }
     onRunStarted = (payload) => {
-      const cur = window.zion?.state?.get("sessions.currentId");
-      if (payload?.sessionId && payload.sessionId !== cur) return;
-      this.sessionId = cur || this.sessionId;
+      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
+      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
       try {
         const sid = this.sessionId;
         const runId = payload?.runId;
@@ -545,9 +544,8 @@ export function installThinkingCards() {
     onReasoningStart = (payload) => {
       const visible = !!window.zion.state.get("chat.thinkingVisible");
       if (!visible) return;
-      const cur = window.zion?.state?.get("sessions.currentId");
-      if (payload?.sessionId && payload.sessionId !== cur) return;
-      this.sessionId = cur || this.sessionId;
+      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
+      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
       this.suspendSnapshot = false;
 
       const runId = payload?.runId || Math.random().toString(36).slice(2);
@@ -577,9 +575,8 @@ export function installThinkingCards() {
     onReasoningToken = (payload) => {
       const visible = !!window.zion.state.get("chat.thinkingVisible");
       if (!visible) return;
-      const cur = window.zion?.state?.get("sessions.currentId");
-      if (payload?.sessionId && payload.sessionId !== cur) return;
-      this.sessionId = cur || this.sessionId;
+      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
+      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
 
       const runId = payload?.runId;
       const sid = this.sessionId;
@@ -605,9 +602,8 @@ export function installThinkingCards() {
       }
     };
     onReasoningEnd = (payload) => {
-      const cur = window.zion?.state?.get("sessions.currentId");
-      if (payload?.sessionId && payload.sessionId !== cur) return;
-      this.sessionId = cur || this.sessionId;
+      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
+      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       this.flush();
     };

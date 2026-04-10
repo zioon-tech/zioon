@@ -1342,6 +1342,16 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dDelete);
 
+  const getTargetEditor = (panelId) => {
+    if (panelId) {
+      try {
+        const panelEditor = window.zion?.panels?.getEditor?.(panelId);
+        if (panelEditor) return panelEditor;
+      } catch {}
+    }
+    return window.zion.window.activeEditor;
+  };
+
   // Switch
   const dSwitch = window.zion.commands.registerCommand("zion.sessions.switch", async (idOrOpts, maybeOpts) => {
     const id = typeof idOrOpts === "string" ? idOrOpts : idOrOpts?.id;
@@ -1386,12 +1396,12 @@ export async function activate(ctx) {
     window.zion.state.set("sessions.currentId", id);
     try {
       const text = await loadDocAsync(id);
-      window.zion.window.activeEditor?.setValue(text);
+      getTargetEditor(opts?.panelId)?.setValue(text);
       try { applyAnnotationsForSession(id); } catch {}
     } catch {}
     try {
       const state = sessionUiState.get(id);
-      const ed = window.zion.window.activeEditor;
+      const ed = getTargetEditor(opts?.panelId);
       if (state && ed?.core?.view) {
         requestAnimationFrame(() => requestAnimationFrame(() => {
           try {
