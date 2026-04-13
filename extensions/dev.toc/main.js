@@ -495,7 +495,7 @@ export async function activate(ctx) {
       t = setTimeout(() => fn(...args), wait);
     };
   }
-  let tocUI = {
+  const createTOCUI = () => ({
     wrapper: null,
     panel: null,
     button: null,
@@ -509,8 +509,15 @@ export async function activate(ctx) {
     prevEditorFlex: "",
     prevEditorWidth: "",
     originalParent: null,
-    originalNextSibling: null
-  };
+    originalNextSibling: null,
+    panelId: null,
+    open: false,
+    overlay: false,
+    editor: null,
+    debouncedUpdate: null
+  });
+  let tocUI = createTOCUI();
+  const tocInstances = new Map();
   // collapsed state set for headings: keep ids of collapsed nodes so updates can preserve UI state
   const tocState = {
     collapsed: new Set(),
@@ -518,9 +525,48 @@ export async function activate(ctx) {
     generatingBlockId: null, // 当前正在生成的块ID（用于显示动画）
     lastGeneratedBlockId: null // 上一次生成的块ID（用于持久化指示）
   };
-  let sidePanelOpen = false;
-  let sideOverlayMode = false;
-  const debouncedUpdate = debounce(() => updateTOCList(), 120);
+  const getPanelIdFromEditor = (ed) => {
+    try { return ed?.panelId || getEditorEl(ed)?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null; } catch { return null; }
+  };
+  const getTOCUIForEditor = (ed) => {
+    const panelId = getPanelIdFromEditor(ed);
+    return panelId ? (tocInstances.get(panelId) || null) : null;
+  };
+  const getBoundPanelId = (ui = tocUI) => {
+    try { return ui?.panelId || ui?.editorEl?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null; } catch { return null; }
+  };
+  const forEachOpenTOCUI = (fn) => {
+    for (const ui of tocInstances.values()) {
+      if (!ui?.open) continue;
+      try { fn(ui); } catch {}
+    }
+  };
+
+  const getEditorEl = (ed) => {
+    try { return ed?.getView?.()?.dom || ed?.core?.view?.dom || null; } catch { return null; }
+  };
+
+  const createTOCWrapper = () => {
+    const wrapper = document.createElement("div");
+    wrapper.id = "zion-toc-wrapper";
+    wrapper.style.position = "relative";
+    wrapper.style.width = "100%";
+    wrapper.style.height = "100%";
+    wrapper.style.display = "block";
+    return wrapper;
+  };
+
+  const bindTOCUIToEditor = (ed) => {
+    try {
+      const ui = getTOCUIForEditor(ed);
+      const edEl = getEditorEl(ed);
+      if (!edEl || !ui?.panel) return false;
+      tocUI = ui;
+      return !!ui.wrapper;
+    } catch {
+      return false;
+    }
+  };
 
   // Helper: 根据会话ID获取对应的TOC块ID
   const getTOCBlockIdForSession = (sessionId) => {
@@ -543,7 +589,7 @@ export async function activate(ctx) {
         if (tocState.lastGeneratedBlockId) {
           tocState.lastGeneratedBlockId = null;
         }
-        if (sidePanelOpen) debouncedUpdate();
+        forEachOpenTOCUI((ui) => ui.debouncedUpdate?.());
       }
     };
 
@@ -553,7 +599,7 @@ export async function activate(ctx) {
         tocState.lastGeneratedBlockId = tocState.generatingBlockId;
       }
       tocState.generatingBlockId = null;
-      if (sidePanelOpen) debouncedUpdate();
+      forEachOpenTOCUI((ui) => ui.debouncedUpdate?.());
     };
 
     window.zion.events.on("chat/runStarted", onRunStarted);
@@ -569,9 +615,9 @@ export async function activate(ctx) {
     ctx.chatEventsCleanup = chatEventsCleanup;
   } catch {}
 
-  const syncToggleAllBtn = () => {
+  const syncToggleAllBtn = (ui = tocUI) => {
     try {
-      const btn = tocUI?.toggleAllBtn;
+      const btn = ui?.toggleAllBtn;
       if (!btn) return;
       const total = tocState.allCollapsibleIds.size;
       let allCollapsed = total > 0;
@@ -592,9 +638,9 @@ export async function activate(ctx) {
     } catch {}
   };
 
-  const syncGroupBtnUI = () => {
+  const syncGroupBtnUI = (ui = tocUI) => {
     try {
-      const groupBtn = tocUI?.groupBtn;
+      const groupBtn = ui?.groupBtn;
       if (!groupBtn) return;
       const on = !!window?.zion?.state?.get?.('toc.groupByRole');
       groupBtn.style.opacity = on ? "1" : "0.7";
@@ -607,12 +653,12 @@ export async function activate(ctx) {
   // Layout the side panel to sit flush left of the editor content while keeping the whole group centered.
   // New logic: decide overlay by a simple threshold derived from width mode, not from current measured editor width.
   // This avoids false overlays in "full"/"wide" and keeps inline layout on typical laptop screens.
-  const applySideLayout = () => {
+  const applySideLayout = (ui = tocUI) => {
     try {
-      if (!tocUI.wrapper || !tocUI.panel || !tocUI.editorEl) return;
-      const wrapper = tocUI.wrapper;
-      const edEl = tocUI.editorEl;
-      const scroller = tocUI.scrollerEl || edEl;
+      if (!ui?.wrapper || !ui?.panel || !ui?.editorEl) return;
+      const wrapper = ui.wrapper;
+      const edEl = ui.editorEl;
+      const scroller = ui.scrollerEl || edEl;
 
       // Ensure wrapper is a flex row centered as a group (panel + editor)
       wrapper.style.display = "flex";
@@ -621,14 +667,14 @@ export async function activate(ctx) {
       wrapper.style.position = "relative";
 
       // Ensure the panel has a stable flex-basis/width
-      let basis = tocUI.panel.offsetWidth || 240;
+      let basis = ui.panel.offsetWidth || 240;
       if (basis <= 0) basis = 240;
       basis = Math.max(220, Math.min(480, basis));
-      tocUI.panel.style.flex = `0 0 ${basis}px`;
-      tocUI.panel.style.width = `${basis}px`;
+      ui.panel.style.flex = `0 0 ${basis}px`;
+      ui.panel.style.width = `${basis}px`;
       // Ensure panel maintains flex column layout for sticky toolbar
-      tocUI.panel.style.display = 'flex';
-      tocUI.panel.style.flexDirection = 'column';
+      ui.panel.style.display = 'flex';
+      ui.panel.style.flexDirection = 'column';
 
       const available = wrapper.clientWidth || window.innerWidth;
 
@@ -648,30 +694,30 @@ export async function activate(ctx) {
 
       if (shouldOverlay) {
         // Overlay: panel floats; editor keeps its own width/margins (from width mode)
-        sideOverlayMode = true;
-        tocUI.panel.style.position = "absolute";
-        tocUI.panel.style.left = "0";
-        tocUI.panel.style.top = "0";
-        tocUI.panel.style.bottom = "0";
-        tocUI.panel.style.height = "100%";
-        tocUI.panel.style.zIndex = "120";
+        ui.overlay = true;
+        ui.panel.style.position = "absolute";
+        ui.panel.style.left = "0";
+        ui.panel.style.top = "0";
+        ui.panel.style.bottom = "0";
+        ui.panel.style.height = "100%";
+        ui.panel.style.zIndex = "120";
 
         edEl.style.flex = "1 1 auto";
         // restore previous editor inline width if any; otherwise let width-mode rules apply
-        edEl.style.width = tocUI.prevEditorWidth || "";
+        edEl.style.width = ui.prevEditorWidth || "";
         if (scroller) {
-          scroller.style.marginLeft = tocUI.prevScrollerMarginLeft || "";
-          scroller.style.marginRight = tocUI.prevScrollerMarginRight || "";
+          scroller.style.marginLeft = ui.prevScrollerMarginLeft || "";
+          scroller.style.marginRight = ui.prevScrollerMarginRight || "";
         }
       } else {
         // Inline: panel sits left, editor takes remaining space; remove auto margins for proper side-by-side centering
-        sideOverlayMode = false;
-        tocUI.panel.style.position = "relative";
-        tocUI.panel.style.left = "";
-        tocUI.panel.style.top = "";
-        tocUI.panel.style.bottom = "";
-        tocUI.panel.style.height = "100%";
-        tocUI.panel.style.zIndex = "";
+        ui.overlay = false;
+        ui.panel.style.position = "relative";
+        ui.panel.style.left = "";
+        ui.panel.style.top = "";
+        ui.panel.style.bottom = "";
+        ui.panel.style.height = "100%";
+        ui.panel.style.zIndex = "";
 
         if (scroller) {
           scroller.style.marginLeft = "0";
@@ -683,13 +729,13 @@ export async function activate(ctx) {
     } catch {}
   };
 
-  const updateTOCList = () => {
+  const updateTOCList = (ui = tocUI) => {
     try {
-      const ed = window.zion.window.activeEditor;
-      if (!ed || !tocUI.panel) return;
+      const ed = ui?.editor || window.zion.window.activeEditor;
+      if (!ed || !ui?.panel) return;
       const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
 
-      let list = tocUI.panel.querySelector('#zion-toc-list');
+      let list = ui.panel.querySelector('#zion-toc-list');
       if (!list) {
         list = document.createElement('div');
         list.id = 'zion-toc-list';
@@ -700,7 +746,7 @@ export async function activate(ctx) {
         list.style.minHeight = '0';
         list.style.maxWidth = '100%';
         list.style.boxSizing = 'border-box';
-        tocUI.panel.appendChild(list);
+        ui.panel.appendChild(list);
       }
       list.innerHTML = '';
 
@@ -788,7 +834,7 @@ export async function activate(ctx) {
               e.stopPropagation();
               if (tocState.collapsed.has(item.id)) tocState.collapsed.delete(item.id);
               else tocState.collapsed.add(item.id);
-              debouncedUpdate();
+              ui.debouncedUpdate?.();
             };
             
             // Show chevron on row hover
@@ -935,7 +981,7 @@ export async function activate(ctx) {
                 e.stopPropagation();
                 if (tocState.collapsed.has(blockId)) tocState.collapsed.delete(blockId);
                 else tocState.collapsed.add(blockId);
-                debouncedUpdate();
+                ui.debouncedUpdate?.();
               };
               
               // Show chevron on row hover
@@ -1039,7 +1085,7 @@ export async function activate(ctx) {
               // Clear persistent indicator on click
               if (tocState.lastGeneratedBlockId === blockId) {
                 tocState.lastGeneratedBlockId = null;
-                setTimeout(() => debouncedUpdate(), 0);
+                setTimeout(() => ui.debouncedUpdate?.(), 0);
               }
               try {
                 window?.zion?.state?.set?.('toc.activeHeadingId', null);
@@ -1059,7 +1105,7 @@ export async function activate(ctx) {
         }
       }
 
-      syncToggleAllBtn();
+      syncToggleAllBtn(ui);
 
       try {
         const activeHeadingId = window?.zion?.state?.get?.('toc.activeHeadingId');
@@ -1095,9 +1141,9 @@ export async function activate(ctx) {
     } catch {}
   };
 
-  const openSideTOC = () => {
-    const ed = window.zion.window.activeEditor;
+  const openSideTOC = (ed = window.zion.window.activeEditor) => {
     const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
+    const ui = getTOCUIForEditor(ed);
     if (!ed) return showOverlayTOC();
     try {
       const t = document?.documentElement?.dataset?.zionDeviceType;
@@ -1106,29 +1152,30 @@ export async function activate(ctx) {
     try {
       if (window.innerWidth < 768) return showOverlayTOC();
     } catch {}
-    if (!tocUI.wrapper || !tocUI.panel || !tocUI.editorEl) {
+    if (!bindTOCUIToEditor(ed) || !ui?.wrapper || !ui?.panel || !ui?.editorEl) {
       // UI not ready (editor DOM not found) -> fallback to overlay
       return showOverlayTOC();
     }
+    tocUI = ui;
     // Show panel
-    tocUI.panel.style.display = "block";
+    ui.panel.style.display = "block";
 
     // Backup current styles to restore when closing
-    const scroller = tocUI.scrollerEl || tocUI.editorEl;
-    if (tocUI.wrapper) {
-      tocUI.prevWrapperJustifyContent = tocUI.wrapper.style.justifyContent || "";
+    const scroller = ui.scrollerEl || ui.editorEl;
+    if (ui.wrapper) {
+      ui.prevWrapperJustifyContent = ui.wrapper.style.justifyContent || "";
     }
-    if (tocUI.editorEl) {
-      tocUI.prevEditorFlex = tocUI.editorEl.style.flex || "";
-      tocUI.prevEditorWidth = tocUI.editorEl.style.width || "";
+    if (ui.editorEl) {
+      ui.prevEditorFlex = ui.editorEl.style.flex || "";
+      ui.prevEditorWidth = ui.editorEl.style.width || "";
     }
     if (scroller) {
-      tocUI.prevScrollerMarginLeft = scroller.style.marginLeft || "";
-      tocUI.prevScrollerMarginRight = scroller.style.marginRight || "";
+      ui.prevScrollerMarginLeft = scroller.style.marginLeft || "";
+      ui.prevScrollerMarginRight = scroller.style.marginRight || "";
     }
 
     // Apply centered layout with panel snug to the editor content
-    applySideLayout();
+    applySideLayout(ui);
 
     // Sync active heading/block based on visible content (cursor-in-view prefers cursor)
     try {
@@ -1137,40 +1184,42 @@ export async function activate(ctx) {
     } catch {}
 
     // Build list
-    updateTOCList();
-    sidePanelOpen = true;
+    updateTOCList(ui);
+    ui.open = true;
   };
 
-  const closeSideTOC = () => {
-    if (!tocUI.wrapper || !tocUI.panel || !tocUI.editorEl) return;
-    tocUI.panel.style.display = "none";
-    sideOverlayMode = false;
+  const closeSideTOC = (ui = tocUI) => {
+    if (!ui?.wrapper || !ui?.panel || !ui?.editorEl) return;
+    ui.panel.style.display = "none";
+    ui.overlay = false;
     // Restore wrapper layout
-    if (tocUI.wrapper) {
-      tocUI.wrapper.style.display = "block";
-      tocUI.wrapper.style.justifyContent = tocUI.prevWrapperJustifyContent || "";
+    if (ui.wrapper) {
+      ui.wrapper.style.display = "block";
+      ui.wrapper.style.justifyContent = ui.prevWrapperJustifyContent || "";
     }
     // Restore editor element sizing
-    if (tocUI.editorEl) {
-      tocUI.editorEl.style.flex = tocUI.prevEditorFlex || "";
-      tocUI.editorEl.style.width = tocUI.prevEditorWidth || "";
+    if (ui.editorEl) {
+      ui.editorEl.style.flex = ui.prevEditorFlex || "";
+      ui.editorEl.style.width = ui.prevEditorWidth || "";
     }
     // Restore scroller margins
-    const scroller = tocUI.scrollerEl || tocUI.editorEl;
+    const scroller = ui.scrollerEl || ui.editorEl;
     if (scroller) {
-      scroller.style.marginLeft = tocUI.prevScrollerMarginLeft || "";
-      scroller.style.marginRight = tocUI.prevScrollerMarginRight || "";
-      tocUI.prevScrollerMarginLeft = "";
-      tocUI.prevScrollerMarginRight = "";
+      scroller.style.marginLeft = ui.prevScrollerMarginLeft || "";
+      scroller.style.marginRight = ui.prevScrollerMarginRight || "";
+      ui.prevScrollerMarginLeft = "";
+      ui.prevScrollerMarginRight = "";
     }
-    sidePanelOpen = false;
+    ui.open = false;
   };
 
   const toggleSideTOC = () => {
+    const ed = window.zion.window.activeEditor;
+    const ui = getTOCUIForEditor(ed);
     try {
       const t = document?.documentElement?.dataset?.zionDeviceType;
       if (t === "mobile") {
-        try { closeSideTOC(); } catch {}
+        try { closeSideTOC(ui); } catch {}
         try {
           const exist = document.getElementById("zion-toc-panel");
           if (exist) { exist.remove(); return; }
@@ -1180,7 +1229,7 @@ export async function activate(ctx) {
     } catch {}
     try {
       if (window.innerWidth < 768) {
-        try { closeSideTOC(); } catch {}
+        try { closeSideTOC(ui); } catch {}
         try {
           const exist = document.getElementById("zion-toc-panel");
           if (exist) { exist.remove(); return; }
@@ -1188,8 +1237,8 @@ export async function activate(ctx) {
         return showOverlayTOC();
       }
     } catch {}
-    if (sidePanelOpen) closeSideTOC();
-    else openSideTOC();
+    if (ui?.open) closeSideTOC(ui);
+    else openSideTOC(ed);
   };
 
   const showOverlayTOC = () => {
@@ -1390,7 +1439,9 @@ export async function activate(ctx) {
   };
 
   // commands
-  const d1 = window.zion.commands.registerCommand("toc.show", () => toggleSideTOC());
+  const d1 = window.zion.commands.registerCommand("toc.show", () => {
+    return toggleSideTOC();
+  });
   const d2 = window.zion.commands.registerCommand("toc.insert", () => insertMarkdownTOC());
   ctx.subscriptions.push(d1, d2);
 
@@ -1419,13 +1470,13 @@ export async function activate(ctx) {
       try { window.zion.state.set('toc.activeHeadingId', null); } catch {}
       try { window.zion.state.set('toc.activeBlockId', null); } catch {}
       try { localStorage.setItem('zion.toc.groupByRole', next ? '1' : '0'); } catch {}
-      if (sidePanelOpen) {
+      forEachOpenTOCUI((ui) => {
         try {
-          const maybeView = window?.zion?.window?.activeEditor?.core?.view || null;
+          const maybeView = ui?.editor?.core?.view || null;
           computeActiveTOCAtCursor(maybeView);
         } catch {}
-        debouncedUpdate();
-      }
+        ui.debouncedUpdate?.();
+      });
     } catch {}
   });
   ctx.subscriptions.push(dToggle);
@@ -1486,22 +1537,30 @@ export async function activate(ctx) {
   const d5 = window.zion.editor.registerDecorator({
     id: "dev.toc.ui",
     apply(editor) {
+      let ui = null;
       try {
+        const panelId = getPanelIdFromEditor(editor);
         // Find CM6 editor root
-        const edEl = document.querySelector(".cm-editor");
+        const edEl = getEditorEl(editor) || document.querySelector(".cm-editor");
         if (!edEl) return { dispose() {} };
+        ui = panelId ? tocInstances.get(panelId) : null;
+        if (!ui) {
+          ui = createTOCUI();
+          ui.panelId = panelId || null;
+          ui.editor = editor;
+          ui.debouncedUpdate = debounce(() => updateTOCList(ui), 120);
+          if (panelId) tocInstances.set(panelId, ui);
+        } else {
+          ui.editor = editor;
+        }
+        tocUI = ui;
 
         // Build UI once
-        if (!tocUI.wrapper) {
+        if (!ui.wrapper) {
           const originalParent = edEl.parentElement;
           const originalNextSibling = edEl.nextSibling;
 
-          const wrapper = document.createElement("div");
-          wrapper.id = "zion-toc-wrapper";
-          wrapper.style.position = "relative";
-          wrapper.style.width = "100%";
-          wrapper.style.height = "100%";
-          wrapper.style.display = "block";
+          const wrapper = createTOCWrapper();
 
           // Insert wrapper before editor and move editor inside it
           originalParent.insertBefore(wrapper, edEl);
@@ -1517,7 +1576,7 @@ export async function activate(ctx) {
           panel.style.maxWidth = "480px";
           panel.style.height = "100%";
           // Prevent horizontal scrolling in the TOC side panel; allow only vertical scrolling
-          panel.style.display = "flex";
+          panel.style.display = "none";
           panel.style.flexDirection = "column";
           panel.style.background = "var(--ext-toc-bg, var(--bg))";
           // remove right border to avoid visual divider
@@ -1600,10 +1659,10 @@ export async function activate(ctx) {
           groupBtn.style.cursor = "pointer";
           groupBtn.style.opacity = "0.7";
           groupBtn.style.transition = "opacity 120ms ease";
-          tocUI.groupBtn = groupBtn;
+          ui.groupBtn = groupBtn;
           groupBtn.onclick = () => window.zion.commands.executeCommand("toc.toggleGroupByRole");
           toolbar.appendChild(groupBtn);
-          syncGroupBtnUI();
+          syncGroupBtnUI(ui);
 
           const toggleAllBtn = document.createElement("button");
           toggleAllBtn.setAttribute('aria-label', '折叠全部');
@@ -1632,13 +1691,13 @@ export async function activate(ctx) {
                 tocState.collapsed.clear();
                 for (const id of tocState.allCollapsibleIds) tocState.collapsed.add(id);
               }
-              updateTOCList();
+              updateTOCList(ui);
             } catch {}
           };
           toolbar.appendChild(toggleAllBtn);
 
-          tocUI.toggleAllBtn = toggleAllBtn;
-          syncToggleAllBtn();
+          ui.toggleAllBtn = toggleAllBtn;
+          syncToggleAllBtn(ui);
 
           // 复制按钮（内联 clipboard SVG）
           const copyBtn = document.createElement("button");
@@ -1714,7 +1773,7 @@ export async function activate(ctx) {
           collapseBtn.style.opacity = "0.7";
           collapseBtn.style.transition = "opacity 120ms ease";
           collapseBtn.onclick = () => {
-            closeSideTOC();
+            closeSideTOC(ui);
           };
           toolbar.appendChild(collapseBtn);
 
@@ -1747,14 +1806,14 @@ export async function activate(ctx) {
           panel.appendChild(list);
 
           // Save refs
-          tocUI.wrapper = wrapper;
-          tocUI.panel = panel;
-          tocUI.button = null;
-          tocUI.editorEl = edEl;
-          tocUI.scrollerEl = edEl.querySelector(".cm-scroller") || edEl;
-          tocUI.prevScrollerMarginLeft = "";
-          tocUI.originalParent = originalParent;
-          tocUI.originalNextSibling = originalNextSibling;
+          ui.wrapper = wrapper;
+          ui.panel = panel;
+          ui.button = null;
+          ui.editorEl = edEl;
+          ui.scrollerEl = edEl.querySelector(".cm-scroller") || edEl;
+          ui.prevScrollerMarginLeft = "";
+          ui.originalParent = originalParent;
+          ui.originalNextSibling = originalNextSibling;
         }
       } catch {}
 
@@ -1777,8 +1836,8 @@ export async function activate(ctx) {
               scheduleComputeActiveTOCByVisibility(u.view);
             }
           } catch {}
-          if (sidePanelOpen && tocUI.panel && (u.docChanged || u.viewportChanged || u.selectionSet)) {
-            debouncedUpdate();
+          if (ui.open && ui.panel && (u.docChanged || u.viewportChanged || u.selectionSet)) {
+            ui.debouncedUpdate?.();
           }
         }
         destroy() {
@@ -1788,27 +1847,27 @@ export async function activate(ctx) {
 
       // Keep editor scroller left-aligned when width mode changes while TOC is open
       const widthModeSub = window.zion.state.onDidChange("ui.editorWidthMode", () => {
-        if (sidePanelOpen) {
-          applySideLayout();
+        if (ui.open) {
+          applySideLayout(ui);
         }
       });
       // 监听分组模式状态变化以同步按钮样式与列表
       const groupModeSub = window.zion.state.onDidChange("toc.groupByRole", () => {
         try {
-          try { syncGroupBtnUI(); } catch {}
-          if (sidePanelOpen) debouncedUpdate();
+          try { syncGroupBtnUI(ui); } catch {}
+          if (ui.open) ui.debouncedUpdate?.();
         } catch {}
       });
       // 点击子目录时的高亮状态变化，触发列表重绘
       const activeHeadingSub = window.zion.state.onDidChange("toc.activeHeadingId", () => {
         try {
-          if (sidePanelOpen) debouncedUpdate();
+          if (ui.open) ui.debouncedUpdate?.();
         } catch {}
       });
       // 当前块（角色）高亮状态变化，触发列表重绘
       const activeBlockSub = window.zion.state.onDidChange("toc.activeBlockId", () => {
         try {
-          if (sidePanelOpen) debouncedUpdate();
+          if (ui.open) ui.debouncedUpdate?.();
         } catch {}
       });
 
@@ -1816,17 +1875,17 @@ export async function activate(ctx) {
         try {
           const t = document?.documentElement?.dataset?.zionDeviceType;
           if (t === "mobile" || window.innerWidth < 768) {
-            try { closeSideTOC(); } catch {}
+            try { closeSideTOC(ui); } catch {}
             try { document.getElementById("zion-toc-panel")?.remove?.(); } catch {}
             return;
           }
         } catch {
           // ignore
         }
-        if (!sidePanelOpen) return;
-        applySideLayout();
+        if (!ui.open) return;
+        applySideLayout(ui);
         try {
-          if (sideOverlayMode) closeSideTOC();
+          if (ui.overlay) closeSideTOC(ui);
         } catch {}
       };
       window.addEventListener("resize", onResize);
@@ -1834,18 +1893,18 @@ export async function activate(ctx) {
       // Open TOC side panel by default
       try {
         const t = document?.documentElement?.dataset?.zionDeviceType;
-        if (t !== "mobile" && !sidePanelOpen && window.innerWidth >= 768) {
-          openSideTOC();
+        if (t !== "mobile" && !ui.open && window.innerWidth >= 768) {
+          openSideTOC(editor);
           try {
-            if (sideOverlayMode) closeSideTOC();
+            if (ui.overlay) closeSideTOC(ui);
           } catch {}
         }
       } catch {
         try {
-          if (!sidePanelOpen && window.innerWidth >= 768) {
-            openSideTOC();
+          if (!ui.open && window.innerWidth >= 768) {
+            openSideTOC(editor);
             try {
-              if (sideOverlayMode) closeSideTOC();
+              if (ui.overlay) closeSideTOC(ui);
             } catch {}
           }
         } catch {}
@@ -1856,13 +1915,13 @@ export async function activate(ctx) {
         dispose() {
           try {
             // Close panel if open and restore editor DOM
-            closeSideTOC();
-            if (tocUI.button) tocUI.button.remove();
-            if (tocUI.panel) tocUI.panel.remove();
-            if (tocUI.originalParent && tocUI.editorEl) {
-              tocUI.originalParent.insertBefore(tocUI.editorEl, tocUI.originalNextSibling || null);
+            closeSideTOC(ui);
+            if (ui.button) ui.button.remove();
+            if (ui.panel) ui.panel.remove();
+            if (ui.originalParent && ui.editorEl) {
+              ui.originalParent.insertBefore(ui.editorEl, ui.originalNextSibling || null);
             }
-            if (tocUI.wrapper) tocUI.wrapper.remove();
+            if (ui.wrapper) ui.wrapper.remove();
 
             // Dispose subscriptions
             try { widthModeSub?.dispose?.(); } catch {}
@@ -1872,19 +1931,21 @@ export async function activate(ctx) {
             try { window.removeEventListener("resize", onResize); } catch {}
 
             // Reset refs
-            tocUI.wrapper = null;
-            tocUI.panel = null;
-            tocUI.button = null;
-            tocUI.editorEl = null;
-            tocUI.scrollerEl = null;
-            tocUI.prevScrollerMarginLeft = "";
-            tocUI.prevScrollerMarginRight = "";
-            tocUI.prevWrapperJustifyContent = "";
-            tocUI.prevEditorFlex = "";
-            tocUI.prevEditorWidth = "";
-            tocUI.originalParent = null;
-            tocUI.originalNextSibling = null;
-            sidePanelOpen = false;
+            ui.wrapper = null;
+            ui.panel = null;
+            ui.button = null;
+            ui.editorEl = null;
+            ui.scrollerEl = null;
+            ui.prevScrollerMarginLeft = "";
+            ui.prevScrollerMarginRight = "";
+            ui.prevWrapperJustifyContent = "";
+            ui.prevEditorFlex = "";
+            ui.prevEditorWidth = "";
+            ui.originalParent = null;
+            ui.originalNextSibling = null;
+            ui.open = false;
+            ui.overlay = false;
+            if (ui.panelId) tocInstances.delete(ui.panelId);
           } catch {}
         }
       };

@@ -138,13 +138,44 @@ export async function activate(ctx) {
   ctx.subscriptions.push(decSwitcher);
 
   // 工具函数
-  const getEd = () => window.zion?.window?.activeEditor;
+  const getEd = (opts) => {
+    if (opts?.editor) return opts.editor;
+    const activePanelId = window.zion?.panels?.getActivePanelId?.();
+    if (activePanelId) {
+      const panelEd = window.zion?.panels?.getEditor?.(activePanelId);
+      if (panelEd) return panelEd;
+    }
+    return window.zion?.window?.activeEditor;
+  };
 
-  const getSessionId = () => window.zion?.state?.get("sessions.currentId");
+  const getSessionId = (opts) => {
+    if (opts?.sessionId) return opts.sessionId;
+    const activePanelId = window.zion?.panels?.getActivePanelId?.();
+    if (activePanelId) {
+      const panelSid = window.zion?.panels?.list?.().find((p) => p.id === activePanelId)?.activeTabId;
+      if (panelSid) return panelSid;
+    }
+    return window.zion?.state?.get("sessions.currentId");
+  };
+  const getPanelSessionId = (panelId) => {
+    if (!panelId) return null;
+    try {
+      return window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId || null;
+    } catch {}
+    return null;
+  };
+  const isEditorShowingSession = (editor, sid) => {
+    if (!editor || !sid) return false;
+    const panelId = editor?.panelId || null;
+    if (panelId) {
+      return getPanelSessionId(panelId) === sid;
+    }
+    return getSessionId() === sid;
+  };
   const runtime = createChatRuntime({
     state: window.zion.state,
     events: window.zion.events,
-    getSessionId
+    getSessionId: () => getSessionId()
   });
   const getRunState = runtime.getRunState;
   const setRunState = runtime.setRunState;
@@ -153,8 +184,8 @@ export async function activate(ctx) {
   window.zion.chat = {
     ...(window.zion.chat || {}),
     run: (opts = {}) => doRun(opts),
-    stop: () => runtime.stopSession(),
-    retry: () => doRun({}),
+    stop: (sid) => runtime.stopSession(sid),
+    retry: (_sid) => doRun({}),
     isStreaming: (sid) => {
       const targetSid = sid || getSessionId();
       return !!runtime.getRunState(targetSid)?.streaming;
@@ -302,14 +333,19 @@ export async function activate(ctx) {
 
   // 通用运行逻辑（含 Tool Calls 链式继续）
   const doRun = async (opts = {}) => {
-    const ed = getEd();
+    const ed = getEd(opts);
     if (!ed) {
       console.log("[langchain-chat] no active editor");
       return;
     }
     // 确保已选择激活模型
     ensureActiveModel();
-    const sid = getSessionId();
+    const sid = getSessionId(opts);
+    const panelId = ed?.panelId || null;
+    if (!sid) {
+      console.log("[langchain-chat] no target session");
+      return;
+    }
     const streaming = !!getRunState(sid)?.streaming;
     if (streaming) {
       console.log("[langchain-chat] already streaming in current session, abort");
@@ -388,7 +424,7 @@ export async function activate(ctx) {
     // 4. 状态 & 事件
     const runId = "run_" + Math.random().toString(36).slice(2);
     runtime.beginRun(sid, runId);
-    window.zion.events.emit("chat/runStarted", { runId, sessionId: sid });
+    window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId });
 
     // 工具调用收集（多步链式调用在每一步内局部收集）
     let aborted = false;
@@ -409,11 +445,11 @@ export async function activate(ctx) {
         acc = [];
         if (!getRunState(sid)?.streaming) return;
 
-        const isActiveSession = getSessionId() === sid;
-        if (!isActiveSession) {
+        const editorShowingSession = isEditorShowingSession(ed, sid);
+        if (!editorShowingSession) {
           try {
             window.zion.commands.executeCommand("zion.sessions.appendAssistantToken", { id: sid, token: text, runId });
-            window.zion.events.emit("chat/token", { runId, token: text, sessionId: sid });
+            window.zion.events.emit("chat/token", { runId, token: text, sessionId: sid, panelId });
           } catch (e) {
             console.error("[langchain-chat] background append token error:", e);
           }
@@ -427,10 +463,10 @@ export async function activate(ctx) {
             startLineHint: insertLine
           });
           if (!appended) return;
-          window.zion.events.emit("chat/token", { runId, token: text, sessionId: sid });
+          window.zion.events.emit("chat/token", { runId, token: text, sessionId: sid, panelId });
 
           // 触底才自动滚动（避免用户上拉时被抢滚）
-          const scroller = document.querySelector(".cm-scroller");
+          const scroller = ed?.getView?.()?.scrollDOM || document.querySelector(".cm-scroller");
           if (scroller) {
             const atBottom = (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) < 8;
             if (atBottom) {
@@ -465,8 +501,8 @@ export async function activate(ctx) {
     // 在最终阶段追加换行并清理（先 flush 剩余缓冲）
     const finalize = () => {
       try { tokenBuffer.flush(); } catch {}
-      const isActiveSession = getSessionId() === sid;
-      if (isActiveSession) {
+      const editorShowingSession = isEditorShowingSession(ed, sid);
+      if (editorShowingSession) {
         try {
           let autoInsert = window.zion?.state?.get('chat.autoInsertUserPrompt');
           if (autoInsert === undefined) {
@@ -491,7 +527,7 @@ export async function activate(ctx) {
       tokenBuffer.stop();
       runtime.markAwaiting(sid);
       window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
-      window.zion.events.emit("chat/runFinished", { runId, sessionId: sid });
+      window.zion.events.emit("chat/runFinished", { runId, sessionId: sid, panelId });
     };
 
     // 单步调用（收集本步工具调用并执行，返回本步的调用与结果）
@@ -512,20 +548,20 @@ export async function activate(ctx) {
           // 收集本步的 assistant tool_calls
           calls.push({ id: tc.id, name: tc.name, args: tc.args });
           // 执行工具并收集结果
-          window.zion.events.emit("chat/toolCall", { runId, toolCall: tc, sessionId: sid });
+          window.zion.events.emit("chat/toolCall", { runId, toolCall: tc, sessionId: sid, panelId });
           const p = executeToolCall(tc, sid)
             .then(res => {
               if (aborted || getRunState(sid)?.aborted) return;
               const content = String(res || "");
               results.push({ id: tc.id, content });
               const ok = inferToolOk(tc.name, res);
-              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: res, ok, sessionId: sid });
+              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: res, ok, sessionId: sid, panelId });
             })
             .catch(err => {
               if (aborted || getRunState(sid)?.aborted) return;
               const msg = `Tool "${tc.name}" failed: ${err?.message || String(err)}`;
               results.push({ id: tc.id, content: msg });
-              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: msg, ok: false, sessionId: sid });
+              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: msg, ok: false, sessionId: sid, panelId });
             });
           promises.push(p);
         },
@@ -533,7 +569,7 @@ export async function activate(ctx) {
         onError: (e) => {
           if (e?.name === "AbortError") { aborted = true; runtime.markAborted(sid); return; }
           window.zion.state.set("chat.error", e.message);
-          window.zion.events.emit("chat/runError", { runId, error: e, sessionId: sid });
+          window.zion.events.emit("chat/runError", { runId, error: e, sessionId: sid, panelId });
           // 显示错误通知
           try {
             window.zion.notification.show(`大模型回答出错: ${e?.message || String(e)}`, {
@@ -550,7 +586,8 @@ export async function activate(ctx) {
           runtime.setController(sid, controller);
         },
         runId,
-        sessionId: sid
+        sessionId: sid,
+        panelId
       });
 
       stepReasoning = String(streamResult?.reasoning_content || "");
@@ -848,10 +885,19 @@ export async function activate(ctx) {
 
   // 注册命令（完全复用现有 ID）
   const cmds = [
-    window.zion.commands.registerCommand("chat.runSelection", () => doRun({ useSelection: true })),
-    window.zion.commands.registerCommand("chat.run", () => doRun({})),
-    window.zion.commands.registerCommand("chat.stop", () => runtime.stopSession()),
-    window.zion.commands.registerCommand("chat.retry", () => doRun({}))
+    window.zion.commands.registerCommand("chat.runSelection", (opts) => doRun({ ...opts, useSelection: true })),
+    window.zion.commands.registerCommand("chat.run", (opts) => doRun(opts || {})),
+    window.zion.commands.registerCommand("chat.stop", (sid) => {
+      const targetSid = sid || (() => {
+        const activePanelId = window.zion?.panels?.getActivePanelId?.();
+        if (activePanelId) {
+          return window.zion?.panels?.list?.().find((p) => p.id === activePanelId)?.activeTabId || null;
+        }
+        return null;
+      })();
+      return runtime.stopSession(targetSid || undefined);
+    }),
+    window.zion.commands.registerCommand("chat.retry", (opts) => doRun(opts || {}))
   ];
   ctx.subscriptions.push(...cmds);
 
@@ -1089,6 +1135,7 @@ export async function activate(ctx) {
     const ensureButton = () => {
       const headerEl = document.querySelector(".zion-editor-header");
       if (!headerEl) return null;
+      if (headerEl.querySelector("button[data-zion-core-runstop-button='1']")) return null;
 
       const settingsBtn = headerEl.querySelector("button[data-zion-editor-settings-menu-button='1']");
 

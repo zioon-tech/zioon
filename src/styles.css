@@ -935,6 +935,119 @@ html, body {
   flex-direction: column;
 }
 
+.zion-panels-root {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.zion-panel {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid transparent;
+}
+
+.zion-panel.is-active {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.zion-panel-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--dim);
+  font-size: 13px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+}
+
+.zion-split-container {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.zion-split-container[data-direction="horizontal"] {
+  flex-direction: row;
+}
+
+.zion-split-container[data-direction="vertical"] {
+  flex-direction: column;
+}
+
+.zion-split-child,
+.zion-split-leaf {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.zion-split-leaf > .zion-panel {
+  flex: 1 1 auto;
+}
+
+.zion-split-handle {
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+  opacity: 0.9;
+  position: relative;
+  z-index: 2;
+}
+
+.zion-split-handle[data-direction="horizontal"] {
+  width: 6px;
+  cursor: col-resize;
+  margin: 0 -3px;
+}
+
+.zion-split-handle[data-direction="vertical"] {
+  height: 6px;
+  cursor: row-resize;
+  margin: -3px 0;
+}
+
+.zion-split-handle::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+.zion-split-handle[data-direction="horizontal"]::before {
+  left: 2px;
+  width: 1px;
+  background: var(--border);
+}
+
+.zion-split-handle[data-direction="vertical"]::before {
+  top: 2px;
+  height: 1px;
+  background: var(--border);
+}
+
+.zion-split-handle:hover,
+.zion-split-handle:active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.zion-split-handle:hover::before,
+.zion-split-handle:active::before {
+  background: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
 .zion-editor-tabsbar {
   height: 36px;
   min-height: 36px;
@@ -986,6 +1099,50 @@ html, body {
   -webkit-overflow-scrolling: touch;
   padding: 5px 0;
 }
+
+.zion-editor-session-tabs.is-drop-target {
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.zion-panel-drop-preview {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+
+.zion-panel-drop-preview.show {
+  opacity: 1;
+}
+
+.zion-panel-drop-preview-label {
+  position: fixed;
+  pointer-events: none;
+  z-index: 10000;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 92%, black);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+
+.zion-panel-drop-preview-label.show {
+  opacity: 1;
+}
+
 .zion-editor-session-tabs::-webkit-scrollbar {
   height: 0;
 }

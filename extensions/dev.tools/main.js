@@ -609,8 +609,8 @@ function registerDefaultTools() {
             return cache[url].md.slice(0, 12000);
           }
 
-          // 通过 r.jina.ai 代理抓取，规避浏览器 CORS
-          const proxied = `https://r.jina.ai/${url}`;
+          // 通过 r.jinaai.cn 代理抓取，规避浏览器 CORS
+          const proxied = `https://r.jinaai.cn/${url}`;
           const res = await fetch(proxied, { redirect: "follow" });
           if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
           const text = await res.text();
@@ -637,13 +637,13 @@ function registerDefaultTools() {
         const allowed = Array.isArray(args?.allowed_domains) ? args.allowed_domains.map(d => String(d).toLowerCase()) : [];
         const blocked = Array.isArray(args?.blocked_domains) ? args.blocked_domains.map(d => String(d).toLowerCase()) : [];
         try {
-          // 使用 DuckDuckGo lite 版，经 r.jina.ai 代理规避 CORS
-          const searchUrl = `https://r.jina.ai/http://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
+          // 使用 DuckDuckGo lite 版，经 r.jinaai.cn 代理规避 CORS
+          const searchUrl = `https://r.jinaai.cn/http://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
           const res = await fetch(searchUrl);
           if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
           const txt = await res.text();
 
-          // 1) 优先从 markdown 中提取 [title](url) 形式（r.jina.ai 常返回为 markdown/纯文本）
+          // 1) 优先从 markdown 中提取 [title](url) 形式（r.jinaai.cn 常返回为 markdown/纯文本）
           const mdLinks = Array.from(txt.matchAll(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g))
             .map(m => ({ title: (m[1] || "").trim(), url: m[2] }))
             // 过滤掉指向搜索页自身的链接

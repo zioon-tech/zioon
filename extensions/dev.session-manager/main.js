@@ -261,8 +261,8 @@ const {
  * Restore persisted annotations for a session by emitting plugin events.
  * Tool-call cards and thinking cards will rebuild themselves based on saved positions.
  */
-function applyAnnotationsForSession(id) {
-  applyAnnotationsForSessionImpl({ id, loadMeta, zion: window.zion });
+function applyAnnotationsForSession(id, panelId) {
+  applyAnnotationsForSessionImpl({ id, panelId, loadMeta, zion: window.zion });
 }
 
 /** 简易 FNV-1a 哈希（32-bit） */
@@ -345,16 +345,23 @@ function maybeUpdateAutoTitle(id) {
     const meta = loadMeta(id);
     // 优先使用当前编辑器中的最新文本（避免依赖未及时写入的 localStorage）
     let text = "";
+    let source = "loadDoc";
     try {
-      const curId = window.zion.state.get("sessions.currentId");
       const ed = window.zion.window.activeEditor;
-      if (curId === id && ed) {
+      const editorPanelId = ed?.panelId || null;
+      const editorPanelSessionId = editorPanelId
+        ? (window.zion?.panelManager?.getPanel?.(editorPanelId)?.activeTabId || null)
+        : null;
+      if (ed && editorPanelSessionId === id) {
         text = ed.getValue() || "";
+        source = "activeEditor";
       } else {
         text = loadDoc(id) || "";
+        source = "loadDoc";
       }
     } catch {
       text = loadDoc(id) || "";
+      source = "loadDoc";
     }
     const derived = deriveTitleFromText(text);
     // 仅当仍为“默认标题”或未明确禁用自动标题时执行；派生成功后“锁定”标题（titleAuto=false）
@@ -866,6 +873,7 @@ function injectScrollbarStyles() {
 
 /** ========== Activate Extension ========== */
 export async function activate(ctx) {
+
   // Inject custom scrollbar styles
   injectScrollbarStyles();
   // 初始化 IndexedDB 并预载数据/迁移
@@ -1097,13 +1105,26 @@ export async function activate(ctx) {
 
   // 自动保存插件（通过 Decorator 注入）
   const plugin = sessionAutoSavePlugin(
-    () => window.zion.state.get("sessions.currentId"),
+    (view) => {
+      try {
+        const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
+        if (panelId) {
+          return window.zion?.panelManager?.getPanel?.(panelId)?.activeTabId
+            || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
+            || window.zion.state.get("sessions.currentId");
+        }
+      } catch {}
+      return window.zion.state.get("sessions.currentId");
+    },
     (meta) => {
-      // 更新状态与状态栏；仅在非流式状态下刷新侧边栏，避免 hover 闪烁
-      window.zion.state.set("sessions.catalog", getIndex());
+      // 流式阶段避免高频刷新 sessions.catalog；否则 tabs 会频繁重渲染并导致 hover/点击闪烁
+      const runState = meta?.id ? (window.zion.state.get(`chat.runs.${meta.id}`) || null) : null;
+      const streaming = !!runState?.streaming;
+      if (!streaming) {
+        window.zion.state.set("sessions.catalog", getIndex());
+      }
       refreshStatusBar();
       try {
-        const streaming = !!window.zion.state.get("chat.streaming");
         if (!streaming) {
           refreshSessionsSidebarViewIfOpen();
         }
@@ -1397,7 +1418,7 @@ export async function activate(ctx) {
     try {
       const text = await loadDocAsync(id);
       getTargetEditor(opts?.panelId)?.setValue(text);
-      try { applyAnnotationsForSession(id); } catch {}
+      try { applyAnnotationsForSession(id, opts?.panelId); } catch {}
     } catch {}
     try {
       const state = sessionUiState.get(id);

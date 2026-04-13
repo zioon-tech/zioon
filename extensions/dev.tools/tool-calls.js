@@ -852,10 +852,11 @@ export function installToolCallCards() {
       this.view = view;
       this.disps = [];
       this.runActive = false;
-      this.anchorPos = view.state.doc.length; // 当前回答插入锚点（随着变更映射）
+      this.anchorPos = view.state.doc.length;
       this.sessionId = null;
       this.toolActions = new Map();
       this.selRaf = 0;
+      try { this.panelId = this.view.dom.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null; } catch { this.panelId = null; }
       try { this.sessionId = window.zion?.state?.get("sessions.currentId") || null; } catch {}
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRun));
       this.disps.push(window.zion.events.on("chat/runFinished", this.onFinish));
@@ -870,6 +871,7 @@ export function installToolCallCards() {
       this.disps.push(window.zion.events.on("toolcards/writeAccept", this.onWriteAccept));
       this.disps.push(window.zion.events.on("toolcards/batchRevert", this.onBatchRevert));
       this.disps.push(window.zion.events.on("toolcards/batchAccept", this.onBatchAccept));
+      this.disps.push(window.zion.events.on("toolcards/toolsUpdated", this.onToolsUpdated));
       // 清理与会话切换联动
       this.disps.push(window.zion.state.onDidChange("sessions.currentId", this.onSessionChanged));
       // 初始快照
@@ -880,13 +882,15 @@ export function installToolCallCards() {
         try {
           const sid = this.sessionId;
           const pending = sid ? window.zion?.state?.get(`sessions.pendingRestore.tools.${sid}`) : null;
+          const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+          const list = Array.isArray(ann.tools) ? ann.tools : [];
           if (Array.isArray(pending) && pending.length) {
+            if (sid && !list.length) {
+              try { window.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, tools: pending }); } catch {}
+            }
             this.onRestore({ items: pending });
             return;
           }
-
-          const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
-          const list = Array.isArray(ann.tools) ? ann.tools : [];
           if (!list.length) return;
           // 基于 StateField 中的已挂载 id 判断是否需要恢复
           let mountedIds = [];
@@ -936,7 +940,7 @@ export function installToolCallCards() {
     // 检查并恢复丢失的 widgets
     checkAndRestoreWidgets = () => {
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = this.sessionId;
         if (!sid) return;
         const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
         const list = Array.isArray(ann.tools) ? ann.tools : [];
@@ -1016,7 +1020,7 @@ export function installToolCallCards() {
     };
     snapshot = () => {
       try {
-        const id = window.zion?.state?.get("sessions.currentId");
+        const id = this.sessionId;
         if (!id) return;
         const fieldVal = this.view.state.field(toolInlineField);
         const arr = [];
@@ -1085,21 +1089,34 @@ export function installToolCallCards() {
       } catch {}
     };
     onRun = (payload) => {
-      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
+      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
+      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
       this.runActive = true;
       const sel = this.view.state.selection?.main?.head;
       this.anchorPos = typeof sel === "number" ? sel : this.view.state.doc.length;
     };
     onFinish = (payload) => {
-      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
+      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
+      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
       this.runActive = false;
     };
     onCall = (payload) => {
-      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
-      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
+      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
+      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
       const tc = payload?.toolCall || payload;
       if (!tc?.id) return;
       const name = tc.name || "tool";
+
+      const isMirrorPanel = !!(payload?.panelId && payload.panelId !== this.panelId);
+      if (isMirrorPanel) {
+        return;
+      }
 
       // 1) 若无 assistant 头，先补充一个（确保工具调用信息插入到 assistant 区块）
       const docBefore = this.view.state.doc;
@@ -1142,8 +1159,10 @@ export function installToolCallCards() {
       } catch {}
     };
     onRes = (payload) => {
-      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
-      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
+      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
+      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
       const id = payload?.toolCallId || payload?.id;
       if (!id) return;
       const result = payload?.result;
@@ -1562,28 +1581,47 @@ export function installToolCallCards() {
       this.snapshot();
     };
     onSessionChanged = () => {
-      // 在会话切换时清空当前工具卡片，避免跨会话污染
-      try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
-      // 重置运行状态与插入锚点
-      this.runActive = false;
-      this.anchorPos = this.view.state.doc.length;
-      this.loadToolActions();
-      // 让快照与新会话对齐（将当前插件状态写空）
-      this.snapshot();
+      const panelMgr = window.zion?.panelManager;
+      const mySessionId = panelMgr?.getPanel(this.panelId)?.activeTabId || null;
+      if (mySessionId && mySessionId !== this.sessionId) {
+        this.sessionId = mySessionId;
+        try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
+        this.runActive = false;
+        this.anchorPos = this.view.state.doc.length;
+        this.loadToolActions();
+        this.snapshot();
+      } else if (!mySessionId && this.sessionId) {
+        this.sessionId = null;
+        try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
+        this.runActive = false;
+        this.anchorPos = this.view.state.doc.length;
+      }
+    };
+    onToolsUpdated = (payload) => {
+      const sid = this.sessionId;
+      if (!sid) return;
+      if (payload?.sessionId && payload.sessionId !== sid) return;
+      requestAnimationFrame(() => {
+        try {
+          const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+          const list = Array.isArray(ann.tools) ? ann.tools : [];
+          if (!list.length) return;
+          this.onRestore({ items: list, panelId: this.panelId, __fromToolsUpdated: true });
+        } catch {}
+      });
     };
     onRestore = (payload) => {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
-
+      if (payload?.panelId && payload.panelId !== this.panelId) return;
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = this.sessionId;
         if (sid) window.zion?.state?.set(`sessions.pendingRestore.tools.${sid}`, null);
       } catch {}
 
-      // 从会话注解读取“已删除条目”，避免复活
       let deletedSet = new Set();
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = this.sessionId;
         const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
         const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [];
         deletedSet = new Set(del);
@@ -1702,11 +1740,8 @@ export function installToolCallCards() {
         processedIds.add(it.id);
       }
 
+
       this.snapshot();
-      try {
-        const sid2 = window.zion?.state?.get("sessions.currentId");
-        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid2 });
-      } catch {}
     };
     destroy() {
       for (const d of this.disps) { try { d?.dispose?.(); } catch {} }

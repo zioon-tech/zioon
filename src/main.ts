@@ -1,7 +1,7 @@
 import "katex/dist/katex.min.css";
 import { EditorCore } from "./editor/EditorCore";
 import "./pwa-test";
-import { attachEditor } from "./ext/registry";
+import { attachEditor, detachEditor, setActiveEditorPanel } from "./ext/registry";
 import type { Disposable } from "./types/zion";
 import { PluginManager } from "./plugin/manager";
 import { HttpPluginInstaller } from "./plugin/http-installer";
@@ -10,6 +10,8 @@ import { notificationManager } from "./notification/manager";
 import { initWorkbench } from "./ui/workbench/workbench";
 import { initCommandPalette } from "./ui/workbench/commandPalette";
 import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
+import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
+
 
 // ---------- 自动保存 / 恢复 ----------
 const STORAGE_KEY = 'zion.autosave';
@@ -37,7 +39,96 @@ function saveDoc(text: string) {
   );
 }
 
-function mountCurrentSessionPath(pathEl: HTMLElement) {
+function getPanelActiveSessionId(panelId?: string | null): string | null {
+  if (!panelId) return null;
+  try {
+    return window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId || null;
+  } catch {
+    return null;
+  }
+}
+
+type PanelTabDragState = {
+  sourcePanelId: string;
+  tabId: string;
+};
+
+const PANEL_TAB_DND_MIME = "application/x-zion-panel-tab";
+let panelTabDragState: PanelTabDragState | null = null;
+type PanelDropSide = "center" | "left" | "right" | "up" | "down";
+let panelDropPreviewEl: HTMLDivElement | null = null;
+let panelDropPreviewLabelEl: HTMLDivElement | null = null;
+
+function ensurePanelDropPreview() {
+  if (!panelDropPreviewEl) {
+    panelDropPreviewEl = document.createElement("div");
+    panelDropPreviewEl.className = "zion-panel-drop-preview";
+    document.body.appendChild(panelDropPreviewEl);
+  }
+  if (!panelDropPreviewLabelEl) {
+    panelDropPreviewLabelEl = document.createElement("div");
+    panelDropPreviewLabelEl.className = "zion-panel-drop-preview-label";
+    document.body.appendChild(panelDropPreviewLabelEl);
+  }
+  return { previewEl: panelDropPreviewEl, labelEl: panelDropPreviewLabelEl };
+}
+
+function hidePanelDropPreview() {
+  if (panelDropPreviewEl) panelDropPreviewEl.classList.remove("show");
+  if (panelDropPreviewLabelEl) panelDropPreviewLabelEl.classList.remove("show");
+}
+
+function getPanelDropSideFromPoint(rect: DOMRect, clientX: number, clientY: number): PanelDropSide {
+  const edgeX = Math.max(56, Math.min(96, rect.width * 0.24));
+  const edgeY = Math.max(56, Math.min(96, rect.height * 0.24));
+  const distLeft = clientX - rect.left;
+  const distRight = rect.right - clientX;
+  const distTop = clientY - rect.top;
+  const distBottom = rect.bottom - clientY;
+  const minDist = Math.min(distLeft, distRight, distTop, distBottom);
+  if (minDist > Math.min(edgeX, edgeY)) return "center";
+  if (minDist === distLeft && distLeft <= edgeX) return "left";
+  if (minDist === distRight && distRight <= edgeX) return "right";
+  if (minDist === distTop && distTop <= edgeY) return "up";
+  if (minDist === distBottom && distBottom <= edgeY) return "down";
+  return "center";
+}
+
+function showPanelDropPreview(rect: DOMRect, side: PanelDropSide) {
+  const { previewEl, labelEl } = ensurePanelDropPreview();
+  let left = rect.left;
+  let top = rect.top;
+  let width = rect.width;
+  let height = rect.height;
+  if (side === "left") width = rect.width / 2;
+  else if (side === "right") {
+    width = rect.width / 2;
+    left = rect.left + rect.width / 2;
+  } else if (side === "up") height = rect.height / 2;
+  else if (side === "down") {
+    height = rect.height / 2;
+    top = rect.top + rect.height / 2;
+  }
+  previewEl.style.left = `${left}px`;
+  previewEl.style.top = `${top}px`;
+  previewEl.style.width = `${Math.max(0, width)}px`;
+  previewEl.style.height = `${Math.max(0, height)}px`;
+  previewEl.classList.add("show");
+
+  const labels: Record<PanelDropSide, string> = {
+    center: "放入当前 panel",
+    left: "在左侧新建 panel",
+    right: "在右侧新建 panel",
+    up: "在上方新建 panel",
+    down: "在下方新建 panel"
+  };
+  labelEl.textContent = labels[side];
+  labelEl.style.left = `${rect.left + rect.width / 2}px`;
+  labelEl.style.top = `${rect.top + 12}px`;
+  labelEl.classList.add("show");
+}
+
+function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
   const safeParse = <T,>(raw: string | null, fallback: T): T => {
     if (!raw) return fallback;
     try {
@@ -93,6 +184,12 @@ function mountCurrentSessionPath(pathEl: HTMLElement) {
   };
 
   let metaDisp: Disposable | null = null;
+  const resolveSessionId = () => {
+    if (panelId) {
+      return getPanelActiveSessionId(panelId) || null;
+    }
+    return window.zion.state.get<string>("sessions.currentId") || null;
+  };
   const bindMeta = (id: string | undefined) => {
     try {
       metaDisp?.dispose();
@@ -105,7 +202,7 @@ function mountCurrentSessionPath(pathEl: HTMLElement) {
   };
 
   const update = () => {
-    const id = window.zion.state.get<string>("sessions.currentId");
+    const id = resolveSessionId();
     if (!id) {
       pathEl.textContent = "";
       pathEl.title = "";
@@ -126,6 +223,7 @@ function mountCurrentSessionPath(pathEl: HTMLElement) {
 
   try {
     window.zion.state.onDidChange<string>("sessions.currentId", (nv) => {
+      if (panelId && window.zion?.panels?.getActivePanelId?.() !== panelId) return;
       bindMeta(nv);
       update();
     });
@@ -133,7 +231,8 @@ function mountCurrentSessionPath(pathEl: HTMLElement) {
 
   try {
     window.zion.events.on("panel/tabActivated", (payload: any) => {
-      const id = payload?.sessionId || payload?.tabId;
+      if (panelId && payload?.panelId !== panelId) return;
+      const id = payload?.sessionId || payload?.tabId || resolveSessionId();
       if (id) {
         bindMeta(id);
         update();
@@ -149,7 +248,7 @@ function mountCurrentSessionPath(pathEl: HTMLElement) {
     window.zion.state.onDidChange("sessions.treeMem", () => update());
   } catch {}
 
-  bindMeta(window.zion.state.get<string>("sessions.currentId"));
+  bindMeta(resolveSessionId() || undefined);
   update();
 }
 
@@ -259,6 +358,10 @@ function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
         e.stopPropagation();
       } catch {}
       try {
+        const panelId = pathEl.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null;
+        if (panelId) {
+          try { window.zion?.panels?.focus?.(panelId); } catch {}
+        }
         window.zion.commands.executeCommand("toc.show");
       } catch {}
     };
@@ -1423,6 +1526,457 @@ function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement) {
   } catch {}
 }
 
+function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, getEditor: () => any) {
+  try {
+    const headerEl = pathEl.parentElement;
+    if (!headerEl) return;
+
+    let btn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-core-runstop-button='1']");
+    const isNew = !btn;
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+    }
+
+    btn.className = "zion-editor-header-action is-icon zion-editor-chat-runstop-button";
+    btn.setAttribute("data-zion-core-runstop-button", "1");
+    btn.setAttribute("data-panel-id", panelId);
+    btn.setAttribute("aria-label", "Run/Stop");
+
+    const update = () => {
+      try {
+        const targetSessionId = window.zion?.panels?.list?.().find((p) => p.id === panelId)?.activeTabId
+          || window.zion?.state?.get?.("sessions.currentId");
+        const streaming = !!window.zion?.chat?.isStreaming?.(targetSessionId || undefined);
+        btn!.innerHTML = `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
+        btn!.title = streaming ? "Stop (Esc)" : "Run (Mod-Enter)";
+        try { btn!.classList.toggle("is-stop", streaming); } catch {}
+      } catch {}
+    };
+
+    btn.onclick = (e) => {
+      try { e.stopPropagation(); } catch {}
+      try { window.zion?.panels?.focus?.(panelId); } catch {}
+      try {
+        const targetSessionId = window.zion?.panels?.list?.().find((p) => p.id === panelId)?.activeTabId
+          || window.zion?.state?.get?.("sessions.currentId");
+        const streaming = !!window.zion?.chat?.isStreaming?.(targetSessionId || undefined);
+        if (streaming) {
+          window.zion.chat?.stop?.(targetSessionId || undefined);
+          return;
+        }
+        const ed = getEditor?.() || window.zion?.window?.activeEditor;
+        const sel = String(ed?.getSelection?.() || "");
+        window.zion.chat?.run?.({
+          sessionId: targetSessionId || undefined,
+          editor: ed || null,
+          useSelection: !!sel.trim()
+        });
+      } catch {}
+    };
+
+    update();
+
+    if (isNew) {
+      const settingsBtn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-settings-menu-button='1']");
+      if (settingsBtn) headerEl.insertBefore(btn, settingsBtn);
+      else headerEl.appendChild(btn);
+    }
+
+    try {
+      window.zion.state.onDidChange("chat.streaming", update);
+      window.zion.state.onDidChange("sessions.currentId", update);
+      window.zion.events.on("panel/tabActivated", (payload: any) => {
+        if (payload?.panelId === panelId) update();
+      });
+    } catch {}
+  } catch {}
+}
+
+function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, panelManager: PanelManager) {
+  try {
+    let newBtn = containerEl.querySelector<HTMLButtonElement>("button[data-zion-panel-tabs-new-session-button='1']");
+    let root = containerEl.querySelector<HTMLElement>("[data-zion-panel-session-tabs='1']");
+    if (!newBtn) {
+      newBtn = document.createElement("button");
+      newBtn.type = "button";
+      newBtn.className = "zion-editor-header-action is-icon zion-editor-tabs-new-session-button";
+      newBtn.innerHTML = '<span class="codicon codicon-add" aria-hidden="true"></span>';
+      newBtn.title = "新增会话";
+      newBtn.setAttribute("aria-label", "新增会话");
+      newBtn.setAttribute("data-zion-panel-tabs-new-session-button", "1");
+      newBtn.onclick = (e) => {
+        try {
+          e.stopPropagation();
+          e.preventDefault();
+        } catch {}
+        try { window.zion.panels?.focus?.(panelId); } catch {}
+        try { window.zion.commands.executeCommand("zion.sessions.new"); } catch {}
+      };
+      containerEl.insertBefore(newBtn, containerEl.firstChild);
+    }
+    if (!root) {
+      root = document.createElement("div");
+      root.className = "zion-editor-session-tabs";
+      root.setAttribute("data-zion-panel-session-tabs", "1");
+      containerEl.appendChild(root);
+    }
+
+    const getTitle = (sessionId: string) => {
+      const meta = window.zion.state.get<any>(`sessions.meta.${sessionId}`);
+      return String(meta?.title || "").trim() || sessionId;
+    };
+    let dropTargetId: string | null = null;
+    let dropPosition: "before" | "after" | null = null;
+    let panelDropSide: PanelDropSide | null = null;
+    let lastDragEndAt = 0;
+
+    const emitTabsChanged = (changedPanelId: string) => {
+      try { window.zion.events.emit("panel/tabsChanged", { panelId: changedPanelId }); } catch {}
+    };
+    const syncActivePanelTabsState = (changedPanelId: string) => {
+      if (window.zion?.panels?.getActivePanelId?.() !== changedPanelId) return;
+      const panel = panelManager.getPanel(changedPanelId);
+      if (!panel) return;
+      try {
+        window.zion.state.set("ui.editorTabs.openSessionIds", panel.tabs.map((tab) => tab.id));
+        window.zion.state.set("ui.editorTabs.activeSessionId", panel.activeTabId || null);
+      } catch {}
+    };
+    const clearDropIndicators = () => {
+      if (!root) return;
+      root.classList.remove("is-drop-target");
+      hidePanelDropPreview();
+      try {
+        root.querySelectorAll(".zion-editor-session-tab.is-drop-before, .zion-editor-session-tab.is-drop-after").forEach((node) => {
+          node.classList.remove("is-drop-before");
+          node.classList.remove("is-drop-after");
+        });
+      } catch {}
+      dropTargetId = null;
+      dropPosition = null;
+      panelDropSide = null;
+    };
+    const readDragState = (ev?: DragEvent | null): PanelTabDragState | null => {
+      if (panelTabDragState) return panelTabDragState;
+      try {
+        const raw = ev?.dataTransfer?.getData(PANEL_TAB_DND_MIME) || "";
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        const sourcePanelId = String(parsed?.sourcePanelId || "").trim();
+        const tabId = String(parsed?.tabId || "").trim();
+        if (!sourcePanelId || !tabId) return null;
+        return { sourcePanelId, tabId };
+      } catch {
+        return null;
+      }
+    };
+    const focusAndActivatePanelTab = (targetPanelId: string, sessionId: string | null) => {
+      if (!sessionId) return false;
+      try { window.zion.panels?.focus?.(targetPanelId); } catch {}
+      panelManager.activateTab(targetPanelId, sessionId);
+      syncActivePanelTabsState(targetPanelId);
+      emitTabsChanged(targetPanelId);
+      try {
+        window.zion.commands.executeCommand("zion.sessions.switch", { id: sessionId, panelId: targetPanelId });
+      } catch {}
+      return true;
+    };
+    const moveTabBetweenPanels = (
+      sourcePanelId: string,
+      tabId: string,
+      targetPanelId: string,
+      targetTabId: string | null,
+      position: "before" | "after"
+    ) => {
+      const sourcePanel = panelManager.getPanel(sourcePanelId);
+      const targetPanel = panelManager.getPanel(targetPanelId);
+      if (!sourcePanel || !targetPanel) return;
+      const fromIndex = sourcePanel.tabs.findIndex((tab) => tab.id === tabId);
+      if (fromIndex === -1) return;
+
+      if (sourcePanelId === targetPanelId) {
+        if (!targetTabId || targetTabId === tabId) return;
+        const nextTabs = sourcePanel.tabs.filter((tab) => tab.id !== tabId);
+        const targetIndex = nextTabs.findIndex((tab) => tab.id === targetTabId);
+        if (targetIndex === -1) return;
+        const insertIndex = position === "before" ? targetIndex : targetIndex + 1;
+        nextTabs.splice(insertIndex, 0, sourcePanel.tabs[fromIndex]);
+        sourcePanel.tabs = nextTabs;
+        emitTabsChanged(sourcePanelId);
+        syncActivePanelTabsState(sourcePanelId);
+        return;
+      }
+
+      const movingTab = sourcePanel.tabs[fromIndex];
+      const targetTabs = targetPanel.tabs.filter((tab) => tab.id !== tabId);
+      let insertIndex = targetTabs.length;
+      if (targetTabId) {
+        const targetIndex = targetTabs.findIndex((tab) => tab.id === targetTabId);
+        if (targetIndex !== -1) insertIndex = position === "before" ? targetIndex : targetIndex + 1;
+      }
+      insertIndex = Math.max(0, Math.min(insertIndex, targetTabs.length));
+      targetTabs.splice(insertIndex, 0, movingTab);
+      targetPanel.tabs = targetTabs;
+      targetPanel.activeTabId = tabId;
+      emitTabsChanged(targetPanelId);
+
+      if (sourcePanel.tabs.length <= 1) {
+        if (panelManager.listPanels().length > 1) {
+          panelManager.closePanel(sourcePanelId);
+        } else {
+          sourcePanel.tabs = [];
+          sourcePanel.activeTabId = null;
+          emitTabsChanged(sourcePanelId);
+          syncActivePanelTabsState(sourcePanelId);
+        }
+      } else {
+        const nextTabs = sourcePanel.tabs.filter((tab) => tab.id !== tabId);
+        sourcePanel.tabs = nextTabs;
+        let nextSourceId: string | null = null;
+        if (sourcePanel.activeTabId === tabId) {
+          nextSourceId = nextTabs[Math.min(fromIndex, nextTabs.length - 1)]?.id || nextTabs[nextTabs.length - 1]?.id || null;
+          sourcePanel.activeTabId = nextSourceId;
+          if (nextSourceId) {
+            panelManager.activateTab(sourcePanelId, nextSourceId);
+            try {
+              window.zion.commands.executeCommand("zion.sessions.switch", { id: nextSourceId, panelId: sourcePanelId });
+            } catch {}
+          }
+        }
+        emitTabsChanged(sourcePanelId);
+        syncActivePanelTabsState(sourcePanelId);
+      }
+
+      focusAndActivatePanelTab(targetPanelId, tabId);
+    };
+    const performPanelDrop = (
+      drag: PanelTabDragState,
+      targetPanelId: string,
+      side: PanelDropSide,
+      targetTabId: string | null = null,
+      position: "before" | "after" = "after"
+    ) => {
+      if (side === "center") {
+        moveTabBetweenPanels(drag.sourcePanelId, drag.tabId, targetPanelId, targetTabId, position);
+        return;
+      }
+      const created = panelManager.splitPanelAt(targetPanelId, side, { seedFromSource: false });
+      const createdPanelId = created?.id || null;
+      if (!createdPanelId) return;
+      moveTabBetweenPanels(drag.sourcePanelId, drag.tabId, createdPanelId, null, "after");
+    };
+
+    const panelRootEl = panelManager.getPanel(panelId)?.rootEl || null;
+    if (panelRootEl && !panelRootEl.dataset.zionPanelSplitDropBound) {
+      panelRootEl.dataset.zionPanelSplitDropBound = "1";
+      panelRootEl.ondragover = (e) => {
+        const ev = e as DragEvent;
+        const drag = readDragState(ev);
+        if (!drag) return;
+        const target = ev.target as HTMLElement | null;
+        if (target && panelRootEl.querySelector("[data-zion-panel-session-tabs='1']")?.contains(target)) return;
+        try {
+          ev.preventDefault();
+          if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+        } catch {}
+        const rect = panelRootEl.getBoundingClientRect();
+        const side = getPanelDropSideFromPoint(rect, ev.clientX, ev.clientY);
+        panelDropSide = side;
+        showPanelDropPreview(rect, side);
+        root?.classList.remove("is-drop-target");
+      };
+      panelRootEl.ondragleave = (e) => {
+        const next = e.relatedTarget as Node | null;
+        if (next && panelRootEl.contains(next)) return;
+        clearDropIndicators();
+      };
+      panelRootEl.ondrop = (e) => {
+        const ev = e as DragEvent;
+        const target = ev.target as HTMLElement | null;
+        if (target && panelRootEl.querySelector("[data-zion-panel-session-tabs='1']")?.contains(target)) return;
+        try {
+          ev.preventDefault();
+          ev.stopPropagation();
+        } catch {}
+        const drag = readDragState(ev);
+        const side = panelDropSide || "center";
+        clearDropIndicators();
+        if (!drag) return;
+        performPanelDrop(drag, panelId, side);
+      };
+    }
+
+    root.ondragover = (e) => {
+      const ev = e as DragEvent;
+      const drag = readDragState(ev);
+      if (!drag) return;
+      const targetTabEl = (ev.target as HTMLElement | null)?.closest?.(".zion-editor-session-tab");
+      if (targetTabEl) {
+        root!.classList.remove("is-drop-target");
+        return;
+      }
+      try {
+        ev.preventDefault();
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+      } catch {}
+      clearDropIndicators();
+      root!.classList.add("is-drop-target");
+    };
+    root.ondragleave = (e) => {
+      const next = e.relatedTarget as Node | null;
+      if (next && root?.contains(next)) return;
+      clearDropIndicators();
+    };
+    root.ondrop = (e) => {
+      const ev = e as DragEvent;
+      const targetTabEl = (ev.target as HTMLElement | null)?.closest?.(".zion-editor-session-tab");
+      if (targetTabEl) return;
+      try {
+        ev.preventDefault();
+        ev.stopPropagation();
+      } catch {}
+      const drag = readDragState(ev);
+      clearDropIndicators();
+      if (!drag) return;
+      performPanelDrop(drag, panelId, "center");
+    };
+
+    const render = () => {
+      const panel = panelManager.getPanel(panelId);
+      if (!panel || !root) return;
+      root.innerHTML = "";
+      for (const tab of panel.tabs) {
+        const tabEl = document.createElement("div");
+        tabEl.className = "zion-editor-session-tab";
+        if (tab.id === panel.activeTabId) tabEl.classList.add("is-active");
+        tabEl.setAttribute("role", "tab");
+        tabEl.setAttribute("tabindex", "0");
+        tabEl.setAttribute("data-session-id", tab.id);
+        tabEl.setAttribute("draggable", "true");
+
+        const titleEl = document.createElement("span");
+        titleEl.className = "zion-editor-session-tab-title";
+        titleEl.textContent = getTitle(tab.id);
+        titleEl.title = getTitle(tab.id);
+
+        const closeBtn = document.createElement("button");
+        closeBtn.type = "button";
+        closeBtn.className = "zion-editor-session-tab-close";
+        closeBtn.setAttribute("draggable", "false");
+        closeBtn.setAttribute("aria-label", "关闭标签页");
+        closeBtn.title = "关闭";
+        closeBtn.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>';
+        closeBtn.onclick = (e) => {
+          try {
+            e.stopPropagation();
+            e.preventDefault();
+          } catch {}
+          const current = panelManager.getPanel(panelId);
+          if (!current || current.tabs.length <= 1) return;
+          const nextTabs = current.tabs.filter((item) => item.id !== tab.id);
+          current.tabs = nextTabs;
+          if (current.activeTabId === tab.id) {
+            const nextId = nextTabs[Math.max(0, nextTabs.length - 1)]?.id || null;
+            current.activeTabId = nextId;
+            if (nextId) {
+              panelManager.activateTab(panelId, nextId);
+              try {
+                window.zion.commands.executeCommand("zion.sessions.switch", { id: nextId, panelId });
+              } catch {}
+            }
+          }
+          emitTabsChanged(panelId);
+          syncActivePanelTabsState(panelId);
+          render();
+        };
+        closeBtn.ondragstart = (e) => {
+          try {
+            e.preventDefault();
+            e.stopPropagation();
+          } catch {}
+          return false;
+        };
+
+        tabEl.onclick = () => {
+          if (panelTabDragState || Date.now() - lastDragEndAt < 150) return;
+          focusAndActivatePanelTab(panelId, tab.id);
+        };
+        tabEl.ondragstart = (e) => {
+          const ev = e as DragEvent;
+          panelTabDragState = { sourcePanelId: panelId, tabId: tab.id };
+          try {
+            tabEl.classList.add("is-dragging");
+            ev.dataTransfer?.setData(PANEL_TAB_DND_MIME, JSON.stringify(panelTabDragState));
+            ev.dataTransfer?.setData("text/plain", tab.id);
+            if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+          } catch {}
+        };
+        tabEl.ondragend = () => {
+          lastDragEndAt = Date.now();
+          panelTabDragState = null;
+          try { tabEl.classList.remove("is-dragging"); } catch {}
+          clearDropIndicators();
+        };
+        tabEl.ondragover = (e) => {
+          const ev = e as DragEvent;
+          const drag = readDragState(ev);
+          if (!drag || (drag.sourcePanelId === panelId && drag.tabId === tab.id)) return;
+          try {
+            ev.preventDefault();
+            if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+          } catch {}
+          root.classList.remove("is-drop-target");
+          const rect = tabEl.getBoundingClientRect();
+          const pos: "before" | "after" = ev.clientX < rect.left + rect.width / 2 ? "before" : "after";
+          if (dropTargetId !== tab.id || dropPosition !== pos) {
+            clearDropIndicators();
+            dropTargetId = tab.id;
+            dropPosition = pos;
+            tabEl.classList.toggle("is-drop-before", pos === "before");
+            tabEl.classList.toggle("is-drop-after", pos === "after");
+          }
+        };
+        tabEl.ondragleave = (e) => {
+          const next = e.relatedTarget as Node | null;
+          if (next && tabEl.contains(next)) return;
+          if (dropTargetId === tab.id) clearDropIndicators();
+        };
+        tabEl.ondrop = (e) => {
+          const ev = e as DragEvent;
+          try {
+            ev.preventDefault();
+            ev.stopPropagation();
+          } catch {}
+          const drag = readDragState(ev);
+          const pos = dropPosition || "after";
+          clearDropIndicators();
+          if (!drag) return;
+          performPanelDrop(drag, panelId, "center", tab.id, pos);
+        };
+
+        tabEl.appendChild(titleEl);
+        tabEl.appendChild(closeBtn);
+        root.appendChild(tabEl);
+      }
+    };
+
+    render();
+    try {
+      window.zion.events.on("panel/tabActivated", (payload: any) => {
+        if (payload?.panelId === panelId) render();
+      });
+      window.zion.events.on("panel/tabsChanged", (payload: any) => {
+        if (payload?.panelId === panelId) render();
+      });
+      window.zion.state.onDidChange("sessions.catalog", render);
+      window.zion.state.onDidChange("sessions.currentId", () => {
+        if (window.zion?.panels?.getActivePanelId?.() === panelId) render();
+      });
+    } catch {}
+  } catch {}
+}
+
 async function bootstrap() {
   const host = document.getElementById("app")!;
   host.innerHTML = "";
@@ -1431,6 +1985,57 @@ async function bootstrap() {
   const editorContainer = wb.editorHost;
   const editorHeaderPathEl = wb.editorHeaderPathEl;
   const editorTabsBarEl = wb.editorTabsBarEl;
+  const editorHeaderEl = editorHeaderPathEl.parentElement as HTMLElement;
+  const editorAreaEl = editorContainer.parentElement as HTMLElement;
+
+  const panelsHost = document.createElement("div");
+  panelsHost.className = "zion-panels-root";
+  const primaryPanelRoot = document.createElement("div");
+  primaryPanelRoot.className = "zion-panel";
+  primaryPanelRoot.dataset.panelId = "panel-0";
+  primaryPanelRoot.appendChild(editorTabsBarEl);
+  primaryPanelRoot.appendChild(editorHeaderEl);
+  primaryPanelRoot.appendChild(editorContainer);
+  panelsHost.appendChild(primaryPanelRoot);
+  editorAreaEl.appendChild(panelsHost);
+
+  const initialSessionId = window.zion.state.get<string>("sessions.currentId") || null;
+  const panelCores = new Map<string, EditorCore>();
+  const panelManager = new PanelManager({
+    host: panelsHost,
+    initialPanel: {
+      id: "panel-0",
+      tabs: initialSessionId ? [{ id: initialSessionId, title: initialSessionId, isDirty: false }] : [],
+      activeTabId: initialSessionId,
+      editor: null,
+      rootEl: primaryPanelRoot,
+      tabsBarEl: editorTabsBarEl,
+      headerEl: editorHeaderEl,
+      pathEl: editorHeaderPathEl,
+      editorHostEl: editorContainer
+    },
+    createPanelDom: createPanelDomShell,
+    emit: (event, payload) => {
+      try { window.zion.events.emit(event, payload); } catch {}
+    }
+  });
+
+  window.zion.panels = {
+    getActivePanelId: () => panelManager.getActivePanelId(),
+    list: () => panelManager.listPanels().map((panel) => ({ id: panel.id, activeTabId: panel.activeTabId })),
+    split: (direction: "horizontal" | "vertical", panelId?: string) => panelManager.splitPanel(panelId, direction)?.id || null,
+    splitAt: (side: "left" | "right" | "up" | "down", panelId?: string) => panelManager.splitPanelAt(panelId, side)?.id || null,
+    focus: (panelId: string) => panelManager.focusPanel(panelId),
+    close: (panelId?: string) => panelManager.closePanel(panelId),
+    getEditor: (panelId: string) => panelManager.getEditor(panelId)
+  };
+  (window.zion as any).panelManager = panelManager;
+  const sessionSync = new SessionSync({
+    events: window.zion.events,
+    getActivePanelId: () => panelManager.getActivePanelId(),
+    listPanels: () => panelManager.listPanels().map((panel) => ({ id: panel.id, activeTabId: panel.activeTabId })),
+    getEditor: (panelId: string) => panelManager.getEditor(panelId)
+  });
 
   // 初始化插件管理器
   const pluginManager = new PluginManager({
@@ -1452,13 +2057,177 @@ This is a minimal scaffold to validate:
 Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
 `;
 
-  const core = new EditorCore(editorContainer, initialDoc);
-  attachEditor(core);
-  mountCurrentSessionPath(editorHeaderPathEl);
-  mountEditorSessionTabsBar(editorTabsBarEl);
+  const core = new EditorCore(editorContainer, initialDoc, "panel-0");
+  panelCores.set("panel-0", core);
+  const initialProxy = attachEditor(core, "panel-0");
+  panelManager.setPanelEditor("panel-0", initialProxy);
+  setActiveEditorPanel("panel-0");
+  panelManager.on("panel/focusChanged", ({ panelId }) => {
+    setActiveEditorPanel(panelId);
+  });
+  const syncLegacyEditorTabsState = (panelId: string | null) => {
+    if (!panelId) return;
+    const panel = panelManager.getPanel(panelId);
+    if (!panel) return;
+    try {
+      window.zion.state.set("ui.editorTabs.openSessionIds", panel.tabs.map((tab) => tab.id));
+      window.zion.state.set("ui.editorTabs.activeSessionId", panel.activeTabId || null);
+    } catch {}
+  };
+  const getActivePanelTabContext = () => {
+    const panelId = panelManager.getActivePanelId();
+    if (!panelId) return null;
+    const panel = panelManager.getPanel(panelId);
+    if (!panel) return null;
+    const activeTabId = panel.activeTabId || panel.tabs[0]?.id || null;
+    return { panelId, panel, activeTabId };
+  };
+  const activatePanelSession = (panelId: string, sessionId: string | null) => {
+    if (!sessionId) return false;
+    panelManager.activateTab(panelId, sessionId);
+    syncLegacyEditorTabsState(panelId);
+    try {
+      window.zion.commands.executeCommand("zion.sessions.switch", { id: sessionId, panelId });
+    } catch {}
+    return true;
+  };
+  try {
+    window.zion.commands.registerCommand("zion.editorTabs.closeActiveSession", () => {
+      const ctx = getActivePanelTabContext();
+      if (!ctx?.activeTabId) return false;
+      const { panelId, panel, activeTabId } = ctx;
+      const idx = panel.tabs.findIndex((tab) => tab.id === activeTabId);
+      if (idx === -1) return false;
+      if (panel.tabs.length <= 1) {
+        const panels = panelManager.listPanels();
+        if (panels.length <= 1) return false;
+        panelManager.closePanel(panelId);
+        const nextPanelId = panelManager.getActivePanelId();
+        if (!nextPanelId) return true;
+        syncLegacyEditorTabsState(nextPanelId);
+        const nextPanel = panelManager.getPanel(nextPanelId);
+        return activatePanelSession(nextPanelId, nextPanel?.activeTabId || nextPanel?.tabs[0]?.id || null) || true;
+      }
+      const nextTabs = panel.tabs.filter((tab) => tab.id !== activeTabId);
+      const nextId = nextTabs[Math.min(idx, nextTabs.length - 1)]?.id || nextTabs[nextTabs.length - 1]?.id || null;
+      panel.tabs = nextTabs;
+      panel.activeTabId = nextId;
+      syncLegacyEditorTabsState(panelId);
+      return !nextId ? true : activatePanelSession(panelId, nextId);
+    });
+    window.zion.commands.registerCommand("zion.editorTabs.nextSessionTab", () => {
+      const ctx = getActivePanelTabContext();
+      if (!ctx?.activeTabId) return false;
+      const { panelId, panel, activeTabId } = ctx;
+      if (panel.tabs.length <= 1) return false;
+      const idx = panel.tabs.findIndex((tab) => tab.id === activeTabId);
+      if (idx === -1) return false;
+      const nextId = panel.tabs[(idx + 1) % panel.tabs.length]?.id || null;
+      if (!nextId) return false;
+      return activatePanelSession(panelId, nextId);
+    });
+    window.zion.commands.registerCommand("zion.editorTabs.prevSessionTab", () => {
+      const ctx = getActivePanelTabContext();
+      if (!ctx?.activeTabId) return false;
+      const { panelId, panel, activeTabId } = ctx;
+      if (panel.tabs.length <= 1) return false;
+      const idx = panel.tabs.findIndex((tab) => tab.id === activeTabId);
+      if (idx === -1) return false;
+      const nextId = panel.tabs[(idx - 1 + panel.tabs.length) % panel.tabs.length]?.id || null;
+      if (!nextId) return false;
+      return activatePanelSession(panelId, nextId);
+    });
+  } catch {}
+  try {
+    window.zion.state.onDidChange<string>("sessions.currentId", (sessionId) => {
+      const activePanelId = panelManager.getActivePanelId();
+      if (!activePanelId) return;
+      const panel = panelManager.getPanel(activePanelId);
+      if (!panel || !sessionId) return;
+      const exists = panel.tabs.some((tab) => tab.id === sessionId);
+      if (!exists) {
+        panel.tabs = [...panel.tabs, { id: sessionId, title: sessionId, isDirty: false }];
+      }
+      panelManager.activateTab(activePanelId, sessionId);
+      syncLegacyEditorTabsState(activePanelId);
+    });
+  } catch {}
+  panelManager.on("panel/created", ({ panelId, sourcePanelId, seedFromSource }) => {
+    const panel = panelManager.getPanel(panelId);
+    if (!panel) return;
+    try {
+      panel.editorHostEl.innerHTML = "";
+    } catch {}
+    const sourceEditor = sourcePanelId ? panelManager.getEditor(sourcePanelId) : null;
+    const sourceSessionId = sourcePanelId ? panelManager.getPanel(sourcePanelId)?.activeTabId || null : null;
+    const seedText = sourceEditor?.getValue?.() || core.getValue();
+    const nextCore = new EditorCore(panel.editorHostEl, seedText, panelId);
+    panelCores.set(panelId, nextCore);
+    const nextProxy = attachEditor(nextCore, panelId);
+    panelManager.setPanelEditor(panelId, nextProxy);
+    try { applyEditorPreferences(nextCore); } catch {}
+    const activeSessionId = seedFromSource === false
+      ? null
+      : (sourceSessionId || window.zion.state.get<string>("sessions.currentId") || null);
+    if (activeSessionId) {
+      panel.tabs = [{ id: activeSessionId, title: activeSessionId, isDirty: false }];
+      panel.activeTabId = activeSessionId;
+      panelManager.activateTab(panelId, activeSessionId);
+    }
+    mountCurrentSessionPath(panel.pathEl, panelId);
+    mountPanelSessionTabsBar(panel.tabsBarEl, panelId, panelManager);
+    mountEditorHeaderTOCButton(panel.pathEl);
+    mountEditorHeaderSessionRenameButton(panel.pathEl);
+    mountEditorHeaderSettingsMenu(panel.pathEl);
+    mountPanelHeaderRunStopButton(panel.pathEl, panelId, () => panelManager.getEditor(panelId));
+    if (activeSessionId) {
+      requestAnimationFrame(() => {
+        try {
+          const ann = (window.zion?.state?.get(`sessions.annotations.${activeSessionId}`) || {}) as any;
+          const meta = window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", activeSessionId) as any;
+          const metaAnn = (meta?.annotations || {}) as any;
+          const pendingTools = window.zion?.state?.get(`sessions.pendingRestore.tools.${activeSessionId}`);
+          const pendingThinking = window.zion?.state?.get(`sessions.pendingRestore.thinking.${activeSessionId}`);
+          const tools = Array.isArray(ann.tools) && ann.tools.length
+            ? ann.tools
+            : (Array.isArray(metaAnn.tools) && metaAnn.tools.length
+              ? metaAnn.tools
+              : (Array.isArray(pendingTools) ? pendingTools : []));
+          const thinking = Array.isArray(ann.thinking) && ann.thinking.length
+            ? ann.thinking
+            : (Array.isArray(metaAnn.thinking) && metaAnn.thinking.length
+              ? metaAnn.thinking
+              : (Array.isArray(pendingThinking) ? pendingThinking : []));
+          if (tools.length) {
+            try { window.zion?.state?.set(`sessions.pendingRestore.tools.${activeSessionId}`, tools); } catch {}
+            try { window.zion?.events?.emit("toolcards/restore", { items: tools, panelId }); } catch {}
+          }
+          if (thinking.length) {
+            try { window.zion?.state?.set(`sessions.pendingRestore.thinking.${activeSessionId}`, thinking); } catch {}
+            try { window.zion?.events?.emit("thinking/restore", { items: thinking, panelId }); } catch {}
+          }
+        } catch {}
+      });
+    }
+    try { nextProxy.focus(); } catch {}
+  });
+  panelManager.on("panel/closed", ({ panelId }) => {
+    const closingCore = panelCores.get(panelId);
+    try { detachEditor(panelId); } catch {}
+    try { closingCore?.dispose?.(); } catch {}
+    panelCores.delete(panelId);
+    const nextActive = panelManager.getActivePanelId();
+    setActiveEditorPanel(nextActive);
+  });
+  try {
+    window.addEventListener("beforeunload", () => sessionSync.dispose(), { once: true });
+  } catch {}
+  mountCurrentSessionPath(editorHeaderPathEl, "panel-0");
+  mountPanelSessionTabsBar(editorTabsBarEl, "panel-0", panelManager);
   mountEditorHeaderTOCButton(editorHeaderPathEl);
   mountEditorHeaderSessionRenameButton(editorHeaderPathEl);
   mountEditorHeaderSettingsMenu(editorHeaderPathEl);
+  mountPanelHeaderRunStopButton(editorHeaderPathEl, "panel-0", () => panelManager.getEditor("panel-0"));
 
   try {
     initServiceBaseUrlConfig();
@@ -1526,6 +2295,182 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
 
   window.zion.commands.registerCommand("zion.setTheme", (t: "light" | "dark") => applyTheme(t));
   window.zion.commands.registerCommand("zion.toggleTheme", () => applyTheme(currentTheme === "dark" ? "light" : "dark"));
+  window.zion.commands.registerCommand("zion.panels.splitHorizontal", () => panelManager.splitPanel(undefined, "horizontal"));
+  window.zion.commands.registerCommand("zion.panels.splitVertical", () => panelManager.splitPanel(undefined, "vertical"));
+  window.zion.commands.registerCommand("zion.panels.closeActive", () => panelManager.closePanel());
+  const focusPanelInDirection = (direction: "left" | "right" | "up" | "down") => {
+    const activeId = panelManager.getActivePanelId();
+    if (!activeId) return false;
+    const activePanel = panelManager.getPanel(activeId);
+    if (!activePanel) return false;
+    const activeRect = activePanel.rootEl.getBoundingClientRect();
+    const activeCx = activeRect.left + activeRect.width / 2;
+    const activeCy = activeRect.top + activeRect.height / 2;
+    const strictGapTolerance = 8;
+    const candidates = panelManager.listPanels().flatMap((panel) => {
+      if (panel.id === activeId) return [];
+      const rect = panel.rootEl.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const overlapX = Math.max(0, Math.min(activeRect.right, rect.right) - Math.max(activeRect.left, rect.left));
+      const overlapY = Math.max(0, Math.min(activeRect.bottom, rect.bottom) - Math.max(activeRect.top, rect.top));
+      let strict = false;
+      let primary = 0;
+      let secondary = 0;
+      let aligned = 0;
+      if (direction === "left") {
+        if (rect.right <= activeRect.left + strictGapTolerance && overlapY > 0) {
+          strict = true;
+          primary = Math.max(0, activeRect.left - rect.right);
+        } else if (cx < activeCx - 1) {
+          primary = activeCx - cx;
+        } else {
+          return [];
+        }
+        secondary = Math.abs(cy - activeCy);
+        aligned = overlapY;
+      } else if (direction === "right") {
+        if (rect.left >= activeRect.right - strictGapTolerance && overlapY > 0) {
+          strict = true;
+          primary = Math.max(0, rect.left - activeRect.right);
+        } else if (cx > activeCx + 1) {
+          primary = cx - activeCx;
+        } else {
+          return [];
+        }
+        secondary = Math.abs(cy - activeCy);
+        aligned = overlapY;
+      } else if (direction === "up") {
+        if (rect.bottom <= activeRect.top + strictGapTolerance && overlapX > 0) {
+          strict = true;
+          primary = Math.max(0, activeRect.top - rect.bottom);
+        } else if (cy < activeCy - 1) {
+          primary = activeCy - cy;
+        } else {
+          return [];
+        }
+        secondary = Math.abs(cx - activeCx);
+        aligned = overlapX;
+      } else {
+        if (rect.top >= activeRect.bottom - strictGapTolerance && overlapX > 0) {
+          strict = true;
+          primary = Math.max(0, rect.top - activeRect.bottom);
+        } else if (cy > activeCy + 1) {
+          primary = cy - activeCy;
+        } else {
+          return [];
+        }
+        secondary = Math.abs(cx - activeCx);
+        aligned = overlapX;
+      }
+      const misalignedPenalty = strict ? 0 : aligned > 0 ? 500000 : 1000000;
+      const score = misalignedPenalty + primary * 10000 + secondary - aligned;
+      return [{ id: panel.id, score, strict }];
+    });
+    const strictCandidates = candidates.filter((item) => item.strict);
+    const pool = strictCandidates.length ? strictCandidates : candidates;
+    let best: { id: string; score: number } | null = null;
+    for (const candidate of pool) {
+      if (!best || candidate.score < best.score) best = candidate;
+    }
+    if (!best) return false;
+    panelManager.focusPanel(best.id);
+    try { panelManager.getEditor(best.id)?.focus?.(); } catch {}
+    return true;
+  };
+  const focusPanelByIndex = (index: number) => {
+    const panels = panelManager.listPanels();
+    const target = panels[Math.max(0, Math.min(index, panels.length - 1))];
+    if (target) panelManager.focusPanel(target.id);
+  };
+  window.zion.commands.registerCommand("zion.panels.focusPanel1", () => focusPanelByIndex(0));
+  window.zion.commands.registerCommand("zion.panels.focusPanel2", () => focusPanelByIndex(1));
+  window.zion.commands.registerCommand("zion.panels.focusPanel3", () => focusPanelByIndex(2));
+  window.zion.commands.registerCommand("zion.panels.focusLeft", () => focusPanelInDirection("left"));
+  window.zion.commands.registerCommand("zion.panels.focusRight", () => focusPanelInDirection("right"));
+  window.zion.commands.registerCommand("zion.panels.focusUp", () => focusPanelInDirection("up"));
+  window.zion.commands.registerCommand("zion.panels.focusDown", () => focusPanelInDirection("down"));
+  window.zion.commands.registerCommand("zion.panels.focusNext", () => {
+    const panels = panelManager.listPanels();
+    if (panels.length <= 1) return;
+    const activeId = panelManager.getActivePanelId();
+    const idx = panels.findIndex(p => p.id === activeId);
+    const next = panels[(idx + 1) % panels.length];
+    if (next) panelManager.focusPanel(next.id);
+  });
+  window.zion.commands.registerCommand("zion.panels.focusPrev", () => {
+    const panels = panelManager.listPanels();
+    if (panels.length <= 1) return;
+    const activeId = panelManager.getActivePanelId();
+    const idx = panels.findIndex(p => p.id === activeId);
+    const prev = panels[(idx - 1 + panels.length) % panels.length];
+    if (prev) panelManager.focusPanel(prev.id);
+  });
+
+  try {
+    window.zion.keybindings.register({ command: "zion.panels.splitHorizontal", key: "Mod-\\", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.splitVertical", key: "Mod-Shift-\\", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.closeActive", key: "Mod-Alt-w", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.focusPanel1", key: "Mod-Alt-1", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.focusPanel2", key: "Mod-Alt-2", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.focusPanel3", key: "Mod-Alt-3", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.focusLeft", key: "Mod-Alt-ArrowLeft", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.focusRight", key: "Mod-Alt-ArrowRight", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.focusUp", key: "Mod-Alt-ArrowUp", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.focusDown", key: "Mod-Alt-ArrowDown", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.focusNext", key: "Mod-Alt-ArrowRight", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.focusPrev", key: "Mod-Alt-ArrowLeft", when: "editorFocus" });
+  } catch {}
+
+  try {
+    const isEditorShortcutContext = (ev: KeyboardEvent) => {
+      if (!window.zion?.window?.activeEditor) return false;
+      const target = ev.target as HTMLElement | null;
+      const appEl = document.getElementById("app");
+      const inCodeMirror = !!target?.closest?.(".cm-editor");
+      if (inCodeMirror) return true;
+      const tag = String(target?.tagName || "").toUpperCase();
+      const isPlainInput =
+        !!target &&
+        !inCodeMirror &&
+        (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!target.isContentEditable);
+      if (isPlainInput) return false;
+      if (!target || target === document.body || target === document.documentElement) return true;
+      if (target.closest?.(".zion-panel")) return true;
+      return !!appEl && appEl.contains(target);
+    };
+    const handleEditorShortcut = (ev: KeyboardEvent, command: string) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      try { (ev as any).stopImmediatePropagation?.(); } catch {}
+      try { window.zion.commands.executeCommand(command); } catch {}
+    };
+    const onGlobalEditorShortcut = (e: Event) => {
+      const ev = e as KeyboardEvent;
+      if (ev.defaultPrevented || !isEditorShortcutContext(ev)) return;
+      const mod = ev.metaKey || ev.ctrlKey;
+      if (!mod) return;
+      const key = String(ev.key || "").toLowerCase();
+      const code = String(ev.code || "");
+      if (!ev.altKey && !ev.shiftKey && (key === "t" || code === "KeyT")) return handleEditorShortcut(ev, "zion.sessions.new");
+      if (!ev.altKey && !ev.shiftKey && (key === "w" || code === "KeyW")) return handleEditorShortcut(ev, "zion.editorTabs.closeActiveSession");
+      if (!ev.altKey && ev.shiftKey && (code === "Comma" || key === "<")) return handleEditorShortcut(ev, "zion.editorTabs.prevSessionTab");
+      if (!ev.altKey && ev.shiftKey && (code === "Period" || key === ">")) return handleEditorShortcut(ev, "zion.editorTabs.nextSessionTab");
+      if (ev.altKey && !ev.shiftKey && code === "ArrowLeft") return handleEditorShortcut(ev, "zion.panels.focusLeft");
+      if (ev.altKey && !ev.shiftKey && code === "ArrowRight") return handleEditorShortcut(ev, "zion.panels.focusRight");
+      if (ev.altKey && !ev.shiftKey && code === "ArrowUp") return handleEditorShortcut(ev, "zion.panels.focusUp");
+      if (ev.altKey && !ev.shiftKey && code === "ArrowDown") return handleEditorShortcut(ev, "zion.panels.focusDown");
+      if (!ev.altKey && !ev.shiftKey && code === "Backslash") return handleEditorShortcut(ev, "zion.panels.splitHorizontal");
+      if (!ev.altKey && ev.shiftKey && code === "Backslash") return handleEditorShortcut(ev, "zion.panels.splitVertical");
+      if (ev.altKey && !ev.shiftKey && (key === "w" || code === "KeyW")) return handleEditorShortcut(ev, "zion.panels.closeActive");
+      if (ev.altKey && !ev.shiftKey && (key === "1" || code === "Digit1")) return handleEditorShortcut(ev, "zion.panels.focusPanel1");
+      if (ev.altKey && !ev.shiftKey && (key === "2" || code === "Digit2")) return handleEditorShortcut(ev, "zion.panels.focusPanel2");
+      if (ev.altKey && !ev.shiftKey && (key === "3" || code === "Digit3")) return handleEditorShortcut(ev, "zion.panels.focusPanel3");
+    };
+    window.addEventListener("keydown", onGlobalEditorShortcut, true);
+    document.addEventListener("keydown", onGlobalEditorShortcut, true);
+  } catch {}
+
   applyTheme(currentTheme);
 
 
@@ -1634,47 +2579,70 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     }
   })();
 
+  const forEachPanelCore = (fn: (targetCore: EditorCore) => void) => {
+    try { fn(core); } catch {}
+    try {
+      for (const [panelId, targetCore] of panelCores.entries()) {
+        if (panelId === "panel-0" || targetCore === core) continue;
+        try { fn(targetCore); } catch {}
+      }
+    } catch {}
+  };
+
   const applyLineNumbers = (enabled: boolean) => {
     lineNumbersEnabled = enabled;
     try { localStorage.setItem("zion.lineNumbers", enabled ? "1" : "0"); } catch {}
-    core.setLineNumbersEnabled(enabled);
+    forEachPanelCore((targetCore) => targetCore.setLineNumbersEnabled(enabled));
     window.zion.state.set("ui.lineNumbers", enabled);
   };
 
   const applyActiveLineHighlight = (enabled: boolean) => {
     activeLineHighlightEnabled = enabled;
     try { localStorage.setItem("zion.activeLineHighlight", enabled ? "1" : "0"); } catch {}
-    core.setActiveLineHighlightEnabled(enabled);
+    forEachPanelCore((targetCore) => targetCore.setActiveLineHighlightEnabled(enabled));
     window.zion.state.set("ui.activeLineHighlight", enabled);
   };
 
   const applySyntaxHighlight = (enabled: boolean) => {
     syntaxHighlightEnabled = enabled;
     try { localStorage.setItem("zion.syntaxHighlight", enabled ? "1" : "0"); } catch {}
-    core.setSyntaxHighlightEnabled(enabled);
+    forEachPanelCore((targetCore) => targetCore.setSyntaxHighlightEnabled(enabled));
     window.zion.state.set("ui.syntaxHighlight", enabled);
   };
 
   const applyAutoIndent = (enabled: boolean) => {
     autoIndentEnabled = enabled;
     try { localStorage.setItem("zion.autoIndent", enabled ? "1" : "0"); } catch {}
-    core.setAutoIndentEnabled(enabled);
+    forEachPanelCore((targetCore) => targetCore.setAutoIndentEnabled(enabled));
     window.zion.state.set("ui.autoIndent", enabled);
   };
 
   const applyFolding = (enabled: boolean) => {
     foldingEnabled = enabled;
     try { localStorage.setItem("zion.folding", enabled ? "1" : "0"); } catch {}
-    core.setFoldingEnabled(enabled);
+    forEachPanelCore((targetCore) => targetCore.setFoldingEnabled(enabled));
     window.zion.state.set("ui.folding", enabled);
   };
 
   const applyLineWrap = (enabled: boolean) => {
     lineWrapEnabled = enabled;
     try { localStorage.setItem("zion.lineWrap", enabled ? "1" : "0"); } catch {}
-    core.setLineWrapEnabled(enabled);
+    forEachPanelCore((targetCore) => targetCore.setLineWrapEnabled(enabled));
     window.zion.state.set("ui.lineWrap", enabled);
   };
+
+  function applyEditorPreferences(targetCore: EditorCore) {
+    targetCore.setTheme(currentTheme);
+    targetCore.setWysiwygEnabled(wysiwygEnabled);
+    targetCore.setLineNumbersEnabled(lineNumbersEnabled);
+    targetCore.setActiveLineHighlightEnabled(activeLineHighlightEnabled);
+    targetCore.setSyntaxHighlightEnabled(syntaxHighlightEnabled);
+    targetCore.setAutoIndentEnabled(autoIndentEnabled);
+    targetCore.setFoldingEnabled(foldingEnabled);
+    targetCore.setLineWrapEnabled(lineWrapEnabled);
+    targetCore.setMinimapEnabled(!!window.zion.state.get("ui.minimapEnabled"));
+    targetCore.setSelectionHighlightEnabled(!!window.zion.state.get("ui.selectionHighlight"));
+  }
 
   // register commands to control these features
   window.zion.commands.registerCommand("zion.setLineNumbers", (v: boolean) => applyLineNumbers(!!v));

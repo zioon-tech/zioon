@@ -277,6 +277,15 @@ declare global {
       window: {
         activeEditor: EditorProxy | null;
       };
+      panels?: {
+        getActivePanelId(): string | null;
+        list(): Array<{ id: string; activeTabId: string | null }>;
+        split(direction: "horizontal" | "vertical", panelId?: string): string | null;
+        splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
+        focus(panelId: string): void;
+        close(panelId?: string): void;
+        getEditor(panelId: string): EditorProxy | null;
+      };
       // models registry (placeholder)
       models?: {
         registerProvider(provider: ModelProvider): Disposable;
@@ -305,9 +314,9 @@ declare global {
         onCommandsChanged(handler: () => void): Disposable;
       };
       chat?: {
-        run(opts?: { useSelection?: boolean; prompt?: string }): void;
-        stop(): void;
-        retry(): void;
+        run(opts?: { useSelection?: boolean; prompt?: string; sessionId?: string; editor?: EditorProxy | null }): void;
+        stop(sessionId?: string): void;
+        retry(sessionId?: string): void;
         isStreaming(sessionId?: string): boolean;
         setActiveModel(model: { providerId: string; modelId: string } | null): void;
         getActiveModel(): { providerId: string; modelId: string } | null;
