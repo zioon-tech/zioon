@@ -379,4 +379,122 @@ export async function activate(ctx) {
 
   // Register FS tools for LLM usage
   try { registerFsTools(); } catch {}
+
+  // Register fs-manager settings into core Settings Panel
+  try {
+    if (window.zion?.settings?.registerItem) {
+      window.zion.settings.registerItem({
+        id: "fs-manager-config",
+        section: "File System",
+        title: "文件系统访问管理",
+        order: 40,
+        render(container) {
+          container.innerHTML = "";
+
+          const style = document.createElement("style");
+          style.textContent = `
+            .fs-cfg-info { font-size:11px;opacity:.7;margin-bottom:10px }
+            .fs-cfg-actions { display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap }
+            .fs-cfg-btn { padding:4px 12px;border:1px solid var(--border,#3c3c3c);border-radius:6px;background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:12px }
+            .fs-cfg-btn:hover { background:rgba(255,255,255,.06) }
+            .fs-cfg-btn.primary { border-color:var(--accent,#6272a4);color:var(--accent,#6272a4) }
+            .fs-cfg-btn.danger { border-color:#ff6b6b;color:#ff6b6b }
+            .fs-cfg-entry { display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border,#3c3c3c);border-radius:6px;margin-bottom:6px }
+            .fs-cfg-entry-icon { font-size:14px }
+            .fs-cfg-entry-name { font-size:12px;font-weight:500;min-width:80px }
+            .fs-cfg-entry-path { flex:1;padding:3px 6px;border:1px solid var(--border,#3c3c3c);border-radius:4px;background:transparent;color:var(--fg,#ccc);font-size:11px;font-family:var(--font-mono,monospace) }
+            .fs-cfg-entry-path:focus { outline:1px solid var(--accent,#6272a4) }
+            .fs-cfg-entry-rm { padding:2px 8px;border:1px solid var(--border,#3c3c3c);border-radius:4px;background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:11px;opacity:.7 }
+            .fs-cfg-entry-rm:hover { opacity:1;color:#ff6b6b }
+            .fs-cfg-empty { font-size:12px;opacity:.6;padding:8px 0 }
+          `;
+          container.appendChild(style);
+
+          const info = document.createElement("div");
+          info.className = "fs-cfg-info";
+          info.textContent = `已授权 ${entries.length} 个文件/文件夹`;
+          container.appendChild(info);
+
+          const actions = document.createElement("div");
+          actions.className = "fs-cfg-actions";
+
+          const addFileBtn = document.createElement("button");
+          addFileBtn.className = "fs-cfg-btn primary";
+          addFileBtn.textContent = "+ 文件";
+          addFileBtn.onclick = async () => { await addFiles(); renderEntries(); };
+          actions.appendChild(addFileBtn);
+
+          const addFolderBtn = document.createElement("button");
+          addFolderBtn.className = "fs-cfg-btn primary";
+          addFolderBtn.textContent = "+ 文件夹";
+          addFolderBtn.onclick = async () => { await addFolder(); renderEntries(); };
+          actions.appendChild(addFolderBtn);
+
+          const clearBtn = document.createElement("button");
+          clearBtn.className = "fs-cfg-btn danger";
+          clearBtn.textContent = "清除全部";
+          clearBtn.onclick = async () => { await clearAll(); renderEntries(); };
+          actions.appendChild(clearBtn);
+
+          container.appendChild(actions);
+
+          const list = document.createElement("div");
+          container.appendChild(list);
+
+          const renderEntries = () => {
+            list.innerHTML = "";
+            info.textContent = `已授权 ${entries.length} 个文件/文件夹`;
+            if (entries.length === 0) {
+              const empty = document.createElement("div");
+              empty.className = "fs-cfg-empty";
+              empty.textContent = "尚未添加任何文件或文件夹";
+              list.appendChild(empty);
+              return;
+            }
+            for (const it of entries) {
+              const row = document.createElement("div");
+              row.className = "fs-cfg-entry";
+
+              const icon = document.createElement("span");
+              icon.className = "fs-cfg-entry-icon";
+              icon.textContent = it.kind === "directory" ? "📁" : "📄";
+              row.appendChild(icon);
+
+              const name = document.createElement("span");
+              name.className = "fs-cfg-entry-name";
+              name.textContent = it.name;
+              row.appendChild(name);
+
+              const pathInput = document.createElement("input");
+              pathInput.className = "fs-cfg-entry-path";
+              pathInput.type = "text";
+              pathInput.placeholder = it.kind === "directory" ? "/absolute/dir/path" : "/absolute/file/path";
+              pathInput.value = String(it.path || "");
+              pathInput.addEventListener("blur", () => {
+                const v = pathInput.value.trim();
+                if (v !== String(it.path || "")) {
+                  updateEntryPath(it.id, v);
+                }
+              });
+              pathInput.addEventListener("keydown", (ev) => {
+                if (ev.key === "Enter") updateEntryPath(it.id, pathInput.value);
+              });
+              row.appendChild(pathInput);
+
+              const rm = document.createElement("button");
+              rm.className = "fs-cfg-entry-rm";
+              rm.textContent = "×";
+              rm.onclick = async () => { await removeEntry(it.id); renderEntries(); };
+              row.appendChild(rm);
+
+              list.appendChild(row);
+            }
+          };
+          renderEntries();
+        }
+      });
+    }
+  } catch (e) {
+    console.warn("[dev.fs-manager] failed to register settings item", e);
+  }
 }

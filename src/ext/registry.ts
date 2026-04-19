@@ -1,3 +1,5 @@
+import { settingsRegistry } from "../settings/registry";
+import { open as openSettingsPanel, close as closeSettingsPanel } from "../settings/SettingsPanel";
 import { EventBus } from "../core/event-bus";
 import { StateBus } from "../core/state-bus";
 import type { Disposable, Keybinding, CommandHandler, PasteHandler, MenuItem, MessageContributor, Decorator } from "../types/zion";
@@ -2324,6 +2326,11 @@ const registry = new Registry();
       onDidChangeDeviceType: (fn: any) => responsiveRuntime.onDidChangeDeviceType(fn),
       onDidChangeMode: (fn: any) => responsiveRuntime.onDidChangeMode(fn),
       setMode: (mode: any) => responsiveRuntime.setMode(mode)
+    },
+    settings: {
+      registerItem: (item: any) => settingsRegistry.registerItem(item),
+      open: () => openSettingsPanel(),
+      close: () => closeSettingsPanel()
     },
     window: {
       activeEditor: null as any

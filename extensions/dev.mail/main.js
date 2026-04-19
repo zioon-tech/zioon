@@ -590,4 +590,12 @@ export async function activate(ctx) {
     } catch {}
   });
   ctx.subscriptions.push({ dispose: () => dispMailNotify.dispose?.() });
+
+  // Register mail settings into core Settings Panel
+  try {
+    const { registerMailSettings } = require("./settings.js");
+    registerMailSettings();
+  } catch (e) {
+    console.warn("[dev.mail] failed to register settings", e);
+  }
 }

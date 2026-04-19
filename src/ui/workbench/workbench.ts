@@ -296,6 +296,23 @@ export function initWorkbench(host: HTMLElement): {
     }
     activityBarEl.appendChild(list);
 
+    // Bottom actions area (settings + commands)
+    const bottom = el("div", "zion-activitybar-bottom");
+
+    const settingsBtn = el("button", "zion-activitybar-item zion-activitybar-settings") as HTMLButtonElement;
+    settingsBtn.type = "button";
+    settingsBtn.title = "设置";
+    settingsBtn.setAttribute("aria-label", "设置");
+    const settingsIcon = document.createElement("span");
+    settingsIcon.className = "codicon codicon-gear";
+    settingsBtn.appendChild(settingsIcon);
+    settingsBtn.onclick = () => {
+      try {
+        (window as any).zion?.settings?.open?.();
+      } catch {}
+    };
+    bottom.appendChild(settingsBtn);
+
     const cmdBtn = el("button", "zion-activitybar-item zion-activitybar-command") as HTMLButtonElement;
     cmdBtn.type = "button";
     cmdBtn.title = "Commands";
@@ -306,7 +323,9 @@ export function initWorkbench(host: HTMLElement): {
         (window as any).zion?.commands?.executeCommand?.("commandPalette.open");
       } catch {}
     };
-    activityBarEl.appendChild(cmdBtn);
+    bottom.appendChild(cmdBtn);
+
+    activityBarEl.appendChild(bottom);
   };
 
   let mountedViewId: string | null = null;

@@ -2861,6 +2861,102 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     initServiceBaseUrlConfig();
   } catch {}
 
+  // Register serviceBaseUrl settings item into the core settings panel
+  try {
+    const { SERVICE_DEFS, loadServiceBaseUrlConfig, saveServiceBaseUrlConfig, resetServiceBaseUrlConfig } = await import("./settings/serviceBaseUrl");
+    (window as any).zion.commands.registerCommand("settings.open", () => {
+      try { (window as any).zion.settings.open(); } catch {}
+    });
+    (window as any).zion.settings.registerItem({
+      id: "serviceBaseUrl",
+      section: "服务",
+      title: "服务地址 (Base URL)",
+      order: 10,
+      render(container: HTMLElement) {
+        const cfg = loadServiceBaseUrlConfig();
+        const inputs: Record<string, HTMLInputElement> = {};
+
+        const style = document.createElement("style");
+        style.textContent = `
+          .svc-url-row { display:flex;align-items:center;gap:8px;margin-bottom:8px }
+          .svc-url-row:last-child { margin-bottom:0 }
+          .svc-url-label { flex:0 0 110px;font-size:12px;opacity:.8;font-weight:500 }
+          .svc-url-input { flex:1;padding:4px 8px;border:1px solid var(--border,#3c3c3c);border-radius:6px;background:transparent;color:var(--fg,#ccc);font-size:12px;font-family:var(--font-mono,monospace) }
+          .svc-url-input:focus { outline:1px solid var(--accent,#6272a4) }
+          .svc-url-actions { display:flex;gap:8px;margin-top:12px }
+          .svc-url-btn { padding:4px 12px;border:1px solid var(--border,#3c3c3c);border-radius:6px;background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:12px }
+          .svc-url-btn:hover { background:rgba(255,255,255,.06) }
+          .svc-url-btn.primary { border-color:var(--accent,#6272a4);color:var(--accent,#6272a4) }
+          .svc-url-msg { font-size:11px;margin-top:6px;min-height:16px }
+          .svc-url-msg.ok { color:var(--ok,#4caf50) }
+          .svc-url-msg.err { color:#ff6b6b }
+        `;
+        container.appendChild(style);
+
+        for (const def of SERVICE_DEFS) {
+          const row = document.createElement("div");
+          row.className = "svc-url-row";
+          const label = document.createElement("div");
+          label.className = "svc-url-label";
+          label.textContent = def.name;
+          const input = document.createElement("input");
+          input.className = "svc-url-input";
+          input.type = "text";
+          input.value = cfg.services[def.id]?.baseUrl || def.defaultBaseUrl;
+          input.placeholder = def.defaultBaseUrl;
+          inputs[def.id] = input;
+          row.appendChild(label);
+          row.appendChild(input);
+          container.appendChild(row);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "svc-url-actions";
+
+        const msg = document.createElement("div");
+        msg.className = "svc-url-msg";
+
+        const saveBtn = document.createElement("button");
+        saveBtn.className = "svc-url-btn primary";
+        saveBtn.textContent = "保存";
+        saveBtn.onclick = () => {
+          const values: Record<string, string> = {};
+          for (const def of SERVICE_DEFS) values[def.id] = inputs[def.id].value;
+          const result = saveServiceBaseUrlConfig(values);
+          if (result.ok) {
+            msg.className = "svc-url-msg ok";
+            msg.textContent = "已保存 ✓";
+            setTimeout(() => { msg.textContent = ""; }, 2000);
+          } else {
+            msg.className = "svc-url-msg err";
+            const fieldName = SERVICE_DEFS.find((d: any) => d.id === result.field)?.name || result.field || "";
+            msg.textContent = `保存失败: ${fieldName} - ${result.error}`;
+          }
+        };
+
+        const resetBtn = document.createElement("button");
+        resetBtn.className = "svc-url-btn";
+        resetBtn.textContent = "重置默认";
+        resetBtn.onclick = () => {
+          const result = resetServiceBaseUrlConfig();
+          for (const def of SERVICE_DEFS) {
+            inputs[def.id].value = result.config.services[def.id]?.baseUrl || def.defaultBaseUrl;
+          }
+          msg.className = "svc-url-msg ok";
+          msg.textContent = "已重置为默认值 ✓";
+          setTimeout(() => { msg.textContent = ""; }, 2000);
+        };
+
+        actions.appendChild(saveBtn);
+        actions.appendChild(resetBtn);
+        container.appendChild(actions);
+        container.appendChild(msg);
+      }
+    });
+  } catch (e) {
+    console.warn("[zion] failed to register serviceBaseUrl settings item", e);
+  }
+
   // 监听内容变化，自动保存
   core.view.state.field && core.view.state.field; // 保证 view 已初始化
   core.view.dom.addEventListener("input", () => {
