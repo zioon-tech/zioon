@@ -1,0 +1,66 @@
+<h2>多面板分屏：布局方案对比</h2>
+<p class="subtitle">思考用户体验 vs 实现复杂度</p>
+
+<div class="options">
+  <div class="option" data-choice="simple-split" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>简单分屏（左右/上下）</h3>
+      <p>只支持2个Panel，一键分屏</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>✓ 优点</h4><ul><li>实现简单（~500行代码）</li><li>用户容易理解</li><li>2周可完成</li></ul></div>
+        <div class="cons"><h4>✗ 缺点</h4><ul><li>不支持3+个Panel</li><li>不能嵌套分屏</li></ul></div>
+      </div>
+      <div class="mockup" style="margin-top:12px;height:120px;background:#f5f5f5;border-radius:6px;padding:8px;display:flex;gap:4px;">
+        <div style="flex:1;background:#e8e8e8;border-radius:4px;padding:4px;font-size:10px;">Panel A</div>
+        <div style="width:4px;background:#666;border-radius:2px;"></div>
+        <div style="flex:1;background:#e8e8e8;border-radius:4px;padding:4px;font-size:10px;">Panel B</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="tree-layout" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>树形布局（VSCode风格）</h3>
+      <p>支持任意数量Panel和嵌套分屏</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>✓ 优点</h4><ul><li>完整的分屏能力</li><li>专业编辑器体验</li><li>灵活性强</li></ul></div>
+        <div class="cons"><h4>✗ 缺点</h4><ul><li>实现复杂（~1500行）</li><li>4-6周开发周期</li><li>需要布局算法</li></ul></div>
+      </div>
+      <div class="mockup" style="margin-top:12px;height:120px;background:#f5f5f5;border-radius:6px;padding:8px;display:flex;gap:2px;">
+        <div style="flex:1;display:flex;flex-direction:column;gap:2px;">
+          <div style="flex:1;background:#e8e8e8;border-radius:4px;padding:4px;font-size:10px;">A</div>
+          <div style="height:4px;background:#666;border-radius:2px;"></div>
+          <div style="flex:1;background:#e8e8e8;border-radius:4px;padding:4px;font-size:10px;">B</div>
+        </div>
+        <div style="width:4px;background:#666;border-radius:2px;"></div>
+        <div style="flex:1;background:#e8e8e8;border-radius:4px;padding:4px;font-size:10px;">C</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="progressive" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>渐进式实现</h3>
+      <p>先做简单分屏，后续迭代到树形</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>✓ 优点</h4><ul><li>快速验证用户需求</li><li>风险可控</li><li>可随时调整方向</li></ul></div>
+        <div class="cons"><h4>✗ 缺点</h4><ul><li>可能需要重构</li><li>功能分批上线</li></ul></div>
+      </div>
+      <div class="mockup" style="margin-top:12px;height:120px;background:#f5f5f5;border-radius:6px;padding:8px;display:flex;gap:4px;">
+        <div style="flex:1;background:#e8e8e8;border-radius:4px;padding:4px;font-size:10px;">Phase 1: 简单分屏</div>
+        <div style="width:4px;background:#999;border-radius:2px;"></div>
+        <div style="flex:1;background:#ddd;border-radius:4px;padding:4px;font-size:9px;color:#666;">Phase 2: 树形布局</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:24px;padding:16px;background:#fffbeb;border-left:4px solid #f59e0b;border-radius:4px;">
+  <h4 style="margin:0 0 8px 0;color:#92400e;">💡 关键问题</h4>
+  <p style="margin:0;font-size:14px;color:#78350f;">
+    用户真的需要3个以上的Panel吗？在实际使用中，2个Panel是否已经满足大部分场景？
+  </p>
+</div>

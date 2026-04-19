@@ -1,5 +1,6 @@
 import { Decoration, EditorView, WidgetType, ViewPlugin } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
+import { diffWordsWithSpace } from "diff";
 
 /**
  * Effects:
@@ -14,6 +15,43 @@ const toggleInline = StateEffect.define(); // { id }
 const updateResult = StateEffect.define(); // { id, result, ok? }
 const removeTool = StateEffect.define();   // { id }
 const clearAll = StateEffect.define();
+
+function scheduleRevealToolContent(view, { id, pos } = {}) {
+  try {
+    const sid = window?.zion?.state?.get?.("sessions.currentId") || null;
+    if (!sid) return;
+    if (window?.zion?.state?.get?.(`chat.followLatest.${sid}`) === false) return;
+    requestAnimationFrame(() => {
+      try {
+        const scrollDOM = view?.scrollDOM;
+        if (!scrollDOM) return;
+        const selectorId = String(id || "").replace(/"/g, '\\"');
+        const toolEl = selectorId
+          ? view.dom.querySelector(`.zion-tool-call-inline[data-tool-id="${selectorId}"], .zion-tool-call-card[data-tool-id="${selectorId}"]`)
+          : null;
+        const viewportRect = scrollDOM.getBoundingClientRect();
+        const margin = 24;
+        let nextScrollTop = null;
+
+        if (toolEl) {
+          const rect = toolEl.getBoundingClientRect();
+          if (rect.bottom > viewportRect.bottom - margin) {
+            nextScrollTop = scrollDOM.scrollTop + (rect.bottom - (viewportRect.bottom - margin));
+          }
+        } else if (typeof pos === "number") {
+          const coords = view.coordsAtPos(Math.max(0, pos), 1);
+          if (coords?.bottom > viewportRect.bottom - margin) {
+            nextScrollTop = scrollDOM.scrollTop + (coords.bottom - (viewportRect.bottom - margin));
+          }
+        }
+
+        if (nextScrollTop == null) return;
+        window?.zion?.state?.set?.(`chat.followSuppressUntil.${sid}`, Date.now() + 80);
+        scrollDOM.scrollTop = Math.max(0, nextScrollTop);
+      } catch {}
+    });
+  } catch {}
+}
 
 function inferToolOkFromResult(toolName, result, ok) {
   const tn = String(toolName || "").toLowerCase();
@@ -122,6 +160,533 @@ function fmt(v, max = 8000) {
   return s;
 }
 
+function createSectionLabel(text) {
+  const el = document.createElement("div");
+  el.textContent = text;
+  Object.assign(el.style, {
+    fontSize: "10px",
+    fontWeight: "600",
+    marginBottom: "6px",
+    opacity: "0.8"
+  });
+  return el;
+}
+
+function createCodeBlock(text, { max = 12000, background = "rgba(128,128,128,0.05)" } = {}) {
+  const body = document.createElement("pre");
+  body.textContent = fmt(text, max);
+  Object.assign(body.style, {
+    margin: 0,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    fontFamily: "var(--font-mono)",
+    fontSize: "11px",
+    lineHeight: "1.5",
+    background,
+    padding: "8px 10px",
+    borderRadius: "6px",
+    overflowX: "auto"
+  });
+  return body;
+}
+
+function normalizeToolName(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function parseMaybeJson(value) {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text) return null;
+  if (!(text.startsWith("{") || text.startsWith("["))) return null;
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+function createMetaPill(text) {
+  const el = document.createElement("span");
+  el.textContent = text;
+  Object.assign(el.style, {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "2px 6px",
+    borderRadius: "999px",
+    fontSize: "10px",
+    color: "var(--muted-fg, var(--fg))",
+    background: "rgba(128,128,128,0.08)",
+    border: "1px solid rgba(128,128,128,0.12)"
+  });
+  return el;
+}
+
+function createInfoText(text) {
+  const el = document.createElement("div");
+  el.textContent = text;
+  Object.assign(el.style, {
+    fontSize: "10px",
+    color: "var(--muted-fg, var(--fg))",
+    marginTop: "6px"
+  });
+  return el;
+}
+
+function createToolMetaRow(name, args) {
+  const row = document.createElement("div");
+  Object.assign(row.style, {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "6px",
+    marginBottom: "8px"
+  });
+  const n = normalizeToolName(name);
+  const path = String(args?.path || args?.file_path || "").trim();
+  if (path) row.appendChild(createMetaPill(path));
+  if ((n === "edit" || n === "fsedit") && typeof args?.replace_all === "boolean") {
+    row.appendChild(createMetaPill(args.replace_all ? "replace all" : "replace first"));
+  }
+  if ((n === "read" || n === "fsread") && typeof args?.offset === "number") {
+    row.appendChild(createMetaPill(`offset ${args.offset}`));
+  }
+  if ((n === "read" || n === "fsread") && typeof args?.limit === "number") {
+    row.appendChild(createMetaPill(`limit ${args.limit}`));
+  }
+  return row.childNodes.length ? row : null;
+}
+
+function createLineTable(lines, { maxRows = 220, showLineNumbers = true } = {}) {
+  const wrap = document.createElement("div");
+  Object.assign(wrap.style, {
+    border: "1px solid rgba(128,128,128,0.12)",
+    borderRadius: "8px",
+    overflow: "hidden",
+    background: "rgba(128,128,128,0.03)"
+  });
+  const rows = Array.isArray(lines) ? lines.slice(0, maxRows) : [];
+  for (let i = 0; i < rows.length; i++) {
+    const item = rows[i] || {};
+    const row = document.createElement("div");
+    Object.assign(row.style, {
+      display: "grid",
+      gridTemplateColumns: showLineNumbers ? "56px minmax(0,1fr)" : "minmax(0,1fr)",
+      borderTop: i === 0 ? "none" : "1px solid rgba(128,128,128,0.06)"
+    });
+    if (showLineNumbers) {
+      const gutter = document.createElement("div");
+      gutter.textContent = item.no == null ? "" : String(item.no);
+      Object.assign(gutter.style, {
+        padding: "4px 8px",
+        textAlign: "right",
+        color: "var(--muted-fg, rgba(127,127,127,0.9))",
+        fontFamily: "var(--font-mono)",
+        fontSize: "10px",
+        userSelect: "none",
+        background: "rgba(128,128,128,0.06)"
+      });
+      row.appendChild(gutter);
+    }
+    const code = document.createElement("div");
+    code.textContent = item.text == null ? "" : String(item.text);
+    Object.assign(code.style, {
+      padding: "4px 10px",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+      fontFamily: "var(--font-mono)",
+      fontSize: "11px",
+      lineHeight: "1.5",
+      minHeight: "22px"
+    });
+    row.appendChild(code);
+    wrap.appendChild(row);
+  }
+  if (Array.isArray(lines) && lines.length > maxRows) {
+    wrap.appendChild(createInfoText(`内容过长，已截断显示前 ${maxRows} 行`));
+  }
+  return wrap;
+}
+
+function createReadView(text) {
+  const raw = String(text ?? "").replace(/\r/g, "");
+  const lines = raw.split("\n");
+  const header = lines[0] || "";
+  const numbered = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/^\s*(\d+)\s+\|\s?(.*)$/);
+    if (m) numbered.push({ no: Number(m[1]), text: m[2] || "" });
+    else numbered.push({ no: null, text: line });
+  }
+  const section = document.createElement("div");
+  if (header.startsWith("// File:")) {
+    section.appendChild(createMetaPill(header.replace(/^\/\/\s*/, "")));
+    section.firstChild.style.marginBottom = "8px";
+  }
+  section.appendChild(createLineTable(numbered.length ? numbered : lines.map((line, idx) => ({ no: idx + 1, text: line })), { maxRows: 260 }));
+  return section;
+}
+
+function createSearchResultsView(data) {
+  const results = Array.isArray(data?.results) ? data.results : [];
+  const wrap = document.createElement("div");
+  Object.assign(wrap.style, {
+    display: "grid",
+    gap: "8px"
+  });
+  results.slice(0, 8).forEach((item, idx) => {
+    const card = document.createElement("div");
+    Object.assign(card.style, {
+      padding: "8px 10px",
+      borderRadius: "8px",
+      border: "1px solid rgba(128,128,128,0.12)",
+      background: "rgba(128,128,128,0.03)"
+    });
+    const title = document.createElement("div");
+    title.textContent = item?.title || item?.name || `结果 ${idx + 1}`;
+    Object.assign(title.style, {
+      fontSize: "11px",
+      fontWeight: "600",
+      marginBottom: "4px"
+    });
+    card.appendChild(title);
+    if (item?.url) {
+      const url = document.createElement("div");
+      url.textContent = item.url;
+      Object.assign(url.style, {
+        fontSize: "10px",
+        color: "var(--accent)",
+        marginBottom: item?.snippet ? "4px" : "0",
+        wordBreak: "break-all"
+      });
+      card.appendChild(url);
+    }
+    if (item?.snippet) {
+      const snippet = document.createElement("div");
+      snippet.textContent = item.snippet;
+      Object.assign(snippet.style, {
+        fontSize: "10px",
+        lineHeight: "1.5",
+        color: "var(--muted-fg, var(--fg))"
+      });
+      card.appendChild(snippet);
+    }
+    wrap.appendChild(card);
+  });
+  if (results.length > 8) wrap.appendChild(createInfoText(`共 ${results.length} 条结果，当前展示前 8 条`));
+  return wrap;
+}
+
+function createPathListView(items, emptyText = "无结果") {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return createInfoText(emptyText);
+  const wrap = document.createElement("div");
+  Object.assign(wrap.style, {
+    border: "1px solid rgba(128,128,128,0.12)",
+    borderRadius: "8px",
+    overflow: "hidden",
+    background: "rgba(128,128,128,0.03)"
+  });
+  list.slice(0, 120).forEach((item, idx) => {
+    const row = document.createElement("div");
+    row.textContent = String(item);
+    Object.assign(row.style, {
+      padding: "5px 10px",
+      borderTop: idx === 0 ? "none" : "1px solid rgba(128,128,128,0.06)",
+      fontFamily: "var(--font-mono)",
+      fontSize: "11px",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word"
+    });
+    wrap.appendChild(row);
+  });
+  if (list.length > 120) wrap.appendChild(createInfoText(`共 ${list.length} 项，当前展示前 120 项`));
+  return wrap;
+}
+
+function createGrepResultsView(data) {
+  const results = Array.isArray(data?.results) ? data.results : [];
+  const mode = String(data?.output_mode || "");
+  if (!results.length) return createInfoText("无命中结果");
+  if (mode === "files_with_matches") {
+    return createPathListView(results, "无命中结果");
+  }
+  if (mode === "count") {
+    const rows = results.map((item) => {
+      if (typeof item === "string") return item;
+      const path = item?.path || item?.file || item?.file_path || "";
+      const count = item?.count ?? item?.matches ?? "";
+      return path ? `${path}  ${count}` : JSON.stringify(item);
+    });
+    return createPathListView(rows, "无命中结果");
+  }
+  const wrap = document.createElement("div");
+  Object.assign(wrap.style, { display: "grid", gap: "8px" });
+  results.slice(0, 40).forEach((item) => {
+    const card = document.createElement("div");
+    Object.assign(card.style, {
+      border: "1px solid rgba(128,128,128,0.12)",
+      borderRadius: "8px",
+      overflow: "hidden",
+      background: "rgba(128,128,128,0.03)"
+    });
+    const path = document.createElement("div");
+    path.textContent = item?.path || item?.file || item?.file_path || "match";
+    Object.assign(path.style, {
+      padding: "6px 10px",
+      fontSize: "10px",
+      fontWeight: "600",
+      background: "rgba(128,128,128,0.06)"
+    });
+    card.appendChild(path);
+    const chunks = Array.isArray(item?.lines)
+      ? item.lines
+      : Array.isArray(item?.matches)
+        ? item.matches
+        : [item];
+    const lines = [];
+    chunks.forEach((entry) => {
+      if (typeof entry === "string") {
+        lines.push({ no: null, text: entry });
+        return;
+      }
+      const no = typeof entry?.line_number === "number" ? entry.line_number : (typeof entry?.line === "number" ? entry.line : null);
+      const text = entry?.text ?? entry?.content ?? entry?.line_text ?? JSON.stringify(entry);
+      lines.push({ no, text });
+    });
+    card.appendChild(createLineTable(lines, { maxRows: 40 }));
+    wrap.appendChild(card);
+  });
+  if (results.length > 40) wrap.appendChild(createInfoText(`共 ${results.length} 项命中，当前展示前 40 项`));
+  return wrap;
+}
+
+function createWritePreviewView(args) {
+  const section = document.createElement("div");
+  const content = String(args?.content ?? "");
+  const prompt = typeof args?.prompt === "string" ? args.prompt.trim() : "";
+  const lines = content.replace(/\r/g, "").split("\n").map((text, idx) => ({ no: idx + 1, text }));
+  section.appendChild(createLineTable(lines, { maxRows: 220 }));
+  if (prompt) section.appendChild(createInfoText(`prompt: ${prompt}`));
+  return section;
+}
+
+function createEditDiffView(args) {
+  const oldText = String(args?.old_string ?? "");
+  const newText = String(args?.new_string ?? "");
+  const renderDiffText = (side) => {
+    const content = document.createElement("div");
+    Object.assign(content.style, {
+      padding: "10px 12px 12px",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+      fontFamily: "var(--font-mono)",
+      fontSize: "11px",
+      lineHeight: "1.6",
+      color: "var(--fg)"
+    });
+    const parts = diffWordsWithSpace(oldText, newText);
+    let wrote = false;
+    for (const part of parts) {
+      const shouldShow = side === "search"
+        ? !part.added
+        : !part.removed;
+      if (!shouldShow) continue;
+      if ((side === "search" && part.removed) || (side === "replace" && part.added)) {
+        const mark = document.createElement("span");
+        mark.textContent = part.value;
+        Object.assign(mark.style, {
+          background: side === "search" ? "rgba(248, 81, 73, 0.16)" : "rgba(46, 160, 67, 0.16)",
+          boxShadow: side === "search"
+            ? "inset 0 0 0 1px rgba(248, 81, 73, 0.22)"
+            : "inset 0 0 0 1px rgba(46, 160, 67, 0.22)",
+          borderRadius: "4px"
+        });
+        content.appendChild(mark);
+      } else {
+        content.appendChild(document.createTextNode(part.value));
+      }
+      wrote = true;
+    }
+    if (!wrote) content.textContent = side === "search" ? oldText : newText;
+    if (!content.textContent && !content.childNodes.length) content.textContent = " ";
+    return content;
+  };
+  const makeBlock = (label, text, tone) => {
+    const block = document.createElement("div");
+    Object.assign(block.style, {
+      border: tone === "search"
+        ? "1px solid rgba(248, 81, 73, 0.18)"
+        : "1px solid rgba(46, 160, 67, 0.18)",
+      borderRadius: "10px",
+      overflow: "hidden",
+      background: "transparent",
+      boxShadow: "none"
+    });
+    const head = document.createElement("div");
+    head.textContent = label;
+    Object.assign(head.style, {
+      padding: "7px 10px",
+      fontSize: "10px",
+      fontWeight: "600",
+      letterSpacing: "0.02em",
+      textTransform: "uppercase",
+      color: "var(--muted-fg, var(--fg))",
+      background: tone === "search" ? "rgba(248, 81, 73, 0.10)" : "rgba(46, 160, 67, 0.10)",
+      borderBottom: tone === "search"
+        ? "1px solid rgba(248, 81, 73, 0.14)"
+        : "1px solid rgba(46, 160, 67, 0.14)"
+    });
+    block.appendChild(head);
+    const body = renderDiffText(tone);
+    if (String(text ?? "").replace(/\r/g, "").split("\n").length > 160) {
+      body.appendChild(createInfoText("内容过长，当前仅适合查看关键替换片段"));
+    }
+    block.appendChild(body);
+    return block;
+  };
+  const wrap = document.createElement("div");
+  Object.assign(wrap.style, {
+    display: "grid",
+    gap: "8px"
+  });
+  wrap.appendChild(makeBlock("Search", oldText, "search"));
+  wrap.appendChild(makeBlock("Replace", newText, "replace"));
+  return wrap;
+}
+
+function createPatchView(text) {
+  const wrap = document.createElement("div");
+  Object.assign(wrap.style, {
+    border: "1px solid rgba(128,128,128,0.12)",
+    borderRadius: "8px",
+    overflow: "hidden",
+    background: "rgba(128,128,128,0.03)"
+  });
+  const lines = String(text ?? "").replace(/\r/g, "").split("\n");
+  const MAX_LINES = 280;
+  const total = Math.min(lines.length, MAX_LINES);
+  for (let i = 0; i < total; i++) {
+    const line = lines[i];
+    const row = document.createElement("div");
+    const kind = line.startsWith("+") ? "add" : line.startsWith("-") ? "remove" : line.startsWith("@@") ? "hunk" : line.startsWith("***") ? "header" : "context";
+    const palette = kind === "add"
+      ? { bg: "rgba(46, 160, 67, 0.10)", fg: "inherit" }
+      : kind === "remove"
+        ? { bg: "rgba(248, 81, 73, 0.10)", fg: "inherit" }
+        : kind === "hunk"
+          ? { bg: "rgba(56, 139, 253, 0.10)", fg: "inherit" }
+          : kind === "header"
+            ? { bg: "rgba(128,128,128,0.08)", fg: "inherit" }
+            : { bg: "transparent", fg: "inherit" };
+    row.textContent = line || " ";
+    Object.assign(row.style, {
+      padding: "4px 10px",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+      fontFamily: "var(--font-mono)",
+      fontSize: "11px",
+      lineHeight: "1.5",
+      borderTop: i === 0 ? "none" : "1px solid rgba(128,128,128,0.06)",
+      background: palette.bg,
+      color: palette.fg
+    });
+    wrap.appendChild(row);
+  }
+  if (lines.length > MAX_LINES) {
+    const more = document.createElement("div");
+    more.textContent = `patch 过长，已截断显示前 ${MAX_LINES} 行`;
+    Object.assign(more.style, {
+      padding: "8px 10px",
+      fontSize: "10px",
+      color: "var(--muted-fg, var(--fg))",
+      background: "rgba(128,128,128,0.05)",
+      borderTop: "1px solid rgba(128,128,128,0.08)"
+    });
+    wrap.appendChild(more);
+  }
+  return wrap;
+}
+
+function createToolRequestRenderer(name, args) {
+  const n = normalizeToolName(name);
+  const section = document.createElement("div");
+  section.style.marginBottom = "8px";
+  section.appendChild(createSectionLabel("请求参数:"));
+  const meta = createToolMetaRow(name, args);
+  if (meta) section.appendChild(meta);
+  if ((n === "edit" || n === "fsedit") && args && (typeof args.old_string === "string" || typeof args.new_string === "string")) {
+    section.appendChild(createEditDiffView(args));
+    return section;
+  }
+  if (n === "write" || n === "fswrite") {
+    section.appendChild(createWritePreviewView(args || {}));
+    return section;
+  }
+  if (n === "apply_patch") {
+    const patchText = typeof args === "string" ? args : (typeof args?.patch === "string" ? args.patch : JSON.stringify(args, null, 2));
+    section.appendChild(createPatchView(patchText));
+    return section;
+  }
+  section.appendChild(createCodeBlock(args, { max: 4000 }));
+  return section;
+}
+
+function renderLightMarkdown(text) {
+  const raw = String(text ?? "");
+  let html = raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre style="margin:6px 0;padding:8px 10px;border-radius:6px;background:rgba(128,128,128,0.08);overflow-x:auto;font-size:11px;line-height:1.5;"><code>${code}</code></pre>`;
+  });
+  html = html.replace(/`([^`\n]+)`/g, '<code style="padding:1px 4px;border-radius:3px;background:rgba(128,128,128,0.12);font-size:11px;">$1</code>');
+  html = html.replace(/^### (.+)$/gm, '<h4 style="margin:10px 0 4px;font-size:12px;font-weight:600;">$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3 style="margin:12px 0 4px;font-size:13px;font-weight:600;">$1</h3>');
+  html = html.replace(/^# (.+)$/gm, '<h2 style="margin:14px 0 6px;font-size:14px;font-weight:600;">$1</h2>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;">$1</a>');
+  html = html.replace(/^[-*] (.+)$/gm, '<li style="margin:2px 0 2px 16px;">$1</li>');
+  html = html.replace(/^> (.+)$/gm, '<blockquote style="margin:4px 0;padding:4px 8px;border-left:3px solid var(--border);opacity:0.85;">$1</blockquote>');
+  html = html.replace(/\n{2,}/g, '</p><p style="margin:6px 0;">');
+  html = html.replace(/\n/g, '<br>');
+  return `<div style="font-size:11px;line-height:1.6;max-height:400px;overflow-y:auto;padding:8px 10px;border-radius:6px;background:rgba(128,128,128,0.04);">${html}</div>`;
+}
+
+function createMarkdownView(text) {
+  const wrap = document.createElement("div");
+  wrap.innerHTML = renderLightMarkdown(text);
+  return wrap;
+}
+
+function createToolResponseRenderer(name, result) {
+  const n = normalizeToolName(name);
+  const section = document.createElement("div");
+  section.appendChild(createSectionLabel("响应结果:"));
+  if (n === "read" || n === "fsread") {
+    section.appendChild(createReadView(result));
+    return section;
+  }
+  if (n === "webfetch" || n === "web_read" || n === "fetch") {
+    section.appendChild(createMarkdownView(result));
+    return section;
+  }
+  const parsed = parseMaybeJson(result);
+  if ((n === "websearch" || n === "localsearch") && parsed?.results) {
+    section.appendChild(createSearchResultsView(parsed));
+    return section;
+  }
+  if (n === "glob" && parsed?.results) {
+    section.appendChild(createPathListView(parsed.results, "无匹配文件"));
+    return section;
+  }
+  if (n === "grep" && parsed?.results) {
+    section.appendChild(createGrepResultsView(parsed));
+    return section;
+  }
+  section.appendChild(createCodeBlock(result, { max: 12000 }));
+  return section;
+}
+
 function notify(message, options) {
   try {
     const fn = window.zion?.notification?.show;
@@ -134,6 +699,22 @@ function notify(message, options) {
     console.info("[notify]", message);
   } catch {}
   return null;
+}
+
+function getPanelEventContext(panelId) {
+  const pid = typeof panelId === "string" && panelId ? panelId : null;
+  let sessionId = null;
+  try {
+    if (pid) {
+      sessionId = window.zion?.panelManager?.getPanel?.(pid)?.activeTabId
+        || window.zion?.panels?.list?.().find((panel) => panel.id === pid)?.activeTabId
+        || null;
+    }
+    if (!sessionId) {
+      sessionId = window.zion?.state?.get?.("sessions.currentId") || null;
+    }
+  } catch {}
+  return { panelId: pid, sessionId };
 }
 
 // 简要摘要：根据工具名称与参数，生成单行提示（便于用户无需展开卡片也能知情）
@@ -300,6 +881,13 @@ class ToolCallCardWidget extends WidgetType {
     const wrap = document.createElement("div");
     wrap.className = "zion-tool-call-card";
     wrap.setAttribute("data-tool-id", String(this.id).replace(/:card$/, ""));
+    const getActionContext = () => {
+      try {
+        const panelId = wrap.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
+        return getPanelEventContext(panelId);
+      } catch {}
+      return getPanelEventContext(null);
+    };
     // 头部：名称与移除按钮
     const header = document.createElement("div");
     header.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;";
@@ -342,12 +930,15 @@ class ToolCallCardWidget extends WidgetType {
         e.stopPropagation();
         const baseId = String(this.id).replace(/:card$/, "");
         try {
+          const ctx = getActionContext();
           window.zion?.events?.emit("toolcards/editRevert", {
             id: baseId,
             path: this.args.path,
             old_string: this.args.old_string,
             new_string: this.args.new_string,
-            replace_all: this.args.replace_all
+            replace_all: this.args.replace_all,
+            panelId: ctx.panelId,
+            sessionId: ctx.sessionId
           });
         } catch (err) {
           console.error("[toolcards/editRevert] error:", err);
@@ -372,12 +963,15 @@ class ToolCallCardWidget extends WidgetType {
         e.stopPropagation();
         const baseId = String(this.id).replace(/:card$/, "");
         try {
+          const ctx = getActionContext();
           window.zion?.events?.emit("toolcards/editAccept", {
             id: baseId,
             path: this.args.path,
             old_string: this.args.old_string,
             new_string: this.args.new_string,
-            replace_all: this.args.replace_all
+            replace_all: this.args.replace_all,
+            panelId: ctx.panelId,
+            sessionId: ctx.sessionId
           });
         } catch (err) {
           console.error("[toolcards/editAccept] error:", err);
@@ -410,10 +1004,13 @@ class ToolCallCardWidget extends WidgetType {
         e.stopPropagation();
         const baseId = String(this.id).replace(/:card$/, "");
         try {
+          const ctx = getActionContext();
           window.zion?.events?.emit("toolcards/writeRevert", {
             id: baseId,
             path: this.args.path,
-            content: this.args.content
+            content: this.args.content,
+            panelId: ctx.panelId,
+            sessionId: ctx.sessionId
           });
         } catch (err) {
           console.error("[toolcards/writeRevert] error:", err);
@@ -438,10 +1035,13 @@ class ToolCallCardWidget extends WidgetType {
         e.stopPropagation();
         const baseId = String(this.id).replace(/:card$/, "");
         try {
+          const ctx = getActionContext();
           window.zion?.events?.emit("toolcards/writeAccept", {
             id: baseId,
             path: this.args.path,
-            content: this.args.content
+            content: this.args.content,
+            panelId: ctx.panelId,
+            sessionId: ctx.sessionId
           });
         } catch (err) {
           console.error("[toolcards/writeAccept] error:", err);
@@ -477,64 +1077,12 @@ class ToolCallCardWidget extends WidgetType {
 
     // 请求参数部分
     if (this.args) {
-      const requestSection = document.createElement("div");
-      requestSection.style.marginBottom = "8px";
-      
-      const requestLabel = document.createElement("div");
-      requestLabel.textContent = "请求参数:";
-      Object.assign(requestLabel.style, {
-        fontSize: "10px",
-        fontWeight: "600",
-        marginBottom: "4px",
-        opacity: "0.8"
-      });
-      requestSection.appendChild(requestLabel);
-      
-      const requestBody = document.createElement("pre");
-      requestBody.textContent = fmt(this.args, 4000);
-      Object.assign(requestBody.style, {
-        margin: 0,
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
-        fontFamily: "var(--font-mono)",
-        fontSize: "11px",
-        background: "rgba(128,128,128,0.05)",
-        padding: "2px",
-        borderRadius: "4px"
-      });
-      requestSection.appendChild(requestBody);
-      wrap.appendChild(requestSection);
+      wrap.appendChild(createToolRequestRenderer(this.name, this.args));
     }
 
     // 响应结果部分
     if (this.result) {
-      const responseSection = document.createElement("div");
-
-      const responseLabel = document.createElement("div");
-      responseLabel.textContent = "响应结果:";
-      Object.assign(responseLabel.style, {
-        fontSize: "10px",
-        fontWeight: "600",
-        marginBottom: "4px",
-        opacity: "0.8"
-      });
-      responseSection.appendChild(responseLabel);
-
-      const responseBody = document.createElement("pre");
-      responseBody.textContent = fmt(this.result, 12000);
-      Object.assign(responseBody.style, {
-        margin: 0,
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
-        fontFamily: "var(--font-mono)",
-        fontSize: "11px",
-        background: "rgba(128,128,128,0.05)",
-        padding: "2px",
-        borderRadius: "4px"
-      });
-      responseSection.appendChild(responseBody);
-
-      wrap.appendChild(responseSection);
+      wrap.appendChild(createToolResponseRenderer(this.name, this.result));
     }
 
     return wrap;
@@ -1152,6 +1700,7 @@ export function installToolCallCards() {
         changes: { from: pos, insert: text },
         effects: [addInline.of({ from: start, to: end, id: tc.id, name, args: tc.args, userStartLine })]
       });
+      scheduleRevealToolContent(this.view, { id: tc.id, pos: end, reason: "onTool-insert" });
       // 插入后，将锚点推进到换行之后
       this.anchorPos = end + 1;
       try {
@@ -1188,7 +1737,19 @@ export function installToolCallCards() {
         window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: this.sessionId });
       } catch {}
     };
+    shouldHandleToolAction = (payload) => {
+      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      if (payload?.panelId && this.panelId && payload.panelId !== this.panelId) return false;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return false;
+      if (!payload?.panelId && !payload?.sessionId) {
+        const activePanelId = window.zion?.panels?.getActivePanelId?.() || null;
+        if (this.panelId && activePanelId && this.panelId !== activePanelId) return false;
+      }
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
+      return true;
+    };
     onEditRevert = async (payload) => {
+      if (!this.shouldHandleToolAction(payload)) return;
       // 处理 edit 工具的 Revert 操作
       const { id, path, old_string, new_string, replace_all } = payload || {};
       if (!path || typeof old_string !== "string" || typeof new_string !== "string") {
@@ -1250,6 +1811,7 @@ export function installToolCallCards() {
       }
     };
     onEditAccept = async (payload) => {
+      if (!this.shouldHandleToolAction(payload)) return;
       // 处理 edit 工具的 Accept 操作
       // Accept 执行正向编辑：old_string -> new_string
       const { id, path, old_string, new_string, replace_all } = payload || {};
@@ -1310,6 +1872,7 @@ export function installToolCallCards() {
       }
     };
     onWriteRevert = async (payload) => {
+      if (!this.shouldHandleToolAction(payload)) return;
       const { id, path } = payload || {};
       if (!path) {
         notify("Revert 参数缺失", { type: "error", duration: 3000 });
@@ -1400,6 +1963,7 @@ export function installToolCallCards() {
       }
     };
     onWriteAccept = async (payload) => {
+      if (!this.shouldHandleToolAction(payload)) return;
       const { id, path } = payload || {};
       if (!path) {
         notify("Accept 参数缺失", { type: "error", duration: 3000 });
@@ -1467,6 +2031,7 @@ export function installToolCallCards() {
       }
     };
     onBatchAccept = async (payload) => {
+      if (!this.shouldHandleToolAction(payload)) return;
       const userStartLine = typeof payload?.userStartLine === "number" ? payload.userStartLine : null;
       const from = typeof payload?.from === "number" ? payload.from : 0;
       const to = typeof payload?.to === "number" ? payload.to : this.view.state.doc.length;
@@ -1522,6 +2087,7 @@ export function installToolCallCards() {
       }
     };
     onBatchRevert = async (payload) => {
+      if (!this.shouldHandleToolAction(payload)) return;
       const userStartLine = typeof payload?.userStartLine === "number" ? payload.userStartLine : null;
       const from = typeof payload?.from === "number" ? payload.from : 0;
       const to = typeof payload?.to === "number" ? payload.to : this.view.state.doc.length;
@@ -1647,11 +2213,32 @@ export function installToolCallCards() {
 
       const batchedEffects = [];
       const batchedToggles = [];
+      let existingItems = new Map();
+      try {
+        const fieldVal = this.view.state.field(toolInlineField);
+        if (fieldVal?.items) fieldVal.items.forEach((it, id) => existingItems.set(String(id), it));
+      } catch {}
       const itemsToProcess = list.filter(it => !deletedSet.has(it?.id));
       const processedIds = new Set();
 
+      // Phase 0: reconcile already-mounted items, avoid restoring or toggling them twice
+      for (const it of itemsToProcess) {
+        const id = String(it?.id || "");
+        if (!id) continue;
+        const mounted = existingItems.get(id);
+        if (!mounted) continue;
+        processedIds.add(id);
+        if (it.result != null && (mounted.result !== it.result || mounted.ok !== it.ok)) {
+          batchedEffects.push(updateResult.of({ id, result: it.result, ok: it.ok }));
+        }
+        if (!!it.expanded && !mounted.expanded) {
+          batchedToggles.push(id);
+        }
+      }
+
       // Phase 1: 精确位置匹配 (优先)
       for (const it of itemsToProcess) {
+        if (processedIds.has(String(it?.id || ""))) continue;
         const expected = `调用 ${it.name}`;
         if (typeof it.from === "number" && typeof it.to === "number" && it.from >= 0 && it.to <= docLen && it.from < it.to) {
           const text = doc.sliceString(it.from, it.to);
@@ -1701,9 +2288,20 @@ export function installToolCallCards() {
 
       // 批量应用 Phase 1 & 2 的效果
       if (batchedEffects.length) this.view.dispatch({ effects: batchedEffects });
+      if (batchedEffects.length) {
+        const lastAddInline = [...batchedEffects].reverse().find((eff) => eff?.is?.(addInline));
+        const lastPayload = lastAddInline?.value || null;
+        if (lastPayload?.id) {
+          scheduleRevealToolContent(this.view, {
+            id: lastPayload.id,
+            pos: lastPayload.to
+          });
+        }
+      }
       if (batchedToggles.length) {
         const eff2 = batchedToggles.map(id => toggleInline.of({ id }));
         this.view.dispatch({ effects: eff2 });
+        scheduleRevealToolContent(this.view, { id: batchedToggles[batchedToggles.length - 1] });
       }
 
       // Phase 3: 兜底 (创建新锚点)
@@ -1725,6 +2323,7 @@ export function installToolCallCards() {
           changes: { from: pos, insert: text },
           effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args, userStartLine })]
         });
+        scheduleRevealToolContent(this.view, { id: it.id, pos: end });
         
         if (it.result != null) {
           this.view.dispatch({ effects: [updateResult.of({ id: it.id, result: it.result, ok: it.ok })] });

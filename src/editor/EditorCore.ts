@@ -73,6 +73,19 @@ const optionDSelectNext = EditorView.domEventHandlers({
   }
 });
 
+const selectionHighlightTheme = EditorView.theme({
+  ".cm-selectionMatch": {
+    backgroundColor: "var(--selection-match-bg)",
+    borderRadius: "0",
+    boxShadow: "none"
+  }
+});
+
+function getSelectionHighlightExtensions(enabled: boolean): Extension[] {
+  if (!enabled) return [];
+  return [highlightSelectionMatches(), selectionHighlightTheme];
+}
+
 export type CursorPos = { line: number; ch: number };
 
 export class EditorCore {
@@ -98,8 +111,12 @@ export class EditorCore {
   private syntaxHighlightEnabled = true;
   private foldEnabled = true;
   private lineWrapEnabled = true;
+  private disposed = false;
+  private _panelId: string;
 
-  constructor(parent: HTMLElement, initialValue = "") {
+  constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0") {
+    this._panelId = panelId;
+    parent.setAttribute("data-panel-id", panelId);
     this.view = new EditorView({
       state: EditorState.create({
         doc: initialValue,
@@ -146,7 +163,7 @@ export class EditorCore {
           // minimap compartment (can be toggled)
           this.minimapComp.of([]),
           // selection highlight compartment
-          this.selectionHighlightComp.of([]),
+          this.selectionHighlightComp.of(getSelectionHighlightExtensions(this.selectionHighlightEnabled)),
           // external visual extensions compartment (extensions can push CM6 ViewPlugins)
           this.externalComp.of(this.externalExtensions),
           this.keymapComp.of(
@@ -429,8 +446,17 @@ export class EditorCore {
     this.selectionHighlightEnabled = !!enabled;
     this.view.dispatch({
       effects: this.selectionHighlightComp.reconfigure(
-        this.selectionHighlightEnabled ? highlightSelectionMatches() : []
+        getSelectionHighlightExtensions(this.selectionHighlightEnabled)
       )
     });
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.externalExtensions = [];
+    try {
+      this.view.destroy();
+    } catch {}
   }
 }

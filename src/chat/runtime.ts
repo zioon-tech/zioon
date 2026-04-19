@@ -28,6 +28,12 @@ export type ChatRunState = {
   streaming?: boolean;
   aborted?: boolean;
   awaiting?: boolean;
+  error?: boolean;
+  model?: {
+    providerId: string;
+    modelId: string;
+    label?: string;
+  } | null;
 };
 
 export function createChatRuntime(opts: CreateChatRuntimeOptions) {
@@ -49,7 +55,7 @@ export function createChatRuntime(opts: CreateChatRuntimeOptions) {
     if (!sid) return null;
     const cur = getRunState(sid) || {};
     opts.state.set(`chat.runs.${sid}`, { ...cur, ...patch });
-    if (sid === opts.getSessionId()) syncGlobalStreamingForActiveSession();
+    syncGlobalStreamingForActiveSession();
     return opts.state.get(`chat.runs.${sid}`) || null;
   };
 
@@ -77,32 +83,32 @@ export function createChatRuntime(opts: CreateChatRuntimeOptions) {
     opts.state.set("chat.runId", runId);
     opts.state.set("chat.error", null);
     clearController(sid);
-    setRunState(sid, { runId, streaming: true, aborted: false, awaiting: false });
+    setRunState(sid, { runId, streaming: true, aborted: false, awaiting: false, error: false });
   };
 
   const markAwaiting = (sid: string | undefined) => {
     if (!sid) return;
-    setRunState(sid, { streaming: false, awaiting: true });
+    setRunState(sid, { streaming: false, awaiting: true, error: false });
     clearController(sid);
   };
 
   const markAborted = (sid: string | undefined) => {
     if (!sid) return;
-    setRunState(sid, { aborted: true, streaming: false });
+    setRunState(sid, { aborted: true, streaming: false, error: false });
     clearController(sid);
   };
 
   const markError = (sid: string | undefined, error: any) => {
     if (!sid) return;
     try { opts.state.set("chat.error", error?.message); } catch {}
-    setRunState(sid, { aborted: true, streaming: false });
+    setRunState(sid, { aborted: false, streaming: false, awaiting: false, error: true });
     clearController(sid);
   };
 
   const stopSession = (sid = opts.getSessionId()) => {
     if (!sid) return null;
     const rs = getRunState(sid);
-    setRunState(sid, { streaming: false, aborted: true });
+    setRunState(sid, { streaming: false, aborted: true, error: false });
     const controller = getController(sid);
     try { controller?.abort?.(); } catch {}
     clearController(sid);

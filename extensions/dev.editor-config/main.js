@@ -55,9 +55,9 @@ export async function activate(ctx) {
     window.zion.state.set(STATE_KEY, DEFAULT_MODE);
   }
 
-  const applyWidthMode = () => {
+  const applyWidthMode = (editor) => {
     const mode = getMode();
-    const cm = document.querySelector(".cm-editor");
+    const cm = editor?.getView?.()?.dom || null;
     if (!cm) return;
     const scroller = cm.querySelector(".cm-scroller") || cm;
 
@@ -103,13 +103,13 @@ export async function activate(ctx) {
   // Decorator to apply width mode reactively
   const widthDecDisp = window.zion.editor.registerDecorator({
     id: "dev.editor.width-mode",
-    apply() {
-      applyWidthMode();
-      const sub = window.zion.state.onDidChange(STATE_KEY, applyWidthMode);
+    apply(editor) {
+      applyWidthMode(editor);
+      const sub = window.zion.state.onDidChange(STATE_KEY, () => applyWidthMode(editor));
       return {
         dispose() {
           try {
-            const cm = document.querySelector(".cm-editor");
+            const cm = editor?.getView?.()?.dom || null;
             const scroller = cm?.querySelector(".cm-scroller") || cm;
             if (scroller) {
               scroller.style.maxWidth = "";

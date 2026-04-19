@@ -4,6 +4,7 @@ export function createSessionsSidebarViewManager(opts) {
   const openAncestors = opts?.openAncestors;
 
   let current = null;
+  let revealRaf = 0;
 
   function refreshIfOpen() {
     try {
@@ -15,6 +16,18 @@ export function createSessionsSidebarViewManager(opts) {
     try {
       current?.anchorToCurrent?.();
     } catch {}
+  }
+
+  function revealSessionIfOpen(sessionId, options) {
+    const sid = sessionId ? String(sessionId) : "";
+    if (!sid) return;
+    if (revealRaf) cancelAnimationFrame(revealRaf);
+    revealRaf = requestAnimationFrame(() => {
+      revealRaf = 0;
+      try {
+        current?.revealSession?.(sid, options);
+      } catch {}
+    });
   }
 
   function toggleMenuIfOpen() {
@@ -139,9 +152,37 @@ export function createSessionsSidebarViewManager(opts) {
       } catch {}
     };
 
+    const revealSession = (sessionId, opts2) => {
+      const sid = sessionId ? String(sessionId) : "";
+      if (!sid) return;
+      const opt = opts2 || {};
+      const openParents = opt.openAncestors !== false;
+      const clearSearch = !!opt.clearSearch;
+      const flash = opt.flash !== false;
+      const block = opt.block || "nearest";
+      try { if (openParents) openAncestors?.(sid); } catch {}
+      try { if (clearSearch) searchInput.value = ""; } catch {}
+      renderAll();
+      try {
+        const sel = `[data-session-id="${CSS.escape(sid)}"]`;
+        const row = container.querySelector(sel) || container.querySelector(".zion-session-row.is-current");
+        if (row && listWrap) {
+          row.scrollIntoView({ block });
+          if (flash) {
+            try {
+              const prev = row.style.background;
+              row.style.background = "var(--border)";
+              setTimeout(() => { row.style.background = prev; }, 450);
+            } catch {}
+          }
+        }
+      } catch {}
+    };
+
     const inst = {
       render: renderAll,
       anchorToCurrent,
+      revealSession,
       toggleMenu: () => {
         headerMenu.style.display = headerMenu.style.display === "none" ? "block" : "none";
       },
@@ -154,5 +195,5 @@ export function createSessionsSidebarViewManager(opts) {
     return inst;
   }
 
-  return { mountInto, refreshIfOpen, anchorToCurrentIfOpen, toggleMenuIfOpen };
+  return { mountInto, refreshIfOpen, anchorToCurrentIfOpen, revealSessionIfOpen, toggleMenuIfOpen };
 }

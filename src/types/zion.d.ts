@@ -280,6 +280,9 @@ declare global {
       panels?: {
         getActivePanelId(): string | null;
         list(): Array<{ id: string; activeTabId: string | null }>;
+        findAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
+        ensureAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
+        openSession(panelId: string, sessionId: string, opts?: { focus?: boolean }): boolean;
         split(direction: "horizontal" | "vertical", panelId?: string): string | null;
         splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         focus(panelId: string): void;
@@ -303,6 +306,8 @@ declare global {
           onToolCall?: (toolCall: any) => void;
           runId?: string;
           sessionId?: string;
+          activeModel?: { providerId: string; modelId: string; label?: string } | null;
+          silentReasoning?: boolean;
         }): Promise<any>;
       };
       // slash commands registry

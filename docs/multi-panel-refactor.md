@@ -7,6 +7,27 @@
 
 ---
 
+## 更新说明（2026-04-10）
+
+- 阶段 1（解耦）已完成/大部完成：
+  - `chat-doc`：消息解析、assistant block 插入/追加/收尾 → `src/chat/doc.ts`
+  - `chat-runtime`：per-session run state、controller、stop/abort、兼容层 → `src/chat/runtime.ts`
+  - `thinking-cards` / `tool-calls`：基于 `this.sessionId` 过滤并补齐初始化路径
+  - `sessions.switch`：支持 `panelId` 预留，单 Panel 下保持兼容
+
+- 阶段 2（分屏）当前真正重点：
+  1. `PanelManager` + `SplitLayout`（布局、焦点、事件）
+  2. panel-aware `activeEditor` / editor 路由（多 `EditorCore` 实例管理）
+  3. `EditorHeader` Core 化（Run/Stop、路径与 tab 归属当前 panel/session）
+  4. `EditorCore.dispose()` 与多实例销毁/解绑
+  5. 同会话多 Panel 同步策略（防环、滚动/光标、装饰不同步）
+  6. 布局持久化
+
+- 难度评估更新：
+  - 之前：`9/10`（分屏与聊天解耦并行推进，风险高）
+  - 现在：`6.5–7/10`（聊天渲染与 runtime 已收敛，剩余难点主要是编辑器/工作台工程）
+
+---
 ## 一、背景
 
 Zion Next 当前是单编辑器实例架构，所有对话、流式渲染、插件操作都通过全局 `window.zion.window.activeEditor` 寻址。用户希望实现类似 VSCode 的编辑器分屏功能，每个 Panel 可以独立进行对话和流式渲染，互不干扰。
@@ -92,6 +113,8 @@ Zion Next 当前是单编辑器实例架构，所有对话、流式渲染、插�
 ---
 
 ## 四、阶段 1：重构需求（解耦）
+
+> 当前状态：本章绝大部分内容已落地，作为阶段 2 的基线与依赖说明保留在文档中。
 
 ### 4.1 R1：对话运行绑定 editor 引用
 
@@ -186,7 +209,16 @@ Zion Next 当前是单编辑器实例架构，所有对话、流式渲染、插�
 
 ## 五、阶段 2：分屏需求
 
-> 前置条件：阶段 1 全部完成并验证通过。
+> 前置条件：阶段 1 的单 Panel 基线已经稳定；接下来重点转向 panel/workbench/editor 生命周期。
+
+### 5.0 当前优先级（更新）
+
+1. `PanelManager` + `SplitLayout`
+2. panel-aware `activeEditor` / editor 路由
+3. `EditorHeader` Core 化
+4. `EditorCore.dispose()` 与 registry 解绑
+5. 同会话多 Panel 同步
+6. 布局持久化
 
 ### 5.1 S1：Panel 数据模型与 PanelManager
 
@@ -219,7 +251,7 @@ interface Panel {
 - 维护 `activePanelId`（焦点）
 - 事件：`panel/created`、`panel/layoutChanged`、`panel/tabActivated`、`panel/focusChanged`
 
-### 5.2 S2：多 EditorCore 实例化
+### 5.2 S2：多 EditorCore 实例化与 editor 路由
 
 **目标**：每个 Panel 拥有独立的 CM6 EditorCore 实例。
 
@@ -229,7 +261,7 @@ interface Panel {
 |------|------|
 | `src/editor/EditorCore.ts` | 确保可多次实例化，新增 `dispose()` |
 | `src/editor/EditorProxy.ts` | 新增 `panelId` 属性 |
-| `src/ext/registry.ts` | `attachEditor(panelId, core)` 支持多实例；`activeEditor` 改为动态代理 |
+| `src/ext/registry.ts` | `attachEditor(panelId, core)` 支持多实例；`activeEditor` 改为动态代理或由 panel-aware getter 提供兼容层 |
 
 **`activeEditor` 动态代理**：
 
@@ -358,34 +390,41 @@ Object.defineProperty(window.zion.window, 'activeEditor', {
 | tool-cards 插入装饰到 this.view | 不需要 | 同上 |
 | session-manager flush 保存 | 不需要 | 每个 Panel 的 flush 独立保存到同一个 session 存储 |
 
+### 5.6 当前剩余阻塞项
+
+- `activeEditor` 仍为单实例语义，registry 仅支持一次性 attach（需动态代理/路由改造）
+- `EditorCore.dispose()`：缺少多实例销毁/监听器清理/registry 解绑的完整实现
+- Header Run/Stop 仍在插件里（需迁至 workbench/header）
+- `roles` 未内核化（不阻塞分屏，但影响整洁度）
+- registry 中 MVP chat runner 仍在（公开入口已被插件覆盖，后续建议统一收口）
+
 ---
 
 ## 六、改动规模评估
 
-### 阶段 1（重构）
+### 阶段 1（重构，当前已落地）
 
 | 文件 | 改动类型 | 改动量 | 风险 |
 |------|---------|--------|------|
-| `extensions/dev.langchain-chat/main.js` | 小改 | ~40 行 | 🟡 中 |
+| `extensions/dev.langchain-chat/main.js` | 中改 | ~300 行 | 🟡 中 |
 | `src/ext/registry.ts` | 中改 | ~60 行 | 🟡 中 |
-| `extensions/dev.thinking/thinking-cards.js` | 小改 | ~30 行 | � 中 |
-| `extensions/dev.tools/tool-calls.js` | 小改 | ~30 行 | � 中 |
+| `extensions/dev.thinking/thinking-cards.js` | 小改 | ~30 行 | 🟡 中 |
+| `extensions/dev.tools/tool-calls.js` | 小改 | ~40 行 | 🟡 中 |
 | `extensions/dev.session-manager/main.js` | 小改 | ~30 行 | 🟡 中 |
-| `src/panel/EditorHeader.ts` | 中改 | ~80 行 | 🟢 低 |
+| `src/chat/doc.ts` | 新增 | ~280 行 | 🟡 中 |
+| `src/chat/runtime.ts` | 新增 | ~140 行 | 🟡 中 |
+| `src/chat/types.ts` | 新增 | ~30 行 | 🟢 低 |
 | `src/main.ts` | 小改 | ~20 行 | 🟢 低 |
-| **总计** | | **~290 行** | |
+| `src/types/zion.d.ts` | 小改 | ~10 行 | 🟢 低 |
+| **总计** | | **~900–1000 行** | |
 
-### 阶段 2（分屏）
+### 阶段 2（分屏，当前待做）
 
 | 文件 | 改动类型 | 改动量 | 风险 |
 |------|---------|--------|------|
-| `src/panel/Panel.ts` | 新增 | ~200 行 | 🟢 低 |
 | `src/panel/PanelManager.ts` | 新增 | ~400 行 | 🟡 中 |
-| `src/panel/SessionSync.ts` | 新增 | ~180 行 | 🟡 中 |
 | `src/panel/SplitLayout.ts` | 新增 | ~200 行 | 🟢 低 |
-| `src/panel/types.ts` | 新增 | ~50 行 | 🟢 低 |
-| `src/panel/index.ts` | 新增 | ~20 行 | 🟢 低 |
-| `src/panel/EditorHeader.ts` | 改动 | ~30 行 | 🟢 低 |
+| `src/panel/SessionSync.ts` | 新增 | ~180 行 | 🟡 中 |
 | `src/editor/EditorCore.ts` | 中改 | ~70 行 | 🔴 高 |
 | `src/editor/EditorProxy.ts` | 中改 | ~50 行 | 🟡 中 |
 | `src/ext/registry.ts` | 中改 | ~80 行 | 🔴 高 |
@@ -393,34 +432,144 @@ Object.defineProperty(window.zion.window, 'activeEditor', {
 | `src/ui/workbench/workbench.ts` | 大改 | ~150 行 | 🔴 高 |
 | `src/styles.css` | 追加 | ~220 行 | 🟢 低 |
 | `extensions/dev.session-manager/main.js` | 中改 | ~80 行 | 🟡 中 |
-| `extensions/dev.langchain-chat/main.js` | 中改 | ~60 行 | 🟡 中 |
-| **总计** | | **~2050 行** | |
+| header Run/Stop（workbench/header） | 新增 | ~120 行 | 🟡 中 |
+| **总计** | | **~1550–1750 行** | |
 
 ---
 
 ## 七、优先级与执行顺序
 
 ```
-阶段 1（重构，单 Panel 下可验证）
-  R1: 对话运行绑定 editor 引用        ← P0，解决最核心的流式漂移问题
-  R2: chat.streaming per-session       ← P0，解除并发互斥
-  R3: thinking/tool 卡片 sessionId 过滤 ← P1，防止卡片错乱
-  R4: sessions.switch 解耦             ← P1，为分屏路由预留接口
-  R5: mountCurrentSessionPath 解耦      ← P2，为分屏路径显示做准备
+阶段 1（重构，已完成/大部完成）
+  R1: 对话运行绑定 editor 引用
+  R2: chat.streaming per-session
+  R3: thinking/tool 卡片 sessionId 过滤
+  R4: sessions.switch 解耦
+  R5: mountCurrentSessionPath 解耦
 
 阶段 2（分屏，在重构基础上）
-  S1: Panel 数据模型 + PanelManager     ← P3
-  S2: 多 EditorCore 实例化             ← P3
-  S3: 分屏 UI 与交互                   ← P3
-  S4: VSCode 行为一致性                ← P3
-  S5: 同会话多 Panel 同步              ← P3
+  S1: Panel 数据模型 + PanelManager      ← P0
+  S2: 多 EditorCore 实例化与 editor 路由 ← P0
+  S3: 分屏 UI 与交互                    ← P1
+  S4: VSCode 行为一致性                 ← P1
+  S5: 同会话多 Panel 同步               ← P1
+  S6: 布局持久化                        ← P2
 ```
 
 ---
 
-## 八、验收标准
+## 八、可执行任务清单
 
-### 阶段 1 验收
+### 8.1 Task Pack A：Panel 基础骨架
+
+**目标**：先把 Panel 容器、布局树和焦点事件搭起来，不接入聊天逻辑。
+
+- [ ] 新增 `src/panel/PanelManager.ts`
+- [ ] 新增 `src/panel/SplitLayout.ts`
+- [ ] 定义 `Panel` / `PanelTab` / `SplitNode` 等核心类型
+- [ ] 提供 `createPanel()` / `closePanel()` / `splitPanel()` / `focusPanel()` / `activateTab()`
+- [ ] 发出基础事件：`panel/created`、`panel/layoutChanged`、`panel/tabActivated`、`panel/focusChanged`
+- [ ] 在 `src/ui/workbench/workbench.ts` 中挂载基础 split DOM
+
+**完成标准**：
+- [ ] 可以在 UI 上创建两个空 Panel
+- [ ] 焦点切换有明确的 `activePanelId`
+- [ ] Panel 关闭/分裂不会破坏已有 DOM
+
+### 8.2 Task Pack B：多 EditorCore 实例与 editor 路由
+
+**目标**：让每个 Panel 拥有独立 editor，并把“当前 editor”语义从全局单例切到 panel-aware 路由。
+
+- [ ] 每个 Panel 创建独立 `EditorCore`
+- [ ] `EditorProxy` 增加 `panelId`
+- [ ] `registry.ts` 支持多实例 attach
+- [ ] `window.zion.window.activeEditor` 改为动态代理或兼容 getter
+- [ ] 暴露 `window.zion.panels.getEditor(panelId)` 之类的显式路由 API
+- [ ] 审计旧代码中所有 `activeEditor` 的使用点
+
+**完成标准**：
+- [ ] 两个 Panel 中的 editor 可以独立输入
+- [ ] 焦点切换后 `activeEditor` 指向当前 Panel
+- [ ] 旧插件在不感知 Panel 的情况下仍可工作
+
+### 8.3 Task Pack C：Header Core 化
+
+**目标**：把 header 中与对话相关的 UI 从插件迁到 core/workbench。
+
+- [ ] 设计 panel 级 `EditorHeader`
+- [ ] 将 Run/Stop 按钮迁到 workbench/header
+- [ ] Run/Stop 直接调用 `window.zion.chat.run/stop/isStreaming`
+- [ ] 将路径显示绑定到当前 panel 的 `activeTabId`
+- [ ] tab 标题、dirty 状态、路径显示全部 panel 本地化
+
+**完成标准**：
+- [ ] Header Run/Stop 不再依赖 `langchain-chat` 注入
+- [ ] 切换 panel/tab 时路径和按钮状态都正确更新
+
+### 8.4 Task Pack D：EditorCore 生命周期
+
+**目标**：解决多实例场景下的销毁、解绑与资源清理问题。
+
+- [ ] 为 `EditorCore` 补齐 `dispose()`
+- [ ] 清理 `EditorView`、事件监听、StateField/Compartment 关联
+- [ ] Panel 关闭时正确销毁 editor 实例
+- [ ] `registry` 增加 detach/unregister 逻辑
+
+**完成标准**：
+- [ ] 反复分裂/关闭 Panel 不出现僵尸 editor
+- [ ] 不残留错误的 `activeEditor` / editor 引用
+
+### 8.5 Task Pack E：同会话多 Panel 同步
+
+**目标**：同一 session 在多个 Panel 打开时，文本同步但交互互不打扰。
+
+- [ ] 新增 `src/panel/SessionSync.ts`
+- [ ] 建立 `sessionId -> Panel[]` 映射
+- [ ] 监听编辑器文本变更并做 debounce 同步
+- [ ] 同步使用 CM6 `dispatch({ changes })`，禁止 `setValue`
+- [ ] 增加防循环来源标记
+- [ ] 明确滚动/光标策略：只跟随主动编辑的 Panel
+- [ ] 明确装饰策略：thinking/tool 不做跨 Panel 同步
+
+**完成标准**：
+- [ ] 手动编辑可同步
+- [ ] 流式写入可同步
+- [ ] 被动同步的 Panel 不丢光标/滚动
+
+### 8.6 Task Pack F：布局持久化与收尾
+
+**目标**：让分屏状态可恢复，并把外围交互收口。
+
+- [ ] 持久化 `zion.panelLayout`
+- [ ] 启动时恢复 Panel 树、tabs、active、尺寸比例
+- [ ] 侧边栏点击会话默认打开到当前焦点 Panel
+- [ ] 统一 Session 重命名、关闭、恢复单 Panel 的行为
+- [ ] 回归验收所有阶段 2 checklist
+
+**完成标准**：
+- [ ] 关闭浏览器后可恢复布局
+- [ ] 侧边栏、header、tab、panel 行为保持一致
+
+### 8.7 推荐实施顺序
+
+1. Task Pack A
+2. Task Pack B
+3. Task Pack C
+4. Task Pack D
+5. Task Pack E
+6. Task Pack F
+
+**原因**：
+- A/B 决定 panel 与 editor 的底座
+- C 依赖 B 提供稳定的当前 panel/session 语义
+- D 是多实例稳定性前提
+- E/F 属于在底座稳定后的行为完善
+
+---
+
+## 九、验收标准
+
+### 阶段 1 验收（已作为当前基线）
 
 - [ ] 单 Panel 下启动对话 → 流式中切换侧边栏会话 → 原对话继续渲染不中断
 - [ ] 单 Panel 下两个 session 可并发流式对话
@@ -442,11 +591,12 @@ Object.defineProperty(window.zion.window, 'activeEditor', {
 - [ ] 同一 session 在两个 Panel 中打开 → Panel A 手动编辑 → Panel B 内容同步更新
 - [ ] 同一 session 在两个 Panel 中打开 → Panel A 流式对话 → Panel B 内容实时同步
 - [ ] 同步不丢失 Panel B 的光标位置和滚动位置
+- [ ] Header Run/Stop 跟随当前 panel/session，而不是由插件全局注入
 - [ ] 分屏布局持久化：关闭浏览器后重新打开 → 恢复之前的分屏状态（Panel 数量、方向、标签页）
 
 ---
 
-## 九、风险与注意事项
+## 十、风险与注意事项
 
 1. **阶段 1 不能破坏现有行为**：每一步重构后都要回归测试单 Panel 场景
 2. **`activeEditor` 动态代理是兼容层**：核心路径用显式 panelId 寻址，动态代理仅保证老插件不崩

@@ -17,18 +17,109 @@ import { encode as encodePlantUML } from "plantuml-encoder";
 const inViewport = (view: EditorView, from: number, to: number) =>
   view.viewport.to >= from && view.viewport.from <= to;
 
-function isPosInsideNode(pos: number, node: { from: number; to: number } | null) {
-  if (!node) return false;
-  return pos >= node.from && pos < node.to;
-}
-
 /* Simple inline fallback regex (single-line, limited, executed only in visible ranges) */
 const INLINE_FALLBACK = /(\*\*([^*\n]+)\*\*)|(_([^_\n]+)_)|(`([^`\n]+)`)|(\[([^\]]+)\]\(([^)\n]+)\))|(!\[([^\]]*)\]\(([^)\n]+)\))|(\$([^\$\n]+)\$)|(~~([^~\n]+)~~)/g;
+const ROLE_HEAD_RE = /^\s*(system|user|assistant|tool)\s+/;
+const FENCE_START_RE = /^\s*`{3,}\s*([^\s`]*)?.*$/;
+const FENCE_CLOSE_RE = /^\s*`{3,}\s*$/;
 
 /* Helper: Check if line contains tool call or thinking markers (skip WYSIWYG processing) */
 const isToolOrThinkingLine = (lineText: string): boolean => {
   return /^\s*调用\s+/.test(lineText) || /^\s*思考\s*$/.test(lineText.trim());
 };
+
+function isRoleHeadLine(lineText: string): boolean {
+  return ROLE_HEAD_RE.test(lineText);
+}
+
+function getRoleBlockRange(doc: EditorView["state"]["doc"], pos: number) {
+  const safePos = Math.max(0, Math.min(pos, doc.length));
+  const currentLine = doc.lineAt(safePos);
+  let startLine = 1;
+  for (let ln = currentLine.number; ln >= 1; ln--) {
+    const line = doc.line(ln);
+    startLine = ln;
+    if (isRoleHeadLine(doc.sliceString(line.from, line.to))) break;
+  }
+  let endLine = doc.lines;
+  for (let ln = startLine + 1; ln <= doc.lines; ln++) {
+    const line = doc.line(ln);
+    if (isRoleHeadLine(doc.sliceString(line.from, line.to))) {
+      endLine = ln - 1;
+      break;
+    }
+  }
+  return {
+    from: doc.line(startLine).from,
+    to: doc.line(endLine).to,
+    startLine,
+    endLine
+  };
+}
+
+type RoleFenceBlock = {
+  from: number;
+  to: number;
+  startLine: number;
+  endLine: number;
+  hasClosingFence: boolean;
+  lang: string;
+};
+
+function collectRoleScopedFenceBlocks(doc: EditorView["state"]["doc"]): RoleFenceBlock[] {
+  const blocks: RoleFenceBlock[] = [];
+  let roleStartLine = 1;
+  while (roleStartLine <= doc.lines) {
+    let roleEndLine = roleStartLine;
+    while (roleEndLine < doc.lines) {
+      const next = doc.line(roleEndLine + 1);
+      if (isRoleHeadLine(doc.sliceString(next.from, next.to))) break;
+      roleEndLine++;
+    }
+
+    let openStartLine = -1;
+    let openLang = "";
+    for (let ln = roleStartLine; ln <= roleEndLine; ln++) {
+      const line = doc.line(ln);
+      const text = doc.sliceString(line.from, line.to).trim();
+      if (openStartLine === -1) {
+        const match = FENCE_START_RE.exec(text);
+        if (match) {
+          openStartLine = ln;
+          openLang = String(match[1] || "").toLowerCase();
+        }
+        continue;
+      }
+
+      if (FENCE_CLOSE_RE.test(text)) {
+        blocks.push({
+          from: doc.line(openStartLine).from,
+          to: line.to,
+          startLine: openStartLine,
+          endLine: ln,
+          hasClosingFence: true,
+          lang: openLang
+        });
+        openStartLine = -1;
+        openLang = "";
+      }
+    }
+
+    if (openStartLine !== -1) {
+      blocks.push({
+        from: doc.line(openStartLine).from,
+        to: doc.line(roleEndLine).to,
+        startLine: openStartLine,
+        endLine: roleEndLine,
+        hasClosingFence: false,
+        lang: openLang
+      });
+    }
+
+    roleStartLine = roleEndLine + 1;
+  }
+  return blocks;
+}
 
 /* App image short link resolver: app://img/<id> -> DataURL from IndexedDB ("dev.paste-image-db"/"images") */
 const APP_IMG_PREFIX = "app://img/";
@@ -303,7 +394,8 @@ class TableWidget extends WidgetType {
     private rows: string[][],
     private sourceFrom: number,
     private sourceTo: number,
-    private onCommit: (text: string) => void
+    private onCommit: (text: string) => void,
+    private onEditSource: () => void
   ) {
     super();
   }
@@ -348,6 +440,18 @@ class TableWidget extends WidgetType {
     span.className = "cm-md-cell-edit";
     span.contentEditable = "true";
     span.spellcheck = false;
+    const focusEditable = () => {
+      try {
+        span.focus();
+        const sel = window.getSelection();
+        if (!sel) return;
+        const range = document.createRange();
+        range.selectNodeContents(span);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch {}
+    };
     // 初始值
     span.textContent = td.textContent || "";
     // 输入时只更新内存，不立即提交
@@ -363,11 +467,30 @@ class TableWidget extends WidgetType {
       }
     });
     span.addEventListener("blur", () => {
-      this.commit();
+      requestAnimationFrame(() => {
+        const next = document.activeElement as HTMLElement | null;
+        const nextIsCellEditor = !!next?.closest(".cm-md-cell-edit");
+        if (nextIsCellEditor) return;
+        this.commit();
+      });
     });
-    // 阻止点击选中导致编辑器焦点变化
-    td.onmousedown = (e) => e.stopPropagation();
-    td.onclick = (e) => e.stopPropagation();
+    // 点击单元格 padding / 边框时，也留在表格内处理，避免命中到底层编辑器造成滚动跳变
+    td.onmousedown = (e) => {
+      e.stopPropagation();
+      if (!(e.target instanceof HTMLElement)) return;
+      if (e.target.closest(".cm-md-col-resizer")) return;
+      if (e.target === span) return;
+      e.preventDefault();
+      focusEditable();
+    };
+    td.onclick = (e) => {
+      e.stopPropagation();
+      if (!(e.target instanceof HTMLElement)) return;
+      if (e.target.closest(".cm-md-col-resizer")) return;
+      if (e.target === span) return;
+      e.preventDefault();
+      focusEditable();
+    };
     td.innerHTML = "";
     td.appendChild(span);
   }
@@ -426,6 +549,34 @@ class TableWidget extends WidgetType {
   toDOM() {
     const wrap = document.createElement("div");
     wrap.className = "cm-md-table-wrap";
+    wrap.addEventListener("mousedown", (e) => {
+      if (!(e.target instanceof HTMLElement)) return;
+      if (e.target.closest(".cm-md-table-btn") || e.target.closest(".cm-md-col-resizer") || e.target.closest(".cm-md-cell-edit")) return;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    wrap.addEventListener("click", (e) => {
+      if (!(e.target instanceof HTMLElement)) return;
+      if (e.target.closest(".cm-md-table-btn") || e.target.closest(".cm-md-col-resizer") || e.target.closest(".cm-md-cell-edit")) return;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "cm-md-table-toolbar";
+    const editBtn = document.createElement("button");
+    editBtn.className = "cm-md-table-btn";
+    editBtn.type = "button";
+    editBtn.textContent = "编辑源码";
+    editBtn.title = "切换到 Markdown 表格源码编辑";
+    editBtn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try { this.onEditSource(); } catch {}
+    };
+    toolbar.appendChild(editBtn);
+    wrap.appendChild(toolbar);
+
     const table = document.createElement("table");
     table.className = "cm-md-table";
 
@@ -749,9 +900,10 @@ class DiagramWidget extends WidgetType {
 /* Build decorations using syntax tree for blocks and single-line inline fallback in visibleRanges
    Important: collect all ranges first and sort by position before building DecorationSet,
    otherwise RangeSetBuilder order constraints may cause only the first chunk to render. */
-function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDiagrams: Set<number>) {
+function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDiagrams: Set<number>, rawTables: Set<number>) {
   const doc = view.state.doc;
   const tree = syntaxTree(view.state) as any;
+  const roleFenceBlocks = collectRoleScopedFenceBlocks(doc);
 
   // Collect then sort to respect RangeSetBuilder ordering
   const pending: { from: number; to: number; dec: Decoration }[] = [];
@@ -763,18 +915,21 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
 
   // Helper: is position inside fenced code or block math
   const isInsideFencedCode = (pos: number) => {
-    let inside = false;
+    for (const block of roleFenceBlocks) {
+      if (pos >= block.from && pos <= block.to) return true;
+    }
+    let insideMath = false;
     try {
       tree.iterate({
         enter: (node: any) => {
           const name = node.name || node.type?.name;
-          if ((name === "FencedCode" || name === "CodeBlock" || name === "BlockMath") && isPosInsideNode(pos, node)) {
-            inside = true;
+          if (name === "BlockMath" && pos >= node.from && pos < node.to) {
+            insideMath = true;
           }
         }
       });
     } catch {}
-    return inside;
+    return insideMath;
   };
 
   // Track lines processed by fallback scanners to avoid overlap/conflicts
@@ -859,11 +1014,13 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         // Quote mark: group contiguous quote lines into a single visual block and avoid splitting marker above content
         if (name === "QuoteMark") {
           const line = doc.lineAt(node.from);
+          const roleRange = getRoleBlockRange(doc, node.from);
           // Determine contiguous quote block (expand up/down), skip processing if inside fenced code
           const isQuoteLineText = (txt: string) => (/^\s*>/.test(txt));
           let startLn = line.number;
           while (startLn > 1) {
             const prev = doc.line(startLn - 1);
+            if (startLn - 1 < roleRange.startLine) break;
             if (isInsideFencedCode(prev.from)) break;
             if (!isQuoteLineText(doc.sliceString(prev.from, prev.to))) break;
             startLn--;
@@ -871,6 +1028,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           let endLn = line.number;
           while (endLn < doc.lines) {
             const next = doc.line(endLn + 1);
+            if (endLn + 1 > roleRange.endLine) break;
             if (isInsideFencedCode(next.from)) break;
             if (!isQuoteLineText(doc.sliceString(next.from, next.to))) break;
             endLn++;
@@ -911,98 +1069,8 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           return;
         }
 
-        // Fenced code (and diagram preview)
+        // Fenced code: handled by role-scoped scanner below so each role matches fences independently
         if (name === "FencedCode" || name === "CodeBlock") {
-          const fromLineNum = doc.lineAt(node.from).number;
-          const toLineNum = doc.lineAt(node.to).number;
-          // add codeblock styling to all lines
-          for (let ln = fromLineNum; ln <= toLineNum; ln++) {
-            const l = doc.line(ln);
-            add(l.from, l.from, Decoration.line({ class: "cm-md-codeblock" }));
-          }
-          // add fence hint on first line; last line仅在存在闭合围栏时标记
-          const firstLine = doc.lineAt(node.from);
-          const lastLine = doc.lineAt(node.to);
-          add(firstLine.from, firstLine.from, Decoration.line({ class: "cm-md-codeblock-fence" }));
-
-          const opener = doc.sliceString(firstLine.from, firstLine.to).trim();
-          const mlang = /^```?\s*([^\s]*)/.exec(opener);
-          let lang = "";
-          if (mlang) lang = (mlang[1] || "").toLowerCase();
-
-          // 检测是否存在闭合围栏（至少三个反引号，仅空格可跟随）
-          const lastTextTrimmed = doc.sliceString(lastLine.from, lastLine.to).trim();
-          const hasClosingFence = /^`{3,}\s*$/.test(lastTextTrimmed);
-          if (hasClosingFence) {
-            add(lastLine.from, lastLine.from, Decoration.line({ class: "cm-md-codeblock-fence" }));
-          }
-
-          // If any line in the block is active (caret/selection), do not render diagram preview; keep raw text for editing
-          let anyActive = false;
-          for (let ln = fromLineNum; ln <= toLineNum; ln++) {
-            if (activeLines.has(ln)) { anyActive = true; break; }
-          }
-
-          const isDiagram = lang === "mermaid" || lang === "plantuml" || lang === "puml" || lang === "svg";
-          // 仅在围栏已闭合时进行图块预览与折叠，避免未闭合围栏吞掉后续内容
-          if (isDiagram && hasClosingFence && !anyActive) {
-            const contentFrom = doc.lineAt(node.from).to;
-            const contentTo = doc.lineAt(node.to).from;
-            const code = doc.sliceString(contentFrom, contentTo);
-            const diagramFrom = node.from;
-
-            // Determine diagram type
-            let diagramType: "mermaid" | "uml" | "svg" = "uml";
-            if (lang === "mermaid") {
-              diagramType = "mermaid";
-            } else if (lang === "svg") {
-              diagramType = "svg";
-            }
-
-            // preview when not expanded; toggle on click
-            if (!expandedDiagrams.has(diagramFrom)) {
-              add(node.from, node.from + (firstLine.to - firstLine.from) + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
-              add(
-                node.from,
-                node.from,
-                Decoration.widget({
-                  widget: new DiagramWidget(code, diagramType, () => {
-                    // toggle preview/raw
-                    if (expandedDiagrams.has(diagramFrom)) {
-                      expandedDiagrams.delete(diagramFrom);
-                    } else {
-                      expandedDiagrams.add(diagramFrom);
-                    }
-                    try { view.dispatch({ annotations: Transaction.userEvent.of("wysiwyg-refresh") }); } catch {}
-                  }),
-                  side: 1
-                })
-              );
-              // collapse non-first lines
-              for (let ln = fromLineNum + 1; ln <= toLineNum; ln++) {
-                const l = doc.line(ln);
-                add(l.from, l.from, Decoration.line({ class: "cm-md-diagram-hiddenline" }));
-              }
-            }
-          }
-          if (hasClosingFence && !anyActive) {
-            const contentFrom = doc.lineAt(node.from).to;
-            const contentTo = doc.lineAt(node.to).from;
-            const raw = doc.sliceString(contentFrom, contentTo);
-            const code = raw.replace(/^\n/, "").replace(/\n$/, "");
-            const allowToolbar = !isDiagram || expandedDiagrams.has(node.from);
-            if (allowToolbar) {
-              add(firstLine.from, firstLine.from, Decoration.line({ class: "cm-md-codeblock-toolbar-anchor" }));
-              add(
-                firstLine.from,
-                firstLine.from,
-                Decoration.widget({
-                  widget: new CodeBlockToolbarWidget(code, lang),
-                  side: -1
-                })
-              );
-            }
-          }
           return;
         }
 
@@ -1025,6 +1093,83 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       }
     });
   } catch {}
+
+  // 1.5) Role-scoped fenced code blocks: each role matches its own ``` pairs independently.
+  for (const block of roleFenceBlocks) {
+    if (!inViewport(view, block.from, block.to)) continue;
+    const fromLineNum = block.startLine;
+    const toLineNum = block.endLine;
+    const firstLine = doc.line(fromLineNum);
+    const lastLine = doc.line(toLineNum);
+    for (let ln = fromLineNum; ln <= toLineNum; ln++) {
+      const l = doc.line(ln);
+      add(l.from, l.from, Decoration.line({ class: "cm-md-codeblock" }));
+    }
+    add(firstLine.from, firstLine.from, Decoration.line({ class: "cm-md-codeblock-fence" }));
+    if (block.hasClosingFence) {
+      add(lastLine.from, lastLine.from, Decoration.line({ class: "cm-md-codeblock-fence" }));
+    }
+
+    let anyActive = false;
+    for (let ln = fromLineNum; ln <= toLineNum; ln++) {
+      if (activeLines.has(ln)) { anyActive = true; break; }
+    }
+
+    const lang = block.lang;
+    const isDiagram = lang === "mermaid" || lang === "plantuml" || lang === "puml" || lang === "svg";
+    if (isDiagram && block.hasClosingFence && !anyActive) {
+      const contentFrom = firstLine.to;
+      const contentTo = lastLine.from;
+      const code = doc.sliceString(contentFrom, contentTo);
+      const diagramFrom = block.from;
+      let diagramType: "mermaid" | "uml" | "svg" = "uml";
+      if (lang === "mermaid") {
+        diagramType = "mermaid";
+      } else if (lang === "svg") {
+        diagramType = "svg";
+      }
+      if (!expandedDiagrams.has(diagramFrom)) {
+        add(block.from, block.from + (firstLine.to - firstLine.from) + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
+        add(
+          block.from,
+          block.from,
+          Decoration.widget({
+            widget: new DiagramWidget(code, diagramType, () => {
+              if (expandedDiagrams.has(diagramFrom)) {
+                expandedDiagrams.delete(diagramFrom);
+              } else {
+                expandedDiagrams.add(diagramFrom);
+              }
+              try { view.dispatch({ annotations: Transaction.userEvent.of("wysiwyg-refresh") }); } catch {}
+            }),
+            side: 1
+          })
+        );
+        for (let ln = fromLineNum + 1; ln <= toLineNum; ln++) {
+          const l = doc.line(ln);
+          add(l.from, l.from, Decoration.line({ class: "cm-md-diagram-hiddenline" }));
+        }
+      }
+    }
+    if (block.hasClosingFence) {
+      const contentFrom = firstLine.to;
+      const contentTo = lastLine.from;
+      const raw = doc.sliceString(contentFrom, contentTo);
+      const code = raw.replace(/^\n/, "").replace(/\n$/, "");
+      const allowToolbar = !isDiagram || expandedDiagrams.has(block.from) || anyActive;
+      if (allowToolbar) {
+        add(firstLine.from, firstLine.from, Decoration.line({ class: "cm-md-codeblock-toolbar-anchor" }));
+        add(
+          firstLine.from,
+          firstLine.from,
+          Decoration.widget({
+            widget: new CodeBlockToolbarWidget(code, lang),
+            side: -1
+          })
+        );
+      }
+    }
+  }
 
   // 2) Visible-range fallback scanners (inline marks, tables, block math). Skip inside code fences.
   for (const vr of view.visibleRanges) {
@@ -1181,10 +1326,12 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
 
       if (isTableRow(ltxt)) {
         try {
+          const roleRange = getRoleBlockRange(doc, line.from);
           let start = ln;
           while (start > 1) {
             const prev = doc.line(start - 1);
             const ptxt = doc.sliceString(prev.from, prev.to);
+            if (start - 1 < roleRange.startLine) break;
             if (isInsideFencedCode(prev.from)) break;
             if (processedFallbackLines.has(start - 1)) break;
             if (!isTableRow(ptxt)) break;
@@ -1207,6 +1354,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
             while (rowLn <= doc.lines) {
               const rline = doc.line(rowLn);
               const rtxt = doc.sliceString(rline.from, rline.to);
+              if (rowLn > roleRange.endLine) break;
               if (!isTableRow(rtxt) || isInsideFencedCode(rline.from) || processedFallbackLines.has(rowLn)) break;
               rows.push(splitCells(rtxt));
               rowLn++;
@@ -1215,22 +1363,17 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
             // Mark lines as processed to avoid overlap with other scanners
             for (let k = start; k < rowLn; k++) processedFallbackLines.add(k);
 
-            // If any line within the table block is active, skip widget for easy editing
-            let anyActive = false;
-            for (let n = start; n < rowLn; n++) {
-              if (activeLines.has(n)) { anyActive = true; break; }
-            }
-
-            if (!anyActive) {
+            const sourceFrom = headerLine.from;
+            const sourceTo = doc.line(rowLn - 1).to;
+            const rawEditing = rawTables.has(sourceFrom);
+            if (!rawEditing) {
               for (let hideLn = start; hideLn < rowLn; hideLn++) {
                 const hline = doc.line(hideLn);
-                add(hline.from, hline.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
+                add(hline.from, hline.to, Decoration.mark({ class: "cm-z-hide-syntax-fixed" }));
                 if (hideLn > start) {
-                  add(hline.from, hline.from, Decoration.line({ class: "cm-md-diagram-hiddenline" }));
+                  add(hline.from, hline.from, Decoration.line({ class: "cm-md-table-hiddenline" }));
                 }
               }
-              const sourceFrom = headerLine.from;
-              const sourceTo = doc.line(rowLn - 1).to;
               add(headerLine.from, headerLine.from, Decoration.widget({
                 widget: new TableWidget(
                   headers,
@@ -1245,6 +1388,18 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
                       });
                     } catch (e) {
                       console.error("[wysiwyg] table commit dispatch error", e);
+                    }
+                  },
+                  () => {
+                    rawTables.add(sourceFrom);
+                    try {
+                      view.dispatch({
+                        selection: { anchor: sourceFrom },
+                        scrollIntoView: true,
+                        annotations: Transaction.userEvent.of("wysiwyg-refresh")
+                      });
+                    } catch (e) {
+                      console.error("[wysiwyg] table raw edit dispatch error", e);
                     }
                   }
                 ),
@@ -1273,6 +1428,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       if (isToolOrThinkingLine(t)) { ln++; continue; }
       const isFence = /^\$\$\s*$/.test(t);
       if (isFence) {
+        const roleRange = getRoleBlockRange(doc, line.from);
         // find closing fence
         let endFenceLn = ln + 1;
         while (endFenceLn <= endLine) { // Restrict math block scan to visible range to avoid massive scans? Usually block math is short.
@@ -1296,7 +1452,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         
         let foundEnd = false;
         let scanLn = ln + 1;
-        while (scanLn <= doc.lines && scanLn < ln + 500) {
+        while (scanLn <= doc.lines && scanLn <= roleRange.endLine && scanLn < ln + 500) {
              const sline = doc.line(scanLn);
              const st = doc.sliceString(sline.from, sline.to).trim();
              if (/^\$\$\s*$/.test(st)) {
@@ -1359,10 +1515,11 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
 const wysiwygPlugin = ViewPlugin.fromClass(class {
   decorations: any;
   expandedDiagrams = new Set<number>();
+  rawTables = new Set<number>();
 
   constructor(view: EditorView) {
     try {
-      this.decorations = buildDecorations(view, getActiveLines(view), this.expandedDiagrams);
+      this.decorations = buildDecorations(view, getActiveLines(view), this.expandedDiagrams, this.rawTables);
     } catch (e) {
       console.error("[wysiwyg] buildDecorations (constructor) error", e);
       this.decorations = Decoration.none;
@@ -1436,11 +1593,29 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
         collapsed = true;
       }
     }
+    if (update.selectionSet && this.rawTables.size > 0) {
+      const toDelete: number[] = [];
+      for (const start of this.rawTables) {
+        const rng = getTableBlockRangeAtPos(update.view, start);
+        if (!rng) continue;
+        let intersects = false;
+        for (const sel of update.view.state.selection.ranges) {
+          const sFrom = sel.from;
+          const sTo = sel.to;
+          if (!(sTo <= rng.from || sFrom >= rng.to)) { intersects = true; break; }
+        }
+        if (!intersects) toDelete.push(start);
+      }
+      if (toDelete.length) {
+        toDelete.forEach(p => this.rawTables.delete(p));
+        collapsed = true;
+      }
+    }
 
     if (needRebuild || selectionOnly || collapsed) {
       const activeLines = getActiveLines(update.view);
       try {
-        this.decorations = buildDecorations(update.view, activeLines, this.expandedDiagrams);
+        this.decorations = buildDecorations(update.view, activeLines, this.expandedDiagrams, this.rawTables);
       } catch (e) {
         console.error("[wysiwyg] buildDecorations (update) error", e);
         this.decorations = Decoration.none;
@@ -1470,17 +1645,42 @@ function getActiveLines(view: EditorView): Set<number> {
 /* helper: 根据起始位置查找对应的围栏代码块范围（Mermaid/CodeBlock） */
 function getFencedBlockRangeAtPos(view: EditorView, startPos: number): { from: number; to: number } | null {
   try {
-    const tree = syntaxTree(view.state) as any;
-    let found: { from: number; to: number } | null = null;
-    tree.iterate({
-      enter: (node: any) => {
-        const name = node.name || node.type?.name;
-        if ((name === "FencedCode" || name === "CodeBlock") && node.from === startPos) {
-          found = { from: node.from, to: node.to };
-        }
-      }
-    });
-    return found;
+    const doc = view.state.doc;
+    const blocks = collectRoleScopedFenceBlocks(doc);
+    const found = blocks.find(block => block.from === startPos);
+    return found ? { from: found.from, to: found.to } : null;
+  } catch {
+    return null;
+  }
+}
+
+function getTableBlockRangeAtPos(view: EditorView, startPos: number): { from: number; to: number } | null {
+  try {
+    const doc = view.state.doc;
+    const startLine = doc.lineAt(startPos).number;
+    const isTableRow = (s: string) => {
+      const t = s.trim();
+      if (!t.includes("|")) return false;
+      return !/^(\s*\|)?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+(\|\s*)?$/.test(t);
+    };
+    const isSeparatorRow = (s: string) => {
+      const t = s.trim();
+      return /^(\s*\|)?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+(\|\s*)?$/.test(t);
+    };
+    if (startLine >= doc.lines) return null;
+    const headerLine = doc.line(startLine);
+    const sepLine = doc.line(startLine + 1);
+    const headerTxt = doc.sliceString(headerLine.from, headerLine.to);
+    const sepTxt = doc.sliceString(sepLine.from, sepLine.to);
+    if (!isTableRow(headerTxt) || !isSeparatorRow(sepTxt)) return null;
+    let rowLn = startLine + 2;
+    while (rowLn <= doc.lines) {
+      const row = doc.line(rowLn);
+      const text = doc.sliceString(row.from, row.to);
+      if (!isTableRow(text)) break;
+      rowLn++;
+    }
+    return { from: headerLine.from, to: doc.line(rowLn - 1).to };
   } catch {
     return null;
   }

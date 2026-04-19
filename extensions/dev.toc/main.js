@@ -7,7 +7,6 @@
  * - StatusBar button "TOC"
  * - Editor context menu item "Table of Contents"
  */
-import { syntaxTree } from "@codemirror/language";
 import { ViewPlugin } from "@codemirror/view";
 
 let extensionCtx = null;
@@ -41,51 +40,50 @@ export async function activate(ctx) {
       .replace(/`(.*?)`/g, '$1'); // also remove inline code formatting
   };
 
-  // Fallback: parse headings from raw text (line-by-line)
-  const parseHeadingsFromText = (text) => {
-    const lines = text.split(/\r?\n/);
+  const parseHeadingsFromLines = (lines, startLine = 0, endLine = lines.length - 1) => {
     const headings = [];
     const re = /^(#{1,6})\s+(.+)\s*$/;
-    for (let i = 0; i < lines.length; i++) {
-      const m = re.exec(lines[i]);
+    const fenceRe = /^\s*(```+|~~~+)/;
+    const start = Math.max(0, startLine || 0);
+    const end = Math.min(lines.length - 1, endLine == null ? lines.length - 1 : endLine);
+    let inFence = false;
+    let fenceToken = "";
+    for (let i = start; i <= end; i++) {
+      const line = String(lines[i] ?? "");
+      const fenceMatch = fenceRe.exec(line);
+      if (fenceMatch) {
+        const token = fenceMatch[1] || "";
+        if (!inFence) {
+          inFence = true;
+          fenceToken = token[0];
+        } else if (!fenceToken || token[0] === fenceToken) {
+          inFence = false;
+          fenceToken = "";
+        }
+        continue;
+      }
+      if (inFence) continue;
+      const m = re.exec(line);
       if (!m) continue;
-      const level = m[1].length;
-      const title = cleanTitle(m[2].trim());
-      headings.push({ level, title, line: i });
+      headings.push({ level: m[1].length, title: cleanTitle(m[2].trim()), line: i });
     }
     return headings;
+  };
+
+  // Fallback: parse headings from raw text (line-by-line)
+  const parseHeadingsFromText = (text) => {
+    const lines = String(text || "").split(/\r?\n/);
+    return parseHeadingsFromLines(lines);
   };
 
   // Preferred: parse headings from CodeMirror syntax tree when editor view is available.
   // Returns {level, title, line} with line being 0-based (compatible with EditorProxy.setCursor).
   const parseHeadingsFromView = (view) => {
-    const headings = [];
     try {
-      const tree = syntaxTree(view.state);
-      const doc = view.state.doc;
-      const re = /^(#{1,6})\s+(.+)\s*$/;
-      tree.iterate({
-        enter: (node) => {
-          const name = node.name || node.type?.name;
-          if (!name) return;
-          // match heading node names conservatively (common markdown grammars use "Header" / "Heading")
-          if (name === "Header" || /heading/i.test(name)) {
-            try {
-              const line = doc.lineAt(node.from);
-              const text = doc.sliceString(line.from, line.to);
-              const m = re.exec(text);
-              if (m) {
-                const level = m[1].length;
-                const title = cleanTitle(m[2].trim());
-                // convert to 0-based line index for EditorProxy compatibility
-                headings.push({ level, title, line: line.number - 1 });
-              }
-            } catch {}
-          }
-        }
-      });
+      const text = view?.state?.doc?.toString?.() || "";
+      return parseHeadingsFromText(text);
     } catch {}
-    return headings;
+    return [];
   };
 
   // Parse role blocks (fallback when roles.index is unavailable)
@@ -189,49 +187,19 @@ export async function activate(ctx) {
 
   // 在 CM6 视图内解析指定字符范围内的标题（返回绝对行号）
   const parseHeadingsFromViewInRange = (view, from, to) => {
-    const headings = [];
     try {
-      const tree = syntaxTree(view.state);
       const doc = view.state.doc;
-      const re = /^(#{1,6})\s+(.+)\s*$/;
-      tree.iterate({
-        enter: (node) => {
-          const name = node.name || node.type?.name;
-          if (!name) return;
-          if (name === "Header" || /heading/i.test(name)) {
-            if (node.from < from || node.from > to) return;
-            try {
-              const line = doc.lineAt(node.from);
-              const text = doc.sliceString(line.from, line.to);
-              const m = re.exec(text);
-              if (m) {
-                const level = m[1].length;
-                const title = cleanTitle(m[2].trim());
-                headings.push({ level, title, line: line.number - 1 });
-              }
-            } catch {}
-          }
-        }
-      });
+      const startLine = doc.lineAt(Math.max(0, from)).number - 1;
+      const endLine = doc.lineAt(Math.max(0, to)).number - 1;
+      return parseHeadingsFromLines(doc.toString().split(/\r?\n/), startLine, endLine);
     } catch {}
-    return headings;
+    return [];
   };
 
   // 文本解析：限定行范围（返回绝对行号）
   const parseHeadingsFromTextInLines = (text, startLine, endLine) => {
-    const lines = text.split(/\r?\n/);
-    const headings = [];
-    const re = /^(#{1,6})\s+(.+)\s*$/;
-    const s = Math.max(0, startLine || 0);
-    const e = Math.min(lines.length - 1, endLine == null ? s : endLine);
-    for (let i = s; i <= e; i++) {
-      const m = re.exec(lines[i]);
-      if (!m) continue;
-      const level = m[1].length;
-      const title = cleanTitle(m[2].trim());
-      headings.push({ level, title, line: i });
-    }
-    return headings;
+    const lines = String(text || "").split(/\r?\n/);
+    return parseHeadingsFromLines(lines, startLine, endLine);
   };
 
   const slugify = (s) => {
@@ -244,11 +212,66 @@ export async function activate(ctx) {
   };
 
   const ACTIVE_TOC_MODE_KEY = 'toc.activeMode';
+  const getRolePrefixes = () => {
+    try {
+      const extras = [];
+      try {
+        const cfg = window?.zion?.config?.roles?.prefixes;
+        if (Array.isArray(cfg)) extras.push(...cfg);
+      } catch {}
+      try {
+        const raw = localStorage.getItem("zion.roles.prefixes") || localStorage.getItem("dev.roles.prefixes");
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (Array.isArray(parsed)) extras.push(...parsed);
+      } catch {}
+      return Array.from(new Set([...BASE_ROLE_PREFIXES, ...extras.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)]));
+    } catch {
+      return [...BASE_ROLE_PREFIXES];
+    }
+  };
+  const getSessionIdFromEditor = (ed) => {
+    try {
+      const panelId = getPanelIdFromEditor(ed);
+      if (panelId) {
+        const fromPanelManager = window?.zion?.panelManager?.getPanel?.(panelId)?.activeTabId;
+        if (fromPanelManager) return String(fromPanelManager);
+        const fromPanelsApi = window?.zion?.panels?.list?.()?.find?.((panel) => panel.id === panelId)?.activeTabId;
+        if (fromPanelsApi) return String(fromPanelsApi);
+      }
+    } catch {}
+    try {
+      const sid = window?.zion?.state?.get?.("sessions.currentId");
+      return sid ? String(sid) : null;
+    } catch {
+      return null;
+    }
+  };
+  const getScopedStateKey = (baseKey, target) => {
+    try {
+      const panelId = typeof target === "string"
+        ? target
+        : (target?.panelId || getBoundPanelId(target) || getPanelIdFromEditor(target) || null);
+      return panelId ? `${baseKey}.${panelId}` : baseKey;
+    } catch {
+      return baseKey;
+    }
+  };
+  const getActiveHeadingStateKey = (target) => getScopedStateKey("toc.activeHeadingId", target);
+  const getActiveBlockStateKey = (target) => getScopedStateKey("toc.activeBlockId", target);
+  const getRoleBlocksForEditor = (ed, maybeView) => {
+    try {
+      const text = String(ed?.getValue?.() || "");
+      const blocks = parseRoleBlocksFromText(text, getRolePrefixes());
+      return ensureLeadingUserBlock(blocks, text, maybeView);
+    } catch {
+      return [];
+    }
+  };
 
   // 根据给定行/位置计算应高亮的目录项（标题与块）
   const computeActiveTOCAtCursor = (viewParam, opts = {}) => {
     try {
-      const ed = window?.zion?.window?.activeEditor;
+      const ed = opts?.editor || window?.zion?.window?.activeEditor;
       if (!ed) return;
 
       const groupMode = !!window?.zion?.state?.get?.('toc.groupByRole');
@@ -275,48 +298,14 @@ export async function activate(ctx) {
       let activeBlockId = null;
 
       if (groupMode) {
-        const idx = window?.zion?.state?.get?.('roles.index');
         let curBlock = null;
-
-        const idxUsable = (() => {
-          try {
-            if (!viewParam || !Array.isArray(idx?.blocks)) return false;
-            const docLen = viewParam.state.doc.length;
-            for (const b of idx.blocks) {
-              if (typeof b?.to === 'number' && b.to > docLen) return false;
-            }
-            return true;
-          } catch {
-            return false;
-          }
-        })();
-
-        // 优先使用字符范围定位块
-        if (idxUsable && viewParam && Array.isArray(idx?.blocks)) {
-          const blocks = ensureLeadingUserBlock(idx.blocks, docText, viewParam);
-          for (const b of blocks) {
-            if (typeof b.from === "number" && typeof b.to === "number") {
-              if (pos >= b.from && pos <= b.to) {
-                curBlock = b;
-                break;
-              }
-            }
-          }
-        }
-
-        // 退化为行范围定位块
-        if (!curBlock) {
-          const rawBlocks = (idxUsable && Array.isArray(idx?.blocks) && typeof idx.blocks[0]?.startLine === "number")
-            ? idx.blocks
-            : parseRoleBlocksFromText(docText);
-          const blocks = ensureLeadingUserBlock(rawBlocks, docText, viewParam);
-          for (const b of blocks) {
-            const s = b.startLine ?? 0;
-            const e = b.endLine ?? s;
-            if (currentLine >= s && currentLine <= e) {
-              curBlock = b;
-              break;
-            }
+        const blocks = getRoleBlocksForEditor(ed, viewParam);
+        for (const b of blocks) {
+          const s = b.startLine ?? 0;
+          const e = b.endLine ?? s;
+          if (currentLine >= s && currentLine <= e) {
+            curBlock = b;
+            break;
           }
         }
 
@@ -365,12 +354,14 @@ export async function activate(ctx) {
 
       // 更新状态（避免不必要的 set）
       try {
-        const prevH = window?.zion?.state?.get?.('toc.activeHeadingId');
-        if (prevH !== activeHeadingId) window.zion.state.set('toc.activeHeadingId', activeHeadingId || null);
+        const key = getActiveHeadingStateKey(ed);
+        const prevH = window?.zion?.state?.get?.(key);
+        if (prevH !== activeHeadingId) window.zion.state.set(key, activeHeadingId || null);
       } catch {}
       try {
-        const prevB = window?.zion?.state?.get?.('toc.activeBlockId');
-        if (prevB !== activeBlockId) window.zion.state.set('toc.activeBlockId', activeBlockId || null);
+        const key = getActiveBlockStateKey(ed);
+        const prevB = window?.zion?.state?.get?.(key);
+        if (prevB !== activeBlockId) window.zion.state.set(key, activeBlockId || null);
       } catch {}
 
       try {
@@ -382,7 +373,7 @@ export async function activate(ctx) {
 
   const activeMeasurePending = new WeakMap();
 
-  const scheduleComputeActiveTOCByVisibility = (viewParam) => {
+  const scheduleComputeActiveTOCByVisibility = (viewParam, editorParam = null) => {
     try {
       if (!viewParam || !viewParam.state) return;
       if (activeMeasurePending.get(viewParam)) return;
@@ -390,7 +381,7 @@ export async function activate(ctx) {
 
       if (typeof viewParam.requestMeasure !== 'function') {
         activeMeasurePending.set(viewParam, false);
-        computeActiveTOCAtCursor(viewParam, { mode: 'cursor' });
+        computeActiveTOCAtCursor(viewParam, { mode: 'cursor', editor: editorParam });
         return;
       }
 
@@ -421,9 +412,9 @@ export async function activate(ctx) {
           try {
             const d = data || {};
             if (typeof d.usedLine === 'number' && typeof d.usedPos === 'number') {
-              computeActiveTOCAtCursor(viewParam, { line: d.usedLine, pos: d.usedPos, mode: d.mode });
+              computeActiveTOCAtCursor(viewParam, { line: d.usedLine, pos: d.usedPos, mode: d.mode, editor: editorParam });
             } else {
-              computeActiveTOCAtCursor(viewParam, { mode: 'cursor' });
+              computeActiveTOCAtCursor(viewParam, { mode: 'cursor', editor: editorParam });
             }
           } catch {}
           activeMeasurePending.set(viewParam, false);
@@ -522,8 +513,8 @@ export async function activate(ctx) {
   const tocState = {
     collapsed: new Set(),
     allCollapsibleIds: new Set(),
-    generatingBlockId: null, // 当前正在生成的块ID（用于显示动画）
-    lastGeneratedBlockId: null // 上一次生成的块ID（用于持久化指示）
+    generatingBlockIdBySession: new Map(), // sessionId -> 当前正在生成的块ID
+    lastGeneratedBlockIdBySession: new Map() // sessionId -> 上一次生成的块ID
   };
   const getPanelIdFromEditor = (ed) => {
     try { return ed?.panelId || getEditorEl(ed)?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null; } catch { return null; }
@@ -578,27 +569,41 @@ export async function activate(ctx) {
     } catch {}
     return null;
   };
+  const getGeneratingBlockIdForEditor = (ed) => {
+    try {
+      const sid = getSessionIdFromEditor(ed);
+      return sid ? (tocState.generatingBlockIdBySession.get(sid) || null) : null;
+    } catch {
+      return null;
+    }
+  };
+  const getLastGeneratedBlockIdForEditor = (ed) => {
+    try {
+      const sid = getSessionIdFromEditor(ed);
+      return sid ? (tocState.lastGeneratedBlockIdBySession.get(sid) || null) : null;
+    } catch {
+      return null;
+    }
+  };
 
   // 监听大模型回答开始/结束事件
   try {
     const onRunStarted = ({ sessionId }) => {
       const blockId = getTOCBlockIdForSession(sessionId);
-      if (blockId) {
-        tocState.generatingBlockId = blockId;
-        // 开始新生成时清除旧的指示器
-        if (tocState.lastGeneratedBlockId) {
-          tocState.lastGeneratedBlockId = null;
-        }
-        forEachOpenTOCUI((ui) => ui.debouncedUpdate?.());
-      }
+      const sid = sessionId ? String(sessionId) : "";
+      if (!sid) return;
+      if (blockId) tocState.generatingBlockIdBySession.set(sid, blockId);
+      else tocState.generatingBlockIdBySession.delete(sid);
+      tocState.lastGeneratedBlockIdBySession.delete(sid);
+      forEachOpenTOCUI((ui) => ui.debouncedUpdate?.());
     };
 
     const onRunFinished = ({ sessionId }) => {
-      // 记录最后生成的块ID
-      if (tocState.generatingBlockId) {
-        tocState.lastGeneratedBlockId = tocState.generatingBlockId;
-      }
-      tocState.generatingBlockId = null;
+      const sid = sessionId ? String(sessionId) : "";
+      if (!sid) return;
+      const generatingBlockId = tocState.generatingBlockIdBySession.get(sid) || getTOCBlockIdForSession(sid);
+      if (generatingBlockId) tocState.lastGeneratedBlockIdBySession.set(sid, generatingBlockId);
+      tocState.generatingBlockIdBySession.delete(sid);
       forEachOpenTOCUI((ui) => ui.debouncedUpdate?.());
     };
 
@@ -734,6 +739,10 @@ export async function activate(ctx) {
       const ed = ui?.editor || window.zion.window.activeEditor;
       if (!ed || !ui?.panel) return;
       const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
+      const activeHeadingStateKey = getActiveHeadingStateKey(ui);
+      const activeBlockStateKey = getActiveBlockStateKey(ui);
+      const generatingBlockId = getGeneratingBlockIdForEditor(ed);
+      const lastGeneratedBlockId = getLastGeneratedBlockIdForEditor(ed);
 
       let list = ui.panel.querySelector('#zion-toc-list');
       if (!list) {
@@ -860,7 +869,7 @@ export async function activate(ctx) {
           row.appendChild(label);
           // Active heading highlight (cursor-based)
           try {
-            const activeId = window?.zion?.state?.get?.('toc.activeHeadingId');
+            const activeId = window?.zion?.state?.get?.(activeHeadingStateKey);
             if (activeId && activeId === item.id) {
               label.style.fontWeight = "600";
               label.style.color = "var(--ext-toc-active-fg, var(--accent))";
@@ -869,7 +878,8 @@ export async function activate(ctx) {
 
           row.onclick = () => {
             try {
-              window?.zion?.state?.set?.('toc.activeHeadingId', item.id);
+              window?.zion?.state?.set?.(activeHeadingStateKey, item.id);
+              window?.zion?.state?.set?.(activeBlockStateKey, null);
               const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
               scrollLineIntoViewTop(ed, maybeView, item.line, 48);
             } catch {}
@@ -903,9 +913,7 @@ export async function activate(ctx) {
         }
       } else {
         // group by role blocks
-        const idx = window?.zion?.state?.get?.('roles.index');
-        const rawBlocks = Array.isArray(idx?.blocks) ? idx.blocks : parseRoleBlocksFromText(ed.getValue());
-        const blocks = ensureLeadingUserBlock(rawBlocks, ed.getValue(), maybeView);
+        const blocks = getRoleBlocksForEditor(ed, maybeView);
         if (!blocks || blocks.length === 0) {
           // fallback to flat headings
           const headings = maybeView ? parseHeadingsFromView(maybeView) : parseHeadingsFromText(ed.getValue());
@@ -1002,8 +1010,8 @@ export async function activate(ctx) {
             const roleColors = { user: '#4caf50', assistant: '#2196f3', system: '#9e9e9e' };
             const dotColor = roleColors[b.role?.toLowerCase()] || roleColors.user;
             // 判断是否是正在生成的块
-            const isGenerating = tocState.generatingBlockId === blockId;
-            const isLastGenerated = tocState.lastGeneratedBlockId === blockId;
+            const isGenerating = generatingBlockId === blockId;
+            const isLastGenerated = lastGeneratedBlockId === blockId;
 
             // 创建小圆点容器，给它留出空间
             const dotContainer = document.createElement("span");
@@ -1070,8 +1078,8 @@ export async function activate(ctx) {
             }
 
             try {
-              const activeBlockId = window?.zion?.state?.get?.('toc.activeBlockId');
-              const activeHeadingId = window?.zion?.state?.get?.('toc.activeHeadingId');
+              const activeBlockId = window?.zion?.state?.get?.(activeBlockStateKey);
+              const activeHeadingId = window?.zion?.state?.get?.(activeHeadingStateKey);
               // 活跃块的高亮（生成中状态优先级更高）
               if (activeBlockId && activeBlockId === blockId && !activeHeadingId && !isGenerating) {
                 label.style.fontWeight = "600";
@@ -1083,12 +1091,14 @@ export async function activate(ctx) {
 
             row.onclick = () => {
               // Clear persistent indicator on click
-              if (tocState.lastGeneratedBlockId === blockId) {
-                tocState.lastGeneratedBlockId = null;
+              const sid = getSessionIdFromEditor(ed);
+              if (sid && tocState.lastGeneratedBlockIdBySession.get(sid) === blockId) {
+                tocState.lastGeneratedBlockIdBySession.delete(sid);
                 setTimeout(() => ui.debouncedUpdate?.(), 0);
               }
               try {
-                window?.zion?.state?.set?.('toc.activeHeadingId', null);
+                window?.zion?.state?.set?.(activeHeadingStateKey, null);
+                window?.zion?.state?.set?.(activeBlockStateKey, blockId);
                 const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
                 scrollLineIntoViewTop(ed, maybeView, blockStartLine, 48);
               } catch {}
@@ -1108,8 +1118,8 @@ export async function activate(ctx) {
       syncToggleAllBtn(ui);
 
       try {
-        const activeHeadingId = window?.zion?.state?.get?.('toc.activeHeadingId');
-        const activeBlockId = window?.zion?.state?.get?.('toc.activeBlockId');
+        const activeHeadingId = window?.zion?.state?.get?.(activeHeadingStateKey);
+        const activeBlockId = window?.zion?.state?.get?.(activeBlockStateKey);
         const activeId = activeHeadingId || activeBlockId;
         if (activeId) {
           requestAnimationFrame(() => {
@@ -1179,8 +1189,8 @@ export async function activate(ctx) {
 
     // Sync active heading/block based on visible content (cursor-in-view prefers cursor)
     try {
-      if (maybeView) scheduleComputeActiveTOCByVisibility(maybeView);
-      else computeActiveTOCAtCursor(null, { mode: 'cursor' });
+      if (maybeView) scheduleComputeActiveTOCByVisibility(maybeView, ed);
+      else computeActiveTOCAtCursor(null, { mode: 'cursor', editor: ed });
     } catch {}
 
     // Build list
@@ -1395,9 +1405,7 @@ export async function activate(ctx) {
     }
 
     // Group mode: build by role blocks
-    const idx = window?.zion?.state?.get?.('roles.index');
-    const rawBlocks = Array.isArray(idx?.blocks) ? idx.blocks : parseRoleBlocksFromText(ed.getValue());
-    const blocks = ensureLeadingUserBlock(rawBlocks, ed.getValue(), maybeView);
+    const blocks = getRoleBlocksForEditor(ed, maybeView);
     if (!blocks || blocks.length === 0) {
       // fallback to flat if no blocks found
       return buildFlat();
@@ -1467,13 +1475,15 @@ export async function activate(ctx) {
       const next = !cur;
       window.zion.state.set('toc.groupByRole', next);
       // 切换分组模式时清空高亮状态，防止残留
-      try { window.zion.state.set('toc.activeHeadingId', null); } catch {}
-      try { window.zion.state.set('toc.activeBlockId', null); } catch {}
+      forEachOpenTOCUI((ui) => {
+        try { window.zion.state.set(getActiveHeadingStateKey(ui), null); } catch {}
+        try { window.zion.state.set(getActiveBlockStateKey(ui), null); } catch {}
+      });
       try { localStorage.setItem('zion.toc.groupByRole', next ? '1' : '0'); } catch {}
       forEachOpenTOCUI((ui) => {
         try {
           const maybeView = ui?.editor?.core?.view || null;
-          computeActiveTOCAtCursor(maybeView);
+          computeActiveTOCAtCursor(maybeView, { editor: ui?.editor || null });
         } catch {}
         ui.debouncedUpdate?.();
       });
@@ -1822,18 +1832,18 @@ export async function activate(ctx) {
         constructor(view) {
           this.view = view;
           this.scrollHandler = () => {
-            try { scheduleComputeActiveTOCByVisibility(this.view); } catch {}
+            try { scheduleComputeActiveTOCByVisibility(this.view, editor); } catch {}
           };
           try {
             view.scrollDOM?.addEventListener?.('scroll', this.scrollHandler, { passive: true });
           } catch {}
-          try { scheduleComputeActiveTOCByVisibility(view); } catch {}
+          try { scheduleComputeActiveTOCByVisibility(view, editor); } catch {}
         }
         update(u) {
           this.view = u.view;
           try {
             if (u.docChanged || u.viewportChanged || u.selectionSet) {
-              scheduleComputeActiveTOCByVisibility(u.view);
+              scheduleComputeActiveTOCByVisibility(u.view, editor);
             }
           } catch {}
           if (ui.open && ui.panel && (u.docChanged || u.viewportChanged || u.selectionSet)) {
@@ -1858,14 +1868,16 @@ export async function activate(ctx) {
           if (ui.open) ui.debouncedUpdate?.();
         } catch {}
       });
+      const activeHeadingKey = getActiveHeadingStateKey(ui);
+      const activeBlockKey = getActiveBlockStateKey(ui);
       // 点击子目录时的高亮状态变化，触发列表重绘
-      const activeHeadingSub = window.zion.state.onDidChange("toc.activeHeadingId", () => {
+      const activeHeadingSub = window.zion.state.onDidChange(activeHeadingKey, () => {
         try {
           if (ui.open) ui.debouncedUpdate?.();
         } catch {}
       });
       // 当前块（角色）高亮状态变化，触发列表重绘
-      const activeBlockSub = window.zion.state.onDidChange("toc.activeBlockId", () => {
+      const activeBlockSub = window.zion.state.onDidChange(activeBlockKey, () => {
         try {
           if (ui.open) ui.debouncedUpdate?.();
         } catch {}

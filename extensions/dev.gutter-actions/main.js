@@ -198,13 +198,29 @@ export async function activate(ctx) {
 
   const doBatchAccept = () => {
     const batch = computeBatchInfoForCursor();
-    if (batch?.range) return window.zion?.events?.emit("toolcards/batchAccept", { from: batch.range.from, to: batch.range.to });
+    if (batch?.range) {
+      const panelId = window.zion?.panels?.getActivePanelId?.() || null;
+      const sessionId = panelId
+        ? (window.zion?.panelManager?.getPanel?.(panelId)?.activeTabId
+          || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
+          || null)
+        : (window.zion?.state?.get?.("sessions.currentId") || null);
+      return window.zion?.events?.emit("toolcards/batchAccept", { from: batch.range.from, to: batch.range.to, panelId, sessionId });
+    }
     window.zion?.notification?.show?.("未找到目标 assistant 范围", { type: "info", duration: 2200 });
   };
 
   const doBatchRevert = () => {
     const batch = computeBatchInfoForCursor();
-    if (batch?.range) return window.zion?.events?.emit("toolcards/batchRevert", { from: batch.range.from, to: batch.range.to });
+    if (batch?.range) {
+      const panelId = window.zion?.panels?.getActivePanelId?.() || null;
+      const sessionId = panelId
+        ? (window.zion?.panelManager?.getPanel?.(panelId)?.activeTabId
+          || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
+          || null)
+        : (window.zion?.state?.get?.("sessions.currentId") || null);
+      return window.zion?.events?.emit("toolcards/batchRevert", { from: batch.range.from, to: batch.range.to, panelId, sessionId });
+    }
     window.zion?.notification?.show?.("未找到目标 assistant 范围", { type: "info", duration: 2200 });
   };
 

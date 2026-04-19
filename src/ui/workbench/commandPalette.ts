@@ -17,6 +17,15 @@ type PaletteItem =
       meta: CommandMeta;
     }
   | {
+      kind: "action";
+      id: string;
+      title: string;
+      description?: string;
+      badge?: string;
+      keywords?: string[];
+      run: () => void | Promise<void>;
+    }
+  | {
       kind: "session";
       id: string;
       title: string;
@@ -53,6 +62,31 @@ function pushRecent(key: string) {
   writeRecent(next);
 }
 
+function pushRecentSessionId(sessionId: any) {
+  const sid = safeText(sessionId).trim();
+  if (!sid) return;
+  pushRecent(`ses:${sid}`);
+}
+
+function pruneRecent(valid: { sessions: Set<string>; commands: Set<string> }) {
+  const cur = readRecent();
+  if (!cur.length) return;
+  const next: string[] = [];
+  const seen = new Set<string>();
+  for (const key of cur) {
+    if (!key || seen.has(key)) continue;
+    const m = /^(\w+):(.*)$/.exec(key);
+    const kind = m?.[1];
+    const id = m?.[2];
+    if (!kind || !id) continue;
+    if (kind === "ses" && !valid.sessions.has(id)) continue;
+    if (kind === "cmd" && !valid.commands.has(id)) continue;
+    seen.add(key);
+    next.push(key);
+  }
+  if (next.length !== cur.length) writeRecent(next);
+}
+
 function injectStyles() {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
@@ -87,9 +121,27 @@ function injectStyles() {
 .zion-cmdk-right{flex:0 0 auto;display:flex;gap:8px;align-items:center}
 .zion-cmdk-kbd{padding:2px 6px;border:1px solid var(--border,#3c3c3c);border-radius:6px;opacity:.9;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:11px}
 .zion-cmdk-badge{padding:2px 6px;border:1px solid var(--border,#3c3c3c);border-radius:999px;opacity:.7;font-size:11px}
+.zion-cmdk-badge[data-status="streaming"]{opacity:1;border-color:color-mix(in srgb,var(--accent,#6272a4) 55%,transparent);color:var(--accent,#6272a4);background:color-mix(in srgb,var(--accent,#6272a4) 12%,transparent)}
+.zion-cmdk-badge[data-status="awaiting"]{opacity:1;border-color:color-mix(in srgb,var(--ok,#4caf50) 55%,transparent);color:var(--ok,#4caf50);background:color-mix(in srgb,var(--ok,#4caf50) 12%,transparent)}
+.zion-cmdk-badge[data-status="failed"]{opacity:1;border-color:rgba(255,107,107,.55);color:#ff6b6b;background:rgba(255,107,107,.10)}
+.zion-cmdk-badge[data-status="aborted"]{opacity:1;border-color:color-mix(in srgb,var(--fg,#ccc) 30%,transparent);color:color-mix(in srgb,var(--fg,#ccc) 70%,transparent);background:color-mix(in srgb,var(--fg,#ccc) 8%,transparent)}
 .zion-cmdk-empty{padding:16px;text-align:center;opacity:.7}
   `;
   document.head.appendChild(style);
+}
+
+function getSessionStatusBadge(sessionId: string): { status: "streaming" | "awaiting" | "failed" | "aborted"; label: string } | null {
+  try {
+    const rs = (window as any)?.zion?.state?.get?.(`chat.runs.${sessionId}`) || null;
+    if (!rs) return null;
+    if (rs.streaming) return { status: "streaming", label: "对话中" };
+    if (rs.awaiting) return { status: "awaiting", label: "待查看" };
+    if (rs.error) return { status: "failed", label: "失败" };
+    if (rs.aborted) return { status: "aborted", label: "已停止" };
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeKeybindingLabel(key: string): string {
@@ -134,6 +186,23 @@ function computeScoreSession(q: string, it: { id: string; title: string }): numb
   return 0;
 }
 
+function computeScoreAction(q: string, it: { id: string; title: string; description?: string; keywords?: string[] }): number {
+  if (!q) return 0;
+  const query = q.toLowerCase();
+  const title = safeText(it.title).toLowerCase();
+  const desc = safeText(it.description).toLowerCase();
+  const id = safeText(it.id).toLowerCase();
+  const keywords = Array.isArray(it.keywords) ? it.keywords.map(x => safeText(x).toLowerCase()).join(" ") : "";
+  if (id === query) return 200;
+  if (title === query) return 190;
+  if (title.startsWith(query)) return 150;
+  if (id.startsWith(query)) return 140;
+  if (title.includes(query)) return 110;
+  if (desc.includes(query)) return 80;
+  if (keywords.includes(query)) return 60;
+  return 0;
+}
+
 function fmtRelTime(ts?: number): string {
   if (!ts || !isFinite(ts)) return "";
   const d = Date.now() - ts;
@@ -157,6 +226,23 @@ function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?:
     const tree = treeFromState && treeFromState.type === "folder" ? treeFromState : (() => {
       try { const v = JSON.parse(localStorage.getItem("zion.sessions.tree") || "null"); return v ?? null; } catch { return null; }
     })();
+
+    const treeSessionIds = new Set<string>();
+    if (tree) {
+      const dfsIds = (node: any) => {
+        if (!node) return;
+        if (node.type === "session") {
+          const id = safeText(node.id).trim();
+          if (id) treeSessionIds.add(id);
+          return;
+        }
+        if (node.type === "folder" && Array.isArray(node.children)) {
+          for (const ch of node.children) dfsIds(ch);
+        }
+      };
+      dfsIds(tree);
+    }
+    const hasTreeIds = treeSessionIds.size > 0;
 
     const computeSessionPath = (sessionId: string, sessionTitle: string): string => {
       if (!tree) return sessionTitle;
@@ -194,7 +280,17 @@ function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?:
           path: id ? computeSessionPath(id, title) : undefined
         };
       })
-      .filter(x => !!x.id);
+      .filter(x => {
+        if (!x.id) return false;
+        // Prefer tree membership as the source of truth for "exists".
+        if (hasTreeIds) return treeSessionIds.has(x.id);
+        // Fallback: ignore sessions with missing meta (usually deleted).
+        try {
+          const meta = (window as any).zion?.state?.get?.(`sessions.meta.${x.id}`);
+          if (!meta) return false;
+        } catch {}
+        return true;
+      });
   } catch {
     return [];
   }
@@ -301,15 +397,15 @@ export function initCommandPalette() {
     const base = loadManifestMeta();
     base.set("commandPalette.toggle", {
       id: "commandPalette.toggle",
-      title: "命令台：打开/关闭",
-      description: "通过 Cmd/Ctrl + K 打开或关闭全局命令台",
+      title: "会话面板：打开/关闭",
+      description: "通过 Cmd/Ctrl + K 打开或关闭会话面板（默认显示近期会话）",
       category: "Zion",
       pluginId: "core"
     });
     base.set("commandPalette.open", {
       id: "commandPalette.open",
-      title: "命令台：打开",
-      description: "打开全局命令台",
+      title: "会话面板：打开",
+      description: "打开会话面板（默认显示近期会话）",
       category: "Zion",
       pluginId: "core"
     });
@@ -391,7 +487,7 @@ export function initCommandPalette() {
   const input = document.createElement("input");
   input.className = "zion-cmdk-input";
   input.type = "text";
-  input.placeholder = "输入命令…";
+  input.placeholder = "搜索会话…";
   input.autocomplete = "off";
   input.spellcheck = false;
 
@@ -421,6 +517,73 @@ export function initCommandPalette() {
   let activeIndex = 0;
   let itemEls: HTMLElement[] = [];
   let lastMouseMoveAt = 0;
+  let currentSubmenu: { id: string; title: string; placeholder: string; emptyText: string; items: PaletteItem[] } | null = null;
+
+  const buildModelActionItems = async (): Promise<PaletteItem[]> => {
+    try {
+      await Promise.resolve(window.zion?.commands?.executeCommand?.("models.listModels"));
+    } catch {}
+    const catalog = (window as any).zion?.state?.get?.("models.catalog") || [];
+    const active = (window as any).zion?.state?.get?.("chat.activeModel") || null;
+    const items = (Array.isArray(catalog) ? catalog : []).map((m: any) => {
+      const providerId = safeText(m?.providerId || "");
+      const modelId = safeText(m?.id || "");
+      const label = safeText(m?.label || modelId || "Unknown Model");
+      const spec = `${providerId}:${modelId}`;
+      const isActive = providerId === active?.providerId && modelId === active?.modelId;
+      return {
+        kind: "action" as const,
+        id: `models.selectModel:${spec}`,
+        title: `${isActive ? "✓ " : ""}${label}`,
+        description: `${providerId}:${modelId}${m?.requiresConfig ? " · needs config" : ""}`,
+        badge: isActive ? "当前" : (providerId || "模型"),
+        keywords: [providerId, modelId, label],
+        run: () => {
+          window.zion?.commands?.executeCommand?.("models.selectModel", spec);
+        }
+      };
+    });
+    items.sort((a, b) => {
+      const ta = safeText(a.title).toLowerCase();
+      const tb = safeText(b.title).toLowerCase();
+      if (ta !== tb) return ta.localeCompare(tb);
+      return safeText(a.description).localeCompare(safeText(b.description));
+    });
+    return items;
+  };
+
+  const openSubmenu = async (commandId: string) => {
+    if (commandId === "models.selectModel" || commandId === "models.openSwitcher") {
+      const items = await buildModelActionItems();
+      currentSubmenu = {
+        id: "models",
+        title: "选择模型",
+        placeholder: "搜索模型…",
+        emptyText: "没有找到匹配的模型",
+        items
+      };
+      input.value = "";
+      render("");
+      try {
+        input.focus();
+        input.setSelectionRange(0, 0);
+      } catch {}
+      return true;
+    }
+    return false;
+  };
+
+  const leaveSubmenu = () => {
+    if (!currentSubmenu) return false;
+    currentSubmenu = null;
+    input.value = ">";
+    render(input.value);
+    try {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    } catch {}
+    return true;
+  };
 
   const setActiveIndex = (idx: number) => {
     if (!itemEls.length) return;
@@ -437,7 +600,7 @@ export function initCommandPalette() {
     activeIndex = next;
   };
 
-  const closePalette = () => {
+  const closePalette = (opts?: { restoreFocus?: boolean }) => {
     if (!open) return;
     open = false;
     mask.style.display = "none";
@@ -446,16 +609,43 @@ export function initCommandPalette() {
     itemEls = [];
     visible = [];
     activeIndex = 0;
+    currentSubmenu = null;
     const restore = lastActive;
     lastActive = null;
+    if (opts?.restoreFocus === false) return;
     try {
       restore?.focus?.();
     } catch {}
   };
 
-  const executeActive = () => {
+  const focusActiveEditorPanel = () => {
+    requestAnimationFrame(() => {
+      try {
+        const panelId = window.zion?.panels?.getActivePanelId?.() || null;
+        if (panelId) {
+          try { window.zion.panels?.focus?.(panelId); } catch {}
+          const panelEditor = window.zion.panels?.getEditor?.(panelId);
+          if (panelEditor?.focus) {
+            panelEditor.focus();
+            return;
+          }
+        }
+        window.zion.window.activeEditor?.focus?.();
+      } catch {}
+    });
+  };
+
+  const executeActive = async () => {
     const it = visible[activeIndex];
     if (!it) return;
+    if (it.kind === "action") {
+      try {
+        await Promise.resolve(it.run());
+        pushRecent(`cmd:${it.id}`);
+      } catch {}
+      closePalette();
+      return;
+    }
     if (it.kind === "command") {
       const meta = it.meta;
       if (!meta.registered) {
@@ -464,6 +654,7 @@ export function initCommandPalette() {
         } catch {}
         return;
       }
+      if (await openSubmenu(meta.id)) return;
       try {
         window.zion.commands.executeCommand(meta.id);
         pushRecent(`cmd:${meta.id}`);
@@ -472,26 +663,30 @@ export function initCommandPalette() {
       return;
     }
     try {
-      window.zion.commands.executeCommand("zion.sessions.switch", it.id);
+      await Promise.resolve(window.zion.commands.executeCommand("zion.sessions.switch", it.id));
       pushRecent(`ses:${it.id}`);
     } catch {}
-    closePalette();
+    closePalette({ restoreFocus: false });
+    focusActiveEditorPanel();
   };
 
   const render = (query: string) => {
     const raw = safeText(query);
-    const isCommandMode = raw.trimStart().startsWith(">");
-    const q = isCommandMode ? raw.replace(/^\s*>\s*/, "").trim() : raw.trim();
+    const inSubmenu = !!currentSubmenu;
+    const isCommandMode = inSubmenu || raw.trimStart().startsWith(">");
+    const q = inSubmenu ? raw.trim() : (isCommandMode ? raw.replace(/^\s*>\s*/, "").trim() : raw.trim());
     const recent = readRecent();
 
-    hint.textContent = isCommandMode ? "↑↓ 选择 · Enter 执行 · Esc 关闭" : "↑↓ 选择 · Enter 打开 · Esc 关闭 · 输入 > 搜命令";
-    input.placeholder = isCommandMode ? "输入命令…" : "搜索会话、命令…（输入 > 搜命令）";
+    hint.textContent = inSubmenu
+      ? "↑↓ 选择 · Enter 执行 · Backspace 返回 · Esc 关闭"
+      : (isCommandMode ? "↑↓ 选择 · Enter 执行命令 · Esc 关闭" : "↑↓ 选择 · Enter 打开会话 · Esc 关闭");
+    input.placeholder = inSubmenu ? currentSubmenu?.placeholder || "搜索…" : (isCommandMode ? "输入命令…" : "搜索会话…");
 
     const openSet = loadOpenSessionIds();
     const cmdItems = commands.map(meta => ({ kind: "command" as const, meta }));
     const sesItems = sessions.map(s => ({ kind: "session" as const, id: s.id, title: s.title, updatedAt: s.updatedAt, open: openSet.has(s.id), path: s.path }));
 
-    const candidates: PaletteItem[] = isCommandMode ? cmdItems : [...sesItems, ...cmdItems];
+    const candidates: PaletteItem[] = inSubmenu ? (currentSubmenu?.items || []) : (isCommandMode ? cmdItems : sesItems);
     let scored: Array<{ item: PaletteItem; score: number; recentRank: number }> = [];
 
     const recentRankOf = (key: string) => {
@@ -510,13 +705,17 @@ export function initCommandPalette() {
         const kind = m?.[1];
         const id = m?.[2];
         if (!kind || !id) continue;
-        const found = candidates.find(c => (c.kind === "command" ? (kind === "cmd" && c.meta.id === id) : (kind === "ses" && c.id === id)));
+        const found = candidates.find(c => {
+          if (c.kind === "command") return kind === "cmd" && c.meta.id === id;
+          if (c.kind === "session") return kind === "ses" && c.id === id;
+          return kind === "cmd" && c.id === id;
+        });
         if (!found) continue;
         seen.add(key);
         scored.push({ item: found, score: 0, recentRank: recentRankOf(key) });
       }
       for (const it of candidates) {
-        const key = it.kind === "command" ? `cmd:${it.meta.id}` : `ses:${it.id}`;
+        const key = it.kind === "command" ? `cmd:${it.meta.id}` : (it.kind === "action" ? `cmd:${it.id}` : `ses:${it.id}`);
         if (seen.has(key)) continue;
         scored.push({ item: it, score: 0, recentRank: 9999 });
       }
@@ -528,6 +727,11 @@ export function initCommandPalette() {
           if (score <= 0) continue;
           const key = `cmd:${it.meta.id}`;
           scored.push({ item: it, score: score + (recent.includes(key) ? 5 : 0), recentRank: recentRankOf(key) });
+        } else if (it.kind === "action") {
+          const score = computeScoreAction(q, it);
+          if (score <= 0) continue;
+          const key = `cmd:${it.id}`;
+          scored.push({ item: it, score: score + (recent.includes(key) ? 5 : 0), recentRank: recentRankOf(key) });
         } else {
           const score = computeScoreSession(q, it);
           if (score <= 0) continue;
@@ -535,7 +739,21 @@ export function initCommandPalette() {
           scored.push({ item: it, score: score + (recent.includes(key) ? 5 : 0), recentRank: recentRankOf(key) });
         }
       }
-      scored.sort((a, b) => b.score - a.score || a.recentRank - b.recentRank || (a.item.kind === b.item.kind ? (a.item.kind === "command" ? a.item.meta.title.localeCompare(b.item.meta.title) : a.item.title.localeCompare(b.item.title)) : (a.item.kind === "session" ? -1 : 1)));
+      scored.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (a.recentRank !== b.recentRank) return a.recentRank - b.recentRank;
+        if (a.item.kind !== b.item.kind) return a.item.kind === "session" ? -1 : 1;
+        if (a.item.kind === "command" && b.item.kind === "command") {
+          return a.item.meta.title.localeCompare(b.item.meta.title);
+        }
+        if (a.item.kind === "action" && b.item.kind === "action") {
+          return a.item.title.localeCompare(b.item.title);
+        }
+        if (a.item.kind === "session" && b.item.kind === "session") {
+          return a.item.title.localeCompare(b.item.title);
+        }
+        return 0;
+      });
       scored = scored.slice(0, 240);
     }
 
@@ -546,7 +764,7 @@ export function initCommandPalette() {
     if (!visible.length) {
       const empty = document.createElement("div");
       empty.className = "zion-cmdk-empty";
-      empty.textContent = isCommandMode ? "没有找到匹配的命令" : "没有找到匹配的项目";
+      empty.textContent = inSubmenu ? (currentSubmenu?.emptyText || "没有找到匹配项") : (isCommandMode ? "没有找到匹配的命令" : "没有找到匹配的会话");
       list.appendChild(empty);
       return;
     }
@@ -564,7 +782,9 @@ export function initCommandPalette() {
 
       const title = document.createElement("div");
       title.className = "zion-cmdk-title";
-      title.textContent = it.kind === "command" ? safeText(it.meta.title || it.meta.id) : safeText(it.title || it.id);
+      title.textContent = it.kind === "command"
+        ? safeText(it.meta.title || it.meta.id)
+        : safeText(it.title || it.id);
 
       const sub = document.createElement("div");
       sub.className = "zion-cmdk-sub";
@@ -576,6 +796,17 @@ export function initCommandPalette() {
         const id = document.createElement("div");
         id.className = "zion-cmdk-id";
         id.textContent = it.meta.id;
+        if (desc.textContent) sub.appendChild(desc);
+        sub.appendChild(id);
+        main.appendChild(title);
+        main.appendChild(sub);
+      } else if (it.kind === "action") {
+        const desc = document.createElement("div");
+        desc.className = "zion-cmdk-desc";
+        desc.textContent = safeText(it.description || "");
+        const id = document.createElement("div");
+        id.className = "zion-cmdk-id";
+        id.textContent = it.id;
         if (desc.textContent) sub.appendChild(desc);
         sub.appendChild(id);
         main.appendChild(title);
@@ -614,7 +845,22 @@ export function initCommandPalette() {
         badge.textContent = "未注册";
         right.appendChild(badge);
       }
+      if (it.kind === "action" && it.badge) {
+        const badge = document.createElement("div");
+        badge.className = "zion-cmdk-badge";
+        badge.textContent = it.badge;
+        right.appendChild(badge);
+      }
       if (it.kind === "session") {
+        const st = getSessionStatusBadge(it.id);
+        if (st) {
+          const badge = document.createElement("div");
+          badge.className = "zion-cmdk-badge";
+          badge.dataset.status = st.status;
+          badge.textContent = st.label;
+          badge.title = st.label;
+          right.appendChild(badge);
+        }
         const badge = document.createElement("div");
         badge.className = "zion-cmdk-badge";
         badge.textContent = it.open ? "打开" : "会话";
@@ -626,7 +872,7 @@ export function initCommandPalette() {
 
       row.onclick = () => {
         activeIndex = i;
-        executeActive();
+        void executeActive();
       };
 
       row.onmouseenter = () => {
@@ -647,6 +893,12 @@ export function initCommandPalette() {
     lastActive = (document.activeElement as any) || null;
     commands = buildCommandList(metaById);
     sessions = loadSessionsFromState();
+    try {
+      pruneRecent({
+        sessions: new Set(sessions.map(s => s.id)),
+        commands: new Set(commands.map(c => c.id))
+      });
+    } catch {}
     mask.style.display = "flex";
     input.value = "";
     render("");
@@ -665,6 +917,7 @@ export function initCommandPalette() {
 
   const openCommandMode = () => {
     if (!open) openPalette();
+    currentSubmenu = null;
     input.value = ">";
     render(input.value);
     setTimeout(() => {
@@ -696,6 +949,34 @@ export function initCommandPalette() {
     window.zion.commands.registerCommand("commandPalette.close", () => closePalette());
   } catch {}
 
+  try {
+    let lastRecentSessionId = safeText(window.zion?.state?.get?.("sessions.currentId")).trim() || "";
+    let recentSessionTimer = 0;
+    if (lastRecentSessionId) pushRecentSessionId(lastRecentSessionId);
+    window.zion.state.onDidChange("sessions.currentId", (nv) => {
+      const sid = safeText(nv).trim();
+      if (!sid || sid === lastRecentSessionId) return;
+      lastRecentSessionId = sid;
+      if (recentSessionTimer) window.clearTimeout(recentSessionTimer);
+      // Debounce slightly so restore/switch chains only persist the final active session.
+      recentSessionTimer = window.setTimeout(() => {
+        try { pushRecentSessionId(sid); } catch {}
+      }, 120);
+    });
+  } catch {}
+
+  // If the palette is open, keep session status badges fresh.
+  try {
+    const rerenderIfOpen = () => {
+      if (!open) return;
+      try { render(input.value); } catch {}
+    };
+    window.zion.events.on("chat/runStarted", rerenderIfOpen);
+    window.zion.events.on("chat/runFinished", rerenderIfOpen);
+    window.zion.events.on("chat/runError", rerenderIfOpen);
+    window.zion.events.on("chat/aborted", rerenderIfOpen);
+  } catch {}
+
   mask.addEventListener("mousedown", (e) => {
     if (e.target === mask) closePalette();
   });
@@ -723,10 +1004,16 @@ export function initCommandPalette() {
       closePalette();
       return;
     }
+    if (e.key === "Backspace" && currentSubmenu && !input.value) {
+      e.preventDefault();
+      e.stopPropagation();
+      leaveSubmenu();
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
-      executeActive();
+      void executeActive();
       return;
     }
     if (e.key === "ArrowDown") {
@@ -752,7 +1039,7 @@ export function initCommandPalette() {
         e.preventDefault();
         e.stopPropagation();
         if (e.shiftKey) openCommandMode();
-        else togglePalette();
+        else openGlobalMode();
       } else if (key === "p" || key === "P") {
         e.preventDefault();
         e.stopPropagation();

@@ -17,6 +17,7 @@ export function createSessionAutoSavePlugin(opts) {
   let timer = 0;
   let pendingDoc = null;
   let pendingId = null;
+  let pendingView = null;
 
   const clearTimer = () => {
     try { if (timer) cancelIdleCallback(timer); } catch {}
@@ -64,11 +65,12 @@ export function createSessionAutoSavePlugin(opts) {
     clearTimer();
     const idle = typeof requestIdleCallback === "function";
     const fn = () => {
-      const id = pendingId || getCurrentId();
+      const id = pendingId || getCurrentId(pendingView);
       if (!id || !pendingDoc) return;
       const doc = pendingDoc;
       pendingDoc = null;
       pendingId = null;
+      pendingView = null;
       commit(id, doc);
     };
     if (idle) {
@@ -79,13 +81,14 @@ export function createSessionAutoSavePlugin(opts) {
   };
 
   const flush = (idOverride) => {
-    const id = idOverride || pendingId || getCurrentId();
+    const id = idOverride || pendingId || getCurrentId(pendingView);
     if (!id) return false;
     if (!pendingDoc) return false;
     if (pendingId && pendingId !== id) return false;
     const doc = pendingDoc;
     pendingDoc = null;
     pendingId = null;
+    pendingView = null;
     clearTimer();
     return commit(id, doc);
   };
@@ -95,7 +98,8 @@ export function createSessionAutoSavePlugin(opts) {
       constructor(view) {}
       update(update) {
         if (update.docChanged) {
-          pendingId = getCurrentId();
+          pendingView = update.view;
+          pendingId = getCurrentId(update.view);
           pendingDoc = update.state.doc;
           scheduleSave();
         }
@@ -107,4 +111,3 @@ export function createSessionAutoSavePlugin(opts) {
     flush
   };
 }
-

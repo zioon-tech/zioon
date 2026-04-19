@@ -3,7 +3,19 @@ import type { EditorCore } from "./EditorCore";
 import type { Extension } from "@codemirror/state";
 
 export class EditorProxy implements IEditorProxy {
-  constructor(private core: EditorCore) {}
+  public panelId: string | null;
+
+  constructor(private core: EditorCore, panelId?: string | null) {
+    this.panelId = panelId ?? null;
+  }
+
+  setCore(core: EditorCore): void {
+    this.core = core;
+  }
+
+  setPanelId(panelId: string | null): void {
+    this.panelId = panelId;
+  }
 
   getValue(): string {
     return this.core.getValue();

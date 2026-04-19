@@ -14,8 +14,83 @@ const DEFAULT_CONFIG = {
   }
 };
 
+const SKILLS_SNAPSHOT_STORAGE_KEY = "zion.skills.snapshot.v1";
+
 function getState() {
   return window.zion && window.zion.state;
+}
+
+function safeJSONParse(text) {
+  try { return JSON.parse(String(text || "")); } catch { return null; }
+}
+
+function loadSnapshot() {
+  try {
+    const raw = localStorage.getItem(SKILLS_SNAPSHOT_STORAGE_KEY) || "";
+    const parsed = safeJSONParse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+let snapshotIdle = 0;
+function saveSnapshotSoon() {
+  if (snapshotIdle) cancelIdleCallback(snapshotIdle);
+  snapshotIdle = requestIdleCallback(
+    () => {
+      snapshotIdle = 0;
+      try {
+        const state = getState();
+        if (!state) return;
+        const snap = {
+          savedAt: Date.now(),
+          paths: state.get("skills.paths") || [],
+          enabled: state.get("skills.enabled") || [],
+          catalog: state.get("skills.catalog") || [],
+          cacheContent: state.get("skills.cacheContent") || {},
+          usageHistory: state.get("skills.usageHistory") || {},
+          tokenBudget: state.get("skills.tokenBudget") || DEFAULT_CONFIG.tokenBudget,
+          config: state.get("skills.config") || DEFAULT_CONFIG,
+          dependencyGraph: state.get("skills.dependencyGraph") || {},
+          lastScan: state.get("skills.lastScan") || 0
+        };
+        localStorage.setItem(SKILLS_SNAPSHOT_STORAGE_KEY, JSON.stringify(snap));
+      } catch {}
+    },
+    { timeout: 1200 }
+  );
+}
+
+function restoreFromSnapshotIfNeeded() {
+  try {
+    const state = getState();
+    if (!state) return;
+    const snap = loadSnapshot();
+    if (!snap) return;
+
+    const paths = state.get("skills.paths") || [];
+    const catalog = state.get("skills.catalog") || [];
+    const lastScan = state.get("skills.lastScan") || 0;
+
+    // Only restore when state looks like a fresh boot/defaults.
+    const looksEmpty =
+      (!Array.isArray(paths) || paths.length === 0) &&
+      (!Array.isArray(catalog) || catalog.length === 0) &&
+      (!lastScan || lastScan === 0);
+    if (!looksEmpty) return;
+
+    if (Array.isArray(snap.paths)) state.set("skills.paths", snap.paths);
+    if (Array.isArray(snap.enabled)) state.set("skills.enabled", snap.enabled);
+    if (Array.isArray(snap.catalog)) state.set("skills.catalog", snap.catalog);
+    if (snap.cacheContent && typeof snap.cacheContent === "object") state.set("skills.cacheContent", snap.cacheContent);
+    if (snap.usageHistory && typeof snap.usageHistory === "object") state.set("skills.usageHistory", snap.usageHistory);
+    if (typeof snap.tokenBudget === "number") state.set("skills.tokenBudget", snap.tokenBudget);
+    if (snap.config && typeof snap.config === "object") state.set("skills.config", snap.config);
+    if (snap.dependencyGraph && typeof snap.dependencyGraph === "object") state.set("skills.dependencyGraph", snap.dependencyGraph);
+    if (typeof snap.lastScan === "number") state.set("skills.lastScan", snap.lastScan);
+  } catch {}
 }
 
 function ensureDefaults() {
@@ -186,12 +261,31 @@ function parseSkillFrontMatter(text) {
   }
 }
 
+async function isLocalToolsHealthy(base) {
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 1500);
+    const res = await fetch(`${base}/health`, { method: "GET", signal: controller.signal });
+    clearTimeout(t);
+    return !!res && res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function scanAllSkills() {
   const state = getState();
   if (!state) return [];
 
   const paths = state.get("skills.paths") || [];
   const base = getLocalToolsBase();
+  const prevCatalog = getCatalog();
+  const healthy = await isLocalToolsHealthy(base);
+  if (!healthy) {
+    // Avoid wiping previously scanned skills when the local service is temporarily unavailable
+    // (common during sleep/wake).
+    return prevCatalog;
+  }
   const catalog = [];
 
   for (const dir of Array.isArray(paths) ? paths : []) {
@@ -225,8 +319,17 @@ async function scanAllSkills() {
     } catch {}
   }
 
+  // If the service is healthy but nothing was found, allow wiping only when no paths are configured.
+  // This avoids "everything disappeared" when the directory mapping temporarily fails.
+  const pathList = Array.isArray(paths) ? paths : [];
+  const shouldKeepPrevious = pathList.length > 0 && catalog.length === 0 && prevCatalog.length > 0;
+  if (shouldKeepPrevious) {
+    return prevCatalog;
+  }
+
   state.set("skills.catalog", catalog);
   state.set("skills.lastScan", Date.now());
+  saveSnapshotSoon();
 
   const enabled = state.get("skills.enabled") || [];
   if (!Array.isArray(enabled) || enabled.length === 0) {
@@ -794,12 +897,27 @@ function registerStateListeners() {
   try {
     disposers.push(window.zion.state.onDidChange("skills.enabled", () => updateStatusBar()));
     disposers.push(window.zion.state.onDidChange("skills.catalog", () => updateStatusBar()));
+    const keysToPersist = [
+      "skills.paths",
+      "skills.enabled",
+      "skills.catalog",
+      "skills.cacheContent",
+      "skills.usageHistory",
+      "skills.tokenBudget",
+      "skills.config",
+      "skills.dependencyGraph",
+      "skills.lastScan"
+    ];
+    for (const k of keysToPersist) {
+      try { disposers.push(window.zion.state.onDidChange(k, () => saveSnapshotSoon())); } catch {}
+    }
   } catch {}
   return disposers;
 }
 
 export async function activate(ctx) {
   ensureDefaults();
+  restoreFromSnapshotIfNeeded();
 
   const commands = registerCommands();
   const contributor = registerMessageContributor();
@@ -817,4 +935,24 @@ export async function activate(ctx) {
   } catch {}
 
   updateStatusBar();
+
+  // When returning from sleep, the local tools service may restart later.
+  // Retry a scan when the page becomes visible again.
+  try {
+    let retryTimer = 0;
+    const scheduleRetry = () => {
+      if (retryTimer) window.clearTimeout(retryTimer);
+      retryTimer = window.setTimeout(async () => {
+        retryTimer = 0;
+        try { await scanAllSkills(); } catch {}
+        try { updateStatusBar(); } catch {}
+      }, 600);
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) scheduleRetry();
+      else saveSnapshotSoon();
+    });
+    window.addEventListener("focus", () => scheduleRetry(), { passive: true });
+    window.addEventListener("pagehide", () => saveSnapshotSoon(), { passive: true });
+  } catch {}
 }

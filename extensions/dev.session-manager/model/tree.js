@@ -194,6 +194,31 @@ export function createSessionTreeModel(opts) {
     }
   }
 
+  function insertSessionNodeAfter(sessionId, afterSessionId, title) {
+    const tree = loadTree() || ensureInitialTree();
+    const { node, parent } = afterSessionId ? findNodeAndParent(tree, afterSessionId) : { node: null, parent: null };
+    if (!node || !parent || !isFolder(parent)) {
+      insertSessionNode(sessionId, "root", title);
+      return;
+    }
+    const n = { id: sessionId, type: "session", title: title || sessionId };
+    parent.children = Array.isArray(parent.children) ? parent.children.slice() : [];
+    const idx = parent.children.findIndex((child) => child.id === afterSessionId);
+    if (idx === -1) {
+      parent.children.unshift(n);
+    } else {
+      parent.children.splice(idx + 1, 0, n);
+    }
+    saveTree(tree);
+    try {
+      rebuildIndexFromTree();
+      try { getZion()?.state?.set("sessions.catalog", getIndex()); } catch {}
+      console.info("[sessions] insertSessionNodeAfter:", { sessionId, afterSessionId, parentId: parent.id, title: n.title });
+    } catch (e) {
+      console.error("[sessions] insertSessionNodeAfter failed to rebuild index:", e);
+    }
+  }
+
   function removeNode(nodeId) {
     const tree = loadTree();
     if (!tree) return false;
@@ -328,6 +353,7 @@ export function createSessionTreeModel(opts) {
     findNodeAndParent,
     insertFolder,
     insertSessionNode,
+    insertSessionNodeAfter,
     removeNode,
     removeNodeRecursive,
     moveNode,
@@ -337,4 +363,3 @@ export function createSessionTreeModel(opts) {
     openAncestors
   };
 }
-

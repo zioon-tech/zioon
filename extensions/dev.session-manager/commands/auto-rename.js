@@ -66,7 +66,8 @@ export function registerSessionAutoRenameCommand(opts) {
           err = e || new Error("LLM error");
         },
         runId: `autoRename-${Date.now()}`,
-        sessionId: id
+        sessionId: id,
+        silentReasoning: true
       });
       if (err) throw err;
 
@@ -88,4 +89,3 @@ export function registerSessionAutoRenameCommand(opts) {
     }
   });
 }
-

@@ -10,15 +10,72 @@ import { geminiProvider } from "./gemini-provider.js";
 import { userModelsProvider } from "./user-models-provider.js";
 import { installModelSwitcher } from "./model-switcher.js";
 import { registerModelsTools } from "./models-tools.js";
+import { createChatOverviewRail } from "./overview-rail.js";
 import {
   appendAssistantToken as appendAssistantTokenToEditor,
+  ensureTrailingUserPromptInDocText,
   finalizeAssistantBlock,
   insertAssistantBlock,
   parseMessages
 } from "../../src/chat/doc";
 import { createChatRuntime } from "../../src/chat/runtime";
 
+function findAssistantEndLineFromDoc(text, startLineHint = 0) {
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
+  const roleHeadRe = /^\s*(system|user|assistant|tool)\s+/;
+  let assistantLine = -1;
+  for (let i = Math.max(0, startLineHint || 0); i < lines.length; i++) {
+    if (/^\s*assistant\s+/.test(lines[i] || "")) {
+      assistantLine = i;
+      break;
+    }
+  }
+  if (assistantLine < 0) {
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^\s*assistant\s+/.test(lines[i] || "")) {
+        assistantLine = i;
+        break;
+      }
+    }
+  }
+  if (assistantLine < 0) return null;
+  let endLine = assistantLine;
+  for (let i = assistantLine + 1; i < lines.length; i++) {
+    if (roleHeadRe.test(lines[i] || "")) break;
+    endLine = i;
+  }
+  return { assistantLine, endLine };
+}
+
+function ensureAssistantLatestVisible(editor, opts = {}) {
+  try {
+    const view = editor?.getView?.();
+    const scrollDOM = view?.scrollDOM;
+    const doc = view?.state?.doc;
+    if (!view || !scrollDOM || !doc) return false;
+    const range = findAssistantEndLineFromDoc(doc.toString(), opts.startLineHint || 0);
+    if (!range) return false;
+    const line = doc.line(Math.max(1, Math.min(doc.lines, range.endLine + 1)));
+    const block = view.lineBlockAt(line.to);
+    const margin = 24;
+    const visibleBottom = scrollDOM.scrollTop + scrollDOM.clientHeight - margin;
+    if (block.bottom <= visibleBottom) return false;
+    const nextScrollTop = Math.max(0, block.bottom - scrollDOM.clientHeight + margin);
+    try {
+      const sessionId = opts.sessionId || null;
+      if (sessionId) {
+        window.zion?.state?.set?.(`chat.followSuppressUntil.${sessionId}`, Date.now() + 80);
+      }
+    } catch {}
+    scrollDOM.scrollTop = nextScrollTop;
+    return true;
+  } catch {}
+  return false;
+}
+
 export async function activate(ctx) {
+  const RUN_FINISHED_SOUND_STATE_KEY = "chat.runFinishedSoundEnabled";
+  const RUN_FINISHED_SOUND_LS_KEY = "zion.chat.runFinishedSoundEnabled";
   const llm = window.zion.llm || (window.zion.llm = {});
   const prevChatApi = window.zion.chat ? { ...window.zion.chat } : null;
   const prevRunStream = llm.runStream;
@@ -82,6 +139,20 @@ export async function activate(ctx) {
       console.warn("[langchain-chat] refreshCatalog error", e);
     }
   }
+  function getResolvedModelSnapshot(source) {
+    const active = source || window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+    const providerId = String(active?.providerId || "deepseek");
+    const modelId = String(active?.modelId || "deepseek-chat");
+    const catalog = window.zion?.state?.get?.("models.catalog") || [];
+    const item = Array.isArray(catalog)
+      ? catalog.find((m) => m.providerId === providerId && m.id === modelId)
+      : null;
+    return {
+      providerId,
+      modelId,
+      label: String(active?.label || item?.label || modelId)
+    };
+  }
   function ensureActiveModel() {
     const active = window.zion.state.get("chat.activeModel");
     if (!active) {
@@ -114,6 +185,22 @@ export async function activate(ctx) {
   await refreshCatalog();
   ensureActiveModel();
 
+  const initStoredBool = (stateKey, lsKey, defaultValue = true) => {
+    try {
+      const existing = window.zion?.state?.get?.(stateKey);
+      if (typeof existing === "boolean") return existing;
+    } catch {}
+    let next = defaultValue;
+    try {
+      const raw = localStorage.getItem(lsKey);
+      if (raw === "0" || raw === "false") next = false;
+      else if (raw === "1" || raw === "true") next = true;
+    } catch {}
+    try { window.zion?.state?.set?.(stateKey, next); } catch {}
+    return next;
+  };
+  initStoredBool(RUN_FINISHED_SOUND_STATE_KEY, RUN_FINISHED_SOUND_LS_KEY, true);
+
   ctx.subscriptions.push(
     window.zion.state.onDidChange("chat.activeModel", (nv) => {
       try {
@@ -130,12 +217,20 @@ export async function activate(ctx) {
   let modelSwitcher = null;
   const decSwitcher = window.zion.editor.registerDecorator({
     id: "dev.langchain-chat.model-switcher",
-    apply(editor) {
+    apply() {
       modelSwitcher = installModelSwitcher();
       return { dispose() { modelSwitcher?.dispose?.(); modelSwitcher = null; } };
     }
   });
   ctx.subscriptions.push(decSwitcher);
+
+  const decOverviewRail = window.zion.editor.registerDecorator({
+    id: "dev.langchain-chat.overview-rail",
+    apply(editor) {
+      return createChatOverviewRail(editor);
+    }
+  });
+  ctx.subscriptions.push(decOverviewRail);
 
   // 工具函数
   const getEd = (opts) => {
@@ -202,6 +297,55 @@ export async function activate(ctx) {
       } catch {}
     }
   });
+
+  let runFinishedAudioCtx = null;
+  const playRunFinishedSound = async () => {
+    if (!window.zion?.state?.get?.(RUN_FINISHED_SOUND_STATE_KEY)) return false;
+    try {
+      const Ctor = window.AudioContext || window["webkitAudioContext"];
+      if (!Ctor) return false;
+      if (!runFinishedAudioCtx || runFinishedAudioCtx.state === "closed") {
+        runFinishedAudioCtx = new Ctor();
+      }
+      const audioCtx = runFinishedAudioCtx;
+      if (audioCtx.state === "suspended") {
+        try { await audioCtx.resume(); } catch {}
+      }
+      const startAt = audioCtx.currentTime + 0.01;
+      const notes = [
+        { freq: 880, duration: 0.07, delay: 0 },
+        { freq: 1174.66, duration: 0.09, delay: 0.08 }
+      ];
+      for (const note of notes) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(note.freq, startAt + note.delay);
+        gain.gain.setValueAtTime(0.0001, startAt + note.delay);
+        gain.gain.linearRampToValueAtTime(0.028, startAt + note.delay + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + note.delay + note.duration);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(startAt + note.delay);
+        osc.stop(startAt + note.delay + note.duration + 0.01);
+      }
+      return true;
+    } catch (e) {
+      console.warn("[langchain-chat] run finished sound failed:", e);
+      return false;
+    }
+  };
+  ctx.subscriptions.push({
+    dispose() {
+      try { runFinishedAudioCtx?.close?.(); } catch {}
+      runFinishedAudioCtx = null;
+    }
+  });
+  ctx.subscriptions.push(
+    window.zion.events.on("chat/runFinished", () => {
+      void playRunFinishedSound();
+    })
+  );
   // 简易工具执行器：支持外部注册与内置示例
   async function executeToolCall(call, sid) {
     const isAborted = () => !!getRunState(sid)?.aborted;
@@ -346,11 +490,38 @@ export async function activate(ctx) {
       console.log("[langchain-chat] no target session");
       return;
     }
+    const runModel = getResolvedModelSnapshot();
     const streaming = !!getRunState(sid)?.streaming;
     if (streaming) {
       console.log("[langchain-chat] already streaming in current session, abort");
       return; // 防止本会话并发；其他会话不受影响
     }
+
+    const readScrollSnapshot = () => {
+      try {
+        const scrollDOM = ed?.getView?.()?.scrollDOM;
+        if (!scrollDOM) return null;
+        return {
+          top: typeof scrollDOM.scrollTop === "number" ? scrollDOM.scrollTop : 0,
+          left: typeof scrollDOM.scrollLeft === "number" ? scrollDOM.scrollLeft : 0
+        };
+      } catch {
+        return null;
+      }
+    };
+    const restoreScrollSnapshot = (snapshot) => {
+      if (!snapshot) return;
+      const apply = () => {
+        try {
+          const scrollDOM = ed?.getView?.()?.scrollDOM;
+          if (!scrollDOM) return;
+          scrollDOM.scrollTop = Math.max(0, snapshot.top || 0);
+          scrollDOM.scrollLeft = Math.max(0, snapshot.left || 0);
+        } catch {}
+      };
+      apply();
+      try { requestAnimationFrame(apply); } catch {}
+    };
 
     // 1. 获取当前光标位置
     const cursor = ed.getCursor();
@@ -415,16 +586,20 @@ export async function activate(ctx) {
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
 
     // 3. 插入 assistant 块（用于承载输出）
+    const beforeInsertScroll = readScrollSnapshot();
     const { anchor, insertLine } = insertAssistantBlock(ed, {
       sessionId: sid,
       state: window.zion.state,
       cursor
     });
+    restoreScrollSnapshot(beforeInsertScroll);
 
     // 4. 状态 & 事件
     const runId = "run_" + Math.random().toString(36).slice(2);
     runtime.beginRun(sid, runId);
-    window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId });
+    setRunState(sid, { aborted: false, model: runModel });
+    try { window.zion?.state?.set?.(`chat.followLatest.${sid}`, true); } catch {}
+    window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId, model: runModel });
 
     // 工具调用收集（多步链式调用在每一步内局部收集）
     let aborted = false;
@@ -468,9 +643,9 @@ export async function activate(ctx) {
           // 触底才自动滚动（避免用户上拉时被抢滚）
           const scroller = ed?.getView?.()?.scrollDOM || document.querySelector(".cm-scroller");
           if (scroller) {
-            const atBottom = (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) < 8;
-            if (atBottom) {
-              scroller.scrollTop = scroller.scrollHeight;
+            const followLatest = window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
+            if (followLatest) {
+              ensureAssistantLatestVisible(ed, { startLineHint: insertLine, sessionId: sid });
             }
           }
         } catch (e) {
@@ -501,19 +676,19 @@ export async function activate(ctx) {
     // 在最终阶段追加换行并清理（先 flush 剩余缓冲）
     const finalize = () => {
       try { tokenBuffer.flush(); } catch {}
+      let autoInsert = window.zion?.state?.get('chat.autoInsertUserPrompt');
+      if (autoInsert === undefined) {
+        autoInsert = true;
+        try { window.zion?.state?.set('chat.autoInsertUserPrompt', true); } catch {}
+      }
+      let autoFocus = window.zion?.state?.get('chat.autoFocusUserPrompt');
+      if (autoFocus === undefined) {
+        autoFocus = true;
+        try { window.zion?.state?.set('chat.autoFocusUserPrompt', true); } catch {}
+      }
       const editorShowingSession = isEditorShowingSession(ed, sid);
       if (editorShowingSession) {
         try {
-          let autoInsert = window.zion?.state?.get('chat.autoInsertUserPrompt');
-          if (autoInsert === undefined) {
-            autoInsert = true;
-            try { window.zion?.state?.set('chat.autoInsertUserPrompt', true); } catch {}
-          }
-          let autoFocus = window.zion?.state?.get('chat.autoFocusUserPrompt');
-          if (autoFocus === undefined) {
-            autoFocus = true;
-            try { window.zion?.state?.set('chat.autoFocusUserPrompt', true); } catch {}
-          }
           finalizeAssistantBlock(ed, {
             anchor,
             startLineHint: insertLine,
@@ -522,7 +697,16 @@ export async function activate(ctx) {
           });
         } catch {}
       } else {
-        try { window.zion.commands.executeCommand("zion.sessions.appendAssistantToken", { id: sid, token: "\n", runId }); } catch {}
+        try {
+          const currentDoc = String(window.zion.commands.executeCommand("zion.sessions.getDoc", sid) || "");
+          const finalized = ensureTrailingUserPromptInDocText(currentDoc, {
+            startLineHint: insertLine,
+            autoInsertUserPrompt: !!autoInsert
+          });
+          if (finalized.text !== currentDoc) {
+            window.zion.commands.executeCommand("zion.sessions.setDoc", { id: sid, text: finalized.text });
+          }
+        } catch {}
       }
       tokenBuffer.stop();
       runtime.markAwaiting(sid);
@@ -542,6 +726,7 @@ export async function activate(ctx) {
       const streamResult = await runStream({
         messages: msgs,
         tools,
+        activeModel: runModel,
         onToken: appendToken,
         onToolCall: (tc) => {
           if (aborted || getRunState(sid)?.aborted) return;
@@ -628,7 +813,7 @@ export async function activate(ctx) {
       // 根据“发起会话位置（光标）上方”的内容，按编辑器顺序把历史工具调用插入到对应的 assistant 消息之后
       if (window.zion?.state?.get("chat.includeToolHistory") || window.zion?.state?.get("chat.includeThinkingHistory")) {
         try {
-          const active = window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+          const active = runModel;
           let preservedThinking = false;
           try {
             const prov = window.zion?.models?.getProvider?.(active?.providerId);
@@ -842,7 +1027,7 @@ export async function activate(ctx) {
 
         // 若本步产生了工具调用与结果，则构造下一步消息继续
         if (step.calls.length > 0) {
-          const active = window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+          const active = runModel;
           const mode = normalizeToolCallsReasoningContentMode(window.zion?.state?.get?.("chat.toolCallsReasoningContentMode"));
           const forceReasoning = shouldForceReasoningContentWithToolCalls({ mode, modelId: active?.modelId, modelName: active?.modelId });
 
@@ -911,6 +1096,15 @@ export async function activate(ctx) {
     } catch {}
     return next;
   };
+  const setStoredStateBool = (key, lsKey, value, label = key) => {
+    const next = !!value;
+    try { localStorage.setItem(lsKey, next ? "1" : "0"); } catch {}
+    try { window.zion?.state?.set?.(key, next); } catch {}
+    try {
+      window.zion?.notification?.show?.(`${label}${next ? "已开启" : "已关闭"}`, { type: "info", duration: 2500 });
+    } catch {}
+    return next;
+  };
 
   const dispToggleAutoInsert = window.zion.commands.registerCommand('chat.toggleAutoInsertUserPrompt', () => {
     toggleStateBool('chat.autoInsertUserPrompt', true);
@@ -918,7 +1112,14 @@ export async function activate(ctx) {
   const dispToggleAutoFocus = window.zion.commands.registerCommand('chat.toggleAutoFocusUserPrompt', () => {
     toggleStateBool('chat.autoFocusUserPrompt', true);
   });
-  ctx.subscriptions.push(dispToggleAutoInsert, dispToggleAutoFocus);
+  const dispSetRunFinishedSound = window.zion.commands.registerCommand("chat.setRunFinishedSoundEnabled", (value) => {
+    return setStoredStateBool(RUN_FINISHED_SOUND_STATE_KEY, RUN_FINISHED_SOUND_LS_KEY, value, "会话结束提示音");
+  });
+  const dispToggleRunFinishedSound = window.zion.commands.registerCommand("chat.toggleRunFinishedSound", () => {
+    const cur = !!window.zion?.state?.get?.(RUN_FINISHED_SOUND_STATE_KEY);
+    return window.zion.commands.executeCommand("chat.setRunFinishedSoundEnabled", !cur);
+  });
+  ctx.subscriptions.push(dispToggleAutoInsert, dispToggleAutoFocus, dispSetRunFinishedSound, dispToggleRunFinishedSound);
 
   const dSlashAutoInsert = window.zion.slash?.registerCommand?.({
     id: 'chat.toggleAutoInsertUserPrompt',
@@ -938,8 +1139,32 @@ export async function activate(ctx) {
     priority: 69,
     execute: () => window.zion.commands.executeCommand('chat.toggleAutoFocusUserPrompt')
   });
+  const dSlashRunFinishedSound = window.zion.slash?.registerCommand?.({
+    id: "chat.toggleRunFinishedSound",
+    trigger: ["endsound", "run.endsound", "toggle.endsound"],
+    title: "切换结束提示音",
+    description: "切换会话运行结束后的系统提示音",
+    category: "chat",
+    priority: 68,
+    execute: () => window.zion.commands.executeCommand("chat.toggleRunFinishedSound")
+  });
   if (dSlashAutoInsert) ctx.subscriptions.push(dSlashAutoInsert);
   if (dSlashAutoFocus) ctx.subscriptions.push(dSlashAutoFocus);
+  if (dSlashRunFinishedSound) ctx.subscriptions.push(dSlashRunFinishedSound);
+
+  try {
+    const reg = window.zion?.__editorHeaderMenuRegistry;
+    const disp = reg?.register?.({
+      id: "dev.langchain-chat.runFinishedSound.headerMenu",
+      title: "Run Finished Sound",
+      section: "Chat",
+      order: 35,
+      kind: "toggle",
+      getChecked: () => !!window.zion.state.get(RUN_FINISHED_SOUND_STATE_KEY),
+      onClick: () => window.zion.commands.executeCommand("chat.toggleRunFinishedSound")
+    });
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
 
   // 模型选择相关命令
   const dispListProviders = window.zion.commands.registerCommand("models.listProviders", () => {

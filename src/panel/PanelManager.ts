@@ -68,6 +68,113 @@ export class PanelManager {
     return this.root;
   }
 
+  snapshotState(): any {
+    return {
+      root: cloneSplitNode(this.root),
+      activePanelId: this.activePanelId,
+      activePanelHistory: [...this.activePanelHistory],
+      nextPanelNum: this.nextPanelNum,
+      nextSplitNum: this.nextSplitNum,
+      panels: this.listPanels().map((panel) => ({
+        id: panel.id,
+        tabs: panel.tabs.map((tab) => ({ ...tab })),
+        activeTabId: panel.activeTabId
+      }))
+    };
+  }
+
+  restoreState(snapshot: any): boolean {
+    try {
+      const nextRoot = cloneSplitNode(snapshot?.root);
+      const nextPanels = Array.isArray(snapshot?.panels) ? snapshot.panels : [];
+      if (!nextRoot || nextPanels.length === 0) return false;
+
+      const panelIds = new Set<string>(
+        nextPanels
+          .map((panel: any) => String(panel?.id || "").trim())
+          .filter((id: string) => !!id)
+      );
+      if (!panelIds.size) return false;
+
+      const leafIds = collectLeafPanelIds(nextRoot);
+      if (!leafIds.length) return false;
+      if (leafIds.some((id) => !panelIds.has(id))) return false;
+      if ([...panelIds].some((id) => !leafIds.includes(id))) return false;
+
+      for (const [panelId, panel] of [...this.panels.entries()]) {
+        if (panelIds.has(panelId)) continue;
+        try { panel.rootEl.remove(); } catch {}
+        this.panels.delete(panelId);
+      }
+
+      const createdPanelIds: PanelId[] = [];
+      for (const id of panelIds.values()) {
+        if (this.panels.has(id)) continue;
+        const dom = this.createPanelDom(id);
+        const created: PanelRecord = {
+          id,
+          tabs: [],
+          activeTabId: null,
+          editor: null,
+          ...dom
+        };
+        this.registerPanel(created);
+        createdPanelIds.push(id);
+      }
+
+      for (const panelState of nextPanels) {
+        const panelId = String(panelState?.id || "").trim();
+        const panel = this.panels.get(panelId);
+        if (!panel) continue;
+        panel.tabs = Array.isArray(panelState?.tabs)
+          ? panelState.tabs
+              .map((tab: any) => ({
+                id: String(tab?.id || "").trim(),
+                title: String(tab?.title || tab?.id || "").trim(),
+                isDirty: !!tab?.isDirty
+              }))
+              .filter((tab: any) => !!tab.id)
+          : [];
+        const requestedActiveId = typeof panelState?.activeTabId === "string" ? panelState.activeTabId : null;
+        panel.activeTabId = requestedActiveId && panel.tabs.some((tab) => tab.id === requestedActiveId)
+          ? requestedActiveId
+          : (panel.tabs[0]?.id || null);
+      }
+
+      this.root = nextRoot;
+      const requestedActivePanelId =
+        typeof snapshot?.activePanelId === "string" && panelIds.has(snapshot.activePanelId)
+          ? snapshot.activePanelId
+          : null;
+      this.activePanelHistory = Array.isArray(snapshot?.activePanelHistory)
+        ? snapshot.activePanelHistory.filter((id: any): id is string => typeof id === "string" && panelIds.has(id))
+        : [];
+      this.activePanelId = requestedActivePanelId || this.findFirstLeafPanelId(this.root);
+      if (this.activePanelId) this.noteActivePanel(this.activePanelId);
+      this.nextPanelNum = Math.max(
+        typeof snapshot?.nextPanelNum === "number" && Number.isFinite(snapshot.nextPanelNum) ? snapshot.nextPanelNum : 1,
+        computeNextSequence(Array.from(panelIds), /^panel-(\d+)$/)
+      );
+      this.nextSplitNum = Math.max(
+        typeof snapshot?.nextSplitNum === "number" && Number.isFinite(snapshot.nextSplitNum) ? snapshot.nextSplitNum : 1,
+        computeNextSequence(collectSplitIds(this.root), /^split-(\d+)$/)
+      );
+
+      this.render();
+      for (const panelId of createdPanelIds) {
+        this.fire("panel/created", {
+          panelId,
+          sourcePanelId: null,
+          seedFromSource: false
+        });
+      }
+      this.fire("panel/focusChanged", { panelId: this.activePanelId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   setPanelEditor(panelId: PanelId, editor: EditorProxy | null): void {
     const panel = this.panels.get(panelId);
     if (!panel) return;
@@ -97,6 +204,48 @@ export class PanelManager {
   splitPanel(panelId = this.activePanelId, direction: SplitDirection = "horizontal"): PanelRecord | null {
     const side: SplitSide = direction === "horizontal" ? "right" : "down";
     return this.splitPanelAt(panelId, side);
+  }
+
+  findPanelAtSide(panelId = this.activePanelId, side: SplitSide = "right"): PanelId | null {
+    if (!panelId || !this.root) return null;
+    const path = this.findPathToPanel(this.root, panelId);
+    if (!path.length) return null;
+    if (side === "right") {
+      for (let i = path.length - 1; i >= 0; i--) {
+        const step = path[i];
+        if (step.node.type !== "split" || step.node.direction !== "horizontal") continue;
+        if (step.branch !== "first") continue;
+        return this.findFirstLeafPanelId(step.node.second);
+      }
+      return null;
+    }
+    if (side === "left") {
+      for (let i = path.length - 1; i >= 0; i--) {
+        const step = path[i];
+        if (step.node.type !== "split" || step.node.direction !== "horizontal") continue;
+        if (step.branch !== "second") continue;
+        return this.findLastLeafPanelId(step.node.first);
+      }
+      return null;
+    }
+    if (side === "down") {
+      for (let i = path.length - 1; i >= 0; i--) {
+        const step = path[i];
+        if (step.node.type !== "split" || step.node.direction !== "vertical") continue;
+        if (step.branch !== "first") continue;
+        return this.findFirstLeafPanelId(step.node.second);
+      }
+      return null;
+    }
+    if (side === "up") {
+      for (let i = path.length - 1; i >= 0; i--) {
+        const step = path[i];
+        if (step.node.type !== "split" || step.node.direction !== "vertical") continue;
+        if (step.branch !== "second") continue;
+        return this.findLastLeafPanelId(step.node.first);
+      }
+    }
+    return null;
   }
 
   splitPanelAt(
@@ -188,17 +337,39 @@ export class PanelManager {
   }
 
   private render(): void {
+    const scrollSnapshots = new Map<PanelId, { top: number; left: number }>();
+    for (const [panelId, panel] of this.panels.entries()) {
+      try {
+        const view = panel.editor?.getView?.();
+        const scrollDOM = view?.scrollDOM;
+        if (!scrollDOM) continue;
+        scrollSnapshots.set(panelId, {
+          top: typeof scrollDOM.scrollTop === "number" ? scrollDOM.scrollTop : 0,
+          left: typeof scrollDOM.scrollLeft === "number" ? scrollDOM.scrollLeft : 0
+        });
+      } catch {}
+    }
     renderSplitLayout(
       this.host,
       this.root,
       (panelId) => this.panels.get(panelId) || null,
       (splitId, ratio) => this.setSplitRatio(splitId, ratio)
     );
+    for (const [panelId, pos] of scrollSnapshots.entries()) {
+      try {
+        const view = this.panels.get(panelId)?.editor?.getView?.();
+        const scrollDOM = view?.scrollDOM;
+        if (!scrollDOM) continue;
+        scrollDOM.scrollTop = Math.max(0, pos.top || 0);
+        scrollDOM.scrollLeft = Math.max(0, pos.left || 0);
+      } catch {}
+    }
     this.applyActiveClasses();
     this.fire("panel/layoutChanged", { root: this.root, activePanelId: this.activePanelId });
   }
 
   private applyActiveClasses(): void {
+    this.host.classList.toggle("has-multiple-panels", this.panels.size > 1);
     for (const panel of this.panels.values()) {
       panel.rootEl.classList.toggle("is-active", panel.id === this.activePanelId);
     }
@@ -266,6 +437,26 @@ export class PanelManager {
     return this.findFirstLeafPanelId(node.first) || this.findFirstLeafPanelId(node.second);
   }
 
+  private findLastLeafPanelId(node: SplitNode | null): PanelId | null {
+    if (!node) return null;
+    if (node.type === "leaf") return node.panelId;
+    return this.findLastLeafPanelId(node.second) || this.findLastLeafPanelId(node.first);
+  }
+
+  private findPathToPanel(
+    node: SplitNode | null,
+    targetPanelId: PanelId,
+    acc: Array<{ node: SplitNode; branch: "first" | "second" | null }> = []
+  ): Array<{ node: SplitNode; branch: "first" | "second" | null }> {
+    if (!node) return [];
+    if (node.type === "leaf") {
+      return node.panelId === targetPanelId ? acc.concat({ node, branch: null }) : [];
+    }
+    const left = this.findPathToPanel(node.first, targetPanelId, acc.concat({ node, branch: "first" }));
+    if (left.length) return left;
+    return this.findPathToPanel(node.second, targetPanelId, acc.concat({ node, branch: "second" }));
+  }
+
   private findSplitNode(node: SplitNode | null, splitId: string): SplitNode | null {
     if (!node) return null;
     if (node.type === "split" && node.id === splitId) return node;
@@ -278,6 +469,48 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): 
   const node = document.createElement(tag);
   if (className) node.className = className;
   return node;
+}
+
+function cloneSplitNode(node: SplitNode | null): SplitNode | null {
+  if (!node) return null;
+  if (node.type === "leaf") {
+    return { ...node };
+  }
+  return {
+    ...node,
+    first: cloneSplitNode(node.first)!,
+    second: cloneSplitNode(node.second)!
+  };
+}
+
+function collectLeafPanelIds(node: SplitNode | null, acc: PanelId[] = []): PanelId[] {
+  if (!node) return acc;
+  if (node.type === "leaf") {
+    acc.push(node.panelId);
+    return acc;
+  }
+  collectLeafPanelIds(node.first, acc);
+  collectLeafPanelIds(node.second, acc);
+  return acc;
+}
+
+function collectSplitIds(node: SplitNode | null, acc: string[] = []): string[] {
+  if (!node || node.type === "leaf") return acc;
+  acc.push(node.id);
+  collectSplitIds(node.first, acc);
+  collectSplitIds(node.second, acc);
+  return acc;
+}
+
+function computeNextSequence(ids: string[], re: RegExp): number {
+  let max = 0;
+  for (const id of ids) {
+    const m = String(id || "").match(re);
+    if (!m) continue;
+    const num = Number(m[1]);
+    if (Number.isFinite(num)) max = Math.max(max, num + 1);
+  }
+  return Math.max(1, max);
 }
 
 export function createPanelDomShell(panelId: PanelId): PanelDomRefs {

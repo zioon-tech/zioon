@@ -450,10 +450,13 @@ export async function runStream({
   getController,
   onToolCall,
   runId,
-  sessionId
+  sessionId,
+  panelId,
+  silentReasoning = false,
+  activeModel = null
 }) {
   // 读取当前激活的模型（默认 deepseek:deepseek-chat）
-  const active = window.zion.state.get("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+  const active = activeModel || window.zion.state.get("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
   const provider = window.zion.models.getProvider(active.providerId);
   if (!provider) throw new Error(`Provider not found: ${active.providerId}`);
   const cfg = await provider.resolve(active.modelId);
@@ -724,7 +727,7 @@ export async function runStream({
           if (parseResult.done) {
             try {
               if (emittedReasoningStart) {
-                window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId });
+                window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId, panelId, silentReasoning });
               }
             } catch {}
             onEnd();
@@ -733,12 +736,12 @@ export async function runStream({
 
           if (parseResult.thinkingStart) {
             emittedReasoningStart = true;
-            try { window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId }); } catch {}
+            try { window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId, panelId, silentReasoning }); } catch {}
           }
 
           if (parseResult.thinkingToken) {
             reasoningBuf += parseResult.thinkingToken;
-            try { window.zion?.events?.emit("chat/reasoningToken", { runId, token: parseResult.thinkingToken, sessionId }); } catch {}
+            try { window.zion?.events?.emit("chat/reasoningToken", { runId, token: parseResult.thinkingToken, sessionId, panelId, silentReasoning }); } catch {}
           }
 
           if (parseResult.contentToken) {
@@ -755,7 +758,7 @@ export async function runStream({
       }
       try {
         if (emittedReasoningStart) {
-          window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId });
+          window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId, panelId, silentReasoning });
         }
       } catch {}
       onEnd();
@@ -845,9 +848,9 @@ export async function runStream({
       if (reasoningContent) {
         reasoningBuf += String(reasoningContent);
         try {
-          window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId });
-          window.zion?.events?.emit("chat/reasoningToken", { runId, token: reasoningContent, sessionId });
-          window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId });
+          window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId, panelId, silentReasoning });
+          window.zion?.events?.emit("chat/reasoningToken", { runId, token: reasoningContent, sessionId, panelId, silentReasoning });
+          window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId, panelId, silentReasoning });
         } catch {}
       }
 

@@ -98,10 +98,15 @@ export function initWorkbench(host: HTMLElement): {
 
   const updateOverlayMask = () => {
     const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
+    const isCompactOverlay = isMobile || responsiveRuntime.getCurrentMode() === "medium";
     const hasSide = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0;
     const hasAux = auxiliaryBarRuntime.isVisible() && auxiliaryBarRuntime.getViews().length > 0;
     const hasBottom = bottomPanelRuntime.isVisible() && bottomPanelRuntime.getViews().length > 0;
-    overlayMaskEl.style.display = isMobile && (hasSide || hasAux || hasBottom) ? "block" : "none";
+    const hasOverlay =
+      (isMobile && hasSide) ||
+      (isCompactOverlay && hasAux) ||
+      (isCompactOverlay && hasBottom);
+    overlayMaskEl.style.display = hasOverlay ? "block" : "none";
   };
 
   overlayMaskEl.onmousedown = (e) => {
@@ -119,6 +124,7 @@ export function initWorkbench(host: HTMLElement): {
 
   const applyRowHeights = () => {
     const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
+    const isCompactOverlay = isMobile || responsiveRuntime.getCurrentMode() === "medium";
     const visible = bottomPanelRuntime.isVisible();
     const hasViews = bottomPanelRuntime.getViews().length > 0;
     const maximized = bottomPanelRuntime.isMaximized();
@@ -130,7 +136,7 @@ export function initWorkbench(host: HTMLElement): {
         out = Math.max(160, Math.round(rh - 160));
       } catch {}
     }
-    if (isMobile) {
+    if (isCompactOverlay) {
       root.style.setProperty("--bottompanel-h", `0px`);
       root.style.setProperty("--bottompanel-overlay-h", `${Math.max(0, out)}px`);
       updateOverlayMask();
@@ -143,6 +149,7 @@ export function initWorkbench(host: HTMLElement): {
 
   const applyColumnWidths = () => {
     const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
+    const isCompactOverlay = isMobile || responsiveRuntime.getCurrentMode() === "medium";
     const aVisible = activityBarRuntime.isVisible();
     const sVisible = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0;
     const xVisible = auxiliaryBarRuntime.isVisible() && auxiliaryBarRuntime.getViews().length > 0;
@@ -159,7 +166,8 @@ export function initWorkbench(host: HTMLElement): {
     } else {
       root.style.setProperty("--activitybar-w", aVisible ? "48px" : "0px");
       root.style.setProperty("--sidebar-w", sVisible ? `${w}px` : "0px");
-      root.style.setProperty("--auxbar-w", xVisible ? `${xw}px` : "0px");
+      root.style.setProperty("--auxbar-w", !isCompactOverlay && xVisible ? `${xw}px` : "0px");
+      root.style.setProperty("--auxbar-overlay-w", `${xw}px`);
       activityBarEl.style.visibility = aVisible ? "visible" : "hidden";
       activityBarEl.style.pointerEvents = aVisible ? "auto" : "none";
     }
@@ -168,6 +176,54 @@ export function initWorkbench(host: HTMLElement): {
     auxiliaryBarEl.style.visibility = xVisible ? "visible" : "hidden";
     auxiliaryBarEl.style.pointerEvents = xVisible ? "auto" : "none";
     updateOverlayMask();
+  };
+
+  const getOverlayReservedBottom = () => {
+    try {
+      const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
+      if (!isMobile) return 0;
+      const rect = mobileBarEl.getBoundingClientRect();
+      return Math.max(0, Math.round(rect.height || 0));
+    } catch {
+      return 0;
+    }
+  };
+
+  const getOverlayBottomHeightPx = () => {
+    const requested = bottomPanelRuntime.getHeight();
+    const maximized = bottomPanelRuntime.isMaximized();
+    try {
+      const rect = root.getBoundingClientRect();
+      const reserved = getOverlayReservedBottom();
+      const maxAllowed = Math.max(160, Math.round(rect.height - reserved - 24));
+      const desired = maximized ? Math.max(160, Math.round(rect.height - reserved - 32)) : requested;
+      return Math.max(120, Math.min(maxAllowed, Math.round(desired)));
+    } catch {
+      return Math.max(120, Math.round(requested));
+    }
+  };
+
+  const getOverlayAuxWidthPx = (isMobile: boolean) => {
+    const requested = auxiliaryBarRuntime.getWidth();
+    try {
+      const rect = root.getBoundingClientRect();
+      const maxAllowed = isMobile
+        ? Math.round(rect.width * 0.92)
+        : Math.round(Math.min(420, rect.width * 0.7));
+      return Math.max(240, Math.min(maxAllowed, Math.round(requested)));
+    } catch {
+      return Math.max(240, Math.round(requested));
+    }
+  };
+
+  const getMediumOverlayLeftPx = () => {
+    try {
+      const activityW = activityBarRuntime.isVisible() ? 48 : 0;
+      const sideW = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0 ? sideBarRuntime.getWidth() : 0;
+      return Math.max(0, activityW + sideW);
+    } catch {
+      return 0;
+    }
   };
 
   const renderMobileBar = () => {
@@ -453,6 +509,8 @@ export function initWorkbench(host: HTMLElement): {
   const renderAuxiliaryBar = () => {
     applyRowHeights();
     applyColumnWidths();
+    const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
+    const isCompactOverlay = isMobile || responsiveRuntime.getCurrentMode() === "medium";
     const views = auxiliaryBarRuntime.getViews();
     try {
       const alive = new Set(views.map(v => v.id));
@@ -471,6 +529,27 @@ export function initWorkbench(host: HTMLElement): {
       }
     } catch {}
     const visible = auxiliaryBarRuntime.isVisible() && views.length > 0;
+    if (isCompactOverlay) {
+      auxiliaryBarEl.style.position = "absolute";
+      auxiliaryBarEl.style.left = "";
+      auxiliaryBarEl.style.right = "0";
+      auxiliaryBarEl.style.top = "0";
+      auxiliaryBarEl.style.bottom = `${getOverlayReservedBottom()}px`;
+      auxiliaryBarEl.style.width = `${getOverlayAuxWidthPx(isMobile)}px`;
+      auxiliaryBarEl.style.maxWidth = "";
+      auxiliaryBarEl.style.zIndex = "70";
+      auxiliaryBarEl.style.boxShadow = "0 12px 40px rgba(0, 0, 0, 0.35)";
+    } else {
+      auxiliaryBarEl.style.position = "relative";
+      auxiliaryBarEl.style.left = "";
+      auxiliaryBarEl.style.right = "";
+      auxiliaryBarEl.style.top = "";
+      auxiliaryBarEl.style.bottom = "";
+      auxiliaryBarEl.style.width = "";
+      auxiliaryBarEl.style.maxWidth = "";
+      auxiliaryBarEl.style.zIndex = "";
+      auxiliaryBarEl.style.boxShadow = "";
+    }
     if (!visible) {
       void auxUnmountView(auxMountedViewId);
       auxMountedViewId = null;
@@ -698,6 +777,8 @@ export function initWorkbench(host: HTMLElement): {
   const renderBottomPanel = () => {
     applyRowHeights();
     applyColumnWidths();
+    const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
+    const isCompactOverlay = isMobile || responsiveRuntime.getCurrentMode() === "medium";
     const views = bottomPanelRuntime.getViews();
     try {
       const alive = new Set(views.map(v => v.id));
@@ -716,6 +797,29 @@ export function initWorkbench(host: HTMLElement): {
       }
     } catch {}
     const visible = bottomPanelRuntime.isVisible() && views.length > 0;
+    if (isCompactOverlay) {
+      bottomPanelEl.style.position = "absolute";
+      bottomPanelEl.style.left = isMobile
+        ? "0"
+        : `${getMediumOverlayLeftPx()}px`;
+      bottomPanelEl.style.right = "0";
+      bottomPanelEl.style.top = "";
+      bottomPanelEl.style.bottom = `${getOverlayReservedBottom()}px`;
+      bottomPanelEl.style.height = `${visible ? getOverlayBottomHeightPx() : 0}px`;
+      bottomPanelEl.style.maxHeight = `${getOverlayBottomHeightPx()}px`;
+      bottomPanelEl.style.zIndex = "70";
+      bottomPanelEl.style.boxShadow = "0 12px 40px rgba(0, 0, 0, 0.35)";
+    } else {
+      bottomPanelEl.style.position = "relative";
+      bottomPanelEl.style.left = "";
+      bottomPanelEl.style.right = "";
+      bottomPanelEl.style.top = "";
+      bottomPanelEl.style.bottom = "";
+      bottomPanelEl.style.height = "";
+      bottomPanelEl.style.maxHeight = "";
+      bottomPanelEl.style.zIndex = "";
+      bottomPanelEl.style.boxShadow = "";
+    }
     bottomPanelEl.style.display = visible ? "flex" : "none";
     if (!visible) {
       void bottomUnmountView(bottomMountedViewId);

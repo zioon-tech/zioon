@@ -14,6 +14,45 @@ const updateText = StateEffect.define();    // { id, text, replace? }
 const removeItem = StateEffect.define();    // { id }
 const clearAll = StateEffect.define();
 
+function scheduleRevealThinkingContent(view, { id, pos } = {}) {
+  try {
+    const sid = window?.zion?.state?.get?.("sessions.currentId") || null;
+    if (!sid) return;
+    if (window?.zion?.state?.get?.(`chat.followLatest.${sid}`) === false) return;
+    requestAnimationFrame(() => {
+      try {
+        const scrollDOM = view?.scrollDOM;
+        if (!scrollDOM) return;
+        const selectorId = String(id || "").replace(/"/g, '\\"');
+        const thinkingEl = selectorId
+          ? view.dom.querySelector(`.zion-thinking-inline[data-thinking-id="${selectorId}"], .zion-thinking-card[data-thinking-card-id="${selectorId}"]`)
+          : null;
+        const viewportRect = scrollDOM.getBoundingClientRect();
+        const margin = 24;
+        let nextScrollTop = null;
+        if (thinkingEl) {
+          const rect = thinkingEl.getBoundingClientRect();
+          if (rect.bottom > viewportRect.bottom - margin) {
+            nextScrollTop = scrollDOM.scrollTop + (rect.bottom - (viewportRect.bottom - margin));
+          } else if (rect.top < viewportRect.top + margin) {
+            nextScrollTop = Math.max(0, scrollDOM.scrollTop - ((viewportRect.top + margin) - rect.top));
+          }
+        } else if (typeof pos === "number") {
+          const coords = view.coordsAtPos(Math.max(0, pos), 1);
+          if (coords?.bottom > viewportRect.bottom - margin) {
+            nextScrollTop = scrollDOM.scrollTop + (coords.bottom - (viewportRect.bottom - margin));
+          } else if (coords?.top < viewportRect.top + margin) {
+            nextScrollTop = Math.max(0, scrollDOM.scrollTop - ((viewportRect.top + margin) - coords.top));
+          }
+        }
+        if (nextScrollTop == null) return;
+        window?.zion?.state?.set?.(`chat.followSuppressUntil.${sid}`, Date.now() + 80);
+        scrollDOM.scrollTop = Math.max(0, nextScrollTop);
+      } catch {}
+    });
+  } catch {}
+}
+
 function fmt(v, max = 1200) {
   let s = typeof v === "string" ? v : JSON.stringify(v, null, 2);
   if (s.length > max) s = s.slice(0, max) + "\n…";
@@ -301,6 +340,7 @@ export function installThinkingCards() {
       this.timer = null;
       this.selRaf = 0;
 
+      try { this.panelId = this.view.dom.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null; } catch { this.panelId = null; }
       try { this.sessionId = window.zion?.state?.get("sessions.currentId") || null; } catch {}
 
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRunStarted));
@@ -310,22 +350,23 @@ export function installThinkingCards() {
       this.disps.push(window.zion.events.on("thinking/remove", this.onRemove));
       this.disps.push(window.zion.events.on("thinking/restore", this.onRestore));
       this.disps.push(window.zion.events.on("thinking/clear", this.onClear));
-      // 清理与会话切换联动
       this.disps.push(window.zion.state.onDidChange("sessions.currentId", this.onSessionChanged));
       // 初始快照
       this.snapshot();
 
       Promise.resolve().then(() => {
         try {
-          const sid = window.zion?.state?.get("sessions.currentId");
+          const sid = this.sessionId;
           const pending = sid ? window.zion?.state?.get(`sessions.pendingRestore.thinking.${sid}`) : null;
+          const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+          const list = Array.isArray(ann.thinking) ? ann.thinking : [];
           if (Array.isArray(pending) && pending.length) {
+            if (sid && !list.length) {
+              try { window.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, thinking: pending }); } catch {}
+            }
             this.onRestore({ items: pending });
             return;
           }
-
-          const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
-          const list = Array.isArray(ann.thinking) ? ann.thinking : [];
           if (!list.length) return;
           // 基于 StateField 中的已挂载 id 判断是否需要恢复
           let mountedIds = [];
@@ -374,7 +415,7 @@ export function installThinkingCards() {
     // 检查并恢复丢失的 widgets
     checkAndRestoreWidgets = () => {
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = this.sessionId;
         if (!sid) return;
         const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
         const list = Array.isArray(ann.thinking) ? ann.thinking : [];
@@ -436,7 +477,7 @@ export function installThinkingCards() {
     };
     snapshot = () => {
       try {
-        const id = this.sessionId || window.zion?.state?.get("sessions.currentId");
+        const id = this.sessionId;
         if (!id) return;
         const fieldVal = this.view.state.field(thinkingField);
         const arr = [];
@@ -513,8 +554,10 @@ export function installThinkingCards() {
       }
     }
     onRunStarted = (payload) => {
-      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
-      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
+      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
+      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
       try {
         const sid = this.sessionId;
         const runId = payload?.runId;
@@ -542,10 +585,13 @@ export function installThinkingCards() {
       }
     }
     onReasoningStart = (payload) => {
+      if (payload?.silentReasoning) return;
       const visible = !!window.zion.state.get("chat.thinkingVisible");
       if (!visible) return;
-      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
-      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
+      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
+      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
       this.suspendSnapshot = false;
 
       const runId = payload?.runId || Math.random().toString(36).slice(2);
@@ -554,6 +600,35 @@ export function installThinkingCards() {
       if (sid) this.setSeq(sid, runId, seq);
       const id = `thinking:${runId}:${seq}`;
       this.currentId = id;
+
+      const isMirrorPanel = !!(payload?.panelId && payload.panelId !== this.panelId);
+      if (isMirrorPanel) {
+        try {
+          const fieldVal = this.view.state.field(thinkingField);
+          if (fieldVal?.items?.has?.(id)) return;
+          const doc = this.view.state.doc;
+          const docString = doc.toString();
+          const occupied = new Set();
+          try { fieldVal?.items?.forEach?.((it) => occupied.add(`${it.from}:${it.to}`)); } catch {}
+          const anchors = [];
+          const regex = /思考/g;
+          let match;
+          while ((match = regex.exec(docString)) !== null) {
+            anchors.push({ from: match.index, to: match.index + "思考".length });
+          }
+          for (let i = anchors.length - 1; i >= 0; i--) {
+            const anchor = anchors[i];
+            if (occupied.has(`${anchor.from}:${anchor.to}`)) continue;
+            this.view.dispatch({ effects: [addInline.of({ from: anchor.from, to: anchor.to, id })] });
+            this.snapshot();
+            return;
+          }
+        } catch {}
+        setTimeout(() => {
+          try { this.ensureInlineForThinkingId(sid, id) || this.checkAndRestoreWidgets(); } catch {}
+        }, 0);
+        return;
+      }
 
       this.ensureAssistantHead();
 
@@ -570,13 +645,17 @@ export function installThinkingCards() {
         changes: { from: pos, insert: text },
         effects: [addInline.of({ from: start, to: end, id })]
       });
+      scheduleRevealThinkingContent(this.view, { id, pos: end });
       this.snapshot();
     };
     onReasoningToken = (payload) => {
+      if (payload?.silentReasoning) return;
       const visible = !!window.zion.state.get("chat.thinkingVisible");
       if (!visible) return;
-      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
-      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
+      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
+      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
 
       const runId = payload?.runId;
       const sid = this.sessionId;
@@ -602,8 +681,11 @@ export function installThinkingCards() {
       }
     };
     onReasoningEnd = (payload) => {
-      if (payload?.sessionId && payload.sessionId !== this.sessionId) return;
-      if (!this.sessionId && payload?.sessionId) this.sessionId = payload.sessionId;
+      if (payload?.silentReasoning) return;
+      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
+      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       this.flush();
     };
@@ -619,36 +701,39 @@ export function installThinkingCards() {
       this.snapshot();
     };
     onSessionChanged = (nv) => {
-      this.suspendSnapshot = true;
-      try {
-        if (typeof nv === "string") this.sessionId = nv || null;
-        else this.sessionId = window.zion?.state?.get("sessions.currentId") || null;
-      } catch {}
-      // 在会话切换时清空当前思考卡片，避免跨会话污染
-      try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
-      // 重置状态与缓冲
-      this.currentId = null;
-      this.buffer = "";
-      if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-
-      Promise.resolve().then(() => {
-        this.suspendSnapshot = false;
-      });
+      const panelMgr = window.zion?.panelManager;
+      const mySessionId = panelMgr?.getPanel(this.panelId)?.activeTabId || null;
+      if (mySessionId && mySessionId !== this.sessionId) {
+        this.sessionId = mySessionId;
+        this.suspendSnapshot = true;
+        try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
+        this.currentId = null;
+        this.buffer = "";
+        if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+        Promise.resolve().then(() => { this.suspendSnapshot = false; });
+      } else if (!mySessionId && this.sessionId) {
+        this.sessionId = null;
+        try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
+        this.currentId = null;
+        this.buffer = "";
+        if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+      }
     };
     onRestore = (payload) => {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
+      if (payload?.panelId && payload.panelId !== this.panelId) return;
 
       this.suspendSnapshot = false;
 
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = this.sessionId;
         if (sid) window.zion?.state?.set(`sessions.pendingRestore.thinking.${sid}`, null);
       } catch {}
 
       let deletedSet = new Set();
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = this.sessionId;
         const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
         const del = Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [];
         deletedSet = new Set(del);
@@ -718,9 +803,20 @@ export function installThinkingCards() {
       }
 
       if (batchedEffects.length) this.view.dispatch({ effects: batchedEffects });
+      if (batchedEffects.length) {
+        const lastAddInline = [...batchedEffects].reverse().find((eff) => eff?.is?.(addInline));
+        const lastPayload = lastAddInline?.value || null;
+        if (lastPayload?.id) {
+          scheduleRevealThinkingContent(this.view, {
+            id: lastPayload.id,
+            pos: lastPayload.to
+          });
+        }
+      }
       if (batchedToggles.length) {
         const eff2 = batchedToggles.map(id => toggleInline.of({ id }));
         this.view.dispatch({ effects: eff2 });
+        scheduleRevealThinkingContent(this.view, { id: batchedToggles[batchedToggles.length - 1] });
       }
 
       // Phase 3: 兜底
@@ -739,6 +835,7 @@ export function installThinkingCards() {
           changes: { from: pos, insert: text },
           effects: [addInline.of({ from: start, to: end, id: it.id })]
         });
+        scheduleRevealThinkingContent(this.view, { id: it.id, pos: end });
         
         if (it?.text) {
           this.view.dispatch({ effects: [updateText.of({ id: it.id, text: it.text, replace: true })] });
@@ -751,6 +848,7 @@ export function installThinkingCards() {
         it.to = end;
         processedIds.add(it.id);
       }
+
 
       this.snapshot();
     };

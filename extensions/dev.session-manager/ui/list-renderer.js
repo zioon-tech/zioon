@@ -626,6 +626,7 @@ export function createSessionsListRendererFactory(deps) {
               srow.style.whiteSpace = "nowrap";
               srow.style.paddingLeft = `${(depth + 1) * 12}px`;
               srow.dataset.depth = String(depth + 1);
+              srow.dataset.sessionId = String(ch.id || "");
               visibleOrder.push({ id: ch.id, type: "session" });
 
               // drag session
@@ -924,4 +925,3 @@ export function createSessionsListRendererFactory(deps) {
     return render;
   };
 }
-

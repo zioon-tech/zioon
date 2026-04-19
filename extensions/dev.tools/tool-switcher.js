@@ -13,7 +13,7 @@ export function installToolSwitcher() {
     position: "fixed",
     inset: "0",
     background: "transparent",
-    zIndex: "1000",
+    zIndex: "100001",
     display: "none"
   });
 
@@ -319,8 +319,24 @@ export function installToolSwitcher() {
     if (e.target === root) close();
   });
 
+  function positionPanel() {
+    const btns = document.querySelectorAll("#statusbar .status-item");
+    let btn = null;
+    for (const b of btns) {
+      if (b.textContent?.includes("Tools:")) { btn = b; break; }
+    }
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    panel.style.top = `${rect.top - 8 - 400}px`;
+    panel.style.right = `${window.innerWidth - rect.right}px`;
+    if (parseFloat(panel.style.top) < 8) {
+      panel.style.top = `${rect.bottom + 8}px`;
+    }
+  }
+
   function open() {
     refresh();
+    positionPanel();
     root.style.display = "block";
     input.focus();
     input.select();
@@ -342,6 +358,7 @@ function createHandle(root) {
   const input = panel?.querySelector("input");
   return {
     open() {
+      input?.dispatchEvent(new Event("input"));
       root.style.display = "block";
       input?.focus();
       input?.select();

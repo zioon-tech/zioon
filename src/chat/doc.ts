@@ -31,6 +31,11 @@ type FinalizeAssistantBlockOptions = {
   autoFocusUserPrompt?: boolean;
 };
 
+type EnsureTrailingUserPromptOptions = {
+  startLineHint?: number;
+  autoInsertUserPrompt?: boolean;
+};
+
 function findAssistantHeadLine(lines: string[], startLineHint = 0): number {
   for (let i = Math.max(0, startLineHint); i < lines.length; i++) {
     if (ASSISTANT_ROLE_RE.test(lines[i])) return i;
@@ -49,6 +54,81 @@ function findAssistantBlockEndLine(lines: string[], assistantLine: number): numb
     endLine = i;
   }
   return endLine;
+}
+
+type TrailingUserPromptPlan =
+  | { kind: "none"; userLine: null; focusCh: null }
+  | { kind: "existing-user"; userLine: number; focusCh: number }
+  | { kind: "replace-line"; userLine: number; focusCh: number; text: string }
+  | { kind: "insert-before-line"; userLine: number; focusCh: number; text: string };
+
+function planTrailingUserPrompt(
+  lines: string[],
+  blockEndLine: number,
+  autoInsertUserPrompt: boolean
+): TrailingUserPromptPlan {
+  if (
+    blockEndLine === lines.length - 1
+    && blockEndLine >= 0
+    && !String(lines[blockEndLine] || "").trim()
+  ) {
+    return { kind: "replace-line", userLine: blockEndLine, focusCh: 5, text: "user " };
+  }
+  const targetLine = blockEndLine + 1;
+  const targetLineText = targetLine < lines.length ? String(lines[targetLine] || "") : "";
+  const userMatch = /^\s*user\s+/.exec(targetLineText);
+  if (userMatch) {
+    return { kind: "existing-user", userLine: targetLine, focusCh: userMatch[0].length };
+  }
+  if (!autoInsertUserPrompt) {
+    return { kind: "none", userLine: null, focusCh: null };
+  }
+  if (/^\s*(system|assistant|tool)\s+/.test(targetLineText)) {
+    return { kind: "insert-before-line", userLine: targetLine, focusCh: 5, text: "user " };
+  }
+  const bareBody = targetLineText.replace(/^\s+/, "");
+  if (!bareBody.trim()) {
+    return { kind: "replace-line", userLine: targetLine, focusCh: 5, text: "user " };
+  }
+  const nextText = `user ${bareBody}`;
+  return { kind: "replace-line", userLine: targetLine, focusCh: nextText.length, text: nextText };
+}
+
+export function ensureTrailingUserPromptInDocText(
+  docText: string,
+  opts: EnsureTrailingUserPromptOptions = {}
+): { text: string; userLine: number | null; changed: boolean } {
+  const lines = String(docText || "").split("\n");
+  const assistantLine = findAssistantHeadLine(lines, Math.max(0, opts.startLineHint ?? 0));
+  if (assistantLine === -1) {
+    return { text: String(docText || ""), userLine: null, changed: false };
+  }
+
+  const blockEndLine = findAssistantBlockEndLine(lines, assistantLine);
+  if (blockEndLine === -1) {
+    return { text: String(docText || ""), userLine: null, changed: false };
+  }
+
+  let changed = false;
+  const lastLineText = String(lines[blockEndLine] || "");
+  if (blockEndLine === lines.length - 1 && lastLineText.trim() !== "") {
+    lines.push("");
+    changed = true;
+  }
+
+  const plan = planTrailingUserPrompt(lines, blockEndLine, !!opts.autoInsertUserPrompt);
+  if (plan.kind === "none") {
+    return { text: lines.join("\n"), userLine: null, changed };
+  }
+  if (plan.kind === "existing-user") {
+    return { text: lines.join("\n"), userLine: plan.userLine, changed };
+  }
+  if (plan.kind === "insert-before-line") {
+    lines.splice(plan.userLine, 0, plan.text);
+    return { text: lines.join("\n"), userLine: plan.userLine, changed: true };
+  }
+  lines[plan.userLine] = plan.text;
+  return { text: lines.join("\n"), userLine: plan.userLine, changed: true };
 }
 
 function buildMessageContent(textLines: string[], images: string[]): string | ChatMessagePart[] {
@@ -82,6 +162,36 @@ function focusUserPromptNoScroll(editor: EditorProxy, line: number, ch: number):
   try { editor.setCursor?.({ line, ch }); } catch {}
   try { editor.focus?.(); } catch {}
   return true;
+}
+
+function shouldRestoreFocusToEditor(editor: EditorProxy): boolean {
+  try {
+    const active = document.activeElement as HTMLElement | null;
+    const view = editor.getView?.();
+    const editorDom = view?.dom as HTMLElement | null;
+    const panelId = (editor as any)?.panelId ? String((editor as any).panelId) : null;
+    const panelRoot = panelId
+      ? (document.querySelector(`[data-panel-id="${CSS.escape(panelId)}"]`) as HTMLElement | null)
+      : null;
+    if (!active || active === document.body || active === document.documentElement) return true;
+    if (editorDom && editorDom.contains(active)) return true;
+    if (panelRoot && panelRoot.contains(active)) return true;
+    if (
+      active.closest(".zion-bottompanel")
+      || active.closest(".zion-auxbar")
+      || active.closest(".zion-sidebar")
+      || active.closest(".xterm")
+      || active.closest(".xterm-screen")
+      || active.closest("[data-workbench-location='bottompanel']")
+      || active.closest("[data-workbench-location='auxiliary']")
+      || active.closest("[data-workbench-location='sidebar']")
+    ) {
+      return false;
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 export function parseMessages(content: string): ChatMessage[] {
@@ -246,41 +356,29 @@ export function finalizeAssistantBlock(editor: EditorProxy, opts: FinalizeAssist
   const blockEndLine = findAssistantBlockEndLine(linesNow, newAssistantLine);
   if (blockEndLine === -1) return true;
 
-  const targetLine = blockEndLine + 1;
-  const targetLineText = targetLine < linesNow.length ? linesNow[targetLine] : "";
-  const isUser = /^\s*user\s+/.test(targetLineText);
-  const isOtherRole = /^\s*(system|assistant|tool)\s+/.test(targetLineText);
-
-  if (isUser) {
-    if (opts.autoFocusUserPrompt) {
-      const m = /^\s*user\s+/.exec(targetLineText);
-      const ch = m ? m[0].length : 5;
-      focusUserPromptNoScroll(editor, targetLine, ch);
+  const plan = planTrailingUserPrompt(linesNow, blockEndLine, !!opts.autoInsertUserPrompt);
+  if (plan.kind === "existing-user") {
+    if (opts.autoFocusUserPrompt && shouldRestoreFocusToEditor(editor)) {
+      focusUserPromptNoScroll(editor, plan.userLine, plan.focusCh);
     }
     return true;
   }
-
-  if (isOtherRole || !opts.autoInsertUserPrompt) {
+  if (plan.kind === "none") {
     return true;
-  }
-
-  if (targetLine >= linesNow.length) {
-    const last = String(linesNow[blockEndLine] || "");
-    if (last.trim() !== "") {
-      try {
-        editor.replaceRange("\n", { line: blockEndLine, ch: last.length });
-      } catch {}
-    }
   }
 
   try {
-    editor.replaceRange(
-      "user ",
-      { line: targetLine, ch: 0 },
-      { line: targetLine, ch: String(linesNow[targetLine] || "").length }
-    );
-    if (opts.autoFocusUserPrompt) {
-      focusUserPromptNoScroll(editor, targetLine, 5);
+    if (plan.kind === "insert-before-line") {
+      editor.replaceRange(`${plan.text}\n`, { line: plan.userLine, ch: 0 }, { line: plan.userLine, ch: 0 });
+    } else {
+      editor.replaceRange(
+        plan.text,
+        { line: plan.userLine, ch: 0 },
+        { line: plan.userLine, ch: String(linesNow[plan.userLine] || "").length }
+      );
+    }
+    if (opts.autoFocusUserPrompt && shouldRestoreFocusToEditor(editor)) {
+      focusUserPromptNoScroll(editor, plan.userLine, plan.focusCh);
     }
   } catch {}
 

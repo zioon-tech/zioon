@@ -371,13 +371,25 @@ function openMenu(view, clientX, clientY, line) {
     const revertDisabled = batch.state === "reverted";
     menu.appendChild(mkItem(acceptLabel, () => {
       try {
-        window.zion?.events?.emit("toolcards/batchAccept", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to });
+        const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
+        const sessionId = panelId
+          ? (window.zion?.panelManager?.getPanel?.(panelId)?.activeTabId
+            || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
+            || null)
+          : (window.zion?.state?.get?.("sessions.currentId") || null);
+        window.zion?.events?.emit("toolcards/batchAccept", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to, panelId, sessionId });
       } catch {}
       return Promise.resolve(true);
     }, acceptDisabled));
     menu.appendChild(mkItem(revertLabel, () => {
       try {
-        window.zion?.events?.emit("toolcards/batchRevert", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to });
+        const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
+        const sessionId = panelId
+          ? (window.zion?.panelManager?.getPanel?.(panelId)?.activeTabId
+            || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
+            || null)
+          : (window.zion?.state?.get?.("sessions.currentId") || null);
+        window.zion?.events?.emit("toolcards/batchRevert", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to, panelId, sessionId });
       } catch {}
       return Promise.resolve(true);
     }, revertDisabled));

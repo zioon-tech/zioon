@@ -58,6 +58,22 @@
 
   /* Editor selection color (dark default) */
   --selection-bg: rgba(98,114,164,0.35);
+  --caret-color: #f8f8f2;
+  --selection-match-bg: rgba(98, 114, 164, 0.14);
+  --selection-match-border: rgba(98, 114, 164, 0.20);
+  --search-match-bg: rgba(214, 163, 74, 0.16);
+  --search-match-border: rgba(214, 163, 74, 0.28);
+  --search-current-bg: rgba(230, 172, 76, 0.24);
+  --search-current-border: rgba(245, 203, 133, 0.46);
+  --editor-tab-active-bg: color-mix(in srgb, var(--border) 78%, transparent);
+  --editor-tab-hover-bg: color-mix(in srgb, var(--border) 34%, transparent);
+  --editor-tabsbar-bg: var(--panel);
+  --editor-tab-border: color-mix(in srgb, var(--border) 74%, transparent);
+  --editor-tab-shadow: none;
+  --editor-tab-active-shadow: none;
+  --panel-active-border: color-mix(in srgb, var(--accent) 78%, var(--border));
+  --panel-active-glow: color-mix(in srgb, var(--accent) 62%, transparent);
+  --panel-active-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent), 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), 0 14px 34px rgba(0, 0, 0, 0.22);
 
   /* Sessions panel indent step (controls highlight width clipping by level) */
   --sessions-indent-step: 16px;
@@ -109,6 +125,22 @@
 
   /* Editor selection color (light override) */
   --selection-bg: rgba(59,130,246,0.28);
+  --caret-color: #1f2937;
+  --selection-match-bg: rgba(59, 130, 246, 0.10);
+  --selection-match-border: rgba(59, 130, 246, 0.18);
+  --search-match-bg: rgba(210, 155, 54, 0.14);
+  --search-match-border: rgba(194, 137, 33, 0.22);
+  --search-current-bg: rgba(227, 164, 52, 0.20);
+  --search-current-border: rgba(182, 118, 14, 0.34);
+  --editor-tab-active-bg: rgba(59,130,246,0.12);
+  --editor-tab-hover-bg: rgba(59,130,246,0.08);
+  --editor-tabsbar-bg: var(--panel);
+  --editor-tab-border: rgba(148,163,184,0.22);
+  --editor-tab-shadow: none;
+  --editor-tab-active-shadow: none;
+  --panel-active-border: color-mix(in srgb, var(--accent) 58%, var(--border));
+  --panel-active-glow: color-mix(in srgb, var(--accent) 48%, transparent);
+  --panel-active-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent), 0 0 0 3px rgba(59, 130, 246, 0.10), 0 12px 24px rgba(15, 23, 42, 0.10);
 }
 
 /* Heading size modes (global) */
@@ -439,6 +471,17 @@ html, body {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
 }
 
+:root[data-zion-responsive-mode="medium"] .zion-auxbar {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: min(var(--auxbar-overlay-w, 300px), 70vw);
+  max-width: 420px;
+  z-index: 70;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
 :root[data-zion-device-type="mobile"] .zion-bottompanel {
   position: absolute;
   left: 0;
@@ -448,6 +491,45 @@ html, body {
   max-height: calc(100% - var(--mobilebar-h, 0px) - var(--safe-bottom, 0px));
   z-index: 70;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-zion-responsive-mode="medium"] .zion-bottompanel {
+  position: absolute;
+  left: calc(var(--activitybar-w, 0px) + var(--sidebar-w, 0px));
+  right: 0;
+  bottom: 0;
+  height: var(--bottompanel-overlay-h, 0px);
+  max-height: 60vh;
+  z-index: 70;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-zion-device-type="mobile"] .zion-auxbar,
+:root[data-zion-device-type="mobile"] .zion-bottompanel,
+:root[data-zion-responsive-mode="medium"] .zion-auxbar,
+:root[data-zion-responsive-mode="medium"] .zion-bottompanel {
+  border: 1px solid color-mix(in srgb, var(--border) 92%, transparent);
+  border-radius: 12px 12px 0 0;
+  overflow: hidden;
+  backdrop-filter: blur(8px);
+}
+
+:root[data-zion-device-type="mobile"] .zion-auxbar-header,
+:root[data-zion-device-type="mobile"] .zion-bottompanel-header,
+:root[data-zion-responsive-mode="medium"] .zion-auxbar-header,
+:root[data-zion-responsive-mode="medium"] .zion-bottompanel-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+}
+
+:root[data-zion-device-type="mobile"] .zion-auxbar-resizer,
+:root[data-zion-device-type="mobile"] .zion-bottompanel-resizer,
+:root[data-zion-responsive-mode="medium"] .zion-auxbar-resizer,
+:root[data-zion-responsive-mode="medium"] .zion-bottompanel-resizer {
+  display: none;
 }
 
 :root[data-zion-device-type="mobile"] .cm-content {
@@ -570,6 +652,7 @@ html, body {
   justify-content: space-between;
   padding: 4px 8px;
   gap: 8px;
+  min-width: 0;
 }
 
 .zion-auxbar-headleft {
@@ -586,6 +669,8 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .zion-auxbar-actions {
@@ -624,6 +709,10 @@ html, body {
   box-sizing: border-box;
   overflow: auto;
   min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  -webkit-overflow-scrolling: touch;
 }
 
 .zion-auxbar-tab {
@@ -703,6 +792,7 @@ html, body {
   padding: 4px 8px;
   gap: 8px;
   border-bottom: none;
+  min-width: 0;
 }
 
 :root[data-theme="light"] .zion-bottompanel-header {
@@ -714,6 +804,10 @@ html, body {
   gap: 4px;
   overflow: auto;
   min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  -webkit-overflow-scrolling: touch;
 }
 
 .zion-bottompanel-tab {
@@ -750,6 +844,7 @@ html, body {
   display: flex;
   gap: 4px;
   align-items: center;
+  flex: 0 0 auto;
 }
 
 .zion-bottompanel-action {
@@ -952,11 +1047,43 @@ html, body {
   overflow: hidden;
   flex-direction: column;
   background: var(--panel);
-  border: 1px solid transparent;
+  border: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+  position: relative;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
-.zion-panel.is-active {
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+.zion-panel::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--panel-active-glow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.zion-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel-active-border) 72%, transparent);
+  transition: opacity 140ms ease;
+}
+
+.has-multiple-panels .zion-panel.is-active {
+  border-color: var(--panel-active-border);
+  box-shadow: var(--panel-active-shadow);
+}
+
+.has-multiple-panels .zion-panel.is-active::before,
+.has-multiple-panels .zion-panel.is-active::after {
+  opacity: 1;
 }
 
 .zion-panel-empty {
@@ -1001,10 +1128,11 @@ html, body {
 
 .zion-split-handle {
   flex: 0 0 auto;
-  background: color-mix(in srgb, var(--border) 70%, transparent);
-  opacity: 0.9;
+  background: color-mix(in srgb, var(--border) 18%, transparent);
+  opacity: 0.58;
   position: relative;
   z-index: 2;
+  transition: background 120ms ease, opacity 120ms ease;
 }
 
 .zion-split-handle[data-direction="horizontal"] {
@@ -1029,18 +1157,19 @@ html, body {
 .zion-split-handle[data-direction="horizontal"]::before {
   left: 2px;
   width: 1px;
-  background: var(--border);
+  background: color-mix(in srgb, var(--border) 42%, transparent);
 }
 
 .zion-split-handle[data-direction="vertical"]::before {
   top: 2px;
   height: 1px;
-  background: var(--border);
+  background: color-mix(in srgb, var(--border) 42%, transparent);
 }
 
 .zion-split-handle:hover,
 .zion-split-handle:active {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
+  opacity: 1;
 }
 
 .zion-split-handle:hover::before,
@@ -1054,9 +1183,10 @@ html, body {
   flex: 0 0 36px;
   display: flex;
   align-items: center;
+  gap: 6px;
   padding: 0 8px;
-  background: transparent;
-  border-bottom: 1px solid var(--border);
+  background: var(--editor-tabsbar-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 92%, transparent);
   color: var(--fg);
   box-sizing: border-box;
 }
@@ -1095,9 +1225,31 @@ html, body {
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
+  -ms-overflow-style: none;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
-  padding: 5px 0;
+  padding: 6px 0;
+  box-sizing: border-box;
+}
+
+.zion-panel-session-tabs-viewport {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: stretch;
+}
+
+.zion-panel-session-tabs-viewport > .zion-editor-session-tabs {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+}
+
+/* Only apply scrollbar compensation when the strip is actually horizontally scrollable. */
+.zion-panel-session-tabs-viewport.is-x-scroll > .zion-editor-session-tabs {
+  height: calc(100% + var(--ui-scrollbar-size, 0px));
 }
 
 .zion-editor-session-tabs.is-drop-target {
@@ -1144,6 +1296,8 @@ html, body {
 }
 
 .zion-editor-session-tabs::-webkit-scrollbar {
+  display: none;
+  width: 0;
   height: 0;
 }
 
@@ -1154,18 +1308,20 @@ html, body {
   gap: 6px;
   height: 24px;
   padding: 0 10px;
-  border-radius: 3px;
-  border: none;
+  box-sizing: border-box;
+  border-radius: 6px;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--fg);
-  opacity: 0.75;
+  opacity: 0.8;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
-  transition: all 80ms ease;
+  transition: background 100ms ease, border-color 100ms ease, opacity 100ms ease;
   font-size: 13px;
   line-height: 1;
   position: relative;
+  box-shadow: var(--editor-tab-shadow);
 }
 .zion-editor-session-tab.is-dragging {
   opacity: 0.35;
@@ -1241,6 +1397,30 @@ html, body {
   background: color-mix(in srgb, var(--border) 55%, transparent);
   opacity: 1;
 }
+.zion-editor-tabs-menu-item-status {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border) 70%, transparent);
+}
+.zion-editor-tabs-menu-item-status[data-status="streaming"] {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent), 0 0 0 4px rgba(98, 114, 164, 0.10);
+}
+.zion-editor-tabs-menu-item-status[data-status="awaiting"] {
+  background: var(--ok);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 40%, transparent);
+}
+.zion-editor-tabs-menu-item-status[data-status="failed"] {
+  background: #ff6b6b;
+  box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.45);
+}
+.zion-editor-tabs-menu-item-status[data-status="aborted"] {
+  background: color-mix(in srgb, var(--fg) 45%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 20%, transparent);
+}
 .zion-editor-tabs-menu-item-label {
   flex: 1 1 auto;
   min-width: 0;
@@ -1248,6 +1428,12 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+}
+.zion-editor-tabs-menu-item-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  opacity: 0.74;
+  white-space: nowrap;
 }
 .zion-editor-tabs-menu-item-actions {
   flex: 0 0 auto;
@@ -1274,41 +1460,18 @@ html, body {
   background: rgba(255, 100, 100, 0.2);
   color: #ff6b6b;
 }
-.zion-editor-session-tab + .zion-editor-session-tab::before {
-  content: "";
-  position: absolute;
-  left: -3px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 1px;
-  height: 14px;
-  background: color-mix(in srgb, var(--border) 85%, transparent);
-  opacity: 0.95;
-}
 .zion-editor-session-tab:hover {
   opacity: 1;
-  background: color-mix(in srgb, var(--border) 30%, transparent);
+  background: var(--editor-tab-hover-bg);
+  border-color: color-mix(in srgb, var(--border) 62%, transparent);
 }
 .zion-editor-session-tab.is-active {
   opacity: 1;
-  background: color-mix(in srgb, var(--border) 60%, transparent);
+  background: var(--editor-tab-active-bg);
   color: var(--fg);
   font-weight: 500;
-}
-.zion-editor-session-tab.is-active::before {
-  opacity: 0;
-}
-.zion-editor-session-tab.is-active + .zion-editor-session-tab::before {
-  opacity: 0;
-}
-.zion-editor-session-tab.is-active::after {
-  content: "";
-  position: absolute;
-  bottom: -5px;
-  left: 10px;
-  right: 10px;
-  height: 2px;
-  border-radius: 1px;
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--editor-tab-border));
+  box-shadow: var(--editor-tab-active-shadow);
 }
 
 .zion-editor-session-tab-status {
@@ -1328,9 +1491,13 @@ html, body {
   background: var(--ok);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 40%, transparent);
 }
-.zion-editor-session-tab.is-aborted .zion-editor-session-tab-status {
+.zion-editor-session-tab.is-failed .zion-editor-session-tab-status {
   background: #ff6b6b;
-  box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.45);
+  box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.45), 0 0 0 4px rgba(255, 107, 107, 0.08);
+}
+.zion-editor-session-tab.is-aborted .zion-editor-session-tab-status {
+  background: color-mix(in srgb, var(--fg) 45%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 20%, transparent);
 }
 
 @keyframes zion-tab-pulse {
@@ -1351,11 +1518,13 @@ html, body {
   white-space: nowrap;
   font-size: inherit;
   line-height: 1;
+  letter-spacing: 0;
 }
 
 .zion-editor-session-tab-close {
   flex: 0 0 auto;
-  height: auto;
+  width: 16px;
+  height: 16px;
   border: none;
   background: transparent;
   color: var(--fg);
@@ -1365,12 +1534,12 @@ html, body {
   justify-content: center;
   cursor: pointer;
   pointer-events: none;
-  padding: 0 2px;
+  padding: 0;
   font-size: 12px;
   line-height: 1;
-  border-radius: 3px;
-  margin-left: 4px;
-  transition: all 80ms ease;
+  border-radius: 4px;
+  margin-left: 3px;
+  transition: opacity 80ms ease, background-color 80ms ease, color 80ms ease;
 }
 .zion-editor-session-tab.is-active .zion-editor-session-tab-close,
 .zion-editor-session-tab:hover .zion-editor-session-tab-close {
@@ -1379,8 +1548,8 @@ html, body {
 }
 .zion-editor-session-tab-close:hover {
   opacity: 1;
-  background: rgba(255, 100, 100, 0.2);
-  color: #ff6b6b;
+  background: color-mix(in srgb, var(--border) 48%, transparent);
+  color: var(--fg);
 }
 .zion-editor-session-tab-close .codicon {
   font-size: 14px;
@@ -1394,7 +1563,7 @@ html, body {
   justify-content: center;
   height: 22px;
   padding: 0 8px;
-  margin-right: 8px;
+  margin-right: 4px;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -1402,7 +1571,7 @@ html, body {
   font-size: 12px;
   line-height: 20px;
   cursor: pointer;
-  opacity: 0.75;
+  opacity: 0.7;
 }
 
 .zion-editor-header-action.is-icon {
@@ -1491,8 +1660,16 @@ html, body {
 }
 .cm-editor {
   height: 100%;
+  background: var(--panel);
 /*   max-width: 860px; */
 /*   margin: 0 auto;    */
+}
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left-color: var(--caret-color) !important;
+}
+.cm-editor.cm-focused {
+  outline: none;
 }
 .cm-content {
   font-size: var(--editor-font-size);
@@ -1512,6 +1689,17 @@ html, body {
   caret-color: var(--fg);
   /* Collapse occupied width so inline markers (like list bullets) don't leave large gaps.
      We keep it inline/inert so editor mapping and caret behavior remain stable. */
+  display: inline-block;
+  width: 0;
+  font-size: 0;
+  line-height: 0;
+  overflow: hidden;
+}
+
+.cm-z-hide-syntax-fixed {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: transparent;
   display: inline-block;
   width: 0;
   font-size: 0;
@@ -1734,6 +1922,17 @@ html, body {
   margin: 0;
   overflow: auto;
   position: relative; /* for toolbar positioning */
+  box-sizing: border-box;
+  padding: 38px 8px 8px;
+}
+.cm-md-diagram-body {
+  min-width: max-content;
+}
+.cm-md-diagram-body > svg,
+.cm-md-diagram-body > img,
+.cm-md-diagram-body > .cm-md-uml {
+  display: block;
+  margin: 0 auto;
 }
 .cm-line:has(.cm-md-diagram) {
   padding-top: 6px;
@@ -1760,6 +1959,19 @@ html, body {
   pointer-events: none !important;
 }
 
+.cm-md-table-hiddenline {
+  height: 0 !important;
+  min-height: 0 !important;
+  line-height: 0 !important;
+  font-size: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 /* Hide line numbers for collapsed lines to avoid overlapping gutter numbers */
 .cm-gutters .cm-gutterElement[style*="height: 0"] {
   display: none !important;
@@ -1767,15 +1979,52 @@ html, body {
 
 /* Tables - Modern Style (GitHub/Typora inspired) */
 .cm-md-table-wrap {
+  display: block;
+  position: relative;
   overflow: auto;
-  margin: 0;
+  margin: 6px 0;
   border: 1px solid var(--border);
   border-radius: 6px;
   background-color: var(--bg);
 }
+.cm-md-table-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px 0 8px;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid var(--md-codeblock-border);
+  border-radius: 6px;
+  z-index: 4;
+  opacity: 0.9;
+  width: fit-content;
+  margin-left: auto;
+  margin-right: 8px;
+  margin-top: 8px;
+  position: relative;
+}
+.cm-md-table-btn {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.cm-md-table-btn:hover {
+  background: var(--border);
+  border-color: var(--border);
+}
+:root[data-theme="light"] .cm-md-table-toolbar {
+  background: rgba(255,255,255,0.9);
+  border-color: var(--border);
+}
 .cm-line:has(.cm-md-table-wrap) {
-  padding-top: 16px;
-  padding-bottom: 16px;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .cm-md-table {
@@ -1888,20 +2137,21 @@ html, body {
 /* Diagram toolbar */
 .cm-md-diagram-toolbar {
   position: absolute;
-  top: 6px;
+  top: 8px;
   right: 8px;
-  display: flex;
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
+  margin: 0;
   background: rgba(0,0,0,0.35);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 4px;
-  opacity: 0;
-  transition: opacity 120ms ease-in-out;
-  z-index: 2;
-}
-.cm-md-diagram:hover .cm-md-diagram-toolbar {
-  opacity: 1;
+  border: 1px solid var(--md-codeblock-border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  opacity: 0.9;
+  z-index: 3;
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
 }
 .cm-md-diagram-btn {
   background: transparent;
@@ -2125,18 +2375,28 @@ html, body {
 
 /* 搜索替换面板样式 */
 .search-replace-panel {
-  --search-match-bg: #f9e076;
-  --search-current-bg: #ff9e00;
   --input-bg: var(--panel);
 }
 
 /* 搜索高亮样式 */
 .cm-searchMatch {
-  background-color: var(--search-match-bg);
+  background: var(--search-match-bg);
+  box-shadow: inset 0 0 0 1px var(--search-match-border);
+  border-radius: 3px;
 }
 
 .cm-searchMatch-selected {
-  background-color: var(--search-current-bg);
+  background: var(--search-current-bg);
+  box-shadow:
+    inset 0 0 0 1px var(--search-current-border),
+    0 0 0 1px color-mix(in srgb, var(--search-current-border) 40%, transparent);
+  border-radius: 3px;
+}
+
+.cm-selectionMatch {
+  background: var(--selection-match-bg);
+  box-shadow: none;
+  border-radius: 0;
 }
 
 /* 状态栏窄屏自适应：收紧间距与字号，减少视觉拥挤 */
@@ -2193,6 +2453,18 @@ html, body {
 }
 .cm-scroller:hover::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb-hover);
+}
+.zion-panel .cm-scroller:hover {
+  scrollbar-color: transparent transparent;
+}
+.zion-panel .cm-scroller:hover::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+.zion-panel .cm-scroller.zion-scroll-active {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.zion-panel .cm-scroller.zion-scroll-active::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
 }
 .cm-scroller::-webkit-scrollbar {
   width: 10px;
@@ -2760,6 +3032,125 @@ html, body {
   opacity: 1;
 }
 
+.zion-chat-overview-rail {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  bottom: 2px;
+  width: 26px;
+  pointer-events: none;
+  z-index: 99;
+  opacity: 0.62;
+}
+
+.zion-chat-overview-rail::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  bottom: 3px;
+  width: 1px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 22%, transparent);
+  opacity: 0.3;
+}
+
+.zion-chat-overview-marker {
+  position: absolute;
+  right: 0;
+  border-radius: 999px;
+  transform-origin: center;
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease;
+}
+
+.zion-chat-overview-marker.is-hidden {
+  opacity: 0;
+  transform: scaleY(0.7);
+}
+
+.zion-chat-overview-marker-assistant {
+  right: 2px;
+  width: 2px;
+  min-height: 8px;
+  background: color-mix(in srgb, var(--role-assistant-fg) 82%, white 8%);
+  border: none;
+  opacity: 0.82;
+}
+
+.zion-chat-overview-marker-cursor {
+  right: 0;
+  width: 6px;
+  height: 3px;
+  background: color-mix(in srgb, var(--accent) 84%, white 10%);
+  opacity: 0.98;
+  border-radius: 999px;
+}
+
+.zion-chat-overview-marker-assistant.is-streaming {
+  animation: zion-chat-overview-pulse 1.4s ease-in-out infinite;
+}
+
+.zion-chat-overview-follow-btn {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  color: var(--fg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 101;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  opacity: 0.96;
+  transform: translateY(0) scale(1);
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+.zion-chat-overview-follow-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.zion-chat-overview-follow-btn:hover {
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  border-color: var(--accent);
+  transform: translateY(0) scale(1.04);
+}
+
+.zion-chat-overview-follow-btn.is-following {
+  opacity: 0.72;
+}
+
+.zion-chat-overview-follow-btn.is-detached {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  opacity: 1;
+  transform: translateY(0) scale(1.04);
+}
+
+.zion-chat-overview-follow-btn.is-hidden {
+  display: none;
+}
+
+@keyframes zion-chat-overview-pulse {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scaleX(1);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scaleX(1.18);
+  }
+}
+
 .zion-inline-confirm {
   position: absolute;
   right: 8px;
@@ -3227,8 +3618,8 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-list {
   scrollbar-color: transparent transparent;
   scrollbar-width: thin; /* Firefox */
+  scrollbar-gutter: stable;
 }
-.zion-sessions-list:hover,
 .zion-sessions-list.zion-scroll-active {
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
@@ -3247,9 +3638,6 @@ body.zion-sessions-no-transitions .zion-session-row * {
 }
 .zion-sessions-list.zion-scroll-active::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb);
-}
-.zion-sessions-list:hover::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb-hover);
 }
 
 /* Status badge for sessions (compact, pill background) */

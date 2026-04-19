@@ -70,4 +70,3 @@ export function registerSessionDocCommands(opts) {
 
   return [dGetDoc, dGetMeta, dSetDoc, dAppendToken, dBumpUpdated];
 }
-

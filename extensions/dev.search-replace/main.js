@@ -55,6 +55,9 @@ export async function activate(ctx) {
   // 监听编辑器焦点变化，更新搜索面板状态
   const focusListener = window.zion.events.on('editor.focusChanged', () => {
     updateSearchPanelVisibility();
+    if (isSearchVisible) {
+      try { ensureSearchPanel(); } catch {}
+    }
   });
   ctx.subscriptions.push(focusListener);
 }
@@ -187,6 +190,39 @@ function updateSearchPanelVisibility() {
 // 自定义搜索面板的 DOM 操作
 let searchPanel = null;
 
+function getSearchPanelHost() {
+  try {
+    const editor = window.zion.window.activeEditor;
+    const view = editor?.getView?.();
+    const editorDom = view?.dom || null;
+    const host = editorDom?.closest?.('.zion-editor-host');
+    if (host && host instanceof HTMLElement) return host;
+  } catch {}
+  try {
+    const panelId = window.zion?.panels?.getActivePanelId?.();
+    if (panelId) {
+      const panelRoot = document.querySelector(`[data-panel-id="${CSS.escape(String(panelId))}"]`);
+      const host = panelRoot?.querySelector?.('.zion-editor-host');
+      if (host && host instanceof HTMLElement) return host;
+    }
+  } catch {}
+  return document.querySelector('.zion-editor-host') || document.querySelector('#app > div') || document.getElementById('app');
+}
+
+function attachSearchPanelToActiveHost() {
+  if (!searchPanel) return;
+  const editorHost = getSearchPanelHost();
+  if (editorHost && editorHost instanceof HTMLElement) {
+    const pos = getComputedStyle(editorHost).position;
+    if (!pos || pos === 'static') editorHost.style.position = 'relative';
+    if (searchPanel.parentElement !== editorHost) {
+      editorHost.appendChild(searchPanel);
+    }
+  } else if (searchPanel.parentElement !== document.body) {
+    document.body.appendChild(searchPanel);
+  }
+}
+
 function ensureSearchPanel() {
   if (!searchPanel) {
     searchPanel = document.createElement('div');
@@ -249,20 +285,12 @@ function ensureSearchPanel() {
     `;
     
     // Append the panel into the editor host so position:absolute is relative to the editor content (not tabs bar)
-    const editorHost = document.querySelector('.zion-editor-host') || document.querySelector('#app > div') || document.getElementById('app');
-    if (editorHost && editorHost instanceof HTMLElement) {
-      // ensure positioning context so the panel sits inside editor area (not the topbar)
-      const pos = getComputedStyle(editorHost).position;
-      if (!pos || pos === 'static') editorHost.style.position = 'relative';
-      editorHost.appendChild(searchPanel);
-    } else {
-      // fallback to body if editor host not found
-      document.body.appendChild(searchPanel);
-    }
+    attachSearchPanelToActiveHost();
     
     // 事件监听
     setupEventListeners();
   }
+  attachSearchPanelToActiveHost();
   
   // 显示/隐藏替换区域
   const replaceSection = searchPanel.querySelector('#replace-section');

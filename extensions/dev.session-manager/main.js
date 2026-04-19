@@ -203,6 +203,7 @@ const {
   findNodeAndParent,
   insertFolder,
   insertSessionNode,
+  insertSessionNodeAfter,
   removeNode,
   removeNodeRecursive,
   moveNode,
@@ -793,54 +794,41 @@ function injectScrollbarStyles() {
     const style = document.createElement("style");
     style.id = styleId;
     style.textContent = `
-      /* Custom scrollbar for session list - match editor scrollbar theme */
+      /* Session manager scrollbar behavior:
+         - keep width stable to avoid layout shift (status lamp not squeezed)
+         - show thumb only while scrolling (zion-scroll-active), consistent with editor panels
+       */
+      .zion-sessions-list,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content {
+        scrollbar-color: transparent transparent;
+        scrollbar-width: thin;
+        scrollbar-gutter: stable;
+      }
+
       .zion-sessions-list::-webkit-scrollbar,
       #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar {
-        width: 0;
-        height: 0;
-      }
-      .zion-sessions-list:hover::-webkit-scrollbar,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content:hover::-webkit-scrollbar {
         width: 10px;
         height: 10px;
       }
-
-      /* Scrollbar track */
       .zion-sessions-list::-webkit-scrollbar-track,
       #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-track {
         background: transparent;
       }
-      .zion-sessions-list::-webkit-scrollbar-corner,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-corner {
-        background: transparent;
-      }
-
-      /* Scrollbar thumb */
       .zion-sessions-list::-webkit-scrollbar-thumb,
       #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb {
-        background-color: var(--scrollbar-thumb, var(--border, rgba(128, 128, 128, 0.4)));
+        background-color: transparent;
         border-radius: 6px;
         border: 2px solid transparent;
         background-clip: content-box;
       }
-
-      /* Hover state for scrollbar thumb */
-      .zion-sessions-list::-webkit-scrollbar-thumb:hover,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb:hover {
-        background-color: var(--scrollbar-thumb-hover, var(--accent, rgba(128, 128, 128, 0.6)));
-        background-clip: content-box;
+      .zion-sessions-list.zion-scroll-active::-webkit-scrollbar-thumb,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content.zion-scroll-active::-webkit-scrollbar-thumb {
+        background-color: var(--scrollbar-thumb, var(--border, rgba(128, 128, 128, 0.4)));
       }
-
-      /* Firefox scrollbar */
-      .zion-sessions-list,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content {
-        scrollbar-width: none;
-        scrollbar-color: transparent transparent;
-      }
-      .zion-sessions-list:hover,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content:hover {
-        scrollbar-width: thin;
-        scrollbar-color: var(--scrollbar-thumb, var(--border, rgba(128, 128, 128, 0.4))) transparent;
+      /* Disable hover-to-show for session-manager (prefer scroll-active only) */
+      .zion-sessions-list:hover::-webkit-scrollbar-thumb,
+      #zion-sessions-panel-overlay .zion-sessions-panel-content:hover::-webkit-scrollbar-thumb {
+        background-color: transparent;
       }
 
       /* Scroll container background - ensure clean background */
@@ -948,6 +936,18 @@ export async function activate(ctx) {
       const sid = nv ? String(nv) : null;
       watchRunKey(sid);
       updateTitle();
+      try {
+        if (sid) {
+          // VS Code-like: when active session changes, reveal it in Sessions sidebar (if open),
+          // without clearing the user's search query.
+          __sidebarViewManager.revealSessionIfOpen(sid, {
+            openAncestors: true,
+            clearSearch: false,
+            flash: false,
+            block: "center"
+          });
+        }
+      } catch {}
     });
     const dispStreaming = window.zion.state.onDidChange("chat.streaming", () => updateTitle());
     ctx.subscriptions.push(dispCur, dispStreaming, { dispose() { try { dispRun?.dispose?.(); } catch {} } });
@@ -1059,7 +1059,12 @@ export async function activate(ctx) {
       title: "Sessions…",
       when: "editorFocus"
     });
-    ctx.subscriptions.push(dispMenu1, dispMenu2);
+    const dispMenu3 = window.zion.menus.register("editor/context", {
+      command: "zion.sessions.fork",
+      title: "Fork Session",
+      when: "editorFocus"
+    });
+    ctx.subscriptions.push(dispMenu1, dispMenu2, dispMenu3);
   } catch {}
 
   // 监听跨标签更新
@@ -1535,8 +1540,9 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispRunStarted, dispRunFinishedUI, dispRunErrorUI, dispAbortedUI);
 
-  const dispReasoningStart = window.zion.events.on("chat/reasoningStart", ({ runId, sessionId }) => {
+  const dispReasoningStart = window.zion.events.on("chat/reasoningStart", ({ runId, sessionId, silentReasoning }) => {
     try {
+      if (silentReasoning) return;
       const cur = window.zion.state.get("sessions.currentId");
       if (!sessionId || sessionId === cur) return; // current session handled by plugin
 
@@ -1572,8 +1578,9 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispReasoningStart);
 
-  const dispReasoningToken = window.zion.events.on("chat/reasoningToken", ({ runId, sessionId, token }) => {
+  const dispReasoningToken = window.zion.events.on("chat/reasoningToken", ({ runId, sessionId, token, silentReasoning }) => {
     try {
+      if (silentReasoning) return;
       const cur = window.zion.state.get("sessions.currentId");
       if (!sessionId || sessionId === cur) return;
       const key = `thinking.seq.${sessionId}.${runId}`;
@@ -1705,6 +1712,83 @@ export async function activate(ctx) {
     return true;
   });
   ctx.subscriptions.push(dClone);
+
+  const buildForkTitle = (baseTitle, siblingTitles) => {
+    const base = String(baseTitle || "Untitled Session").trim() || "Untitled Session";
+    const used = new Set((Array.isArray(siblingTitles) ? siblingTitles : []).map((t) => String(t || "").trim()).filter(Boolean));
+    const first = `${base} (Fork)`;
+    if (!used.has(first)) return first;
+    for (let i = 2; i < 1000; i++) {
+      const next = `${base} (Fork ${i})`;
+      if (!used.has(next)) return next;
+    }
+    return `${base} (Fork ${Date.now()})`;
+  };
+
+  const dFork = window.zion.commands.registerCommand("zion.sessions.fork", async (id) => {
+    const req = id && typeof id === "object" ? id : null;
+    const sourcePanelId = req?.panelId || window.zion?.panels?.getActivePanelId?.() || null;
+    const panelSessionId = sourcePanelId
+      ? (window.zion?.panels?.list?.().find((panel) => panel.id === sourcePanelId)?.activeTabId || null)
+      : null;
+    const srcId = (typeof id === "string" ? id : null)
+      || req?.id
+      || req?.sessionId
+      || panelSessionId
+      || window.zion.state.get("sessions.currentId");
+    if (!srcId) return false;
+    const srcText = await loadDocAsync(srcId);
+    const srcMeta = loadMeta(srcId) || { title: "Session" };
+    const tree = loadTree() || ensureInitialTree();
+    const { parent } = findNodeAndParent(tree, srcId);
+    const siblings = Array.isArray(parent?.children) ? parent.children : [];
+    const siblingTitles = siblings
+      .filter((child) => child?.type === "session" && child?.id !== srcId)
+      .map((child) => child?.title || child?.id);
+    const newTitle = buildForkTitle(srcMeta.title || srcId, siblingTitles);
+    const nextId = genId();
+    const copiedMeta = safeJSONParse(JSON.stringify(srcMeta || {}), {}) || {};
+    const meta = {
+      ...copiedMeta,
+      id: nextId,
+      title: newTitle,
+      createdAt: now(),
+      updatedAt: now(),
+      size: srcText.length,
+      hash: hashString(srcText),
+      titleAuto: false
+    };
+    saveDoc(nextId, srcText);
+    saveMeta(nextId, meta);
+    insertSessionNodeAfter(nextId, srcId, meta.title);
+    rebuildIndexFromTree();
+    window.zion.state.set("sessions.catalog", getIndex());
+    const targetPanelId = window.zion?.panels?.ensureAtSide?.("right", sourcePanelId || undefined) || sourcePanelId || null;
+    if (targetPanelId) {
+      try {
+        window.zion.panels.focus(targetPanelId);
+      } catch {}
+      try {
+        window.zion.panels.openSession(targetPanelId, nextId, { focus: true });
+      } catch {
+        try {
+          await window.zion.commands.executeCommand("zion.sessions.switch", { id: nextId, panelId: targetPanelId });
+        } catch {}
+      }
+    } else {
+      window.zion.state.set("sessions.currentId", nextId);
+      try {
+        window.zion.window.activeEditor?.setValue(srcText);
+        applyAnnotationsForSession(nextId);
+      } catch {}
+    }
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    refreshStatusBar();
+    postSaved(nextId, meta.updatedAt, meta.hash);
+    updatePageTitle(nextId);
+    return nextId;
+  });
+  ctx.subscriptions.push(dFork);
 
   // Export
   const dExport = window.zion.commands.registerCommand("zion.sessions.export", (id) => {
