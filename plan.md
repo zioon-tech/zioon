@@ -28,31 +28,48 @@
 
 ```
 核心层 (src/settings/)
-├── registry.ts          # SettingsRegistry：registerItem / list / onDidChange
+├── registry.ts          # SettingsRegistry：registerPage / registerItem(legacy) / list / onDidChange
 ├── SettingsPanel.ts     # 设置面板 UI（modal overlay）
 ├── serviceBaseUrl.ts    # 现有，保持不变（纯数据层）
 └── index.ts             # 统一导出
 暴露到 window.zion：
   window.zion.settings = {
-    registerItem(item) => { dispose() },
+    registerPage(page) => { dispose() },
+    registerItem(item) => { dispose() }, // legacy bridge
     open(),
     close()
   }
-各模块/插件自己调用 registerItem：
-  // main.ts bootstrap：注册 serviceBaseUrl 的编辑 UI
+各模块/插件自己调用 registerPage：
+  // dev.service-baseurl/activate()：注册 serviceBaseUrl 页面
   // dev.mail/activate()：注册 mail 配置项
   // dev.skills/activate()：注册 skills 配置项
   // dev.fs-manager/activate()：注册 fs 配置项
 ```
 
-### SettingsItem 接口
+### Settings 协议
 ```ts
-interface SettingsItem {
-  id: string;                    // 唯一标识
-  section: string;               // 分组（如 "Services", "Mail", "Skills"）
-  title: string;                 // 显示标题
-  order?: number;                // 排序（默认按注册顺序）
-  render: (container: HTMLElement) => { dispose?: () => void } | void;
+interface SettingsPageContribution {
+  id: string;
+  title: string;
+  category: "general" | "editor" | "services" | "workspace" | "extensions" | "advanced";
+  sections: SettingSectionContribution[];
+}
+
+interface SettingSectionContribution {
+  id: string;
+  title: string;
+  settings: SettingContribution[];
+}
+
+interface SettingContribution {
+  id: string;
+  label: string;
+  kind: "string" | "password" | "number" | "boolean" | "textarea" | "select" | "action" | "custom";
+  getValue?: () => unknown | Promise<unknown>;
+  setValue?: (value: unknown) => void | Promise<void>;
+  validate?: (value: unknown) => string | null | Promise<string | null>;
+  reset?: () => void | Promise<void>;
+  renderCustom?: () => ReactNode;
 }
 ```
 

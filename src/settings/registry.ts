@@ -1,25 +1,94 @@
-/**
- * SettingsRegistry — 设置项注册中心
- *
- * 核心层只做注册/注销，不关心具体配置内容。
- * 各模块/插件通过 registerItem() 注册自己的设置项。
- */
+import type { ReactNode } from "react";
 
-export interface SettingsItem {
-  /** 唯一标识 */
+export type SettingsCategory =
+  | "general"
+  | "editor"
+  | "services"
+  | "workspace"
+  | "extensions"
+  | "advanced";
+
+export type SettingKind =
+  | "string"
+  | "password"
+  | "number"
+  | "boolean"
+  | "select"
+  | "multiselect"
+  | "textarea"
+  | "action"
+  | "custom";
+
+export type SettingScope = "application" | "workspace" | "plugin";
+
+export interface SettingOption {
+  label: string;
+  value: string;
+}
+
+export interface SettingRenderProps {
+  setting: SettingContribution;
+}
+
+export interface SettingContribution {
   id: string;
-  /** 分组（如 "Services", "Mail", "Skills"） */
-  section: string;
-  /** 显示标题 */
-  title: string;
-  /** 排序权重，默认 0（按注册顺序） */
+  label: string;
+  description?: string;
+  kind: SettingKind;
+  controlLayout?: "compact" | "wide";
   order?: number;
-  /**
-   * 插件自行渲染设置 UI
-   * @param container 面板分配的容器节点
-   * @returns 可选的 dispose 回调
-   */
-  render: (container: HTMLElement) => { dispose?: () => void } | void;
+  tags?: string[];
+  scope?: SettingScope;
+  defaultValue?: unknown;
+  placeholder?: string;
+  inputMode?: "text" | "numeric" | "decimal" | "email" | "url" | "search";
+  enumOptions?: SettingOption[];
+  requiresRestart?: boolean;
+  experimental?: boolean;
+  dangerous?: boolean;
+  actionLabel?: string;
+  getValue?: () => unknown | Promise<unknown>;
+  setValue?: (value: unknown) => void | Promise<void>;
+  validate?: (value: unknown) => string | null | Promise<string | null>;
+  reset?: () => void | Promise<void>;
+  run?: () => void | Promise<void>;
+  renderCustom?: (props: SettingRenderProps) => ReactNode;
+  renderLegacy?: (container: HTMLElement) => { dispose?: () => void } | void;
+}
+
+export interface SettingSectionContribution {
+  id: string;
+  title: string;
+  description?: string;
+  order?: number;
+  settings: SettingContribution[];
+}
+
+export interface SettingsPageContribution {
+  id: string;
+  title: string;
+  description?: string;
+  category: SettingsCategory;
+  order?: number;
+  keywords?: string[];
+  pluginId?: string;
+  sections: SettingSectionContribution[];
+}
+
+/**
+ * Legacy item bridge.
+ * 保留给尚未迁移到 page/section/setting 协议的插件使用。
+ */
+export interface SettingsItem {
+  id: string;
+  category?: string;
+  section: string;
+  title: string;
+  description?: string;
+  keywords?: string[];
+  order?: number;
+  renderReact?: (props: { item: SettingsItem }) => ReactNode;
+  render?: (container: HTMLElement) => { dispose?: () => void } | void;
 }
 
 export interface Disposable {
@@ -28,66 +97,101 @@ export interface Disposable {
 
 type ChangeHandler = () => void;
 
+const CATEGORY_SET = new Set<SettingsCategory>([
+  "general",
+  "editor",
+  "services",
+  "workspace",
+  "extensions",
+  "advanced"
+]);
+
+function normalizeCategory(input?: string): SettingsCategory {
+  const raw = String(input || "").trim().toLowerCase();
+  if (CATEGORY_SET.has(raw as SettingsCategory)) {
+    return raw as SettingsCategory;
+  }
+  if (raw === "service") return "services";
+  if (raw === "extension") return "extensions";
+  return "extensions";
+}
+
+function sortSettings<T extends { order?: number; id?: string; title?: string; label?: string }>(items: T[]): T[] {
+  return items.slice().sort((a, b) => {
+    const orderCompare = (a.order ?? 0) - (b.order ?? 0);
+    if (orderCompare !== 0) return orderCompare;
+    const aName = a.title || a.label || a.id || "";
+    const bName = b.title || b.label || b.id || "";
+    return aName.localeCompare(bName);
+  });
+}
+
+function clonePage(page: SettingsPageContribution): SettingsPageContribution {
+  return {
+    ...page,
+    sections: sortSettings(page.sections).map((section) => ({
+      ...section,
+      settings: sortSettings(section.settings)
+    }))
+  };
+}
+
+function legacyItemToPage(item: SettingsItem): SettingsPageContribution {
+  return {
+    id: `legacy.${item.id}`,
+    title: item.section || item.title,
+    description: item.description,
+    category: normalizeCategory(item.category),
+    order: item.order,
+    keywords: item.keywords,
+    pluginId: "legacy",
+    sections: [
+      {
+        id: `${item.id}.section`,
+        title: item.section || "General",
+        order: item.order,
+        settings: [
+          {
+            id: item.id,
+            label: item.title,
+            description: item.description,
+            kind: "custom",
+            order: item.order,
+            tags: item.keywords,
+            renderCustom: item.renderReact ? () => item.renderReact!({ item }) : undefined,
+            renderLegacy: item.render
+          }
+        ]
+      }
+    ]
+  };
+}
+
 export class SettingsRegistry {
-  private items = new Map<string, SettingsItem>();
-  private renderers = new Map<string, { dispose?: () => void } | null>();
+  private pages = new Map<string, SettingsPageContribution>();
   private changeHandlers: ChangeHandler[] = [];
 
-  /**
-   * 注册一个设置项。如果 id 已存在，先注销旧的再注册新的。
-   */
-  registerItem(item: SettingsItem): Disposable {
-    // 如果已存在，先清理
-    if (this.items.has(item.id)) {
-      this.disposeItem(item.id);
-    }
-
-    this.items.set(item.id, item);
+  registerPage(page: SettingsPageContribution): Disposable {
+    this.pages.set(page.id, clonePage(page));
     this.fireChange();
-
     return {
       dispose: () => {
-        if (this.items.get(item.id) === item) {
-          this.disposeItem(item.id);
-          this.items.delete(item.id);
+        if (this.pages.get(page.id)?.id === page.id) {
+          this.pages.delete(page.id);
           this.fireChange();
         }
       }
     };
   }
 
-  /**
-   * 获取所有已注册的设置项，按 section 分组并排序
-   */
-  getItems(): SettingsItem[] {
-    return Array.from(this.items.values()).sort((a, b) => {
-      // 先按 section 字母排序，再按 order 排序
-      const sectionCompare = a.section.localeCompare(b.section);
-      if (sectionCompare !== 0) return sectionCompare;
-      return (a.order ?? 0) - (b.order ?? 0);
-    });
+  registerItem(item: SettingsItem): Disposable {
+    return this.registerPage(legacyItemToPage(item));
   }
 
-  /**
-   * 获取所有已注册的设置项，按 section 分组
-   */
-  getSections(): { section: string; items: SettingsItem[] }[] {
-    const sectionMap = new Map<string, SettingsItem[]>();
-    const sorted = this.getItems();
-    for (const item of sorted) {
-      const list = sectionMap.get(item.section) || [];
-      list.push(item);
-      sectionMap.set(item.section, list);
-    }
-    return Array.from(sectionMap.entries()).map(([section, items]) => ({
-      section,
-      items
-    }));
+  getPages(): SettingsPageContribution[] {
+    return sortSettings(Array.from(this.pages.values())).map((page) => clonePage(page));
   }
 
-  /**
-   * 监听设置项变更
-   */
   onDidChange(handler: ChangeHandler): Disposable {
     this.changeHandlers.push(handler);
     return {
@@ -98,20 +202,15 @@ export class SettingsRegistry {
     };
   }
 
-  private disposeItem(id: string) {
-    const renderer = this.renderers.get(id);
-    if (renderer) {
-      try { renderer.dispose?.(); } catch {}
-      this.renderers.delete(id);
-    }
-  }
-
   private fireChange() {
     for (const handler of this.changeHandlers) {
-      try { handler(); } catch {}
+      try {
+        handler();
+      } catch {
+        // Ignore misbehaving listeners to avoid breaking the registry.
+      }
     }
   }
 }
 
-/** 全局单例 */
 export const settingsRegistry = new SettingsRegistry();

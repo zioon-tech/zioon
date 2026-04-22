@@ -3,7 +3,7 @@
 ## 背景
 
 Zion Next 的各类配置散落在不同位置：
-- 服务 BaseUrl 由 `dev.settings` 插件管理（弹出 overlay 编辑）
+- 服务 BaseUrl 由独立设置插件注册到统一设置中心
 - Mail SMTP 配置由 `dev.mail` 插件自行管理
 - Skills 配置在 `dev.skills` 插件内
 - 文件系统句柄由 `dev.fs-manager` 管理
@@ -15,7 +15,7 @@ Zion Next 的各类配置散落在不同位置：
 1. 在左侧 Activity Bar 底部（和 ⌘ 命令按钮并排）添加 ⚙ 设置按钮
 2. 点击弹出统一的设置面板（modal overlay）
 3. **核心层只做注册 API + 面板壳子**，具体配置项由各插件自己注册
-4. 已有的 `dev.settings` 插件由核心层替代
+4. 历史上的 `dev.settings` 迁移掉，改为由各设置插件自行注册
 
 ## 架构
 
@@ -27,56 +27,78 @@ Zion Next 的各类配置散落在不同位置：
 └── index.ts             # 统一导出
 
 暴露到 window.zion：
-  window.zion.settings.registerItem(item)  → { dispose() }
+  window.zion.settings.registerPage(page)  → { dispose() }
+  window.zion.settings.registerItem(item)  → { dispose() } // legacy bridge
   window.zion.settings.open()
   window.zion.settings.close()
 
-各模块/插件在 activate() 中自行调用 registerItem 注册配置
+各模块/插件在 activate() 中自行调用 registerPage 注册配置页面
 ```
 
 **核心原则**：核心层零业务逻辑，不做任何具体配置项的内容。
 
 ## 核心 API
 
-### SettingsItem 接口
+### SettingsPageContribution 接口
 
 ```ts
-interface SettingsItem {
-  /** 唯一标识 */
+interface SettingsPageContribution {
   id: string;
-  /** 分组（如 "服务", "Mail", "Skills", "File System"） */
-  section: string;
-  /** 显示标题 */
   title: string;
-  /** 排序权重，默认 0 */
+  category: "general" | "editor" | "services" | "workspace" | "extensions" | "advanced";
+  description?: string;
+  pluginId?: string;
   order?: number;
-  /**
-   * 插件自行渲染设置 UI
-   * @param container 面板分配的容器节点
-   * @returns 可选的 dispose 回调（面板关闭时调用）
-   */
-  render: (container: HTMLElement) => { dispose?: () => void } | void;
+  sections: SettingSectionContribution[];
+}
+
+interface SettingSectionContribution {
+  id: string;
+  title: string;
+  description?: string;
+  settings: SettingContribution[];
+}
+
+interface SettingContribution {
+  id: string;
+  label: string;
+  kind: "string" | "password" | "number" | "boolean" | "textarea" | "select" | "action" | "custom";
+  description?: string;
+  scope?: "application" | "workspace" | "plugin";
+  defaultValue?: unknown;
+  getValue?: () => unknown | Promise<unknown>;
+  setValue?: (value: unknown) => void | Promise<void>;
+  validate?: (value: unknown) => string | null | Promise<string | null>;
+  reset?: () => void | Promise<void>;
+  run?: () => void | Promise<void>;
+  renderCustom?: () => ReactNode;
 }
 ```
 
 ### 注册 API
 
 ```ts
-// 注册设置项
-const disposable = window.zion.settings.registerItem({
-  id: "my-plugin-config",
-  section: "My Plugin",
-  title: "我的配置",
-  order: 50,
-  render(container) {
-    // 自行渲染 UI
-    const input = document.createElement("input");
-    input.value = localStorage.getItem("my.config") || "";
-    container.appendChild(input);
-    return {
-      dispose() { /* 清理 */ }
-    };
-  }
+// 注册设置页面
+const disposable = window.zion.settings.registerPage({
+  id: "my-plugin.settings",
+  title: "My Plugin",
+  category: "extensions",
+  pluginId: "my-plugin",
+  sections: [
+    {
+      id: "my-plugin.general",
+      title: "General",
+      settings: [
+        {
+          id: "myPlugin.apiKey",
+          label: "API Key",
+          kind: "password",
+          getValue: () => localStorage.getItem("my.config.apiKey") || "",
+          setValue: (value) => localStorage.setItem("my.config.apiKey", String(value || "")),
+        }
+      ]
+    }
+  ]
 });
 
 // 取消注册
@@ -155,7 +177,7 @@ window.zion.commands.executeCommand("settings.open");
 
 | Section | Item | 注册者 | 内容 |
 |---------|------|--------|------|
-| 服务 | 服务地址 (Base URL) | 核心层 main.ts | 4 个服务的 BaseUrl 编辑 |
+| 服务 | 服务地址 (Base URL) | dev.service-baseurl/main.js | 4 个服务的 BaseUrl 编辑 |
 | Mail | 邮件配置 | dev.mail/settings.js | SMTP / 收件人 / 通知 / Debug |
 | Skills | Skills 配置 | dev.skills/main.js | 目录路径 / 扫描 / 启用 |
 | File System | 文件系统访问管理 | dev.fs-manager/main.js | 文件/文件夹句柄管理 |
@@ -165,13 +187,14 @@ window.zion.commands.executeCommand("settings.open");
 | 文件 | 类型 | 说明 |
 |------|------|------|
 | `src/settings/registry.ts` | 新增 | SettingsRegistry 类 |
-| `src/settings/SettingsPanel.ts` | 新增 | Modal overlay 面板 UI |
+| `src/settings/SettingsPanel.ts` | 新增 | React 驱动的设置中心弹层 |
+| `src/settings/SettingsShell.tsx` | 新增 | 左侧导航 + 搜索 + 内容区的设置中心壳子 |
 | `src/settings/index.ts` | 新增 | 统一导出 |
 | `src/ext/registry.ts` | 修改 | 暴露 `window.zion.settings` API |
 | `src/ui/workbench/workbench.ts` | 修改 | Activity Bar 底部 ⚙ 按钮 |
 | `src/styles.css` | 修改 | `.zion-activitybar-bottom` CSS |
-| `src/main.ts` | 修改 | bootstrap 中注册 serviceBaseUrl 设置项 |
-| `extensions/dev.settings/main.js` | 修改 | 精简为 legacy shim |
+| `src/main.ts` | 修改 | bootstrap 中注册设置中心打开命令及旧命令别名 |
+| `extensions/dev.service-baseurl/main.js` | 新增 | 注册服务地址设置项（React 原生实现） |
 | `extensions/dev.mail/settings.js` | 新增 | Mail 配置 UI 注册 |
 | `extensions/dev.mail/main.js` | 修改 | activate 中调用 registerMailSettings |
 | `extensions/dev.skills/main.js` | 修改 | activate 中注册 skills 配置 |

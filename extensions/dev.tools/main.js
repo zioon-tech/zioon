@@ -1,5 +1,7 @@
+import { createElement } from "react";
 import { installToolCallCards } from "./tool-calls.js";
 import { installToolSwitcher } from "./tool-switcher.js";
+import { ToolsSettingsPage, buildToolRows } from "./ToolsSettingsPage.jsx";
 
 export async function activate(ctx) {
   // 注册默认工具与处理器
@@ -153,6 +155,55 @@ export async function activate(ctx) {
       localStorage.setItem("zion.enabledTools.userCustomized", (prevCustomized || customizedNow) ? "1" : "0");
     } catch {}
   };
+
+  const getToolRows = () => {
+    ensureEnabledTools();
+    const rawTools = window.zion.state.get("chat.tools") || [];
+    const enabled = window.zion.state.get("chat.enabledTools");
+    const names = rawTools.map((tool) => tool?.function?.name).filter(Boolean);
+    const enabledNames = Array.isArray(enabled) ? enabled.filter((name) => names.includes(name)) : names;
+    return buildToolRows(rawTools, enabledNames);
+  };
+  const setEnabledTools = async (value) => {
+    const rawTools = window.zion.state.get("chat.tools") || [];
+    const names = rawTools.map((tool) => tool?.function?.name).filter(Boolean);
+    const next = Array.isArray(value) ? value.map(String).filter((name) => names.includes(name)) : [];
+    window.zion.state.set("chat.enabledTools", next);
+    window.zion.state.set("chat.toolsKnownNames", names);
+    persistEnabledTools();
+  };
+
+  try {
+    window.zion.settings.registerPage({
+      id: "tools.preferences",
+      pluginId: "dev.tools",
+      category: "workspace",
+      title: "Tools",
+      description: "启用工具与工具入口",
+      order: 38,
+      sections: [
+        {
+          id: "tools.preferences.page",
+          title: "Tools",
+          settings: [
+            {
+              id: "tools.preferences.manager",
+              kind: "custom",
+              label: "Tools",
+              renderCustom: () =>
+                createElement(ToolsSettingsPage, {
+                  getTools: getToolRows,
+                  setEnabledTools,
+                  openSwitcher: () => window.zion.commands.executeCommand("tools.openSwitcher")
+                })
+            }
+          ]
+        }
+      ]
+    });
+  } catch (e) {
+    console.error("[dev.tools] register settings page failed", e);
+  }
 
   ctx.subscriptions.push(
     window.zion.state.onDidChange("chat.tools", () => { ensureEnabledTools(); updateToolsBtn(); }),

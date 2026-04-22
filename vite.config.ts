@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 import { zionExtensionsPlugin } from "./vite-plugin-extensions-fixed.js";
 import { VitePWA } from 'vite-plugin-pwa';
 
@@ -50,6 +51,7 @@ export default defineConfig({
     copyPublicDir: true
   },
   plugins: [
+    react(),
     zionExtensionsPlugin() as any,
     VitePWA({
       registerType: 'autoUpdate',

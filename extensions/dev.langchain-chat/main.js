@@ -1,3 +1,4 @@
+import { createElement } from "react";
 import { runStream } from "./chat-service.js";
 import {
   DEFAULT_REASONING_CONTENT_PLACEHOLDER,
@@ -11,6 +12,7 @@ import { userModelsProvider } from "./user-models-provider.js";
 import { installModelSwitcher } from "./model-switcher.js";
 import { registerModelsTools } from "./models-tools.js";
 import { createChatOverviewRail } from "./overview-rail.js";
+import { ModelsSettingsPage } from "./ModelsSettingsPage.jsx";
 import {
   appendAssistantToken as appendAssistantTokenToEditor,
   ensureTrailingUserPromptInDocText,
@@ -1435,6 +1437,35 @@ export async function activate(ctx) {
 
   // 注册“模型管理”工具（CRUD + 设置激活）
   try { registerModelsTools(); } catch {}
+
+  try {
+    const settingsDisp = window.zion?.settings?.registerPage?.({
+      id: "services.langchain-models",
+      title: "Models",
+      category: "services",
+      order: 30,
+      pluginId: "dev.langchain-chat",
+      keywords: ["models", "llm", "provider", "langchain", "deepseek", "claude", "gemini"],
+      sections: [
+        {
+          id: "langchain.models.manage",
+          title: "Models",
+          settings: [
+            {
+              id: "chat.models.manager",
+              label: "Models",
+              kind: "custom",
+              order: 10,
+              renderCustom: () => createElement(ModelsSettingsPage)
+            }
+          ]
+        }
+      ]
+    });
+    if (settingsDisp) ctx.subscriptions.push(settingsDisp);
+  } catch (e) {
+    console.warn("[langchain-chat] failed to register settings page", e);
+  }
 
   try {
     let installed = false;

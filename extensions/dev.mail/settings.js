@@ -1,153 +1,225 @@
-/**
- * dev.mail — mail 配置设置项注册
- *
- * 将 SMTP 配置 / 收件人列表 / 通知开关 注册到核心层 Settings Panel
- */
+import {
+  getMailSettings,
+  MAIL_SETTINGS_DEFAULTS,
+  saveMailSettings,
+  validateMailSettings
+} from "./mail-settings-store.js";
 
-function getMailConfig() {
-  try {
-    const raw = localStorage.getItem("zion.mail.config");
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return {
-    host: "",
-    port: "465",
-    secure: true,
-    user: "",
-    pass: "",
-    from: "",
-    to: [],
-    notify: true,
-    debug: false
-  };
+function readField(field) {
+  const settings = getMailSettings();
+  return settings[field];
 }
 
-function saveMailConfig(cfg) {
-  try {
-    localStorage.setItem("zion.mail.config", JSON.stringify(cfg));
-  } catch {}
-}
-
-function renderMailConfig(container) {
-  const cfg = getMailConfig();
-  const inputs = {};
-
-  const style = document.createElement("style");
-  style.textContent = `
-    .mail-cfg-row { display:flex;align-items:center;gap:8px;margin-bottom:8px }
-    .mail-cfg-row:last-child { margin-bottom:0 }
-    .mail-cfg-label { flex:0 0 110px;font-size:12px;opacity:.8;font-weight:500 }
-    .mail-cfg-input { flex:1;padding:4px 8px;border:1px solid var(--border,#3c3c3c);border-radius:6px;background:transparent;color:var(--fg,#ccc);font-size:12px }
-    .mail-cfg-input:focus { outline:1px solid var(--accent,#6272a4) }
-    .mail-cfg-actions { display:flex;gap:8px;margin-top:12px }
-    .mail-cfg-btn { padding:4px 12px;border:1px solid var(--border,#3c3c3c);border-radius:6px;background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:12px }
-    .mail-cfg-btn:hover { background:rgba(255,255,255,.06) }
-    .mail-cfg-btn.primary { border-color:var(--accent,#6272a4);color:var(--accent,#6272a4) }
-    .mail-cfg-msg { font-size:11px;margin-top:6px;min-height:16px }
-    .mail-cfg-msg.ok { color:var(--ok,#4caf50) }
-    .mail-cfg-check { display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;opacity:.85 }
-    .mail-cfg-check input { accent-color:var(--accent,#6272a4) }
-  `;
-  container.appendChild(style);
-
-  const fields = [
-    { key: "host", label: "SMTP Host", type: "text", placeholder: "smtp.example.com" },
-    { key: "port", label: "SMTP Port", type: "text", placeholder: "465" },
-    { key: "user", label: "Username", type: "text", placeholder: "user@example.com" },
-    { key: "pass", label: "Password", type: "password", placeholder: "••••••" },
-    { key: "from", label: "From", type: "text", placeholder: "noreply@example.com" },
-    { key: "to", label: "Recipients", type: "text", placeholder: "a@x.com, b@y.com" }
-  ];
-
-  for (const f of fields) {
-    const row = document.createElement("div");
-    row.className = "mail-cfg-row";
-    const label = document.createElement("div");
-    label.className = "mail-cfg-label";
-    label.textContent = f.label;
-    const input = document.createElement("input");
-    input.className = "mail-cfg-input";
-    input.type = f.type;
-    input.placeholder = f.placeholder;
-    if (f.key === "to") {
-      input.value = Array.isArray(cfg.to) ? cfg.to.join(", ") : (cfg.to || "");
-    } else {
-      input.value = String(cfg[f.key] ?? "");
-    }
-    inputs[f.key] = input;
-    row.appendChild(label);
-    row.appendChild(input);
-    container.appendChild(row);
+function writeField(field, value) {
+  const result = saveMailSettings({ ...getMailSettings(), [field]: value });
+  if (!result.ok) {
+    throw new Error(result.errors?.[field] || result.errors?._form || "保存失败");
   }
-
-  // Notification toggle
-  const notifyRow = document.createElement("div");
-  notifyRow.className = "mail-cfg-check";
-  const notifyCb = document.createElement("input");
-  notifyCb.type = "checkbox";
-  notifyCb.checked = cfg.notify !== false;
-  const notifyLabel = document.createElement("span");
-  notifyLabel.textContent = "启用通知";
-  notifyRow.appendChild(notifyCb);
-  notifyRow.appendChild(notifyLabel);
-  container.appendChild(notifyRow);
-
-  // Debug toggle
-  const debugRow = document.createElement("div");
-  debugRow.className = "mail-cfg-check";
-  const debugCb = document.createElement("input");
-  debugCb.type = "checkbox";
-  debugCb.checked = cfg.debug === true;
-  const debugLabel = document.createElement("span");
-  debugLabel.textContent = "Debug 模式";
-  debugRow.appendChild(debugCb);
-  debugRow.appendChild(debugLabel);
-  container.appendChild(debugRow);
-
-  const msg = document.createElement("div");
-  msg.className = "mail-cfg-msg";
-
-  const actions = document.createElement("div");
-  actions.className = "mail-cfg-actions";
-  const saveBtn = document.createElement("button");
-  saveBtn.className = "mail-cfg-btn primary";
-  saveBtn.textContent = "保存";
-  saveBtn.onclick = () => {
-    const toStr = inputs["to"].value.trim();
-    const toArr = toStr ? toStr.split(/[,;]/).map(s => s.trim()).filter(Boolean) : [];
-    const newCfg = {
-      host: inputs["host"].value.trim(),
-      port: inputs["port"].value.trim() || "465",
-      secure: true,
-      user: inputs["user"].value.trim(),
-      pass: inputs["pass"].value,
-      from: inputs["from"].value.trim(),
-      to: toArr,
-      notify: notifyCb.checked,
-      debug: debugCb.checked
-    };
-    saveMailConfig(newCfg);
-    msg.className = "mail-cfg-msg ok";
-    msg.textContent = "已保存 ✓";
-    setTimeout(() => { msg.textContent = ""; }, 2000);
-  };
-  actions.appendChild(saveBtn);
-  container.appendChild(actions);
-  container.appendChild(msg);
 }
 
-exports.registerMailSettings = function () {
+function validateField(field, value) {
+  const errors = validateMailSettings({ ...getMailSettings(), [field]: value });
+  return errors[field] || null;
+}
+
+export function registerMailSettings() {
   try {
-    if (window.zion?.settings?.registerItem) {
-      window.zion.settings.registerItem({
-        id: "mail-config",
-        section: "Mail",
-        title: "邮件配置",
+    if (window.zion?.settings?.registerPage) {
+      window.zion.settings.registerPage({
+        id: "services.mail",
+        title: "Mail",
+        description: "配置 SMTP 发信、默认收件人和会话结束通知。",
+        category: "services",
         order: 20,
-        render: renderMailConfig
+        pluginId: "dev.mail",
+        keywords: ["smtp", "email", "recipient", "notification", "debug"],
+        sections: [
+          {
+            id: "mail.smtp",
+            title: "SMTP",
+            description: "定义真正用于发送邮件的 SMTP 连接参数。",
+            settings: [
+              {
+                id: "mail.smtp.host",
+                label: "SMTP Host",
+                description: "例如 `smtp.example.com`。",
+                kind: "string",
+                controlLayout: "wide",
+                scope: "application",
+                order: 10,
+                placeholder: "smtp.example.com",
+                getValue: () => readField("smtpHost"),
+                setValue: (value) => writeField("smtpHost", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.smtpHost
+              },
+              {
+                id: "mail.smtp.port",
+                label: "SMTP Port",
+                description: "常见端口如 `465` 或 `587`。",
+                kind: "number",
+                scope: "application",
+                order: 20,
+                placeholder: MAIL_SETTINGS_DEFAULTS.smtpPort,
+                inputMode: "numeric",
+                getValue: () => readField("smtpPort"),
+                setValue: (value) => writeField("smtpPort", value),
+                validate: (value) => validateField("smtpPort", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.smtpPort
+              },
+              {
+                id: "mail.smtp.username",
+                label: "SMTP Username",
+                description: "通常是邮箱地址或服务账号。",
+                kind: "string",
+                controlLayout: "wide",
+                scope: "application",
+                order: 30,
+                placeholder: "user@example.com",
+                getValue: () => readField("smtpUsername"),
+                setValue: (value) => writeField("smtpUsername", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.smtpUsername
+              },
+              {
+                id: "mail.smtp.password",
+                label: "SMTP Password",
+                description: "建议使用 app-specific password。",
+                kind: "password",
+                controlLayout: "wide",
+                scope: "application",
+                order: 40,
+                placeholder: "app-specific password",
+                getValue: () => readField("smtpPassword"),
+                setValue: (value) => writeField("smtpPassword", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.smtpPassword,
+                dangerous: true
+              },
+              {
+                id: "mail.smtp.useTls",
+                label: "Use TLS",
+                description: "与 Mail 服务配置保持一致。",
+                kind: "boolean",
+                scope: "application",
+                order: 50,
+                getValue: () => readField("smtpUseTls"),
+                setValue: (value) => writeField("smtpUseTls", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.smtpUseTls
+              }
+            ]
+          },
+          {
+            id: "mail.identity",
+            title: "Identity",
+            description: "配置发件人展示信息。",
+            settings: [
+              {
+                id: "mail.from.email",
+                label: "From Email",
+                description: "发件人邮箱地址。",
+                kind: "string",
+                controlLayout: "wide",
+                scope: "application",
+                order: 10,
+                placeholder: MAIL_SETTINGS_DEFAULTS.fromEmail,
+                inputMode: "email",
+                getValue: () => readField("fromEmail"),
+                setValue: (value) => writeField("fromEmail", value),
+                validate: (value) => validateField("fromEmail", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.fromEmail
+              },
+              {
+                id: "mail.from.name",
+                label: "From Name",
+                description: "显示给收件人的发件人名称。",
+                kind: "string",
+                controlLayout: "wide",
+                scope: "application",
+                order: 20,
+                placeholder: MAIL_SETTINGS_DEFAULTS.fromName,
+                getValue: () => readField("fromName"),
+                setValue: (value) => writeField("fromName", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.fromName
+              }
+            ]
+          },
+          {
+            id: "mail.recipients",
+            title: "Recipients",
+            description: "管理默认收件人和通知发信对象。",
+            settings: [
+              {
+                id: "mail.recipients.list",
+                label: "Recipients",
+                description: "支持逗号、分号或换行分隔多个邮箱地址。",
+                kind: "textarea",
+                controlLayout: "wide",
+                scope: "application",
+                order: 10,
+                placeholder: "alice@example.com\nbob@example.com",
+                getValue: () => (readField("recipients") || []).join("\n"),
+                setValue: (value) => writeField("recipients", value),
+                validate: (value) => validateField("recipients", value),
+                defaultValue: ""
+              },
+              {
+                id: "mail.recipients.default",
+                label: "Default Recipient",
+                description: "留空时会回退到收件人列表中的第一个地址。",
+                kind: "string",
+                controlLayout: "wide",
+                scope: "application",
+                order: 20,
+                placeholder: "alice@example.com",
+                inputMode: "email",
+                getValue: () => readField("defaultRecipient"),
+                setValue: (value) => writeField("defaultRecipient", value),
+                validate: (value) => validateField("defaultRecipient", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.defaultRecipient
+              }
+            ]
+          },
+          {
+            id: "mail.notifications",
+            title: "Notifications",
+            description: "控制会话结束后的发信和调试输出。",
+            settings: [
+              {
+                id: "mail.notify.always",
+                label: "Auto Notify",
+                description: "会话结束后默认尝试发信。",
+                kind: "boolean",
+                scope: "application",
+                order: 10,
+                getValue: () => readField("notifyAlways"),
+                setValue: (value) => writeField("notifyAlways", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.notifyAlways
+              },
+              {
+                id: "mail.debug",
+                label: "Debug Mode",
+                description: "输出更多 mail 调试日志。",
+                kind: "boolean",
+                scope: "application",
+                order: 20,
+                getValue: () => readField("debug"),
+                setValue: (value) => writeField("debug", value),
+                defaultValue: MAIL_SETTINGS_DEFAULTS.debug
+              },
+              {
+                id: "mail.panel.open",
+                label: "Open Compact Mail Panel",
+                description: "打开原有的紧凑 Mail 配置面板，便于调试或快速调整。",
+                kind: "action",
+                scope: "plugin",
+                order: 30,
+                actionLabel: "打开面板",
+                run: () => window.zion?.commands?.executeCommand?.("tools.openMailConfig")
+              }
+            ]
+          }
+        ]
       });
     }
   } catch (e) {
-    console.warn("[dev.mail] failed to register settings item", e);
+    console.warn("[dev.mail] failed to register settings page", e);
   }
-};
+}

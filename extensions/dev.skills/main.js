@@ -937,8 +937,11 @@ export async function activate(ctx) {
 
       window.zion.settings.registerItem({
         id: "skills-config",
+        category: "Workspace",
         section: "Skills",
         title: "Skills 配置",
+        description: "管理技能目录、重新扫描技能索引，并批量启用或清理缓存。",
+        keywords: ["skills", "catalog", "scan", "paths", "workspace"],
         order: 30,
         render(container) {
           const st = getState();

@@ -2328,6 +2328,7 @@ const registry = new Registry();
       setMode: (mode: any) => responsiveRuntime.setMode(mode)
     },
     settings: {
+      registerPage: (page: any) => settingsRegistry.registerPage(page),
       registerItem: (item: any) => settingsRegistry.registerItem(item),
       open: () => openSettingsPanel(),
       close: () => closeSettingsPanel()

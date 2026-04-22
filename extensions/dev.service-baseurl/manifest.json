@@ -1,0 +1,19 @@
+{
+  "name": "dev.service-baseurl",
+  "version": "0.0.1",
+  "description": "Register the service base URL settings item into the unified Settings Center.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.service-baseurl",
+    "name": "Service BaseUrl Settings",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

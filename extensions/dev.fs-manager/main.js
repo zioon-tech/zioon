@@ -385,8 +385,11 @@ export async function activate(ctx) {
     if (window.zion?.settings?.registerItem) {
       window.zion.settings.registerItem({
         id: "fs-manager-config",
+        category: "Workspace",
         section: "File System",
         title: "文件系统访问管理",
+        description: "维护已授权的文件和目录句柄，并保存它们的本地路径映射。",
+        keywords: ["filesystem", "handles", "workspace", "permissions", "paths"],
         order: 40,
         render(container) {
           container.innerHTML = "";
