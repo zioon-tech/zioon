@@ -561,6 +561,16 @@ html, body {
   overscroll-behavior: contain;
 }
 
+.zion-activitybar-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
 .zion-activitybar-item {
   position: relative;
   width: 100%;

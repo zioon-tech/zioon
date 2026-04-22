@@ -246,6 +246,24 @@ function insertRoleLineBelow(editor, role) {
   } catch {}
 }
 
+function readRoleList(key, fallback = []) {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = JSON.parse(raw || "[]");
+    return Array.isArray(parsed) ? parsed.filter(Boolean).map(v => String(v)) : fallback.slice();
+  } catch {
+    return fallback.slice();
+  }
+}
+
+function writeRoleList(key, values) {
+  const next = Array.isArray(values)
+    ? values.map(v => String(v).trim()).filter(Boolean)
+    : [];
+  try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+  return next;
+}
+
 export async function activate(ctx) {
   try {
     // Dynamically import roles() from local extension module
@@ -393,6 +411,61 @@ export async function activate(ctx) {
         onClick: showRolesConfigModal
       });
       ctx.subscriptions.push(dispStatus);
+    }
+
+    try {
+      window.zion.settings.registerPage({
+        id: 'roles.preferences',
+        pluginId: 'dev.roles',
+        category: 'workspace',
+        title: 'Roles',
+        description: '角色前缀与块级高亮',
+        order: 36,
+        sections: [
+          {
+            id: 'roles.basics',
+            title: '基础配置',
+            settings: [
+              {
+                id: 'roles.prefixes',
+                kind: 'textarea',
+                label: '角色前缀',
+                description: '每行一个角色名称。保存后新编辑器会使用这些前缀。',
+                placeholder: 'user\nassistant\nsystem',
+                getValue: () => readRoleList('zion.roles.prefixes', []).join('\n'),
+                setValue: async (value) => {
+                  const next = String(value || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+                  writeRoleList('zion.roles.prefixes', next);
+                  try { localStorage.setItem('dev.roles.prefixes', JSON.stringify(next)); } catch {}
+                }
+              },
+              {
+                id: 'roles.highlightBlocks',
+                kind: 'textarea',
+                label: '高亮块角色',
+                description: '这些角色会渲染为更明显的块样式。',
+                placeholder: 'system\ntool',
+                getValue: () => readRoleList('zion.roles.highlightBlockRoles', []).join('\n'),
+                setValue: async (value) => {
+                  const next = String(value || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+                  writeRoleList('zion.roles.highlightBlockRoles', next);
+                  try { localStorage.setItem('dev.roles.highlightBlockRoles', JSON.stringify(next)); } catch {}
+                }
+              },
+              {
+                id: 'roles.openAdvanced',
+                kind: 'action',
+                label: '高级角色配置',
+                description: '打开角色配置弹窗做更细的调整',
+                actionLabel: '打开角色配置',
+                action: async () => window.zion.commands.executeCommand('roles.configure')
+              }
+            ]
+          }
+        ]
+      });
+    } catch (registerError) {
+      console.error('[dev.roles] register settings page failed:', registerError);
     }
   } catch (e) {
     console.error('[dev.roles] activation error:', e);

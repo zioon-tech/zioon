@@ -740,6 +740,232 @@ export async function activate(ctx) {
       console.error("openConfigPanel error:", e);
     }
   }
+
+  const getBool = (key, fallback = false) => {
+    const value = window.zion.state.get(key);
+    return typeof value === "boolean" ? value : fallback;
+  };
+  const getString = (key, fallback = "") => {
+    const value = window.zion.state.get(key);
+    return typeof value === "string" && value ? value : fallback;
+  };
+  const setStoredState = (stateKey, storageKey, value) => {
+    window.zion.state.set(stateKey, value);
+    try {
+      localStorage.setItem(storageKey, typeof value === "string" ? value : JSON.stringify(value));
+    } catch {}
+  };
+
+  try {
+    window.zion.settings.registerPage({
+      id: "appearance.preferences",
+      pluginId: "dev.editor-config",
+      category: "general",
+      title: "Appearance",
+      description: "主题与页面呈现",
+      order: 12,
+      sections: [
+        {
+          id: "appearance.basics",
+          title: "外观",
+          settings: [
+            {
+              id: "appearance.theme",
+              kind: "select",
+              label: "主题",
+              description: "切换整体明暗风格",
+              enumOptions: [
+                { value: "dark", label: "Dark" },
+                { value: "light", label: "Light" }
+              ],
+              getValue: () => String(window.zion.state.get("ui.theme") || "dark"),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setTheme", value === "light" ? "light" : "dark")
+            },
+            {
+              id: "appearance.editorWidthMode",
+              kind: "select",
+              label: "编辑区域宽度",
+              description: "控制正文区域的横向宽度",
+              enumOptions: [
+                { value: "standard", label: "标准" },
+                { value: "wide", label: "宽" },
+                { value: "full", label: "全宽" }
+              ],
+              getValue: () => getString(STATE_KEY, DEFAULT_MODE),
+              setValue: async (value) => {
+                if (value === "wide") return window.zion.commands.executeCommand("dev.editor.setWidthWide");
+                if (value === "full") return window.zion.commands.executeCommand("dev.editor.setWidthFull");
+                return window.zion.commands.executeCommand("dev.editor.setWidthStandard");
+              }
+            },
+            {
+              id: "appearance.headingSize",
+              kind: "select",
+              label: "标题尺寸",
+              description: "调整页面里标题的视觉大小",
+              enumOptions: [
+                { value: "medium", label: "适中" },
+                { value: "small", label: "较小" },
+                { value: "xsmall", label: "更小" }
+              ],
+              getValue: () => getString(HEADING_STATE_KEY, HEADING_DEFAULT),
+              setValue: async (value) => {
+                if (value === "small") return window.zion.commands.executeCommand("dev.editor.setHeadingSizeSmall");
+                if (value === "xsmall") return window.zion.commands.executeCommand("dev.editor.setHeadingSizeXSmall");
+                return window.zion.commands.executeCommand("dev.editor.setHeadingSizeMedium");
+              }
+            },
+            {
+              id: "appearance.roleUserBlockBackground",
+              kind: "boolean",
+              label: "用户消息底色",
+              description: "为用户消息块增加轻微背景区分",
+              getValue: () => getBool("ui.roleUserBlockBackground", false),
+              setValue: async (value) => window.zion.commands.executeCommand("dev.editor.setUserRoleBlockBackground", !!value)
+            }
+          ]
+        }
+      ]
+    });
+
+    window.zion.settings.registerPage({
+      id: "editor.preferences",
+      pluginId: "dev.editor-config",
+      category: "editor",
+      title: "Editor",
+      description: "常用编辑器偏好",
+      order: 14,
+      sections: [
+        {
+          id: "editor.basics",
+          title: "基础体验",
+          settings: [
+            {
+              id: "editor.wysiwyg",
+              kind: "boolean",
+              label: "所见即所得",
+              description: "在编辑时显示更接近最终排版的效果",
+              getValue: () => getBool("ui.wysiwyg", false),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setWysiwyg", !!value)
+            },
+            {
+              id: "editor.lineWrap",
+              kind: "boolean",
+              label: "自动换行",
+              description: "长行内容自动折到下一行",
+              getValue: () => getBool("ui.lineWrap", false),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setLineWrap", !!value)
+            },
+            {
+              id: "editor.minimap",
+              kind: "boolean",
+              label: "迷你地图",
+              description: "在右侧显示文档缩略预览",
+              getValue: () => getBool("ui.minimapEnabled", true),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setMinimap", !!value)
+            },
+            {
+              id: "editor.lineNumbers",
+              kind: "boolean",
+              label: "行号",
+              description: "显示每一行的序号",
+              getValue: () => getBool("ui.lineNumbers", false),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setLineNumbers", !!value)
+            },
+            {
+              id: "editor.activeLineHighlight",
+              kind: "boolean",
+              label: "当前行高亮",
+              description: "突出当前所在行",
+              getValue: () => getBool("ui.activeLineHighlight", false),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setActiveLineHighlight", !!value)
+            },
+            {
+              id: "editor.syntaxHighlight",
+              kind: "boolean",
+              label: "语法高亮",
+              description: "为代码与标记内容提供颜色区分",
+              getValue: () => getBool("ui.syntaxHighlight", false),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setSyntaxHighlight", !!value)
+            },
+            {
+              id: "editor.autoIndent",
+              kind: "boolean",
+              label: "自动缩进",
+              description: "换行时继承上一行缩进",
+              getValue: () => getBool("ui.autoIndent", false),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setAutoIndent", !!value)
+            },
+            {
+              id: "editor.folding",
+              kind: "boolean",
+              label: "折叠",
+              description: "允许折叠标题和代码块",
+              getValue: () => getBool("ui.folding", false),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setFolding", !!value)
+            },
+            {
+              id: "editor.selectionHighlight",
+              kind: "boolean",
+              label: "选中高亮",
+              description: "同步高亮当前选中的重复内容",
+              getValue: () => getBool("ui.selectionHighlight", true),
+              setValue: async (value) => window.zion.commands.executeCommand("zion.setSelectionHighlight", !!value)
+            }
+          ]
+        },
+        {
+          id: "editor.chat",
+          title: "聊天编辑偏好",
+          settings: [
+            {
+              id: "editor.includeToolHistory",
+              kind: "boolean",
+              label: "带上工具历史",
+              description: "在聊天上下文里包含工具调用历史",
+              getValue: () => getBool("chat.includeToolHistory", true),
+              setValue: async (value) => setStoredState("chat.includeToolHistory", "zion.includeToolHistory", !!value)
+            },
+            {
+              id: "editor.includeThinkingHistory",
+              kind: "boolean",
+              label: "带上思考历史",
+              description: "在聊天上下文里包含推理过程历史",
+              getValue: () => getBool("chat.includeThinkingHistory", true),
+              setValue: async (value) => setStoredState("chat.includeThinkingHistory", "zion.includeThinkingHistory", !!value)
+            },
+            {
+              id: "editor.toolReasoningMode",
+              kind: "select",
+              label: "工具推理内容",
+              description: "控制工具调用里的 reasoning_content 是否保留",
+              enumOptions: [
+                { value: "auto", label: "自动" },
+                { value: "always", label: "总是保留" },
+                { value: "never", label: "不保留" }
+              ],
+              getValue: () => getString("chat.toolCallsReasoningContentMode", "auto"),
+              setValue: async (value) => {
+                const next = value === "always" || value === "never" ? value : "auto";
+                setStoredState("chat.toolCallsReasoningContentMode", "zion.toolCallsReasoningContentMode", next);
+              }
+            },
+            {
+              id: "editor.openAdvancedPanel",
+              kind: "action",
+              label: "高级编辑器设置",
+              description: "打开完整编辑器配置面板",
+              actionLabel: "打开高级配置",
+              action: async () => openConfigPanel()
+            }
+          ]
+        }
+      ]
+    });
+  } catch (e) {
+    console.error("[dev.editor-config] register settings pages failed", e);
+  }
+
   // Register the aggregated editor-config tools for LLM usage
   try { registerEditorTools(); } catch {}
 

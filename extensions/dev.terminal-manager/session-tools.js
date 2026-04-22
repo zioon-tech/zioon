@@ -627,22 +627,87 @@ export function installTerminalManagerPanel() {
 export function mountTerminalManagerSidebarViewInto(container) {
   const root = document.createElement("div");
   Object.assign(root.style, {
-    padding: "10px",
+    padding: "12px",
     display: "flex",
     flexDirection: "column",
-    gap: "10px",
+    gap: "12px",
     boxSizing: "border-box",
     width: "100%"
   });
+
+  const header = document.createElement("div");
+  Object.assign(header.style, {
+    display: "flex",
+    flexDirection: "column",
+    gap: "4px"
+  });
+
+  const title = document.createElement("div");
+  title.textContent = "终端会话";
+  Object.assign(title.style, {
+    fontSize: "15px",
+    fontWeight: "600",
+    letterSpacing: "0.01em"
+  });
+
+  const summary = document.createElement("div");
+  summary.textContent = "正在读取会话…";
+  Object.assign(summary.style, {
+    fontSize: "11px",
+    lineHeight: "1.5",
+    opacity: "0.6"
+  });
+
+  header.appendChild(title);
+  header.appendChild(summary);
+
+  const toolbar = document.createElement("div");
+  Object.assign(toolbar.style, {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "8px"
+  });
+
+  const toolbarActions = document.createElement("div");
+  Object.assign(toolbarActions.style, {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap"
+  });
+
+  const makeButton = (text, primary = false) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = text;
+    Object.assign(btn.style, {
+      border: "1px solid var(--border)",
+      borderRadius: "8px",
+      background: primary ? "color-mix(in srgb, var(--accent) 18%, transparent)" : "transparent",
+      color: "var(--fg)",
+      padding: "6px 10px",
+      fontSize: "12px",
+      cursor: "pointer"
+    });
+    return btn;
+  };
+
+  const createToggleBtn = makeButton("新建终端", true);
+  const refreshBtn = makeButton("刷新");
+  toolbarActions.appendChild(createToggleBtn);
+  toolbarActions.appendChild(refreshBtn);
 
   const ctxWrap = document.createElement("label");
   Object.assign(ctxWrap.style, {
     display: "inline-flex",
     alignItems: "center",
     gap: "6px",
-    fontSize: "12px",
+    fontSize: "11px",
+    lineHeight: "1.4",
     userSelect: "none",
-    cursor: "pointer"
+    cursor: "pointer",
+    opacity: "0.72"
   });
   const cbCtx = document.createElement("input");
   cbCtx.type = "checkbox";
@@ -665,11 +730,18 @@ export function mountTerminalManagerSidebarViewInto(container) {
     } catch {}
   });
 
+  toolbar.appendChild(toolbarActions);
+  toolbar.appendChild(ctxWrap);
+
   const form = document.createElement("div");
   Object.assign(form.style, {
-    display: "grid",
+    display: "none",
     gridTemplateColumns: "1fr",
-    gap: "6px"
+    gap: "8px",
+    padding: "12px",
+    border: "1px solid color-mix(in srgb, var(--border) 38%, transparent)",
+    borderRadius: "12px",
+    background: "color-mix(in srgb, var(--panel) 82%, transparent)"
   });
 
   const mkInput = (label, placeholder = "", type = "text") => {
@@ -679,7 +751,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
     wrap.style.gap = "4px";
     const lb = document.createElement("span");
     lb.textContent = label;
-    Object.assign(lb.style, { fontSize: "11px", opacity: "0.8" });
+    Object.assign(lb.style, { fontSize: "10px", opacity: "0.62", textTransform: "uppercase", letterSpacing: "0.03em" });
     const inp = document.createElement("input");
     inp.type = type;
     inp.placeholder = placeholder;
@@ -706,7 +778,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
   typeWrap.style.gap = "4px";
   const typeLb = document.createElement("span");
   typeLb.textContent = "Type";
-  Object.assign(typeLb.style, { fontSize: "11px", opacity: "0.8" });
+  Object.assign(typeLb.style, { fontSize: "10px", opacity: "0.62", textTransform: "uppercase", letterSpacing: "0.03em" });
   const typeSel = document.createElement("select");
   ["local", "ssh"].forEach((v) => {
     const o = document.createElement("option");
@@ -742,43 +814,32 @@ export function mountTerminalManagerSidebarViewInto(container) {
   form.appendChild(sshPort.wrap);
 
   const btns = document.createElement("div");
-  Object.assign(btns.style, { display: "flex", gap: "8px", justifyContent: "flex-end" });
+  Object.assign(btns.style, { display: "flex", gap: "8px", justifyContent: "flex-end", flexWrap: "wrap" });
 
-  const createBtn = document.createElement("button");
-  createBtn.textContent = "Create";
-  createBtn.title = "创建会话";
-  Object.assign(createBtn.style, {
-    border: "1px solid var(--border)",
-    borderRadius: "8px",
-    background: "var(--accent)",
-    color: "var(--panel)",
-    padding: "6px 10px",
-    fontSize: "12px",
-    cursor: "pointer"
-  });
-
-  const refreshBtn = document.createElement("button");
-  refreshBtn.textContent = "Refresh";
-  Object.assign(refreshBtn.style, {
-    border: "1px solid var(--border)",
-    borderRadius: "8px",
-    background: "transparent",
-    color: "var(--fg)",
-    padding: "6px 10px",
-    fontSize: "12px",
-    cursor: "pointer"
-  });
+  const createBtn = makeButton("创建终端", true);
+  const cancelCreateBtn = makeButton("取消");
 
   btns.appendChild(createBtn);
-  btns.appendChild(refreshBtn);
+  btns.appendChild(cancelCreateBtn);
 
   const list = document.createElement("div");
   Object.assign(list.style, {
     display: "flex",
     flexDirection: "column",
-    gap: "8px",
+    gap: "0",
     width: "100%",
     boxSizing: "border-box"
+  });
+
+  const message = document.createElement("div");
+  Object.assign(message.style, {
+    display: "none",
+    fontSize: "11px",
+    lineHeight: "1.45",
+    padding: "8px 10px",
+    borderRadius: "8px",
+    border: "1px solid color-mix(in srgb, var(--border) 36%, transparent)",
+    background: "color-mix(in srgb, var(--panel) 82%, transparent)"
   });
 
   const readBase = () => {
@@ -790,6 +851,53 @@ export function mountTerminalManagerSidebarViewInto(container) {
     } catch {}
     return "http://127.0.0.1:8765";
   };
+
+  function basename(path) {
+    const value = String(path || "").trim();
+    if (!value) return "";
+    const parts = value.split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : value;
+  }
+
+  function shortPath(path) {
+    const value = String(path || "").trim();
+    if (!value) return "";
+    const parts = value.split("/").filter(Boolean);
+    if (parts.length <= 2) return value;
+    return `.../${parts.slice(-2).join("/")}`;
+  }
+
+  function sessionTitle(s) {
+    if ((s?.type || "local") === "ssh") {
+      const host = String(s?.ssh_host || "").trim();
+      const user = String(s?.ssh_user || "").trim();
+      if (host) return `${user ? `${user}@` : ""}${host}`;
+      return "SSH 会话";
+    }
+    return basename(s?.cwd) || "本地终端";
+  }
+
+  function sessionMeta(s) {
+    const type = (s?.type || "local") === "ssh" ? "SSH" : "Local";
+    const cwd = shortPath(s?.cwd) || "未设置工作目录";
+    const fa = formatLastActivity(s?.last_activity);
+    return { text: `${type} · ${cwd} · ${fa.text || "(unknown)"}`, title: fa.title || String(s?.cwd || "") };
+  }
+
+  function showMessage(text, tone = "info") {
+    const value = String(text || "").trim();
+    if (!value) {
+      message.style.display = "none";
+      message.textContent = "";
+      return;
+    }
+    message.textContent = value;
+    message.style.display = "block";
+    message.style.color = tone === "error" ? "#f2a7a7" : "var(--fg)";
+    message.style.background = tone === "error"
+      ? "rgba(190, 70, 70, 0.12)"
+      : "color-mix(in srgb, var(--panel) 82%, transparent)";
+  }
 
   function formatLastActivity(val) {
     if (val == null) return { text: "(unknown)", title: "" };
@@ -827,6 +935,31 @@ export function mountTerminalManagerSidebarViewInto(container) {
   }
 
   let selectedId = null;
+  let expandedId = null;
+  let currentItems = [];
+  let createExpanded = false;
+
+  function syncCreateVisibility() {
+    form.style.display = createExpanded ? "grid" : "none";
+    createToggleBtn.textContent = createExpanded ? "收起新建" : "新建终端";
+    const isSsh = typeSel.value === "ssh";
+    sshUser.wrap.style.display = isSsh ? "flex" : "none";
+    sshHost.wrap.style.display = isSsh ? "flex" : "none";
+    sshPort.wrap.style.display = isSsh ? "flex" : "none";
+  }
+
+  function updateSummary(items) {
+    const arr = Array.isArray(items) ? items : [];
+    const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
+    const active = arr.find((item) => item?.id && item.id === activeId) || null;
+    if (!arr.length) {
+      summary.textContent = "还没有终端会话。可以先新建一个本地终端。";
+      return;
+    }
+    summary.textContent = active
+      ? `共 ${arr.length} 个会话，当前使用 ${sessionTitle(active)}。`
+      : `共 ${arr.length} 个会话，还没有当前终端。`;
+  }
 
   function updateSelectedStyles() {
     const rows = list.querySelectorAll(".zion-session-row");
@@ -852,14 +985,19 @@ export function mountTerminalManagerSidebarViewInto(container) {
       const base = readBase().replace(/\/$/, "");
       const res = await fetch(`${base}/sessions/${encodeURIComponent(sid)}`, { method: "DELETE" });
       await res.json().catch(() => null);
-      if (!res.ok) return;
+      if (!res.ok) {
+        showMessage("关闭终端失败，请稍后再试。", "error");
+        return;
+      }
       const listArr = (window.zion?.state?.get("terminal.sessions") || []).filter((s) => s?.id !== sid);
       window.zion?.state?.set("terminal.sessions", listArr);
       const cur = window.zion?.state?.get("terminal.activeSessionId");
       if (cur === sid) window.zion?.state?.set("terminal.activeSessionId", null);
       if (selectedId === sid) selectedId = null;
       renderList(listArr);
-    } catch {}
+    } catch (e) {
+      showMessage(`关闭终端失败：${e?.message || String(e)}`, "error");
+    }
   }
 
   async function applyCwdTo(sid, cwd) {
@@ -872,7 +1010,10 @@ export function mountTerminalManagerSidebarViewInto(container) {
         body: JSON.stringify({ command: `cd "${cwd}"` })
       });
       await res.json().catch(() => null);
-      if (!res.ok) return;
+      if (!res.ok) {
+        showMessage("更新工作目录失败，请稍后再试。", "error");
+        return;
+      }
       const listArr = (window.zion?.state?.get("terminal.sessions") || []).slice();
       for (let i = 0; i < listArr.length; i++) {
         if (listArr[i]?.id === sid) {
@@ -882,7 +1023,9 @@ export function mountTerminalManagerSidebarViewInto(container) {
       }
       window.zion?.state?.set("terminal.sessions", listArr);
       renderList(listArr);
-    } catch {}
+    } catch (e) {
+      showMessage(`更新工作目录失败：${e?.message || String(e)}`, "error");
+    }
   }
 
   async function reactivateSession(sid) {
@@ -902,23 +1045,32 @@ export function mountTerminalManagerSidebarViewInto(container) {
         }
         window.zion?.state?.set("terminal.sessions", listArr);
         renderList(listArr);
+        showMessage("已重新连接终端会话。");
       } else {
-        alert("Reactivate failed: " + (data?.error || "Unknown error"));
+        showMessage("重新连接失败，请稍后再试。", "error");
       }
     } catch (e) {
-      alert("Reactivate error: " + (e?.message || String(e)));
+      showMessage(`重新连接失败：${e?.message || String(e)}`, "error");
     }
   }
 
   function renderList(items) {
+    currentItems = Array.isArray(items) ? items : [];
     list.innerHTML = "";
-    const arr = Array.isArray(items) ? items : [];
+    const arr = currentItems;
     const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
+    updateSummary(arr);
 
     if (arr.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "No sessions";
-      Object.assign(empty.style, { fontSize: "12px", opacity: "0.7", textAlign: "center", padding: "10px" });
+      empty.textContent = "还没有终端会话。点击“新建终端”创建一个本地会话。";
+      Object.assign(empty.style, {
+        fontSize: "12px",
+        lineHeight: "1.5",
+        opacity: "0.72",
+        textAlign: "left",
+        padding: "10px 0"
+      });
       list.appendChild(empty);
       return;
     }
@@ -932,209 +1084,223 @@ export function mountTerminalManagerSidebarViewInto(container) {
       Object.assign(card.style, {
         display: "flex",
         flexDirection: "column",
-        gap: "8px",
-        padding: "10px",
-        borderRadius: "10px",
-        cursor: "pointer",
-        border: "1px solid var(--border)",
-        background: "rgba(255,255,255,0.02)",
+        gap: "0",
+        padding: "12px 0",
+        borderRadius: "0",
+        cursor: "default",
+        border: "none",
+        borderBottom: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
+        background: "transparent",
+        boxShadow: "none",
         width: "100%",
-        boxSizing: "border-box"
+        boxSizing: "border-box",
+        whiteSpace: "normal"
       });
 
-      const headerRow = document.createElement("div");
-      Object.assign(headerRow.style, { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" });
+      const row = document.createElement("div");
+      Object.assign(row.style, {
+        display: "grid",
+        gridTemplateColumns: "minmax(0,1fr) auto",
+        gap: "12px",
+        alignItems: "center"
+      });
 
-      const title = document.createElement("div");
-      title.textContent = s.id || "(unknown id)";
-      Object.assign(title.style, {
-        flex: "1",
-        minWidth: "0",
+      const main = document.createElement("button");
+      main.type = "button";
+      Object.assign(main.style, {
+        border: "none",
+        background: "transparent",
+        color: "var(--fg)",
+        padding: "0",
+        textAlign: "left",
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        gap: "4px",
+        minWidth: "0"
+      });
+      main.addEventListener("click", () => {
+        selectedId = s.id;
+        setActiveSession(s.id);
+        renderList(currentItems);
+      });
+
+      const mainTitle = document.createElement("div");
+      mainTitle.textContent = sessionTitle(s);
+      Object.assign(mainTitle.style, {
+        fontSize: "12px",
+        fontWeight: "600",
+        lineHeight: "1.4",
         whiteSpace: "nowrap",
         overflow: "hidden",
-        textOverflow: "ellipsis",
-        fontSize: "13px",
-        fontWeight: "600"
+        textOverflow: "ellipsis"
       });
 
-      const typeBadge = document.createElement("span");
-      typeBadge.textContent = (s.type || "local").toUpperCase();
-      Object.assign(typeBadge.style, {
-        fontSize: "10px",
-        opacity: "0.85",
-        border: "1px solid var(--border)",
-        borderRadius: "6px",
-        padding: "2px 6px",
-        background: "rgba(128,128,128,0.08)"
-      });
-
-      const activeMark = document.createElement("span");
-      const isActive = activeId && s.id && activeId === s.id;
-      activeMark.textContent = isActive ? "✓ Active" : "";
-      Object.assign(activeMark.style, {
+      const meta = sessionMeta(s);
+      const mainMeta = document.createElement("div");
+      mainMeta.textContent = meta.text;
+      if (meta.title) mainMeta.title = meta.title;
+      Object.assign(mainMeta.style, {
         fontSize: "11px",
-        opacity: isActive ? "0.85" : "0",
-        color: "var(--accent)"
+        lineHeight: "1.5",
+        opacity: "0.6",
+        whiteSpace: "normal",
+        wordBreak: "break-word"
       });
 
-      headerRow.appendChild(title);
-      headerRow.appendChild(typeBadge);
-      headerRow.appendChild(activeMark);
-      card.appendChild(headerRow);
+      const rawId = document.createElement("div");
+      rawId.textContent = String(s.id || "");
+      Object.assign(rawId.style, {
+        fontSize: "10px",
+        lineHeight: "1.3",
+        opacity: "0.38",
+        fontFamily: "var(--font-mono, monospace)"
+      });
 
-      const details = document.createElement("div");
-      Object.assign(details.style, { display: "grid", gridTemplateColumns: "1fr", rowGap: "6px" });
+      main.appendChild(mainTitle);
+      main.appendChild(mainMeta);
+      if (String(s.id || "") && String(s.id || "") !== sessionTitle(s)) main.appendChild(rawId);
 
-      const mkDetail = (labelText, valueText, titleText) => {
-        const row = document.createElement("div");
-        Object.assign(row.style, { display: "flex", alignItems: "baseline", gap: "6px" });
-        const lab = document.createElement("span");
-        lab.textContent = labelText;
-        Object.assign(lab.style, { fontSize: "10px", opacity: "0.7", minWidth: "90px" });
-        const val = document.createElement("span");
-        val.textContent = valueText || "";
-        if (titleText) val.title = titleText;
-        Object.assign(val.style, {
-          fontSize: "12px",
-          flex: "1",
-          minWidth: "0",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "normal",
-          wordBreak: "break-word"
+      const side = document.createElement("div");
+      Object.assign(side.style, {
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        flexWrap: "wrap",
+        justifyContent: "flex-end"
+      });
+
+      const isActive = activeId && s.id && activeId === s.id;
+      if (isActive) {
+        const current = document.createElement("span");
+        current.textContent = "当前";
+        Object.assign(current.style, {
+          fontSize: "10px",
+          lineHeight: "1.2",
+          opacity: "0.72",
+          padding: "0 6px",
+          minHeight: "18px",
+          display: "inline-flex",
+          alignItems: "center",
+          borderRadius: "999px",
+          background: "color-mix(in srgb, var(--accent) 14%, transparent)"
         });
-        row.appendChild(lab);
-        row.appendChild(val);
-        return row;
-      };
-
-      if ((s.type || "local") === "ssh") {
-        const user = String(s.ssh_user || "").trim();
-        const host = String(s.ssh_host || "").trim();
-        const port = typeof s.ssh_port === "number" ? s.ssh_port : s.ssh_port ? Number(s.ssh_port) : 22;
-        const conn = `${user ? user + "@" : ""}${host}${host ? ":" + port : ""}`;
-        details.appendChild(mkDetail("SSH", conn || "(not set)"));
-      } else {
-        details.appendChild(mkDetail("Type", "local"));
+        side.appendChild(current);
       }
-      details.appendChild(mkDetail("CWD", String(s.cwd || "") || "(unknown)"));
-      const fa = formatLastActivity(s.last_activity);
-      details.appendChild(mkDetail("Last Activity", fa.text || "(unknown)", fa.title));
-      card.appendChild(details);
 
-      const actions = document.createElement("div");
-      Object.assign(actions.style, { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" });
-
-      const btnActive = document.createElement("button");
-      btnActive.type = "button";
-      btnActive.title = "Set Active Session";
-      btnActive.setAttribute("aria-label", "Set Active Session");
-      btnActive.textContent = "Set Active";
-      Object.assign(btnActive.style, {
-        border: "1px solid var(--border)",
-        borderRadius: "8px",
+      const moreBtn = document.createElement("button");
+      moreBtn.type = "button";
+      moreBtn.textContent = expandedId === s.id ? "收起" : "更多";
+      Object.assign(moreBtn.style, {
+        border: "none",
         background: "transparent",
         color: "var(--fg)",
-        padding: "6px 10px",
-        fontSize: "12px",
+        opacity: "0.64",
+        padding: "0",
+        fontSize: "11px",
         cursor: "pointer"
       });
-      btnActive.addEventListener("click", (e) => {
+      moreBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        setActiveSession(s.id);
-        updateSelectedStyles();
-      });
-
-      const isSsh = (s.type || "local") === "ssh";
-      const btnReactivate = document.createElement("button");
-      btnReactivate.type = "button";
-      btnReactivate.title = "Reactivate Session (reconnect SSH)";
-      btnReactivate.setAttribute("aria-label", "Reactivate Session");
-      btnReactivate.textContent = "🔄 Reactivate";
-      btnReactivate.style.display = isSsh ? "inline-block" : "none";
-      Object.assign(btnReactivate.style, {
-        border: "1px solid var(--border)",
-        borderRadius: "8px",
-        background: isSsh && s.active === false ? "rgba(255,165,0,0.15)" : "transparent",
-        color: isSsh && s.active === false ? "orange" : "var(--fg)",
-        padding: "6px 10px",
-        fontSize: "12px",
-        cursor: "pointer"
-      });
-      btnReactivate.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        await reactivateSession(s.id);
-      });
-
-      const btnClose = document.createElement("button");
-      btnClose.type = "button";
-      btnClose.title = "Close Session";
-      btnClose.setAttribute("aria-label", "Close Session");
-      btnClose.textContent = "Close";
-      Object.assign(btnClose.style, {
-        border: "1px solid var(--border)",
-        borderRadius: "8px",
-        background: "transparent",
-        color: "var(--fg)",
-        padding: "6px 10px",
-        fontSize: "12px",
-        cursor: "pointer"
-      });
-      btnClose.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        await closeSession(s.id);
-      });
-
-      const cwdInp = document.createElement("input");
-      cwdInp.type = "text";
-      cwdInp.placeholder = "Set CWD…";
-      cwdInp.value = String(s.cwd || "");
-      Object.assign(cwdInp.style, {
-        flex: "1",
-        boxSizing: "border-box",
-        border: "1px solid var(--border)",
-        borderRadius: "8px",
-        background: "transparent",
-        color: "var(--fg)",
-        outline: "none",
-        padding: "6px 10px",
-        fontSize: "12px",
-        fontFamily: "inherit",
-        minWidth: "0",
-        maxWidth: "100%"
-      });
-
-      const btnApply = document.createElement("button");
-      btnApply.type = "button";
-      btnApply.title = "Apply CWD";
-      btnApply.setAttribute("aria-label", "Apply CWD");
-      btnApply.textContent = "Apply CWD";
-      Object.assign(btnApply.style, {
-        border: "1px solid var(--border)",
-        borderRadius: "8px",
-        background: "transparent",
-        color: "var(--fg)",
-        padding: "6px 10px",
-        fontSize: "12px",
-        cursor: "pointer"
-      });
-      btnApply.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const cwd = cwdInp.value.trim();
-        if (cwd) await applyCwdTo(s.id, cwd);
-      });
-
-      actions.appendChild(btnActive);
-      actions.appendChild(btnReactivate);
-      actions.appendChild(btnClose);
-      actions.appendChild(cwdInp);
-      actions.appendChild(btnApply);
-      card.appendChild(actions);
-
-      card.addEventListener("click", () => {
         selectedId = s.id;
-        updateSelectedStyles();
+        expandedId = expandedId === s.id ? null : s.id;
+        renderList(currentItems);
       });
+      side.appendChild(moreBtn);
+
+      row.appendChild(main);
+      row.appendChild(side);
+      card.appendChild(row);
+
+      if (expandedId === s.id) {
+        const detail = document.createElement("div");
+        Object.assign(detail.style, {
+          display: "grid",
+          gridTemplateColumns: "1fr",
+          gap: "10px",
+          marginTop: "10px",
+          paddingTop: "10px",
+          borderTop: "1px solid color-mix(in srgb, var(--border) 16%, transparent)"
+        });
+
+        if ((s.type || "local") === "ssh") {
+          const sshInfo = document.createElement("div");
+          sshInfo.textContent = `SSH: ${String(s.ssh_user || "").trim() ? `${String(s.ssh_user || "").trim()}@` : ""}${String(s.ssh_host || "").trim() || "(unknown host)"}:${typeof s.ssh_port === "number" ? s.ssh_port : s.ssh_port ? Number(s.ssh_port) : 22}`;
+          Object.assign(sshInfo.style, { fontSize: "11px", lineHeight: "1.5", opacity: "0.62" });
+          detail.appendChild(sshInfo);
+        }
+
+        const cwdRow = document.createElement("div");
+        Object.assign(cwdRow.style, {
+          display: "grid",
+          gridTemplateColumns: "minmax(0,1fr) auto",
+          gap: "8px",
+          alignItems: "center"
+        });
+
+        const cwdInp = document.createElement("input");
+        cwdInp.type = "text";
+        cwdInp.placeholder = "工作目录";
+        cwdInp.value = String(s.cwd || "");
+        Object.assign(cwdInp.style, {
+          width: "100%",
+          boxSizing: "border-box",
+          border: "1px solid var(--border)",
+          borderRadius: "8px",
+          background: "transparent",
+          color: "var(--fg)",
+          outline: "none",
+          padding: "6px 10px",
+          fontSize: "12px",
+          fontFamily: "inherit",
+          minWidth: "0"
+        });
+
+        const btnApply = makeButton("更新目录");
+        btnApply.addEventListener("click", async () => {
+          const cwd = cwdInp.value.trim();
+          if (!cwd) return;
+          await applyCwdTo(s.id, cwd);
+          showMessage("已更新工作目录。");
+        });
+        cwdRow.appendChild(cwdInp);
+        cwdRow.appendChild(btnApply);
+        detail.appendChild(cwdRow);
+
+        const actions = document.createElement("div");
+        Object.assign(actions.style, {
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          flexWrap: "wrap"
+        });
+
+        const openBtn = makeButton("打开终端");
+        openBtn.addEventListener("click", async () => {
+          setActiveSession(s.id);
+          try { await window.zion.commands.executeCommand("terminal.openPanel"); } catch {}
+        });
+        actions.appendChild(openBtn);
+
+        if ((s.type || "local") === "ssh" && s.active === false) {
+          const reactivateBtn = makeButton("重新连接");
+          reactivateBtn.addEventListener("click", async () => {
+            await reactivateSession(s.id);
+          });
+          actions.appendChild(reactivateBtn);
+        }
+
+        const closeBtn = makeButton("关闭会话");
+        closeBtn.addEventListener("click", async () => {
+          await closeSession(s.id);
+          showMessage("已关闭终端会话。");
+        });
+        actions.appendChild(closeBtn);
+
+        detail.appendChild(actions);
+        card.appendChild(detail);
+      }
+
       list.appendChild(card);
     });
 
@@ -1146,11 +1312,17 @@ export function mountTerminalManagerSidebarViewInto(container) {
       const base = readBase().replace(/\/$/, "");
       const res = await fetch(`${base}/sessions`, { method: "GET" });
       const data = await res.json().catch(() => null);
-      if (!res.ok) return;
+      if (!res.ok) {
+        showMessage("刷新终端列表失败。", "error");
+        return;
+      }
       const arr = data?.sessions || [];
       window.zion?.state?.set("terminal.sessions", arr);
       renderList(arr);
-    } catch {}
+      showMessage("");
+    } catch (e) {
+      showMessage(`刷新终端列表失败：${e?.message || String(e)}`, "error");
+    }
   }
 
   async function create() {
@@ -1169,22 +1341,45 @@ export function mountTerminalManagerSidebarViewInto(container) {
         body: JSON.stringify(payload)
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok) return;
+      if (!res.ok) {
+        showMessage("创建终端失败，请检查填写内容。", "error");
+        return;
+      }
       selectedId = data?.session?.id || null;
+      expandedId = selectedId;
       window.zion?.state?.set("terminal.activeSessionId", selectedId);
       const listArr = (window.zion?.state?.get("terminal.sessions") || []).slice();
       if (data?.session) listArr.push(data.session);
       window.zion?.state?.set("terminal.sessions", listArr);
+      createExpanded = false;
+      syncCreateVisibility();
       renderList(listArr);
-    } catch {}
+      showMessage("终端已创建，并设为当前会话。");
+    } catch (e) {
+      showMessage(`创建终端失败：${e?.message || String(e)}`, "error");
+    }
   }
 
+  createToggleBtn.addEventListener("click", () => {
+    createExpanded = !createExpanded;
+    syncCreateVisibility();
+  });
+  cancelCreateBtn.addEventListener("click", () => {
+    createExpanded = false;
+    syncCreateVisibility();
+  });
+  typeSel.addEventListener("change", syncCreateVisibility);
   createBtn.addEventListener("click", create);
   refreshBtn.addEventListener("click", refresh);
 
-  root.appendChild(ctxWrap);
+  syncCreateVisibility();
+
+  form.appendChild(btns);
+
+  root.appendChild(header);
+  root.appendChild(toolbar);
   root.appendChild(form);
-  root.appendChild(btns);
+  root.appendChild(message);
   root.appendChild(list);
 
   container.appendChild(root);

@@ -927,6 +927,157 @@ export async function activate(ctx) {
   try { ctx.subscriptions.push(contributor); } catch {}
   try { ctx.subscriptions.push(...listeners); } catch {}
 
+  // Register skills settings into core Settings Panel
+  try {
+    if (window.zion?.settings?.registerItem) {
+      const state = getState();
+      const paths = (state && state.get("skills.paths")) || [];
+      const catalog = getCatalog();
+      const enabled = getEnabledSet();
+
+      window.zion.settings.registerItem({
+        id: "skills-config",
+        category: "Workspace",
+        section: "Skills",
+        title: "Skills 配置",
+        description: "管理技能目录、重新扫描技能索引，并批量启用或清理缓存。",
+        keywords: ["skills", "catalog", "scan", "paths", "workspace"],
+        order: 30,
+        render(container) {
+          const st = getState();
+          if (!st) return;
+          container.innerHTML = "";
+
+          const style = document.createElement("style");
+          style.textContent = `
+            .sk-cfg-info { font-size:11px;opacity:.7;margin-bottom:10px }
+            .sk-cfg-path-row { display:flex;gap:6px;margin-bottom:8px;align-items:center }
+            .sk-cfg-input { flex:1;padding:4px 8px;border:1px solid var(--border,#3c3c3c);border-radius:6px;background:transparent;color:var(--fg,#ccc);font-size:12px;font-family:var(--font-mono,monospace) }
+            .sk-cfg-input:focus { outline:1px solid var(--accent,#6272a4) }
+            .sk-cfg-btn { padding:4px 12px;border:1px solid var(--border,#3c3c3c);border-radius:6px;background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:12px }
+            .sk-cfg-btn:hover { background:rgba(255,255,255,.06) }
+            .sk-cfg-btn.primary { border-color:var(--accent,#6272a4);color:var(--accent,#6272a4) }
+            .sk-cfg-path-item { display:flex;gap:6px;align-items:center;margin-bottom:4px }
+            .sk-cfg-path-text { flex:1;font-size:11px;opacity:.8;font-family:var(--font-mono,monospace);overflow:hidden;text-overflow:ellipsis;white-space:nowrap }
+            .sk-cfg-path-del { padding:2px 8px;border:1px solid var(--border,#3c3c3c);border-radius:4px;background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:11px;opacity:.7 }
+            .sk-cfg-path-del:hover { opacity:1;color:#ff6b6b }
+            .sk-cfg-actions { display:flex;gap:8px;margin-top:10px }
+            .sk-cfg-label { font-size:12px;opacity:.85;font-weight:500;margin-bottom:4px }
+            .sk-cfg-section { margin-bottom:12px }
+          `;
+          container.appendChild(style);
+
+          // Stats
+          const cat = getCatalog();
+          const en = getEnabledSet();
+          const info = document.createElement("div");
+          info.className = "sk-cfg-info";
+          info.textContent = `已启用 ${en.size}/${cat.length} 个 skills`;
+          container.appendChild(info);
+
+          // Paths section
+          const pathsSection = document.createElement("div");
+          pathsSection.className = "sk-cfg-section";
+          const pathsLabel = document.createElement("div");
+          pathsLabel.className = "sk-cfg-label";
+          pathsLabel.textContent = "Skills 目录";
+          pathsSection.appendChild(pathsLabel);
+
+          const pathList = document.createElement("div");
+          const refreshPaths = () => {
+            pathList.innerHTML = "";
+            const currentPaths = st.get("skills.paths") || [];
+            for (let i = 0; i < currentPaths.length; i++) {
+              const row = document.createElement("div");
+              row.className = "sk-cfg-path-item";
+              const text = document.createElement("div");
+              text.className = "sk-cfg-path-text";
+              text.textContent = currentPaths[i];
+              text.title = currentPaths[i];
+              const del = document.createElement("button");
+              del.className = "sk-cfg-path-del";
+              del.textContent = "×";
+              del.onclick = () => {
+                const next = currentPaths.slice();
+                next.splice(i, 1);
+                st.set("skills.paths", next);
+                refreshPaths();
+              };
+              row.appendChild(text);
+              row.appendChild(del);
+              pathList.appendChild(row);
+            }
+          };
+          refreshPaths();
+          pathsSection.appendChild(pathList);
+
+          const addRow = document.createElement("div");
+          addRow.className = "sk-cfg-path-row";
+          const input = document.createElement("input");
+          input.className = "sk-cfg-input";
+          input.type = "text";
+          input.placeholder = "/path/to/skills/directory";
+          const addBtn = document.createElement("button");
+          addBtn.className = "sk-cfg-btn";
+          addBtn.textContent = "添加";
+          addBtn.onclick = () => {
+            const v = input.value.trim();
+            if (!v) return;
+            const current = st.get("skills.paths") || [];
+            if (!current.includes(v)) {
+              st.set("skills.paths", [...current, v]);
+            }
+            input.value = "";
+            refreshPaths();
+          };
+          addRow.appendChild(input);
+          addRow.appendChild(addBtn);
+          pathsSection.appendChild(addRow);
+          container.appendChild(pathsSection);
+
+          // Actions
+          const actions = document.createElement("div");
+          actions.className = "sk-cfg-actions";
+
+          const scanBtn = document.createElement("button");
+          scanBtn.className = "sk-cfg-btn primary";
+          scanBtn.textContent = "立即扫描";
+          scanBtn.onclick = async () => {
+            await window.zion.commands.executeCommand("skills.scanNow");
+            refreshPaths();
+            const newCat = getCatalog();
+            const newEn = getEnabledSet();
+            info.textContent = `已启用 ${newEn.size}/${newCat.length} 个 skills`;
+          };
+          actions.appendChild(scanBtn);
+
+          const enableAllBtn = document.createElement("button");
+          enableAllBtn.className = "sk-cfg-btn";
+          enableAllBtn.textContent = "全部启用";
+          enableAllBtn.onclick = () => {
+            const allCat = getCatalog();
+            st.set("skills.enabled", allCat.map(s => s.id));
+            const newEn = getEnabledSet();
+            info.textContent = `已启用 ${newEn.size}/${allCat.length} 个 skills`;
+          };
+          actions.appendChild(enableAllBtn);
+
+          const clearBtn = document.createElement("button");
+          clearBtn.className = "sk-cfg-btn";
+          clearBtn.textContent = "清除缓存";
+          clearBtn.onclick = () => {
+            window.zion.commands.executeCommand("skills.clearCache");
+          };
+          actions.appendChild(clearBtn);
+
+          container.appendChild(actions);
+        }
+      });
+    }
+  } catch (e) {
+    console.warn("[dev.skills] failed to register settings item", e);
+  }
+
   try {
     Promise.resolve().then(async () => {
       try { await scanAllSkills(); } catch {}

@@ -1,4 +1,5 @@
 import { installMailConfigPanel } from "./mail-config.js";
+import { registerMailSettings } from "./settings.js";
 
 export async function activate(ctx) {
   try {
@@ -590,4 +591,11 @@ export async function activate(ctx) {
     } catch {}
   });
   ctx.subscriptions.push({ dispose: () => dispMailNotify.dispose?.() });
+
+  // Register mail settings into core Settings Panel
+  try {
+    registerMailSettings();
+  } catch (e) {
+    console.warn("[dev.mail] failed to register settings", e);
+  }
 }

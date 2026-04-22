@@ -639,6 +639,104 @@ export async function activate(ctx) {
     syncEngineFromSettings(compressionEngine, initialSettings);
   } catch {}
 
+  const updateCompressionSetting = async (key, value, parser) => {
+    const current = await getCompressionSettings();
+    const nextValue = typeof parser === 'function' ? parser(value) : value;
+    const next = { ...current, [key]: nextValue };
+    await window.zion.commands.executeCommand('compression.settings.save', next);
+    syncEngineFromSettings(compressionEngine, next);
+  };
+
+  try {
+    window.zion.settings.registerPage({
+      id: 'compression.preferences',
+      pluginId: 'dev.context-compression',
+      category: 'workspace',
+      title: 'Compression',
+      description: '上下文压缩与摘要策略',
+      order: 30,
+      sections: [
+        {
+          id: 'compression.basics',
+          title: '基础设置',
+          settings: [
+            {
+              id: 'compression.autoCompression',
+              kind: 'boolean',
+              label: '自动压缩',
+              description: '在上下文过长时自动触发压缩',
+              getValue: async () => !!(await getCompressionSettings()).autoCompression,
+              setValue: async (value) => updateCompressionSetting('autoCompression', !!value)
+            },
+            {
+              id: 'compression.defaultStrategy',
+              kind: 'select',
+              label: '默认策略',
+              description: '决定自动压缩优先采用的方式',
+              enumOptions: [
+                { value: 'auto', label: '自动选择' },
+                { value: 'opencode', label: 'OpenCode' },
+                { value: 'claude-code', label: 'Claude Code' },
+                { value: 'cursor', label: 'Cursor' },
+                { value: 'manus', label: 'Manus' },
+                { value: 'focus-agent', label: 'Focus Agent' },
+                { value: 'progressive', label: 'Progressive' }
+              ],
+              getValue: async () => String((await getCompressionSettings()).defaultStrategy || 'auto'),
+              setValue: async (value) => updateCompressionSetting('defaultStrategy', String(value || 'auto'))
+            },
+            {
+              id: 'compression.threshold',
+              kind: 'number',
+              label: '触发阈值',
+              description: '达到上下文比例后触发压缩，通常建议 0.8',
+              getValue: async () => String((await getCompressionSettings()).threshold ?? 0.8),
+              setValue: async (value) => updateCompressionSetting('threshold', value, (raw) => {
+                const parsed = Number(raw);
+                return Number.isFinite(parsed) ? parsed : 0.8;
+              })
+            },
+            {
+              id: 'compression.contextLimitTokens',
+              kind: 'number',
+              label: '上下文上限',
+              description: '压缩计算时参考的 token 上限',
+              getValue: async () => String((await getCompressionSettings()).contextLimitTokens ?? 200000),
+              setValue: async (value) => updateCompressionSetting('contextLimitTokens', value, (raw) => {
+                const parsed = Number(raw);
+                return Number.isFinite(parsed) ? parsed : 200000;
+              })
+            }
+          ]
+        },
+        {
+          id: 'compression.actions',
+          title: '更多操作',
+          settings: [
+            {
+              id: 'compression.openAdvanced',
+              kind: 'action',
+              label: '高级压缩配置',
+              description: '打开完整压缩设置面板',
+              actionLabel: '打开高级配置',
+              action: async () => window.zion.commands.executeCommand('compression.settings')
+            },
+            {
+              id: 'compression.openStats',
+              kind: 'action',
+              label: '压缩统计',
+              description: '查看压缩次数与节省情况',
+              actionLabel: '查看统计',
+              action: async () => window.zion.commands.executeCommand('compression.stats')
+            }
+          ]
+        }
+      ]
+    });
+  } catch (e) {
+    warn('register compression settings page failed', e);
+  }
+
   log('settings', window.zion?.state?.get?.('compression.settings'));
 
   const dispContributor = window.zion.messages.registerContributor({

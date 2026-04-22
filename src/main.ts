@@ -2861,6 +2861,17 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     initServiceBaseUrlConfig();
   } catch {}
 
+  try {
+    (window as any).zion.commands.registerCommand("settings.open", () => {
+      try { (window as any).zion.settings.open(); } catch {}
+    });
+    (window as any).zion.commands.registerCommand("zion.settings.show", () => {
+      try { (window as any).zion.settings.open(); } catch {}
+    });
+  } catch (e) {
+    console.warn("[zion] failed to register settings commands", e);
+  }
+
   // 监听内容变化，自动保存
   core.view.state.field && core.view.state.field; // 保证 view 已初始化
   core.view.dom.addEventListener("input", () => {

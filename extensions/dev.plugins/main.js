@@ -34,11 +34,12 @@ function mountPluginsSidebarViewInto(container) {
     "div",
     {
       style: {
-        padding: "10px",
+        padding: "12px",
         display: "flex",
         flexDirection: "column",
-        gap: "10px",
-        boxSizing: "border-box"
+        gap: "12px",
+        boxSizing: "border-box",
+        width: "100%"
       }
     }
   );
@@ -48,28 +49,77 @@ function mountPluginsSidebarViewInto(container) {
     {
       style: {
         display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: "10px"
+        flexDirection: "column",
+        alignItems: "stretch",
+        gap: "8px"
       }
     }
   );
 
+  const heading = h(
+    "div",
+    {
+      style: {
+        display: "flex",
+        flexDirection: "column",
+        gap: "4px"
+      }
+    }
+  );
+
+  const title = h(
+    "div",
+    {
+      style: {
+        fontSize: "15px",
+        fontWeight: "600",
+        letterSpacing: "0.01em"
+      }
+    },
+    "插件"
+  );
+
   const statsText = h("div", {
     style: {
-      fontSize: "12px",
-      opacity: "0.8",
-      whiteSpace: "nowrap",
-      overflow: "hidden",
-      textOverflow: "ellipsis"
+      fontSize: "11px",
+      lineHeight: "1.5",
+      opacity: "0.62"
     }
   });
+
+  heading.appendChild(title);
+  heading.appendChild(statsText);
+
+  const actionsRow = h(
+    "div",
+    {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "8px",
+        flexWrap: "wrap"
+      }
+    }
+  );
+
+  const actionButtons = h(
+    "div",
+    {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        flexWrap: "wrap"
+      }
+    }
+  );
 
   const refreshBtn = h(
     "button",
     {
       style: {
-        height: "26px",
+        height: "28px",
         padding: "0 10px",
         borderRadius: "8px",
         border: "1px solid var(--border)",
@@ -79,11 +129,28 @@ function mountPluginsSidebarViewInto(container) {
         fontSize: "12px"
       }
     },
-    "Refresh"
+    "刷新"
   );
 
-  header.appendChild(statsText);
-  header.appendChild(refreshBtn);
+  const reloadAllBtn = h("button", {
+    style: {
+      height: "28px",
+      padding: "0 10px",
+      borderRadius: "8px",
+      border: "1px solid var(--border)",
+      background: "transparent",
+      color: "var(--fg)",
+      cursor: "pointer",
+      fontSize: "12px"
+    }
+  }, "重新加载");
+
+  actionButtons.appendChild(refreshBtn);
+  actionButtons.appendChild(reloadAllBtn);
+  actionsRow.appendChild(actionButtons);
+
+  header.appendChild(heading);
+  header.appendChild(actionsRow);
   root.appendChild(header);
 
   const searchRow = h("div", {
@@ -114,32 +181,82 @@ function mountPluginsSidebarViewInto(container) {
   searchRow.appendChild(searchInput);
   root.appendChild(searchRow);
 
+  const message = h("div", {
+    style: {
+      display: "none",
+      fontSize: "11px",
+      lineHeight: "1.45",
+      padding: "8px 10px",
+      borderRadius: "8px",
+      border: "1px solid color-mix(in srgb, var(--border) 36%, transparent)",
+      background: "color-mix(in srgb, var(--panel) 82%, transparent)"
+    }
+  });
+  root.appendChild(message);
+
   const list = h("div", {
     style: {
       display: "flex",
       flexDirection: "column",
-      gap: "8px"
+      gap: "0"
     }
   });
   root.appendChild(list);
 
-  const serviceBox = h("div", {
+  const toolsPanel = h("details", {
     style: {
-      border: "1px dashed var(--border)",
-      borderRadius: "10px",
-      padding: "10px",
-      display: "flex",
-      flexDirection: "column",
-      gap: "8px"
+      borderTop: "1px solid color-mix(in srgb, var(--border) 28%, transparent)",
+      paddingTop: "12px"
     }
   });
 
+  const toolsSummary = h("summary", {
+    style: {
+      cursor: "pointer",
+      listStyle: "none",
+      userSelect: "none",
+      fontSize: "12px",
+      fontWeight: "600",
+      opacity: "0.88"
+    }
+  }, "高级工具");
+
+  const toolsContent = h("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "10px",
+      marginTop: "10px"
+    }
+  });
+  toolsPanel.appendChild(toolsSummary);
+  toolsPanel.appendChild(toolsContent);
+
+  const serviceBox = h("div", {
+    style: {
+      border: "1px solid color-mix(in srgb, var(--border) 32%, transparent)",
+      borderRadius: "12px",
+      padding: "12px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px",
+      background: "color-mix(in srgb, var(--panel) 90%, transparent)"
+    }
+  });
   const serviceTitle = h("div", {
     style: {
       fontSize: "12px",
       fontWeight: "600"
     }
-  }, "Install from Service (zion-local-tools)");
+  }, "安装插件");
+
+  const serviceDesc = h("div", {
+    style: {
+      fontSize: "11px",
+      lineHeight: "1.5",
+      opacity: "0.58"
+    }
+  }, "支持配置服务地址、搜索可安装插件，或直接拖拽 ZIP 包安装。");
 
   const urlRow = h("div", {
     style: {
@@ -188,7 +305,7 @@ function mountPluginsSidebarViewInto(container) {
       padding: "12px",
       textAlign: "center",
       fontSize: "12px",
-      opacity: "0.85"
+      opacity: "0.78"
     }
   }, "拖拽 ZIP 插件包到此处进行安装");
 
@@ -255,20 +372,21 @@ function mountPluginsSidebarViewInto(container) {
   actionRow.appendChild(listBtn);
 
   serviceBox.appendChild(serviceTitle);
+  serviceBox.appendChild(serviceDesc);
   serviceBox.appendChild(urlRow);
   serviceBox.appendChild(dropZone);
   serviceBox.appendChild(actionRow);
   serviceBox.appendChild(resultsList);
-  root.appendChild(serviceBox);
 
   const devBox = h("div", {
     style: {
-      border: "1px dashed var(--border)",
-      borderRadius: "10px",
-      padding: "10px",
+      border: "1px solid color-mix(in srgb, var(--border) 32%, transparent)",
+      borderRadius: "12px",
+      padding: "12px",
       display: "flex",
       flexDirection: "column",
-      gap: "8px"
+      gap: "8px",
+      background: "color-mix(in srgb, var(--panel) 90%, transparent)"
     }
   });
 
@@ -277,7 +395,15 @@ function mountPluginsSidebarViewInto(container) {
       fontSize: "12px",
       fontWeight: "600"
     }
-  }, "Dev Mode (Local Directory → HTTP Mapping)");
+  }, "开发模式");
+
+  const devDesc = h("div", {
+    style: {
+      fontSize: "11px",
+      lineHeight: "1.5",
+      opacity: "0.58"
+    }
+  }, "把本地插件目录映射成可热更新的开发会话，适合调试插件。");
 
   const devRow = h("div", {
     style: {
@@ -344,33 +470,27 @@ function mountPluginsSidebarViewInto(container) {
   });
 
   devBox.appendChild(devTitle);
+  devBox.appendChild(devDesc);
   devBox.appendChild(devRow);
   devBox.appendChild(devStatus);
-  root.appendChild(devBox);
+  toolsContent.appendChild(serviceBox);
+  toolsContent.appendChild(devBox);
+  root.appendChild(toolsPanel);
 
-  const footer = h("div", {
-    style: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center"
+  function showMessage(text, tone = "info") {
+    const value = String(text || "").trim();
+    if (!value) {
+      message.style.display = "none";
+      message.textContent = "";
+      return;
     }
-  });
-
-  const reloadAllBtn = h("button", {
-    style: {
-      height: "28px",
-      padding: "0 10px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      cursor: "pointer",
-      fontSize: "12px"
-    }
-  }, "Reload All");
-
-  footer.appendChild(reloadAllBtn);
-  root.appendChild(footer);
+    message.style.display = "block";
+    message.textContent = value;
+    message.style.color = tone === "error" ? "#f2a7a7" : "var(--fg)";
+    message.style.background = tone === "error"
+      ? "rgba(190, 70, 70, 0.12)"
+      : "color-mix(in srgb, var(--panel) 82%, transparent)";
+  }
 
   function renderEmpty(text) {
     list.innerHTML = "";
@@ -380,8 +500,9 @@ function mountPluginsSidebarViewInto(container) {
         {
           style: {
             fontSize: "12px",
-            opacity: "0.8",
-            padding: "6px 0"
+            lineHeight: "1.5",
+            opacity: "0.72",
+            padding: "8px 0"
           }
         },
         text
@@ -391,11 +512,11 @@ function mountPluginsSidebarViewInto(container) {
 
   function renderStats() {
     if (!pluginManager || typeof pluginManager.getStats !== "function") {
-      statsText.textContent = "Plugins";
+      statsText.textContent = "查看和切换已安装插件。";
       return;
     }
     const s = pluginManager.getStats();
-    statsText.textContent = `Total ${s.total} · Enabled ${s.enabled} · Active ${s.active} · Errors ${s.errors}`;
+    statsText.textContent = `共 ${s.total} 个插件，已启用 ${s.enabled} 个，活跃 ${s.active} 个，异常 ${s.errors} 个。`;
   }
 
   function renderList() {
@@ -426,13 +547,11 @@ function mountPluginsSidebarViewInto(container) {
       const row = h("div", {
         style: {
           display: "flex",
-          gap: "10px",
-          alignItems: "flex-start",
+          gap: "12px",
+          alignItems: "center",
           justifyContent: "space-between",
-          padding: "8px",
-          border: "1px solid var(--border)",
-          borderRadius: "10px",
-          background: "rgba(255,255,255,0.02)",
+          padding: "12px 0",
+          borderBottom: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
           boxSizing: "border-box"
         }
       });
@@ -440,7 +559,7 @@ function mountPluginsSidebarViewInto(container) {
       const left = h("div", { style: { flex: "1 1 auto", minWidth: "0" } });
       const title = h("div", {
         style: {
-          fontSize: "13px",
+          fontSize: "12px",
           fontWeight: "600",
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -449,8 +568,8 @@ function mountPluginsSidebarViewInto(container) {
       }, String(plugin?.name || plugin?.id || "(unknown)"));
       const meta = h("div", {
         style: {
-          fontSize: "11px",
-          opacity: "0.75",
+          fontSize: "10px",
+          opacity: "0.48",
           fontFamily: "var(--font-mono)",
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -468,7 +587,8 @@ function mountPluginsSidebarViewInto(container) {
             {
               style: {
                 fontSize: "11px",
-                opacity: "0.8",
+                lineHeight: "1.5",
+                opacity: "0.62",
                 marginTop: "4px",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -519,7 +639,7 @@ function mountPluginsSidebarViewInto(container) {
           const devLine = h("div", {
             style: {
               fontSize: "11px",
-              opacity: "0.7",
+              opacity: "0.52",
               fontFamily: "var(--font-mono)",
               marginTop: "4px",
               wordBreak: "break-word"
@@ -529,7 +649,7 @@ function mountPluginsSidebarViewInto(container) {
         }
       } catch {}
 
-      const right = h("div", { style: { display: "flex", gap: "10px", alignItems: "center" } });
+      const right = h("div", { style: { display: "flex", gap: "10px", alignItems: "center", flex: "0 0 auto" } });
 
       const dot = h("div", {
         style: {
@@ -544,7 +664,7 @@ function mountPluginsSidebarViewInto(container) {
                 : plugin?.enabled
                   ? "#d29922"
                   : "#6e7681",
-          marginTop: "8px"
+          marginTop: "0"
         }
       });
 
@@ -559,8 +679,10 @@ function mountPluginsSidebarViewInto(container) {
           } else {
             await pluginManager.disable(String(plugin.id));
           }
+          showMessage(next ? "插件已启用。" : "插件已停用。");
         } catch (e) {
           toggle.checked = !next;
+          showMessage(`切换插件失败：${e?.message || "未知错误"}`, "error");
         } finally {
           try {
             renderStats();
@@ -627,11 +749,11 @@ function mountPluginsSidebarViewInto(container) {
       const files = e.dataTransfer && e.dataTransfer.files;
       if (!files || files.length === 0) return;
       if (!pluginInstaller || typeof pluginInstaller.installFromFile !== "function") {
-        alert("Installer 不可用");
+        showMessage("安装器不可用。", "error");
         return;
       }
       if (!pluginManager || typeof pluginManager.installFromInfo !== "function") {
-        alert("PluginManager 不可用");
+        showMessage("插件管理器不可用。", "error");
         return;
       }
       for (let i = 0; i < files.length; i++) {
@@ -641,12 +763,13 @@ function mountPluginsSidebarViewInto(container) {
         if (ret.success && ret.plugin) {
           await pluginManager.installFromInfo(ret.plugin, { enabled: true });
           doRefresh();
+          showMessage(`已安装 ${ret.plugin.name || ret.plugin.id}。`);
         } else {
-          alert(`安装失败: ${ret.error?.message || "未知错误"}`);
+          showMessage(`安装失败：${ret.error?.message || "未知错误"}`, "error");
         }
       }
     } catch (err) {
-      alert("安装过程中发生错误，请查看控制台");
+      showMessage("安装过程中发生错误，请查看控制台。", "error");
     }
   };
 
@@ -692,8 +815,9 @@ function mountPluginsSidebarViewInto(container) {
           if (ret.success && ret.plugin) {
             await pluginManager.installFromInfo(ret.plugin, { enabled: true });
             doRefresh();
+            showMessage(`已安装 ${ret.plugin.name || ret.plugin.id}。`);
           } else {
-            alert(`Install failed: ${ret.error?.message || "Unknown"}`);
+            showMessage(`安装失败：${ret.error?.message || "未知错误"}`, "error");
           }
         };
         row.appendChild(label);
@@ -750,8 +874,9 @@ function mountPluginsSidebarViewInto(container) {
           if (ret.success && ret.plugin) {
             await pluginManager.installFromInfo(ret.plugin, { enabled: true });
             doRefresh();
+            showMessage(`已安装 ${ret.plugin.name || ret.plugin.id}。`);
           } else {
-            alert(`Install failed: ${ret.error?.message || "Unknown"}`);
+            showMessage(`安装失败：${ret.error?.message || "未知错误"}`, "error");
           }
         };
         row.appendChild(label);
@@ -774,7 +899,7 @@ function mountPluginsSidebarViewInto(container) {
     const wsUrl = serviceUrl.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
     const ws = new WebSocket(wsUrl);
     ws.onopen = () => {
-      devStatus.textContent = `Dev websocket connected: ${wsUrl}`;
+      devStatus.textContent = `开发连接已建立：${wsUrl}`;
     };
     ws.onmessage = async (ev) => {
       try {
@@ -790,12 +915,12 @@ function mountPluginsSidebarViewInto(container) {
             } catch {}
           }
         } else if (msg.type === "dev:stop") {
-          devStatus.textContent = `Dev session stopped: ${devId}`;
+          devStatus.textContent = `开发会话已停止：${devId}`;
         }
       } catch {}
     };
     ws.onclose = () => {
-      devStatus.textContent = `Dev websocket closed: ${devId}`;
+      devStatus.textContent = `开发连接已关闭：${devId}`;
     };
     return ws;
   };
@@ -803,7 +928,7 @@ function mountPluginsSidebarViewInto(container) {
   devStartBtn.onclick = async () => {
     const p = devPathInput.value.trim();
     if (!p) {
-      alert("请输入本地插件目录绝对路径");
+      showMessage("请输入本地插件目录绝对路径。", "error");
       return;
     }
     const serviceUrl = getServiceBaseUrl();
@@ -839,7 +964,7 @@ function mountPluginsSidebarViewInto(container) {
       const ret = await pluginInstaller.installFromDevBase(baseUrl, devId);
       if (ret.success && ret.plugin) {
         await pluginManager.installFromInfo(ret.plugin, { enabled: true });
-        devStatus.textContent = `Dev session started: ${devId} (${ret.plugin.id})`;
+        devStatus.textContent = `开发会话已启动：${devId} (${ret.plugin.id})`;
         const ws = connectWebSocket(serviceUrl, devId);
         activeDevSessions.set(devId, { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir });
         try {
@@ -854,12 +979,13 @@ function mountPluginsSidebarViewInto(container) {
         devStartBtn.disabled = true;
         devStopBtn.disabled = false;
         devStopBtn.style.opacity = "1";
+        showMessage("开发模式已启动。");
       } else {
         throw new Error(ret.error?.message || "开发模式安装失败");
       }
     } catch (e) {
       devStatus.textContent = "启动开发模式失败";
-      alert(`启动开发模式失败：${e?.message || e}`);
+      showMessage(`启动开发模式失败：${e?.message || e}`, "error");
     }
   };
 
@@ -888,8 +1014,11 @@ function mountPluginsSidebarViewInto(container) {
         } catch {}
         activeDevSessions.delete(devId);
       }
-      devStatus.textContent = "Dev sessions stopped.";
-    } catch {}
+      devStatus.textContent = "开发会话已停止。";
+      showMessage("开发模式已停止。");
+    } catch (e) {
+      showMessage(`停止开发模式失败：${e?.message || e}`, "error");
+    }
     devStartBtn.disabled = false;
     devStopBtn.disabled = true;
     devStopBtn.style.opacity = "0.6";
