@@ -11,6 +11,8 @@ import { initWorkbench } from "./ui/workbench/workbench";
 import { initCommandPalette } from "./ui/workbench/commandPalette";
 import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
+import { createChatAnnotationsApi } from "./chat/annotations";
+import { SessionRuntime } from "./session/runtime";
 
 
 // ---------- 自动保存 / 恢复 ----------
@@ -1619,6 +1621,7 @@ function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, get
         const sel = String(ed?.getSelection?.() || "");
         window.zion.chat?.run?.({
           sessionId: targetSessionId || undefined,
+          panelId,
           editor: ed || null,
           useSelection: !!sel.trim()
         });
@@ -1896,7 +1899,11 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
         if (nextId) {
           panelManager.activateTab(targetPanelId, nextId);
           try {
-            window.zion.commands.executeCommand("zion.sessions.switch", { id: nextId, panelId: targetPanelId });
+            window.zion.commands.executeCommand("zion.sessions.switch", {
+              id: nextId,
+              panelId: targetPanelId,
+              previousSessionId: targetTabId
+            });
           } catch {}
         }
       }
@@ -1935,11 +1942,16 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
     const focusAndActivatePanelTab = (targetPanelId: string, sessionId: string | null) => {
       if (!sessionId) return false;
       try { window.zion.panels?.focus?.(targetPanelId); } catch {}
+      const previousSessionId = panelManager.getPanel(targetPanelId)?.activeTabId || null;
       panelManager.activateTab(targetPanelId, sessionId);
       syncActivePanelTabsState(targetPanelId);
       emitTabsChanged(targetPanelId);
       try {
-        window.zion.commands.executeCommand("zion.sessions.switch", { id: sessionId, panelId: targetPanelId });
+        window.zion.commands.executeCommand("zion.sessions.switch", {
+          id: sessionId,
+          panelId: targetPanelId,
+          previousSessionId
+        });
       } catch {}
       return true;
     };
@@ -2001,7 +2013,11 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
           if (nextSourceId) {
             panelManager.activateTab(sourcePanelId, nextSourceId);
             try {
-              window.zion.commands.executeCommand("zion.sessions.switch", { id: nextSourceId, panelId: sourcePanelId });
+              window.zion.commands.executeCommand("zion.sessions.switch", {
+                id: nextSourceId,
+                panelId: sourcePanelId,
+                previousSessionId: tabId
+              });
             } catch {}
           }
         }
@@ -2293,73 +2309,6 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
             viewportEl.classList.toggle("is-x-scroll", xScrollable);
           }
         } catch {}
-        // #region debug-point panel-tabs-vertical-centering
-        try {
-          const viewportEl =
-            containerEl.querySelector<HTMLElement>("[data-zion-panel-session-tabs-viewport='1']") ||
-            containerEl.querySelector<HTMLElement>("[data-zion-editor-session-tabs-viewport='1']");
-          const tabsBarEl = containerEl.closest(".zion-editor-tabsbar") as HTMLElement | null;
-          const rootEl = root as HTMLElement;
-          const getNum = (v: string | null) => {
-            const n = v ? Number(String(v).replace("px", "").trim()) : NaN;
-            return Number.isFinite(n) ? n : null;
-          };
-          const cssScrollbar = getComputedStyle(document.documentElement).getPropertyValue("--ui-scrollbar-size") || null;
-          const rootCS = getComputedStyle(rootEl);
-          const vpCS = viewportEl ? getComputedStyle(viewportEl) : null;
-          const rRect = rootEl.getBoundingClientRect();
-          const vRect = viewportEl ? viewportEl.getBoundingClientRect() : null;
-          const bRect = tabsBarEl ? tabsBarEl.getBoundingClientRect() : null;
-          fetch("http://127.0.0.1:7777/event", {
-            method: "POST",
-            body: JSON.stringify({
-              sessionId: "panel-tabs-vertical-centering",
-              runId: "pre-fix",
-              hypothesisId: "measure-layout",
-              location: "src/main.ts:mountPanelSessionTabsBar:render:raf",
-              msg: "[DEBUG] panel tabs layout metrics",
-              data: {
-                panelId,
-                tabCount: panel.tabs.length,
-                hasHorizontalOverflow: rootEl.scrollWidth > rootEl.clientWidth + 1,
-                cssScrollbarSize: cssScrollbar ? cssScrollbar.trim() : null,
-                cssScrollbarSizeNum: getNum(cssScrollbar),
-                tabsBar: bRect
-                  ? { h: bRect.height, top: bRect.top, bottom: bRect.bottom }
-                  : null,
-                viewport: viewportEl && vRect
-                  ? {
-                      h: vRect.height,
-                      top: vRect.top,
-                      bottom: vRect.bottom,
-                      clientH: viewportEl.clientHeight,
-                      offsetH: viewportEl.offsetHeight,
-                      paddingTop: vpCS ? vpCS.paddingTop : null,
-                      paddingBottom: vpCS ? vpCS.paddingBottom : null,
-                      overflow: vpCS ? `${vpCS.overflowX}/${vpCS.overflowY}` : null
-                    }
-                  : null,
-                root: {
-                  h: rRect.height,
-                  top: rRect.top,
-                  bottom: rRect.bottom,
-                  clientH: rootEl.clientHeight,
-                  offsetH: rootEl.offsetHeight,
-                  scrollH: rootEl.scrollHeight,
-                  scrollW: rootEl.scrollWidth,
-                  clientW: rootEl.clientWidth,
-                  paddingTop: rootCS.paddingTop,
-                  paddingBottom: rootCS.paddingBottom,
-                  boxSizing: rootCS.boxSizing,
-                  alignItems: rootCS.alignItems,
-                  lineHeight: rootCS.lineHeight
-                }
-              },
-              ts: Date.now()
-            })
-          }).catch(() => {});
-        } catch {}
-        // #endregion
         try {
           if (isDropdownOpen()) showDropdownMenu();
         } catch {}
@@ -2466,6 +2415,43 @@ async function bootstrap() {
     listPanels: () => panelManager.listPanels().map((panel) => ({ id: panel.id, activeTabId: panel.activeTabId })),
     getEditor: (panelId: string) => panelManager.getEditor(panelId)
   });
+  const chatAnnotations = createChatAnnotationsApi({
+    state: window.zion.state,
+    events: window.zion.events,
+    commands: window.zion.commands,
+    getSessionMeta: (sessionId: string) => window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", sessionId),
+    getActivePanelId: () => panelManager.getActivePanelId()
+  });
+  (window.zion as any).chatCards = chatAnnotations;
+  const sessionRuntime = new SessionRuntime({
+    getActivePanelId: () => panelManager.getActivePanelId(),
+    getPanel: (panelId: string) => panelManager.getPanel(panelId) as any,
+    listPanels: () => panelManager.listPanels() as any,
+    getEditor: (panelId: string) => panelManager.getEditor(panelId),
+    getActiveEditor: () => window.zion.window.activeEditor,
+    getGlobalSessionId: () => window.zion.state.get<string>("sessions.currentId") || null,
+    focusPanel: (panelId: string) => panelManager.focusPanel(panelId),
+    activatePanelTab: (panelId: string, sessionId: string) => panelManager.activateTab(panelId, sessionId),
+    syncLegacyEditorTabsState: (panelId: string) => syncLegacyEditorTabsState(panelId),
+    switchSessionDocument: ({ id, panelId, previousSessionId, skipPersistPrevious }) => {
+      window.zion.commands.executeCommand("zion.sessions.switch", {
+        id,
+        panelId,
+        previousSessionId,
+        skipPersistPrevious
+      });
+    },
+    emit: (topic, payload) => {
+      try { window.zion.events.emit(topic, payload); } catch {}
+    }
+  });
+  (window.zion as any).sessions = {
+    ...((window.zion as any).sessions || {}),
+    runtime: sessionRuntime,
+    resolveContext: (opts?: any) => sessionRuntime.resolveContext(opts || {}),
+    getPanelSessionId: (panelId: string) => sessionRuntime.getPanelSessionId(panelId),
+    isEditorShowingSession: (editor: any, sessionId: string) => sessionRuntime.isEditorShowingSession(editor, sessionId)
+  };
 
   // 初始化插件管理器
   const pluginManager = new PluginManager({
@@ -2516,26 +2502,10 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     return { panelId, panel, activeTabId };
   };
   const openSessionInPanel = (panelId: string, sessionId: string | null, opts?: { focus?: boolean }) => {
-    if (!sessionId) return false;
-    const panel = panelManager.getPanel(panelId);
-    if (!panel) return false;
-    const exists = panel.tabs.some((tab) => tab.id === sessionId);
-    if (!exists) {
-      panel.tabs = [...panel.tabs, { id: sessionId, title: sessionId, isDirty: false }];
-    }
-    if (opts?.focus !== false) {
-      try { panelManager.focusPanel(panelId); } catch {}
-    }
-    return activatePanelSession(panelId, sessionId);
+    return sessionRuntime.openPanelSession(panelId, sessionId, opts);
   };
   const activatePanelSession = (panelId: string, sessionId: string | null) => {
-    if (!sessionId) return false;
-    panelManager.activateTab(panelId, sessionId);
-    syncLegacyEditorTabsState(panelId);
-    try {
-      window.zion.commands.executeCommand("zion.sessions.switch", { id: sessionId, panelId });
-    } catch {}
-    return true;
+    return sessionRuntime.switchPanelSession(panelId, sessionId);
   };
   const restoreSplitViewportFromSource = (sourceEditor: any, targetEditor: any) => {
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -2645,6 +2615,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
             window.zion.commands.executeCommand("zion.sessions.switch", {
               id: panel.activeTabId,
               panelId: panel.id,
+              skipPersistPrevious: true,
               writeUrl: false,
               pushUrl: false
             })
@@ -2660,6 +2631,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
             window.zion.commands.executeCommand("zion.sessions.switch", {
               id: finalPanel.activeTabId,
               panelId: finalActivePanelId,
+              skipPersistPrevious: true,
               writeUrl: false,
               pushUrl: false
             })
@@ -2746,6 +2718,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   try {
     window.zion.state.onDidChange<string>("sessions.currentId", (sessionId) => {
       if (suspendSessionCurrentSync) return;
+      if (panelManager.listPanels().length > 1) return;
       const activePanelId = panelManager.getActivePanelId();
       if (!activePanelId) return;
       const panel = panelManager.getPanel(activePanelId);
@@ -2767,6 +2740,14 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     } catch {}
     const sourceEditor = sourcePanelId ? panelManager.getEditor(sourcePanelId) : null;
     const sourceSessionId = sourcePanelId ? panelManager.getPanel(sourcePanelId)?.activeTabId || null : null;
+    if (sourcePanelId && sourceSessionId) {
+      try {
+        window.zion.commands.executeCommand("zion.chatCards.snapshotSession", {
+          panelId: sourcePanelId,
+          sessionId: sourceSessionId
+        });
+      } catch {}
+    }
     const seedText = sourceEditor?.getValue?.() || core.getValue();
     const nextCore = new EditorCore(panel.editorHostEl, seedText, panelId);
     panelCores.set(panelId, nextCore);
@@ -2790,31 +2771,18 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     attachPanelScrollPersistence(panelId);
     if (activeSessionId) {
       requestAnimationFrame(() => {
-        try {
-          const ann = (window.zion?.state?.get(`sessions.annotations.${activeSessionId}`) || {}) as any;
-          const meta = window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", activeSessionId) as any;
-          const metaAnn = (meta?.annotations || {}) as any;
-          const pendingTools = window.zion?.state?.get(`sessions.pendingRestore.tools.${activeSessionId}`);
-          const pendingThinking = window.zion?.state?.get(`sessions.pendingRestore.thinking.${activeSessionId}`);
-          const tools = Array.isArray(ann.tools) && ann.tools.length
-            ? ann.tools
-            : (Array.isArray(metaAnn.tools) && metaAnn.tools.length
-              ? metaAnn.tools
-              : (Array.isArray(pendingTools) ? pendingTools : []));
-          const thinking = Array.isArray(ann.thinking) && ann.thinking.length
-            ? ann.thinking
-            : (Array.isArray(metaAnn.thinking) && metaAnn.thinking.length
-              ? metaAnn.thinking
-              : (Array.isArray(pendingThinking) ? pendingThinking : []));
-          if (tools.length) {
-            try { window.zion?.state?.set(`sessions.pendingRestore.tools.${activeSessionId}`, tools); } catch {}
-            try { window.zion?.events?.emit("toolcards/restore", { items: tools, panelId }); } catch {}
-          }
-          if (thinking.length) {
-            try { window.zion?.state?.set(`sessions.pendingRestore.thinking.${activeSessionId}`, thinking); } catch {}
-            try { window.zion?.events?.emit("thinking/restore", { items: thinking, panelId }); } catch {}
-          }
-        } catch {}
+        requestAnimationFrame(() => {
+          try {
+            window.zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
+              sessionId: activeSessionId,
+              panelId,
+              clearFirst: false
+            });
+            requestAnimationFrame(() => {
+              try { restoreSplitViewportFromSource(sourceEditor, nextProxy); } catch {}
+            });
+          } catch {}
+        });
       });
     }
     try { nextProxy.focus(); } catch {}

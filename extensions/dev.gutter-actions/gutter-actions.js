@@ -118,7 +118,7 @@ function onDocMouseMove(ev) {
 function computeBatchInfoForLine(doc, userStartLine, isUserLikeLine) {
   if (!isUserLikeLine) return null;
   const sid = window.zion?.state?.get?.("sessions.currentId");
-  const ann = sid ? (window.zion?.state?.get?.(`sessions.annotations.${sid}`) || {}) : {};
+  const ann = sid ? (window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sid) || {}) : {};
   const list = Array.isArray(ann.tools) ? ann.tools : [];
   const toolActions = ann && typeof ann.toolActions === "object" ? ann.toolActions : {};
 

@@ -3,6 +3,22 @@ import { installToolCallCards } from "./tool-calls.js";
 import { installToolSwitcher } from "./tool-switcher.js";
 import { ToolsSettingsPage, buildToolRows } from "./ToolsSettingsPage.jsx";
 
+function getSessionAnnotations(sessionId) {
+  try {
+    return window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sessionId) || {};
+  } catch {
+    return {};
+  }
+}
+
+function updateSessionAnnotations(sessionId, updater) {
+  try {
+    return window.zion?.commands?.executeCommand?.("zion.chatCards.updateSessionAnnotations", { sessionId, updater }) || {};
+  } catch {
+    return {};
+  }
+}
+
 export async function activate(ctx) {
   // 注册默认工具与处理器
   registerDefaultTools();
@@ -27,7 +43,7 @@ export async function activate(ctx) {
       const sid = window.zion?.state?.get("sessions.currentId");
       if (!sid) return null;
 
-      const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+      const ann = getSessionAnnotations(sid);
       const tools = ann.tools || [];
       return tools.find(t => t.id === toolId) || null;
     },
@@ -40,7 +56,7 @@ export async function activate(ctx) {
       const sid = window.zion?.state?.get("sessions.currentId");
       if (!sid) return [];
 
-      const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+      const ann = getSessionAnnotations(sid);
       return ann.tools || [];
     },
 
@@ -1117,8 +1133,6 @@ function registerDefaultTools() {
           if (!res.ok) {
             const txt = await res.text().catch(() => "");
             if (chatSessionId) {
-              const prev = window.zion?.state?.get(`sessions.annotations.${chatSessionId}`) || {};
-              const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
               const entry = {
                 toolCallId,
                 path,
@@ -1132,7 +1146,10 @@ function registerDefaultTools() {
                 error: txt || data?.error || "write failed",
                 at: Date.now()
               };
-              window.zion?.state?.set(`sessions.annotations.${chatSessionId}`, { ...prev, writeHistory: [...list, entry] });
+              updateSessionAnnotations(chatSessionId, (prev) => {
+                const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
+                return { ...prev, writeHistory: [...list, entry] };
+              });
             }
             return `HTTP ${res.status}: ${txt || data?.error || "write failed"}`;
           }
@@ -1140,8 +1157,6 @@ function registerDefaultTools() {
           // fp[path] = { complete: true, hash: await sha256Hex(content), at: Date.now() };
           // setFpStore(fp);
           if (chatSessionId) {
-            const prev = window.zion?.state?.get(`sessions.annotations.${chatSessionId}`) || {};
-            const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
             const entry = {
               toolCallId,
               path,
@@ -1157,7 +1172,10 @@ function registerDefaultTools() {
               ok: true,
               at: Date.now()
             };
-            window.zion?.state?.set(`sessions.annotations.${chatSessionId}`, { ...prev, writeHistory: [...list, entry] });
+            updateSessionAnnotations(chatSessionId, (prev) => {
+              const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
+              return { ...prev, writeHistory: [...list, entry] };
+            });
           }
           const out = { ...(data || {}), path, prompt };
           return JSON.stringify(out, null, 2);
@@ -1319,7 +1337,7 @@ function registerDefaultTools() {
         try {
           const sid = window.zion?.state?.get("sessions.currentId");
           if (!sid) return "No session";
-          const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+          const ann = getSessionAnnotations(sid);
           const items = Array.isArray(ann.tools) ? ann.tools : [];
           const it = items.find(x => String(x.id) === toolId);
           if (!it) return "Not found";

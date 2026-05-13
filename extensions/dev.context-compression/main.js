@@ -24,9 +24,26 @@ let __settingsPanelSingleton = null;
 
 const __compressionMem = { kv: {}, versions: {} };
 
+function getActivePanelContext() {
+  try {
+    const panelId = window.zion?.panels?.getActivePanelId?.() || null;
+    const panels = window.zion?.panels?.list?.() || [];
+    const panel = panelId ? panels.find(p => p?.id === panelId) : null;
+    const sessionId = panel?.activeTabId || window.zion?.state?.get?.('sessions.currentId') || null;
+    const editor = panelId ? (window.zion?.panels?.getEditor?.(panelId) || window.zion?.window?.activeEditor) : window.zion?.window?.activeEditor;
+    return { panelId, sessionId, editor };
+  } catch {
+    return {
+      panelId: null,
+      sessionId: null,
+      editor: window.zion?.window?.activeEditor
+    };
+  }
+}
+
 function getSessionKey() {
   try {
-    const sid = window.zion?.state?.get?.('sessions.currentId');
+    const sid = getActivePanelContext().sessionId || window.zion?.state?.get?.('sessions.currentId');
     if (sid) return `session:${String(sid)}`;
   } catch {}
   return 'global';
@@ -203,35 +220,27 @@ async function listVersionsForActiveSession() {
 }
 
 async function restoreVersionForActiveSession(id) {
-  const editor = window.zion.window.activeEditor;
+  const { panelId, sessionId: activePanelSessionId, editor } = getActivePanelContext();
   if (!editor) return { ok: false, error: 'no_editor' };
   const sessionKey = getSessionKey();
   const rec = await storageGetVersion(String(id));
   if (!rec || rec.sessionKey !== sessionKey) return { ok: false, error: 'not_found' };
 
-  const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
+  const sessionId = activePanelSessionId || (sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null);
   const annotations = rec.annotations && typeof rec.annotations === 'object' ? rec.annotations : null;
-
-  try { window.zion?.events?.emit('toolcards/clear'); } catch {}
-  try { window.zion?.events?.emit('thinking/clear'); } catch {}
 
   editor.setValue(String(rec.text ?? ''));
   await setActiveVersionId(sessionKey, String(id));
 
   if (sessionId) {
-    try { window.zion?.state?.set(`sessions.annotations.${sessionId}`, annotations || {}); } catch {}
-    try { window.zion?.state?.set(`sessions.pendingRestore.tools.${sessionId}`, Array.isArray(annotations?.tools) ? annotations.tools : null); } catch {}
-    try { window.zion?.state?.set(`sessions.pendingRestore.thinking.${sessionId}`, Array.isArray(annotations?.thinking) ? annotations.thinking : null); } catch {}
     setTimeout(() => {
       try {
-        if (Array.isArray(annotations?.tools) && annotations.tools.length) {
-          window.zion?.events?.emit('toolcards/restore', { items: annotations.tools });
-        }
-      } catch {}
-      try {
-        if (Array.isArray(annotations?.thinking) && annotations.thinking.length) {
-          window.zion?.events?.emit('thinking/restore', { items: annotations.thinking });
-        }
+        window.zion?.commands?.executeCommand?.('zion.chatCards.restoreSession', {
+          sessionId,
+          panelId,
+          annotations: annotations || {},
+          clearFirst: true
+        });
       } catch {}
     }, 0);
   }
@@ -245,7 +254,7 @@ function buildMessagesForCompression(docText, sessionId) {
 
   const ann = (() => {
     try {
-      const v = window.zion?.state?.get?.(`sessions.annotations.${sessionId}`);
+      const v = window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId);
       return v && typeof v === 'object' ? v : {};
     } catch {
       return {};
@@ -496,7 +505,7 @@ export async function activate(ctx) {
         const sessionKey = getSessionKey();
         const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
         if (!sessionId) return { ok: false, error: 'no_session' };
-        const ann = window.zion?.state?.get?.(`sessions.annotations.${sessionId}`) || {};
+        const ann = window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || {};
         const items = Array.isArray(ann.tools) ? ann.tools : [];
         const it = items.find(x => String(x.id) === toolId);
         if (!it) return { ok: false, error: 'not_found' };
@@ -1004,7 +1013,7 @@ async function applyCompressionToActiveEditor(compressionEngine, opts) {
   const docText = editor.getValue();
   const sessionKey = getSessionKey();
   const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
-  const annotations = sessionId ? (window.zion?.state?.get?.(`sessions.annotations.${sessionId}`) || null) : null;
+  const annotations = sessionId ? (window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || null) : null;
   const messages = buildMessagesForCompression(docText, sessionId);
   if (!messages.length) return { ok: false, error: 'no_messages' };
 

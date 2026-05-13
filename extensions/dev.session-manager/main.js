@@ -16,6 +16,7 @@ import { createSessionAutoSavePlugin } from "./editor/autosave-plugin.js";
 import { createSessionsSidebarViewManager } from "./ui/sidebar-view.js";
 import { createSessionsPanelManager } from "./ui/panel.js";
 import { createSessionsListRendererFactory } from "./ui/list-renderer.js";
+import { SessionDocumentRuntime } from "../../src/session/document-runtime";
 
 /** ========== Storage & Utils ========== */
 const LS_INDEX = "zion.sessions.index";
@@ -1272,7 +1273,7 @@ export async function activate(ctx) {
     const isManual = resolvedTitle !== suggested;
     const meta = { id, title: resolvedTitle, createdAt: now(), updatedAt: now(), size: text.length, hash: hashString(text), titleAuto: !isManual };
     try {
-      const prevAnn = window.zion?.state?.get(`sessions.annotations.${prevId}`) || loadMeta(prevId)?.annotations;
+      const prevAnn = window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", prevId) || loadMeta(prevId)?.annotations;
       if (prevAnn) meta.annotations = prevAnn;
     } catch {}
     saveDoc(id, text);
@@ -1377,57 +1378,39 @@ export async function activate(ctx) {
     }
     return window.zion.window.activeEditor;
   };
-
-  // Switch
-  const dSwitch = window.zion.commands.registerCommand("zion.sessions.switch", async (idOrOpts, maybeOpts) => {
-    const id = typeof idOrOpts === "string" ? idOrOpts : idOrOpts?.id;
-    const opts = typeof idOrOpts === "string" ? (maybeOpts || {}) : (idOrOpts || {});
-    if (!id) return false;
-    // Persist annotations of current session before switching
+  const persistSessionPresentation = (sessionId, editor) => {
+    if (!sessionId) return;
     try {
-      const curPrev = window.zion.state.get("sessions.currentId");
-      if (curPrev) {
-        try {
-          const ed = window.zion.window.activeEditor;
-          try {
-            window.zion.commands.executeCommand("zion.sessions.flushPendingSave", curPrev);
-          } catch {}
-          try {
-            const cursor = ed?.getCursor?.();
-            const view0 = ed?.core?.view;
-            const scrollTop = view0?.scrollDOM?.scrollTop;
-            let scrollAnchor = null;
-            try {
-              if (view0 && typeof scrollTop === "number" && isFinite(scrollTop)) {
-                const block = view0.lineBlockAtHeight(scrollTop);
-                scrollAnchor = { pos: block.from, yOffset: scrollTop - block.top };
-              }
-            } catch {}
-            sessionUiState.set(curPrev, { cursor, scrollTop, scrollAnchor });
-          } catch {}
-        } catch {}
-        const ann = window.zion.state.get(`sessions.annotations.${curPrev}`);
-        if (ann) {
-          const metaPrev = loadMeta(curPrev);
-          metaPrev.annotations = { ...(metaPrev.annotations || {}), ...ann };
-          saveMeta(curPrev, metaPrev);
+      window.zion.commands.executeCommand("zion.sessions.flushPendingSave", sessionId);
+    } catch {}
+    try {
+      const cursor = editor?.getCursor?.();
+      const view0 = editor?.core?.view;
+      const scrollTop = view0?.scrollDOM?.scrollTop;
+      let scrollAnchor = null;
+      try {
+        if (view0 && typeof scrollTop === "number" && isFinite(scrollTop)) {
+          const block = view0.lineBlockAtHeight(scrollTop);
+          scrollAnchor = { pos: block.from, yOffset: scrollTop - block.top };
         }
-        // 离开当前会话前尝试自动更新标题
-        try { maybeUpdateAutoTitle(curPrev); } catch {}
+      } catch {}
+      sessionUiState.set(sessionId, { cursor, scrollTop, scrollAnchor });
+    } catch {}
+    try {
+      const ann = window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sessionId);
+      if (ann) {
+        const metaPrev = loadMeta(sessionId);
+        metaPrev.annotations = { ...(metaPrev.annotations || {}), ...ann };
+        saveMeta(sessionId, metaPrev);
       }
     } catch {}
-    if (opts.writeUrl !== false) {
-      setLastActiveId(id, { push: opts.pushUrl !== false });
-    }
-    window.zion.state.set("sessions.currentId", id);
-    try {
-      const text = await loadDocAsync(id);
-      getTargetEditor(opts?.panelId)?.setValue(text);
-      try { applyAnnotationsForSession(id, opts?.panelId); } catch {}
-    } catch {}
+    try { maybeUpdateAutoTitle(sessionId); } catch {}
+  };
+
+  const restoreSessionViewState = (id, panelId) => {
     try {
       const state = sessionUiState.get(id);
-      const ed = getTargetEditor(opts?.panelId);
+      const ed = getTargetEditor(panelId);
       if (state && ed?.core?.view) {
         requestAnimationFrame(() => requestAnimationFrame(() => {
           try {
@@ -1463,16 +1446,33 @@ export async function activate(ctx) {
         }));
       }
     } catch {}
-    // 进入目标会话后尝试自动更新其标题（如仍为默认）
-    try { maybeUpdateAutoTitle(id); } catch {}
-    // 清除该会话的“待查看”标识
-    try { window.zion.state.update(`chat.runs.${id}`, (rs) => ({ ...(rs || {}), awaiting: false })); } catch {}
-    // 同步兼容状态栏 streaming 显示
-    const rs = window.zion.state.get(`chat.runs.${id}`);
-    window.zion.state.set("chat.streaming", !!rs?.streaming);
-    refreshStatusBar();
-    try { refreshSessionsSidebarViewIfOpen(); } catch {}
-    return true;
+  };
+
+  const documentRuntime = new SessionDocumentRuntime({
+    getGlobalSessionId: () => window.zion.state.get("sessions.currentId") || null,
+    getPanelSessionId: (panelId) => window.zion?.sessions?.getPanelSessionId?.(panelId) || null,
+    setGlobalSessionId: (id) => window.zion.state.set("sessions.currentId", id),
+    getTargetEditor,
+    persistPreviousSession: persistSessionPresentation,
+    setLastActiveId,
+    loadDocument: loadDocAsync,
+    applyAnnotations: applyAnnotationsForSession,
+    restoreUiState: restoreSessionViewState,
+    afterSwitch: (id) => {
+      try { maybeUpdateAutoTitle(id); } catch {}
+      try { window.zion.state.update(`chat.runs.${id}`, (rs) => ({ ...(rs || {}), awaiting: false })); } catch {}
+      const rs = window.zion.state.get(`chat.runs.${id}`);
+      window.zion.state.set("chat.streaming", !!rs?.streaming);
+      refreshStatusBar();
+      try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    }
+  });
+
+  // Switch
+  const dSwitch = window.zion.commands.registerCommand("zion.sessions.switch", async (idOrOpts, maybeOpts) => {
+    const id = typeof idOrOpts === "string" ? idOrOpts : idOrOpts?.id;
+    const opts = typeof idOrOpts === "string" ? (maybeOpts || {}) : (idOrOpts || {});
+    return documentRuntime.switchSession({ ...opts, id });
   });
   ctx.subscriptions.push(dSwitch);
 

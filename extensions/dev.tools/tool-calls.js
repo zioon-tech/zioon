@@ -1,6 +1,14 @@
 import { Decoration, EditorView, WidgetType, ViewPlugin } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
 import { diffWordsWithSpace } from "diff";
+import {
+  buildRegexAnchors,
+  filterDeletedItems,
+  planAssistantMarkerInsertion,
+  reconcileExactAnchors,
+  reconcileMountedItems,
+  reconcileNearestAnchors
+} from "../../src/chat/restore";
 
 /**
  * Effects:
@@ -16,9 +24,59 @@ const updateResult = StateEffect.define(); // { id, result, ok? }
 const removeTool = StateEffect.define();   // { id }
 const clearAll = StateEffect.define();
 
+function getSessionAnnotations(sessionId) {
+  try {
+    return window?.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sessionId) || {};
+  } catch {
+    return {};
+  }
+}
+
+function updateSessionAnnotations(sessionId, updater) {
+  try {
+    return window?.zion?.commands?.executeCommand?.("zion.chatCards.updateSessionAnnotations", { sessionId, updater }) || {};
+  } catch {
+    return {};
+  }
+}
+
+function clearPendingRestore(sessionId, kind) {
+  try {
+    window?.zion?.commands?.executeCommand?.("zion.chatCards.clearPendingRestore", { sessionId, kind });
+  } catch {}
+}
+
+function getPanelSessionId(panelId) {
+  try {
+    return panelId ? (window?.zion?.panelManager?.getPanel?.(panelId)?.activeTabId || null) : null;
+  } catch {
+    return null;
+  }
+}
+
+function getViewSessionId(view) {
+  try {
+    const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
+    return getPanelSessionId(panelId) || window?.zion?.state?.get?.("sessions.currentId") || null;
+  } catch {
+    return null;
+  }
+}
+
+function debugChatCards(event, payload) {
+  void event;
+  void payload;
+}
+
+function dbgWidgetLifecycle(msg, data = {}, hypothesisId = "H4") {
+  // #region debug-point widget-lifecycle
+  try { fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "widget-lifecycle", runId: "pre-fix", hypothesisId, location: "extensions/dev.tools/tool-calls.js", msg, data, ts: Date.now() }) }).catch(() => {}); } catch {}
+  // #endregion
+}
+
 function scheduleRevealToolContent(view, { id, pos } = {}) {
   try {
-    const sid = window?.zion?.state?.get?.("sessions.currentId") || null;
+    const sid = getViewSessionId(view);
     if (!sid) return;
     if (window?.zion?.state?.get?.(`chat.followLatest.${sid}`) === false) return;
     requestAnimationFrame(() => {
@@ -1070,7 +1128,9 @@ class ToolCallCardWidget extends WidgetType {
     close.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
       const baseId = String(this.id).replace(/:card$/, "");
-      try { window.zion?.events?.emit("toolcards/remove", { id: baseId }); } catch {}
+      const panelId = close.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null;
+      const sessionId = getPanelSessionId(panelId);
+      try { window.zion?.events?.emit("toolcards/remove", { id: baseId, panelId, sessionId }); } catch {}
     });
     header.appendChild(close);
     wrap.appendChild(header);
@@ -1189,12 +1249,12 @@ const toolInlineField = StateField.define({
         items.clear();
       }
       if (e.is(addInline)) {
-        const { from, to, id, name, args, userStartLine } = e.value;
+        const { from, to, id, name, args, userStartLine, sessionId } = e.value;
         // replace 原始文本为 inline widget（不可编辑、可定制样式）
         const widget = new ToolInlineWidget(id, name, args, null, false);
         const repl = Decoration.replace({ widget }).range(from, to);
         deco = deco.update({ add: [repl] });
-        items.set(id, { from, to, name, args, result: null, ok: null, expanded: false, userStartLine: typeof userStartLine === "number" ? userStartLine : null });
+        items.set(id, { from, to, name, args, result: null, ok: null, expanded: false, userStartLine: typeof userStartLine === "number" ? userStartLine : null, sessionId: sessionId || null });
       }
       if (e.is(toggleInline)) {
         const id = e.value?.id;
@@ -1239,6 +1299,7 @@ const toolInlineField = StateField.define({
       }
       if (e.is(removeTool)) {
         const base = String(e.value?.id || "");
+        const itemSessionId = items.get(base)?.sessionId || null;
         // 移除 inline widget 与 card widget（也兼容旧的 mark 情况）
         deco = deco.update({
           filter: (_f, _t, value) => {
@@ -1254,12 +1315,13 @@ const toolInlineField = StateField.define({
         items.delete(base);
         // 标记该条目为已删除，防止在会话恢复时复活
         try {
-          const sid = window?.zion?.state?.get("sessions.currentId");
+          const sid = e.value?.sessionId || itemSessionId || window?.zion?.state?.get("sessions.currentId");
           if (sid) {
-            const ann = window?.zion?.state?.get(`sessions.annotations.${sid}`) || {};
-            const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds.slice() : [];
-            if (!del.includes(base)) del.push(base);
-            window?.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, deletedToolIds: del });
+            updateSessionAnnotations(sid, (ann) => {
+              const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds.slice() : [];
+              if (!del.includes(base)) del.push(base);
+              return { ...ann, deletedToolIds: del };
+            });
           }
         } catch {}
       }
@@ -1281,6 +1343,7 @@ const toolInlineField = StateField.define({
         }
       });
       if (toRemove.length) {
+        const removedSessionId = toRemove.map(id => items.get(id)?.sessionId).find(Boolean) || null;
         // 移除对应 inline/card 装饰
         deco = deco.update({
           filter: (_f, _t, value) => {
@@ -1292,12 +1355,13 @@ const toolInlineField = StateField.define({
         toRemove.forEach(id => items.delete(id));
         // 写删除标记，避免恢复时复活
         try {
-          const sid = window?.zion?.state?.get("sessions.currentId");
+          const sid = removedSessionId || window?.zion?.state?.get("sessions.currentId");
           if (sid) {
-            const ann = window?.zion?.state?.get(`sessions.annotations.${sid}`) || {};
-            const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds.slice() : [];
-            toRemove.forEach(id => { if (!del.includes(id)) del.push(id); });
-            window?.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, deletedToolIds: del });
+            updateSessionAnnotations(sid, (ann) => {
+              const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds.slice() : [];
+              toRemove.forEach(id => { if (!del.includes(id)) del.push(id); });
+              return { ...ann, deletedToolIds: del };
+            });
           }
         } catch {}
       }
@@ -1322,71 +1386,6 @@ function findPrevRoleStartLine(doc, pos, role) {
   return null;
 }
 
-function findAssistantBlockEnd(view) {
-  const { state } = view;
-  const doc = state.doc;
-  const lines = doc.toString().replace(/\r/g, "").split("\n");
-
-  // 找最后一个 assistant 头行
-  let headIdx = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-    if (m && m[1] === "assistant") { headIdx = i; break; }
-  }
-  if (headIdx < 0) return doc.length;
-
-  // 往下直到下一个角色头行，取其前一行为区块末尾
-  let endIdx = headIdx;
-  for (let i = headIdx + 1; i < lines.length; i++) {
-    const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-    if (m) break;
-    endIdx = i;
-  }
-  return doc.line(endIdx + 1).to;
-}
-
-/**
- * 根据 hintPos（当前回答锚点或光标）查找“距离最近的 assistant 区块末尾”
- */
-function findAssistantBlockEndNear(view, hintPos) {
-  const { state } = view;
-  const doc = state.doc;
-  const txt = doc.toString().replace(/\r/g, "");
-  const lines = txt.split("\n");
-
-  // hintPos 转为行索引
-  const hint = typeof hintPos === "number" ? hintPos : (state.selection?.main?.head ?? doc.length);
-  const hintLine = doc.lineAt(hint).number - 1;
-
-  // 自 hintLine 向上查找最近的 assistant 头
-  let headIdx = -1;
-  for (let i = hintLine; i >= 0; i--) {
-    const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-    if (m && m[1] === "assistant") { headIdx = i; break; }
-    if (m && m[1] !== "assistant") {
-      // 在 hint 上方遇到别的角色头，继续向上直到找到 assistant 或越界
-      continue;
-    }
-  }
-  // 若未找到，回退到最后一个 assistant
-  if (headIdx < 0) {
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-      if (m && m[1] === "assistant") { headIdx = i; break; }
-    }
-  }
-  if (headIdx < 0) return doc.length;
-
-  // 从 headIdx 往下直到下一个角色头行，前一行为区块末尾
-  let endIdx = headIdx;
-  for (let i = headIdx + 1; i < lines.length; i++) {
-    const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-    if (m) break;
-    endIdx = i;
-  }
-  return doc.line(endIdx + 1).to;
-}
-
 /**
  * 将扩展暴露出去：由 editor.addVisualExtension(ext) 注入
  * - chat/toolCall：在最新 assistant 区块末尾插入“调用 xxx”文本行并加装饰
@@ -1404,15 +1403,21 @@ export function installToolCallCards() {
       this.sessionId = null;
       this.toolActions = new Map();
       this.selRaf = 0;
+      this.mirrorToolCalls = new Map();
       try { this.panelId = this.view.dom.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null; } catch { this.panelId = null; }
-      try { this.sessionId = window.zion?.state?.get("sessions.currentId") || null; } catch {}
+      try {
+        this.sessionId = getPanelSessionId(this.panelId) || (!this.panelId ? (window.zion?.state?.get("sessions.currentId") || null) : null);
+      } catch {}
+      debugChatCards("plugin.init", { panelId: this.panelId, sessionId: this.sessionId, docLength: this.view.state.doc.length });
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRun));
       this.disps.push(window.zion.events.on("chat/runFinished", this.onFinish));
       this.disps.push(window.zion.events.on("chat/toolCall", this.onCall));
+      this.disps.push(window.zion.events.on("toolcards/inlineInserted", this.onInlineInserted));
       this.disps.push(window.zion.events.on("chat/toolResult", this.onRes));
       this.disps.push(window.zion.events.on("toolcards/remove", this.onRemove));
       this.disps.push(window.zion.events.on("toolcards/restore", this.onRestore));
       this.disps.push(window.zion.events.on("toolcards/clear", this.onClear));
+      this.disps.push(window.zion.events.on("toolcards/snapshot", this.onSnapshot));
       this.disps.push(window.zion.events.on("toolcards/editRevert", this.onEditRevert));
       this.disps.push(window.zion.events.on("toolcards/editAccept", this.onEditAccept));
       this.disps.push(window.zion.events.on("toolcards/writeRevert", this.onWriteRevert));
@@ -1429,13 +1434,16 @@ export function installToolCallCards() {
       Promise.resolve().then(() => {
         try {
           const sid = this.sessionId;
-          const pending = sid ? window.zion?.state?.get(`sessions.pendingRestore.tools.${sid}`) : null;
-          const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+          const pending = sid ? window.zion?.commands?.executeCommand?.("zion.chatCards.getPendingRestore", { sessionId: sid, kind: "tools" }) : null;
+          const ann = sid ? getSessionAnnotations(sid) : {};
           const list = Array.isArray(ann.tools) ? ann.tools : [];
+          debugChatCards("plugin.initialRestoreCheck", {
+            panelId: this.panelId,
+            sessionId: sid,
+            pending: Array.isArray(pending) ? pending.length : 0,
+            annotations: list.length
+          });
           if (Array.isArray(pending) && pending.length) {
-            if (sid && !list.length) {
-              try { window.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, tools: pending }); } catch {}
-            }
             this.onRestore({ items: pending });
             return;
           }
@@ -1463,6 +1471,13 @@ export function installToolCallCards() {
       let wasHidden = document.hidden;
       const checkAndRestore = () => {
         const isHidden = document.hidden;
+        dbgWidgetLifecycle("[DEBUG] tools.visibility", {
+          panelId: this.panelId,
+          sessionId: this.sessionId,
+          wasHidden,
+          isHidden,
+          docLength: this.view.state.doc.length
+        }, "H4");
         if (wasHidden && !isHidden) {
           // 页面从休眠中唤醒，检查并恢复丢失的 widgets
           this.checkAndRestoreWidgets();
@@ -1477,6 +1492,11 @@ export function installToolCallCards() {
       // 也监听 window focus 事件作为备份
       const onFocus = () => {
         // 延迟一点执行，确保 DOM 已完全恢复
+        dbgWidgetLifecycle("[DEBUG] tools.focus", {
+          panelId: this.panelId,
+          sessionId: this.sessionId,
+          docLength: this.view.state.doc.length
+        }, "H4");
         setTimeout(() => this.checkAndRestoreWidgets(), 100);
       };
       window.addEventListener("focus", onFocus);
@@ -1490,20 +1510,34 @@ export function installToolCallCards() {
       try {
         const sid = this.sessionId;
         if (!sid) return;
-        const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+        const ann = getSessionAnnotations(sid);
         const list = Array.isArray(ann.tools) ? ann.tools : [];
-        if (!list.length) return;
-
-        // 基于 StateField 中的已挂载 id 判断是否需要恢复
         let mountedIds = [];
         try {
           const fieldVal = this.view.state.field(toolInlineField);
           if (fieldVal?.items) fieldVal.items.forEach((_it, id) => mountedIds.push(String(id)));
         } catch {}
+        dbgWidgetLifecycle("[DEBUG] tools.restoreCheck", {
+          panelId: this.panelId,
+          sessionId: sid,
+          annotationCount: list.length,
+          mountedCount: mountedIds.length,
+          mountedIds,
+          inlineDom: this.view.dom.querySelectorAll(".zion-tool-call-inline").length,
+          cardDom: this.view.dom.querySelectorAll(".zion-tool-call-card").length,
+          callTextCount: (this.view.state.doc.toString().match(/调用\s+[^\n]+/g) || []).length
+        }, "H4");
+        if (!list.length) return;
+
+        // 基于 StateField 中的已挂载 id 判断是否需要恢复
         const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
         const missing = wantIds.some(id => !mountedIds.includes(id));
         if (missing) {
-          console.log("[tool-calls] restore needed (missing ids):", { missingIds: wantIds.filter(id => !mountedIds.includes(id)) });
+          dbgWidgetLifecycle("[DEBUG] tools.restoreNeeded", {
+            panelId: this.panelId,
+            sessionId: sid,
+            missingIds: wantIds.filter(id => !mountedIds.includes(id))
+          }, "H4");
           this.onRestore({ items: list });
         }
       } catch (e) {
@@ -1531,6 +1565,15 @@ export function installToolCallCards() {
         this.anchorPos = update.state.selection?.main?.head ?? this.anchorPos;
       }
       // 每次更新后持久化快照（位置会被 StateField 自动映射）
+      if (this.mirrorToolCalls.size) {
+        try { this.attachPendingMirrorToolCalls(); } catch {}
+        if (this.mirrorToolCalls.size) {
+          if (update.selectionSet || update.docChanged || update.viewportChanged) {
+            this.syncSelectionHighlight();
+          }
+          return;
+        }
+      }
       this.snapshot();
       if (update.selectionSet || update.docChanged || update.viewportChanged) {
         this.syncSelectionHighlight();
@@ -1588,9 +1631,26 @@ export function installToolCallCards() {
             actionAt: typeof act?.at === "number" ? act.at : null
           });
         });
-        const prev = window.zion?.state?.get(`sessions.annotations.${id}`) || {};
-        // 将注解快照写回内存
-        window.zion?.state?.set(`sessions.annotations.${id}`, { ...prev, tools: arr });
+        updateSessionAnnotations(id, (prev) => {
+          const prevTools = Array.isArray(prev.tools) ? prev.tools : [];
+          if (!arr.length && prevTools.length && /调用\s+([^\n]+)/.test(this.view.state.doc.toString())) {
+            debugChatCards("snapshot.skipEmpty", {
+              panelId: this.panelId,
+              sessionId: id,
+              prevCount: prevTools.length,
+              docLength: this.view.state.doc.length
+            });
+            return prev;
+          }
+          return { ...prev, tools: arr };
+        });
+        debugChatCards("snapshot", {
+          panelId: this.panelId,
+          sessionId: id,
+          count: arr.length,
+          expanded: arr.filter(it => it.expanded).length,
+          ids: arr.map(it => it.id)
+        });
         // 同步当前挂载的 widget id 列表与计数，供生命周期判定使用（避免依赖 DOM 计数）
         try {
           const mountedIds = arr.map(it => it.id).filter(Boolean);
@@ -1602,11 +1662,14 @@ export function installToolCallCards() {
         } catch {}
       } catch {}
     };
+    getVisibleSessionId = () => {
+      return window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+    };
     loadToolActions = () => {
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = this.getVisibleSessionId();
         if (!sid) return;
-        const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+        const ann = getSessionAnnotations(sid);
         const ta = ann && typeof ann.toolActions === "object" ? ann.toolActions : {};
         const next = new Map();
         Object.keys(ta || {}).forEach((k) => {
@@ -1621,23 +1684,22 @@ export function installToolCallCards() {
         this.toolActions = next;
       } catch {}
     };
-    setToolAction = (toolCallId, action) => {
+    setToolAction = (toolCallId, action, sessionId) => {
       if (!toolCallId || (action !== "accept" && action !== "revert")) return;
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = sessionId || this.getVisibleSessionId();
         if (!sid) return;
-        const prev = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
-        const taPrev = prev && typeof prev.toolActions === "object" ? prev.toolActions : {};
-        const ta = { ...(taPrev || {}) };
         const at = Date.now();
-        ta[String(toolCallId)] = { action, at };
-        window.zion?.state?.set(`sessions.annotations.${sid}`, { ...prev, toolActions: ta });
+        updateSessionAnnotations(sid, (prev) => {
+          const taPrev = prev && typeof prev.toolActions === "object" ? prev.toolActions : {};
+          return { ...prev, toolActions: { ...(taPrev || {}), [String(toolCallId)]: { action, at } } };
+        });
         this.toolActions.set(String(toolCallId), { action, at });
         try { window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid }); } catch {}
       } catch {}
     };
     onRun = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      const visibleSessionId = this.getVisibleSessionId();
       if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
       if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
       if (payload?.sessionId) this.sessionId = payload.sessionId;
@@ -1646,14 +1708,14 @@ export function installToolCallCards() {
       this.anchorPos = typeof sel === "number" ? sel : this.view.state.doc.length;
     };
     onFinish = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      const visibleSessionId = this.getVisibleSessionId();
       if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
       if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
       if (payload?.sessionId) this.sessionId = payload.sessionId;
       this.runActive = false;
     };
     onCall = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      const visibleSessionId = this.getVisibleSessionId();
       if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
       if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
       if (payload?.sessionId) this.sessionId = payload.sessionId;
@@ -1663,6 +1725,21 @@ export function installToolCallCards() {
 
       const isMirrorPanel = !!(payload?.panelId && payload.panelId !== this.panelId);
       if (isMirrorPanel) {
+        const anchorCountBefore = buildRegexAnchors(this.view.state.doc.toString(), /调用\s+([^\n]+)/g, (match) => {
+          if (match[0].length > 300) return null;
+          return { from: match.index, to: match.index + match[0].length, name: match[1].trim() };
+        }).length;
+        debugChatCards("toolCall.mirrorPending", { panelId: this.panelId, sourcePanelId: payload?.panelId, sessionId: this.sessionId, id: tc.id, name, anchorCountBefore });
+        this.mirrorToolCalls.set(String(tc.id), { ...tc, name, sessionId: this.sessionId, anchorCountBefore, attempts: 0 });
+        if (this.attachPendingMirrorToolCalls(String(tc.id))) return;
+        try {
+          requestAnimationFrame(() => {
+            try { this.attachPendingMirrorToolCalls(String(tc.id)); } catch {}
+          });
+        } catch {}
+        [30, 120, 300].forEach((delay) => setTimeout(() => {
+          try { this.attachPendingMirrorToolCalls(String(tc.id)); } catch {}
+        }, delay));
         return;
       }
 
@@ -1685,30 +1762,167 @@ export function installToolCallCards() {
       // 2) 计算插入位置：基于当前会话锚点的 assistant 区块末尾
       const sid = this.sessionId;
       const hint = (sid ? window.zion?.state?.get(`chat.answerAnchorPos.${sid}`) : undefined) ?? window.zion?.state?.get("chat.answerAnchorPos");
-      const doc = this.view.state.doc;
-      const pos = typeof hint === "number" ? findAssistantBlockEndNear(this.view, hint) : findAssistantBlockEnd(this.view);
-      const prevChar = pos > 0 ? doc.sliceString(pos - 1, pos) : "";
-      const prefix = prevChar === "\n" || pos === 0 ? "" : "\n"; // 确保新起一行
-      const text = `${prefix}调用 ${name}\n`; // 末尾也换行，避免与后续回答拼在一行
-      const start = pos + prefix.length;
-      const end = start + (`调用 ${name}`).length;
-      const userStartLine = findPrevRoleStartLine(doc, start, "user");
+      const plan = planAssistantMarkerInsertion({
+        docText: this.view.state.doc.toString(),
+        markerText: `调用 ${name}`,
+        hintPos: typeof hint === "number" ? hint : null,
+        trailingNewlines: 1
+      });
+      const userStartLine = findPrevRoleStartLine(this.view.state.doc, plan.markerFrom, "user");
 
       // 对外暴露锚点：设置到换行后的位置，便于后续回答继续新起一行
-      try { window.zion?.state?.set("chat.lastToolCallPos", end + 1); } catch {}
+      try { window.zion?.state?.set("chat.lastToolCallPos", plan.markerTo + 1); } catch {}
       this.view.dispatch({
-        changes: { from: pos, insert: text },
-        effects: [addInline.of({ from: start, to: end, id: tc.id, name, args: tc.args, userStartLine })]
+        changes: { from: plan.insertPos, insert: plan.insertText },
+        effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: tc.id, name, args: tc.args, userStartLine, sessionId: this.sessionId })]
       });
-      scheduleRevealToolContent(this.view, { id: tc.id, pos: end, reason: "onTool-insert" });
+      debugChatCards("toolCall.inserted", { panelId: this.panelId, sessionId: this.sessionId, id: tc.id, name, from: plan.markerFrom, to: plan.markerTo });
+      try {
+        window.zion?.events?.emit("toolcards/inlineInserted", {
+          panelId: this.panelId,
+          sessionId: this.sessionId,
+          id: tc.id,
+          name,
+          args: tc.args,
+          from: plan.markerFrom,
+          to: plan.markerTo
+        });
+      } catch {}
+      scheduleRevealToolContent(this.view, { id: tc.id, pos: plan.markerTo, reason: "onTool-insert" });
       // 插入后，将锚点推进到换行之后
-      this.anchorPos = end + 1;
+      this.anchorPos = plan.markerTo + 1;
       try {
         window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: this.sessionId });
       } catch {}
     };
+    attachPendingMirrorToolCalls = (onlyId) => {
+      if (!this.mirrorToolCalls.size) return false;
+      let attachedAny = false;
+      try {
+        const fieldVal = this.view.state.field(toolInlineField);
+        const occupied = new Set();
+        try { fieldVal?.items?.forEach?.((it) => occupied.add(`${it.from}:${it.to}`)); } catch {}
+        const doc = this.view.state.doc;
+        const docString = doc.toString();
+        const anchors = buildRegexAnchors(docString, /调用\s+([^\n]+)/g, (match) => {
+          if (match[0].length > 300) return null;
+          return {
+            from: match.index,
+            to: match.index + match[0].length,
+            name: match[1].trim()
+          };
+        });
+        const entries = Array.from(this.mirrorToolCalls.entries());
+        debugChatCards("mirror.attach.scan", {
+          panelId: this.panelId,
+          sessionId: this.sessionId,
+          pending: entries.length,
+          anchors: anchors.length,
+          onlyId
+        });
+        for (const [id, tc] of entries) {
+          if (onlyId && id !== onlyId) continue;
+          if (fieldVal?.items?.has?.(id)) {
+            this.mirrorToolCalls.delete(id);
+            continue;
+          }
+          tc.attempts = Number(tc.attempts || 0) + 1;
+          const anchorCountBefore = Math.max(0, Number(tc.anchorCountBefore || 0));
+          const newAnchors = anchors.slice(anchorCountBefore);
+          const candidates = newAnchors;
+          debugChatCards("mirror.attach.candidates", {
+            panelId: this.panelId,
+            sessionId: this.sessionId,
+            id,
+            name: tc.name,
+            attempts: tc.attempts,
+            anchorCountBefore,
+            totalAnchors: anchors.length,
+            candidateAnchors: candidates.length
+          });
+          if (!candidates.length) continue;
+          for (let i = candidates.length - 1; i >= 0; i--) {
+            const anchor = candidates[i];
+            if (anchor.occupied) continue;
+            if (anchor.name !== tc.name) continue;
+            if (occupied.has(`${anchor.from}:${anchor.to}`)) continue;
+            anchor.occupied = true;
+            occupied.add(`${anchor.from}:${anchor.to}`);
+            const userStartLine = findPrevRoleStartLine(doc, anchor.from, "user");
+            this.view.dispatch({
+              effects: [addInline.of({ from: anchor.from, to: anchor.to, id, name: tc.name, args: tc.args, userStartLine, sessionId: this.sessionId })]
+            });
+            debugChatCards("mirror.attach.matched", { panelId: this.panelId, sessionId: this.sessionId, id, name: tc.name, from: anchor.from, to: anchor.to });
+            this.mirrorToolCalls.delete(id);
+            attachedAny = true;
+            break;
+          }
+        }
+        if (attachedAny) this.snapshot();
+      } catch {}
+      return attachedAny;
+    };
+    attachMirrorToolByHint = (payload) => {
+      if (!payload?.id || !payload?.name) return false;
+      const visibleSessionId = this.getVisibleSessionId();
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return false;
+      if (payload?.panelId && payload.panelId === this.panelId) return false;
+      try {
+        const fieldVal = this.view.state.field(toolInlineField);
+        if (fieldVal?.items?.has?.(String(payload.id))) return true;
+        const occupied = new Set();
+        try { fieldVal?.items?.forEach?.((it) => occupied.add(`${it.from}:${it.to}`)); } catch {}
+        const anchors = buildRegexAnchors(this.view.state.doc.toString(), /调用\s+([^\n]+)/g, (match) => {
+          if (match[0].length > 300) return null;
+          return { from: match.index, to: match.index + match[0].length, name: match[1].trim() };
+        }).filter((anchor) => anchor.name === payload.name && !anchor.occupied && !occupied.has(`${anchor.from}:${anchor.to}`));
+        const hintFrom = typeof payload.from === "number" ? payload.from : null;
+        const ranked = anchors
+          .map((anchor) => ({ anchor, score: hintFrom == null ? 0 : Math.abs(anchor.from - hintFrom) }))
+          .sort((a, b) => a.score - b.score);
+        debugChatCards("inlineInserted.hintScan", {
+          panelId: this.panelId,
+          sourcePanelId: payload.panelId,
+          sessionId: payload.sessionId,
+          id: payload.id,
+          name: payload.name,
+          hintFrom,
+          candidates: ranked.length,
+          bestScore: ranked[0]?.score ?? null
+        });
+        const best = ranked[0]?.anchor;
+        if (!best) return false;
+        const userStartLine = findPrevRoleStartLine(this.view.state.doc, best.from, "user");
+        this.view.dispatch({
+          effects: [addInline.of({ from: best.from, to: best.to, id: payload.id, name: payload.name, args: payload.args, userStartLine, sessionId: visibleSessionId || this.sessionId || payload.sessionId || null })]
+        });
+        this.mirrorToolCalls.delete(String(payload.id));
+        debugChatCards("inlineInserted.hintMatched", {
+          panelId: this.panelId,
+          sourcePanelId: payload.panelId,
+          sessionId: payload.sessionId,
+          id: payload.id,
+          name: payload.name,
+          from: best.from,
+          to: best.to
+        });
+        this.snapshot();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onInlineInserted = (payload) => {
+      if (this.attachMirrorToolByHint(payload)) return;
+      requestAnimationFrame(() => {
+        try { this.attachMirrorToolByHint(payload); } catch {}
+      });
+      setTimeout(() => {
+        try { this.attachMirrorToolByHint(payload); } catch {}
+      }, 80);
+    };
     onRes = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      const visibleSessionId = this.getVisibleSessionId();
       if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
       if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
       if (payload?.sessionId) this.sessionId = payload.sessionId;
@@ -1725,20 +1939,23 @@ export function installToolCallCards() {
         const it = fieldVal.items.get(String(id));
         const nm = String(it?.name || "");
         if ((nm === "edit" || nm === "write" || nm === "fsedit" || nm === "fswrite") && it?.ok === true && !this.toolActions.get(String(id))) {
-          this.setToolAction(String(id), "accept");
+          this.setToolAction(String(id), "accept", this.sessionId);
         }
       } catch {}
     };
     onRemove = (payload) => {
-      const id = payload?.id || payload;
+      const scopedPayload = payload && typeof payload === "object" ? payload : { id: payload };
+      if (!this.shouldHandleToolAction(scopedPayload)) return;
+      const id = scopedPayload?.id;
       if (!id) return;
-      this.view.dispatch({ effects: [removeTool.of({ id })] });
+      const sessionId = scopedPayload?.sessionId || this.getVisibleSessionId();
+      this.view.dispatch({ effects: [removeTool.of({ id, sessionId })] });
       try {
-        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: this.sessionId });
+        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId });
       } catch {}
     };
     shouldHandleToolAction = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      const visibleSessionId = this.getVisibleSessionId();
       if (payload?.panelId && this.panelId && payload.panelId !== this.panelId) return false;
       if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return false;
       if (!payload?.panelId && !payload?.sessionId) {
@@ -1879,8 +2096,8 @@ export function installToolCallCards() {
         return;
       }
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
-        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+        const sid = payload?.sessionId || this.getVisibleSessionId();
+        const ann = sid ? getSessionAnnotations(sid) : {};
         const list = Array.isArray(ann.writeHistory) ? ann.writeHistory : [];
         const baseId = String(id || "");
         const contentHint = typeof payload?.content === "string" ? payload.content : null;
@@ -1928,7 +2145,7 @@ export function installToolCallCards() {
             return;
           }
           notify("Revert 成功！", { type: "success", duration: 3000 });
-          if (id) this.setToolAction(String(id), "revert");
+          if (id) this.setToolAction(String(id), "revert", sid);
           return;
         }
         const beforeContent = item?.beforeContent;
@@ -1956,7 +2173,7 @@ export function installToolCallCards() {
           return;
         }
         notify("Revert 成功！", { type: "success", duration: 3000 });
-        if (id) this.setToolAction(String(id), "revert");
+        if (id) this.setToolAction(String(id), "revert", sid);
       } catch (e) {
         console.error("[onWriteRevert] error:", e);
         notify("Revert 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
@@ -1970,8 +2187,8 @@ export function installToolCallCards() {
         return;
       }
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
-        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+        const sid = payload?.sessionId || this.getVisibleSessionId();
+        const ann = sid ? getSessionAnnotations(sid) : {};
         const list = Array.isArray(ann.writeHistory) ? ann.writeHistory : [];
         const baseId = String(id || "");
         const contentHint = typeof payload?.content === "string" ? payload.content : null;
@@ -2024,7 +2241,7 @@ export function installToolCallCards() {
           return;
         }
         notify("Accept 成功！", { type: "success", duration: 3000 });
-        if (id) this.setToolAction(String(id), "accept");
+        if (id) this.setToolAction(String(id), "accept", sid);
       } catch (e) {
         console.error("[onWriteAccept] error:", e);
         notify("Accept 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
@@ -2142,8 +2359,19 @@ export function installToolCallCards() {
         }
       }
     };
-    onClear = () => {
+    onClear = (payload) => {
+      const visibleSessionId = this.getVisibleSessionId();
+      if (payload?.panelId && this.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
       this.view.dispatch({ effects: [clearAll.of({})] });
+      this.snapshot();
+    };
+    onSnapshot = (payload = {}) => {
+      const visibleSessionId = this.getVisibleSessionId();
+      if (payload?.panelId && this.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
+      const sid = payload?.sessionId || visibleSessionId;
+      if (sid) this.sessionId = sid;
       this.snapshot();
     };
     onSessionChanged = () => {
@@ -2151,6 +2379,7 @@ export function installToolCallCards() {
       const mySessionId = panelMgr?.getPanel(this.panelId)?.activeTabId || null;
       if (mySessionId && mySessionId !== this.sessionId) {
         this.sessionId = mySessionId;
+        this.mirrorToolCalls.clear();
         try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
         this.runActive = false;
         this.anchorPos = this.view.state.doc.length;
@@ -2158,6 +2387,7 @@ export function installToolCallCards() {
         this.snapshot();
       } else if (!mySessionId && this.sessionId) {
         this.sessionId = null;
+        this.mirrorToolCalls.clear();
         try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
         this.runActive = false;
         this.anchorPos = this.view.state.doc.length;
@@ -2169,7 +2399,18 @@ export function installToolCallCards() {
       if (payload?.sessionId && payload.sessionId !== sid) return;
       requestAnimationFrame(() => {
         try {
-          const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+          if (this.mirrorToolCalls.size) {
+            this.attachPendingMirrorToolCalls();
+            if (this.mirrorToolCalls.size) {
+              debugChatCards("toolsUpdated.deferRestoreForPendingMirror", {
+                panelId: this.panelId,
+                sessionId: sid,
+                pending: this.mirrorToolCalls.size
+              });
+              return;
+            }
+          }
+          const ann = getSessionAnnotations(sid);
           const list = Array.isArray(ann.tools) ? ann.tools : [];
           if (!list.length) return;
           this.onRestore({ items: list, panelId: this.panelId, __fromToolsUpdated: true });
@@ -2179,112 +2420,106 @@ export function installToolCallCards() {
     onRestore = (payload) => {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
-      if (payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.panelId && payload.panelId !== this.panelId) {
+        debugChatCards("restore.skipPanel", { panelId: this.panelId, payloadPanelId: payload.panelId, sessionId: payload?.sessionId, count: list.length });
+        return;
+      }
+      const visibleSessionId = this.getVisibleSessionId();
+      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) {
+        debugChatCards("restore.skipSession", { panelId: this.panelId, visibleSessionId, payloadSessionId: payload.sessionId, count: list.length });
+        return;
+      }
+      const restoreSessionId = payload?.sessionId || visibleSessionId || this.sessionId || null;
+      if (restoreSessionId) this.sessionId = restoreSessionId;
+      dbgWidgetLifecycle("[DEBUG] tools.restoreStart", {
+        panelId: this.panelId,
+        visibleSessionId,
+        restoreSessionId,
+        payloadPanelId: payload?.panelId || null,
+        count: list.length,
+        docLength: this.view.state.doc.length
+      }, "H5");
+      debugChatCards("restore.start", { panelId: this.panelId, sessionId: restoreSessionId, count: list.length, docLength: this.view.state.doc.length });
       try {
-        const sid = this.sessionId;
-        if (sid) window.zion?.state?.set(`sessions.pendingRestore.tools.${sid}`, null);
+        const sid = restoreSessionId;
+        if (sid) clearPendingRestore(sid, "tools");
       } catch {}
 
-      let deletedSet = new Set();
-      try {
-        const sid = this.sessionId;
-        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
-        const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [];
-        deletedSet = new Set(del);
-      } catch {}
-
-      // 扫描文档寻找所有“调用 xxx”锚点，用于位置校准
       const doc = this.view.state.doc;
       const docLen = doc.length;
       const docString = doc.toString();
-      const anchors = [];
-      const regex = /调用\s+([^\n]+)/g;
-      let match;
-      while ((match = regex.exec(docString)) !== null) {
-        if (match[0].length > 300) continue; // 忽略过长的异常行
-        anchors.push({
+      let deletedIds = [];
+      try {
+        const sid = restoreSessionId;
+        const ann = sid ? getSessionAnnotations(sid) : {};
+        deletedIds = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [];
+      } catch {}
+      const anchors = buildRegexAnchors(docString, /调用\s+([^\n]+)/g, (match) => {
+        if (match[0].length > 300) return null;
+        return {
           from: match.index,
           to: match.index + match[0].length,
           text: match[0],
-          name: match[1].trim(),
-          occupied: false
-        });
-      }
+          name: match[1].trim()
+        };
+      });
 
       const batchedEffects = [];
       const batchedToggles = [];
+      debugChatCards("restore.anchors", { panelId: this.panelId, sessionId: restoreSessionId, items: list.length, anchors: anchors.length });
       let existingItems = new Map();
       try {
         const fieldVal = this.view.state.field(toolInlineField);
         if (fieldVal?.items) fieldVal.items.forEach((it, id) => existingItems.set(String(id), it));
       } catch {}
-      const itemsToProcess = list.filter(it => !deletedSet.has(it?.id));
-      const processedIds = new Set();
+      const itemsToProcess = filterDeletedItems(list, deletedIds);
 
       // Phase 0: reconcile already-mounted items, avoid restoring or toggling them twice
-      for (const it of itemsToProcess) {
-        const id = String(it?.id || "");
-        if (!id) continue;
-        const mounted = existingItems.get(id);
-        if (!mounted) continue;
-        processedIds.add(id);
-        if (it.result != null && (mounted.result !== it.result || mounted.ok !== it.ok)) {
-          batchedEffects.push(updateResult.of({ id, result: it.result, ok: it.ok }));
+      const processedIds = reconcileMountedItems({
+        items: itemsToProcess,
+        existingItems,
+        onMounted: (it, mounted) => {
+          const id = String(it?.id || "");
+          if (it.result != null && (mounted.result !== it.result || mounted.ok !== it.ok)) {
+            batchedEffects.push(updateResult.of({ id, result: it.result, ok: it.ok }));
+          }
+          if (!!it.expanded && !mounted.expanded) {
+            batchedToggles.push(id);
+          }
         }
-        if (!!it.expanded && !mounted.expanded) {
-          batchedToggles.push(id);
-        }
-      }
+      });
 
       // Phase 1: 精确位置匹配 (优先)
-      for (const it of itemsToProcess) {
-        if (processedIds.has(String(it?.id || ""))) continue;
-        const expected = `调用 ${it.name}`;
-        if (typeof it.from === "number" && typeof it.to === "number" && it.from >= 0 && it.to <= docLen && it.from < it.to) {
-          const text = doc.sliceString(it.from, it.to);
-          if (text === expected) {
-            // 标记锚点被占用
-            const anchor = anchors.find(a => a.from === it.from && a.to === it.to && !a.occupied);
-            if (anchor) anchor.occupied = true;
-            
-            batchedEffects.push(addInline.of({ from: it.from, to: it.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null }));
-            if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
-            if (it.expanded) batchedToggles.push(it.id);
-            processedIds.add(it.id);
-          }
-        }
-      }
-
-      // Phase 2: 模糊/最近位置匹配 (应对文本偏移)
-      for (const it of itemsToProcess) {
-        if (processedIds.has(it.id)) continue;
-
-        let bestAnchor = null;
-        let minDist = Infinity;
-        // 寻找同名且未占用的最近锚点
-        for (const anchor of anchors) {
-          if (anchor.occupied) continue;
-          if (anchor.name !== it.name) continue;
-          const dist = Math.abs(anchor.from - (it.from || 0));
-          if (dist < minDist) {
-            minDist = dist;
-            bestAnchor = anchor;
-          }
-        }
-
-        if (bestAnchor) {
-          bestAnchor.occupied = true;
-          // 使用新发现的位置
-          batchedEffects.push(addInline.of({ from: bestAnchor.from, to: bestAnchor.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null }));
+      reconcileExactAnchors({
+        items: itemsToProcess,
+        processedIds,
+        anchors,
+        isExactMatch: (it, anchor) => {
+          if (typeof it.from !== "number" || typeof it.to !== "number") return false;
+          if (it.from < 0 || it.to > docLen || it.from >= it.to) return false;
+          return anchor.from === it.from && anchor.to === it.to && doc.sliceString(it.from, it.to) === `调用 ${it.name}`;
+        },
+        onMatch: (it, anchor) => {
+          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null, sessionId: restoreSessionId }));
           if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
           if (it.expanded) batchedToggles.push(it.id);
-          processedIds.add(it.id);
-          
-          // 更新 item 位置以便 snapshot
-          it.from = bestAnchor.from;
-          it.to = bestAnchor.to;
         }
-      }
+      });
+
+      // Phase 2: 模糊/最近位置匹配 (应对文本偏移)
+      reconcileNearestAnchors({
+        items: itemsToProcess,
+        processedIds,
+        anchors,
+        canUseAnchor: (it, anchor) => anchor.name === it.name,
+        onMatch: (it, anchor) => {
+          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null, sessionId: restoreSessionId }));
+          if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
+          if (it.expanded) batchedToggles.push(it.id);
+          it.from = anchor.from;
+          it.to = anchor.to;
+        }
+      });
 
       // 批量应用 Phase 1 & 2 的效果
       if (batchedEffects.length) this.view.dispatch({ effects: batchedEffects });
@@ -2310,20 +2545,20 @@ export function installToolCallCards() {
 
         const name = it.name || "tool";
         // 重新获取 doc，因为前面的 dispatch 可能没改变 doc (effects only)，但在 Phase 3 循环中我们会修改 doc
-        const docNow = this.view.state.doc;
-        const pos = findAssistantBlockEnd(this.view);
-        const prevChar = pos > 0 ? docNow.sliceString(pos - 1, pos) : "";
-        const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-        const text = `${prefix}调用 ${name}\n`;
-        const start = pos + prefix.length;
-        const end = start + (`调用 ${name}`).length;
-        const userStartLine = typeof it.userStartLine === "number" ? it.userStartLine : findPrevRoleStartLine(docNow, start, "user");
+        const plan = planAssistantMarkerInsertion({
+          docText: this.view.state.doc.toString(),
+          markerText: `调用 ${name}`,
+          trailingNewlines: 1
+        });
+        const userStartLine = typeof it.userStartLine === "number"
+          ? it.userStartLine
+          : findPrevRoleStartLine(this.view.state.doc, plan.markerFrom, "user");
 
         this.view.dispatch({
-          changes: { from: pos, insert: text },
-          effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args, userStartLine })]
+          changes: { from: plan.insertPos, insert: plan.insertText },
+          effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: it.id, name, args: it.args, userStartLine, sessionId: restoreSessionId })]
         });
-        scheduleRevealToolContent(this.view, { id: it.id, pos: end });
+        scheduleRevealToolContent(this.view, { id: it.id, pos: plan.markerTo });
         
         if (it.result != null) {
           this.view.dispatch({ effects: [updateResult.of({ id: it.id, result: it.result, ok: it.ok })] });
@@ -2333,16 +2568,45 @@ export function installToolCallCards() {
         }
         
         // 更新 item 位置
-        it.from = start;
-        it.to = end;
+        it.from = plan.markerFrom;
+        it.to = plan.markerTo;
         
         processedIds.add(it.id);
       }
 
 
       this.snapshot();
+      dbgWidgetLifecycle("[DEBUG] tools.restoreDone", {
+        panelId: this.panelId,
+        sessionId: restoreSessionId,
+        processed: processedIds.size,
+        itemCount: itemsToProcess.length
+      }, "H5");
+      debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
+      requestAnimationFrame(() => {
+        try {
+          const fieldVal = this.view.state.field(toolInlineField);
+          let fieldCount = 0;
+          let expandedCount = 0;
+          fieldVal?.items?.forEach?.((it) => {
+            fieldCount += 1;
+            if (it?.expanded) expandedCount += 1;
+          });
+          debugChatCards("restore.domCheck", {
+            panelId: this.panelId,
+            sessionId: restoreSessionId,
+            fieldCount,
+            expandedCount,
+            inlineDom: this.view.dom.querySelectorAll(".zion-tool-call-inline").length,
+            cardDom: this.view.dom.querySelectorAll(".zion-tool-call-card").length,
+            viewportFrom: this.view.viewport?.from,
+            viewportTo: this.view.viewport?.to
+          });
+        } catch {}
+      });
     };
     destroy() {
+      try { this.mirrorToolCalls.clear(); } catch {}
       for (const d of this.disps) { try { d?.dispose?.(); } catch {} }
       try { if (this.selRaf) window.cancelAnimationFrame(this.selRaf); } catch {}
     }

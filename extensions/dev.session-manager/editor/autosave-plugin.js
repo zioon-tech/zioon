@@ -14,15 +14,30 @@ export function createSessionAutoSavePlugin(opts) {
   const postSaved = opts?.postSaved;
   const zion = opts?.zion || window.zion;
 
-  let timer = 0;
-  let pendingDoc = null;
-  let pendingId = null;
-  let pendingView = null;
+  const buckets = new Map();
 
-  const clearTimer = () => {
-    try { if (timer) cancelIdleCallback(timer); } catch {}
-    try { if (timer) clearTimeout(timer); } catch {}
-    timer = 0;
+  const getBucketKey = (view) => {
+    try {
+      const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
+      if (panelId) return `panel:${panelId}`;
+    } catch {}
+    return view || "global";
+  };
+
+  const getBucket = (view) => {
+    const key = getBucketKey(view);
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { key, timer: 0, pendingDoc: null, pendingId: null, pendingView: null };
+      buckets.set(key, bucket);
+    }
+    return bucket;
+  };
+
+  const clearTimer = (bucket) => {
+    try { if (bucket?.timer) cancelIdleCallback(bucket.timer); } catch {}
+    try { if (bucket?.timer) clearTimeout(bucket.timer); } catch {}
+    if (bucket) bucket.timer = 0;
   };
 
   const commit = (id, doc) => {
@@ -61,51 +76,62 @@ export function createSessionAutoSavePlugin(opts) {
     return true;
   };
 
-  const scheduleSave = () => {
-    clearTimer();
+  const scheduleSave = (bucket) => {
+    clearTimer(bucket);
     const idle = typeof requestIdleCallback === "function";
     const fn = () => {
-      const id = pendingId || getCurrentId(pendingView);
-      if (!id || !pendingDoc) return;
-      const doc = pendingDoc;
-      pendingDoc = null;
-      pendingId = null;
-      pendingView = null;
+      bucket.timer = 0;
+      const id = bucket.pendingId || getCurrentId(bucket.pendingView);
+      if (!id || !bucket.pendingDoc) return;
+      const doc = bucket.pendingDoc;
+      bucket.pendingDoc = null;
+      bucket.pendingId = null;
+      bucket.pendingView = null;
       commit(id, doc);
     };
     if (idle) {
-      timer = requestIdleCallback(fn, { timeout: 1200 });
+      bucket.timer = requestIdleCallback(fn, { timeout: 1200 });
     } else {
-      timer = setTimeout(fn, 600);
+      bucket.timer = setTimeout(fn, 600);
     }
   };
 
   const flush = (idOverride) => {
-    const id = idOverride || pendingId || getCurrentId(pendingView);
-    if (!id) return false;
-    if (!pendingDoc) return false;
-    if (pendingId && pendingId !== id) return false;
-    const doc = pendingDoc;
-    pendingDoc = null;
-    pendingId = null;
-    pendingView = null;
-    clearTimer();
-    return commit(id, doc);
+    let saved = false;
+    for (const bucket of buckets.values()) {
+      const id = idOverride || bucket.pendingId || getCurrentId(bucket.pendingView);
+      if (!id || !bucket.pendingDoc) continue;
+      const bucketId = bucket.pendingId || getCurrentId(bucket.pendingView);
+      if (idOverride && bucketId !== idOverride) continue;
+      const doc = bucket.pendingDoc;
+      bucket.pendingDoc = null;
+      bucket.pendingId = null;
+      bucket.pendingView = null;
+      clearTimer(bucket);
+      saved = commit(id, doc) || saved;
+    }
+    return saved;
   };
 
   return {
     extension: ViewPlugin.fromClass(class {
-      constructor(view) {}
+      constructor(view) {
+        this.view = view;
+      }
       update(update) {
         if (update.docChanged) {
-          pendingView = update.view;
-          pendingId = getCurrentId(update.view);
-          pendingDoc = update.state.doc;
-          scheduleSave();
+          const bucket = getBucket(update.view);
+          bucket.pendingView = update.view;
+          bucket.pendingId = getCurrentId(update.view);
+          bucket.pendingDoc = update.state.doc;
+          scheduleSave(bucket);
         }
       }
       destroy() {
-        clearTimer();
+        const key = getBucketKey(this?.view);
+        const bucket = buckets.get(key);
+        clearTimer(bucket);
+        buckets.delete(key);
       }
     }),
     flush

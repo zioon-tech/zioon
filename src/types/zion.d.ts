@@ -282,12 +282,23 @@ declare global {
         list(): Array<{ id: string; activeTabId: string | null }>;
         findAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         ensureAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
-        openSession(panelId: string, sessionId: string, opts?: { focus?: boolean }): boolean;
+        openSession(panelId: string, sessionId: string, opts?: { focus?: boolean }): boolean | Promise<boolean>;
         split(direction: "horizontal" | "vertical", panelId?: string): string | null;
         splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         focus(panelId: string): void;
         close(panelId?: string): void;
         getEditor(panelId: string): EditorProxy | null;
+      };
+      sessions?: {
+        runtime?: any;
+        resolveContext(opts?: { panelId?: string | null; sessionId?: string | null; editor?: EditorProxy | null }): {
+          panelId: string | null;
+          sessionId: string | null;
+          editor: EditorProxy | null;
+          panel: any | null;
+        };
+        getPanelSessionId(panelId: string): string | null;
+        isEditorShowingSession(editor: EditorProxy | null, sessionId: string | null): boolean;
       };
       // models registry (placeholder)
       models?: {
@@ -319,7 +330,7 @@ declare global {
         onCommandsChanged(handler: () => void): Disposable;
       };
       chat?: {
-        run(opts?: { useSelection?: boolean; prompt?: string; sessionId?: string; editor?: EditorProxy | null }): void;
+        run(opts?: { useSelection?: boolean; prompt?: string; sessionId?: string; panelId?: string; editor?: EditorProxy | null }): void;
         stop(sessionId?: string): void;
         retry(sessionId?: string): void;
         isStreaming(sessionId?: string): boolean;

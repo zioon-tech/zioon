@@ -235,8 +235,21 @@ export async function activate(ctx) {
   ctx.subscriptions.push(decOverviewRail);
 
   // 工具函数
+  const resolveSessionContext = (opts = {}) => {
+    try {
+      const ctx = window.zion?.sessions?.resolveContext?.(opts);
+      if (ctx) return ctx;
+    } catch {}
+    return null;
+  };
   const getEd = (opts) => {
+    const ctx = resolveSessionContext(opts);
+    if (ctx?.editor) return ctx.editor;
     if (opts?.editor) return opts.editor;
+    if (opts?.panelId) {
+      const panelEd = window.zion?.panels?.getEditor?.(opts.panelId);
+      if (panelEd) return panelEd;
+    }
     const activePanelId = window.zion?.panels?.getActivePanelId?.();
     if (activePanelId) {
       const panelEd = window.zion?.panels?.getEditor?.(activePanelId);
@@ -246,7 +259,13 @@ export async function activate(ctx) {
   };
 
   const getSessionId = (opts) => {
+    const ctx = resolveSessionContext(opts || {});
+    if (ctx?.sessionId) return ctx.sessionId;
     if (opts?.sessionId) return opts.sessionId;
+    if (opts?.panelId) {
+      const panelSid = window.zion?.panels?.list?.().find((p) => p.id === opts.panelId)?.activeTabId;
+      if (panelSid) return panelSid;
+    }
     const activePanelId = window.zion?.panels?.getActivePanelId?.();
     if (activePanelId) {
       const panelSid = window.zion?.panels?.list?.().find((p) => p.id === activePanelId)?.activeTabId;
@@ -257,12 +276,20 @@ export async function activate(ctx) {
   const getPanelSessionId = (panelId) => {
     if (!panelId) return null;
     try {
+      const sid = window.zion?.sessions?.getPanelSessionId?.(panelId);
+      if (sid) return sid;
+    } catch {}
+    try {
       return window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId || null;
     } catch {}
     return null;
   };
   const isEditorShowingSession = (editor, sid) => {
     if (!editor || !sid) return false;
+    try {
+      const ok = window.zion?.sessions?.isEditorShowingSession?.(editor, sid);
+      if (typeof ok === "boolean") return ok;
+    } catch {}
     const panelId = editor?.panelId || null;
     if (panelId) {
       return getPanelSessionId(panelId) === sid;
@@ -478,22 +505,51 @@ export async function activate(ctx) {
   }
 
   // 通用运行逻辑（含 Tool Calls 链式继续）
+  const dbgWidgetLifecycle = (msg, data = {}, hypothesisId = "H1") => {
+    // #region debug-point widget-lifecycle
+    try { fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "widget-lifecycle", runId: "pre-fix", hypothesisId, location: "extensions/dev.langchain-chat/main.js", msg, data, ts: Date.now() }) }).catch(() => {}); } catch {}
+    // #endregion
+  };
   const doRun = async (opts = {}) => {
     const ed = getEd(opts);
+    dbgWidgetLifecycle("[DEBUG] chat.doRun.editor", {
+      optsPanelId: opts?.panelId || null,
+      editorPanelId: ed?.panelId || null,
+      activePanelId: window.zion?.panels?.getActivePanelId?.() || null,
+      stateSessionId: window.zion?.state?.get?.("sessions.currentId") || null
+    }, "H1");
     if (!ed) {
       console.log("[langchain-chat] no active editor");
       return;
     }
+    const panelId = opts?.panelId || ed?.panelId || null;
     // 确保已选择激活模型
     ensureActiveModel();
-    const sid = getSessionId(opts);
-    const panelId = ed?.panelId || null;
+    const sid = getSessionId({ ...opts, panelId });
+    dbgWidgetLifecycle("[DEBUG] chat.doRun.session", {
+      panelId,
+      sid,
+      panelSessionId: panelId ? getPanelSessionId(panelId) : null,
+      editorPanelId: ed?.panelId || null,
+      docLength: String(ed.getValue?.() || "").length
+    }, "H1");
     if (!sid) {
       console.log("[langchain-chat] no target session");
       return;
     }
+    const panelSessionId = panelId ? getPanelSessionId(panelId) : null;
+    if (panelId && panelSessionId && sid !== panelSessionId) {
+      console.warn("[langchain-chat] run aborted: target session does not match editor panel", { panelId, sid, panelSessionId });
+      return;
+    }
     const runModel = getResolvedModelSnapshot();
     const streaming = !!getRunState(sid)?.streaming;
+    dbgWidgetLifecycle("[DEBUG] chat.doRun.streamingCheck", {
+      panelId,
+      sid,
+      streaming,
+      runState: getRunState(sid) || null
+    }, "H1");
     if (streaming) {
       console.log("[langchain-chat] already streaming in current session, abort");
       return; // 防止本会话并发；其他会话不受影响
@@ -594,6 +650,13 @@ export async function activate(ctx) {
       state: window.zion.state,
       cursor
     });
+    dbgWidgetLifecycle("[DEBUG] chat.doRun.assistantInserted", {
+      panelId,
+      sid,
+      anchor,
+      insertLine,
+      cursor
+    }, "H1");
     restoreScrollSnapshot(beforeInsertScroll);
 
     // 4. 状态 & 事件
@@ -602,6 +665,7 @@ export async function activate(ctx) {
     setRunState(sid, { aborted: false, model: runModel });
     try { window.zion?.state?.set?.(`chat.followLatest.${sid}`, true); } catch {}
     window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId, model: runModel });
+    dbgWidgetLifecycle("[DEBUG] chat.event.runStarted", { panelId, sid, runId, model: runModel }, "H1");
 
     // 工具调用收集（多步链式调用在每一步内局部收集）
     let aborted = false;
@@ -838,7 +902,7 @@ export async function activate(ctx) {
           const mode = normalizeToolCallsReasoningContentMode(window.zion?.state?.get?.("chat.toolCallsReasoningContentMode"));
           const forceReasoning = shouldForceReasoningContentWithToolCalls({ mode, modelId: active?.modelId, modelName: active?.modelId });
 
-          const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+          const ann = window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sid) || {};
           const limitPos = contentBeforeCursor.length;
 
           // tools (must have both call and result to satisfy API constraints)
