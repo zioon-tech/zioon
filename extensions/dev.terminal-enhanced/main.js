@@ -848,6 +848,7 @@ export async function activate(ctx) {
         infoBtn = document.createElement("button");
         infoBtn.type = "button";
         infoBtn.className = "zion-terminal-bottombar-info";
+        infoBtn.innerHTML = '<span class="zion-terminal-bottombar-label"></span>';
         infoBtn.onclick = (e) => {
           try { e.stopPropagation(); } catch {}
           try { window.zion.commands.executeCommand("terminal.togglePanel"); } catch {}
@@ -857,7 +858,7 @@ export async function activate(ctx) {
         triggerBtn.type = "button";
         triggerBtn.className = "zion-terminal-bottombar-trigger";
         triggerBtn.setAttribute("aria-label", "Switch terminal session");
-        triggerBtn.innerHTML = '<span class="codicon codicon-chevron-up" aria-hidden="true"></span>';
+        triggerBtn.innerHTML = '<span class="codicon codicon-terminal" aria-hidden="true"></span>';
         triggerBtn.onclick = (e) => {
           try { e.stopPropagation(); } catch {}
           switchSession();
@@ -865,10 +866,21 @@ export async function activate(ctx) {
 
         wrap.appendChild(triggerBtn);
         wrap.appendChild(infoBtn);
-        right.insertBefore(wrap, right.firstChild);
+        const metrics = document.getElementById("bottombar-metrics");
+        const status = document.getElementById("bottombar-status") || document.getElementById("bottombar-left");
+        if (status && status.parentElement === right) {
+          right.insertBefore(wrap, status);
+        } else if (metrics && metrics.parentElement === right) {
+          right.insertBefore(wrap, metrics.nextSibling);
+        } else {
+          right.insertBefore(wrap, right.firstChild);
+        }
       }
 
-      if (infoBtn) infoBtn.textContent = getInfoText();
+      if (infoBtn) {
+        const label = infoBtn.querySelector(".zion-terminal-bottombar-label");
+        if (label) label.textContent = getInfoText();
+      }
       try {
         const sid = window.zion?.state?.get("terminal.activeSessionId");
         const activeId = typeof sid === "string" ? sid : "";

@@ -98,6 +98,26 @@ export async function activate(ctx) {
     }
   };
 
+  let lastContextMenuInfo = null;
+  const onContextMenuCapture = (event) => {
+    try {
+      const editor = window.zion && window.zion.window && window.zion.window.activeEditor;
+      const view = editor?.getView?.();
+      if (!view?.dom) return;
+      const target = event?.target;
+      if (!(target instanceof Node) || !view.dom.contains(target)) return;
+      const pos = view.posAtCoords?.({ x: event.clientX, y: event.clientY });
+      if (typeof pos !== "number") return;
+      lastContextMenuInfo = { view, pos, at: Date.now() };
+    } catch {}
+  };
+  document.addEventListener("contextmenu", onContextMenuCapture, true);
+  ctx.subscriptions.push({
+    dispose() {
+      try { document.removeEventListener("contextmenu", onContextMenuCapture, true); } catch {}
+    }
+  });
+
   const computeBatchInfoForCursor = () => {
     try {
       const editor = window.zion && window.zion.window && window.zion.window.activeEditor;
@@ -105,14 +125,17 @@ export async function activate(ctx) {
       const view = editor.getView?.();
       if (!view) return null;
       const doc = view.state.doc;
-      const head = view.state.selection.main.head;
+      let head = view.state.selection.main.head;
+      if (lastContextMenuInfo?.view === view && (Date.now() - (lastContextMenuInfo.at || 0)) < 3000) {
+        if (typeof lastContextMenuInfo.pos === "number") head = lastContextMenuInfo.pos;
+      }
       const curLineNo = doc.lineAt(head).number;
       const line = doc.line(curLineNo);
       const implicitMarkerLine = findImplicitUserMarkerLine(doc);
       const isImplicitUserLine = implicitMarkerLine != null && curLineNo === implicitMarkerLine && !isRoleHeader(line.text);
       const implicitUserStartLine = isImplicitUserLine ? 0 : null;
       const sid = window.zion?.state?.get?.("sessions.currentId");
-      const ann = sid ? (window.zion?.state?.get?.(`sessions.annotations.${sid}`) || {}) : {};
+      const ann = sid ? (window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sid) || {}) : {};
       const list = Array.isArray(ann.tools) ? ann.tools : [];
       const toolActions = ann && typeof ann.toolActions === "object" ? ann.toolActions : {};
 
@@ -121,6 +144,7 @@ export async function activate(ctx) {
       let role = null;
       let curBlockIndex = -1;
       let range = null;
+      let userStartLine = implicitUserStartLine;
       try {
         for (let i = 0; i < blocks.length; i++) {
           const b = blocks[i];
@@ -142,7 +166,22 @@ export async function activate(ctx) {
         if (b && typeof b.from === "number" && typeof b.to === "number") {
           range = { from: b.from, to: b.to };
         }
+        if (curBlockIndex >= 0) {
+          for (let i = curBlockIndex - 1; i >= 0; i--) {
+            const prev = blocks[i];
+            if (!prev) continue;
+            if (prev.role === "user") {
+              if (typeof prev.startLine === "number") userStartLine = prev.startLine;
+              break;
+            }
+            if (prev.role === "assistant") break;
+          }
+        }
       } else if (role === "user") {
+        if (curBlockIndex >= 0) {
+          const cur = blocks[curBlockIndex];
+          if (cur && typeof cur.startLine === "number") userStartLine = cur.startLine;
+        }
         if (curBlockIndex >= 0) {
           for (let i = curBlockIndex + 1; i < blocks.length; i++) {
             const b = blocks[i];
@@ -173,6 +212,7 @@ export async function activate(ctx) {
       let total = 0;
       let acceptCount = 0;
       let revertCount = 0;
+      const matchesUser = (it) => userStartLine != null && it && it.userStartLine === userStartLine;
       const matchesRange = (it) => range && typeof it.from === "number" && it.from >= range.from && it.from <= range.to;
       const isTargetName = (name) => name === "edit" || name === "write" || name === "fsedit" || name === "fswrite";
       const pickAction = (id, fallback) => {
@@ -180,7 +220,10 @@ export async function activate(ctx) {
         const a = v?.action || fallback;
         return a === "accept" || a === "revert" ? a : null;
       };
-      const candidates = range ? list.filter(it => matchesRange(it) && isTargetName(String(it?.name || ""))) : [];
+      const matchedByUser = userStartLine != null ? list.filter(it => matchesUser(it) && isTargetName(String(it?.name || ""))) : [];
+      const candidates = matchedByUser.length
+        ? matchedByUser
+        : (range ? list.filter(it => matchesRange(it) && isTargetName(String(it?.name || ""))) : []);
       for (const it of candidates) {
         total += 1;
         const path = it.args?.path;
@@ -190,7 +233,7 @@ export async function activate(ctx) {
         if (action === "revert") revertCount += 1;
       }
       const state = acceptCount === total ? "accepted" : (revertCount === total ? "reverted" : "mixed");
-      return { total, acceptCount, revertCount, files: filesSet.size, role, range, state };
+      return { total, acceptCount, revertCount, files: filesSet.size, role, range, state, userStartLine };
     } catch (e) {
       return null;
     }
@@ -205,7 +248,7 @@ export async function activate(ctx) {
           || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
           || null)
         : (window.zion?.state?.get?.("sessions.currentId") || null);
-      return window.zion?.events?.emit("toolcards/batchAccept", { from: batch.range.from, to: batch.range.to, panelId, sessionId });
+      return window.zion?.events?.emit("toolcards/batchAccept", { userStartLine: batch.userStartLine, from: batch.range.from, to: batch.range.to, panelId, sessionId });
     }
     window.zion?.notification?.show?.("未找到目标 assistant 范围", { type: "info", duration: 2200 });
   };
@@ -219,7 +262,7 @@ export async function activate(ctx) {
           || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
           || null)
         : (window.zion?.state?.get?.("sessions.currentId") || null);
-      return window.zion?.events?.emit("toolcards/batchRevert", { from: batch.range.from, to: batch.range.to, panelId, sessionId });
+      return window.zion?.events?.emit("toolcards/batchRevert", { userStartLine: batch.userStartLine, from: batch.range.from, to: batch.range.to, panelId, sessionId });
     }
     window.zion?.notification?.show?.("未找到目标 assistant 范围", { type: "info", duration: 2200 });
   };

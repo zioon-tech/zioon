@@ -265,7 +265,6 @@ function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?:
         parts.unshift(String(parent.title || "Folder").trim() || "Folder");
         curId = parent.id;
       }
-      parts.unshift(String(tree?.title || "Sessions").trim() || "Sessions");
       return parts.join(" / ");
     };
 

@@ -368,8 +368,14 @@ export async function activate(ctx) {
     window.zion.commands.registerCommand("fs.getEntries", () => entries.slice())
   );
 
-  // Status bar entry
-  const status = window.zion.statusBar.registerItem({
+  // Workspace entry: prefer editor header menu, keep statusBar as legacy fallback.
+  const status = window.zion.editorHeaderMenu?.register?.({
+    id: "core.fsmanager",
+    title: "文件系统访问管理",
+    section: "Workspace",
+    order: 10,
+    onClick: () => window.zion.commands.executeCommand("fs.showManager")
+  }) || window.zion.statusBar.registerItem({
     id: "core.fsmanager",
     text: "FS",
     tooltip: "Manage file/folder access",

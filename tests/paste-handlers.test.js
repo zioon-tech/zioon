@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { attachEditor } from '../src/ext/registry';
 import { EditorCore } from '../src/editor/EditorCore';
+
+afterEach(() => {
+  document.body.innerHTML = '';
+});
 
 describe('Registry paste handlers', () => {
   it('executes by priority (desc) and short-circuits when handled', async () => {
@@ -45,7 +49,6 @@ describe('Registry paste handlers', () => {
     };
     Object.defineProperty(evt, 'clipboardData', { value: dt });
 
-    const beforeButtons = document.querySelectorAll('button').length;
     const target = core.view.dom;
     target.dispatchEvent(evt);
 
@@ -65,8 +68,6 @@ describe('Registry paste handlers', () => {
     d2.dispose();
     core.view.destroy();
     document.body.removeChild(host);
-    // some environments may add buttons; ensure we didn’t leak
-    const afterButtons = document.querySelectorAll('button').length;
-    expect(afterButtons).toBeGreaterThanOrEqual(beforeButtons);
+    expect(document.body.contains(host)).toBe(false);
   });
 });

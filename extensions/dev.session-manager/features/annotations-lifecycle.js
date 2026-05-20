@@ -14,7 +14,7 @@ export function createAnnotationsLifecycle(opts) {
 
   function getAnnotationsState(id) {
     try {
-      return getZion()?.state?.get(`sessions.annotations.${id}`) || null;
+      return getZion()?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", id) || null;
     } catch {
       return null;
     }
@@ -85,64 +85,60 @@ export function createAnnotationsLifecycle(opts) {
           }, 80);
         } catch {}
       };
-      const needsRestore = (id, ann) => {
+      const listRestoreTargets = () => {
         try {
-          const tools = Array.isArray(ann?.tools) ? ann.tools : [];
-          const thinking = Array.isArray(ann?.thinking) ? ann.thinking : [];
-          // 仍优先处理挂起的恢复队列
-          const pendTools = getZion()?.state?.get(`sessions.pendingRestore.tools.${id}`) || null;
-          const pendThinking = getZion()?.state?.get(`sessions.pendingRestore.thinking.${id}`) || null;
-          if (Array.isArray(pendTools) && pendTools.length) return true;
-          if (Array.isArray(pendThinking) && pendThinking.length) return true;
-          // 改为读取插件快照暴露的“已挂载 id 列表”，避免 DOM 计数
-          const mountedTools = getZion()?.state?.get(`sessions.widgets.tools.${id}`)?.ids || [];
-          const mountedThinking = getZion()?.state?.get(`sessions.widgets.thinking.${id}`)?.ids || [];
-          const wantToolIds = tools.map(t => t?.id).filter(Boolean);
-          const wantThinkingIds = thinking.map(t => t?.id).filter(Boolean);
-          // 若有任何目标 id 未挂载，则需要恢复
-          const missTool = wantToolIds.some(x => !mountedTools.includes(x));
-          const missThinking = wantThinkingIds.some(x => !mountedThinking.includes(x));
-          return missTool || missThinking;
-        } catch {
-          return true;
+          const panels = getZion()?.panels?.list?.();
+          if (Array.isArray(panels) && panels.length) {
+            return panels
+              .map((panel) => ({
+                panelId: typeof panel?.id === "string" ? panel.id : null,
+                sessionId: typeof panel?.activeTabId === "string" ? panel.activeTabId : null
+              }))
+              .filter((item) => !!item.panelId && !!item.sessionId);
+          }
+        } catch {}
+        try {
+          const id = getZion()?.state?.get("sessions.currentId");
+          if (id) return [{ panelId: null, sessionId: id }];
+        } catch {}
+        return [];
+      };
+      const loadAnnotations = async (id) => {
+        let ann = null;
+        try {
+          const rec = await idbGet(dbName, "metas", id);
+          const meta = rec?.meta;
+          if (meta && meta.annotations) {
+            ann = meta.annotations;
+            try { getZion()?.state?.set(`sessions.meta.${id}`, meta); } catch {}
+          }
+        } catch {}
+        if (!ann) {
+          try { ann = getZion()?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", id) || null; } catch {}
         }
+        return ann;
       };
       const doRestore = async () => {
         try {
-          const id = getZion()?.state?.get("sessions.currentId");
-          if (!id) return;
-          const ed = getZion()?.window?.activeEditor;
-          if (!ed) return;
-          let ann = null;
-          try {
-            const rec = await idbGet(dbName, "metas", id);
-            const meta = rec?.meta;
-            if (meta && meta.annotations) {
-              ann = meta.annotations;
-              try { getZion()?.state?.set(`sessions.meta.${id}`, meta); } catch {}
+          const targets = listRestoreTargets();
+          if (!targets.length) return;
+          const cache = new Map();
+          for (const target of targets) {
+            const id = target?.sessionId;
+            if (!id) continue;
+            let ann = cache.get(id);
+            if (ann === undefined) {
+              ann = await loadAnnotations(id);
+              cache.set(id, ann || null);
             }
-          } catch {}
-          if (!ann) {
-            try { ann = getZion()?.state?.get(`sessions.annotations.${id}`) || null; } catch {}
-          }
-          if (!ann) {
-            try { ann = loadMeta(id)?.annotations || null; } catch {}
-          }
-          if (!ann) return;
-          try { getZion()?.state?.set(`sessions.annotations.${id}`, ann); } catch {}
-          const should = needsRestore(id, ann);
-          if (!should) return;
-          try { getZion()?.events?.emit("toolcards/clear"); } catch {}
-          try { getZion()?.events?.emit("thinking/clear"); } catch {}
-          const tools = Array.isArray(ann.tools) ? ann.tools : [];
-          const thinking = Array.isArray(ann.thinking) ? ann.thinking : [];
-          if (tools.length) {
-            try { getZion()?.state?.set(`sessions.pendingRestore.tools.${id}`, tools); } catch {}
-            try { getZion()?.events?.emit("toolcards/restore", { items: tools }); } catch {}
-          }
-          if (thinking.length) {
-            try { getZion()?.state?.set(`sessions.pendingRestore.thinking.${id}`, thinking); } catch {}
-            try { getZion()?.events?.emit("thinking/restore", { items: thinking }); } catch {}
+            if (!ann) continue;
+            try {
+              getZion()?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
+                sessionId: id,
+                panelId: target.panelId,
+                annotations: ann
+              });
+            } catch {}
           }
         } catch {}
       };

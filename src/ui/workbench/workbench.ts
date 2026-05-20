@@ -983,7 +983,17 @@ export function initWorkbench(host: HTMLElement): {
         btn.type = "button";
         btn.title = safeText(a.title);
         btn.setAttribute("aria-label", safeText(a.ariaLabel || a.title));
-        btn.textContent = safeText(a.icon || "");
+        const icon = String(a.icon || "").trim();
+        btn.textContent = "";
+        const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
+        if (codiconMatch) {
+          const span = document.createElement("span");
+          span.className = `codicon codicon-${codiconMatch[1]}`;
+          span.setAttribute("aria-hidden", "true");
+          btn.appendChild(span);
+        } else {
+          btn.textContent = safeText(icon);
+        }
         btn.onclick = () => {
           try {
             a.onClick();

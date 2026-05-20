@@ -24,9 +24,26 @@ let __settingsPanelSingleton = null;
 
 const __compressionMem = { kv: {}, versions: {} };
 
+function getActivePanelContext() {
+  try {
+    const panelId = window.zion?.panels?.getActivePanelId?.() || null;
+    const panels = window.zion?.panels?.list?.() || [];
+    const panel = panelId ? panels.find(p => p?.id === panelId) : null;
+    const sessionId = panel?.activeTabId || window.zion?.state?.get?.('sessions.currentId') || null;
+    const editor = panelId ? (window.zion?.panels?.getEditor?.(panelId) || window.zion?.window?.activeEditor) : window.zion?.window?.activeEditor;
+    return { panelId, sessionId, editor };
+  } catch {
+    return {
+      panelId: null,
+      sessionId: null,
+      editor: window.zion?.window?.activeEditor
+    };
+  }
+}
+
 function getSessionKey() {
   try {
-    const sid = window.zion?.state?.get?.('sessions.currentId');
+    const sid = getActivePanelContext().sessionId || window.zion?.state?.get?.('sessions.currentId');
     if (sid) return `session:${String(sid)}`;
   } catch {}
   return 'global';
@@ -203,35 +220,27 @@ async function listVersionsForActiveSession() {
 }
 
 async function restoreVersionForActiveSession(id) {
-  const editor = window.zion.window.activeEditor;
+  const { panelId, sessionId: activePanelSessionId, editor } = getActivePanelContext();
   if (!editor) return { ok: false, error: 'no_editor' };
   const sessionKey = getSessionKey();
   const rec = await storageGetVersion(String(id));
   if (!rec || rec.sessionKey !== sessionKey) return { ok: false, error: 'not_found' };
 
-  const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
+  const sessionId = activePanelSessionId || (sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null);
   const annotations = rec.annotations && typeof rec.annotations === 'object' ? rec.annotations : null;
-
-  try { window.zion?.events?.emit('toolcards/clear'); } catch {}
-  try { window.zion?.events?.emit('thinking/clear'); } catch {}
 
   editor.setValue(String(rec.text ?? ''));
   await setActiveVersionId(sessionKey, String(id));
 
   if (sessionId) {
-    try { window.zion?.state?.set(`sessions.annotations.${sessionId}`, annotations || {}); } catch {}
-    try { window.zion?.state?.set(`sessions.pendingRestore.tools.${sessionId}`, Array.isArray(annotations?.tools) ? annotations.tools : null); } catch {}
-    try { window.zion?.state?.set(`sessions.pendingRestore.thinking.${sessionId}`, Array.isArray(annotations?.thinking) ? annotations.thinking : null); } catch {}
     setTimeout(() => {
       try {
-        if (Array.isArray(annotations?.tools) && annotations.tools.length) {
-          window.zion?.events?.emit('toolcards/restore', { items: annotations.tools });
-        }
-      } catch {}
-      try {
-        if (Array.isArray(annotations?.thinking) && annotations.thinking.length) {
-          window.zion?.events?.emit('thinking/restore', { items: annotations.thinking });
-        }
+        window.zion?.commands?.executeCommand?.('zion.chatCards.restoreSession', {
+          sessionId,
+          panelId,
+          annotations: annotations || {},
+          clearFirst: true
+        });
       } catch {}
     }, 0);
   }
@@ -245,7 +254,7 @@ function buildMessagesForCompression(docText, sessionId) {
 
   const ann = (() => {
     try {
-      const v = window.zion?.state?.get?.(`sessions.annotations.${sessionId}`);
+      const v = window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId);
       return v && typeof v === 'object' ? v : {};
     } catch {
       return {};
@@ -496,7 +505,7 @@ export async function activate(ctx) {
         const sessionKey = getSessionKey();
         const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
         if (!sessionId) return { ok: false, error: 'no_session' };
-        const ann = window.zion?.state?.get?.(`sessions.annotations.${sessionId}`) || {};
+        const ann = window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || {};
         const items = Array.isArray(ann.tools) ? ann.tools : [];
         const it = items.find(x => String(x.id) === toolId);
         if (!it) return { ok: false, error: 'not_found' };
@@ -846,9 +855,21 @@ export async function activate(ctx) {
     const stats = window.zion.state.get('compression.stats') || {};
     const saved = stats.totalTokensSaved || 0;
     try { statusDisp?.dispose?.(); } catch {}
-    statusDisp = window.zion.statusBar.registerItem({
+    statusDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: 'compression.status',
-      text: `📦 ${formatTokens(saved)}`,
+      text: `Ctx: ${formatTokens(saved)}`,
+      tooltip: `Tokens saved: ${saved}`,
+      priority: 60,
+      onClick: () => openCompressionPanel()
+    }) || window.zion.editorHeaderMenu?.register?.({
+      id: 'compression.status',
+      title: `上下文压缩：${formatTokens(saved)}`,
+      section: 'Chat',
+      order: 30,
+      onClick: () => openCompressionPanel()
+    }) || window.zion.statusBar.registerItem({
+      id: 'compression.status',
+      text: `Ctx: ${formatTokens(saved)}`,
       tooltip: `Tokens saved: ${saved}`,
       onClick: () => openCompressionPanel()
     });
@@ -1004,7 +1025,7 @@ async function applyCompressionToActiveEditor(compressionEngine, opts) {
   const docText = editor.getValue();
   const sessionKey = getSessionKey();
   const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
-  const annotations = sessionId ? (window.zion?.state?.get?.(`sessions.annotations.${sessionId}`) || null) : null;
+  const annotations = sessionId ? (window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || null) : null;
   const messages = buildMessagesForCompression(docText, sessionId);
   if (!messages.length) return { ok: false, error: 'no_messages' };
 
@@ -1420,16 +1441,17 @@ function openStatsOverlay() {
     position: 'fixed',
     top: '48px',
     right: '12px',
-    width: '380px',
-    maxHeight: '75vh',
+    width: '360px',
+    maxWidth: 'calc(100vw - 16px)',
+    maxHeight: '65vh',
     overflow: 'auto',
     background: 'var(--panel)',
     color: 'var(--fg)',
     border: '1px solid var(--border)',
     borderRadius: '8px',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-    padding: '12px',
-    fontFamily: 'var(--font-sans)',
+    boxShadow: '0 12px 32px rgba(0,0,0,0.32)',
+    padding: '8px',
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
     pointerEvents: 'auto'
   });
 
@@ -1523,6 +1545,7 @@ function openStatsOverlay() {
   panel.appendChild(container);
   root.appendChild(panel);
   document.body.appendChild(root);
+  positionStatsOverlayPanel(panel);
 
   // Event handlers
   root.addEventListener('click', (e) => {
@@ -1542,4 +1565,33 @@ function openStatsOverlay() {
     });
     root.remove();
   });
+}
+
+function positionStatsOverlayPanel(panel) {
+  const btn = document.querySelector('[data-zion-status-id="compression.status"]')
+    || Array.from(document.querySelectorAll('#bottombar .status-item, #statusbar .status-item'))
+      .find((b) => b.textContent?.includes('Ctx:'));
+  const pad = 8;
+  const vw = window.innerWidth || 0;
+  const vh = window.innerHeight || 0;
+  panel.style.left = '';
+  panel.style.right = '';
+  panel.style.top = '';
+  panel.style.bottom = '';
+  panel.style.maxHeight = 'min(75vh, calc(100vh - 24px))';
+  if (!btn) {
+    panel.style.right = '12px';
+    panel.style.bottom = '36px';
+    return;
+  }
+  const rect = btn.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  const mw = Math.min(panelRect.width || 380, Math.max(240, vw - pad * 2));
+  const spaceAbove = Math.max(180, rect.top - pad * 2);
+  panel.style.maxHeight = `${Math.min(Math.round(vh * 0.75), spaceAbove)}px`;
+  const mh = Math.min(panelRect.height || 420, spaceAbove);
+  const left = Math.max(pad, Math.min(Math.round(rect.right - mw), Math.max(pad, vw - mw - pad)));
+  const top = Math.max(pad, Math.round(rect.top - pad - mh));
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
 }

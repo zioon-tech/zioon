@@ -4,8 +4,6 @@ export function createSessionDocRepo(opts) {
   const idbSet = opts?.idbSet;
   const warnStorageIssue = opts?.warnStorageIssue;
   const now = opts?.now;
-  const applyAnnotationsForSession = opts?.applyAnnotationsForSession;
-
   const getZion = () => {
     try {
       const v = opts?.getZion?.();
@@ -28,19 +26,6 @@ export function createSessionDocRepo(opts) {
         const rec = await idbGet(dbName, "docs", id);
         const text = rec?.text || "";
         try { zion?.state?.set(`sessions.doc.${id}`, text); } catch {}
-        try {
-          const cur = zion?.state?.get("sessions.currentId");
-          if (cur === id) {
-            const ed = zion?.window?.activeEditor;
-            if (ed) {
-              const curText = ed.getValue?.() || "";
-              if (!curText) {
-                ed.setValue(text);
-                try { applyAnnotationsForSession?.(id); } catch {}
-              }
-            }
-          }
-        } catch {}
       } catch {}
     })();
     return "";
@@ -106,4 +91,3 @@ export function createSessionDocRepo(opts) {
 
   return { docKey, metaKey, loadDoc, saveDoc, loadDocAsync, loadMeta, saveMeta };
 }
-

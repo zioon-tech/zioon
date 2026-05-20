@@ -54,17 +54,20 @@ export function installModelSwitcher() {
     position: "fixed",
     top: "48px",
     right: "12px",
-    width: "380px",
+    width: "360px",
+    maxWidth: "calc(100vw - 16px)",
     maxHeight: "65vh",
     overflow: "auto",
     background: "var(--panel)",
     color: "var(--fg)",
     border: "1px solid var(--border)",
-    borderRadius: "6px",
-    boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+    borderRadius: "8px",
+    boxShadow: "0 12px 32px rgba(0,0,0,0.32)",
     padding: "8px",
     fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
   });
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", "Select Model");
 
   // 标题区 + 操作按钮
   const header = document.createElement("div");
@@ -471,25 +474,38 @@ export function installModelSwitcher() {
   root.addEventListener("click", (e) => { if (e.target === root) close(); });
 
   function positionPanel() {
-    const btns = document.querySelectorAll("#statusbar .status-item");
-    let btn = null;
-    for (const b of btns) {
-      if (b.textContent?.includes("Model:")) { btn = b; break; }
+    const btn = document.querySelector('[data-zion-status-id="langchain.chat.model"]')
+      || Array.from(document.querySelectorAll("#bottombar .status-item, #statusbar .status-item"))
+        .find((b) => b.textContent?.includes("Model:"));
+    const pad = 8;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    panel.style.left = "";
+    panel.style.right = "";
+    panel.style.top = "";
+    panel.style.bottom = "";
+    panel.style.maxHeight = "min(65vh, calc(100vh - 24px))";
+    if (!btn) {
+      panel.style.right = "12px";
+      panel.style.bottom = "36px";
+      return;
     }
-    if (!btn) return;
     const rect = btn.getBoundingClientRect();
-    panel.style.top = `${rect.top - 8 - 400}px`;
-    panel.style.right = `${window.innerWidth - rect.right}px`;
-    if (parseFloat(panel.style.top) < 8) {
-      panel.style.top = `${rect.bottom + 8}px`;
-    }
+    const width = Math.min(360, Math.max(220, vw - pad * 2));
+    const maxRight = Math.max(pad, vw - width - pad);
+    const right = Math.min(Math.max(pad, Math.round(vw - rect.right)), maxRight);
+    const spaceAbove = Math.max(160, Math.round(rect.top - pad * 2));
+    panel.style.width = `${width}px`;
+    panel.style.maxHeight = `${Math.min(Math.round(vh * 0.65), spaceAbove)}px`;
+    panel.style.right = `${right}px`;
+    panel.style.bottom = `${Math.max(pad, Math.round(vh - rect.top + pad))}px`;
   }
 
   function open() {
     window.zion?.commands?.executeCommand("models.listModels");
     refresh();
-    positionPanel();
     root.style.display = "block";
+    positionPanel();
     input.focus();
     input.select();
   }
@@ -961,11 +977,40 @@ export function installModelSwitcher() {
 function createHandle(root) {
   const panel = root.querySelector("div");
   const input = panel?.querySelector("input");
+  const position = () => {
+    if (!panel) return;
+    const btn = document.querySelector('[data-zion-status-id="langchain.chat.model"]')
+      || Array.from(document.querySelectorAll("#bottombar .status-item, #statusbar .status-item"))
+        .find((b) => b.textContent?.includes("Model:"));
+    const pad = 8;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    panel.style.left = "";
+    panel.style.right = "";
+    panel.style.top = "";
+    panel.style.bottom = "";
+    panel.style.maxHeight = "min(65vh, calc(100vh - 24px))";
+    if (!btn) {
+      panel.style.right = "12px";
+      panel.style.bottom = "36px";
+      return;
+    }
+    const rect = btn.getBoundingClientRect();
+    const width = Math.min(360, Math.max(220, vw - pad * 2));
+    const maxRight = Math.max(pad, vw - width - pad);
+    const right = Math.min(Math.max(pad, Math.round(vw - rect.right)), maxRight);
+    const spaceAbove = Math.max(160, Math.round(rect.top - pad * 2));
+    panel.style.width = `${width}px`;
+    panel.style.maxHeight = `${Math.min(Math.round(vh * 0.65), spaceAbove)}px`;
+    panel.style.right = `${right}px`;
+    panel.style.bottom = `${Math.max(pad, Math.round(vh - rect.top + pad))}px`;
+  };
   return {
     open() {
       window.zion?.commands?.executeCommand("models.listModels");
       input?.dispatchEvent(new Event("input"));
       root.style.display = "block";
+      position();
       input?.focus();
       input?.select();
     },

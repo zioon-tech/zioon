@@ -1,6 +1,14 @@
 import { Decoration, EditorView, WidgetType, ViewPlugin } from "@codemirror/view";
-import { StateField, StateEffect } from "@codemirror/state";
+import { StateField, StateEffect, Transaction } from "@codemirror/state";
 import { diffWordsWithSpace } from "diff";
+import {
+  buildRegexAnchors,
+  filterDeletedItems,
+  planAssistantMarkerInsertion,
+  reconcileExactAnchors,
+  reconcileMountedItems,
+  reconcileNearestAnchors
+} from "../../src/chat/restore";
 
 /**
  * Effects:
@@ -16,9 +24,48 @@ const updateResult = StateEffect.define(); // { id, result, ok? }
 const removeTool = StateEffect.define();   // { id }
 const clearAll = StateEffect.define();
 
+function getSessionAnnotations(sessionId) {
+  try {
+    return window?.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sessionId) || {};
+  } catch {
+    return {};
+  }
+}
+
+function updateSessionAnnotations(sessionId, updater) {
+  try {
+    return window?.zion?.commands?.executeCommand?.("zion.chatCards.updateSessionAnnotations", { sessionId, updater }) || {};
+  } catch {
+    return {};
+  }
+}
+
+function clearPendingRestore(sessionId, kind) {
+  try {
+    window?.zion?.commands?.executeCommand?.("zion.chatCards.clearPendingRestore", { sessionId, kind });
+  } catch {}
+}
+
+function getViewSessionId(view) {
+  try {
+    return view?.dom?.getAttribute?.("data-session-id") || null;
+  } catch {
+    return null;
+  }
+}
+
+function debugChatCards(event, payload) {
+  void event;
+  void payload;
+}
+
+function debugToolFieldStats(_view) {
+  return {};
+}
+
 function scheduleRevealToolContent(view, { id, pos } = {}) {
   try {
-    const sid = window?.zion?.state?.get?.("sessions.currentId") || null;
+    const sid = getViewSessionId(view);
     if (!sid) return;
     if (window?.zion?.state?.get?.(`chat.followLatest.${sid}`) === false) return;
     requestAnimationFrame(() => {
@@ -710,9 +757,6 @@ function getPanelEventContext(panelId) {
         || window.zion?.panels?.list?.().find((panel) => panel.id === pid)?.activeTabId
         || null;
     }
-    if (!sessionId) {
-      sessionId = window.zion?.state?.get?.("sessions.currentId") || null;
-    }
   } catch {}
   return { panelId: pid, sessionId };
 }
@@ -722,6 +766,45 @@ function clip(s, max = 80) {
   const t = String(s || "");
   return t.length > max ? t.slice(0, max) + "…" : t;
 }
+
+function clipMiddle(s, max = 80) {
+  const t = String(s || "");
+  if (t.length <= max) return t;
+  if (max <= 1) return "…";
+  const keep = Math.max(1, max - 1);
+  const left = Math.ceil(keep / 2);
+  const right = Math.floor(keep / 2);
+  return `${t.slice(0, left)}…${t.slice(t.length - right)}`;
+}
+
+function normalizePathForLabel(path) {
+  return String(path || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function pathBasename(path) {
+  const p = normalizePathForLabel(path);
+  if (!p) return "";
+  const parts = p.split("/").filter(Boolean);
+  return parts[parts.length - 1] || p;
+}
+
+function pathParentTail(path, segments = 2) {
+  const p = normalizePathForLabel(path);
+  if (!p) return "";
+  const parts = p.split("/").filter(Boolean);
+  if (parts.length <= 1) return "";
+  return parts.slice(0, -1).slice(-segments).join("/");
+}
+
+function formatPathForChip(path, max = 44) {
+  const p = normalizePathForLabel(path);
+  if (!p) return "";
+  const parts = p.split("/").filter(Boolean);
+  const tailCount = max >= 70 ? 3 : 2;
+  const tail = parts.slice(-tailCount).join("/") || pathBasename(p);
+  return clipMiddle(tail, max);
+}
+
 function summarizeToolArgs(name, args) {
   const n = String(name || "");
   const a = args || {};
@@ -865,17 +948,79 @@ function summarizeToolArgs(name, args) {
   }
 }
 
+function summarizeToolArgsCompact(name, args, max = 44) {
+  const n = String(name || "");
+  const a = args || {};
+  try {
+    switch (n) {
+      case "fsRead":
+      case "read": {
+        const fp = String(a?.path || a?.file_path || "").trim();
+        if (!fp) break;
+        const off = typeof a?.offset === "number" ? a.offset : null;
+        const lim = typeof a?.limit === "number" ? a.limit : null;
+        const suffix = off != null || lim != null ? ` @${off != null ? off : "-"}+${lim != null ? lim : "-"}` : "";
+        return `${formatPathForChip(fp, Math.max(12, max - suffix.length))}${suffix}`;
+      }
+      case "fsWrite":
+      case "write": {
+        const fp = String(a?.path || a?.file_path || "").trim();
+        if (!fp) break;
+        const len = String(a?.content ?? "").length;
+        const suffix = len ? ` (${len} chars)` : "";
+        return `${formatPathForChip(fp, Math.max(12, max - suffix.length))}${suffix}`;
+      }
+      case "fsEdit":
+      case "edit": {
+        const fp = String(a?.path || a?.file_path || "").trim();
+        if (!fp) break;
+        const suffix = a?.replace_all ? " (all)" : "";
+        return `${formatPathForChip(fp, Math.max(12, max - suffix.length))}${suffix}`;
+      }
+      case "fsTree":
+      case "tree": {
+        const dir = String(a?.path || a?.directory_path || "").trim();
+        if (!dir) break;
+        const md = typeof a?.max_depth === "number" ? a.max_depth : null;
+        const suffix = md != null ? ` (depth ${md})` : "";
+        return `${formatPathForChip(dir, Math.max(12, max - suffix.length))}${suffix}`;
+      }
+      case "glob": {
+        const pattern = String(a?.pattern || "").trim();
+        const dir = String(a?.path || "").trim();
+        if (!pattern && !dir) break;
+        if (!dir) return clipMiddle(pattern, max);
+        const where = formatPathForChip(dir, Math.max(12, Math.floor(max * 0.45)));
+        return clipMiddle(`${pattern} in ${where}`, max);
+      }
+      case "grep": {
+        const pattern = String(a?.pattern || "").trim();
+        const dir = String(a?.path || "").trim();
+        if (!pattern && !dir) break;
+        if (!dir) return clipMiddle(pattern, max);
+        const where = formatPathForChip(dir, Math.max(12, Math.floor(max * 0.45)));
+        return clipMiddle(`${pattern} in ${where}`, max);
+      }
+      default:
+        break;
+    }
+  } catch {}
+  const summary = summarizeToolArgs(name, args);
+  return summary ? clipMiddle(summary, max) : "";
+}
+
 class ToolCallCardWidget extends WidgetType {
-  constructor(id, name, args, result, ok) {
+  constructor(id, name, args, result, ok, sessionId = null) {
     super();
     this.id = id + ":card";
     this.name = name;
     this.args = args;
     this.result = result;
     this.ok = ok;
+    this.sessionId = sessionId || null;
   }
   eq(other) {
-    return other.id === this.id && other.name === this.name && other.result === this.result && other.ok === this.ok && JSON.stringify(other.args) === JSON.stringify(this.args);
+    return other.id === this.id && other.name === this.name && other.result === this.result && other.ok === this.ok && other.sessionId === this.sessionId && JSON.stringify(other.args) === JSON.stringify(this.args);
   }
   toDOM() {
     const wrap = document.createElement("div");
@@ -884,18 +1029,40 @@ class ToolCallCardWidget extends WidgetType {
     const getActionContext = () => {
       try {
         const panelId = wrap.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
-        return getPanelEventContext(panelId);
+        const ctx = getPanelEventContext(panelId);
+        return { ...ctx, sessionId: ctx.sessionId || this.sessionId || null };
       } catch {}
-      return getPanelEventContext(null);
+      return { panelId: null, sessionId: this.sessionId || null };
     };
     // 头部：名称与移除按钮
     const header = document.createElement("div");
-    header.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;";
+    header.style.cssText = "display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;min-width:0;";
+    const headMain = document.createElement("div");
+    Object.assign(headMain.style, {
+      display: "grid",
+      gap: "2px",
+      minWidth: 0,
+      flex: "1 1 auto"
+    });
+    const titleRow = document.createElement("div");
+    Object.assign(titleRow.style, {
+      display: "flex",
+      alignItems: "center",
+      gap: "6px",
+      minWidth: 0
+    });
     const title = document.createElement("span");
     title.textContent = `调用 ${this.name}`;
-    Object.assign(title.style, { fontSize: "11px", fontWeight: "600" });
+    Object.assign(title.style, {
+      fontSize: "11px",
+      fontWeight: "650",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+      minWidth: 0
+    });
 
-    header.appendChild(title);
+    titleRow.appendChild(title);
 
     const ok = inferToolOkFromResult(this.name, this.result, this.ok);
     const badge = document.createElement("span");
@@ -906,7 +1073,26 @@ class ToolCallCardWidget extends WidgetType {
     badge.innerHTML = toolStatusIcon(status);
     badge.title = label;
     badge.setAttribute("aria-label", `工具调用状态：${label}`);
-    header.appendChild(badge);
+    titleRow.appendChild(badge);
+    headMain.appendChild(titleRow);
+
+    const summary = summarizeToolArgsCompact(this.name, this.args, 90);
+    if (summary) {
+      const subtitle = document.createElement("div");
+      subtitle.textContent = summary;
+      subtitle.title = summarizeToolArgs(this.name, this.args);
+      Object.assign(subtitle.style, {
+        color: "var(--muted-fg, rgba(127,127,127,0.92))",
+        fontSize: "10px",
+        lineHeight: "1.35",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        minWidth: 0
+      });
+      headMain.appendChild(subtitle);
+    }
+    header.appendChild(headMain);
 
     if (this.name === "edit" && this.args) {
       const actionButtons = document.createElement("div");
@@ -1070,7 +1256,10 @@ class ToolCallCardWidget extends WidgetType {
     close.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
       const baseId = String(this.id).replace(/:card$/, "");
-      try { window.zion?.events?.emit("toolcards/remove", { id: baseId }); } catch {}
+      const editorEl = close.closest("[data-editor-id]");
+      const sessionId = editorEl?.getAttribute("data-session-id") || null;
+      const panelId = editorEl?.closest("[data-panel-id]")?.getAttribute("data-panel-id") || close.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null;
+      try { window.zion?.events?.emit("toolcards/remove", { id: baseId, panelId, sessionId }); } catch {}
     });
     header.appendChild(close);
     wrap.appendChild(header);
@@ -1112,10 +1301,21 @@ class ToolInlineWidget extends WidgetType {
     span.setAttribute("data-tool-id", String(this.id).replace(/:inline$/, ""));
     // 可访问性提示：包含摘要更知情
     const summaryText = summarizeToolArgs(this.name, this.args);
+    const compactSummary = summarizeToolArgsCompact(this.name, this.args, 36);
     span.title = summaryText
       ? `调用 ${this.name}：${summaryText}（点击展开/收起）`
       : `调用 ${this.name}（点击展开/收起）`;
     span.setAttribute("aria-label", `调用 ${this.name}（点击展开或收起工具调用卡片）`);
+    Object.assign(span.style, {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "4px",
+      maxWidth: "min(520px, 75%)",
+      minWidth: 0,
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      verticalAlign: "baseline"
+    });
 
     const btn = document.createElement("button");
     btn.className = "zion-tool-call-inline-toggle";
@@ -1126,23 +1326,46 @@ class ToolInlineWidget extends WidgetType {
     btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
   <path d="M4.646 6.646a.5.5 0 0 1 .708 0L8 9.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z"></path>
 </svg>`;
+    Object.assign(btn.style, {
+      flex: "0 0 auto"
+    });
     // 不阻止事件冒泡，交由全局 click handler 处理 toggle
     span.appendChild(btn);
 
-    // 信息容器：将“调用 XX”与摘要作为一个整体参与换行
+    // 信息容器：保持单行省略，避免长参数把正文挤成多行。
     const info = document.createElement("span");
     info.className = "zion-tool-call-inline-info";
+    Object.assign(info.style, {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "4px",
+      minWidth: 0,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    });
 
     const txt = document.createElement("span");
     txt.className = "zion-tool-call-inline-text";
     txt.textContent = `调用 ${this.name}`;
+    Object.assign(txt.style, {
+      flex: "0 0 auto",
+      whiteSpace: "nowrap"
+    });
     info.appendChild(txt);
 
-    // 摘要：在行内补充关键参数（如 query/url/filepath 等）
-    if (summaryText) {
+    // 只显示极短摘要；完整参数放 title 和展开卡片里。
+    if (compactSummary) {
       const sum = document.createElement("span");
       sum.className = "zion-tool-call-inline-summary";
-      sum.textContent = `：${summaryText}`;
+      sum.textContent = `· ${compactSummary}`;
+      Object.assign(sum.style, {
+        color: "var(--muted-fg, rgba(127,127,127,0.9))",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        minWidth: 0
+      });
       info.appendChild(sum);
     }
 
@@ -1156,6 +1379,9 @@ class ToolInlineWidget extends WidgetType {
     badge.innerHTML = toolStatusIcon(status);
     badge.title = label;
     badge.setAttribute("aria-label", `工具调用状态：${label}`);
+    Object.assign(badge.style, {
+      flex: "0 0 auto"
+    });
     span.appendChild(badge);
 
     return span;
@@ -1176,6 +1402,10 @@ const toolInlineField = StateField.define({
     // 1) 位置映射
     let deco = val.deco.map(tr.changes);
     const items = new Map();
+    const debugEffects = { clearAll: 0, addInline: 0, toggleInline: 0, updateResult: 0, removeTool: 0 };
+    let debugRemovedIds = [];
+    let debugUserEvent = null;
+    try { debugUserEvent = tr?.annotation?.(Transaction.userEvent) || null; } catch {}
     val.items.forEach((it, id) => {
       const mappedFrom = tr.changes.mapPos(it.from, 1);
       const mappedTo = tr.changes.mapPos(it.to, -1);
@@ -1185,18 +1415,21 @@ const toolInlineField = StateField.define({
     // 2) 处理 effects
     for (const e of tr.effects) {
       if (e.is(clearAll)) {
+        debugEffects.clearAll += 1;
         deco = Decoration.none;
         items.clear();
       }
       if (e.is(addInline)) {
-        const { from, to, id, name, args, userStartLine } = e.value;
+        debugEffects.addInline += 1;
+        const { from, to, id, name, args, userStartLine, sessionId } = e.value;
         // replace 原始文本为 inline widget（不可编辑、可定制样式）
         const widget = new ToolInlineWidget(id, name, args, null, false);
         const repl = Decoration.replace({ widget }).range(from, to);
         deco = deco.update({ add: [repl] });
-        items.set(id, { from, to, name, args, result: null, ok: null, expanded: false, userStartLine: typeof userStartLine === "number" ? userStartLine : null });
+        items.set(id, { from, to, name, args, result: null, ok: null, expanded: false, userStartLine: typeof userStartLine === "number" ? userStartLine : null, sessionId: sessionId || null });
       }
       if (e.is(toggleInline)) {
+        debugEffects.toggleInline += 1;
         const id = e.value?.id;
         const it = id ? items.get(id) : null;
         if (!it) continue;
@@ -1208,12 +1441,13 @@ const toolInlineField = StateField.define({
           items.set(id, { ...it, expanded: false });
         } else {
           // 展开：插入卡片（行内，行末）
-          const widget = new ToolCallCardWidget(id, it.name, it.args, it.result, it.ok);
+          const widget = new ToolCallCardWidget(id, it.name, it.args, it.result, it.ok, it.sessionId || null);
           deco = deco.update({ add: [Decoration.widget({ widget, side: 1 }).range(it.to)] });
           items.set(id, { ...it, expanded: true });
         }
       }
       if (e.is(updateResult)) {
+        debugEffects.updateResult += 1;
         const { id, result, ok } = e.value || {};
         const it = id ? items.get(id) : null;
         if (!it) continue;
@@ -1233,12 +1467,14 @@ const toolInlineField = StateField.define({
           deco = deco.update({
             filter: (_f, _t, value) => value?.spec?.widget?.id !== (id + ":card")
           });
-          const widget = new ToolCallCardWidget(id, updated.name, updated.args, updated.result, updated.ok);
+          const widget = new ToolCallCardWidget(id, updated.name, updated.args, updated.result, updated.ok, updated.sessionId || null);
           deco = deco.update({ add: [Decoration.widget({ widget, side: 1 }).range(updated.to)] });
         }
       }
       if (e.is(removeTool)) {
+        debugEffects.removeTool += 1;
         const base = String(e.value?.id || "");
+        const itemSessionId = items.get(base)?.sessionId || null;
         // 移除 inline widget 与 card widget（也兼容旧的 mark 情况）
         deco = deco.update({
           filter: (_f, _t, value) => {
@@ -1254,12 +1490,13 @@ const toolInlineField = StateField.define({
         items.delete(base);
         // 标记该条目为已删除，防止在会话恢复时复活
         try {
-          const sid = window?.zion?.state?.get("sessions.currentId");
+          const sid = e.value?.sessionId || itemSessionId || null;
           if (sid) {
-            const ann = window?.zion?.state?.get(`sessions.annotations.${sid}`) || {};
-            const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds.slice() : [];
-            if (!del.includes(base)) del.push(base);
-            window?.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, deletedToolIds: del });
+            updateSessionAnnotations(sid, (ann) => {
+              const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds.slice() : [];
+              if (!del.includes(base)) del.push(base);
+              return { ...ann, deletedToolIds: del };
+            });
           }
         } catch {}
       }
@@ -1281,6 +1518,15 @@ const toolInlineField = StateField.define({
         }
       });
       if (toRemove.length) {
+        debugRemovedIds = toRemove.map(id => String(id));
+        const isSessionLoad = (() => {
+          try {
+            return tr?.annotation?.(Transaction.userEvent) === "zion.sessionLoad";
+          } catch {
+            return false;
+          }
+        })();
+        const removedSessionId = toRemove.map(id => items.get(id)?.sessionId).find(Boolean) || null;
         // 移除对应 inline/card 装饰
         deco = deco.update({
           filter: (_f, _t, value) => {
@@ -1290,16 +1536,34 @@ const toolInlineField = StateField.define({
         });
         // 删除内存条目
         toRemove.forEach(id => items.delete(id));
-        // 写删除标记，避免恢复时复活
-        try {
-          const sid = window?.zion?.state?.get("sessions.currentId");
-          if (sid) {
-            const ann = window?.zion?.state?.get(`sessions.annotations.${sid}`) || {};
-            const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds.slice() : [];
-            toRemove.forEach(id => { if (!del.includes(id)) del.push(id); });
-            window?.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, deletedToolIds: del });
-          }
-        } catch {}
+        // 文档整体 session-load 时，旧锚点失效不代表用户删除，不应写 deleted 标记。
+        if (!isSessionLoad) {
+          try {
+            const sid = removedSessionId || null;
+            if (sid) {
+              updateSessionAnnotations(sid, (ann) => {
+                const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds.slice() : [];
+                toRemove.forEach(id => { if (!del.includes(id)) del.push(id); });
+                return { ...ann, deletedToolIds: del };
+              });
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    try {
+      const effectCount = debugEffects.clearAll + debugEffects.addInline + debugEffects.toggleInline + debugEffects.updateResult + debugEffects.removeTool;
+      if (effectCount || debugRemovedIds.length || debugUserEvent === "zion.sessionLoad") {
+        debugChatCards("field.update", {
+          prevCount: val.items?.size || 0,
+          nextCount: items.size,
+          effects: debugEffects,
+          removedIds: debugRemovedIds,
+          docChanged: !!tr.docChanged,
+          userEvent: debugUserEvent,
+          docLength: tr.state?.doc?.length || 0
+        });
       }
     } catch {}
 
@@ -1322,71 +1586,6 @@ function findPrevRoleStartLine(doc, pos, role) {
   return null;
 }
 
-function findAssistantBlockEnd(view) {
-  const { state } = view;
-  const doc = state.doc;
-  const lines = doc.toString().replace(/\r/g, "").split("\n");
-
-  // 找最后一个 assistant 头行
-  let headIdx = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-    if (m && m[1] === "assistant") { headIdx = i; break; }
-  }
-  if (headIdx < 0) return doc.length;
-
-  // 往下直到下一个角色头行，取其前一行为区块末尾
-  let endIdx = headIdx;
-  for (let i = headIdx + 1; i < lines.length; i++) {
-    const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-    if (m) break;
-    endIdx = i;
-  }
-  return doc.line(endIdx + 1).to;
-}
-
-/**
- * 根据 hintPos（当前回答锚点或光标）查找“距离最近的 assistant 区块末尾”
- */
-function findAssistantBlockEndNear(view, hintPos) {
-  const { state } = view;
-  const doc = state.doc;
-  const txt = doc.toString().replace(/\r/g, "");
-  const lines = txt.split("\n");
-
-  // hintPos 转为行索引
-  const hint = typeof hintPos === "number" ? hintPos : (state.selection?.main?.head ?? doc.length);
-  const hintLine = doc.lineAt(hint).number - 1;
-
-  // 自 hintLine 向上查找最近的 assistant 头
-  let headIdx = -1;
-  for (let i = hintLine; i >= 0; i--) {
-    const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-    if (m && m[1] === "assistant") { headIdx = i; break; }
-    if (m && m[1] !== "assistant") {
-      // 在 hint 上方遇到别的角色头，继续向上直到找到 assistant 或越界
-      continue;
-    }
-  }
-  // 若未找到，回退到最后一个 assistant
-  if (headIdx < 0) {
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-      if (m && m[1] === "assistant") { headIdx = i; break; }
-    }
-  }
-  if (headIdx < 0) return doc.length;
-
-  // 从 headIdx 往下直到下一个角色头行，前一行为区块末尾
-  let endIdx = headIdx;
-  for (let i = headIdx + 1; i < lines.length; i++) {
-    const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-    if (m) break;
-    endIdx = i;
-  }
-  return doc.line(endIdx + 1).to;
-}
-
 /**
  * 将扩展暴露出去：由 editor.addVisualExtension(ext) 注入
  * - chat/toolCall：在最新 assistant 区块末尾插入“调用 xxx”文本行并加装饰
@@ -1404,15 +1603,21 @@ export function installToolCallCards() {
       this.sessionId = null;
       this.toolActions = new Map();
       this.selRaf = 0;
+      this.mirrorToolCalls = new Map();
       try { this.panelId = this.view.dom.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null; } catch { this.panelId = null; }
-      try { this.sessionId = window.zion?.state?.get("sessions.currentId") || null; } catch {}
+      try {
+        this.sessionId = getViewSessionId(this.view);
+      } catch {}
+      debugChatCards("plugin.init", { panelId: this.panelId, sessionId: this.sessionId, docLength: this.view.state.doc.length });
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRun));
       this.disps.push(window.zion.events.on("chat/runFinished", this.onFinish));
       this.disps.push(window.zion.events.on("chat/toolCall", this.onCall));
+      this.disps.push(window.zion.events.on("toolcards/inlineInserted", this.onInlineInserted));
       this.disps.push(window.zion.events.on("chat/toolResult", this.onRes));
       this.disps.push(window.zion.events.on("toolcards/remove", this.onRemove));
       this.disps.push(window.zion.events.on("toolcards/restore", this.onRestore));
       this.disps.push(window.zion.events.on("toolcards/clear", this.onClear));
+      this.disps.push(window.zion.events.on("toolcards/snapshot", this.onSnapshot));
       this.disps.push(window.zion.events.on("toolcards/editRevert", this.onEditRevert));
       this.disps.push(window.zion.events.on("toolcards/editAccept", this.onEditAccept));
       this.disps.push(window.zion.events.on("toolcards/writeRevert", this.onWriteRevert));
@@ -1429,13 +1634,16 @@ export function installToolCallCards() {
       Promise.resolve().then(() => {
         try {
           const sid = this.sessionId;
-          const pending = sid ? window.zion?.state?.get(`sessions.pendingRestore.tools.${sid}`) : null;
-          const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+          const pending = sid ? window.zion?.commands?.executeCommand?.("zion.chatCards.getPendingRestore", { sessionId: sid, kind: "tools" }) : null;
+          const ann = sid ? getSessionAnnotations(sid) : {};
           const list = Array.isArray(ann.tools) ? ann.tools : [];
+          debugChatCards("plugin.initialRestoreCheck", {
+            panelId: this.panelId,
+            sessionId: sid,
+            pending: Array.isArray(pending) ? pending.length : 0,
+            annotations: list.length
+          });
           if (Array.isArray(pending) && pending.length) {
-            if (sid && !list.length) {
-              try { window.zion?.state?.set(`sessions.annotations.${sid}`, { ...ann, tools: pending }); } catch {}
-            }
             this.onRestore({ items: pending });
             return;
           }
@@ -1490,20 +1698,27 @@ export function installToolCallCards() {
       try {
         const sid = this.sessionId;
         if (!sid) return;
-        const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+        const ann = getSessionAnnotations(sid);
         const list = Array.isArray(ann.tools) ? ann.tools : [];
-        if (!list.length) return;
-
-        // 基于 StateField 中的已挂载 id 判断是否需要恢复
         let mountedIds = [];
         try {
           const fieldVal = this.view.state.field(toolInlineField);
           if (fieldVal?.items) fieldVal.items.forEach((_it, id) => mountedIds.push(String(id)));
         } catch {}
+        if (!list.length) return;
+
+        // 基于 StateField 中的已挂载 id 判断是否需要恢复
         const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
         const missing = wantIds.some(id => !mountedIds.includes(id));
+        debugChatCards("visibility.checkAndRestore", {
+          panelId: this.panelId,
+          sessionId: sid,
+          annotations: list.length,
+          mounted: mountedIds.length,
+          missing,
+          stats: debugToolFieldStats(this.view)
+        });
         if (missing) {
-          console.log("[tool-calls] restore needed (missing ids):", { missingIds: wantIds.filter(id => !mountedIds.includes(id)) });
           this.onRestore({ items: list });
         }
       } catch (e) {
@@ -1512,6 +1727,8 @@ export function installToolCallCards() {
     };
 
     update(update) {
+      const debugBeforeSessionId = this.sessionId;
+      const debugBeforeVisibleSessionId = getViewSessionId(this.view);
       if (update.docChanged) {
         // 将锚点映射到新文档位置
         this.anchorPos = update.changes.mapPos(this.anchorPos, 1);
@@ -1531,7 +1748,34 @@ export function installToolCallCards() {
         this.anchorPos = update.state.selection?.main?.head ?? this.anchorPos;
       }
       // 每次更新后持久化快照（位置会被 StateField 自动映射）
+      if (this.mirrorToolCalls.size) {
+        try { this.attachPendingMirrorToolCalls(); } catch {}
+        if (this.mirrorToolCalls.size) {
+          if (update.selectionSet || update.docChanged || update.viewportChanged) {
+            this.syncSelectionHighlight();
+          }
+          return;
+        }
+      }
       this.snapshot();
+      try {
+        if (update.docChanged || update.viewportChanged) {
+          const stats = debugToolFieldStats(this.view);
+          const hasPlainToolText = /调用\s+([^\n]+)/.test(this.view.state.doc.toString());
+          debugChatCards("view.update", {
+            panelId: this.panelId,
+            sessionId: this.sessionId,
+            beforeSessionId: debugBeforeSessionId,
+            beforeVisibleSessionId: debugBeforeVisibleSessionId,
+            docChanged: !!update.docChanged,
+            viewportChanged: !!update.viewportChanged,
+            selectionSet: !!update.selectionSet,
+            transactions: update.transactions?.length || 0,
+            hasPlainToolText,
+            stats
+          });
+        }
+      } catch {}
       if (update.selectionSet || update.docChanged || update.viewportChanged) {
         this.syncSelectionHighlight();
       }
@@ -1588,9 +1832,26 @@ export function installToolCallCards() {
             actionAt: typeof act?.at === "number" ? act.at : null
           });
         });
-        const prev = window.zion?.state?.get(`sessions.annotations.${id}`) || {};
-        // 将注解快照写回内存
-        window.zion?.state?.set(`sessions.annotations.${id}`, { ...prev, tools: arr });
+        updateSessionAnnotations(id, (prev) => {
+          const prevTools = Array.isArray(prev.tools) ? prev.tools : [];
+          if (!arr.length && prevTools.length && /调用\s+([^\n]+)/.test(this.view.state.doc.toString())) {
+            debugChatCards("snapshot.skipEmpty", {
+              panelId: this.panelId,
+              sessionId: id,
+              prevCount: prevTools.length,
+              docLength: this.view.state.doc.length
+            });
+            return prev;
+          }
+          return { ...prev, tools: arr };
+        });
+        debugChatCards("snapshot", {
+          panelId: this.panelId,
+          sessionId: id,
+          count: arr.length,
+          expanded: arr.filter(it => it.expanded).length,
+          ids: arr.map(it => it.id)
+        });
         // 同步当前挂载的 widget id 列表与计数，供生命周期判定使用（避免依赖 DOM 计数）
         try {
           const mountedIds = arr.map(it => it.id).filter(Boolean);
@@ -1602,11 +1863,26 @@ export function installToolCallCards() {
         } catch {}
       } catch {}
     };
+    getVisibleSessionId = () => {
+      return getViewSessionId(this.view);
+    };
+    shouldHandleScopedPayload = (payload) => {
+      const visibleSessionId = this.getVisibleSessionId();
+      if (!visibleSessionId) return false;
+      if (payload?.sessionId && payload.sessionId !== visibleSessionId) return false;
+      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return false;
+      if (!payload?.panelId && !payload?.sessionId) {
+        const activePanelId = window.zion?.panels?.getActivePanelId?.() || null;
+        if (this.panelId && activePanelId && this.panelId !== activePanelId) return false;
+      }
+      this.sessionId = visibleSessionId;
+      return true;
+    };
     loadToolActions = () => {
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = this.getVisibleSessionId();
         if (!sid) return;
-        const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+        const ann = getSessionAnnotations(sid);
         const ta = ann && typeof ann.toolActions === "object" ? ann.toolActions : {};
         const next = new Map();
         Object.keys(ta || {}).forEach((k) => {
@@ -1621,48 +1897,53 @@ export function installToolCallCards() {
         this.toolActions = next;
       } catch {}
     };
-    setToolAction = (toolCallId, action) => {
+    setToolAction = (toolCallId, action, sessionId) => {
       if (!toolCallId || (action !== "accept" && action !== "revert")) return;
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
+        const sid = sessionId || this.getVisibleSessionId();
         if (!sid) return;
-        const prev = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
-        const taPrev = prev && typeof prev.toolActions === "object" ? prev.toolActions : {};
-        const ta = { ...(taPrev || {}) };
         const at = Date.now();
-        ta[String(toolCallId)] = { action, at };
-        window.zion?.state?.set(`sessions.annotations.${sid}`, { ...prev, toolActions: ta });
+        updateSessionAnnotations(sid, (prev) => {
+          const taPrev = prev && typeof prev.toolActions === "object" ? prev.toolActions : {};
+          return { ...prev, toolActions: { ...(taPrev || {}), [String(toolCallId)]: { action, at } } };
+        });
         this.toolActions.set(String(toolCallId), { action, at });
         try { window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: sid }); } catch {}
       } catch {}
     };
     onRun = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
-      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
-      if (payload?.sessionId) this.sessionId = payload.sessionId;
+      if (!this.shouldHandleScopedPayload(payload)) return;
       this.runActive = true;
       const sel = this.view.state.selection?.main?.head;
       this.anchorPos = typeof sel === "number" ? sel : this.view.state.doc.length;
     };
     onFinish = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
-      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
-      if (payload?.sessionId) this.sessionId = payload.sessionId;
+      if (!this.shouldHandleScopedPayload(payload)) return;
       this.runActive = false;
     };
     onCall = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
-      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
-      if (payload?.sessionId) this.sessionId = payload.sessionId;
+      if (!this.shouldHandleScopedPayload(payload)) return;
       const tc = payload?.toolCall || payload;
       if (!tc?.id) return;
       const name = tc.name || "tool";
 
       const isMirrorPanel = !!(payload?.panelId && payload.panelId !== this.panelId);
       if (isMirrorPanel) {
+        const anchorCountBefore = buildRegexAnchors(this.view.state.doc.toString(), /调用\s+([^\n]+)/g, (match) => {
+          if (match[0].length > 300) return null;
+          return { from: match.index, to: match.index + match[0].length, name: match[1].trim() };
+        }).length;
+        debugChatCards("toolCall.mirrorPending", { panelId: this.panelId, sourcePanelId: payload?.panelId, sessionId: this.sessionId, id: tc.id, name, anchorCountBefore });
+        this.mirrorToolCalls.set(String(tc.id), { ...tc, name, sessionId: this.sessionId, anchorCountBefore, attempts: 0 });
+        if (this.attachPendingMirrorToolCalls(String(tc.id))) return;
+        try {
+          requestAnimationFrame(() => {
+            try { this.attachPendingMirrorToolCalls(String(tc.id)); } catch {}
+          });
+        } catch {}
+        [30, 120, 300].forEach((delay) => setTimeout(() => {
+          try { this.attachPendingMirrorToolCalls(String(tc.id)); } catch {}
+        }, delay));
         return;
       }
 
@@ -1685,33 +1966,168 @@ export function installToolCallCards() {
       // 2) 计算插入位置：基于当前会话锚点的 assistant 区块末尾
       const sid = this.sessionId;
       const hint = (sid ? window.zion?.state?.get(`chat.answerAnchorPos.${sid}`) : undefined) ?? window.zion?.state?.get("chat.answerAnchorPos");
-      const doc = this.view.state.doc;
-      const pos = typeof hint === "number" ? findAssistantBlockEndNear(this.view, hint) : findAssistantBlockEnd(this.view);
-      const prevChar = pos > 0 ? doc.sliceString(pos - 1, pos) : "";
-      const prefix = prevChar === "\n" || pos === 0 ? "" : "\n"; // 确保新起一行
-      const text = `${prefix}调用 ${name}\n`; // 末尾也换行，避免与后续回答拼在一行
-      const start = pos + prefix.length;
-      const end = start + (`调用 ${name}`).length;
-      const userStartLine = findPrevRoleStartLine(doc, start, "user");
+      const plan = planAssistantMarkerInsertion({
+        docText: this.view.state.doc.toString(),
+        markerText: `调用 ${name}`,
+        hintPos: typeof hint === "number" ? hint : null,
+        trailingNewlines: 1
+      });
+      const userStartLine = findPrevRoleStartLine(this.view.state.doc, plan.markerFrom, "user");
 
       // 对外暴露锚点：设置到换行后的位置，便于后续回答继续新起一行
-      try { window.zion?.state?.set("chat.lastToolCallPos", end + 1); } catch {}
+      try { window.zion?.state?.set("chat.lastToolCallPos", plan.markerTo + 1); } catch {}
       this.view.dispatch({
-        changes: { from: pos, insert: text },
-        effects: [addInline.of({ from: start, to: end, id: tc.id, name, args: tc.args, userStartLine })]
+        changes: { from: plan.insertPos, insert: plan.insertText },
+        effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: tc.id, name, args: tc.args, userStartLine, sessionId: this.sessionId })]
       });
-      scheduleRevealToolContent(this.view, { id: tc.id, pos: end, reason: "onTool-insert" });
+      debugChatCards("toolCall.inserted", { panelId: this.panelId, sessionId: this.sessionId, id: tc.id, name, from: plan.markerFrom, to: plan.markerTo });
+      try {
+        window.zion?.events?.emit("toolcards/inlineInserted", {
+          panelId: this.panelId,
+          sessionId: this.sessionId,
+          id: tc.id,
+          name,
+          args: tc.args,
+          from: plan.markerFrom,
+          to: plan.markerTo
+        });
+      } catch {}
+      scheduleRevealToolContent(this.view, { id: tc.id, pos: plan.markerTo, reason: "onTool-insert" });
       // 插入后，将锚点推进到换行之后
-      this.anchorPos = end + 1;
+      this.anchorPos = plan.markerTo + 1;
       try {
         window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: this.sessionId });
       } catch {}
     };
+    attachPendingMirrorToolCalls = (onlyId) => {
+      if (!this.mirrorToolCalls.size) return false;
+      let attachedAny = false;
+      try {
+        const fieldVal = this.view.state.field(toolInlineField);
+        const occupied = new Set();
+        try { fieldVal?.items?.forEach?.((it) => occupied.add(`${it.from}:${it.to}`)); } catch {}
+        const doc = this.view.state.doc;
+        const docString = doc.toString();
+        const anchors = buildRegexAnchors(docString, /调用\s+([^\n]+)/g, (match) => {
+          if (match[0].length > 300) return null;
+          return {
+            from: match.index,
+            to: match.index + match[0].length,
+            name: match[1].trim()
+          };
+        });
+        const entries = Array.from(this.mirrorToolCalls.entries());
+        debugChatCards("mirror.attach.scan", {
+          panelId: this.panelId,
+          sessionId: this.sessionId,
+          pending: entries.length,
+          anchors: anchors.length,
+          onlyId
+        });
+        for (const [id, tc] of entries) {
+          if (onlyId && id !== onlyId) continue;
+          if (fieldVal?.items?.has?.(id)) {
+            this.mirrorToolCalls.delete(id);
+            continue;
+          }
+          tc.attempts = Number(tc.attempts || 0) + 1;
+          const anchorCountBefore = Math.max(0, Number(tc.anchorCountBefore || 0));
+          const newAnchors = anchors.slice(anchorCountBefore);
+          const candidates = newAnchors;
+          debugChatCards("mirror.attach.candidates", {
+            panelId: this.panelId,
+            sessionId: this.sessionId,
+            id,
+            name: tc.name,
+            attempts: tc.attempts,
+            anchorCountBefore,
+            totalAnchors: anchors.length,
+            candidateAnchors: candidates.length
+          });
+          if (!candidates.length) continue;
+          for (let i = candidates.length - 1; i >= 0; i--) {
+            const anchor = candidates[i];
+            if (anchor.occupied) continue;
+            if (anchor.name !== tc.name) continue;
+            if (occupied.has(`${anchor.from}:${anchor.to}`)) continue;
+            anchor.occupied = true;
+            occupied.add(`${anchor.from}:${anchor.to}`);
+            const userStartLine = findPrevRoleStartLine(doc, anchor.from, "user");
+            this.view.dispatch({
+              effects: [addInline.of({ from: anchor.from, to: anchor.to, id, name: tc.name, args: tc.args, userStartLine, sessionId: this.sessionId })]
+            });
+            debugChatCards("mirror.attach.matched", { panelId: this.panelId, sessionId: this.sessionId, id, name: tc.name, from: anchor.from, to: anchor.to });
+            this.mirrorToolCalls.delete(id);
+            attachedAny = true;
+            break;
+          }
+        }
+        if (attachedAny) this.snapshot();
+      } catch {}
+      return attachedAny;
+    };
+    attachMirrorToolByHint = (payload) => {
+      if (!payload?.id || !payload?.name) return false;
+      const visibleSessionId = this.getVisibleSessionId();
+      if (!visibleSessionId) return false;
+      if (payload?.sessionId && payload.sessionId !== visibleSessionId) return false;
+      if (payload?.panelId && payload.panelId === this.panelId) return false;
+      try {
+        const fieldVal = this.view.state.field(toolInlineField);
+        if (fieldVal?.items?.has?.(String(payload.id))) return true;
+        const occupied = new Set();
+        try { fieldVal?.items?.forEach?.((it) => occupied.add(`${it.from}:${it.to}`)); } catch {}
+        const anchors = buildRegexAnchors(this.view.state.doc.toString(), /调用\s+([^\n]+)/g, (match) => {
+          if (match[0].length > 300) return null;
+          return { from: match.index, to: match.index + match[0].length, name: match[1].trim() };
+        }).filter((anchor) => anchor.name === payload.name && !anchor.occupied && !occupied.has(`${anchor.from}:${anchor.to}`));
+        const hintFrom = typeof payload.from === "number" ? payload.from : null;
+        const ranked = anchors
+          .map((anchor) => ({ anchor, score: hintFrom == null ? 0 : Math.abs(anchor.from - hintFrom) }))
+          .sort((a, b) => a.score - b.score);
+        debugChatCards("inlineInserted.hintScan", {
+          panelId: this.panelId,
+          sourcePanelId: payload.panelId,
+          sessionId: payload.sessionId,
+          id: payload.id,
+          name: payload.name,
+          hintFrom,
+          candidates: ranked.length,
+          bestScore: ranked[0]?.score ?? null
+        });
+        const best = ranked[0]?.anchor;
+        if (!best) return false;
+        const userStartLine = findPrevRoleStartLine(this.view.state.doc, best.from, "user");
+        this.view.dispatch({
+          effects: [addInline.of({ from: best.from, to: best.to, id: payload.id, name: payload.name, args: payload.args, userStartLine, sessionId: visibleSessionId || this.sessionId || payload.sessionId || null })]
+        });
+        this.mirrorToolCalls.delete(String(payload.id));
+        debugChatCards("inlineInserted.hintMatched", {
+          panelId: this.panelId,
+          sourcePanelId: payload.panelId,
+          sessionId: payload.sessionId,
+          id: payload.id,
+          name: payload.name,
+          from: best.from,
+          to: best.to
+        });
+        this.snapshot();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onInlineInserted = (payload) => {
+      if (this.attachMirrorToolByHint(payload)) return;
+      requestAnimationFrame(() => {
+        try { this.attachMirrorToolByHint(payload); } catch {}
+      });
+      setTimeout(() => {
+        try { this.attachMirrorToolByHint(payload); } catch {}
+      }, 80);
+    };
     onRes = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
-      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
-      if (payload?.sessionId) this.sessionId = payload.sessionId;
+      if (!this.shouldHandleScopedPayload(payload)) return;
       const id = payload?.toolCallId || payload?.id;
       if (!id) return;
       const result = payload?.result;
@@ -1725,33 +2141,31 @@ export function installToolCallCards() {
         const it = fieldVal.items.get(String(id));
         const nm = String(it?.name || "");
         if ((nm === "edit" || nm === "write" || nm === "fsedit" || nm === "fswrite") && it?.ok === true && !this.toolActions.get(String(id))) {
-          this.setToolAction(String(id), "accept");
+          this.setToolAction(String(id), "accept", this.sessionId);
         }
       } catch {}
     };
     onRemove = (payload) => {
-      const id = payload?.id || payload;
+      const scopedPayload = payload && typeof payload === "object" ? payload : { id: payload };
+      if (!this.shouldHandleToolAction(scopedPayload)) return;
+      const id = scopedPayload?.id;
       if (!id) return;
-      this.view.dispatch({ effects: [removeTool.of({ id })] });
+      const sessionId = scopedPayload?.sessionId || this.getVisibleSessionId();
+      this.view.dispatch({ effects: [removeTool.of({ id, sessionId })] });
       try {
-        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId: this.sessionId });
+        window.zion?.events?.emit("toolcards/toolsUpdated", { sessionId });
       } catch {}
     };
     shouldHandleToolAction = (payload) => {
-      const visibleSessionId = window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
-      if (payload?.panelId && this.panelId && payload.panelId !== this.panelId) return false;
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return false;
-      if (!payload?.panelId && !payload?.sessionId) {
-        const activePanelId = window.zion?.panels?.getActivePanelId?.() || null;
-        if (this.panelId && activePanelId && this.panelId !== activePanelId) return false;
-      }
-      if (payload?.sessionId) this.sessionId = payload.sessionId;
-      return true;
+      return this.shouldHandleScopedPayload(payload);
     };
     onEditRevert = async (payload) => {
       if (!this.shouldHandleToolAction(payload)) return;
       // 处理 edit 工具的 Revert 操作
       const { id, path, old_string, new_string, replace_all } = payload || {};
+      // #region debug-point D:edit-revert-entry
+      fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"D",location:"extensions/dev.tools/tool-calls.js:2162",msg:"[DEBUG] onEditRevert entered",data:{id:id ?? null,path:path ?? null,replace_all:!!replace_all,panelId:this.panelId,visibleSessionId:this.getVisibleSessionId?.() || null},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       if (!path || typeof old_string !== "string" || typeof new_string !== "string") {
         notify("Revert 参数缺失", { type: "error", duration: 3000 });
         return;
@@ -1815,6 +2229,9 @@ export function installToolCallCards() {
       // 处理 edit 工具的 Accept 操作
       // Accept 执行正向编辑：old_string -> new_string
       const { id, path, old_string, new_string, replace_all } = payload || {};
+      // #region debug-point D:edit-accept-entry
+      fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"D",location:"extensions/dev.tools/tool-calls.js:2224",msg:"[DEBUG] onEditAccept entered",data:{id:id ?? null,path:path ?? null,replace_all:!!replace_all,panelId:this.panelId,visibleSessionId:this.getVisibleSessionId?.() || null},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       if (!path || typeof old_string !== "string" || typeof new_string !== "string") {
         notify("Accept 参数缺失", { type: "error", duration: 3000 });
         return;
@@ -1874,13 +2291,16 @@ export function installToolCallCards() {
     onWriteRevert = async (payload) => {
       if (!this.shouldHandleToolAction(payload)) return;
       const { id, path } = payload || {};
+      // #region debug-point D:write-revert-entry
+      fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"D",location:"extensions/dev.tools/tool-calls.js:2285",msg:"[DEBUG] onWriteRevert entered",data:{id:id ?? null,path:path ?? null,panelId:this.panelId,visibleSessionId:this.getVisibleSessionId?.() || null},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       if (!path) {
         notify("Revert 参数缺失", { type: "error", duration: 3000 });
         return;
       }
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
-        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+        const sid = payload?.sessionId || this.getVisibleSessionId();
+        const ann = sid ? getSessionAnnotations(sid) : {};
         const list = Array.isArray(ann.writeHistory) ? ann.writeHistory : [];
         const baseId = String(id || "");
         const contentHint = typeof payload?.content === "string" ? payload.content : null;
@@ -1891,6 +2311,9 @@ export function installToolCallCards() {
         const byContent = list.slice().reverse().find(findByContent);
         const byPath = list.slice().reverse().find(findByPath);
         const item = byId || byContent || byPath;
+        // #region debug-point E:write-revert-history
+        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"E",location:"extensions/dev.tools/tool-calls.js:2313",msg:"[DEBUG] onWriteRevert writeHistory lookup",data:{sid,historyCount:list.length,baseId,matchedById:!!byId,matchedByContent:!!byContent,matchedByPath:!!byPath,hasItem:!!item,beforeExists:item?.beforeExists ?? null,hasBeforeContent:typeof item?.beforeContent === "string"},ts:Date.now()})}).catch(()=>{});
+        // #endregion
         if (baseId && !byId) {
           if (!byContent) {
             notify("Revert 失败: 未找到对应的 write 记录（可能跨会话/已被清理）", { type: "error", duration: 6000 });
@@ -1922,13 +2345,16 @@ export function installToolCallCards() {
           const data = (() => {
             try { return raw ? JSON.parse(raw) : null; } catch { return null; }
           })();
+          // #region debug-point E:write-revert-delete-result
+          fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"E",location:"extensions/dev.tools/tool-calls.js:2345",msg:"[DEBUG] onWriteRevert delete request finished",data:{ok:res.ok,status:res.status,raw:raw?.slice?.(0,300) ?? ""},ts:Date.now()})}).catch(()=>{});
+          // #endregion
           if (!res.ok) {
             console.error("[onWriteRevert] delete failed:", raw || data?.error || "delete failed");
             notify("Revert 失败: " + (raw || data?.error || "未知错误"), { type: "error", duration: 6000 });
             return;
           }
           notify("Revert 成功！", { type: "success", duration: 3000 });
-          if (id) this.setToolAction(String(id), "revert");
+          if (id) this.setToolAction(String(id), "revert", sid);
           return;
         }
         const beforeContent = item?.beforeContent;
@@ -1950,13 +2376,16 @@ export function installToolCallCards() {
         const data = (() => {
           try { return raw ? JSON.parse(raw) : null; } catch { return null; }
         })();
+        // #region debug-point E:write-revert-write-result
+        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"E",location:"extensions/dev.tools/tool-calls.js:2373",msg:"[DEBUG] onWriteRevert write request finished",data:{ok:res.ok,status:res.status,raw:raw?.slice?.(0,300) ?? ""},ts:Date.now()})}).catch(()=>{});
+        // #endregion
         if (!res.ok) {
           console.error("[onWriteRevert] failed:", raw || data?.error || "write failed");
           notify("Revert 失败: " + (raw || data?.error || "未知错误"), { type: "error", duration: 6000 });
           return;
         }
         notify("Revert 成功！", { type: "success", duration: 3000 });
-        if (id) this.setToolAction(String(id), "revert");
+        if (id) this.setToolAction(String(id), "revert", sid);
       } catch (e) {
         console.error("[onWriteRevert] error:", e);
         notify("Revert 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
@@ -1965,13 +2394,16 @@ export function installToolCallCards() {
     onWriteAccept = async (payload) => {
       if (!this.shouldHandleToolAction(payload)) return;
       const { id, path } = payload || {};
+      // #region debug-point D:write-accept-entry
+      fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"D",location:"extensions/dev.tools/tool-calls.js:2376",msg:"[DEBUG] onWriteAccept entered",data:{id:id ?? null,path:path ?? null,panelId:this.panelId,visibleSessionId:this.getVisibleSessionId?.() || null},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       if (!path) {
         notify("Accept 参数缺失", { type: "error", duration: 3000 });
         return;
       }
       try {
-        const sid = window.zion?.state?.get("sessions.currentId");
-        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
+        const sid = payload?.sessionId || this.getVisibleSessionId();
+        const ann = sid ? getSessionAnnotations(sid) : {};
         const list = Array.isArray(ann.writeHistory) ? ann.writeHistory : [];
         const baseId = String(id || "");
         const contentHint = typeof payload?.content === "string" ? payload.content : null;
@@ -1983,6 +2415,9 @@ export function installToolCallCards() {
         const byPath = list.slice().reverse().find(findByPath);
         const item = byId || byContent || byPath;
         const content = typeof payload?.content === "string" ? payload.content : item?.afterContent;
+        // #region debug-point E:write-accept-history
+        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"E",location:"extensions/dev.tools/tool-calls.js:2408",msg:"[DEBUG] onWriteAccept writeHistory lookup",data:{sid,historyCount:list.length,baseId,matchedById:!!byId,matchedByContent:!!byContent,matchedByPath:!!byPath,hasItem:!!item,hasPayloadContent:typeof payload?.content === "string",hasResolvedContent:typeof content === "string"},ts:Date.now()})}).catch(()=>{});
+        // #endregion
         if (baseId && !byId && typeof payload?.content !== "string") {
           if (!byContent) {
             notify("Accept 失败: 未找到对应的 write 记录（可能跨会话/已被清理）", { type: "error", duration: 6000 });
@@ -2018,13 +2453,16 @@ export function installToolCallCards() {
         const data = (() => {
           try { return raw ? JSON.parse(raw) : null; } catch { return null; }
         })();
+        // #region debug-point E:write-accept-result
+        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"E",location:"extensions/dev.tools/tool-calls.js:2444",msg:"[DEBUG] onWriteAccept write request finished",data:{ok:res.ok,status:res.status,raw:raw?.slice?.(0,300) ?? ""},ts:Date.now()})}).catch(()=>{});
+        // #endregion
         if (!res.ok) {
           console.error("[onWriteAccept] failed:", raw || data?.error || "write failed");
           notify("Accept 失败: " + (raw || data?.error || "未知错误"), { type: "error", duration: 6000 });
           return;
         }
         notify("Accept 成功！", { type: "success", duration: 3000 });
-        if (id) this.setToolAction(String(id), "accept");
+        if (id) this.setToolAction(String(id), "accept", sid);
       } catch (e) {
         console.error("[onWriteAccept] error:", e);
         notify("Accept 错误: " + (e?.message || String(e)), { type: "error", duration: 6000 });
@@ -2036,6 +2474,9 @@ export function installToolCallCards() {
       const from = typeof payload?.from === "number" ? payload.from : 0;
       const to = typeof payload?.to === "number" ? payload.to : this.view.state.doc.length;
       if (userStartLine == null && to <= from) return;
+      // #region debug-point B:batch-accept-entry
+      fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"B",location:"extensions/dev.tools/tool-calls.js:2444",msg:"[DEBUG] onBatchAccept entered",data:{panelId:this.panelId,visibleSessionId:this.getVisibleSessionId?.() || null,payloadSessionId:payload?.sessionId || null,payloadPanelId:payload?.panelId || null,userStartLine,from,to},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       let items = [];
       try {
         const fieldVal = this.view.state.field(toolInlineField);
@@ -2064,10 +2505,16 @@ export function installToolCallCards() {
         } catch {}
       }
       if (!items.length) {
+        // #region debug-point C:batch-accept-empty
+        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"C",location:"extensions/dev.tools/tool-calls.js:2477",msg:"[DEBUG] onBatchAccept found no matching items",data:{userStartLine,from,to,panelId:this.panelId,visibleSessionId:this.getVisibleSessionId?.() || null},ts:Date.now()})}).catch(()=>{});
+        // #endregion
         notify("当前消息没有可处理的工具调用", { type: "info", duration: 3000 });
         return;
       }
       items.sort((a, b) => a.from - b.from);
+      // #region debug-point C:batch-accept-items
+      fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"C",location:"extensions/dev.tools/tool-calls.js:2481",msg:"[DEBUG] onBatchAccept matched items",data:{count:items.length,items:items.map(it=>({id:String(it.id||""),name:it.name,from:it.from,to:it.to,userStartLine:it.userStartLine ?? null,path:it.args?.path ?? null}))},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       for (const it of items) {
         if (it.name === "edit" || it.name === "fsedit") {
           await this.onEditAccept({
@@ -2092,6 +2539,9 @@ export function installToolCallCards() {
       const from = typeof payload?.from === "number" ? payload.from : 0;
       const to = typeof payload?.to === "number" ? payload.to : this.view.state.doc.length;
       if (userStartLine == null && to <= from) return;
+      // #region debug-point B:batch-revert-entry
+      fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"B",location:"extensions/dev.tools/tool-calls.js:2500",msg:"[DEBUG] onBatchRevert entered",data:{panelId:this.panelId,visibleSessionId:this.getVisibleSessionId?.() || null,payloadSessionId:payload?.sessionId || null,payloadPanelId:payload?.panelId || null,userStartLine,from,to},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       let items = [];
       try {
         const fieldVal = this.view.state.field(toolInlineField);
@@ -2120,10 +2570,16 @@ export function installToolCallCards() {
         } catch {}
       }
       if (!items.length) {
+        // #region debug-point C:batch-revert-empty
+        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"C",location:"extensions/dev.tools/tool-calls.js:2533",msg:"[DEBUG] onBatchRevert found no matching items",data:{userStartLine,from,to,panelId:this.panelId,visibleSessionId:this.getVisibleSessionId?.() || null},ts:Date.now()})}).catch(()=>{});
+        // #endregion
         notify("当前消息没有可处理的工具调用", { type: "info", duration: 3000 });
         return;
       }
       items.sort((a, b) => b.from - a.from);
+      // #region debug-point C:batch-revert-items
+      fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"C",location:"extensions/dev.tools/tool-calls.js:2537",msg:"[DEBUG] onBatchRevert matched items",data:{count:items.length,items:items.map(it=>({id:String(it.id||""),name:it.name,from:it.from,to:it.to,userStartLine:it.userStartLine ?? null,path:it.args?.path ?? null}))},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       for (const it of items) {
         if (it.name === "edit" || it.name === "fsedit") {
           await this.onEditRevert({
@@ -2142,22 +2598,49 @@ export function installToolCallCards() {
         }
       }
     };
-    onClear = () => {
+    onClear = (payload) => {
+      if (payload?.panelId && payload.panelId !== this.panelId) {
+        debugChatCards("clear.skipPanel", {
+          panelId: this.panelId,
+          payloadPanelId: payload.panelId,
+          sessionId: payload?.sessionId,
+          stats: debugToolFieldStats(this.view)
+        });
+        return;
+      }
+      if (!this.shouldHandleScopedPayload(payload)) return;
       this.view.dispatch({ effects: [clearAll.of({})] });
       this.snapshot();
     };
+    onSnapshot = (payload = {}) => {
+      if (payload?.panelId && payload.panelId !== this.panelId) {
+        debugChatCards("snapshot.skipPanel", {
+          panelId: this.panelId,
+          payloadPanelId: payload.panelId,
+          sessionId: payload?.sessionId,
+          stats: debugToolFieldStats(this.view)
+        });
+        return;
+      }
+      if (!this.shouldHandleScopedPayload(payload)) return;
+      this.snapshot();
+    };
     onSessionChanged = () => {
-      const panelMgr = window.zion?.panelManager;
-      const mySessionId = panelMgr?.getPanel(this.panelId)?.activeTabId || null;
-      if (mySessionId && mySessionId !== this.sessionId) {
-        this.sessionId = mySessionId;
-        try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
-        this.runActive = false;
-        this.anchorPos = this.view.state.doc.length;
+      const boundSessionId = getViewSessionId(this.view);
+      debugChatCards("session.changed", {
+        panelId: this.panelId,
+        prevSessionId: this.sessionId,
+        boundSessionId,
+        stats: debugToolFieldStats(this.view)
+      });
+      if (boundSessionId) {
+        this.sessionId = boundSessionId;
         this.loadToolActions();
-        this.snapshot();
-      } else if (!mySessionId && this.sessionId) {
+        return;
+      }
+      if (this.sessionId) {
         this.sessionId = null;
+        this.mirrorToolCalls.clear();
         try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
         this.runActive = false;
         this.anchorPos = this.view.state.doc.length;
@@ -2169,7 +2652,18 @@ export function installToolCallCards() {
       if (payload?.sessionId && payload.sessionId !== sid) return;
       requestAnimationFrame(() => {
         try {
-          const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+          if (this.mirrorToolCalls.size) {
+            this.attachPendingMirrorToolCalls();
+            if (this.mirrorToolCalls.size) {
+              debugChatCards("toolsUpdated.deferRestoreForPendingMirror", {
+                panelId: this.panelId,
+                sessionId: sid,
+                pending: this.mirrorToolCalls.size
+              });
+              return;
+            }
+          }
+          const ann = getSessionAnnotations(sid);
           const list = Array.isArray(ann.tools) ? ann.tools : [];
           if (!list.length) return;
           this.onRestore({ items: list, panelId: this.panelId, __fromToolsUpdated: true });
@@ -2179,114 +2673,136 @@ export function installToolCallCards() {
     onRestore = (payload) => {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
-      if (payload?.panelId && payload.panelId !== this.panelId) return;
+      if (payload?.panelId && payload.panelId !== this.panelId) {
+        debugChatCards("restore.skipPanel", { panelId: this.panelId, payloadPanelId: payload.panelId, sessionId: payload?.sessionId, count: list.length });
+        return;
+      }
+      const visibleSessionId = this.getVisibleSessionId();
+      if (!visibleSessionId) {
+        debugChatCards("restore.skipNoVisibleSession", {
+          panelId: this.panelId,
+          payloadPanelId: payload?.panelId,
+          payloadSessionId: payload?.sessionId,
+          count: list.length,
+          stats: debugToolFieldStats(this.view)
+        });
+        return;
+      }
+      if (payload?.sessionId && payload.sessionId !== visibleSessionId) {
+        debugChatCards("restore.skipSession", { panelId: this.panelId, visibleSessionId, payloadSessionId: payload.sessionId, count: list.length });
+        return;
+      }
+      const restoreSessionId = visibleSessionId;
+      this.sessionId = restoreSessionId;
+      debugChatCards("restore.start", { panelId: this.panelId, sessionId: restoreSessionId, count: list.length, docLength: this.view.state.doc.length, fromToolsUpdated: !!payload?.__fromToolsUpdated, stats: debugToolFieldStats(this.view) });
+      if (!String(this.view.state.doc.toString() || "").trim()) {
+        debugChatCards("restore.skipEmptyDoc", {
+          panelId: this.panelId,
+          sessionId: restoreSessionId,
+          count: list.length,
+          stats: debugToolFieldStats(this.view)
+        });
+        return;
+      }
       try {
-        const sid = this.sessionId;
-        if (sid) window.zion?.state?.set(`sessions.pendingRestore.tools.${sid}`, null);
+        const sid = restoreSessionId;
+        if (sid) clearPendingRestore(sid, "tools");
       } catch {}
 
-      let deletedSet = new Set();
-      try {
-        const sid = this.sessionId;
-        const ann = sid ? (window.zion?.state?.get(`sessions.annotations.${sid}`) || {}) : {};
-        const del = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [];
-        deletedSet = new Set(del);
-      } catch {}
-
-      // 扫描文档寻找所有“调用 xxx”锚点，用于位置校准
       const doc = this.view.state.doc;
       const docLen = doc.length;
       const docString = doc.toString();
-      const anchors = [];
-      const regex = /调用\s+([^\n]+)/g;
-      let match;
-      while ((match = regex.exec(docString)) !== null) {
-        if (match[0].length > 300) continue; // 忽略过长的异常行
-        anchors.push({
+      let deletedIds = [];
+      try {
+        const sid = restoreSessionId;
+        const ann = sid ? getSessionAnnotations(sid) : {};
+        deletedIds = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [];
+      } catch {}
+      const anchors = buildRegexAnchors(docString, /调用\s+([^\n]+)/g, (match) => {
+        if (match[0].length > 300) return null;
+        return {
           from: match.index,
           to: match.index + match[0].length,
           text: match[0],
-          name: match[1].trim(),
-          occupied: false
-        });
-      }
+          name: match[1].trim()
+        };
+      });
 
       const batchedEffects = [];
       const batchedToggles = [];
+      debugChatCards("restore.anchors", { panelId: this.panelId, sessionId: restoreSessionId, items: list.length, anchors: anchors.length });
       let existingItems = new Map();
       try {
         const fieldVal = this.view.state.field(toolInlineField);
         if (fieldVal?.items) fieldVal.items.forEach((it, id) => existingItems.set(String(id), it));
       } catch {}
-      const itemsToProcess = list.filter(it => !deletedSet.has(it?.id));
-      const processedIds = new Set();
+      const itemsToProcess = filterDeletedItems(list, deletedIds);
+      debugChatCards("restore.inputs", {
+        panelId: this.panelId,
+        sessionId: restoreSessionId,
+        incomingIds: list.map(it => it?.id).filter(Boolean).map(String),
+        deletedIds,
+        itemsToProcess: itemsToProcess.length,
+        existingIds: [...existingItems.keys()],
+        anchorPreview: anchors.slice(0, 8).map(a => ({ from: a.from, to: a.to, name: a.name }))
+      });
 
       // Phase 0: reconcile already-mounted items, avoid restoring or toggling them twice
-      for (const it of itemsToProcess) {
-        const id = String(it?.id || "");
-        if (!id) continue;
-        const mounted = existingItems.get(id);
-        if (!mounted) continue;
-        processedIds.add(id);
-        if (it.result != null && (mounted.result !== it.result || mounted.ok !== it.ok)) {
-          batchedEffects.push(updateResult.of({ id, result: it.result, ok: it.ok }));
+      const processedIds = reconcileMountedItems({
+        items: itemsToProcess,
+        existingItems,
+        onMounted: (it, mounted) => {
+          const id = String(it?.id || "");
+          if (it.result != null && (mounted.result !== it.result || mounted.ok !== it.ok)) {
+            batchedEffects.push(updateResult.of({ id, result: it.result, ok: it.ok }));
+          }
+          if (!!it.expanded && !mounted.expanded) {
+            batchedToggles.push(id);
+          }
         }
-        if (!!it.expanded && !mounted.expanded) {
-          batchedToggles.push(id);
-        }
-      }
+      });
 
       // Phase 1: 精确位置匹配 (优先)
-      for (const it of itemsToProcess) {
-        if (processedIds.has(String(it?.id || ""))) continue;
-        const expected = `调用 ${it.name}`;
-        if (typeof it.from === "number" && typeof it.to === "number" && it.from >= 0 && it.to <= docLen && it.from < it.to) {
-          const text = doc.sliceString(it.from, it.to);
-          if (text === expected) {
-            // 标记锚点被占用
-            const anchor = anchors.find(a => a.from === it.from && a.to === it.to && !a.occupied);
-            if (anchor) anchor.occupied = true;
-            
-            batchedEffects.push(addInline.of({ from: it.from, to: it.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null }));
-            if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
-            if (it.expanded) batchedToggles.push(it.id);
-            processedIds.add(it.id);
-          }
-        }
-      }
-
-      // Phase 2: 模糊/最近位置匹配 (应对文本偏移)
-      for (const it of itemsToProcess) {
-        if (processedIds.has(it.id)) continue;
-
-        let bestAnchor = null;
-        let minDist = Infinity;
-        // 寻找同名且未占用的最近锚点
-        for (const anchor of anchors) {
-          if (anchor.occupied) continue;
-          if (anchor.name !== it.name) continue;
-          const dist = Math.abs(anchor.from - (it.from || 0));
-          if (dist < minDist) {
-            minDist = dist;
-            bestAnchor = anchor;
-          }
-        }
-
-        if (bestAnchor) {
-          bestAnchor.occupied = true;
-          // 使用新发现的位置
-          batchedEffects.push(addInline.of({ from: bestAnchor.from, to: bestAnchor.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null }));
+      reconcileExactAnchors({
+        items: itemsToProcess,
+        processedIds,
+        anchors,
+        isExactMatch: (it, anchor) => {
+          if (typeof it.from !== "number" || typeof it.to !== "number") return false;
+          if (it.from < 0 || it.to > docLen || it.from >= it.to) return false;
+          return anchor.from === it.from && anchor.to === it.to && doc.sliceString(it.from, it.to) === `调用 ${it.name}`;
+        },
+        onMatch: (it, anchor) => {
+          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null, sessionId: restoreSessionId }));
           if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
           if (it.expanded) batchedToggles.push(it.id);
-          processedIds.add(it.id);
-          
-          // 更新 item 位置以便 snapshot
-          it.from = bestAnchor.from;
-          it.to = bestAnchor.to;
         }
-      }
+      });
+
+      // Phase 2: 模糊/最近位置匹配 (应对文本偏移)
+      reconcileNearestAnchors({
+        items: itemsToProcess,
+        processedIds,
+        anchors,
+        canUseAnchor: (it, anchor) => anchor.name === it.name,
+        onMatch: (it, anchor) => {
+          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, name: it.name, args: it.args, userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null, sessionId: restoreSessionId }));
+          if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
+          if (it.expanded) batchedToggles.push(it.id);
+          it.from = anchor.from;
+          it.to = anchor.to;
+        }
+      });
 
       // 批量应用 Phase 1 & 2 的效果
+      debugChatCards("restore.plan", {
+        panelId: this.panelId,
+        sessionId: restoreSessionId,
+        processedBeforeFallback: processedIds.size,
+        batchedEffects: batchedEffects.length,
+        batchedToggles: batchedToggles.length,
+        needFallback: itemsToProcess.filter(it => !processedIds.has(it.id)).map(it => String(it?.id || ""))
+      });
       if (batchedEffects.length) this.view.dispatch({ effects: batchedEffects });
       if (batchedEffects.length) {
         const lastAddInline = [...batchedEffects].reverse().find((eff) => eff?.is?.(addInline));
@@ -2310,20 +2826,21 @@ export function installToolCallCards() {
 
         const name = it.name || "tool";
         // 重新获取 doc，因为前面的 dispatch 可能没改变 doc (effects only)，但在 Phase 3 循环中我们会修改 doc
-        const docNow = this.view.state.doc;
-        const pos = findAssistantBlockEnd(this.view);
-        const prevChar = pos > 0 ? docNow.sliceString(pos - 1, pos) : "";
-        const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-        const text = `${prefix}调用 ${name}\n`;
-        const start = pos + prefix.length;
-        const end = start + (`调用 ${name}`).length;
-        const userStartLine = typeof it.userStartLine === "number" ? it.userStartLine : findPrevRoleStartLine(docNow, start, "user");
+        const plan = planAssistantMarkerInsertion({
+          docText: this.view.state.doc.toString(),
+          markerText: `调用 ${name}`,
+          trailingNewlines: 1
+        });
+        const userStartLine = typeof it.userStartLine === "number"
+          ? it.userStartLine
+          : findPrevRoleStartLine(this.view.state.doc, plan.markerFrom, "user");
 
         this.view.dispatch({
-          changes: { from: pos, insert: text },
-          effects: [addInline.of({ from: start, to: end, id: it.id, name, args: it.args, userStartLine })]
+          changes: { from: plan.insertPos, insert: plan.insertText },
+          annotations: Transaction.userEvent.of("zion.cardRestore"),
+          effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: it.id, name, args: it.args, userStartLine, sessionId: restoreSessionId })]
         });
-        scheduleRevealToolContent(this.view, { id: it.id, pos: end });
+        scheduleRevealToolContent(this.view, { id: it.id, pos: plan.markerTo });
         
         if (it.result != null) {
           this.view.dispatch({ effects: [updateResult.of({ id: it.id, result: it.result, ok: it.ok })] });
@@ -2333,16 +2850,39 @@ export function installToolCallCards() {
         }
         
         // 更新 item 位置
-        it.from = start;
-        it.to = end;
+        it.from = plan.markerFrom;
+        it.to = plan.markerTo;
         
         processedIds.add(it.id);
       }
 
 
       this.snapshot();
+      debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
+      requestAnimationFrame(() => {
+        try {
+          const fieldVal = this.view.state.field(toolInlineField);
+          let fieldCount = 0;
+          let expandedCount = 0;
+          fieldVal?.items?.forEach?.((it) => {
+            fieldCount += 1;
+            if (it?.expanded) expandedCount += 1;
+          });
+          debugChatCards("restore.domCheck", {
+            panelId: this.panelId,
+            sessionId: restoreSessionId,
+            fieldCount,
+            expandedCount,
+            inlineDom: this.view.dom.querySelectorAll(".zion-tool-call-inline").length,
+            cardDom: this.view.dom.querySelectorAll(".zion-tool-call-card").length,
+            viewportFrom: this.view.viewport?.from,
+            viewportTo: this.view.viewport?.to
+          });
+        } catch {}
+      });
     };
     destroy() {
+      try { this.mirrorToolCalls.clear(); } catch {}
       for (const d of this.disps) { try { d?.dispose?.(); } catch {} }
       try { if (this.selRaf) window.cancelAnimationFrame(this.selRaf); } catch {}
     }

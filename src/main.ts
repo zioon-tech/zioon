@@ -11,6 +11,8 @@ import { initWorkbench } from "./ui/workbench/workbench";
 import { initCommandPalette } from "./ui/workbench/commandPalette";
 import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
+import { createChatAnnotationsApi } from "./chat/annotations";
+import { SessionRuntime } from "./session/runtime";
 
 
 // ---------- 自动保存 / 恢复 ----------
@@ -95,9 +97,29 @@ type PanelTabDragState = {
 
 const PANEL_TAB_DND_MIME = "application/x-zion-panel-tab";
 let panelTabDragState: PanelTabDragState | null = null;
+const panelTabVisitHistory = new Map<string, string[]>();
 type PanelDropSide = "center" | "left" | "right" | "up" | "down";
 let panelDropPreviewEl: HTMLDivElement | null = null;
 let panelDropPreviewLabelEl: HTMLDivElement | null = null;
+
+function notePanelTabVisit(panelId: string | null | undefined, tabId: string | null | undefined) {
+  if (!panelId || !tabId) return;
+  const prev = panelTabVisitHistory.get(panelId) || [];
+  panelTabVisitHistory.set(panelId, [tabId, ...prev.filter((id) => id !== tabId)].slice(0, 32));
+}
+
+function pickPreviousVisitedPanelTab(
+  panelId: string,
+  removedTabId: string,
+  remainingTabs: Array<{ id: string }>,
+  fallbackIndex: number
+): string | null {
+  const remainingIds = new Set(remainingTabs.map((tab) => tab.id));
+  const history = panelTabVisitHistory.get(panelId) || [];
+  const fromHistory = history.find((id) => id !== removedTabId && remainingIds.has(id));
+  if (fromHistory) return fromHistory;
+  return remainingTabs[Math.min(fallbackIndex, remainingTabs.length - 1)]?.id || remainingTabs[remainingTabs.length - 1]?.id || null;
+}
 
 function ensurePanelDropPreview() {
   if (!panelDropPreviewEl) {
@@ -205,7 +227,7 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
     const tree = treeFromState && treeFromState.type === "folder" ? treeFromState : safeParse<any>(localStorage.getItem("zion.sessions.tree"), null);
     const meta = window.zion.state.get<any>(`sessions.meta.${sessionId}`);
     const sessionTitle = String(meta?.title || "").trim() || sessionId;
-    if (!tree) return `Sessions / ${sessionTitle}`;
+    if (!tree) return sessionTitle;
 
     const parts: string[] = [sessionTitle];
     let curId: string | null = sessionId;
@@ -217,8 +239,6 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
       parts.unshift(String(parent.title || "Folder").trim() || "Folder");
       curId = parent.id;
     }
-
-    parts.unshift(String(tree?.title || "Sessions").trim() || "Sessions");
 
     return parts.join(" / ");
   };
@@ -317,7 +337,10 @@ function mountEditorHeaderNewSessionButton(pathEl: HTMLElement) {
       } catch {}
       try {
         // 获取当前会话的父级ID
-        const curId = window.zion.state.get<string>("sessions.currentId");
+        const panelId = window.zion.panels?.getActivePanelId?.() || undefined;
+        const curId = panelId
+          ? getPanelActiveSessionId(panelId)
+          : window.zion.state.get<string>("sessions.currentId");
         let parentId: string | undefined = undefined;
         
         if (curId) {
@@ -356,7 +379,7 @@ function mountEditorHeaderNewSessionButton(pathEl: HTMLElement) {
         }
         
         // 执行创建新会话命令，指定父级为当前会话的父级
-        window.zion.commands.executeCommand("zion.sessions.new", { parentId });
+        window.zion.commands.executeCommand("zion.sessions.new", { parentId, panelId });
       } catch {}
     };
 
@@ -418,6 +441,13 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
     if (existing && existingNewBtn && existingDropdownBtn) return;
 
     const STORAGE_KEY = "zion.ui.editorSessionTabs";
+    const getOwningPanelId = (): string | null => {
+      try {
+        return containerEl.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null;
+      } catch {
+        return null;
+      }
+    };
 
     const safeParse = <T,>(raw: string | null, fallback: T): T => {
       if (!raw) return fallback;
@@ -492,7 +522,10 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
 
     const getParentIdForNewSession = (): string | undefined => {
       try {
-        const curId = window.zion.state.get<string>("sessions.currentId");
+        const panelId = getOwningPanelId() || window.zion.panels?.getActivePanelId?.() || undefined;
+        const curId = panelId
+          ? getPanelActiveSessionId(panelId)
+          : window.zion.state.get<string>("sessions.currentId");
         if (!curId) return undefined;
         const tree = window.zion.state.get<any>("sessions.treeMem");
         if (!tree || tree.type !== "folder") return undefined;
@@ -536,7 +569,8 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
         } catch {}
         try {
           const parentId = getParentIdForNewSession();
-          window.zion.commands.executeCommand("zion.sessions.new", { parentId });
+          const panelId = getOwningPanelId() || window.zion.panels?.getActivePanelId?.() || undefined;
+          window.zion.commands.executeCommand("zion.sessions.new", { parentId, panelId });
         } catch {}
       };
       containerEl.insertBefore(newBtn, containerEl.firstChild);
@@ -818,7 +852,11 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
         suppressEnsureActiveOnce(id);
         if (nextId) {
           try {
-            window.zion.commands.executeCommand("zion.sessions.switch", nextId);
+            const panelId = getOwningPanelId();
+            window.zion.commands.executeCommand(
+              "zion.sessions.switch",
+              panelId ? { id: nextId, panelId, previousSessionId: id } : nextId
+            );
           } catch {}
         }
       }
@@ -827,7 +865,17 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
 
     const activateTab = (id: string) => {
       try {
-        window.zion.commands.executeCommand("zion.sessions.switch", id);
+        const panelId = getOwningPanelId();
+        if (panelId && getPanelActiveSessionId(panelId) === id) {
+          try { window.zion?.panels?.focus?.(panelId); } catch {}
+          try { window.zion?.panels?.openSession?.(panelId, id, { focus: true, forceReload: true }); } catch {}
+          return;
+        }
+        if (panelId && typeof window.zion?.panels?.openSession === "function") {
+          window.zion.panels.openSession(panelId, id, { focus: true });
+        } else {
+          window.zion.commands.executeCommand("zion.sessions.switch", id);
+        }
       } catch {}
     };
 
@@ -1229,6 +1277,16 @@ function getEditorHeaderMenuRegistry() {
   return registry;
 }
 
+function exposeEditorHeaderMenuApi() {
+  try {
+    const registry = getEditorHeaderMenuRegistry();
+    (window.zion as any).editorHeaderMenu = {
+      register: (item: EditorHeaderMenuItem) => registry.register(item),
+      list: () => registry.list()
+    };
+  } catch {}
+}
+
 function mountEditorHeaderSettingsMenu(pathEl: HTMLElement) {
   try {
     const headerEl = pathEl.parentElement;
@@ -1449,7 +1507,7 @@ function mountEditorHeaderSettingsMenu(pathEl: HTMLElement) {
   } catch {}
 }
 
-function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement) {
+function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement, panelId?: string | null) {
   try {
     const headerEl = pathEl.parentElement;
     if (!headerEl) return;
@@ -1523,11 +1581,22 @@ function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement) {
         menu.appendChild(row);
       };
 
+      const resolveHeaderSessionId = () => {
+        if (panelId) return getPanelActiveSessionId(panelId) || null;
+        return window.zion.state.get<string>("sessions.currentId") || null;
+      };
+
       addItem("Rename…", () => {
-        try { window.zion.commands.executeCommand("zion.sessions.rename"); } catch {}
+        try {
+          const id = resolveHeaderSessionId();
+          window.zion.commands.executeCommand("zion.sessions.rename", { id, panelId: panelId || null });
+        } catch {}
       });
       addItem("Auto Rename (AI)", () => {
-        try { window.zion.commands.executeCommand("zion.sessions.autoRename"); } catch {}
+        try {
+          const id = resolveHeaderSessionId();
+          window.zion.commands.executeCommand("zion.sessions.autoRename", { id, panelId: panelId || null });
+        } catch {}
       });
 
       positionMenu();
@@ -1576,6 +1645,148 @@ function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement) {
   } catch {}
 }
 
+function mountEditorHeaderSplitMenuButton(pathEl: HTMLElement) {
+  try {
+    const headerEl = pathEl.parentElement;
+    if (!headerEl) return;
+
+    let btn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-split-menu-button='1']");
+    const isNew = !btn;
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+    }
+
+    btn.className = "zion-editor-header-action is-icon zion-editor-split-menu-button";
+    btn.innerHTML = '<svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9Zm1.5-.25a.25.25 0 0 0-.25.25v9c0 .14.11.25.25.25h4.25v-9.5H3.5Zm5.5 9.5h3.5c.14 0 .25-.11.25-.25v-9a.25.25 0 0 0-.25-.25H9v9.5Z"/></svg>';
+    btn.title = "分屏";
+    btn.setAttribute("aria-label", "分屏");
+    btn.setAttribute("data-zion-editor-split-menu-button", "1");
+
+    let menuEl: HTMLDivElement | null = null;
+    let cleanup: (() => void) | null = null;
+
+    const resolvePanelId = () => {
+      try {
+        return pathEl.closest("[data-panel-id]")?.getAttribute("data-panel-id")
+          || window.zion?.panels?.getActivePanelId?.()
+          || "panel-0";
+      } catch {
+        return "panel-0";
+      }
+    };
+
+    const closeMenu = () => {
+      try { cleanup?.(); } catch {}
+      cleanup = null;
+      try { menuEl?.remove(); } catch {}
+      menuEl = null;
+    };
+
+    const positionMenu = () => {
+      if (!menuEl) return;
+      const r = btn!.getBoundingClientRect();
+      const mw = menuEl.offsetWidth || 180;
+      const mh = menuEl.offsetHeight || 96;
+      const pad = 8;
+      const vw = window.innerWidth || 0;
+      const vh = window.innerHeight || 0;
+      let left = Math.round(r.right - mw);
+      let top = Math.round(r.bottom + 6);
+      left = Math.max(pad, Math.min(left, Math.max(pad, vw - mw - pad)));
+      if (top + mh + pad > vh) {
+        const above = Math.round(r.top - 6 - mh);
+        if (above >= pad) top = above;
+      }
+      top = Math.max(pad, Math.min(top, Math.max(pad, vh - mh - pad)));
+      menuEl.style.left = `${left}px`;
+      menuEl.style.top = `${top}px`;
+    };
+
+    const split = (direction: "horizontal" | "vertical") => {
+      const panelId = resolvePanelId();
+      try { window.zion?.panels?.focus?.(panelId); } catch {}
+      try { window.zion?.panels?.split?.(direction, panelId); } catch {}
+    };
+
+    const openMenu = () => {
+      if (menuEl) return;
+      const menu = document.createElement("div");
+      menu.className = "zion-context-menu zion-editor-header-session-menu zion-editor-header-split-menu";
+      menu.style.position = "fixed";
+      menu.style.zIndex = "99999";
+      menu.style.minWidth = "180px";
+      document.body.appendChild(menu);
+      menuEl = menu;
+
+      const addItem = (label: string, title: string, onClick: () => void) => {
+        const row = document.createElement("div");
+        row.className = "zion-context-menu-row";
+        const it = document.createElement("button");
+        it.className = "zion-context-menu-item";
+        it.type = "button";
+        it.textContent = label;
+        it.title = title;
+        it.onclick = (e) => {
+          try { e.stopPropagation(); } catch {}
+          try { onClick(); } catch {}
+          closeMenu();
+        };
+        row.appendChild(it);
+        menu.appendChild(row);
+      };
+
+      addItem("向右分屏", "在右侧打开当前会话的新分屏", () => split("horizontal"));
+      addItem("向下分屏", "在下方打开当前会话的新分屏", () => split("vertical"));
+
+      positionMenu();
+
+      const escHandler = (ev: KeyboardEvent) => {
+        if (ev.key === "Escape") closeMenu();
+      };
+      const clickAway = (ev: MouseEvent) => {
+        try {
+          const t = ev.target as Node | null;
+          if (!t) return closeMenu();
+          if (menuEl && menuEl.contains(t)) return;
+          if (btn && btn.contains(t)) return;
+          closeMenu();
+        } catch {
+          closeMenu();
+        }
+      };
+      const resizeHandler = () => {
+        try { positionMenu(); } catch {}
+      };
+
+      document.addEventListener("keydown", escHandler);
+      document.addEventListener("mousedown", clickAway, true);
+      window.addEventListener("resize", resizeHandler, { passive: true });
+
+      cleanup = () => {
+        document.removeEventListener("keydown", escHandler);
+        document.removeEventListener("mousedown", clickAway, true);
+        window.removeEventListener("resize", resizeHandler as any);
+      };
+    };
+
+    btn.onclick = (e) => {
+      try {
+        e.stopPropagation();
+        e.preventDefault();
+      } catch {}
+      if (menuEl) closeMenu();
+      else openMenu();
+    };
+
+    if (isNew) {
+      const settingsBtn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-settings-menu-button='1']");
+      if (settingsBtn) headerEl.insertBefore(btn, settingsBtn);
+      else headerEl.appendChild(btn);
+    }
+  } catch {}
+}
+
 function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, getEditor: () => any) {
   try {
     const headerEl = pathEl.parentElement;
@@ -1619,6 +1830,7 @@ function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, get
         const sel = String(ed?.getSelection?.() || "");
         window.zion.chat?.run?.({
           sessionId: targetSessionId || undefined,
+          panelId,
           editor: ed || null,
           useSelection: !!sel.trim()
         });
@@ -1643,7 +1855,12 @@ function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, get
   } catch {}
 }
 
-function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, panelManager: PanelManager) {
+function mountPanelSessionTabsBar(
+  containerEl: HTMLElement,
+  panelId: string,
+  panelManager: PanelManager,
+  opts?: { onTabRemovedFromPanel?: (panelId: string, tabId: string) => void }
+) {
   try {
     let newBtn = containerEl.querySelector<HTMLButtonElement>("button[data-zion-panel-tabs-new-session-button='1']");
     let dropdownBtn = containerEl.querySelector<HTMLButtonElement>("button[data-zion-panel-tabs-dropdown-button='1']");
@@ -1663,7 +1880,7 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
           e.preventDefault();
         } catch {}
         try { window.zion.panels?.focus?.(panelId); } catch {}
-        try { window.zion.commands.executeCommand("zion.sessions.new"); } catch {}
+        try { window.zion.commands.executeCommand("zion.sessions.new", { panelId }); } catch {}
       };
       containerEl.insertBefore(newBtn, containerEl.firstChild);
     }
@@ -1863,6 +2080,17 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
     let dropPosition: "before" | "after" | null = null;
     let panelDropSide: PanelDropSide | null = null;
     let lastDragEndAt = 0;
+    const updateTabDensity = () => {
+      try {
+        if (!root) return;
+        const count = root.querySelectorAll(".zion-editor-session-tab").length;
+        const width = root.clientWidth || root.getBoundingClientRect().width || 0;
+        const avg = count > 0 ? width / count : width;
+        const density = avg < 82 ? "crowded" : avg < 132 ? "compact" : "comfortable";
+        root.dataset.density = density;
+        root.dataset.tabCount = String(count);
+      } catch {}
+    };
 
     const emitTabsChanged = (changedPanelId: string) => {
       try { window.zion.events.emit("panel/tabsChanged", { panelId: changedPanelId }); } catch {}
@@ -1889,14 +2117,15 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
       }
       const nextTabs = current.tabs.filter((item) => item.id !== targetTabId);
       const wasActive = current.activeTabId === targetTabId;
+      const nextId = wasActive
+        ? pickPreviousVisitedPanelTab(targetPanelId, targetTabId, nextTabs, idx)
+        : null;
       current.tabs = nextTabs;
+      try { opts?.onTabRemovedFromPanel?.(targetPanelId, targetTabId); } catch {}
       if (wasActive) {
-        const nextId = nextTabs[Math.min(idx, nextTabs.length - 1)]?.id || nextTabs[nextTabs.length - 1]?.id || null;
-        current.activeTabId = nextId;
         if (nextId) {
-          panelManager.activateTab(targetPanelId, nextId);
           try {
-            window.zion.commands.executeCommand("zion.sessions.switch", { id: nextId, panelId: targetPanelId });
+            window.zion.panels?.openSession?.(targetPanelId, nextId, { focus: true, forceReload: true });
           } catch {}
         }
       }
@@ -1932,16 +2161,20 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
         return null;
       }
     };
-    const focusAndActivatePanelTab = (targetPanelId: string, sessionId: string | null) => {
+    const focusAndActivatePanelTab = (
+      targetPanelId: string,
+      sessionId: string | null,
+      opts?: { focus?: boolean; forceReload?: boolean }
+    ) => {
       if (!sessionId) return false;
-      try { window.zion.panels?.focus?.(targetPanelId); } catch {}
-      panelManager.activateTab(targetPanelId, sessionId);
-      syncActivePanelTabsState(targetPanelId);
-      emitTabsChanged(targetPanelId);
       try {
-        window.zion.commands.executeCommand("zion.sessions.switch", { id: sessionId, panelId: targetPanelId });
-      } catch {}
-      return true;
+        return window.zion.panels?.openSession?.(targetPanelId, sessionId, {
+          focus: opts?.focus !== false,
+          forceReload: !!opts?.forceReload
+        }) !== false;
+      } catch {
+        return false;
+      }
     };
     const moveTabBetweenPanels = (
       sourcePanelId: string,
@@ -1979,13 +2212,13 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
       insertIndex = Math.max(0, Math.min(insertIndex, targetTabs.length));
       targetTabs.splice(insertIndex, 0, movingTab);
       targetPanel.tabs = targetTabs;
-      targetPanel.activeTabId = tabId;
       emitTabsChanged(targetPanelId);
 
       if (sourcePanel.tabs.length <= 1) {
         if (panelManager.listPanels().length > 1) {
           panelManager.closePanel(sourcePanelId);
         } else {
+          try { opts?.onTabRemovedFromPanel?.(sourcePanelId, tabId); } catch {}
           sourcePanel.tabs = [];
           sourcePanel.activeTabId = null;
           emitTabsChanged(sourcePanelId);
@@ -1993,15 +2226,16 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
         }
       } else {
         const nextTabs = sourcePanel.tabs.filter((tab) => tab.id !== tabId);
+        const wasSourceActive = sourcePanel.activeTabId === tabId;
+        const nextSourceId = wasSourceActive
+          ? pickPreviousVisitedPanelTab(sourcePanelId, tabId, nextTabs, fromIndex)
+          : null;
         sourcePanel.tabs = nextTabs;
-        let nextSourceId: string | null = null;
-        if (sourcePanel.activeTabId === tabId) {
-          nextSourceId = nextTabs[Math.min(fromIndex, nextTabs.length - 1)]?.id || nextTabs[nextTabs.length - 1]?.id || null;
-          sourcePanel.activeTabId = nextSourceId;
+        try { opts?.onTabRemovedFromPanel?.(sourcePanelId, tabId); } catch {}
+        if (wasSourceActive) {
           if (nextSourceId) {
-            panelManager.activateTab(sourcePanelId, nextSourceId);
             try {
-              window.zion.commands.executeCommand("zion.sessions.switch", { id: nextSourceId, panelId: sourcePanelId });
+              window.zion.panels?.openSession?.(sourcePanelId, nextSourceId, { focus: false, forceReload: true });
             } catch {}
           }
         }
@@ -2009,7 +2243,7 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
         syncActivePanelTabsState(sourcePanelId);
       }
 
-      focusAndActivatePanelTab(targetPanelId, tabId);
+      focusAndActivatePanelTab(targetPanelId, tabId, { focus: true, forceReload: true });
     };
     const performPanelDrop = (
       drag: PanelTabDragState,
@@ -2102,32 +2336,11 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
       if (!drag) return;
       performPanelDrop(drag, panelId, "center");
     };
-    root.onwheel = (e) => {
-      const ev = e as WheelEvent;
-      if (!root) return;
-      if (root.scrollWidth <= root.clientWidth + 1) return;
-      if (ev.ctrlKey) return;
-      const horizontalGesture = Math.abs(ev.deltaX) > Math.abs(ev.deltaY) + 0.5;
-      if (horizontalGesture) return;
-      const scale = ev.deltaMode === WheelEvent.DOM_DELTA_LINE
-        ? 16
-        : ev.deltaMode === WheelEvent.DOM_DELTA_PAGE
-          ? root.clientWidth
-          : 1;
-      const delta = ev.deltaY * scale * 2.2;
-      if (Math.abs(delta) < 1) return;
-      try { ev.preventDefault(); } catch {}
-      try {
-        root.scrollBy({ left: delta, behavior: "auto" });
-      } catch {
-        root.scrollLeft += delta;
-      }
-    };
-
     try {
       if (!containerEl.dataset.zionPanelTabsDropdownBound) {
         containerEl.dataset.zionPanelTabsDropdownBound = "1";
         window.addEventListener("resize", hideDropdownMenu);
+        window.addEventListener("resize", updateTabDensity);
         window.addEventListener(
           "scroll",
           (e) => {
@@ -2148,6 +2361,14 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
           hideDropdownMenu();
         });
       }
+    } catch {}
+    try {
+      const anyContainer = containerEl as any;
+      anyContainer.__zionPanelTabsResizeObserver?.disconnect?.();
+      const ro = new ResizeObserver(updateTabDensity);
+      ro.observe(containerEl);
+      ro.observe(root);
+      anyContainer.__zionPanelTabsResizeObserver = ro;
     } catch {}
 
     const render = (opts?: { revealActiveTab?: boolean }) => {
@@ -2213,6 +2434,22 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
           if (panelTabDragState || Date.now() - lastDragEndAt < 150) return;
           focusAndActivatePanelTab(panelId, tab.id);
         };
+        tabEl.onauxclick = (e) => {
+          if (e.button === 1) {
+            try {
+              e.preventDefault();
+              e.stopPropagation();
+            } catch {}
+            closeTabInPanel(panelId, tab.id);
+          }
+        };
+        tabEl.oncontextmenu = (e) => {
+          try {
+            e.preventDefault();
+            e.stopPropagation();
+          } catch {}
+          showDropdownMenu();
+        };
         tabEl.ondragstart = (e) => {
           const ev = e as DragEvent;
           panelTabDragState = { sourcePanelId: panelId, tabId: tab.id };
@@ -2271,7 +2508,9 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
         tabEl.appendChild(closeBtn);
         root.appendChild(tabEl);
       }
+      updateTabDensity();
       requestAnimationFrame(() => {
+        updateTabDensity();
         try {
           if (shouldRevealActiveTab) {
             const viewportEl = containerEl.querySelector<HTMLElement>("[data-zion-panel-session-tabs-viewport='1']");
@@ -2286,80 +2525,6 @@ function mountPanelSessionTabsBar(containerEl: HTMLElement, panelId: string, pan
             }
           }
         } catch {}
-        try {
-          const viewportEl = containerEl.querySelector<HTMLElement>("[data-zion-panel-session-tabs-viewport='1']");
-          if (viewportEl) {
-            const xScrollable = root.scrollWidth > root.clientWidth + 1;
-            viewportEl.classList.toggle("is-x-scroll", xScrollable);
-          }
-        } catch {}
-        // #region debug-point panel-tabs-vertical-centering
-        try {
-          const viewportEl =
-            containerEl.querySelector<HTMLElement>("[data-zion-panel-session-tabs-viewport='1']") ||
-            containerEl.querySelector<HTMLElement>("[data-zion-editor-session-tabs-viewport='1']");
-          const tabsBarEl = containerEl.closest(".zion-editor-tabsbar") as HTMLElement | null;
-          const rootEl = root as HTMLElement;
-          const getNum = (v: string | null) => {
-            const n = v ? Number(String(v).replace("px", "").trim()) : NaN;
-            return Number.isFinite(n) ? n : null;
-          };
-          const cssScrollbar = getComputedStyle(document.documentElement).getPropertyValue("--ui-scrollbar-size") || null;
-          const rootCS = getComputedStyle(rootEl);
-          const vpCS = viewportEl ? getComputedStyle(viewportEl) : null;
-          const rRect = rootEl.getBoundingClientRect();
-          const vRect = viewportEl ? viewportEl.getBoundingClientRect() : null;
-          const bRect = tabsBarEl ? tabsBarEl.getBoundingClientRect() : null;
-          fetch("http://127.0.0.1:7777/event", {
-            method: "POST",
-            body: JSON.stringify({
-              sessionId: "panel-tabs-vertical-centering",
-              runId: "pre-fix",
-              hypothesisId: "measure-layout",
-              location: "src/main.ts:mountPanelSessionTabsBar:render:raf",
-              msg: "[DEBUG] panel tabs layout metrics",
-              data: {
-                panelId,
-                tabCount: panel.tabs.length,
-                hasHorizontalOverflow: rootEl.scrollWidth > rootEl.clientWidth + 1,
-                cssScrollbarSize: cssScrollbar ? cssScrollbar.trim() : null,
-                cssScrollbarSizeNum: getNum(cssScrollbar),
-                tabsBar: bRect
-                  ? { h: bRect.height, top: bRect.top, bottom: bRect.bottom }
-                  : null,
-                viewport: viewportEl && vRect
-                  ? {
-                      h: vRect.height,
-                      top: vRect.top,
-                      bottom: vRect.bottom,
-                      clientH: viewportEl.clientHeight,
-                      offsetH: viewportEl.offsetHeight,
-                      paddingTop: vpCS ? vpCS.paddingTop : null,
-                      paddingBottom: vpCS ? vpCS.paddingBottom : null,
-                      overflow: vpCS ? `${vpCS.overflowX}/${vpCS.overflowY}` : null
-                    }
-                  : null,
-                root: {
-                  h: rRect.height,
-                  top: rRect.top,
-                  bottom: rRect.bottom,
-                  clientH: rootEl.clientHeight,
-                  offsetH: rootEl.offsetHeight,
-                  scrollH: rootEl.scrollHeight,
-                  scrollW: rootEl.scrollWidth,
-                  clientW: rootEl.clientWidth,
-                  paddingTop: rootCS.paddingTop,
-                  paddingBottom: rootCS.paddingBottom,
-                  boxSizing: rootCS.boxSizing,
-                  alignItems: rootCS.alignItems,
-                  lineHeight: rootCS.lineHeight
-                }
-              },
-              ts: Date.now()
-            })
-          }).catch(() => {});
-        } catch {}
-        // #endregion
         try {
           if (isDropdownOpen()) showDropdownMenu();
         } catch {}
@@ -2386,31 +2551,13 @@ async function bootstrap() {
   const host = document.getElementById("app")!;
   host.innerHTML = "";
 
-  // Measure native scrollbar thickness (0 on overlay-scrollbar systems).
-  // We use this to keep tab content vertically centered even when a horizontal
-  // scrollbar would otherwise consume layout height.
-  try {
-    const probe = document.createElement("div");
-    probe.style.position = "absolute";
-    probe.style.top = "-9999px";
-    probe.style.left = "-9999px";
-    probe.style.width = "120px";
-    probe.style.height = "120px";
-    probe.style.overflow = "scroll";
-    document.body.appendChild(probe);
-    const sbw = probe.offsetWidth - probe.clientWidth;
-    const sbh = probe.offsetHeight - probe.clientHeight;
-    probe.remove();
-    const size = Math.max(0, Math.max(sbw, sbh));
-    document.documentElement.style.setProperty("--ui-scrollbar-size", `${size}px`);
-  } catch {}
-
   const wb = initWorkbench(host);
   const editorContainer = wb.editorHost;
   const editorHeaderPathEl = wb.editorHeaderPathEl;
   const editorTabsBarEl = wb.editorTabsBarEl;
   const editorHeaderEl = editorHeaderPathEl.parentElement as HTMLElement;
   const editorAreaEl = editorContainer.parentElement as HTMLElement;
+  exposeEditorHeaderMenuApi();
 
   const panelsHost = document.createElement("div");
   panelsHost.className = "zion-panels-root";
@@ -2452,12 +2599,38 @@ async function bootstrap() {
       const existing = panelManager.findPanelAtSide(panelId, side);
       return existing || panelManager.splitPanelAt(panelId, side)?.id || null;
     },
-    openSession: (panelId: string, sessionId: string, opts?: { focus?: boolean }) => openSessionInPanel(panelId, sessionId, opts),
+    openSession: (panelId: string, sessionId: string, opts?: { focus?: boolean; forceReload?: boolean }) => openSessionInPanel(panelId, sessionId, opts),
     split: (direction: "horizontal" | "vertical", panelId?: string) => panelManager.splitPanel(panelId, direction)?.id || null,
     splitAt: (side: "left" | "right" | "up" | "down", panelId?: string) => panelManager.splitPanelAt(panelId, side)?.id || null,
     focus: (panelId: string) => panelManager.focusPanel(panelId),
     close: (panelId?: string) => panelManager.closePanel(panelId),
-    getEditor: (panelId: string) => panelManager.getEditor(panelId)
+    getEditor: (panelId: string) => panelManager.getEditor(panelId),
+    getEditorBySession: (panelId: string, sessionId: string) => {
+      const slotEditor = panelEditorSlots.get(panelId)?.get(sessionId)?.proxy || null;
+      if (slotEditor) return slotEditor;
+      const panel = panelManager.getPanel(panelId);
+      return panel?.activeTabId === sessionId ? panelManager.getEditor(panelId) : null;
+    },
+    listEditors: (panelId?: string) => {
+      const entries: Array<{ panelId: string; sessionId: string; editorId: string | null; active: boolean }> = [];
+      const pushPanel = (pid: string) => {
+        const panel = panelManager.getPanel(pid);
+        const activeTabId = panel?.activeTabId || null;
+        const panelTabIds = new Set((panel?.tabs || []).map((tab: any) => tab.id));
+        for (const slot of panelEditorSlots.get(pid)?.values?.() || []) {
+          if (panelTabIds.size > 0 && !panelTabIds.has(slot.sessionId)) continue;
+          entries.push({
+            panelId: pid,
+            sessionId: slot.sessionId,
+            editorId: slot.proxy?.editorId || null,
+            active: activeTabId === slot.sessionId
+          });
+        }
+      };
+      if (panelId) pushPanel(panelId);
+      else for (const panel of panelManager.listPanels()) pushPanel(panel.id);
+      return entries;
+    }
   };
   (window.zion as any).panelManager = panelManager;
   const sessionSync = new SessionSync({
@@ -2466,6 +2639,115 @@ async function bootstrap() {
     listPanels: () => panelManager.listPanels().map((panel) => ({ id: panel.id, activeTabId: panel.activeTabId })),
     getEditor: (panelId: string) => panelManager.getEditor(panelId)
   });
+  const chatAnnotations = createChatAnnotationsApi({
+    state: window.zion.state,
+    events: window.zion.events,
+    commands: window.zion.commands,
+    getSessionMeta: (sessionId: string) => window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", sessionId),
+    getActivePanelId: () => panelManager.getActivePanelId()
+  });
+  (window.zion as any).chatCards = chatAnnotations;
+  let activateCachedEditorSlot: (panelId: string, sessionId: string) => boolean = () => false;
+  let ensureEditorSlotForSession: (panelId: string, sessionId: string, seedText?: string) => any = () => null;
+  const debugPanelSlots = (event: string, payload?: any) => {
+    void event;
+    void payload;
+  };
+  const debugPanelSlotSummary = (panelId: string) => {
+    try {
+      const panel = panelManager.getPanel(panelId);
+      const slots = panelEditorSlots.get(panelId);
+      return {
+        panelId,
+        activeTabId: panel?.activeTabId || null,
+        panelEditorId: (panelManager.getEditor(panelId) as any)?.editorId || null,
+        panelEditorSessionId: (panelManager.getEditor(panelId) as any)?.sessionId || null,
+        slots: [...(slots?.values?.() || [])].map((slot: any) => ({
+          sessionId: slot.sessionId,
+          editorId: slot.proxy?.editorId || null,
+          proxySessionId: slot.proxy?.sessionId || null,
+          coreSessionId: slot.core?.getSessionId?.() || null,
+          loaded: !!slot.loaded,
+          display: slot.hostEl?.style?.display || "",
+          connected: !!slot.core?.view?.dom?.isConnected,
+          docLength: slot.core?.view?.state?.doc?.length || 0,
+          inlineDom: slot.core?.view?.dom?.querySelectorAll?.(".zion-tool-call-inline")?.length || 0,
+          cardDom: slot.core?.view?.dom?.querySelectorAll?.(".zion-tool-call-card")?.length || 0
+        }))
+      };
+    } catch {
+      return { panelId, error: true };
+    }
+  };
+  const sessionRuntime = new SessionRuntime({
+    getActivePanelId: () => panelManager.getActivePanelId(),
+    getPanel: (panelId: string) => panelManager.getPanel(panelId) as any,
+    listPanels: () => panelManager.listPanels() as any,
+    getEditor: (panelId: string) => panelManager.getEditor(panelId),
+    getActiveEditor: () => window.zion.window.activeEditor,
+    getGlobalSessionId: () => window.zion.state.get<string>("sessions.currentId") || null,
+    focusPanel: (panelId: string) => panelManager.focusPanel(panelId),
+    activatePanelTab: (panelId: string, sessionId: string) => panelManager.activateTab(panelId, sessionId),
+    syncLegacyEditorTabsState: (panelId: string) => syncLegacyEditorTabsState(panelId),
+    switchSessionDocument: ({ id, panelId, previousSessionId, skipPersistPrevious }) => {
+      debugPanelSlots("switchSessionDocument.start", {
+        id,
+        panelId,
+        previousSessionId,
+        skipPersistPrevious: !!skipPersistPrevious,
+        summary: panelId ? debugPanelSlotSummary(panelId) : null
+      });
+      if (!skipPersistPrevious && previousSessionId) {
+        try { window.zion.commands.executeCommand("zion.sessions.flushPendingSave", previousSessionId); } catch {}
+      }
+      const cachedSlot = panelId ? panelEditorSlots.get(panelId)?.get(id) || null : null;
+      if (panelId && cachedSlot?.loaded && activateCachedEditorSlot(panelId, id)) {
+        debugPanelSlots("switchSessionDocument.cachedSlot", {
+          id,
+          panelId,
+          previousSessionId,
+          summary: debugPanelSlotSummary(panelId)
+        });
+        return true;
+      }
+      if (panelId) ensureEditorSlotForSession(panelId, id);
+      const result = window.zion.commands.executeCommand("zion.sessions.switch", {
+        id,
+        panelId,
+        previousSessionId,
+        skipPersistPrevious: panelId ? true : skipPersistPrevious,
+        __fromPanelRuntime: true
+      });
+      if (panelId) {
+        return Promise.resolve(result).then((ok) => {
+          const slot = panelEditorSlots.get(panelId)?.get(id) || null;
+          if (slot && ok !== false) slot.loaded = true;
+          if (ok === false && previousSessionId) {
+            try { activateCachedEditorSlot(panelId, previousSessionId); } catch {}
+          }
+          debugPanelSlots("switchSessionDocument.commandResult", {
+            id,
+            panelId,
+            ok,
+            loaded: !!slot?.loaded,
+            summary: debugPanelSlotSummary(panelId)
+          });
+          return ok;
+        });
+      }
+      return result;
+    },
+    emit: (topic, payload) => {
+      try { window.zion.events.emit(topic, payload); } catch {}
+    }
+  });
+  (window.zion as any).sessions = {
+    ...((window.zion as any).sessions || {}),
+    runtime: sessionRuntime,
+    resolveContext: (opts?: any) => sessionRuntime.resolveContext(opts || {}),
+    getPanelSessionId: (panelId: string) => sessionRuntime.getPanelSessionId(panelId),
+    isEditorShowingSession: (editor: any, sessionId: string) => sessionRuntime.isEditorShowingSession(editor, sessionId)
+  };
 
   // 初始化插件管理器
   const pluginManager = new PluginManager({
@@ -2474,8 +2756,8 @@ async function bootstrap() {
   });
 
   // 优先读缓存，没有再给默认
-  const cached = loadLastDoc();
   const savedPanelWorkspace = loadPanelWorkspaceSnapshot();
+  const cached = savedPanelWorkspace?.manager ? "" : loadLastDoc();
   const initialDoc =
     cached.trim() ||
     `# Zion Next (CodeMirror 6) - 插件化版本
@@ -2489,15 +2771,156 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
 `;
 
   const core = new EditorCore(editorContainer, initialDoc, "panel-0");
+  try { core.setSessionId(initialSessionId); } catch {}
   panelCores.set("panel-0", core);
   const initialProxy = attachEditor(core, "panel-0");
+  try { initialProxy?.setSessionId?.(initialSessionId); } catch {}
   panelManager.setPanelEditor("panel-0", initialProxy);
   setActiveEditorPanel("panel-0");
   let suspendSessionCurrentSync = false;
+  let restoringPanelWorkspace = false;
   const panelScrollPersistDisposers = new Map<string, () => void>();
+  type EditorSlot = {
+    panelId: string;
+    sessionId: string;
+    core: EditorCore;
+    proxy: any;
+    hostEl: HTMLElement;
+    loaded: boolean;
+  };
+  const panelEditorSlots = new Map<string, Map<string, EditorSlot>>();
+  const createEditorSlotHost = (panelId: string, sessionId: string) => {
+    const hostEl = document.createElement("div");
+    hostEl.className = "zion-editor-slot";
+    hostEl.dataset.panelId = panelId;
+    hostEl.dataset.sessionId = sessionId;
+    hostEl.style.width = "100%";
+    hostEl.style.height = "100%";
+    hostEl.style.minHeight = "0";
+    hostEl.style.display = "none";
+    return hostEl;
+  };
+  const getPanelSlots = (panelId: string) => {
+    let slots = panelEditorSlots.get(panelId);
+    if (!slots) {
+      slots = new Map<string, EditorSlot>();
+      panelEditorSlots.set(panelId, slots);
+    }
+    return slots;
+  };
+  const showOnlyEditorSlot = (panelId: string, sessionId: string) => {
+    const slots = getPanelSlots(panelId);
+    for (const [sid, slot] of slots.entries()) {
+      slot.hostEl.style.display = sid === sessionId ? "" : "none";
+    }
+    debugPanelSlots("slot.showOnly", {
+      panelId,
+      sessionId,
+      summary: debugPanelSlotSummary(panelId)
+    });
+  };
+  const registerEditorSlot = (panelId: string, sessionId: string, slotCore: EditorCore, proxy: any, hostEl?: HTMLElement, loaded = false) => {
+    const panel = panelManager.getPanel(panelId);
+    const slotHost = hostEl || createEditorSlotHost(panelId, sessionId);
+    try {
+      if (!hostEl) {
+        panel?.editorHostEl?.appendChild(slotHost);
+        if (!slotHost.contains(slotCore.view.dom)) slotHost.appendChild(slotCore.view.dom);
+      } else if (!slotHost.contains(slotCore.view.dom)) {
+        slotHost.appendChild(slotCore.view.dom);
+      }
+    } catch {}
+    try { slotCore.setSessionId(sessionId); } catch {}
+    try { proxy?.setSessionId?.(sessionId); } catch {}
+    const slot: EditorSlot = { panelId, sessionId, core: slotCore, proxy, hostEl: slotHost, loaded };
+    getPanelSlots(panelId).set(sessionId, slot);
+    debugPanelSlots("slot.register", {
+      panelId,
+      sessionId,
+      editorId: proxy?.editorId || null,
+      loaded,
+      summary: debugPanelSlotSummary(panelId)
+    });
+    return slot;
+  };
+  if (initialSessionId) {
+    const initialHost = createEditorSlotHost("panel-0", initialSessionId);
+    try {
+      editorContainer.appendChild(initialHost);
+      initialHost.appendChild(core.view.dom);
+    } catch {}
+    registerEditorSlot("panel-0", initialSessionId, core, initialProxy, initialHost, true);
+    showOnlyEditorSlot("panel-0", initialSessionId);
+  }
+  activateCachedEditorSlot = (panelId: string, sessionId: string) => {
+    const slot = panelEditorSlots.get(panelId)?.get(sessionId) || null;
+    if (!slot) {
+      return false;
+    }
+    const proxy = attachEditor(slot.core, panelId);
+    try { proxy?.setSessionId?.(sessionId); } catch {}
+    slot.proxy = proxy;
+    panelManager.setPanelEditor(panelId, proxy);
+    panelCores.set(panelId, slot.core);
+    showOnlyEditorSlot(panelId, sessionId);
+    try { panelManager.activateTab(panelId, sessionId); } catch {}
+    try { setActiveEditorPanel(panelId); } catch {}
+    debugPanelSlots("slot.activateCached", {
+      panelId,
+      sessionId,
+      editorId: proxy?.editorId || null,
+      summary: debugPanelSlotSummary(panelId)
+    });
+    return true;
+  };
+  ensureEditorSlotForSession = (panelId: string, sessionId: string, seedText = "") => {
+    const existing = panelEditorSlots.get(panelId)?.get(sessionId) || null;
+    if (existing) {
+      activateCachedEditorSlot(panelId, sessionId);
+      debugPanelSlots("slot.ensureExisting", {
+        panelId,
+        sessionId,
+        summary: debugPanelSlotSummary(panelId)
+      });
+      return existing;
+    }
+    const panel = panelManager.getPanel(panelId);
+    if (!panel) return null;
+    const slots = getPanelSlots(panelId);
+    if (slots.size === 0) {
+      const staleCore = panelCores.get(panelId);
+      try { staleCore?.dispose?.(); } catch {}
+      try { panel.editorHostEl.innerHTML = ""; } catch {}
+    }
+    const hostEl = createEditorSlotHost(panelId, sessionId);
+    panel.editorHostEl.appendChild(hostEl);
+    const slotCore = new EditorCore(hostEl, seedText, panelId);
+    try { applyEditorPreferences(slotCore); } catch {}
+    const proxy = attachEditor(slotCore, panelId);
+    const slot = registerEditorSlot(panelId, sessionId, slotCore, proxy, hostEl, false);
+    activateCachedEditorSlot(panelId, sessionId);
+    debugPanelSlots("slot.ensureNew", {
+      panelId,
+      sessionId,
+      seedLength: seedText.length,
+      summary: debugPanelSlotSummary(panelId)
+    });
+    return slot;
+  };
+  const disposeEditorSlotForSession = (panelId: string, sessionId: string) => {
+    const slot = panelEditorSlots.get(panelId)?.get(sessionId) || null;
+    if (!slot) return;
+    try { slot.core.dispose(); } catch {}
+    try { slot.hostEl.remove(); } catch {}
+    panelEditorSlots.get(panelId)?.delete(sessionId);
+  };
   panelManager.on("panel/focusChanged", ({ panelId }) => {
     setActiveEditorPanel(panelId);
   });
+  panelManager.on("panel/tabActivated", ({ panelId, tabId, sessionId }: any) => {
+    notePanelTabVisit(panelId, sessionId || tabId || null);
+  });
+  if (initialSessionId) notePanelTabVisit("panel-0", initialSessionId);
   const syncLegacyEditorTabsState = (panelId: string | null) => {
     if (!panelId) return;
     const panel = panelManager.getPanel(panelId);
@@ -2515,27 +2938,11 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     const activeTabId = panel.activeTabId || panel.tabs[0]?.id || null;
     return { panelId, panel, activeTabId };
   };
-  const openSessionInPanel = (panelId: string, sessionId: string | null, opts?: { focus?: boolean }) => {
-    if (!sessionId) return false;
-    const panel = panelManager.getPanel(panelId);
-    if (!panel) return false;
-    const exists = panel.tabs.some((tab) => tab.id === sessionId);
-    if (!exists) {
-      panel.tabs = [...panel.tabs, { id: sessionId, title: sessionId, isDirty: false }];
-    }
-    if (opts?.focus !== false) {
-      try { panelManager.focusPanel(panelId); } catch {}
-    }
-    return activatePanelSession(panelId, sessionId);
+  const openSessionInPanel = (panelId: string, sessionId: string | null, opts?: { focus?: boolean; forceReload?: boolean }) => {
+    return sessionRuntime.openPanelSession(panelId, sessionId, opts);
   };
   const activatePanelSession = (panelId: string, sessionId: string | null) => {
-    if (!sessionId) return false;
-    panelManager.activateTab(panelId, sessionId);
-    syncLegacyEditorTabsState(panelId);
-    try {
-      window.zion.commands.executeCommand("zion.sessions.switch", { id: sessionId, panelId });
-    } catch {}
-    return true;
+    return sessionRuntime.switchPanelSession(panelId, sessionId);
   };
   const restoreSplitViewportFromSource = (sourceEditor: any, targetEditor: any) => {
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -2629,9 +3036,11 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       return;
     }
     suspendSessionCurrentSync = true;
+    restoringPanelWorkspace = true;
     const restored = panelManager.restoreState(savedPanelWorkspace.manager);
     if (!restored) {
       suspendSessionCurrentSync = false;
+      restoringPanelWorkspace = false;
       return;
     }
     for (const panel of panelManager.listPanels()) {
@@ -2645,6 +3054,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
             window.zion.commands.executeCommand("zion.sessions.switch", {
               id: panel.activeTabId,
               panelId: panel.id,
+              skipPersistPrevious: true,
+              forceReload: true,
               writeUrl: false,
               pushUrl: false
             })
@@ -2660,6 +3071,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
             window.zion.commands.executeCommand("zion.sessions.switch", {
               id: finalPanel.activeTabId,
               panelId: finalActivePanelId,
+              skipPersistPrevious: true,
+              forceReload: true,
               writeUrl: false,
               pushUrl: false
             })
@@ -2679,11 +3092,13 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
             }
           } finally {
             suspendSessionCurrentSync = false;
+            restoringPanelWorkspace = false;
             schedulePanelWorkspacePersist();
           }
         }));
       } catch {
         suspendSessionCurrentSync = false;
+        restoringPanelWorkspace = false;
       }
     };
     void runRestore();
@@ -2705,14 +3120,23 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     }
     const nextTabs = panel.tabs.filter((tab) => tab.id !== tabId);
     const wasActive = panel.activeTabId === tabId;
+    const closingSlot = panelEditorSlots.get(panelId)?.get(tabId) || null;
+    if (closingSlot) {
+      try { closingSlot.core.dispose(); } catch {}
+      try { closingSlot.hostEl.remove(); } catch {}
+      panelEditorSlots.get(panelId)?.delete(tabId);
+    }
     panel.tabs = nextTabs;
     const nextId = wasActive
-      ? (nextTabs[Math.min(idx, nextTabs.length - 1)]?.id || nextTabs[nextTabs.length - 1]?.id || null)
+      ? pickPreviousVisitedPanelTab(panelId, tabId, nextTabs, idx)
       : (panel.activeTabId || nextTabs[0]?.id || null);
-    panel.activeTabId = nextId;
     syncLegacyEditorTabsState(panelId);
     try { window.zion.events.emit("panel/tabsChanged", { panelId }); } catch {}
-    return !wasActive || !nextId ? true : activatePanelSession(panelId, nextId);
+    if (!wasActive || !nextId) return true;
+    try {
+      window.zion.panels?.openSession?.(panelId, nextId, { focus: true, forceReload: true });
+    } catch {}
+    return true;
   };
   try {
     window.zion.commands.registerCommand("zion.editorTabs.closeActiveSession", () => {
@@ -2746,6 +3170,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   try {
     window.zion.state.onDidChange<string>("sessions.currentId", (sessionId) => {
       if (suspendSessionCurrentSync) return;
+      if (panelManager.listPanels().length > 1) return;
       const activePanelId = panelManager.getActivePanelId();
       if (!activePanelId) return;
       const panel = panelManager.getPanel(activePanelId);
@@ -2762,59 +3187,84 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   panelManager.on("panel/created", ({ panelId, sourcePanelId, seedFromSource }) => {
     const panel = panelManager.getPanel(panelId);
     if (!panel) return;
+    debugPanelSlots("panel.created", {
+      panelId,
+      sourcePanelId,
+      seedFromSource,
+      sourceSummary: sourcePanelId ? debugPanelSlotSummary(sourcePanelId) : null
+    });
     try {
       panel.editorHostEl.innerHTML = "";
     } catch {}
     const sourceEditor = sourcePanelId ? panelManager.getEditor(sourcePanelId) : null;
     const sourceSessionId = sourcePanelId ? panelManager.getPanel(sourcePanelId)?.activeTabId || null : null;
-    const seedText = sourceEditor?.getValue?.() || core.getValue();
-    const nextCore = new EditorCore(panel.editorHostEl, seedText, panelId);
+    if (sourcePanelId && sourceSessionId) {
+      try {
+        window.zion.commands.executeCommand("zion.chatCards.snapshotSession", {
+          panelId: sourcePanelId,
+          sessionId: sourceSessionId
+        });
+      } catch {}
+    }
+    const seedText = restoringPanelWorkspace
+      ? ""
+      : (sourceEditor?.getValue?.() || core.getValue());
+    const activeSessionId = panel.activeTabId || (seedFromSource === false
+      ? null
+      : (sourceSessionId || window.zion.state.get<string>("sessions.currentId") || null));
+    const slotHost = activeSessionId ? createEditorSlotHost(panelId, activeSessionId) : null;
+    try {
+      if (slotHost) panel.editorHostEl.appendChild(slotHost);
+    } catch {}
+    const nextCore = new EditorCore(slotHost || panel.editorHostEl, seedText, panelId);
     panelCores.set(panelId, nextCore);
     const nextProxy = attachEditor(nextCore, panelId);
     panelManager.setPanelEditor(panelId, nextProxy);
     try { applyEditorPreferences(nextCore); } catch {}
-    const activeSessionId = seedFromSource === false
-      ? null
-      : (sourceSessionId || window.zion.state.get<string>("sessions.currentId") || null);
+    try { nextProxy?.setSessionId?.(activeSessionId); } catch {}
     if (activeSessionId) {
-      panel.tabs = [{ id: activeSessionId, title: activeSessionId, isDirty: false }];
-      panel.activeTabId = activeSessionId;
+      registerEditorSlot(panelId, activeSessionId, nextCore, nextProxy, slotHost || undefined, seedFromSource !== false);
+      showOnlyEditorSlot(panelId, activeSessionId);
+      if (!restoringPanelWorkspace) {
+        panel.tabs = [{ id: activeSessionId, title: activeSessionId, isDirty: false }];
+        panel.activeTabId = activeSessionId;
+      }
       panelManager.activateTab(panelId, activeSessionId);
     }
     mountCurrentSessionPath(panel.pathEl, panelId);
-    mountPanelSessionTabsBar(panel.tabsBarEl, panelId, panelManager);
+    mountPanelSessionTabsBar(panel.tabsBarEl, panelId, panelManager, {
+      onTabRemovedFromPanel: disposeEditorSlotForSession
+    });
     mountEditorHeaderTOCButton(panel.pathEl);
-    mountEditorHeaderSessionRenameButton(panel.pathEl);
+    mountEditorHeaderSessionRenameButton(panel.pathEl, panelId);
+    mountEditorHeaderSplitMenuButton(panel.pathEl);
     mountEditorHeaderSettingsMenu(panel.pathEl);
     mountPanelHeaderRunStopButton(panel.pathEl, panelId, () => panelManager.getEditor(panelId));
     attachPanelScrollPersistence(panelId);
-    if (activeSessionId) {
+    if (activeSessionId && !restoringPanelWorkspace) {
       requestAnimationFrame(() => {
-        try {
-          const ann = (window.zion?.state?.get(`sessions.annotations.${activeSessionId}`) || {}) as any;
-          const meta = window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", activeSessionId) as any;
-          const metaAnn = (meta?.annotations || {}) as any;
-          const pendingTools = window.zion?.state?.get(`sessions.pendingRestore.tools.${activeSessionId}`);
-          const pendingThinking = window.zion?.state?.get(`sessions.pendingRestore.thinking.${activeSessionId}`);
-          const tools = Array.isArray(ann.tools) && ann.tools.length
-            ? ann.tools
-            : (Array.isArray(metaAnn.tools) && metaAnn.tools.length
-              ? metaAnn.tools
-              : (Array.isArray(pendingTools) ? pendingTools : []));
-          const thinking = Array.isArray(ann.thinking) && ann.thinking.length
-            ? ann.thinking
-            : (Array.isArray(metaAnn.thinking) && metaAnn.thinking.length
-              ? metaAnn.thinking
-              : (Array.isArray(pendingThinking) ? pendingThinking : []));
-          if (tools.length) {
-            try { window.zion?.state?.set(`sessions.pendingRestore.tools.${activeSessionId}`, tools); } catch {}
-            try { window.zion?.events?.emit("toolcards/restore", { items: tools, panelId }); } catch {}
-          }
-          if (thinking.length) {
-            try { window.zion?.state?.set(`sessions.pendingRestore.thinking.${activeSessionId}`, thinking); } catch {}
-            try { window.zion?.events?.emit("thinking/restore", { items: thinking, panelId }); } catch {}
-          }
-        } catch {}
+        requestAnimationFrame(() => {
+          try {
+            debugPanelSlots("panel.created.restoreSession.before", {
+              panelId,
+              activeSessionId,
+              summary: debugPanelSlotSummary(panelId)
+            });
+            window.zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
+              sessionId: activeSessionId,
+              panelId,
+              clearFirst: false
+            });
+            debugPanelSlots("panel.created.restoreSession.after", {
+              panelId,
+              activeSessionId,
+              summary: debugPanelSlotSummary(panelId)
+            });
+            requestAnimationFrame(() => {
+              try { restoreSplitViewportFromSource(sourceEditor, nextProxy); } catch {}
+            });
+          } catch {}
+        });
       });
     }
     try { nextProxy.focus(); } catch {}
@@ -2823,6 +3273,14 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   });
   panelManager.on("panel/closed", ({ panelId }) => {
     const closingCore = panelCores.get(panelId);
+    const closingSlots = panelEditorSlots.get(panelId);
+    if (closingSlots) {
+      for (const slot of closingSlots.values()) {
+        try { slot.core.dispose(); } catch {}
+        try { slot.hostEl.remove(); } catch {}
+      }
+      panelEditorSlots.delete(panelId);
+    }
     try { panelScrollPersistDisposers.get(panelId)?.(); } catch {}
     panelScrollPersistDisposers.delete(panelId);
     try { detachEditor(panelId); } catch {}
@@ -2850,9 +3308,12 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     window.addEventListener("beforeunload", () => sessionSync.dispose(), { once: true });
   } catch {}
   mountCurrentSessionPath(editorHeaderPathEl, "panel-0");
-  mountPanelSessionTabsBar(editorTabsBarEl, "panel-0", panelManager);
+  mountPanelSessionTabsBar(editorTabsBarEl, "panel-0", panelManager, {
+    onTabRemovedFromPanel: disposeEditorSlotForSession
+  });
   mountEditorHeaderTOCButton(editorHeaderPathEl);
-  mountEditorHeaderSessionRenameButton(editorHeaderPathEl);
+  mountEditorHeaderSessionRenameButton(editorHeaderPathEl, "panel-0");
+  mountEditorHeaderSplitMenuButton(editorHeaderPathEl);
   mountEditorHeaderSettingsMenu(editorHeaderPathEl);
   mountPanelHeaderRunStopButton(editorHeaderPathEl, "panel-0", () => panelManager.getEditor("panel-0"));
   restorePanelWorkspaceWhenReady();
@@ -2897,14 +3358,28 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   const applyTheme = (t: "light" | "dark") => {
     currentTheme = t;
     try { localStorage.setItem("zion.theme", t); } catch {}
-    document.documentElement.setAttribute("data-theme", t);
+    const themedCores = new Set<EditorCore>();
+    try { themedCores.add(core); } catch {}
     try { core.setTheme(t); } catch {}
     try {
-      for (const [panelId, targetCore] of panelCores.entries()) {
-        if (panelId === "panel-0" || targetCore === core) continue;
+      for (const targetCore of panelCores.values()) {
+        if (targetCore === core) continue;
+        try { themedCores.add(targetCore); } catch {}
         try { targetCore.setTheme(t); } catch {}
       }
     } catch {}
+    document.documentElement.setAttribute("data-theme", t);
+    const refreshEditorThemes = () => {
+      try {
+        for (const targetCore of themedCores) {
+          try { targetCore.refreshWysiwyg(); } catch {}
+        }
+      } catch {}
+    };
+    refreshEditorThemes();
+    requestAnimationFrame(() => {
+      refreshEditorThemes();
+    });
     window.zion.state.set("ui.theme", t);
     try {
       const ensureMeta = () => {
@@ -2935,6 +3410,13 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       tooltip: "Click to toggle theme",
       onClick: () => window.zion.commands.executeCommand("zion.toggleTheme"),
       priority: 80
+    });
+    (window.zion as any).editorHeaderMenu?.register?.({
+      id: "core.theme",
+      title: `切换主题：${t === "dark" ? "深色" : "浅色"}`,
+      section: "Layout",
+      order: 10,
+      command: "zion.toggleTheme"
     });
   };
 
@@ -3051,6 +3533,60 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     const prev = panels[(idx - 1 + panels.length) % panels.length];
     if (prev) panelManager.focusPanel(prev.id);
   });
+
+  const PANEL_FOCUS_HIGHLIGHT_KEY = "zion.panelFocusHighlight";
+  let panelFocusHighlightEnabled = (() => {
+    try {
+      return localStorage.getItem(PANEL_FOCUS_HIGHLIGHT_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  })();
+  const applyPanelFocusHighlight = (enabled: boolean) => {
+    panelFocusHighlightEnabled = !!enabled;
+    try { localStorage.setItem(PANEL_FOCUS_HIGHLIGHT_KEY, panelFocusHighlightEnabled ? "true" : "false"); } catch {}
+    try {
+      document.documentElement.setAttribute(
+        "data-panel-focus-highlight",
+        panelFocusHighlightEnabled ? "enabled" : "disabled"
+      );
+    } catch {}
+    try { window.zion.state.set("ui.panelFocusHighlight", panelFocusHighlightEnabled); } catch {}
+    return panelFocusHighlightEnabled;
+  };
+  applyPanelFocusHighlight(panelFocusHighlightEnabled);
+  window.zion.commands.registerCommand("zion.panels.setFocusHighlight", (enabled: boolean) => applyPanelFocusHighlight(!!enabled));
+  window.zion.commands.registerCommand("zion.panels.toggleFocusHighlight", () => applyPanelFocusHighlight(!panelFocusHighlightEnabled));
+
+  try {
+    (window as any).zion.settings.registerPage({
+      id: "workspace.panels",
+      title: "Panels",
+      category: "workspace",
+      order: 30,
+      keywords: ["panel", "editor", "focus", "highlight", "split"],
+      sections: [
+        {
+          id: "workspace.panels.appearance",
+          title: "Appearance",
+          settings: [
+            {
+              id: "workspace.panels.focusHighlight",
+              label: "Highlight focused editor",
+              description: "Show a subtle border and glow around the currently focused editor when multiple panels are open.",
+              kind: "boolean",
+              scope: "workspace",
+              defaultValue: true,
+              getValue: () => panelFocusHighlightEnabled,
+              setValue: (value: unknown) => applyPanelFocusHighlight(!!value)
+            }
+          ]
+        }
+      ]
+    });
+  } catch (e) {
+    console.warn("[zion] failed to register panel settings", e);
+  }
 
   try {
     window.zion.keybindings.register({ command: "zion.panels.splitHorizontal", key: "Mod-\\", when: "editorFocus" });
@@ -3513,31 +4049,108 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       requestAnimationFrame(tick);
     };
 
-    window.zion.statusBar.registerItem({
+    try { document.getElementById("bottombar-layout-controls")?.remove(); } catch {}
+    const layoutActions = [
+      {
+        id: "core.bottompanel.toggle",
+        icon: "codicon-layout-panel",
+        label: "Toggle Bottom Panel",
+        onClick: () => {
+          const st = window.zion.state;
+          const wasVisible = !!st?.get?.("ui.bottomPanel.visible");
+          window.zion.commands?.executeCommand?.("bottomPanel.toggle");
+          if (!wasVisible) focusWithRetry(".zion-bottompanel");
+        }
+      },
+      {
+        id: "core.auxbar.toggle",
+        icon: "codicon-layout-sidebar-right",
+        label: "Toggle Auxiliary Bar",
+        onClick: () => {
+          const st = window.zion.state;
+          const wasVisible = !!st?.get?.("ui.auxiliaryBar.visible");
+          window.zion.commands?.executeCommand?.("auxiliaryBar.toggle");
+          if (!wasVisible) focusWithRetry(".zion-auxbar");
+        }
+      }
+    ];
+    const ensureEditorLayoutControls = () => {
+      const panels = panelManager.listPanels();
+      let target = panels[0] || null;
+      for (const panel of panels) {
+        const rect = panel.rootEl.getBoundingClientRect();
+        const targetRect = target?.rootEl.getBoundingClientRect();
+        if (!target || !targetRect || rect.right > targetRect.right + 1 || (Math.abs(rect.right - targetRect.right) <= 1 && rect.top < targetRect.top)) {
+          target = panel;
+        }
+      }
+      if (!target) return;
+      let group = document.getElementById("zion-editor-layout-controls");
+      if (!group) {
+        group = document.createElement("div");
+        group.id = "zion-editor-layout-controls";
+        group.className = "zion-editor-layout-controls";
+      }
+      if (group.parentElement !== target.tabsBarEl) {
+        target.tabsBarEl.appendChild(group);
+      }
+      for (const action of layoutActions) {
+        let btn = group.querySelector<HTMLButtonElement>(`button[data-zion-layout-id="${action.id}"]`);
+        if (!btn) {
+          btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "zion-editor-header-action is-icon zion-editor-layout-button";
+          btn.setAttribute("data-zion-layout-id", action.id);
+          group.appendChild(btn);
+        }
+        btn.title = action.label;
+        btn.setAttribute("aria-label", action.label);
+        btn.innerHTML = `<span class="codicon ${action.icon}" aria-hidden="true"></span>`;
+        btn.onpointerdown = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        };
+        btn.onmousedown = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        };
+        btn.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          action.onClick();
+          scheduleEditorLayoutControls();
+        };
+      }
+    };
+    const scheduleEditorLayoutControls = () => requestAnimationFrame(() => ensureEditorLayoutControls());
+    scheduleEditorLayoutControls();
+    panelManager.on("panel/layoutChanged", scheduleEditorLayoutControls);
+    panelManager.on("panel/closed", scheduleEditorLayoutControls);
+    panelManager.on("panel/focusChanged", scheduleEditorLayoutControls);
+    window.addEventListener("resize", scheduleEditorLayoutControls);
+    (window.zion as any).editorHeaderMenu?.register?.({
       id: "core.bottompanel.toggle",
-      text: "$(layout-panel)",
-      tooltip: "Toggle Bottom Panel",
+      title: "切换底部面板",
+      section: "Layout",
+      order: 20,
       onClick: () => {
         const st = window.zion.state;
         const wasVisible = !!st?.get?.("ui.bottomPanel.visible");
         window.zion.bottomPanel?.toggle();
         if (!wasVisible) focusWithRetry(".zion-bottompanel");
-      },
-      priority: 95,
-      align: "right"
+      }
     });
-    window.zion.statusBar.registerItem({
+    (window.zion as any).editorHeaderMenu?.register?.({
       id: "core.auxbar.toggle",
-      text: "$(layout-sidebar-right)",
-      tooltip: "Toggle Auxiliary Bar",
+      title: "切换右侧辅助栏",
+      section: "Layout",
+      order: 30,
       onClick: () => {
         const st = window.zion.state;
         const wasVisible = !!st?.get?.("ui.auxiliaryBar.visible");
         window.zion.auxiliaryBar?.toggle();
         if (!wasVisible) focusWithRetry(".zion-auxbar");
-      },
-      priority: 94,
-      align: "right"
+      }
     });
   } catch {}
 
@@ -3548,11 +4161,10 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   // Show extension load errors (if any)
   const extErr = (window as any).__ext_errors || 0;
   if (extErr > 0) {
-    window.zion.statusBar.registerItem({
-      id: "core.extErrors",
-      text: `● ExtErr(${extErr})`,
-      tooltip: "Some extensions failed to load (check console)",
-      priority: 100
+    notificationManager.show(`Some extensions failed to load (${extErr}). Check console for details.`, {
+      type: "warning",
+      duration: 0,
+      dismissible: true
     });
   }
 
@@ -3567,20 +4179,36 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
         bar.appendChild(right);
       }
 
-      const mLnCol = document.createElement("span");
-      const mBefore = document.createElement("span");
-      const mTotal = document.createElement("span");
-      mLnCol.className = "bottombar-metric bottombar-metric-lncol";
-      mBefore.className = "bottombar-metric bottombar-metric-before";
-      mTotal.className = "bottombar-metric bottombar-metric-total";
-      right.appendChild(mLnCol);
-      right.appendChild(mBefore);
-      right.appendChild(mTotal);
+      let metrics = document.getElementById("bottombar-metrics") as HTMLDivElement | null;
+      if (!metrics) {
+        metrics = document.createElement("div");
+        metrics.id = "bottombar-metrics";
+      }
+      const terminal = right.querySelector("[data-zion-bottombar-terminal]");
+      const status = document.getElementById("bottombar-status") || document.getElementById("bottombar-left");
+      const metricsAnchor =
+        terminal && terminal.parentElement === right
+          ? terminal
+          : status && status.parentElement === right
+            ? status
+            : null;
+      if (metrics.parentElement !== right || metrics.nextElementSibling !== metricsAnchor) {
+        right.insertBefore(metrics, metricsAnchor);
+      }
 
-      let maxLnDigits = 1;
-      let maxColDigits = 1;
-      let maxPosDigits = 1;
-      let maxTotalDigits = 1;
+      const ensureMetric = (className: string) => {
+        let metric = metrics!.querySelector(`.${className}`) as HTMLSpanElement | null;
+        if (!metric) {
+          metric = document.createElement("span");
+          metric.className = `bottombar-metric ${className}`;
+          metrics!.appendChild(metric);
+        }
+        return metric;
+      };
+
+      const mLnCol = ensureMetric("bottombar-metric-lncol");
+      const mBefore = ensureMetric("bottombar-metric-before");
+      const mTotal = ensureMetric("bottombar-metric-total");
 
       const getMetricsView = () => {
         try {
@@ -3609,15 +4237,14 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
           const before = head;
           const total = doc.length;
 
-          maxLnDigits = Math.max(maxLnDigits, String(doc.lines).length, String(ln).length);
-          maxColDigits = Math.max(maxColDigits, String(col).length);
-          maxPosDigits = Math.max(maxPosDigits, String(before).length);
-          maxTotalDigits = Math.max(maxTotalDigits, String(total).length);
+          const lineDigits = Math.max(String(doc.lines).length, String(ln).length);
+          const colDigits = Math.max(String(Math.max(1, line.to - line.from + 1)).length, String(col).length);
+          const totalDigits = Math.max(String(total).length, String(before).length);
 
-          const lnStr = String(ln).padStart(maxLnDigits, " ");
-          const colStr = String(col).padStart(maxColDigits, " ");
-          const beforeStr = String(before).padStart(maxPosDigits, " ");
-          const totalStr = String(total).padStart(maxTotalDigits, " ");
+          const lnStr = String(ln).padStart(lineDigits, " ");
+          const colStr = String(col).padStart(colDigits, " ");
+          const beforeStr = String(before).padStart(totalDigits, " ");
+          const totalStr = String(total).padStart(totalDigits, " ");
 
           mLnCol.textContent = `Ln ${lnStr}, Col ${colStr}`;
           mBefore.textContent = `Before ${beforeStr}`;

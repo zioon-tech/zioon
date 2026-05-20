@@ -36,15 +36,14 @@ class Registry {
   private readonly STATUS_PINNED_KEY = 'zion.statusBar.pinned';
   private bottomStatusItems = new Map<
     string,
-    { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number; pinned: boolean }
+    { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number }
   >();
-  private bottomStatusItemMinWidth = new Map<string, number>();
-  private bottomStatusPinned: Set<string> = new Set();
-  private readonly BOTTOM_STATUS_PINNED_KEY = 'zion.bottomStatusBar.pinned';
   private editorCore: EditorCore | null = null;
   private editorCores = new Map<string, EditorCore>();
   private editorProxies = new Map<string, EditorProxy>();
+  private editorProxiesByEditorId = new Map<string, EditorProxy>();
   private activePanelId: string | null = null;
+  private updateListenerAttached = new Set<string>();
 
   // paste handlers
   private pasteHandlers: PasteHandler[] = [];
@@ -88,15 +87,17 @@ class Registry {
   private lastPrompt: string | null = null;
 
   attachEditor(core: EditorCore, panelId = "panel-0") {
+    const editorKey = core.getEditorId?.() || panelId;
     this.editorCores.set(panelId, core);
-    let proxy = this.editorProxies.get(panelId);
+    let proxy = this.editorProxiesByEditorId.get(editorKey);
     if (!proxy) {
       proxy = new EditorProxy(core, panelId);
-      this.editorProxies.set(panelId, proxy);
+      this.editorProxiesByEditorId.set(editorKey, proxy);
     } else {
       proxy.setCore(core);
       proxy.setPanelId(panelId);
     }
+    this.editorProxies.set(panelId, proxy);
 
     if (!this.activePanelId) {
       this.activePanelId = panelId;
@@ -111,7 +112,7 @@ class Registry {
     (this as any).loadMenuUsageStats();
 
     // Wire CM6 update events to Zion EventBus so plugins can react to input/cursor changes.
-    try {
+    if (!this.updateListenerAttached.has(editorKey)) try {
       const ext = EditorView.updateListener.of((update) => {
         try {
           const active = this.getActiveEditorCore();
@@ -127,6 +128,7 @@ class Registry {
         }
       });
       core.addExternalExtension(ext as any);
+      this.updateListenerAttached.add(editorKey);
     } catch (e) {
       console.error("[zion] failed to attach editor update listener", e);
     }
@@ -365,7 +367,8 @@ class Registry {
 
   private attachPasteListener(panelId: string) {
     const core = this.editorCores.get(panelId);
-    if (!core || this.pasteAttached.has(panelId)) return;
+    const editorKey = core?.getEditorId?.() || panelId;
+    if (!core || this.pasteAttached.has(editorKey)) return;
     const dom = core.view.dom;
     dom.addEventListener("paste", async (e: ClipboardEvent) => {
       try {
@@ -392,12 +395,13 @@ class Registry {
         console.error("[zion] paste pipeline error:", err);
       }
     });
-    this.pasteAttached.add(panelId);
+    this.pasteAttached.add(editorKey);
   }
 
   private attachContextMenu(panelId: string) {
     const core = this.editorCores.get(panelId);
-    if (!core || this.contextMenuAttached.has(panelId)) return;
+    const editorKey = core?.getEditorId?.() || panelId;
+    if (!core || this.contextMenuAttached.has(editorKey)) return;
     const dom = core.view.dom;
 
     dom.addEventListener("contextmenu", (e: MouseEvent) => {
@@ -406,7 +410,7 @@ class Registry {
       e.preventDefault();
       this.showEditorContextMenuAt(e.clientX, e.clientY, panelId);
     });
-    this.contextMenuAttached.add(panelId);
+    this.contextMenuAttached.add(editorKey);
   }
 
   private shouldShowMenuItem(it: MenuItem, ctx: { hasSelection: boolean; editorFocus: boolean }): boolean {
@@ -1296,8 +1300,9 @@ class Registry {
     for (const pid of targetPanelIds) {
       const editor = this.editorProxies.get(pid) || null;
       if (!editor) continue;
+      const editorKey = editor.editorId || pid;
       for (const dec of this.decorators) {
-        const key = `${dec.id}:${pid}`;
+        const key = `${dec.id}:${editorKey}`;
         if (this.decoratorDisposables.has(key)) continue;
         try {
           const disp = dec.apply(editor as unknown as IEditorProxy);
@@ -1620,7 +1625,6 @@ class Registry {
 
   constructor() {
     this.loadStatusPinned();
-    this.loadBottomStatusPinned();
   }
 
   private loadStatusPinned() {
@@ -1645,28 +1649,6 @@ class Registry {
     }
   }
 
-  private loadBottomStatusPinned() {
-    try {
-      const raw = localStorage.getItem(this.BOTTOM_STATUS_PINNED_KEY);
-      if (raw) {
-        const arr = JSON.parse(raw);
-        if (Array.isArray(arr)) {
-          this.bottomStatusPinned = new Set(arr);
-        }
-      }
-    } catch (e) {
-      console.error('[registry] load bottom status pinned error:', e);
-    }
-  }
-
-  private saveBottomStatusPinned() {
-    try {
-      localStorage.setItem(this.BOTTOM_STATUS_PINNED_KEY, JSON.stringify(Array.from(this.bottomStatusPinned)));
-    } catch (e) {
-      console.error('[registry] save bottom status pinned error:', e);
-    }
-  }
-
   // statusbar
   registerStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable {
     const bar = document.getElementById("statusbar");
@@ -1681,6 +1663,7 @@ class Registry {
 
     const existing = this.statusItems.get(opts.id);
     if (existing) {
+      existing.el.setAttribute("data-zion-status-id", opts.id);
       // Update in place without clearing innerHTML to preserve hover state and reduce flicker
       const textSpan = existing.el.querySelector("span:not(.status-pin-btn)");
       if (textSpan) {
@@ -1756,6 +1739,7 @@ class Registry {
 
     const el = document.createElement("button");
     el.className = "status-item";
+    el.setAttribute("data-zion-status-id", opts.id);
     if (pinned) {
       el.classList.add('pinned');
     }
@@ -1803,12 +1787,14 @@ class Registry {
   registerBottomStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }): Disposable {
     const bar = document.getElementById("bottombar");
     if (!bar) return { dispose: () => {} };
+    const target = this.getBottomStatusContainer(bar);
 
     const priority = opts.priority ?? 0;
-    const pinned = this.bottomStatusPinned.has(opts.id);
-
     const existing = this.bottomStatusItems.get(opts.id);
     if (existing) {
+      existing.el.classList.add("bottombar-status-item");
+      existing.el.classList.remove("pinned");
+      existing.el.setAttribute("data-zion-status-id", opts.id);
       const textSpan = existing.el.querySelector("span:not(.status-pin-btn)");
       if (textSpan) {
         textSpan.textContent = opts.text;
@@ -1822,30 +1808,26 @@ class Registry {
         }
       }
 
-      const tooltipBase = typeof opts.tooltip === "string" ? opts.tooltip : "";
-      const tooltip = (tooltipBase ? tooltipBase + "\n" : "") + "Right-click to " + (pinned ? "Unpin" : "Pin");
-      existing.el.title = tooltip;
+      existing.el.title = typeof opts.tooltip === "string" ? opts.tooltip : "";
+      existing.el.style.minWidth = "";
 
       existing.el.onclick = (e) => { if (opts.onClick) opts.onClick(); };
       existing.el.oncontextmenu = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.toggleBottomStatusPin(opts.id, bar);
       };
 
       existing.onClick = opts.onClick;
-      existing.pinned = pinned;
 
       const pinBtn = existing.el.querySelector(".status-pin-btn");
       if (pinBtn) (pinBtn as any).remove();
 
       if (existing.priority !== priority) {
         existing.priority = priority;
-        this.sortBottomStatusItems(bar);
+        this.sortBottomStatusItems(target);
       } else {
-        this.sortBottomStatusItems(bar);
+        this.sortBottomStatusItems(target);
       }
-      this.stabilizeItemWidth(this.bottomStatusItemMinWidth, opts.id, existing.el);
 
       return {
         dispose: () => {
@@ -1858,28 +1840,24 @@ class Registry {
     }
 
     const el = document.createElement("button");
-    el.className = "status-item";
-    if (pinned) el.classList.add("pinned");
+    el.className = "status-item bottombar-status-item";
+    el.setAttribute("data-zion-status-id", opts.id);
 
     const span = document.createElement("span");
     span.textContent = opts.text;
     el.appendChild(span);
 
-    const tooltipBase = typeof opts.tooltip === "string" ? opts.tooltip : "";
-    const tooltip = (tooltipBase ? tooltipBase + "\n" : "") + "Right-click to " + (pinned ? "Unpin" : "Pin");
-    el.title = tooltip;
+    el.title = typeof opts.tooltip === "string" ? opts.tooltip : "";
 
     el.onclick = (e) => { if (opts.onClick) opts.onClick(); };
     el.oncontextmenu = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this.toggleBottomStatusPin(opts.id, bar);
     };
 
-    bar.appendChild(el);
-    this.bottomStatusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority, pinned });
-    this.sortBottomStatusItems(bar);
-    this.stabilizeItemWidth(this.bottomStatusItemMinWidth, opts.id, el);
+    target.appendChild(el);
+    this.bottomStatusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority });
+    this.sortBottomStatusItems(target);
 
     return {
       dispose: () => {
@@ -1891,49 +1869,42 @@ class Registry {
     };
   }
 
-  private toggleBottomStatusPin(id: string, bar: HTMLElement) {
-    const item = this.bottomStatusItems.get(id);
-    if (!item) return;
-
-    if (this.bottomStatusPinned.has(id)) {
-      this.bottomStatusPinned.delete(id);
-      item.pinned = false;
-      item.el.classList.remove('pinned');
-    } else {
-      this.bottomStatusPinned.add(id);
-      item.pinned = true;
-      item.el.classList.add('pinned');
+  private getBottomStatusContainer(bar: HTMLElement): HTMLElement {
+    let right = document.getElementById("bottombar-right");
+    if (!right) {
+      right = document.createElement("div");
+      right.id = "bottombar-right";
+      bar.appendChild(right);
     }
-
-    const currentTitle = item.el.title || "";
-    const suffixPin = "\nRight-click to Pin";
-    const suffixUnpin = "\nRight-click to Unpin";
-    if (item.pinned) {
-      if (currentTitle.endsWith(suffixPin)) {
-        item.el.title = currentTitle.slice(0, -suffixPin.length) + suffixUnpin;
-      } else if (!currentTitle.endsWith(suffixUnpin)) {
-        item.el.title = currentTitle + suffixUnpin;
-      }
+    let status = document.getElementById("bottombar-status") || document.getElementById("bottombar-left");
+    if (!status) {
+      status = document.createElement("div");
+      status.id = "bottombar-status";
     } else {
-      if (currentTitle.endsWith(suffixUnpin)) {
-        item.el.title = currentTitle.slice(0, -suffixUnpin.length) + suffixPin;
-      } else if (!currentTitle.endsWith(suffixPin)) {
-        item.el.title = currentTitle + suffixPin;
-      }
+      status.id = "bottombar-status";
     }
-
-    this.saveBottomStatusPinned();
-    this.sortBottomStatusItems(bar);
+    const terminal = right.querySelector("[data-zion-bottombar-terminal]");
+    const metrics = document.getElementById("bottombar-metrics");
+    const expectedPrev =
+      terminal && terminal.parentElement === right
+        ? terminal
+        : metrics && metrics.parentElement === right
+          ? metrics
+          : null;
+    const anchor = expectedPrev ? expectedPrev.nextSibling : right.firstChild;
+    if (status.parentElement !== right || status.previousElementSibling !== expectedPrev) {
+      right.insertBefore(status, anchor);
+    }
+    return status;
   }
 
-  private sortBottomStatusItems(bar: HTMLElement) {
+  private sortBottomStatusItems(container: HTMLElement) {
     const items = Array.from(this.bottomStatusItems.values());
     items.sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       if (b.priority !== a.priority) return b.priority - a.priority;
       return a.id.localeCompare(b.id);
     });
-    items.forEach(item => bar.appendChild(item.el));
+    items.forEach(item => container.appendChild(item.el));
   }
 
   private getStatusBarContainer(align: "left" | "right"): HTMLElement | null {

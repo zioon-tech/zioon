@@ -3,6 +3,22 @@ import { installToolCallCards } from "./tool-calls.js";
 import { installToolSwitcher } from "./tool-switcher.js";
 import { ToolsSettingsPage, buildToolRows } from "./ToolsSettingsPage.jsx";
 
+function getSessionAnnotations(sessionId) {
+  try {
+    return window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sessionId) || {};
+  } catch {
+    return {};
+  }
+}
+
+function updateSessionAnnotations(sessionId, updater) {
+  try {
+    return window.zion?.commands?.executeCommand?.("zion.chatCards.updateSessionAnnotations", { sessionId, updater }) || {};
+  } catch {
+    return {};
+  }
+}
+
 export async function activate(ctx) {
   // 注册默认工具与处理器
   registerDefaultTools();
@@ -27,7 +43,7 @@ export async function activate(ctx) {
       const sid = window.zion?.state?.get("sessions.currentId");
       if (!sid) return null;
 
-      const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+      const ann = getSessionAnnotations(sid);
       const tools = ann.tools || [];
       return tools.find(t => t.id === toolId) || null;
     },
@@ -40,7 +56,7 @@ export async function activate(ctx) {
       const sid = window.zion?.state?.get("sessions.currentId");
       if (!sid) return [];
 
-      const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+      const ann = getSessionAnnotations(sid);
       return ann.tools || [];
     },
 
@@ -94,7 +110,19 @@ export async function activate(ctx) {
     const enabledNames = Array.isArray(enabled) ? enabled : all.map(t => t?.function?.name).filter(Boolean);
     const n = enabledNames.filter(Boolean).length;
     toolsBtnDisp?.dispose?.();
-    toolsBtnDisp = window.zion.statusBar.registerItem({
+    toolsBtnDisp = window.zion.bottomStatusBar?.registerItem?.({
+      id: "dev.tools.button",
+      text: `Tools: ${n}`,
+      tooltip: "Manage enabled tools (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
+      priority: 70,
+      onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
+    }) || window.zion.editorHeaderMenu?.register?.({
+      id: "dev.tools.button",
+      title: `工具：${n}`,
+      section: "Chat",
+      order: 20,
+      onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
+    }) || window.zion.statusBar.registerItem({
       id: "dev.tools.button",
       text: `Tools: ${n}`,
       tooltip: "Manage enabled tools (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
@@ -1117,8 +1145,6 @@ function registerDefaultTools() {
           if (!res.ok) {
             const txt = await res.text().catch(() => "");
             if (chatSessionId) {
-              const prev = window.zion?.state?.get(`sessions.annotations.${chatSessionId}`) || {};
-              const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
               const entry = {
                 toolCallId,
                 path,
@@ -1132,7 +1158,10 @@ function registerDefaultTools() {
                 error: txt || data?.error || "write failed",
                 at: Date.now()
               };
-              window.zion?.state?.set(`sessions.annotations.${chatSessionId}`, { ...prev, writeHistory: [...list, entry] });
+              updateSessionAnnotations(chatSessionId, (prev) => {
+                const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
+                return { ...prev, writeHistory: [...list, entry] };
+              });
             }
             return `HTTP ${res.status}: ${txt || data?.error || "write failed"}`;
           }
@@ -1140,8 +1169,6 @@ function registerDefaultTools() {
           // fp[path] = { complete: true, hash: await sha256Hex(content), at: Date.now() };
           // setFpStore(fp);
           if (chatSessionId) {
-            const prev = window.zion?.state?.get(`sessions.annotations.${chatSessionId}`) || {};
-            const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
             const entry = {
               toolCallId,
               path,
@@ -1157,7 +1184,10 @@ function registerDefaultTools() {
               ok: true,
               at: Date.now()
             };
-            window.zion?.state?.set(`sessions.annotations.${chatSessionId}`, { ...prev, writeHistory: [...list, entry] });
+            updateSessionAnnotations(chatSessionId, (prev) => {
+              const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
+              return { ...prev, writeHistory: [...list, entry] };
+            });
           }
           const out = { ...(data || {}), path, prompt };
           return JSON.stringify(out, null, 2);
@@ -1319,7 +1349,7 @@ function registerDefaultTools() {
         try {
           const sid = window.zion?.state?.get("sessions.currentId");
           if (!sid) return "No session";
-          const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+          const ann = getSessionAnnotations(sid);
           const items = Array.isArray(ann.tools) ? ann.tools : [];
           const it = items.find(x => String(x.id) === toolId);
           if (!it) return "Not found";
@@ -1751,7 +1781,7 @@ function wrapHandlersWithTerminalContext(handlers) {
       const originalHandler = handlers[toolName];
       
       // 创建包装后的处理器
-      handlers[toolName] = async function(args) {
+      handlers[toolName] = async function(args, ...rest) {
         try {
           // 如果用户没有显式传递 session_id，则自动从 terminal.activeSessionId 获取
           // 注意：只在 args 不存在或为 undefined 时自动注入
@@ -1765,7 +1795,7 @@ function wrapHandlersWithTerminalContext(handlers) {
           }
           
           // 调用原始处理器
-          return originalHandler(args);
+          return originalHandler(args, ...rest);
         } catch (e) {
           console.error(`[dev.tools] Wrapped handler for ${toolName} failed:`, e);
           throw e;
