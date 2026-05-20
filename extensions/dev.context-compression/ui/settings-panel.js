@@ -949,6 +949,7 @@ export class CompressionSettingsPanel {
     if (this.root && this.panelElement && document.body.contains(this.root)) {
       try {
         this.switchTab(this.currentTab);
+        this.positionPanelFromStatusBar();
       } catch {}
       return;
     }
@@ -962,8 +963,8 @@ export class CompressionSettingsPanel {
     Object.assign(root.style, {
       position: 'fixed',
       inset: '0',
-      pointerEvents: 'none',
-      zIndex: '1000',
+      background: 'transparent',
+      zIndex: '100001',
       display: 'block'
     });
 
@@ -973,17 +974,21 @@ export class CompressionSettingsPanel {
       position: 'fixed',
       top: '48px',
       right: '12px',
-      width: '400px',
-      maxHeight: '75vh',
+      width: '360px',
+      maxWidth: 'calc(100vw - 16px)',
+      maxHeight: '65vh',
       overflow: 'auto',
       background: 'var(--panel)',
       color: 'var(--fg)',
       border: '1px solid var(--border)',
       borderRadius: '8px',
-      boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-      fontFamily: 'var(--font-sans)',
-      pointerEvents: 'auto'
+      boxShadow: '0 12px 32px rgba(0,0,0,0.32)',
+      fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
+      outline: 'none'
     });
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', 'Context Compression');
+    panel.tabIndex = -1;
 
     // Load settings before rendering
     await this.loadSettings();
@@ -998,6 +1003,7 @@ export class CompressionSettingsPanel {
     root.appendChild(panel);
     document.body.appendChild(root);
     this.root = root;
+    this.positionPanelFromStatusBar();
 
     // Click outside to close
     root.addEventListener('click', (e) => {
@@ -1006,7 +1012,45 @@ export class CompressionSettingsPanel {
       }
     });
 
+    root.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.hide();
+      }
+    });
+
     this.attachEventListeners();
+    panel.focus({ preventScroll: true });
+  }
+
+  positionPanelFromStatusBar() {
+    const panel = this.panelElement;
+    if (!panel) return;
+    const btn = document.querySelector('[data-zion-status-id="compression.status"]')
+      || Array.from(document.querySelectorAll('#bottombar .status-item, #statusbar .status-item'))
+        .find((b) => b.textContent?.includes('Ctx:'));
+    const pad = 8;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    panel.style.left = '';
+    panel.style.right = '';
+    panel.style.top = '';
+    panel.style.bottom = '';
+    panel.style.maxHeight = 'min(65vh, calc(100vh - 24px))';
+    if (!btn) {
+      panel.style.right = '12px';
+      panel.style.bottom = '36px';
+      return;
+    }
+    const rect = btn.getBoundingClientRect();
+    const width = Math.min(360, Math.max(240, vw - pad * 2));
+    const maxRight = Math.max(pad, vw - width - pad);
+    const right = Math.min(Math.max(pad, Math.round(vw - rect.right)), maxRight);
+    const spaceAbove = Math.max(180, Math.round(rect.top - pad * 2));
+    panel.style.width = `${width}px`;
+    panel.style.maxHeight = `${Math.min(Math.round(vh * 0.65), spaceAbove)}px`;
+    panel.style.right = `${right}px`;
+    panel.style.bottom = `${Math.max(pad, Math.round(vh - rect.top + pad))}px`;
   }
 
   /**

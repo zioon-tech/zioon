@@ -1,4 +1,5 @@
 import { ViewPlugin } from "@codemirror/view";
+import { Transaction } from "@codemirror/state";
 
 export function createSessionAutoSavePlugin(opts) {
   const getCurrentId = opts?.getCurrentId;
@@ -18,6 +19,8 @@ export function createSessionAutoSavePlugin(opts) {
 
   const getBucketKey = (view) => {
     try {
+      const editorId = view?.dom?.getAttribute?.("data-editor-id") || null;
+      if (editorId) return `editor:${editorId}`;
       const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
       if (panelId) return `panel:${panelId}`;
     } catch {}
@@ -32,6 +35,17 @@ export function createSessionAutoSavePlugin(opts) {
       buckets.set(key, bucket);
     }
     return bucket;
+  };
+
+  const isAutosaveIgnoredUpdate = (update) => {
+    try {
+      return !!update?.transactions?.some?.((tr) => {
+        const userEvent = tr?.annotation?.(Transaction.userEvent);
+        return userEvent === "zion.sessionLoad" || userEvent === "zion.cardRestore";
+      });
+    } catch {
+      return false;
+    }
   };
 
   const clearTimer = (bucket) => {
@@ -120,6 +134,7 @@ export function createSessionAutoSavePlugin(opts) {
       }
       update(update) {
         if (update.docChanged) {
+          if (isAutosaveIgnoredUpdate(update)) return;
           const bucket = getBucket(update.view);
           bucket.pendingView = update.view;
           bucket.pendingId = getCurrentId(update.view);

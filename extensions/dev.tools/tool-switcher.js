@@ -23,17 +23,20 @@ export function installToolSwitcher() {
     position: "fixed",
     top: "48px",
     right: "12px",
-    width: "420px",
+    width: "360px",
+    maxWidth: "calc(100vw - 16px)",
     maxHeight: "65vh",
     overflow: "auto",
     background: "var(--panel)",
     color: "var(--fg)",
     border: "1px solid var(--border)",
-    borderRadius: "6px",
-    boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+    borderRadius: "8px",
+    boxShadow: "0 12px 32px rgba(0,0,0,0.32)",
     padding: "8px",
     fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
   });
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", "Select Tools");
 
   // 标题
   const header = document.createElement("div");
@@ -104,7 +107,8 @@ export function installToolSwitcher() {
     return arr
       .map(t => ({
         name: t?.function?.name || "",
-        description: t?.function?.description || ""
+        description: t?.function?.description || "",
+        schema: t?.function?.parameters || null
       }))
       .filter(it => it.name);
   }
@@ -146,6 +150,74 @@ export function installToolSwitcher() {
       flexShrink: "0"
     });
     return el;
+  }
+
+  function showToolPreview(tool) {
+    if (!tool) return;
+    const overlay = document.createElement("div");
+    Object.assign(overlay.style, {
+      position: "fixed",
+      inset: "0",
+      background: "rgba(0,0,0,0.28)",
+      zIndex: "100002"
+    });
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    const modal = document.createElement("div");
+    Object.assign(modal.style, {
+      position: "fixed",
+      left: "50%",
+      top: "50%",
+      transform: "translate(-50%, -50%)",
+      width: "520px",
+      maxWidth: "calc(100vw - 24px)",
+      maxHeight: "72vh",
+      overflow: "auto",
+      background: "var(--panel)",
+      color: "var(--fg)",
+      border: "1px solid var(--border)",
+      borderRadius: "8px",
+      boxShadow: "0 12px 32px rgba(0,0,0,0.32)",
+      padding: "12px",
+      fontFamily: "inherit"
+    });
+    modal.addEventListener("click", (e) => e.stopPropagation());
+
+    const title = document.createElement("div");
+    title.textContent = tool.name || "Tool";
+    Object.assign(title.style, { fontSize: "13px", fontWeight: "600", marginBottom: "6px" });
+
+    const desc = document.createElement("div");
+    desc.textContent = tool.description || "No description";
+    Object.assign(desc.style, { fontSize: "12px", opacity: "0.72", lineHeight: "1.5", marginBottom: "10px" });
+
+    const schemaTitle = document.createElement("div");
+    schemaTitle.textContent = "Parameters";
+    Object.assign(schemaTitle.style, { fontSize: "11px", fontWeight: "600", opacity: "0.72", marginBottom: "6px" });
+
+    const pre = document.createElement("pre");
+    pre.textContent = tool.schema ? JSON.stringify(tool.schema, null, 2) : "(none)";
+    Object.assign(pre.style, {
+      margin: "0",
+      padding: "8px",
+      border: "1px solid var(--border)",
+      borderRadius: "6px",
+      background: "color-mix(in srgb, var(--border) 14%, transparent)",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+      fontSize: "11px",
+      lineHeight: "1.45",
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+    });
+
+    modal.appendChild(title);
+    modal.appendChild(desc);
+    modal.appendChild(schemaTitle);
+    modal.appendChild(pre);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
   }
 
   function renderItems(items) {
@@ -213,14 +285,36 @@ export function installToolSwitcher() {
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
         textAlign: "left",
-        flex: "0 1 60%",
+        flex: "0 1 48%",
         minWidth: "0",
         flexShrink: "1"
+      });
+
+      const preview = document.createElement("button");
+      preview.type = "button";
+      preview.textContent = "Preview";
+      preview.title = "Preview tool details";
+      Object.assign(preview.style, {
+        flexShrink: "0",
+        padding: "2px 6px",
+        borderRadius: "4px",
+        border: "1px solid var(--border)",
+        background: "transparent",
+        color: "inherit",
+        cursor: "pointer",
+        fontSize: "10px",
+        opacity: "0.62"
+      });
+      preview.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showToolPreview(m);
       });
 
       row.appendChild(cb);
       row.appendChild(left);
       row.appendChild(right);
+      row.appendChild(preview);
 
       row.addEventListener("mouseenter", () => {
         selectedIdx = i;
@@ -320,24 +414,37 @@ export function installToolSwitcher() {
   });
 
   function positionPanel() {
-    const btns = document.querySelectorAll("#statusbar .status-item");
-    let btn = null;
-    for (const b of btns) {
-      if (b.textContent?.includes("Tools:")) { btn = b; break; }
+    const btn = document.querySelector('[data-zion-status-id="dev.tools.button"]')
+      || Array.from(document.querySelectorAll("#bottombar .status-item, #statusbar .status-item"))
+        .find((b) => b.textContent?.includes("Tools:"));
+    const pad = 8;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    panel.style.left = "";
+    panel.style.right = "";
+    panel.style.top = "";
+    panel.style.bottom = "";
+    panel.style.maxHeight = "min(65vh, calc(100vh - 24px))";
+    if (!btn) {
+      panel.style.right = "12px";
+      panel.style.bottom = "36px";
+      return;
     }
-    if (!btn) return;
     const rect = btn.getBoundingClientRect();
-    panel.style.top = `${rect.top - 8 - 400}px`;
-    panel.style.right = `${window.innerWidth - rect.right}px`;
-    if (parseFloat(panel.style.top) < 8) {
-      panel.style.top = `${rect.bottom + 8}px`;
-    }
+    const width = Math.min(360, Math.max(240, vw - pad * 2));
+    const maxRight = Math.max(pad, vw - width - pad);
+    const right = Math.min(Math.max(pad, Math.round(vw - rect.right)), maxRight);
+    const spaceAbove = Math.max(160, Math.round(rect.top - pad * 2));
+    panel.style.width = `${width}px`;
+    panel.style.maxHeight = `${Math.min(Math.round(vh * 0.65), spaceAbove)}px`;
+    panel.style.right = `${right}px`;
+    panel.style.bottom = `${Math.max(pad, Math.round(vh - rect.top + pad))}px`;
   }
 
   function open() {
     refresh();
-    positionPanel();
     root.style.display = "block";
+    positionPanel();
     input.focus();
     input.select();
   }
@@ -356,10 +463,39 @@ export function installToolSwitcher() {
 function createHandle(root) {
   const panel = root.querySelector("div");
   const input = panel?.querySelector("input");
+  const position = () => {
+    if (!panel) return;
+    const btn = document.querySelector('[data-zion-status-id="dev.tools.button"]')
+      || Array.from(document.querySelectorAll("#bottombar .status-item, #statusbar .status-item"))
+        .find((b) => b.textContent?.includes("Tools:"));
+    const pad = 8;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    panel.style.left = "";
+    panel.style.right = "";
+    panel.style.top = "";
+    panel.style.bottom = "";
+    panel.style.maxHeight = "min(65vh, calc(100vh - 24px))";
+    if (!btn) {
+      panel.style.right = "12px";
+      panel.style.bottom = "36px";
+      return;
+    }
+    const rect = btn.getBoundingClientRect();
+    const width = Math.min(360, Math.max(240, vw - pad * 2));
+    const maxRight = Math.max(pad, vw - width - pad);
+    const right = Math.min(Math.max(pad, Math.round(vw - rect.right)), maxRight);
+    const spaceAbove = Math.max(160, Math.round(rect.top - pad * 2));
+    panel.style.width = `${width}px`;
+    panel.style.maxHeight = `${Math.min(Math.round(vh * 0.65), spaceAbove)}px`;
+    panel.style.right = `${right}px`;
+    panel.style.bottom = `${Math.max(pad, Math.round(vh - rect.top + pad))}px`;
+  };
   return {
     open() {
       input?.dispatchEvent(new Event("input"));
       root.style.display = "block";
+      position();
       input?.focus();
       input?.select();
     },

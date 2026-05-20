@@ -402,9 +402,15 @@ export async function activate(ctx) {
       ctx.subscriptions.push(dispMenu);
     }
 
-    // 状态栏按钮入口
-    if (window.zion?.statusBar?.registerItem) {
-      const dispStatus = window.zion.statusBar.registerItem({
+    // 配置入口：优先放到 editor header 菜单，保留 statusBar 作为旧 API 兜底。
+    if (window.zion?.editorHeaderMenu?.register || window.zion?.statusBar?.registerItem) {
+      const dispStatus = window.zion.editorHeaderMenu?.register?.({
+        id: 'dev.roles.config',
+        title: '角色配置',
+        section: 'Extensions',
+        order: 30,
+        onClick: showRolesConfigModal
+      }) || window.zion.statusBar.registerItem({
         id: 'dev.roles.config',
         text: '角色配置',
         tooltip: '配置自定义角色和高亮块角色',

@@ -22,6 +22,14 @@ const INLINE_FALLBACK = /(\*\*([^*\n]+)\*\*)|(_([^_\n]+)_)|(`([^`\n]+)`)|(\[([^\
 const ROLE_HEAD_RE = /^\s*(system|user|assistant|tool)\s+/;
 const FENCE_START_RE = /^\s*`{3,}\s*([^\s`]*)?.*$/;
 const FENCE_CLOSE_RE = /^\s*`{3,}\s*$/;
+const TABLE_SEPARATOR_CELL_RE = /^:?-{3,}:?$/;
+const ESCAPABLE_MARKDOWN_RE = /[\\`*_[\]{}()#+\-.!~|>]/;
+
+function isEscapedAt(text: string, index: number): boolean {
+  let slashCount = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) slashCount++;
+  return slashCount % 2 === 1;
+}
 
 /* Helper: Check if line contains tool call or thinking markers (skip WYSIWYG processing) */
 const isToolOrThinkingLine = (lineText: string): boolean => {
@@ -30,6 +38,187 @@ const isToolOrThinkingLine = (lineText: string): boolean => {
 
 function isRoleHeadLine(lineText: string): boolean {
   return ROLE_HEAD_RE.test(lineText);
+}
+
+function stripOuterTablePipes(s: string): string {
+  let t = s.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  let slashCount = 0;
+  for (let i = t.length - 2; i >= 0 && t[i] === "\\"; i--) slashCount++;
+  if (t.endsWith("|") && slashCount % 2 === 0) t = t.slice(0, -1);
+  return t;
+}
+
+function splitMarkdownTableCells(s: string): string[] {
+  const t = stripOuterTablePipes(s);
+  const cells: string[] = [];
+  let cur = "";
+  let inCode = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    const next = t[i + 1];
+    if (ch === "\\" && next) {
+      cur += next === "|" ? "|" : ch + next;
+      i++;
+      continue;
+    }
+    if (ch === "`") {
+      inCode = !inCode;
+      cur += ch;
+      continue;
+    }
+    if (ch === "|" && !inCode) {
+      cells.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+function isMarkdownTableSeparatorRow(s: string): boolean {
+  const t = s.trim();
+  if (!t.includes("|")) return false;
+  const cells = splitMarkdownTableCells(t);
+  return cells.length >= 2 && cells.every(cell => TABLE_SEPARATOR_CELL_RE.test(cell.trim()));
+}
+
+function isMarkdownTableContentRow(s: string): boolean {
+  const t = s.trim();
+  if (!t.includes("|")) return false;
+  return !isMarkdownTableSeparatorRow(t) && splitMarkdownTableCells(t).length >= 2;
+}
+
+function normalizeTableRows(headers: string[], aligns: Array<"left" | "center" | "right">, rows: string[][]) {
+  const colCount = Math.max(headers.length, aligns.length, ...rows.map(row => row.length), 1);
+  const normalize = (row: string[]) => Array.from({ length: colCount }, (_, i) => row[i] ?? "");
+  return {
+    headers: normalize(headers),
+    aligns: Array.from({ length: colCount }, (_, i) => aligns[i] || "left") as Array<"left" | "center" | "right">,
+    rows: rows.map(normalize)
+  };
+}
+
+function appendTableInlineMarkdown(parent: HTMLElement, source: string) {
+  const appendText = (text: string) => {
+    if (text) parent.appendChild(document.createTextNode(text));
+  };
+  const appendStyled = (tag: "strong" | "em" | "code" | "s", cls: string, text: string) => {
+    const el = document.createElement(tag);
+    el.className = cls;
+    if (tag === "code") {
+      el.textContent = text;
+    } else {
+      appendTableInlineMarkdown(el, text);
+    }
+    parent.appendChild(el);
+  };
+  let i = 0;
+  while (i < source.length) {
+    const rest = source.slice(i);
+    if (rest.startsWith("<br>") || rest.startsWith("<br/>") || rest.startsWith("<br />")) {
+      parent.appendChild(document.createElement("br"));
+      i += rest.startsWith("<br />") ? 6 : rest.startsWith("<br/>") ? 5 : 4;
+      continue;
+    }
+    if (source[i] === "\\" && i + 1 < source.length) {
+      appendText(source[i + 1]);
+      i += 2;
+      continue;
+    }
+    if (rest.startsWith("`")) {
+      const close = source.indexOf("`", i + 1);
+      if (close > i + 1) {
+        appendStyled("code", "cm-md-code", source.slice(i + 1, close));
+        i = close + 1;
+        continue;
+      }
+    }
+    if (rest.startsWith("**")) {
+      const close = source.indexOf("**", i + 2);
+      if (close > i + 2) {
+        appendStyled("strong", "cm-md-strong", source.slice(i + 2, close));
+        i = close + 2;
+        continue;
+      }
+    }
+    if (rest.startsWith("~~")) {
+      const close = source.indexOf("~~", i + 2);
+      if (close > i + 2) {
+        appendStyled("s", "cm-md-strike", source.slice(i + 2, close));
+        i = close + 2;
+        continue;
+      }
+    }
+    if (rest.startsWith("_")) {
+      const close = source.indexOf("_", i + 1);
+      const before = i > 0 ? source[i - 1] : "";
+      const after = close >= 0 && close + 1 < source.length ? source[close + 1] : "";
+      const isWordChar = (ch: string) => /[A-Za-z0-9_]/.test(ch);
+      if (close > i + 1 && !isWordChar(before) && !isWordChar(after)) {
+        appendStyled("em", "cm-md-em", source.slice(i + 1, close));
+        i = close + 1;
+        continue;
+      }
+    }
+    if (rest.startsWith("[")) {
+      const labelEnd = source.indexOf("]", i + 1);
+      if (labelEnd > i + 1 && source[labelEnd + 1] === "(") {
+        const urlEnd = source.indexOf(")", labelEnd + 2);
+        if (urlEnd > labelEnd + 2) {
+          const a = document.createElement("a");
+          a.className = "cm-md-link cm-md-table-link";
+          a.href = source.slice(labelEnd + 2, urlEnd);
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          appendTableInlineMarkdown(a, source.slice(i + 1, labelEnd));
+          parent.appendChild(a);
+          i = urlEnd + 1;
+          continue;
+        }
+      }
+    }
+    appendText(source[i]);
+    i++;
+  }
+}
+
+type AddDecoration = (from: number, to: number, dec: Decoration) => void;
+
+function addNestedInlineDecorations(add: AddDecoration, contentStart: number, content: string) {
+  const nested = /(`([^`\n]+)`)|(!\[([^\]]*)\]\(([^)\n]+)\))|(\[([^\]]+)\]\(([^)\n]+)\))|(\$([^\$\n]+)\$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = nested.exec(content)) !== null) {
+    const start = contentStart + m.index;
+    const end = start + m[0].length;
+    if (m[1]) {
+      add(start, start + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      add(start + 1, end - 1, Decoration.mark({ class: "cm-md-code" }));
+      add(end - 1, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      continue;
+    }
+    if (m[3]) {
+      const alt = m[4] || "";
+      const src = m[5] || "";
+      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      add(start, start, Decoration.widget({ widget: new SimpleImageWidget(alt, src), side: 1 }));
+      continue;
+    }
+    if (m[6]) {
+      const label = m[7] || "";
+      const url = m[8] || "";
+      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      add(start, start, Decoration.widget({ widget: new SimpleLinkWidget(label, url), side: 1 }));
+      continue;
+    }
+    if (m[9]) {
+      const expr = m[10] || "";
+      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      add(start, start, Decoration.widget({ widget: new MathWidget(expr, false), side: 1 }));
+    }
+  }
 }
 
 function getRoleBlockRange(doc: EditorView["state"]["doc"], pos: number) {
@@ -220,7 +409,7 @@ class SimpleLinkWidget extends WidgetType {
     a.href = this.url;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
-    a.textContent = this.label;
+    appendTableInlineMarkdown(a, this.label);
     a.title = this.url;
     return a;
   }
@@ -239,7 +428,7 @@ class SimpleImageWidget extends WidgetType {
     const mkFallback = () => {
       const fallback = document.createElement("span");
       fallback.className = "cm-md-img-fallback";
-      fallback.textContent = this.alt || "[image]";
+      appendTableInlineMarkdown(fallback, this.alt || "[image]");
       return fallback;
     };
 
@@ -312,6 +501,31 @@ class SimpleCodeWidget extends WidgetType {
     el.className = "cm-md-code";
     el.textContent = this.code;
     return el;
+  }
+  ignoreEvent() { return true; }
+}
+
+class KbdWidget extends WidgetType {
+  constructor(private label: string) { super(); }
+  eq(other: KbdWidget) { return other.label === this.label; }
+  toDOM() {
+    const el = document.createElement("kbd");
+    el.className = "cm-md-kbd";
+    el.textContent = this.label;
+    return el;
+  }
+  ignoreEvent() { return true; }
+}
+
+class FootnoteRefWidget extends WidgetType {
+  constructor(private id: string) { super(); }
+  eq(other: FootnoteRefWidget) { return other.id === this.id; }
+  toDOM() {
+    const sup = document.createElement("sup");
+    sup.className = "cm-md-footnote-ref";
+    sup.textContent = this.id;
+    sup.title = `脚注 ${this.id}`;
+    return sup;
   }
   ignoreEvent() { return true; }
 }
@@ -398,6 +612,10 @@ class TableWidget extends WidgetType {
     private onEditSource: () => void
   ) {
     super();
+    const normalized = normalizeTableRows(headers, aligns, rows);
+    this.headers = normalized.headers;
+    this.aligns = normalized.aligns;
+    this.rows = normalized.rows;
   }
 
   eq(other: TableWidget) {
@@ -435,13 +653,27 @@ class TableWidget extends WidgetType {
     }
   }
 
-  private attachCellEdit(td: HTMLTableCellElement, getSetter: () => (val: string) => void) {
+  private attachCellEdit(td: HTMLTableCellElement, value: string, getSetter: () => (val: string) => void) {
     const span = document.createElement("span");
     span.className = "cm-md-cell-edit";
     span.contentEditable = "true";
     span.spellcheck = false;
+    span.dataset.raw = value;
+    span.dataset.editing = "false";
+    const renderDisplay = () => {
+      span.contentEditable = "false";
+      span.innerHTML = "";
+      appendTableInlineMarkdown(span, span.dataset.raw || "");
+    };
+    const enterEditMode = () => {
+      if (span.dataset.editing === "true") return;
+      span.dataset.editing = "true";
+      span.contentEditable = "true";
+      span.textContent = span.dataset.raw || "";
+    };
     const focusEditable = () => {
       try {
+        enterEditMode();
         span.focus();
         const sel = window.getSelection();
         if (!sel) return;
@@ -452,12 +684,57 @@ class TableWidget extends WidgetType {
         sel.addRange(range);
       } catch {}
     };
-    // 初始值
-    span.textContent = td.textContent || "";
+    const focusEditableAtPoint = (clientX: number, clientY: number) => {
+      try {
+        enterEditMode();
+        span.focus();
+        const docWithCaret = document as Document & {
+          caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+          caretRangeFromPoint?: (x: number, y: number) => Range | null;
+        };
+        let range: Range | null = null;
+        const pos = docWithCaret.caretPositionFromPoint?.(clientX, clientY);
+        if (pos && span.contains(pos.offsetNode)) {
+          range = document.createRange();
+          range.setStart(pos.offsetNode, pos.offset);
+          range.collapse(true);
+        } else {
+          const hitRange = docWithCaret.caretRangeFromPoint?.(clientX, clientY) || null;
+          if (hitRange && span.contains(hitRange.startContainer)) range = hitRange;
+        }
+        if (!range) {
+          range = document.createRange();
+          range.selectNodeContents(span);
+          range.collapse(false);
+        }
+        const sel = window.getSelection();
+        if (!sel) return;
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch {}
+    };
+    renderDisplay();
     // 输入时只更新内存，不立即提交
     span.addEventListener("input", () => {
       const setter = getSetter();
-      setter(span.textContent || "");
+      const nextValue = span.textContent || "";
+      span.dataset.raw = nextValue;
+      setter(nextValue);
+    });
+    span.addEventListener("focus", enterEditMode);
+    span.addEventListener("mousedown", (ev) => {
+      if (ev.target instanceof HTMLElement && ev.target.closest("a")) return;
+      ev.stopPropagation();
+      if (ev.detail >= 2) {
+        enterEditMode();
+        span.focus();
+        return;
+      }
+      ev.preventDefault();
+      focusEditableAtPoint(ev.clientX, ev.clientY);
+    });
+    span.addEventListener("dblclick", (ev) => {
+      ev.stopPropagation();
     });
     // Enter/Meta+Enter 提交；Shift+Enter 插入换行（但提交时会被替换为空格）
     span.addEventListener("keydown", (ev) => {
@@ -471,7 +748,10 @@ class TableWidget extends WidgetType {
         const next = document.activeElement as HTMLElement | null;
         const nextIsCellEditor = !!next?.closest(".cm-md-cell-edit");
         if (nextIsCellEditor) return;
+        span.dataset.raw = span.textContent || "";
+        span.dataset.editing = "false";
         this.commit();
+        renderDisplay();
       });
     });
     // 点击单元格 padding / 边框时，也留在表格内处理，避免命中到底层编辑器造成滚动跳变
@@ -479,7 +759,8 @@ class TableWidget extends WidgetType {
       e.stopPropagation();
       if (!(e.target instanceof HTMLElement)) return;
       if (e.target.closest(".cm-md-col-resizer")) return;
-      if (e.target === span) return;
+      if (e.target.closest("a")) return;
+      if (e.target.closest(".cm-md-cell-edit")) return;
       e.preventDefault();
       focusEditable();
     };
@@ -487,7 +768,8 @@ class TableWidget extends WidgetType {
       e.stopPropagation();
       if (!(e.target instanceof HTMLElement)) return;
       if (e.target.closest(".cm-md-col-resizer")) return;
-      if (e.target === span) return;
+      if (e.target.closest("a")) return;
+      if (e.target.closest(".cm-md-cell-edit")) return;
       e.preventDefault();
       focusEditable();
     };
@@ -564,18 +846,49 @@ class TableWidget extends WidgetType {
 
     const toolbar = document.createElement("div");
     toolbar.className = "cm-md-table-toolbar";
+    const stopActionEvent = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
     const editBtn = document.createElement("button");
     editBtn.className = "cm-md-table-btn";
     editBtn.type = "button";
-    editBtn.textContent = "编辑源码";
+    editBtn.textContent = "源码";
     editBtn.title = "切换到 Markdown 表格源码编辑";
+    editBtn.onpointerdown = stopActionEvent;
+    editBtn.onmousedown = stopActionEvent;
     editBtn.onclick = (e) => {
       e.preventDefault();
       e.stopPropagation();
       try { this.onEditSource(); } catch {}
     };
     toolbar.appendChild(editBtn);
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "cm-md-table-btn";
+    copyBtn.type = "button";
+    copyBtn.textContent = "复制";
+    copyBtn.title = "复制 Markdown 表格";
+    copyBtn.onpointerdown = stopActionEvent;
+    copyBtn.onmousedown = stopActionEvent;
+    copyBtn.onclick = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        await navigator.clipboard?.writeText?.(this.buildMarkdown());
+        copyBtn.textContent = "已复制";
+        window.setTimeout(() => { copyBtn.textContent = "复制"; }, 1200);
+      } catch {
+        copyBtn.textContent = "失败";
+        window.setTimeout(() => { copyBtn.textContent = "复制"; }, 1200);
+      }
+    };
+    toolbar.appendChild(copyBtn);
     wrap.appendChild(toolbar);
+
+    const scroller = document.createElement("div");
+    scroller.className = "cm-md-table-scroll";
 
     const table = document.createElement("table");
     table.className = "cm-md-table";
@@ -586,10 +899,8 @@ class TableWidget extends WidgetType {
     this.headers.forEach((h, i) => {
       const th = document.createElement("th");
       th.style.textAlign = this.aligns[i] || "left";
-      th.textContent = h;
-
       // 表头可编辑
-      this.attachCellEdit(th as unknown as HTMLTableCellElement, () => {
+      this.attachCellEdit(th as unknown as HTMLTableCellElement, h, () => {
         return (val: string) => {
           this.headers[i] = val;
         };
@@ -610,10 +921,8 @@ class TableWidget extends WidgetType {
       row.forEach((cell, ci) => {
         const td = document.createElement("td");
         td.style.textAlign = this.aligns[ci] || "left";
-        td.textContent = cell;
-
         // 单元格可编辑
-        this.attachCellEdit(td, () => {
+        this.attachCellEdit(td, cell, () => {
           return (val: string) => {
             this.rows[ri][ci] = val;
           };
@@ -630,7 +939,8 @@ class TableWidget extends WidgetType {
       this.columnWidths.forEach((w, i) => this.setColumnWidth(table, i, w));
     }
 
-    wrap.appendChild(table);
+    scroller.appendChild(table);
+    wrap.appendChild(scroller);
     return wrap;
   }
 
@@ -1181,6 +1491,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
     while ((m = INLINE_FALLBACK.exec(text)) !== null) {
       const start = vr.from + m.index;
       const end = start + m[0].length;
+      if (isEscapedAt(text, m.index)) continue;
       if (isInsideFencedCode(start)) continue;
       const lnNum = doc.lineAt(start).number;
       const isActive = activeLines.has(lnNum);
@@ -1198,6 +1509,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         } else {
           add(start, start + 2, Decoration.mark({ class: "cm-z-hide-syntax" }));
           add(start + 2, end - 2, Decoration.mark({ class: "cm-md-strong" }));
+          addNestedInlineDecorations(add, start + 2, m[2] || "");
           add(end - 2, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
         }
         continue;
@@ -1217,6 +1529,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         } else {
           add(start, start + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
           add(start + 1, end - 1, Decoration.mark({ class: "cm-md-em" }));
+          addNestedInlineDecorations(add, start + 1, m[4] || "");
           add(end - 1, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
         }
         continue;
@@ -1279,10 +1592,47 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         } else {
           add(start, start + 2, Decoration.mark({ class: "cm-z-hide-syntax" }));
           add(start + 2, end - 2, Decoration.mark({ class: "cm-md-strike" }));
+          addNestedInlineDecorations(add, start + 2, m[16] || "");
           add(end - 2, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
         }
         continue;
       }
+    }
+
+    const escapedInline = /\\([\\`*_[\]{}()#+\-.!~|>])/g;
+    while ((m = escapedInline.exec(text)) !== null) {
+      const start = vr.from + m.index;
+      if (isInsideFencedCode(start)) continue;
+      const line = doc.lineAt(start);
+      if (activeLines.has(line.number)) continue;
+      if (isToolOrThinkingLine(doc.sliceString(line.from, line.to))) continue;
+      if (ESCAPABLE_MARKDOWN_RE.test(m[1] || "")) {
+        add(start, start + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      }
+    }
+
+    const kbdInline = /<kbd>([^<\n]+)<\/kbd>/gi;
+    while ((m = kbdInline.exec(text)) !== null) {
+      const start = vr.from + m.index;
+      const end = start + m[0].length;
+      if (isInsideFencedCode(start)) continue;
+      const line = doc.lineAt(start);
+      if (activeLines.has(line.number)) continue;
+      if (isToolOrThinkingLine(doc.sliceString(line.from, line.to))) continue;
+      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      add(start, start, Decoration.widget({ widget: new KbdWidget(m[1] || ""), side: 1 }));
+    }
+
+    const footnoteRef = /\[\^([^\]\s]+)\](?!:)/g;
+    while ((m = footnoteRef.exec(text)) !== null) {
+      const start = vr.from + m.index;
+      const end = start + m[0].length;
+      if (isInsideFencedCode(start)) continue;
+      const line = doc.lineAt(start);
+      if (activeLines.has(line.number)) continue;
+      if (isToolOrThinkingLine(doc.sliceString(line.from, line.to))) continue;
+      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      add(start, start, Decoration.widget({ widget: new FootnoteRefWidget(m[1] || ""), side: 1 }));
     }
 
 // 2.2 tables (pipe-style GFM): header + separator + rows
@@ -1290,22 +1640,8 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
     const startLine = doc.lineAt(vr.from).number;
     const endLine = doc.lineAt(vr.to).number;
 
-    const isTableRow = (s: string) => {
-      const t = s.trim();
-      if (!t.includes("|")) return false;
-      // not a separator
-      return !/^(\s*\|)?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+(\|\s*)?$/.test(t);
-    };
-    const isSeparatorRow = (s: string) => {
-      const t = s.trim();
-      return /^(\s*\|)?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+(\|\s*)?$/.test(t);
-    };
-    const splitCells = (s: string) => {
-      const t = s.trim().replace(/^\|/, "").replace(/\|$/, "");
-      return t.split("|").map(c => c.trim());
-    };
     const parseAligns = (s: string) => {
-      const cells = splitCells(s);
+      const cells = splitMarkdownTableCells(s);
       return cells.map(seg => {
         const left = seg.startsWith(":");
         const right = seg.endsWith(":");
@@ -1324,7 +1660,23 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       // Skip tool call and thinking lines
       if (isToolOrThinkingLine(ltxt)) { ln++; continue; }
 
-      if (isTableRow(ltxt)) {
+      const footnoteDefMatch = /^\s*\[\^([^\]]+)\]:\s*/.exec(ltxt);
+      if (footnoteDefMatch) {
+        add(line.from, line.from, Decoration.line({ class: "cm-md-footnote-def-line" }));
+        if (!activeLines.has(ln)) {
+          const markerLen = footnoteDefMatch[0].length;
+          add(line.from, line.from + markerLen, Decoration.mark({ class: "cm-z-hide-syntax" }));
+          add(line.from, line.from, Decoration.widget({ widget: new FootnoteRefWidget(footnoteDefMatch[1] || ""), side: 1 }));
+        }
+        ln++;
+        continue;
+      }
+
+      if (/^\s*<\/?(details|summary|dl|dt|dd|p)\b/i.test(ltxt)) {
+        add(line.from, line.from, Decoration.line({ class: "cm-md-html-line" }));
+      }
+
+      if (isMarkdownTableContentRow(ltxt)) {
         try {
           const roleRange = getRoleBlockRange(doc, line.from);
           let start = ln;
@@ -1334,7 +1686,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
             if (start - 1 < roleRange.startLine) break;
             if (isInsideFencedCode(prev.from)) break;
             if (processedFallbackLines.has(start - 1)) break;
-            if (!isTableRow(ptxt)) break;
+            if (!isMarkdownTableContentRow(ptxt)) break;
             start--;
           }
 
@@ -1345,8 +1697,8 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           const sepLine = doc.line(sepLn);
           const sepTxt = doc.sliceString(sepLine.from, sepLine.to);
 
-          if (isTableRow(headerTxt) && isSeparatorRow(sepTxt)) {
-            const headers = splitCells(headerTxt);
+          if (isMarkdownTableContentRow(headerTxt) && isMarkdownTableSeparatorRow(sepTxt)) {
+            const headers = splitMarkdownTableCells(headerTxt);
             const aligns = parseAligns(sepTxt);
             const rows: string[][] = [];
             let rowLn = sepLn + 1;
@@ -1355,8 +1707,8 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
               const rline = doc.line(rowLn);
               const rtxt = doc.sliceString(rline.from, rline.to);
               if (rowLn > roleRange.endLine) break;
-              if (!isTableRow(rtxt) || isInsideFencedCode(rline.from) || processedFallbackLines.has(rowLn)) break;
-              rows.push(splitCells(rtxt));
+              if (!isMarkdownTableContentRow(rtxt) || isInsideFencedCode(rline.from) || processedFallbackLines.has(rowLn)) break;
+              rows.push(splitMarkdownTableCells(rtxt));
               rowLn++;
             }
 
@@ -1602,7 +1954,8 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
         for (const sel of update.view.state.selection.ranges) {
           const sFrom = sel.from;
           const sTo = sel.to;
-          if (!(sTo <= rng.from || sFrom >= rng.to)) { intersects = true; break; }
+          // A cursor placed at the first table character should keep source mode open.
+          if (sel.empty ? (sFrom >= rng.from && sFrom <= rng.to) : !(sTo <= rng.from || sFrom >= rng.to)) { intersects = true; break; }
         }
         if (!intersects) toDelete.push(start);
       }
@@ -1658,26 +2011,17 @@ function getTableBlockRangeAtPos(view: EditorView, startPos: number): { from: nu
   try {
     const doc = view.state.doc;
     const startLine = doc.lineAt(startPos).number;
-    const isTableRow = (s: string) => {
-      const t = s.trim();
-      if (!t.includes("|")) return false;
-      return !/^(\s*\|)?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+(\|\s*)?$/.test(t);
-    };
-    const isSeparatorRow = (s: string) => {
-      const t = s.trim();
-      return /^(\s*\|)?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+(\|\s*)?$/.test(t);
-    };
     if (startLine >= doc.lines) return null;
     const headerLine = doc.line(startLine);
     const sepLine = doc.line(startLine + 1);
     const headerTxt = doc.sliceString(headerLine.from, headerLine.to);
     const sepTxt = doc.sliceString(sepLine.from, sepLine.to);
-    if (!isTableRow(headerTxt) || !isSeparatorRow(sepTxt)) return null;
+    if (!isMarkdownTableContentRow(headerTxt) || !isMarkdownTableSeparatorRow(sepTxt)) return null;
     let rowLn = startLine + 2;
     while (rowLn <= doc.lines) {
       const row = doc.line(rowLn);
       const text = doc.sliceString(row.from, row.to);
-      if (!isTableRow(text)) break;
+      if (!isMarkdownTableContentRow(text)) break;
       rowLn++;
     }
     return { from: headerLine.from, to: doc.line(rowLn - 1).to };

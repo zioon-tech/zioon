@@ -29,6 +29,7 @@ function createHarness(panelSessions: Record<string, string | null>, initialText
     host.dataset.panelId = panel.id;
     document.body.appendChild(host);
     const core = new EditorCore(host, initialText, panel.id);
+    core.setSessionId(panel.activeTabId);
     const editor = attachEditor(core, panel.id);
     cores.set(panel.id, core);
     editors.set(panel.id, editor);
@@ -150,6 +151,36 @@ describe("chat cards DOM lifecycle", () => {
     }
   });
 
+  it("restores mirrored tool widgets after session-load text sync without marking them deleted", async () => {
+    const h = createHarness({ "panel-a": "session-1", "panel-b": "session-1" }, "user hi\nassistant \n");
+    try {
+      window.zion.events.emit("chat/toolCall", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        toolCall: { id: "tool-sync", name: "read", args: { path: "sync.txt" } }
+      });
+      await wait(120);
+
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(1);
+      expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(1);
+
+      const syncedText = h.editors.get("panel-a")!.getValue();
+      h.cores.get("panel-b")!.setValue(syncedText, { source: "session-load" });
+      await wait(20);
+
+      expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(0);
+
+      window.zion.events.emit("toolcards/toolsUpdated", { sessionId: "session-1" });
+      await wait(80);
+
+      const ann = window.zion.commands.executeCommand("zion.chatCards.getSessionAnnotations", "session-1");
+      expect(Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : []).not.toContain("tool-sync");
+      expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(1);
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("does not sync text or annotations into panels showing a different session", async () => {
     const h = createHarness({ "panel-a": "session-1", "panel-b": "session-2" }, "user hi\nassistant \n");
     try {
@@ -164,6 +195,51 @@ describe("chat cards DOM lifecycle", () => {
       expect(h.editors.get("panel-b")!.getValue()).toBe(beforeB);
       expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(0);
       expect(window.zion.commands.executeCommand("zion.chatCards.getSessionAnnotations", "session-2").tools).toEqual([]);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("does not attach widgets to an editor view without a bound session id", async () => {
+    const h = createHarness({ "panel-a": "session-1" }, "user hi\nassistant \n");
+    try {
+      h.cores.get("panel-a")!.setSessionId(null);
+      window.zion.events.emit("chat/toolCall", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        toolCall: { id: "tool-unbound", name: "read", args: {} }
+      });
+      window.zion.events.emit("chat/reasoningStart", { sessionId: "session-1", panelId: "panel-a", runId: "run-unbound" });
+      window.zion.events.emit("chat/reasoningToken", { sessionId: "session-1", panelId: "panel-a", runId: "run-unbound", token: "thinking" });
+      await wait(80);
+
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(0);
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("defers widget restore on empty session-loaded views instead of inserting marker-only docs", async () => {
+    const h = createHarness({ "panel-a": "session-1" }, "");
+    try {
+      window.zion.commands.executeCommand("zion.chatCards.setSessionAnnotations", {
+        sessionId: "session-1",
+        annotations: {
+          tools: [{ id: "tool-empty-restore", name: "read", args: {}, expanded: false }],
+          thinking: [{ id: "thinking-empty-restore", text: "reasoning", expanded: false }]
+        }
+      });
+
+      window.zion.commands.executeCommand("zion.chatCards.restoreSession", {
+        sessionId: "session-1",
+        panelId: "panel-a"
+      });
+      await wait(80);
+
+      expect(h.editors.get("panel-a")!.getValue()).toBe("");
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(0);
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(0);
     } finally {
       h.dispose();
     }

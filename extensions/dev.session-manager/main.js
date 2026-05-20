@@ -26,6 +26,10 @@ const LS_AUTO = "zion.autosave";
 const LS_FOLDER_OPEN = "zion.sessions.folderOpen";
 const URL_SESSION = "zionSession";
 const URL_SESSION_ALT = "session";
+function debugSessions(event, payload) {
+  void event;
+  void payload;
+}
 function now() {
   return Date.now();
 }
@@ -50,12 +54,12 @@ function warnStorageIssue(where, error) {
     console.error("[sessions] storage write failed at", where, error);
     // mark an error state for diagnostics
     try { window.zion?.state?.set("sessions.storageError", { where, error: String(error) }); } catch {}
-    // surface a compact status item (id reused to update text)
+    // Surface storage failures as a notification now that the top status bar is hidden.
     try {
-      window.zion?.statusBar?.registerItem({
-        id: "session.storage.warn",
-        text: "⚠ Storage",
-        tooltip: "Sessions storage write failed. Some changes may not persist."
+      window.zion?.notification?.show?.("Sessions storage write failed. Some changes may not persist.", {
+        type: "warning",
+        duration: 0,
+        dismissible: true
       });
     } catch {}
   } catch {}
@@ -264,6 +268,16 @@ const {
  * Tool-call cards and thinking cards will rebuild themselves based on saved positions.
  */
 function applyAnnotationsForSession(id, panelId) {
+  try {
+    const meta = loadMeta(id);
+    debugSessions("annotations.apply", {
+      sessionId: id,
+      panelId: panelId || null,
+      tools: Array.isArray(meta?.annotations?.tools) ? meta.annotations.tools.length : 0,
+      thinking: Array.isArray(meta?.annotations?.thinking) ? meta.annotations.thinking.length : 0,
+      toolIds: Array.isArray(meta?.annotations?.tools) ? meta.annotations.tools.map((it) => it?.id).filter(Boolean).map(String) : []
+    });
+  } catch {}
   applyAnnotationsForSessionImpl({ id, panelId, loadMeta, zion: window.zion });
 }
 
@@ -351,9 +365,9 @@ function maybeUpdateAutoTitle(id) {
     try {
       const ed = window.zion.window.activeEditor;
       const editorPanelId = ed?.panelId || null;
-      const editorPanelSessionId = editorPanelId
+      const editorPanelSessionId = ed?.sessionId || (editorPanelId
         ? (window.zion?.panelManager?.getPanel?.(editorPanelId)?.activeTabId || null)
-        : null;
+        : null);
       if (ed && editorPanelSessionId === id) {
         text = ed.getValue() || "";
         source = "activeEditor";
@@ -697,6 +711,72 @@ function refreshStatusBar() {
   updatePageTitle(id);
 }
 
+function getActivePanelContext() {
+  try {
+    const panelId = window.zion?.panels?.getActivePanelId?.() || null;
+    const panel = panelId
+      ? window.zion?.panels?.list?.().find((item) => item.id === panelId) || null
+      : null;
+    const editor = panelId
+      ? window.zion?.panels?.getEditor?.(panelId) || window.zion?.window?.activeEditor || null
+      : window.zion?.window?.activeEditor || null;
+    return {
+      panelId,
+      sessionId: panel?.activeTabId || window.zion?.state?.get?.("sessions.currentId") || null,
+      editor
+    };
+  } catch {
+    return {
+      panelId: null,
+      sessionId: window.zion?.state?.get?.("sessions.currentId") || null,
+      editor: window.zion?.window?.activeEditor || null
+    };
+  }
+}
+
+async function openSessionForPanel(panelId, sessionId, opts = {}) {
+  if (panelId && typeof window.zion?.panels?.openSession === "function") {
+    return await window.zion.panels.openSession(panelId, sessionId, {
+      focus: opts?.focus !== false,
+      forceReload: !!opts?.forceReload
+    });
+  }
+  window.zion.state.set("sessions.currentId", sessionId);
+  const text = opts?.text != null ? String(opts.text) : await loadDocAsync(sessionId);
+  window.zion.window.activeEditor?.setValue(text, { source: "session-load" });
+  try { applyAnnotationsForSession(sessionId); } catch {}
+  return true;
+}
+
+async function removeSessionFromPanels(sessionId) {
+  const panels = (() => {
+    try { return window.zion?.panelManager?.listPanels?.() || []; } catch { return []; }
+  })();
+  const changed = [];
+  for (const panel of panels) {
+    if (!Array.isArray(panel?.tabs)) continue;
+    const idx = panel.tabs.findIndex((tab) => tab?.id === sessionId);
+    if (idx < 0) continue;
+    const wasActive = panel.activeTabId === sessionId;
+    panel.tabs = panel.tabs.filter((tab) => tab?.id !== sessionId);
+    changed.push(panel.id);
+    if (!wasActive) continue;
+    const nextId = panel.tabs[Math.min(idx, panel.tabs.length - 1)]?.id || panel.tabs[panel.tabs.length - 1]?.id || null;
+    if (nextId) {
+      await openSessionForPanel(panel.id, nextId, {
+        focus: window.zion?.panels?.getActivePanelId?.() === panel.id,
+        forceReload: true
+      });
+    } else {
+      panel.activeTabId = null;
+    }
+  }
+  for (const panelId of changed) {
+    try { window.zion?.events?.emit?.("panel/tabsChanged", { panelId }); } catch {}
+  }
+  return changed.length > 0;
+}
+
 /** ========== CM6 Plugin (auto-save) ========== */
 function sessionAutoSavePlugin(getCurrentId, onSaved) {
   return createSessionAutoSavePlugin({
@@ -843,15 +923,22 @@ function injectScrollbarStyles() {
 
       /* Highlight styles for current session */
       .zion-session-row.is-current {
-        background: var(--ext-session-active-bg, rgba(128, 128, 128, 0.15));
+        background: var(--sessions-current-bg, var(--ext-session-active-bg, rgba(128, 128, 128, 0.15)));
         border: none !important;
         outline: none !important;
+        box-shadow: none !important;
       }
       .zion-session-row.is-current:hover {
-        background: var(--ext-session-active-hover-bg, rgba(128, 128, 128, 0.25));
+        background: var(--sessions-current-hover-bg, var(--ext-session-active-hover-bg, rgba(128, 128, 128, 0.25)));
+      }
+      .zion-session-row:focus,
+      .zion-session-row:focus-visible {
+        outline: none !important;
+        box-shadow: none !important;
       }
       .zion-session-row.is-selected {
-        background: var(--ext-session-selected-bg, rgba(33, 150, 243, 0.2));
+        background: var(--sessions-selected-bg, var(--ext-session-selected-bg, rgba(33, 150, 243, 0.2)));
+        box-shadow: none !important;
       }
     `;
     document.head.appendChild(style);
@@ -903,7 +990,7 @@ export async function activate(ctx) {
   if (ed) {
     try {
       const text = await loadDocAsync(currentId);
-      ed.setValue(text);
+      ed.setValue(text, { source: "session-load" });
       try { applyAnnotationsForSession(currentId); } catch {}
     } catch (e) {
       console.error("[sessions] setValue error:", e);
@@ -988,19 +1075,10 @@ export async function activate(ctx) {
           id: "sessions.new",
           title: "Create new session",
           ariaLabel: "Create new session",
-          icon: "+",
-          onClick: () => window.zion.commands.executeCommand("zion.sessions.new")
-        },
-        {
-          id: "sessions.anchor",
-          title: "定位到当前会话",
-          ariaLabel: "定位到当前会话",
-          icon: "◎",
-          onClick: () => {
-            try {
-              __sidebarViewManager.anchorToCurrentIfOpen();
-            } catch {}
-          }
+          icon: "$(add)",
+          onClick: () => window.zion.commands.executeCommand("zion.sessions.new", {
+            parentId: window.zion.state.get("sessions.selectedFolderId") || "root"
+          })
         },
         {
           id: "sessions.actions",
@@ -1081,27 +1159,28 @@ export async function activate(ctx) {
           const meta = loadMeta(cur);
           if (meta.hash !== msg.hash) {
             window.zion.state.set("sessions.externalUpdate", { id: msg.id, updatedAt: msg.updatedAt, hash: msg.hash });
-            window.zion.statusBar.registerItem({
-              id: "session.externalUpdate",
-              text: "⟳",
-              tooltip: "This session was updated in another tab. Click to refresh.",
-              onClick: () => {
-                (async () => {
-                  try {
-                    const text = await loadDocAsync(cur);
-                    const ed2 = window.zion.window.activeEditor;
-                    ed2?.setValue(text);
-                    try { applyAnnotationsForSession(cur); } catch {}
-                    // 清理提示
-                    window.zion.state.set("sessions.externalUpdate", null);
-                    // 刷新状态
-                    refreshStatusBar();
-                    try { refreshSessionsSidebarViewIfOpen(); } catch {}
-                  } catch (e) {
-                    console.error("[sessions] refresh on external update error:", e);
-                  }
-                })();
-              }
+            window.zion.notification?.show?.("当前会话已在另一个标签页更新。", {
+              type: "info",
+              duration: 0,
+              dismissible: true,
+              actions: [{
+                label: "刷新",
+                handler: () => {
+                  (async () => {
+                    try {
+                      const text = await loadDocAsync(cur);
+                      const ed2 = window.zion.window.activeEditor;
+                      ed2?.setValue(text, { source: "session-load" });
+                      try { applyAnnotationsForSession(cur); } catch {}
+                      window.zion.state.set("sessions.externalUpdate", null);
+                      refreshStatusBar();
+                      try { refreshSessionsSidebarViewIfOpen(); } catch {}
+                    } catch (e) {
+                      console.error("[sessions] refresh on external update error:", e);
+                    }
+                  })();
+                }
+              }]
             });
           }
         }
@@ -1113,6 +1192,8 @@ export async function activate(ctx) {
   const plugin = sessionAutoSavePlugin(
     (view) => {
       try {
+        const editorSessionId = view?.dom?.getAttribute?.("data-session-id") || null;
+        if (editorSessionId) return editorSessionId;
         const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
         if (panelId) {
           return window.zion?.panelManager?.getPanel?.(panelId)?.activeTabId
@@ -1194,10 +1275,13 @@ export async function activate(ctx) {
   } catch {}
 
   // New empty session
-  const dNew = window.zion.commands.registerCommand("zion.sessions.new", (opts) => {
+  const dNew = window.zion.commands.registerCommand("zion.sessions.new", async (opts = {}) => {
     const suggested = `Session ${getIndex().length + 1}`;
     const id = genId();
     const text = String(opts?.content ?? "");
+    const targetPanelId = opts?.panelId || (() => {
+      try { return window.zion?.panels?.getActivePanelId?.() || null; } catch { return null; }
+    })();
     // title: prefer provided; else derive from content; else fallback suggested
     const derived = deriveTitleFromText(text);
     const explicitTitle = String(opts?.title || "").trim();
@@ -1215,7 +1299,9 @@ export async function activate(ctx) {
     saveMeta(id, meta);
     const parentId = (() => {
       if (opts?.parentId) return opts.parentId;
-      const curId = window.zion.state.get("sessions.currentId");
+      const curId = targetPanelId
+        ? (window.zion?.panels?.list?.().find((panel) => panel.id === targetPanelId)?.activeTabId || null)
+        : window.zion.state.get("sessions.currentId");
       if (curId) {
         const tree = loadTree() || ensureInitialTree();
         const { parent } = findNodeAndParent(tree, curId);
@@ -1227,7 +1313,6 @@ export async function activate(ctx) {
     insertSessionNode(id, parentId, meta.title);
     rebuildIndexFromTree();
     setLastActiveId(id, { push: true });
-    window.zion.state.set("sessions.currentId", id);
     window.zion.state.set("sessions.catalog", getIndex());
     try {
       const rs = window.zion.state.get(`chat.runs.${id}`);
@@ -1243,21 +1328,28 @@ export async function activate(ctx) {
     } catch (e) {
       console.warn("[sessions] new: verification error", e);
     }
-    const ed = window.zion.window.activeEditor;
-    ed?.setValue(text);
-    try { applyAnnotationsForSession(id); } catch {}
-    ed?.focus?.();
+    if (targetPanelId && typeof window.zion?.panels?.openSession === "function") {
+      await window.zion.panels.openSession(targetPanelId, id, { focus: opts?.focus !== false, forceReload: true });
+    } else {
+      window.zion.state.set("sessions.currentId", id);
+      const ed = window.zion.window.activeEditor;
+      ed?.setValue(text, { source: "session-load" });
+      try { applyAnnotationsForSession(id); } catch {}
+      ed?.focus?.();
+    }
     refreshStatusBar();
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     postSaved(id, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(id);
+    return id;
   });
   ctx.subscriptions.push(dNew);
 
   // Save current content as new session
   const dSaveAsNew = window.zion.commands.registerCommand("zion.sessions.saveAsNew", async () => {
-    const ed = window.zion.window.activeEditor;
+    const target = getActivePanelContext();
+    const ed = target.editor;
     const text = ed?.getValue() || "";
     const suggested = `Session ${getIndex().length + 1}`;
     const rawTitle = await openModalInput({
@@ -1268,7 +1360,7 @@ export async function activate(ctx) {
       cancelText: "Use default"
     });
     const resolvedTitle = String((rawTitle == null ? suggested : rawTitle) || suggested).trim() || suggested;
-    const prevId = window.zion.state.get("sessions.currentId");
+    const prevId = target.sessionId;
     const id = genId();
     const isManual = resolvedTitle !== suggested;
     const meta = { id, title: resolvedTitle, createdAt: now(), updatedAt: now(), size: text.length, hash: hashString(text), titleAuto: !isManual };
@@ -1285,13 +1377,12 @@ export async function activate(ctx) {
     insertSessionNode(id, parentId, meta.title);
     rebuildIndexFromTree();
     setLastActiveId(id, { push: true });
-    window.zion.state.set("sessions.currentId", id);
     window.zion.state.set("sessions.catalog", getIndex());
     try {
       const rs = window.zion.state.get(`chat.runs.${id}`);
       window.zion.state.set("chat.streaming", !!rs?.streaming);
     } catch {}
-    try { applyAnnotationsForSession(id); } catch {}
+    await openSessionForPanel(target.panelId, id, { text });
     refreshStatusBar();
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     postSaved(id, meta.updatedAt, meta.hash);
@@ -1302,7 +1393,15 @@ export async function activate(ctx) {
 
   // Rename
   const dRename = window.zion.commands.registerCommand("zion.sessions.rename", async (opts) => {
-    const id = opts?.id || window.zion.state.get("sessions.currentId");
+    const id = opts?.id || (() => {
+      const panelId = opts?.panelId || null;
+      if (panelId) {
+        try {
+          return window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId || null;
+        } catch {}
+      }
+      return window.zion.state.get("sessions.currentId");
+    })();
     if (!id) return false;
     const entry = findInIndex(id);
     const nv = String(opts?.title || "");
@@ -1317,10 +1416,11 @@ export async function activate(ctx) {
       });
     const title = String((raw == null ? (entry?.title || "") : raw) || "").trim();
     if (!title) return false;
-    const meta = loadMeta(id);
+    const meta = { ...(loadMeta(id) || {}), id };
     meta.title = title;
     meta.titleAuto = false;
     saveMeta(id, meta);
+    try { window.zion.state.set(`sessions.meta.${id}`, meta); } catch {}
     // update tree node title
     const tree = loadTree() || ensureInitialTree();
     const { node } = findNodeAndParent(tree, id);
@@ -1330,6 +1430,15 @@ export async function activate(ctx) {
     }
     rebuildIndexFromTree();
     window.zion.state.set("sessions.catalog", getIndex());
+    try {
+      const panels = window.zion?.panels?.list?.() || [];
+      for (const panel of panels) {
+        if (panel?.tabs?.some?.((tab) => tab?.id === id)) {
+          window.zion.events?.emit?.("panel/tabsChanged", { panelId: panel.id, sessionId: id, reason: "rename" });
+        }
+      }
+      window.zion.events?.emit?.("session/renamed", { id, title, panelId: opts?.panelId || null });
+    } catch {}
     refreshStatusBar();
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     // 更新页面标题
@@ -1341,22 +1450,23 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dAutoRename);
 
   // Delete
-  const dDelete = window.zion.commands.registerCommand("zion.sessions.delete", (id) => {
+  const dDelete = window.zion.commands.registerCommand("zion.sessions.delete", async (id) => {
     const cur = window.zion.state.get("sessions.currentId");
     deleteSession(id);
     const nextId = getLastActiveId() || getIndex()[0]?.id || null;
     window.zion.state.set("sessions.catalog", getIndex());
+    await removeSessionFromPanels(id);
     if (id === cur) {
       window.zion.state.set("sessions.currentId", nextId);
       if (nextId) {
         setLastActiveId(nextId);
-        (async () => {
+        if (!window.zion?.panels?.getActivePanelId?.()) {
           try {
             const text = await loadDocAsync(nextId);
-            window.zion.window.activeEditor?.setValue(text);
+            window.zion.window.activeEditor?.setValue(text, { source: "session-load" });
             try { applyAnnotationsForSession(nextId); } catch {}
           } catch {}
-        })();
+        }
       } else {
         window.zion.commands.executeCommand("zion.sessions.new");
       }
@@ -1472,7 +1582,37 @@ export async function activate(ctx) {
   const dSwitch = window.zion.commands.registerCommand("zion.sessions.switch", async (idOrOpts, maybeOpts) => {
     const id = typeof idOrOpts === "string" ? idOrOpts : idOrOpts?.id;
     const opts = typeof idOrOpts === "string" ? (maybeOpts || {}) : (idOrOpts || {});
-    return documentRuntime.switchSession({ ...opts, id });
+    debugSessions("switch.command.start", {
+      id,
+      panelId: opts?.panelId || null,
+      fromPanelRuntime: !!opts?.__fromPanelRuntime,
+      forceReload: !!opts?.forceReload,
+      skipPersistPrevious: !!opts?.skipPersistPrevious,
+      activePanelId: window.zion?.panels?.getActivePanelId?.() || null,
+      currentId: window.zion?.state?.get?.("sessions.currentId") || null
+    });
+    if (id && opts?.panelId && !opts?.__fromPanelRuntime) {
+      try {
+        if (typeof window.zion.panels?.openSession === "function") {
+          const result = await window.zion.panels.openSession(opts.panelId, id, { focus: opts?.focus !== false, forceReload: opts?.forceReload });
+          debugSessions("switch.command.delegatedPanel", { id, panelId: opts.panelId, result });
+          return result;
+        }
+      } catch {}
+    }
+    if (id && !opts?.panelId) {
+      try {
+        const panelId = window.zion.panels?.getActivePanelId?.();
+        if (panelId && typeof window.zion.panels?.openSession === "function") {
+          const result = await window.zion.panels.openSession(panelId, id, { focus: opts?.focus !== false });
+          debugSessions("switch.command.delegatedActivePanel", { id, panelId, result });
+          return result;
+        }
+      } catch {}
+    }
+    const result = await documentRuntime.switchSession({ ...opts, id });
+    debugSessions("switch.command.documentRuntimeResult", { id, panelId: opts?.panelId || null, result });
+    return result;
   });
   ctx.subscriptions.push(dSwitch);
 
@@ -1540,24 +1680,28 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispRunStarted, dispRunFinishedUI, dispRunErrorUI, dispAbortedUI);
 
-  const dispReasoningStart = window.zion.events.on("chat/reasoningStart", ({ runId, sessionId, silentReasoning }) => {
+  const dispReasoningStart = window.zion.events.on("chat/reasoningStart", async ({ runId, sessionId, silentReasoning }) => {
     try {
       if (silentReasoning) return;
       const cur = window.zion.state.get("sessions.currentId");
       if (!sessionId || sessionId === cur) return; // current session handled by plugin
 
       // Compute insertion position in background doc
-      const doc = window.zion.commands.executeCommand("zion.sessions.getDoc", sessionId) || "";
       const hint = window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
-      const pos = findAssistantBlockEndInText(doc, hint);
-
-      const prevChar = pos > 0 ? doc.slice(pos - 1, pos) : "";
-      const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-      const text = `${prefix}思考\n\n`;
-      const start = pos + prefix.length;
-      const end = start + "思考".length;
-      const newDoc = doc.slice(0, pos) + text + doc.slice(pos);
-      window.zion.commands.executeCommand("zion.sessions.setDoc", { id: sessionId, text: newDoc });
+      let start = 0;
+      let end = 0;
+      await window.zion.commands.executeCommand("zion.sessions.transformDoc", {
+        id: sessionId,
+        transform: (doc) => {
+          const pos = findAssistantBlockEndInText(doc, hint);
+          const prevChar = pos > 0 ? doc.slice(pos - 1, pos) : "";
+          const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
+          const text = `${prefix}思考\n\n`;
+          start = pos + prefix.length;
+          end = start + "思考".length;
+          return doc.slice(0, pos) + text + doc.slice(pos);
+        }
+      });
 
       // seq for this run
       const key = `thinking.seq.${sessionId}.${runId}`;
@@ -1601,22 +1745,27 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispReasoningToken);
 
-  const dispToolCall = window.zion.events.on("chat/toolCall", ({ runId, sessionId, toolCall }) => {
+  const dispToolCall = window.zion.events.on("chat/toolCall", async ({ runId, sessionId, toolCall }) => {
     try {
       const cur = window.zion.state.get("sessions.currentId");
       if (!sessionId || sessionId === cur) return;
       const name = toolCall?.name || "tool";
 
-      const doc = window.zion.commands.executeCommand("zion.sessions.getDoc", sessionId) || "";
       const hint = window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
-      const pos = findAssistantBlockEndInText(doc, hint);
-      const prevChar = pos > 0 ? doc.slice(pos - 1, pos) : "";
-      const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-      const text = `${prefix}调用 ${name}\n`;
-      const start = pos + prefix.length;
-      const end = start + (`调用 ${name}`).length;
-      const newDoc = doc.slice(0, pos) + text + doc.slice(pos);
-      window.zion.commands.executeCommand("zion.sessions.setDoc", { id: sessionId, text: newDoc });
+      let start = 0;
+      let end = 0;
+      await window.zion.commands.executeCommand("zion.sessions.transformDoc", {
+        id: sessionId,
+        transform: (doc) => {
+          const pos = findAssistantBlockEndInText(doc, hint);
+          const prevChar = pos > 0 ? doc.slice(pos - 1, pos) : "";
+          const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
+          const text = `${prefix}调用 ${name}\n`;
+          start = pos + prefix.length;
+          end = start + (`调用 ${name}`).length;
+          return doc.slice(0, pos) + text + doc.slice(pos);
+        }
+      });
 
       // Persist meta.annotations.tools
       const meta = loadMeta(sessionId);
@@ -1685,7 +1834,9 @@ export async function activate(ctx) {
 
   // Clone
   const dClone = window.zion.commands.registerCommand("zion.sessions.clone", (id) => {
-    const srcId = id || window.zion.state.get("sessions.currentId");
+    return (async () => {
+    const target = getActivePanelContext();
+    const srcId = id || target.sessionId;
     if (!srcId) return false;
     const srcMeta = loadMeta(srcId);
     const text = loadDoc(srcId);
@@ -1700,16 +1851,15 @@ export async function activate(ctx) {
     saveMeta(newId, meta);
     upsertIndexEntry({ id: newId, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
     setLastActiveId(newId, { push: true });
-    window.zion.state.set("sessions.currentId", newId);
     window.zion.state.set("sessions.catalog", getIndex());
-    window.zion.window.activeEditor?.setValue(text);
-    try { applyAnnotationsForSession(newId); } catch {}
+    await openSessionForPanel(target.panelId, newId, { text });
     refreshStatusBar();
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     postSaved(newId, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(newId);
     return true;
+    })();
   });
   ctx.subscriptions.push(dClone);
 
@@ -1778,7 +1928,7 @@ export async function activate(ctx) {
     } else {
       window.zion.state.set("sessions.currentId", nextId);
       try {
-        window.zion.window.activeEditor?.setValue(srcText);
+        window.zion.window.activeEditor?.setValue(srcText, { source: "session-load" });
         applyAnnotationsForSession(nextId);
       } catch {}
     }
@@ -1841,17 +1991,14 @@ export async function activate(ctx) {
       window.zion.state.set("sessions.catalog", getIndex());
       refreshStatusBar();
       try { refreshSessionsSidebarViewIfOpen(); } catch {}
-      // notify
-      window.zion.statusBar.registerItem({
-        id: "session.import.ok",
-        text: "✓",
-        tooltip: "Sessions imported successfully"
+      window.zion.notification?.show?.("Sessions imported successfully", {
+        type: "success",
+        duration: 3000
       });
     } else {
-      window.zion.statusBar.registerItem({
-        id: "session.import.err",
-        text: "⚠",
-        tooltip: "Failed to import sessions"
+      window.zion.notification?.show?.("Failed to import sessions", {
+        type: "error",
+        duration: 5000
       });
     }
     return ok;
@@ -1885,13 +2032,18 @@ export async function activate(ctx) {
       }
     }
     clearSelection();
-    const nextId = getLastActiveId() || getIndex()[0]?.id || null;
     if (affectedCurrent) {
+      const nextId = getLastActiveId() || getIndex()[0]?.id || null;
+      await Promise.all(sel.filter((it) => it.type !== "folder").map((it) => removeSessionFromPanels(it.id)));
       window.zion.state.set("sessions.currentId", nextId);
       if (nextId) {
         setLastActiveId(nextId);
-        window.zion.window.activeEditor?.setValue(loadDoc(nextId));
+        if (!window.zion?.panels?.getActivePanelId?.()) {
+          window.zion.window.activeEditor?.setValue(loadDoc(nextId), { source: "session-load" });
+        }
       }
+    } else {
+      await Promise.all(sel.filter((it) => it.type !== "folder").map((it) => removeSessionFromPanels(it.id)));
     }
     window.zion.state.set("sessions.catalog", getIndex());
     refreshStatusBar();

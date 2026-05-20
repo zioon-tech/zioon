@@ -197,6 +197,13 @@ function openMenu(view, clientX, clientY, line) {
   const isImplicitUserLine = !isUserRoleLine && implicitMarkerLine != null && line.number === implicitMarkerLine && !isRoleHeader(line.text);
   const isUserLikeLine = isUserRoleLine || isImplicitUserLine;
   const userStartLine = isImplicitUserLine ? 0 : (line.number - 1);
+  try {
+    window.zion?.state?.set?.("dev.gutterActions.lastContext", {
+      lineNumber: line.number,
+      userStartLine,
+      at: Date.now()
+    });
+  } catch {}
   const batch = computeBatchInfoForLine(doc, userStartLine, isUserLikeLine);
 
   // Determine foldable range at this line
@@ -377,6 +384,9 @@ function openMenu(view, clientX, clientY, line) {
             || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
             || null)
           : (window.zion?.state?.get?.("sessions.currentId") || null);
+        // #region debug-point A:menu-batch-accept-click
+        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"A",location:"extensions/dev.gutter-actions/gutter-actions.js:380",msg:"[DEBUG] gutter menu batch accept clicked",data:{userStartLine:batch.userStartLine,from:batch.range?.from ?? null,to:batch.range?.to ?? null,panelId,sessionId,acceptCount:batch.acceptCount,revertCount:batch.revertCount,total:batch.total,disabled:acceptDisabled},ts:Date.now()})}).catch(()=>{});
+        // #endregion
         window.zion?.events?.emit("toolcards/batchAccept", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to, panelId, sessionId });
       } catch {}
       return Promise.resolve(true);
@@ -389,6 +399,9 @@ function openMenu(view, clientX, clientY, line) {
             || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
             || null)
           : (window.zion?.state?.get?.("sessions.currentId") || null);
+        // #region debug-point A:menu-batch-revert-click
+        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"A",location:"extensions/dev.gutter-actions/gutter-actions.js:392",msg:"[DEBUG] gutter menu batch revert clicked",data:{userStartLine:batch.userStartLine,from:batch.range?.from ?? null,to:batch.range?.to ?? null,panelId,sessionId,acceptCount:batch.acceptCount,revertCount:batch.revertCount,total:batch.total,disabled:revertDisabled},ts:Date.now()})}).catch(()=>{});
+        // #endregion
         window.zion?.events?.emit("toolcards/batchRevert", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to, panelId, sessionId });
       } catch {}
       return Promise.resolve(true);

@@ -345,6 +345,207 @@ async function getCatalogOrScan() {
   return await scanAllSkills();
 }
 
+function findSkillsByNames(catalog, names) {
+  const wanted = (Array.isArray(names) ? names : [names])
+    .map((s) => String(s || "").trim())
+    .filter(Boolean);
+  if (!wanted.length) return [];
+  const byIdOrName = new Map();
+  for (const skill of catalog || []) {
+    if (!skill) continue;
+    if (skill.id) byIdOrName.set(String(skill.id).toLowerCase(), skill);
+    if (skill.name) byIdOrName.set(String(skill.name).toLowerCase(), skill);
+  }
+  return wanted.map((name) => byIdOrName.get(name.toLowerCase())).filter(Boolean);
+}
+
+function skillSummary(skill, enabledSet) {
+  return {
+    id: skill.id,
+    name: skill.name || skill.id,
+    enabled: enabledSet.has(skill.id),
+    description: skill.description || "",
+    category: skill.category || "",
+    tags: Array.isArray(skill.tags) ? skill.tags : [],
+    difficulty: skill.difficulty || "",
+    allowedTools: Array.isArray(skill.allowedTools) ? skill.allowedTools : [],
+    dependencies: Array.isArray(skill.dependencies) ? skill.dependencies : [],
+    path: skill.path || "",
+    file: skill.file || ""
+  };
+}
+
+function registerSkillManagerTool() {
+  try {
+    const toolName = "skillManager";
+    const tool = {
+      type: "function",
+      function: {
+        name: toolName,
+        description: "Manage LLM skills: list/get/scan, enable or disable skills, manage skill directories, clear cache, show stats, or open the skills panel. The default skills directory is ~/.zion-next/skills.",
+        parameters: {
+          type: "object",
+          properties: {
+            action: {
+              type: "string",
+              enum: ["list", "get", "scan", "enable", "disable", "set_enabled", "list_paths", "add_path", "remove_path", "clear_cache", "stats", "open_panel"],
+              description: "Operation to perform"
+            },
+            name: { type: "string", description: "Skill id or name for get/enable/disable" },
+            names: { type: "array", items: { type: "string" }, description: "Skill ids or names for enable/disable/set_enabled" },
+            query: { type: "string", description: "Optional list filter matching id/name/description/category/tags" },
+            enabled_only: { type: "boolean", description: "For list: only return enabled skills" },
+            include_body: { type: "boolean", description: "For get: include SKILL.md content" },
+            path: { type: "string", description: "Skill directory path for add_path/remove_path. Default location: ~/.zion-next/skills" }
+          },
+          required: ["action"],
+          additionalProperties: false
+        }
+      }
+    };
+
+    const existing = window.zion?.state?.get("chat.tools") || [];
+    const existNames = new Set(existing.map(t => t?.function?.name).filter(Boolean));
+    const merged = existing.slice();
+    if (!existNames.has(toolName)) merged.push(tool);
+    window.zion?.state?.set("chat.tools", merged);
+
+    const handlers = { ...(window.zion?.state?.get("chat.toolHandlers") || {}) };
+    handlers[toolName] = async (args) => {
+      try {
+        const state = getState();
+        if (!state) return JSON.stringify({ ok: false, error: "State unavailable" });
+        const action = String(args?.action || "").trim();
+        const catalog = action === "scan" ? await scanAllSkills() : await getCatalogOrScan();
+        const enabledSet = getEnabledSet();
+        const paths = Array.isArray(state.get("skills.paths")) ? state.get("skills.paths") : [];
+
+        if (action === "list") {
+          const q = String(args?.query || "").trim().toLowerCase();
+          const enabledOnly = !!args?.enabled_only;
+          let skills = catalog.map((s) => skillSummary(s, enabledSet));
+          if (enabledOnly) skills = skills.filter((s) => s.enabled);
+          if (q) {
+            skills = skills.filter((s) => {
+              const haystack = [
+                s.id,
+                s.name,
+                s.description,
+                s.category,
+                ...(s.tags || [])
+              ].join(" ").toLowerCase();
+              return haystack.includes(q);
+            });
+          }
+          return JSON.stringify({
+            ok: true,
+            total: catalog.length,
+            enabled: enabledSet.size,
+            lastScan: state.get("skills.lastScan") || 0,
+            paths,
+            skills
+          }, null, 2);
+        }
+
+        if (action === "get") {
+          const [skill] = findSkillsByNames(catalog, args?.name || args?.names);
+          if (!skill) return JSON.stringify({ ok: false, error: "Skill not found", name: args?.name || args?.names });
+          const result = skillSummary(skill, enabledSet);
+          if (args?.include_body) result.body = await loadSkillBody(skill);
+          return JSON.stringify({ ok: true, skill: result }, null, 2);
+        }
+
+        if (action === "scan") {
+          try { updateStatusBar(); } catch {}
+          return JSON.stringify({
+            ok: true,
+            total: catalog.length,
+            enabled: getEnabledSet().size,
+            lastScan: state.get("skills.lastScan") || 0,
+            paths
+          }, null, 2);
+        }
+
+        if (action === "enable" || action === "disable" || action === "set_enabled") {
+          const targets = findSkillsByNames(catalog, action === "set_enabled" ? args?.names : (args?.names || args?.name));
+          if (!targets.length) return JSON.stringify({ ok: false, error: "No matching skills found" });
+          const next = action === "set_enabled" ? new Set() : new Set(Array.from(enabledSet));
+          for (const skill of targets) {
+            if (action === "disable") next.delete(skill.id);
+            else next.add(skill.id);
+          }
+          state.set("skills.enabled", Array.from(next));
+          try { updateStatusBar(); } catch {}
+          return JSON.stringify({
+            ok: true,
+            action,
+            changed: targets.map((s) => ({ id: s.id, name: s.name || s.id })),
+            enabled: Array.from(next)
+          }, null, 2);
+        }
+
+        if (action === "list_paths") {
+          return JSON.stringify({ ok: true, paths }, null, 2);
+        }
+
+        if (action === "add_path" || action === "remove_path") {
+          const path = String(args?.path || "").trim();
+          if (!path) return JSON.stringify({ ok: false, error: "Missing path" });
+          const next = action === "add_path"
+            ? Array.from(new Set([...paths, path]))
+            : paths.filter((p) => p !== path);
+          state.set("skills.paths", next);
+          return JSON.stringify({ ok: true, action, paths: next }, null, 2);
+        }
+
+        if (action === "clear_cache") {
+          state.set("skills.cacheContent", {});
+          state.set("skills.usageHistory", {});
+          return JSON.stringify({ ok: true, cleared: ["skills.cacheContent", "skills.usageHistory"] }, null, 2);
+        }
+
+        if (action === "stats") {
+          const history = state.get("skills.usageHistory") || {};
+          const skills = Object.entries(history || {}).map(([id, entries]) => {
+            const skill = catalog.find((s) => s.id === id);
+            return {
+              id,
+              name: (skill && (skill.name || skill.id)) || id,
+              uses: Array.isArray(entries) ? entries.length : 0
+            };
+          });
+          return JSON.stringify({ ok: true, total: catalog.length, enabled: enabledSet.size, skills }, null, 2);
+        }
+
+        if (action === "open_panel") {
+          openSkillsPanel();
+          return JSON.stringify({ ok: true, opened: true }, null, 2);
+        }
+
+        return JSON.stringify({ ok: false, error: `Unknown action: ${action}` });
+      } catch (e) {
+        return JSON.stringify({ ok: false, error: e?.message || String(e) });
+      }
+    };
+    window.zion?.state?.set("chat.toolHandlers", handlers);
+
+    try {
+      const names = (window.zion?.state?.get("chat.tools") || [])
+        .map(t => t?.function?.name)
+        .filter(Boolean);
+      window.zion?.state?.set("chat.toolsKnownNames", names);
+      const enabled = window.zion?.state?.get("chat.enabledTools");
+      if (!Array.isArray(enabled) || enabled.length === 0) {
+        window.zion?.state?.set("chat.enabledTools", names);
+      } else if (!enabled.includes(toolName)) {
+        window.zion?.state?.set("chat.enabledTools", [...enabled, toolName]);
+      }
+    } catch {}
+  } catch (e) {
+    console.warn("[skills] register skillManager tool failed", e);
+  }
+}
+
 function registerMessageContributor() {
   if (!window.zion || !window.zion.messages || typeof window.zion.messages.registerContributor !== "function") {
     return { dispose: () => {} };
@@ -374,7 +575,19 @@ function updateStatusBar() {
     const catalog = getCatalog();
     const enabled = getEnabledSet();
     const text = `Skills: ${enabled.size}/${catalog.length}`;
-    window.zion.statusBar.registerItem({
+    window.zion.bottomStatusBar?.registerItem?.({
+      id: "dev.skills.status",
+      text,
+      tooltip: "Manage Skills",
+      priority: 69,
+      onClick: () => window.zion.commands.executeCommand("skills.openPanel")
+    }) || window.zion.editorHeaderMenu?.register?.({
+      id: "dev.skills.status",
+      title: `Skills：${enabled.size}/${catalog.length}`,
+      section: "Extensions",
+      order: 20,
+      onClick: () => window.zion.commands.executeCommand("skills.openPanel")
+    }) || window.zion.statusBar.registerItem({
       id: "dev.skills.status",
       text,
       tooltip: "Manage Skills",
@@ -382,6 +595,42 @@ function updateStatusBar() {
       priority: 78
     });
   } catch {}
+}
+
+function getSkillsStatusButton() {
+  try {
+    return document.querySelector('[data-zion-status-id="dev.skills.status"]');
+  } catch {
+    return null;
+  }
+}
+
+function positionSkillsPanel(panel) {
+  const gap = 8;
+  const margin = 8;
+  const fallbackBottom = 36;
+  const anchor = getSkillsStatusButton();
+
+  let right = 12;
+  let bottom = fallbackBottom;
+  let availableHeight = window.innerHeight - fallbackBottom - margin;
+
+  if (anchor) {
+    const rect = anchor.getBoundingClientRect();
+    right = Math.max(margin, window.innerWidth - rect.right);
+    bottom = Math.max(margin, window.innerHeight - rect.top + gap);
+    availableHeight = Math.max(240, rect.top - gap - margin);
+  }
+
+  const panelWidth = panel.offsetWidth || Math.min(360, window.innerWidth - margin * 2);
+  right = Math.min(right, Math.max(margin, window.innerWidth - panelWidth - margin));
+
+  Object.assign(panel.style, {
+    top: "auto",
+    right: `${right}px`,
+    bottom: `${bottom}px`,
+    maxHeight: `${Math.min(Math.floor(window.innerHeight * 0.65), availableHeight)}px`
+  });
 }
 
 function createButton(text, style, onClick) {
@@ -479,7 +728,13 @@ function renderSkillsList(container) {
   if (catalog.length === 0) {
     const empty = document.createElement("div");
     empty.textContent = 'No skills found. Add a directory path and click "Scan Now".';
-    Object.assign(empty.style, { fontSize: "12px", opacity: "0.7", padding: "10px 4px" });
+    Object.assign(empty.style, {
+      fontSize: "11px",
+      opacity: "0.6",
+      padding: "8px 6px",
+      textAlign: "center",
+      fontStyle: "italic"
+    });
     container.appendChild(empty);
     return;
   }
@@ -487,19 +742,28 @@ function renderSkillsList(container) {
   const sorted = catalog.slice().sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
   for (const skill of sorted) {
     const row = document.createElement("div");
+    const isEnabled = enabledSet.has(skill.id);
     Object.assign(row.style, {
-      border: "1px solid var(--border)",
-      borderRadius: "10px",
-      padding: "10px",
-      marginBottom: "8px",
-      background: enabledSet.has(skill.id) ? "rgba(128,128,128,0.06)" : "transparent"
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: "8px",
+      cursor: "pointer",
+      borderRadius: "4px",
+      padding: "4px 6px",
+      background: "transparent",
+      transition: "background-color 120ms ease, color 120ms ease",
+      fontFamily: "inherit",
+      fontSize: "11px",
+      lineHeight: "1.3"
     });
+    row.onmouseenter = () => { row.style.background = "color-mix(in srgb, var(--border) 28%, transparent)"; };
+    row.onmouseleave = () => { row.style.background = "transparent"; };
 
-    const header = document.createElement("div");
-    Object.assign(header.style, { display: "flex", alignItems: "center", gap: "10px" });
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
-    toggle.checked = enabledSet.has(skill.id);
+    toggle.checked = isEnabled;
+    Object.assign(toggle.style, { flexShrink: "0", margin: "0 0 0 0", cursor: "pointer" });
     toggle.onchange = () => {
       const next = new Set(enabledSet);
       if (toggle.checked) next.add(skill.id);
@@ -509,49 +773,67 @@ function renderSkillsList(container) {
 
     const title = document.createElement("div");
     title.textContent = skill.name || skill.id;
-    Object.assign(title.style, { fontSize: "13px", fontWeight: "600", flex: "1", minWidth: "0" });
+    Object.assign(title.style, {
+      flex: "0 0 34%",
+      minWidth: "90px",
+      fontWeight: "400",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    });
 
-    header.appendChild(toggle);
-    header.appendChild(title);
-    row.appendChild(header);
-
-    const desc = document.createElement("div");
-    desc.textContent = skill.description || "No description";
-    Object.assign(desc.style, { fontSize: "12px", opacity: "0.8", marginTop: "6px", marginLeft: "22px" });
-    row.appendChild(desc);
+    const parts = [];
+    if (skill.description) parts.push(String(skill.description));
+    if (skill.category) parts.push(`[${String(skill.category)}]`);
+    if (skill.tags && skill.tags.length) parts.push(skill.tags.slice(0, 2).map((t) => `#${t}`).join(" "));
 
     const meta = document.createElement("div");
-    const parts = [];
-    if (skill.category) parts.push(String(skill.category));
-    if (skill.tags && skill.tags.length) parts.push(skill.tags.map((t) => `#${t}`).join(" "));
-    if (skill.difficulty) parts.push(String(skill.difficulty));
-    meta.textContent = parts.join(" · ");
-    Object.assign(meta.style, { fontSize: "11px", opacity: "0.65", marginTop: "6px", marginLeft: "22px" });
-    row.appendChild(meta);
+    meta.textContent = parts.join("  ");
+    Object.assign(meta.style, {
+      flex: "1",
+      minWidth: "0",
+      fontSize: "10px",
+      opacity: "0.5",
+      color: "var(--fg)",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+      textAlign: "left"
+    });
 
-    const actions = document.createElement("div");
-    Object.assign(actions.style, { display: "flex", gap: "8px", marginTop: "8px", marginLeft: "22px" });
-
-    actions.appendChild(
-      createButton(
-        "Preview",
-        {
-          padding: "4px 10px",
-          borderRadius: "8px",
-          border: "1px solid var(--border)",
-          background: "transparent",
-          color: "var(--fg)",
-          cursor: "pointer",
-          fontSize: "12px"
-        },
-        async () => {
-          const body = await loadSkillBody(skill);
-          showModal(skill.name || skill.id, body || "(empty)");
-        }
-      )
+    const preview = createButton(
+      "Preview",
+      {
+        flexShrink: "0",
+        padding: "2px 6px",
+        borderRadius: "4px",
+        border: "1px solid var(--border)",
+        background: "transparent",
+        color: "var(--fg)",
+        cursor: "pointer",
+        fontSize: "10px",
+        opacity: "0.55"
+      },
+      async (e) => {
+        try { e?.preventDefault?.(); e?.stopPropagation?.(); } catch {}
+        const body = await loadSkillBody(skill);
+        showModal(skill.name || skill.id, body || "(empty)");
+      }
     );
 
-    row.appendChild(actions);
+    row.addEventListener("mousedown", (e) => e.preventDefault());
+    row.addEventListener("click", (e) => {
+      if (e.target === toggle || e.target === preview) return;
+      const next = new Set(enabledSet);
+      if (isEnabled) next.delete(skill.id);
+      else next.add(skill.id);
+      state.set("skills.enabled", Array.from(next));
+    });
+
+    row.appendChild(toggle);
+    row.appendChild(title);
+    row.appendChild(meta);
+    row.appendChild(preview);
     container.appendChild(row);
   }
 }
@@ -567,21 +849,21 @@ function renderPathsList(container) {
   if (list.length === 0) {
     const empty = document.createElement("div");
     empty.textContent = "No paths configured";
-    Object.assign(empty.style, { fontSize: "11px", opacity: "0.6" });
+    Object.assign(empty.style, { fontSize: "10px", opacity: "0.5", padding: "2px 0" });
     container.appendChild(empty);
     return;
   }
 
   list.forEach((p, idx) => {
     const row = document.createElement("div");
-    Object.assign(row.style, { display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" });
+    Object.assign(row.style, { display: "flex", gap: "6px", alignItems: "center", marginBottom: "4px" });
 
     const label = document.createElement("div");
     label.textContent = String(p);
     Object.assign(label.style, {
       flex: "1",
-      fontSize: "11px",
-      opacity: "0.8",
+      fontSize: "10px",
+      opacity: "0.62",
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
@@ -592,13 +874,13 @@ function renderPathsList(container) {
       "×",
       {
         width: "26px",
-        height: "26px",
-        borderRadius: "8px",
+        height: "22px",
+        borderRadius: "4px",
         border: "1px solid var(--border)",
         background: "transparent",
         color: "var(--fg)",
         cursor: "pointer",
-        opacity: "0.8"
+        opacity: "0.7"
       },
       () => {
         const next = list.slice();
@@ -626,14 +908,16 @@ function openSkillsPanel() {
   Object.assign(overlay.style, {
     position: "fixed",
     inset: "0",
-    background: "rgba(0,0,0,0.35)",
-    zIndex: "99998"
+    background: "transparent",
+    zIndex: "100000"
   });
   let d1 = null;
   let d2 = null;
+  let d3 = null;
   const closePanel = () => {
     try { d1 && d1.dispose && d1.dispose(); } catch {}
     try { d2 && d2.dispose && d2.dispose(); } catch {}
+    try { d3 && d3.dispose && d3.dispose(); } catch {}
     try { overlay.remove(); } catch {}
   };
   overlay.onclick = (e) => {
@@ -643,73 +927,185 @@ function openSkillsPanel() {
   const panel = document.createElement("div");
   Object.assign(panel.style, {
     position: "fixed",
-    right: "24px",
-    top: "60px",
-    width: "520px",
-    maxWidth: "92vw",
-    maxHeight: "78vh",
+    right: "12px",
+    bottom: "36px",
+    width: "360px",
+    maxWidth: "calc(100vw - 16px)",
+    maxHeight: "65vh",
     overflow: "auto",
     background: "var(--panel)",
     color: "var(--fg)",
     border: "1px solid var(--border)",
-    borderRadius: "12px",
-    boxShadow: "0 12px 32px rgba(0,0,0,0.42)",
-    padding: "14px",
-    zIndex: "99999",
-    fontFamily: "var(--font-sans)"
+    borderRadius: "8px",
+    boxShadow: "0 12px 32px rgba(0,0,0,0.32)",
+    padding: "8px",
+    zIndex: "100001",
+    fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
   });
   panel.onclick = (e) => e.stopPropagation();
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", "Skills");
 
   const title = document.createElement("div");
-  title.textContent = "Skills";
-  Object.assign(title.style, { fontWeight: "700", fontSize: "14px", marginBottom: "10px" });
-  panel.appendChild(title);
+  title.textContent = "Select Skills";
+  Object.assign(title.style, { fontWeight: "500", fontSize: "11px", opacity: "0.8" });
 
   const stats = document.createElement("div");
-  Object.assign(stats.style, { fontSize: "12px", opacity: "0.75", marginBottom: "10px" });
+  Object.assign(stats.style, {
+    fontSize: "10px",
+    opacity: "0.55",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    marginLeft: "auto"
+  });
   const refreshStats = () => {
     const catalog = getCatalog();
     const enabled = getEnabledSet();
-    stats.textContent = `Enabled ${enabled.size}/${catalog.length} · Base ${getLocalToolsBase()}`;
+    stats.textContent = `${enabled.size}/${catalog.length}`;
   };
   refreshStats();
-  panel.appendChild(stats);
+
+  const header = document.createElement("div");
+  Object.assign(header.style, {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    marginBottom: "6px"
+  });
+  header.appendChild(title);
+  header.appendChild(stats);
+  panel.appendChild(header);
+
+  const actions = document.createElement("div");
+  Object.assign(actions.style, {
+    display: "flex",
+    gap: "6px",
+    alignItems: "center",
+    flexWrap: "wrap",
+    marginBottom: "8px"
+  });
+
+  const compactButtonStyle = {
+    height: "24px",
+    padding: "0 8px",
+    borderRadius: "4px",
+    border: "1px solid var(--border)",
+    background: "transparent",
+    color: "var(--fg)",
+    cursor: "pointer",
+    fontSize: "11px"
+  };
+
+  actions.appendChild(
+    createButton(
+      "Scan",
+      {
+        ...compactButtonStyle,
+        border: "none",
+        background: "var(--accent)",
+        color: "var(--panel)",
+        fontWeight: "500"
+      },
+      async () => {
+        await window.zion.commands.executeCommand("skills.scanNow");
+        renderSkillsList(skillsList);
+        refreshStats();
+      }
+    )
+  );
+
+  actions.appendChild(
+    createButton(
+      "All",
+      compactButtonStyle,
+      () => {
+        const catalog = getCatalog();
+        state.set("skills.enabled", catalog.map((s) => s.id));
+        renderSkillsList(skillsList);
+        refreshStats();
+      }
+    )
+  );
+
+  actions.appendChild(
+    createButton(
+      "None",
+      compactButtonStyle,
+      () => {
+        state.set("skills.enabled", []);
+        renderSkillsList(skillsList);
+        refreshStats();
+      }
+    )
+  );
+
+  actions.appendChild(
+    createButton(
+      "Clear",
+      compactButtonStyle,
+      async () => {
+        await window.zion.commands.executeCommand("skills.clearCache");
+      }
+    )
+  );
+  panel.appendChild(actions);
+
+  const skillsList = document.createElement("div");
+  Object.assign(skillsList.style, {
+    display: "flex",
+    flexDirection: "column",
+    gap: "4px"
+  });
+  renderSkillsList(skillsList);
+  panel.appendChild(skillsList);
 
   const pathsWrap = document.createElement("div");
-  Object.assign(pathsWrap.style, { marginBottom: "12px" });
+  Object.assign(pathsWrap.style, {
+    marginBottom: "8px",
+    paddingBottom: "8px",
+    borderBottom: "1px solid color-mix(in srgb, var(--border) 62%, transparent)"
+  });
 
-  const pathsHeader = document.createElement("div");
-  pathsHeader.textContent = "Skill Directories";
-  Object.assign(pathsHeader.style, { fontSize: "12px", fontWeight: "600", marginBottom: "6px" });
-  pathsWrap.appendChild(pathsHeader);
+  const pathsDetails = document.createElement("details");
+  pathsDetails.open = false;
+  const pathsHeader = document.createElement("summary");
+  pathsHeader.textContent = "Directories";
+  Object.assign(pathsHeader.style, {
+    cursor: "pointer",
+    fontSize: "10px",
+    opacity: "0.58",
+    marginBottom: "6px",
+    userSelect: "none"
+  });
+  pathsDetails.appendChild(pathsHeader);
 
   const inputRow = document.createElement("div");
-  Object.assign(inputRow.style, { display: "flex", gap: "8px", marginBottom: "8px" });
+  Object.assign(inputRow.style, { display: "flex", gap: "6px", marginBottom: "6px" });
   const input = document.createElement("input");
   input.type = "text";
   input.placeholder = "/absolute/path/to/skills";
   Object.assign(input.style, {
     flex: "1",
-    height: "30px",
-    borderRadius: "10px",
+    height: "24px",
+    borderRadius: "4px",
     border: "1px solid var(--border)",
     background: "transparent",
     color: "var(--fg)",
     padding: "0 10px",
     outline: "none",
-    fontSize: "12px"
+    fontSize: "11px",
+    fontFamily: "inherit"
   });
   const addBtn = createButton(
     "Add",
     {
-      height: "30px",
-      padding: "0 12px",
-      borderRadius: "10px",
+      height: "24px",
+      padding: "0 8px",
+      borderRadius: "4px",
       border: "1px solid var(--border)",
       background: "transparent",
       color: "var(--fg)",
       cursor: "pointer",
-      fontSize: "12px"
+      fontSize: "11px"
     },
     () => {
       const p = String(input.value || "").trim();
@@ -724,123 +1120,17 @@ function openSkillsPanel() {
   );
   inputRow.appendChild(input);
   inputRow.appendChild(addBtn);
-  pathsWrap.appendChild(inputRow);
+  pathsDetails.appendChild(inputRow);
 
   const pathsList = document.createElement("div");
   renderPathsList(pathsList);
-  pathsWrap.appendChild(pathsList);
-  panel.appendChild(pathsWrap);
-
-  const actions = document.createElement("div");
-  Object.assign(actions.style, { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" });
-  actions.appendChild(
-    createButton(
-      "Scan Now",
-      {
-        height: "30px",
-        padding: "0 12px",
-        borderRadius: "10px",
-        border: "none",
-        background: "var(--accent)",
-        color: "var(--panel)",
-        cursor: "pointer",
-        fontSize: "12px",
-        fontWeight: "600"
-      },
-      async () => {
-        await window.zion.commands.executeCommand("skills.scanNow");
-        renderSkillsList(skillsList);
-        refreshStats();
-      }
-    )
-  );
-
-  actions.appendChild(
-    createButton(
-      "Enable All",
-      {
-        height: "30px",
-        padding: "0 12px",
-        borderRadius: "10px",
-        border: "1px solid var(--border)",
-        background: "transparent",
-        color: "var(--fg)",
-        cursor: "pointer",
-        fontSize: "12px"
-      },
-      () => {
-        const catalog = getCatalog();
-        state.set("skills.enabled", catalog.map((s) => s.id));
-        renderSkillsList(skillsList);
-        refreshStats();
-      }
-    )
-  );
-
-  actions.appendChild(
-    createButton(
-      "Disable All",
-      {
-        height: "30px",
-        padding: "0 12px",
-        borderRadius: "10px",
-        border: "1px solid var(--border)",
-        background: "transparent",
-        color: "var(--fg)",
-        cursor: "pointer",
-        fontSize: "12px"
-      },
-      () => {
-        state.set("skills.enabled", []);
-        renderSkillsList(skillsList);
-        refreshStats();
-      }
-    )
-  );
-
-  actions.appendChild(
-    createButton(
-      "Clear Usage",
-      {
-        height: "30px",
-        padding: "0 12px",
-        borderRadius: "10px",
-        border: "1px solid var(--border)",
-        background: "transparent",
-        color: "var(--fg)",
-        cursor: "pointer",
-        fontSize: "12px"
-      },
-      async () => {
-        await window.zion.commands.executeCommand("skills.clearCache");
-      }
-    )
-  );
-
-  const closeBtn = createButton(
-    "Close",
-    {
-      height: "30px",
-      padding: "0 12px",
-      borderRadius: "10px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      cursor: "pointer",
-      fontSize: "12px",
-      marginLeft: "auto"
-    },
-    () => closePanel()
-  );
-  actions.appendChild(closeBtn);
-  panel.appendChild(actions);
-
-  const skillsList = document.createElement("div");
-  renderSkillsList(skillsList);
-  panel.appendChild(skillsList);
+  pathsDetails.appendChild(pathsList);
+  pathsWrap.appendChild(pathsDetails);
+  panel.insertBefore(pathsWrap, actions);
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
+  positionSkillsPanel(panel);
 
   d1 = window.zion.state.onDidChange("skills.catalog", () => {
     renderSkillsList(skillsList);
@@ -850,6 +1140,9 @@ function openSkillsPanel() {
     renderSkillsList(skillsList);
     refreshStats();
   });
+  const onResize = () => positionSkillsPanel(panel);
+  window.addEventListener("resize", onResize);
+  d3 = { dispose: () => window.removeEventListener("resize", onResize) };
   return { dispose: closePanel };
 }
 
@@ -920,6 +1213,7 @@ export async function activate(ctx) {
   restoreFromSnapshotIfNeeded();
 
   const commands = registerCommands();
+  registerSkillManagerTool();
   const contributor = registerMessageContributor();
   const listeners = registerStateListeners();
 

@@ -36,6 +36,9 @@ export type AttachSessionLifecycleOptions = {
   snapshotBeforeSwitch?: boolean;
 };
 
+function debugChatCardRuntime(_event: string, _payload?: any): void {
+}
+
 export class CardTypeRegistry {
   private readonly types = new Map<string, ChatCardType>();
 
@@ -87,6 +90,7 @@ export class ChatCardRuntime {
         const previousSessionId = payload?.previousSessionId ?? null;
         const nextSessionId = payload?.sessionId ?? null;
         if (!previousSessionId || previousSessionId === nextSessionId) return;
+        debugChatCardRuntime("lifecycle.beforeSwitch.snapshot", { panelId, previousSessionId, nextSessionId });
         this.snapshotSession({ panelId, sessionId: previousSessionId });
       }));
     }
@@ -117,9 +121,24 @@ export class ChatCardRuntime {
       this.opts.setPendingRestore(sessionId, type.pendingKind || type.kind, items.length ? items : null);
     }
 
+    debugChatCardRuntime("restoreSession.preEmit", {
+      sessionId,
+      panelId,
+      clearFirst: restoreOpts?.clearFirst !== false,
+      restored: Object.fromEntries(Object.entries(restored).map(([key, items]) => [key, Array.isArray(items) ? items.length : 0]))
+    });
+
     for (const type of types) {
       const items = restored[type.kind] || [];
       if (items.length) {
+        debugChatCardRuntime("restoreSession.emit", {
+          sessionId,
+          panelId,
+          kind: type.kind,
+          event: type.restoreEvent,
+          count: items.length,
+          ids: items.map((it: any) => it?.id).filter(Boolean).map(String)
+        });
         try { this.opts.events.emit(type.restoreEvent, { items, panelId, sessionId }); } catch {}
       }
     }
@@ -135,6 +154,12 @@ export class ChatCardRuntime {
     for (const type of this.registry.list()) {
       if (!type.snapshotEvent) continue;
       try {
+        debugChatCardRuntime("snapshotSession.emit", {
+          sessionId,
+          panelId,
+          kind: type.kind,
+          event: type.snapshotEvent
+        });
         this.opts.events.emit(type.snapshotEvent, { panelId, sessionId });
         snapshotted.push(type.kind);
       } catch {}

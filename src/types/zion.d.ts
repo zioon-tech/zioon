@@ -9,14 +9,18 @@ export type Keybinding = {
 export type CommandHandler = (...args: any[]) => any;
 
 export interface EditorProxy {
+  panelId?: string | null;
+  editorId?: string;
+  sessionId?: string | null;
   getValue(): string;
-  setValue(v: string): void;
+  setValue(v: string, opts?: { source?: "session-load" }): void;
   replaceSelection(text: string): void;
   getSelection(): string;
   replaceRange(text: string, from: { line: number; ch: number }, to?: { line: number; ch: number }): void;
   getCursor(): { line: number; ch: number };
   setCursor(pos: { line: number; ch: number }): void;
   focus(): void;
+  setSessionId?(sessionId: string | null): void;
   /** Inject a custom CM6 visual extension (e.g., ViewPlugin/Decoration) */
   addVisualExtension(ext: any): void;
   /** Get raw CM6 EditorView for advanced extensions */
@@ -148,6 +152,26 @@ declare global {
       // ui
       statusBar: {
         registerItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable;
+      };
+      editorHeaderMenu?: {
+        register(item: {
+          id: string;
+          title?: string;
+          section?: string;
+          order?: number;
+          kind?: "action" | "toggle" | "separator";
+          command?: string;
+          args?: any[];
+          onClick?: () => void;
+          getChecked?: () => boolean;
+        }): Disposable;
+        list(): Array<{
+          id: string;
+          title?: string;
+          section?: string;
+          order?: number;
+          kind?: "action" | "toggle" | "separator";
+        }>;
       };
       activityBar?: {
         registerItem(opts: {
@@ -282,12 +306,14 @@ declare global {
         list(): Array<{ id: string; activeTabId: string | null }>;
         findAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         ensureAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
-        openSession(panelId: string, sessionId: string, opts?: { focus?: boolean }): boolean | Promise<boolean>;
+        openSession(panelId: string, sessionId: string, opts?: { focus?: boolean; forceReload?: boolean }): boolean | Promise<boolean>;
         split(direction: "horizontal" | "vertical", panelId?: string): string | null;
         splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         focus(panelId: string): void;
         close(panelId?: string): void;
         getEditor(panelId: string): EditorProxy | null;
+        getEditorBySession(panelId: string, sessionId: string): EditorProxy | null;
+        listEditors(panelId?: string): Array<{ panelId: string; sessionId: string; editorId: string | null; active: boolean }>;
       };
       sessions?: {
         runtime?: any;

@@ -75,6 +75,64 @@ function ensureAssistantLatestVisible(editor, opts = {}) {
   return false;
 }
 
+function findTrailingUserPromptLineFromDoc(text, startLineHint = 0) {
+  const assistantRange = findAssistantEndLineFromDoc(text, startLineHint);
+  if (!assistantRange) return null;
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
+  const targetLine = assistantRange.endLine + 1;
+  if (targetLine < lines.length && /^\s*user\s+/.test(lines[targetLine] || "")) {
+    return targetLine;
+  }
+  for (let i = targetLine; i < lines.length; i++) {
+    if (/^\s*user\s+/.test(lines[i] || "")) return i;
+    if (/^\s*(system|assistant|tool)\s+/.test(lines[i] || "")) break;
+  }
+  return null;
+}
+
+function ensureDocLineVisible(editor, lineIndex, opts = {}) {
+  try {
+    if (typeof lineIndex !== "number" || lineIndex < 0) return false;
+    const view = editor?.getView?.();
+    const scrollDOM = view?.scrollDOM;
+    const doc = view?.state?.doc;
+    if (!view || !scrollDOM || !doc) return false;
+    const line = doc.line(Math.max(1, Math.min(doc.lines, lineIndex + 1)));
+    const block = view.lineBlockAt(line.from);
+    const margin = 24;
+    const visibleTop = scrollDOM.scrollTop + margin;
+    const visibleBottom = scrollDOM.scrollTop + scrollDOM.clientHeight - margin;
+    let nextScrollTop = null;
+    if (block.bottom > visibleBottom) {
+      nextScrollTop = Math.max(0, block.bottom - scrollDOM.clientHeight + margin);
+    } else if (block.top < visibleTop) {
+      nextScrollTop = Math.max(0, block.top - margin);
+    }
+    if (nextScrollTop == null) return false;
+    try {
+      const sessionId = opts.sessionId || null;
+      if (sessionId) {
+        window.zion?.state?.set?.(`chat.followSuppressUntil.${sessionId}`, Date.now() + 80);
+      }
+    } catch {}
+    scrollDOM.scrollTop = nextScrollTop;
+    return true;
+  } catch {}
+  return false;
+}
+
+function ensureTrailingUserPromptVisible(editor, opts = {}) {
+  try {
+    const view = editor?.getView?.();
+    const doc = view?.state?.doc;
+    if (!view || !doc) return false;
+    const userLine = findTrailingUserPromptLineFromDoc(doc.toString(), opts.startLineHint || 0);
+    if (userLine == null) return false;
+    return ensureDocLineVisible(editor, userLine, opts);
+  } catch {}
+  return false;
+}
+
 export async function activate(ctx) {
   const RUN_FINISHED_SOUND_STATE_KEY = "chat.runFinishedSoundEnabled";
   const RUN_FINISHED_SOUND_LS_KEY = "zion.chat.runFinishedSoundEnabled";
@@ -261,6 +319,7 @@ export async function activate(ctx) {
   const getSessionId = (opts) => {
     const ctx = resolveSessionContext(opts || {});
     if (ctx?.sessionId) return ctx.sessionId;
+    if (opts?.editor?.sessionId) return opts.editor.sessionId;
     if (opts?.sessionId) return opts.sessionId;
     if (opts?.panelId) {
       const panelSid = window.zion?.panels?.list?.().find((p) => p.id === opts.panelId)?.activeTabId;
@@ -505,19 +564,8 @@ export async function activate(ctx) {
   }
 
   // 通用运行逻辑（含 Tool Calls 链式继续）
-  const dbgWidgetLifecycle = (msg, data = {}, hypothesisId = "H1") => {
-    // #region debug-point widget-lifecycle
-    try { fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "widget-lifecycle", runId: "pre-fix", hypothesisId, location: "extensions/dev.langchain-chat/main.js", msg, data, ts: Date.now() }) }).catch(() => {}); } catch {}
-    // #endregion
-  };
   const doRun = async (opts = {}) => {
     const ed = getEd(opts);
-    dbgWidgetLifecycle("[DEBUG] chat.doRun.editor", {
-      optsPanelId: opts?.panelId || null,
-      editorPanelId: ed?.panelId || null,
-      activePanelId: window.zion?.panels?.getActivePanelId?.() || null,
-      stateSessionId: window.zion?.state?.get?.("sessions.currentId") || null
-    }, "H1");
     if (!ed) {
       console.log("[langchain-chat] no active editor");
       return;
@@ -526,13 +574,6 @@ export async function activate(ctx) {
     // 确保已选择激活模型
     ensureActiveModel();
     const sid = getSessionId({ ...opts, panelId });
-    dbgWidgetLifecycle("[DEBUG] chat.doRun.session", {
-      panelId,
-      sid,
-      panelSessionId: panelId ? getPanelSessionId(panelId) : null,
-      editorPanelId: ed?.panelId || null,
-      docLength: String(ed.getValue?.() || "").length
-    }, "H1");
     if (!sid) {
       console.log("[langchain-chat] no target session");
       return;
@@ -544,12 +585,6 @@ export async function activate(ctx) {
     }
     const runModel = getResolvedModelSnapshot();
     const streaming = !!getRunState(sid)?.streaming;
-    dbgWidgetLifecycle("[DEBUG] chat.doRun.streamingCheck", {
-      panelId,
-      sid,
-      streaming,
-      runState: getRunState(sid) || null
-    }, "H1");
     if (streaming) {
       console.log("[langchain-chat] already streaming in current session, abort");
       return; // 防止本会话并发；其他会话不受影响
@@ -650,13 +685,6 @@ export async function activate(ctx) {
       state: window.zion.state,
       cursor
     });
-    dbgWidgetLifecycle("[DEBUG] chat.doRun.assistantInserted", {
-      panelId,
-      sid,
-      anchor,
-      insertLine,
-      cursor
-    }, "H1");
     restoreScrollSnapshot(beforeInsertScroll);
 
     // 4. 状态 & 事件
@@ -664,8 +692,24 @@ export async function activate(ctx) {
     runtime.beginRun(sid, runId);
     setRunState(sid, { aborted: false, model: runModel });
     try { window.zion?.state?.set?.(`chat.followLatest.${sid}`, true); } catch {}
+    const followInsertedAssistant = window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
+    if (followInsertedAssistant) {
+      const syncInsertedAssistantVisibility = () => {
+        try {
+          window.zion?.state?.set?.(`chat.followSuppressUntil.${sid}`, Date.now() + 500);
+        } catch {}
+        ensureAssistantLatestVisible(ed, { startLineHint: insertLine, sessionId: sid });
+        try {
+          window.zion?.state?.set?.(`chat.followLatest.${sid}`, true);
+        } catch {}
+      };
+      try {
+        requestAnimationFrame(() => requestAnimationFrame(syncInsertedAssistantVisibility));
+      } catch {
+        setTimeout(syncInsertedAssistantVisibility, 0);
+      }
+    }
     window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId, model: runModel });
-    dbgWidgetLifecycle("[DEBUG] chat.event.runStarted", { panelId, sid, runId, model: runModel }, "H1");
 
     // 工具调用收集（多步链式调用在每一步内局部收集）
     let aborted = false;
@@ -761,6 +805,17 @@ export async function activate(ctx) {
             autoInsertUserPrompt: !!autoInsert,
             autoFocusUserPrompt: !!autoFocus
           });
+          const followLatest = window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
+          if (followLatest) {
+            const syncUserPromptVisibility = () => {
+              ensureTrailingUserPromptVisible(ed, { startLineHint: insertLine, sessionId: sid });
+            };
+            try {
+              requestAnimationFrame(() => requestAnimationFrame(syncUserPromptVisibility));
+            } catch {
+              setTimeout(syncUserPromptVisibility, 0);
+            }
+          }
         } catch {}
       } else {
         try {
@@ -784,7 +839,7 @@ export async function activate(ctx) {
     const runStep = async (msgs) => {
       if (aborted || getRunState(sid)?.aborted) return { calls: [], results: [] };
       const calls = [];
-      const results = [];
+      const resultsById = new Map();
       const promises = [];
 
       let stepReasoning = "";
@@ -794,8 +849,12 @@ export async function activate(ctx) {
         tools,
         activeModel: runModel,
         onToken: appendToken,
+        beforeControlEvent: () => {
+          try { tokenBuffer.flush(); } catch {}
+        },
         onToolCall: (tc) => {
           if (aborted || getRunState(sid)?.aborted) return;
+          try { tokenBuffer.flush(); } catch {}
           // 收集本步的 assistant tool_calls
           calls.push({ id: tc.id, name: tc.name, args: tc.args });
           // 执行工具并收集结果
@@ -804,14 +863,14 @@ export async function activate(ctx) {
             .then(res => {
               if (aborted || getRunState(sid)?.aborted) return;
               const content = String(res || "");
-              results.push({ id: tc.id, content });
+              resultsById.set(tc.id, { id: tc.id, content });
               const ok = inferToolOk(tc.name, res);
               window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: res, ok, sessionId: sid, panelId });
             })
             .catch(err => {
               if (aborted || getRunState(sid)?.aborted) return;
               const msg = `Tool "${tc.name}" failed: ${err?.message || String(err)}`;
-              results.push({ id: tc.id, content: msg });
+              resultsById.set(tc.id, { id: tc.id, content: msg });
               window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: msg, ok: false, sessionId: sid, panelId });
             });
           promises.push(p);
@@ -848,6 +907,10 @@ export async function activate(ctx) {
         try { await Promise.allSettled(promises); } catch {}
       }
 
+      const results = calls
+        .map((call) => resultsById.get(call.id))
+        .filter(Boolean);
+      if (aborted || getRunState(sid)?.aborted) return { calls: [], results: [], reasoning_content: stepReasoning };
       return { calls, results, reasoning_content: stepReasoning };
     };
 
@@ -1089,7 +1152,7 @@ export async function activate(ctx) {
         }
 
         const step = await runStep(msgs);
-        if (aborted) { finalize(); return; }
+        if (aborted || getRunState(sid)?.aborted) { finalize(); return; }
 
         // 若本步产生了工具调用与结果，则构造下一步消息继续
         if (step.calls.length > 0) {
@@ -1404,7 +1467,19 @@ export async function activate(ctx) {
     }
     
     modelBtnDisp?.dispose?.();
-    modelBtnDisp = window.zion.statusBar.registerItem({
+    modelBtnDisp = window.zion.bottomStatusBar?.registerItem?.({
+      id: "langchain.chat.model",
+      text: `Model: ${label}`,
+      tooltip,
+      priority: 80,
+      onClick: () => window.zion.commands.executeCommand("models.openSwitcher")
+    }) || window.zion.editorHeaderMenu?.register?.({
+      id: "langchain.chat.model",
+      title: `模型：${label}`,
+      section: "Chat",
+      order: 10,
+      onClick: () => window.zion.commands.executeCommand("models.openSwitcher")
+    }) || window.zion.statusBar.registerItem({
       id: "langchain.chat.model",
       text: `Model: ${label}`,
       tooltip,

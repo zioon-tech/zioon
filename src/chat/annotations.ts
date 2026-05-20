@@ -56,25 +56,6 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
   const activeThinkingByRun = new Map<string, string>();
 
   const debugLog = (_event: string, _payload?: any) => {};
-  const debugReport = (msg: string, data: any, hypothesisId = "H4") => {
-    // #region debug-point widget-lifecycle
-    try {
-      const g = globalThis as any;
-      g.fetch?.("http://127.0.0.1:7777/event", {
-        method: "POST",
-        body: JSON.stringify({
-          sessionId: "widget-lifecycle",
-          runId: "pre-fix",
-          hypothesisId,
-          location: "src/chat/annotations.ts",
-          msg,
-          data,
-          ts: Date.now()
-        })
-      })?.catch?.(() => {});
-    } catch {}
-    // #endregion
-  };
 
   const getMetaAnnotations = (sessionId: string | null | undefined): SessionAnnotations | null => {
     if (!sessionId) return null;
@@ -207,6 +188,12 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
     if (!sessionId) return null;
     const next = cloneArrayMaybe(items);
     try { opts.state.set(`sessions.pendingRestore.${kind}.${sessionId}`, next); } catch {}
+    debugLog("pending.set", {
+      sessionId,
+      kind,
+      count: next?.length || 0,
+      ids: Array.isArray(next) ? next.map((it: any) => it?.id).filter(Boolean).map(String) : []
+    });
     return next;
   };
 
@@ -237,6 +224,7 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
 
   const clearPendingRestore = (sessionId: string | null | undefined, kind?: PendingKind) => {
     if (!sessionId) return;
+    debugLog("pending.clear", { sessionId, kind: kind || "all" });
     if (!kind || kind === "tools") setPendingRestore(sessionId, "tools", null);
     if (!kind || kind === "thinking") setPendingRestore(sessionId, "thinking", null);
   };
@@ -308,8 +296,9 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
         thinkingAnnotationIds
       };
     });
-    debugReport("[DEBUG] chatCards.auditPanels", { reason, panels: report }, "H4");
-    return { reason, panels: report };
+    const result = { reason, panels: report };
+    debugLog("panel.audit", result);
+    return result;
   };
 
   const commandDisposables = [

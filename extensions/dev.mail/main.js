@@ -303,7 +303,13 @@ export async function activate(ctx) {
   const updateMailBtn = () => {
     mailBtnDisp?.dispose?.();
     const mailBase = (window.zion.state.get("mail.baseUrl") || localStorage.getItem("zion.mail.baseUrl") || "http://127.0.0.1:8765");
-    mailBtnDisp = window.zion.statusBar.registerItem({
+    mailBtnDisp = window.zion.editorHeaderMenu?.register?.({
+      id: "dev.mail.button",
+      title: "邮件配置",
+      section: "Extensions",
+      order: 40,
+      onClick: () => window.zion.commands.executeCommand("tools.openMailConfig")
+    }) || window.zion.statusBar.registerItem({
       id: "dev.mail.button",
       text: "MailCfg",
       tooltip: `Configure mail (base: ${mailBase})`,

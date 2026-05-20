@@ -1,4 +1,5 @@
 import type { EditorProxy } from "../types/zion";
+import { Transaction } from "@codemirror/state";
 
 
 type Disposable = { dispose(): void };
@@ -22,7 +23,8 @@ export class SessionSync {
   constructor(opts: SessionSyncOptions) {
     this.opts = opts;
     this.disp = opts.events.on("editor.change", (payload) => {
-      this.syncFromPanel(payload?.panelId || null);
+      if (isIgnoredChange(payload?.update)) return;
+      this.syncFromPanel(payload?.panelId || null, payload?.view || null);
     });
   }
 
@@ -32,29 +34,37 @@ export class SessionSync {
     this.syncingPanels.clear();
   }
 
-  syncFromPanel(sourcePanelId: string | null): void {
+  syncFromPanel(sourcePanelId: string | null, sourceView: any = null): void {
     if (!sourcePanelId) {
       sourcePanelId = this.opts.getActivePanelId();
     }
     if (!sourcePanelId || this.syncingPanels.has(sourcePanelId)) return;
 
     const sourcePanel = this.opts.listPanels().find((panel) => panel.id === sourcePanelId);
-    const sourceSessionId = sourcePanel?.activeTabId || null;
-    // #region debug-point widget-lifecycle
-    try { fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "widget-lifecycle", runId: "pre-fix", hypothesisId: "H2", location: "src/panel/SessionSync.ts", msg: "[DEBUG] sessionSync.source", data: { sourcePanelId, sourceSessionId, panels: this.opts.listPanels() }, ts: Date.now() }) }).catch(() => {}); } catch {}
-    // #endregion
+    const sourceViewSessionId = getViewSessionId(sourceView);
+    const sourceSessionId = sourceViewSessionId || sourcePanel?.activeTabId || null;
     if (!sourceSessionId) return;
 
     const sourceEditor = this.opts.getEditor(sourcePanelId);
-    if (!sourceEditor) return;
-    const nextText = String(sourceEditor.getValue?.() || "");
+    if (!sourceEditor && !sourceView) return;
+    const nextText = sourceView
+      ? String(sourceView.state?.doc?.toString?.() || "")
+      : String(sourceEditor?.getValue?.() || "");
 
     for (const panel of this.opts.listPanels()) {
       if (panel.id === sourcePanelId) continue;
       if (panel.activeTabId !== sourceSessionId) continue;
       const targetEditor = this.opts.getEditor(panel.id);
       if (!targetEditor) continue;
-      if (String(targetEditor.getValue?.() || "") === nextText) continue;
+      const targetText = String(targetEditor.getValue?.() || "");
+      const targetView = targetEditor.getView?.();
+      const targetViewSessionId = getViewSessionId(targetView);
+      if (targetViewSessionId && targetViewSessionId !== sourceSessionId) {
+        // The panel says it is on this session, but the active editor view is bound elsewhere.
+        // Skipping avoids copying text across session-bound views during tab transitions.
+        continue;
+      }
+      if (targetText === nextText) continue;
 
       try {
         this.syncingPanels.add(panel.id);
@@ -65,20 +75,33 @@ export class SessionSync {
           view.dispatch({
             changes: change
           });
-          // #region debug-point widget-lifecycle
-          try { fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "widget-lifecycle", runId: "pre-fix", hypothesisId: "H2", location: "src/panel/SessionSync.ts", msg: "[DEBUG] sessionSync.dispatched", data: { sourcePanelId, targetPanelId: panel.id, sourceSessionId, change, currentLength: currentText.length, nextLength: nextText.length }, ts: Date.now() }) }).catch(() => {}); } catch {}
-          // #endregion
         } else {
           targetEditor.setValue(nextText);
-          // #region debug-point widget-lifecycle
-          try { fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "widget-lifecycle", runId: "pre-fix", hypothesisId: "H2", location: "src/panel/SessionSync.ts", msg: "[DEBUG] sessionSync.setValue", data: { sourcePanelId, targetPanelId: panel.id, sourceSessionId, nextLength: nextText.length }, ts: Date.now() }) }).catch(() => {}); } catch {}
-          // #endregion
         }
       } catch {
       } finally {
         this.syncingPanels.delete(panel.id);
       }
     }
+  }
+}
+
+function getViewSessionId(view: any): string | null {
+  try {
+    return view?.dom?.getAttribute?.("data-session-id") || null;
+  } catch {
+    return null;
+  }
+}
+
+function isIgnoredChange(update: any): boolean {
+  try {
+    return !!update?.transactions?.some?.((tr: any) => {
+      const userEvent = tr?.annotation?.(Transaction.userEvent);
+      return userEvent === "zion.sessionLoad" || userEvent === "zion.cardRestore";
+    });
+  } catch {
+    return false;
   }
 }
 

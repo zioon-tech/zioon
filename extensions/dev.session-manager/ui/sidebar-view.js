@@ -21,7 +21,7 @@ export function createSessionsSidebarViewManager(opts) {
   function revealSessionIfOpen(sessionId, options) {
     const sid = sessionId ? String(sessionId) : "";
     if (!sid) return;
-    if (revealRaf) cancelAnimationFrame(revealRaf);
+    if (revealRaf) window.cancelAnimationFrame(revealRaf);
     revealRaf = requestAnimationFrame(() => {
       revealRaf = 0;
       try {
@@ -75,49 +75,58 @@ export function createSessionsSidebarViewManager(opts) {
       return item;
     };
 
+    headerMenu.appendChild(mkHeaderMenuItem("New Session", () => {
+      const selFolder = zion.state.get("sessions.selectedFolderId") || "root";
+      zion.commands.executeCommand("zion.sessions.new", { parentId: selFolder });
+      refreshIfOpen();
+    }));
+    headerMenu.appendChild(mkHeaderMenuItem("New Folder", () => {
+      const selFolder = zion.state.get("sessions.selectedFolderId") || "root";
+      zion.commands.executeCommand("zion.sessions.newFolder", { parentId: selFolder });
+      refreshIfOpen();
+    }));
     headerMenu.appendChild(mkHeaderMenuItem("Import Sessions", () => zion.commands.executeCommand("zion.sessions.import")));
     headerMenu.appendChild(mkHeaderMenuItem("Export All Sessions", () => zion.commands.executeCommand("zion.sessions.export")));
     headerMenu.appendChild(mkHeaderMenuItem("Export Selected", () => zion.commands.executeCommand("zion.sessions.exportSelected")));
     headerMenu.appendChild(mkHeaderMenuItem("Delete Selected", () => zion.commands.executeCommand("zion.sessions.deleteSelected")));
 
-    const controls = document.createElement("div");
-    controls.style.display = "grid";
-    controls.style.gridTemplateColumns = "1fr auto auto";
-    controls.style.gap = "6px";
-    controls.style.padding = "8px 10px";
-
-    const searchInput = document.createElement("input");
-    searchInput.type = "text";
-    searchInput.placeholder = "Search by title…";
-    searchInput.setAttribute("aria-label", "Search sessions by title");
-    searchInput.style.background = "var(--panel)";
-    searchInput.style.color = "var(--fg)";
-    searchInput.style.border = "1px solid var(--border)";
-    searchInput.style.borderRadius = "6px";
-    searchInput.style.padding = "6px 8px";
-    searchInput.style.fontSize = "12px";
-
     container.appendChild(headerMenu);
     container.addEventListener("click", () => { headerMenu.style.display = "none"; });
-
-    controls.append(searchInput);
-    container.appendChild(controls);
 
     const listWrap = document.createElement("div");
     listWrap.className = "zion-sessions-list";
     listWrap.style.flex = "1 1 auto";
     listWrap.style.overflow = "auto";
-    listWrap.style.padding = "6px 0 6px 6px";
+    listWrap.style.padding = "6px 0 6px 8px";
     const list = document.createElement("div");
     listWrap.appendChild(list);
     container.appendChild(listWrap);
 
+    const isRowFullyVisible = (row) => {
+      try {
+        if (!row || !listWrap) return false;
+        const rowRect = row.getBoundingClientRect();
+        const wrapRect = listWrap.getBoundingClientRect();
+        const margin = 4;
+        return rowRect.top >= wrapRect.top + margin && rowRect.bottom <= wrapRect.bottom - margin;
+      } catch {
+        return false;
+      }
+    };
+
     const innerRender = createSessionsListRenderer({
       listEl: list,
       hostElement: container,
-      getQuery: () => (searchInput.value || "").trim().toLowerCase(),
+      getQuery: () => "",
       getSort: () => "updated",
-      onSwitchSession: (id) => zion.commands.executeCommand("zion.sessions.switch", id),
+      onSwitchSession: (id) => {
+        const panelId = zion?.panels?.getActivePanelId?.() || zion?.panelManager?.getActivePanelId?.() || null;
+        const result = panelId && typeof zion?.panels?.openSession === "function"
+          ? zion.panels.openSession(panelId, id, { focus: true })
+          : zion.commands.executeCommand("zion.sessions.switch", id);
+        Promise.resolve(result).then(() => refreshIfOpen()).catch(() => {});
+        return result;
+      },
       onAfterChange: () => {
         refreshIfOpen();
       }
@@ -127,7 +136,6 @@ export function createSessionsSidebarViewManager(opts) {
       innerRender();
     };
 
-    searchInput.addEventListener("input", () => renderAll());
     renderAll();
     try { listWrap.scrollTop = prevScroll; } catch {}
 
@@ -136,12 +144,11 @@ export function createSessionsSidebarViewManager(opts) {
         const cid = zion?.state?.get("sessions.currentId");
         if (!cid) return;
         try { openAncestors?.(cid); } catch {}
-        try { searchInput.value = ""; } catch {}
         renderAll();
         try {
           const row = container.querySelector(".zion-session-row.is-current");
           if (row && listWrap) {
-            row.scrollIntoView({ block: "center" });
+            if (!isRowFullyVisible(row)) row.scrollIntoView({ block: "center" });
             try {
               const prev = row.style.background;
               row.style.background = "var(--border)";
@@ -161,13 +168,12 @@ export function createSessionsSidebarViewManager(opts) {
       const flash = opt.flash !== false;
       const block = opt.block || "nearest";
       try { if (openParents) openAncestors?.(sid); } catch {}
-      try { if (clearSearch) searchInput.value = ""; } catch {}
+      void clearSearch;
       renderAll();
       try {
-        const sel = `[data-session-id="${CSS.escape(sid)}"]`;
-        const row = container.querySelector(sel) || container.querySelector(".zion-session-row.is-current");
+        const row = Array.from(container.querySelectorAll("[data-session-id]")).find(el => el.dataset?.sessionId === sid) || container.querySelector(".zion-session-row.is-current");
         if (row && listWrap) {
-          row.scrollIntoView({ block });
+          if (!isRowFullyVisible(row)) row.scrollIntoView({ block });
           if (flash) {
             try {
               const prev = row.style.background;

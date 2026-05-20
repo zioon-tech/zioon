@@ -110,7 +110,19 @@ export async function activate(ctx) {
     const enabledNames = Array.isArray(enabled) ? enabled : all.map(t => t?.function?.name).filter(Boolean);
     const n = enabledNames.filter(Boolean).length;
     toolsBtnDisp?.dispose?.();
-    toolsBtnDisp = window.zion.statusBar.registerItem({
+    toolsBtnDisp = window.zion.bottomStatusBar?.registerItem?.({
+      id: "dev.tools.button",
+      text: `Tools: ${n}`,
+      tooltip: "Manage enabled tools (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
+      priority: 70,
+      onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
+    }) || window.zion.editorHeaderMenu?.register?.({
+      id: "dev.tools.button",
+      title: `工具：${n}`,
+      section: "Chat",
+      order: 20,
+      onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
+    }) || window.zion.statusBar.registerItem({
       id: "dev.tools.button",
       text: `Tools: ${n}`,
       tooltip: "Manage enabled tools (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
@@ -1769,7 +1781,7 @@ function wrapHandlersWithTerminalContext(handlers) {
       const originalHandler = handlers[toolName];
       
       // 创建包装后的处理器
-      handlers[toolName] = async function(args) {
+      handlers[toolName] = async function(args, ...rest) {
         try {
           // 如果用户没有显式传递 session_id，则自动从 terminal.activeSessionId 获取
           // 注意：只在 args 不存在或为 undefined 时自动注入
@@ -1783,7 +1795,7 @@ function wrapHandlersWithTerminalContext(handlers) {
           }
           
           // 调用原始处理器
-          return originalHandler(args);
+          return originalHandler(args, ...rest);
         } catch (e) {
           console.error(`[dev.tools] Wrapped handler for ${toolName} failed:`, e);
           throw e;

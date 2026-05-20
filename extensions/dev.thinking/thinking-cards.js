@@ -1,5 +1,5 @@
 import { Decoration, EditorView, WidgetType, ViewPlugin } from "@codemirror/view";
-import { StateField, StateEffect } from "@codemirror/state";
+import { StateField, StateEffect, Transaction } from "@codemirror/state";
 import {
   buildRegexAnchors,
   filterDeletedItems,
@@ -43,18 +43,9 @@ function clearPendingRestore(sessionId, kind) {
   } catch {}
 }
 
-function getPanelSessionId(panelId) {
-  try {
-    return panelId ? (window?.zion?.panelManager?.getPanel?.(panelId)?.activeTabId || null) : null;
-  } catch {
-    return null;
-  }
-}
-
 function getViewSessionId(view) {
   try {
-    const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
-    return getPanelSessionId(panelId) || window?.zion?.state?.get?.("sessions.currentId") || null;
+    return view?.dom?.getAttribute?.("data-session-id") || null;
   } catch {
     return null;
   }
@@ -63,12 +54,6 @@ function getViewSessionId(view) {
 function debugChatCards(event, payload) {
   void event;
   void payload;
-}
-
-function dbgWidgetLifecycle(msg, data = {}, hypothesisId = "H4") {
-  // #region debug-point widget-lifecycle
-  try { fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "widget-lifecycle", runId: "pre-fix", hypothesisId, location: "extensions/dev.thinking/thinking-cards.js", msg, data, ts: Date.now() }) }).catch(() => {}); } catch {}
-  // #endregion
 }
 
 function scheduleRevealThinkingContent(view, { id, pos } = {}) {
@@ -161,8 +146,9 @@ class ThinkingCardWidget extends WidgetType {
     close.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
       const baseId = String(this.id).replace(/:card$/, "");
-      const panelId = close.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null;
-      const sessionId = getPanelSessionId(panelId);
+      const editorEl = close.closest("[data-editor-id]");
+      const sessionId = editorEl?.getAttribute("data-session-id") || null;
+      const panelId = editorEl?.closest("[data-panel-id]")?.getAttribute("data-panel-id") || close.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null;
       try { window.zion?.events?.emit("thinking/remove", { id: baseId, panelId, sessionId }); } catch {}
     });
     header.appendChild(title);
@@ -292,7 +278,7 @@ const thinkingField = StateField.define({
         items.delete(base);
 
         try {
-          const sid = e.value?.sessionId || itemSessionId || window?.zion?.state?.get("sessions.currentId");
+          const sid = e.value?.sessionId || itemSessionId || null;
           if (sid) {
             updateSessionAnnotations(sid, (ann) => {
               const del = Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds.slice() : [];
@@ -349,7 +335,7 @@ export function installThinkingCards() {
 
       try { this.panelId = this.view.dom.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null; } catch { this.panelId = null; }
       try {
-        this.sessionId = getPanelSessionId(this.panelId) || (!this.panelId ? (window.zion?.state?.get("sessions.currentId") || null) : null);
+        this.sessionId = getViewSessionId(this.view);
       } catch {}
       debugChatCards("plugin.init", { panelId: this.panelId, sessionId: this.sessionId, docLength: this.view.state.doc.length });
 
@@ -405,13 +391,6 @@ export function installThinkingCards() {
       let wasHidden = document.hidden;
       const checkAndRestore = () => {
         const isHidden = document.hidden;
-        dbgWidgetLifecycle("[DEBUG] thinking.visibility", {
-          panelId: this.panelId,
-          sessionId: this.sessionId,
-          wasHidden,
-          isHidden,
-          docLength: this.view.state.doc.length
-        }, "H4");
         if (wasHidden && !isHidden) {
           // 页面从休眠中唤醒，检查并恢复丢失的 widgets
           this.checkAndRestoreWidgets();
@@ -425,11 +404,6 @@ export function installThinkingCards() {
       });
       // 也监听 window focus 事件作为备份
       const onFocus = () => {
-        dbgWidgetLifecycle("[DEBUG] thinking.focus", {
-          panelId: this.panelId,
-          sessionId: this.sessionId,
-          docLength: this.view.state.doc.length
-        }, "H4");
         setTimeout(() => this.checkAndRestoreWidgets(), 100);
       };
       window.addEventListener("focus", onFocus);
@@ -450,27 +424,12 @@ export function installThinkingCards() {
           const fieldVal = this.view.state.field(thinkingField);
           if (fieldVal?.items) fieldVal.items.forEach((_it, id) => mountedIds.push(String(id)));
         } catch {}
-        dbgWidgetLifecycle("[DEBUG] thinking.restoreCheck", {
-          panelId: this.panelId,
-          sessionId: sid,
-          annotationCount: list.length,
-          mountedCount: mountedIds.length,
-          mountedIds,
-          inlineDom: this.view.dom.querySelectorAll(".zion-thinking-inline").length,
-          cardDom: this.view.dom.querySelectorAll(".zion-thinking-card").length,
-          thinkingTextCount: (this.view.state.doc.toString().match(/思考/g) || []).length
-        }, "H4");
         if (!list.length) return;
 
         // 基于 StateField 中的已挂载 id 判断是否需要恢复
         const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
         const missing = wantIds.some(id => !mountedIds.includes(id));
         if (missing) {
-          dbgWidgetLifecycle("[DEBUG] thinking.restoreNeeded", {
-            panelId: this.panelId,
-            sessionId: sid,
-            missingIds: wantIds.filter(id => !mountedIds.includes(id))
-          }, "H4");
           this.onRestore({ items: list });
         }
       } catch (e) {
@@ -571,17 +530,18 @@ export function installThinkingCards() {
       return `thinking.seq.${sid}.${runId}`;
     }
     getVisibleSessionId = () => {
-      return window.zion?.panelManager?.getPanel(this.panelId)?.activeTabId || this.sessionId || null;
+      return getViewSessionId(this.view);
     };
     shouldHandleScopedPayload = (payload) => {
       const visibleSessionId = this.getVisibleSessionId();
-      if (payload?.panelId && this.panelId && payload.panelId !== this.panelId) return false;
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return false;
+      if (!visibleSessionId) return false;
+      if (payload?.sessionId && payload.sessionId !== visibleSessionId) return false;
+      if (!payload?.sessionId && payload?.panelId && this.panelId && payload.panelId !== this.panelId) return false;
       if (!payload?.panelId && !payload?.sessionId) {
         const activePanelId = window.zion?.panels?.getActivePanelId?.() || null;
         if (this.panelId && activePanelId && this.panelId !== activePanelId) return false;
       }
-      if (payload?.sessionId) this.sessionId = payload.sessionId;
+      this.sessionId = visibleSessionId;
       return true;
     };
     getSeq(sid, runId) {
@@ -653,10 +613,7 @@ export function installThinkingCards() {
       if (payload?.silentReasoning) return;
       const visible = !!window.zion.state.get("chat.thinkingVisible");
       if (!visible) return;
-      const visibleSessionId = this.getVisibleSessionId();
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
-      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
-      if (payload?.sessionId) this.sessionId = payload.sessionId;
+      if (!this.shouldHandleScopedPayload(payload)) return;
       this.suspendSnapshot = false;
 
       const runId = payload?.runId || Math.random().toString(36).slice(2);
@@ -716,10 +673,7 @@ export function installThinkingCards() {
       if (payload?.silentReasoning) return;
       const visible = !!window.zion.state.get("chat.thinkingVisible");
       if (!visible) return;
-      const visibleSessionId = this.getVisibleSessionId();
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
-      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
-      if (payload?.sessionId) this.sessionId = payload.sessionId;
+      if (!this.shouldHandleScopedPayload(payload)) return;
 
       const runId = payload?.runId;
       const sid = this.sessionId;
@@ -746,10 +700,7 @@ export function installThinkingCards() {
     };
     onReasoningEnd = (payload) => {
       if (payload?.silentReasoning) return;
-      const visibleSessionId = this.getVisibleSessionId();
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
-      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
-      if (payload?.sessionId) this.sessionId = payload.sessionId;
+      if (!this.shouldHandleScopedPayload(payload)) return;
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       this.flush();
     };
@@ -773,10 +724,13 @@ export function installThinkingCards() {
       this.snapshot();
     };
     onSessionChanged = (nv) => {
-      const panelMgr = window.zion?.panelManager;
-      const mySessionId = panelMgr?.getPanel(this.panelId)?.activeTabId || null;
-      if (mySessionId && mySessionId !== this.sessionId) {
-        this.sessionId = mySessionId;
+      const boundSessionId = getViewSessionId(this.view);
+      if (boundSessionId) {
+        this.sessionId = boundSessionId;
+        return;
+      }
+      if (this.sessionId) {
+        this.sessionId = null;
         this.suspendSnapshot = true;
         try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
         this.currentId = null;
@@ -784,13 +738,6 @@ export function installThinkingCards() {
         this.reasoningSeq.clear();
         if (this.timer) { clearTimeout(this.timer); this.timer = null; }
         Promise.resolve().then(() => { this.suspendSnapshot = false; });
-      } else if (!mySessionId && this.sessionId) {
-        this.sessionId = null;
-        try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
-        this.currentId = null;
-        this.buffer = "";
-        this.reasoningSeq.clear();
-        if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       }
     };
     onRestore = (payload) => {
@@ -801,23 +748,19 @@ export function installThinkingCards() {
         return;
       }
       const visibleSessionId = this.getVisibleSessionId();
-      if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) {
+      if (!visibleSessionId) return;
+      if (payload?.sessionId && payload.sessionId !== visibleSessionId) {
         debugChatCards("restore.skipSession", { panelId: this.panelId, visibleSessionId, payloadSessionId: payload.sessionId, count: list.length });
         return;
       }
-      const restoreSessionId = payload?.sessionId || visibleSessionId || this.sessionId || null;
-      if (restoreSessionId) this.sessionId = restoreSessionId;
-      dbgWidgetLifecycle("[DEBUG] thinking.restoreStart", {
-        panelId: this.panelId,
-        visibleSessionId,
-        restoreSessionId,
-        payloadPanelId: payload?.panelId || null,
-        count: list.length,
-        docLength: this.view.state.doc.length
-      }, "H5");
+      const restoreSessionId = visibleSessionId;
+      this.sessionId = restoreSessionId;
       debugChatCards("restore.start", { panelId: this.panelId, sessionId: restoreSessionId, count: list.length, docLength: this.view.state.doc.length });
 
       this.suspendSnapshot = false;
+      if (!String(this.view.state.doc.toString() || "").trim()) {
+        return;
+      }
 
       try {
         const sid = restoreSessionId;
@@ -903,6 +846,7 @@ export function installThinkingCards() {
 
         this.view.dispatch({
           changes: { from: plan.insertPos, insert: plan.insertText },
+          annotations: Transaction.userEvent.of("zion.cardRestore"),
           effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: it.id, sessionId: restoreSessionId })]
         });
         scheduleRevealThinkingContent(this.view, { id: it.id, pos: plan.markerTo });
@@ -921,12 +865,6 @@ export function installThinkingCards() {
 
 
       this.snapshot();
-      dbgWidgetLifecycle("[DEBUG] thinking.restoreDone", {
-        panelId: this.panelId,
-        sessionId: restoreSessionId,
-        processed: processedIds.size,
-        itemCount: itemsToProcess.length
-      }, "H5");
       debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
     };
     destroy() {

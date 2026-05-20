@@ -47,18 +47,23 @@ export class SessionDocumentRuntime {
       }
     }
 
+    let text = "";
+    try {
+      text = await this.opts.loadDocument(id);
+      if (!this.isCurrentSwitch(switchKey, switchToken, id, targetPanelId)) return false;
+    } catch (e) {
+      void e;
+      return false;
+    }
+
     if (switchOpts?.writeUrl !== false) {
       this.opts.setLastActiveId(id, { push: switchOpts?.pushUrl !== false });
     }
-
     this.opts.setGlobalSessionId(id);
-
-    try {
-      const text = await this.opts.loadDocument(id);
-      if (!this.isCurrentSwitch(switchKey, switchToken, id, targetPanelId)) return false;
-      this.opts.getTargetEditor(targetPanelId)?.setValue(text);
-      this.opts.applyAnnotations(id, targetPanelId);
-    } catch {}
+    const targetEditor = this.opts.getTargetEditor(targetPanelId);
+    try { (targetEditor as any)?.setSessionId?.(id); } catch {}
+    targetEditor?.setValue(text, { source: "session-load" });
+    this.opts.applyAnnotations(id, targetPanelId);
 
     if (!this.isCurrentSwitch(switchKey, switchToken, id, targetPanelId)) return false;
     try { this.opts.restoreUiState?.(id, targetPanelId); } catch {}
@@ -77,9 +82,7 @@ export class SessionDocumentRuntime {
     if (panelId && typeof this.opts.getPanelSessionId === "function") {
       return this.opts.getPanelSessionId(panelId) === sessionId;
     }
-    if (!panelId) {
-      return this.opts.getGlobalSessionId() === sessionId;
-    }
+    if (!panelId) return true;
     return true;
   }
 }

@@ -22,6 +22,19 @@ export function createSessionsListRendererFactory(deps) {
   } = deps || {};
 
   return function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, onSwitchSession, onAfterChange }) {
+    const getEffectiveCurrentSessionId = () => {
+      try {
+        const panelId = window.zion?.panelManager?.getActivePanelId?.() || window.zion?.panels?.getActivePanelId?.() || null;
+        if (panelId) {
+          const panelSessionId = window.zion?.panelManager?.getPanel?.(panelId)?.activeTabId
+            || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
+            || null;
+          if (panelSessionId) return panelSessionId;
+        }
+      } catch {}
+      return window.zion?.state?.get?.("sessions.currentId") || null;
+    };
+
     // Small icon button
     const mkIconBtn = (icon, title, onClick) => {
       const b = document.createElement("button");
@@ -186,6 +199,138 @@ export function createSessionsListRendererFactory(deps) {
 
       const tree = loadTree() || ensureInitialTree();
       const visibleOrder = [];
+      let rootContextMenu = null;
+      let selectionContextMenu = null;
+
+      const hideOpenMenus = () => {
+        try {
+          Array.from(listEl.querySelectorAll(".session-row-menu")).forEach((m) => {
+            m.style.display = "none";
+          });
+        } catch {}
+      };
+
+      const showAnchoredMenu = (menu) => {
+        hideOpenMenus();
+        menu.style.position = "absolute";
+        menu.style.top = "28px";
+        menu.style.right = "0";
+        menu.style.left = "auto";
+        menu.style.display = "block";
+      };
+
+      const showContextMenu = (menu, ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        hideOpenMenus();
+        menu.style.position = "fixed";
+        menu.style.right = "auto";
+        menu.style.left = `${ev.clientX}px`;
+        menu.style.top = `${ev.clientY}px`;
+        menu.style.display = "block";
+        requestAnimationFrame(() => {
+          try {
+            const rect = menu.getBoundingClientRect();
+            const pad = 8;
+            const left = Math.min(ev.clientX, window.innerWidth - rect.width - pad);
+            const top = Math.min(ev.clientY, window.innerHeight - rect.height - pad);
+            menu.style.left = `${Math.max(pad, left)}px`;
+            menu.style.top = `${Math.max(pad, top)}px`;
+          } catch {}
+        });
+        const close = (e) => {
+          try {
+            if (e?.target && menu.contains(e.target)) return;
+            menu.style.display = "none";
+            document.removeEventListener("pointerdown", close, true);
+            document.removeEventListener("keydown", onKeyDown, true);
+          } catch {}
+        };
+        const onKeyDown = (e) => {
+          if (e.key === "Escape") close(e);
+        };
+        setTimeout(() => {
+          document.addEventListener("pointerdown", close, true);
+          document.addEventListener("keydown", onKeyDown, true);
+        }, 0);
+      };
+
+      const isInSelection = (id) => {
+        try {
+          return getSelection().some((it) => it && it.id === id);
+        } catch {
+          return false;
+        }
+      };
+
+      const selectOnlyForContext = (id, type) => {
+        try { setSelection([{ id, type }]); } catch {}
+        try { setLastSelectedId(id); } catch {}
+      };
+
+      const shouldUseRootContextMenu = (ev) => {
+        const target = ev?.target;
+        if (!target?.closest) return true;
+        if (target.closest(".zion-session-row")) return false;
+        if (target.closest(".session-row-menu")) return false;
+        if (target.closest("button,input,select,textarea,a")) return false;
+        return true;
+      };
+
+      const openRootContextMenu = (ev) => {
+        if (!shouldUseRootContextMenu(ev)) return;
+        try { window.zion.state.set("sessions.selectedFolderId", "root"); } catch {}
+        try { clearSelection(); } catch {}
+        if (rootContextMenu) showContextMenu(rootContextMenu, ev);
+      };
+
+      listEl.onclick = (ev) => {
+        if (ev.target?.closest?.(".zion-session-row")) return;
+        hideOpenMenus();
+        try { window.zion.state.set("sessions.selectedFolderId", "root"); } catch {}
+        try { clearSelection(); } catch {}
+        render();
+      };
+      listEl.oncontextmenu = (ev) => {
+        openRootContextMenu(ev);
+      };
+      if (hostElement) {
+        hostElement.oncontextmenu = (ev) => {
+          openRootContextMenu(ev);
+        };
+      }
+      listEl.ondragover = (ev) => {
+        if (ev.target?.closest?.(".zion-session-row")) return;
+        ev.preventDefault();
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+      };
+      listEl.ondrop = (ev) => {
+        if (ev.target?.closest?.(".zion-session-row")) return;
+        ev.preventDefault();
+        try {
+          const rawMulti = ev.dataTransfer?.getData("application/zion-nodes") || "";
+          const rawSingle = ev.dataTransfer?.getData("application/zion-node") || "";
+          let items = [];
+          if (rawMulti) {
+            const payload = JSON.parse(rawMulti);
+            items = Array.isArray(payload.items) ? payload.items : [];
+          } else if (rawSingle) {
+            const payload = JSON.parse(rawSingle);
+            if (payload && payload.id) items = [{ id: payload.id, type: payload.type || "session" }];
+          }
+          let moved = false;
+          for (const it of items) {
+            if (it.id && it.id !== "root") {
+              if (moveNode(it.id, "root")) moved = true;
+            }
+          }
+          if (moved) {
+            window.zion.state.set("sessions.catalog", getIndex());
+            render();
+            if (typeof onAfterChange === "function") onAfterChange();
+          }
+        } catch {}
+      };
 
       // restore transitions in next frame
       requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -310,13 +455,117 @@ export function createSessionsListRendererFactory(deps) {
         return menu;
       };
 
+      const mkRootMenu = () => {
+        const menu = document.createElement("div");
+        menu.style.position = "fixed";
+        menu.style.background = "var(--panel)";
+        menu.style.border = "1px solid var(--border)";
+        menu.style.borderRadius = "6px";
+        menu.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
+        menu.style.padding = "4px 0";
+        menu.style.zIndex = "100001";
+        menu.style.display = "none";
+        menu.style.minWidth = "160px";
+
+        const mkItem = (text, onClick) => {
+          const it = document.createElement("div");
+          it.textContent = text;
+          it.style.padding = "6px 16px";
+          it.style.cursor = "pointer";
+          it.style.fontSize = "13px";
+          it.style.color = "var(--fg)";
+          it.onmouseenter = () => { it.style.background = "var(--border)"; };
+          it.onmouseleave = () => { it.style.background = "transparent"; };
+          it.onclick = () => { menu.style.display = "none"; onClick(); };
+          return it;
+        };
+
+        menu.appendChild(mkItem("New Session", () => {
+          window.zion.commands.executeCommand("zion.sessions.new", { parentId: "root" });
+          if (typeof onAfterChange === "function") onAfterChange();
+          render();
+        }));
+        menu.appendChild(mkItem("New Folder", () => {
+          try {
+            const id = window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: "root", title: "New Folder" });
+            pendingEdit = { id, type: "folder" };
+          } catch {}
+          if (typeof onAfterChange === "function") onAfterChange();
+          render();
+        }));
+        menu.appendChild(mkItem("Import Sessions", () => {
+          window.zion.commands.executeCommand("zion.sessions.import");
+        }));
+        menu.appendChild(mkItem("Export All Sessions", () => {
+          window.zion.commands.executeCommand("zion.sessions.export");
+        }));
+        if (getSelection().length > 0) {
+          menu.appendChild(mkItem("Export Selected", () => {
+            window.zion.commands.executeCommand("zion.sessions.exportSelected");
+          }));
+          menu.appendChild(mkItem("Delete Selected", () => {
+            window.zion.commands.executeCommand("zion.sessions.deleteSelected");
+            if (typeof onAfterChange === "function") onAfterChange();
+            render();
+          }));
+        }
+
+        return menu;
+      };
+
+      const mkSelectionMenu = () => {
+        const menu = document.createElement("div");
+        menu.style.position = "fixed";
+        menu.style.background = "var(--panel)";
+        menu.style.border = "1px solid var(--border)";
+        menu.style.borderRadius = "6px";
+        menu.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
+        menu.style.padding = "4px 0";
+        menu.style.zIndex = "100001";
+        menu.style.display = "none";
+        menu.style.minWidth = "160px";
+
+        const mkItem = (text, onClick) => {
+          const it = document.createElement("div");
+          it.textContent = text;
+          it.style.padding = "6px 16px";
+          it.style.cursor = "pointer";
+          it.style.fontSize = "13px";
+          it.style.color = "var(--fg)";
+          it.onmouseenter = () => { it.style.background = "var(--border)"; };
+          it.onmouseleave = () => { it.style.background = "transparent"; };
+          it.onclick = () => { menu.style.display = "none"; onClick(); };
+          return it;
+        };
+
+        const count = getSelection().length;
+        const title = document.createElement("div");
+        title.textContent = `${count} Selected`;
+        title.style.padding = "6px 16px";
+        title.style.fontSize = "12px";
+        title.style.opacity = "0.7";
+        title.style.pointerEvents = "none";
+        menu.appendChild(title);
+
+        menu.appendChild(mkItem("Export Selected", () => {
+          window.zion.commands.executeCommand("zion.sessions.exportSelected");
+        }));
+        menu.appendChild(mkItem("Delete Selected", () => {
+          window.zion.commands.executeCommand("zion.sessions.deleteSelected");
+          if (typeof onAfterChange === "function") onAfterChange();
+          render();
+        }));
+
+        return menu;
+      };
+
       const renderFolder = (folder, depth = 0) => {
         // folder row
         const row = document.createElement("div");
         row.style.display = "flex";
         row.style.alignItems = "center";
         row.style.justifyContent = "space-between";
-        row.style.padding = "8px 10px 8px 0";
+        row.style.padding = "6px 10px";
         row.style.gap = "8px";
         row.style.borderRadius = "8px";
         row.style.transition = "background 120ms ease";
@@ -325,7 +574,11 @@ export function createSessionsListRendererFactory(deps) {
         row.style.whiteSpace = "nowrap";
         row.style.borderLeft = `${depth * 12}px solid transparent`;
         row.dataset.depth = String(depth);
-        visibleOrder.push({ id: folder.id, type: "folder" });
+        if (depth < 0) {
+          row.style.display = "none";
+          row.setAttribute("aria-hidden", "true");
+        }
+        if (depth >= 0) visibleOrder.push({ id: folder.id, type: "folder" });
 
         const labelWrap = document.createElement("div");
         labelWrap.style.display = "flex";
@@ -366,7 +619,7 @@ export function createSessionsListRendererFactory(deps) {
         btns.style.transform = "translateY(-50%)";
 
         const bNewSession = mkIconBtn(
-          '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+          '<span class="codicon codicon-add" aria-hidden="true"></span>',
           "New session here",
           (ev) => {
             ev.stopPropagation();
@@ -376,7 +629,7 @@ export function createSessionsListRendererFactory(deps) {
           }
         );
         const bNewFolder = mkIconBtn(
-          '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2.5 4.5h4l1.2 1.5H13a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 11V6a1.5 1.5 0 0 1 1-1.5z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M11 5.5h1.5M11.75 4.75v1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+          '<span class="codicon codicon-new-folder" aria-hidden="true"></span>',
           "New folder here",
           (ev) => {
             ev.stopPropagation();
@@ -396,14 +649,30 @@ export function createSessionsListRendererFactory(deps) {
           (ev) => {
             ev.stopPropagation();
             const isOpen = folderMenu.style.display === "block";
-            Array.from(listEl.querySelectorAll(".session-row-menu")).forEach(m => m.style.display = "none");
-            folderMenu.style.display = isOpen ? "none" : "block";
+            if (isOpen) {
+              folderMenu.style.display = "none";
+            } else {
+              showAnchoredMenu(folderMenu);
+            }
           }
         );
         const folderMenu = mkFolderMenu(folder, row);
         folderMenu.className = "session-row-menu";
         row.appendChild(folderMenu);
         row.addEventListener("click", () => { folderMenu.style.display = "none"; });
+        row.addEventListener("contextmenu", (ev) => {
+          if (depth < 0) return;
+          try { window.zion.state.set("sessions.selectedFolderId", folder.id); } catch {}
+          if (getSelection().length > 1 && isInSelection(folder.id)) {
+            if (selectionContextMenu) showContextMenu(selectionContextMenu, ev);
+            return;
+          }
+          if (!isInSelection(folder.id)) {
+            selectOnlyForContext(folder.id, "folder");
+            row.classList.add("is-selected");
+          }
+          showContextMenu(folderMenu, ev);
+        });
 
         // drag folder
         row.setAttribute("draggable", "true");
@@ -576,7 +845,7 @@ export function createSessionsListRendererFactory(deps) {
           } catch {}
         }
 
-        if (isFolderOpen(folder.id)) {
+        if (depth < 0 || isFolderOpen(folder.id)) {
           const children = (folder.children || []).slice();
 
           const matchNode = (n) => (n.title || "").toLowerCase().includes(query);
@@ -616,7 +885,7 @@ export function createSessionsListRendererFactory(deps) {
               srow.style.display = "flex";
               srow.style.alignItems = "center";
               srow.style.justifyContent = "space-between";
-              srow.style.padding = "8px 0 8px 0";
+              srow.style.padding = "6px 10px";
               srow.style.gap = "8px";
               srow.style.borderRadius = "8px";
               srow.style.transition = "background 120ms ease";
@@ -624,7 +893,7 @@ export function createSessionsListRendererFactory(deps) {
               srow.style.position = "relative";
               srow.className = "zion-session-row";
               srow.style.whiteSpace = "nowrap";
-              srow.style.paddingLeft = `${(depth + 1) * 12}px`;
+              srow.style.paddingLeft = `${10 + ((depth + 1) * 12)}px`;
               srow.dataset.depth = String(depth + 1);
               srow.dataset.sessionId = String(ch.id || "");
               visibleOrder.push({ id: ch.id, type: "session" });
@@ -660,7 +929,7 @@ export function createSessionsListRendererFactory(deps) {
               titleLine.style.flex = "1 1 auto";
               titleLine.style.minWidth = "0";
 
-              const curId = window.zion.state.get("sessions.currentId");
+              const curId = getEffectiveCurrentSessionId();
               if (ch.id === curId) srow.classList.add("is-current");
               if (isSelected(ch.id)) srow.classList.add("is-selected");
 
@@ -715,11 +984,25 @@ export function createSessionsListRendererFactory(deps) {
                 (ev) => {
                   ev.stopPropagation();
                   const isOpen = sMenu.style.display === "block";
-                  Array.from(listEl.querySelectorAll(".session-row-menu")).forEach(m => m.style.display = "none");
-                  sMenu.style.display = isOpen ? "none" : "block";
+                  if (isOpen) {
+                    sMenu.style.display = "none";
+                  } else {
+                    showAnchoredMenu(sMenu);
+                  }
                 }
               );
               bMore2.style.opacity = "0";
+              srow.addEventListener("contextmenu", (ev) => {
+                if (getSelection().length > 1 && isInSelection(ch.id)) {
+                  if (selectionContextMenu) showContextMenu(selectionContextMenu, ev);
+                  return;
+                }
+                if (!isInSelection(ch.id)) {
+                  selectOnlyForContext(ch.id, "session");
+                  srow.classList.add("is-selected");
+                }
+                showContextMenu(sMenu, ev);
+              });
 
               const rs = window.zion.state.get(`chat.runs.${ch.id}`) || null;
               let statusBadge = null;
@@ -895,8 +1178,11 @@ export function createSessionsListRendererFactory(deps) {
                   render();
                   return;
                 }
-                setSelection([{ id: ch.id, type: "session" }]);
+                clearSelection();
                 setLastSelectedId(ch.id);
+                try {
+                  Array.from(listEl.querySelectorAll(".zion-session-row.is-selected")).forEach((row) => row.classList.remove("is-selected"));
+                } catch {}
                 if (typeof onSwitchSession === "function") onSwitchSession(ch.id);
               });
 
@@ -908,18 +1194,24 @@ export function createSessionsListRendererFactory(deps) {
           }
         }
       };
-
       const root = tree;
+      rootContextMenu = mkRootMenu();
+      rootContextMenu.className = "session-row-menu";
+      listEl.appendChild(rootContextMenu);
+      selectionContextMenu = mkSelectionMenu();
+      selectionContextMenu.className = "session-row-menu";
+      listEl.appendChild(selectionContextMenu);
       if (!root || !Array.isArray(root.children) || root.children.length === 0) {
         const empty = document.createElement("div");
-        empty.textContent = query ? "No sessions match your search." : "No sessions yet.";
+        empty.textContent = "No sessions yet.";
         empty.style.opacity = "0.8";
         empty.style.fontSize = "12px";
         empty.style.padding = "8px 4px";
         listEl.appendChild(empty);
         return;
       }
-      renderFolder(root, 0);
+      try { setFolderOpen(root.id || "root", true); } catch {}
+      renderFolder(root, -1);
     };
 
     return render;

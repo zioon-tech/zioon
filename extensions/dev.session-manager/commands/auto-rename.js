@@ -11,11 +11,6 @@ export function registerSessionAutoRenameCommand(opts) {
     t = t.replace(/^["'“”‘’]+/, "").replace(/["'“”‘’]+$/, "");
     t = t.replace(/\s+/g, " ").trim();
     t = t.replace(/^[\-–—:：#*]+/, "").replace(/[\-–—:：#*]+$/, "").trim();
-    if (!t) return "";
-    const hasCJK = /[\u4e00-\u9fff]/.test(t);
-    const maxLen = hasCJK ? 18 : 36;
-    const arr = Array.from(t);
-    if (arr.length > maxLen) t = arr.slice(0, maxLen).join("");
     return t.trim();
   };
 
@@ -45,7 +40,7 @@ export function registerSessionAutoRenameCommand(opts) {
         {
           role: "system",
           content:
-            "你是一个为笔记/会话自动生成标题的助手。输出一个简短自然的标题，避免引号与换行，不要输出任何解释。中文标题尽量不超过18字，英文不超过36字符。"
+            "你是一个为笔记/会话自动生成标题的助手。输出一个简短自然的标题，避免引号与换行，不要输出任何解释。标题要尽量短，通常控制在一小段短语内。"
         },
         {
           role: "user",

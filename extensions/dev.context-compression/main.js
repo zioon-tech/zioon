@@ -855,9 +855,21 @@ export async function activate(ctx) {
     const stats = window.zion.state.get('compression.stats') || {};
     const saved = stats.totalTokensSaved || 0;
     try { statusDisp?.dispose?.(); } catch {}
-    statusDisp = window.zion.statusBar.registerItem({
+    statusDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: 'compression.status',
-      text: `📦 ${formatTokens(saved)}`,
+      text: `Ctx: ${formatTokens(saved)}`,
+      tooltip: `Tokens saved: ${saved}`,
+      priority: 60,
+      onClick: () => openCompressionPanel()
+    }) || window.zion.editorHeaderMenu?.register?.({
+      id: 'compression.status',
+      title: `上下文压缩：${formatTokens(saved)}`,
+      section: 'Chat',
+      order: 30,
+      onClick: () => openCompressionPanel()
+    }) || window.zion.statusBar.registerItem({
+      id: 'compression.status',
+      text: `Ctx: ${formatTokens(saved)}`,
       tooltip: `Tokens saved: ${saved}`,
       onClick: () => openCompressionPanel()
     });
@@ -1429,16 +1441,17 @@ function openStatsOverlay() {
     position: 'fixed',
     top: '48px',
     right: '12px',
-    width: '380px',
-    maxHeight: '75vh',
+    width: '360px',
+    maxWidth: 'calc(100vw - 16px)',
+    maxHeight: '65vh',
     overflow: 'auto',
     background: 'var(--panel)',
     color: 'var(--fg)',
     border: '1px solid var(--border)',
     borderRadius: '8px',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-    padding: '12px',
-    fontFamily: 'var(--font-sans)',
+    boxShadow: '0 12px 32px rgba(0,0,0,0.32)',
+    padding: '8px',
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
     pointerEvents: 'auto'
   });
 
@@ -1532,6 +1545,7 @@ function openStatsOverlay() {
   panel.appendChild(container);
   root.appendChild(panel);
   document.body.appendChild(root);
+  positionStatsOverlayPanel(panel);
 
   // Event handlers
   root.addEventListener('click', (e) => {
@@ -1551,4 +1565,33 @@ function openStatsOverlay() {
     });
     root.remove();
   });
+}
+
+function positionStatsOverlayPanel(panel) {
+  const btn = document.querySelector('[data-zion-status-id="compression.status"]')
+    || Array.from(document.querySelectorAll('#bottombar .status-item, #statusbar .status-item'))
+      .find((b) => b.textContent?.includes('Ctx:'));
+  const pad = 8;
+  const vw = window.innerWidth || 0;
+  const vh = window.innerHeight || 0;
+  panel.style.left = '';
+  panel.style.right = '';
+  panel.style.top = '';
+  panel.style.bottom = '';
+  panel.style.maxHeight = 'min(75vh, calc(100vh - 24px))';
+  if (!btn) {
+    panel.style.right = '12px';
+    panel.style.bottom = '36px';
+    return;
+  }
+  const rect = btn.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  const mw = Math.min(panelRect.width || 380, Math.max(240, vw - pad * 2));
+  const spaceAbove = Math.max(180, rect.top - pad * 2);
+  panel.style.maxHeight = `${Math.min(Math.round(vh * 0.75), spaceAbove)}px`;
+  const mh = Math.min(panelRect.height || 420, spaceAbove);
+  const left = Math.max(pad, Math.min(Math.round(rect.right - mw), Math.max(pad, vw - mw - pad)));
+  const top = Math.max(pad, Math.round(rect.top - pad - mh));
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
 }

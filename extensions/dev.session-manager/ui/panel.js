@@ -2,7 +2,6 @@ export function createSessionsPanelManager(opts) {
   const zion = opts?.zion || window.zion;
   const getIndex = opts?.getIndex;
   const createSessionsListRenderer = opts?.createSessionsListRenderer;
-  const openAncestors = opts?.openAncestors;
   const openModalInput = opts?.openModalInput;
   const refreshSessionsSidebarViewIfOpen = opts?.refreshSessionsSidebarViewIfOpen;
 
@@ -82,20 +81,9 @@ export function createSessionsPanelManager(opts) {
 
       const controls = document.createElement("div");
       controls.style.display = "grid";
-      controls.style.gridTemplateColumns = "1fr auto auto auto";
+      controls.style.gridTemplateColumns = "auto auto";
       controls.style.gap = "6px";
       controls.style.marginBottom = "8px";
-
-      const searchInput = document.createElement("input");
-      searchInput.type = "text";
-      searchInput.placeholder = "Search by title…";
-      searchInput.setAttribute("aria-label", "Search sessions by title");
-      searchInput.style.background = "var(--panel)";
-      searchInput.style.color = "var(--fg)";
-      searchInput.style.border = "1px solid var(--border)";
-      searchInput.style.borderRadius = "6px";
-      searchInput.style.padding = "6px 8px";
-      searchInput.style.fontSize = "12px";
 
       const sortSelect = document.createElement("select");
       sortSelect.setAttribute("aria-label", "Sort sessions");
@@ -117,26 +105,6 @@ export function createSessionsPanelManager(opts) {
       optTitle.textContent = "Aa";
       optTitle.title = "Sort by title (A→Z)";
       sortSelect.append(optUpdated, optTitle);
-
-      const anchorBtn = document.createElement("button");
-      const ICON_TARGET = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>';
-      anchorBtn.innerHTML = ICON_TARGET;
-      anchorBtn.title = "定位到当前会话";
-      anchorBtn.setAttribute("aria-label", anchorBtn.title);
-      anchorBtn.style.background = "transparent";
-      anchorBtn.style.color = "var(--fg)";
-      anchorBtn.style.border = "none";
-      anchorBtn.style.borderRadius = "6px";
-      anchorBtn.style.padding = "2px";
-      anchorBtn.style.cursor = "pointer";
-      anchorBtn.style.fontSize = "14px";
-      anchorBtn.style.width = "24px";
-      anchorBtn.style.height = "24px";
-      anchorBtn.style.display = "flex";
-      anchorBtn.style.alignItems = "center";
-      anchorBtn.style.justifyContent = "center";
-      anchorBtn.onmouseenter = () => { anchorBtn.style.background = "var(--border)"; };
-      anchorBtn.onmouseleave = () => { anchorBtn.style.background = "transparent"; };
 
       const actions = document.createElement("div");
       actions.style.position = "relative";
@@ -230,7 +198,7 @@ export function createSessionsPanelManager(opts) {
 
       panel.addEventListener("click", () => { menu.style.display = "none"; });
 
-      controls.append(searchInput, sortSelect, anchorBtn, actions);
+      controls.append(sortSelect, actions);
       panel.appendChild(controls);
 
       const list = document.createElement("div");
@@ -239,11 +207,12 @@ export function createSessionsPanelManager(opts) {
       const render = createSessionsListRenderer({
         listEl: list,
         hostElement: panel,
-        getQuery: () => (searchInput.value || "").trim().toLowerCase(),
+        getQuery: () => "",
         getSort: () => sortSelect.value || "updated",
         onSwitchSession: (id) => {
-          zion.commands.executeCommand("zion.sessions.switch", id);
+          const result = zion.commands.executeCommand("zion.sessions.switch", id);
           setTimeout(() => { overlay.remove(); }, 30);
+          return result;
         },
         onAfterChange: () => {
           try { refreshSessionsSidebarViewIfOpen?.(); } catch {}
@@ -251,28 +220,6 @@ export function createSessionsPanelManager(opts) {
         }
       });
 
-      anchorBtn.onclick = () => {
-        try {
-          const cid = zion?.state?.get("sessions.currentId");
-          if (!cid) return;
-          openAncestors(cid);
-          try { searchInput.value = ""; } catch {}
-          render();
-          try {
-            const row = panel.querySelector(".zion-session-row.is-current");
-            if (row) {
-              row.scrollIntoView({ block: "center" });
-              try {
-                const prev = row.style.background;
-                row.style.background = "var(--border)";
-                setTimeout(() => { row.style.background = prev; }, 600);
-              } catch {}
-            }
-          } catch {}
-        } catch {}
-      };
-
-      searchInput.addEventListener("input", () => render());
       sortSelect.addEventListener("change", () => render());
       render();
 
@@ -295,4 +242,3 @@ export function createSessionsPanelManager(opts) {
 
   return { open, refreshIfOpen };
 }
-

@@ -1,4 +1,4 @@
-import { EditorState, EditorSelection, Compartment, Prec, type Extension } from "@codemirror/state";
+import { EditorState, EditorSelection, Compartment, Prec, Transaction, type Extension } from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -88,6 +88,16 @@ function getSelectionHighlightExtensions(enabled: boolean): Extension[] {
 
 export type CursorPos = { line: number; ch: number };
 
+export type EditorSetValueOptions = {
+  source?: "session-load";
+};
+
+let nextEditorCoreSeq = 1;
+
+function createEditorId(panelId: string): string {
+  return `${panelId || "editor"}:${nextEditorCoreSeq++}`;
+}
+
 export class EditorCore {
   public view: EditorView;
   private keymapComp = new Compartment();
@@ -113,9 +123,12 @@ export class EditorCore {
   private lineWrapEnabled = true;
   private disposed = false;
   private _panelId: string;
+  private _editorId: string;
+  private _sessionId: string | null = null;
 
   constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0") {
     this._panelId = panelId;
+    this._editorId = createEditorId(panelId);
     parent.setAttribute("data-panel-id", panelId);
     this.view = new EditorView({
       state: EditorState.create({
@@ -181,16 +194,55 @@ export class EditorCore {
       }),
       parent
     });
+    this.applyDomIdentity();
+  }
+
+  private applyDomIdentity(): void {
+    try {
+      this.view.dom.setAttribute("data-editor-id", this._editorId);
+      this.view.dom.setAttribute("data-panel-id", this._panelId);
+      if (this._sessionId) {
+        this.view.dom.setAttribute("data-session-id", this._sessionId);
+      } else {
+        this.view.dom.removeAttribute("data-session-id");
+      }
+    } catch {}
+  }
+
+  getEditorId(): string {
+    return this._editorId;
+  }
+
+  getPanelId(): string {
+    return this._panelId;
+  }
+
+  setPanelId(panelId: string): void {
+    this._panelId = panelId;
+    this.applyDomIdentity();
+  }
+
+  getSessionId(): string | null {
+    return this._sessionId;
+  }
+
+  setSessionId(sessionId: string | null): void {
+    this._sessionId = sessionId ? String(sessionId) : null;
+    this.applyDomIdentity();
   }
 
   getValue(): string {
     return this.view.state.doc.toString();
   }
 
-  setValue(v: string): void {
+  setValue(v: string, opts?: EditorSetValueOptions): void {
     const { state } = this.view;
+    const annotations = opts?.source === "session-load"
+      ? Transaction.userEvent.of("zion.sessionLoad")
+      : undefined;
     const tr = state.update({
-      changes: { from: 0, to: state.doc.length, insert: v }
+      changes: { from: 0, to: state.doc.length, insert: v },
+      annotations
     });
     this.view.dispatch(tr);
   }
@@ -268,10 +320,18 @@ export class EditorCore {
     this.view.dispatch({
       effects: this.themeComp.reconfigure(
         theme === "dark"
-          ? [oneDark, syntaxHighlighting(defaultHighlightStyle, { fallback: true })]
+          ? oneDark
           : syntaxHighlighting(defaultHighlightStyle, { fallback: true })
       )
     });
+  }
+
+  refreshWysiwyg(): void {
+    try {
+      this.view.dispatch({
+        annotations: Transaction.userEvent.of("wysiwyg-refresh")
+      });
+    } catch {}
   }
 
   // Helper to rebuild the features array based on current flags

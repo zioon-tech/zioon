@@ -449,6 +449,7 @@ export async function runStream({
   onError,
   getController,
   onToolCall,
+  beforeControlEvent,
   runId,
   sessionId,
   panelId,
@@ -687,6 +688,7 @@ export async function runStream({
                     if (bufItem.id && bufItem.name && bufItem.arguments) {
                       try {
                         const args = JSON.parse(bufItem.arguments);
+                        try { beforeControlEvent?.("toolCall"); } catch {}
                         onToolCall && onToolCall({ id: bufItem.id, name: bufItem.name, args });
                         // 清空该 buffer 位置，避免重复触发
                         toolCallsBuffer[idx] = { id: "", name: "", arguments: "" };
@@ -727,6 +729,7 @@ export async function runStream({
           if (parseResult.done) {
             try {
               if (emittedReasoningStart) {
+                try { beforeControlEvent?.("reasoningEnd"); } catch {}
                 window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId, panelId, silentReasoning });
               }
             } catch {}
@@ -736,11 +739,13 @@ export async function runStream({
 
           if (parseResult.thinkingStart) {
             emittedReasoningStart = true;
+            try { beforeControlEvent?.("reasoningStart"); } catch {}
             try { window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId, panelId, silentReasoning }); } catch {}
           }
 
           if (parseResult.thinkingToken) {
             reasoningBuf += parseResult.thinkingToken;
+            try { beforeControlEvent?.("reasoningToken"); } catch {}
             try { window.zion?.events?.emit("chat/reasoningToken", { runId, token: parseResult.thinkingToken, sessionId, panelId, silentReasoning }); } catch {}
           }
 
@@ -752,12 +757,14 @@ export async function runStream({
             const fc = parseResult.functionCall;
             // 生成一个唯一的 id
             const id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+            try { beforeControlEvent?.("toolCall"); } catch {}
             onToolCall && onToolCall({ id, name: fc.name, args: fc.args });
           }
         }
       }
       try {
         if (emittedReasoningStart) {
+          try { beforeControlEvent?.("reasoningEnd"); } catch {}
           window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId, panelId, silentReasoning });
         }
       } catch {}
@@ -786,6 +793,7 @@ export async function runStream({
         for (const tc of toolUses) {
           try {
             const args = typeof tc.input === "string" ? JSON.parse(tc.input) : (tc.input || {});
+            try { beforeControlEvent?.("toolCall"); } catch {}
             onToolCall && onToolCall({ id: tc.id, name: tc.name, args });
           } catch {
             // 忽略解析错误
@@ -804,6 +812,7 @@ export async function runStream({
               const fc = part.functionCall;
               const args = fc.args || {};
               const id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+              try { beforeControlEvent?.("toolCall"); } catch {}
               onToolCall && onToolCall({ id, name: fc.name, args });
             }
           }
@@ -818,6 +827,7 @@ export async function runStream({
               const args = typeof tc?.function?.arguments === "string"
                 ? JSON.parse(tc.function.arguments)
                 : (tc?.function?.arguments || {});
+              try { beforeControlEvent?.("toolCall"); } catch {}
               onToolCall && onToolCall({
                 id: tc.id,
                 name: tc?.function?.name,
@@ -848,8 +858,11 @@ export async function runStream({
       if (reasoningContent) {
         reasoningBuf += String(reasoningContent);
         try {
+          try { beforeControlEvent?.("reasoningStart"); } catch {}
           window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId, panelId, silentReasoning });
+          try { beforeControlEvent?.("reasoningToken"); } catch {}
           window.zion?.events?.emit("chat/reasoningToken", { runId, token: reasoningContent, sessionId, panelId, silentReasoning });
+          try { beforeControlEvent?.("reasoningEnd"); } catch {}
           window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId, panelId, silentReasoning });
         } catch {}
       }
