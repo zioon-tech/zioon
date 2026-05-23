@@ -3107,22 +3107,86 @@ body.is-dragging-panel-tabs-scrollbar {
   background-color: var(--scrollbar-thumb-hover);
 }
 
-/* Context menu/submenu scrollbar theming */
-.zion-context-submenu {
+/* Popup/menu scrollbar theming */
+.zion-popup-scrollbar,
+.zion-context-menu,
+.zion-context-submenu,
+.zion-editor-header-menu,
+.zion-editor-tabs-menu,
+#zion-model-switcher-root > div,
+#zion-tools-switcher-root > div,
+#zion-task-panel,
+#zion-skills-panel > div,
+#zion-compression-stats-overlay > div,
+.zion-compression-settings-panel,
+.zion-terminal-bottombar-menu,
+.zte-tabs-dropdown {
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   scrollbar-width: thin;
+  scrollbar-gutter: stable;
 }
-.zion-context-submenu::-webkit-scrollbar {
+.zion-popup-scrollbar::-webkit-scrollbar,
+.zion-context-menu::-webkit-scrollbar,
+.zion-context-submenu::-webkit-scrollbar,
+.zion-editor-header-menu::-webkit-scrollbar,
+.zion-editor-tabs-menu::-webkit-scrollbar,
+#zion-model-switcher-root > div::-webkit-scrollbar,
+#zion-tools-switcher-root > div::-webkit-scrollbar,
+#zion-task-panel::-webkit-scrollbar,
+#zion-skills-panel > div::-webkit-scrollbar,
+#zion-compression-stats-overlay > div::-webkit-scrollbar,
+.zion-compression-settings-panel::-webkit-scrollbar,
+.zion-terminal-bottombar-menu::-webkit-scrollbar,
+.zte-tabs-dropdown::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
-.zion-context-submenu::-webkit-scrollbar-track {
+.zion-popup-scrollbar::-webkit-scrollbar-track,
+.zion-context-menu::-webkit-scrollbar-track,
+.zion-context-submenu::-webkit-scrollbar-track,
+.zion-editor-header-menu::-webkit-scrollbar-track,
+.zion-editor-tabs-menu::-webkit-scrollbar-track,
+#zion-model-switcher-root > div::-webkit-scrollbar-track,
+#zion-tools-switcher-root > div::-webkit-scrollbar-track,
+#zion-task-panel::-webkit-scrollbar-track,
+#zion-skills-panel > div::-webkit-scrollbar-track,
+#zion-compression-stats-overlay > div::-webkit-scrollbar-track,
+.zion-compression-settings-panel::-webkit-scrollbar-track,
+.zion-terminal-bottombar-menu::-webkit-scrollbar-track,
+.zte-tabs-dropdown::-webkit-scrollbar-track {
   background: var(--scrollbar-track);
 }
-.zion-context-submenu::-webkit-scrollbar-thumb {
+.zion-popup-scrollbar::-webkit-scrollbar-thumb,
+.zion-context-menu::-webkit-scrollbar-thumb,
+.zion-context-submenu::-webkit-scrollbar-thumb,
+.zion-editor-header-menu::-webkit-scrollbar-thumb,
+.zion-editor-tabs-menu::-webkit-scrollbar-thumb,
+#zion-model-switcher-root > div::-webkit-scrollbar-thumb,
+#zion-tools-switcher-root > div::-webkit-scrollbar-thumb,
+#zion-task-panel::-webkit-scrollbar-thumb,
+#zion-skills-panel > div::-webkit-scrollbar-thumb,
+#zion-compression-stats-overlay > div::-webkit-scrollbar-thumb,
+.zion-compression-settings-panel::-webkit-scrollbar-thumb,
+.zion-terminal-bottombar-menu::-webkit-scrollbar-thumb,
+.zte-tabs-dropdown::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb);
   border-radius: 6px;
+  border: 2px solid var(--scrollbar-track);
+  background-clip: content-box;
 }
-.zion-context-submenu:hover::-webkit-scrollbar-thumb {
+.zion-popup-scrollbar:hover::-webkit-scrollbar-thumb,
+.zion-context-menu:hover::-webkit-scrollbar-thumb,
+.zion-context-submenu:hover::-webkit-scrollbar-thumb,
+.zion-editor-header-menu:hover::-webkit-scrollbar-thumb,
+.zion-editor-tabs-menu:hover::-webkit-scrollbar-thumb,
+#zion-model-switcher-root > div:hover::-webkit-scrollbar-thumb,
+#zion-tools-switcher-root > div:hover::-webkit-scrollbar-thumb,
+#zion-task-panel:hover::-webkit-scrollbar-thumb,
+#zion-skills-panel > div:hover::-webkit-scrollbar-thumb,
+#zion-compression-stats-overlay > div:hover::-webkit-scrollbar-thumb,
+.zion-compression-settings-panel:hover::-webkit-scrollbar-thumb,
+.zion-terminal-bottombar-menu:hover::-webkit-scrollbar-thumb,
+.zte-tabs-dropdown:hover::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb-hover);
 }
 
