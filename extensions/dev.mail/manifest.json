@@ -13,11 +13,15 @@
       "commands": [
         {
           "id": "tools.openMailConfig",
-          "title": "Open Mail Configuration"
+          "title": "Open Mail Configuration",
+          "titleKey": "dev.mail.cmd.openConfig",
+          "categoryKey": "dev.mail.category.mail"
         },
         {
           "id": "tools.closeMailConfig",
-          "title": "Close Mail Configuration"
+          "title": "Close Mail Configuration",
+          "titleKey": "dev.mail.cmd.closeConfig",
+          "categoryKey": "dev.mail.category.mail"
         }
       ]
     },

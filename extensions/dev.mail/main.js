@@ -1,7 +1,86 @@
 import { installMailConfigPanel } from "./mail-config.js";
 import { registerMailSettings } from "./settings.js";
 
+const I18N_NS = "dev.mail";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.mail": "邮件",
+    "cmd.openConfig": "打开邮件配置",
+    "cmd.closeConfig": "关闭邮件配置",
+    "ui.config": "邮件配置",
+    "ui.tooltip": "配置邮件 (base: {base})",
+    "settings.title": "Mail",
+    "settings.description": "配置 SMTP 发信、默认收件人和会话结束通知。",
+    "settings.smtp.title": "SMTP",
+    "settings.smtp.description": "定义真正用于发送邮件的 SMTP 连接参数。",
+    "settings.smtpHost.description": "例如 `smtp.example.com`。",
+    "settings.smtpPort.description": "常见端口如 `465` 或 `587`。",
+    "settings.smtpUsername.description": "通常是邮箱地址或服务账号。",
+    "settings.smtpPassword.description": "建议使用 app-specific password。",
+    "settings.useTls.description": "与 Mail 服务配置保持一致。",
+    "settings.identity.title": "身份",
+    "settings.identity.description": "配置发件人展示信息。",
+    "settings.fromEmail.description": "发件人邮箱地址。",
+    "settings.fromName.description": "显示给收件人的发件人名称。",
+    "settings.recipients.title": "收件人",
+    "settings.recipients.description": "管理默认收件人和通知发信对象。",
+    "settings.recipientsList.description": "支持逗号、分号或换行分隔多个邮箱地址。",
+    "settings.defaultRecipient.description": "留空时会回退到收件人列表中的第一个地址。",
+    "settings.notifications.title": "通知",
+    "settings.notifications.description": "控制会话结束后的发信和调试输出。",
+    "settings.autoNotify.description": "会话结束后默认尝试发信。",
+    "settings.debug.description": "输出更多 mail 调试日志。",
+    "settings.openPanel.label": "打开紧凑 Mail 面板",
+    "settings.openPanel.description": "打开原有的紧凑 Mail 配置面板，便于调试或快速调整。",
+    "settings.openPanel.action": "打开面板"
+  },
+  "en-US": {
+    "category.mail": "Mail",
+    "cmd.openConfig": "Open Mail Configuration",
+    "cmd.closeConfig": "Close Mail Configuration",
+    "ui.config": "Mail Configuration",
+    "ui.tooltip": "Configure mail (base: {base})",
+    "settings.title": "Mail",
+    "settings.description": "Configure SMTP sending, default recipients, and run-finished notifications.",
+    "settings.smtp.title": "SMTP",
+    "settings.smtp.description": "Define SMTP connection parameters used for sending mail.",
+    "settings.smtpHost.description": "For example `smtp.example.com`.",
+    "settings.smtpPort.description": "Common ports include `465` or `587`.",
+    "settings.smtpUsername.description": "Usually an email address or service account.",
+    "settings.smtpPassword.description": "App-specific password is recommended.",
+    "settings.useTls.description": "Keep this aligned with the Mail service configuration.",
+    "settings.identity.title": "Identity",
+    "settings.identity.description": "Configure sender display information.",
+    "settings.fromEmail.description": "Sender email address.",
+    "settings.fromName.description": "Sender name shown to recipients.",
+    "settings.recipients.title": "Recipients",
+    "settings.recipients.description": "Manage default recipients and notification targets.",
+    "settings.recipientsList.description": "Separate multiple email addresses with comma, semicolon, or new lines.",
+    "settings.defaultRecipient.description": "Falls back to the first recipient when empty.",
+    "settings.notifications.title": "Notifications",
+    "settings.notifications.description": "Control mail after session completion and debug output.",
+    "settings.autoNotify.description": "Try sending mail after a session finishes.",
+    "settings.debug.description": "Output more mail debug logs.",
+    "settings.openPanel.label": "Open Compact Mail Panel",
+    "settings.openPanel.description": "Open the legacy compact Mail panel for quick debugging or adjustment.",
+    "settings.openPanel.action": "Open Panel"
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   try {
     const mailManageTool = {
       type: "function",
@@ -305,19 +384,20 @@ export async function activate(ctx) {
     const mailBase = (window.zion.state.get("mail.baseUrl") || localStorage.getItem("zion.mail.baseUrl") || "http://127.0.0.1:8765");
     mailBtnDisp = window.zion.editorHeaderMenu?.register?.({
       id: "dev.mail.button",
-      title: "邮件配置",
+      title: t("ui.config", "邮件配置"),
       section: "Extensions",
       order: 40,
       onClick: () => window.zion.commands.executeCommand("tools.openMailConfig")
     }) || window.zion.statusBar.registerItem({
       id: "dev.mail.button",
       text: "MailCfg",
-      tooltip: `Configure mail (base: ${mailBase})`,
+      tooltip: t("ui.tooltip", "Configure mail (base: {base})", { base: mailBase }),
       onClick: () => window.zion.commands.executeCommand("tools.openMailConfig")
     });
   };
   updateMailBtn();
   ctx.subscriptions.push(window.zion.state.onDidChange("mail.baseUrl", () => updateMailBtn()));
+  ctx.subscriptions.push(window.zion.events.on("i18n/changed", () => updateMailBtn()));
 
   const dispMailNotify = window.zion.events.on("chat/runFinished", async ({ sessionId }) => {
     try {

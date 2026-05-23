@@ -22,6 +22,58 @@
  *   into the editor and trigger chat.run automatically (with a simple re-entrancy lock).
  */
 
+const I18N_NS = 'dev.task-panel';
+const I18N_MESSAGES = {
+  'zh-CN': {
+    'category.tasks': '任务',
+    'cmd.togglePanel': '切换任务面板',
+    'cmd.addTask': '添加任务',
+    'cmd.clearTasks': '清空所有任务',
+    'ui.title': '任务',
+    'ui.addTask': '添加任务',
+    'ui.hidePanel': '隐藏面板',
+    'ui.activeUnfinished': '当前任务还有未完成待办。',
+    'ui.taskUnfinished': '任务“{name}”还有未完成待办。',
+    'ui.continue': '继续',
+    'ui.auto': '自动',
+    'ui.filter': '筛选任务...',
+    'ui.footer': '点击任务激活，点击待办切换状态',
+    'ui.empty': '暂无任务',
+    'ui.untitled': '未命名',
+    'ui.toggle': '切换',
+    'status.text': '任务：{count}',
+    'status.tooltip': '切换任务面板'
+  },
+  'en-US': {
+    'category.tasks': 'Tasks',
+    'cmd.togglePanel': 'Toggle Tasks Panel',
+    'cmd.addTask': 'Add Task',
+    'cmd.clearTasks': 'Clear All Tasks',
+    'ui.title': 'Tasks',
+    'ui.addTask': 'Add task',
+    'ui.hidePanel': 'Hide panel',
+    'ui.activeUnfinished': 'Active task has unfinished todos.',
+    'ui.taskUnfinished': 'Task "{name}" has unfinished todos.',
+    'ui.continue': 'Continue',
+    'ui.auto': 'Auto',
+    'ui.filter': 'Filter tasks...',
+    'ui.footer': 'Click task to activate, click todo to toggle state',
+    'ui.empty': 'No tasks',
+    'ui.untitled': 'untitled',
+    'ui.toggle': 'Toggle',
+    'status.text': 'Tasks: {count}',
+    'status.tooltip': 'Toggle Tasks Panel'
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 function ensureStateKeys() {
   if (!window.zion?.state) return;
   if (!Array.isArray(window.zion.state.get('todo.tasks'))) {
@@ -68,7 +120,7 @@ function createPanelHandle() {
     fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif'
   });
   panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-label', 'Tasks');
+  panel.setAttribute('aria-label', t('ui.title', 'Tasks'));
 
   // Header toolbar
   const header = document.createElement('div');
@@ -80,12 +132,12 @@ function createPanelHandle() {
   });
 
   const title = document.createElement('div');
-  title.textContent = 'Tasks';
+  title.textContent = t('ui.title', 'Tasks');
   Object.assign(title.style, { fontSize: '13px', fontWeight: '600', flex: '1' });
 
   const btnAdd = document.createElement('button');
   btnAdd.textContent = '+';
-  btnAdd.title = 'Add task';
+  btnAdd.title = t('ui.addTask', 'Add task');
   Object.assign(btnAdd.style, {
     padding: '4px 6px',
     borderRadius: '4px',
@@ -96,7 +148,7 @@ function createPanelHandle() {
 
   const btnClose = document.createElement('button');
   btnClose.textContent = '×';
-  btnClose.title = 'Hide panel';
+  btnClose.title = t('ui.hidePanel', 'Hide panel');
   Object.assign(btnClose.style, {
     padding: '4px 6px',
     borderRadius: '4px',
@@ -122,11 +174,11 @@ function createPanelHandle() {
   });
 
   const bannerText = document.createElement('div');
-  bannerText.textContent = 'Active task has unfinished todos.';
+  bannerText.textContent = t('ui.activeUnfinished', 'Active task has unfinished todos.');
   Object.assign(bannerText.style, { flex: '1', fontSize: '12px' });
 
   const btnContinue = document.createElement('button');
-  btnContinue.textContent = 'Continue';
+  btnContinue.textContent = t('ui.continue', 'Continue');
   Object.assign(btnContinue.style, {
     padding: '4px 8px',
     borderRadius: '4px',
@@ -142,7 +194,7 @@ function createPanelHandle() {
   autoChk.type = 'checkbox';
   autoChk.checked = !!window.zion.state.get('todo.autoContinue');
   const autoText = document.createElement('span');
-  autoText.textContent = 'Auto';
+  autoText.textContent = t('ui.auto', 'Auto');
   autoLabel.appendChild(autoChk);
   autoLabel.appendChild(autoText);
 
@@ -152,7 +204,7 @@ function createPanelHandle() {
 
   const search = document.createElement('input');
   search.type = 'text';
-  search.placeholder = 'Filter tasks...';
+  search.placeholder = t('ui.filter', 'Filter tasks...');
   Object.assign(search.style, {
     width: '100%',
     boxSizing: 'border-box',
@@ -174,7 +226,7 @@ function createPanelHandle() {
   });
 
   const footer = document.createElement('div');
-  footer.textContent = 'Click task to activate • Click todo to toggle state';
+  footer.textContent = t('ui.footer', 'Click task to activate, click todo to toggle state');
   Object.assign(footer.style, {
     fontSize: '11px',
     opacity: '0.6',
@@ -216,7 +268,7 @@ function createPanelHandle() {
 
     if (!Array.isArray(tasks) || tasks.length === 0) {
       const empty = document.createElement('div');
-      empty.textContent = 'No tasks';
+      empty.textContent = t('ui.empty', 'No tasks');
       Object.assign(empty.style, { fontSize: '12px', opacity: '0.6', textAlign: 'center' });
       list.appendChild(empty);
       return;
@@ -238,7 +290,7 @@ function createPanelHandle() {
       Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' });
 
       const name = document.createElement('div');
-      name.textContent = `${task.name || '(untitled)'} `;
+      name.textContent = `${task.name || `(${t('ui.untitled', 'untitled')})`} `;
       Object.assign(name.style, { fontWeight: '600', fontSize: '12px', flex: '1' });
 
       const ts = document.createElement('div');
@@ -274,7 +326,7 @@ function createPanelHandle() {
         Object.assign(actions.style, { display: 'flex', gap: '6px', alignItems: 'center' });
 
         const btnToggle = document.createElement('button');
-        btnToggle.textContent = 'Toggle';
+        btnToggle.textContent = t('ui.toggle', 'Toggle');
         Object.assign(btnToggle.style, {
           fontSize: '11px',
           padding: '2px 6px',
@@ -389,7 +441,9 @@ function createPanelHandle() {
       continueBanner.style.display = 'none';
       return;
     }
-    bannerText.textContent = `Task "${task.name || '(untitled)'}" has unfinished todos.`;
+    bannerText.textContent = t('ui.taskUnfinished', 'Task "{name}" has unfinished todos.', {
+      name: task.name || `(${t('ui.untitled', 'untitled')})`
+    });
     continueBanner.style.display = 'flex';
   }
   function hideContinueBanner() {
@@ -471,7 +525,19 @@ function createPanelHandle() {
     root.remove();
   }
 
-  return { open, close, toggle, renderTasks, dispose, showContinueBanner, hideContinueBanner };
+  function refreshI18n() {
+    panel.setAttribute('aria-label', t('ui.title', 'Tasks'));
+    title.textContent = t('ui.title', 'Tasks');
+    btnAdd.title = t('ui.addTask', 'Add task');
+    btnClose.title = t('ui.hidePanel', 'Hide panel');
+    btnContinue.textContent = t('ui.continue', 'Continue');
+    autoText.textContent = t('ui.auto', 'Auto');
+    search.placeholder = t('ui.filter', 'Filter tasks...');
+    footer.textContent = t('ui.footer', 'Click task to activate, click todo to toggle state');
+    renderTasks(window.zion?.state?.get('todo.tasks') || []);
+  }
+
+  return { open, close, toggle, renderTasks, dispose, showContinueBanner, hideContinueBanner, refreshI18n };
 }
 
 /**
@@ -577,6 +643,11 @@ Please read the info above, check the task status and continue to work out the f
 
 import { registerTaskTools } from "./task-tools.js";
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   ensureStateKeys();
 
   // Panel handle (created via decorator apply)
@@ -627,22 +698,24 @@ export async function activate(ctx) {
     try {
       statusDisp?.dispose?.();
       const tasks = Array.isArray(window.zion.state.get('todo.tasks')) ? window.zion.state.get('todo.tasks') : [];
+      const text = t('status.text', 'Tasks: {count}', { count: tasks.length });
+      const tooltip = t('status.tooltip', 'Toggle Tasks Panel');
       statusDisp = window.zion.bottomStatusBar?.registerItem?.({
         id: 'dev.task-panel.status',
-        text: `Tasks: ${tasks.length}`,
-        tooltip: 'Toggle Tasks Panel',
+        text,
+        tooltip,
         priority: 50,
         onClick: () => window.zion.commands.executeCommand('tasks.togglePanel')
       }) || window.zion.editorHeaderMenu?.register?.({
         id: 'dev.task-panel.status',
-        title: `任务：${tasks.length}`,
+        title: text,
         section: 'Workspace',
         order: 20,
         onClick: () => window.zion.commands.executeCommand('tasks.togglePanel')
       }) || window.zion.statusBar.registerItem({
         id: 'dev.task-panel.status',
-        text: `Tasks: ${tasks.length}`,
-        tooltip: 'Toggle Tasks Panel',
+        text,
+        tooltip,
         onClick: () => window.zion.commands.executeCommand('tasks.togglePanel')
       });
       ctx.subscriptions.push(statusDisp);
@@ -759,6 +832,14 @@ export async function activate(ctx) {
     try { /* keep lock until finished */ } catch {}
   });
   ctx.subscriptions.push(dispRunStarted);
+
+  const dispI18n = window.zion.events.on('i18n/changed', () => {
+    try {
+      updateStatusBar();
+      panelHandle?.refreshI18n?.();
+    } catch {}
+  });
+  ctx.subscriptions.push(dispI18n);
 
   // Ensure panel is in sync on startup
   try {

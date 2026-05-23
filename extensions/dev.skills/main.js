@@ -69,6 +69,7 @@ function t(key, fallback, values) {
 }
 
 const SKILLS_SNAPSHOT_STORAGE_KEY = "zion.skills.snapshot.v1";
+let skillsStatusDisp = null;
 
 function getState() {
   return window.zion && window.zion.state;
@@ -629,7 +630,8 @@ function updateStatusBar() {
     const catalog = getCatalog();
     const enabled = getEnabledSet();
     const text = t("status.skills", "Skills: {enabled}/{total}", { enabled: enabled.size, total: catalog.length });
-    window.zion.bottomStatusBar?.registerItem?.({
+    try { skillsStatusDisp?.dispose?.(); } catch {}
+    skillsStatusDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: "dev.skills.status",
       text,
       tooltip: t("status.tooltip", "Manage Skills"),
@@ -1244,6 +1246,8 @@ function registerStateListeners() {
   try {
     disposers.push(window.zion.state.onDidChange("skills.enabled", () => updateStatusBar()));
     disposers.push(window.zion.state.onDidChange("skills.catalog", () => updateStatusBar()));
+    disposers.push(window.zion.events.on("i18n/changed", () => updateStatusBar()));
+    disposers.push({ dispose: () => { try { skillsStatusDisp?.dispose?.(); skillsStatusDisp = null; } catch {} } });
     const keysToPersist = [
       "skills.paths",
       "skills.enabled",
