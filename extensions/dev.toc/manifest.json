@@ -13,15 +13,21 @@
       "commands": [
         {
           "id": "toc.show",
-          "title": "Show TOC"
+          "title": "Show TOC",
+          "titleKey": "dev.toc.cmd.show",
+          "categoryKey": "dev.toc.category.toc"
         },
         {
           "id": "toc.insert",
-          "title": "Insert TOC (Markdown)"
+          "title": "Insert TOC (Markdown)",
+          "titleKey": "dev.toc.cmd.insert",
+          "categoryKey": "dev.toc.category.toc"
         },
         {
           "id": "toc.toggleGroupByRole",
-          "title": "Toggle TOC Group by Role"
+          "title": "Toggle TOC Group by Role",
+          "titleKey": "dev.toc.cmd.toggleGroupByRole",
+          "categoryKey": "dev.toc.category.toc"
         }
       ],
       "keybindings": [
@@ -41,11 +47,13 @@
           {
             "command": "toc.show",
             "title": "Contents",
+            "titleKey": "dev.toc.menu.contents",
             "when": "editorFocus"
           },
           {
             "command": "toc.toggleGroupByRole",
             "title": "TOC: Group by Role",
+            "titleKey": "dev.toc.menu.groupByRole",
             "when": "editorFocus"
           }
         ]

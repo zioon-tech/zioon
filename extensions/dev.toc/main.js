@@ -10,9 +10,55 @@
 import { ViewPlugin } from "@codemirror/view";
 
 let extensionCtx = null;
+const I18N_NS = "dev.toc";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.toc": "目录",
+    "cmd.show": "显示目录",
+    "cmd.insert": "插入目录 (Markdown)",
+    "cmd.toggleGroupByRole": "切换目录按角色分组",
+    "menu.contents": "目录",
+    "menu.groupByRole": "目录：按角色分组",
+    "ui.contents": "目录",
+    "ui.empty": "未找到标题 (使用 #、##、### ...)",
+    "ui.insertHere": "在此插入目录",
+    "ui.close": "关闭",
+    "slash.show.description": "显示文档目录",
+    "slash.insert.description": "在当前位置插入 Markdown 目录",
+    "slash.group.description": "切换目录是否按角色分组"
+  },
+  "en-US": {
+    "category.toc": "TOC",
+    "cmd.show": "Show TOC",
+    "cmd.insert": "Insert TOC (Markdown)",
+    "cmd.toggleGroupByRole": "Toggle TOC Group by Role",
+    "menu.contents": "Contents",
+    "menu.groupByRole": "TOC: Group by Role",
+    "ui.contents": "Contents",
+    "ui.empty": "No headings found (use #, ##, ### ...)",
+    "ui.insertHere": "Insert TOC Here",
+    "ui.close": "Close",
+    "slash.show.description": "Show document table of contents",
+    "slash.insert.description": "Insert Markdown TOC at current position",
+    "slash.group.description": "Toggle whether TOC groups by role"
+  }
+};
+
+function t(key, fallback) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
 
 export async function activate(ctx) {
   extensionCtx = ctx;
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
   // Inject TOC scrollbar hiding style (WebKit + Firefox + IE) to hide vertical scrollbar in TOC area
   try {
     if (!document.getElementById('zion-toc-scrollbar-style')) {
@@ -966,7 +1012,7 @@ export async function activate(ctx) {
         const headings = maybeView ? parseHeadingsFromView(maybeView) : parseHeadingsFromText(ed.getValue());
         if (headings.length === 0) {
           const empty = document.createElement("div");
-          empty.textContent = "No headings found (use #, ##, ### ...)";
+          empty.textContent = t("ui.empty", "No headings found (use #, ##, ### ...)");
           empty.style.opacity = "0.8";
           empty.style.fontSize = "12px";
           empty.style.padding = "8px";
@@ -1351,7 +1397,7 @@ export async function activate(ctx) {
     panel.onclick = (e) => e.stopPropagation();
 
     const title = document.createElement("div");
-    title.textContent = "Contents";
+    title.textContent = t("ui.contents", "Contents");
     title.style.fontWeight = "600";
     title.style.marginBottom = "8px";
     panel.appendChild(title);
@@ -1363,7 +1409,7 @@ export async function activate(ctx) {
     list.style.maxWidth = "100%";
     if (headings.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "No headings found (use #, ##, ### ...)";
+      empty.textContent = t("ui.empty", "No headings found (use #, ##, ### ...)");
       empty.style.opacity = "0.8";
       empty.style.fontSize = "12px";
       list.appendChild(empty);
@@ -1414,7 +1460,7 @@ export async function activate(ctx) {
     footer.style.justifyContent = "space-between";
 
     const insertBtn = document.createElement("button");
-    insertBtn.textContent = "Insert TOC Here";
+    insertBtn.textContent = t("ui.insertHere", "Insert TOC Here");
     insertBtn.style.background = "var(--ext-toc-btn-bg, var(--panel))";
     insertBtn.style.color = "var(--ext-toc-fg, var(--fg))";
     insertBtn.style.border = "1px solid var(--ext-toc-accent, var(--accent))";
@@ -1426,7 +1472,7 @@ export async function activate(ctx) {
     };
 
     const closeBtn = document.createElement("button");
-    closeBtn.textContent = "Close";
+    closeBtn.textContent = t("ui.close", "Close");
     closeBtn.style.background = "var(--ext-toc-btn-bg, var(--panel))";
     closeBtn.style.color = "var(--ext-toc-fg, var(--fg))";
     closeBtn.style.border = "1px solid var(--ext-toc-accent, var(--accent))";
@@ -1582,9 +1628,9 @@ export async function activate(ctx) {
   const dSlash1 = window.zion.slash?.registerCommand?.({
     id: "toc.show",
     trigger: ["toc", "table-of-contents"],
-    title: "显示目录",
-    description: "打开文档目录侧边栏",
-    category: "navigation",
+    title: t("cmd.show", "显示目录"),
+    description: t("slash.show.description", "打开文档目录侧边栏"),
+    category: t("category.toc", "目录"),
     icon: "📑",
     priority: 100,
     execute: () => {
@@ -1595,9 +1641,9 @@ export async function activate(ctx) {
   const dSlash2 = window.zion.slash?.registerCommand?.({
     id: "toc.insert",
     trigger: ["insert-toc", "toc-insert"],
-    title: "插入目录",
-    description: "在光标位置插入 Markdown 目录",
-    category: "markdown",
+    title: t("cmd.insert", "插入目录"),
+    description: t("slash.insert.description", "在光标位置插入 Markdown 目录"),
+    category: t("category.toc", "目录"),
     icon: "📋",
     priority: 90,
     execute: () => {
@@ -1608,9 +1654,9 @@ export async function activate(ctx) {
   const dSlash3 = window.zion.slash?.registerCommand?.({
     id: "toc.toggleGroupByRole",
     trigger: ["toc-group", "group-toc"],
-    title: "切换目录分组",
-    description: "按角色分组显示目录",
-    category: "navigation",
+    title: t("cmd.toggleGroupByRole", "切换目录分组"),
+    description: t("slash.group.description", "按角色分组显示目录"),
+    category: t("category.toc", "目录"),
     icon: "📑",
     priority: 80,
     execute: () => {
