@@ -1,4 +1,12 @@
 export function installMailConfigPanel() {
+  const t = (key, fallback, values) => {
+    const fullKey = `dev.mail.${key}`;
+    try {
+      const translated = window.zion?.i18n?.t?.(fullKey, values);
+      if (translated && translated !== fullKey) return translated;
+    } catch {}
+    return fallback;
+  };
   let root = document.getElementById("zion-mail-config-root");
   if (root) return createHandle(root);
 
@@ -30,7 +38,6 @@ export function installMailConfigPanel() {
   });
 
   const header = document.createElement("div");
-  header.textContent = "Mail Configuration (SMTP)";
   Object.assign(header.style, {
     fontSize: "11px",
     opacity: "0.8",
@@ -149,15 +156,15 @@ export function installMailConfigPanel() {
     return v;
   };
 
-  const smtpHost = mkInput("SMTP Host", "zion.mail.smtp.host", "smtp.example.com");
-  const smtpPort = mkInput("SMTP Port", "zion.mail.smtp.port", "587", "number");
-  const smtpUser = mkInput("SMTP Username", "zion.mail.smtp.username", "user@example.com");
-  const smtpPass = mkInput("SMTP Password", "zion.mail.smtp.password", "app-specific password", "password");
-  const smtpTLS = mkCheckbox("Use TLS", "zion.mail.smtp.useTls");
+  const smtpHost = mkInput("", "zion.mail.smtp.host", "smtp.example.com");
+  const smtpPort = mkInput("", "zion.mail.smtp.port", "587", "number");
+  const smtpUser = mkInput("", "zion.mail.smtp.username", "user@example.com");
+  const smtpPass = mkInput("", "zion.mail.smtp.password", "app-specific password", "password");
+  const smtpTLS = mkCheckbox("", "zion.mail.smtp.useTls");
 
-  const fromEmail = mkInput("From Email", "zion.mail.fromEmail", "zion@zion.ai");
-  const fromName = mkInput("From Name", "zion.mail.fromName", "Zion AI");
-  const baseUrl = mkInput("Service Base URL", "zion.mail.baseUrl", "http://127.0.0.1:8765");
+  const fromEmail = mkInput("", "zion.mail.fromEmail", "zion@zion.ai");
+  const fromName = mkInput("", "zion.mail.fromName", "Zion AI");
+  const baseUrl = mkInput("", "zion.mail.baseUrl", "http://127.0.0.1:8765");
 
   form.appendChild(smtpHost.wrap);
   form.appendChild(smtpPort.wrap);
@@ -179,7 +186,6 @@ export function installMailConfigPanel() {
   });
 
   const recipientsTitle = document.createElement("div");
-  recipientsTitle.textContent = "Recipients";
   Object.assign(recipientsTitle.style, { fontSize: "11px", opacity: "0.85", fontWeight: "600" });
 
   const addRow = document.createElement("div");
@@ -201,7 +207,6 @@ export function installMailConfigPanel() {
     fontFamily: "inherit"
   });
   const addBtn = document.createElement("button");
-  addBtn.textContent = "Add";
   Object.assign(addBtn.style, {
     border: "1px solid var(--border)",
     borderRadius: "4px",
@@ -251,7 +256,7 @@ export function installMailConfigPanel() {
       Object.assign(text.style, { fontSize: "11px", flex: "1", overflow: "hidden", textOverflow: "ellipsis" });
 
       const del = document.createElement("button");
-      del.textContent = "Remove";
+      del.textContent = t("panel.remove", "Remove");
       Object.assign(del.style, {
         border: "1px solid var(--border)",
         borderRadius: "4px",
@@ -309,7 +314,6 @@ export function installMailConfigPanel() {
     gap: "6px"
   });
   const notifyTitle = document.createElement("div");
-  notifyTitle.textContent = "Notify";
   Object.assign(notifyTitle.style, { fontSize: "11px", opacity: "0.85", fontWeight: "600" });
 
   const notifyModeWrap = document.createElement("div");
@@ -340,8 +344,8 @@ export function installMailConfigPanel() {
     return { wrap, radio };
   };
 
-  const rOnce = mkRadio("本次会话结束发送一次邮件通知");
-  const rAlways = mkRadio("总是发送邮件通知");
+  const rOnce = mkRadio("");
+  const rAlways = mkRadio("");
 
   const setRadioChecked = (radio, checked) => {
     if (!radio) return;
@@ -426,8 +430,6 @@ export function installMailConfigPanel() {
   Object.assign(btns.style, { display: "flex", gap: "8px", marginTop: "6px", justifyContent: "flex-end" });
 
   const save = document.createElement("button");
-  save.textContent = "Save";
-  save.title = "保存并推送到本地服务";
   Object.assign(save.style, {
     border: "1px solid var(--border)",
     borderRadius: "4px",
@@ -439,7 +441,6 @@ export function installMailConfigPanel() {
   });
 
   const closeBtn = document.createElement("button");
-  closeBtn.textContent = "Close";
   Object.assign(closeBtn.style, {
     border: "1px solid var(--border)",
     borderRadius: "4px",
@@ -454,7 +455,6 @@ export function installMailConfigPanel() {
   btns.appendChild(closeBtn);
 
   const footer = document.createElement("div");
-  footer.textContent = "SMTP will be used when host is set. Username/password may require an app-specific password.";
   Object.assign(footer.style, {
     fontSize: "10px",
     opacity: "0.6",
@@ -510,8 +510,32 @@ export function installMailConfigPanel() {
 
   root.addEventListener("click", (e) => { if (e.target === root) root.style.display = "none"; });
 
+  function refreshLabels() {
+    header.textContent = t("panel.title", "Mail Configuration (SMTP)");
+    smtpHost.wrap.querySelector("span").textContent = t("panel.smtpHost", "SMTP Host");
+    smtpPort.wrap.querySelector("span").textContent = t("panel.smtpPort", "SMTP Port");
+    smtpUser.wrap.querySelector("span").textContent = t("panel.smtpUsername", "SMTP Username");
+    smtpPass.wrap.querySelector("span").textContent = t("panel.smtpPassword", "SMTP Password");
+    smtpTLS.wrap.querySelector("span").textContent = t("panel.useTls", "Use TLS");
+    fromEmail.wrap.querySelector("span").textContent = t("panel.fromEmail", "From Email");
+    fromName.wrap.querySelector("span").textContent = t("panel.fromName", "From Name");
+    baseUrl.wrap.querySelector("span").textContent = t("panel.baseUrl", "Service Base URL");
+    recipientsTitle.textContent = t("panel.recipients", "Recipients");
+    addBtn.textContent = t("panel.add", "Add");
+    notifyTitle.textContent = t("panel.notify", "Notify");
+    rOnce.wrap.querySelector("span").textContent = t("panel.notifyOnce", "本次会话结束发送一次邮件通知");
+    rAlways.wrap.querySelector("span").textContent = t("panel.notifyAlways", "总是发送邮件通知");
+    save.textContent = t("panel.save", "Save");
+    save.title = t("panel.saveTitle", "保存并推送到本地服务");
+    closeBtn.textContent = t("panel.close", "Close");
+    footer.textContent = t("panel.footer", "SMTP will be used when host is set. Username/password may require an app-specific password.");
+    renderRecipients();
+  }
+  const dispI18n = window.zion?.events?.on?.("i18n/changed", refreshLabels);
+
   function open() {
     root.style.display = "block";
+    try { refreshLabels(); } catch {}
     try { renderRecipients(); } catch {}
     try { refreshNotifyUI(); } catch {}
   }
@@ -519,8 +543,10 @@ export function installMailConfigPanel() {
     root.style.display = "none";
   }
   function dispose() {
+    try { dispI18n?.dispose?.(); } catch {}
     root.remove();
   }
+  refreshLabels();
   return { open, close, dispose };
 }
 

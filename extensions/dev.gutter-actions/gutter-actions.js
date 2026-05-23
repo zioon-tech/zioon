@@ -1,6 +1,15 @@
 import { gutter, GutterMarker, ViewPlugin, EditorView } from "@codemirror/view";
 import { foldService, foldable } from "@codemirror/language";
 
+function t(key, fallback, values) {
+  const fullKey = `dev.gutter-actions.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 /**
  * Copy helpers with fallback
  */
@@ -348,7 +357,7 @@ function openMenu(view, clientX, clientY, line) {
     return btn;
   };
 
-  menu.appendChild(mkItem("下一行插入 user", () => {
+  menu.appendChild(mkItem(t("menu.insertUserBelow", "下一行插入 user"), () => {
     ensureUserPromptBelow(view, line);
     return Promise.resolve(true);
   }, false));
@@ -358,7 +367,7 @@ function openMenu(view, clientX, clientY, line) {
     const text = doc.sliceString(line.from, line.to);
     return copyText(text);
   };
-  menu.appendChild(mkItem("复制当前行", copyLine, false));
+  menu.appendChild(mkItem(t("menu.copyLine", "复制当前行"), copyLine, false));
 
   // 复制折叠块范围（如果有），范围需包含当前行
   const copyFoldBlock = () => {
@@ -368,12 +377,12 @@ function openMenu(view, clientX, clientY, line) {
     const text = doc.sliceString(start, end);
     return copyText(text);
   };
-  menu.appendChild(mkItem("复制折叠块范围", copyFoldBlock, !foldRange));
+  menu.appendChild(mkItem(t("menu.copyFoldBlock", "复制折叠块范围"), copyFoldBlock, !foldRange));
 
   if (batch) {
-    const info = `涉及 ${batch.total} 处变更，${batch.files} 个文件`;
-    const acceptLabel = `批量 Accept (${batch.acceptCount}/${batch.total})`;
-    const revertLabel = `批量 Revert (${batch.revertCount}/${batch.total})`;
+    const info = t("menu.batchInfo", "涉及 {total} 处变更，{files} 个文件", { total: batch.total, files: batch.files });
+    const acceptLabel = t("menu.batchAccept", "批量接受 ({accepted}/{total})", { accepted: batch.acceptCount, total: batch.total });
+    const revertLabel = t("menu.batchRevert", "批量回退 ({reverted}/{total})", { reverted: batch.revertCount, total: batch.total });
     const acceptDisabled = batch.state === "accepted";
     const revertDisabled = batch.state === "reverted";
     menu.appendChild(mkItem(acceptLabel, () => {
@@ -480,7 +489,7 @@ class DotMarker extends GutterMarker {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "zion-gutter-dot";
-    btn.title = "行操作（Shift-点击：下一行插入 user）";
+    btn.title = t("ui.lineActions", "行操作（Shift-点击：下一行插入 user）");
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -506,7 +515,7 @@ class UserDotMarker extends DotMarker {
   toDOM(view) {
     const btn = super.toDOM(view);
     btn.classList.add("zion-gutter-dot-persistent");
-    btn.title = "User message";
+    btn.title = t("ui.userMessage", "User message");
     return btn;
   }
 }

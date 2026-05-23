@@ -8,6 +8,15 @@ import {
   reconcileNearestAnchors
 } from "../../src/chat/restore";
 
+function t(key, fallback, values) {
+  const fullKey = `dev.thinking.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 /**
  * Effects:
  * - addInline: 插入“思考”文本并替换为内联 widget
@@ -127,11 +136,11 @@ class ThinkingCardWidget extends WidgetType {
     const header = document.createElement("div");
     header.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;";
     const title = document.createElement("span");
-    title.textContent = "思考";
+    title.textContent = t("ui.thinking", "思考");
     Object.assign(title.style, { fontSize: "11px", fontWeight: "600" });
     const close = document.createElement("button");
     close.textContent = "×";
-    close.title = "移除思考记录";
+    close.title = t("ui.remove", "移除思考记录");
     Object.assign(close.style, {
       marginLeft: "auto",
       background: "transparent",
@@ -181,14 +190,14 @@ class ThinkingInlineWidget extends WidgetType {
     const span = document.createElement("span");
     span.className = "zion-thinking-inline";
     span.setAttribute("data-thinking-id", String(this.id).replace(/:inline$/, ""));
-    span.title = "思考（点击展开/收起）";
-    span.setAttribute("aria-label", "思考（点击展开或收起卡片）");
+    span.title = t("ui.inlineTitle", "思考（点击展开/收起）");
+    span.setAttribute("aria-label", t("ui.inlineAria", "思考（点击展开或收起卡片）"));
 
     const btn = document.createElement("button");
     btn.className = "zion-thinking-inline-toggle";
     btn.type = "button";
-    btn.title = "展开/收起思考内容";
-    btn.setAttribute("aria-label", "展开/收起思考内容");
+    btn.title = t("ui.toggleContent", "展开/收起思考内容");
+    btn.setAttribute("aria-label", t("ui.toggleContent", "展开/收起思考内容"));
     btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
   <path d="M4.646 6.646a.5.5 0 0 1 .708 0L8 9.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z"></path>
 </svg>`;
@@ -196,7 +205,7 @@ class ThinkingInlineWidget extends WidgetType {
 
     const txt = document.createElement("span");
     txt.className = "zion-thinking-inline-text";
-    txt.textContent = "思考";
+    txt.textContent = t("ui.thinking", "思考");
     span.appendChild(txt);
 
     return span;

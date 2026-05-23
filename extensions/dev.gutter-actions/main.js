@@ -1,4 +1,45 @@
 export async function activate(ctx) {
+  const I18N_NS = "dev.gutter-actions";
+  const I18N_MESSAGES = {
+    "zh-CN": {
+      "category.editor": "编辑器",
+      "cmd.toggle": "切换行号栏操作",
+      "ui.headerMenu": "行号栏操作",
+      "ui.lineActions": "行操作（Shift-点击：下一行插入 user）",
+      "ui.userMessage": "User 消息",
+      "menu.insertUserBelow": "下一行插入 user",
+      "menu.copyLine": "复制当前行",
+      "menu.copyFoldBlock": "复制折叠块范围",
+      "menu.batchInfo": "涉及 {total} 处变更，{files} 个文件",
+      "menu.batchAccept": "批量接受 ({accepted}/{total})",
+      "menu.batchRevert": "批量回退 ({reverted}/{total})"
+    },
+    "en-US": {
+      "category.editor": "Editor",
+      "cmd.toggle": "Toggle Gutter Actions",
+      "ui.headerMenu": "Gutter Actions",
+      "ui.lineActions": "Line actions (Shift-click: insert user below)",
+      "ui.userMessage": "User message",
+      "menu.insertUserBelow": "Insert user below",
+      "menu.copyLine": "Copy current line",
+      "menu.copyFoldBlock": "Copy fold block range",
+      "menu.batchInfo": "{total} changes across {files} files",
+      "menu.batchAccept": "Batch Accept ({accepted}/{total})",
+      "menu.batchRevert": "Batch Revert ({reverted}/{total})"
+    }
+  };
+  const t = (key, fallback, values) => {
+    const fullKey = `${I18N_NS}.${key}`;
+    try {
+      const translated = window.zion?.i18n?.t?.(fullKey, values);
+      if (translated && translated !== fullKey) return translated;
+    } catch {}
+    return fallback;
+  };
+  try {
+    const disp = window.zion?.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
   const STATE_KEY = "ui.gutterActionsEnabled";
   const CSS_DISABLED_CLASS = "zion-gutter-actions-disabled";
 
@@ -48,8 +89,8 @@ export async function activate(ctx) {
     const reg = window.zion?.__editorHeaderMenuRegistry;
     const disp = reg?.register?.({
       id: "dev.gutter-actions.headerMenu",
-      title: "Gutter Actions",
-      section: "Editor",
+      title: t("ui.headerMenu", "Gutter Actions"),
+      section: t("category.editor", "Editor"),
       order: 10,
       kind: "toggle",
       getChecked: () => !!window.zion.state.get(STATE_KEY),

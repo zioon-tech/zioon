@@ -7,29 +7,41 @@
   "zion": {
     "id": "dev.search-replace-plus",
     "name": "dev.search-replace-plus",
+    "nameKey": "dev.plugins.pluginName.dev.search-replace-plus",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.search-replace-plus",
     "version": "0.0.2",
     "main": "./main.js",
     "contributes": {
       "commands": [
         {
           "id": "dev.srp.acceptAll",
-          "title": "Accept all Search/Replace blocks"
+          "title": "Accept all Search/Replace blocks",
+          "titleKey": "dev.search-replace-plus.cmd.acceptAll",
+          "categoryKey": "dev.search-replace-plus.category.srp"
         },
         {
           "id": "dev.srp.revertAll",
-          "title": "Revert all Search/Replace blocks"
+          "title": "Revert all Search/Replace blocks",
+          "titleKey": "dev.search-replace-plus.cmd.revertAll",
+          "categoryKey": "dev.search-replace-plus.category.srp"
         },
         {
           "id": "dev.srp.toggleDiffAll",
-          "title": "Toggle Diff (all blocks)"
+          "title": "Toggle Diff (all blocks)",
+          "titleKey": "dev.search-replace-plus.cmd.toggleDiffAll",
+          "categoryKey": "dev.search-replace-plus.category.srp"
         },
         {
           "id": "dev.srp.acceptAllFiles",
-          "title": "Accept in granted files"
+          "title": "Accept in granted files",
+          "titleKey": "dev.search-replace-plus.cmd.acceptAllFiles",
+          "categoryKey": "dev.search-replace-plus.category.srp"
         },
         {
           "id": "dev.srp.revertAllFiles",
-          "title": "Revert in granted files"
+          "title": "Revert in granted files",
+          "titleKey": "dev.search-replace-plus.cmd.revertAllFiles",
+          "categoryKey": "dev.search-replace-plus.category.srp"
         }
       ],
       "keybindings": []

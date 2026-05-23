@@ -4,6 +4,68 @@
  * Provides UI for configuring compression settings
  */
 
+const PANEL_I18N = {
+  "zh-CN": {
+    "title": "上下文压缩",
+    "close": "关闭面板",
+    "tab.general": "通用",
+    "tab.strategies": "策略",
+    "tab.compress": "压缩",
+    "tab.statistics": "统计",
+    "btn.reset": "重置",
+    "btn.save": "保存",
+    "section.auto": "自动压缩",
+    "label.enableAuto": "启用自动压缩",
+    "help.enableAuto": "达到阈值时压缩对话",
+    "label.strategy": "策略",
+    "label.auto": "自动（智能选择）",
+    "label.threshold": "阈值",
+    "section.limits": "限制",
+    "label.contextLimit": "上下文上限",
+    "label.outputBudget": "输出预算",
+    "label.charsPerToken": "每 Token 字符数",
+    "help.charsPerToken": "Token 估算系数（默认 4）",
+    "label.debugLogging": "调试日志",
+    "help.debugLogging": "在控制台记录压缩决策",
+    "section.strategyConfig": "策略配置",
+    "section.advanced": "高级",
+    "section.compression": "压缩",
+    "btn.preview": "预览",
+    "stat.current": "当前",
+    "stat.after": "压缩后",
+    "stat.saved": "节省",
+    "stat.messages": "消息数",
+    "label.preview": "预览",
+    "placeholder.preview": "点击预览生成压缩文本...",
+    "btn.apply": "压缩（保留快照）",
+    "section.versions": "版本",
+    "btn.clearHistory": "清空历史",
+    "section.overview": "概览",
+    "stat.totalSaved": "总节省",
+    "stat.compressions": "压缩次数",
+    "stat.avgSavings": "平均节省",
+    "stat.costSaved": "节省成本",
+    "section.strategyUsage": "策略使用",
+    "empty.events": "暂无压缩事件",
+    "empty.versions": "暂无版本",
+    "btn.restore": "恢复",
+    "btn.delete": "删除"
+  },
+  "en-US": {}
+};
+
+function panelT(key, fallback) {
+  try {
+    const fullKey = `dev.context-compression.panel.${key}`;
+    const translated = window.zion?.i18n?.t?.(fullKey);
+    if (translated && translated !== fullKey) return translated;
+    const locale = window.zion?.i18n?.getLocale?.() || "en-US";
+    return PANEL_I18N[locale]?.[key] || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export class CompressionSettingsPanel {
   constructor(compressionEngine) {
     this.engine = compressionEngine;
@@ -11,6 +73,11 @@ export class CompressionSettingsPanel {
     this.panelElement = null;
     this.root = null;
     this.currentTab = 'general';
+    this.i18nDispose = null;
+  }
+
+  t(key, fallback) {
+    return panelT(key, fallback);
   }
 
   /**
@@ -30,6 +97,8 @@ export class CompressionSettingsPanel {
       this.root.remove();
       this.root = null;
     }
+    try { this.i18nDispose?.dispose?.(); } catch {}
+    this.i18nDispose = null;
     this.panelElement = null;
   }
   
@@ -120,23 +189,23 @@ export class CompressionSettingsPanel {
         <div class="panel-header">
           <div class="header-title">
             <span class="title-icon">📦</span>
-            <span>Context Compression</span>
+            <span>${this.t("title", "Context Compression")}</span>
           </div>
-          <button class="header-close" title="Close panel">✕</button>
+          <button class="header-close" title="${this.t("close", "Close panel")}">✕</button>
         </div>
 
         <div class="panel-tabs">
           <button class="tab-btn ${this.currentTab === 'general' ? 'active' : ''}" data-tab="general">
-            General
+            ${this.t("tab.general", "General")}
           </button>
           <button class="tab-btn ${this.currentTab === 'strategies' ? 'active' : ''}" data-tab="strategies">
-            Strategies
+            ${this.t("tab.strategies", "Strategies")}
           </button>
           <button class="tab-btn ${this.currentTab === 'compress' ? 'active' : ''}" data-tab="compress">
-            Compress
+            ${this.t("tab.compress", "Compress")}
           </button>
           <button class="tab-btn ${this.currentTab === 'statistics' ? 'active' : ''}" data-tab="statistics">
-            Statistics
+            ${this.t("tab.statistics", "Statistics")}
           </button>
         </div>
 
@@ -160,8 +229,8 @@ export class CompressionSettingsPanel {
         </div>
 
         <div class="panel-footer">
-          <button id="reset-settings" class="btn-secondary">Reset</button>
-          <button id="save-settings" class="btn-primary">Save</button>
+          <button id="reset-settings" class="btn-secondary">${this.t("btn.reset", "Reset")}</button>
+          <button id="save-settings" class="btn-primary">${this.t("btn.save", "Save")}</button>
         </div>
       </div>
     `;
@@ -174,22 +243,22 @@ export class CompressionSettingsPanel {
   renderGeneralSettings() {
     return `
       <div class="settings-section">
-        <div class="section-title">Auto Compression</div>
+        <div class="section-title">${this.t("section.auto", "Auto Compression")}</div>
 
         <div class="setting-item">
           <label class="toggle-label">
             <input type="checkbox" id="auto-compression" ${this.settings.autoCompression ? 'checked' : ''}>
             <span class="toggle-slider"></span>
-            <span>Enable Auto Compression</span>
+            <span>${this.t("label.enableAuto", "Enable Auto Compression")}</span>
           </label>
-          <small>Compress conversations when threshold is reached</small>
+          <small>${this.t("help.enableAuto", "Compress conversations when threshold is reached")}</small>
         </div>
 
         <div class="setting-row">
           <div class="setting-col">
-            <label for="default-strategy" class="field-label">Strategy</label>
+            <label for="default-strategy" class="field-label">${this.t("label.strategy", "Strategy")}</label>
             <select id="default-strategy" class="field-input">
-              <option value="auto" ${this.settings.defaultStrategy === 'auto' ? 'selected' : ''}>Auto (智能选择)</option>
+              <option value="auto" ${this.settings.defaultStrategy === 'auto' ? 'selected' : ''}>${this.t("label.auto", "Auto (智能选择)")}</option>
               <option value="opencode" ${this.settings.defaultStrategy === 'opencode' ? 'selected' : ''}>OpenCode</option>
               <option value="claude-code" ${this.settings.defaultStrategy === 'claude-code' ? 'selected' : ''}>Claude Code</option>
               <option value="cursor" ${this.settings.defaultStrategy === 'cursor' ? 'selected' : ''}>Cursor</option>
@@ -200,7 +269,7 @@ export class CompressionSettingsPanel {
           </div>
 
           <div class="setting-col">
-            <label for="threshold" class="field-label">Threshold</label>
+            <label for="threshold" class="field-label">${this.t("label.threshold", "Threshold")}</label>
             <div class="range-wrapper">
               <input type="range" id="threshold" min="0.5" max="1.0" step="0.05" value="${this.settings.threshold}">
               <span id="threshold-value" class="range-value">${Math.round(this.settings.threshold * 100)}%</span>
@@ -208,36 +277,36 @@ export class CompressionSettingsPanel {
           </div>
         </div>
 
-        <div class="section-title">Limits</div>
+        <div class="section-title">${this.t("section.limits", "Limits")}</div>
 
         <div class="setting-row">
           <div class="setting-col">
-            <label for="context-limit-tokens" class="field-label">Context Limit</label>
+            <label for="context-limit-tokens" class="field-label">${this.t("label.contextLimit", "Context Limit")}</label>
             <input type="number" id="context-limit-tokens" class="field-input"
                    value="${this.settings.contextLimitTokens}" min="0" step="1024">
           </div>
 
           <div class="setting-col">
-            <label for="output-tokens" class="field-label">Output Budget</label>
+            <label for="output-tokens" class="field-label">${this.t("label.outputBudget", "Output Budget")}</label>
             <input type="number" id="output-tokens" class="field-input"
                    value="${this.settings.outputTokens}" min="0" step="256">
           </div>
         </div>
 
         <div class="setting-item">
-          <label for="chars-per-token" class="field-label">Chars Per Token</label>
+          <label for="chars-per-token" class="field-label">${this.t("label.charsPerToken", "Chars Per Token")}</label>
           <input type="number" id="chars-per-token" class="field-input"
                  value="${this.settings.charsPerToken}" min="1" step="1">
-          <small>Token estimation factor (default 4)</small>
+          <small>${this.t("help.charsPerToken", "Token estimation factor (default 4)")}</small>
         </div>
 
         <div class="setting-item">
           <label class="toggle-label">
             <input type="checkbox" id="debug-logging" ${this.settings.debugLogging ? 'checked' : ''}>
             <span class="toggle-slider"></span>
-            <span>Debug Logging</span>
+            <span>${this.t("label.debugLogging", "Debug Logging")}</span>
           </label>
-          <small>Log compression decisions to console</small>
+          <small>${this.t("help.debugLogging", "Log compression decisions to console")}</small>
         </div>
       </div>
     `;
@@ -251,7 +320,7 @@ export class CompressionSettingsPanel {
   renderStrategySettings(strategies) {
     return `
       <div class="settings-section">
-        <div class="section-title">Strategy Configuration</div>
+        <div class="section-title">${this.t("section.strategyConfig", "Strategy Configuration")}</div>
 
         ${this.renderOpenCodeSettings()}
         ${this.renderCursorSettings()}
@@ -464,7 +533,7 @@ export class CompressionSettingsPanel {
   renderAdvancedSettings() {
     return `
       <div class="settings-section">
-        <div class="section-title">Advanced</div>
+        <div class="section-title">${this.t("section.advanced", "Advanced")}</div>
 
         <div class="setting-item">
           <label class="toggle-label">
@@ -499,13 +568,13 @@ export class CompressionSettingsPanel {
   renderCompressionTab(strategies) {
     return `
       <div class="settings-section">
-        <div class="section-title">Compression</div>
+        <div class="section-title">${this.t("section.compression", "Compression")}</div>
 
         <div class="setting-row">
           <div class="setting-col">
             <label for="compress-strategy" class="field-label">Strategy</label>
             <select id="compress-strategy" class="field-input">
-              <option value="auto" ${this.settings.defaultStrategy === 'auto' ? 'selected' : ''}>Auto (智能选择)</option>
+              <option value="auto" ${this.settings.defaultStrategy === 'auto' ? 'selected' : ''}>${this.t("label.auto", "Auto (智能选择)")}</option>
               <option value="opencode" ${this.settings.defaultStrategy === 'opencode' ? 'selected' : ''}>OpenCode</option>
               <option value="claude-code" ${this.settings.defaultStrategy === 'claude-code' ? 'selected' : ''}>Claude Code</option>
               <option value="cursor" ${this.settings.defaultStrategy === 'cursor' ? 'selected' : ''}>Cursor</option>
@@ -517,45 +586,45 @@ export class CompressionSettingsPanel {
 
           <div class="setting-col">
             <label class="field-label">&nbsp;</label>
-            <button id="compress-preview-btn" class="btn-secondary" style="width:100%">Preview</button>
+            <button id="compress-preview-btn" class="btn-secondary" style="width:100%">${this.t("btn.preview", "Preview")}</button>
           </div>
         </div>
 
         <div class="stats-grid" id="compress-stats-grid">
           <div class="stat-card">
-            <div class="stat-label">Current</div>
+            <div class="stat-label">${this.t("stat.current", "Current")}</div>
             <div class="stat-value" id="compress-stat-current">-</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">After</div>
+            <div class="stat-label">${this.t("stat.after", "After")}</div>
             <div class="stat-value" id="compress-stat-after">-</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Saved</div>
+            <div class="stat-label">${this.t("stat.saved", "Saved")}</div>
             <div class="stat-value" id="compress-stat-saved">-</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Messages</div>
+            <div class="stat-label">${this.t("stat.messages", "Messages")}</div>
             <div class="stat-value" id="compress-stat-messages">-</div>
           </div>
         </div>
 
         <div class="setting-item">
-          <label class="field-label">Preview</label>
-          <textarea id="compress-preview-text" class="compression-preview" readonly placeholder="Click Preview to generate compressed text..."></textarea>
+          <label class="field-label">${this.t("label.preview", "Preview")}</label>
+          <textarea id="compress-preview-text" class="compression-preview" readonly placeholder="${this.t("placeholder.preview", "Click Preview to generate compressed text...")}"></textarea>
           <small id="compress-preview-meta"></small>
         </div>
 
         <div class="panel-footer-inline">
-          <button id="compress-apply-btn" class="btn-primary" style="width:100%">Compress (Keep snapshot)</button>
+          <button id="compress-apply-btn" class="btn-primary" style="width:100%">${this.t("btn.apply", "Compress (Keep snapshot)")}</button>
         </div>
       </div>
 
       <div class="settings-section">
-        <div class="section-title">Versions</div>
+        <div class="section-title">${this.t("section.versions", "Versions")}</div>
         <div id="compression-versions-list" class="compression-versions-list"></div>
         <div class="panel-footer-inline">
-          <button id="compression-versions-clear" class="btn-secondary" style="width:100%">Clear all history</button>
+          <button id="compression-versions-clear" class="btn-secondary" style="width:100%">${this.t("btn.clearHistory", "Clear all history")}</button>
         </div>
       </div>
     `;
@@ -570,31 +639,31 @@ export class CompressionSettingsPanel {
 
     return `
       <div class="settings-section">
-        <div class="section-title">Overview</div>
+        <div class="section-title">${this.t("section.overview", "Overview")}</div>
 
         <div class="stats-grid">
           <div class="stat-card">
-            <div class="stat-label">Total Saved</div>
+            <div class="stat-label">${this.t("stat.totalSaved", "Total Saved")}</div>
             <div class="stat-value">${this.formatTokens(stats.totalTokensSaved || 0)}</div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-label">Compressions</div>
+            <div class="stat-label">${this.t("stat.compressions", "Compressions")}</div>
             <div class="stat-value">${stats.compressionCount || 0}</div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-label">Avg Savings</div>
+            <div class="stat-label">${this.t("stat.avgSavings", "Avg Savings")}</div>
             <div class="stat-value">${this.formatTokens(stats.averageSavings || 0)}</div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-label">Cost Saved</div>
+            <div class="stat-label">${this.t("stat.costSaved", "Cost Saved")}</div>
             <div class="stat-value">$${(stats.costSavings || 0).toFixed(2)}</div>
           </div>
         </div>
 
-        <div class="section-title" style="margin-top: 16px;">Strategy Usage</div>
+        <div class="section-title" style="margin-top: 16px;">${this.t("section.strategyUsage", "Strategy Usage")}</div>
         ${this.renderStrategyUsage(stats.strategyUsage || {})}
       </div>
     `;
@@ -609,7 +678,7 @@ export class CompressionSettingsPanel {
     const strategies = Object.entries(strategyUsage);
 
     if (strategies.length === 0) {
-      return '<div class="empty-state">No compression events yet</div>';
+      return `<div class="empty-state">${this.t("empty.events", "No compression events yet")}</div>`;
     }
 
     const total = Object.values(strategyUsage).reduce((a, b) => a + b, 0);
@@ -819,13 +888,13 @@ export class CompressionSettingsPanel {
         listEl.innerHTML = this.renderVersionsList(versions, activeId);
       }
     } catch {
-      if (listEl) listEl.innerHTML = '<div class="empty-state">No versions yet</div>';
+      if (listEl) listEl.innerHTML = `<div class="empty-state">${this.t("empty.versions", "No versions yet")}</div>`;
     }
   }
 
   renderVersionsList(versions, activeId) {
     if (!Array.isArray(versions) || versions.length === 0) {
-      return '<div class="empty-state">No versions yet</div>';
+      return `<div class="empty-state">${this.t("empty.versions", "No versions yet")}</div>`;
     }
 
     const rows = versions.map((v, i) => {
@@ -846,8 +915,8 @@ export class CompressionSettingsPanel {
             <div class="version-meta">${ts} · ${strat} · ${msgs} msgs · ${tokens}${saved ? ` · saved ${saved}` : ''}</div>
           </div>
           <div class="version-actions">
-            <button class="btn-mini" data-action="restore" data-id="${id}">Restore</button>
-            <button class="btn-mini btn-danger" data-action="delete" data-id="${id}">Delete</button>
+            <button class="btn-mini" data-action="restore" data-id="${id}">${this.t("btn.restore", "Restore")}</button>
+            <button class="btn-mini btn-danger" data-action="delete" data-id="${id}">${this.t("btn.delete", "Delete")}</button>
           </div>
         </div>
       `;
@@ -987,7 +1056,7 @@ export class CompressionSettingsPanel {
       outline: 'none'
     });
     panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-label', 'Context Compression');
+    panel.setAttribute('aria-label', this.t("title", "Context Compression"));
     panel.tabIndex = -1;
 
     // Load settings before rendering
@@ -1020,6 +1089,11 @@ export class CompressionSettingsPanel {
     });
 
     this.attachEventListeners();
+    this.i18nDispose = window.zion?.events?.on?.("i18n/changed", () => {
+      const tab = this.currentTab;
+      this.hide();
+      this.openSettingsPanel(tab);
+    }) || null;
     panel.focus({ preventScroll: true });
   }
 
