@@ -82,8 +82,7 @@ export function createSessionsSidebarViewManager(opts) {
     }));
     headerMenu.appendChild(mkHeaderMenuItem("New Folder", () => {
       const selFolder = zion.state.get("sessions.selectedFolderId") || "root";
-      zion.commands.executeCommand("zion.sessions.newFolder", { parentId: selFolder });
-      refreshIfOpen();
+      zion.commands.executeCommand("zion.sessions.newFolder", { parentId: selFolder, targetView: "sidebar" });
     }));
     headerMenu.appendChild(mkHeaderMenuItem("Import Sessions", () => zion.commands.executeCommand("zion.sessions.import")));
     headerMenu.appendChild(mkHeaderMenuItem("Export All Sessions", () => zion.commands.executeCommand("zion.sessions.export")));
@@ -117,6 +116,7 @@ export function createSessionsSidebarViewManager(opts) {
     const innerRender = createSessionsListRenderer({
       listEl: list,
       hostElement: container,
+      viewId: "sidebar",
       getQuery: () => "",
       getSort: () => "updated",
       onSwitchSession: (id) => {

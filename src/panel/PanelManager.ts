@@ -36,6 +36,8 @@ export class PanelManager {
   private activePanelHistory: PanelId[] = [];
   private nextPanelNum = 1;
   private nextSplitNum = 1;
+  private maximizedPanelId: PanelId | null = null;
+  private maximizedSplitRatios: Map<string, number> | null = null;
 
   constructor(opts: PanelManagerOptions) {
     this.host = opts.host;
@@ -66,6 +68,15 @@ export class PanelManager {
 
   getRoot(): SplitNode | null {
     return this.root;
+  }
+
+  getMaximizedPanelId(): PanelId | null {
+    return this.maximizedPanelId && this.panels.has(this.maximizedPanelId) ? this.maximizedPanelId : null;
+  }
+
+  isPanelMaximized(panelId?: PanelId | null): boolean {
+    const targetId = panelId || this.activePanelId;
+    return !!targetId && this.getMaximizedPanelId() === targetId;
   }
 
   snapshotState(): any {
@@ -142,6 +153,8 @@ export class PanelManager {
       }
 
       this.root = nextRoot;
+      this.maximizedPanelId = null;
+      this.maximizedSplitRatios = null;
       const requestedActivePanelId =
         typeof snapshot?.activePanelId === "string" && panelIds.has(snapshot.activePanelId)
           ? snapshot.activePanelId
@@ -191,7 +204,6 @@ export class PanelManager {
     this.noteActivePanel(panelId);
     this.applyActiveClasses();
     this.fire("panel/focusChanged", { panelId });
-    this.fire("panel/layoutChanged", { root: this.root, activePanelId: this.activePanelId });
   }
 
   activateTab(panelId: PanelId, tabId: PanelTabId | null): void {
@@ -256,6 +268,8 @@ export class PanelManager {
     if (!panelId || !this.root) return null;
     const existing = this.panels.get(panelId);
     if (!existing) return null;
+    this.maximizedPanelId = null;
+    this.maximizedSplitRatios = null;
 
     const direction: SplitDirection = side === "left" || side === "right" ? "horizontal" : "vertical";
     const placeBefore = side === "left" || side === "up";
@@ -299,6 +313,8 @@ export class PanelManager {
     const closing = this.panels.get(panelId);
     try { closing?.rootEl.remove(); } catch {}
     this.panels.delete(panelId);
+    if (this.maximizedPanelId === panelId) this.maximizedPanelId = null;
+    this.maximizedSplitRatios = null;
     this.activePanelHistory = this.activePanelHistory.filter((id) => id !== panelId);
     this.root = nextRoot;
     let nextActive = this.activePanelId;
@@ -312,6 +328,36 @@ export class PanelManager {
     this.render();
     this.fire("panel/closed", { panelId });
     this.fire("panel/focusChanged", { panelId: nextActive });
+  }
+
+  maximizePanel(panelId = this.activePanelId): void {
+    if (!panelId || !this.panels.has(panelId) || !this.root || this.panels.size <= 1) return;
+    this.activePanelId = panelId;
+    this.noteActivePanel(panelId);
+    if (!this.maximizedSplitRatios) {
+      this.maximizedSplitRatios = captureSplitRatios(this.root);
+    } else {
+      restoreSplitRatios(this.root, this.maximizedSplitRatios);
+    }
+    this.emphasizePanel(panelId);
+    this.maximizedPanelId = panelId;
+    this.render();
+  }
+
+  restorePanelLayout(): void {
+    if (!this.root || !this.maximizedPanelId) return;
+    if (this.maximizedSplitRatios) {
+      restoreSplitRatios(this.root, this.maximizedSplitRatios);
+    }
+    this.maximizedPanelId = null;
+    this.maximizedSplitRatios = null;
+    this.render();
+  }
+
+  togglePanelMaximized(panelId = this.activePanelId): void {
+    if (!panelId || !this.panels.has(panelId)) return;
+    if (this.isPanelMaximized(panelId)) this.restorePanelLayout();
+    else this.maximizePanel(panelId);
   }
 
   on<K extends keyof PanelManagerEventMap>(event: K, handler: Listener<K>): Disposable {
@@ -369,9 +415,12 @@ export class PanelManager {
   }
 
   private applyActiveClasses(): void {
+    const maximizedPanelId = this.getMaximizedPanelId();
     this.host.classList.toggle("has-multiple-panels", this.panels.size > 1);
+    this.host.classList.toggle("is-panel-maximized", !!maximizedPanelId);
     for (const panel of this.panels.values()) {
       panel.rootEl.classList.toggle("is-active", panel.id === this.activePanelId);
+      panel.rootEl.classList.toggle("is-maximized", !!maximizedPanelId && panel.id === maximizedPanelId);
     }
   }
 
@@ -401,11 +450,23 @@ export class PanelManager {
 
   private setSplitRatio(splitId: string, ratio: number): void {
     if (!this.root) return;
+    this.maximizedPanelId = null;
+    this.maximizedSplitRatios = null;
     const nextRatio = Math.max(0.15, Math.min(0.85, ratio));
     const node = this.findSplitNode(this.root, splitId);
     if (!node || node.type !== "split") return;
     node.ratio = nextRatio;
     this.fire("panel/layoutChanged", { root: this.root, activePanelId: this.activePanelId });
+  }
+
+  private emphasizePanel(panelId: PanelId): void {
+    if (!this.root) return;
+    const path = this.findPathToPanel(this.root, panelId);
+    if (!path.length) return;
+    for (const step of path) {
+      if (step.node.type !== "split" || !step.branch) continue;
+      step.node.ratio = step.branch === "first" ? 0.82 : 0.18;
+    }
   }
 
   private replaceLeaf(node: SplitNode, targetPanelId: PanelId, replacement: SplitNode): SplitNode | null {
@@ -500,6 +561,24 @@ function collectSplitIds(node: SplitNode | null, acc: string[] = []): string[] {
   collectSplitIds(node.first, acc);
   collectSplitIds(node.second, acc);
   return acc;
+}
+
+function captureSplitRatios(node: SplitNode | null, acc = new Map<string, number>()): Map<string, number> {
+  if (!node || node.type === "leaf") return acc;
+  acc.set(node.id, node.ratio);
+  captureSplitRatios(node.first, acc);
+  captureSplitRatios(node.second, acc);
+  return acc;
+}
+
+function restoreSplitRatios(node: SplitNode | null, ratios: Map<string, number> | null): void {
+  if (!node || node.type === "leaf" || !ratios) return;
+  const saved = ratios.get(node.id);
+  if (typeof saved === "number" && Number.isFinite(saved)) {
+    node.ratio = Math.max(0.15, Math.min(0.85, saved));
+  }
+  restoreSplitRatios(node.first, ratios);
+  restoreSplitRatios(node.second, ratios);
 }
 
 function computeNextSequence(ids: string[], re: RegExp): number {

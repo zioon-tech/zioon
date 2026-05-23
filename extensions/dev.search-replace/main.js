@@ -1,5 +1,5 @@
 import { search, searchKeymap } from '@codemirror/search';
-import { keymap } from '@codemirror/view';
+import { Decoration, ViewPlugin, keymap } from '@codemirror/view';
 
 // 移除默认的搜索快捷键，使用我们自定义的
 const filteredSearchKeymap = searchKeymap.filter(binding => 
@@ -8,6 +8,64 @@ const filteredSearchKeymap = searchKeymap.filter(binding =>
 
 let searchExtension = null;
 let isSearchVisible = false;
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildSearchDecorations(view) {
+  if (!window.zion?.state?.get?.('searchReplace.visible')) return Decoration.none;
+  const query = window.zion?.state?.get?.('searchReplace.query') || '';
+  if (!query) return Decoration.none;
+
+  const caseSensitive = !!window.zion?.state?.get?.('searchReplace.caseSensitive');
+  const wholeWord = !!window.zion?.state?.get?.('searchReplace.wholeWord');
+  const regex = !!window.zion?.state?.get?.('searchReplace.regex');
+  const source = regex ? query : escapeRegExp(query);
+  const boundary = wholeWord ? '\\b' : '';
+  let re;
+  try {
+    re = new RegExp(`${boundary}${source}${boundary}`, caseSensitive ? 'g' : 'gi');
+  } catch {
+    return Decoration.none;
+  }
+
+  const builder = [];
+  const selected = view.state.selection.main;
+  for (const range of view.visibleRanges) {
+    const text = view.state.doc.sliceString(range.from, range.to);
+    re.lastIndex = 0;
+    let match;
+    while ((match = re.exec(text)) !== null) {
+      const from = range.from + match.index;
+      const to = from + match[0].length;
+      if (to > from) {
+        const isSelected = !selected.empty && selected.from === from && selected.to === to;
+        builder.push(Decoration.mark({ class: isSelected ? 'cm-searchMatch cm-searchMatch-selected' : 'cm-searchMatch' }).range(from, to));
+      }
+      if (match.index === re.lastIndex) re.lastIndex++;
+    }
+  }
+  return Decoration.set(builder, true);
+}
+
+const searchHighlightExtension = ViewPlugin.fromClass(class {
+  constructor(view) {
+    this.decorations = buildSearchDecorations(view);
+  }
+
+  update(update) {
+    this.decorations = buildSearchDecorations(update.view);
+  }
+}, {
+  decorations: value => value.decorations
+});
+
+function refreshSearchHighlights() {
+  try {
+    window.zion?.window?.activeEditor?.getView?.()?.dispatch({});
+  } catch {}
+}
 
 export async function activate(ctx) {
   // 初始化搜索扩展
@@ -45,6 +103,7 @@ export async function activate(ctx) {
       // 注入搜索扩展和过滤后的快捷键
       editor.addVisualExtension([
         searchExtension,
+        searchHighlightExtension,
         keymap.of(filteredSearchKeymap)
       ]);
       return { dispose() {} };
@@ -97,8 +156,10 @@ function showSearchPanel(withReplace = false) {
 
 function hideSearchPanel() {
   window.zion.state.set('searchReplace.visible', false);
+  window.zion.state.set('selectionToolbar.suppressUntil', Date.now() + 900);
   isSearchVisible = false;
   hideCustomPanel();
+  refreshSearchHighlights();
   
   // 焦点回到编辑器
   const editor = window.zion.window.activeEditor;
@@ -499,6 +560,7 @@ function updateSearch() {
   const caseSensitive = !!(searchPanel.querySelector('#case-sensitive')?.checked);
   const wholeWord = !!(searchPanel.querySelector('#whole-word')?.checked);
   const regex = !!(searchPanel.querySelector('#regex')?.checked);
+  const ed = window.zion.window.activeEditor;
 
   window.zion.state.set('searchReplace.replace', replaceVal);
 
@@ -509,8 +571,8 @@ function updateSearch() {
     wholeWord,
     regexp: regex
   });
+  refreshSearchHighlights();
 
-  const ed = window.zion.window.activeEditor;
   const text = ed?.getValue?.() || '';
 
   let ranges = [];

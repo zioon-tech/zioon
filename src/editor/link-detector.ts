@@ -68,7 +68,7 @@ export const linkDetector = ViewPlugin.fromClass(
 // Add some basic styles for the link
 export const linkStyles = EditorView.baseTheme({
   ".cm-detected-link": {
-    textDecoration: "underline",
+    textDecoration: "none",
     cursor: "pointer"
   }
 });

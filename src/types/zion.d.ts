@@ -303,6 +303,8 @@ declare global {
       };
       panels?: {
         getActivePanelId(): string | null;
+        getMaximizedPanelId(): string | null;
+        isMaximized(panelId?: string): boolean;
         list(): Array<{ id: string; activeTabId: string | null }>;
         findAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         ensureAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
@@ -311,6 +313,9 @@ declare global {
         splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         focus(panelId: string): void;
         close(panelId?: string): void;
+        maximize(panelId?: string): void;
+        restore(): void;
+        toggleMaximize(panelId?: string): void;
         getEditor(panelId: string): EditorProxy | null;
         getEditorBySession(panelId: string, sessionId: string): EditorProxy | null;
         listEditors(panelId?: string): Array<{ panelId: string; sessionId: string; editorId: string | null; active: boolean }>;

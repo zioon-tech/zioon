@@ -26,6 +26,7 @@ const LS_AUTO = "zion.autosave";
 const LS_FOLDER_OPEN = "zion.sessions.folderOpen";
 const URL_SESSION = "zionSession";
 const URL_SESSION_ALT = "session";
+const PENDING_INLINE_EDIT_KEY = "sessions.pendingInlineEdit";
 function debugSessions(event, payload) {
   void event;
   void payload;
@@ -1037,8 +1038,20 @@ export async function activate(ctx) {
         }
       } catch {}
     });
+    const dispReveal = window.zion.events.on("sessions/revealRequested", (payload) => {
+      const sid = payload?.sessionId ? String(payload.sessionId) : null;
+      if (!sid) return;
+      try {
+        __sidebarViewManager.revealSessionIfOpen(sid, {
+          openAncestors: true,
+          clearSearch: false,
+          flash: false,
+          block: "center"
+        });
+      } catch {}
+    });
     const dispStreaming = window.zion.state.onDidChange("chat.streaming", () => updateTitle());
-    ctx.subscriptions.push(dispCur, dispStreaming, { dispose() { try { dispRun?.dispose?.(); } catch {} } });
+    ctx.subscriptions.push(dispCur, dispReveal, dispStreaming, { dispose() { try { dispRun?.dispose?.(); } catch {} } });
   } catch {}
 
   try {
@@ -2087,19 +2100,27 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dDeleteSelected, dExportSelected);
 
   // Folder commands
-  const dNewFolder = window.zion.commands.registerCommand("zion.sessions.newFolder", async (opts) => {
-    let title = String(opts?.title || "");
-    if (!title) {
-      const input = await openModalInput({
-        title: "Folder name",
-        value: "New Folder",
-        placeholder: "Folder name",
-        okText: "Create",
-        cancelText: "Use default"
-      });
-      title = String((input == null ? "New Folder" : input) || "New Folder").trim() || "New Folder";
+  const dNewFolder = window.zion.commands.registerCommand("zion.sessions.newFolder", (opts) => {
+    const parentId = String(opts?.parentId || window.zion.state.get("sessions.selectedFolderId") || "root") || "root";
+    const title = String(opts?.title || "").trim() || "New Folder";
+    const shouldStartInlineRename = opts?.startInlineRename !== false;
+    const targetView = String(opts?.targetView || "").trim() || null;
+    const id = insertFolder(parentId, title);
+    try { openAncestors(id); } catch {}
+    try { setFolderOpen(parentId, true); } catch {}
+    try { setSelection([{ id, type: "folder" }]); } catch {}
+    try { setLastSelectedId(id); } catch {}
+    try { window.zion.state.set("sessions.selectedFolderId", id); } catch {}
+    if (shouldStartInlineRename) {
+      try {
+        window.zion.state.set(PENDING_INLINE_EDIT_KEY, {
+          id,
+          type: "folder",
+          isNew: true,
+          targetView
+        });
+      } catch {}
     }
-    const id = insertFolder(opts?.parentId || window.zion.state.get("sessions.selectedFolderId") || "root", title);
     window.zion.state.set("sessions.catalog", getIndex());
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return id;

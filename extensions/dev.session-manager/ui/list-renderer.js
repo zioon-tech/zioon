@@ -21,7 +21,7 @@ export function createSessionsListRendererFactory(deps) {
     moveNode
   } = deps || {};
 
-  return function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, onSwitchSession, onAfterChange }) {
+  return function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, onSwitchSession, onAfterChange, viewId = null }) {
     const getEffectiveCurrentSessionId = () => {
       try {
         const panelId = window.zion?.panelManager?.getActivePanelId?.() || window.zion?.panels?.getActivePanelId?.() || null;
@@ -56,8 +56,45 @@ export function createSessionsListRendererFactory(deps) {
       return b;
     };
 
-    let pendingEdit = null; // { id, type: "session"|"folder" }
+    const PENDING_INLINE_EDIT_KEY = "sessions.pendingInlineEdit";
+    let pendingEdit = null; // { id, type: "session"|"folder", isNew?: boolean }
     let pendingConfirm = null; // { id, type: "session"|"folder" }
+
+    const takePendingEdit = (id, type) => {
+      if (pendingEdit && pendingEdit.id === id && pendingEdit.type === type) {
+        const local = pendingEdit;
+        pendingEdit = null;
+        return local;
+      }
+      try {
+        const queued = window.zion?.state?.get?.(PENDING_INLINE_EDIT_KEY) || null;
+        const queuedTarget = String(queued?.targetView || "").trim() || null;
+        const currentViewId = String(viewId || "").trim() || null;
+        if (
+          queued &&
+          queued.id === id &&
+          queued.type === type &&
+          (!queuedTarget || !currentViewId || queuedTarget === currentViewId)
+        ) {
+          try { window.zion?.state?.set?.(PENDING_INLINE_EDIT_KEY, null); } catch {}
+          return queued;
+        }
+      } catch {}
+      return null;
+    };
+
+    const getPendingEditForView = () => {
+      if (pendingEdit) return pendingEdit;
+      try {
+        const queued = window.zion?.state?.get?.(PENDING_INLINE_EDIT_KEY) || null;
+        const queuedTarget = String(queued?.targetView || "").trim() || null;
+        const currentViewId = String(viewId || "").trim() || null;
+        if (!queued) return null;
+        if (queuedTarget && currentViewId && queuedTarget !== currentViewId) return null;
+        return queued;
+      } catch {}
+      return null;
+    };
 
     const isConfirming = (id, type) => !!pendingConfirm && pendingConfirm.id === id && pendingConfirm.type === type;
 
@@ -115,7 +152,7 @@ export function createSessionsListRendererFactory(deps) {
       return wrap;
     };
 
-    const startInlineEdit = ({ row, titleEl, initialValue, placeholder, onCommit }) => {
+    const startInlineEdit = ({ row, titleEl, initialValue, placeholder, onCommit, onCancel, commitOnBlur = true }) => {
       if (!row || !titleEl || row.querySelector("input[data-zion-inline-edit='1']")) return;
 
       const input = document.createElement("input");
@@ -137,20 +174,29 @@ export function createSessionsListRendererFactory(deps) {
       const parent = titleEl.parentElement;
       if (!parent) return;
 
+      let finished = false;
       const cleanup = () => {
         try { input.remove(); } catch {}
         try { titleEl.style.display = ""; } catch {}
       };
 
       const commit = () => {
+        if (finished) return;
+        finished = true;
         const v = String(input.value || "").trim();
         cleanup();
-        if (!v) return;
+        if (!v) {
+          if (typeof onCancel === "function") onCancel({ reason: "empty" });
+          return;
+        }
         if (typeof onCommit === "function") onCommit(v);
       };
 
-      const cancel = () => {
+      const cancel = (reason = "cancel") => {
+        if (finished) return;
+        finished = true;
         cleanup();
+        if (typeof onCancel === "function") onCancel({ reason });
         try { row.focus(); } catch {}
       };
 
@@ -176,10 +222,14 @@ export function createSessionsListRendererFactory(deps) {
       input.onkeyup = (e) => {
         try { e.stopPropagation(); } catch {}
       };
-      input.onblur = () => commit();
+      input.onblur = () => {
+        if (commitOnBlur) commit();
+        else cancel();
+      };
 
       setTimeout(() => {
         try {
+          row.scrollIntoView({ block: "nearest" });
           input.focus();
           input.select();
         } catch {}
@@ -434,9 +484,9 @@ export function createSessionsListRendererFactory(deps) {
         menu.appendChild(mkItem("New Folder", () => {
           try {
             try { setFolderOpen(folder.id, true); } catch {}
-            const id = window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id, title: "New Folder" });
-            pendingEdit = { id, type: "folder" };
+            window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id, targetView: viewId });
           } catch {}
+          if (viewId === "sidebar") return;
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }));
@@ -487,9 +537,9 @@ export function createSessionsListRendererFactory(deps) {
         }));
         menu.appendChild(mkItem("New Folder", () => {
           try {
-            const id = window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: "root", title: "New Folder" });
-            pendingEdit = { id, type: "folder" };
+            window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: "root", targetView: viewId });
           } catch {}
+          if (viewId === "sidebar") return;
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }));
@@ -635,9 +685,9 @@ export function createSessionsListRendererFactory(deps) {
             ev.stopPropagation();
             try {
               try { setFolderOpen(folder.id, true); } catch {}
-              const id = window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id, title: "New Folder" });
-              pendingEdit = { id, type: "folder" };
+              window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id, targetView: viewId });
             } catch {}
+            if (viewId === "sidebar") return;
             if (typeof onAfterChange === "function") onAfterChange();
             render();
           }
@@ -806,18 +856,24 @@ export function createSessionsListRendererFactory(deps) {
         row.append(labelWrap, btns);
         listEl.appendChild(row);
 
-        if (pendingEdit && pendingEdit.id === folder.id && pendingEdit.type === "folder") {
-          const pid = pendingEdit;
-          pendingEdit = null;
+        const folderPendingEdit = takePendingEdit(folder.id, "folder");
+        if (folderPendingEdit) {
           startInlineEdit({
             row,
             titleEl: ttl,
             initialValue: folder.title || "Folder",
             placeholder: "Folder name",
             onCommit: (title) => {
-              window.zion.commands.executeCommand("zion.sessions.renameFolder", { id: pid.id, title });
+              window.zion.commands.executeCommand("zion.sessions.renameFolder", { id: folderPendingEdit.id, title });
               if (typeof onAfterChange === "function") onAfterChange();
               render();
+            },
+            onCancel: () => {
+              if (folderPendingEdit?.isNew) {
+                window.zion.commands.executeCommand("zion.sessions.deleteFolder", folderPendingEdit.id);
+                if (typeof onAfterChange === "function") onAfterChange();
+                render();
+              }
             }
           });
         }
@@ -864,7 +920,14 @@ export function createSessionsListRendererFactory(deps) {
           const nodes = query ? filterTree(children) : children;
 
           const sortNodes = (nodes) => {
-            const fs = nodes.filter(n => n.type === "folder").sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+            const activePendingEdit = getPendingEditForView();
+            const pendingNewFolderId = activePendingEdit?.type === "folder" && activePendingEdit?.isNew ? String(activePendingEdit.id || "") : "";
+            const fs = nodes
+              .filter(n => n.type === "folder" && String(n.id || "") !== pendingNewFolderId)
+              .sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+            const pendingFolder = pendingNewFolderId
+              ? nodes.find(n => n.type === "folder" && String(n.id || "") === pendingNewFolderId)
+              : null;
             const ss = nodes.filter(n => n.type === "session").sort((a, b) => {
               if (sortBy === "updated") {
                 const am = loadMeta(a.id), bm = loadMeta(b.id);
@@ -873,7 +936,7 @@ export function createSessionsListRendererFactory(deps) {
                 return (a.title || a.id).localeCompare(b.title || b.id);
               }
             });
-            return [...fs, ...ss];
+            return [...(pendingFolder ? [pendingFolder] : []), ...fs, ...ss];
           };
 
           for (const ch of sortNodes(nodes)) {

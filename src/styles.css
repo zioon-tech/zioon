@@ -43,8 +43,8 @@
   --md-h6-size: 1em;
 
   /* Markdown UI tokens (dark defaults) */
-  --md-code-bg: rgba(98,114,164,0.08);
-  --md-code-border: rgba(98,114,164,0.2);
+  --md-code-bg: rgba(110, 118, 129, 0.4);
+  --md-code-border: transparent;
   --md-codeblock-bg: rgba(0,0,0,0.2);
   --md-codeblock-border: rgba(98,114,164,0.25);
   --md-quote-bg: color-mix(in srgb, var(--border) 10%, transparent);
@@ -61,10 +61,10 @@
   --caret-color: #f8f8f2;
   --selection-match-bg: rgba(98, 114, 164, 0.14);
   --selection-match-border: rgba(98, 114, 164, 0.20);
-  --search-match-bg: rgba(214, 163, 74, 0.16);
-  --search-match-border: rgba(214, 163, 74, 0.28);
-  --search-current-bg: rgba(230, 172, 76, 0.24);
-  --search-current-border: rgba(245, 203, 133, 0.46);
+  --search-match-bg: var(--selection-match-bg);
+  --search-match-border: var(--selection-match-border);
+  --search-current-bg: var(--selection-bg);
+  --search-current-border: var(--selection-match-border);
   --editor-tab-active-bg: color-mix(in srgb, var(--border) 78%, transparent);
   --editor-tab-hover-bg: color-mix(in srgb, var(--border) 34%, transparent);
   --editor-tabsbar-bg: var(--panel);
@@ -107,8 +107,8 @@
   --role-system-border: rgba(107,114,128,0.16);
 
   /* Markdown UI tokens (light theme overrides) */
-  --md-code-bg: rgba(0,0,0,0.04);
-  --md-code-border: rgba(0,0,0,0.08);
+  --md-code-bg: rgba(175, 184, 193, 0.2);
+  --md-code-border: transparent;
   --md-codeblock-bg: rgba(0,0,0,0.03);
   --md-codeblock-border: rgba(0,0,0,0.1);
   --md-quote-bg: color-mix(in srgb, var(--border) 18%, transparent);
@@ -128,10 +128,10 @@
   --caret-color: #1f2937;
   --selection-match-bg: rgba(59, 130, 246, 0.10);
   --selection-match-border: rgba(59, 130, 246, 0.18);
-  --search-match-bg: rgba(210, 155, 54, 0.14);
-  --search-match-border: rgba(194, 137, 33, 0.22);
-  --search-current-bg: rgba(227, 164, 52, 0.20);
-  --search-current-border: rgba(182, 118, 14, 0.34);
+  --search-match-bg: var(--selection-match-bg);
+  --search-match-border: var(--selection-match-border);
+  --search-current-bg: var(--selection-bg);
+  --search-current-border: var(--selection-match-border);
   --editor-tab-active-bg: rgba(59,130,246,0.12);
   --editor-tab-hover-bg: rgba(59,130,246,0.08);
   --editor-tabsbar-bg: var(--panel);
@@ -147,10 +147,10 @@
 :root[data-heading-size="small"] {
   --md-h1-size: 1.2em;
   --md-h2-size: 1.1em;
-  --md-h3-size: 1.0em;
-  --md-h4-size: 0.95em;
-  --md-h5-size: 0.9em;
-  --md-h6-size: 0.85em;
+  --md-h3-size: 1.05em;
+  --md-h4-size: 1.02em;
+  --md-h5-size: 1.01em;
+  --md-h6-size: 1em;
 }
 :root[data-heading-size="xsmall"] {
   --md-h1-size: 1em;
@@ -1343,12 +1343,52 @@ html, body {
   overflow: hidden;
   display: flex;
   align-items: center;
+  position: relative;
+}
+
+.zion-panel-session-tabs-scrollbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1px;
+  height: 2px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  z-index: 1;
+  border-radius: 999px;
+}
+
+.zion-panel-session-tabs-scrollbar-thumb {
+  height: 100%;
+  width: 0;
+  background: color-mix(in srgb, var(--fg) 34%, transparent);
+  border-radius: 999px;
+  transform: translateX(0);
+  will-change: transform, width;
+}
+
+.zion-panel-session-tabs-viewport[data-scrollable="1"]:hover > .zion-panel-session-tabs-scrollbar,
+.zion-panel-session-tabs-viewport[data-scrollable="1"]:focus-within > .zion-panel-session-tabs-scrollbar,
+body.is-dragging-panel-tabs-scrollbar .zion-panel-session-tabs-viewport[data-scrollable="1"] > .zion-panel-session-tabs-scrollbar {
+  opacity: 0.9;
+  pointer-events: auto;
+  cursor: default;
+}
+
+body.is-dragging-panel-tabs-scrollbar {
+  cursor: default;
+  user-select: none;
 }
 
 .zion-panel-session-tabs-viewport > .zion-editor-session-tabs {
   width: 100%;
+  min-width: 100%;
   max-width: none;
   height: 100%;
+  flex: 0 0 auto;
+  overflow: visible;
+  will-change: transform;
 }
 
 .zion-editor-session-tabs[data-density="compact"] {
@@ -1477,38 +1517,50 @@ html, body {
 
 .zion-editor-tabs-menu {
   position: fixed;
-  min-width: 260px;
-  max-width: 360px;
-  max-height: 320px;
+  min-width: 220px;
+  max-width: 300px;
+  max-height: 280px;
   overflow-y: auto;
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  border-radius: 10px;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--fg) 5%, transparent);
   padding: 4px;
   z-index: 960;
   display: none;
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  scrollbar-color: transparent transparent;
   scrollbar-width: thin;
 }
 .zion-editor-tabs-menu.show {
   display: block;
 }
 .zion-editor-tabs-menu::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 .zion-editor-tabs-menu::-webkit-scrollbar-track {
-  background: var(--scrollbar-track);
+  background: transparent;
 }
 .zion-editor-tabs-menu::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
+  background-color: transparent;
   border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  transition: background-color .15s ease;
+}
+.zion-editor-tabs-menu:hover {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.zion-editor-tabs-menu:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  background-clip: content-box;
 }
 
 .zion-editor-tabs-menu-empty {
-  padding: 8px 10px;
+  padding: 7px 8px;
   opacity: 0.7;
   font-size: 12px;
 }
@@ -1518,18 +1570,37 @@ html, body {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   user-select: none;
   opacity: 0.92;
+  color: var(--fg);
+  transition: background-color .1s ease;
 }
 .zion-editor-tabs-menu-item:hover {
-  background: color-mix(in srgb, var(--border) 30%, transparent);
+  background: rgba(98,114,164,.10);
   opacity: 1;
 }
+:root[data-theme="light"] .zion-editor-tabs-menu-item:hover {
+  background: rgba(59,130,246,.10);
+}
 .zion-editor-tabs-menu-item.is-active {
-  background: color-mix(in srgb, var(--border) 55%, transparent);
+  background: transparent;
   opacity: 1;
+}
+.zion-editor-tabs-menu-item.is-keyboard-selected {
+  background: var(--role-user-bg, rgba(98,114,164,.18));
+  opacity: 1;
+}
+.zion-editor-tabs-menu-item.is-active.is-keyboard-selected {
+  background: var(--role-user-bg, rgba(98,114,164,.18));
+}
+.zion-editor-tabs-menu-item.is-active .zion-editor-tabs-menu-item-label {
+  font-weight: 600;
+}
+.zion-editor-tabs-menu-item.is-active .zion-editor-tabs-menu-item-meta {
+  color: var(--accent);
+  opacity: 0.9;
 }
 .zion-editor-tabs-menu-item-status {
   flex: 0 0 auto;
@@ -1594,6 +1665,20 @@ html, body {
   background: rgba(255, 100, 100, 0.2);
   color: #ff6b6b;
 }
+.zion-editor-tabs-menu-hint {
+  position: sticky;
+  bottom: -4px;
+  margin: 4px -4px -4px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  opacity: .65;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  text-align: right;
+}
 .zion-editor-session-tab:hover {
   opacity: 0.96;
   background: color-mix(in srgb, var(--panel) 72%, transparent);
@@ -1653,7 +1738,7 @@ html, body {
   min-width: 0;
   max-width: none;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
   font-size: inherit;
   line-height: 1;
@@ -1684,6 +1769,19 @@ html, body {
   border-radius: 4px;
   z-index: 2;
   transition: opacity 80ms ease, background-color 80ms ease, color 80ms ease;
+}
+.zion-editor-session-tab.is-active::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  top: 1px;
+  bottom: 1px;
+  width: 30px;
+  border-radius: 0 7px 7px 0;
+  background: var(--panel);
+  background: linear-gradient(90deg, transparent, var(--panel) 44%, var(--panel));
+  pointer-events: none;
+  z-index: 1;
 }
 .zion-editor-session-tab.is-active .zion-editor-session-tab-close {
   opacity: 0.72;
@@ -1928,12 +2026,29 @@ html, body {
 .cm-z-hidden { display: none; }
 
 /* WYSIWYG widgets (follow oneDark palette) */
-.cm-editor .cm-md-link {
+.cm-editor .cm-md-link,
+.cm-editor a.cm-md-link,
+.cm-editor a.cm-md-link:link,
+.cm-editor a.cm-md-link:visited,
+.cm-editor a.cm-md-link:hover,
+.cm-editor a.cm-md-link:active {
   color: var(--accent) !important;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  -webkit-text-fill-color: var(--accent);
+  text-decoration: none !important;
 }
-.cm-editor .cm-md-link:hover { color: var(--accent) !important; opacity: 0.8; }
+.cm-editor .cm-md-link:hover,
+.cm-editor a.cm-md-link:hover {
+  color: var(--accent) !important;
+  -webkit-text-fill-color: var(--accent);
+  opacity: 0.9;
+}
+
+.cm-editor .cm-detected-link {
+  color: var(--accent) !important;
+  -webkit-text-fill-color: var(--accent);
+  text-decoration: none !important;
+}
+.cm-editor .cm-detected-link:hover { color: var(--accent) !important; opacity: 0.9; }
 
 .cm-editor .cm-md-strong { font-weight: 600; }
 .cm-editor .cm-md-em { font-style: italic; }
@@ -1942,11 +2057,22 @@ html, body {
 .cm-editor .cm-md-code {
   font-family: var(--font-mono);
   background: var(--md-code-bg) !important;
-  border: none;
-  padding: 0.1em 0.4em;
-  border-radius: 3px;
-  font-size: 0.88em;
-  color: var(--accent) !important;
+  border: 0;
+  padding: 0.2em 0.4em;
+  border-radius: 6px;
+  font-size: 0.85em;
+  font-weight: 400;
+  line-height: inherit;
+  white-space: break-spaces !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-all !important;
+  color: var(--fg) !important;
+}
+
+.cm-editor .cm-md-code * {
+  white-space: break-spaces !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-all !important;
 }
 
 .cm-md-kbd {
@@ -2074,18 +2200,24 @@ html, body {
 
 .cm-md-ul-bullet {
   display: inline-block;
-  width: 1ch;
+  width: 1.15ch;
   text-align: center;
+  white-space: nowrap;
   color: var(--fg);
-  opacity: 0.6;
-  margin-right: 0.75ch;
+  font-size: 1em;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0.9;
+  vertical-align: 0;
+  margin-right: 0;
 }
 
 .cm-md-ol-num {
   display: inline-block;
   min-width: 2.2ch;
   text-align: right;
-  margin-right: 0.85ch;
+  white-space: nowrap;
+  margin-right: 0;
   color: var(--fg);
   opacity: 0.6;
 }
@@ -2693,18 +2825,22 @@ html, body {
 }
 
 /* 搜索高亮样式 */
-.cm-searchMatch {
-  background: var(--search-match-bg);
+.cm-editor .cm-searchMatch {
+  background-color: var(--search-match-bg) !important;
   box-shadow: inset 0 0 0 1px var(--search-match-border);
   border-radius: 3px;
+  color: inherit;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
-.cm-searchMatch-selected {
-  background: var(--search-current-bg);
-  box-shadow:
-    inset 0 0 0 1px var(--search-current-border),
-    0 0 0 1px color-mix(in srgb, var(--search-current-border) 40%, transparent);
-  border-radius: 3px;
+.cm-editor .cm-searchMatch-selected {
+  background-color: var(--search-current-bg) !important;
+  box-shadow: none;
+  border-radius: 0;
+  color: inherit;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 .cm-selectionMatch {

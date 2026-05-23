@@ -2,7 +2,6 @@ export function createSessionsPanelManager(opts) {
   const zion = opts?.zion || window.zion;
   const getIndex = opts?.getIndex;
   const createSessionsListRenderer = opts?.createSessionsListRenderer;
-  const openModalInput = opts?.openModalInput;
   const refreshSessionsSidebarViewIfOpen = opts?.refreshSessionsSidebarViewIfOpen;
 
   function open() {
@@ -160,19 +159,8 @@ export function createSessionsPanelManager(opts) {
       }));
       menu.appendChild(mkMenuItem("New Folder", () => {
         const selFolder = zion.state.get("sessions.selectedFolderId") || "root";
-        (async () => {
-          const input = await openModalInput({
-            title: "Folder name",
-            value: "New Folder",
-            placeholder: "Folder name",
-            okText: "Create",
-            cancelText: "Cancel"
-          });
-          const title2 = String((input == null ? "" : input) || "").trim();
-          if (!title2) return;
-          zion.commands.executeCommand("zion.sessions.newFolder", { parentId: selFolder, title: title2 });
-          setTimeout(() => { overlay.remove(); open(); }, 30);
-        })();
+        zion.commands.executeCommand("zion.sessions.newFolder", { parentId: selFolder, targetView: "panel" });
+        setTimeout(() => { overlay.remove(); open(); }, 30);
       }));
       menu.appendChild(mkMenuItem("Import Sessions", () => {
         zion.commands.executeCommand("zion.sessions.import");
@@ -207,6 +195,7 @@ export function createSessionsPanelManager(opts) {
       const render = createSessionsListRenderer({
         listEl: list,
         hostElement: panel,
+        viewId: "panel",
         getQuery: () => "",
         getSort: () => sortSelect.value || "updated",
         onSwitchSession: (id) => {

@@ -1297,19 +1297,21 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           const lnNum = doc.lineAt(node.from).number;
           const isActive = activeLines.has(lnNum);
           if (!isActive) {
-            add(node.from, node.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
             const txt = doc.sliceString(node.from, node.to).trim();
+            const line = doc.lineAt(node.to);
+            let replaceTo = node.to;
+            while (replaceTo < line.to && /\s/.test(doc.sliceString(replaceTo, replaceTo + 1))) replaceTo++;
             add(
               node.from,
-              node.from,
-              Decoration.widget({
+              replaceTo,
+              Decoration.replace({
                 widget: new (class extends WidgetType {
                   constructor(private txt: string) { super(); }
                   eq(other: any) { return other.txt === this.txt; }
                   toDOM() {
                     const s = document.createElement("span");
                     s.className = /^[\d]/.test(this.txt) ? "cm-md-ol-num" : "cm-md-ul-bullet";
-                    s.textContent = /^[\d]/.test(this.txt) ? (this.txt.replace(/\./g, "") + ".") : "•";
+                    s.textContent = /^[\d]/.test(this.txt) ? `${this.txt.replace(/\./g, "")}.\u00A0` : "•\u00A0";
                     return s;
                   }
                   ignoreEvent() { return true; }
