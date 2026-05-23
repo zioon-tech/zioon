@@ -6,15 +6,118 @@ const I18N_MESSAGES = {
     "category.plugins": "插件",
     "cmd.show": "显示插件",
     "ui.plugins": "插件",
-    "ui.reload": "重新加载插件"
+    "ui.reload": "重新加载插件",
+    "ui.refresh": "刷新",
+    "ui.reloadAll": "重新加载",
+    "ui.search": "搜索插件",
+    "ui.advancedTools": "高级工具",
+    "ui.installPlugins": "安装插件",
+    "ui.installDesc": "支持配置服务地址、搜索可安装插件，或直接拖拽 ZIP 包安装。",
+    "ui.saveUrl": "保存 URL",
+    "ui.dropZip": "拖拽 ZIP 插件包到此处进行安装",
+    "ui.searchQuery": "搜索关键词",
+    "ui.listAll": "列出全部",
+    "ui.install": "安装",
+    "ui.devMode": "开发模式",
+    "ui.devDesc": "把本地插件目录映射成可热更新的开发会话，适合调试插件。",
+    "ui.startDev": "启动开发",
+    "ui.stopDev": "停止开发",
+    "ui.statsUnavailable": "查看和切换已安装插件。",
+    "ui.stats": "共 {total} 个插件，已启用 {enabled} 个，活跃 {active} 个，异常 {errors} 个。",
+    "ui.systemUnavailable": "插件系统不可用",
+    "ui.noMatching": "没有匹配的插件",
+    "ui.noPlugins": "没有找到插件",
+    "ui.managerUnavailable": "PluginManager 不可用",
+    "ui.searchFailed": "搜索失败：{message}",
+    "ui.searchError": "搜索出错",
+    "ui.listFailed": "列表加载失败：{message}",
+    "ui.listError": "列表加载出错",
+    "msg.enabled": "插件已启用。",
+    "msg.disabled": "插件已停用。",
+    "msg.toggleFailed": "切换插件失败：{message}",
+    "msg.installerUnavailable": "安装器不可用。",
+    "msg.managerUnavailable": "插件管理器不可用。",
+    "msg.installed": "已安装 {name}。",
+    "msg.installFailed": "安装失败：{message}",
+    "msg.installError": "安装过程中发生错误，请查看控制台。",
+    "msg.enterDevPath": "请输入本地插件目录绝对路径。",
+    "msg.hotReloadUnavailable": "Hot reload 不可用",
+    "msg.installerDevUnavailable": "Installer 不可用",
+    "msg.devInstallFailed": "开发模式安装失败",
+    "msg.devStarted": "开发模式已启动。",
+    "msg.devStopped": "开发模式已停止。",
+    "msg.startDevFailed": "启动开发模式失败：{message}",
+    "msg.stopDevFailed": "停止开发模式失败：{message}",
+    "msg.devConnected": "开发连接已建立：{url}",
+    "msg.devSessionStopped": "开发会话已停止：{id}",
+    "msg.devClosed": "开发连接已关闭：{id}",
+    "msg.devStartedStatus": "开发会话已启动：{id} ({plugin})",
+    "msg.devStartFailedShort": "启动开发模式失败",
+    "msg.devStoppedShort": "开发会话已停止。"
   },
   "en-US": {
     "category.plugins": "Plugins",
     "cmd.show": "Show Plugins",
     "ui.plugins": "Plugins",
-    "ui.reload": "Reload plugins"
+    "ui.reload": "Reload plugins",
+    "ui.refresh": "Refresh",
+    "ui.reloadAll": "Reload",
+    "ui.search": "Search plugins",
+    "ui.advancedTools": "Advanced Tools",
+    "ui.installPlugins": "Install Plugins",
+    "ui.installDesc": "Configure the service URL, search installable plugins, or drag a ZIP package here.",
+    "ui.saveUrl": "Save URL",
+    "ui.dropZip": "Drop ZIP plugin package here to install",
+    "ui.searchQuery": "Search query",
+    "ui.listAll": "List All",
+    "ui.install": "Install",
+    "ui.devMode": "Development Mode",
+    "ui.devDesc": "Map a local plugin directory into a hot-reload development session for debugging plugins.",
+    "ui.startDev": "Start Dev",
+    "ui.stopDev": "Stop Dev",
+    "ui.statsUnavailable": "View and toggle installed plugins.",
+    "ui.stats": "{total} plugins, {enabled} enabled, {active} active, {errors} errors.",
+    "ui.systemUnavailable": "Plugin system not available",
+    "ui.noMatching": "No matching plugins",
+    "ui.noPlugins": "No plugins found",
+    "ui.managerUnavailable": "PluginManager not available",
+    "ui.searchFailed": "Search failed: {message}",
+    "ui.searchError": "Search error",
+    "ui.listFailed": "List failed: {message}",
+    "ui.listError": "List error",
+    "msg.enabled": "Plugin enabled.",
+    "msg.disabled": "Plugin disabled.",
+    "msg.toggleFailed": "Failed to toggle plugin: {message}",
+    "msg.installerUnavailable": "Installer not available.",
+    "msg.managerUnavailable": "Plugin manager not available.",
+    "msg.installed": "Installed {name}.",
+    "msg.installFailed": "Install failed: {message}",
+    "msg.installError": "An error occurred during installation. Check the console.",
+    "msg.enterDevPath": "Enter an absolute path to a local plugin directory.",
+    "msg.hotReloadUnavailable": "Hot reload not available",
+    "msg.installerDevUnavailable": "Installer not available",
+    "msg.devInstallFailed": "Development mode installation failed",
+    "msg.devStarted": "Development mode started.",
+    "msg.devStopped": "Development mode stopped.",
+    "msg.startDevFailed": "Failed to start development mode: {message}",
+    "msg.stopDevFailed": "Failed to stop development mode: {message}",
+    "msg.devConnected": "Development connection established: {url}",
+    "msg.devSessionStopped": "Development session stopped: {id}",
+    "msg.devClosed": "Development connection closed: {id}",
+    "msg.devStartedStatus": "Development session started: {id} ({plugin})",
+    "msg.devStartFailedShort": "Failed to start development mode",
+    "msg.devStoppedShort": "Development session stopped."
   }
 };
+
+function t(key, fallback, values) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
 
 function h(tag, props, ...children) {
   const el = document.createElement(tag);
@@ -92,7 +195,7 @@ function mountPluginsSidebarViewInto(container) {
         letterSpacing: "0.01em"
       }
     },
-    "插件"
+    t("ui.plugins", "插件")
   );
 
   const statsText = h("div", {
@@ -145,7 +248,7 @@ function mountPluginsSidebarViewInto(container) {
         fontSize: "12px"
       }
     },
-    "刷新"
+    t("ui.refresh", "刷新")
   );
 
   const reloadAllBtn = h("button", {
@@ -159,7 +262,7 @@ function mountPluginsSidebarViewInto(container) {
       cursor: "pointer",
       fontSize: "12px"
     }
-  }, "重新加载");
+  }, t("ui.reloadAll", "重新加载"));
 
   actionButtons.appendChild(refreshBtn);
   actionButtons.appendChild(reloadAllBtn);
@@ -179,7 +282,7 @@ function mountPluginsSidebarViewInto(container) {
 
   const searchInput = h("input", {
     type: "text",
-    placeholder: "Search plugins",
+    placeholder: t("ui.search", "Search plugins"),
     style: {
       width: "100%",
       height: "28px",
@@ -235,7 +338,7 @@ function mountPluginsSidebarViewInto(container) {
       fontWeight: "600",
       opacity: "0.88"
     }
-  }, "高级工具");
+  }, t("ui.advancedTools", "高级工具"));
 
   const toolsContent = h("div", {
     style: {
@@ -264,7 +367,7 @@ function mountPluginsSidebarViewInto(container) {
       fontSize: "12px",
       fontWeight: "600"
     }
-  }, "安装插件");
+  }, t("ui.installPlugins", "安装插件"));
 
   const serviceDesc = h("div", {
     style: {
@@ -272,7 +375,7 @@ function mountPluginsSidebarViewInto(container) {
       lineHeight: "1.5",
       opacity: "0.58"
     }
-  }, "支持配置服务地址、搜索可安装插件，或直接拖拽 ZIP 包安装。");
+  }, t("ui.installDesc", "支持配置服务地址、搜索可安装插件，或直接拖拽 ZIP 包安装。"));
 
   const urlRow = h("div", {
     style: {
@@ -309,7 +412,7 @@ function mountPluginsSidebarViewInto(container) {
       cursor: "pointer",
       fontSize: "12px"
     }
-  }, "Save URL");
+  }, t("ui.saveUrl", "Save URL"));
 
   urlRow.appendChild(urlInput);
   urlRow.appendChild(saveUrlBtn);
@@ -323,7 +426,7 @@ function mountPluginsSidebarViewInto(container) {
       fontSize: "12px",
       opacity: "0.78"
     }
-  }, "拖拽 ZIP 插件包到此处进行安装");
+  }, t("ui.dropZip", "拖拽 ZIP 插件包到此处进行安装"));
 
   const actionRow = h("div", {
     style: {
@@ -334,7 +437,7 @@ function mountPluginsSidebarViewInto(container) {
 
   const queryInput = h("input", {
     type: "text",
-    placeholder: "Search query",
+    placeholder: t("ui.searchQuery", "Search query"),
     style: {
       flex: "1",
       height: "28px",
@@ -360,7 +463,7 @@ function mountPluginsSidebarViewInto(container) {
       cursor: "pointer",
       fontSize: "12px"
     }
-  }, "Search");
+  }, t("ui.search", "Search"));
 
   const listBtn = h("button", {
     style: {
@@ -373,7 +476,7 @@ function mountPluginsSidebarViewInto(container) {
       cursor: "pointer",
       fontSize: "12px"
     }
-  }, "List All");
+  }, t("ui.listAll", "List All"));
 
   const resultsList = h("div", {
     style: {
@@ -411,7 +514,7 @@ function mountPluginsSidebarViewInto(container) {
       fontSize: "12px",
       fontWeight: "600"
     }
-  }, "开发模式");
+  }, t("ui.devMode", "开发模式"));
 
   const devDesc = h("div", {
     style: {
@@ -419,7 +522,7 @@ function mountPluginsSidebarViewInto(container) {
       lineHeight: "1.5",
       opacity: "0.58"
     }
-  }, "把本地插件目录映射成可热更新的开发会话，适合调试插件。");
+  }, t("ui.devDesc", "把本地插件目录映射成可热更新的开发会话，适合调试插件。"));
 
   const devRow = h("div", {
     style: {
@@ -456,7 +559,7 @@ function mountPluginsSidebarViewInto(container) {
       cursor: "pointer",
       fontSize: "12px"
     }
-  }, "Start Dev");
+  }, t("ui.startDev", "Start Dev"));
 
   const devStopBtn = h("button", {
     style: {
@@ -471,7 +574,7 @@ function mountPluginsSidebarViewInto(container) {
       opacity: "0.6"
     },
     disabled: true
-  }, "Stop Dev");
+  }, t("ui.stopDev", "Stop Dev"));
 
   devRow.appendChild(devPathInput);
   devRow.appendChild(devStartBtn);
@@ -528,16 +631,16 @@ function mountPluginsSidebarViewInto(container) {
 
   function renderStats() {
     if (!pluginManager || typeof pluginManager.getStats !== "function") {
-      statsText.textContent = "查看和切换已安装插件。";
+      statsText.textContent = t("ui.statsUnavailable", "查看和切换已安装插件。");
       return;
     }
     const s = pluginManager.getStats();
-    statsText.textContent = `共 ${s.total} 个插件，已启用 ${s.enabled} 个，活跃 ${s.active} 个，异常 ${s.errors} 个。`;
+    statsText.textContent = t("ui.stats", "共 {total} 个插件，已启用 {enabled} 个，活跃 {active} 个，异常 {errors} 个。", s);
   }
 
   function renderList() {
     if (!pluginManager || typeof pluginManager.list !== "function") {
-      renderEmpty("Plugin system not available");
+      renderEmpty(t("ui.systemUnavailable", "Plugin system not available"));
       return;
     }
 
@@ -555,7 +658,7 @@ function mountPluginsSidebarViewInto(container) {
     list.innerHTML = "";
 
     if (!filtered.length) {
-      renderEmpty(q ? "No matching plugins" : "No plugins found");
+      renderEmpty(q ? t("ui.noMatching", "No matching plugins") : t("ui.noPlugins", "No plugins found"));
       return;
     }
 
@@ -695,10 +798,10 @@ function mountPluginsSidebarViewInto(container) {
           } else {
             await pluginManager.disable(String(plugin.id));
           }
-          showMessage(next ? "插件已启用。" : "插件已停用。");
+          showMessage(next ? t("msg.enabled", "插件已启用。") : t("msg.disabled", "插件已停用。"));
         } catch (e) {
           toggle.checked = !next;
-          showMessage(`切换插件失败：${e?.message || "未知错误"}`, "error");
+          showMessage(t("msg.toggleFailed", "切换插件失败：{message}", { message: e?.message || "未知错误" }), "error");
         } finally {
           try {
             renderStats();
@@ -765,11 +868,11 @@ function mountPluginsSidebarViewInto(container) {
       const files = e.dataTransfer && e.dataTransfer.files;
       if (!files || files.length === 0) return;
       if (!pluginInstaller || typeof pluginInstaller.installFromFile !== "function") {
-        showMessage("安装器不可用。", "error");
+        showMessage(t("msg.installerUnavailable", "安装器不可用。"), "error");
         return;
       }
       if (!pluginManager || typeof pluginManager.installFromInfo !== "function") {
-        showMessage("插件管理器不可用。", "error");
+        showMessage(t("msg.managerUnavailable", "插件管理器不可用。"), "error");
         return;
       }
       for (let i = 0; i < files.length; i++) {
@@ -779,13 +882,13 @@ function mountPluginsSidebarViewInto(container) {
         if (ret.success && ret.plugin) {
           await pluginManager.installFromInfo(ret.plugin, { enabled: true });
           doRefresh();
-          showMessage(`已安装 ${ret.plugin.name || ret.plugin.id}。`);
+          showMessage(t("msg.installed", "已安装 {name}。", { name: ret.plugin.name || ret.plugin.id }));
         } else {
-          showMessage(`安装失败：${ret.error?.message || "未知错误"}`, "error");
+          showMessage(t("msg.installFailed", "安装失败：{message}", { message: ret.error?.message || "未知错误" }), "error");
         }
       }
     } catch (err) {
-      showMessage("安装过程中发生错误，请查看控制台。", "error");
+      showMessage(t("msg.installError", "安装过程中发生错误，请查看控制台。"), "error");
     }
   };
 
@@ -796,12 +899,12 @@ function mountPluginsSidebarViewInto(container) {
       const res = await pluginInstaller.searchPlugins(queryInput.value.trim(), 50);
       if (!res.success) {
         resultsList.appendChild(
-          h("div", { style: { color: "var(--error)", fontSize: "12px" } }, `Search failed: ${res.error?.message || "Unknown"}`)
+          h("div", { style: { color: "var(--error)", fontSize: "12px" } }, t("ui.searchFailed", "Search failed: {message}", { message: res.error?.message || "Unknown" }))
         );
         return;
       }
       if (!pluginManager || typeof pluginManager.installFromInfo !== "function") {
-        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, "PluginManager 不可用"));
+        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, t("ui.managerUnavailable", "PluginManager 不可用")));
         return;
       }
       res.data.forEach((item) => {
@@ -825,15 +928,15 @@ function mountPluginsSidebarViewInto(container) {
             cursor: "pointer",
             fontSize: "12px"
           }
-        }, "Install");
+        }, t("ui.install", "Install"));
         installBtn.onclick = async () => {
           const ret = await pluginInstaller.installFromService(item.id);
           if (ret.success && ret.plugin) {
             await pluginManager.installFromInfo(ret.plugin, { enabled: true });
             doRefresh();
-            showMessage(`已安装 ${ret.plugin.name || ret.plugin.id}。`);
+            showMessage(t("msg.installed", "已安装 {name}。", { name: ret.plugin.name || ret.plugin.id }));
           } else {
-            showMessage(`安装失败：${ret.error?.message || "未知错误"}`, "error");
+            showMessage(t("msg.installFailed", "安装失败：{message}", { message: ret.error?.message || "未知错误" }), "error");
           }
         };
         row.appendChild(label);
@@ -841,10 +944,10 @@ function mountPluginsSidebarViewInto(container) {
         resultsList.appendChild(row);
       });
       if (res.data.length === 0) {
-        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, "No plugins matched"));
+        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, t("ui.noMatching", "No plugins matched")));
       }
     } catch (e) {
-      resultsList.appendChild(h("div", { style: { color: "var(--error)", fontSize: "12px" } }, "Search error"));
+      resultsList.appendChild(h("div", { style: { color: "var(--error)", fontSize: "12px" } }, t("ui.searchError", "Search error")));
     }
   };
 
@@ -855,12 +958,12 @@ function mountPluginsSidebarViewInto(container) {
       const res = await pluginInstaller.listPlugins(100, 0);
       if (!res.success) {
         resultsList.appendChild(
-          h("div", { style: { color: "var(--error)", fontSize: "12px" } }, `List failed: ${res.error?.message || "Unknown"}`)
+          h("div", { style: { color: "var(--error)", fontSize: "12px" } }, t("ui.listFailed", "List failed: {message}", { message: res.error?.message || "Unknown" }))
         );
         return;
       }
       if (!pluginManager || typeof pluginManager.installFromInfo !== "function") {
-        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, "PluginManager 不可用"));
+        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, t("ui.managerUnavailable", "PluginManager 不可用")));
         return;
       }
       res.data.forEach((item) => {
@@ -884,15 +987,15 @@ function mountPluginsSidebarViewInto(container) {
             cursor: "pointer",
             fontSize: "12px"
           }
-        }, "Install");
+        }, t("ui.install", "Install"));
         installBtn.onclick = async () => {
           const ret = await pluginInstaller.installFromService(item.id);
           if (ret.success && ret.plugin) {
             await pluginManager.installFromInfo(ret.plugin, { enabled: true });
             doRefresh();
-            showMessage(`已安装 ${ret.plugin.name || ret.plugin.id}。`);
+            showMessage(t("msg.installed", "已安装 {name}。", { name: ret.plugin.name || ret.plugin.id }));
           } else {
-            showMessage(`安装失败：${ret.error?.message || "未知错误"}`, "error");
+            showMessage(t("msg.installFailed", "安装失败：{message}", { message: ret.error?.message || "未知错误" }), "error");
           }
         };
         row.appendChild(label);
@@ -900,10 +1003,10 @@ function mountPluginsSidebarViewInto(container) {
         resultsList.appendChild(row);
       });
       if (res.data.length === 0) {
-        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, "No plugins found"));
+        resultsList.appendChild(h("div", { style: { opacity: "0.8", fontSize: "12px" } }, t("ui.noPlugins", "No plugins found")));
       }
     } catch (e) {
-      resultsList.appendChild(h("div", { style: { color: "var(--error)", fontSize: "12px" } }, "List error"));
+      resultsList.appendChild(h("div", { style: { color: "var(--error)", fontSize: "12px" } }, t("ui.listError", "List error")));
     }
   };
 
@@ -915,7 +1018,7 @@ function mountPluginsSidebarViewInto(container) {
     const wsUrl = serviceUrl.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
     const ws = new WebSocket(wsUrl);
     ws.onopen = () => {
-      devStatus.textContent = `开发连接已建立：${wsUrl}`;
+      devStatus.textContent = t("msg.devConnected", "开发连接已建立：{url}", { url: wsUrl });
     };
     ws.onmessage = async (ev) => {
       try {
@@ -931,12 +1034,12 @@ function mountPluginsSidebarViewInto(container) {
             } catch {}
           }
         } else if (msg.type === "dev:stop") {
-          devStatus.textContent = `开发会话已停止：${devId}`;
+          devStatus.textContent = t("msg.devSessionStopped", "开发会话已停止：{id}", { id: devId });
         }
       } catch {}
     };
     ws.onclose = () => {
-      devStatus.textContent = `开发连接已关闭：${devId}`;
+      devStatus.textContent = t("msg.devClosed", "开发连接已关闭：{id}", { id: devId });
     };
     return ws;
   };
@@ -944,16 +1047,16 @@ function mountPluginsSidebarViewInto(container) {
   devStartBtn.onclick = async () => {
     const p = devPathInput.value.trim();
     if (!p) {
-      showMessage("请输入本地插件目录绝对路径。", "error");
+      showMessage(t("msg.enterDevPath", "请输入本地插件目录绝对路径。"), "error");
       return;
     }
     const serviceUrl = getServiceBaseUrl();
     try {
       if (!pluginManager || typeof pluginManager.installFromInfo !== "function") {
-        throw new Error("PluginManager 不可用");
+        throw new Error(t("ui.managerUnavailable", "PluginManager 不可用"));
       }
       if (!pluginManager.hotReloadFromInfo) {
-        throw new Error("Hot reload 不可用");
+        throw new Error(t("msg.hotReloadUnavailable", "Hot reload 不可用"));
       }
       const res = await fetch(`${serviceUrl}/plugins/dev/start`, {
         method: "POST",
@@ -974,13 +1077,13 @@ function mountPluginsSidebarViewInto(container) {
       const baseUrl = serviceUrl + baseUrlRel;
 
       if (!pluginInstaller || typeof pluginInstaller.installFromDevBase !== "function") {
-        throw new Error("Installer 不可用");
+        throw new Error(t("msg.installerDevUnavailable", "Installer 不可用"));
       }
 
       const ret = await pluginInstaller.installFromDevBase(baseUrl, devId);
       if (ret.success && ret.plugin) {
         await pluginManager.installFromInfo(ret.plugin, { enabled: true });
-        devStatus.textContent = `开发会话已启动：${devId} (${ret.plugin.id})`;
+        devStatus.textContent = t("msg.devStartedStatus", "开发会话已启动：{id} ({plugin})", { id: devId, plugin: ret.plugin.id });
         const ws = connectWebSocket(serviceUrl, devId);
         activeDevSessions.set(devId, { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir });
         try {
@@ -995,13 +1098,13 @@ function mountPluginsSidebarViewInto(container) {
         devStartBtn.disabled = true;
         devStopBtn.disabled = false;
         devStopBtn.style.opacity = "1";
-        showMessage("开发模式已启动。");
+        showMessage(t("msg.devStarted", "开发模式已启动。"));
       } else {
-        throw new Error(ret.error?.message || "开发模式安装失败");
+        throw new Error(ret.error?.message || t("msg.devInstallFailed", "开发模式安装失败"));
       }
     } catch (e) {
-      devStatus.textContent = "启动开发模式失败";
-      showMessage(`启动开发模式失败：${e?.message || e}`, "error");
+      devStatus.textContent = t("msg.devStartFailedShort", "启动开发模式失败");
+      showMessage(t("msg.startDevFailed", "启动开发模式失败：{message}", { message: e?.message || e }), "error");
     }
   };
 
@@ -1030,10 +1133,10 @@ function mountPluginsSidebarViewInto(container) {
         } catch {}
         activeDevSessions.delete(devId);
       }
-      devStatus.textContent = "开发会话已停止。";
-      showMessage("开发模式已停止。");
+      devStatus.textContent = t("msg.devStoppedShort", "开发会话已停止。");
+      showMessage(t("msg.devStopped", "开发模式已停止。"));
     } catch (e) {
-      showMessage(`停止开发模式失败：${e?.message || e}`, "error");
+      showMessage(t("msg.stopDevFailed", "停止开发模式失败：{message}", { message: e?.message || e }), "error");
     }
     devStartBtn.disabled = false;
     devStopBtn.disabled = true;
@@ -1054,10 +1157,32 @@ function mountPluginsSidebarViewInto(container) {
     } catch {}
   });
 
+  function refreshI18n() {
+    title.textContent = t("ui.plugins", "插件");
+    refreshBtn.textContent = t("ui.refresh", "刷新");
+    reloadAllBtn.textContent = t("ui.reloadAll", "重新加载");
+    searchInput.placeholder = t("ui.search", "Search plugins");
+    toolsSummary.textContent = t("ui.advancedTools", "高级工具");
+    serviceTitle.textContent = t("ui.installPlugins", "安装插件");
+    serviceDesc.textContent = t("ui.installDesc", "支持配置服务地址、搜索可安装插件，或直接拖拽 ZIP 包安装。");
+    saveUrlBtn.textContent = t("ui.saveUrl", "Save URL");
+    dropZone.textContent = t("ui.dropZip", "拖拽 ZIP 插件包到此处进行安装");
+    queryInput.placeholder = t("ui.searchQuery", "Search query");
+    searchBtn.textContent = t("ui.search", "Search");
+    listBtn.textContent = t("ui.listAll", "List All");
+    devTitle.textContent = t("ui.devMode", "开发模式");
+    devDesc.textContent = t("ui.devDesc", "把本地插件目录映射成可热更新的开发会话，适合调试插件。");
+    devStartBtn.textContent = t("ui.startDev", "Start Dev");
+    devStopBtn.textContent = t("ui.stopDev", "Stop Dev");
+    doRefresh();
+  }
+
   container.appendChild(root);
   doRefresh();
 
   const disposers = [];
+  const i18nDisp = window.zion?.events?.on?.("i18n/changed", refreshI18n);
+  if (i18nDisp) disposers.push(() => i18nDisp.dispose?.());
   if (pluginManager && typeof pluginManager.on === "function" && typeof pluginManager.off === "function") {
     const events = [
       "installed",

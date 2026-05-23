@@ -5,6 +5,15 @@
  * - 设置会话 cwd
  * - 状态总线：terminal.sessions / terminal.activeSessionId
  */
+function t(key, fallback, values) {
+  const fullKey = `dev.terminal-manager.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 export function installTerminalManagerPanel() {
   let root = document.getElementById("zion-terminal-manager-root");
   if (root) return createHandle(root);
@@ -38,7 +47,7 @@ export function installTerminalManagerPanel() {
   });
 
   const header = document.createElement("div");
-  header.textContent = "Terminal Sessions";
+  header.textContent = t("ui.sessions", "Terminal Sessions");
   Object.assign(header.style, {
     fontSize: "11px",
     opacity: "0.85",
@@ -62,7 +71,7 @@ export function installTerminalManagerPanel() {
   cbCtx.type = "checkbox";
   cbCtx.style.margin = "0";
   const spanCtx = document.createElement("span");
-  spanCtx.textContent = "在对话中注入终端上下文";
+  spanCtx.textContent = t("ui.injectContext", "在对话中注入终端上下文");
   ctxWrap.appendChild(cbCtx);
   ctxWrap.appendChild(spanCtx);
   try {
@@ -90,7 +99,7 @@ export function installTerminalManagerPanel() {
 
   // Human-readable last activity formatter
   function formatLastActivity(val) {
-    if (val == null) return { text: "(unknown)", title: "" };
+    if (val == null) return { text: `(${t("ui.unknown", "unknown")})`, title: "" };
 
     let ts = null;
     if (typeof val === "number") {
@@ -108,13 +117,13 @@ export function installTerminalManagerPanel() {
       ts = val.getTime();
     }
 
-    if (ts == null) return { text: "(unknown)", title: "" };
+    if (ts == null) return { text: `(${t("ui.unknown", "unknown")})`, title: "" };
 
     const d = new Date(ts);
     const diffMs = Date.now() - d.getTime();
     const sec = Math.floor(diffMs / 1000);
     let text;
-    if (sec < 10) text = "just now";
+    if (sec < 10) text = t("ui.justNow", "just now");
     else if (sec < 60) text = `${sec}s ago`;
     else if (sec < 3600) text = `${Math.floor(sec / 60)}m ago`;
     else if (sec < 86400) text = `${Math.floor(sec / 3600)}h ago`;
@@ -167,7 +176,7 @@ export function installTerminalManagerPanel() {
   typeWrap.style.flexDirection = "column";
   typeWrap.style.gap = "4px";
   const typeLb = document.createElement("span");
-  typeLb.textContent = "Type";
+  typeLb.textContent = t("ui.type", "Type");
   Object.assign(typeLb.style, { fontSize: "11px", opacity: "0.8" });
   const typeSel = document.createElement("select");
   ["local","ssh"].forEach(v => {
@@ -190,11 +199,11 @@ export function installTerminalManagerPanel() {
   typeWrap.appendChild(typeLb);
   typeWrap.appendChild(typeSel);
 
-  const sshUser = mkInput("SSH User", "root");
-  const sshHost = mkInput("SSH Host (or alias)", "e.g., las-dev");
-  sshHost.inp.title = "You can use SSH config alias (e.g., las-dev) or direct hostname (e.g., 101.126.47.38)";
-  const sshPort = mkInput("SSH Port", "22", "number");
-  const initialCwd = mkInput("Initial CWD", "/");
+  const sshUser = mkInput(t("ui.sshUser", "SSH User"), "root");
+  const sshHost = mkInput(t("ui.sshHost", "SSH Host (or alias)"), "e.g., las-dev");
+  sshHost.inp.title = t("ui.sshHostTitle", "You can use SSH config alias (e.g., las-dev) or direct hostname (e.g., 101.126.47.38)");
+  const sshPort = mkInput(t("ui.sshPort", "SSH Port"), "22", "number");
+  const initialCwd = mkInput(t("ui.initialCwd", "Initial CWD"), "/");
 
   form.appendChild(typeWrap);
   form.appendChild(initialCwd.wrap);
@@ -206,8 +215,8 @@ export function installTerminalManagerPanel() {
   Object.assign(btns.style, { display: "flex", gap: "8px", marginTop: "6px", justifyContent: "flex-end" });
 
   const createBtn = document.createElement("button");
-  createBtn.textContent = "Create";
-  createBtn.title = "创建会话";
+  createBtn.textContent = t("ui.create", "Create");
+  createBtn.title = t("ui.create", "创建会话");
   Object.assign(createBtn.style, {
     border: "1px solid var(--border)",
     borderRadius: "4px",
@@ -219,7 +228,7 @@ export function installTerminalManagerPanel() {
   });
 
   const refreshBtn = document.createElement("button");
-  refreshBtn.textContent = "Refresh";
+  refreshBtn.textContent = t("ui.refresh", "Refresh");
   Object.assign(refreshBtn.style, {
     border: "1px solid var(--border)",
     borderRadius: "4px",
@@ -260,7 +269,7 @@ export function installTerminalManagerPanel() {
 
     if (arr.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "No sessions";
+      empty.textContent = t("ui.noSessions", "No sessions");
       Object.assign(empty.style, { fontSize: "11px", opacity: "0.6", textAlign: "center", padding: "6px" });
       list.appendChild(empty);
       return;
@@ -315,7 +324,7 @@ export function installTerminalManagerPanel() {
 
       const activeMark = document.createElement("span");
       const isActive = activeId && s.id && activeId === s.id;
-      activeMark.textContent = isActive ? "✓ Active" : "";
+      activeMark.textContent = isActive ? `✓ ${t("ui.current", "Active")}` : "";
       Object.assign(activeMark.style, {
         fontSize: "10px",
         opacity: isActive ? "0.85" : "0",
@@ -361,11 +370,11 @@ export function installTerminalManagerPanel() {
         const conn = `${user ? user + "@" : ""}${host}${host ? ":" + port : ""}`;
         details.appendChild(mkDetail("SSH", conn || "(not set)"));
       } else {
-        details.appendChild(mkDetail("Type", "local"));
+        details.appendChild(mkDetail(t("ui.type", "Type"), t("ui.local", "local")));
       }
-      details.appendChild(mkDetail("CWD", String(s.cwd || "") || "(unknown)"));
+      details.appendChild(mkDetail("CWD", String(s.cwd || "") || `(${t("ui.unknown", "unknown")})`));
       const fa = formatLastActivity(s.last_activity);
-      details.appendChild(mkDetail("Last Activity", fa.text || "(unknown)", fa.title));
+      details.appendChild(mkDetail("Last Activity", fa.text || `(${t("ui.unknown", "unknown")})`, fa.title));
       card.appendChild(details);
 
       // Actions: Set Active / Reactivate / Close / CWD input + Apply
@@ -374,9 +383,9 @@ export function installTerminalManagerPanel() {
 
       const btnActive = document.createElement("button");
       btnActive.type = "button";
-      btnActive.title = "Set Active Session";
-      btnActive.setAttribute("aria-label", "Set Active Session");
-      btnActive.textContent = "Set Active";
+      btnActive.title = t("ui.current", "Set Active Session");
+      btnActive.setAttribute("aria-label", t("ui.current", "Set Active Session"));
+      btnActive.textContent = t("ui.current", "Set Active");
       Object.assign(btnActive.style, {
         border: "1px solid var(--border)",
         borderRadius: "4px",
@@ -396,9 +405,9 @@ export function installTerminalManagerPanel() {
       const isSsh = (s.type || "local") === "ssh";
       const btnReactivate = document.createElement("button");
       btnReactivate.type = "button";
-      btnReactivate.title = "Reactivate Session (reconnect SSH)";
-      btnReactivate.setAttribute("aria-label", "Reactivate Session");
-      btnReactivate.textContent = "🔄 Reactivate";
+      btnReactivate.title = t("ui.reconnect", "Reactivate Session (reconnect SSH)");
+      btnReactivate.setAttribute("aria-label", t("ui.reconnect", "Reactivate Session"));
+      btnReactivate.textContent = `🔄 ${t("ui.reconnect", "Reactivate")}`;
       btnReactivate.style.display = isSsh ? "inline-block" : "none";
       Object.assign(btnReactivate.style, {
         border: "1px solid var(--border)",
@@ -416,9 +425,9 @@ export function installTerminalManagerPanel() {
 
       const btnClose = document.createElement("button");
       btnClose.type = "button";
-      btnClose.title = "Close Session";
-      btnClose.setAttribute("aria-label", "Close Session");
-      btnClose.textContent = "Close";
+      btnClose.title = t("ui.closeSession", "Close Session");
+      btnClose.setAttribute("aria-label", t("ui.closeSession", "Close Session"));
+      btnClose.textContent = t("ui.closeSession", "Close");
       Object.assign(btnClose.style, {
         border: "1px solid var(--border)",
         borderRadius: "4px",
@@ -435,7 +444,7 @@ export function installTerminalManagerPanel() {
 
       const cwdInp = document.createElement("input");
       cwdInp.type = "text";
-      cwdInp.placeholder = "Set CWD…";
+      cwdInp.placeholder = t("ui.cwd", "Set CWD...");
       cwdInp.value = String(s.cwd || "");
       Object.assign(cwdInp.style, {
         flex: "1",
@@ -454,9 +463,9 @@ export function installTerminalManagerPanel() {
 
       const btnApply = document.createElement("button");
       btnApply.type = "button";
-      btnApply.title = "Apply CWD";
-      btnApply.setAttribute("aria-label", "Apply CWD");
-      btnApply.textContent = "Apply CWD";
+      btnApply.title = t("ui.updateCwd", "Apply CWD");
+      btnApply.setAttribute("aria-label", t("ui.updateCwd", "Apply CWD"));
+      btnApply.textContent = t("ui.updateCwd", "Apply CWD");
       Object.assign(btnApply.style, {
         border: "1px solid var(--border)",
         borderRadius: "4px",
@@ -599,10 +608,10 @@ export function installTerminalManagerPanel() {
         window.zion?.state?.set("terminal.sessions", listArr);
         renderList(listArr);
       } else {
-        alert("Reactivate failed: " + (data?.error || "Unknown error"));
+        alert(t("msg.reconnectFailedWithError", "Reactivate failed: {message}", { message: data?.error || "Unknown error" }));
       }
     } catch (e) {
-      alert("Reactivate error: " + (e?.message || String(e)));
+      alert(t("msg.reconnectFailedWithError", "Reactivate error: {message}", { message: e?.message || String(e) }));
     }
   }
 
@@ -643,7 +652,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
   });
 
   const title = document.createElement("div");
-  title.textContent = "终端会话";
+  title.textContent = t("ui.sessions", "终端会话");
   Object.assign(title.style, {
     fontSize: "15px",
     fontWeight: "600",
@@ -651,7 +660,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
   });
 
   const summary = document.createElement("div");
-  summary.textContent = "正在读取会话…";
+  summary.textContent = t("ui.loading", "正在读取会话...");
   Object.assign(summary.style, {
     fontSize: "11px",
     lineHeight: "1.5",
@@ -693,8 +702,8 @@ export function mountTerminalManagerSidebarViewInto(container) {
     return btn;
   };
 
-  const createToggleBtn = makeButton("新建终端", true);
-  const refreshBtn = makeButton("刷新");
+  const createToggleBtn = makeButton(t("ui.newTerminal", "新建终端"), true);
+  const refreshBtn = makeButton(t("ui.refresh", "刷新"));
   toolbarActions.appendChild(createToggleBtn);
   toolbarActions.appendChild(refreshBtn);
 
@@ -713,7 +722,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
   cbCtx.type = "checkbox";
   cbCtx.style.margin = "0";
   const spanCtx = document.createElement("span");
-  spanCtx.textContent = "在对话中注入终端上下文";
+  spanCtx.textContent = t("ui.injectContext", "在对话中注入终端上下文");
   ctxWrap.appendChild(cbCtx);
   ctxWrap.appendChild(spanCtx);
   try {
@@ -777,7 +786,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
   typeWrap.style.flexDirection = "column";
   typeWrap.style.gap = "4px";
   const typeLb = document.createElement("span");
-  typeLb.textContent = "Type";
+  typeLb.textContent = t("ui.type", "Type");
   Object.assign(typeLb.style, { fontSize: "10px", opacity: "0.62", textTransform: "uppercase", letterSpacing: "0.03em" });
   const typeSel = document.createElement("select");
   ["local", "ssh"].forEach((v) => {
@@ -801,11 +810,11 @@ export function mountTerminalManagerSidebarViewInto(container) {
   typeWrap.appendChild(typeLb);
   typeWrap.appendChild(typeSel);
 
-  const sshUser = mkInput("SSH User", "root");
-  const sshHost = mkInput("SSH Host (or alias)", "e.g., las-dev");
-  sshHost.inp.title = "You can use SSH config alias (e.g., las-dev) or direct hostname (e.g., 101.126.47.38)";
-  const sshPort = mkInput("SSH Port", "22", "number");
-  const initialCwd = mkInput("Initial CWD", "/");
+  const sshUser = mkInput(t("ui.sshUser", "SSH User"), "root");
+  const sshHost = mkInput(t("ui.sshHost", "SSH Host (or alias)"), "e.g., las-dev");
+  sshHost.inp.title = t("ui.sshHostTitle", "You can use SSH config alias (e.g., las-dev) or direct hostname (e.g., 101.126.47.38)");
+  const sshPort = mkInput(t("ui.sshPort", "SSH Port"), "22", "number");
+  const initialCwd = mkInput(t("ui.initialCwd", "Initial CWD"), "/");
 
   form.appendChild(typeWrap);
   form.appendChild(initialCwd.wrap);
@@ -816,8 +825,8 @@ export function mountTerminalManagerSidebarViewInto(container) {
   const btns = document.createElement("div");
   Object.assign(btns.style, { display: "flex", gap: "8px", justifyContent: "flex-end", flexWrap: "wrap" });
 
-  const createBtn = makeButton("创建终端", true);
-  const cancelCreateBtn = makeButton("取消");
+  const createBtn = makeButton(t("ui.create", "创建终端"), true);
+  const cancelCreateBtn = makeButton(t("ui.cancel", "取消"));
 
   btns.appendChild(createBtn);
   btns.appendChild(cancelCreateBtn);
@@ -872,14 +881,14 @@ export function mountTerminalManagerSidebarViewInto(container) {
       const host = String(s?.ssh_host || "").trim();
       const user = String(s?.ssh_user || "").trim();
       if (host) return `${user ? `${user}@` : ""}${host}`;
-      return "SSH 会话";
+      return t("ui.sshSession", "SSH 会话");
     }
-    return basename(s?.cwd) || "本地终端";
+    return basename(s?.cwd) || t("ui.localTerminal", "本地终端");
   }
 
   function sessionMeta(s) {
-    const type = (s?.type || "local") === "ssh" ? "SSH" : "Local";
-    const cwd = shortPath(s?.cwd) || "未设置工作目录";
+    const type = (s?.type || "local") === "ssh" ? "SSH" : t("ui.local", "Local");
+    const cwd = shortPath(s?.cwd) || t("ui.cwdUnset", "未设置工作目录");
     const fa = formatLastActivity(s?.last_activity);
     return { text: `${type} · ${cwd} · ${fa.text || "(unknown)"}`, title: fa.title || String(s?.cwd || "") };
   }
@@ -900,7 +909,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
   }
 
   function formatLastActivity(val) {
-    if (val == null) return { text: "(unknown)", title: "" };
+    if (val == null) return { text: `(${t("ui.unknown", "unknown")})`, title: "" };
 
     let ts = null;
     if (typeof val === "number") {
@@ -917,13 +926,13 @@ export function mountTerminalManagerSidebarViewInto(container) {
       ts = val.getTime();
     }
 
-    if (ts == null) return { text: "(unknown)", title: "" };
+    if (ts == null) return { text: `(${t("ui.unknown", "unknown")})`, title: "" };
 
     const d = new Date(ts);
     const diffMs = Date.now() - d.getTime();
     const sec = Math.floor(diffMs / 1000);
     let text;
-    if (sec < 10) text = "just now";
+    if (sec < 10) text = t("ui.justNow", "just now");
     else if (sec < 60) text = `${sec}s ago`;
     else if (sec < 3600) text = `${Math.floor(sec / 60)}m ago`;
     else if (sec < 86400) text = `${Math.floor(sec / 3600)}h ago`;
@@ -941,7 +950,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
 
   function syncCreateVisibility() {
     form.style.display = createExpanded ? "grid" : "none";
-    createToggleBtn.textContent = createExpanded ? "收起新建" : "新建终端";
+    createToggleBtn.textContent = createExpanded ? t("ui.collapseNew", "收起新建") : t("ui.newTerminal", "新建终端");
     const isSsh = typeSel.value === "ssh";
     sshUser.wrap.style.display = isSsh ? "flex" : "none";
     sshHost.wrap.style.display = isSsh ? "flex" : "none";
@@ -953,12 +962,12 @@ export function mountTerminalManagerSidebarViewInto(container) {
     const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
     const active = arr.find((item) => item?.id && item.id === activeId) || null;
     if (!arr.length) {
-      summary.textContent = "还没有终端会话。可以先新建一个本地终端。";
+      summary.textContent = t("ui.noSessionsSummary", "还没有终端会话。可以先新建一个本地终端。");
       return;
     }
     summary.textContent = active
-      ? `共 ${arr.length} 个会话，当前使用 ${sessionTitle(active)}。`
-      : `共 ${arr.length} 个会话，还没有当前终端。`;
+      ? t("ui.summaryActive", "共 {count} 个会话，当前使用 {name}。", { count: arr.length, name: sessionTitle(active) })
+      : t("ui.summaryNoActive", "共 {count} 个会话，还没有当前终端。", { count: arr.length });
   }
 
   function updateSelectedStyles() {
@@ -986,7 +995,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       const res = await fetch(`${base}/sessions/${encodeURIComponent(sid)}`, { method: "DELETE" });
       await res.json().catch(() => null);
       if (!res.ok) {
-        showMessage("关闭终端失败，请稍后再试。", "error");
+        showMessage(t("msg.closeFailed", "关闭终端失败，请稍后再试。"), "error");
         return;
       }
       const listArr = (window.zion?.state?.get("terminal.sessions") || []).filter((s) => s?.id !== sid);
@@ -996,7 +1005,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       if (selectedId === sid) selectedId = null;
       renderList(listArr);
     } catch (e) {
-      showMessage(`关闭终端失败：${e?.message || String(e)}`, "error");
+      showMessage(t("msg.closeFailedWithError", "关闭终端失败：{message}", { message: e?.message || String(e) }), "error");
     }
   }
 
@@ -1011,7 +1020,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       });
       await res.json().catch(() => null);
       if (!res.ok) {
-        showMessage("更新工作目录失败，请稍后再试。", "error");
+        showMessage(t("msg.cwdFailed", "更新工作目录失败，请稍后再试。"), "error");
         return;
       }
       const listArr = (window.zion?.state?.get("terminal.sessions") || []).slice();
@@ -1024,7 +1033,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       window.zion?.state?.set("terminal.sessions", listArr);
       renderList(listArr);
     } catch (e) {
-      showMessage(`更新工作目录失败：${e?.message || String(e)}`, "error");
+      showMessage(t("msg.cwdFailedWithError", "更新工作目录失败：{message}", { message: e?.message || String(e) }), "error");
     }
   }
 
@@ -1045,12 +1054,12 @@ export function mountTerminalManagerSidebarViewInto(container) {
         }
         window.zion?.state?.set("terminal.sessions", listArr);
         renderList(listArr);
-        showMessage("已重新连接终端会话。");
+        showMessage(t("msg.reconnected", "已重新连接终端会话。"));
       } else {
-        showMessage("重新连接失败，请稍后再试。", "error");
+        showMessage(t("msg.reconnectFailed", "重新连接失败，请稍后再试。"), "error");
       }
     } catch (e) {
-      showMessage(`重新连接失败：${e?.message || String(e)}`, "error");
+      showMessage(t("msg.reconnectFailedWithError", "重新连接失败：{message}", { message: e?.message || String(e) }), "error");
     }
   }
 
@@ -1063,7 +1072,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
 
     if (arr.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "还没有终端会话。点击“新建终端”创建一个本地会话。";
+      empty.textContent = t("ui.noSessions", "还没有终端会话。点击“新建终端”创建一个本地会话。");
       Object.assign(empty.style, {
         fontSize: "12px",
         lineHeight: "1.5",
@@ -1173,7 +1182,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       const isActive = activeId && s.id && activeId === s.id;
       if (isActive) {
         const current = document.createElement("span");
-        current.textContent = "当前";
+        current.textContent = t("ui.current", "当前");
         Object.assign(current.style, {
           fontSize: "10px",
           lineHeight: "1.2",
@@ -1190,7 +1199,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
 
       const moreBtn = document.createElement("button");
       moreBtn.type = "button";
-      moreBtn.textContent = expandedId === s.id ? "收起" : "更多";
+      moreBtn.textContent = expandedId === s.id ? t("ui.collapse", "收起") : t("ui.more", "更多");
       Object.assign(moreBtn.style, {
         border: "none",
         background: "transparent",
@@ -1240,7 +1249,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
 
         const cwdInp = document.createElement("input");
         cwdInp.type = "text";
-        cwdInp.placeholder = "工作目录";
+        cwdInp.placeholder = t("ui.cwd", "工作目录");
         cwdInp.value = String(s.cwd || "");
         Object.assign(cwdInp.style, {
           width: "100%",
@@ -1256,12 +1265,12 @@ export function mountTerminalManagerSidebarViewInto(container) {
           minWidth: "0"
         });
 
-        const btnApply = makeButton("更新目录");
+        const btnApply = makeButton(t("ui.updateCwd", "更新目录"));
         btnApply.addEventListener("click", async () => {
           const cwd = cwdInp.value.trim();
           if (!cwd) return;
           await applyCwdTo(s.id, cwd);
-          showMessage("已更新工作目录。");
+          showMessage(t("msg.cwdUpdated", "已更新工作目录。"));
         });
         cwdRow.appendChild(cwdInp);
         cwdRow.appendChild(btnApply);
@@ -1275,7 +1284,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
           flexWrap: "wrap"
         });
 
-        const openBtn = makeButton("打开终端");
+        const openBtn = makeButton(t("ui.openTerminal", "打开终端"));
         openBtn.addEventListener("click", async () => {
           setActiveSession(s.id);
           try { await window.zion.commands.executeCommand("terminal.openPanel"); } catch {}
@@ -1283,17 +1292,17 @@ export function mountTerminalManagerSidebarViewInto(container) {
         actions.appendChild(openBtn);
 
         if ((s.type || "local") === "ssh" && s.active === false) {
-          const reactivateBtn = makeButton("重新连接");
+          const reactivateBtn = makeButton(t("ui.reconnect", "重新连接"));
           reactivateBtn.addEventListener("click", async () => {
             await reactivateSession(s.id);
           });
           actions.appendChild(reactivateBtn);
         }
 
-        const closeBtn = makeButton("关闭会话");
+        const closeBtn = makeButton(t("ui.closeSession", "关闭会话"));
         closeBtn.addEventListener("click", async () => {
           await closeSession(s.id);
-          showMessage("已关闭终端会话。");
+          showMessage(t("msg.closed", "已关闭终端会话。"));
         });
         actions.appendChild(closeBtn);
 
@@ -1313,7 +1322,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       const res = await fetch(`${base}/sessions`, { method: "GET" });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        showMessage("刷新终端列表失败。", "error");
+        showMessage(t("msg.refreshFailed", "刷新终端列表失败。"), "error");
         return;
       }
       const arr = data?.sessions || [];
@@ -1321,7 +1330,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       renderList(arr);
       showMessage("");
     } catch (e) {
-      showMessage(`刷新终端列表失败：${e?.message || String(e)}`, "error");
+      showMessage(t("msg.refreshFailedWithError", "刷新终端列表失败：{message}", { message: e?.message || String(e) }), "error");
     }
   }
 
@@ -1342,7 +1351,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        showMessage("创建终端失败，请检查填写内容。", "error");
+        showMessage(t("msg.createFailed", "创建终端失败，请检查填写内容。"), "error");
         return;
       }
       selectedId = data?.session?.id || null;
@@ -1354,9 +1363,9 @@ export function mountTerminalManagerSidebarViewInto(container) {
       createExpanded = false;
       syncCreateVisibility();
       renderList(listArr);
-      showMessage("终端已创建，并设为当前会话。");
+      showMessage(t("msg.created", "终端已创建，并设为当前会话。"));
     } catch (e) {
-      showMessage(`创建终端失败：${e?.message || String(e)}`, "error");
+      showMessage(t("msg.createFailedWithError", "创建终端失败：{message}", { message: e?.message || String(e) }), "error");
     }
   }
 
@@ -1371,6 +1380,22 @@ export function mountTerminalManagerSidebarViewInto(container) {
   typeSel.addEventListener("change", syncCreateVisibility);
   createBtn.addEventListener("click", create);
   refreshBtn.addEventListener("click", refresh);
+
+  function refreshI18n() {
+    title.textContent = t("ui.sessions", "终端会话");
+    spanCtx.textContent = t("ui.injectContext", "在对话中注入终端上下文");
+    typeLb.textContent = t("ui.type", "Type");
+    try { sshUser.wrap.querySelector("span").textContent = t("ui.sshUser", "SSH User"); } catch {}
+    try { sshHost.wrap.querySelector("span").textContent = t("ui.sshHost", "SSH Host (or alias)"); } catch {}
+    try { sshPort.wrap.querySelector("span").textContent = t("ui.sshPort", "SSH Port"); } catch {}
+    try { initialCwd.wrap.querySelector("span").textContent = t("ui.initialCwd", "Initial CWD"); } catch {}
+    sshHost.inp.title = t("ui.sshHostTitle", "You can use SSH config alias (e.g., las-dev) or direct hostname (e.g., 101.126.47.38)");
+    createBtn.textContent = t("ui.create", "创建终端");
+    cancelCreateBtn.textContent = t("ui.cancel", "取消");
+    refreshBtn.textContent = t("ui.refresh", "刷新");
+    syncCreateVisibility();
+    renderList(currentItems);
+  }
 
   syncCreateVisibility();
 
@@ -1399,6 +1424,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       cbCtx.checked = nv !== false;
     } catch {}
   });
+  const disp4 = window.zion?.events?.on?.("i18n/changed", refreshI18n);
 
   void refresh();
 
@@ -1412,6 +1438,9 @@ export function mountTerminalManagerSidebarViewInto(container) {
       } catch {}
       try {
         disp3?.dispose?.();
+      } catch {}
+      try {
+        disp4?.dispose?.();
       } catch {}
       try {
         root.remove();
