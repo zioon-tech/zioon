@@ -21,6 +21,15 @@ export function createSessionsListRendererFactory(deps) {
     moveNode
   } = deps || {};
 
+  function t(key, fallback, values) {
+    const fullKey = `dev.session-manager.${key}`;
+    try {
+      const translated = window.zion?.i18n?.t?.(fullKey, values);
+      if (translated && translated !== fullKey) return translated;
+    } catch {}
+    return fallback;
+  }
+
   return function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, onSwitchSession, onAfterChange, viewId = null }) {
     const getEffectiveCurrentSessionId = () => {
       try {
@@ -118,7 +127,7 @@ export function createSessionsListRendererFactory(deps) {
 
       const lbl = document.createElement("span");
       lbl.className = "zion-inline-confirm-label";
-      lbl.textContent = String(label || "Delete?");
+      lbl.textContent = String(label || t("ui.deleteConfirm", "Delete?"));
 
       const actions = document.createElement("span");
       actions.className = "zion-inline-confirm-actions";
@@ -126,7 +135,7 @@ export function createSessionsListRendererFactory(deps) {
       const cancel = document.createElement("button");
       cancel.type = "button";
       cancel.className = "zion-inline-confirm-btn";
-      cancel.textContent = "Cancel";
+      cancel.textContent = t("ui.cancel", "Cancel");
       cancel.onclick = (e) => {
         try { e.stopPropagation(); } catch {}
         if (typeof onCancel === "function") onCancel();
@@ -135,7 +144,7 @@ export function createSessionsListRendererFactory(deps) {
       const del = document.createElement("button");
       del.type = "button";
       del.className = "zion-inline-confirm-btn danger";
-      del.textContent = "Delete";
+      del.textContent = t("ui.delete", "Delete");
       del.onclick = (e) => {
         try { e.stopPropagation(); } catch {}
         if (typeof onConfirm === "function") onConfirm();
@@ -415,7 +424,7 @@ export function createSessionsListRendererFactory(deps) {
           return it;
         };
 
-        menu.appendChild(mkItem("Open in New Tab", () => {
+        menu.appendChild(mkItem(t("ui.openNewTab", "Open in New Tab"), () => {
           const u = buildSessionURL(item.id);
           const a = document.createElement("a");
           a.href = u;
@@ -424,24 +433,24 @@ export function createSessionsListRendererFactory(deps) {
           a.click();
         }));
 
-        menu.appendChild(mkItem("Rename", () => {
+        menu.appendChild(mkItem(t("ui.rename", "Rename"), () => {
           pendingEdit = { id: item.id, type: "session" };
           render();
         }));
-        menu.appendChild(mkItem("Auto Rename", async () => {
+        menu.appendChild(mkItem(t("ui.autoRename", "Auto Rename"), async () => {
           try { await window.zion.commands.executeCommand("zion.sessions.autoRename", { id: item.id }); } catch {}
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }));
-        menu.appendChild(mkItem("Clone", () => {
+        menu.appendChild(mkItem(t("ui.clone", "Clone"), () => {
           window.zion.commands.executeCommand("zion.sessions.clone", item.id);
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }));
-        menu.appendChild(mkItem("Export", () => {
+        menu.appendChild(mkItem(t("ui.export", "Export"), () => {
           window.zion.commands.executeCommand("zion.sessions.export", item.id);
         }));
-        menu.appendChild(mkItem("Delete", () => {
+        menu.appendChild(mkItem(t("ui.delete", "Delete"), () => {
           pendingConfirm = { id: item.id, type: "session" };
           render();
         }));
@@ -476,12 +485,12 @@ export function createSessionsListRendererFactory(deps) {
           return it;
         };
 
-        menu.appendChild(mkItem("New Session", () => {
+        menu.appendChild(mkItem(t("cmd.new", "New Session"), () => {
           window.zion.commands.executeCommand("zion.sessions.new", { parentId: folder.id });
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }));
-        menu.appendChild(mkItem("New Folder", () => {
+        menu.appendChild(mkItem(t("ui.newFolder", "New Folder"), () => {
           try {
             try { setFolderOpen(folder.id, true); } catch {}
             window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id, targetView: viewId });
@@ -490,14 +499,14 @@ export function createSessionsListRendererFactory(deps) {
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }));
-        menu.appendChild(mkItem("Rename Folder", () => {
+        menu.appendChild(mkItem(t("ui.renameFolder", "Rename Folder"), () => {
           pendingEdit = { id: folder.id, type: "folder" };
           render();
         }));
-        menu.appendChild(mkItem("Export Folder", () => {
+        menu.appendChild(mkItem(t("ui.exportFolder", "Export Folder"), () => {
           window.zion.commands.executeCommand("zion.sessions.exportFolder", folder.id);
         }));
-        menu.appendChild(mkItem("Delete Folder", () => {
+        menu.appendChild(mkItem(t("ui.deleteFolder", "Delete Folder"), () => {
           pendingConfirm = { id: folder.id, type: "folder" };
           render();
         }));
@@ -530,12 +539,12 @@ export function createSessionsListRendererFactory(deps) {
           return it;
         };
 
-        menu.appendChild(mkItem("New Session", () => {
+        menu.appendChild(mkItem(t("cmd.new", "New Session"), () => {
           window.zion.commands.executeCommand("zion.sessions.new", { parentId: "root" });
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }));
-        menu.appendChild(mkItem("New Folder", () => {
+        menu.appendChild(mkItem(t("ui.newFolder", "New Folder"), () => {
           try {
             window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: "root", targetView: viewId });
           } catch {}
@@ -543,17 +552,17 @@ export function createSessionsListRendererFactory(deps) {
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }));
-        menu.appendChild(mkItem("Import Sessions", () => {
+        menu.appendChild(mkItem(t("ui.import", "Import Sessions"), () => {
           window.zion.commands.executeCommand("zion.sessions.import");
         }));
-        menu.appendChild(mkItem("Export All Sessions", () => {
+        menu.appendChild(mkItem(t("ui.exportAll", "Export All Sessions"), () => {
           window.zion.commands.executeCommand("zion.sessions.export");
         }));
         if (getSelection().length > 0) {
-          menu.appendChild(mkItem("Export Selected", () => {
+          menu.appendChild(mkItem(t("ui.exportSelected", "Export Selected"), () => {
             window.zion.commands.executeCommand("zion.sessions.exportSelected");
           }));
-          menu.appendChild(mkItem("Delete Selected", () => {
+          menu.appendChild(mkItem(t("dialog.deleteSelected", "Delete Selected"), () => {
             window.zion.commands.executeCommand("zion.sessions.deleteSelected");
             if (typeof onAfterChange === "function") onAfterChange();
             render();
@@ -590,17 +599,17 @@ export function createSessionsListRendererFactory(deps) {
 
         const count = getSelection().length;
         const title = document.createElement("div");
-        title.textContent = `${count} Selected`;
+        title.textContent = t("ui.selectedCount", "{count} Selected", { count });
         title.style.padding = "6px 16px";
         title.style.fontSize = "12px";
         title.style.opacity = "0.7";
         title.style.pointerEvents = "none";
         menu.appendChild(title);
 
-        menu.appendChild(mkItem("Export Selected", () => {
+        menu.appendChild(mkItem(t("ui.exportSelected", "Export Selected"), () => {
           window.zion.commands.executeCommand("zion.sessions.exportSelected");
         }));
-        menu.appendChild(mkItem("Delete Selected", () => {
+        menu.appendChild(mkItem(t("dialog.deleteSelected", "Delete Selected"), () => {
           window.zion.commands.executeCommand("zion.sessions.deleteSelected");
           if (typeof onAfterChange === "function") onAfterChange();
           render();
@@ -670,7 +679,7 @@ export function createSessionsListRendererFactory(deps) {
 
         const bNewSession = mkIconBtn(
           '<span class="codicon codicon-add" aria-hidden="true"></span>',
-          "New session here",
+          t("ui.newSessionHere", "New session here"),
           (ev) => {
             ev.stopPropagation();
             window.zion.commands.executeCommand("zion.sessions.new", { parentId: folder.id });
@@ -680,7 +689,7 @@ export function createSessionsListRendererFactory(deps) {
         );
         const bNewFolder = mkIconBtn(
           '<span class="codicon codicon-new-folder" aria-hidden="true"></span>',
-          "New folder here",
+          t("ui.newFolderHere", "New folder here"),
           (ev) => {
             ev.stopPropagation();
             try {
@@ -695,7 +704,7 @@ export function createSessionsListRendererFactory(deps) {
 
         const bMore = mkIconBtn(
           '<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="4" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="12" cy="8" r="1.5" fill="currentColor"/></svg>',
-          "Folder actions",
+          t("ui.folderActions", "Folder actions"),
           (ev) => {
             ev.stopPropagation();
             const isOpen = folderMenu.style.display === "block";
@@ -862,7 +871,7 @@ export function createSessionsListRendererFactory(deps) {
             row,
             titleEl: ttl,
             initialValue: folder.title || "Folder",
-            placeholder: "Folder name",
+            placeholder: t("ui.folderName", "Folder name"),
             onCommit: (title) => {
               window.zion.commands.executeCommand("zion.sessions.renameFolder", { id: folderPendingEdit.id, title });
               if (typeof onAfterChange === "function") onAfterChange();
@@ -886,7 +895,7 @@ export function createSessionsListRendererFactory(deps) {
             bMore.style.opacity = "0";
             mountInlineConfirm({
               row,
-              label: "Delete folder?",
+              label: t("ui.deleteFolderConfirm", "Delete folder?"),
               onCancel: () => {
                 pendingConfirm = null;
                 render();
@@ -1006,7 +1015,7 @@ export function createSessionsListRendererFactory(deps) {
               titleLine.appendChild(ttl2);
 
               const meta = loadMeta(ch.id);
-              srow.title = `Updated: ${fmtTime(meta?.updatedAt || now())} · ${meta?.size || 0} chars`;
+              srow.title = `${t("ui.updated", "Updated")}: ${fmtTime(meta?.updatedAt || now())} · ${t("ui.chars", "{count} chars", { count: meta?.size || 0 })}`;
 
               labelWrap2.append(titleLine);
 
@@ -1028,7 +1037,7 @@ export function createSessionsListRendererFactory(deps) {
 
               const bOpenNewTab = mkIconBtn(
                 '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 4H4.5A1.5 1.5 0 0 0 3 5.5v6A1.5 1.5 0 0 0 4.5 13h6A1.5 1.5 0 0 0 12 11.5V10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9 3h4v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3L8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-                "Open in new tab",
+                t("ui.openNewTab", "Open in new tab"),
                 (ev) => {
                   ev.stopPropagation();
                   const u = buildSessionURL(ch.id);
@@ -1043,7 +1052,7 @@ export function createSessionsListRendererFactory(deps) {
 
               const bMore2 = mkIconBtn(
                 '<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="4" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="12" cy="8" r="1.5" fill="currentColor"/></svg>',
-                "More actions",
+                t("ui.moreActions", "More actions"),
                 (ev) => {
                   ev.stopPropagation();
                   const isOpen = sMenu.style.display === "block";
@@ -1134,7 +1143,7 @@ export function createSessionsListRendererFactory(deps) {
                 rightWrap.style.display = "none";
                 mountInlineConfirm({
                   row: srow,
-                  label: "Delete session?",
+                  label: t("ui.deleteSessionConfirm", "Delete session?"),
                   onCancel: () => {
                     pendingConfirm = null;
                     render();
@@ -1155,7 +1164,7 @@ export function createSessionsListRendererFactory(deps) {
                   row: srow,
                   titleEl: ttl2,
                   initialValue: ch.title || ch.id,
-                  placeholder: "Session title",
+                  placeholder: t("ui.sessionTitle", "Session title"),
                   onCommit: (title) => {
                     window.zion.commands.executeCommand("zion.sessions.rename", { id: pid.id, title });
                     if (typeof onAfterChange === "function") onAfterChange();
@@ -1266,7 +1275,7 @@ export function createSessionsListRendererFactory(deps) {
       listEl.appendChild(selectionContextMenu);
       if (!root || !Array.isArray(root.children) || root.children.length === 0) {
         const empty = document.createElement("div");
-        empty.textContent = "No sessions yet.";
+        empty.textContent = t("ui.noSessionsYet", "No sessions yet.");
         empty.style.opacity = "0.8";
         empty.style.fontSize = "12px";
         empty.style.padding = "8px 4px";

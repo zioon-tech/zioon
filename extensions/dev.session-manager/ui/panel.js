@@ -4,6 +4,15 @@ export function createSessionsPanelManager(opts) {
   const createSessionsListRenderer = opts?.createSessionsListRenderer;
   const refreshSessionsSidebarViewIfOpen = opts?.refreshSessionsSidebarViewIfOpen;
 
+  function t(key, fallback, values) {
+    const fullKey = `dev.session-manager.${key}`;
+    try {
+      const translated = zion?.i18n?.t?.(fullKey, values);
+      if (translated && translated !== fullKey) return translated;
+    } catch {}
+    return fallback;
+  }
+
   function open() {
     try {
       const existing = document.getElementById("zion-sessions-panel-overlay");
@@ -46,7 +55,7 @@ export function createSessionsPanelManager(opts) {
       titleWrap.style.gap = "8px";
 
       const title = document.createElement("div");
-      title.textContent = "Sessions";
+      title.textContent = t("ui.sessions", "Sessions");
       title.style.fontWeight = "500";
       title.style.fontSize = "12px";
 
@@ -60,8 +69,8 @@ export function createSessionsPanelManager(opts) {
       titleWrap.appendChild(count);
 
       const closeBtn = document.createElement("button");
-      closeBtn.setAttribute("aria-label", "Close sessions panel");
-      closeBtn.title = "Close";
+      closeBtn.setAttribute("aria-label", t("ui.closePanel", "Close sessions panel"));
+      closeBtn.title = t("ui.close", "Close");
       closeBtn.textContent = "×";
       closeBtn.style.background = "transparent";
       closeBtn.style.color = "var(--fg)";
@@ -85,8 +94,8 @@ export function createSessionsPanelManager(opts) {
       controls.style.marginBottom = "8px";
 
       const sortSelect = document.createElement("select");
-      sortSelect.setAttribute("aria-label", "Sort sessions");
-      sortSelect.title = "Sort";
+      sortSelect.setAttribute("aria-label", t("ui.sortSessions", "Sort sessions"));
+      sortSelect.title = t("ui.sort", "Sort");
       sortSelect.style.background = "var(--panel)";
       sortSelect.style.color = "var(--fg)";
       sortSelect.style.border = "1px solid var(--border)";
@@ -98,19 +107,19 @@ export function createSessionsPanelManager(opts) {
       const optUpdated = document.createElement("option");
       optUpdated.value = "updated";
       optUpdated.textContent = "🕒";
-      optUpdated.title = "Sort by updated (newest first)";
+      optUpdated.title = t("ui.sortUpdated", "Sort by updated (newest first)");
       const optTitle = document.createElement("option");
       optTitle.value = "title";
       optTitle.textContent = "Aa";
-      optTitle.title = "Sort by title (A→Z)";
+      optTitle.title = t("ui.sortTitle", "Sort by title (A to Z)");
       sortSelect.append(optUpdated, optTitle);
 
       const actions = document.createElement("div");
       actions.style.position = "relative";
       const actionBtn = document.createElement("button");
       actionBtn.innerHTML = "&#x22EE;";
-      actionBtn.title = "More actions";
-      actionBtn.setAttribute("aria-label", "More actions");
+      actionBtn.title = t("ui.moreActions", "More actions");
+      actionBtn.setAttribute("aria-label", t("ui.moreActions", "More actions"));
       actionBtn.style.background = "transparent";
       actionBtn.style.color = "var(--fg)";
       actionBtn.style.border = "none";
@@ -152,27 +161,27 @@ export function createSessionsPanelManager(opts) {
         return item;
       };
 
-      menu.appendChild(mkMenuItem("New Session", () => {
+      menu.appendChild(mkMenuItem(t("cmd.new", "New Session"), () => {
         const selFolder = zion.state.get("sessions.selectedFolderId") || "root";
         zion.commands.executeCommand("zion.sessions.new", { parentId: selFolder });
         setTimeout(() => { overlay.remove(); open(); }, 30);
       }));
-      menu.appendChild(mkMenuItem("New Folder", () => {
+      menu.appendChild(mkMenuItem(t("ui.newFolder", "New Folder"), () => {
         const selFolder = zion.state.get("sessions.selectedFolderId") || "root";
         zion.commands.executeCommand("zion.sessions.newFolder", { parentId: selFolder, targetView: "panel" });
         setTimeout(() => { overlay.remove(); open(); }, 30);
       }));
-      menu.appendChild(mkMenuItem("Import Sessions", () => {
+      menu.appendChild(mkMenuItem(t("ui.import", "Import Sessions"), () => {
         zion.commands.executeCommand("zion.sessions.import");
         setTimeout(() => { overlay.remove(); open(); }, 300);
       }));
-      menu.appendChild(mkMenuItem("Export All Sessions", () => {
+      menu.appendChild(mkMenuItem(t("ui.exportAll", "Export All Sessions"), () => {
         zion.commands.executeCommand("zion.sessions.export");
       }));
-      menu.appendChild(mkMenuItem("Export Selected", () => {
+      menu.appendChild(mkMenuItem(t("ui.exportSelected", "Export Selected"), () => {
         zion.commands.executeCommand("zion.sessions.exportSelected");
       }));
-      menu.appendChild(mkMenuItem("Delete Selected", () => {
+      menu.appendChild(mkMenuItem(t("dialog.deleteSelected", "Delete Selected"), () => {
         zion.commands.executeCommand("zion.sessions.deleteSelected");
         setTimeout(() => { overlay.remove(); open(); }, 30);
       }));
