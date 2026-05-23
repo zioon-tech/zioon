@@ -30,6 +30,12 @@
           "categoryKey": "dev.session-manager.category.sessions"
         },
         {
+          "id": "zion.sessions.renameInline",
+          "title": "Rename Session",
+          "titleKey": "dev.session-manager.cmd.rename",
+          "categoryKey": "dev.session-manager.category.sessions"
+        },
+        {
           "id": "zion.sessions.autoRename",
           "title": "AI Rename Session",
           "titleKey": "dev.session-manager.cmd.autoRename",
@@ -104,7 +110,7 @@
           "key": "Mod-r"
         },
         {
-          "command": "zion.sessions.rename",
+          "command": "zion.sessions.renameInline",
           "key": "Mod-Shift-r"
         }
       ]
@@ -114,6 +120,7 @@
       "onCommand:zion.sessions.showPanel",
       "onCommand:zion.sessions.toggleSidebar",
       "onCommand:zion.sessions.rename",
+      "onCommand:zion.sessions.renameInline",
       "onCommand:zion.sessions.autoRename"
     ],
     "engines": {

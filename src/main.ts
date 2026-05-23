@@ -20,6 +20,8 @@ import { createI18nManager } from "./i18n/i18nManager";
 // ---------- 自动保存 / 恢复 ----------
 const STORAGE_KEY = 'zion.autosave';
 const PANEL_WORKSPACE_STORAGE_KEY = "zion.panelWorkspace.v1";
+const EDITOR_PATH_RENAME_FALLBACK_KEY = "__fallback__";
+const editorPathInlineRenameHandlers = new Map<string, (opts?: any) => boolean>();
 
 /** 读回上次的内容 */
 function loadLastDoc(): string {
@@ -245,7 +247,13 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
     return parts.join(" / ");
   };
 
+  const computeTitle = (sessionId: string): string => {
+    const meta = window.zion.state.get<any>(`sessions.meta.${sessionId}`);
+    return String(meta?.title || "").trim() || sessionId;
+  };
+
   let metaDisp: Disposable | null = null;
+  let inlineRenaming = false;
   const resolveSessionId = () => {
     if (panelId) {
       return getPanelActiveSessionId(panelId) || null;
@@ -264,6 +272,7 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
   };
 
   const update = () => {
+    if (inlineRenaming) return;
     const id = resolveSessionId();
     if (!id) {
       pathEl.textContent = "";
@@ -275,8 +284,71 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
     pathEl.title = p;
   };
 
+  const startInlineRename = () => {
+    const id = resolveSessionId();
+    if (!id || inlineRenaming) return false;
+    inlineRenaming = true;
+    const originalTitle = computeTitle(id);
+    pathEl.classList.add("is-renaming");
+    pathEl.title = "Enter 保存，Esc 取消";
+    pathEl.textContent = "";
+
+    const form = document.createElement("form");
+    form.className = "zion-editor-session-path-rename";
+    const input = document.createElement("input");
+    input.className = "zion-editor-session-path-rename-input";
+    input.type = "text";
+    input.value = originalTitle;
+    input.placeholder = "Session title";
+    input.setAttribute("aria-label", "重命名会话");
+    form.appendChild(input);
+    pathEl.appendChild(form);
+
+    let done = false;
+    const finish = async (commit: boolean) => {
+      if (done) return;
+      done = true;
+      const nextTitle = input.value.trim();
+      inlineRenaming = false;
+      pathEl.classList.remove("is-renaming");
+      if (commit && nextTitle && nextTitle !== originalTitle) {
+        try {
+          await Promise.resolve(window.zion.commands.executeCommand("zion.sessions.rename", { id, title: nextTitle, panelId: panelId || null }));
+        } catch {}
+      }
+      update();
+    };
+
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      void finish(true);
+    };
+    input.onkeydown = (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        void finish(false);
+      }
+    };
+    input.onblur = () => {
+      void finish(true);
+    };
+
+    requestAnimationFrame(() => {
+      try {
+        input.focus();
+        input.select();
+      } catch {}
+    });
+    return true;
+  };
+
+  try {
+    editorPathInlineRenameHandlers.set(panelId || EDITOR_PATH_RENAME_FALLBACK_KEY, startInlineRename);
+  } catch {}
+
   try {
     pathEl.onclick = () => {
+      if (inlineRenaming) return;
       try {
         window.zion.commands.executeCommand("zion.sessions.toggleSidebar");
       } catch {}
@@ -1593,7 +1665,7 @@ function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement, panelId?: str
       addItem("Rename…", () => {
         try {
           const id = resolveHeaderSessionId();
-          window.zion.commands.executeCommand("zion.sessions.rename", { id, panelId: panelId || null });
+          window.zion.commands.executeCommand("zion.sessions.renameInline", { id, panelId: panelId || null });
         } catch {}
       });
       addItem("Auto Rename (AI)", () => {
@@ -3629,6 +3701,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     try { detachEditor(panelId); } catch {}
     try { closingCore?.dispose?.(); } catch {}
     panelCores.delete(panelId);
+    editorPathInlineRenameHandlers.delete(panelId);
     const nextActive = panelManager.getActivePanelId();
     setActiveEditorPanel(nextActive);
     schedulePanelWorkspacePersist();
@@ -3808,6 +3881,16 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     const prev = panels[(idx - 1 + panels.length) % panels.length];
     if (prev) panelManager.focusPanel(prev.id);
   });
+  window.zion.commands.registerCommand("zion.sessions.renameInline", (opts?: any) => {
+    const panelId = opts?.panelId || panelManager.getActivePanelId?.() || null;
+    const handler = (panelId && editorPathInlineRenameHandlers.get(panelId)) || editorPathInlineRenameHandlers.get(EDITOR_PATH_RENAME_FALLBACK_KEY);
+    if (handler?.(opts)) return true;
+    try {
+      return !!window.zion.commands.executeCommand("zion.sessions.rename", opts || {});
+    } catch {
+      return false;
+    }
+  });
 
   const PANEL_FOCUS_HIGHLIGHT_KEY = "zion.panelFocusHighlight";
   let panelFocusHighlightEnabled = (() => {
@@ -3909,7 +3992,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       const key = String(ev.key || "").toLowerCase();
       const code = String(ev.code || "");
       if (!ev.altKey && !ev.shiftKey && (key === "r" || code === "KeyR")) return handleEditorShortcut(ev, "zion.sessions.autoRename");
-      if (!ev.altKey && ev.shiftKey && (key === "r" || code === "KeyR")) return handleEditorShortcut(ev, "zion.sessions.rename");
+      if (!ev.altKey && ev.shiftKey && (key === "r" || code === "KeyR")) return handleEditorShortcut(ev, "zion.sessions.renameInline");
       if (!ev.altKey && !ev.shiftKey && (key === "t" || code === "KeyT")) return handleEditorShortcut(ev, "zion.sessions.new");
       if (!ev.altKey && !ev.shiftKey && (key === "w" || code === "KeyW")) return handleEditorShortcut(ev, "zion.editorTabs.closeActiveSession");
       if (!ev.altKey && ev.shiftKey && (code === "Comma" || key === "<")) return handleEditorShortcut(ev, "zion.editorTabs.prevSessionTab");
