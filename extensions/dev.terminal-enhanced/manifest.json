@@ -11,12 +11,12 @@
     "main": "./main.js",
     "contributes": {
       "commands": [
-        { "id": "terminal.openPanel", "title": "Open Terminal Panel" },
-        { "id": "terminal.togglePanel", "title": "Toggle Terminal Panel" },
-        { "id": "terminal.switchSession", "title": "Terminal: Switch Session", "description": "Open terminal session switcher", "category": "Terminal" },
-        { "id": "terminal.executeCommand", "title": "Execute Terminal Command" },
-        { "id": "terminal.quickCommand", "title": "Quick Command Selector" },
-        { "id": "terminal.toggleContext", "title": "Toggle Terminal Context in Chat" }
+        { "id": "terminal.openPanel", "title": "Open Terminal Panel", "titleKey": "dev.terminal-enhanced.cmd.openPanel", "categoryKey": "dev.terminal-enhanced.category.terminal" },
+        { "id": "terminal.togglePanel", "title": "Toggle Terminal Panel", "titleKey": "dev.terminal-enhanced.cmd.togglePanel", "categoryKey": "dev.terminal-enhanced.category.terminal" },
+        { "id": "terminal.switchSession", "title": "Terminal: Switch Session", "titleKey": "dev.terminal-enhanced.cmd.switchSession", "description": "Open terminal session switcher", "descriptionKey": "dev.terminal-enhanced.cmd.switchSession.description", "category": "Terminal", "categoryKey": "dev.terminal-enhanced.category.terminal" },
+        { "id": "terminal.executeCommand", "title": "Execute Terminal Command", "titleKey": "dev.terminal-enhanced.cmd.executeCommand", "categoryKey": "dev.terminal-enhanced.category.terminal" },
+        { "id": "terminal.quickCommand", "title": "Quick Command Selector", "titleKey": "dev.terminal-enhanced.cmd.quickCommand", "categoryKey": "dev.terminal-enhanced.category.terminal" },
+        { "id": "terminal.toggleContext", "title": "Toggle Terminal Context in Chat", "titleKey": "dev.terminal-enhanced.cmd.toggleContext", "categoryKey": "dev.terminal-enhanced.category.terminal" }
       ],
       "keybindings": [
         { "command": "terminal.openPanel", "key": "Mod-`" },

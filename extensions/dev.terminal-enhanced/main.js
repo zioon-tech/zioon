@@ -1,5 +1,72 @@
 import { installTerminalEnhancedPanel } from "./panel.js";
 
+const I18N_NS = "dev.terminal-enhanced";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.terminal": "终端",
+    "cmd.openPanel": "打开终端面板",
+    "cmd.togglePanel": "切换终端面板",
+    "cmd.switchSession": "终端：切换会话",
+    "cmd.switchSession.description": "打开终端会话切换器",
+    "cmd.executeCommand": "执行终端命令",
+    "cmd.quickCommand": "快速命令选择器",
+    "cmd.toggleContext": "切换对话中的终端上下文",
+    "ui.terminal": "终端",
+    "ui.noTerminal": "无终端",
+    "ui.local": "本地",
+    "ui.ssh": "SSH",
+    "ui.noSessions": "没有会话",
+    "ui.newLocalSession": "新建本地会话",
+    "ui.openManager": "打开终端管理器",
+    "ui.switchSession": "切换终端会话",
+    "ui.active": "当前",
+    "ui.none": "无",
+    "ui.clickOpenPanel": "点击打开终端面板",
+    "slash.commandPalette.title": "命令面板（终端）",
+    "slash.commandPalette.description": "打开终端快速命令选择器",
+    "slash.history.title": "终端历史",
+    "slash.history.description": "打开终端命令历史",
+    "slash.switch.title": "切换终端会话",
+    "slash.switch.description": "打开终端会话切换器"
+  },
+  "en-US": {
+    "category.terminal": "Terminal",
+    "cmd.openPanel": "Open Terminal Panel",
+    "cmd.togglePanel": "Toggle Terminal Panel",
+    "cmd.switchSession": "Terminal: Switch Session",
+    "cmd.switchSession.description": "Open terminal session switcher",
+    "cmd.executeCommand": "Execute Terminal Command",
+    "cmd.quickCommand": "Quick Command Selector",
+    "cmd.toggleContext": "Toggle Terminal Context in Chat",
+    "ui.terminal": "Terminal",
+    "ui.noTerminal": "No Terminal",
+    "ui.local": "Local",
+    "ui.ssh": "SSH",
+    "ui.noSessions": "No sessions",
+    "ui.newLocalSession": "New Local Session",
+    "ui.openManager": "Open Terminal Manager",
+    "ui.switchSession": "Switch terminal session",
+    "ui.active": "Active",
+    "ui.none": "None",
+    "ui.clickOpenPanel": "Click to open terminal panel",
+    "slash.commandPalette.title": "Command Palette (Terminal)",
+    "slash.commandPalette.description": "Open terminal quick command selector",
+    "slash.history.title": "Terminal History",
+    "slash.history.description": "Open terminal command history",
+    "slash.switch.title": "Switch Terminal Session",
+    "slash.switch.description": "Open terminal session switcher"
+  }
+};
+
+function t(key, fallback, values) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 /**
  * Read local tools base URL (shared convention with terminal-manager)
  */
@@ -249,6 +316,11 @@ async function ensureSessions() {
 }
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   try {
     const st = window.zion?.state;
     if (st && !Array.isArray(st.get("terminal.history"))) {
@@ -517,6 +589,7 @@ export async function activate(ctx) {
       id: VIEW_ID,
       pluginId: "dev.terminal-enhanced",
       title: "Terminal",
+      titleKey: "dev.terminal-enhanced.ui.terminal",
       icon: "⌨️",
       order: 10,
       keepWhenActive: true,
@@ -586,6 +659,7 @@ export async function activate(ctx) {
       id: AUX_VIEW_ID,
       pluginId: "dev.terminal-enhanced",
       title: "Terminal",
+      titleKey: "dev.terminal-enhanced.ui.terminal",
       icon: "⌨️",
       order: 30,
       keepWhenActive: true,
@@ -662,7 +736,7 @@ export async function activate(ctx) {
     };
 
     const getSessionDisplayName = (s) => {
-      if (!s || typeof s !== "object") return "Terminal";
+      if (!s || typeof s !== "object") return t("ui.terminal", "Terminal");
       const name = String(s.name || s.label || "").trim();
       if (name) return name;
       const type = String(s.type || "local").trim() || "local";
@@ -674,7 +748,7 @@ export async function activate(ctx) {
         const conn = `${user ? `${user}@` : ""}${host || "SSH"}`;
         return cwdBase ? `${conn} · ${cwdBase}` : conn;
       }
-      return cwdBase || "Local";
+      return cwdBase || t("ui.local", "Local");
     };
 
     const getInfoText = () => {
@@ -683,7 +757,7 @@ export async function activate(ctx) {
       const sessions = window.zion?.state?.get("terminal.sessions");
       const list = Array.isArray(sessions) ? sessions : [];
       const cur = list.find(s => s?.id === activeId) || null;
-      const name = cur ? getSessionDisplayName(cur) : "No Terminal";
+      const name = cur ? getSessionDisplayName(cur) : t("ui.noTerminal", "No Terminal");
       return name;
     };
 
@@ -761,7 +835,7 @@ export async function activate(ctx) {
       const list = Array.isArray(sessions) ? sessions : [];
       const activeId = String(window.zion?.state?.get("terminal.activeSessionId") || "");
       if (!list.length) {
-        addItem("No sessions", null, { disabled: true });
+        addItem(t("ui.noSessions", "No sessions"), null, { disabled: true });
         return;
       }
 
@@ -776,13 +850,13 @@ export async function activate(ctx) {
       }
 
       addDivider();
-      addItem("New Local Session", async () => {
+      addItem(t("ui.newLocalSession", "New Local Session"), async () => {
         try {
           await window.zion.commands.executeCommand("terminal.createSession", { type: "local" });
           await window.zion.commands.executeCommand("terminal.openPanel");
         } catch {}
       });
-      addItem("Open Terminal Manager", () => window.zion.commands.executeCommand("terminal.openManager"));
+      addItem(t("ui.openManager", "Open Terminal Manager"), () => window.zion.commands.executeCommand("terminal.openManager"));
     };
 
     const openMenu = async () => {
@@ -857,7 +931,7 @@ export async function activate(ctx) {
         triggerBtn = document.createElement("button");
         triggerBtn.type = "button";
         triggerBtn.className = "zion-terminal-bottombar-trigger";
-        triggerBtn.setAttribute("aria-label", "Switch terminal session");
+        triggerBtn.setAttribute("aria-label", t("ui.switchSession", "Switch terminal session"));
         triggerBtn.innerHTML = '<span class="codicon codicon-terminal" aria-hidden="true"></span>';
         triggerBtn.onclick = (e) => {
           try { e.stopPropagation(); } catch {}
@@ -889,11 +963,11 @@ export async function activate(ctx) {
         const cur = list.find(s => s?.id === activeId) || null;
         const cwd = cur?.cwd ? String(cur.cwd) : "";
         const disp = cur ? getSessionDisplayName(cur) : "";
-        if (infoBtn) infoBtn.title = `${disp || "Terminal"}\nActive: ${activeId || "None"}${cwd ? `\nCWD: ${cwd}` : ""}\n\nClick to open terminal panel`;
-        if (triggerBtn) triggerBtn.title = "Switch terminal session";
+        if (infoBtn) infoBtn.title = `${disp || t("ui.terminal", "Terminal")}\n${t("ui.active", "Active")}: ${activeId || t("ui.none", "None")}${cwd ? `\nCWD: ${cwd}` : ""}\n\n${t("ui.clickOpenPanel", "Click to open terminal panel")}`;
+        if (triggerBtn) triggerBtn.title = t("ui.switchSession", "Switch terminal session");
       } catch {
-        if (infoBtn) infoBtn.title = "Click to open terminal panel";
-        if (triggerBtn) triggerBtn.title = "Switch terminal session";
+        if (infoBtn) infoBtn.title = t("ui.clickOpenPanel", "Click to open terminal panel");
+        if (triggerBtn) triggerBtn.title = t("ui.switchSession", "Switch terminal session");
       }
       return wrap;
     };
@@ -925,8 +999,10 @@ export async function activate(ctx) {
 
     const sub1 = window.zion.state.onDidChange("terminal.activeSessionId", update);
     const sub2 = window.zion.state.onDidChange("terminal.sessions", update);
+    const sub3 = window.zion.events.on("i18n/changed", update);
     ctx.subscriptions.push({ dispose: () => { try { sub1.dispose?.(); } catch {} } });
     ctx.subscriptions.push({ dispose: () => { try { sub2.dispose?.(); } catch {} } });
+    ctx.subscriptions.push({ dispose: () => { try { sub3.dispose?.(); } catch {} } });
 
     ctx.subscriptions.push({
       dispose: () => {
@@ -969,9 +1045,9 @@ export async function activate(ctx) {
       const d1 = slash.registerCommand({
         id: "terminal.cmd",
         trigger: ["cmd"],
-        title: "Command Palette (Terminal)",
-        description: "Open terminal quick command selector",
-        category: "terminal",
+        title: t("slash.commandPalette.title", "Command Palette (Terminal)"),
+        description: t("slash.commandPalette.description", "Open terminal quick command selector"),
+        category: t("category.terminal", "terminal"),
         icon: "⌨️",
         priority: 95,
         execute: () => window.zion.commands.executeCommand("terminal.quickCommand")
@@ -979,9 +1055,9 @@ export async function activate(ctx) {
       const d2 = slash.registerCommand({
         id: "terminal.history",
         trigger: ["terminal-history", "term-history", "history"],
-        title: "Terminal History",
-        description: "Open terminal command history",
-        category: "terminal",
+        title: t("slash.history.title", "Terminal History"),
+        description: t("slash.history.description", "Open terminal command history"),
+        category: t("category.terminal", "terminal"),
         icon: "🕘",
         priority: 94,
         execute: () => window.zion.commands.executeCommand("terminal.openHistory")
@@ -989,9 +1065,9 @@ export async function activate(ctx) {
       const d3 = slash.registerCommand({
         id: "terminal.switchSession",
         trigger: ["term", "terminal", "switch", "ts"],
-        title: "Switch Terminal Session",
-        description: "Open terminal session switcher",
-        category: "terminal",
+        title: t("slash.switch.title", "Switch Terminal Session"),
+        description: t("slash.switch.description", "Open terminal session switcher"),
+        category: t("category.terminal", "terminal"),
         icon: "🔼",
         priority: 93,
         execute: () => window.zion.commands.executeCommand("terminal.switchSession")
