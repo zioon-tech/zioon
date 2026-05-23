@@ -1432,7 +1432,7 @@ html, body {
   gap: 4px;
   padding: 4px 6px 0;
   background: color-mix(in srgb, var(--editor-tabsbar-bg) 92%, var(--bg));
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 52%, transparent);
+  border-bottom: 0;
   color: var(--fg);
   box-sizing: border-box;
 }
