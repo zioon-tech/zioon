@@ -13,51 +13,75 @@
       "commands": [
         {
           "id": "zion.sessions.new",
-          "title": "New Session"
+          "title": "New Session",
+          "titleKey": "dev.session-manager.cmd.new",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.saveAsNew",
-          "title": "Save As New Session"
+          "title": "Save As New Session",
+          "titleKey": "dev.session-manager.cmd.saveAsNew",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.rename",
-          "title": "Rename Session"
+          "title": "Rename Session",
+          "titleKey": "dev.session-manager.cmd.rename",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.delete",
-          "title": "Delete Session"
+          "title": "Delete Session",
+          "titleKey": "dev.session-manager.cmd.delete",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.switch",
-          "title": "Switch Session"
+          "title": "Switch Session",
+          "titleKey": "dev.session-manager.cmd.switch",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.clone",
-          "title": "Clone Session"
+          "title": "Clone Session",
+          "titleKey": "dev.session-manager.cmd.clone",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.export",
-          "title": "Export Sessions"
+          "title": "Export Sessions",
+          "titleKey": "dev.session-manager.cmd.export",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.import",
-          "title": "Import Sessions"
+          "title": "Import Sessions",
+          "titleKey": "dev.session-manager.cmd.import",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.showPanel",
-          "title": "Show Sessions Panel"
+          "title": "Show Sessions Panel",
+          "titleKey": "dev.session-manager.cmd.showPanel",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.showSidebar",
-          "title": "Show Sessions Sidebar"
+          "title": "Show Sessions Sidebar",
+          "titleKey": "dev.session-manager.cmd.showSidebar",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.hideSidebar",
-          "title": "Hide Sessions Sidebar"
+          "title": "Hide Sessions Sidebar",
+          "titleKey": "dev.session-manager.cmd.hideSidebar",
+          "categoryKey": "dev.session-manager.category.sessions"
         },
         {
           "id": "zion.sessions.toggleSidebar",
-          "title": "Toggle Sessions Sidebar"
+          "title": "Toggle Sessions Sidebar",
+          "titleKey": "dev.session-manager.cmd.toggleSidebar",
+          "categoryKey": "dev.session-manager.category.sessions"
         }
       ],
       "keybindings": [

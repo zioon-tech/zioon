@@ -18,6 +18,72 @@ import { createSessionsPanelManager } from "./ui/panel.js";
 import { createSessionsListRendererFactory } from "./ui/list-renderer.js";
 import { SessionDocumentRuntime } from "../../src/session/document-runtime";
 
+const I18N_NS = "dev.session-manager";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.sessions": "会话",
+    "cmd.new": "新建会话",
+    "cmd.saveAsNew": "另存为新会话",
+    "cmd.rename": "重命名会话",
+    "cmd.delete": "删除会话",
+    "cmd.switch": "切换会话",
+    "cmd.clone": "克隆会话",
+    "cmd.export": "导出会话",
+    "cmd.import": "导入会话",
+    "cmd.showPanel": "显示会话面板",
+    "cmd.showSidebar": "显示会话侧边栏",
+    "cmd.hideSidebar": "隐藏会话侧边栏",
+    "cmd.toggleSidebar": "切换会话侧边栏",
+    "slash.new.description": "创建新的会话",
+    "slash.showPanel.description": "打开会话管理面板",
+    "slash.toggleSidebar.description": "显示/隐藏会话侧边栏",
+    "slash.saveAsNew.description": "将当前内容另存为新会话",
+    "ui.sessions": "会话",
+    "ui.createNew": "新建会话",
+    "ui.actions": "操作",
+    "ui.fork": "分叉会话",
+    "ui.refresh": "刷新",
+    "dialog.newTitle": "新会话标题",
+    "dialog.rename": "重命名会话",
+    "dialog.deleteSelected": "删除所选项"
+  },
+  "en-US": {
+    "category.sessions": "Sessions",
+    "cmd.new": "New Session",
+    "cmd.saveAsNew": "Save As New Session",
+    "cmd.rename": "Rename Session",
+    "cmd.delete": "Delete Session",
+    "cmd.switch": "Switch Session",
+    "cmd.clone": "Clone Session",
+    "cmd.export": "Export Sessions",
+    "cmd.import": "Import Sessions",
+    "cmd.showPanel": "Show Sessions Panel",
+    "cmd.showSidebar": "Show Sessions Sidebar",
+    "cmd.hideSidebar": "Hide Sessions Sidebar",
+    "cmd.toggleSidebar": "Toggle Sessions Sidebar",
+    "slash.new.description": "Create a new session",
+    "slash.showPanel.description": "Open the sessions panel",
+    "slash.toggleSidebar.description": "Show or hide the sessions sidebar",
+    "slash.saveAsNew.description": "Save current content as a new session",
+    "ui.sessions": "Sessions",
+    "ui.createNew": "Create new session",
+    "ui.actions": "Actions",
+    "ui.fork": "Fork Session",
+    "ui.refresh": "Refresh",
+    "dialog.newTitle": "New session title",
+    "dialog.rename": "Rename session",
+    "dialog.deleteSelected": "Delete selected"
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 /** ========== Storage & Utils ========== */
 const LS_INDEX = "zion.sessions.index";
 const LS_TREE = "zion.sessions.tree";
@@ -950,6 +1016,10 @@ function injectScrollbarStyles() {
 
 /** ========== Activate Extension ========== */
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
 
   // Inject custom scrollbar styles
   injectScrollbarStyles();
@@ -1072,22 +1142,22 @@ export async function activate(ctx) {
       id: "sessions.activity",
       pluginId: "dev.session-manager",
       icon: "$(comment-discussion)",
-      tooltip: "Sessions",
+      tooltip: t("ui.sessions", "Sessions"),
       sideBarViewId: "sessions.list",
       order: 10
     });
     const dispView = window.zion.sideBar.registerView({
       id: "sessions.list",
       pluginId: "dev.session-manager",
-      title: "Sessions",
+      title: t("ui.sessions", "Sessions"),
       icon: "💬",
       order: 10,
       location: "sidebar",
       headerActions: [
         {
           id: "sessions.new",
-          title: "Create new session",
-          ariaLabel: "Create new session",
+          title: t("ui.createNew", "Create new session"),
+          ariaLabel: t("ui.createNew", "Create new session"),
           icon: "$(add)",
           onClick: () => window.zion.commands.executeCommand("zion.sessions.new", {
             parentId: window.zion.state.get("sessions.selectedFolderId") || "root"
@@ -1095,8 +1165,8 @@ export async function activate(ctx) {
         },
         {
           id: "sessions.actions",
-          title: "Actions",
-          ariaLabel: "Actions",
+          title: t("ui.actions", "Actions"),
+          ariaLabel: t("ui.actions", "Actions"),
           icon: "⋮",
           onClick: () => {
             try {
@@ -1143,17 +1213,17 @@ export async function activate(ctx) {
   try {
     const dispMenu1 = window.zion.menus.register("editor/context", {
       command: "zion.sessions.saveAsNew",
-      title: "Save As New Session",
+      title: t("cmd.saveAsNew", "Save As New Session"),
       when: "editorFocus"
     });
     const dispMenu2 = window.zion.menus.register("editor/context", {
       command: "zion.sessions.showPanel",
-      title: "Sessions…",
+      title: t("ui.sessions", "Sessions") + "…",
       when: "editorFocus"
     });
     const dispMenu3 = window.zion.menus.register("editor/context", {
       command: "zion.sessions.fork",
-      title: "Fork Session",
+      title: t("ui.fork", "Fork Session"),
       when: "editorFocus"
     });
     ctx.subscriptions.push(dispMenu1, dispMenu2, dispMenu3);
@@ -1177,7 +1247,7 @@ export async function activate(ctx) {
               duration: 0,
               dismissible: true,
               actions: [{
-                label: "刷新",
+                label: t("ui.refresh", "刷新"),
                 handler: () => {
                   (async () => {
                     try {
@@ -1366,7 +1436,7 @@ export async function activate(ctx) {
     const text = ed?.getValue() || "";
     const suggested = `Session ${getIndex().length + 1}`;
     const rawTitle = await openModalInput({
-      title: "New session title",
+      title: t("dialog.newTitle", "New session title"),
       value: suggested,
       placeholder: "Session title",
       okText: "Create",
@@ -1421,7 +1491,7 @@ export async function activate(ctx) {
     const raw = nv
       ? nv
       : await openModalInput({
-        title: "Rename session",
+        title: t("dialog.rename", "Rename session"),
         value: entry?.title || "",
         placeholder: "Session title",
         okText: "Rename",
@@ -2023,7 +2093,7 @@ export async function activate(ctx) {
     const sel = getSelection();
     if (!sel.length) return false;
     const ok = await openModalConfirm({
-      title: "Delete selected",
+      title: t("dialog.deleteSelected", "Delete selected"),
       message: `Delete ${sel.length} selected item(s)? This cannot be undone.`,
       okText: "Delete",
       cancelText: "Cancel"
@@ -2163,29 +2233,29 @@ export async function activate(ctx) {
       {
         id: "zion.sessions.new",
         triggers: ["new", "new-session", "ns"],
-        title: "新建会话",
-        description: "创建新的会话",
+        title: t("cmd.new", "新建会话"),
+        description: t("slash.new.description", "创建新的会话"),
         priority: 100
       },
       {
         id: "zion.sessions.showPanel",
         triggers: ["sessions", "show-sessions", "session-panel"],
-        title: "显示会话面板",
-        description: "打开会话管理面板",
+        title: t("cmd.showPanel", "显示会话面板"),
+        description: t("slash.showPanel.description", "打开会话管理面板"),
         priority: 90
       },
       {
         id: "zion.sessions.toggleSidebar",
         triggers: ["sidebar", "sessions-sidebar"],
-        title: "切换会话侧边栏",
-        description: "显示/隐藏会话侧边栏",
+        title: t("cmd.toggleSidebar", "切换会话侧边栏"),
+        description: t("slash.toggleSidebar.description", "显示/隐藏会话侧边栏"),
         priority: 80
       },
       {
         id: "zion.sessions.saveAsNew",
         triggers: ["save-as", "save-session"],
-        title: "另存为新会话",
-        description: "将当前内容另存为新会话",
+        title: t("cmd.saveAsNew", "另存为新会话"),
+        description: t("slash.saveAsNew.description", "将当前内容另存为新会话"),
         priority: 70
       }
     ];
