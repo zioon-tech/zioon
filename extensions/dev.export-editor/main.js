@@ -7,6 +7,45 @@ function readCssVar(name, fallback) {
   }
 }
 
+const I18N_NS = "dev.export-editor";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.export": "导出",
+    "cmd.png": "导出为 PNG",
+    "cmd.pngPages": "导出为 PNG（分页）",
+    "cmd.pdf": "导出为 PDF",
+    "desc.png": "导出当前编辑器（保留渲染）为 PNG（单张拼接）",
+    "desc.pngPages": "导出当前编辑器（保留渲染）为 PNG（多张分页）",
+    "desc.pdf": "导出当前编辑器（保留渲染）为 PDF",
+    "msg.pngDone": "已导出 PNG（单张拼接，保留渲染）",
+    "msg.pngPagesDone": "已导出 PNG（多张分页，保留渲染）",
+    "msg.pdfOpened": "已打开打印对话框（可另存为 PDF）",
+    "msg.failed": "导出失败：{message}"
+  },
+  "en-US": {
+    "category.export": "Export",
+    "cmd.png": "Export as PNG",
+    "cmd.pngPages": "Export as PNG (pages)",
+    "cmd.pdf": "Export as PDF",
+    "desc.png": "Export the current editor as a rendered PNG (single stitched image)",
+    "desc.pngPages": "Export the current editor as rendered PNG pages",
+    "desc.pdf": "Export the current editor as a rendered PDF",
+    "msg.pngDone": "Exported PNG (single stitched image, rendered)",
+    "msg.pngPagesDone": "Exported PNG pages (rendered)",
+    "msg.pdfOpened": "Print dialog opened (save as PDF)",
+    "msg.failed": "Export failed: {message}"
+  }
+};
+
+function t(key, fallback, values) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 function sanitizeFilenameBase(base) {
   const cleaned = String(base || "export")
     .trim()
@@ -42,9 +81,9 @@ function registerHeaderMenuItems(ctx) {
     const reg = window.zion?.__editorHeaderMenuRegistry;
     if (!reg?.register) return;
     const items = [
-      { id: "dev.export-editor.png", title: "Export as PNG", section: "Export", kind: "action", order: 81, command: "exportEditor.asPng" },
-      { id: "dev.export-editor.pngPages", title: "Export as PNG (pages)", section: "Export", kind: "action", order: 82, command: "exportEditor.asPngMulti" },
-      { id: "dev.export-editor.pdf", title: "Export as PDF", section: "Export", kind: "action", order: 83, command: "exportEditor.asPdf" }
+      { id: "dev.export-editor.png", title: t("cmd.png", "Export as PNG"), section: t("category.export", "Export"), kind: "action", order: 81, command: "exportEditor.asPng" },
+      { id: "dev.export-editor.pngPages", title: t("cmd.pngPages", "Export as PNG (pages)"), section: t("category.export", "Export"), kind: "action", order: 82, command: "exportEditor.asPngMulti" },
+      { id: "dev.export-editor.pdf", title: t("cmd.pdf", "Export as PDF"), section: t("category.export", "Export"), kind: "action", order: 83, command: "exportEditor.asPdf" }
     ];
     for (const it of items) {
       const disp = reg.register({
@@ -450,7 +489,7 @@ function showQuickPick(actions) {
   panel.onclick = (e) => e.stopPropagation();
 
   const title = document.createElement("div");
-  title.textContent = "Export";
+  title.textContent = t("category.export", "Export");
   title.style.fontWeight = "600";
   title.style.marginBottom = "8px";
   panel.appendChild(title);
@@ -490,16 +529,20 @@ function showQuickPick(actions) {
 
 export async function activate(ctx) {
   try {
+    const dispI18n = window.zion?.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (dispI18n) ctx.subscriptions.push(dispI18n);
+  } catch {}
+  try {
     registerHeaderMenuItems(ctx);
   } catch {}
 
   const cmdPngSingle = window.zion.commands.registerCommand("exportEditor.asPng", async () => {
     try {
       await exportPngSingle();
-      window.zion?.notification?.show?.("已导出 PNG（单张拼接，保留渲染）", { type: "success", duration: 2000 });
+      window.zion?.notification?.show?.(t("msg.pngDone", "已导出 PNG（单张拼接，保留渲染）"), { type: "success", duration: 2000 });
       return true;
     } catch (e) {
-      window.zion?.notification?.show?.(`导出失败: ${e?.message || String(e)}`, { type: "error" });
+      window.zion?.notification?.show?.(t("msg.failed", "导出失败：{message}", { message: e?.message || String(e) }), { type: "error" });
       return false;
     }
   });
@@ -507,10 +550,10 @@ export async function activate(ctx) {
   const cmdPngMulti = window.zion.commands.registerCommand("exportEditor.asPngMulti", async () => {
     try {
       await exportPngMulti();
-      window.zion?.notification?.show?.("已导出 PNG（多张分页，保留渲染）", { type: "success", duration: 2000 });
+      window.zion?.notification?.show?.(t("msg.pngPagesDone", "已导出 PNG（多张分页，保留渲染）"), { type: "success", duration: 2000 });
       return true;
     } catch (e) {
-      window.zion?.notification?.show?.(`导出失败: ${e?.message || String(e)}`, { type: "error" });
+      window.zion?.notification?.show?.(t("msg.failed", "导出失败：{message}", { message: e?.message || String(e) }), { type: "error" });
       return false;
     }
   });
@@ -518,10 +561,10 @@ export async function activate(ctx) {
   const cmdPdf = window.zion.commands.registerCommand("exportEditor.asPdf", async () => {
     try {
       await exportPdf();
-      window.zion?.notification?.show?.("已打开打印对话框（可另存为 PDF）", { type: "info", duration: 2500 });
+      window.zion?.notification?.show?.(t("msg.pdfOpened", "已打开打印对话框（可另存为 PDF）"), { type: "info", duration: 2500 });
       return true;
     } catch (e) {
-      window.zion?.notification?.show?.(`导出失败: ${e?.message || String(e)}`, { type: "error" });
+      window.zion?.notification?.show?.(t("msg.failed", "导出失败：{message}", { message: e?.message || String(e) }), { type: "error" });
       return false;
     }
   });
@@ -530,12 +573,12 @@ export async function activate(ctx) {
 
   try {
     const menu = window.zion.menus.register("editor/context", {
-      title: "Export",
+      title: t("category.export", "Export"),
       when: "editorFocus",
       submenu: [
-        { command: "exportEditor.asPng", title: "Export as PNG", when: "editorFocus" },
-        { command: "exportEditor.asPngMulti", title: "Export as PNG (pages)", when: "editorFocus" },
-        { command: "exportEditor.asPdf", title: "Export as PDF", when: "editorFocus" }
+        { command: "exportEditor.asPng", title: t("cmd.png", "Export as PNG"), when: "editorFocus" },
+        { command: "exportEditor.asPngMulti", title: t("cmd.pngPages", "Export as PNG (pages)"), when: "editorFocus" },
+        { command: "exportEditor.asPdf", title: t("cmd.pdf", "Export as PDF"), when: "editorFocus" }
       ]
     });
     ctx.subscriptions.push(menu);
@@ -548,9 +591,9 @@ export async function activate(ctx) {
         slash({
           id: "export.png",
           trigger: ["exportpng", "png"],
-          title: "Export as PNG",
-          description: "导出当前编辑器（保留渲染）为 PNG（单张拼接）",
-          category: "export",
+          title: t("cmd.png", "Export as PNG"),
+          description: t("desc.png", "导出当前编辑器（保留渲染）为 PNG（单张拼接）"),
+          category: t("category.export", "Export"),
           priority: 80,
           execute: async () => {
             await exportPngSingle();
@@ -561,9 +604,9 @@ export async function activate(ctx) {
         slash({
           id: "export.pdf",
           trigger: ["exportpdf", "pdf"],
-          title: "Export as PDF",
-          description: "导出当前编辑器（保留渲染）为 PDF",
-          category: "export",
+          title: t("cmd.pdf", "Export as PDF"),
+          description: t("desc.pdf", "导出当前编辑器（保留渲染）为 PDF"),
+          category: t("category.export", "Export"),
           priority: 79,
           execute: async () => {
             await exportPdf();
@@ -574,9 +617,9 @@ export async function activate(ctx) {
         slash({
           id: "export.pngMulti",
           trigger: ["exportpngpages", "pngpages"],
-          title: "Export as PNG (pages)",
-          description: "导出当前编辑器（保留渲染）为 PNG（多张分页）",
-          category: "export",
+          title: t("cmd.pngPages", "Export as PNG (pages)"),
+          description: t("desc.pngPages", "导出当前编辑器（保留渲染）为 PNG（多张分页）"),
+          category: t("category.export", "Export"),
           priority: 78,
           execute: async () => {
             await exportPngMulti();

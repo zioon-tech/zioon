@@ -8,6 +8,70 @@ const filteredSearchKeymap = searchKeymap.filter(binding =>
 
 let searchExtension = null;
 let isSearchVisible = false;
+const I18N_NS = 'dev.search-replace';
+const I18N_MESSAGES = {
+  'zh-CN': {
+    'category.search': '搜索',
+    'cmd.show': '显示搜索',
+    'cmd.showWithReplace': '显示搜索和替换',
+    'cmd.hide': '隐藏搜索',
+    'cmd.next': '下一个匹配',
+    'cmd.prev': '上一个匹配',
+    'cmd.selectAll': '选择所有匹配',
+    'cmd.replace': '替换当前匹配',
+    'cmd.replaceAll': '替换所有匹配',
+    'ui.search': '搜索',
+    'ui.replace': '替换',
+    'ui.showReplace': '显示替换',
+    'ui.hideReplace': '隐藏替换',
+    'ui.prev': '上一个匹配',
+    'ui.next': '下一个匹配',
+    'ui.selectAll': '选择所有匹配',
+    'ui.close': '关闭',
+    'ui.replaceCurrent': '替换',
+    'ui.all': '全部',
+    'ui.matchCase': '区分大小写',
+    'ui.wholeWord': '全字匹配',
+    'ui.regex': '正则表达式',
+    'ui.replaced': '已替换 {count} 个',
+    'ui.noResults': '无结果'
+  },
+  'en-US': {
+    'category.search': 'Search',
+    'cmd.show': 'Show Search',
+    'cmd.showWithReplace': 'Show Search and Replace',
+    'cmd.hide': 'Hide Search',
+    'cmd.next': 'Next Match',
+    'cmd.prev': 'Previous Match',
+    'cmd.selectAll': 'Select All Matches',
+    'cmd.replace': 'Replace Current Match',
+    'cmd.replaceAll': 'Replace All Matches',
+    'ui.search': 'Search',
+    'ui.replace': 'Replace',
+    'ui.showReplace': 'Show replace',
+    'ui.hideReplace': 'Hide replace',
+    'ui.prev': 'Previous Match',
+    'ui.next': 'Next Match',
+    'ui.selectAll': 'Select All Matches',
+    'ui.close': 'Close',
+    'ui.replaceCurrent': 'Replace',
+    'ui.all': 'All',
+    'ui.matchCase': 'Match case',
+    'ui.wholeWord': 'Whole word',
+    'ui.regex': 'Regex',
+    'ui.replaced': 'Replaced {count}',
+    'ui.noResults': 'No results'
+  }
+};
+
+function t(key, fallback, values) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -68,6 +132,11 @@ function refreshSearchHighlights() {
 }
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   // 初始化搜索扩展
   searchExtension = search();
   
@@ -119,6 +188,15 @@ export async function activate(ctx) {
     }
   });
   ctx.subscriptions.push(focusListener);
+  ctx.subscriptions.push(window.zion.events.on('i18n/changed', () => {
+    if (!searchPanel || !isSearchVisible) return;
+    try {
+      searchPanel.remove();
+      searchPanel = null;
+      ensureSearchPanel();
+      updateSearch();
+    } catch {}
+  }));
 }
 
 function showSearchPanel(withReplace = false) {
@@ -201,7 +279,7 @@ function replaceCurrent() {
   // 简单反馈：如果内容发生变化，提示“Replaced 1”
   const after = editor?.getValue?.() ?? '';
   if (after !== before) {
-    __showSearchStatus('Replaced 1');
+    __showSearchStatus(t('ui.replaced', 'Replaced {count}', { count: 1 }));
   }
 }
 
@@ -231,11 +309,7 @@ function replaceAll() {
     });
   }
   window.zion.commands.executeCommand('replaceAll');
-  if (count > 0) {
-    __showSearchStatus(`Replaced ${count}`);
-  } else {
-    __showSearchStatus('Replaced 0');
-  }
+  __showSearchStatus(t('ui.replaced', 'Replaced {count}', { count }));
 }
 
 function updateSearchPanelVisibility() {
@@ -308,37 +382,37 @@ function ensureSearchPanel() {
     
     searchPanel.innerHTML = `
       <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-        <textarea id="search-input" placeholder="Search" rows="1"
+        <textarea id="search-input" placeholder="${t('ui.search', 'Search')}" rows="1"
                style="flex: 1; max-height: 80px; resize: none; padding: 6px 8px; border: 1px solid var(--border); 
                       background: var(--input-bg, var(--panel)); 
                       color: var(--fg); border-radius: 4px; font-family: inherit; font-size: inherit; overflow: hidden;"></textarea>
         <span id="match-count" style="color: var(--fg-secondary); font-size: 12px;"></span>
-        <button id="toggle-replace-btn" title="Show replace" style="background: none; border: 1px solid var(--border); color: var(--fg); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size:12px;">▾</button>
-        <button id="prev-btn" title="Previous Match" style="background: none; border: 1px solid var(--border); color: var(--fg); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size:12px;">↑</button>
-        <button id="next-btn" title="Next Match" style="background: none; border: 1px solid var(--border); color: var(--fg); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size:12px;">↓</button>
-        <button id="select-all-btn" title="Select All Matches" style="background: none; border: 1px solid var(--border); color: var(--fg); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size:12px;">All</button>
-        <button id="close-btn" title="Close" style="background: none; border: none; color: var(--fg); cursor: pointer; padding: 2px 6px; font-size:12px;">×</button>
+        <button id="toggle-replace-btn" title="${t('ui.showReplace', 'Show replace')}" style="background: none; border: 1px solid var(--border); color: var(--fg); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size:12px;">▾</button>
+        <button id="prev-btn" title="${t('ui.prev', 'Previous Match')}" style="background: none; border: 1px solid var(--border); color: var(--fg); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size:12px;">↑</button>
+        <button id="next-btn" title="${t('ui.next', 'Next Match')}" style="background: none; border: 1px solid var(--border); color: var(--fg); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size:12px;">↓</button>
+        <button id="select-all-btn" title="${t('ui.selectAll', 'Select All Matches')}" style="background: none; border: 1px solid var(--border); color: var(--fg); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size:12px;">${t('ui.all', 'All')}</button>
+        <button id="close-btn" title="${t('ui.close', 'Close')}" style="background: none; border: none; color: var(--fg); cursor: pointer; padding: 2px 6px; font-size:12px;">×</button>
       </div>
       <div id="replace-section" style="display: none; margin-top: 8px;">
         <div style="display: flex; gap: 8px; align-items: center;">
-          <textarea id="replace-input" placeholder="Replace" rows="1"
+          <textarea id="replace-input" placeholder="${t('ui.replace', 'Replace')}" rows="1"
                  style="flex: 1; max-height: 80px; resize: none; padding: 6px 8px; border: 1px solid var(--border); 
                         background: var(--input-bg, var(--panel)); 
                         color: var(--fg); border-radius: 4px; font-family: inherit; font-size: inherit; overflow: hidden;"></textarea>
-          <button id="replace-btn" style="padding: 4px 8px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size:12px;">Replace</button>
-          <button id="replace-all-btn" style="padding: 4px 8px; background: var(--border); color: var(--fg); border: none; border-radius: 4px; cursor: pointer; font-size:12px;">All</button>
+          <button id="replace-btn" style="padding: 4px 8px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size:12px;">${t('ui.replaceCurrent', 'Replace')}</button>
+          <button id="replace-all-btn" style="padding: 4px 8px; background: var(--border); color: var(--fg); border: none; border-radius: 4px; cursor: pointer; font-size:12px;">${t('ui.all', 'All')}</button>
         </div>
       </div>
       <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">
-        <label title="Match case" style="display: flex; align-items: center; gap: 6px; font-size: 12px;">
+        <label title="${t('ui.matchCase', 'Match case')}" style="display: flex; align-items: center; gap: 6px; font-size: 12px;">
           <input type="checkbox" id="case-sensitive" />
           <span style="font-size:12px; opacity:0.9;">Aa</span>
         </label>
-        <label title="Whole word" style="display: flex; align-items: center; gap: 6px; font-size: 12px;">
+        <label title="${t('ui.wholeWord', 'Whole word')}" style="display: flex; align-items: center; gap: 6px; font-size: 12px;">
           <input type="checkbox" id="whole-word" />
           <span style="font-size:12px; opacity:0.9;">⎵</span>
         </label>
-        <label title="Regex" style="display: flex; align-items: center; gap: 6px; font-size: 12px;">
+        <label title="${t('ui.regex', 'Regex')}" style="display: flex; align-items: center; gap: 6px; font-size: 12px;">
           <input type="checkbox" id="regex" />
           <span style="font-size:12px; opacity:0.9;">.*</span>
         </label>
@@ -361,7 +435,7 @@ function ensureSearchPanel() {
   const toggleBtn = searchPanel.querySelector('#toggle-replace-btn');
   if (toggleBtn) {
     toggleBtn.textContent = withReplace ? '▴' : '▾';
-    toggleBtn.title = withReplace ? 'Hide replace' : 'Show replace';
+    toggleBtn.title = withReplace ? t('ui.hideReplace', 'Hide replace') : t('ui.showReplace', 'Show replace');
   }
   
   searchPanel.style.display = 'block';
@@ -415,7 +489,7 @@ function setupEventListeners() {
     const btn = searchPanel.querySelector('#toggle-replace-btn');
     if (btn) {
       btn.textContent = next ? '▴' : '▾';
-      btn.title = next ? 'Hide replace' : 'Show replace';
+      btn.title = next ? t('ui.hideReplace', 'Hide replace') : t('ui.showReplace', 'Show replace');
     }
     if (next) {
       const rInput = searchPanel.querySelector('#replace-input');
@@ -628,7 +702,7 @@ function updateSearch() {
     if (!query) {
       matchCount.textContent = '';
     } else if (count === 0) {
-      matchCount.textContent = 'No results';
+      matchCount.textContent = t('ui.noResults', 'No results');
     } else {
       matchCount.textContent = `${current}/${count}`;
     }

@@ -13,35 +13,51 @@
       "commands": [
         {
           "id": "searchReplace.show",
-          "title": "Show Search"
+          "title": "Show Search",
+          "titleKey": "dev.search-replace.cmd.show",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.showWithReplace",
-          "title": "Show Search and Replace"
+          "title": "Show Search and Replace",
+          "titleKey": "dev.search-replace.cmd.showWithReplace",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.hide",
-          "title": "Hide Search"
+          "title": "Hide Search",
+          "titleKey": "dev.search-replace.cmd.hide",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.next",
-          "title": "Next Match"
+          "title": "Next Match",
+          "titleKey": "dev.search-replace.cmd.next",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.prev",
-          "title": "Previous Match"
+          "title": "Previous Match",
+          "titleKey": "dev.search-replace.cmd.prev",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.selectAll",
-          "title": "Select All Matches"
+          "title": "Select All Matches",
+          "titleKey": "dev.search-replace.cmd.selectAll",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.replace",
-          "title": "Replace Current Match"
+          "title": "Replace Current Match",
+          "titleKey": "dev.search-replace.cmd.replace",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.replaceAll",
-          "title": "Replace All Matches"
+          "title": "Replace All Matches",
+          "titleKey": "dev.search-replace.cmd.replaceAll",
+          "categoryKey": "dev.search-replace.category.search"
         }
       ],
       "keybindings": [
