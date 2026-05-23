@@ -22,6 +22,74 @@ import {
 } from "../../src/chat/doc";
 import { createChatRuntime } from "../../src/chat/runtime";
 
+const I18N_NS = "dev.langchain-chat";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.chat": "聊天",
+    "category.models": "模型",
+    "cmd.runSelection": "运行聊天（选中内容）",
+    "cmd.run": "运行聊天",
+    "cmd.stop": "停止聊天",
+    "cmd.retry": "重试聊天",
+    "settings.models.title": "模型",
+    "settings.models.description": "管理模型提供商与默认模型",
+    "settings.models.section": "模型",
+    "settings.models.label": "模型",
+    "slash.chat.title": "聊天",
+    "slash.chat.description": "使用当前上下文运行聊天",
+    "slash.chatSelection.title": "聊天（选中内容）",
+    "slash.chatSelection.description": "使用当前选中内容运行聊天",
+    "slash.stop.title": "停止聊天",
+    "slash.stop.description": "中止当前流式运行",
+    "slash.retry.title": "重试聊天",
+    "slash.retry.description": "使用上一次提示重新运行",
+    "slash.selectModel.title": "选择模型",
+    "slash.selectModel.description": "选择一个模型",
+    "slash.openModelSwitcher.title": "打开模型切换器",
+    "slash.openModelSwitcher.description": "打开模型切换面板",
+    "slash.setActiveModel.title": "设置当前模型",
+    "slash.model.label": "模型",
+    "status.model": "模型：{label}",
+    "status.runFinishedSound": "结束提示音"
+  },
+  "en-US": {
+    "category.chat": "Chat",
+    "category.models": "Models",
+    "cmd.runSelection": "Run Chat (Selection)",
+    "cmd.run": "Run Chat",
+    "cmd.stop": "Stop Chat",
+    "cmd.retry": "Retry Chat",
+    "settings.models.title": "Models",
+    "settings.models.description": "Manage model providers and default model",
+    "settings.models.section": "Models",
+    "settings.models.label": "Models",
+    "slash.chat.title": "Chat",
+    "slash.chat.description": "Run chat with current context",
+    "slash.chatSelection.title": "Chat (Selection)",
+    "slash.chatSelection.description": "Run chat using current selection",
+    "slash.stop.title": "Stop Chat",
+    "slash.stop.description": "Abort current streaming run",
+    "slash.retry.title": "Retry Chat",
+    "slash.retry.description": "Re-run chat with the last prompt",
+    "slash.selectModel.title": "Select Model",
+    "slash.selectModel.description": "Pick a model",
+    "slash.openModelSwitcher.title": "Open Model Switcher",
+    "slash.openModelSwitcher.description": "Open the model switcher panel",
+    "slash.setActiveModel.title": "Set Active Model",
+    "slash.model.label": "Model",
+    "status.model": "Model: {label}",
+    "status.runFinishedSound": "Run Finished Sound"
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 function findAssistantEndLineFromDoc(text, startLineHint = 0) {
   const lines = String(text || "").replace(/\r/g, "").split("\n");
   const roleHeadRe = /^\s*(system|user|assistant|tool)\s+/;
@@ -134,6 +202,11 @@ function ensureTrailingUserPromptVisible(editor, opts = {}) {
 }
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   const RUN_FINISHED_SOUND_STATE_KEY = "chat.runFinishedSoundEnabled";
   const RUN_FINISHED_SOUND_LS_KEY = "zion.chat.runFinishedSoundEnabled";
   const llm = window.zion.llm || (window.zion.llm = {});
@@ -1285,7 +1358,7 @@ export async function activate(ctx) {
     const reg = window.zion?.__editorHeaderMenuRegistry;
     const disp = reg?.register?.({
       id: "dev.langchain-chat.runFinishedSound.headerMenu",
-      title: "Run Finished Sound",
+      title: t("status.runFinishedSound", "Run Finished Sound"),
       section: "Chat",
       order: 35,
       kind: "toggle",
@@ -1362,13 +1435,13 @@ export async function activate(ctx) {
 
     const runChatMenuItem = {
       command: "chat.run",
-      title: "Run Chat",
+      title: t("cmd.run", "Run Chat"),
       when: "editorFocus",
       submenu: []
     };
     const selectModelMenuItem = {
       command: "models.openSwitcher",
-      title: "Select Model...",
+      title: t("slash.selectModel.title", "Select Model") + "...",
       when: "editorFocus",
       submenu: []
     };
@@ -1378,12 +1451,12 @@ export async function activate(ctx) {
       window.zion.menus.register("editor/context", selectModelMenuItem),
       window.zion.menus.register("editor/context", {
         command: "chat.stop",
-        title: "Stop Chat",
+        title: t("cmd.stop", "Stop Chat"),
         when: "editorFocus"
       }),
       window.zion.menus.register("editor/context", {
         command: "chat.retry",
-        title: "Retry Chat",
+        title: t("cmd.retry", "Retry Chat"),
         when: "editorFocus"
       })
     ];
@@ -1426,7 +1499,7 @@ export async function activate(ctx) {
     const rebuildContextMenu = () => {
       const active = window.zion.state.get("chat.activeModel");
       const defaultLabel = active?.label || active?.modelId || "unknown";
-      runChatMenuItem.title = `Run Chat (${defaultLabel})`;
+      runChatMenuItem.title = `${t("cmd.run", "Run Chat")} (${defaultLabel})`;
       runChatMenuItem.submenu = [];
       selectModelMenuItem.submenu = buildModelMenuItems("models.setDefaultModel");
     };
@@ -1469,19 +1542,19 @@ export async function activate(ctx) {
     modelBtnDisp?.dispose?.();
     modelBtnDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: "langchain.chat.model",
-      text: `Model: ${label}`,
+      text: t("status.model", "Model: {label}", { label }),
       tooltip,
       priority: 80,
       onClick: () => window.zion.commands.executeCommand("models.openSwitcher")
     }) || window.zion.editorHeaderMenu?.register?.({
       id: "langchain.chat.model",
-      title: `模型：${label}`,
+      title: t("status.model", "Model: {label}", { label }),
       section: "Chat",
       order: 10,
       onClick: () => window.zion.commands.executeCommand("models.openSwitcher")
     }) || window.zion.statusBar.registerItem({
       id: "langchain.chat.model",
-      text: `Model: ${label}`,
+      text: t("status.model", "Model: {label}", { label }),
       tooltip,
       onClick: () => window.zion.commands.executeCommand("models.openSwitcher")
     });
@@ -1489,7 +1562,8 @@ export async function activate(ctx) {
   updateModelBtn();
   ctx.subscriptions.push(
     window.zion.state.onDidChange("chat.activeModel", updateModelBtn),
-    window.zion.state.onDidChange("models.catalog", updateModelBtn)
+    window.zion.state.onDidChange("models.catalog", updateModelBtn),
+    window.zion.events.on("i18n/changed", updateModelBtn)
   );
 
   // Editor header Run/Stop button (only when this plugin is active)
@@ -1581,6 +1655,9 @@ export async function activate(ctx) {
     const settingsDisp = window.zion?.settings?.registerPage?.({
       id: "services.langchain-models",
       title: "Models",
+      titleKey: "dev.langchain-chat.settings.models.title",
+      description: "Manage model providers and default model",
+      descriptionKey: "dev.langchain-chat.settings.models.description",
       category: "services",
       order: 30,
       pluginId: "dev.langchain-chat",
@@ -1589,10 +1666,12 @@ export async function activate(ctx) {
         {
           id: "langchain.models.manage",
           title: "Models",
+          titleKey: "dev.langchain-chat.settings.models.section",
           settings: [
             {
               id: "chat.models.manager",
               label: "Models",
+              labelKey: "dev.langchain-chat.settings.models.label",
               kind: "custom",
               order: 10,
               renderCustom: () => createElement(ModelsSettingsPage)
@@ -1620,9 +1699,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.chat.run",
           trigger: ["chat", "ask"],
-          title: "Chat",
-          description: "Run chat with current context",
-          category: "chat",
+          title: t("slash.chat.title", "Chat"),
+          description: t("slash.chat.description", "Run chat with current context"),
+          category: t("category.chat", "chat"),
           icon: "💬",
           execute: () => window.zion.commands.executeCommand("chat.run")
         })
@@ -1632,9 +1711,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.chat.runSelection",
           trigger: ["chatSelection", "chatSel"],
-          title: "Chat (Selection)",
-          description: "Run chat using current selection",
-          category: "chat",
+          title: t("slash.chatSelection.title", "Chat (Selection)"),
+          description: t("slash.chatSelection.description", "Run chat using current selection"),
+          category: t("category.chat", "chat"),
           icon: "📝",
           execute: () => window.zion.commands.executeCommand("chat.runSelection")
         })
@@ -1644,9 +1723,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.chat.stop",
           trigger: ["stop", "stopChat"],
-          title: "Stop Chat",
-          description: "Abort current streaming run",
-          category: "chat",
+          title: t("slash.stop.title", "Stop Chat"),
+          description: t("slash.stop.description", "Abort current streaming run"),
+          category: t("category.chat", "chat"),
           icon: "⏹️",
           execute: () => window.zion.commands.executeCommand("chat.stop")
         })
@@ -1656,9 +1735,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.chat.retry",
           trigger: ["retry", "chatRetry"],
-          title: "Retry Chat",
-          description: "Re-run chat with the last prompt",
-          category: "chat",
+          title: t("slash.retry.title", "Retry Chat"),
+          description: t("slash.retry.description", "Re-run chat with the last prompt"),
+          category: t("category.chat", "chat"),
           icon: "🔁",
           execute: () => window.zion.commands.executeCommand("chat.retry")
         })
@@ -1668,9 +1747,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.models.pick",
           trigger: ["models", "model"],
-          title: "Select Model",
-          description: "Pick a model",
-          category: "models",
+          title: t("slash.selectModel.title", "Select Model"),
+          description: t("slash.selectModel.description", "Pick a model"),
+          category: t("category.models", "models"),
           icon: "🧠",
           submenu: async () => {
             await refreshCatalog().catch(() => {});
@@ -1710,9 +1789,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.models.openSwitcher",
           trigger: ["modelSwitcher"],
-          title: "Open Model Switcher",
-          description: "Open the model switcher panel",
-          category: "models",
+          title: t("slash.openModelSwitcher.title", "Open Model Switcher"),
+          description: t("slash.openModelSwitcher.description", "Open the model switcher panel"),
+          category: t("category.models", "models"),
           icon: "🧠",
           execute: () => window.zion.commands.executeCommand("models.openSwitcher")
         })
@@ -1722,15 +1801,15 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.models.select",
           trigger: ["modelSelect", "setModel"],
-          title: "Set Active Model",
-          description: "Pick a model",
-          category: "models",
+          title: t("slash.setActiveModel.title", "Set Active Model"),
+          description: t("slash.selectModel.description", "Pick a model"),
+          category: t("category.models", "models"),
           icon: "🧠",
           params: [
             {
               name: "model",
               type: "select",
-              label: "Model",
+              label: t("slash.model.label", "Model"),
               asyncOptions: async () => {
                 await refreshCatalog().catch(() => {});
                 const catalog = window.zion?.state?.get("models.catalog") || [];
