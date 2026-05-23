@@ -32,6 +32,32 @@ const I18N_MESSAGES = {
     "ui.searchError": "搜索出错",
     "ui.listFailed": "列表加载失败：{message}",
     "ui.listError": "列表加载出错",
+    "pluginName.dev.terminal-enhanced": "增强终端",
+    "pluginName.dev.toc": "目录",
+    "pluginName.dev.roles": "角色",
+    "pluginName.dev.terminal-manager": "终端管理器",
+    "pluginName.dev.plugins": "插件管理器",
+    "pluginName.dev.mail": "邮件",
+    "pluginName.dev.task-panel": "任务面板",
+    "pluginName.dev.fs-manager": "文件访问管理",
+    "pluginName.dev.skills": "技能",
+    "pluginName.dev.context-compression": "上下文压缩",
+    "pluginName.dev.tools": "工具",
+    "pluginName.dev.session-manager": "会话管理器",
+    "pluginName.dev.langchain-chat": "聊天",
+    "pluginName.dev.editor-config": "编辑器配置",
+    "pluginName.dev.service-baseurl": "服务地址",
+    "pluginName.dev.thinking": "思考过程",
+    "pluginName.dev.sticky-user-header": "固定用户头部",
+    "pluginName.dev.sticky-header": "固定头部",
+    "pluginName.dev.slash-commands": "斜杠命令",
+    "pluginName.dev.search-replace": "搜索和替换",
+    "pluginName.dev.search-replace-plus": "搜索替换增强",
+    "pluginName.dev.paste-image": "粘贴图片",
+    "pluginName.dev.image-enhanced": "图片增强",
+    "pluginName.dev.gutter-actions": "行号栏操作",
+    "pluginName.dev.export-editor": "导出编辑器",
+    "pluginName.zion.autocompletion": "自动补全",
     "msg.enabled": "插件已启用。",
     "msg.disabled": "插件已停用。",
     "msg.toggleFailed": "切换插件失败：{message}",
@@ -85,6 +111,32 @@ const I18N_MESSAGES = {
     "ui.searchError": "Search error",
     "ui.listFailed": "List failed: {message}",
     "ui.listError": "List error",
+    "pluginName.dev.terminal-enhanced": "Terminal Enhanced",
+    "pluginName.dev.toc": "Table of Contents",
+    "pluginName.dev.roles": "Roles",
+    "pluginName.dev.terminal-manager": "Terminal Manager",
+    "pluginName.dev.plugins": "Plugin Manager",
+    "pluginName.dev.mail": "Mail",
+    "pluginName.dev.task-panel": "Task Panel",
+    "pluginName.dev.fs-manager": "File Access Manager",
+    "pluginName.dev.skills": "Skills",
+    "pluginName.dev.context-compression": "Context Compression",
+    "pluginName.dev.tools": "Tools",
+    "pluginName.dev.session-manager": "Session Manager",
+    "pluginName.dev.langchain-chat": "Chat",
+    "pluginName.dev.editor-config": "Editor Config",
+    "pluginName.dev.service-baseurl": "Service Base URL",
+    "pluginName.dev.thinking": "Thinking",
+    "pluginName.dev.sticky-user-header": "Sticky User Header",
+    "pluginName.dev.sticky-header": "Sticky Header",
+    "pluginName.dev.slash-commands": "Slash Commands",
+    "pluginName.dev.search-replace": "Search and Replace",
+    "pluginName.dev.search-replace-plus": "Search/Replace Plus",
+    "pluginName.dev.paste-image": "Paste Image",
+    "pluginName.dev.image-enhanced": "Image Enhanced",
+    "pluginName.dev.gutter-actions": "Gutter Actions",
+    "pluginName.dev.export-editor": "Export Editor",
+    "pluginName.zion.autocompletion": "Autocompletion",
     "msg.enabled": "Plugin enabled.",
     "msg.disabled": "Plugin disabled.",
     "msg.toggleFailed": "Failed to toggle plugin: {message}",
@@ -117,6 +169,53 @@ function t(key, fallback, values) {
     if (translated && translated !== fullKey) return translated;
   } catch {}
   return fallback;
+}
+
+function translateFullKey(key, fallback, values) {
+  const fullKey = String(key || "");
+  if (!fullKey) return fallback;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
+function getManifestMeta(plugin) {
+  const manifest = plugin?.manifest || {};
+  const zion = manifest?.zion || {};
+  return { manifest, zion };
+}
+
+function prettifyPluginId(id) {
+  return String(id || "")
+    .replace(/^dev\./, "")
+    .replace(/^zion\./, "")
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function getPluginDisplayName(plugin) {
+  const id = String(plugin?.id || "");
+  const { manifest, zion } = getManifestMeta(plugin);
+  const rawName = String(zion.displayName || zion.name || manifest.displayName || plugin?.name || id || "").trim();
+  const key = zion.displayNameKey || zion.nameKey || manifest.displayNameKey || manifest.nameKey;
+  if (key) return translateFullKey(key, rawName || prettifyPluginId(id));
+  const builtin = t(`pluginName.${id}`, "");
+  if (builtin) return builtin;
+  if (rawName && rawName !== id && !/^dev\./.test(rawName)) return rawName;
+  return prettifyPluginId(id) || rawName || id;
+}
+
+function getPluginDescription(plugin) {
+  const { manifest, zion } = getManifestMeta(plugin);
+  const raw = String(plugin?.description || manifest.description || "").trim();
+  const key = zion.descriptionKey || manifest.descriptionKey;
+  if (key) return translateFullKey(key, raw);
+  if (/^Zion Next Plugin:\s*dev\./i.test(raw)) return "";
+  return raw;
 }
 
 function h(tag, props, ...children) {
@@ -649,8 +748,8 @@ function mountPluginsSidebarViewInto(container) {
     const filtered = q
       ? plugins.filter((p) => {
           const id = String(p?.id || "").toLowerCase();
-          const name = String(p?.name || "").toLowerCase();
-          const desc = String(p?.description || "").toLowerCase();
+          const name = getPluginDisplayName(p).toLowerCase();
+          const desc = getPluginDescription(p).toLowerCase();
           return id.includes(q) || name.includes(q) || desc.includes(q);
         })
       : plugins;
@@ -676,6 +775,8 @@ function mountPluginsSidebarViewInto(container) {
       });
 
       const left = h("div", { style: { flex: "1 1 auto", minWidth: "0" } });
+      const displayName = getPluginDisplayName(plugin);
+      const displayDescription = getPluginDescription(plugin);
       const title = h("div", {
         style: {
           fontSize: "12px",
@@ -684,7 +785,7 @@ function mountPluginsSidebarViewInto(container) {
           textOverflow: "ellipsis",
           whiteSpace: "nowrap"
         }
-      }, String(plugin?.name || plugin?.id || "(unknown)"));
+      }, displayName);
       const meta = h("div", {
         style: {
           fontSize: "10px",
@@ -699,7 +800,7 @@ function mountPluginsSidebarViewInto(container) {
       left.appendChild(title);
       left.appendChild(meta);
 
-      if (plugin?.description) {
+      if (displayDescription) {
         left.appendChild(
           h(
             "div",
@@ -716,7 +817,7 @@ function mountPluginsSidebarViewInto(container) {
                 WebkitBoxOrient: "vertical"
               }
             },
-            String(plugin.description)
+            displayDescription
           )
         );
       }
@@ -882,7 +983,7 @@ function mountPluginsSidebarViewInto(container) {
         if (ret.success && ret.plugin) {
           await pluginManager.installFromInfo(ret.plugin, { enabled: true });
           doRefresh();
-          showMessage(t("msg.installed", "已安装 {name}。", { name: ret.plugin.name || ret.plugin.id }));
+          showMessage(t("msg.installed", "已安装 {name}。", { name: getPluginDisplayName(ret.plugin) }));
         } else {
           showMessage(t("msg.installFailed", "安装失败：{message}", { message: ret.error?.message || "未知错误" }), "error");
         }
@@ -934,7 +1035,7 @@ function mountPluginsSidebarViewInto(container) {
           if (ret.success && ret.plugin) {
             await pluginManager.installFromInfo(ret.plugin, { enabled: true });
             doRefresh();
-            showMessage(t("msg.installed", "已安装 {name}。", { name: ret.plugin.name || ret.plugin.id }));
+            showMessage(t("msg.installed", "已安装 {name}。", { name: getPluginDisplayName(ret.plugin) }));
           } else {
             showMessage(t("msg.installFailed", "安装失败：{message}", { message: ret.error?.message || "未知错误" }), "error");
           }
@@ -993,7 +1094,7 @@ function mountPluginsSidebarViewInto(container) {
           if (ret.success && ret.plugin) {
             await pluginManager.installFromInfo(ret.plugin, { enabled: true });
             doRefresh();
-            showMessage(t("msg.installed", "已安装 {name}。", { name: ret.plugin.name || ret.plugin.id }));
+            showMessage(t("msg.installed", "已安装 {name}。", { name: getPluginDisplayName(ret.plugin) }));
           } else {
             showMessage(t("msg.installFailed", "安装失败：{message}", { message: ret.error?.message || "未知错误" }), "error");
           }
