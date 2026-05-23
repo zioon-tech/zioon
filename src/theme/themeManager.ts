@@ -1,6 +1,8 @@
 import { updatePwaThemeColor, type ResolvedTheme } from "./pwa";
 
 export type ThemePreference = "system" | "light" | "dark";
+export type ThemeVariant = "default" | "visual-studio-dark";
+export type ThemeSelection = ThemePreference | "visual-studio-dark";
 export type ThemeChangeSource = "init" | "settings" | "command" | "system" | "migration" | "refresh";
 
 type ThemeableEditor = {
@@ -13,6 +15,7 @@ type ThemeManagerOptions = {
 };
 
 const THEME_PREFERENCE_KEY = "zion.themePreference";
+const THEME_VARIANT_KEY = "zion.themeVariant";
 const LEGACY_THEME_KEY = "zion.theme";
 
 function isThemePreference(value: unknown): value is ThemePreference {
@@ -21,6 +24,14 @@ function isThemePreference(value: unknown): value is ThemePreference {
 
 function isResolvedTheme(value: unknown): value is ResolvedTheme {
   return value === "light" || value === "dark";
+}
+
+function isThemeVariant(value: unknown): value is ThemeVariant {
+  return value === "default" || value === "visual-studio-dark";
+}
+
+function isThemeSelection(value: unknown): value is ThemeSelection {
+  return isThemePreference(value) || value === "visual-studio-dark";
 }
 
 function readStoredPreference(): { preference: ThemePreference; migratedFromLegacy: boolean } {
@@ -34,6 +45,14 @@ function readStoredPreference(): { preference: ThemePreference; migratedFromLega
   return { preference: "system", migratedFromLegacy: false };
 }
 
+function readStoredVariant(): ThemeVariant {
+  try {
+    const stored = localStorage.getItem(THEME_VARIANT_KEY);
+    if (isThemeVariant(stored)) return stored;
+  } catch {}
+  return "default";
+}
+
 function getSystemTheme(): ResolvedTheme {
   try {
     return window.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "light" : "dark";
@@ -44,6 +63,7 @@ function getSystemTheme(): ResolvedTheme {
 
 export class ThemeManager {
   private preference: ThemePreference;
+  private variant: ThemeVariant;
   private resolvedTheme: ResolvedTheme;
   private mediaQuery: MediaQueryList | null = null;
   private systemHandler = () => {
@@ -53,6 +73,7 @@ export class ThemeManager {
   constructor(private readonly opts: ThemeManagerOptions) {
     const initial = readStoredPreference();
     this.preference = initial.preference;
+    this.variant = readStoredVariant();
     this.resolvedTheme = this.resolvePreference(initial.preference);
     if (initial.migratedFromLegacy) this.persistPreference(initial.preference);
   }
@@ -63,7 +84,6 @@ export class ThemeManager {
     try { this.mediaQuery?.addListener?.(this.systemHandler); } catch {}
     this.exposeApi();
     this.registerCommands();
-    this.registerSettings();
     this.apply("init", { force: true });
   }
 
@@ -81,11 +101,43 @@ export class ThemeManager {
     return this.resolvedTheme;
   }
 
+  getVariant(): ThemeVariant {
+    return this.variant;
+  }
+
+  getSelection(): ThemeSelection {
+    if (this.preference === "dark" && this.variant === "visual-studio-dark") {
+      return "visual-studio-dark";
+    }
+    return this.preference;
+  }
+
+  setSelection(selection: ThemeSelection, source: ThemeChangeSource = "settings"): void {
+    if (!isThemeSelection(selection)) return;
+    if (selection === "visual-studio-dark") {
+      this.preference = "dark";
+      this.variant = "visual-studio-dark";
+    } else {
+      this.preference = selection;
+      this.variant = "default";
+    }
+    this.persistPreference(this.preference);
+    try { localStorage.setItem(THEME_VARIANT_KEY, this.variant); } catch {}
+    this.apply(source, { force: true });
+  }
+
   setPreference(preference: ThemePreference, source: ThemeChangeSource = "settings"): void {
     if (!isThemePreference(preference)) return;
     this.preference = preference;
     this.persistPreference(preference);
     this.apply(source);
+  }
+
+  setVariant(variant: ThemeVariant, source: ThemeChangeSource = "settings"): void {
+    if (!isThemeVariant(variant)) return;
+    this.variant = variant;
+    try { localStorage.setItem(THEME_VARIANT_KEY, variant); } catch {}
+    this.apply(source, { force: true });
   }
 
   toggle(source: ThemeChangeSource = "command"): void {
@@ -123,6 +175,10 @@ export class ThemeManager {
       try { editor.setTheme(nextResolved); } catch {}
     }
     document.documentElement.setAttribute("data-theme", nextResolved);
+    document.documentElement.setAttribute(
+      "data-theme-variant",
+      nextResolved === "dark" ? this.variant : "default"
+    );
 
     const refreshEditorThemes = () => {
       for (const editor of this.opts.getEditorCores()) {
@@ -137,6 +193,7 @@ export class ThemeManager {
     updatePwaThemeColor(nextResolved);
 
     try { window.zion.state.set("ui.themePreference", this.preference); } catch {}
+    try { window.zion.state.set("ui.themeVariant", this.variant); } catch {}
     try { window.zion.state.set("ui.theme", nextResolved); } catch {}
     this.updateStatusEntry();
     this.updateHeaderMenuEntry();
@@ -145,6 +202,7 @@ export class ThemeManager {
       try {
         window.zion.events.emit("theme/changed", {
           preference: this.preference,
+          variant: this.variant,
           resolvedTheme: nextResolved,
           source
         });
@@ -154,9 +212,14 @@ export class ThemeManager {
 
   private getDisplayLabel(): string {
     if (this.preference === "system") {
-      return `System (${this.resolvedTheme === "dark" ? "Dark" : "Light"})`;
+      return `System (${this.getResolvedThemeLabel()})`;
     }
-    return this.resolvedTheme === "dark" ? "Dark" : "Light";
+    return this.getResolvedThemeLabel();
+  }
+
+  private getResolvedThemeLabel(): string {
+    if (this.resolvedTheme === "light") return "Light";
+    return this.variant === "visual-studio-dark" ? "Visual Studio Dark" : "Dark";
   }
 
   private updateStatusEntry(): void {
@@ -185,52 +248,23 @@ export class ThemeManager {
 
   private registerCommands(): void {
     try {
-      window.zion.commands.registerCommand("zion.setTheme", (theme: ThemePreference) => {
-        this.setPreference(theme, "command");
+      window.zion.commands.registerCommand("zion.setTheme", (theme: ThemeSelection) => {
+        this.setSelection(theme, "command");
+      });
+      window.zion.commands.registerCommand("zion.theme.getSelection", () => this.getSelection());
+      window.zion.commands.registerCommand("zion.theme.setSelection", (theme: ThemeSelection) => {
+        this.setSelection(theme, "command");
       });
       window.zion.commands.registerCommand("zion.theme.setPreference", (theme: ThemePreference) => {
         this.setPreference(theme, "command");
       });
       window.zion.commands.registerCommand("zion.theme.getPreference", () => this.getPreference());
       window.zion.commands.registerCommand("zion.theme.getResolvedTheme", () => this.getResolvedTheme());
-      window.zion.commands.registerCommand("zion.toggleTheme", () => this.toggle("command"));
-    } catch {}
-  }
-
-  private registerSettings(): void {
-    try {
-      window.zion.settings?.registerPage?.({
-        id: "core.appearance",
-        title: "Appearance",
-        category: "general",
-        order: 10,
-        keywords: ["theme", "appearance", "color", "dark", "light", "system"],
-        sections: [
-          {
-            id: "core.appearance.theme",
-            title: "Theme",
-            settings: [
-              {
-                id: "appearance.colorTheme",
-                label: "Color theme",
-                description: "Choose whether Zion Next uses a light theme, a dark theme, or follows the system appearance.",
-                kind: "select",
-                scope: "application",
-                defaultValue: "system",
-                enumOptions: [
-                  { label: "System", value: "system" },
-                  { label: "Light", value: "light" },
-                  { label: "Dark", value: "dark" }
-                ],
-                getValue: () => this.getPreference(),
-                setValue: (value: unknown) => {
-                  if (isThemePreference(value)) this.setPreference(value, "settings");
-                }
-              }
-            ]
-          }
-        ]
+      window.zion.commands.registerCommand("zion.theme.getVariant", () => this.getVariant());
+      window.zion.commands.registerCommand("zion.theme.setVariant", (variant: ThemeVariant) => {
+        this.setVariant(variant, "command");
       });
+      window.zion.commands.registerCommand("zion.toggleTheme", () => this.toggle("command"));
     } catch {}
   }
 
@@ -238,8 +272,12 @@ export class ThemeManager {
     try {
       (window.zion as any).theme = {
         getPreference: () => this.getPreference(),
+        getSelection: () => this.getSelection(),
         getResolvedTheme: () => this.getResolvedTheme(),
+        getVariant: () => this.getVariant(),
+        setSelection: (selection: ThemeSelection) => this.setSelection(selection, "settings"),
         setPreference: (preference: ThemePreference) => this.setPreference(preference, "settings"),
+        setVariant: (variant: ThemeVariant) => this.setVariant(variant, "settings"),
         toggle: () => this.toggle("command"),
         refresh: () => this.refresh(),
         getToken: (name: string) => this.getToken(name)

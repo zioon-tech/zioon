@@ -34,6 +34,33 @@ type PaletteItem =
       path?: string;
     };
 
+const THEME_OPTIONS = [
+  {
+    id: "system",
+    title: "System",
+    description: "跟随系统外观自动切换 Light / Dark",
+    keywords: ["theme", "appearance", "system", "auto", "跟随系统"]
+  },
+  {
+    id: "dark",
+    title: "Dark",
+    description: "Zion Next 默认深色主题",
+    keywords: ["theme", "appearance", "dark", "默认深色"]
+  },
+  {
+    id: "light",
+    title: "Light",
+    description: "Zion Next 默认浅色主题",
+    keywords: ["theme", "appearance", "light", "浅色"]
+  },
+  {
+    id: "visual-studio-dark",
+    title: "深色 (Visual Studio)",
+    description: "参考 VS Code Visual Studio Dark 的深色主题",
+    keywords: ["theme", "appearance", "dark", "visual studio", "vscode", "vs dark"]
+  }
+] as const;
+
 function safeText(v: any): string {
   return String(v ?? "");
 }
@@ -415,6 +442,27 @@ export function initCommandPalette() {
       category: "Zion",
       pluginId: "core"
     });
+    base.set("zion.setTheme", {
+      id: "zion.setTheme",
+      title: "主题：选择主题",
+      description: "打开主题列表并切换 Zion Next 的外观主题",
+      category: "Appearance",
+      pluginId: "core"
+    });
+    base.set("zion.theme.setSelection", {
+      id: "zion.theme.setSelection",
+      title: "主题：选择主题",
+      description: "打开主题列表并切换 Zion Next 的外观主题",
+      category: "Appearance",
+      pluginId: "core"
+    });
+    base.set("zion.toggleTheme", {
+      id: "zion.toggleTheme",
+      title: "主题：快速切换",
+      description: "切换 Light 和当前深色主题；在命令面板中会打开主题列表",
+      category: "Appearance",
+      pluginId: "core"
+    });
     base.set("bottomPanel.toggle", {
       id: "bottomPanel.toggle",
       title: "底部面板：打开/关闭",
@@ -551,6 +599,34 @@ export function initCommandPalette() {
     return items;
   };
 
+  const buildThemeActionItems = (): PaletteItem[] => {
+    const current = safeText(
+      (window as any).zion?.theme?.getSelection?.() ||
+      (window as any).zion?.state?.get?.("ui.themePreference") ||
+      (window as any).zion?.state?.get?.("ui.theme") ||
+      "system"
+    );
+    return THEME_OPTIONS.map(theme => {
+      const isActive = theme.id === current;
+      return {
+        kind: "action" as const,
+        id: `theme.select:${theme.id}`,
+        title: `${isActive ? "✓ " : ""}${theme.title}`,
+        description: theme.description,
+        badge: isActive ? "当前" : "主题",
+        keywords: [...theme.keywords],
+        run: () => {
+          const zion = (window as any).zion;
+          if (zion?.theme?.setSelection) {
+            zion.theme.setSelection(theme.id);
+            return;
+          }
+          zion?.commands?.executeCommand?.("zion.setTheme", theme.id);
+        }
+      };
+    });
+  };
+
   const openSubmenu = async (commandId: string) => {
     if (commandId === "models.selectModel" || commandId === "models.openSwitcher") {
       const items = await buildModelActionItems();
@@ -560,6 +636,22 @@ export function initCommandPalette() {
         placeholder: "搜索模型…",
         emptyText: "没有找到匹配的模型",
         items
+      };
+      input.value = "";
+      render("");
+      try {
+        input.focus();
+        input.setSelectionRange(0, 0);
+      } catch {}
+      return true;
+    }
+    if (commandId === "zion.setTheme" || commandId === "zion.theme.setSelection" || commandId === "zion.toggleTheme") {
+      currentSubmenu = {
+        id: "themes",
+        title: "选择主题",
+        placeholder: "搜索主题…",
+        emptyText: "没有找到匹配的主题",
+        items: buildThemeActionItems()
       };
       input.value = "";
       render("");

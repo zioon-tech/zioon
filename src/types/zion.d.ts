@@ -161,8 +161,12 @@ declare global {
       };
       theme?: {
         getPreference(): "system" | "light" | "dark";
+        getSelection(): "system" | "light" | "dark" | "visual-studio-dark";
         getResolvedTheme(): "light" | "dark";
+        getVariant(): "default" | "visual-studio-dark";
         setPreference(preference: "system" | "light" | "dark"): void;
+        setSelection(selection: "system" | "light" | "dark" | "visual-studio-dark"): void;
+        setVariant(variant: "default" | "visual-studio-dark"): void;
         toggle(): void;
         refresh(): void;
         getToken(name: string): string;

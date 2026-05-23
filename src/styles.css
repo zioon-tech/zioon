@@ -145,6 +145,151 @@
   --panel-active-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent), 0 0 0 3px rgba(59, 130, 246, 0.10), 0 12px 24px rgba(15, 23, 42, 0.10);
 }
 
+/* Visual Studio Dark preset */
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] {
+  --bg: #1e1e1e;
+  --panel: #252526;
+  --border: #3c3c3c;
+  --fg: #cccccc;
+  --dim: rgba(204,204,204,0.62);
+  --accent: #007acc;
+  --accent-rgb: 0, 122, 204;
+  --ok: #89d185;
+  --app-theme-color: #2d2d30;
+  --app-background-color: #1e1e1e;
+
+  --md-code-bg: #2d2d30;
+  --md-codeblock-bg: #1e1e1e;
+  --md-codeblock-border: #3c3c3c;
+  --md-quote-bg: color-mix(in srgb, #2d2d30 78%, transparent);
+  --md-quote-border: #007acc;
+  --md-table-header-bg: #2d2d30;
+
+  --scrollbar-track: #1e1e1e;
+  --scrollbar-thumb: #424242;
+  --scrollbar-thumb-hover: #5a5a5a;
+
+  --selection-bg: rgba(38, 79, 120, 0.78);
+  --caret-color: #aeafad;
+  --selection-match-bg: rgba(234, 92, 0, 0.20);
+  --selection-match-border: rgba(234, 92, 0, 0.38);
+  --search-match-bg: rgba(234, 92, 0, 0.22);
+  --search-match-border: rgba(234, 92, 0, 0.46);
+  --search-current-bg: rgba(81, 92, 106, 0.88);
+  --search-current-border: rgba(234, 92, 0, 0.70);
+
+  --editor-tabsbar-bg: #2d2d2d;
+  --editor-tab-active-bg: #1e1e1e;
+  --editor-tab-hover-bg: #333333;
+  --editor-tab-border: #2d2d2d;
+  --editor-tab-shadow: none;
+  --editor-tab-active-shadow: none;
+  --panel-active-border: #007acc;
+  --panel-active-glow: #007acc;
+  --panel-active-shadow: inset 0 0 0 1px rgba(0, 122, 204, 0.58);
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar {
+  background: #007acc;
+  border-top-color: #007acc;
+  color: #ffffff;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-status .bottombar-status-item,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-right,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-right .bottombar-metric,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-right .zion-terminal-bottombar-info,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-right .zion-terminal-bottombar-trigger {
+  color: rgba(255,255,255,0.92);
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-status .bottombar-status-item:hover,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-status .bottombar-status-item:focus-visible,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-right .zion-terminal-bottombar-switcher:hover,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-right .zion-terminal-bottombar-switcher:focus-within,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] #bottombar-right .zion-terminal-bottombar-trigger:hover {
+  background: rgba(255,255,255,0.16);
+  color: #ffffff;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-activitybar {
+  background: #333333;
+  border-right-color: #2d2d30;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-sidebar,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-auxbar,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-bottompanel {
+  background: #252526;
+  border-color: #3c3c3c;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-panel {
+  background: #1e1e1e;
+  border-color: #2d2d30;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-tabsbar {
+  background: #2d2d2d;
+  border-bottom-color: #252526;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-header {
+  background: #1e1e1e;
+  border-bottom: 1px solid #2d2d30;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-session-tab {
+  border-radius: 0;
+  opacity: 0.78;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-session-tab:hover {
+  background: #333333;
+  border-color: #333333;
+  opacity: 1;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-session-tab.is-active {
+  background: #1e1e1e;
+  border-color: #1e1e1e;
+  border-top-color: #007acc;
+  border-bottom-color: #1e1e1e;
+  color: #ffffff;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-session-tab.is-active::after {
+  background: linear-gradient(90deg, transparent, #1e1e1e 44%, #1e1e1e);
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-bottompanel-tab:hover,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-bottompanel-action:hover,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-sidebar-tab:hover,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-sidebar-action:hover,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-activitybar-item:hover {
+  background: #2a2d2e;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-bottompanel-tab.is-active,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-sidebar-tab.is-active,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-activitybar-item.is-active {
+  background: #37373d;
+  border-color: #007acc;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .cm-editor,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .cm-scroller,
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .cm-content {
+  background: #1e1e1e;
+}
+
+:root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .cm-gutters {
+  background: #1e1e1e;
+  border-right-color: #2d2d30;
+  color: #858585;
+}
+
 /* Heading size modes (global) */
 :root[data-heading-size="small"] {
   --md-h1-size: 1.2em;

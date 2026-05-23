@@ -775,11 +775,17 @@ export async function activate(ctx) {
               label: "主题",
               description: "切换整体明暗风格",
               enumOptions: [
+                { value: "system", label: "System" },
                 { value: "dark", label: "Dark" },
-                { value: "light", label: "Light" }
+                { value: "light", label: "Light" },
+                { value: "visual-studio-dark", label: "深色 (Visual Studio)" }
               ],
-              getValue: () => String(window.zion.state.get("ui.theme") || "dark"),
-              setValue: async (value) => window.zion.commands.executeCommand("zion.setTheme", value === "light" ? "light" : "dark")
+              getValue: () => String(window.zion.theme?.getSelection?.() || window.zion.state.get("ui.themePreference") || window.zion.state.get("ui.theme") || "system"),
+              setValue: async (value) => {
+                const selection = value === "light" || value === "dark" || value === "system" || value === "visual-studio-dark" ? value : "system";
+                if (window.zion.theme?.setSelection) return window.zion.theme.setSelection(selection);
+                return window.zion.commands.executeCommand("zion.setTheme", selection);
+              }
             },
             {
               id: "appearance.editorWidthMode",
