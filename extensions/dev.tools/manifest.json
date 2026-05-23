@@ -13,7 +13,9 @@
       "commands": [
         {
           "id": "tools.parseFromContent",
-          "title": "Parse Tools From Content"
+          "title": "Parse Tools From Content",
+          "titleKey": "dev.tools.cmd.parseFromContent",
+          "categoryKey": "dev.tools.category.tools"
         }
       ]
     },

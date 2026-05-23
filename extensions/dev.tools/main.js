@@ -3,6 +3,38 @@ import { installToolCallCards } from "./tool-calls.js";
 import { installToolSwitcher } from "./tool-switcher.js";
 import { ToolsSettingsPage, buildToolRows } from "./ToolsSettingsPage.jsx";
 
+const I18N_NS = "dev.tools";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.tools": "工具",
+    "cmd.parseFromContent": "从内容解析工具",
+    "settings.title": "工具",
+    "settings.description": "启用工具与工具入口",
+    "settings.section": "工具",
+    "settings.manager": "工具",
+    "status.tools": "工具：{count}",
+    "status.tooltip": "管理已启用工具"
+  },
+  "en-US": {
+    "category.tools": "Tools",
+    "cmd.parseFromContent": "Parse Tools From Content",
+    "settings.title": "Tools",
+    "settings.description": "Enable tools and tool entry points",
+    "settings.section": "Tools",
+    "settings.manager": "Tools",
+    "status.tools": "Tools: {count}",
+    "status.tooltip": "Manage enabled tools"
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 function getSessionAnnotations(sessionId) {
   try {
     return window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sessionId) || {};
@@ -20,6 +52,11 @@ function updateSessionAnnotations(sessionId, updater) {
 }
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   // 注册默认工具与处理器
   registerDefaultTools();
 
@@ -112,20 +149,20 @@ export async function activate(ctx) {
     toolsBtnDisp?.dispose?.();
     toolsBtnDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: "dev.tools.button",
-      text: `Tools: ${n}`,
-      tooltip: "Manage enabled tools (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
+      text: t("status.tools", "Tools: {count}", { count: n }),
+      tooltip: `${t("status.tooltip", "Manage enabled tools")} (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)`,
       priority: 70,
       onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
     }) || window.zion.editorHeaderMenu?.register?.({
       id: "dev.tools.button",
-      title: `工具：${n}`,
+      title: t("status.tools", "Tools: {count}", { count: n }),
       section: "Chat",
       order: 20,
       onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
     }) || window.zion.statusBar.registerItem({
       id: "dev.tools.button",
-      text: `Tools: ${n}`,
-      tooltip: "Manage enabled tools (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
+      text: t("status.tools", "Tools: {count}", { count: n }),
+      tooltip: `${t("status.tooltip", "Manage enabled tools")} (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)`,
       onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
     });
   };
@@ -207,17 +244,21 @@ export async function activate(ctx) {
       pluginId: "dev.tools",
       category: "workspace",
       title: "Tools",
+      titleKey: "dev.tools.settings.title",
       description: "启用工具与工具入口",
+      descriptionKey: "dev.tools.settings.description",
       order: 38,
       sections: [
         {
           id: "tools.preferences.page",
           title: "Tools",
+          titleKey: "dev.tools.settings.section",
           settings: [
             {
               id: "tools.preferences.manager",
               kind: "custom",
               label: "Tools",
+              labelKey: "dev.tools.settings.manager",
               renderCustom: () =>
                 createElement(ToolsSettingsPage, {
                   getTools: getToolRows,
@@ -235,7 +276,8 @@ export async function activate(ctx) {
 
   ctx.subscriptions.push(
     window.zion.state.onDidChange("chat.tools", () => { ensureEnabledTools(); updateToolsBtn(); }),
-    window.zion.state.onDidChange("chat.enabledTools", () => { persistEnabledTools(); updateToolsBtn(); })
+    window.zion.state.onDidChange("chat.enabledTools", () => { persistEnabledTools(); updateToolsBtn(); }),
+    window.zion.events.on("i18n/changed", updateToolsBtn)
   );
 
 }
