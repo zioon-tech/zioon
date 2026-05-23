@@ -1,5 +1,21 @@
 const DEFAULT_BASE_URL = "http://127.0.0.1:8765";
 
+const I18N_NS = "dev.plugins";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.plugins": "插件",
+    "cmd.show": "显示插件",
+    "ui.plugins": "插件",
+    "ui.reload": "重新加载插件"
+  },
+  "en-US": {
+    "category.plugins": "Plugins",
+    "cmd.show": "Show Plugins",
+    "ui.plugins": "Plugins",
+    "ui.reload": "Reload plugins"
+  }
+};
+
 function h(tag, props, ...children) {
   const el = document.createElement(tag);
   if (props) {
@@ -1089,6 +1105,11 @@ function mountPluginsSidebarViewInto(container) {
 
 export async function activate(ctx) {
   try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
+  try {
     const dispCmd = window.zion.commands.registerCommand("zion.plugins.show", () => {
       try {
         window.zion.activityBar.activateItem("plugins.activity");
@@ -1103,6 +1124,7 @@ export async function activate(ctx) {
       pluginId: "dev.plugins",
       icon: "$(extensions)",
       tooltip: "Plugins",
+      tooltipKey: "dev.plugins.ui.plugins",
       sideBarViewId: "plugins.manager",
       order: 20
     });
@@ -1110,6 +1132,7 @@ export async function activate(ctx) {
       id: "plugins.manager",
       pluginId: "dev.plugins",
       title: "Plugins",
+      titleKey: "dev.plugins.ui.plugins",
       icon: "🧩",
       order: 20,
       location: "sidebar",
@@ -1117,7 +1140,9 @@ export async function activate(ctx) {
         {
           id: "plugins.reload",
           title: "Reload plugins",
+          titleKey: "dev.plugins.ui.reload",
           ariaLabel: "Reload plugins",
+          ariaLabelKey: "dev.plugins.ui.reload",
           icon: "↻",
           onClick: () => {
             try {

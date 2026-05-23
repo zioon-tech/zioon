@@ -40,7 +40,11 @@ const I18N_MESSAGES = {
     "slash.saveAsNew.description": "将当前内容另存为新会话",
     "ui.sessions": "会话",
     "ui.createNew": "新建会话",
+    "ui.newFolder": "新建文件夹",
     "ui.actions": "操作",
+    "ui.import": "导入会话",
+    "ui.exportAll": "导出全部会话",
+    "ui.exportSelected": "导出所选项",
     "ui.fork": "分叉会话",
     "ui.refresh": "刷新",
     "dialog.newTitle": "新会话标题",
@@ -67,7 +71,11 @@ const I18N_MESSAGES = {
     "slash.saveAsNew.description": "Save current content as a new session",
     "ui.sessions": "Sessions",
     "ui.createNew": "Create new session",
+    "ui.newFolder": "New Folder",
     "ui.actions": "Actions",
+    "ui.import": "Import Sessions",
+    "ui.exportAll": "Export All Sessions",
+    "ui.exportSelected": "Export Selected",
     "ui.fork": "Fork Session",
     "ui.refresh": "Refresh",
     "dialog.newTitle": "New session title",
@@ -1143,6 +1151,7 @@ export async function activate(ctx) {
       pluginId: "dev.session-manager",
       icon: "$(comment-discussion)",
       tooltip: t("ui.sessions", "Sessions"),
+      tooltipKey: "dev.session-manager.ui.sessions",
       sideBarViewId: "sessions.list",
       order: 10
     });
@@ -1150,6 +1159,7 @@ export async function activate(ctx) {
       id: "sessions.list",
       pluginId: "dev.session-manager",
       title: t("ui.sessions", "Sessions"),
+      titleKey: "dev.session-manager.ui.sessions",
       icon: "💬",
       order: 10,
       location: "sidebar",
@@ -1157,7 +1167,9 @@ export async function activate(ctx) {
         {
           id: "sessions.new",
           title: t("ui.createNew", "Create new session"),
+          titleKey: "dev.session-manager.ui.createNew",
           ariaLabel: t("ui.createNew", "Create new session"),
+          ariaLabelKey: "dev.session-manager.ui.createNew",
           icon: "$(add)",
           onClick: () => window.zion.commands.executeCommand("zion.sessions.new", {
             parentId: window.zion.state.get("sessions.selectedFolderId") || "root"
@@ -1166,7 +1178,9 @@ export async function activate(ctx) {
         {
           id: "sessions.actions",
           title: t("ui.actions", "Actions"),
+          titleKey: "dev.session-manager.ui.actions",
           ariaLabel: t("ui.actions", "Actions"),
+          ariaLabelKey: "dev.session-manager.ui.actions",
           icon: "⋮",
           onClick: () => {
             try {
@@ -1187,6 +1201,9 @@ export async function activate(ctx) {
       }
     });
     ctx.subscriptions.push(dispItem, dispView);
+    ctx.subscriptions.push(window.zion.events.on("i18n/changed", () => {
+      try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    }));
     try { window.zion.activityBar.activateItem("sessions.activity"); } catch {}
     focusCurrentSessionInSidebar();
   } catch {}

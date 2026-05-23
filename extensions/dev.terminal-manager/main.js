@@ -1,6 +1,31 @@
 import { mountTerminalManagerSidebarViewInto } from "./session-tools.js";
 
+const I18N_NS = "dev.terminal-manager";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.terminal": "终端",
+    "cmd.openManager": "打开终端管理器",
+    "cmd.closeManager": "关闭终端管理器",
+    "cmd.newSameLevel": "同级新建会话",
+    "ui.terminal": "终端",
+    "ui.refresh": "刷新会话"
+  },
+  "en-US": {
+    "category.terminal": "Terminal",
+    "cmd.openManager": "Open Terminal Manager",
+    "cmd.closeManager": "Close Terminal Manager",
+    "cmd.newSameLevel": "New Session at Same Level",
+    "ui.terminal": "Terminal",
+    "ui.refresh": "Refresh sessions"
+  }
+};
+
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   // 注册 terminalManage 工具 schema 到 chat.tools
   try {
     const terminalManageTool = {
@@ -319,6 +344,7 @@ export async function activate(ctx) {
       pluginId: "dev.terminal-manager",
       icon: "$(terminal)",
       tooltip: "Terminal",
+      tooltipKey: "dev.terminal-manager.ui.terminal",
       sideBarViewId: "terminal.manager",
       order: 30
     });
@@ -326,6 +352,7 @@ export async function activate(ctx) {
       id: "terminal.manager",
       pluginId: "dev.terminal-manager",
       title: "Terminal",
+      titleKey: "dev.terminal-manager.ui.terminal",
       icon: "💻",
       order: 30,
       location: "sidebar",
@@ -333,7 +360,9 @@ export async function activate(ctx) {
         {
           id: "terminal.refresh",
           title: "Refresh sessions",
+          titleKey: "dev.terminal-manager.ui.refresh",
           ariaLabel: "Refresh sessions",
+          ariaLabelKey: "dev.terminal-manager.ui.refresh",
           icon: "↻",
           onClick: () => {
             try {

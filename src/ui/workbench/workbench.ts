@@ -10,6 +10,23 @@ function safeText(text: string) {
   return String(text ?? "");
 }
 
+function tr(key: string | undefined, fallback = ""): string {
+  if (!key) return fallback;
+  try {
+    const translated = (window as any).zion?.i18n?.t?.(key);
+    if (translated && translated !== key) return translated;
+  } catch {}
+  return fallback || key;
+}
+
+function translatedTitle(item: { title?: string; titleKey?: string } | null | undefined, fallback = ""): string {
+  return tr(item?.titleKey, safeText(item?.title || fallback));
+}
+
+function translatedTooltip(item: { tooltip?: string; tooltipKey?: string } | null | undefined, fallback = ""): string {
+  return tr(item?.tooltipKey, safeText(item?.tooltip || fallback));
+}
+
 function isScrollableY(el: HTMLElement): boolean {
   try {
     const st = getComputedStyle(el);
@@ -278,8 +295,9 @@ export function initWorkbench(host: HTMLElement): {
     for (const it of items) {
       const btn = el("button", "zion-activitybar-item");
       btn.type = "button";
-      btn.title = safeText(it.tooltip || "");
-      btn.setAttribute("aria-label", safeText(it.tooltip || it.id));
+      const tooltip = translatedTooltip(it, it.id);
+      btn.title = tooltip;
+      btn.setAttribute("aria-label", tooltip);
       if (activeId === it.id) btn.classList.add("is-active");
       const icon = String(it.icon || "").trim();
       btn.textContent = "";
@@ -583,15 +601,16 @@ export function initWorkbench(host: HTMLElement): {
 
     auxTabs.style.display = views.length > 1 ? "flex" : "none";
     auxTitle.style.display = views.length > 1 ? "none" : "block";
-    auxTitle.textContent = safeText(views[0]?.title || "");
+    auxTitle.textContent = translatedTitle(views[0], "");
     auxTabs.innerHTML = "";
     if (auxTabs.style.display !== "none") {
       for (const v of views) {
         const tab = el("button", "zion-auxbar-tab");
         (tab as HTMLButtonElement).type = "button";
-        tab.title = safeText(v.title);
-        tab.setAttribute("aria-label", safeText(v.title));
-        tab.textContent = safeText(v.icon ? `${v.icon} ${v.title}` : v.title);
+        const title = translatedTitle(v);
+        tab.title = title;
+        tab.setAttribute("aria-label", title);
+        tab.textContent = safeText(v.icon ? `${v.icon} ${title}` : title);
         if (v.id === activeViewId) tab.classList.add("is-active");
         (tab as HTMLButtonElement).onclick = () => auxiliaryBarRuntime.activateView(v.id);
         auxTabs.appendChild(tab);
@@ -859,9 +878,10 @@ export function initWorkbench(host: HTMLElement): {
     for (const v of views) {
       const tab = el("button", "zion-bottompanel-tab") as HTMLButtonElement;
       tab.type = "button";
-      tab.title = safeText(v.title);
-      tab.setAttribute("aria-label", safeText(v.title));
-      tab.textContent = safeText(v.icon ? `${v.icon} ${v.title}` : v.title);
+      const title = translatedTitle(v);
+      tab.title = title;
+      tab.setAttribute("aria-label", title);
+      tab.textContent = safeText(v.icon ? `${v.icon} ${title}` : title);
       if (v.id === nextId) tab.classList.add("is-active");
       tab.onclick = () => bottomPanelRuntime.activateView(v.id);
       bottomTabs.appendChild(tab);
@@ -974,15 +994,17 @@ export function initWorkbench(host: HTMLElement): {
     const activeViewId = sideBarRuntime.getActiveViewId();
     const activeView = activeViewId ? sideBarRuntime.getView(activeViewId) : null;
 
-    headerTitle.textContent = safeText(activeView?.title || "Side Bar");
+    headerTitle.textContent = translatedTitle(activeView, "Side Bar");
 
     headerActions.innerHTML = "";
     if (activeView?.headerActions && Array.isArray(activeView.headerActions)) {
       for (const a of activeView.headerActions) {
         const btn = el("button", "zion-sidebar-action");
         btn.type = "button";
-        btn.title = safeText(a.title);
-        btn.setAttribute("aria-label", safeText(a.ariaLabel || a.title));
+        const title = translatedTitle(a);
+        const ariaLabel = tr(a.ariaLabelKey, safeText(a.ariaLabel || title));
+        btn.title = title;
+        btn.setAttribute("aria-label", ariaLabel);
         const icon = String(a.icon || "").trim();
         btn.textContent = "";
         const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
@@ -1011,9 +1033,10 @@ export function initWorkbench(host: HTMLElement): {
       for (const v of views) {
         const tab = el("button", "zion-sidebar-tab");
         tab.type = "button";
-        tab.title = safeText(v.title);
-        tab.setAttribute("aria-label", safeText(v.title));
-        tab.textContent = safeText(v.icon ? `${v.icon} ${v.title}` : v.title);
+        const title = translatedTitle(v);
+        tab.title = title;
+        tab.setAttribute("aria-label", title);
+        tab.textContent = safeText(v.icon ? `${v.icon} ${title}` : title);
         if (v.id === activeViewId) tab.classList.add("is-active");
         tab.onclick = () => sideBarRuntime.activateView(v.id);
         tabs.appendChild(tab);
@@ -1099,6 +1122,16 @@ export function initWorkbench(host: HTMLElement): {
   const dispS = sideBarRuntime.onDidChange(() => renderSideBar());
   const dispX = auxiliaryBarRuntime.onDidChange(() => renderAuxiliaryBar());
   const dispB = bottomPanelRuntime.onDidChange(() => renderBottomPanel());
+  let dispI18n: { dispose?: () => void } | null = null;
+  try {
+    dispI18n = (window as any).zion?.events?.on?.("i18n/changed", () => {
+      renderActivityBar();
+      renderSideBar();
+      renderAuxiliaryBar();
+      renderBottomPanel();
+      renderMobileBar();
+    }) || null;
+  } catch {}
   const onResize = () => {
     renderMobileBar();
     renderBottomPanel();
@@ -1127,6 +1160,9 @@ export function initWorkbench(host: HTMLElement): {
       } catch {}
       try {
         dispB.dispose();
+      } catch {}
+      try {
+        dispI18n?.dispose?.();
       } catch {}
       try {
         window.removeEventListener("resize", onResize);

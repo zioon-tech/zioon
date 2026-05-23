@@ -418,19 +418,27 @@ export async function activate(ctx) {
   );
 
   // Workspace entry: prefer editor header menu, keep statusBar as legacy fallback.
-  const status = window.zion.editorHeaderMenu?.register?.({
-    id: "core.fsmanager",
-    title: t("ui.title", "文件系统访问管理"),
-    section: "Workspace",
-    order: 10,
-    onClick: () => window.zion.commands.executeCommand("fs.showManager")
-  }) || window.zion.statusBar.registerItem({
-    id: "core.fsmanager",
-    text: "FS",
-    tooltip: t("ui.tooltip", "Manage file/folder access"),
-    onClick: () => window.zion.commands.executeCommand("fs.showManager")
-  });
-  ctx.subscriptions.push(status);
+  let status = null;
+  const updateStatus = () => {
+    try { status?.dispose?.(); } catch {}
+    status = window.zion.editorHeaderMenu?.register?.({
+      id: "core.fsmanager",
+      title: t("ui.title", "文件系统访问管理"),
+      section: "Workspace",
+      order: 10,
+      onClick: () => window.zion.commands.executeCommand("fs.showManager")
+    }) || window.zion.statusBar.registerItem({
+      id: "core.fsmanager",
+      text: "FS",
+      tooltip: t("ui.tooltip", "Manage file/folder access"),
+      onClick: () => window.zion.commands.executeCommand("fs.showManager")
+    });
+  };
+  updateStatus();
+  ctx.subscriptions.push(
+    { dispose: () => { try { status?.dispose?.(); } catch {} } },
+    window.zion.events.on("i18n/changed", updateStatus)
+  );
 
   // Register FS tools for LLM usage
   try { registerFsTools(); } catch {}

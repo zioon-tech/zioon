@@ -209,6 +209,7 @@ declare global {
           pluginId: string;
           icon: string;
           tooltip?: string;
+          tooltipKey?: string;
           order?: number;
           when?: string;
           sideBarViewId?: string;
@@ -227,12 +228,13 @@ declare global {
           id: string;
           pluginId: string;
           title: string;
+          titleKey?: string;
           icon?: string;
           location?: 'sidebar' | string;
           order?: number;
           when?: string;
           canClose?: boolean;
-          headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };
@@ -253,13 +255,14 @@ declare global {
           id: string;
           pluginId: string;
           title: string;
+          titleKey?: string;
           icon?: string;
           location?: 'auxiliarybar' | string;
           order?: number;
           when?: string;
           canClose?: boolean;
           keepWhenActive?: boolean;
-          headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };
@@ -281,6 +284,7 @@ declare global {
           id: string;
           pluginId: string;
           title: string;
+          titleKey?: string;
           icon?: string;
           location?: 'bottompanel' | string;
           order?: number;

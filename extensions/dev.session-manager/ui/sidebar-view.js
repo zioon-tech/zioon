@@ -3,6 +3,15 @@ export function createSessionsSidebarViewManager(opts) {
   const createSessionsListRenderer = opts?.createSessionsListRenderer;
   const openAncestors = opts?.openAncestors;
 
+  function t(key, fallback) {
+    const fullKey = `dev.session-manager.${key}`;
+    try {
+      const translated = zion?.i18n?.t?.(fullKey);
+      if (translated && translated !== fullKey) return translated;
+    } catch {}
+    return fallback;
+  }
+
   let current = null;
   let revealRaf = 0;
 
@@ -62,9 +71,10 @@ export function createSessionsSidebarViewManager(opts) {
     headerMenu.style.display = "none";
     headerMenu.style.minWidth = "140px";
 
-    const mkHeaderMenuItem = (text, onClick) => {
+    const menuItems = [];
+    const mkHeaderMenuItem = (key, fallback, onClick) => {
       const item = document.createElement("div");
-      item.textContent = text;
+      item.textContent = t(key, fallback);
       item.style.padding = "6px 16px";
       item.style.cursor = "pointer";
       item.style.fontSize = "13px";
@@ -72,22 +82,28 @@ export function createSessionsSidebarViewManager(opts) {
       item.onmouseenter = () => { item.style.background = "var(--border)"; };
       item.onmouseleave = () => { item.style.background = "transparent"; };
       item.onclick = () => { headerMenu.style.display = "none"; onClick(); };
+      menuItems.push({ item, key, fallback });
       return item;
     };
+    const refreshMenuText = () => {
+      for (const m of menuItems) {
+        try { m.item.textContent = t(m.key, m.fallback); } catch {}
+      }
+    };
 
-    headerMenu.appendChild(mkHeaderMenuItem("New Session", () => {
+    headerMenu.appendChild(mkHeaderMenuItem("ui.createNew", "New Session", () => {
       const selFolder = zion.state.get("sessions.selectedFolderId") || "root";
       zion.commands.executeCommand("zion.sessions.new", { parentId: selFolder });
       refreshIfOpen();
     }));
-    headerMenu.appendChild(mkHeaderMenuItem("New Folder", () => {
+    headerMenu.appendChild(mkHeaderMenuItem("ui.newFolder", "New Folder", () => {
       const selFolder = zion.state.get("sessions.selectedFolderId") || "root";
       zion.commands.executeCommand("zion.sessions.newFolder", { parentId: selFolder, targetView: "sidebar" });
     }));
-    headerMenu.appendChild(mkHeaderMenuItem("Import Sessions", () => zion.commands.executeCommand("zion.sessions.import")));
-    headerMenu.appendChild(mkHeaderMenuItem("Export All Sessions", () => zion.commands.executeCommand("zion.sessions.export")));
-    headerMenu.appendChild(mkHeaderMenuItem("Export Selected", () => zion.commands.executeCommand("zion.sessions.exportSelected")));
-    headerMenu.appendChild(mkHeaderMenuItem("Delete Selected", () => zion.commands.executeCommand("zion.sessions.deleteSelected")));
+    headerMenu.appendChild(mkHeaderMenuItem("ui.import", "Import Sessions", () => zion.commands.executeCommand("zion.sessions.import")));
+    headerMenu.appendChild(mkHeaderMenuItem("ui.exportAll", "Export All Sessions", () => zion.commands.executeCommand("zion.sessions.export")));
+    headerMenu.appendChild(mkHeaderMenuItem("ui.exportSelected", "Export Selected", () => zion.commands.executeCommand("zion.sessions.exportSelected")));
+    headerMenu.appendChild(mkHeaderMenuItem("dialog.deleteSelected", "Delete Selected", () => zion.commands.executeCommand("zion.sessions.deleteSelected")));
 
     container.appendChild(headerMenu);
     container.addEventListener("click", () => { headerMenu.style.display = "none"; });
@@ -190,6 +206,7 @@ export function createSessionsSidebarViewManager(opts) {
       anchorToCurrent,
       revealSession,
       toggleMenu: () => {
+        refreshMenuText();
         headerMenu.style.display = headerMenu.style.display === "none" ? "block" : "none";
       },
       dispose: () => {
