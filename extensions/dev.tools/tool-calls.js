@@ -10,6 +10,15 @@ import {
   reconcileNearestAnchors
 } from "../../src/chat/restore";
 
+function t(key, fallback, values) {
+  const fullKey = `dev.tools.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 /**
  * Effects:
  * - addInline: 在文档中插入“调用 xxx”文本并为其加 mark 装饰
@@ -639,7 +648,7 @@ function createPatchView(text) {
   }
   if (lines.length > MAX_LINES) {
     const more = document.createElement("div");
-    more.textContent = `patch 过长，已截断显示前 ${MAX_LINES} 行`;
+    more.textContent = t("call.patchTruncated", "patch 过长，已截断显示前 {count} 行", { count: MAX_LINES });
     Object.assign(more.style, {
       padding: "8px 10px",
       fontSize: "10px",
@@ -1052,7 +1061,7 @@ class ToolCallCardWidget extends WidgetType {
       minWidth: 0
     });
     const title = document.createElement("span");
-    title.textContent = `调用 ${this.name}`;
+    title.textContent = t("call.title", "调用 {name}", { name: this.name });
     Object.assign(title.style, {
       fontSize: "11px",
       fontWeight: "650",
@@ -1072,7 +1081,7 @@ class ToolCallCardWidget extends WidgetType {
     badge.setAttribute("data-status", status);
     badge.innerHTML = toolStatusIcon(status);
     badge.title = label;
-    badge.setAttribute("aria-label", `工具调用状态：${label}`);
+    badge.setAttribute("aria-label", t("call.status", "工具调用状态：{label}", { label }));
     titleRow.appendChild(badge);
     headMain.appendChild(titleRow);
 
@@ -1099,8 +1108,8 @@ class ToolCallCardWidget extends WidgetType {
       actionButtons.style.cssText = "display:flex;gap:6px;";
 
       const revertBtn = document.createElement("button");
-      revertBtn.textContent = "Revert";
-      revertBtn.title = "回退编辑操作";
+      revertBtn.textContent = t("call.revert", "Revert");
+      revertBtn.title = t("call.revertEdit", "回退编辑操作");
       Object.assign(revertBtn.style, {
         background: "rgba(255, 100, 100, 0.1)",
         border: "1px solid rgba(255, 100, 100, 0.3)",
@@ -1132,8 +1141,8 @@ class ToolCallCardWidget extends WidgetType {
       });
 
       const acceptBtn = document.createElement("button");
-      acceptBtn.textContent = "Accept";
-      acceptBtn.title = "接受编辑操作";
+      acceptBtn.textContent = t("call.accept", "Accept");
+      acceptBtn.title = t("call.acceptEdit", "接受编辑操作");
       Object.assign(acceptBtn.style, {
         background: "rgba(100, 200, 100, 0.1)",
         border: "1px solid rgba(100, 200, 100, 0.3)",
@@ -1173,8 +1182,8 @@ class ToolCallCardWidget extends WidgetType {
       actionButtons.style.cssText = "display:flex;gap:6px;";
 
       const revertBtn = document.createElement("button");
-      revertBtn.textContent = "Revert";
-      revertBtn.title = "回退写入操作";
+      revertBtn.textContent = t("call.revert", "Revert");
+      revertBtn.title = t("call.revertWrite", "回退写入操作");
       Object.assign(revertBtn.style, {
         background: "rgba(255, 100, 100, 0.1)",
         border: "1px solid rgba(255, 100, 100, 0.3)",
@@ -1204,8 +1213,8 @@ class ToolCallCardWidget extends WidgetType {
       });
 
       const acceptBtn = document.createElement("button");
-      acceptBtn.textContent = "Accept";
-      acceptBtn.title = "接受写入操作";
+      acceptBtn.textContent = t("call.accept", "Accept");
+      acceptBtn.title = t("call.acceptWrite", "接受写入操作");
       Object.assign(acceptBtn.style, {
         background: "rgba(100, 200, 100, 0.1)",
         border: "1px solid rgba(100, 200, 100, 0.3)",
@@ -1241,7 +1250,7 @@ class ToolCallCardWidget extends WidgetType {
 
     const close = document.createElement("button");
     close.textContent = "×";
-    close.title = "移除该工具记录";
+    close.title = t("call.remove", "移除该工具记录");
     Object.assign(close.style, {
       marginLeft: "auto",
       background: "transparent",
@@ -1303,9 +1312,9 @@ class ToolInlineWidget extends WidgetType {
     const summaryText = summarizeToolArgs(this.name, this.args);
     const compactSummary = summarizeToolArgsCompact(this.name, this.args, 36);
     span.title = summaryText
-      ? `调用 ${this.name}：${summaryText}（点击展开/收起）`
-      : `调用 ${this.name}（点击展开/收起）`;
-    span.setAttribute("aria-label", `调用 ${this.name}（点击展开或收起工具调用卡片）`);
+      ? t("call.inlineTitleWithSummary", "调用 {name}：{summary}（点击展开/收起）", { name: this.name, summary: summaryText })
+      : t("call.inlineTitle", "调用 {name}（点击展开/收起）", { name: this.name });
+    span.setAttribute("aria-label", t("call.inlineAria", "调用 {name}（点击展开或收起工具调用卡片）", { name: this.name }));
     Object.assign(span.style, {
       display: "inline-flex",
       alignItems: "center",
@@ -1320,8 +1329,8 @@ class ToolInlineWidget extends WidgetType {
     const btn = document.createElement("button");
     btn.className = "zion-tool-call-inline-toggle";
     btn.type = "button";
-    btn.title = "展开/收起工具调用卡片";
-    btn.setAttribute("aria-label", "展开/收起工具调用卡片");
+    btn.title = t("call.toggle", "展开/收起工具调用卡片");
+    btn.setAttribute("aria-label", t("call.toggle", "展开/收起工具调用卡片"));
     // 内联 SVG（chevron-down），主题跟随 currentColor
     btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
   <path d="M4.646 6.646a.5.5 0 0 1 .708 0L8 9.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z"></path>
@@ -1347,7 +1356,7 @@ class ToolInlineWidget extends WidgetType {
 
     const txt = document.createElement("span");
     txt.className = "zion-tool-call-inline-text";
-    txt.textContent = `调用 ${this.name}`;
+    txt.textContent = t("call.title", "调用 {name}", { name: this.name });
     Object.assign(txt.style, {
       flex: "0 0 auto",
       whiteSpace: "nowrap"
@@ -1378,7 +1387,7 @@ class ToolInlineWidget extends WidgetType {
     badge.setAttribute("data-status", status);
     badge.innerHTML = toolStatusIcon(status);
     badge.title = label;
-    badge.setAttribute("aria-label", `工具调用状态：${label}`);
+    badge.setAttribute("aria-label", t("call.status", "工具调用状态：{label}", { label }));
     Object.assign(badge.style, {
       flex: "0 0 auto"
     });

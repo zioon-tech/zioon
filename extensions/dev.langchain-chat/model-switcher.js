@@ -7,6 +7,15 @@
  * - 空列表时提供“创建第一个模型”入口
  * - 行内操作：编辑/删除（仅 user.dynamic 可删除/保存）
  */
+function t(key, fallback, values) {
+  const fullKey = `dev.langchain-chat.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 export function installModelSwitcher() {
   const DYN_KEY = "zion.models.dynamic";
   const DYN_PROVIDER_ID = "user.dynamic";
@@ -67,7 +76,7 @@ export function installModelSwitcher() {
     fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
   });
   panel.setAttribute("role", "dialog");
-  panel.setAttribute("aria-label", "Select Model");
+  panel.setAttribute("aria-label", t("modelSwitcher.title", "Select Model"));
 
   // 标题区 + 操作按钮
   const header = document.createElement("div");
@@ -78,7 +87,6 @@ export function installModelSwitcher() {
     marginBottom: "6px"
   });
   const title = document.createElement("div");
-  title.textContent = "Select Model";
   Object.assign(title.style, {
     fontSize: "11px",
     opacity: "0.8",
@@ -89,8 +97,8 @@ export function installModelSwitcher() {
   const actions = document.createElement("div");
   const btnAdd = document.createElement("button");
   btnAdd.type = "button";
-  btnAdd.title = "Add Model";
-  btnAdd.setAttribute("aria-label", "Add Model");
+  btnAdd.title = t("modelSwitcher.addModel", "Add Model");
+  btnAdd.setAttribute("aria-label", t("modelSwitcher.addModel", "Add Model"));
   Object.assign(btnAdd.style, {
     border: "1px solid var(--border)",
     background: "var(--panel)",
@@ -102,7 +110,7 @@ export function installModelSwitcher() {
   });
   btnAdd.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">
     ${svgPlus()}
-    <span>Add</span>
+    <span>${t("modelSwitcher.add", "Add")}</span>
   </span>`;
   btnAdd.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -115,7 +123,6 @@ export function installModelSwitcher() {
   // 搜索框
   const input = document.createElement("input");
   input.type = "text";
-  input.placeholder = "Search models…";
   Object.assign(input.style, {
     width: "100%",
     boxSizing: "border-box",
@@ -151,7 +158,6 @@ export function installModelSwitcher() {
 
   // 底部提示
   const footer = document.createElement("div");
-  footer.textContent = "Enter: select • Esc: close • ↑↓: navigate";
   Object.assign(footer.style, {
     fontSize: "10px",
     opacity: "0.6",
@@ -301,7 +307,7 @@ export function installModelSwitcher() {
 
     if (items.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "No models found";
+      empty.textContent = t("modelSwitcher.noModels", "No models found");
       Object.assign(empty.style, {
         fontSize: "11px",
         opacity: "0.6",
@@ -319,8 +325,8 @@ export function installModelSwitcher() {
       });
       const btnFirst = document.createElement("button");
       btnFirst.type = "button";
-      btnFirst.title = "Create your first model";
-      btnFirst.setAttribute("aria-label", "Create your first model");
+      btnFirst.title = t("modelSwitcher.createFirst", "Create your first model");
+      btnFirst.setAttribute("aria-label", t("modelSwitcher.createFirst", "Create your first model"));
       Object.assign(btnFirst.style, {
         border: "1px solid var(--border)",
         background: "var(--panel)",
@@ -330,7 +336,7 @@ export function installModelSwitcher() {
         fontSize: "11px",
         cursor: "pointer"
       });
-      btnFirst.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">${svgPlus()}<span>Add Model</span></span>`;
+      btnFirst.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">${svgPlus()}<span>${t("modelSwitcher.addModel", "Add Model")}</span></span>`;
       btnFirst.addEventListener("click", (e) => { e.stopPropagation(); openEditor(null); });
       cta.appendChild(btnFirst);
       list.appendChild(cta);
@@ -379,7 +385,7 @@ export function installModelSwitcher() {
 
       // 操作按钮
       const canEdit = m.providerId === DYN_PROVIDER_ID;
-      const btnEdit = iconButton(svgEdit(), canEdit ? "Edit Model" : "View Model (read-only)");
+      const btnEdit = iconButton(svgEdit(), canEdit ? t("modelSwitcher.edit", "Edit Model") : t("modelSwitcher.view", "View Model (read-only)"));
       btnEdit.addEventListener("click", async () => {
         const prov = window.zion?.models?.getProvider(m.providerId);
         let cfg = null;
@@ -389,7 +395,7 @@ export function installModelSwitcher() {
       right.appendChild(btnEdit);
 
       if (canEdit) {
-        const btnDel = iconButton(svgTrash(), "Delete Model");
+        const btnDel = iconButton(svgTrash(), t("modelSwitcher.delete", "Delete Model"));
         btnDel.addEventListener("click", () => { doDeleteModel(m); });
         right.appendChild(btnDel);
       }
@@ -502,6 +508,7 @@ export function installModelSwitcher() {
   }
 
   function open() {
+    refreshLabels();
     window.zion?.commands?.executeCommand("models.listModels");
     refresh();
     root.style.display = "block";
@@ -510,7 +517,22 @@ export function installModelSwitcher() {
     input.select();
   }
   function close() { root.style.display = "none"; }
-  function dispose() { root.remove(); }
+  function refreshLabels() {
+    const titleText = t("modelSwitcher.title", "Select Model");
+    panel.setAttribute("aria-label", titleText);
+    title.textContent = titleText;
+    btnAdd.title = t("modelSwitcher.addModel", "Add Model");
+    btnAdd.setAttribute("aria-label", t("modelSwitcher.addModel", "Add Model"));
+    btnAdd.querySelector("span span").textContent = t("modelSwitcher.add", "Add");
+    input.placeholder = t("modelSwitcher.search", "Search models...");
+    footer.textContent = t("modelSwitcher.footer", "Enter: select • Esc: close • ↑↓: navigate");
+    refresh();
+  }
+  const dispI18n = window.zion?.events?.on?.("i18n/changed", refreshLabels);
+  function dispose() {
+    try { dispI18n?.dispose?.(); } catch {}
+    root.remove();
+  }
 
   // ====== 编辑器实现 ======
   function fieldRow(labelText, inputEl) {
@@ -645,7 +667,7 @@ export function installModelSwitcher() {
 
   async function testConnectivity(cfg, statusEl) {
     if (!cfg?.url || !(cfg?.key || cfg?.apiKey)) {
-      statusEl.textContent = "Missing url or key";
+      statusEl.textContent = t("modelSwitcher.missingUrlOrKey", "Missing url or key");
       statusEl.style.color = "rgb(220,80,80)";
       return;
     }
@@ -657,7 +679,7 @@ export function installModelSwitcher() {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     const t0 = performance.now();
-    statusEl.textContent = "Testing…";
+    statusEl.textContent = t("modelSwitcher.testing", "Testing...");
     statusEl.style.color = "inherit";
     try {
       const res = await fetch(cfg.url, {
@@ -679,7 +701,7 @@ export function installModelSwitcher() {
         statusEl.style.color = "rgb(220,80,80)";
       }
     } catch (e) {
-      statusEl.textContent = e?.name === "AbortError" ? "Timeout" : (e?.message || String(e));
+      statusEl.textContent = e?.name === "AbortError" ? t("modelSwitcher.timeout", "Timeout") : (e?.message || String(e));
       statusEl.style.color = "rgb(220,80,80)";
     } finally {
       clearTimeout(timer);
@@ -698,7 +720,7 @@ export function installModelSwitcher() {
     const readonly = !!spec?.readonly && !isDeepseekProvider;
 
     const title = document.createElement("div");
-    title.textContent = isNew ? "Add Model" : (readonly ? "View Model" : "Edit Model");
+    title.textContent = isNew ? t("modelSwitcher.addModel", "Add Model") : (readonly ? t("modelSwitcher.viewModel", "View Model") : t("modelSwitcher.edit", "Edit Model"));
     Object.assign(title.style, { fontSize: "11px", opacity: "0.8", fontWeight: "500", marginBottom: "6px" });
     editorWrap.appendChild(title);
 
@@ -827,7 +849,7 @@ export function installModelSwitcher() {
     editorWrap.appendChild(status);
 
     // 按钮
-    const btnTest = secondaryButton("Test", "Test connectivity", svgBolt());
+    const btnTest = secondaryButton(t("modelSwitcher.test", "Test"), t("modelSwitcher.testConnectivity", "Test connectivity"), svgBolt());
     btnTest.addEventListener("click", async () => {
       const cfg = {
         id: inpId.value.trim(),
@@ -838,15 +860,15 @@ export function installModelSwitcher() {
       await testConnectivity(cfg, status);
     });
 
-    const btnSave = primaryButton(isNew ? "Save" : "Save Changes", "Save Model", svgCheck());
+    const btnSave = primaryButton(isNew ? t("modelSwitcher.save", "Save") : t("modelSwitcher.saveChanges", "Save Changes"), t("modelSwitcher.saveModel", "Save Model"), svgCheck());
     btnSave.disabled = (providerId !== DYN_PROVIDER_ID && !isDeepseekProvider) || readonly;
     btnSave.addEventListener("click", async () => {
       const id = inpId.value.trim();
       const url = inpUrl.value.trim();
       const key = inpKey.value.trim();
-      if (!id) { status.textContent = "Missing Model ID"; status.style.color = "rgb(220,80,80)"; return; }
-      if (!url) { status.textContent = "Missing Base URL"; status.style.color = "rgb(220,80,80)"; return; }
-      if (!key) { status.textContent = "Missing API Key"; status.style.color = "rgb(220,80,80)"; return; }
+      if (!id) { status.textContent = t("modelSwitcher.missingModelId", "Missing Model ID"); status.style.color = "rgb(220,80,80)"; return; }
+      if (!url) { status.textContent = t("modelSwitcher.missingBaseUrl", "Missing Base URL"); status.style.color = "rgb(220,80,80)"; return; }
+      if (!key) { status.textContent = t("modelSwitcher.missingApiKey", "Missing API Key"); status.style.color = "rgb(220,80,80)"; return; }
 
       // 对于 deepseek 提供者，保存所有参数到 localStorage
       if (isDeepseekProvider) {
@@ -867,7 +889,7 @@ export function installModelSwitcher() {
           };
           localStorage.setItem("zion.deepseek.config", JSON.stringify(deepseekConfig));
           
-          status.textContent = "DeepSeek configuration saved";
+          status.textContent = t("modelSwitcher.deepseekSaved", "DeepSeek configuration saved");
           status.style.color = "rgb(60,180,90)";
           // 刷新模型目录以更新状态
           await refreshCatalog();
@@ -876,7 +898,7 @@ export function installModelSwitcher() {
           setTimeout(() => closeEditor(), 300);
           return;
         } catch (e) {
-          status.textContent = `Failed to save: ${e?.message || String(e)}`;
+          status.textContent = t("modelSwitcher.failedSave", "Failed to save: {message}", { message: e?.message || String(e) });
           status.style.color = "rgb(220,80,80)";
           return;
         }
@@ -885,7 +907,7 @@ export function installModelSwitcher() {
       // 对于 user.dynamic 提供者，保存到 localStorage 字典
       const dict = loadDynamicStore();
       if (isNew && dict[id]) {
-        status.textContent = `Model already exists: ${id}`;
+        status.textContent = t("modelSwitcher.modelExists", "Model already exists: {id}", { id });
         status.style.color = "rgb(220,80,80)";
         return;
       }
@@ -914,17 +936,17 @@ export function installModelSwitcher() {
       const cat = catalog();
       const item = cat.find(x => x.providerId === DYN_PROVIDER_ID && x.id === id);
       setActive(DYN_PROVIDER_ID, id, item?.label || id);
-      status.textContent = "Saved";
+      status.textContent = t("modelSwitcher.saved", "Saved");
       status.style.color = "rgb(60,180,90)";
       // 刷新列表并关闭编辑器
       refresh();
       setTimeout(() => closeEditor(), 300);
     });
 
-    const btnCancel = secondaryButton("Cancel", "Cancel", svgClose());
+    const btnCancel = secondaryButton(t("modelSwitcher.cancel", "Cancel"), t("modelSwitcher.cancel", "Cancel"), svgClose());
     btnCancel.addEventListener("click", () => closeEditor());
 
-    const btnDelete = dangerButton("Delete", "Delete Model", svgTrash());
+    const btnDelete = dangerButton(t("modelSwitcher.delete", "Delete"), t("modelSwitcher.delete", "Delete Model"), svgTrash());
     btnDelete.style.marginLeft = "auto";
     btnDelete.disabled = isNew || providerId !== DYN_PROVIDER_ID || readonly || isDeepseekProvider;
     btnDelete.addEventListener("click", async () => {
