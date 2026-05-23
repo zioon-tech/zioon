@@ -153,6 +153,20 @@ declare global {
       statusBar: {
         registerItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable;
       };
+      settings?: {
+        registerPage(page: any): Disposable;
+        registerItem(item: any): Disposable;
+        open(): void;
+        close(): void;
+      };
+      theme?: {
+        getPreference(): "system" | "light" | "dark";
+        getResolvedTheme(): "light" | "dark";
+        setPreference(preference: "system" | "light" | "dark"): void;
+        toggle(): void;
+        refresh(): void;
+        getToken(name: string): string;
+      };
       editorHeaderMenu?: {
         register(item: {
           id: string;

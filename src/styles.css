@@ -7,6 +7,8 @@
   --accent: #6272a4;
   --accent-rgb: 98, 114, 164;
   --ok: #50fa7b;
+  --app-theme-color: var(--panel);
+  --app-background-color: var(--bg);
 
   /* Font stacks (system-first, CJK-friendly) */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Noto Sans", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", "Source Han Sans SC", Arial, sans-serif;

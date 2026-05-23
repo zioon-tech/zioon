@@ -13,6 +13,7 @@ import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBa
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
 import { SessionRuntime } from "./session/runtime";
+import { createThemeManager } from "./theme/themeManager";
 
 
 // ---------- 自动保存 / 恢复 ----------
@@ -3686,83 +3687,11 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     }
   });
 
-  // Theme init + commands + status
-  let currentTheme: "light" | "dark" = (() => {
-    try {
-      const t = localStorage.getItem("zion.theme") as "light" | "dark" | null;
-      return t === "light" || t === "dark" ? t : "dark";
-    } catch {
-      return "dark";
-    }
-  })();
-
-  const applyTheme = (t: "light" | "dark") => {
-    currentTheme = t;
-    try { localStorage.setItem("zion.theme", t); } catch {}
-    const themedCores = new Set<EditorCore>();
-    try { themedCores.add(core); } catch {}
-    try { core.setTheme(t); } catch {}
-    try {
-      for (const targetCore of panelCores.values()) {
-        if (targetCore === core) continue;
-        try { themedCores.add(targetCore); } catch {}
-        try { targetCore.setTheme(t); } catch {}
-      }
-    } catch {}
-    document.documentElement.setAttribute("data-theme", t);
-    const refreshEditorThemes = () => {
-      try {
-        for (const targetCore of themedCores) {
-          try { targetCore.refreshWysiwyg(); } catch {}
-        }
-      } catch {}
-    };
-    refreshEditorThemes();
-    requestAnimationFrame(() => {
-      refreshEditorThemes();
-    });
-    window.zion.state.set("ui.theme", t);
-    try {
-      const ensureMeta = () => {
-        let meta = document.querySelector('meta[name="theme-color"]');
-        if (!meta) {
-          meta = document.createElement("meta");
-          meta.setAttribute("name", "theme-color");
-          document.head.appendChild(meta);
-        }
-        return meta;
-      };
-      const updateThemeColor = () => {
-        try {
-          const meta = ensureMeta();
-          const cs = getComputedStyle(document.documentElement);
-          const panel = String(cs.getPropertyValue("--panel") || "").trim();
-          const fallback = t === "light" ? "#ffffff" : "#282a36";
-          meta.setAttribute("content", panel || fallback);
-        } catch {}
-      };
-      updateThemeColor();
-      requestAnimationFrame(updateThemeColor);
-    } catch {}
-    // Update/Render status item (same id will replace)
-    window.zion.statusBar.registerItem({
-      id: "core.theme",
-      text: `Theme: ${t === "dark" ? "Dark" : "Light"}`,
-      tooltip: "Click to toggle theme",
-      onClick: () => window.zion.commands.executeCommand("zion.toggleTheme"),
-      priority: 80
-    });
-    (window.zion as any).editorHeaderMenu?.register?.({
-      id: "core.theme",
-      title: `切换主题：${t === "dark" ? "深色" : "浅色"}`,
-      section: "Layout",
-      order: 10,
-      command: "zion.toggleTheme"
-    });
-  };
-
-  window.zion.commands.registerCommand("zion.setTheme", (t: "light" | "dark") => applyTheme(t));
-  window.zion.commands.registerCommand("zion.toggleTheme", () => applyTheme(currentTheme === "dark" ? "light" : "dark"));
+  // Theme init + commands + status + settings
+  const themeManager = createThemeManager({
+    getEditorCores: () => panelCores.values()
+  });
+  themeManager.init();
   window.zion.commands.registerCommand("zion.panels.splitHorizontal", () => panelManager.splitPanel(undefined, "horizontal"));
   window.zion.commands.registerCommand("zion.panels.splitVertical", () => panelManager.splitPanel(undefined, "vertical"));
   window.zion.commands.registerCommand("zion.panels.closeActive", () => panelManager.closePanel());
@@ -3993,10 +3922,6 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     document.addEventListener("keydown", onGlobalEditorShortcut, true);
   } catch {}
 
-  applyTheme(currentTheme);
-
-
-
   // WYSIWYG init + commands + status
   let wysiwygEnabled: boolean = (() => {
     try {
@@ -4154,7 +4079,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   };
 
   function applyEditorPreferences(targetCore: EditorCore) {
-    targetCore.setTheme(currentTheme);
+    targetCore.setTheme(themeManager.getResolvedTheme());
     targetCore.setWysiwygEnabled(wysiwygEnabled);
     targetCore.setLineNumbersEnabled(lineNumbersEnabled);
     targetCore.setActiveLineHighlightEnabled(activeLineHighlightEnabled);

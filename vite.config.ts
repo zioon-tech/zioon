@@ -61,7 +61,7 @@ export default defineConfig({
         short_name: 'Zion',
         description: 'Zion Next - A modern editor playground',
         theme_color: '#282a36',
-        background_color: '#ffffff',
+        background_color: '#282a36',
         display: 'standalone',
         icons: [
           {
