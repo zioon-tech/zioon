@@ -1332,6 +1332,26 @@ html, body {
   opacity: 1;
 }
 
+.zion-panels-root.is-panel-maximized .zion-panel.is-maximized {
+  border-color: var(--panel-active-border);
+  box-shadow:
+    var(--panel-active-shadow),
+    inset 0 0 0 1px color-mix(in srgb, var(--panel-active-border) 60%, transparent);
+}
+
+.zion-panels-root.is-panel-maximized .zion-panel.is-maximized::before,
+.zion-panels-root.is-panel-maximized .zion-panel.is-maximized::after {
+  opacity: 1;
+}
+
+.zion-panels-root.is-panel-maximized .zion-panel.is-maximized::before {
+  height: 3px;
+}
+
+.zion-panels-root.is-panel-maximized .zion-panel.is-maximized .zion-editor-tabsbar {
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--panel-active-glow) 88%, transparent);
+}
+
 .zion-panel-empty {
   display: flex;
   align-items: center;

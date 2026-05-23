@@ -38,6 +38,7 @@ export class PanelManager {
   private nextSplitNum = 1;
   private maximizedPanelId: PanelId | null = null;
   private maximizedSplitRatios: Map<string, number> | null = null;
+  private pendingMaximizedFocusRender: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: PanelManagerOptions) {
     this.host = opts.host;
@@ -200,8 +201,20 @@ export class PanelManager {
 
   focusPanel(panelId: PanelId): void {
     if (!this.panels.has(panelId)) return;
+    const maximizedPanelId = this.getMaximizedPanelId();
     this.activePanelId = panelId;
     this.noteActivePanel(panelId);
+    if (maximizedPanelId && maximizedPanelId !== panelId && this.root && this.panels.size > 1) {
+      if (this.maximizedSplitRatios) {
+        restoreSplitRatios(this.root, this.maximizedSplitRatios);
+      }
+      this.emphasizePanel(panelId);
+      this.maximizedPanelId = panelId;
+      this.applyActiveClasses();
+      this.scheduleMaximizedFocusRender();
+      this.fire("panel/focusChanged", { panelId });
+      return;
+    }
     this.applyActiveClasses();
     this.fire("panel/focusChanged", { panelId });
   }
@@ -433,6 +446,14 @@ export class PanelManager {
         (fn as Listener<K>)(payload);
       } catch {}
     }
+  }
+
+  private scheduleMaximizedFocusRender(): void {
+    if (this.pendingMaximizedFocusRender) return;
+    this.pendingMaximizedFocusRender = setTimeout(() => {
+      this.pendingMaximizedFocusRender = null;
+      this.render();
+    }, 0);
   }
 
   private allocatePanelId(): PanelId {
