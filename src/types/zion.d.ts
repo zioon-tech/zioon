@@ -159,6 +159,18 @@ declare global {
         open(): void;
         close(): void;
       };
+      i18n?: {
+        getLocale(): "zh-CN" | "en-US";
+        getDefaultLocale(): "zh-CN";
+        getSupportedLocales(): Array<{ value: "zh-CN" | "en-US"; label: string; nativeLabel: string }>;
+        setLocale(locale: "zh-CN" | "en-US"): void;
+        toggleLocale(): void;
+        registerNamespace(
+          namespace: string,
+          messages: Partial<Record<"zh-CN" | "en-US", Record<string, string>>>
+        ): Disposable;
+        t(key: string, values?: Record<string, string | number | boolean | null | undefined>): string;
+      };
       theme?: {
         getPreference(): "system" | "light" | "dark";
         getSelection(): "system" | "light" | "dark" | "visual-studio-dark";

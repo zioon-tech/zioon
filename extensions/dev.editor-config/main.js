@@ -788,6 +788,22 @@ export async function activate(ctx) {
               }
             },
             {
+              id: "appearance.language",
+              kind: "select",
+              label: "语言",
+              description: "切换界面语言，默认使用简体中文",
+              enumOptions: [
+                { value: "zh-CN", label: "简体中文" },
+                { value: "en-US", label: "English" }
+              ],
+              getValue: () => String(window.zion.i18n?.getLocale?.() || window.zion.state.get("ui.locale") || "zh-CN"),
+              setValue: async (value) => {
+                const locale = value === "en-US" ? "en-US" : "zh-CN";
+                if (window.zion.i18n?.setLocale) return window.zion.i18n.setLocale(locale);
+                return window.zion.commands.executeCommand("zion.setLanguage", locale);
+              }
+            },
+            {
               id: "appearance.editorWidthMode",
               kind: "select",
               label: "编辑区域宽度",

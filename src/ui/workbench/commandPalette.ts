@@ -61,6 +61,21 @@ const THEME_OPTIONS = [
   }
 ] as const;
 
+const LANGUAGE_OPTIONS = [
+  {
+    id: "zh-CN",
+    title: "简体中文",
+    description: "默认界面语言",
+    keywords: ["language", "locale", "中文", "简体中文", "chinese"]
+  },
+  {
+    id: "en-US",
+    title: "English",
+    description: "English interface language",
+    keywords: ["language", "locale", "english", "英文"]
+  }
+] as const;
+
 function safeText(v: any): string {
   return String(v ?? "");
 }
@@ -463,6 +478,27 @@ export function initCommandPalette() {
       category: "Appearance",
       pluginId: "core"
     });
+    base.set("zion.setLanguage", {
+      id: "zion.setLanguage",
+      title: "语言：选择语言",
+      description: "打开语言列表并切换 Zion Next 的界面语言",
+      category: "Appearance",
+      pluginId: "core"
+    });
+    base.set("zion.i18n.setLocale", {
+      id: "zion.i18n.setLocale",
+      title: "语言：选择语言",
+      description: "打开语言列表并切换 Zion Next 的界面语言",
+      category: "Appearance",
+      pluginId: "core"
+    });
+    base.set("zion.toggleLanguage", {
+      id: "zion.toggleLanguage",
+      title: "语言：切换中文/英文",
+      description: "在简体中文和 English 之间快速切换",
+      category: "Appearance",
+      pluginId: "core"
+    });
     base.set("bottomPanel.toggle", {
       id: "bottomPanel.toggle",
       title: "底部面板：打开/关闭",
@@ -627,6 +663,33 @@ export function initCommandPalette() {
     });
   };
 
+  const buildLanguageActionItems = (): PaletteItem[] => {
+    const current = safeText(
+      (window as any).zion?.i18n?.getLocale?.() ||
+      (window as any).zion?.state?.get?.("ui.locale") ||
+      "zh-CN"
+    );
+    return LANGUAGE_OPTIONS.map(locale => {
+      const isActive = locale.id === current;
+      return {
+        kind: "action" as const,
+        id: `language.select:${locale.id}`,
+        title: `${isActive ? "✓ " : ""}${locale.title}`,
+        description: locale.description,
+        badge: isActive ? "当前" : "语言",
+        keywords: [...locale.keywords],
+        run: () => {
+          const zion = (window as any).zion;
+          if (zion?.i18n?.setLocale) {
+            zion.i18n.setLocale(locale.id);
+            return;
+          }
+          zion?.commands?.executeCommand?.("zion.setLanguage", locale.id);
+        }
+      };
+    });
+  };
+
   const openSubmenu = async (commandId: string) => {
     if (commandId === "models.selectModel" || commandId === "models.openSwitcher") {
       const items = await buildModelActionItems();
@@ -652,6 +715,22 @@ export function initCommandPalette() {
         placeholder: "搜索主题…",
         emptyText: "没有找到匹配的主题",
         items: buildThemeActionItems()
+      };
+      input.value = "";
+      render("");
+      try {
+        input.focus();
+        input.setSelectionRange(0, 0);
+      } catch {}
+      return true;
+    }
+    if (commandId === "zion.setLanguage" || commandId === "zion.i18n.setLocale" || commandId === "zion.toggleLanguage") {
+      currentSubmenu = {
+        id: "languages",
+        title: "选择语言",
+        placeholder: "搜索语言…",
+        emptyText: "没有找到匹配的语言",
+        items: buildLanguageActionItems()
       };
       input.value = "";
       render("");

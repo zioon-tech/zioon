@@ -14,6 +14,7 @@ import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
 import { SessionRuntime } from "./session/runtime";
 import { createThemeManager } from "./theme/themeManager";
+import { createI18nManager } from "./i18n/i18nManager";
 
 
 // ---------- 自动保存 / 恢复 ----------
@@ -3686,6 +3687,10 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       saveDoc(core.getValue());
     }
   });
+
+  // Locale init + commands + plugin API
+  const i18nManager = createI18nManager();
+  i18nManager.init();
 
   // Theme init + commands + status + settings
   const themeManager = createThemeManager({
