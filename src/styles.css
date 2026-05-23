@@ -252,6 +252,8 @@
 }
 
 :root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-session-tab.is-active {
+  align-self: flex-end;
+  height: 32px;
   background: #1e1e1e;
   border-color: #1e1e1e;
   border-top-color: #1e1e1e;
