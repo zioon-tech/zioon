@@ -47,6 +47,31 @@ window.zion.events.on("i18n/changed", ({ locale, previousLocale }) => {
 - 推荐 namespace 使用插件 id，例如 `dev.langchain-chat`。
 - key 使用点号路径，例如 `settings.title`、`command.run.title`。
 - 调用时使用完整路径：`dev.langchain-chat.settings.title`。
+- `t()` 会按最长 namespace 匹配，因此插件 id 中可以包含点号。
+
+## 声明式文案 Key
+
+Settings 支持在保留原始中文文案的同时声明 key：
+
+```js
+{
+  label: "主题",
+  labelKey: "dev.editor-config.settings.theme.label",
+  description: "切换整体明暗风格",
+  descriptionKey: "dev.editor-config.settings.theme.description"
+}
+```
+
+插件 manifest 的命令也支持 key：
+
+```json
+{
+  "id": "dev.editor.toggleLineNumbers",
+  "title": "Toggle Line Numbers",
+  "titleKey": "dev.editor-config.cmd.toggleLineNumbers",
+  "categoryKey": "dev.editor-config.category.editor"
+}
+```
 
 ## 插件接入建议
 

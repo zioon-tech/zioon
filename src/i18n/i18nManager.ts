@@ -86,18 +86,19 @@ export class I18nManager {
 
   t(key: string, values?: InterpolationValues): string {
     const rawKey = String(key || "");
-    const dot = rawKey.indexOf(".");
-    if (dot <= 0) return rawKey;
+    let namespace = "";
+    for (const candidate of this.namespaces.keys()) {
+      if (!rawKey.startsWith(`${candidate}.`)) continue;
+      if (candidate.length > namespace.length) namespace = candidate;
+    }
+    if (!namespace) return rawKey;
 
-    const namespace = rawKey.slice(0, dot);
-    const messageKey = rawKey.slice(dot + 1);
+    const messageKey = rawKey.slice(namespace.length + 1);
     const bundle = this.namespaces.get(namespace);
-    if (!bundle) return rawKey;
-
     const message =
-      bundle[this.locale]?.[messageKey] ??
-      bundle[DEFAULT_LOCALE]?.[messageKey] ??
-      bundle["en-US"]?.[messageKey];
+      bundle?.[this.locale]?.[messageKey] ??
+      bundle?.[DEFAULT_LOCALE]?.[messageKey] ??
+      bundle?.["en-US"]?.[messageKey];
 
     return message ? interpolate(message, values) : rawKey;
   }

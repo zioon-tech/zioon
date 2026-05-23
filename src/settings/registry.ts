@@ -23,6 +23,7 @@ export type SettingScope = "application" | "workspace" | "plugin";
 
 export interface SettingOption {
   label: string;
+  labelKey?: string;
   value: string;
 }
 
@@ -33,7 +34,9 @@ export interface SettingRenderProps {
 export interface SettingContribution {
   id: string;
   label: string;
+  labelKey?: string;
   description?: string;
+  descriptionKey?: string;
   kind: SettingKind;
   controlLayout?: "compact" | "wide";
   order?: number;
@@ -41,12 +44,14 @@ export interface SettingContribution {
   scope?: SettingScope;
   defaultValue?: unknown;
   placeholder?: string;
+  placeholderKey?: string;
   inputMode?: "text" | "numeric" | "decimal" | "email" | "url" | "search";
   enumOptions?: SettingOption[];
   requiresRestart?: boolean;
   experimental?: boolean;
   dangerous?: boolean;
   actionLabel?: string;
+  actionLabelKey?: string;
   getValue?: () => unknown | Promise<unknown>;
   setValue?: (value: unknown) => void | Promise<void>;
   validate?: (value: unknown) => string | null | Promise<string | null>;
@@ -59,7 +64,9 @@ export interface SettingContribution {
 export interface SettingSectionContribution {
   id: string;
   title: string;
+  titleKey?: string;
   description?: string;
+  descriptionKey?: string;
   order?: number;
   settings: SettingContribution[];
 }
@@ -67,7 +74,9 @@ export interface SettingSectionContribution {
 export interface SettingsPageContribution {
   id: string;
   title: string;
+  titleKey?: string;
   description?: string;
+  descriptionKey?: string;
   category: SettingsCategory;
   order?: number;
   keywords?: string[];

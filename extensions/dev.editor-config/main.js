@@ -1,5 +1,156 @@
 import { registerEditorTools } from "./editor-config-tools.js";
+
+const I18N_NS = "dev.editor-config";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.editor": "编辑器",
+    "cmd.toggleLineNumbers": "切换行号",
+    "cmd.toggleActiveLineHighlight": "切换当前行高亮",
+    "cmd.toggleSyntaxHighlight": "切换语法高亮",
+    "cmd.toggleAutoIndent": "切换自动缩进",
+    "cmd.toggleFolding": "切换折叠",
+    "cmd.toggleLineWrap": "切换自动换行",
+    "cmd.toggleSelectionHighlight": "切换选择高亮",
+    "cmd.cycleWidthMode": "切换编辑器宽度",
+    "cmd.setWidthFull": "编辑器宽度：全宽",
+    "cmd.setWidthWide": "编辑器宽度：宽",
+    "cmd.setWidthStandard": "编辑器宽度：标准",
+    "cmd.setHeadingSizeMedium": "标题尺寸：适中",
+    "cmd.setHeadingSizeSmall": "标题尺寸：较小",
+    "cmd.setHeadingSizeXSmall": "标题尺寸：更小",
+    "cmd.cycleHeadingSize": "切换标题尺寸",
+    "settings.appearance.title": "外观",
+    "settings.appearance.description": "主题与页面呈现",
+    "settings.appearance.section": "外观",
+    "settings.theme.label": "主题",
+    "settings.theme.description": "切换整体明暗风格",
+    "settings.language.label": "语言",
+    "settings.language.description": "切换界面语言",
+    "settings.width.label": "编辑区域宽度",
+    "settings.width.description": "控制正文区域的横向宽度",
+    "settings.width.standard": "标准",
+    "settings.width.wide": "宽",
+    "settings.width.full": "全宽",
+    "settings.heading.label": "标题尺寸",
+    "settings.heading.description": "调整标题大小",
+    "settings.heading.medium": "适中",
+    "settings.heading.small": "较小",
+    "settings.heading.xsmall": "更小",
+    "settings.userBlockBg.label": "用户消息底色",
+    "settings.userBlockBg.description": "为用户消息块增加轻微背景区分",
+    "settings.editor.title": "编辑器",
+    "settings.editor.description": "常用编辑器偏好",
+    "settings.editor.basics": "基础体验",
+    "settings.editor.chat": "聊天偏好",
+    "settings.wysiwyg.label": "所见即所得",
+    "settings.wysiwyg.description": "编辑时显示更接近最终排版的效果",
+    "settings.lineWrap.label": "自动换行",
+    "settings.lineWrap.description": "长行内容自动折到下一行",
+    "settings.minimap.label": "迷你地图",
+    "settings.minimap.description": "显示文档缩略预览",
+    "settings.lineNumbers.label": "行号",
+    "settings.lineNumbers.description": "显示每一行的序号",
+    "settings.activeLine.label": "当前行高亮",
+    "settings.activeLine.description": "突出当前所在行",
+    "settings.syntax.label": "语法高亮",
+    "settings.syntax.description": "为代码与标记内容提供颜色区分",
+    "settings.autoIndent.label": "自动缩进",
+    "settings.autoIndent.description": "换行时继承上一行缩进",
+    "settings.folding.label": "折叠",
+    "settings.folding.description": "允许折叠标题和代码块",
+    "settings.selection.label": "选中高亮",
+    "settings.selection.description": "同步高亮当前选中的重复内容",
+    "settings.toolHistory.label": "带上工具历史",
+    "settings.toolHistory.description": "在聊天上下文里包含工具调用历史",
+    "settings.thinkingHistory.label": "带上思考历史",
+    "settings.thinkingHistory.description": "在聊天上下文里包含推理过程历史",
+    "settings.toolReasoning.label": "工具推理内容",
+    "settings.toolReasoning.description": "控制工具调用里的 reasoning_content 是否保留",
+    "settings.toolReasoning.auto": "自动",
+    "settings.toolReasoning.always": "总是保留",
+    "settings.toolReasoning.never": "不保留",
+    "settings.advanced.label": "高级编辑器设置",
+    "settings.advanced.description": "打开完整编辑器配置面板",
+    "settings.advanced.action": "打开高级配置"
+  },
+  "en-US": {
+    "category.editor": "Editor",
+    "cmd.toggleLineNumbers": "Toggle Line Numbers",
+    "cmd.toggleActiveLineHighlight": "Toggle Active Line Highlight",
+    "cmd.toggleSyntaxHighlight": "Toggle Syntax Highlight",
+    "cmd.toggleAutoIndent": "Toggle Auto Indent",
+    "cmd.toggleFolding": "Toggle Folding",
+    "cmd.toggleLineWrap": "Toggle Line Wrap",
+    "cmd.toggleSelectionHighlight": "Toggle Selection Highlight",
+    "cmd.cycleWidthMode": "Cycle Editor Width",
+    "cmd.setWidthFull": "Editor Width: Full",
+    "cmd.setWidthWide": "Editor Width: Wide",
+    "cmd.setWidthStandard": "Editor Width: Standard",
+    "cmd.setHeadingSizeMedium": "Heading Size: Medium",
+    "cmd.setHeadingSizeSmall": "Heading Size: Small",
+    "cmd.setHeadingSizeXSmall": "Heading Size: Extra Small",
+    "cmd.cycleHeadingSize": "Cycle Heading Size",
+    "settings.appearance.title": "Appearance",
+    "settings.appearance.description": "Theme and layout",
+    "settings.appearance.section": "Appearance",
+    "settings.theme.label": "Theme",
+    "settings.theme.description": "Change the app color theme",
+    "settings.language.label": "Language",
+    "settings.language.description": "Change display language",
+    "settings.width.label": "Editor Width",
+    "settings.width.description": "Control content width",
+    "settings.width.standard": "Standard",
+    "settings.width.wide": "Wide",
+    "settings.width.full": "Full",
+    "settings.heading.label": "Heading Size",
+    "settings.heading.description": "Adjust heading size",
+    "settings.heading.medium": "Medium",
+    "settings.heading.small": "Small",
+    "settings.heading.xsmall": "Extra Small",
+    "settings.userBlockBg.label": "User Message Background",
+    "settings.userBlockBg.description": "Add a subtle background to user messages",
+    "settings.editor.title": "Editor",
+    "settings.editor.description": "Common editor preferences",
+    "settings.editor.basics": "Basics",
+    "settings.editor.chat": "Chat",
+    "settings.wysiwyg.label": "WYSIWYG",
+    "settings.wysiwyg.description": "Show content closer to final layout while editing",
+    "settings.lineWrap.label": "Line Wrap",
+    "settings.lineWrap.description": "Wrap long lines",
+    "settings.minimap.label": "Minimap",
+    "settings.minimap.description": "Show document preview",
+    "settings.lineNumbers.label": "Line Numbers",
+    "settings.lineNumbers.description": "Show line numbers",
+    "settings.activeLine.label": "Active Line",
+    "settings.activeLine.description": "Highlight current line",
+    "settings.syntax.label": "Syntax Highlight",
+    "settings.syntax.description": "Colorize code and markup",
+    "settings.autoIndent.label": "Auto Indent",
+    "settings.autoIndent.description": "Keep indentation on new lines",
+    "settings.folding.label": "Folding",
+    "settings.folding.description": "Allow folding headings and code blocks",
+    "settings.selection.label": "Selection Highlight",
+    "settings.selection.description": "Highlight repeated selected text",
+    "settings.toolHistory.label": "Include Tool History",
+    "settings.toolHistory.description": "Include tool call history in chat context",
+    "settings.thinkingHistory.label": "Include Thinking History",
+    "settings.thinkingHistory.description": "Include reasoning history in chat context",
+    "settings.toolReasoning.label": "Tool Reasoning Content",
+    "settings.toolReasoning.description": "Control whether reasoning_content is kept in tool calls",
+    "settings.toolReasoning.auto": "Auto",
+    "settings.toolReasoning.always": "Always",
+    "settings.toolReasoning.never": "Never",
+    "settings.advanced.label": "Advanced Editor Settings",
+    "settings.advanced.description": "Open full editor configuration",
+    "settings.advanced.action": "Open Advanced"
+  }
+};
+
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
   // Keep registering commands & keybindings, but do not create per-feature status items.
   const cmds = [
     { id: "dev.editor.toggleLineNumbers", core: "zion.toggleLineNumbers", stateKey: "ui.lineNumbers" },
@@ -762,18 +913,23 @@ export async function activate(ctx) {
       pluginId: "dev.editor-config",
       category: "general",
       title: "Appearance",
+      titleKey: "dev.editor-config.settings.appearance.title",
       description: "主题与页面呈现",
+      descriptionKey: "dev.editor-config.settings.appearance.description",
       order: 12,
       sections: [
         {
           id: "appearance.basics",
           title: "外观",
+          titleKey: "dev.editor-config.settings.appearance.section",
           settings: [
             {
               id: "appearance.theme",
               kind: "select",
               label: "主题",
+              labelKey: "dev.editor-config.settings.theme.label",
               description: "切换整体明暗风格",
+              descriptionKey: "dev.editor-config.settings.theme.description",
               enumOptions: [
                 { value: "system", label: "System" },
                 { value: "dark", label: "Dark" },
@@ -791,7 +947,9 @@ export async function activate(ctx) {
               id: "appearance.language",
               kind: "select",
               label: "语言",
+              labelKey: "dev.editor-config.settings.language.label",
               description: "切换界面语言，默认使用简体中文",
+              descriptionKey: "dev.editor-config.settings.language.description",
               enumOptions: [
                 { value: "zh-CN", label: "简体中文" },
                 { value: "en-US", label: "English" }
@@ -807,11 +965,13 @@ export async function activate(ctx) {
               id: "appearance.editorWidthMode",
               kind: "select",
               label: "编辑区域宽度",
+              labelKey: "dev.editor-config.settings.width.label",
               description: "控制正文区域的横向宽度",
+              descriptionKey: "dev.editor-config.settings.width.description",
               enumOptions: [
-                { value: "standard", label: "标准" },
-                { value: "wide", label: "宽" },
-                { value: "full", label: "全宽" }
+                { value: "standard", label: "标准", labelKey: "dev.editor-config.settings.width.standard" },
+                { value: "wide", label: "宽", labelKey: "dev.editor-config.settings.width.wide" },
+                { value: "full", label: "全宽", labelKey: "dev.editor-config.settings.width.full" }
               ],
               getValue: () => getString(STATE_KEY, DEFAULT_MODE),
               setValue: async (value) => {
@@ -824,11 +984,13 @@ export async function activate(ctx) {
               id: "appearance.headingSize",
               kind: "select",
               label: "标题尺寸",
+              labelKey: "dev.editor-config.settings.heading.label",
               description: "调整页面里标题的视觉大小",
+              descriptionKey: "dev.editor-config.settings.heading.description",
               enumOptions: [
-                { value: "medium", label: "适中" },
-                { value: "small", label: "较小" },
-                { value: "xsmall", label: "更小" }
+                { value: "medium", label: "适中", labelKey: "dev.editor-config.settings.heading.medium" },
+                { value: "small", label: "较小", labelKey: "dev.editor-config.settings.heading.small" },
+                { value: "xsmall", label: "更小", labelKey: "dev.editor-config.settings.heading.xsmall" }
               ],
               getValue: () => getString(HEADING_STATE_KEY, HEADING_DEFAULT),
               setValue: async (value) => {
@@ -841,7 +1003,9 @@ export async function activate(ctx) {
               id: "appearance.roleUserBlockBackground",
               kind: "boolean",
               label: "用户消息底色",
+              labelKey: "dev.editor-config.settings.userBlockBg.label",
               description: "为用户消息块增加轻微背景区分",
+              descriptionKey: "dev.editor-config.settings.userBlockBg.description",
               getValue: () => getBool("ui.roleUserBlockBackground", false),
               setValue: async (value) => window.zion.commands.executeCommand("dev.editor.setUserRoleBlockBackground", !!value)
             }
@@ -855,18 +1019,23 @@ export async function activate(ctx) {
       pluginId: "dev.editor-config",
       category: "editor",
       title: "Editor",
+      titleKey: "dev.editor-config.settings.editor.title",
       description: "常用编辑器偏好",
+      descriptionKey: "dev.editor-config.settings.editor.description",
       order: 14,
       sections: [
         {
           id: "editor.basics",
           title: "基础体验",
+          titleKey: "dev.editor-config.settings.editor.basics",
           settings: [
             {
               id: "editor.wysiwyg",
               kind: "boolean",
               label: "所见即所得",
+              labelKey: "dev.editor-config.settings.wysiwyg.label",
               description: "在编辑时显示更接近最终排版的效果",
+              descriptionKey: "dev.editor-config.settings.wysiwyg.description",
               getValue: () => getBool("ui.wysiwyg", false),
               setValue: async (value) => window.zion.commands.executeCommand("zion.setWysiwyg", !!value)
             },
@@ -874,7 +1043,9 @@ export async function activate(ctx) {
               id: "editor.lineWrap",
               kind: "boolean",
               label: "自动换行",
+              labelKey: "dev.editor-config.settings.lineWrap.label",
               description: "长行内容自动折到下一行",
+              descriptionKey: "dev.editor-config.settings.lineWrap.description",
               getValue: () => getBool("ui.lineWrap", false),
               setValue: async (value) => window.zion.commands.executeCommand("zion.setLineWrap", !!value)
             },
@@ -882,7 +1053,9 @@ export async function activate(ctx) {
               id: "editor.minimap",
               kind: "boolean",
               label: "迷你地图",
+              labelKey: "dev.editor-config.settings.minimap.label",
               description: "在右侧显示文档缩略预览",
+              descriptionKey: "dev.editor-config.settings.minimap.description",
               getValue: () => getBool("ui.minimapEnabled", true),
               setValue: async (value) => window.zion.commands.executeCommand("zion.setMinimap", !!value)
             },
@@ -890,7 +1063,9 @@ export async function activate(ctx) {
               id: "editor.lineNumbers",
               kind: "boolean",
               label: "行号",
+              labelKey: "dev.editor-config.settings.lineNumbers.label",
               description: "显示每一行的序号",
+              descriptionKey: "dev.editor-config.settings.lineNumbers.description",
               getValue: () => getBool("ui.lineNumbers", false),
               setValue: async (value) => window.zion.commands.executeCommand("zion.setLineNumbers", !!value)
             },
@@ -898,7 +1073,9 @@ export async function activate(ctx) {
               id: "editor.activeLineHighlight",
               kind: "boolean",
               label: "当前行高亮",
+              labelKey: "dev.editor-config.settings.activeLine.label",
               description: "突出当前所在行",
+              descriptionKey: "dev.editor-config.settings.activeLine.description",
               getValue: () => getBool("ui.activeLineHighlight", false),
               setValue: async (value) => window.zion.commands.executeCommand("zion.setActiveLineHighlight", !!value)
             },
@@ -906,7 +1083,9 @@ export async function activate(ctx) {
               id: "editor.syntaxHighlight",
               kind: "boolean",
               label: "语法高亮",
+              labelKey: "dev.editor-config.settings.syntax.label",
               description: "为代码与标记内容提供颜色区分",
+              descriptionKey: "dev.editor-config.settings.syntax.description",
               getValue: () => getBool("ui.syntaxHighlight", false),
               setValue: async (value) => window.zion.commands.executeCommand("zion.setSyntaxHighlight", !!value)
             },
@@ -914,7 +1093,9 @@ export async function activate(ctx) {
               id: "editor.autoIndent",
               kind: "boolean",
               label: "自动缩进",
+              labelKey: "dev.editor-config.settings.autoIndent.label",
               description: "换行时继承上一行缩进",
+              descriptionKey: "dev.editor-config.settings.autoIndent.description",
               getValue: () => getBool("ui.autoIndent", false),
               setValue: async (value) => window.zion.commands.executeCommand("zion.setAutoIndent", !!value)
             },
@@ -922,7 +1103,9 @@ export async function activate(ctx) {
               id: "editor.folding",
               kind: "boolean",
               label: "折叠",
+              labelKey: "dev.editor-config.settings.folding.label",
               description: "允许折叠标题和代码块",
+              descriptionKey: "dev.editor-config.settings.folding.description",
               getValue: () => getBool("ui.folding", false),
               setValue: async (value) => window.zion.commands.executeCommand("zion.setFolding", !!value)
             },
@@ -930,7 +1113,9 @@ export async function activate(ctx) {
               id: "editor.selectionHighlight",
               kind: "boolean",
               label: "选中高亮",
+              labelKey: "dev.editor-config.settings.selection.label",
               description: "同步高亮当前选中的重复内容",
+              descriptionKey: "dev.editor-config.settings.selection.description",
               getValue: () => getBool("ui.selectionHighlight", true),
               setValue: async (value) => window.zion.commands.executeCommand("zion.setSelectionHighlight", !!value)
             }
@@ -939,12 +1124,15 @@ export async function activate(ctx) {
         {
           id: "editor.chat",
           title: "聊天编辑偏好",
+          titleKey: "dev.editor-config.settings.editor.chat",
           settings: [
             {
               id: "editor.includeToolHistory",
               kind: "boolean",
               label: "带上工具历史",
+              labelKey: "dev.editor-config.settings.toolHistory.label",
               description: "在聊天上下文里包含工具调用历史",
+              descriptionKey: "dev.editor-config.settings.toolHistory.description",
               getValue: () => getBool("chat.includeToolHistory", true),
               setValue: async (value) => setStoredState("chat.includeToolHistory", "zion.includeToolHistory", !!value)
             },
@@ -952,7 +1140,9 @@ export async function activate(ctx) {
               id: "editor.includeThinkingHistory",
               kind: "boolean",
               label: "带上思考历史",
+              labelKey: "dev.editor-config.settings.thinkingHistory.label",
               description: "在聊天上下文里包含推理过程历史",
+              descriptionKey: "dev.editor-config.settings.thinkingHistory.description",
               getValue: () => getBool("chat.includeThinkingHistory", true),
               setValue: async (value) => setStoredState("chat.includeThinkingHistory", "zion.includeThinkingHistory", !!value)
             },
@@ -960,11 +1150,13 @@ export async function activate(ctx) {
               id: "editor.toolReasoningMode",
               kind: "select",
               label: "工具推理内容",
+              labelKey: "dev.editor-config.settings.toolReasoning.label",
               description: "控制工具调用里的 reasoning_content 是否保留",
+              descriptionKey: "dev.editor-config.settings.toolReasoning.description",
               enumOptions: [
-                { value: "auto", label: "自动" },
-                { value: "always", label: "总是保留" },
-                { value: "never", label: "不保留" }
+                { value: "auto", label: "自动", labelKey: "dev.editor-config.settings.toolReasoning.auto" },
+                { value: "always", label: "总是保留", labelKey: "dev.editor-config.settings.toolReasoning.always" },
+                { value: "never", label: "不保留", labelKey: "dev.editor-config.settings.toolReasoning.never" }
               ],
               getValue: () => getString("chat.toolCallsReasoningContentMode", "auto"),
               setValue: async (value) => {
@@ -976,8 +1168,11 @@ export async function activate(ctx) {
               id: "editor.openAdvancedPanel",
               kind: "action",
               label: "高级编辑器设置",
+              labelKey: "dev.editor-config.settings.advanced.label",
               description: "打开完整编辑器配置面板",
+              descriptionKey: "dev.editor-config.settings.advanced.description",
               actionLabel: "打开高级配置",
+              actionLabelKey: "dev.editor-config.settings.advanced.action",
               action: async () => openConfigPanel()
             }
           ]

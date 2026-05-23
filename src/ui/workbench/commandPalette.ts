@@ -1,8 +1,11 @@
 type CommandMeta = {
   id: string;
   title: string;
+  titleKey?: string;
   description?: string;
+  descriptionKey?: string;
   category?: string;
+  categoryKey?: string;
   pluginId?: string;
   registered: boolean;
   keybindings: Array<{ key: string; when?: string }>;
@@ -78,6 +81,15 @@ const LANGUAGE_OPTIONS = [
 
 function safeText(v: any): string {
   return String(v ?? "");
+}
+
+function t(key: string | undefined, fallback = ""): string {
+  if (!key) return fallback;
+  try {
+    const translated = (window as any).zion?.i18n?.t?.(key);
+    if (translated && translated !== key) return translated;
+  } catch {}
+  return fallback || key;
 }
 
 function readRecent(): string[] {
@@ -345,8 +357,8 @@ function loadOpenSessionIds(): Set<string> {
   return new Set();
 }
 
-function loadManifestMeta(): Map<string, Pick<CommandMeta, "id" | "title" | "description" | "category" | "pluginId">> {
-  const out = new Map<string, Pick<CommandMeta, "id" | "title" | "description" | "category" | "pluginId">>();
+function loadManifestMeta(): Map<string, Pick<CommandMeta, "id" | "title" | "titleKey" | "description" | "descriptionKey" | "category" | "categoryKey" | "pluginId">> {
+  const out = new Map<string, Pick<CommandMeta, "id" | "title" | "titleKey" | "description" | "descriptionKey" | "category" | "categoryKey" | "pluginId">>();
   try {
     const manifests = (import.meta as any).glob("/extensions/**/manifest.json", { eager: true }) as Record<string, any>;
     for (const mod of Object.values(manifests)) {
@@ -364,8 +376,11 @@ function loadManifestMeta(): Map<string, Pick<CommandMeta, "id" | "title" | "des
           out.set(id, {
             id,
             title,
+            titleKey: safeText(c?.titleKey || ""),
             description,
+            descriptionKey: safeText(c?.descriptionKey || ""),
             category: safeText(c?.category || pluginName),
+            categoryKey: safeText(c?.categoryKey || ""),
             pluginId
           });
         }
@@ -402,7 +417,7 @@ function buildRuntimeIndex(): Map<string, { registered: boolean; keybindings: Ar
   return out;
 }
 
-function buildCommandList(metaById: Map<string, Pick<CommandMeta, "id" | "title" | "description" | "category" | "pluginId">>): CommandMeta[] {
+function buildCommandList(metaById: Map<string, Pick<CommandMeta, "id" | "title" | "titleKey" | "description" | "descriptionKey" | "category" | "categoryKey" | "pluginId">>): CommandMeta[] {
   const index = buildRuntimeIndex();
   const allIds = new Set<string>();
   for (const id of index.keys()) allIds.add(id);
@@ -414,9 +429,12 @@ function buildCommandList(metaById: Map<string, Pick<CommandMeta, "id" | "title"
     const meta = metaById.get(id);
     items.push({
       id,
-      title: meta?.title || id,
-      description: meta?.description || "",
-      category: meta?.category || "",
+      title: t(meta?.titleKey, meta?.title || id),
+      titleKey: meta?.titleKey,
+      description: t(meta?.descriptionKey, meta?.description || ""),
+      descriptionKey: meta?.descriptionKey,
+      category: t(meta?.categoryKey, meta?.category || ""),
+      categoryKey: meta?.categoryKey,
       pluginId: meta?.pluginId || "",
       registered: info.registered,
       keybindings: info.keybindings
@@ -1141,10 +1159,16 @@ export function initCommandPalette() {
       if (!open) return;
       try { render(input.value); } catch {}
     };
+    const refreshI18nIfOpen = () => {
+      if (!open) return;
+      try { commands = buildCommandList(metaById); } catch {}
+      try { render(input.value); } catch {}
+    };
     window.zion.events.on("chat/runStarted", rerenderIfOpen);
     window.zion.events.on("chat/runFinished", rerenderIfOpen);
     window.zion.events.on("chat/runError", rerenderIfOpen);
     window.zion.events.on("chat/aborted", rerenderIfOpen);
+    window.zion.events.on("i18n/changed", refreshI18nIfOpen);
   } catch {}
 
   mask.addEventListener("mousedown", (e) => {
