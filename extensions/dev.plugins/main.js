@@ -58,6 +58,32 @@ const I18N_MESSAGES = {
     "pluginName.dev.gutter-actions": "行号栏操作",
     "pluginName.dev.export-editor": "导出编辑器",
     "pluginName.zion.autocompletion": "自动补全",
+    "pluginDescription.dev.terminal-enhanced": "提供增强终端面板、会话切换、命令历史和智能辅助能力。",
+    "pluginDescription.dev.toc": "生成并展示当前文档目录，支持插入 Markdown 目录。",
+    "pluginDescription.dev.roles": "配置角色前缀，并为不同角色的内容块提供高亮。",
+    "pluginDescription.dev.terminal-manager": "管理本地和 SSH 终端会话，支持切换、重连和目录更新。",
+    "pluginDescription.dev.plugins": "查看、启用、停用、安装和开发调试 Zion 插件。",
+    "pluginDescription.dev.mail": "配置 SMTP 邮件发送、默认收件人和会话结束通知。",
+    "pluginDescription.dev.task-panel": "管理任务和待办，并支持继续执行未完成任务。",
+    "pluginDescription.dev.fs-manager": "管理文件和文件夹访问权限，供工具安全读取和写入。",
+    "pluginDescription.dev.skills": "扫描和管理 Agent Skills，并把技能元数据注入系统提示。",
+    "pluginDescription.dev.context-compression": "为 AI 对话提供多策略上下文压缩和统计能力。",
+    "pluginDescription.dev.tools": "管理工具解析、开关和来自 AI 响应的工具调用。",
+    "pluginDescription.dev.session-manager": "管理会话列表、文件夹、导入导出、克隆和切换。",
+    "pluginDescription.dev.langchain-chat": "提供聊天运行、停止、重试和模型配置能力。",
+    "pluginDescription.dev.editor-config": "配置编辑器外观、宽度、行号、折行和语法高亮等选项。",
+    "pluginDescription.dev.service-baseurl": "在设置中心注册后端服务地址配置项。",
+    "pluginDescription.dev.thinking": "控制和展示模型思考过程相关内容。",
+    "pluginDescription.dev.sticky-user-header": "滚动时固定当前 user 消息标题，帮助识别当前回答对应的问题。",
+    "pluginDescription.dev.sticky-header": "兼容旧固定头部插件 id，并复用固定用户头部能力。",
+    "pluginDescription.dev.slash-commands": "注册斜杠命令入口，用于快速触发常用动作。",
+    "pluginDescription.dev.search-replace": "在编辑器中提供搜索、替换、跳转和全选匹配能力。",
+    "pluginDescription.dev.search-replace-plus": "提供更强的搜索替换批量接受、回滚和 diff 操作。",
+    "pluginDescription.dev.paste-image": "处理粘贴图片，并插入为 Markdown 图片。",
+    "pluginDescription.dev.image-enhanced": "增强 Markdown 图片预览，提供打开、复制、下载和信息查看等操作。",
+    "pluginDescription.dev.gutter-actions": "在编辑器行号栏提供快捷操作入口。",
+    "pluginDescription.dev.export-editor": "把当前编辑器内容导出为 PNG 或 PDF。",
+    "pluginDescription.zion.autocompletion": "提供编辑器自动补全能力。",
     "msg.enabled": "插件已启用。",
     "msg.disabled": "插件已停用。",
     "msg.toggleFailed": "切换插件失败：{message}",
@@ -137,6 +163,32 @@ const I18N_MESSAGES = {
     "pluginName.dev.gutter-actions": "Gutter Actions",
     "pluginName.dev.export-editor": "Export Editor",
     "pluginName.zion.autocompletion": "Autocompletion",
+    "pluginDescription.dev.terminal-enhanced": "Enhanced terminal panel with session switching, command history, and smart assistance.",
+    "pluginDescription.dev.toc": "Generate and display the current document table of contents, with Markdown TOC insertion.",
+    "pluginDescription.dev.roles": "Configure role prefixes and highlight content blocks by role.",
+    "pluginDescription.dev.terminal-manager": "Manage local and SSH terminal sessions, including switching, reconnecting, and CWD updates.",
+    "pluginDescription.dev.plugins": "View, enable, disable, install, and develop Zion plugins.",
+    "pluginDescription.dev.mail": "Configure SMTP sending, default recipients, and run-finished notifications.",
+    "pluginDescription.dev.task-panel": "Manage tasks and todos, with continuation support for unfinished work.",
+    "pluginDescription.dev.fs-manager": "Manage file and folder access permissions for safe tool read/write operations.",
+    "pluginDescription.dev.skills": "Scan and manage Agent Skills, and inject skill metadata into the system prompt.",
+    "pluginDescription.dev.context-compression": "Provide multi-strategy context compression and statistics for AI conversations.",
+    "pluginDescription.dev.tools": "Manage tool parsing, switches, and tool calls from AI assistant responses.",
+    "pluginDescription.dev.session-manager": "Manage session lists, folders, import/export, cloning, and switching.",
+    "pluginDescription.dev.langchain-chat": "Provide chat run, stop, retry, and model configuration capabilities.",
+    "pluginDescription.dev.editor-config": "Configure editor appearance, width, line numbers, wrapping, and syntax highlighting.",
+    "pluginDescription.dev.service-baseurl": "Register backend service base URL settings in the Settings Center.",
+    "pluginDescription.dev.thinking": "Control and display model thinking-related content.",
+    "pluginDescription.dev.sticky-user-header": "Keep the current user message header visible while scrolling to identify the active question.",
+    "pluginDescription.dev.sticky-header": "Compatibility plugin for the old sticky header id, reusing sticky user header behavior.",
+    "pluginDescription.dev.slash-commands": "Register slash command entries for quickly invoking common actions.",
+    "pluginDescription.dev.search-replace": "Provide editor search, replace, navigation, and select-all matches.",
+    "pluginDescription.dev.search-replace-plus": "Provide enhanced search/replace batch accept, revert, and diff operations.",
+    "pluginDescription.dev.paste-image": "Handle pasted images and insert them as Markdown images.",
+    "pluginDescription.dev.image-enhanced": "Enhance Markdown image previews with open, copy, download, and info actions.",
+    "pluginDescription.dev.gutter-actions": "Provide quick action entry points in the editor gutter.",
+    "pluginDescription.dev.export-editor": "Export the current editor content to PNG or PDF.",
+    "pluginDescription.zion.autocompletion": "Provide editor autocompletion capabilities.",
     "msg.enabled": "Plugin enabled.",
     "msg.disabled": "Plugin disabled.",
     "msg.toggleFailed": "Failed to toggle plugin: {message}",
@@ -210,10 +262,13 @@ function getPluginDisplayName(plugin) {
 }
 
 function getPluginDescription(plugin) {
+  const id = String(plugin?.id || "");
   const { manifest, zion } = getManifestMeta(plugin);
   const raw = String(plugin?.description || manifest.description || "").trim();
   const key = zion.descriptionKey || manifest.descriptionKey;
   if (key) return translateFullKey(key, raw);
+  const builtin = t(`pluginDescription.${id}`, "");
+  if (builtin) return builtin;
   if (/^Zion Next Plugin:\s*dev\./i.test(raw)) return "";
   return raw;
 }
