@@ -23,8 +23,32 @@
  * });
  * ```
  */
+const I18N_NS = "dev.slash-commands";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.slash": "斜杠命令",
+    "cmd.show": "显示斜杠命令"
+  },
+  "en-US": {
+    "category.slash": "Slash Commands",
+    "cmd.show": "Show Slash Commands"
+  }
+};
+
+function t(key, fallback, values) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion?.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
   // ===== Slash Command Registry =====
   const commands = new Map(); // id -> SlashCommand
   const commandsByTrigger = new Map(); // trigger -> SlashCommand[]

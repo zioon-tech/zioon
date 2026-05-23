@@ -49,6 +49,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.fs-manager",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.fs-manager"
   }
 }

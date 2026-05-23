@@ -32,6 +32,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.roles",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.roles"
   }
 }

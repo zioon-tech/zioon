@@ -160,6 +160,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.editor-config",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.editor-config"
   }
 }

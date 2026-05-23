@@ -50,6 +50,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.skills",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.skills"
   }
 }

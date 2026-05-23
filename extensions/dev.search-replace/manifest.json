@@ -98,6 +98,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.search-replace",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.search-replace"
   }
 }

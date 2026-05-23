@@ -67,6 +67,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.toc",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.toc"
   }
 }

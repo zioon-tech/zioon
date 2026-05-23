@@ -36,6 +36,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.task-panel",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.task-panel"
   }
 }

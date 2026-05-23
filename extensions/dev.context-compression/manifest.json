@@ -104,6 +104,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.context-compression",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.context-compression"
   }
 }

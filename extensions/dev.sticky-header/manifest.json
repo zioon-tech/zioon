@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "author": "Zion Team",
   "main": "main.js",
-  "enabled": true
+  "enabled": true,
+  "nameKey": "dev.plugins.pluginName.dev.sticky-header",
+  "descriptionKey": "dev.plugins.pluginDescription.dev.sticky-header"
 }
-

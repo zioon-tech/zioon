@@ -1,5 +1,28 @@
 import { ViewPlugin, EditorView } from "@codemirror/view";
 
+const I18N_NS = "dev.sticky-user-header";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.editor": "编辑器",
+    "cmd.toggle": "切换固定用户头部",
+    "ui.headerMenu": "固定用户头部"
+  },
+  "en-US": {
+    "category.editor": "Editor",
+    "cmd.toggle": "Toggle Sticky Header",
+    "ui.headerMenu": "Sticky User Header"
+  }
+};
+
+function t(key, fallback, values) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 const BASE_ROLE_PREFIXES = ["user", "assistant", "system"];
 
 function normalize(list) {
@@ -489,6 +512,10 @@ function stickyUserHeaderView() {
 }
 
 export async function activate(ctx) {
+  try {
+    const dispI18n = window.zion?.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (dispI18n) ctx.subscriptions.push(dispI18n);
+  } catch {}
   const disp = window.zion.editor.registerDecorator({
     id: "dev.sticky-user-header.decorator",
     apply(editor) {
@@ -519,8 +546,8 @@ export async function activate(ctx) {
     if (reg?.register) {
       const menuDisp = reg.register({
         id: "dev.sticky-user-header.menu",
-        title: "Sticky User Header",
-        section: "Editor",
+        title: t("ui.headerMenu", "Sticky User Header"),
+        section: t("category.editor", "Editor"),
         kind: "toggle",
         order: 48,
         getChecked: () => isEnabled(),

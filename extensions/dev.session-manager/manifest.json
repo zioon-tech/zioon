@@ -107,6 +107,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.session-manager",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.session-manager"
   }
 }

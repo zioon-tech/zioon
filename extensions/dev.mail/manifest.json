@@ -30,6 +30,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.mail",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.mail"
   }
 }

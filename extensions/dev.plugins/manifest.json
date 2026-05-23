@@ -18,6 +18,8 @@
           "categoryKey": "dev.plugins.category.plugins"
         }
       ]
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.plugins",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.plugins"
   }
 }

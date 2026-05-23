@@ -16,19 +16,27 @@
         {
           "id": "editor.autocompletion.toggle",
           "title": "编辑器：切换自动补全",
-          "category": "Editor"
+          "category": "Editor",
+          "titleKey": "dev.autocompletion.cmd.toggle",
+          "categoryKey": "dev.autocompletion.category.editor"
         },
         {
           "id": "editor.autocompletion.enable",
           "title": "编辑器：启用自动补全",
-          "category": "Editor"
+          "category": "Editor",
+          "titleKey": "dev.autocompletion.cmd.enable",
+          "categoryKey": "dev.autocompletion.category.editor"
         },
         {
           "id": "editor.autocompletion.disable",
           "title": "编辑器：禁用自动补全",
-          "category": "Editor"
+          "category": "Editor",
+          "titleKey": "dev.autocompletion.cmd.disable",
+          "categoryKey": "dev.autocompletion.category.editor"
         }
       ]
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.zion.autocompletion",
+    "descriptionKey": "dev.plugins.pluginDescription.zion.autocompletion"
   }
 }
