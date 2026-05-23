@@ -1472,7 +1472,6 @@ export async function activate(ctx) {
   const kbs = [
     window.zion.keybindings.register({ command: "chat.runSelection", key: "Mod-Enter", when: "editorFocus" }),
     window.zion.keybindings.register({ command: "chat.stop", key: "Escape", when: "editorFocus" }),
-    window.zion.keybindings.register({ command: "chat.retry", key: "Mod-Shift-r", when: "editorFocus" }),
     window.zion.keybindings.register({ command: "models.openSwitcher", key: "Mod-Shift-m", when: "editorFocus" })
   ];
   ctx.subscriptions.push(...kbs);

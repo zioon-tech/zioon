@@ -46,11 +46,6 @@
           "command": "chat.stop",
           "key": "Escape",
           "when": "editorFocus"
-        },
-        {
-          "command": "chat.retry",
-          "key": "Mod-Shift-r",
-          "when": "editorFocus"
         }
       ]
     },

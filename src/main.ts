@@ -3908,6 +3908,8 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       if (!mod) return;
       const key = String(ev.key || "").toLowerCase();
       const code = String(ev.code || "");
+      if (!ev.altKey && !ev.shiftKey && (key === "r" || code === "KeyR")) return handleEditorShortcut(ev, "zion.sessions.autoRename");
+      if (!ev.altKey && ev.shiftKey && (key === "r" || code === "KeyR")) return handleEditorShortcut(ev, "zion.sessions.rename");
       if (!ev.altKey && !ev.shiftKey && (key === "t" || code === "KeyT")) return handleEditorShortcut(ev, "zion.sessions.new");
       if (!ev.altKey && !ev.shiftKey && (key === "w" || code === "KeyW")) return handleEditorShortcut(ev, "zion.editorTabs.closeActiveSession");
       if (!ev.altKey && ev.shiftKey && (code === "Comma" || key === "<")) return handleEditorShortcut(ev, "zion.editorTabs.prevSessionTab");
