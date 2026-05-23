@@ -1478,9 +1478,9 @@ html, body {
   min-width: 120px;
   height: 24px;
   box-sizing: border-box;
-  border: 1px solid var(--accent);
+  border: 1px solid transparent;
   border-radius: 4px;
-  background: var(--panel);
+  background: transparent;
   color: var(--fg);
   font: inherit;
   line-height: 22px;
