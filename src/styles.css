@@ -159,7 +159,7 @@
   --app-background-color: #1e1e1e;
 
   --md-code-bg: #2d2d30;
-  --md-codeblock-bg: #1e1e1e;
+  --md-codeblock-bg: #252526;
   --md-codeblock-border: #3c3c3c;
   --md-quote-bg: color-mix(in srgb, #2d2d30 78%, transparent);
   --md-quote-border: #007acc;
@@ -232,12 +232,12 @@
 
 :root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-tabsbar {
   background: #2d2d2d;
-  border-bottom-color: #252526;
+  border-bottom-color: transparent;
 }
 
 :root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-header {
   background: #1e1e1e;
-  border-bottom: 1px solid #2d2d30;
+  border-bottom: 1px solid transparent;
 }
 
 :root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-session-tab {
@@ -254,9 +254,10 @@
 :root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-session-tab.is-active {
   background: #1e1e1e;
   border-color: #1e1e1e;
-  border-top-color: #007acc;
+  border-top-color: #1e1e1e;
   border-bottom-color: #1e1e1e;
   color: #ffffff;
+  box-shadow: none;
 }
 
 :root[data-theme="dark"][data-theme-variant="visual-studio-dark"] .zion-editor-session-tab.is-active::after {
