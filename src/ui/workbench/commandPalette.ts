@@ -79,6 +79,57 @@ const LANGUAGE_OPTIONS = [
   }
 ] as const;
 
+const BUILTIN_COMMAND_META: Record<string, Partial<CommandMeta>> = {
+  "findNext": { title: "查找：下一个匹配项", description: "跳转到下一个搜索结果", category: "编辑器", pluginId: "core" },
+  "findPrev": { title: "查找：上一个匹配项", description: "跳转到上一个搜索结果", category: "编辑器", pluginId: "core" },
+
+  "chat.toggleAutoInsertUserPrompt": { title: "聊天：切换自动插入用户提示", description: "切换用户提示是否自动插入到编辑器", category: "聊天", pluginId: "dev.langchain-chat" },
+  "chat.toggleAutoFocusUserPrompt": { title: "聊天：切换自动聚焦用户提示", description: "切换运行后是否自动聚焦用户提示", category: "聊天", pluginId: "dev.langchain-chat" },
+  "chat.toggleRunFinishedSound": { title: "聊天：切换完成提示音", description: "切换对话完成后的提示音", category: "聊天", pluginId: "dev.langchain-chat" },
+  "models.openSwitcher": { title: "模型：打开模型切换器", description: "打开模型选择列表", category: "模型", pluginId: "dev.langchain-chat" },
+  "models.closeSwitcher": { title: "模型：关闭模型切换器", description: "关闭模型选择列表", category: "模型", pluginId: "dev.langchain-chat" },
+  "models.selectNextModel": { title: "模型：选择下一个模型", description: "切换到下一个可用模型", category: "模型", pluginId: "dev.langchain-chat" },
+  "models.selectPrevModel": { title: "模型：选择上一个模型", description: "切换到上一个可用模型", category: "模型", pluginId: "dev.langchain-chat" },
+
+  "compression.strategy.progressive": { title: "压缩：使用渐进策略", description: "使用 Progressive 策略压缩当前对话", category: "压缩", pluginId: "dev.context-compression" },
+  "compression.preview": { title: "压缩：打开预览", description: "打开上下文压缩预览面板", category: "压缩", pluginId: "dev.context-compression" },
+  "compression.preview.compute": { title: "压缩：计算预览", description: "计算当前对话的上下文压缩预览", category: "压缩", pluginId: "dev.context-compression" },
+  "compression.apply": { title: "压缩：应用压缩", description: "对当前对话应用上下文压缩", category: "压缩", pluginId: "dev.context-compression" },
+  "compression.panel": { title: "压缩：打开面板", description: "打开上下文压缩面板", category: "压缩", pluginId: "dev.context-compression" },
+  "compression.tool.view": { title: "压缩：查看工具结果", description: "查看压缩上下文中的工具调用结果", category: "压缩", pluginId: "dev.context-compression" },
+  "compression.versions.list": { title: "压缩：列出历史版本", description: "列出当前会话的压缩历史版本", category: "压缩", pluginId: "dev.context-compression" },
+  "compression.versions.clear": { title: "压缩：清空历史版本", description: "清空当前会话的压缩历史版本", category: "压缩", pluginId: "dev.context-compression" },
+
+  "dev.editor.toggleUserRoleBlockBackground": { title: "编辑器：切换用户块背景", description: "切换 user 角色块背景显示", category: "编辑器", pluginId: "dev.editor-config" },
+  "dev.editor.toggleIncludeToolHistory": { title: "编辑器：切换包含工具历史", description: "切换是否在上下文中包含工具调用历史", category: "编辑器", pluginId: "dev.editor-config" },
+  "dev.editor.toggleIncludeThinkingHistory": { title: "编辑器：切换包含思考历史", description: "切换是否在上下文中包含 thinking 历史", category: "编辑器", pluginId: "dev.editor-config" },
+  "dev.editor.cycleToolCallsReasoningContentMode": { title: "编辑器：切换工具推理内容模式", description: "循环切换工具调用 reasoning_content 显示模式", category: "编辑器", pluginId: "dev.editor-config" },
+  "dev.editor.toggleMinimap": { title: "编辑器：切换缩略图", description: "显示或隐藏编辑器 minimap", category: "编辑器", pluginId: "dev.editor-config" },
+
+  "dev.gutter-actions.batchAccept": { title: "行号操作：批量接受", description: "批量接受当前可处理的变更", category: "编辑器", pluginId: "dev.gutter-actions" },
+  "dev.gutter-actions.batchRevert": { title: "行号操作：批量回退", description: "批量回退当前可处理的变更", category: "编辑器", pluginId: "dev.gutter-actions" }
+};
+
+const HIDDEN_RUNTIME_COMMANDS = [
+  "chat.setRunFinishedSoundEnabled",
+  "models.listProviders",
+  "models.listModels",
+  "models.selectModel",
+  "compression.settings.save",
+  "compression.settings.load",
+  "compression.versions.restore",
+  "compression.versions.delete",
+  "dev.editor.setUserRoleBlockBackground",
+  "dev.editor.setIncludeToolHistory",
+  "dev.editor.setIncludeThinkingHistory",
+  "dev.editor.setToolCallsReasoningContentMode"
+];
+
+function isHiddenRuntimeCommand(id: string): boolean {
+  if (HIDDEN_RUNTIME_COMMANDS.includes(id)) return true;
+  return id.startsWith("models.setDefaultModel.") || id.startsWith("chat.runDefaultWithModel.");
+}
+
 function safeText(v: any): string {
   return String(v ?? "");
 }
@@ -387,6 +438,19 @@ function loadManifestMeta(): Map<string, Pick<CommandMeta, "id" | "title" | "tit
       }
     }
   } catch {}
+  for (const [id, meta] of Object.entries(BUILTIN_COMMAND_META)) {
+    if (out.has(id)) continue;
+    out.set(id, {
+      id,
+      title: safeText(meta.title || id),
+      titleKey: safeText(meta.titleKey || ""),
+      description: safeText(meta.description || ""),
+      descriptionKey: safeText(meta.descriptionKey || ""),
+      category: safeText(meta.category || "Zion"),
+      categoryKey: safeText(meta.categoryKey || ""),
+      pluginId: safeText(meta.pluginId || "core")
+    });
+  }
   return out;
 }
 
@@ -425,6 +489,7 @@ function buildCommandList(metaById: Map<string, Pick<CommandMeta, "id" | "title"
 
   const items: CommandMeta[] = [];
   for (const id of allIds) {
+    if (isHiddenRuntimeCommand(id)) continue;
     const info = index.get(id) || { registered: false, keybindings: [] as Array<{ key: string; when?: string }> };
     const meta = metaById.get(id);
     items.push({
