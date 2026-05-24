@@ -3,7 +3,6 @@
  * Features:
  * - Command: toc.show -> open TOC overlay with clickable headings
  * - Command: toc.insert -> insert Markdown TOC list at cursor
- * - Keybinding: Mod-Alt-T -> open TOC
  * - StatusBar button "TOC"
  * - Editor context menu item "Table of Contents"
  */
@@ -1585,14 +1584,6 @@ export async function activate(ctx) {
   });
   const d2 = window.zion.commands.registerCommand("toc.insert", () => insertMarkdownTOC());
   ctx.subscriptions.push(d1, d2);
-
-  // keybinding
-  const d3 = window.zion.keybindings.register({
-    command: "toc.show",
-    key: "Mod-Alt-t",
-    when: "editorFocus"
-  });
-  ctx.subscriptions.push(d3);
 
   // 初始化分组开关状态（localStorage -> state）
   try {

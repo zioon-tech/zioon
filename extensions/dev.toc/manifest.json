@@ -32,11 +32,6 @@
       ],
       "keybindings": [
         {
-          "command": "toc.show",
-          "key": "Mod-Alt-t",
-          "when": "editorFocus"
-        },
-        {
           "command": "toc.toggleGroupByRole",
           "key": "Mod-Shift-g",
           "when": "editorFocus"
