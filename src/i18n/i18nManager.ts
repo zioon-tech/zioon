@@ -103,6 +103,27 @@ export class I18nManager {
     return message ? interpolate(message, values) : rawKey;
   }
 
+  getMessageVariants(key: string, values?: InterpolationValues): string[] {
+    const rawKey = String(key || "");
+    let namespace = "";
+    for (const candidate of this.namespaces.keys()) {
+      if (!rawKey.startsWith(`${candidate}.`)) continue;
+      if (candidate.length > namespace.length) namespace = candidate;
+    }
+    if (!namespace) return [];
+
+    const messageKey = rawKey.slice(namespace.length + 1);
+    const bundle = this.namespaces.get(namespace);
+    const out: string[] = [];
+    for (const locale of SUPPORTED_LOCALES) {
+      const message = bundle?.[locale.value]?.[messageKey];
+      if (!message) continue;
+      const translated = interpolate(message, values);
+      if (translated && !out.includes(translated)) out.push(translated);
+    }
+    return out;
+  }
+
   private applyLocale(locale: ZionLocale, opts: { previousLocale?: ZionLocale; emit: boolean }): void {
     try { document.documentElement.setAttribute("lang", locale); } catch {}
     try { window.zion.state.set("ui.locale", locale); } catch {}
@@ -134,7 +155,8 @@ export class I18nManager {
         setLocale: (locale: ZionLocale) => this.setLocale(locale),
         toggleLocale: () => this.toggleLocale(),
         registerNamespace: (namespace: string, messages: ZionI18nBundle) => this.registerNamespace(namespace, messages),
-        t: (key: string, values?: InterpolationValues) => this.t(key, values)
+        t: (key: string, values?: InterpolationValues) => this.t(key, values),
+        getMessageVariants: (key: string, values?: InterpolationValues) => this.getMessageVariants(key, values)
       };
     } catch {}
   }

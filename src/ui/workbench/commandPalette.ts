@@ -1,3 +1,5 @@
+import { matchSorter, rankings } from "match-sorter";
+
 type CommandMeta = {
   id: string;
   title: string;
@@ -9,7 +11,10 @@ type CommandMeta = {
   pluginId?: string;
   registered: boolean;
   keybindings: Array<{ key: string; when?: string }>;
+  searchText?: string[];
 };
+
+type CommandMetaContribution = Pick<CommandMeta, "id" | "title" | "titleKey" | "description" | "descriptionKey" | "category" | "categoryKey" | "pluginId" | "searchText">;
 
 const STYLE_ID = "zion-command-palette-style";
 const RECENT_KEY = "zion.commandPalette.recent.v2";
@@ -180,6 +185,38 @@ function t(key: string | undefined, fallback = ""): string {
   return fallback || key;
 }
 
+function uniqueTexts(values: Array<unknown>): string[] {
+  const out: string[] = [];
+  for (const value of values) {
+    const text = safeText(value).trim();
+    if (!text || out.includes(text)) continue;
+    out.push(text);
+  }
+  return out;
+}
+
+function splitIdentifier(value: string): string {
+  return safeText(value)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[._:/-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tVariants(key: string | undefined, fallback = ""): string[] {
+  const variants: string[] = [];
+  if (key) {
+    try {
+      const all = (window as any).zion?.i18n?.getMessageVariants?.(key);
+      if (Array.isArray(all)) variants.push(...all);
+    } catch {}
+    variants.push(t(key, fallback));
+    variants.push(key);
+  }
+  variants.push(fallback);
+  return uniqueTexts(variants);
+}
+
 function readRecent(): string[] {
   try {
     const raw = localStorage.getItem(RECENT_KEY);
@@ -295,54 +332,66 @@ function normalizeKeybindingLabel(key: string): string {
     .trim();
 }
 
-function computeScore(q: string, item: CommandMeta): number {
-  if (!q) return 0;
-  const query = q.toLowerCase();
-  const title = (item.title || "").toLowerCase();
-  const desc = (item.description || "").toLowerCase();
-  const id = item.id.toLowerCase();
-  const cat = (item.category || "").toLowerCase();
-  const plugin = (item.pluginId || "").toLowerCase();
-
-  if (id === query) return 200;
-  if (title === query) return 190;
-  if (title.startsWith(query)) return 140;
-  if (id.startsWith(query)) return 120;
-  if (title.includes(query)) return 100;
-  if (desc.includes(query)) return 70;
-  if (cat.includes(query) || plugin.includes(query)) return 40;
-  return 0;
+function getItemSearchText(item: PaletteItem): string {
+  if (item.kind === "command") {
+    const meta = item.meta;
+    return uniqueTexts([
+      meta.title,
+      meta.id,
+      splitIdentifier(meta.id),
+      meta.description,
+      meta.category,
+      meta.pluginId,
+      splitIdentifier(meta.pluginId || ""),
+      ...(meta.searchText || [])
+    ]).join(" ");
+  }
+  if (item.kind === "action") {
+    return uniqueTexts([
+      item.title,
+      item.id,
+      splitIdentifier(item.id),
+      item.description,
+      ...(item.keywords || [])
+    ]).join(" ");
+  }
+  return uniqueTexts([
+    item.title,
+    item.id,
+    item.path
+  ]).join(" ");
 }
 
-function computeScoreSession(q: string, it: { id: string; title: string }): number {
-  if (!q) return 0;
-  const query = q.toLowerCase();
-  const title = (it.title || "").toLowerCase();
-  const id = it.id.toLowerCase();
-  if (id === query) return 200;
-  if (title === query) return 190;
-  if (title.startsWith(query)) return 140;
-  if (id.startsWith(query)) return 120;
-  if (title.includes(query)) return 100;
-  if (id.includes(query)) return 60;
-  return 0;
+function sortItemsForSearch(candidates: PaletteItem[], recentRankOf: (key: string) => number): PaletteItem[] {
+  const itemKey = (it: PaletteItem) => it.kind === "command" ? `cmd:${it.meta.id}` : (it.kind === "action" ? `cmd:${it.id}` : `ses:${it.id}`);
+  const itemTitle = (it: PaletteItem) => it.kind === "command" ? it.meta.title : it.title;
+  return candidates.slice().sort((a, b) => {
+    const ra = recentRankOf(itemKey(a));
+    const rb = recentRankOf(itemKey(b));
+    if (ra !== rb) return ra - rb;
+    if (a.kind !== b.kind) return a.kind === "session" ? -1 : 1;
+    return safeText(itemTitle(a)).localeCompare(safeText(itemTitle(b)));
+  });
 }
 
-function computeScoreAction(q: string, it: { id: string; title: string; description?: string; keywords?: string[] }): number {
-  if (!q) return 0;
-  const query = q.toLowerCase();
-  const title = safeText(it.title).toLowerCase();
-  const desc = safeText(it.description).toLowerCase();
-  const id = safeText(it.id).toLowerCase();
-  const keywords = Array.isArray(it.keywords) ? it.keywords.map(x => safeText(x).toLowerCase()).join(" ") : "";
-  if (id === query) return 200;
-  if (title === query) return 190;
-  if (title.startsWith(query)) return 150;
-  if (id.startsWith(query)) return 140;
-  if (title.includes(query)) return 110;
-  if (desc.includes(query)) return 80;
-  if (keywords.includes(query)) return 60;
-  return 0;
+function searchItems(q: string, candidates: PaletteItem[], recentRankOf: (key: string) => number): Array<{ item: PaletteItem; score: number; recentRank: number }> {
+  const rows = sortItemsForSearch(candidates, recentRankOf).map((item) => ({
+    item,
+    text: getItemSearchText(item)
+  }));
+  const matches = matchSorter(rows, q, {
+    keys: ["text"],
+    threshold: rankings.MATCHES
+  });
+  return matches.map((row, index) => {
+    const item = row.item;
+    const key = item.kind === "command" ? `cmd:${item.meta.id}` : (item.kind === "action" ? `cmd:${item.id}` : `ses:${item.id}`);
+    return {
+      item,
+      score: matches.length - index,
+      recentRank: recentRankOf(key)
+    };
+  });
 }
 
 function fmtRelTime(ts?: number): string {
@@ -445,8 +494,8 @@ function loadOpenSessionIds(): Set<string> {
   return new Set();
 }
 
-function loadManifestMeta(): Map<string, Pick<CommandMeta, "id" | "title" | "titleKey" | "description" | "descriptionKey" | "category" | "categoryKey" | "pluginId">> {
-  const out = new Map<string, Pick<CommandMeta, "id" | "title" | "titleKey" | "description" | "descriptionKey" | "category" | "categoryKey" | "pluginId">>();
+function loadManifestMeta(): Map<string, CommandMetaContribution> {
+  const out = new Map<string, CommandMetaContribution>();
   try {
     const manifests = (import.meta as any).glob("/extensions/**/manifest.json", { eager: true }) as Record<string, any>;
     for (const mod of Object.values(manifests)) {
@@ -484,7 +533,8 @@ function loadManifestMeta(): Map<string, Pick<CommandMeta, "id" | "title" | "tit
       descriptionKey: safeText(meta.descriptionKey || ""),
       category: safeText(meta.category || "Zion"),
       categoryKey: safeText(meta.categoryKey || ""),
-      pluginId: safeText(meta.pluginId || "core")
+      pluginId: safeText(meta.pluginId || "core"),
+      searchText: Array.isArray(meta.searchText) ? meta.searchText : []
     });
   }
   return out;
@@ -517,7 +567,7 @@ function buildRuntimeIndex(): Map<string, { registered: boolean; keybindings: Ar
   return out;
 }
 
-function buildCommandList(metaById: Map<string, Pick<CommandMeta, "id" | "title" | "titleKey" | "description" | "descriptionKey" | "category" | "categoryKey" | "pluginId">>): CommandMeta[] {
+function buildCommandList(metaById: Map<string, CommandMetaContribution>): CommandMeta[] {
   const index = buildRuntimeIndex();
   const allIds = new Set<string>();
   for (const id of index.keys()) allIds.add(id);
@@ -528,17 +578,33 @@ function buildCommandList(metaById: Map<string, Pick<CommandMeta, "id" | "title"
     if (isHiddenRuntimeCommand(id)) continue;
     const info = index.get(id) || { registered: false, keybindings: [] as Array<{ key: string; when?: string }> };
     const meta = metaById.get(id);
+    const title = t(meta?.titleKey, meta?.title || id);
+    const description = t(meta?.descriptionKey, meta?.description || "");
+    const category = t(meta?.categoryKey, meta?.category || "");
     items.push({
       id,
-      title: t(meta?.titleKey, meta?.title || id),
+      title,
       titleKey: meta?.titleKey,
-      description: t(meta?.descriptionKey, meta?.description || ""),
+      description,
       descriptionKey: meta?.descriptionKey,
-      category: t(meta?.categoryKey, meta?.category || ""),
+      category,
       categoryKey: meta?.categoryKey,
       pluginId: meta?.pluginId || "",
       registered: info.registered,
-      keybindings: info.keybindings
+      keybindings: info.keybindings,
+      searchText: uniqueTexts([
+        ...tVariants(meta?.titleKey, meta?.title || id),
+        ...tVariants(meta?.descriptionKey, meta?.description || ""),
+        ...tVariants(meta?.categoryKey, meta?.category || ""),
+        meta?.title,
+        meta?.description,
+        meta?.category,
+        id,
+        splitIdentifier(id),
+        meta?.pluginId,
+        splitIdentifier(meta?.pluginId || ""),
+        ...(meta?.searchText || [])
+      ])
     });
   }
   items.sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
@@ -1017,24 +1083,7 @@ export function initCommandPalette() {
       }
       scored = scored.slice(0, 160);
     } else {
-      for (const it of candidates) {
-        if (it.kind === "command") {
-          const score = computeScore(q, it.meta);
-          if (score <= 0) continue;
-          const key = `cmd:${it.meta.id}`;
-          scored.push({ item: it, score: score + (recent.includes(key) ? 5 : 0), recentRank: recentRankOf(key) });
-        } else if (it.kind === "action") {
-          const score = computeScoreAction(q, it);
-          if (score <= 0) continue;
-          const key = `cmd:${it.id}`;
-          scored.push({ item: it, score: score + (recent.includes(key) ? 5 : 0), recentRank: recentRankOf(key) });
-        } else {
-          const score = computeScoreSession(q, it);
-          if (score <= 0) continue;
-          const key = `ses:${it.id}`;
-          scored.push({ item: it, score: score + (recent.includes(key) ? 5 : 0), recentRank: recentRankOf(key) });
-        }
-      }
+      scored = searchItems(q, candidates, recentRankOf);
       scored.sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
         if (a.recentRank !== b.recentRank) return a.recentRank - b.recentRank;

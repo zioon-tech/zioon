@@ -170,6 +170,7 @@ declare global {
           messages: Partial<Record<"zh-CN" | "en-US", Record<string, string>>>
         ): Disposable;
         t(key: string, values?: Record<string, string | number | boolean | null | undefined>): string;
+        getMessageVariants(key: string, values?: Record<string, string | number | boolean | null | undefined>): string[];
       };
       theme?: {
         getPreference(): "system" | "light" | "dark";
