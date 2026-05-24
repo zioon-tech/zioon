@@ -1332,7 +1332,6 @@ html, body {
   opacity: 1;
 }
 
-
 .zion-panel-empty {
   display: flex;
   align-items: center;
@@ -1870,18 +1869,6 @@ body.is-dragging-panel-tabs-scrollbar {
   box-shadow:
     0 -1px 0 color-mix(in srgb, white 5%, transparent),
     0 1px 0 var(--panel);
-}
-
-.zion-editor-session-tab.is-active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  background: inherit;
-  pointer-events: none;
-  z-index: 1;
 }
 
 .zion-editor-session-tab-status {
