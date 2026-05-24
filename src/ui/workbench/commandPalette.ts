@@ -517,6 +517,13 @@ export function initCommandPalette() {
       category: "Appearance",
       pluginId: "core"
     });
+    base.set("zion.reloadWindow", {
+      id: "zion.reloadWindow",
+      title: "窗口：刷新页面",
+      description: "重新加载 Zion Next 页面，替代浏览器默认的 Cmd/Ctrl + R",
+      category: "Zion",
+      pluginId: "core"
+    });
     base.set("bottomPanel.toggle", {
       id: "bottomPanel.toggle",
       title: "底部面板：打开/关闭",

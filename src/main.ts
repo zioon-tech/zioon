@@ -3745,6 +3745,9 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     (window as any).zion.commands.registerCommand("zion.settings.show", () => {
       try { (window as any).zion.settings.open(); } catch {}
     });
+    (window as any).zion.commands.registerCommand("zion.reloadWindow", () => {
+      location.reload();
+    });
   } catch (e) {
     console.warn("[zion] failed to register settings commands", e);
   }
