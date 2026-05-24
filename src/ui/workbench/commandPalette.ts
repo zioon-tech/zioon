@@ -82,6 +82,10 @@ const LANGUAGE_OPTIONS = [
 const BUILTIN_COMMAND_META: Record<string, Partial<CommandMeta>> = {
   "findNext": { title: "查找：下一个匹配项", description: "跳转到下一个搜索结果", category: "编辑器", pluginId: "core" },
   "findPrev": { title: "查找：上一个匹配项", description: "跳转到上一个搜索结果", category: "编辑器", pluginId: "core" },
+  "replaceNext": { title: "查找：替换当前匹配项", description: "替换当前搜索匹配项", category: "编辑器", pluginId: "core" },
+  "replaceAll": { title: "查找：全部替换", description: "替换所有搜索匹配项", category: "编辑器", pluginId: "core" },
+  "selectMatches": { title: "查找：选择所有匹配项", description: "选择所有搜索匹配项", category: "编辑器", pluginId: "core" },
+  "settings.open": { title: "设置：打开设置", description: "打开 Zion Next 设置面板", category: "Zion", pluginId: "core" },
 
   "chat.toggleAutoInsertUserPrompt": { title: "聊天：切换自动插入用户提示", description: "切换用户提示是否自动插入到编辑器", category: "聊天", pluginId: "dev.langchain-chat" },
   "chat.toggleAutoFocusUserPrompt": { title: "聊天：切换自动聚焦用户提示", description: "切换运行后是否自动聚焦用户提示", category: "聊天", pluginId: "dev.langchain-chat" },
@@ -107,7 +111,23 @@ const BUILTIN_COMMAND_META: Record<string, Partial<CommandMeta>> = {
   "dev.editor.toggleMinimap": { title: "编辑器：切换缩略图", description: "显示或隐藏编辑器 minimap", category: "编辑器", pluginId: "dev.editor-config" },
 
   "dev.gutter-actions.batchAccept": { title: "行号操作：批量接受", description: "批量接受当前可处理的变更", category: "编辑器", pluginId: "dev.gutter-actions" },
-  "dev.gutter-actions.batchRevert": { title: "行号操作：批量回退", description: "批量回退当前可处理的变更", category: "编辑器", pluginId: "dev.gutter-actions" }
+  "dev.gutter-actions.batchRevert": { title: "行号操作：批量回退", description: "批量回退当前可处理的变更", category: "编辑器", pluginId: "dev.gutter-actions" },
+
+  "roles.setUser": { title: "角色：设置为用户", description: "将当前行角色设置为 user", category: "角色", pluginId: "dev.roles" },
+  "roles.setAssistant": { title: "角色：设置为助手", description: "将当前行角色设置为 assistant", category: "角色", pluginId: "dev.roles" },
+  "roles.setSystem": { title: "角色：设置为系统", description: "将当前行角色设置为 system", category: "角色", pluginId: "dev.roles" },
+  "roles.toggle": { title: "角色：切换角色显示", description: "显示或隐藏角色标记", category: "角色", pluginId: "dev.roles" },
+  "roles.configure": { title: "角色：配置角色", description: "打开角色配置", category: "角色", pluginId: "dev.roles" },
+  "roles.toggleUser": { title: "角色：切换用户角色", description: "切换当前行的 user 角色标记", category: "角色", pluginId: "dev.roles" },
+  "roles.insertUserBelow": { title: "角色：在下方插入用户", description: "在当前行下方插入 user 角色块", category: "角色", pluginId: "dev.roles" },
+  "roles.insertAssistantBelow": { title: "角色：在下方插入助手", description: "在当前行下方插入 assistant 角色块", category: "角色", pluginId: "dev.roles" },
+  "roles.insertSystemBelow": { title: "角色：在下方插入系统", description: "在当前行下方插入 system 角色块", category: "角色", pluginId: "dev.roles" },
+
+  "terminal.openHistory": { title: "终端：打开历史", description: "打开终端历史记录", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.openAuxPanel": { title: "终端：打开右侧面板", description: "在右侧辅助栏打开终端面板", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.openManager": { title: "终端：打开管理器", description: "打开终端会话管理器", category: "终端", pluginId: "dev.terminal-manager" },
+  "terminal.closeManager": { title: "终端：关闭管理器", description: "关闭终端会话管理器", category: "终端", pluginId: "dev.terminal-manager" },
+  "terminal.refreshSessions": { title: "终端：刷新会话", description: "刷新终端会话列表", category: "终端", pluginId: "dev.terminal-manager" }
 };
 
 const HIDDEN_RUNTIME_COMMANDS = [
@@ -115,6 +135,8 @@ const HIDDEN_RUNTIME_COMMANDS = [
   "models.listProviders",
   "models.listModels",
   "models.selectModel",
+  "models.selectActive",
+  "setSearchQuery",
   "compression.settings.save",
   "compression.settings.load",
   "compression.versions.restore",
@@ -122,7 +144,13 @@ const HIDDEN_RUNTIME_COMMANDS = [
   "dev.editor.setUserRoleBlockBackground",
   "dev.editor.setIncludeToolHistory",
   "dev.editor.setIncludeThinkingHistory",
-  "dev.editor.setToolCallsReasoningContentMode"
+  "dev.editor.setToolCallsReasoningContentMode",
+  "roles.setRole",
+  "terminal.createSession",
+  "terminal.closeSession",
+  "terminal.setActiveSession",
+  "terminal.setSessionCwd",
+  "terminal.reactivateSession"
 ];
 
 function isHiddenRuntimeCommand(id: string): boolean {
@@ -439,7 +467,6 @@ function loadManifestMeta(): Map<string, Pick<CommandMeta, "id" | "title" | "tit
     }
   } catch {}
   for (const [id, meta] of Object.entries(BUILTIN_COMMAND_META)) {
-    if (out.has(id)) continue;
     out.set(id, {
       id,
       title: safeText(meta.title || id),
