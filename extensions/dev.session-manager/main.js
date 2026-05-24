@@ -481,22 +481,21 @@ function isDefaultTitle(t) {
   return /^Session\b/i.test(s) || /^Imported Session\b/i.test(s);
 }
 
-/** 当前是否应自动标题：显式开启时遵循；否则只要标题仍是默认样式（Session/Imported Session）就继续尝试自动派生。 */
-function shouldAutoTitle(meta) {
-  if (!meta) return false;
-  if (meta.titleAuto === true) return true;
-  // 即便显式标记为 false，只要还是默认标题，也允许自动派生一次以提升可用性
-  if (isDefaultTitle(meta.title)) return true;
-  return false;
+function isMeaningfulAutoRenameContent(text) {
+  const cleaned = String(text || "")
+    .replace(/^\s*(system|user|assistant|tool)\s+/gim, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.length >= 12;
 }
 
-/** 当需要自动标题时，基于文档内容更新会话标题（首个非空行或首句）。同步树与索引，并刷新状态。 */
-function maybeUpdateAutoTitle(id) {
+/** 首次有实际内容后触发一次 AI 标题生成；手动改名会通过 titleAuto=false 自动阻止。 */
+function maybeTriggerInitialAutoRename(id) {
   try {
     const meta = loadMeta(id);
+    if (!meta || meta.titleAuto !== true || meta.autoRenameTriggeredAt) return false;
     // 优先使用当前编辑器中的最新文本（避免依赖未及时写入的 localStorage）
     let text = "";
-    let source = "loadDoc";
     try {
       const ed = window.zion.window.activeEditor;
       const editorPanelId = ed?.panelId || null;
@@ -505,34 +504,26 @@ function maybeUpdateAutoTitle(id) {
         : null);
       if (ed && editorPanelSessionId === id) {
         text = ed.getValue() || "";
-        source = "activeEditor";
       } else {
         text = loadDoc(id) || "";
-        source = "loadDoc";
       }
     } catch {
       text = loadDoc(id) || "";
-      source = "loadDoc";
     }
-    const derived = deriveTitleFromText(text);
-    // 仅当仍为“默认标题”或未明确禁用自动标题时执行；派生成功后“锁定”标题（titleAuto=false）
-    if (shouldAutoTitle(meta) && derived && derived !== meta.title) {
-      meta.title = derived;
-      meta.titleAuto = false; // 首次派生后锁定，后续不再自动更新（仅重命名可改变）
-      saveMeta(id, meta);
-      // 更新树节点标题
-      const tree = loadTree() || ensureInitialTree();
-      const { node } = findNodeAndParent(tree, id);
-      if (node && node.type === "session") {
-        node.title = meta.title;
-        saveTree(tree);
-      }
-      // 重建索引并刷新状态
-      rebuildIndexFromTree();
-      try { window.zion.state.set("sessions.catalog", getIndex()); } catch {}
-      try { refreshStatusBar(); } catch {}
-      return true;
-    }
+    if (!isMeaningfulAutoRenameContent(text)) return false;
+
+    meta.autoRenameTriggeredAt = now();
+    saveMeta(id, meta);
+    try { window.zion.state.set(`sessions.meta.${id}`, meta); } catch {}
+
+    const run = () => {
+      try {
+        window.zion.commands.executeCommand("zion.sessions.autoRename", { id, onlyIfAuto: true, silent: true, reason: "initial-content" });
+      } catch {}
+    };
+    if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 1500 });
+    else setTimeout(run, 800);
+    return true;
   } catch {}
   return false;
 }
@@ -1150,7 +1141,7 @@ export async function activate(ctx) {
       try {
         dispRun = window.zion.state.onDidChange(`chat.runs.${sid}`, () => {
           updateTitle();
-          try { maybeUpdateAutoTitle(sid); } catch {}
+          try { maybeTriggerInitialAutoRename(sid); } catch {}
         });
       } catch {
         dispRun = null;
@@ -1377,6 +1368,7 @@ export async function activate(ctx) {
           refreshSessionsSidebarViewIfOpen();
         }
       } catch {}
+      try { maybeTriggerInitialAutoRename(meta?.id); } catch {}
     }
   );
   const dispDec = window.zion.editor.registerDecorator({
@@ -1443,10 +1435,9 @@ export async function activate(ctx) {
     const targetPanelId = opts?.panelId || (() => {
       try { return window.zion?.panels?.getActivePanelId?.() || null; } catch { return null; }
     })();
-    // title: prefer provided; else derive from content; else fallback suggested
-    const derived = deriveTitleFromText(text);
+    // Keep new sessions on a stable placeholder; AI rename runs once after real content arrives.
     const explicitTitle = String(opts?.title || "").trim();
-    const title = explicitTitle || derived || suggested;
+    const title = explicitTitle || suggested;
     const meta = {
       id,
       title,
@@ -1454,7 +1445,7 @@ export async function activate(ctx) {
       updatedAt: now(),
       size: text.length,
       hash: hashString(text),
-      titleAuto: !explicitTitle && !!derived
+      titleAuto: !explicitTitle
     };
     saveDoc(id, text);
     saveMeta(id, meta);
@@ -1503,6 +1494,7 @@ export async function activate(ctx) {
     postSaved(id, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(id);
+    try { maybeTriggerInitialAutoRename(id); } catch {}
     return id;
   });
   ctx.subscriptions.push(dNew);
@@ -1549,6 +1541,7 @@ export async function activate(ctx) {
     postSaved(id, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(id);
+    try { maybeTriggerInitialAutoRename(id); } catch {}
   });
   ctx.subscriptions.push(dSaveAsNew);
 
@@ -1675,7 +1668,7 @@ export async function activate(ctx) {
         saveMeta(sessionId, metaPrev);
       }
     } catch {}
-    try { maybeUpdateAutoTitle(sessionId); } catch {}
+    try { maybeTriggerInitialAutoRename(sessionId); } catch {}
   };
 
   const restoreSessionViewState = (id, panelId) => {
@@ -1730,7 +1723,7 @@ export async function activate(ctx) {
     applyAnnotations: applyAnnotationsForSession,
     restoreUiState: restoreSessionViewState,
     afterSwitch: (id) => {
-      try { maybeUpdateAutoTitle(id); } catch {}
+      try { maybeTriggerInitialAutoRename(id); } catch {}
       try { window.zion.state.update(`chat.runs.${id}`, (rs) => ({ ...(rs || {}), awaiting: false })); } catch {}
       const rs = window.zion.state.get(`chat.runs.${id}`);
       window.zion.state.set("chat.streaming", !!rs?.streaming);
@@ -1809,7 +1802,10 @@ export async function activate(ctx) {
       hashString,
       upsertIndexEntry,
       getIndex,
-      refreshSessionsSidebarViewIfOpen
+      refreshSessionsSidebarViewIfOpen,
+      onDocChanged: (id) => {
+        try { maybeTriggerInitialAutoRename(id); } catch {}
+      }
     })
   );
 

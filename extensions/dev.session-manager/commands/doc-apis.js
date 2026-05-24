@@ -60,6 +60,7 @@ export function registerSessionDocCommands(opts) {
   const upsertIndexEntry = opts?.upsertIndexEntry;
   const getIndex = opts?.getIndex;
   const refreshSessionsSidebarViewIfOpen = opts?.refreshSessionsSidebarViewIfOpen;
+  const onDocChanged = opts?.onDocChanged;
   const docQueues = new Map();
 
   const enqueueDocWrite = (id, task) => {
@@ -82,6 +83,7 @@ export function registerSessionDocCommands(opts) {
     meta.size = nextText.length;
     meta.hash = hashString(nextText);
     saveMeta(id, meta);
+    try { onDocChanged?.(id, nextText, meta); } catch {}
     const updatedEditors = new Set();
     try {
       const panelsApi = zion.panels || zion.panelManager;

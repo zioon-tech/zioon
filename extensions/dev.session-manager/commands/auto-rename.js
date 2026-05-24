@@ -17,21 +17,30 @@ export function registerSessionAutoRenameCommand(opts) {
   return zion.commands.registerCommand("zion.sessions.autoRename", async (opts2) => {
     const id = opts2?.id || zion.state.get("sessions.currentId");
     if (!id) return false;
+    const silent = !!opts2?.silent;
     if (autoRenameInflight.has(id)) return false;
+    if (opts2?.onlyIfAuto) {
+      const meta = zion.commands.executeCommand("zion.sessions.getMeta", id);
+      if (!meta || meta.titleAuto !== true) return false;
+    }
     autoRenameInflight.add(id);
     try {
       const text = String(loadDoc?.(id) || "").trim();
       if (!text) return false;
 
-      try {
-        zion.notification?.show?.("正在生成会话标题…", { type: "info", duration: 1600 });
-      } catch {}
+      if (!silent) {
+        try {
+          zion.notification?.show?.("正在生成会话标题…", { type: "info", duration: 1600 });
+        } catch {}
+      }
 
       const runStream = zion?.llm?.runStream;
       if (typeof runStream !== "function") {
-        try {
-          zion.notification?.show?.("未找到大模型服务（zion.llm.runStream）", { type: "warning", duration: 2400 });
-        } catch {}
+        if (!silent) {
+          try {
+            zion.notification?.show?.("未找到大模型服务（zion.llm.runStream）", { type: "warning", duration: 2400 });
+          } catch {}
+        }
         return false;
       }
 
@@ -68,16 +77,26 @@ export function registerSessionAutoRenameCommand(opts) {
 
       const title = cleanAutoTitle(out);
       if (!title) {
-        try { zion.notification?.show?.("未生成有效标题", { type: "warning", duration: 2000 }); } catch {}
+        if (!silent) {
+          try { zion.notification?.show?.("未生成有效标题", { type: "warning", duration: 2000 }); } catch {}
+        }
         return false;
       }
+      if (opts2?.onlyIfAuto) {
+        const meta = zion.commands.executeCommand("zion.sessions.getMeta", id);
+        if (!meta || meta.titleAuto !== true) return false;
+      }
       zion.commands.executeCommand("zion.sessions.rename", { id, title });
-      try { zion.notification?.show?.(`已重命名为：${title}`, { type: "success", duration: 1800 }); } catch {}
+      if (!silent) {
+        try { zion.notification?.show?.(`已重命名为：${title}`, { type: "success", duration: 1800 }); } catch {}
+      }
       return true;
     } catch (e) {
-      try {
-        zion.notification?.show?.(`自动重命名失败：${e?.message || String(e)}`, { type: "error", duration: 3200 });
-      } catch {}
+      if (!silent) {
+        try {
+          zion.notification?.show?.(`自动重命名失败：${e?.message || String(e)}`, { type: "error", duration: 3200 });
+        } catch {}
+      }
       return false;
     } finally {
       autoRenameInflight.delete(id);
