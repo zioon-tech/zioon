@@ -3,7 +3,7 @@
  * Features:
  * - Command: toc.show -> open TOC overlay with clickable headings
  * - Command: toc.insert -> insert Markdown TOC list at cursor
- * - Keybinding: Mod-Shift-T -> open TOC
+ * - Keybinding: Mod-Alt-T -> open TOC
  * - StatusBar button "TOC"
  * - Editor context menu item "Table of Contents"
  */
@@ -1589,7 +1589,7 @@ export async function activate(ctx) {
   // keybinding
   const d3 = window.zion.keybindings.register({
     command: "toc.show",
-    key: "Mod-Shift-t",
+    key: "Mod-Alt-t",
     when: "editorFocus"
   });
   ctx.subscriptions.push(d3);

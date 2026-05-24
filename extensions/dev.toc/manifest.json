@@ -33,7 +33,7 @@
       "keybindings": [
         {
           "command": "toc.show",
-          "key": "Mod-Shift-t",
+          "key": "Mod-Alt-t",
           "when": "editorFocus"
         },
         {
