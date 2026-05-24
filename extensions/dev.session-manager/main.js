@@ -481,6 +481,18 @@ function isDefaultTitle(t) {
   return /^Session\b/i.test(s) || /^Imported Session\b/i.test(s);
 }
 
+function getLatestSessionText(id) {
+  try {
+    const ed = window.zion.window.activeEditor;
+    const editorPanelId = ed?.panelId || null;
+    const editorPanelSessionId = ed?.sessionId || (editorPanelId
+      ? (window.zion?.panelManager?.getPanel?.(editorPanelId)?.activeTabId || null)
+      : null);
+    if (ed && editorPanelSessionId === id) return ed.getValue() || "";
+  } catch {}
+  return loadDoc(id) || "";
+}
+
 function isMeaningfulAutoRenameContent(text) {
   const cleaned = String(text || "")
     .replace(/^\s*(system|user|assistant|tool)\s+/gim, "")
@@ -489,36 +501,49 @@ function isMeaningfulAutoRenameContent(text) {
   return cleaned.length >= 12;
 }
 
-/** 首次有实际内容后触发一次 AI 标题生成；手动改名会通过 titleAuto=false 自动阻止。 */
-function maybeTriggerInitialAutoRename(id) {
+/** 未触发对话前，用首行/首句本地派生标题；仍保留 titleAuto=true，之后可被 AI 标题替换。 */
+function maybeUpdateLocalAutoTitle(id) {
   try {
     const meta = loadMeta(id);
-    if (!meta || meta.titleAuto !== true || meta.autoRenameTriggeredAt) return false;
-    // 优先使用当前编辑器中的最新文本（避免依赖未及时写入的 localStorage）
-    let text = "";
-    try {
-      const ed = window.zion.window.activeEditor;
-      const editorPanelId = ed?.panelId || null;
-      const editorPanelSessionId = ed?.sessionId || (editorPanelId
-        ? (window.zion?.panelManager?.getPanel?.(editorPanelId)?.activeTabId || null)
-        : null);
-      if (ed && editorPanelSessionId === id) {
-        text = ed.getValue() || "";
-      } else {
-        text = loadDoc(id) || "";
-      }
-    } catch {
-      text = loadDoc(id) || "";
+    if (!meta || meta.titleAuto !== true) return false;
+    const derived = deriveTitleFromText(getLatestSessionText(id));
+    if (!derived || derived === meta.title) return false;
+    meta.title = derived;
+    meta.titleAuto = true;
+    saveMeta(id, meta);
+    try { window.zion.state.set(`sessions.meta.${id}`, meta); } catch {}
+
+    const tree = loadTree() || ensureInitialTree();
+    const { node } = findNodeAndParent(tree, id);
+    if (node && node.type === "session") {
+      node.title = meta.title;
+      saveTree(tree);
     }
+    rebuildIndexFromTree();
+    try { window.zion.state.set("sessions.catalog", getIndex()); } catch {}
+    try { refreshStatusBar(); } catch {}
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    try { updatePageTitle(id); } catch {}
+    return true;
+  } catch {}
+  return false;
+}
+
+/** 对话首次触发时，再启动 AI 标题生成；手动改名会通过 titleAuto=false 自动阻止。 */
+function maybeTriggerChatAutoRename(id) {
+  try {
+    const meta = loadMeta(id);
+    if (!meta || meta.titleAuto !== true || meta.autoRenameChatTriggeredAt) return false;
+    const text = getLatestSessionText(id);
     if (!isMeaningfulAutoRenameContent(text)) return false;
 
-    meta.autoRenameTriggeredAt = now();
+    meta.autoRenameChatTriggeredAt = now();
     saveMeta(id, meta);
     try { window.zion.state.set(`sessions.meta.${id}`, meta); } catch {}
 
     const run = () => {
       try {
-        window.zion.commands.executeCommand("zion.sessions.autoRename", { id, onlyIfAuto: true, silent: true, reason: "initial-content" });
+        window.zion.commands.executeCommand("zion.sessions.autoRename", { id, onlyIfAuto: true, silent: true, reason: "chat-run-started" });
       } catch {}
     };
     if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 1500 });
@@ -1141,7 +1166,7 @@ export async function activate(ctx) {
       try {
         dispRun = window.zion.state.onDidChange(`chat.runs.${sid}`, () => {
           updateTitle();
-          try { maybeTriggerInitialAutoRename(sid); } catch {}
+          try { maybeUpdateLocalAutoTitle(sid); } catch {}
         });
       } catch {
         dispRun = null;
@@ -1368,7 +1393,7 @@ export async function activate(ctx) {
           refreshSessionsSidebarViewIfOpen();
         }
       } catch {}
-      try { maybeTriggerInitialAutoRename(meta?.id); } catch {}
+      try { maybeUpdateLocalAutoTitle(meta?.id); } catch {}
     }
   );
   const dispDec = window.zion.editor.registerDecorator({
@@ -1494,7 +1519,7 @@ export async function activate(ctx) {
     postSaved(id, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(id);
-    try { maybeTriggerInitialAutoRename(id); } catch {}
+    try { maybeUpdateLocalAutoTitle(id); } catch {}
     return id;
   });
   ctx.subscriptions.push(dNew);
@@ -1541,7 +1566,7 @@ export async function activate(ctx) {
     postSaved(id, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(id);
-    try { maybeTriggerInitialAutoRename(id); } catch {}
+    try { maybeUpdateLocalAutoTitle(id); } catch {}
   });
   ctx.subscriptions.push(dSaveAsNew);
 
@@ -1668,7 +1693,7 @@ export async function activate(ctx) {
         saveMeta(sessionId, metaPrev);
       }
     } catch {}
-    try { maybeTriggerInitialAutoRename(sessionId); } catch {}
+    try { maybeUpdateLocalAutoTitle(sessionId); } catch {}
   };
 
   const restoreSessionViewState = (id, panelId) => {
@@ -1723,7 +1748,7 @@ export async function activate(ctx) {
     applyAnnotations: applyAnnotationsForSession,
     restoreUiState: restoreSessionViewState,
     afterSwitch: (id) => {
-      try { maybeTriggerInitialAutoRename(id); } catch {}
+      try { maybeUpdateLocalAutoTitle(id); } catch {}
       try { window.zion.state.update(`chat.runs.${id}`, (rs) => ({ ...(rs || {}), awaiting: false })); } catch {}
       const rs = window.zion.state.get(`chat.runs.${id}`);
       window.zion.state.set("chat.streaming", !!rs?.streaming);
@@ -1804,7 +1829,7 @@ export async function activate(ctx) {
       getIndex,
       refreshSessionsSidebarViewIfOpen,
       onDocChanged: (id) => {
-        try { maybeTriggerInitialAutoRename(id); } catch {}
+        try { maybeUpdateLocalAutoTitle(id); } catch {}
       }
     })
   );
@@ -1819,6 +1844,7 @@ export async function activate(ctx) {
         window.zion.state.set(key, 0);
       }
     } catch {}
+    try { maybeTriggerChatAutoRename(sessionId); } catch {}
     // Refresh UI to reflect "streaming" status badge immediately
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
