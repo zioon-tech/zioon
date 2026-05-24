@@ -127,7 +127,16 @@ const BUILTIN_COMMAND_META: Record<string, Partial<CommandMeta>> = {
   "terminal.openAuxPanel": { title: "终端：打开右侧面板", description: "在右侧辅助栏打开终端面板", category: "终端", pluginId: "dev.terminal-enhanced" },
   "terminal.openManager": { title: "终端：打开管理器", description: "打开终端会话管理器", category: "终端", pluginId: "dev.terminal-manager" },
   "terminal.closeManager": { title: "终端：关闭管理器", description: "关闭终端会话管理器", category: "终端", pluginId: "dev.terminal-manager" },
-  "terminal.refreshSessions": { title: "终端：刷新会话", description: "刷新终端会话列表", category: "终端", pluginId: "dev.terminal-manager" }
+  "terminal.refreshSessions": { title: "终端：刷新会话", description: "刷新终端会话列表", category: "终端", pluginId: "dev.terminal-manager" },
+  "terminal.setActiveSession1": { title: "终端：切换到会话 1", description: "切换到第 1 个终端会话", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.setActiveSession2": { title: "终端：切换到会话 2", description: "切换到第 2 个终端会话", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.setActiveSession3": { title: "终端：切换到会话 3", description: "切换到第 3 个终端会话", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.setActiveSession4": { title: "终端：切换到会话 4", description: "切换到第 4 个终端会话", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.setActiveSession5": { title: "终端：切换到会话 5", description: "切换到第 5 个终端会话", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.setActiveSession6": { title: "终端：切换到会话 6", description: "切换到第 6 个终端会话", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.setActiveSession7": { title: "终端：切换到会话 7", description: "切换到第 7 个终端会话", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.setActiveSession8": { title: "终端：切换到会话 8", description: "切换到第 8 个终端会话", category: "终端", pluginId: "dev.terminal-enhanced" },
+  "terminal.setActiveSession9": { title: "终端：切换到会话 9", description: "切换到第 9 个终端会话", category: "终端", pluginId: "dev.terminal-enhanced" }
 };
 
 const HIDDEN_RUNTIME_COMMANDS = [
