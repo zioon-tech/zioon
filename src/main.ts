@@ -1277,7 +1277,7 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
 
     try {
       window.zion.keybindings.register({ command: "zion.sessions.new", key: "Mod-t", when: "editorFocus" });
-      window.zion.keybindings.register({ command: "zion.sessions.newInFolder", key: "Mod-Alt-t", when: "editorFocus" });
+      window.zion.keybindings.register({ command: "zion.sessions.newInFolder", key: "Mod-Shift-t", when: "editorFocus" });
       window.zion.keybindings.register({ command: "zion.editorTabs.closeActiveSession", key: "Mod-w", when: "editorFocus" });
       window.zion.keybindings.register({ command: "zion.editorTabs.prevSessionTab", key: "Mod-Shift-,", when: "editorFocus" });
       window.zion.keybindings.register({ command: "zion.editorTabs.nextSessionTab", key: "Mod-Shift-.", when: "editorFocus" });

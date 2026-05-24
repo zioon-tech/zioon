@@ -111,7 +111,7 @@
         },
         {
           "command": "zion.sessions.newInFolder",
-          "key": "Mod-Alt-t"
+          "key": "Mod-Shift-t"
         },
         {
           "command": "zion.sessions.toggleSidebar",

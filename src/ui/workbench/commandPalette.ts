@@ -1457,11 +1457,34 @@ export function initCommandPalette() {
     await openSubmenu("zion.sessions.newInFolder");
   };
 
+  const isNewSessionFolderShortcut = (ev: KeyboardEvent) => {
+    return (ev.metaKey || ev.ctrlKey) && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "t";
+  };
+
   try {
     window.zion.commands.registerCommand("commandPalette.toggle", () => togglePalette());
     window.zion.commands.registerCommand("commandPalette.open", () => openPalette());
     window.zion.commands.registerCommand("commandPalette.close", () => closePalette());
     window.zion.commands.registerCommand("zion.sessions.newInFolder", () => openNewSessionFolderPicker());
+  } catch {}
+
+  try {
+    window.addEventListener("keydown", (ev) => {
+      if (!isNewSessionFolderShortcut(ev)) return;
+      if (mask.style.display === "flex" && mask.contains(ev.target as Node)) return;
+      try {
+        if (localStorage.getItem("zion.debug.keybindings") === "1") {
+          console.debug("[zion:keybinding:fallback]", {
+            key: "Mod-Shift-t",
+            command: "zion.sessions.newInFolder",
+            target: (ev.target as HTMLElement | null)?.tagName || ""
+          });
+        }
+      } catch {}
+      ev.preventDefault();
+      ev.stopPropagation();
+      void openNewSessionFolderPicker();
+    }, true);
   } catch {}
 
   try {

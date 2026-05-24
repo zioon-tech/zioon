@@ -1589,7 +1589,19 @@ class Registry {
         // Only trigger searchReplaceVisible bindings when the search panel currently has focus.
         if (kb.when === "searchReplaceVisible" && !searchPanelFocused) return false;
 
-        this.executeCommand(kb.command);
+        const result = this.executeCommand(kb.command);
+        try {
+          if (localStorage.getItem("zion.debug.keybindings") === "1") {
+            console.debug("[zion:keybinding]", {
+              key: kb.key,
+              command: kb.command,
+              when: kb.when || "",
+              editorFocus,
+              hasSelection,
+              result
+            });
+          }
+        } catch {}
         return true;
       }
     }));
