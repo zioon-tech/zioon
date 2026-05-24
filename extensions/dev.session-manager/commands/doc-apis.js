@@ -124,6 +124,11 @@ export function registerSessionDocCommands(opts) {
     if (!id) return "";
     return loadDoc(id);
   });
+  const dGetDocAsync = zion.commands.registerCommand("zion.sessions.getDocAsync", async (id) => {
+    if (!id) return "";
+    if (typeof opts?.loadDocAsync === "function") return opts.loadDocAsync(id);
+    return loadDoc(id);
+  });
   const dGetMeta = zion.commands.registerCommand("zion.sessions.getMeta", (id) => {
     if (!id) return null;
     return loadMeta(id);
@@ -162,5 +167,5 @@ export function registerSessionDocCommands(opts) {
     return true;
   });
 
-  return [dGetDoc, dGetMeta, dSetDoc, dTransformDoc, dAppendToken, dBumpUpdated];
+  return [dGetDoc, dGetDocAsync, dGetMeta, dSetDoc, dTransformDoc, dAppendToken, dBumpUpdated];
 }

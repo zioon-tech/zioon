@@ -1820,6 +1820,7 @@ export async function activate(ctx) {
     ...registerSessionDocCommands({
       zion: window.zion,
       loadDoc,
+      loadDocAsync,
       loadMeta,
       saveDoc,
       saveMeta,

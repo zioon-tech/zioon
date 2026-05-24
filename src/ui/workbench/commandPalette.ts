@@ -40,6 +40,7 @@ type PaletteItem =
       updatedAt?: number;
       open: boolean;
       path?: string;
+      contentSnippet?: string;
     };
 
 const THEME_OPTIONS = [
@@ -160,6 +161,7 @@ const HIDDEN_RUNTIME_COMMANDS = [
   "dev.editor.setIncludeThinkingHistory",
   "dev.editor.setToolCallsReasoningContentMode",
   "roles.setRole",
+  "zion.sessions.getDocAsync",
   "terminal.createSession",
   "terminal.closeSession",
   "terminal.setActiveSession",
@@ -358,8 +360,20 @@ function getItemSearchText(item: PaletteItem): string {
   return uniqueTexts([
     item.title,
     item.id,
-    item.path
+    item.path,
+    item.contentSnippet
   ]).join(" ");
+}
+
+function makeContentSnippet(text: string, query: string, radius = 64): string {
+  const source = safeText(text).replace(/\s+/g, " ").trim();
+  const q = safeText(query).trim();
+  if (!source || !q) return "";
+  const idx = source.toLowerCase().indexOf(q.toLowerCase());
+  if (idx < 0) return "";
+  const start = Math.max(0, idx - radius);
+  const end = Math.min(source.length, idx + q.length + radius);
+  return `${start > 0 ? "…" : ""}${source.slice(start, end)}${end < source.length ? "…" : ""}`;
 }
 
 function sortItemsForSearch(candidates: PaletteItem[], recentRankOf: (key: string) => number): PaletteItem[] {
@@ -788,6 +802,10 @@ export function initCommandPalette() {
   let lastActive: HTMLElement | null = null;
   let commands: CommandMeta[] = [];
   let sessions: Array<{ id: string; title: string; updatedAt?: number; path?: string }> = [];
+  const sessionContentCache = new Map<string, string>();
+  const sessionContentSnippets = new Map<string, Map<string, string>>();
+  let contentSearchToken = 0;
+  let contentSearchTimer = 0;
   let visible: PaletteItem[] = [];
   let activeIndex = 0;
   let itemEls: HTMLElement[] = [];
@@ -1032,6 +1050,38 @@ export function initCommandPalette() {
     focusActiveEditorPanel();
   };
 
+  const scheduleContentSearch = (query: string, sessionItems: Extract<PaletteItem, { kind: "session" }>[]) => {
+    const q = safeText(query).trim();
+    contentSearchToken++;
+    try { if (contentSearchTimer) clearTimeout(contentSearchTimer); } catch {}
+    if (!q || q.length < 2 || !sessionItems.length) return;
+    const token = contentSearchToken;
+    contentSearchTimer = window.setTimeout(async () => {
+      const snippets = sessionContentSnippets.get(q) || new Map<string, string>();
+      let changed = false;
+      for (const it of sessionItems) {
+        if (!open || token !== contentSearchToken) return;
+        if (snippets.has(it.id)) continue;
+        let doc = sessionContentCache.get(it.id);
+        if (doc == null) {
+          try {
+            doc = safeText(await Promise.resolve(window.zion.commands.executeCommand("zion.sessions.getDocAsync", it.id)));
+          } catch {
+            doc = "";
+          }
+          sessionContentCache.set(it.id, doc);
+        }
+        const snippet = makeContentSnippet(doc, q);
+        if (!snippet) continue;
+        snippets.set(it.id, snippet);
+        changed = true;
+      }
+      if (!changed || !open || token !== contentSearchToken) return;
+      sessionContentSnippets.set(q, snippets);
+      render(input.value);
+    }, 120);
+  };
+
   const render = (query: string) => {
     const raw = safeText(query);
     const inSubmenu = !!currentSubmenu;
@@ -1046,7 +1096,16 @@ export function initCommandPalette() {
 
     const openSet = loadOpenSessionIds();
     const cmdItems = commands.map(meta => ({ kind: "command" as const, meta }));
-    const sesItems = sessions.map(s => ({ kind: "session" as const, id: s.id, title: s.title, updatedAt: s.updatedAt, open: openSet.has(s.id), path: s.path }));
+    const snippets = sessionContentSnippets.get(q);
+    const sesItems = sessions.map(s => ({
+      kind: "session" as const,
+      id: s.id,
+      title: s.title,
+      updatedAt: s.updatedAt,
+      open: openSet.has(s.id),
+      path: s.path,
+      contentSnippet: snippets?.get(s.id)
+    }));
 
     const candidates: PaletteItem[] = inSubmenu ? (currentSubmenu?.items || []) : (isCommandMode ? cmdItems : sesItems);
     let scored: Array<{ item: PaletteItem; score: number; recentRank: number }> = [];
@@ -1103,6 +1162,7 @@ export function initCommandPalette() {
     }
 
     visible = scored.map(x => x.item);
+    if (!inSubmenu && !isCommandMode) scheduleContentSearch(q, sesItems);
     list.innerHTML = "";
     itemEls = [];
 
@@ -1163,11 +1223,11 @@ export function initCommandPalette() {
         pathRow.className = "zion-cmdk-path";
         const pathLeft = document.createElement("span");
         pathLeft.className = "zion-cmdk-path-left";
-        pathLeft.textContent = it.path || "";
+        pathLeft.textContent = it.contentSnippet ? `内容匹配：${it.contentSnippet}` : (it.path || "");
         const pathRight = document.createElement("span");
         pathRight.className = "zion-cmdk-path-right";
         pathRight.textContent = (it.open ? "已打开的会话" : "会话") + (it.updatedAt ? ` · ${fmtRelTime(it.updatedAt)} ago` : "") + ` · ${it.id}`;
-        pathLeft.title = it.path || "";
+        pathLeft.title = it.contentSnippet || it.path || "";
         pathRight.title = pathRight.textContent;
         pathRow.appendChild(pathLeft);
         pathRow.appendChild(pathRight);
@@ -1238,6 +1298,9 @@ export function initCommandPalette() {
     lastActive = (document.activeElement as any) || null;
     commands = buildCommandList(metaById);
     sessions = loadSessionsFromState();
+    sessionContentCache.clear();
+    sessionContentSnippets.clear();
+    contentSearchToken++;
     try {
       pruneRecent({
         sessions: new Set(sessions.map(s => s.id)),
