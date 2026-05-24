@@ -18,6 +18,14 @@
           "categoryKey": "dev.session-manager.category.sessions"
         },
         {
+          "id": "zion.sessions.newInFolder",
+          "title": "New Session in Folder",
+          "titleKey": "dev.session-manager.cmd.newInFolder",
+          "description": "Choose a target folder and create a new session",
+          "descriptionKey": "dev.session-manager.cmd.newInFolder.description",
+          "categoryKey": "dev.session-manager.category.sessions"
+        },
+        {
           "id": "zion.sessions.saveAsNew",
           "title": "Save As New Session",
           "titleKey": "dev.session-manager.cmd.saveAsNew",
@@ -100,6 +108,10 @@
         {
           "command": "zion.sessions.new",
           "key": "Mod-Shift-n"
+        },
+        {
+          "command": "zion.sessions.newInFolder",
+          "key": "Mod-Shift-t"
         },
         {
           "command": "zion.sessions.toggleSidebar",

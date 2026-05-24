@@ -23,6 +23,8 @@ const I18N_MESSAGES = {
   "zh-CN": {
     "category.sessions": "会话",
     "cmd.new": "新建会话",
+    "cmd.newInFolder": "会话：在指定文件夹中新建",
+    "cmd.newInFolder.description": "选择目标文件夹并创建新会话",
     "cmd.saveAsNew": "另存为新会话",
     "cmd.rename": "重命名会话",
     "cmd.autoRename": "AI 重命名会话",
@@ -84,6 +86,8 @@ const I18N_MESSAGES = {
   "en-US": {
     "category.sessions": "Sessions",
     "cmd.new": "New Session",
+    "cmd.newInFolder": "Sessions: New in Folder",
+    "cmd.newInFolder.description": "Choose a target folder and create a new session",
     "cmd.saveAsNew": "Save As New Session",
     "cmd.rename": "Rename Session",
     "cmd.autoRename": "AI Rename Session",

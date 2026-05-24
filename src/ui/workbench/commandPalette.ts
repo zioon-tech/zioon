@@ -500,6 +500,54 @@ function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?:
   }
 }
 
+function loadSessionTree(): any | null {
+  const treeFromState = (window as any).zion?.state?.get?.("sessions.treeMem");
+  if (treeFromState && treeFromState.type === "folder") return treeFromState;
+  try {
+    const v = JSON.parse(localStorage.getItem("zion.sessions.tree") || "null");
+    return v && v.type === "folder" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function getSessionParentFolderId(tree: any, sessionId: string): string {
+  let parentId = "root";
+  const dfs = (node: any, parent: any) => {
+    if (!node) return false;
+    if (node.type === "session" && node.id === sessionId) {
+      parentId = parent?.id || "root";
+      return true;
+    }
+    if (node.type === "folder" && Array.isArray(node.children)) {
+      for (const ch of node.children) {
+        if (dfs(ch, node)) return true;
+      }
+    }
+    return false;
+  };
+  dfs(tree, null);
+  return parentId;
+}
+
+function flattenSessionFolders(): Array<{ id: string; title: string; path: string }> {
+  const tree = loadSessionTree();
+  if (!tree) return [{ id: "root", title: "根目录", path: "根目录" }];
+  const out: Array<{ id: string; title: string; path: string }> = [];
+  const rootTitle = safeText(tree.title || "根目录").trim() || "根目录";
+  const walk = (node: any, ancestors: string[]) => {
+    if (!node || node.type !== "folder") return;
+    const id = safeText(node.id || "root").trim() || "root";
+    const title = id === "root" ? "根目录" : (safeText(node.title || "Folder").trim() || "Folder");
+    const path = id === "root" ? "根目录" : [...ancestors, title].join(" / ");
+    out.push({ id, title, path });
+    const nextAncestors = id === "root" ? [] : [...ancestors, title];
+    for (const ch of Array.isArray(node.children) ? node.children : []) walk(ch, nextAncestors);
+  };
+  walk({ ...tree, title: rootTitle }, []);
+  return out.length ? out : [{ id: "root", title: "根目录", path: "根目录" }];
+}
+
 function loadOpenSessionIds(): Set<string> {
   try {
     const arr = (window as any).zion?.state?.get?.("ui.editorTabs.openSessionIds");
@@ -697,6 +745,17 @@ export function initCommandPalette() {
       description: "在简体中文和 English 之间快速切换",
       category: "Appearance",
       pluginId: "core"
+    });
+    base.set("zion.sessions.newInFolder", {
+      id: "zion.sessions.newInFolder",
+      title: "会话：在指定文件夹中新建",
+      titleKey: "dev.session-manager.cmd.newInFolder",
+      description: "选择目标文件夹并创建新会话",
+      descriptionKey: "dev.session-manager.cmd.newInFolder.description",
+      category: "会话",
+      categoryKey: "dev.session-manager.category.sessions",
+      pluginId: "dev.session-manager",
+      searchText: ["Sessions: New in Folder", "Choose a target folder and create a new session", "new session folder", "指定文件夹 新建会话"]
     });
     base.set("zion.reloadWindow", {
       id: "zion.reloadWindow",
@@ -900,7 +959,49 @@ export function initCommandPalette() {
     });
   };
 
+  const buildNewSessionFolderActionItems = (): PaletteItem[] => {
+    const tree = loadSessionTree();
+    const currentSessionId = safeText((window as any).zion?.state?.get?.("sessions.currentId")).trim();
+    const currentParentId = tree && currentSessionId ? getSessionParentFolderId(tree, currentSessionId) : "root";
+    const folders = flattenSessionFolders();
+    const current = folders.find(f => f.id === currentParentId) || folders.find(f => f.id === "root") || folders[0];
+    const ordered = uniqueTexts([current?.id, "root", ...folders.map(f => f.id)])
+      .map(id => folders.find(f => f.id === id))
+      .filter(Boolean) as Array<{ id: string; title: string; path: string }>;
+
+    return ordered.map(folder => {
+      const isCurrent = folder.id === currentParentId;
+      return {
+        kind: "action" as const,
+        id: `sessions.newInFolder:${folder.id}`,
+        title: `${isCurrent ? "✓ " : ""}${isCurrent ? "当前目录" : folder.title}`,
+        description: folder.path,
+        badge: folder.id === "root" ? "根目录" : "文件夹",
+        keywords: [folder.title, folder.path, "folder", "new session", "新建会话", "文件夹"],
+        run: async () => {
+          await Promise.resolve(window.zion?.commands?.executeCommand?.("zion.sessions.new", { parentId: folder.id }));
+        }
+      };
+    });
+  };
+
   const openSubmenu = async (commandId: string) => {
+    if (commandId === "zion.sessions.newInFolder") {
+      currentSubmenu = {
+        id: "session-folders",
+        title: "选择目标文件夹",
+        placeholder: "搜索文件夹…",
+        emptyText: "没有找到匹配的文件夹",
+        items: buildNewSessionFolderActionItems()
+      };
+      input.value = "";
+      render("");
+      try {
+        input.focus();
+        input.setSelectionRange(0, 0);
+      } catch {}
+      return true;
+    }
     if (commandId === "models.selectModel" || commandId === "models.openSwitcher") {
       const items = await buildModelActionItems();
       currentSubmenu = {
@@ -1351,10 +1452,16 @@ export function initCommandPalette() {
     openPalette();
   };
 
+  const openNewSessionFolderPicker = async () => {
+    if (!open) openPalette();
+    await openSubmenu("zion.sessions.newInFolder");
+  };
+
   try {
     window.zion.commands.registerCommand("commandPalette.toggle", () => togglePalette());
     window.zion.commands.registerCommand("commandPalette.open", () => openPalette());
     window.zion.commands.registerCommand("commandPalette.close", () => closePalette());
+    window.zion.commands.registerCommand("zion.sessions.newInFolder", () => openNewSessionFolderPicker());
   } catch {}
 
   try {
