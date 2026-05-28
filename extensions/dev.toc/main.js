@@ -820,6 +820,7 @@ export async function activate(ctx) {
       if (shouldOverlay) {
         // Overlay: panel floats above the left side; editor pane keeps full width.
         ui.overlay = true;
+        edEl.style.setProperty("--zion-toc-inline-width", "0px");
         ui.panel.style.position = "absolute";
         ui.panel.style.left = "0";
         ui.panel.style.top = "0";
@@ -832,6 +833,7 @@ export async function activate(ctx) {
       } else {
         // Inline: panel sits left, editor pane fills the rest.
         ui.overlay = false;
+        edEl.style.setProperty("--zion-toc-inline-width", `${basis}px`);
         ui.panel.style.position = "relative";
         ui.panel.style.left = "";
         ui.panel.style.top = "";
@@ -1317,6 +1319,7 @@ export async function activate(ctx) {
     if (ui.editorEl) {
       ui.editorEl.style.flex = ui.prevEditorFlex || "";
       ui.editorEl.style.width = ui.prevEditorWidth || "";
+      ui.editorEl.style.removeProperty("--zion-toc-inline-width");
     }
     ui.prevScrollerMarginLeft = "";
     ui.prevScrollerMarginRight = "";

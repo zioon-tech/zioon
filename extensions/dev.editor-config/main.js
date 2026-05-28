@@ -211,6 +211,11 @@ export async function activate(ctx) {
     const cm = editor?.getView?.()?.dom || null;
     if (!cm) return;
     const scroller = cm.querySelector(".cm-scroller") || cm;
+    const centeredPadding = (maxWidth, side) => {
+      const tocWidth = "var(--zion-toc-inline-width, 0px)";
+      const sign = side === "left" ? "-" : "+";
+      return `max(0px, calc((100% - ${maxWidth}px ${sign} ${tocWidth}) / 2))`;
+    };
 
     // reset common styles
     scroller.style.maxWidth = "";
@@ -235,8 +240,8 @@ export async function activate(ctx) {
       // Use padding on scroller to center content area
       const maxWidth = 960;
       scroller.style.boxSizing = "border-box";
-      scroller.style.paddingLeft = "calc((100% - " + maxWidth + "px) / 2)";
-      scroller.style.paddingRight = "calc((100% - " + maxWidth + "px) / 2)";
+      scroller.style.paddingLeft = centeredPadding(maxWidth, "left");
+      scroller.style.paddingRight = centeredPadding(maxWidth, "right");
       scroller.style.minWidth = "0"; // Allow content to shrink
     } else {
       // standard mode: content centered with max-width, scrollbar on right edge
@@ -245,8 +250,8 @@ export async function activate(ctx) {
       // Use padding on scroller to center content area
       const maxWidth = 720;
       scroller.style.boxSizing = "border-box";
-      scroller.style.paddingLeft = "calc((100% - " + maxWidth + "px) / 2)";
-      scroller.style.paddingRight = "calc((100% - " + maxWidth + "px) / 2)";
+      scroller.style.paddingLeft = centeredPadding(maxWidth, "left");
+      scroller.style.paddingRight = centeredPadding(maxWidth, "right");
       scroller.style.minWidth = "0"; // Allow content to shrink
     }
   };

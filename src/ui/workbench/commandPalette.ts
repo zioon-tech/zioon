@@ -757,6 +757,15 @@ export function initCommandPalette() {
       pluginId: "dev.session-manager",
       searchText: ["Sessions: New in Folder", "Choose a target folder and create a new session", "new session folder", "指定文件夹 新建会话"]
     });
+    base.set("zion.sessions.newFolder", {
+      id: "zion.sessions.newFolder",
+      title: "会话：新建文件夹",
+      description: "选择当前目录或其他目录并创建会话文件夹",
+      category: "会话",
+      categoryKey: "dev.session-manager.category.sessions",
+      pluginId: "dev.session-manager",
+      searchText: ["Sessions: New Folder", "Create session folder", "new folder", "新建会话文件夹", "会话文件夹"]
+    });
     base.set("zion.reloadWindow", {
       id: "zion.reloadWindow",
       title: "窗口：刷新页面",
@@ -962,7 +971,8 @@ export function initCommandPalette() {
   const buildNewSessionFolderActionItems = (): PaletteItem[] => {
     const tree = loadSessionTree();
     const currentSessionId = safeText((window as any).zion?.state?.get?.("sessions.currentId")).trim();
-    const currentParentId = tree && currentSessionId ? getSessionParentFolderId(tree, currentSessionId) : "root";
+    const selectedFolderId = safeText((window as any).zion?.state?.get?.("sessions.selectedFolderId")).trim();
+    const currentParentId = tree && currentSessionId ? getSessionParentFolderId(tree, currentSessionId) : (selectedFolderId || "root");
     const folders = flattenSessionFolders();
     const current = folders.find(f => f.id === currentParentId) || folders.find(f => f.id === "root") || folders[0];
     const ordered = uniqueTexts([current?.id, "root", ...folders.map(f => f.id)])
@@ -985,6 +995,42 @@ export function initCommandPalette() {
     });
   };
 
+  const buildNewSessionFolderTargetActionItems = (): PaletteItem[] => {
+    const tree = loadSessionTree();
+    const currentSessionId = safeText((window as any).zion?.state?.get?.("sessions.currentId")).trim();
+    const selectedFolderId = safeText((window as any).zion?.state?.get?.("sessions.selectedFolderId")).trim();
+    const currentParentId = tree && currentSessionId ? getSessionParentFolderId(tree, currentSessionId) : (selectedFolderId || "root");
+    const folders = flattenSessionFolders();
+    const current = folders.find(f => f.id === currentParentId) || folders.find(f => f.id === "root") || folders[0];
+    const ordered = uniqueTexts([current?.id, "root", ...folders.map(f => f.id)])
+      .map(id => folders.find(f => f.id === id))
+      .filter(Boolean) as Array<{ id: string; title: string; path: string }>;
+
+    return ordered.map(folder => {
+      const isCurrent = folder.id === currentParentId;
+      return {
+        kind: "action" as const,
+        id: `sessions.newFolder:${folder.id}`,
+        title: `${isCurrent ? "✓ " : ""}${isCurrent ? "当前目录" : folder.title}`,
+        description: `在 ${folder.path} 下创建文件夹`,
+        badge: folder.id === "root" ? "根目录" : "文件夹",
+        keywords: [folder.title, folder.path, "folder", "new folder", "session folder", "新建文件夹", "会话文件夹"],
+        run: () => {
+          window.setTimeout(() => {
+            try { window.zion?.commands?.executeCommand?.("zion.sessions.showSidebar"); } catch {}
+            try {
+              window.zion?.commands?.executeCommand?.("zion.sessions.newFolder", {
+                parentId: folder.id,
+                targetView: "sidebar",
+                startInlineRename: true
+              });
+            } catch {}
+          }, 0);
+        }
+      };
+    });
+  };
+
   const openSubmenu = async (commandId: string) => {
     if (commandId === "zion.sessions.newInFolder") {
       currentSubmenu = {
@@ -993,6 +1039,22 @@ export function initCommandPalette() {
         placeholder: "搜索文件夹…",
         emptyText: "没有找到匹配的文件夹",
         items: buildNewSessionFolderActionItems()
+      };
+      input.value = "";
+      render("");
+      try {
+        input.focus();
+        input.setSelectionRange(0, 0);
+      } catch {}
+      return true;
+    }
+    if (commandId === "zion.sessions.newFolder") {
+      currentSubmenu = {
+        id: "session-new-folder-target",
+        title: "选择新文件夹位置",
+        placeholder: "搜索当前或其他目录…",
+        emptyText: "没有找到匹配的目录",
+        items: buildNewSessionFolderTargetActionItems()
       };
       input.value = "";
       render("");

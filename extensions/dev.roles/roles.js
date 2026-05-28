@@ -344,7 +344,6 @@ class RoleRailMarker extends GutterMarker {
 }
 
 const userRailMarker = new RoleRailMarker("user");
-const assistantRailMarker = new RoleRailMarker("assistant");
 
 function rolesRailGutter(prefixes, highlightBlockRoles) {
   return gutter({
@@ -363,7 +362,6 @@ function rolesRailGutter(prefixes, highlightBlockRoles) {
             if (s == null || e == null) continue;
             if (lineNo >= s && lineNo <= e) {
               if (b.role === "user") return userRailMarker;
-              if (b.role === "assistant") return assistantRailMarker;
               break;
             }
           }
@@ -379,7 +377,6 @@ function rolesRailGutter(prefixes, highlightBlockRoles) {
         }
         if (!currentRole) currentRole = "user";
         if (currentRole === "user") return userRailMarker;
-        if (currentRole === "assistant") return assistantRailMarker;
       } catch {}
       return null;
     }
@@ -607,5 +604,5 @@ export function roles(opts = {}) {
     }
   });
 
-  return [rolesView(opts), Prec.highest(rolesRailGutter(prefixes, getHighlightBlockRoles(opts))), navKeymap, foldExt];
+  return [rolesView(opts), rolesRailGutter(prefixes, getHighlightBlockRoles(opts)), navKeymap, foldExt];
 }

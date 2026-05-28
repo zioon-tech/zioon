@@ -133,46 +133,9 @@ class ThinkingCardWidget extends WidgetType {
     wrap.className = "zion-thinking-card";
     wrap.setAttribute("data-thinking-card-id", String(this.id).replace(/:card$/, ""));
 
-    const header = document.createElement("div");
-    header.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;";
-    const title = document.createElement("span");
-    title.textContent = t("ui.thinking", "思考");
-    Object.assign(title.style, { fontSize: "11px", fontWeight: "600" });
-    const close = document.createElement("button");
-    close.textContent = "×";
-    close.title = t("ui.remove", "移除思考记录");
-    Object.assign(close.style, {
-      marginLeft: "auto",
-      background: "transparent",
-      border: "1px solid var(--border)",
-      color: "var(--fg)",
-      borderRadius: "4px",
-      padding: "0 6px",
-      lineHeight: "16px",
-      fontSize: "11px",
-      cursor: "pointer"
-    });
-    close.addEventListener("click", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const baseId = String(this.id).replace(/:card$/, "");
-      const editorEl = close.closest("[data-editor-id]");
-      const sessionId = editorEl?.getAttribute("data-session-id") || null;
-      const panelId = editorEl?.closest("[data-panel-id]")?.getAttribute("data-panel-id") || close.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null;
-      try { window.zion?.events?.emit("thinking/remove", { id: baseId, panelId, sessionId }); } catch {}
-    });
-    header.appendChild(title);
-    header.appendChild(close);
-    wrap.appendChild(header);
-
     const body = document.createElement("pre");
+    body.className = "zion-thinking-card-body";
     body.textContent = fmt(this.text, 5000);
-    Object.assign(body.style, {
-      margin: 0,
-      whiteSpace: "pre-wrap",
-      wordBreak: "break-word",
-      fontFamily: "var(--font-mono)",
-      fontSize: "11px"
-    });
     wrap.appendChild(body);
     return wrap;
   }
@@ -448,7 +411,18 @@ export function installThinkingCards() {
 
     update(update) {
       if (this.suspendSnapshot) return;
-      this.snapshot();
+      const isSessionLoad = (() => {
+        try {
+          return !!update.transactions?.some?.((tr) => tr?.annotation?.(Transaction.userEvent) === "zion.sessionLoad");
+        } catch {
+          return false;
+        }
+      })();
+      if (isSessionLoad) {
+        setTimeout(() => this.checkAndRestoreWidgets(), 0);
+      } else {
+        this.snapshot();
+      }
       if (update.selectionSet || update.docChanged || update.viewportChanged) {
         this.syncSelectionHighlight();
       }
@@ -500,7 +474,7 @@ export function installThinkingCards() {
         });
         updateSessionAnnotations(id, (prev) => {
           const prevThinking = Array.isArray(prev.thinking) ? prev.thinking : [];
-          if (!arr.length && prevThinking.length && /思考/.test(this.view.state.doc.toString())) {
+          if (!arr.length && prevThinking.length) {
             debugChatCards("snapshot.skipEmpty", {
               panelId: this.panelId,
               sessionId: id,
@@ -732,7 +706,7 @@ export function installThinkingCards() {
       if (sid) this.sessionId = sid;
       this.snapshot();
     };
-    onSessionChanged = (nv) => {
+    onSessionChanged = () => {
       const boundSessionId = getViewSessionId(this.view);
       if (boundSessionId) {
         this.sessionId = boundSessionId;
