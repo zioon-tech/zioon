@@ -81,7 +81,23 @@ const I18N_MESSAGES = {
     "ui.refresh": "刷新",
     "dialog.newTitle": "新会话标题",
     "dialog.rename": "重命名会话",
-    "dialog.deleteSelected": "删除所选项"
+    "dialog.deleteSelected": "删除所选项",
+    "heatmap.expand": "展开热力图",
+    "heatmap.collapse": "折叠热力图",
+    "heatmap.previous35Days": "查看更早的 35 天",
+    "heatmap.next35Days": "查看之后的 35 天",
+    "heatmap.clear": "Clear",
+    "heatmap.today": "Today",
+    "heatmap.clearTitle": "清除日期筛选，显示全部会话",
+    "heatmap.todayTitle": "跳到今天并筛选今天",
+    "heatmap.allRange": "全部 · {range}",
+    "heatmap.dayTitle": "{day} · {sessions} 个会话 · {tokens} tok · {cost}",
+    "heatmap.costNA": "cost n/a",
+    "heatmap.sessions": "sessions",
+    "heatmap.tokens": "tokens",
+    "heatmap.cache": "cache",
+    "heatmap.cost": "cost",
+    "heatmap.noModelUsage": "当天没有模型消耗"
   },
   "en-US": {
     "category.sessions": "Sessions",
@@ -144,7 +160,23 @@ const I18N_MESSAGES = {
     "ui.refresh": "Refresh",
     "dialog.newTitle": "New session title",
     "dialog.rename": "Rename session",
-    "dialog.deleteSelected": "Delete selected"
+    "dialog.deleteSelected": "Delete selected",
+    "heatmap.expand": "Expand heatmap",
+    "heatmap.collapse": "Collapse heatmap",
+    "heatmap.previous35Days": "View earlier 35 days",
+    "heatmap.next35Days": "View next 35 days",
+    "heatmap.clear": "Clear",
+    "heatmap.today": "Today",
+    "heatmap.clearTitle": "Clear date filter and show all sessions",
+    "heatmap.todayTitle": "Jump to today and filter today",
+    "heatmap.allRange": "All · {range}",
+    "heatmap.dayTitle": "{day} · {sessions} sessions · {tokens} tok · {cost}",
+    "heatmap.costNA": "cost n/a",
+    "heatmap.sessions": "sessions",
+    "heatmap.tokens": "tokens",
+    "heatmap.cache": "cache",
+    "heatmap.cost": "cost",
+    "heatmap.noModelUsage": "No model usage on this day"
   }
 };
 
@@ -193,6 +225,7 @@ function warnStorageIssue(where, error) {
     console.error("[sessions] storage write failed at", where, error);
     // mark an error state for diagnostics
     try { window.zion?.state?.set("sessions.storageError", { where, error: String(error) }); } catch {}
+    try { window.zion?.state?.set("sessions.storageUnavailable", true); } catch {}
     // Surface storage failures as a notification now that the top status bar is hidden.
     try {
       window.zion?.notification?.show?.("Sessions storage write failed. Some changes may not persist.", {
@@ -221,21 +254,33 @@ async function initSessionsStorage() {
   try {
     await openSessionsDB(DB_NAME);
     // preload KV: tree/index
+    let treeFromIDB = null;
     try {
       const tree = await idbGetKV(DB_NAME, "tree");
       if (tree && tree.type === "folder" && Array.isArray(tree.children)) {
+        treeFromIDB = tree;
         try { window.zion?.state?.set("sessions.treeMem", tree); } catch {}
+      } else if (tree != null) {
+        const error = new Error("invalid sessions tree in IndexedDB");
+        try { warnStorageIssue("loadTree", error); } catch {}
+        return { ok: false, reason: "invalidTree", error };
       }
-    } catch {}
+    } catch (e) {
+      try { warnStorageIssue("loadTree", e); } catch {}
+      return { ok: false, reason: "loadTree", error: e };
+    }
     try {
       const idx = await idbGetKV(DB_NAME, "index");
       if (Array.isArray(idx)) {
         try { window.zion?.state?.set("sessions.indexMem", idx); } catch {}
       }
-    } catch {}
+    } catch (e) {
+      try { warnStorageIssue("loadIndex", e); } catch {}
+      return { ok: false, reason: "loadIndex", error: e };
+    }
 
     // migrate from localStorage if no tree in IDB but legacy tree/index exist
-    const hasTreeInIDB = !!(await idbGetKV(DB_NAME, "tree"));
+    const hasTreeInIDB = !!treeFromIDB;
     const legacyTreeRaw = localStorage.getItem(LS_TREE);
     const legacyIndexRaw = localStorage.getItem(LS_INDEX);
     if (!hasTreeInIDB && (legacyTreeRaw || legacyIndexRaw)) {
@@ -250,6 +295,7 @@ async function initSessionsStorage() {
         if (Array.isArray(legacyIndex)) ids = legacyIndex.map(it => it.id).filter(Boolean);
       }
       // migrate docs/metas
+      const migrationErrors = [];
       for (const sid of ids) {
         try {
           const d = localStorage.getItem(docKey(sid)) || "";
@@ -259,8 +305,12 @@ async function initSessionsStorage() {
           try { window.zion?.state?.set(`sessions.doc.${sid}`, d); } catch {}
           try { window.zion?.state?.set(`sessions.meta.${sid}`, m); } catch {}
         } catch (e) {
+          migrationErrors.push(e);
           console.warn("[sessions] migrate doc/meta error:", sid, e);
         }
+      }
+      if (migrationErrors.length) {
+        throw new Error(`session migration failed for ${migrationErrors.length} item(s)`);
       }
       // persist tree/index to idb
       if (legacyTree) {
@@ -293,8 +343,11 @@ async function initSessionsStorage() {
         tooltip: "Sessions migrated to IndexedDB"
       });
     }
+    return { ok: true };
   } catch (e) {
     console.error("[sessions] initSessionsStorage error:", e);
+    try { warnStorageIssue("initSessionsStorage", e); } catch {}
+    return { ok: false, reason: "initSessionsStorage", error: e };
   }
 }
 
@@ -526,7 +579,9 @@ function maybeUpdateLocalAutoTitle(id) {
     rebuildIndexFromTree();
     try { window.zion.state.set("sessions.catalog", getIndex()); } catch {}
     try { refreshStatusBar(); } catch {}
-    try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    if (!opts?.skipRefresh) {
+      try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    }
     try { updatePageTitle(id); } catch {}
     return true;
   } catch {}
@@ -836,7 +891,9 @@ function refreshSessionsOverlayIfOpen() {
 const __sidebarViewManager = createSessionsSidebarViewManager({
   zion: window.zion,
   createSessionsListRenderer,
-  openAncestors
+  openAncestors,
+  getIndex,
+  loadMeta
 });
 
 function refreshSessionsSidebarViewIfOpen() {
@@ -1112,31 +1169,34 @@ export async function activate(ctx) {
   // Inject custom scrollbar styles
   injectScrollbarStyles();
   // 初始化 IndexedDB 并预载数据/迁移
-  await initSessionsStorage();
+  const storageStatus = await initSessionsStorage();
+  if (!storageStatus?.ok) {
+    try { window.zion?.state?.set("sessions.storageUnavailable", true); } catch {}
+    try { window.zion?.state?.set("sessions.catalog", getIndex()); } catch {}
+    try {
+      window.zion?.notification?.show?.(
+        "Sessions storage is unavailable. Free disk space and refresh before editing sessions.",
+        { type: "error", duration: 0, dismissible: true }
+      );
+    } catch {}
+    return;
+  }
+  try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
 
   // 初始化树/索引/会话
   ensureInitialTree();
   rebuildIndexFromTree();
   // 注册会话相关工具（供大模型使用）
   try { registerSessionTools(); } catch {}
-  let currentId = getLastActiveId() || getIndex()[0]?.id || null;
+  const shouldStartEmpty = window.zion?.state?.get?.("sessions.startEmpty") === true;
+  let currentId = shouldStartEmpty ? null : (getLastActiveId() || getIndex()[0]?.id || null);
   try {
     if (currentId && !findInIndex(currentId)) {
       currentId = getIndex()[0]?.id || null;
     }
   } catch {}
-  if (!currentId) {
-    // 没有会话，创建一个空的
-    const id = genId();
-    const doc = "";
-    const title = "Session 1";
-    const meta = { id, title, createdAt: now(), updatedAt: now(), size: 0, hash: hashString(doc), titleAuto: true };
-    saveDoc(id, doc);
-    saveMeta(id, meta);
-    upsertIndexEntry({ id, title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
-    currentId = id;
-  }
-  setLastActiveId(currentId);
+  if (currentId) setLastActiveId(currentId);
+  else setLastActiveId(null);
   window.zion.state.set("sessions.currentId", currentId);
   window.zion.state.set("sessions.catalog", getIndex());
   const sessionUiState = new Map();
@@ -1146,7 +1206,7 @@ export async function activate(ctx) {
 
   // 将当前会话内容加载到编辑器
   const ed = window.zion.window.activeEditor;
-  if (ed) {
+  if (ed && currentId) {
     try {
       const text = await loadDocAsync(currentId);
       ed.setValue(text, { source: "session-load" });
@@ -1229,7 +1289,7 @@ export async function activate(ctx) {
     const dispItem = window.zion.activityBar.registerItem({
       id: "sessions.activity",
       pluginId: "dev.session-manager",
-      icon: "$(comment-discussion)",
+      icon: "$(history)",
       tooltip: t("ui.sessions", "Sessions"),
       tooltipKey: "dev.session-manager.ui.sessions",
       sideBarViewId: "sessions.list",
@@ -1651,7 +1711,8 @@ export async function activate(ctx) {
           } catch {}
         }
       } else {
-        window.zion.commands.executeCommand("zion.sessions.new");
+        setLastActiveId(null);
+        try { window.zion.window.activeEditor?.setValue("", { source: "session-load" }); } catch {}
       }
     }
     refreshStatusBar();
@@ -2229,6 +2290,9 @@ export async function activate(ctx) {
         if (!window.zion?.panels?.getActivePanelId?.()) {
           window.zion.window.activeEditor?.setValue(loadDoc(nextId), { source: "session-load" });
         }
+      } else {
+        setLastActiveId(null);
+        try { window.zion.window.activeEditor?.setValue("", { source: "session-load" }); } catch {}
       }
     } else {
       await Promise.all(sel.filter((it) => it.type !== "folder").map((it) => removeSessionFromPanels(it.id)));

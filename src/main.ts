@@ -1,7 +1,7 @@
 import "katex/dist/katex.min.css";
-import { EditorCore } from "./editor/EditorCore";
+import { EditorCore, type VimOperationalMode } from "./editor/EditorCore";
 import "./pwa-test";
-import { attachEditor, detachEditor, setActiveEditorPanel } from "./ext/registry";
+import { attachEditor, detachEditor, listAttachedEditorCores, setActiveEditorPanel } from "./ext/registry";
 import type { Disposable } from "./types/zion";
 import { PluginManager } from "./plugin/manager";
 import { HttpPluginInstaller } from "./plugin/http-installer";
@@ -15,6 +15,15 @@ import { createChatAnnotationsApi } from "./chat/annotations";
 import { SessionRuntime } from "./session/runtime";
 import { createThemeManager } from "./theme/themeManager";
 import { createI18nManager } from "./i18n/i18nManager";
+import { EditorState, Prec, StateEffect, type Extension } from "@codemirror/state";
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from "@codemirror/view";
+import { defaultKeymap } from "@codemirror/commands";
+import { foldGutter, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { json } from "@codemirror/lang-json";
+import { markdown } from "@codemirror/lang-markdown";
+import { languages } from "@codemirror/language-data";
+import { highlightSelectionMatches } from "@codemirror/search";
+import { tags as cmTags } from "@lezer/highlight";
 
 
 // ---------- 自动保存 / 恢复 ----------
@@ -57,6 +66,16 @@ function loadPanelWorkspaceSnapshot(): any | null {
   }
 }
 
+function clearPersistedActiveSession() {
+  try { localStorage.removeItem("zion.sessions.lastActiveId"); } catch {}
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("zionSession");
+    url.searchParams.delete("session");
+    window.history.replaceState({ ...(window.history.state || {}), zionSessionId: null }, "", url.toString());
+  } catch {}
+}
+
 let panelWorkspaceSaveTimer = 0;
 function savePanelWorkspaceSnapshot(snapshot: any) {
   if (panelWorkspaceSaveTimer) cancelIdleCallback(panelWorkspaceSaveTimer);
@@ -70,10 +89,193 @@ function savePanelWorkspaceSnapshot(snapshot: any) {
   );
 }
 
+function savePanelWorkspaceSnapshotNow(snapshot: any) {
+  if (panelWorkspaceSaveTimer) {
+    try { cancelIdleCallback(panelWorkspaceSaveTimer); } catch {}
+    panelWorkspaceSaveTimer = 0;
+  }
+  try {
+    localStorage.setItem(PANEL_WORKSPACE_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {}
+}
+
+function isEmptyPanelWorkspaceSnapshot(snapshot: any): boolean {
+  const panels = Array.isArray(snapshot?.manager?.panels) ? snapshot.manager.panels : null;
+  return !!panels && panels.length > 0 && panels.every((panel: any) => !Array.isArray(panel?.tabs) || panel.tabs.length === 0);
+}
+
+
 function getPanelActiveSessionId(panelId?: string | null): string | null {
   if (!panelId) return null;
   try {
-    return window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId || null;
+    const id = window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId || null;
+    return isFilePanelTabId(id) ? null : id;
+  } catch {
+    return null;
+  }
+}
+
+function isFilePanelTabId(id?: string | null): boolean {
+  return typeof id === "string" && id.startsWith("file:");
+}
+
+function languageFromFilename(name?: string | null): string {
+  const ext = String(name || "").toLowerCase().split(".").pop() || "";
+  const map: Record<string, string> = {
+    js: "javascript",
+    jsx: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    json: "json",
+    md: "markdown",
+    py: "python",
+    sh: "shell",
+    bash: "shell",
+    zsh: "shell",
+    css: "css",
+    html: "html",
+    xml: "xml",
+    yaml: "yaml",
+    yml: "yaml",
+    go: "go",
+    rs: "rust",
+    java: "java",
+    kt: "kotlin",
+    swift: "swift",
+    rb: "ruby",
+    php: "php",
+    sql: "sql"
+  };
+  return map[ext] || "text";
+}
+
+function createChangesLikeHighlightStyle(dark: boolean): HighlightStyle {
+  const colors = dark
+    ? {
+        keyword: "#ff7b72",
+        string: "#a5d6ff",
+        number: "#79c0ff",
+        comment: "#8b949e",
+        functionName: "#d2a8ff",
+        property: "#79c0ff",
+        typeName: "#ffa657",
+        tag: "#7ee787",
+        punctuation: "var(--muted-fg, rgba(127,127,127,0.9))"
+      }
+    : {
+        keyword: "#cf222e",
+        string: "#0a3069",
+        number: "#0550ae",
+        comment: "#6e7781",
+        functionName: "#8250df",
+        property: "#0550ae",
+        typeName: "#953800",
+        tag: "#116329",
+        punctuation: "var(--muted-fg, rgba(127,127,127,0.9))"
+      };
+  return HighlightStyle.define([
+    { tag: cmTags.keyword, color: colors.keyword },
+    { tag: [cmTags.string, cmTags.special(cmTags.string)], color: colors.string },
+    { tag: [cmTags.number, cmTags.bool, cmTags.null], color: colors.number },
+    { tag: cmTags.comment, color: colors.comment, fontStyle: "italic" },
+    { tag: [cmTags.function(cmTags.variableName), cmTags.function(cmTags.propertyName)], color: colors.functionName },
+    { tag: cmTags.propertyName, color: colors.property },
+    { tag: [cmTags.typeName, cmTags.className], color: colors.typeName },
+    { tag: cmTags.tagName, color: colors.tag },
+    { tag: [cmTags.punctuation, cmTags.bracket, cmTags.operator], color: colors.punctuation }
+  ]);
+}
+
+function createFileCodeViewer(parent: HTMLElement, content: string, meta: any): EditorView {
+  const filename = String(meta?.title || meta?.path || meta?.displayPath || "");
+  const languageName = String(meta?.language || languageFromFilename(filename) || "text");
+  const dark = document.documentElement.getAttribute("data-theme") !== "light";
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: content,
+      extensions: [
+        EditorState.readOnly.of(true),
+        EditorView.editable.of(false),
+        lineNumbers(),
+        highlightActiveLineGutter(),
+        highlightActiveLine(),
+        foldGutter(),
+        highlightSelectionMatches(),
+        EditorView.lineWrapping,
+        Prec.high(keymap.of(defaultKeymap)),
+        syntaxHighlighting(createChangesLikeHighlightStyle(dark), { fallback: true }),
+        EditorView.theme({
+          "&": {
+            height: "100%",
+            backgroundColor: "var(--editor-bg)"
+          },
+          ".cm-scroller": {
+            fontFamily: "var(--font-mono)",
+            fontSize: "11px",
+            lineHeight: "1.5"
+          },
+          ".cm-content": {
+            padding: "0"
+          },
+          ".cm-line": {
+            padding: "2px 12px 2px 7px"
+          },
+          ".cm-gutters": {
+            backgroundColor: "var(--editor-bg)",
+            borderRight: "0"
+          },
+          ".cm-lineNumbers .cm-gutterElement": {
+            padding: "2px 6px 2px 2px",
+            color: "var(--muted-fg, rgba(127,127,127,0.9))"
+          },
+          ".cm-foldGutter .cm-gutterElement": {
+            padding: "2px 4px",
+            color: "var(--muted-fg, rgba(127,127,127,0.9))"
+          },
+          ".cm-activeLine": {
+            backgroundColor: "color-mix(in srgb, var(--accent) 8%, transparent)"
+          },
+          ".cm-activeLineGutter": {
+            backgroundColor: "color-mix(in srgb, var(--accent) 8%, transparent)"
+          }
+        }),
+        ...initialFileLanguageExtensions(languageName, filename)
+      ]
+    }),
+    parent
+  });
+  void loadCodeMirrorLanguage(languageName, filename).then((extension) => {
+    if (!extension) return;
+    try {
+      view.dispatch({ effects: StateEffect.appendConfig.of(extension) });
+    } catch {}
+  });
+  return view;
+}
+
+function initialFileLanguageExtensions(languageName: string, filename: string): Extension[] {
+  const lang = languageName.toLowerCase();
+  const name = filename.toLowerCase();
+  if (lang === "json" || name.endsWith(".json")) return [json()];
+  if (lang === "markdown" || name.endsWith(".md") || name.endsWith(".markdown")) return [markdown({ codeLanguages: languages })];
+  return [];
+}
+
+async function loadCodeMirrorLanguage(languageName: string, filename: string): Promise<Extension | null> {
+  if (initialFileLanguageExtensions(languageName, filename).length) return null;
+  const lang = languageName.toLowerCase();
+  const desc = languages.find((item: any) => {
+    try {
+      return item?.matchFilename?.(filename)
+        || item?.alias?.some?.((alias: string) => alias.toLowerCase() === lang)
+        || String(item?.name || "").toLowerCase() === lang;
+    } catch {
+      return false;
+    }
+  }) as any;
+  if (!desc?.load) return null;
+  try {
+    return await desc.load();
   } catch {
     return null;
   }
@@ -195,6 +397,22 @@ function showPanelDropPreview(rect: DOMRect, side: PanelDropSide) {
 }
 
 function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
+  const headerEl = pathEl.parentElement as HTMLElement | null;
+  const setSessionActionsVisible = (visible: boolean) => {
+    if (!headerEl) return;
+    const selectors = [
+      "button[data-zion-editor-toc-button='1']",
+      "button[data-zion-editor-session-rename-button='1']",
+      "button[data-zion-editor-split-menu-button='1']",
+      "button[data-zion-core-runstop-button='1']",
+      "button[data-zion-editor-settings-menu-button='1']"
+    ].join(",");
+    for (const el of Array.from(headerEl.querySelectorAll<HTMLElement>(selectors))) {
+      el.style.display = visible ? "" : "none";
+      try { el.setAttribute("aria-hidden", visible ? "false" : "true"); } catch {}
+    }
+  };
+
   const safeParse = <T,>(raw: string | null, fallback: T): T => {
     if (!raw) return fallback;
     try {
@@ -252,6 +470,22 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
     return String(meta?.title || "").trim() || sessionId;
   };
 
+  const computeFilePath = (tabId: string): string => {
+    const meta = window.zion.state.get<any>(`files.openTabs.${tabId}`) || null;
+    return String(meta?.path || meta?.displayPath || meta?.title || tabId).trim() || tabId;
+  };
+
+  const resolveActiveTabId = () => {
+    if (panelId) {
+      try {
+        return window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId || null;
+      } catch {
+        return null;
+      }
+    }
+    return window.zion.state.get<string>("sessions.currentId") || null;
+  };
+
   let metaDisp: Disposable | null = null;
   let inlineRenaming = false;
   const resolveSessionId = () => {
@@ -273,18 +507,29 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
 
   const update = () => {
     if (inlineRenaming) return;
+    const activeTabId = resolveActiveTabId();
+    if (isFilePanelTabId(activeTabId)) {
+      setSessionActionsVisible(true);
+      const p = computeFilePath(activeTabId || "");
+      pathEl.textContent = p;
+      pathEl.title = p;
+      return;
+    }
     const id = resolveSessionId();
     if (!id) {
+      setSessionActionsVisible(false);
       pathEl.textContent = "";
       pathEl.title = "";
       return;
     }
+    setSessionActionsVisible(true);
     const p = computePath(id);
     pathEl.textContent = p;
     pathEl.title = p;
   };
 
   const startInlineRename = () => {
+    if (isFilePanelTabId(resolveActiveTabId())) return false;
     const id = resolveSessionId();
     if (!id || inlineRenaming) return false;
     inlineRenaming = true;
@@ -367,7 +612,10 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
     window.zion.events.on("panel/tabActivated", (payload: any) => {
       if (panelId && payload?.panelId !== panelId) return;
       const id = payload?.sessionId || payload?.tabId || resolveSessionId();
-      if (id) {
+      if (isFilePanelTabId(id)) {
+        bindMeta(undefined);
+        update();
+      } else if (id) {
         bindMeta(id);
         update();
       }
@@ -384,6 +632,7 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
 
   bindMeta(resolveSessionId() || undefined);
   update();
+  requestAnimationFrame(update);
 }
 
 function mountEditorHeaderNewSessionButton(pathEl: HTMLElement) {
@@ -915,7 +1164,6 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
     const closeTab = (id: string) => {
       const idx = openIds.indexOf(id);
       if (idx === -1) return;
-      if (openIds.length <= 1) return;
       const nextOpen = openIds.filter(x => x !== id);
       const activeId = window.zion.state.get<string>("sessions.currentId") ?? null;
       const isClosingActive = activeId === id;
@@ -934,6 +1182,8 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
               panelId ? { id: nextId, panelId, previousSessionId: id } : nextId
             );
           } catch {}
+        } else {
+          try { window.zion.state.set("sessions.currentId", null); } catch {}
         }
       }
       requestRender();
@@ -1022,14 +1272,6 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
           window.zion.commands.executeCommand("zion.sessions.switch", openIds[0]);
         } catch {}
         return; // 等待下次渲染
-      }
-
-      // 如果没有有效的标签页但当前会话为空，创建新会话
-      if (openIds.length === 0 && !activeId) {
-        try {
-          window.zion.commands.executeCommand("zion.sessions.new");
-        } catch {}
-        return;
       }
 
       ensureActiveInTabs(activeId);
@@ -2065,10 +2307,10 @@ function mountPanelSessionTabsBar(
       if (!items.length) return false;
       const idx = dropdownHighlightedIndex >= 0 ? dropdownHighlightedIndex : getActiveDropdownIndex();
       const item = items[Math.max(0, Math.min(items.length - 1, idx))];
-      const sessionId = item?.dataset.sessionId || "";
-      if (!sessionId) return false;
+          const tabId = item?.dataset.sessionId || "";
+          if (!tabId) return false;
       hideDropdownMenu();
-      focusAndActivatePanelTab(panelId, sessionId);
+      focusAndActivatePanelTab(panelId, tabId);
       return true;
     };
 
@@ -2091,12 +2333,24 @@ function mountPanelSessionTabsBar(
       containerEl.appendChild(dropdownBtn);
     }
 
-    const getTitle = (sessionId: string) => {
+    const isFileTab = (tabOrId: any) => isFilePanelTabId(typeof tabOrId === "string" ? tabOrId : tabOrId?.id) || tabOrId?.kind === "file";
+    const getTabMeta = (tabOrId: any) => {
+      if (typeof tabOrId !== "string") return tabOrId?.meta || null;
+      return window.zion.state.get<any>(`files.openTabs.${tabOrId}`) || null;
+    };
+    const getTitle = (tabOrId: any) => {
+      if (isFileTab(tabOrId)) {
+        const meta = getTabMeta(tabOrId);
+        return String(meta?.title || (typeof tabOrId === "string" ? tabOrId : tabOrId?.title) || "").trim() || "File";
+      }
+      const sessionId = typeof tabOrId === "string" ? tabOrId : tabOrId?.id;
       const meta = window.zion.state.get<any>(`sessions.meta.${sessionId}`);
       return String(meta?.title || "").trim() || sessionId;
     };
-    const getTabStatus = (sessionId: string): "streaming" | "awaiting" | "failed" | "aborted" | null => {
+    const getTabStatus = (tabOrId: any): "streaming" | "awaiting" | "failed" | "aborted" | null => {
       try {
+        if (isFileTab(tabOrId)) return null;
+        const sessionId = typeof tabOrId === "string" ? tabOrId : tabOrId?.id;
         const rs = window.zion.state.get<any>(`chat.runs.${sessionId}`) || null;
         if (!rs) return null;
         if (rs.streaming) return "streaming";
@@ -2108,8 +2362,9 @@ function mountPanelSessionTabsBar(
         return null;
       }
     };
-    const getTabStatusText = (sessionId: string) => {
-      const status = getTabStatus(sessionId);
+    const getTabStatusText = (tabOrId: any) => {
+      if (isFileTab(tabOrId)) return "文件";
+      const status = getTabStatus(tabOrId);
       switch (status) {
         case "streaming": return "对话中";
         case "awaiting": return "待查看";
@@ -2120,20 +2375,20 @@ function mountPanelSessionTabsBar(
     };
     const syncWatchers = () => {
       const panel = panelManager.getPanel(panelId);
-      const tabIds = new Set((panel?.tabs || []).map((tab) => tab.id));
+      const sessionTabIds = new Set((panel?.tabs || []).filter((tab: any) => !isFileTab(tab)).map((tab) => tab.id));
       for (const [id, disp] of Array.from(metaDisposables.entries())) {
-        if (!tabIds.has(id)) {
+        if (!sessionTabIds.has(id)) {
           try { disp.dispose(); } catch {}
           metaDisposables.delete(id);
         }
       }
       for (const [id, disp] of Array.from(runDisposables.entries())) {
-        if (!tabIds.has(id)) {
+        if (!sessionTabIds.has(id)) {
           try { disp.dispose(); } catch {}
           runDisposables.delete(id);
         }
       }
-      for (const id of tabIds) {
+      for (const id of sessionTabIds) {
         if (!metaDisposables.has(id)) {
           try {
             metaDisposables.set(
@@ -2181,20 +2436,20 @@ function mountPanelSessionTabsBar(
           item.setAttribute("aria-selected", "false");
           item.setAttribute("data-session-id", tab.id);
 
-          const status = getTabStatus(tab.id);
+          const status = getTabStatus(tab);
           const statusEl = document.createElement("span");
           statusEl.className = "zion-editor-tabs-menu-item-status";
           if (status) statusEl.dataset.status = status;
 
           const label = document.createElement("div");
           label.className = "zion-editor-tabs-menu-item-label";
-          const title = getTitle(tab.id);
+          const title = getTitle(tab);
           label.textContent = title;
           label.title = title;
 
           const meta = document.createElement("div");
           meta.className = "zion-editor-tabs-menu-item-meta";
-          meta.textContent = getTabStatusText(tab.id) || (panel.activeTabId === tab.id ? "当前" : "");
+          meta.textContent = getTabStatusText(tab) || (panel.activeTabId === tab.id ? "当前" : "");
 
           const actions = document.createElement("div");
           actions.className = "zion-editor-tabs-menu-item-actions";
@@ -2257,6 +2512,8 @@ function mountPanelSessionTabsBar(
     let tabStripScrollLeft = 0;
     let lastTabClickAt = 0;
     let lastTabClickSessionId: string | null = null;
+    let ignoreClickActivatedTabId: string | null = null;
+    let ignoreClickActivatedAt = 0;
     const updateViewportScrollState = () => {
       try {
         if (!viewport || !root) return;
@@ -2322,8 +2579,24 @@ function mountPanelSessionTabsBar(
       const idx = current.tabs.findIndex((item) => item.id === targetTabId);
       if (idx === -1) return false;
       if (current.tabs.length <= 1) {
-        if (panelManager.listPanels().length <= 1) return false;
-        panelManager.closePanel(targetPanelId);
+        if (panelManager.listPanels().length > 1) {
+          panelManager.closePanel(targetPanelId);
+          return true;
+        }
+        current.tabs = [];
+        current.activeTabId = null;
+        try { opts?.onTabRemovedFromPanel?.(targetPanelId, targetTabId); } catch {}
+        try { panelManager.activateTab(targetPanelId, null); } catch {}
+        try { window.zion.state.set("sessions.currentId", null); } catch {}
+        clearPersistedActiveSession();
+        emitTabsChanged(targetPanelId);
+        syncActivePanelTabsState(targetPanelId);
+        savePanelWorkspaceSnapshotNow({
+          version: 1,
+          savedAt: Date.now(),
+          manager: panelManager.snapshotState(),
+          viewStates: {}
+        });
         return true;
       }
       const nextTabs = current.tabs.filter((item) => item.id !== targetTabId);
@@ -2335,9 +2608,7 @@ function mountPanelSessionTabsBar(
       try { opts?.onTabRemovedFromPanel?.(targetPanelId, targetTabId); } catch {}
       if (wasActive) {
         if (nextId) {
-          try {
-            window.zion.panels?.openSession?.(targetPanelId, nextId, { focus: true, forceReload: true });
-          } catch {}
+          focusAndActivatePanelTab(targetPanelId, nextId, { focus: true, forceReload: true });
         }
       }
       emitTabsChanged(targetPanelId);
@@ -2374,12 +2645,17 @@ function mountPanelSessionTabsBar(
     };
     const focusAndActivatePanelTab = (
       targetPanelId: string,
-      sessionId: string | null,
+      tabId: string | null,
       opts?: { focus?: boolean; forceReload?: boolean }
     ) => {
-      if (!sessionId) return false;
+      if (!tabId) return false;
       try {
-        return window.zion.panels?.openSession?.(targetPanelId, sessionId, {
+        if (isFilePanelTabId(tabId)) {
+          return (window.zion.panels as any)?.openTab?.(targetPanelId, tabId, {
+            focus: opts?.focus !== false
+          }) !== false;
+        }
+        return window.zion.panels?.openSession?.(targetPanelId, tabId, {
           focus: opts?.focus !== false,
           forceReload: !!opts?.forceReload
         }) !== false;
@@ -2738,6 +3014,7 @@ function mountPanelSessionTabsBar(
         const tabEl = document.createElement("div");
         tabEl.className = "zion-editor-session-tab";
         if (tab.id === panel.activeTabId) tabEl.classList.add("is-active");
+        if (isFileTab(tab)) tabEl.classList.add("is-file-tab");
         tabEl.setAttribute("role", "tab");
         tabEl.setAttribute("tabindex", "0");
         tabEl.setAttribute("data-session-id", tab.id);
@@ -2745,10 +3022,10 @@ function mountPanelSessionTabsBar(
 
         const titleEl = document.createElement("span");
         titleEl.className = "zion-editor-session-tab-title";
-        titleEl.textContent = getTitle(tab.id);
-        const status = getTabStatus(tab.id);
-        const statusText = getTabStatusText(tab.id);
-        titleEl.title = statusText ? `${getTitle(tab.id)} · ${statusText}` : getTitle(tab.id);
+        const status = getTabStatus(tab);
+        const statusText = getTabStatusText(tab);
+        titleEl.textContent = getTitle(tab);
+        titleEl.title = statusText ? `${getTitle(tab)} · ${statusText}` : getTitle(tab);
 
         const statusEl = document.createElement("span");
         statusEl.className = "zion-editor-session-tab-status";
@@ -2783,8 +3060,20 @@ function mountPanelSessionTabsBar(
           return false;
         };
 
+        tabEl.onmousedown = (e) => {
+          if (e.button !== 0 || panelTabDragState || Date.now() - lastDragEndAt < 150) return;
+          if (panelManager.getActivePanelId?.() === panelId) return;
+          try { e.stopPropagation(); } catch {}
+          ignoreClickActivatedTabId = tab.id;
+          ignoreClickActivatedAt = Date.now();
+          focusAndActivatePanelTab(panelId, tab.id);
+        };
         tabEl.onclick = () => {
           if (panelTabDragState || Date.now() - lastDragEndAt < 150) return;
+          if (ignoreClickActivatedTabId === tab.id && Date.now() - ignoreClickActivatedAt < 500) {
+            ignoreClickActivatedTabId = null;
+            return;
+          }
           const now = Date.now();
           const isManualDoubleClick = lastTabClickSessionId === tab.id && now - lastTabClickAt <= 320;
           lastTabClickSessionId = tab.id;
@@ -2947,7 +3236,14 @@ async function bootstrap() {
   panelsHost.appendChild(primaryPanelRoot);
   editorAreaEl.appendChild(panelsHost);
 
-  const initialSessionId = window.zion.state.get<string>("sessions.currentId") || null;
+  const savedPanelWorkspace = loadPanelWorkspaceSnapshot();
+  const shouldStartEmpty = isEmptyPanelWorkspaceSnapshot(savedPanelWorkspace);
+  if (shouldStartEmpty) {
+    clearPersistedActiveSession();
+    try { window.zion.state.set("sessions.currentId", null); } catch {}
+  }
+  try { window.zion.state.set("sessions.startEmpty", shouldStartEmpty); } catch {}
+  const initialSessionId = shouldStartEmpty ? null : (window.zion.state.get<string>("sessions.currentId") || null);
   const panelCores = new Map<string, EditorCore>();
   const panelManager = new PanelManager({
     host: panelsHost,
@@ -2979,6 +3275,14 @@ async function bootstrap() {
       return existing || panelManager.splitPanelAt(panelId, side)?.id || null;
     },
     openSession: (panelId: string, sessionId: string, opts?: { focus?: boolean; forceReload?: boolean }) => openSessionInPanel(panelId, sessionId, opts),
+    openTab: (panelId: string, tabId: string, opts?: { focus?: boolean }) => {
+      if (isFilePanelTabId(tabId)) return activateFileTab(panelId, tabId, opts);
+      return openSessionInPanel(panelId, tabId, opts as any);
+    },
+    openFileTab: (args: any) => {
+      const panelId = String(args?.panelId || panelManager.getActivePanelId() || "panel-0");
+      return openFileTabInPanel(panelId, args);
+    },
     split: (direction: "horizontal" | "vertical", panelId?: string) => panelManager.splitPanel(panelId, direction)?.id || null,
     splitAt: (side: "left" | "right" | "up" | "down", panelId?: string) => panelManager.splitPanelAt(panelId, side)?.id || null,
     focus: (panelId: string) => panelManager.focusPanel(panelId),
@@ -3142,20 +3446,9 @@ async function bootstrap() {
     logLevel: 'info'
   });
 
-  // 优先读缓存，没有再给默认
-  const savedPanelWorkspace = loadPanelWorkspaceSnapshot();
+  // 优先读缓存；没有会话时保持空编辑器，避免启动时闪过硬编码示例内容。
   const cached = savedPanelWorkspace?.manager ? "" : loadLastDoc();
-  const initialDoc =
-    cached.trim() ||
-    `# Zion Next (CodeMirror 6) - 插件化版本
-This is a minimal scaffold to validate:
-- CM6 editor core with safe proxy
-- Extension registry (commands / keybindings / status bar)
-- EventBus & StateBus for plugin interaction
-- New plugin system with backward compatibility
-
-Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
-`;
+  const initialDoc = cached || "";
 
   const core = new EditorCore(editorContainer, initialDoc, "panel-0");
   try { core.setSessionId(initialSessionId); } catch {}
@@ -3175,7 +3468,15 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     hostEl: HTMLElement;
     loaded: boolean;
   };
+  type FilePanelSlot = {
+    panelId: string;
+    tabId: string;
+    hostEl: HTMLElement;
+    objectUrl?: string;
+    codeView?: EditorView;
+  };
   const panelEditorSlots = new Map<string, Map<string, EditorSlot>>();
+  const panelFileSlots = new Map<string, Map<string, FilePanelSlot>>();
   const createEditorSlotHost = (panelId: string, sessionId: string) => {
     const hostEl = document.createElement("div");
     hostEl.className = "zion-editor-slot";
@@ -3195,16 +3496,130 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     }
     return slots;
   };
+  const getPanelFileSlots = (panelId: string) => {
+    let slots = panelFileSlots.get(panelId);
+    if (!slots) {
+      slots = new Map<string, FilePanelSlot>();
+      panelFileSlots.set(panelId, slots);
+    }
+    return slots;
+  };
   const showOnlyEditorSlot = (panelId: string, sessionId: string) => {
+    try { panelManager.getPanel(panelId)?.rootEl.classList.remove("is-empty-session"); } catch {}
     const slots = getPanelSlots(panelId);
     for (const [sid, slot] of slots.entries()) {
       slot.hostEl.style.display = sid === sessionId ? "" : "none";
+    }
+    for (const slot of getPanelFileSlots(panelId).values()) {
+      slot.hostEl.style.display = "none";
     }
     debugPanelSlots("slot.showOnly", {
       panelId,
       sessionId,
       summary: debugPanelSlotSummary(panelId)
     });
+  };
+  const disposeFileSlot = (panelId: string, tabId: string) => {
+    const slot = panelFileSlots.get(panelId)?.get(tabId) || null;
+    if (!slot) return;
+    try { slot.codeView?.destroy(); } catch {}
+    try { if (slot.objectUrl) URL.revokeObjectURL(slot.objectUrl); } catch {}
+    try { slot.hostEl.remove(); } catch {}
+    panelFileSlots.get(panelId)?.delete(tabId);
+    try { window.zion.state.set(`files.openTabs.${tabId}`, null); } catch {}
+  };
+  const showOnlyFileSlot = (panelId: string, tabId: string) => {
+    try { panelManager.getPanel(panelId)?.rootEl.classList.remove("is-empty-session"); } catch {}
+    for (const slot of getPanelSlots(panelId).values()) {
+      slot.hostEl.style.display = "none";
+    }
+    for (const [id, slot] of getPanelFileSlots(panelId).entries()) {
+      slot.hostEl.style.display = id === tabId ? "" : "none";
+    }
+    panelManager.setPanelEditor(panelId, null);
+    panelCores.delete(panelId);
+    try { setActiveEditorPanel(panelId); } catch {}
+  };
+  const renderFileSlotContent = (hostEl: HTMLElement, file: any, meta: any, existingUrl?: string) => {
+    try { if (existingUrl) URL.revokeObjectURL(existingUrl); } catch {}
+    hostEl.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "zion-file-tab-viewer";
+
+    let objectUrl = "";
+    let codeView: EditorView | undefined;
+    if (file?.kind === "image" && file.blob instanceof Blob) {
+      objectUrl = URL.createObjectURL(file.blob);
+      const stage = document.createElement("div");
+      stage.className = "zion-file-tab-image-stage";
+      const img = document.createElement("img");
+      img.className = "zion-file-tab-image";
+      img.src = objectUrl;
+      img.alt = String(meta?.title || "image");
+      stage.appendChild(img);
+      wrap.appendChild(stage);
+    } else if (file?.kind === "text") {
+      const codeHost = document.createElement("div");
+      codeHost.className = "zion-file-tab-code-host";
+      wrap.appendChild(codeHost);
+      codeView = createFileCodeViewer(codeHost, String(file?.content || ""), meta);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "zion-file-tab-empty";
+      empty.textContent = "Binary preview is not supported yet.";
+      wrap.appendChild(empty);
+    }
+    hostEl.appendChild(wrap);
+    return { objectUrl, codeView };
+  };
+  const activateFileTab = (panelId: string, tabId: string, opts?: { focus?: boolean }) => {
+    const panel = panelManager.getPanel(panelId);
+    if (!panel || !panel.tabs.some((tab) => tab.id === tabId)) return false;
+    showOnlyFileSlot(panelId, tabId);
+    panelManager.activateTab(panelId, tabId);
+    syncLegacyEditorTabsState(panelId);
+    try { window.zion.events.emit("panel/tabsChanged", { panelId }); } catch {}
+    if (opts?.focus !== false) {
+      try { panelManager.focusPanel(panelId); } catch {}
+      try { panelFileSlots.get(panelId)?.get(tabId)?.hostEl.focus(); } catch {}
+    }
+    return true;
+  };
+  const openFileTabInPanel = (panelId: string, args: any) => {
+    const panel = panelManager.getPanel(panelId);
+    if (!panel) return false;
+    const tabId = String(args?.id || `file:${Date.now().toString(36)}`).trim();
+    const title = String(args?.title || args?.name || "File").trim() || "File";
+    const meta = {
+      ...(args?.meta || {}),
+      title,
+      path: args?.path || args?.meta?.path || "",
+      displayPath: args?.displayPath || args?.meta?.displayPath || args?.path || "",
+      language: args?.language || args?.meta?.language || languageFromFilename(title)
+    };
+    let slot = getPanelFileSlots(panelId).get(tabId) || null;
+    if (!slot) {
+      const hostEl = document.createElement("div");
+      hostEl.className = "zion-file-tab-slot";
+      hostEl.dataset.panelId = panelId;
+      hostEl.dataset.tabId = tabId;
+      hostEl.tabIndex = 0;
+      hostEl.style.display = "none";
+      panel.editorHostEl.appendChild(hostEl);
+      slot = { panelId, tabId, hostEl };
+      getPanelFileSlots(panelId).set(tabId, slot);
+    }
+    try { slot.codeView?.destroy(); } catch {}
+    slot.codeView = undefined;
+    const rendered = renderFileSlotContent(slot.hostEl, args?.file || { kind: "binary" }, meta, slot.objectUrl);
+    slot.objectUrl = rendered.objectUrl;
+    slot.codeView = rendered.codeView;
+    try { window.zion.state.set(`files.openTabs.${tabId}`, meta); } catch {}
+    const existingIndex = panel.tabs.findIndex((tab) => tab.id === tabId);
+    const nextTab = { id: tabId, title, isDirty: false, kind: "file" as const, meta };
+    if (existingIndex >= 0) panel.tabs[existingIndex] = nextTab;
+    else panel.tabs = [...panel.tabs, nextTab];
+    return activateFileTab(panelId, tabId, { focus: args?.focus === true });
   };
   const registerEditorSlot = (panelId: string, sessionId: string, slotCore: EditorCore, proxy: any, hostEl?: HTMLElement, loaded = false) => {
     const panel = panelManager.getPanel(panelId);
@@ -3301,8 +3716,39 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     try { slot.hostEl.remove(); } catch {}
     panelEditorSlots.get(panelId)?.delete(sessionId);
   };
+  const showPanelEmptyState = (panelId: string) => {
+    const panel = panelManager.getPanel(panelId);
+    if (!panel || panel.tabs.length > 0) return;
+    try { panel.rootEl.classList.add("is-empty-session"); } catch {}
+    try { panelCores.get(panelId)?.dispose?.(); } catch {}
+    try { detachEditor(panelId); } catch {}
+    try { panel.editorHostEl.innerHTML = ""; } catch {}
+    const empty = document.createElement("div");
+    empty.className = "zion-panel-empty";
+    empty.innerHTML = `
+      <div class="zion-panel-empty-content">
+        <div class="zion-panel-empty-title">暂无打开的会话</div>
+        <div class="zion-panel-empty-hint">双击创建会话</div>
+        <div class="zion-panel-empty-hint">Cmd+T 创建会话</div>
+        <div class="zion-panel-empty-hint">Cmd+Enter 运行聊天</div>
+      </div>
+    `;
+    empty.ondblclick = (e) => {
+      try {
+        e.preventDefault();
+        e.stopPropagation();
+      } catch {}
+      try { window.zion.commands.executeCommand("zion.sessions.new", { panelId }); } catch {}
+    };
+    panel.editorHostEl.appendChild(empty);
+    panelManager.setPanelEditor(panelId, null);
+    panelCores.delete(panelId);
+    try { setActiveEditorPanel(panelId); } catch {}
+  };
+  if (!initialSessionId) showPanelEmptyState("panel-0");
   const syncPanelSessionToCurrent = (panelId: string | null): string | null => {
     const activeTabId = panelId ? panelManager.getPanel(panelId)?.activeTabId || null : null;
+    if (isFilePanelTabId(activeTabId)) return null;
     if (activeTabId && window.zion.state.get<string>("sessions.currentId") !== activeTabId) {
       try { window.zion.state.set("sessions.currentId", activeTabId); } catch {}
     }
@@ -3358,6 +3804,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     return sessionRuntime.openPanelSession(panelId, sessionId, opts);
   };
   const activatePanelSession = (panelId: string, sessionId: string | null) => {
+    if (isFilePanelTabId(sessionId)) return activateFileTab(panelId, sessionId as string);
     return sessionRuntime.switchPanelSession(panelId, sessionId);
   };
   const restoreSplitViewportFromSource = (sourceEditor: any, targetEditor: any) => {
@@ -3477,6 +3924,9 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
             })
           );
         }
+        for (const panel of panelManager.listPanels()) {
+          if (!panel.activeTabId && panel.tabs.length === 0) showPanelEmptyState(panel.id);
+        }
         const finalActivePanelId =
           typeof savedPanelWorkspace?.manager?.activePanelId === "string"
             ? savedPanelWorkspace.manager.activePanelId
@@ -3526,7 +3976,20 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     const idx = panel.tabs.findIndex((tab) => tab.id === tabId);
     if (idx === -1) return false;
     if (panel.tabs.length <= 1) {
-      if (panelManager.listPanels().length <= 1) return false;
+      disposeEditorSlotForSession(panelId, tabId);
+      disposeFileSlot(panelId, tabId);
+      if (panelManager.listPanels().length <= 1) {
+        panel.tabs = [];
+        panel.activeTabId = null;
+        try { panelManager.activateTab(panelId, null); } catch {}
+        try { window.zion.state.set("sessions.currentId", null); } catch {}
+        clearPersistedActiveSession();
+        showPanelEmptyState(panelId);
+        syncLegacyEditorTabsState(panelId);
+        try { window.zion.events.emit("panel/tabsChanged", { panelId }); } catch {}
+        savePanelWorkspaceSnapshotNow(buildPanelWorkspaceSnapshot());
+        return true;
+      }
       panelManager.closePanel(panelId);
       const nextPanelId = panelManager.getActivePanelId();
       if (!nextPanelId) return true;
@@ -3542,6 +4005,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       try { closingSlot.hostEl.remove(); } catch {}
       panelEditorSlots.get(panelId)?.delete(tabId);
     }
+    disposeFileSlot(panelId, tabId);
     panel.tabs = nextTabs;
     const nextId = wasActive
       ? pickPreviousVisitedPanelTab(panelId, tabId, nextTabs, idx)
@@ -3549,9 +4013,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     syncLegacyEditorTabsState(panelId);
     try { window.zion.events.emit("panel/tabsChanged", { panelId }); } catch {}
     if (!wasActive || !nextId) return true;
-    try {
-      window.zion.panels?.openSession?.(panelId, nextId, { focus: true, forceReload: true });
-    } catch {}
+    activatePanelSession(panelId, nextId);
     return true;
   };
   try {
@@ -3591,6 +4053,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       if (!activePanelId) return;
       const panel = panelManager.getPanel(activePanelId);
       if (!panel || !sessionId) return;
+      if (isFilePanelTabId(panel.activeTabId)) return;
       const exists = panel.tabs.some((tab) => tab.id === sessionId);
       if (!exists) {
         panel.tabs = [...panel.tabs, { id: sessionId, title: sessionId, isDirty: false }];
@@ -3649,7 +4112,11 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     }
     mountCurrentSessionPath(panel.pathEl, panelId);
     mountPanelSessionTabsBar(panel.tabsBarEl, panelId, panelManager, {
-      onTabRemovedFromPanel: disposeEditorSlotForSession
+      onTabRemovedFromPanel: (pid, tabId) => {
+        disposeEditorSlotForSession(pid, tabId);
+        disposeFileSlot(pid, tabId);
+        showPanelEmptyState(pid);
+      }
     });
     mountEditorHeaderTOCButton(panel.pathEl);
     mountEditorHeaderSessionRenameButton(panel.pathEl, panelId);
@@ -3697,6 +4164,16 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       }
       panelEditorSlots.delete(panelId);
     }
+    const closingFileSlots = panelFileSlots.get(panelId);
+    if (closingFileSlots) {
+      for (const slot of closingFileSlots.values()) {
+        try { slot.codeView?.destroy(); } catch {}
+        try { if (slot.objectUrl) URL.revokeObjectURL(slot.objectUrl); } catch {}
+        try { slot.hostEl.remove(); } catch {}
+        try { window.zion.state.set(`files.openTabs.${slot.tabId}`, null); } catch {}
+      }
+      panelFileSlots.delete(panelId);
+    }
     try { panelScrollPersistDisposers.get(panelId)?.(); } catch {}
     panelScrollPersistDisposers.delete(panelId);
     try { detachEditor(panelId); } catch {}
@@ -3721,12 +4198,70 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     });
     window.addEventListener("pagehide", () => schedulePanelWorkspacePersist(), { passive: true });
   } catch {}
+  const installInactivePanelFocusReturnScrollGuard = () => {
+    try {
+      const proto = Element.prototype as any;
+      if (proto.__zionInactivePanelFocusReturnScrollGuard) return;
+      const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
+      if (!descriptor?.get || !descriptor?.set) return;
+      proto.__zionInactivePanelFocusReturnScrollGuard = true;
+      let focusReturnUntil = 0;
+      let lastPointerPanelId = "";
+      let lastPointerAt = 0;
+      const markFocusReturn = () => { focusReturnUntil = Date.now() + 320; };
+      const panelIdOf = (el: Element | null | undefined) => {
+        try { return el?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || ""; } catch { return ""; }
+      };
+      document.addEventListener("pointerdown", (ev) => {
+        const target = ev.target as Element | null;
+        lastPointerPanelId = panelIdOf(target);
+        lastPointerAt = Date.now();
+      }, true);
+      window.addEventListener("focus", markFocusReturn, true);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) markFocusReturn();
+      }, true);
+      Object.defineProperty(Element.prototype, "scrollTop", {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get: function guardedScrollTopGetter(this: Element) {
+          return descriptor.get?.call(this);
+        },
+        set: function guardedScrollTopSetter(this: Element, value: number) {
+          try {
+            const el = this as HTMLElement;
+            const panelId = panelIdOf(el);
+            const activePanelId = panelManager.getActivePanelId?.() || "";
+            const focusedPanelId = panelIdOf(document.activeElement as Element | null);
+            const isRecentPointerPanel = panelId && panelId === lastPointerPanelId && Date.now() - lastPointerAt < 700;
+            const isInactiveEditorScroller =
+              Date.now() <= focusReturnUntil &&
+              el.classList?.contains("cm-scroller") &&
+              panelId &&
+              panelId !== activePanelId &&
+              panelId !== focusedPanelId &&
+              !isRecentPointerPanel;
+            if (isInactiveEditorScroller) {
+              const before = Number(descriptor.get?.call(this) || 0);
+              if (Math.round(before) !== Math.round(Number(value) || 0)) return;
+            }
+          } catch {}
+          descriptor.set?.call(this, value);
+        }
+      });
+    } catch {}
+  };
+  installInactivePanelFocusReturnScrollGuard();
   try {
     window.addEventListener("beforeunload", () => sessionSync.dispose(), { once: true });
   } catch {}
   mountCurrentSessionPath(editorHeaderPathEl, "panel-0");
   mountPanelSessionTabsBar(editorTabsBarEl, "panel-0", panelManager, {
-    onTabRemovedFromPanel: disposeEditorSlotForSession
+    onTabRemovedFromPanel: (pid, tabId) => {
+      disposeEditorSlotForSession(pid, tabId);
+      disposeFileSlot(pid, tabId);
+      showPanelEmptyState(pid);
+    }
   });
   mountEditorHeaderTOCButton(editorHeaderPathEl);
   mountEditorHeaderSessionRenameButton(editorHeaderPathEl, "panel-0");
@@ -3967,7 +4502,6 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
 
   try {
     const isEditorShortcutContext = (ev: KeyboardEvent) => {
-      if (!window.zion?.window?.activeEditor) return false;
       const target = ev.target as HTMLElement | null;
       const appEl = document.getElementById("app");
       const inCodeMirror = !!target?.closest?.(".cm-editor");
@@ -3991,10 +4525,13 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     const onGlobalEditorShortcut = (e: Event) => {
       const ev = e as KeyboardEvent;
       if (ev.defaultPrevented || !isEditorShortcutContext(ev)) return;
-      const mod = ev.metaKey || ev.ctrlKey;
-      if (!mod) return;
       const key = String(ev.key || "").toLowerCase();
       const code = String(ev.code || "");
+      if (ev.altKey && ev.shiftKey && !ev.metaKey && !ev.ctrlKey && (code === "KeyV" || key === "v" || key === "◊")) {
+        return handleEditorShortcut(ev, "zion.toggleVimMode");
+      }
+      const mod = ev.metaKey || ev.ctrlKey;
+      if (!mod) return;
       if (!ev.altKey && !ev.shiftKey && (key === "r" || code === "KeyR")) return handleEditorShortcut(ev, "zion.sessions.autoRename");
       if (!ev.altKey && ev.shiftKey && (key === "r" || code === "KeyR")) return handleEditorShortcut(ev, "zion.sessions.renameInline");
       if (!ev.altKey && !ev.shiftKey && (key === "t" || code === "KeyT")) return handleEditorShortcut(ev, "zion.sessions.new");
@@ -4027,6 +4564,16 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       return true;
     }
   })();
+  let wysiwygKeepActiveLineRendered: boolean = (() => {
+    try {
+      const v = localStorage.getItem("zion.wysiwyg.keepActiveLineRendered");
+      if (v === "0" || v === "false") return false;
+      if (v === "1" || v === "true") return true;
+      return true; // default ON: focusing a line keeps rendered Markdown.
+    } catch {
+      return true;
+    }
+  })();
 
   const applyWysiwyg = (enabled: boolean) => {
     wysiwygEnabled = enabled;
@@ -4036,10 +4583,21 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     forEachPanelCore((targetCore) => targetCore.setWysiwygEnabled(enabled));
     window.zion.state.set("ui.wysiwyg", enabled);
   };
+  const applyWysiwygKeepActiveLineRendered = (enabled: boolean) => {
+    wysiwygKeepActiveLineRendered = enabled;
+    try {
+      localStorage.setItem("zion.wysiwyg.keepActiveLineRendered", enabled ? "1" : "0");
+    } catch {}
+    forEachPanelCore((targetCore) => targetCore.setWysiwygKeepActiveLineRendered(enabled));
+    window.zion.state.set("ui.wysiwyg.keepActiveLineRendered", enabled);
+  };
 
   window.zion.commands.registerCommand("zion.setWysiwyg", (enabled: boolean) => applyWysiwyg(!!enabled));
   window.zion.commands.registerCommand("zion.toggleWysiwyg", () => applyWysiwyg(!wysiwygEnabled));
+  window.zion.commands.registerCommand("zion.setWysiwygKeepActiveLineRendered", (enabled: boolean) => applyWysiwygKeepActiveLineRendered(!!enabled));
+  window.zion.commands.registerCommand("zion.toggleWysiwygKeepActiveLineRendered", () => applyWysiwygKeepActiveLineRendered(!wysiwygKeepActiveLineRendered));
   applyWysiwyg(wysiwygEnabled);
+  applyWysiwygKeepActiveLineRendered(wysiwygKeepActiveLineRendered);
   try {
     const reg = getEditorHeaderMenuRegistry();
     reg.register({
@@ -4050,6 +4608,15 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       kind: "toggle",
       getChecked: () => !!window.zion.state.get("ui.wysiwyg"),
       onClick: () => window.zion.commands.executeCommand("zion.toggleWysiwyg")
+    });
+    reg.register({
+      id: "core.wysiwyg.keepActiveLineRendered.headerMenu",
+      title: "Keep Focused Line Rendered",
+      section: "Editor",
+      order: 16.1,
+      kind: "toggle",
+      getChecked: () => !!window.zion.state.get("ui.wysiwyg.keepActiveLineRendered"),
+      onClick: () => window.zion.commands.executeCommand("zion.toggleWysiwygKeepActiveLineRendered")
     });
   } catch {}
 
@@ -4120,6 +4687,166 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     }
   })();
 
+  let vimModeEnabled: boolean = (() => {
+    try {
+      const v = localStorage.getItem("zion.vimMode");
+      if (v === "0" || v === "false") return false;
+      if (v === "1" || v === "true") return true;
+      return false;
+    } catch {
+      return false;
+    }
+  })();
+  let vimOperationalMode: VimOperationalMode = "normal";
+  const vimOperationalModeDisposers = new WeakMap<EditorCore, Disposable>();
+  let applyingGlobalVimOperationalMode = false;
+
+  type EditorFontFamilyPreset = "system-sans" | "system-mono" | "serif" | "custom";
+  const EDITOR_FONT_FAMILY_PRESETS = new Set<EditorFontFamilyPreset>(["system-sans", "system-mono", "serif", "custom"]);
+  const EDITOR_APPEARANCE_DEFAULTS = {
+    fontFamilyPreset: "system-sans" as EditorFontFamilyPreset,
+    customFontFamily: "",
+    fontSize: 15,
+    lineHeight: 1.6,
+    textColor: ""
+  };
+
+  const readStoredString = (key: string, fallback: string) => {
+    try {
+      const value = localStorage.getItem(key);
+      return value == null ? fallback : value;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const parseNumberPreference = (value: unknown, fallback: number, min: number, max: number) => {
+    const n = typeof value === "number" ? value : Number(String(value ?? "").trim());
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  };
+
+  const sanitizeFontFamily = (value: unknown) => {
+    const raw = String(value ?? "").trim().slice(0, 180);
+    if (!raw || /[;{}<>]/.test(raw) || /[\r\n]/.test(raw)) return "";
+    return raw;
+  };
+
+  const normalizeOptionalColor = (value: unknown) => String(value ?? "").trim().slice(0, 80);
+
+  const validateOptionalColor = (value: unknown) => {
+    const color = normalizeOptionalColor(value);
+    if (!color) return null;
+    try {
+      if (CSS.supports?.("color", color)) return null;
+    } catch {}
+    return "请输入有效的 CSS 颜色，例如 #d1d5db、rgb(209 213 219)；留空则跟随主题。";
+  };
+
+  const validateFontFamily = (value: unknown) => {
+    const raw = String(value ?? "");
+    if (!raw.trim()) return null;
+    if (raw.length > 180 || /[;{}<>]/.test(raw) || /[\r\n]/.test(raw)) {
+      return "字体名称只能包含字体族列表，不能包含 CSS 语句或换行。";
+    }
+    return null;
+  };
+
+  const validateNumberRange = (value: unknown, min: number, max: number, unitLabel: string) => {
+    const n = Number(String(value ?? "").trim());
+    if (!Number.isFinite(n)) return `请输入有效数字。`;
+    if (n < min || n > max) return `请输入 ${min} 到 ${max} ${unitLabel}之间的数值。`;
+    return null;
+  };
+
+  const normalizeFontFamilyPreset = (value: unknown): EditorFontFamilyPreset => {
+    const raw = String(value ?? "");
+    return EDITOR_FONT_FAMILY_PRESETS.has(raw as EditorFontFamilyPreset)
+      ? raw as EditorFontFamilyPreset
+      : EDITOR_APPEARANCE_DEFAULTS.fontFamilyPreset;
+  };
+
+  let editorFontFamilyPreset = normalizeFontFamilyPreset(readStoredString("zion.editor.fontFamilyPreset", EDITOR_APPEARANCE_DEFAULTS.fontFamilyPreset));
+  let editorCustomFontFamily = sanitizeFontFamily(readStoredString("zion.editor.customFontFamily", EDITOR_APPEARANCE_DEFAULTS.customFontFamily));
+  let editorFontSize = parseNumberPreference(readStoredString("zion.editor.fontSize", String(EDITOR_APPEARANCE_DEFAULTS.fontSize)), EDITOR_APPEARANCE_DEFAULTS.fontSize, 10, 24);
+  let editorLineHeight = parseNumberPreference(readStoredString("zion.editor.lineHeight", String(EDITOR_APPEARANCE_DEFAULTS.lineHeight)), EDITOR_APPEARANCE_DEFAULTS.lineHeight, 1.2, 2.4);
+  let editorTextColor = normalizeOptionalColor(readStoredString("zion.editor.textColor", EDITOR_APPEARANCE_DEFAULTS.textColor));
+
+  const getEditorFontFamilyCss = () => {
+    if (editorFontFamilyPreset === "system-mono") return "var(--font-mono)";
+    if (editorFontFamilyPreset === "serif") return "Georgia, 'Times New Roman', 'Noto Serif SC', 'Songti SC', serif";
+    if (editorFontFamilyPreset === "custom") return editorCustomFontFamily || "var(--font-sans)";
+    return "var(--font-sans)";
+  };
+
+  const applyEditorAppearancePreferences = () => {
+    const root = document.documentElement;
+    root.style.setProperty("--editor-content-font-family", getEditorFontFamilyCss());
+    root.style.setProperty("--editor-content-font-size", `${editorFontSize}px`);
+    root.style.setProperty("--editor-content-line-height", String(editorLineHeight));
+    if (editorTextColor) root.style.setProperty("--editor-text-fg", editorTextColor);
+    else root.style.removeProperty("--editor-text-fg");
+    try {
+      window.zion.state.set("ui.editorAppearance", {
+        fontFamilyPreset: editorFontFamilyPreset,
+        customFontFamily: editorCustomFontFamily,
+        fontSize: editorFontSize,
+        lineHeight: editorLineHeight,
+        textColor: editorTextColor
+      });
+    } catch {}
+  };
+
+  const setEditorFontFamilyPreset = (value: unknown) => {
+    editorFontFamilyPreset = normalizeFontFamilyPreset(value);
+    try { localStorage.setItem("zion.editor.fontFamilyPreset", editorFontFamilyPreset); } catch {}
+    applyEditorAppearancePreferences();
+  };
+
+  const setEditorCustomFontFamily = (value: unknown) => {
+    editorCustomFontFamily = sanitizeFontFamily(value);
+    try { localStorage.setItem("zion.editor.customFontFamily", editorCustomFontFamily); } catch {}
+    applyEditorAppearancePreferences();
+  };
+
+  const setEditorFontSize = (value: unknown) => {
+    editorFontSize = parseNumberPreference(value, EDITOR_APPEARANCE_DEFAULTS.fontSize, 10, 24);
+    try { localStorage.setItem("zion.editor.fontSize", String(editorFontSize)); } catch {}
+    applyEditorAppearancePreferences();
+  };
+
+  const setEditorLineHeight = (value: unknown) => {
+    editorLineHeight = parseNumberPreference(value, EDITOR_APPEARANCE_DEFAULTS.lineHeight, 1.2, 2.4);
+    try { localStorage.setItem("zion.editor.lineHeight", String(editorLineHeight)); } catch {}
+    applyEditorAppearancePreferences();
+  };
+
+  const setEditorTextColor = (value: unknown) => {
+    editorTextColor = normalizeOptionalColor(value);
+    try { localStorage.setItem("zion.editor.textColor", editorTextColor); } catch {}
+    applyEditorAppearancePreferences();
+  };
+
+  const resetEditorAppearanceSetting = (key: "fontFamilyPreset" | "customFontFamily" | "fontSize" | "lineHeight" | "textColor") => {
+    if (key === "fontFamilyPreset") {
+      editorFontFamilyPreset = EDITOR_APPEARANCE_DEFAULTS.fontFamilyPreset;
+      try { localStorage.removeItem("zion.editor.fontFamilyPreset"); } catch {}
+    } else if (key === "customFontFamily") {
+      editorCustomFontFamily = EDITOR_APPEARANCE_DEFAULTS.customFontFamily;
+      try { localStorage.removeItem("zion.editor.customFontFamily"); } catch {}
+    } else if (key === "fontSize") {
+      editorFontSize = EDITOR_APPEARANCE_DEFAULTS.fontSize;
+      try { localStorage.removeItem("zion.editor.fontSize"); } catch {}
+    } else if (key === "lineHeight") {
+      editorLineHeight = EDITOR_APPEARANCE_DEFAULTS.lineHeight;
+      try { localStorage.removeItem("zion.editor.lineHeight"); } catch {}
+    } else {
+      editorTextColor = EDITOR_APPEARANCE_DEFAULTS.textColor;
+      try { localStorage.removeItem("zion.editor.textColor"); } catch {}
+    }
+    applyEditorAppearancePreferences();
+  };
+
   function forEachPanelCore(fn: (targetCore: EditorCore) => void) {
     try { fn(core); } catch {}
     try {
@@ -4128,6 +4855,59 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
         try { fn(targetCore); } catch {}
       }
     } catch {}
+  }
+
+  function forEachAttachedEditorCore(fn: (targetCore: EditorCore) => void) {
+    const seen = new Set<EditorCore>();
+    const visit = (targetCore: EditorCore | null | undefined) => {
+      if (!targetCore || seen.has(targetCore)) return;
+      seen.add(targetCore);
+      try { fn(targetCore); } catch {}
+    };
+    try { visit(core); } catch {}
+    try {
+      for (const targetCore of panelCores.values()) visit(targetCore);
+    } catch {}
+    try {
+      for (const targetCore of listAttachedEditorCores()) visit(targetCore);
+    } catch {}
+  }
+
+  function isFocusedEditorCore(targetCore: EditorCore | null | undefined): boolean {
+    try {
+      const active = document.activeElement;
+      return !!active && !!targetCore?.view?.dom?.contains?.(active);
+    } catch {
+      return false;
+    }
+  }
+
+  function applyVimOperationalModeToAll(mode: VimOperationalMode) {
+    if (!vimModeEnabled) return;
+    applyingGlobalVimOperationalMode = true;
+    try {
+      forEachAttachedEditorCore((targetCore) => {
+        targetCore.setVimOperationalMode(mode, { preserveViewState: !isFocusedEditorCore(targetCore) });
+      });
+    } finally {
+      applyingGlobalVimOperationalMode = false;
+    }
+  }
+
+  function registerVimOperationalModeSync(targetCore: EditorCore | null | undefined) {
+    if (!targetCore || vimOperationalModeDisposers.has(targetCore)) return;
+    try {
+      vimOperationalModeDisposers.set(targetCore, targetCore.onVimOperationalModeChange((mode) => {
+        if (applyingGlobalVimOperationalMode || !vimModeEnabled) return;
+        vimOperationalMode = mode;
+        try { window.zion.state.set("ui.editor.vimOperationalMode", mode); } catch {}
+        applyVimOperationalModeToAll(mode);
+      }));
+    } catch {}
+  }
+
+  function registerAllVimOperationalModeSync() {
+    forEachAttachedEditorCore(registerVimOperationalModeSync);
   }
 
   const applyLineNumbers = (enabled: boolean) => {
@@ -4172,9 +4952,22 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     window.zion.state.set("ui.lineWrap", enabled);
   };
 
+  const applyVimMode = (enabled: boolean) => {
+    vimModeEnabled = enabled;
+    try { localStorage.setItem("zion.vimMode", enabled ? "1" : "0"); } catch {}
+    forEachAttachedEditorCore((targetCore) => {
+      registerVimOperationalModeSync(targetCore);
+      targetCore.setVimModeEnabled(enabled);
+      if (enabled) targetCore.setVimOperationalMode(vimOperationalMode, { preserveViewState: !isFocusedEditorCore(targetCore) });
+    });
+    window.zion.state.set("ui.editor.vimMode", enabled);
+    window.zion.state.set("ui.editor.vimOperationalMode", enabled ? vimOperationalMode : "normal");
+  };
+
   function applyEditorPreferences(targetCore: EditorCore) {
     targetCore.setTheme(themeManager.getResolvedTheme());
     targetCore.setWysiwygEnabled(wysiwygEnabled);
+    targetCore.setWysiwygKeepActiveLineRendered(wysiwygKeepActiveLineRendered);
     targetCore.setLineNumbersEnabled(lineNumbersEnabled);
     targetCore.setActiveLineHighlightEnabled(activeLineHighlightEnabled);
     targetCore.setSyntaxHighlightEnabled(syntaxHighlightEnabled);
@@ -4183,6 +4976,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     targetCore.setLineWrapEnabled(lineWrapEnabled);
     targetCore.setMinimapEnabled(!!window.zion.state.get("ui.minimapEnabled"));
     targetCore.setSelectionHighlightEnabled(!!window.zion.state.get("ui.selectionHighlight"));
+    targetCore.setVimModeEnabled(vimModeEnabled);
   }
 
   // register commands to control these features
@@ -4198,14 +4992,143 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   window.zion.commands.registerCommand("zion.toggleFolding", () => applyFolding(!foldingEnabled));
   window.zion.commands.registerCommand("zion.setLineWrap", (v: boolean) => applyLineWrap(!!v));
   window.zion.commands.registerCommand("zion.toggleLineWrap", () => applyLineWrap(!lineWrapEnabled));
+  window.zion.commands.registerCommand("zion.setVimMode", (v: boolean) => applyVimMode(!!v));
+  window.zion.commands.registerCommand("zion.toggleVimMode", () => applyVimMode(!vimModeEnabled));
+  window.zion.commands.registerCommand("zion.editorAppearance.apply", () => applyEditorAppearancePreferences());
+  try {
+    window.zion.events.on("editor/attached", (payload: any) => {
+      const targetCore = payload?.core;
+      if (!targetCore) return;
+      registerVimOperationalModeSync(targetCore);
+      targetCore.setVimModeEnabled(vimModeEnabled);
+      if (vimModeEnabled) targetCore.setVimOperationalMode(vimOperationalMode, { preserveViewState: !isFocusedEditorCore(targetCore) });
+    });
+  } catch {}
 
   // apply current values
+  applyEditorAppearancePreferences();
   applyLineNumbers(lineNumbersEnabled);
   applyActiveLineHighlight(activeLineHighlightEnabled);
   applySyntaxHighlight(syntaxHighlightEnabled);
   applyAutoIndent(autoIndentEnabled);
   applyFolding(foldingEnabled);
   applyLineWrap(lineWrapEnabled);
+  registerAllVimOperationalModeSync();
+  applyVimMode(vimModeEnabled);
+
+  try {
+    window.zion.keybindings.register({ command: "zion.toggleVimMode", key: "Alt-Shift-v", when: "editorFocus" });
+  } catch {}
+  try {
+    const reg = getEditorHeaderMenuRegistry();
+    reg.register({
+      id: "core.vimMode.headerMenu",
+      title: "Vim Mode",
+      section: "Editor",
+      order: 17,
+      kind: "toggle",
+      getChecked: () => !!window.zion.state.get("ui.editor.vimMode"),
+      onClick: () => window.zion.commands.executeCommand("zion.toggleVimMode")
+    });
+  } catch {}
+
+  try {
+    (window as any).zion.settings.registerPage({
+      id: "editor.appearance",
+      title: "Editor Appearance",
+      category: "editor",
+      order: 10,
+      keywords: ["editor", "appearance", "font", "color", "typography", "编辑器", "字体", "颜色"],
+      sections: [
+        {
+          id: "editor.appearance.typography",
+          title: "Typography",
+          description: "默认跟随主题；这些设置只覆盖编辑器正文区域。",
+          settings: [
+            {
+              id: "editor.appearance.fontFamilyPreset",
+              label: "字体族",
+              description: "选择编辑器正文使用的字体族。默认使用系统无衬线字体，适合 Markdown 阅读和编辑。",
+              kind: "select",
+              scope: "application",
+              defaultValue: EDITOR_APPEARANCE_DEFAULTS.fontFamilyPreset,
+              enumOptions: [
+                { label: "系统无衬线（默认）", value: "system-sans" },
+                { label: "系统等宽", value: "system-mono" },
+                { label: "衬线", value: "serif" },
+                { label: "自定义字体族", value: "custom" }
+              ],
+              getValue: () => editorFontFamilyPreset,
+              setValue: setEditorFontFamilyPreset,
+              reset: () => resetEditorAppearanceSetting("fontFamilyPreset")
+            },
+            {
+              id: "editor.appearance.customFontFamily",
+              label: "自定义字体族",
+              description: "当字体族选择“自定义”时生效，例如 \"LXGW WenKai\", \"PingFang SC\", sans-serif。",
+              kind: "string",
+              scope: "application",
+              controlLayout: "wide",
+              defaultValue: EDITOR_APPEARANCE_DEFAULTS.customFontFamily,
+              placeholder: "\"LXGW WenKai\", \"PingFang SC\", sans-serif",
+              getValue: () => editorCustomFontFamily,
+              setValue: setEditorCustomFontFamily,
+              validate: validateFontFamily,
+              reset: () => resetEditorAppearanceSetting("customFontFamily")
+            },
+            {
+              id: "editor.appearance.fontSize",
+              label: "字号",
+              description: "编辑器正文基础字号，单位 px。",
+              kind: "number",
+              inputMode: "decimal",
+              scope: "application",
+              defaultValue: EDITOR_APPEARANCE_DEFAULTS.fontSize,
+              getValue: () => editorFontSize,
+              setValue: setEditorFontSize,
+              validate: (value: unknown) => validateNumberRange(value, 10, 24, "px "),
+              reset: () => resetEditorAppearanceSetting("fontSize")
+            },
+            {
+              id: "editor.appearance.lineHeight",
+              label: "行高",
+              description: "编辑器正文行高倍率。Markdown 阅读编辑建议保持在 1.5 到 1.8 之间。",
+              kind: "number",
+              inputMode: "decimal",
+              scope: "application",
+              defaultValue: EDITOR_APPEARANCE_DEFAULTS.lineHeight,
+              getValue: () => editorLineHeight,
+              setValue: setEditorLineHeight,
+              validate: (value: unknown) => validateNumberRange(value, 1.2, 2.4, ""),
+              reset: () => resetEditorAppearanceSetting("lineHeight")
+            }
+          ]
+        },
+        {
+          id: "editor.appearance.colors",
+          title: "Colors",
+          description: "颜色默认跟随当前主题；只有填写自定义值时才覆盖主题。",
+          settings: [
+            {
+              id: "editor.appearance.textColor",
+              label: "正文颜色",
+              description: "留空则跟随主题正文色。支持 CSS 颜色值，例如 #d1d5db 或 rgb(209 213 219)。",
+              kind: "string",
+              scope: "application",
+              defaultValue: EDITOR_APPEARANCE_DEFAULTS.textColor,
+              placeholder: "留空跟随主题",
+              getValue: () => editorTextColor,
+              setValue: setEditorTextColor,
+              validate: validateOptionalColor,
+              reset: () => resetEditorAppearanceSetting("textColor")
+            }
+          ]
+        }
+      ]
+    });
+  } catch (e) {
+    console.warn("[zion] failed to register editor appearance settings", e);
+  }
 
   // Auto-load all extensions under /extensions
 
@@ -4287,6 +5210,10 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
   } catch {}
 
   try {
+    document.querySelectorAll('[data-zion-status-id="chat.usage.today"]').forEach((el) => el.remove());
+  } catch {}
+
+  try {
     window.zion.commands.registerCommand("bottomPanel.show", () => window.zion.bottomPanel?.show());
     window.zion.commands.registerCommand("bottomPanel.hide", () => window.zion.bottomPanel?.hide());
     window.zion.commands.registerCommand("bottomPanel.toggle", () => window.zion.bottomPanel?.toggle());
@@ -4335,40 +5262,6 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
     window.zion.commands.registerCommand("auxiliaryBar.show", () => window.zion.auxiliaryBar?.show());
     window.zion.commands.registerCommand("auxiliaryBar.hide", () => window.zion.auxiliaryBar?.hide());
     window.zion.commands.registerCommand("auxiliaryBar.toggle", () => window.zion.auxiliaryBar?.toggle());
-  } catch {}
-
-  try {
-    window.zion.auxiliaryBar?.registerView({
-      id: "core.context",
-      pluginId: "core",
-      title: "Context",
-      icon: "🧩",
-      order: 10,
-      component: {
-        render: (container: HTMLElement) => {
-          const wrap = document.createElement("div");
-          wrap.style.padding = "10px";
-          wrap.style.fontSize = "12px";
-          wrap.style.whiteSpace = "pre-wrap";
-          wrap.style.lineHeight = "1.5";
-          wrap.textContent =
-            "Auxiliary Bar 已启用。\n\n" +
-            "可以：\n" +
-            "- 点击顶部右侧按钮打开/关闭\n" +
-            "- 拖拽右侧边栏左侧的细条调整宽度\n" +
-            "- Cmd/Ctrl + K 打开命令台，搜索 auxiliaryBar.toggle\n";
-          container.appendChild(wrap);
-          return {
-            dispose: () => {
-              try {
-                wrap.remove();
-              } catch {}
-            }
-          };
-        }
-      }
-    });
-
   } catch {}
 
   try {
@@ -4597,18 +5490,11 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
           const before = head;
           const total = doc.length;
 
-          const lineDigits = Math.max(String(doc.lines).length, String(ln).length);
-          const colDigits = Math.max(String(Math.max(1, line.to - line.from + 1)).length, String(col).length);
-          const totalDigits = Math.max(String(total).length, String(before).length);
-
-          const lnStr = String(ln).padStart(lineDigits, " ");
-          const colStr = String(col).padStart(colDigits, " ");
-          const beforeStr = String(before).padStart(totalDigits, " ");
-          const totalStr = String(total).padStart(totalDigits, " ");
-
-          mLnCol.textContent = `Ln ${lnStr}, Col ${colStr}`;
-          mBefore.textContent = `Before ${beforeStr}`;
-          mTotal.textContent = `Total ${totalStr}`;
+          const locale = String((window as any).zion?.i18n?.getLocale?.() || (window as any).zion?.state?.get?.("ui.locale") || "");
+          const isEn = locale.startsWith("en");
+          mLnCol.textContent = isEn ? `Ln ${ln}, Col ${col}` : `行 ${ln}, 列 ${col}`;
+          mBefore.textContent = isEn ? `Before ${before}` : `之前 ${before}`;
+          mTotal.textContent = isEn ? `Total ${total}` : `总计 ${total}`;
         } catch {}
       };
 
@@ -4617,6 +5503,7 @@ Try: Press Cmd/Ctrl + Shift + D to insert timestamp (from sample extension).
       (window as any).zion.events.on("editor.change", updateMetrics);
       (window as any).zion.events.on("panel/focusChanged", updateMetrics);
       (window as any).zion.events.on("panel/tabActivated", updateMetrics);
+      (window as any).zion.events.on("i18n/changed", updateMetrics);
     }
   } catch (e) {
     console.error("Init bottom status bar metrics error:", e);

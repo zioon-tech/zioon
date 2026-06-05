@@ -1,4 +1,5 @@
 import { matchSorter, rankings } from "match-sorter";
+import { BUILT_IN_THEME_OPTIONS } from "../../theme/themes";
 
 type CommandMeta = {
   id: string;
@@ -43,32 +44,7 @@ type PaletteItem =
       contentSnippet?: string;
     };
 
-const THEME_OPTIONS = [
-  {
-    id: "system",
-    title: "System",
-    description: "跟随系统外观自动切换 Light / Dark",
-    keywords: ["theme", "appearance", "system", "auto", "跟随系统"]
-  },
-  {
-    id: "dark",
-    title: "Dark",
-    description: "Zion Next 默认深色主题",
-    keywords: ["theme", "appearance", "dark", "默认深色"]
-  },
-  {
-    id: "light",
-    title: "Light",
-    description: "Zion Next 默认浅色主题",
-    keywords: ["theme", "appearance", "light", "浅色"]
-  },
-  {
-    id: "visual-studio-dark",
-    title: "深色 (Visual Studio)",
-    description: "参考 VS Code Visual Studio Dark 的深色主题",
-    keywords: ["theme", "appearance", "dark", "visual studio", "vscode", "vs dark"]
-  }
-] as const;
+const THEME_OPTIONS = BUILT_IN_THEME_OPTIONS;
 
 const LANGUAGE_OPTIONS = [
   {
@@ -101,6 +77,9 @@ const BUILTIN_COMMAND_META: Record<string, Partial<CommandMeta>> = {
   "models.selectNextModel": { title: "模型：选择下一个模型", description: "切换到下一个可用模型", category: "模型", pluginId: "dev.langchain-chat" },
   "models.selectPrevModel": { title: "模型：选择上一个模型", description: "切换到上一个可用模型", category: "模型", pluginId: "dev.langchain-chat" },
 
+  "comments.openPanel": { title: "评论：打开面板", titleKey: "dev.comments.cmd.openPanel", description: "打开右侧评论面板", descriptionKey: "dev.comments.cmd.openPanel.description", category: "评论", categoryKey: "dev.comments.title", pluginId: "dev.comments", searchText: ["comment", "comments", "评论", "批注"] },
+  "comments.createFromSelection": { title: "评论：为选区创建评论", titleKey: "dev.comments.cmd.createFromSelection", description: "基于当前编辑器选区创建一个评论线程", descriptionKey: "dev.comments.cmd.createFromSelection.description", category: "评论", categoryKey: "dev.comments.title", pluginId: "dev.comments", searchText: ["comment", "selection", "评论", "批注", "选区"] },
+
   "compression.strategy.progressive": { title: "压缩：使用渐进策略", description: "使用 Progressive 策略压缩当前对话", category: "压缩", pluginId: "dev.context-compression" },
   "compression.preview": { title: "压缩：打开预览", description: "打开上下文压缩预览面板", category: "压缩", pluginId: "dev.context-compression" },
   "compression.preview.compute": { title: "压缩：计算预览", description: "计算当前对话的上下文压缩预览", category: "压缩", pluginId: "dev.context-compression" },
@@ -115,6 +94,8 @@ const BUILTIN_COMMAND_META: Record<string, Partial<CommandMeta>> = {
   "dev.editor.toggleIncludeThinkingHistory": { title: "编辑器：切换包含思考历史", description: "切换是否在上下文中包含 thinking 历史", category: "编辑器", pluginId: "dev.editor-config" },
   "dev.editor.cycleToolCallsReasoningContentMode": { title: "编辑器：切换工具推理内容模式", description: "循环切换工具调用 reasoning_content 显示模式", category: "编辑器", pluginId: "dev.editor-config" },
   "dev.editor.toggleMinimap": { title: "编辑器：切换缩略图", description: "显示或隐藏编辑器 minimap", category: "编辑器", pluginId: "dev.editor-config" },
+  "zion.toggleWysiwygKeepActiveLineRendered": { title: "编辑器：切换聚焦行保持渲染", description: "切换光标所在 Markdown 行是否继续保持渲染形态", category: "编辑器", pluginId: "core", searchText: ["wysiwyg", "markdown", "rendered", "focused line", "聚焦行", "渲染"] },
+  "zion.toggleVimMode": { title: "编辑器：切换 Vim 模式", description: "为会话编辑器开启或关闭 Vim 键位模式", category: "编辑器", pluginId: "core", searchText: ["vim", "vi", "modal editing", "键位", "模式编辑"] },
 
   "dev.gutter-actions.batchAccept": { title: "行号操作：批量接受", description: "批量接受当前可处理的变更", category: "编辑器", pluginId: "dev.gutter-actions" },
   "dev.gutter-actions.batchRevert": { title: "行号操作：批量回退", description: "批量回退当前可处理的变更", category: "编辑器", pluginId: "dev.gutter-actions" },
@@ -160,13 +141,19 @@ const HIDDEN_RUNTIME_COMMANDS = [
   "dev.editor.setIncludeToolHistory",
   "dev.editor.setIncludeThinkingHistory",
   "dev.editor.setToolCallsReasoningContentMode",
+  "zion.setWysiwygKeepActiveLineRendered",
+  "zion.setVimMode",
   "roles.setRole",
   "zion.sessions.getDocAsync",
   "terminal.createSession",
   "terminal.closeSession",
   "terminal.setActiveSession",
   "terminal.setSessionCwd",
-  "terminal.reactivateSession"
+  "terminal.reactivateSession",
+  "tools.files.addFolder",
+  "tools.files.openSource",
+  "comments.revealThread",
+  "commandPalette.openFilesPicker"
 ];
 
 function isHiddenRuntimeCommand(id: string): boolean {
@@ -203,6 +190,13 @@ function splitIdentifier(value: string): string {
     .replace(/[._:/-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function basenameFromPath(path: string): string {
+  const value = safeText(path).replace(/[\\/]+$/, "");
+  if (!value) return "";
+  if (value === "/" || /^[A-Za-z]:$/.test(value)) return value;
+  return value.split(/[\\/]+/).filter(Boolean).pop() || value;
 }
 
 function tVariants(key: string | undefined, fallback = ""): string[] {
@@ -773,6 +767,17 @@ export function initCommandPalette() {
       category: "Zion",
       pluginId: "core"
     });
+    base.set("tools.files.open", {
+      id: "tools.files.open",
+      title: "文件：打开...",
+      titleKey: "dev.tools.cmd.openFilesPicker",
+      description: "选择本地文件夹或打开某个终端会话的当前目录",
+      descriptionKey: "dev.tools.cmd.openFilesPicker.description",
+      category: "文件",
+      categoryKey: "dev.tools.files.title",
+      pluginId: "dev.tools",
+      searchText: ["Files: Open", "Files: Open Folder", "Open Folder", "Terminal Session", "选择文件夹", "打开文件夹", "终端目录"]
+    });
     base.set("bottomPanel.toggle", {
       id: "bottomPanel.toggle",
       title: "底部面板：打开/关闭",
@@ -1031,7 +1036,62 @@ export function initCommandPalette() {
     });
   };
 
+  const buildFilesOpenActionItems = (): PaletteItem[] => {
+    const terminalSessions = ((window as any).zion?.state?.get?.("terminal.sessions") || []) as any[];
+    const activeTerminalId = safeText((window as any).zion?.state?.get?.("terminal.activeSessionId")).trim();
+    const items: PaletteItem[] = [{
+      kind: "action",
+      id: "files.open.localFolder",
+      title: "打开本地文件夹",
+      description: "选择一个本地文件夹并加入 Files Explorer",
+      badge: "Local",
+      keywords: ["Files", "Open Folder", "Local Folder", "Add Folder", "本地文件夹", "打开文件夹"],
+      run: async () => {
+        await Promise.resolve(window.zion?.commands?.executeCommand?.("tools.files.addFolder"));
+      }
+    }];
+
+    for (const session of Array.isArray(terminalSessions) ? terminalSessions : []) {
+      const id = safeText(session?.id).trim();
+      if (!id) continue;
+      const type = safeText(session?.type || "local").trim() || "local";
+      const host = safeText(session?.ssh_host || session?.host).trim();
+      const cwd = safeText(session?.cwd || session?.initial_cwd).trim();
+      const project = basenameFromPath(cwd) || id;
+      const isActive = id === activeTerminalId;
+      const scope = type === "ssh" ? (host ? `SSH ${host}` : "SSH") : "Local";
+      items.push({
+        kind: "action",
+        id: `files.open.terminal:${id}`,
+        title: `${isActive ? "✓ " : ""}${scope} · ${project}`,
+        description: cwd || id,
+        badge: isActive ? "Active Terminal" : "Terminal",
+        keywords: [id, type, host, cwd, project, "terminal", "session", "Files", "终端", "目录"],
+        run: async () => {
+          await Promise.resolve(window.zion?.commands?.executeCommand?.("tools.files.openSource", `terminal:${id}`));
+        }
+      });
+    }
+    return items;
+  };
+
   const openSubmenu = async (commandId: string) => {
+    if (commandId === "tools.files.open") {
+      currentSubmenu = {
+        id: "files-open",
+        title: t("dev.tools.files.openSubmenu", "Open Files"),
+        placeholder: t("dev.tools.files.openSubmenuPlaceholder", "Search local folders or terminal sessions..."),
+        emptyText: t("dev.tools.files.openSubmenuEmpty", "No matching entries"),
+        items: buildFilesOpenActionItems()
+      };
+      input.value = "";
+      render("");
+      try {
+        input.focus();
+        input.setSelectionRange(0, 0);
+      } catch {}
+      return true;
+    }
     if (commandId === "zion.sessions.newInFolder") {
       currentSubmenu = {
         id: "session-folders",
@@ -1519,6 +1579,11 @@ export function initCommandPalette() {
     await openSubmenu("zion.sessions.newInFolder");
   };
 
+  const openFilesPicker = async () => {
+    if (!open) openPalette();
+    await openSubmenu("tools.files.open");
+  };
+
   const isNewSessionFolderShortcut = (ev: KeyboardEvent) => {
     return (ev.metaKey || ev.ctrlKey) && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "t";
   };
@@ -1527,6 +1592,7 @@ export function initCommandPalette() {
     window.zion.commands.registerCommand("commandPalette.toggle", () => togglePalette());
     window.zion.commands.registerCommand("commandPalette.open", () => openPalette());
     window.zion.commands.registerCommand("commandPalette.close", () => closePalette());
+    window.zion.commands.registerCommand("commandPalette.openFilesPicker", () => openFilesPicker());
     window.zion.commands.registerCommand("zion.sessions.newInFolder", () => openNewSessionFolderPicker());
   } catch {}
 

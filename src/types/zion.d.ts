@@ -174,12 +174,12 @@ declare global {
       };
       theme?: {
         getPreference(): "system" | "light" | "dark";
-        getSelection(): "system" | "light" | "dark" | "visual-studio-dark";
+        getSelection(): "system" | "light" | "dark" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus";
         getResolvedTheme(): "light" | "dark";
-        getVariant(): "default" | "visual-studio-dark";
+        getVariant(): "default" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus";
         setPreference(preference: "system" | "light" | "dark"): void;
-        setSelection(selection: "system" | "light" | "dark" | "visual-studio-dark"): void;
-        setVariant(variant: "default" | "visual-studio-dark"): void;
+        setSelection(selection: "system" | "light" | "dark" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus"): void;
+        setVariant(variant: "default" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus"): void;
         toggle(): void;
         refresh(): void;
         getToken(name: string): string;
@@ -326,6 +326,10 @@ declare global {
       editor: {
         registerPasteHandler(handler: PasteHandler): Disposable;
         registerDecorator(dec: { id: string; apply: (editor: EditorProxy) => Disposable }): Disposable;
+        attachEditor?(core: any, panelId?: string): EditorProxy | null;
+        detachEditor?(panelId: string): EditorProxy | null;
+        listAttachedEditorCores?(): any[];
+        getEditorForView?(view: any): EditorProxy | null;
         selectionToolbar?: {
           registerItem(item: SelectionToolbarItem): Disposable;
           list(): SelectionToolbarItem[];
@@ -344,6 +348,8 @@ declare global {
         findAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         ensureAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         openSession(panelId: string, sessionId: string, opts?: { focus?: boolean; forceReload?: boolean }): boolean | Promise<boolean>;
+        openTab?(panelId: string, tabId: string, opts?: { focus?: boolean }): boolean | Promise<boolean>;
+        openFileTab?(args: { panelId?: string; id?: string; title?: string; name?: string; path?: string; displayPath?: string; language?: string; meta?: any; file?: any; focus?: boolean }): boolean | Promise<boolean>;
         split(direction: "horizontal" | "vertical", panelId?: string): string | null;
         splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         focus(panelId: string): void;

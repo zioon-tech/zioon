@@ -67,8 +67,8 @@ export async function activate(ctx) {
 .zion-toc-sidepanel, .zion-toc-list, #zion-toc-panel { -ms-overflow-style: none; scrollbar-width: none; }
 .zion-toc-sidepanel::-webkit-scrollbar, .zion-toc-list::-webkit-scrollbar, #zion-toc-panel::-webkit-scrollbar { display: none; width: 0; height: 0; }
 @keyframes toc-pulse {
-  0%, 100% { transform: scale(1); opacity: 0.6; box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4); }
-  50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px rgba(33, 150, 243, 0); }
+  0%, 100% { transform: scale(1); opacity: 0.6; box-shadow: 0 0 0 0 color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 36%, transparent); }
+  50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 0%, transparent); }
 }
       `;
       document.head.appendChild(style);
@@ -862,6 +862,9 @@ export async function activate(ctx) {
         list.className = 'zion-toc-list';
         // Prevent horizontal scrolling and ensure it fits the panel
         list.style.flex = '1';
+        list.style.fontFamily = 'var(--font-sans)';
+        list.style.fontSize = '13px';
+        list.style.lineHeight = '1.5';
         list.style.overflowY = 'auto';
         list.style.overflowX = 'hidden';
         list.style.minHeight = '0';
@@ -917,19 +920,19 @@ export async function activate(ctx) {
           } catch {}
           row.style.display = "flex";
           row.style.alignItems = "center";
-          row.style.padding = "4px 8px";
-          row.style.gap = "6px";
+          row.style.padding = "5px 4px";
+          row.style.gap = "4px";
           row.style.cursor = "pointer";
           // indentation by semantic level (offset inside role block when grouped)
-          row.style.paddingLeft = `${(item.level - 1 + baseLevelOffset) * 12}px`;
+          row.style.paddingLeft = `${(item.level - 1 + baseLevelOffset) * 10}px`;
 
           // Always create left column for consistent spacing
           const leftCol = document.createElement("div");
           leftCol.style.display = "flex";
           leftCol.style.alignItems = "center";
           leftCol.style.justifyContent = "center";
-          leftCol.style.flex = "0 0 24px";
-          leftCol.style.width = "24px";
+          leftCol.style.flex = "0 0 12px";
+          leftCol.style.width = "12px";
           
           if (item.children && item.children.length > 0) {
             const isCollapsed = tocState.collapsed.has(item.id);
@@ -942,8 +945,8 @@ export async function activate(ctx) {
             chevronBtn.title = isCollapsed ? '展开' : '收起';
             chevronBtn.style.background = 'transparent';
             chevronBtn.style.border = 'none';
-            chevronBtn.style.width = '24px';
-            chevronBtn.style.height = '24px';
+            chevronBtn.style.width = '16px';
+            chevronBtn.style.height = '18px';
             chevronBtn.style.padding = '0';
             chevronBtn.style.cursor = 'pointer';
             chevronBtn.style.display = 'inline-flex';
@@ -973,7 +976,9 @@ export async function activate(ctx) {
           const label = document.createElement("span");
           label.className = "toc-label";
           label.textContent = item.title;
-          label.style.fontSize = "12px";
+          label.style.fontSize = "13px";
+          label.style.lineHeight = "1.5";
+          label.style.letterSpacing = "0";
           label.style.whiteSpace = "nowrap";
           label.style.textOverflow = "ellipsis";
           label.style.overflow = "hidden";
@@ -1015,8 +1020,8 @@ export async function activate(ctx) {
           const empty = document.createElement("div");
           empty.textContent = t("ui.empty", "No headings found (use #, ##, ### ...)");
           empty.style.opacity = "0.8";
-          empty.style.fontSize = "12px";
-          empty.style.padding = "8px";
+          empty.style.fontSize = "13px";
+          empty.style.padding = "8px 10px";
           list.appendChild(empty);
         } else {
           const roots = buildTree(headings);
@@ -1064,8 +1069,8 @@ export async function activate(ctx) {
             } catch {}
             row.style.display = "flex";
             row.style.alignItems = "center";
-            row.style.padding = "4px 8px";
-            row.style.gap = "6px";
+            row.style.padding = "6px 4px";
+            row.style.gap = "4px";
             row.style.cursor = "pointer";
 
             // chevron or spacer
@@ -1074,8 +1079,8 @@ export async function activate(ctx) {
             leftCol.style.display = "flex";
             leftCol.style.alignItems = "center";
             leftCol.style.justifyContent = "center";
-            leftCol.style.flex = "0 0 24px";
-            leftCol.style.width = "24px";
+            leftCol.style.flex = "0 0 12px";
+            leftCol.style.width = "12px";
             
             if (roots.length > 0) {
               const isCollapsed = tocState.collapsed.has(blockId);
@@ -1088,8 +1093,8 @@ export async function activate(ctx) {
               chevronBtn.title = isCollapsed ? '展开' : '收起';
               chevronBtn.style.background = 'transparent';
               chevronBtn.style.border = 'none';
-              chevronBtn.style.width = '24px';
-              chevronBtn.style.height = '24px';
+              chevronBtn.style.width = '16px';
+              chevronBtn.style.height = '18px';
               chevronBtn.style.padding = '0';
               chevronBtn.style.cursor = 'pointer';
               chevronBtn.style.display = 'inline-flex';
@@ -1119,7 +1124,11 @@ export async function activate(ctx) {
             const label = document.createElement("span");
             label.className = "toc-label";
             // Use color dot to mark role (方案4) - more subtle
-            const roleColors = { user: '#4caf50', assistant: '#2196f3', system: '#9e9e9e' };
+            const roleColors = {
+              user: 'var(--ext-toc-role-user, var(--role-user-fg, #4caf50))',
+              assistant: 'var(--ext-toc-role-assistant, var(--role-assistant-fg, #2196f3))',
+              system: 'var(--ext-toc-role-system, var(--role-system-fg, #9e9e9e))'
+            };
             const dotColor = roleColors[b.role?.toLowerCase()] || roleColors.user;
             // 判断是否是正在生成的块
             const isGenerating = generatingBlockId === blockId;
@@ -1130,10 +1139,10 @@ export async function activate(ctx) {
             dotContainer.style.display = "inline-flex";
             dotContainer.style.alignItems = "center";
             dotContainer.style.justifyContent = "center";
-            dotContainer.style.width = "16px"; // 增加宽度以容纳放大效果
+            dotContainer.style.width = "12px";
             dotContainer.style.height = "16px";
             dotContainer.style.flexShrink = "0";
-            dotContainer.style.marginRight = "4px";
+            dotContainer.style.marginRight = "5px";
 
             if (isLastGenerated) {
               // 持久化指示器 - 使用 SVG 图标代替字符
@@ -1168,7 +1177,9 @@ export async function activate(ctx) {
 
             const textSpan = document.createElement("span");
             textSpan.textContent = (b.preview || '').trim() || '(empty)';
-            textSpan.style.fontSize = "12px";
+            textSpan.style.fontSize = "13px";
+            textSpan.style.lineHeight = "1.5";
+            textSpan.style.letterSpacing = "0";
             textSpan.style.whiteSpace = "nowrap";
             textSpan.style.textOverflow = "ellipsis";
             textSpan.style.overflow = "hidden";
@@ -1395,6 +1406,9 @@ export async function activate(ctx) {
     panel.style.borderRadius = "6px";
     panel.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)";
     panel.style.padding = "10px";
+    panel.style.fontFamily = "var(--font-sans)";
+    panel.style.fontSize = "13px";
+    panel.style.lineHeight = "1.5";
     panel.style.zIndex = "99999";
     panel.onclick = (e) => e.stopPropagation();
 
@@ -1406,6 +1420,9 @@ export async function activate(ctx) {
 
     const list = document.createElement("div");
     // Constrain list to avoid horizontal scrolling
+    list.style.fontFamily = "var(--font-sans)";
+    list.style.fontSize = "13px";
+    list.style.lineHeight = "1.5";
     list.style.overflowY = "auto";
     list.style.overflowX = "hidden";
     list.style.maxWidth = "100%";
@@ -1413,7 +1430,7 @@ export async function activate(ctx) {
       const empty = document.createElement("div");
       empty.textContent = t("ui.empty", "No headings found (use #, ##, ### ...)");
       empty.style.opacity = "0.8";
-      empty.style.fontSize = "12px";
+      empty.style.fontSize = "13px";
       list.appendChild(empty);
     } else {
       headings.forEach(h => {
@@ -1421,10 +1438,11 @@ export async function activate(ctx) {
         row.className = "toc-row";
         row.style.display = "flex";
         row.style.alignItems = "center";
-        row.style.padding = "4px 2px";
+        row.style.padding = "5px 4px";
+        row.style.gap = "4px";
         row.style.cursor = "pointer";
         // indent by level (still set inline for per-item indentation)
-        row.style.paddingLeft = `${(h.level - 1) * 12}px`;
+        row.style.paddingLeft = `${(h.level - 1) * 10}px`;
 
         const bullet = document.createElement("span");
         bullet.className = "toc-bullet";
@@ -1433,7 +1451,9 @@ export async function activate(ctx) {
         const label = document.createElement("span");
         label.className = "toc-label";
         label.textContent = h.title;
-        label.style.fontSize = "12px";
+        label.style.fontSize = "13px";
+        label.style.lineHeight = "1.5";
+        label.style.letterSpacing = "0";
         label.style.whiteSpace = "nowrap";
         label.style.textOverflow = "ellipsis";
         label.style.overflow = "hidden";
@@ -1714,15 +1734,15 @@ export async function activate(ctx) {
           const panel = document.createElement("div");
           panel.className = "zion-toc-sidepanel";
           panel.style.display = "none";
-          panel.style.flex = "0 0 240px";
-          panel.style.width = "240px";
-          panel.style.minWidth = "220px";
+          panel.style.flex = "0 0 268px";
+          panel.style.width = "268px";
+          panel.style.minWidth = "240px";
           panel.style.maxWidth = "480px";
           panel.style.height = "100%";
           // Prevent horizontal scrolling in the TOC side panel; allow only vertical scrolling
           panel.style.display = "none";
           panel.style.flexDirection = "column";
-          panel.style.background = "var(--ext-toc-bg, var(--bg))";
+          panel.style.background = "var(--ext-toc-bg, var(--editor-bg, var(--bg)))";
           // remove right border to avoid visual divider
           panel.style.borderRight = "none";
           // panel.style.boxShadow = "2px 0 8px rgba(0,0,0,0.15)";
@@ -1744,7 +1764,7 @@ export async function activate(ctx) {
           let isResizing = false;
           let startX = 0;
           let startWidth = 0;
-          const minWidth = 220;
+          const minWidth = 240;
           const maxWidth = 480;
 
           resizer.addEventListener("mousedown", (e) => {
@@ -1781,8 +1801,9 @@ export async function activate(ctx) {
           const toolbar = document.createElement("div");
           toolbar.style.display = "flex";
           toolbar.style.alignItems = "center";
-          toolbar.style.gap = "6px";
-          toolbar.style.padding = "8px 0px 8px 35px";
+          toolbar.style.gap = "8px";
+          toolbar.style.padding = "10px 8px 8px";
+          toolbar.style.justifyContent = "flex-start";
           toolbar.style.flexShrink = "0";
           toolbar.style.flexGrow = "0";
           // ensure toolbar spans full width and align buttons to the right

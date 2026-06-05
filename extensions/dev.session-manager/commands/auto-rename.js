@@ -3,14 +3,46 @@ export function registerSessionAutoRenameCommand(opts) {
   const loadDoc = opts?.loadDoc;
 
   const autoRenameInflight = new Set();
+  const TITLE_MAX_LENGTH = 36;
+  const parseTitlePayload = (raw) => {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    const withoutFence = text
+      .replace(/^\s*```(?:json)?\s*/i, "")
+      .replace(/\s*```\s*$/i, "")
+      .trim();
+    const tryParse = (candidate) => {
+      try {
+        const parsed = JSON.parse(candidate);
+        const title = parsed && typeof parsed === "object" ? (parsed.title ?? parsed.name) : "";
+        return typeof title === "string" ? title : "";
+      } catch {
+        return "";
+      }
+    };
+    const direct = tryParse(withoutFence);
+    if (direct) return direct;
+    const match = withoutFence.match(/\{[\s\S]*?\}/);
+    return match ? tryParse(match[0]) : "";
+  };
+  const looksLikeAnswer = (title) => {
+    const t = String(title || "").trim();
+    if (!t) return true;
+    if (Array.from(t).length > TITLE_MAX_LENGTH) return true;
+    if (/[。！？!?]\s*.+/.test(t)) return true;
+    return /^(当然|可以|好的|首先|其次|以下|这里|这是|这个问题|答案|建议|Sure|Certainly|Here|You can|To )/i.test(t);
+  };
   const cleanAutoTitle = (raw) => {
-    let t = String(raw || "");
-    t = t.split("\n").find(x => String(x || "").trim().length > 0) || "";
+    let t = parseTitlePayload(raw);
+    if (!t) t = String(raw || "").split("\n").find(x => String(x || "").trim().length > 0) || "";
     t = t.replace(/^\s*(title|session title)\s*[:：]\s*/i, "");
+    t = t.replace(/^\s*(name|session name)\s*[:：]\s*/i, "");
     t = t.replace(/^\s*标题\s*[:：]\s*/i, "");
+    t = t.replace(/^\s*会话名\s*[:：]\s*/i, "");
     t = t.replace(/^["'“”‘’]+/, "").replace(/["'“”‘’]+$/, "");
     t = t.replace(/\s+/g, " ").trim();
     t = t.replace(/^[\-–—:：#*]+/, "").replace(/[\-–—:：#*]+$/, "").trim();
+    if (looksLikeAnswer(t)) return "";
     return t.trim();
   };
 
@@ -49,11 +81,26 @@ export function registerSessionAutoRenameCommand(opts) {
         {
           role: "system",
           content:
-            "你是一个为笔记/会话自动生成标题的助手。输出一个简短自然的标题，避免引号与换行，不要输出任何解释。标题要尽量短，通常控制在一小段短语内。"
+            [
+              "你是会话标题生成器，不是聊天助手。",
+              "任务：只根据用户提供的会话内容生成一个会话名。",
+              "禁止：不要回答会话里的问题，不要给建议，不要解释，不要复述内容，不要输出 Markdown。",
+              "标题要求：2-18 个中文字符或 2-8 个英文单词；短、具体、像文件/会话标题；不要引号；不要句号。",
+              "如果内容是在提问，也要概括主题，而不是回答问题。",
+              "必须只输出一行严格 JSON，格式为：{\"title\":\"会话名\"}"
+            ].join("\n")
         },
         {
           role: "user",
-          content: `请根据以下内容生成标题：\n\n${excerpt}`
+          content:
+            [
+              "为下面的会话生成会话名。",
+              "再次强调：不要回答会话内容，只返回 JSON。",
+              "",
+              "<conversation>",
+              excerpt,
+              "</conversation>"
+            ].join("\n")
         }
       ];
 

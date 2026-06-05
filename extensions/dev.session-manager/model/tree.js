@@ -3,12 +3,7 @@ export function createSessionTreeModel(opts) {
   const idbSetKV = opts?.idbSetKV;
   const warnStorageIssue = opts?.warnStorageIssue;
   const loadMeta = opts?.loadMeta;
-  const saveDoc = opts?.saveDoc;
-  const saveMeta = opts?.saveMeta;
-  const deriveTitleFromText = opts?.deriveTitleFromText;
   const genId = opts?.genId;
-  const hashString = opts?.hashString;
-  const now = opts?.now;
   const getLastActiveId = opts?.getLastActiveId;
   const setLastActiveId = opts?.setLastActiveId;
   const docKey = opts?.docKey;
@@ -20,25 +15,41 @@ export function createSessionTreeModel(opts) {
     } catch {}
     return window.zion;
   };
-  const lsAutoKey = opts?.lsAutoKey;
   const lsFolderOpenKey = opts?.lsFolderOpenKey;
+  const cloneValue = (value) => {
+    try {
+      if (typeof structuredClone === "function") return structuredClone(value);
+    } catch {}
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return value;
+    }
+  };
 
   function loadTree() {
     try {
       const mem = getZion()?.state?.get("sessions.treeMem");
-      if (mem && mem.type === "folder" && Array.isArray(mem.children)) return mem;
+      if (mem && mem.type === "folder" && Array.isArray(mem.children)) return cloneValue(mem);
     } catch {}
     return null;
   }
 
   function saveTree(tree) {
+    const optimistic = cloneValue(tree);
+    let previous;
+    try { previous = getZion()?.state?.get("sessions.treeMem"); } catch {}
+    try { getZion()?.state?.set("sessions.treeMem", optimistic); } catch {}
     (async () => {
       try {
-        await idbSetKV(dbName, "tree", tree);
+        await idbSetKV(dbName, "tree", optimistic);
       } catch (e) {
+        try {
+          if (getZion()?.state?.get("sessions.treeMem") === optimistic) {
+            getZion()?.state?.set("sessions.treeMem", previous);
+          }
+        } catch {}
         try { warnStorageIssue?.("saveTree", e); } catch {}
-      } finally {
-        try { getZion()?.state?.set("sessions.treeMem", tree); } catch {}
       }
     })();
   }
@@ -46,7 +57,7 @@ export function createSessionTreeModel(opts) {
   function getIndexLegacy() {
     try {
       const mem = getZion()?.state?.get("sessions.indexMem");
-      if (Array.isArray(mem)) return mem;
+      if (Array.isArray(mem)) return cloneValue(mem);
     } catch {}
     return [];
   }
@@ -76,7 +87,7 @@ export function createSessionTreeModel(opts) {
   function getIndex() {
     try {
       const mem = getZion()?.state?.get("sessions.indexMem");
-      if (Array.isArray(mem)) return mem;
+      if (Array.isArray(mem)) return cloneValue(mem);
     } catch {}
     const tree = loadTree();
     if (tree) return flattenTree(tree);
@@ -84,13 +95,20 @@ export function createSessionTreeModel(opts) {
   }
 
   function setIndex(list) {
+    const optimistic = cloneValue(list);
+    let previous;
+    try { previous = getZion()?.state?.get("sessions.indexMem"); } catch {}
+    try { getZion()?.state?.set("sessions.indexMem", optimistic); } catch {}
     (async () => {
       try {
-        await idbSetKV(dbName, "index", list);
+        await idbSetKV(dbName, "index", optimistic);
       } catch (e) {
+        try {
+          if (getZion()?.state?.get("sessions.indexMem") === optimistic) {
+            getZion()?.state?.set("sessions.indexMem", previous);
+          }
+        } catch {}
         try { warnStorageIssue?.("setIndex", e); } catch {}
-      } finally {
-        try { getZion()?.state?.set("sessions.indexMem", list); } catch {}
       }
     })();
   }
@@ -108,25 +126,7 @@ export function createSessionTreeModel(opts) {
 
     let legacy = getIndexLegacy();
     if (legacy.length === 0) {
-      const cached = lsAutoKey ? (localStorage.getItem(lsAutoKey) || "") : "";
-      const id = genId();
-      const doc = cached || "";
-      const derived = deriveTitleFromText(doc);
-      const title = derived || "Session 1";
-      const meta = {
-        id,
-        title,
-        createdAt: now(),
-        updatedAt: now(),
-        size: doc.length,
-        hash: hashString(doc),
-        titleAuto: true
-      };
-      saveDoc(id, doc);
-      saveMeta(id, meta);
-      legacy = [{ id, title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt }];
-      setIndex(legacy);
-      setLastActiveId(id);
+      setIndex([]);
     }
 
     tree = {

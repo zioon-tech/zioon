@@ -1,14 +1,39 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  THINKING_MODE_FIELDS,
+  getThinkingEffortOptions,
+  getThinkingModeLabel,
+  getThinkingModeOptions,
+  inferThinkingCapability,
+  inferThinkingEffortCapability,
+  normalizeThinkingEffort,
+  normalizeThinkingMode
+} from "./model-config-fields.js";
 
 const DYN_KEY = "zion.models.dynamic";
 const PROVIDER_ORDER = ["deepseek", "anthropic", "google"];
+const isEn = () => String(window.zion?.i18n?.getLocale?.() || window.zion?.state?.get?.("ui.locale") || "").startsWith("en");
+const tt = (zh, en) => (isEn() ? en : zh);
 
 const BUILTIN_PROVIDER_META = {
   deepseek: {
     title: "DeepSeek",
     apiKeyKey: "zion.deepseek.apiKey",
     configKey: "zion.deepseek.config",
-    fields: ["label", "modelName", "temperature", "max_tokens", "stream", "supportsImage", "preservedThinking", "interleavedThinking"]
+    fields: [
+      "label",
+      "modelName",
+      "temperature",
+      "max_tokens",
+      "stream",
+      "supportsImage",
+      "supportsThinking",
+      "supportsThinkingEffort",
+      "thinkingMode",
+      "thinkingEffort",
+      "preservedThinking",
+      "interleavedThinking"
+    ]
   },
   anthropic: {
     title: "Claude",
@@ -63,6 +88,10 @@ function loadProviderDraft(providerId) {
     max_tokens: cfg.max_tokens ?? "",
     stream: cfg.stream !== false,
     supportsImage: !!cfg.supportsImage,
+    supportsThinking: cfg.supportsThinking,
+    supportsThinkingEffort: cfg.supportsThinkingEffort,
+    thinkingMode: normalizeThinkingMode(cfg.thinkingMode),
+    thinkingEffort: normalizeThinkingEffort(cfg.thinkingEffort),
     preservedThinking: !!cfg.preservedThinking,
     interleavedThinking: !!cfg.interleavedThinking
   };
@@ -75,6 +104,13 @@ function saveProviderDraft(providerId, draft) {
   for (const field of meta.fields) {
     if (field === "stream") next.stream = !!draft.stream;
     if (field === "supportsImage") next.supportsImage = !!draft.supportsImage;
+    if (field === "supportsThinking") next.supportsThinking = draft.supportsThinking == null || draft.supportsThinking === "" ? undefined : !!draft.supportsThinking;
+    if (field === "supportsThinkingEffort") {
+      next.supportsThinkingEffort =
+        draft.supportsThinkingEffort == null || draft.supportsThinkingEffort === "" ? undefined : !!draft.supportsThinkingEffort;
+    }
+    if (field === "thinkingMode") next.thinkingMode = normalizeThinkingMode(draft.thinkingMode);
+    if (field === "thinkingEffort") next.thinkingEffort = normalizeThinkingEffort(draft.thinkingEffort);
     if (field === "preservedThinking") next.preservedThinking = !!draft.preservedThinking;
     if (field === "interleavedThinking") next.interleavedThinking = !!draft.interleavedThinking;
     if (field === "temperature" && draft.temperature !== "") next.temperature = Number(draft.temperature);
@@ -98,6 +134,10 @@ function emptyCustomDraft() {
     max_tokens: "",
     stream: true,
     supportsImage: false,
+    supportsThinking: "",
+    supportsThinkingEffort: "",
+    thinkingMode: "auto",
+    thinkingEffort: "auto",
     preservedThinking: false,
     interleavedThinking: false
   };
@@ -116,6 +156,10 @@ function draftFromCustomRow(row) {
     max_tokens: row.max_tokens ?? "",
     stream: row.stream !== false,
     supportsImage: !!row.supportsImage,
+    supportsThinking: row.supportsThinking ?? "",
+    supportsThinkingEffort: row.supportsThinkingEffort ?? "",
+    thinkingMode: normalizeThinkingMode(row.thinkingMode),
+    thinkingEffort: normalizeThinkingEffort(row.thinkingEffort),
     preservedThinking: !!row.preservedThinking,
     interleavedThinking: !!row.interleavedThinking
   };
@@ -138,7 +182,7 @@ async function rebuildCatalog() {
         const cfg = await prov.resolve?.(m.id);
         if (cfg?._requiresConfig && (!cfg.key || !String(cfg.key).trim())) {
           requiresConfig = true;
-          configHint = cfg._configHint || "需要配置 API key";
+          configHint = cfg._configHint || tt("需要配置 API key", "API key required");
         }
       } catch {}
       models.push({
@@ -174,31 +218,31 @@ function getProviderTitle(providerId) {
 }
 
 function getProviderSummary(providerId) {
-  if (providerId === "deepseek") return "适合日常对话与代码任务";
-  if (providerId === "anthropic") return "偏重稳定表达与长文本";
-  if (providerId === "google") return "适合多模态与通用问答";
-  return "模型提供方";
+  if (providerId === "deepseek") return tt("适合日常对话与代码任务", "Good for daily chat and coding tasks");
+  if (providerId === "anthropic") return tt("偏重稳定表达与长文本", "Strong at stable writing and long-form text");
+  if (providerId === "google") return tt("适合多模态与通用问答", "Good for multimodal and general Q&A");
+  return tt("模型提供方", "Model provider");
 }
 
 function describeConfigState(requiresConfig) {
-  return requiresConfig ? "还需要补全密钥后才能稳定使用" : "已具备基本使用条件";
+  return requiresConfig ? tt("还需要补全密钥后才能稳定使用", "Complete the key before stable use") : tt("已具备基本使用条件", "Ready for basic use");
 }
 
 function getBuiltInStatusRows(row, isActive) {
   return [
-    { label: "提供方", value: getProviderTitle(row.providerId) },
-    { label: "模型标识", value: row.id },
-    { label: "当前默认", value: isActive ? "是" : "否" },
-    { label: "连接状态", value: row.requiresConfig ? "待补全" : "已就绪" }
+    { label: tt("提供方", "Provider"), value: getProviderTitle(row.providerId) },
+    { label: tt("模型标识", "Model ID"), value: row.id },
+    { label: tt("当前默认", "Default"), value: isActive ? tt("是", "Yes") : tt("否", "No") },
+    { label: tt("连接状态", "Connection"), value: row.requiresConfig ? tt("待补全", "Incomplete") : tt("已就绪", "Ready") }
   ];
 }
 
 function getCustomStatusRows(editingId, isActive, draft) {
   return [
-    { label: "模型 ID", value: editingId || "新建中" },
-    { label: "接口地址", value: draft.url || "未填写" },
-    { label: "当前默认", value: isActive ? "是" : "否" },
-    { label: "连接状态", value: draft.key ? "已填写密钥" : "待补全" }
+    { label: tt("模型 ID", "Model ID"), value: editingId || tt("新建中", "New") },
+    { label: tt("接口地址", "Base URL"), value: draft.url || tt("未填写", "Empty") },
+    { label: tt("当前默认", "Default"), value: isActive ? tt("是", "Yes") : tt("否", "No") },
+    { label: tt("连接状态", "Connection"), value: draft.key ? tt("已填写密钥", "Key provided") : tt("待补全", "Incomplete") }
   ];
 }
 
@@ -224,6 +268,52 @@ function PreferenceStatusCard({ title, rows }) {
   );
 }
 
+function ThinkingConfigFields({ draft, onChange, modelInfo }) {
+  const capability = inferThinkingCapability({ cfg: draft, ...modelInfo });
+  const supportsEffort = inferThinkingEffortCapability({ cfg: draft, ...modelInfo });
+  const hint =
+    capability === "supported"
+      ? supportsEffort
+        ? tt("当前模型看起来支持思考，也可能支持强度设置。", "This model appears to support thinking and may support effort control.")
+        : tt("当前模型看起来支持思考，但未确认支持强度设置。", "This model appears to support thinking, but effort control is not confirmed.")
+      : capability === "unsupported"
+        ? tt("当前模型标记为不支持思考。", "This model is marked as not supporting thinking.")
+        : tt("是否支持思考取决于服务商和模型。", "Thinking support depends on the provider and model.");
+
+  return (
+    <>
+      <label className="lc-models-field">
+        <span>{tt("思考方式", "Thinking Mode")}</span>
+        <select value={normalizeThinkingMode(draft.thinkingMode)} onChange={(e) => onChange("thinkingMode", e.target.value)}>
+          {getThinkingModeOptions().map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="lc-models-field">
+        <span>{tt("思考强度", "Thinking Effort")}</span>
+        <select
+          value={normalizeThinkingEffort(draft.thinkingEffort)}
+          onChange={(e) => onChange("thinkingEffort", e.target.value)}
+          title={supportsEffort ? tt("当前模型可能支持思考强度。", "This model may support thinking effort.") : tt("未确认当前模型支持强度设置；如服务商兼容，可手动选择。", "Effort support is not confirmed; choose manually if your provider supports it.")}
+        >
+          {getThinkingEffortOptions().map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="lc-models-field wide">
+        <span>{tt("思考能力", "Thinking Capability")}</span>
+        <div className="lc-models-status">{hint}</div>
+      </div>
+    </>
+  );
+}
+
 function ProviderConfigEditor({ providerId, draft, onChange, onSave, saving }) {
   const meta = BUILTIN_PROVIDER_META[providerId];
   if (!meta || !draft) return null;
@@ -232,36 +322,36 @@ function ProviderConfigEditor({ providerId, draft, onChange, onSave, saving }) {
   return (
     <div className="lc-models-detail-stack">
       <section className="lc-models-detail-card">
-        <div className="lc-models-detail-section-title">连接与常用偏好</div>
-        <div className="lc-models-detail-section-desc">先完成最关键的连接项，再按需展开高级设置。</div>
+        <div className="lc-models-detail-section-title">{tt("连接与常用偏好", "Connection & Preferences")}</div>
+        <div className="lc-models-detail-section-desc">{tt("先完成最关键的连接项，再按需展开高级设置。", "Complete the key connection fields first, then expand advanced settings if needed.")}</div>
         <div className="lc-models-form two-cols">
           <label className="lc-models-field wide">
             <span>API Key</span>
             <input
               type="password"
               value={draft.apiKey}
-              placeholder="输入 API Key"
+              placeholder={tt("输入 API Key", "Enter API Key")}
               onChange={(e) => onChange(providerId, "apiKey", e.target.value)}
             />
           </label>
           {providerId === "deepseek" ? (
             <label className="lc-models-field">
-              <span>显示名称</span>
+              <span>{tt("显示名称", "Display Name")}</span>
               <input
                 type="text"
                 value={draft.label}
-                placeholder="例如：DeepSeek Chat"
+                placeholder={tt("例如：DeepSeek Chat", "e.g. DeepSeek Chat")}
                 onChange={(e) => onChange(providerId, "label", e.target.value)}
               />
             </label>
           ) : null}
           {providerId === "deepseek" ? (
             <label className="lc-models-field">
-              <span>默认模型</span>
+              <span>{tt("默认模型", "Default Model")}</span>
               <input
                 type="text"
                 value={draft.modelName}
-                placeholder="例如：deepseek-chat"
+                placeholder={tt("例如：deepseek-chat", "e.g. deepseek-chat")}
                 onChange={(e) => onChange(providerId, "modelName", e.target.value)}
               />
             </label>
@@ -269,13 +359,13 @@ function ProviderConfigEditor({ providerId, draft, onChange, onSave, saving }) {
         </div>
         <div className="lc-models-actions">
           <button type="button" className="primary" onClick={() => void onSave(providerId)} disabled={saving}>
-            {saving ? "保存中..." : "保存更改"}
+            {saving ? tt("保存中...", "Saving...") : tt("保存更改", "Save Changes")}
           </button>
         </div>
       </section>
 
       <details className="lc-models-advanced">
-        <summary className="lc-models-advanced-summary">高级设置</summary>
+        <summary className="lc-models-advanced-summary">{tt("高级设置", "Advanced Settings")}</summary>
         <div className="lc-models-form two-cols">
           <label className="lc-models-field">
             <span>Temperature</span>
@@ -295,6 +385,13 @@ function ProviderConfigEditor({ providerId, draft, onChange, onSave, saving }) {
               onChange={(e) => onChange(providerId, "max_tokens", e.target.value)}
             />
           </label>
+          {showAdvanced ? (
+            <ThinkingConfigFields
+              draft={draft}
+              onChange={(field, value) => onChange(providerId, field, value)}
+              modelInfo={{ providerId, providerType: providerId === "deepseek" ? "openai" : providerId, modelName: draft.modelName }}
+            />
+          ) : null}
         </div>
         <div className="lc-models-checks">
           <label className="lc-models-check">
@@ -303,7 +400,7 @@ function ProviderConfigEditor({ providerId, draft, onChange, onSave, saving }) {
               checked={!!draft.stream}
               onChange={(e) => onChange(providerId, "stream", e.target.checked)}
             />
-            <span>流式返回</span>
+            <span>{tt("流式返回", "Stream")}</span>
           </label>
           {showAdvanced ? (
             <>
@@ -313,24 +410,18 @@ function ProviderConfigEditor({ providerId, draft, onChange, onSave, saving }) {
                   checked={!!draft.supportsImage}
                   onChange={(e) => onChange(providerId, "supportsImage", e.target.checked)}
                 />
-                <span>支持图片</span>
+                <span>{tt("支持图片", "Supports Images")}</span>
               </label>
-              <label className="lc-models-check">
-                <input
-                  type="checkbox"
-                  checked={!!draft.preservedThinking}
-                  onChange={(e) => onChange(providerId, "preservedThinking", e.target.checked)}
-                />
-                <span>保留思维链</span>
-              </label>
-              <label className="lc-models-check">
-                <input
-                  type="checkbox"
-                  checked={!!draft.interleavedThinking}
-                  onChange={(e) => onChange(providerId, "interleavedThinking", e.target.checked)}
-                />
-                <span>交错思维链</span>
-              </label>
+              {THINKING_MODE_FIELDS.map((field) => (
+                <label key={field.key} className="lc-models-check" title={isEn() ? field.descriptionEn || field.description : field.description}>
+                  <input
+                    type="checkbox"
+                    checked={!!draft[field.key]}
+                    onChange={(e) => onChange(providerId, field.key, e.target.checked)}
+                  />
+                  <span>{getThinkingModeLabel(field.key)}</span>
+                </label>
+              ))}
             </>
           ) : null}
         </div>
@@ -354,37 +445,37 @@ function CustomModelDetail({
     <div className="lc-models-detail-stack">
       <section className="lc-models-detail-hero">
         <div>
-          <div className="lc-models-detail-title">{editingId ? draft.label || editingId : "新建自定义模型"}</div>
+          <div className="lc-models-detail-title">{editingId ? draft.label || editingId : tt("新建自定义模型", "New Custom Model")}</div>
           <div className="lc-models-detail-subtitle">
-            {editingId ? "保留最必要的信息，作为你自己的默认模型来源。" : "填写基础连接信息后即可加入模型列表。"}
+            {editingId ? tt("保留最必要的信息，作为你自己的默认模型来源。", "Keep the essential fields for your own default model source.") : tt("填写基础连接信息后即可加入模型列表。", "Fill in the basic connection fields to add it to the model list.")}
           </div>
         </div>
         <div className="lc-models-detail-actions">
           {editingId ? (
             <button type="button" onClick={onActivate} disabled={isActive}>
-              {isActive ? "当前默认" : "设为默认"}
+              {isActive ? tt("当前默认", "Current Default") : tt("设为默认", "Set as Default")}
             </button>
           ) : null}
           <button type="button" className="primary" onClick={() => void onSave()} disabled={saving}>
-            {saving ? "保存中..." : editingId ? "保存更改" : "创建模型"}
+            {saving ? tt("保存中...", "Saving...") : editingId ? tt("保存更改", "Save Changes") : tt("创建模型", "Create Model")}
           </button>
           {editingId ? (
             <button type="button" onClick={onDelete} disabled={saving}>
-              删除
+              {tt("删除", "Delete")}
             </button>
           ) : (
             <button type="button" onClick={onReset} disabled={saving}>
-              清空
+              {tt("清空", "Clear")}
             </button>
           )}
         </div>
       </section>
 
-      <PreferenceStatusCard title="当前状态" rows={getCustomStatusRows(editingId, isActive, draft)} />
+      <PreferenceStatusCard title={tt("当前状态", "Current Status")} rows={getCustomStatusRows(editingId, isActive, draft)} />
 
       <section className="lc-models-detail-card">
-        <div className="lc-models-detail-section-title">基础信息</div>
-        <div className="lc-models-detail-section-desc">先填能决定可不可用的关键信息。</div>
+        <div className="lc-models-detail-section-title">{tt("基础信息", "Basic Info")}</div>
+        <div className="lc-models-detail-section-desc">{tt("先填能决定可不可用的关键信息。", "Fill in the key fields that determine whether the model is usable.")}</div>
         <div className="lc-models-form two-cols">
           <label className="lc-models-field">
             <span>ID</span>
@@ -397,11 +488,11 @@ function CustomModelDetail({
             />
           </label>
           <label className="lc-models-field">
-            <span>显示名称</span>
-            <input type="text" value={draft.label} placeholder="例如：My Model" onChange={(e) => onChange("label", e.target.value)} />
+            <span>{tt("显示名称", "Display Name")}</span>
+            <input type="text" value={draft.label} placeholder={tt("例如：My Model", "e.g. My Model")} onChange={(e) => onChange("label", e.target.value)} />
           </label>
           <label className="lc-models-field wide">
-            <span>接口地址</span>
+            <span>{tt("接口地址", "Base URL")}</span>
             <input
               type="text"
               value={draft.url}
@@ -411,10 +502,10 @@ function CustomModelDetail({
           </label>
           <label className="lc-models-field">
             <span>API Key</span>
-            <input type="password" value={draft.key} placeholder="输入 API Key" onChange={(e) => onChange("key", e.target.value)} />
+            <input type="password" value={draft.key} placeholder={tt("输入 API Key", "Enter API Key")} onChange={(e) => onChange("key", e.target.value)} />
           </label>
           <label className="lc-models-field">
-            <span>接口类型</span>
+            <span>{tt("接口类型", "Provider Type")}</span>
             <select value={draft.providerType} onChange={(e) => onChange("providerType", e.target.value)}>
               <option value="openai">OpenAI</option>
               <option value="claude">Claude</option>
@@ -425,11 +516,11 @@ function CustomModelDetail({
       </section>
 
       <details className="lc-models-advanced">
-        <summary className="lc-models-advanced-summary">高级设置</summary>
+        <summary className="lc-models-advanced-summary">{tt("高级设置", "Advanced Settings")}</summary>
         <div className="lc-models-form two-cols">
           <label className="lc-models-field">
-            <span>模型名覆盖</span>
-            <input type="text" value={draft.modelName} placeholder="可选，例如：gpt-4o-mini" onChange={(e) => onChange("modelName", e.target.value)} />
+            <span>{tt("模型名覆盖", "Model Override")}</span>
+            <input type="text" value={draft.modelName} placeholder={tt("可选，例如：gpt-4o-mini", "Optional, e.g. gpt-4o-mini")} onChange={(e) => onChange("modelName", e.target.value)} />
           </label>
           <label className="lc-models-field">
             <span>Temperature</span>
@@ -439,32 +530,31 @@ function CustomModelDetail({
             <span>Max Tokens</span>
             <input type="number" value={draft.max_tokens} placeholder="4096" onChange={(e) => onChange("max_tokens", e.target.value)} />
           </label>
+          <ThinkingConfigFields
+            draft={draft}
+            onChange={onChange}
+            modelInfo={{ providerId: "user.dynamic", providerType: draft.providerType, modelId: editingId || draft.id, modelName: draft.modelName || draft.id }}
+          />
         </div>
         <div className="lc-models-checks">
           <label className="lc-models-check">
             <input type="checkbox" checked={!!draft.stream} onChange={(e) => onChange("stream", e.target.checked)} />
-            <span>流式返回</span>
+            <span>{tt("流式返回", "Stream")}</span>
           </label>
           <label className="lc-models-check">
             <input type="checkbox" checked={!!draft.supportsImage} onChange={(e) => onChange("supportsImage", e.target.checked)} />
-            <span>支持图片</span>
+            <span>{tt("支持图片", "Supports Images")}</span>
           </label>
-          <label className="lc-models-check">
-            <input
-              type="checkbox"
-              checked={!!draft.preservedThinking}
-              onChange={(e) => onChange("preservedThinking", e.target.checked)}
-            />
-            <span>保留思维链</span>
-          </label>
-          <label className="lc-models-check">
-            <input
-              type="checkbox"
-              checked={!!draft.interleavedThinking}
-              onChange={(e) => onChange("interleavedThinking", e.target.checked)}
-            />
-            <span>交错思维链</span>
-          </label>
+          {THINKING_MODE_FIELDS.map((field) => (
+            <label key={field.key} className="lc-models-check" title={isEn() ? field.descriptionEn || field.description : field.description}>
+              <input
+                type="checkbox"
+                checked={!!draft[field.key]}
+                onChange={(e) => onChange(field.key, e.target.checked)}
+              />
+              <span>{getThinkingModeLabel(field.key)}</span>
+            </label>
+          ))}
         </div>
       </details>
     </div>
@@ -504,6 +594,7 @@ function isValidSelection(selection, builtins, customRows) {
 }
 
 export function ModelsSettingsPage() {
+  useZionState("ui.locale", window.zion?.i18n?.getLocale?.() || "zh-CN");
   const activeModel = useZionState("chat.activeModel", null);
   const catalogFromState = useZionState("models.catalog", []);
   const [catalog, setCatalog] = useState(Array.isArray(catalogFromState) ? catalogFromState : []);
@@ -607,6 +698,7 @@ export function ModelsSettingsPage() {
     try {
       saveProviderDraft(providerId, providerDrafts[providerId]);
       await refresh();
+      try { window.zion?.events?.emit?.("models/configChanged", { providerId }); } catch {}
       setStatus(`${getProviderTitle(providerId)} 配置已保存`);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
@@ -642,15 +734,15 @@ export function ModelsSettingsPage() {
     const id = String(customDraft.id || "").trim();
     const url = String(customDraft.url || "").trim();
     const key = String(customDraft.key || "").trim();
-    if (!id) return setStatus("缺少 Model ID");
-    if (!url) return setStatus("缺少 Base URL");
-    if (!key) return setStatus("缺少 API Key");
+    if (!id) return setStatus(tt("缺少 Model ID", "Missing Model ID"));
+    if (!url) return setStatus(tt("缺少 Base URL", "Missing Base URL"));
+    if (!key) return setStatus(tt("缺少 API Key", "Missing API Key"));
 
     setSavingKey("custom");
     try {
       const dict = loadDynamicStore();
       if (!editingCustomId && dict[id]) {
-        setStatus(`模型已存在: ${id}`);
+        setStatus(tt(`模型已存在: ${id}`, `Model already exists: ${id}`));
         setSavingKey("");
         return;
       }
@@ -661,6 +753,11 @@ export function ModelsSettingsPage() {
         providerType: String(customDraft.providerType || "openai"),
         stream: !!customDraft.stream,
         supportsImage: !!customDraft.supportsImage,
+        supportsThinking: customDraft.supportsThinking == null || customDraft.supportsThinking === "" ? undefined : !!customDraft.supportsThinking,
+        supportsThinkingEffort:
+          customDraft.supportsThinkingEffort == null || customDraft.supportsThinkingEffort === "" ? undefined : !!customDraft.supportsThinkingEffort,
+        thinkingMode: normalizeThinkingMode(customDraft.thinkingMode),
+        thinkingEffort: normalizeThinkingEffort(customDraft.thinkingEffort),
         preservedThinking: !!customDraft.preservedThinking,
         interleavedThinking: !!customDraft.interleavedThinking
       };
@@ -673,10 +770,11 @@ export function ModelsSettingsPage() {
       dict[id] = next;
       saveDynamicStore(dict);
       await refresh();
+      try { window.zion?.events?.emit?.("models/configChanged", { providerId: "user.dynamic", modelId: id }); } catch {}
       setEditingCustomId(id);
       setCustomDraft(draftFromCustomRow({ id, ...next }));
       setSelection({ kind: "custom", providerId: "user.dynamic", id });
-      setStatus(`已保存 custom model: ${id}`);
+      setStatus(tt(`已保存 custom model: ${id}`, `Saved custom model: ${id}`));
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
     } finally {
@@ -685,7 +783,7 @@ export function ModelsSettingsPage() {
   };
 
   const handleDeleteCustom = async (row) => {
-    const ok = window.confirm(`删除模型 "${row.id}" ?`);
+    const ok = window.confirm(tt(`删除模型 "${row.id}" ?`, `Delete model "${row.id}"?`));
     if (!ok) return;
     setSavingKey(`delete:${row.id}`);
     try {
@@ -693,6 +791,7 @@ export function ModelsSettingsPage() {
       delete dict[row.id];
       saveDynamicStore(dict);
       await refresh();
+      try { window.zion?.events?.emit?.("models/configChanged", { providerId: "user.dynamic", modelId: row.id }); } catch {}
       if (selection?.kind === "custom" && selection.id === row.id) {
         setSelection(selectFallback(activeModel, builtins, loadCustomRows()));
       }
@@ -700,7 +799,7 @@ export function ModelsSettingsPage() {
         setEditingCustomId("");
         setCustomDraft(emptyCustomDraft());
       }
-      setStatus(`已删除 custom model: ${row.id}`);
+      setStatus(tt(`已删除 custom model: ${row.id}`, `Deleted custom model: ${row.id}`));
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
     } finally {
@@ -711,28 +810,28 @@ export function ModelsSettingsPage() {
   const handleActivate = async (row) => {
     try {
       window.zion?.commands?.executeCommand?.("models.selectModel", `${row.providerId}:${row.id}`);
-      setStatus(`当前模型: ${row.label || row.id}`);
+      setStatus(tt(`当前模型: ${row.label || row.id}`, `Current model: ${row.label || row.id}`));
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const activeLabel = activeModel?.label || activeModel?.modelId || "未选择模型";
+  const activeLabel = activeModel?.label || activeModel?.modelId || tt("未选择模型", "No model selected");
   const selectedProviderId = selectedBuiltIn?.providerId || null;
 
   return (
     <div className="lc-models">
       <div className="lc-models-toolbar">
         <div className="lc-models-toolbar-main">
-          <div className="lc-models-toolbar-title">模型偏好</div>
-          <div className="lc-models-toolbar-meta">当前默认：{activeLabel}</div>
+          <div className="lc-models-toolbar-title">{tt("模型偏好", "Model Preferences")}</div>
+          <div className="lc-models-toolbar-meta">{tt("当前默认", "Current default")}: {activeLabel}</div>
         </div>
         <div className="lc-models-toolbar-actions">
           <button type="button" onClick={() => void refresh()}>
-            刷新
+            {tt("刷新", "Refresh")}
           </button>
           <button type="button" className="primary" onClick={startNewCustom}>
-            新建自定义模型
+            {tt("新建自定义模型", "New Custom Model")}
           </button>
         </div>
       </div>
@@ -760,7 +859,7 @@ export function ModelsSettingsPage() {
                       <span className="lc-models-sidebar-item-main">
                         <span className="lc-models-sidebar-item-title">{row.label || row.id}</span>
                       </span>
-                      {active ? <span className="lc-models-pill">当前</span> : row.requiresConfig ? <span className="lc-models-pill is-warn">待补全</span> : null}
+                      {active ? <span className="lc-models-pill">{tt("当前", "Current")}</span> : row.requiresConfig ? <span className="lc-models-pill is-warn">{tt("待补全", "Incomplete")}</span> : null}
                     </button>
                   );
                 })}
@@ -772,12 +871,12 @@ export function ModelsSettingsPage() {
             <div className="lc-models-sidebar-group-head">
               <div className="lc-models-sidebar-group-title">Custom</div>
               <button type="button" className="lc-models-quiet-button" onClick={startNewCustom}>
-                新建
+                {tt("新建", "New")}
               </button>
             </div>
             <div className="lc-models-sidebar-list">
               {customRows.length === 0 ? (
-                <div className="lc-models-empty">暂无</div>
+                <div className="lc-models-empty">{tt("暂无", "None")}</div>
               ) : (
                 customRows.map((row) => {
                   const selected = selection?.kind === "custom" && selection.id === row.id;
@@ -793,7 +892,7 @@ export function ModelsSettingsPage() {
                       <span className="lc-models-sidebar-item-main">
                         <span className="lc-models-sidebar-item-title">{row.label || row.id}</span>
                       </span>
-                      {active ? <span className="lc-models-pill">当前</span> : null}
+                      {active ? <span className="lc-models-pill">{tt("当前", "Current")}</span> : null}
                     </button>
                   );
                 })
@@ -809,13 +908,13 @@ export function ModelsSettingsPage() {
                 <div>
                   <div className="lc-models-detail-title">{selectedBuiltIn.label || selectedBuiltIn.id}</div>
                   <div className="lc-models-detail-subtitle">
-                    {getProviderSummary(selectedBuiltIn.providerId)}，{describeConfigState(selectedBuiltIn.requiresConfig)}。
+                    {getProviderSummary(selectedBuiltIn.providerId)}{isEn() ? ", " : "，"}{describeConfigState(selectedBuiltIn.requiresConfig)}{isEn() ? "." : "。"}
                   </div>
                   <div className="lc-models-detail-meta">
                     <span className="lc-models-row-meta">{getProviderTitle(selectedBuiltIn.providerId)}</span>
-                    {selectedBuiltIn.requiresConfig ? <span className="lc-models-pill is-warn">需配置</span> : null}
+                    {selectedBuiltIn.requiresConfig ? <span className="lc-models-pill is-warn">{tt("需配置", "Needs Config")}</span> : null}
                     {activeModel?.providerId === selectedBuiltIn.providerId && activeModel?.modelId === selectedBuiltIn.id ? (
-                      <span className="lc-models-pill">当前</span>
+                      <span className="lc-models-pill">{tt("当前", "Current")}</span>
                     ) : null}
                   </div>
                 </div>
@@ -826,14 +925,14 @@ export function ModelsSettingsPage() {
                     disabled={activeModel?.providerId === selectedBuiltIn.providerId && activeModel?.modelId === selectedBuiltIn.id}
                   >
                     {activeModel?.providerId === selectedBuiltIn.providerId && activeModel?.modelId === selectedBuiltIn.id
-                      ? "当前默认"
-                      : "设为默认"}
+                      ? tt("当前默认", "Current Default")
+                      : tt("设为默认", "Set as Default")}
                   </button>
                 </div>
               </section>
 
               <PreferenceStatusCard
-                title="当前状态"
+                title={tt("当前状态", "Current Status")}
                 rows={getBuiltInStatusRows(
                   selectedBuiltIn,
                   activeModel?.providerId === selectedBuiltIn.providerId && activeModel?.modelId === selectedBuiltIn.id

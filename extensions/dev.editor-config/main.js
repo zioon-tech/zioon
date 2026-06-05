@@ -939,11 +939,37 @@ export async function activate(ctx) {
                 { value: "system", label: "System" },
                 { value: "dark", label: "Dark" },
                 { value: "light", label: "Light" },
-                { value: "visual-studio-dark", label: "深色 (Visual Studio)" }
+                { value: "visual-studio-dark", label: "深色 (Visual Studio)" },
+                { value: "github-dark", label: "GitHub Dark" },
+                { value: "github-light", label: "GitHub Light" },
+                { value: "catppuccin-mocha", label: "Catppuccin Mocha" },
+                { value: "catppuccin-latte", label: "Catppuccin Latte" },
+                { value: "tokyo-night", label: "Tokyo Night" },
+                { value: "rose-pine-dawn", label: "Rose Pine Dawn" },
+                { value: "everforest-light", label: "Everforest Light" },
+                { value: "kanagawa-lotus", label: "Kanagawa Lotus" },
+                { value: "xiaohongshu", label: "小红书" },
+                { value: "wechat", label: "微信" }
               ],
               getValue: () => String(window.zion.theme?.getSelection?.() || window.zion.state.get("ui.themePreference") || window.zion.state.get("ui.theme") || "system"),
               setValue: async (value) => {
-                const selection = value === "light" || value === "dark" || value === "system" || value === "visual-studio-dark" ? value : "system";
+                const allowed = new Set([
+                  "system",
+                  "dark",
+                  "light",
+                  "visual-studio-dark",
+                  "github-dark",
+                  "github-light",
+                  "catppuccin-mocha",
+                  "catppuccin-latte",
+                  "tokyo-night",
+                  "rose-pine-dawn",
+                  "everforest-light",
+                  "kanagawa-lotus",
+                  "xiaohongshu",
+                  "wechat"
+                ]);
+                const selection = allowed.has(String(value)) ? String(value) : "system";
                 if (window.zion.theme?.setSelection) return window.zion.theme.setSelection(selection);
                 return window.zion.commands.executeCommand("zion.setTheme", selection);
               }

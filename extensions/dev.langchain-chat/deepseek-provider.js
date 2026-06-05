@@ -45,8 +45,15 @@ export const deepseekProvider = {
         modelName: config.modelName || "deepseek-chat",
         temperature: config.temperature,
         max_tokens: config.max_tokens,
+        pricing: config.pricing,
         stream: config.stream !== false,
         supportsImage: !!config.supportsImage,
+        supportsThinking: config.supportsThinking,
+        supportsThinkingEffort: config.supportsThinkingEffort,
+        thinkingMode: config.thinkingMode || "auto",
+        thinkingEffort: config.thinkingEffort || "auto",
+        preservedThinking: !!config.preservedThinking,
+        interleavedThinking: !!config.interleavedThinking,
         _requiresConfig: true,
         _configHint: "请使用 modelsManage 工具配置 DeepSeek API key，或设置 localStorage 键 'zion.deepseek.apiKey'"
       };
@@ -61,8 +68,15 @@ export const deepseekProvider = {
       modelName: config.modelName || "deepseek-chat",
       temperature: config.temperature,
       max_tokens: config.max_tokens,
+      pricing: config.pricing,
       stream: config.stream !== false,
-      supportsImage: !!config.supportsImage
+      supportsImage: !!config.supportsImage,
+      supportsThinking: config.supportsThinking,
+      supportsThinkingEffort: config.supportsThinkingEffort,
+      thinkingMode: config.thinkingMode || "auto",
+      thinkingEffort: config.thinkingEffort || "auto",
+      preservedThinking: !!config.preservedThinking,
+      interleavedThinking: !!config.interleavedThinking
     };
   }
 };

@@ -13,6 +13,8 @@ export type RestoreItem = {
 };
 
 const ROLE_HEADER_RE = /^(system|user|assistant|tool)\s+/;
+const CARD_MARKER_RE = /^(?:思考|调用 [^\n]{1,300})$/;
+const CARD_MARKER_TAIL_RE = /(?:^|\n)(?:思考|调用 [^\n]{1,300})\n+$/;
 
 function splitLines(text: string) {
   return String(text || "").replace(/\r/g, "").split("\n");
@@ -76,14 +78,32 @@ export function planAssistantMarkerInsertion(args: {
   const markerText = String(args?.markerText || "");
   const trailingNewlines = Math.max(0, Number(args?.trailingNewlines ?? 1));
   const insertPos = findAssistantBlockEndOffset(docText, args?.hintPos);
-  const prevChar = insertPos > 0 ? docText.slice(insertPos - 1, insertPos) : "";
-  const prefix = prevChar === "\n" || insertPos === 0 ? "" : "\n";
+  let replaceFrom = insertPos;
+  let replaceTo = insertPos;
+  let prefix = "";
+  const beforeInsert = docText.slice(0, insertPos);
+
+  // Consecutive card markers should render as adjacent rows, not separated by a blank line.
+  // Collapse "思考\n\n调用 xxx" to "思考\n调用 xxx" while streaming.
+  const shouldCollapseCardGap = CARD_MARKER_RE.test(markerText);
+  const cardTail = shouldCollapseCardGap ? beforeInsert.match(CARD_MARKER_TAIL_RE) : null;
+  if (cardTail) {
+    const trailingBreaks = cardTail[0].match(/\n+$/)?.[0] || "";
+    replaceFrom = insertPos - trailingBreaks.length;
+    replaceTo = insertPos;
+    prefix = "\n";
+  } else {
+    const prevChar = insertPos > 0 ? docText.slice(insertPos - 1, insertPos) : "";
+    prefix = prevChar === "\n" || insertPos === 0 ? "" : "\n";
+  }
   const suffix = "\n".repeat(trailingNewlines);
   const insertText = `${prefix}${markerText}${suffix}`;
-  const markerFrom = insertPos + prefix.length;
+  const markerFrom = replaceFrom + prefix.length;
   const markerTo = markerFrom + markerText.length;
   return {
     insertPos,
+    replaceFrom,
+    replaceTo,
     insertText,
     markerFrom,
     markerTo

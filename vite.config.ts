@@ -2,8 +2,26 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { zionExtensionsPlugin } from "./vite-plugin-extensions-fixed.js";
 import { VitePWA } from 'vite-plugin-pwa';
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const reactPath = require.resolve("react");
+const reactJsxRuntimePath = require.resolve("react/jsx-runtime");
+const reactJsxDevRuntimePath = require.resolve("react/jsx-dev-runtime");
+const reactDomPath = require.resolve("react-dom");
+const reactDomClientPath = require.resolve("react-dom/client");
 
 export default defineConfig({
+  resolve: {
+    dedupe: ["react", "react-dom"],
+    alias: [
+      { find: /^react-dom\/client$/, replacement: reactDomClientPath },
+      { find: /^react-dom$/, replacement: reactDomPath },
+      { find: /^react\/jsx-runtime$/, replacement: reactJsxRuntimePath },
+      { find: /^react\/jsx-dev-runtime$/, replacement: reactJsxDevRuntimePath },
+      { find: /^react$/, replacement: reactPath }
+    ]
+  },
   server: {
     port: 5177,
     strictPort: false,
@@ -56,6 +74,9 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png'],
+      workbox: {
+        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024
+      },
       manifest: {
         name: 'Zion Next',
         short_name: 'Zion',

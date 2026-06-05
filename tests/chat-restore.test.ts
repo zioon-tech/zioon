@@ -105,4 +105,19 @@ describe("chat restore helpers", () => {
     expect(plan.markerTo - plan.markerFrom).toBe("调用 read".length);
     expect(plan.insertPos).toBe(hintedEnd);
   });
+
+  it("collapses blank lines between consecutive card markers to one newline", () => {
+    const docText = "user hi\nassistant \n思考\n\n";
+    const plan = planAssistantMarkerInsertion({
+      docText,
+      markerText: "调用 read",
+      trailingNewlines: 1
+    });
+
+    const nextText = docText.slice(0, plan.replaceFrom) + plan.insertText + docText.slice(plan.replaceTo);
+    expect(nextText).toBe("user hi\nassistant \n思考\n调用 read\n");
+    expect(plan.replaceFrom).toBe("user hi\nassistant \n思考".length);
+    expect(plan.replaceTo).toBe(docText.length);
+    expect(nextText.slice(plan.markerFrom, plan.markerTo)).toBe("调用 read");
+  });
 });

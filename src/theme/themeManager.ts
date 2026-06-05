@@ -1,8 +1,16 @@
 import { updatePwaThemeColor, type ResolvedTheme } from "./pwa";
+import {
+  getThemeOption,
+  getThemeOptionByVariant,
+  isThemePreference,
+  isThemeSelection,
+  isThemeVariant,
+  type ThemePreference,
+  type ThemeSelection,
+  type ThemeVariant
+} from "./themes";
 
-export type ThemePreference = "system" | "light" | "dark";
-export type ThemeVariant = "default" | "visual-studio-dark";
-export type ThemeSelection = ThemePreference | "visual-studio-dark";
+export type { ThemePreference, ThemeSelection, ThemeVariant } from "./themes";
 export type ThemeChangeSource = "init" | "settings" | "command" | "system" | "migration" | "refresh";
 
 type ThemeableEditor = {
@@ -18,20 +26,8 @@ const THEME_PREFERENCE_KEY = "zion.themePreference";
 const THEME_VARIANT_KEY = "zion.themeVariant";
 const LEGACY_THEME_KEY = "zion.theme";
 
-function isThemePreference(value: unknown): value is ThemePreference {
-  return value === "system" || value === "light" || value === "dark";
-}
-
 function isResolvedTheme(value: unknown): value is ResolvedTheme {
   return value === "light" || value === "dark";
-}
-
-function isThemeVariant(value: unknown): value is ThemeVariant {
-  return value === "default" || value === "visual-studio-dark";
-}
-
-function isThemeSelection(value: unknown): value is ThemeSelection {
-  return isThemePreference(value) || value === "visual-studio-dark";
 }
 
 function readStoredPreference(): { preference: ThemePreference; migratedFromLegacy: boolean } {
@@ -102,24 +98,27 @@ export class ThemeManager {
   }
 
   getVariant(): ThemeVariant {
+    if (this.preference === "system") return "default";
     return this.variant;
   }
 
   getSelection(): ThemeSelection {
-    if (this.preference === "dark" && this.variant === "visual-studio-dark") {
-      return "visual-studio-dark";
+    if (this.preference === "system") return "system";
+    if (this.variant !== "default") {
+      return getThemeOptionByVariant(this.variant, this.resolvedTheme).id;
     }
     return this.preference;
   }
 
   setSelection(selection: ThemeSelection, source: ThemeChangeSource = "settings"): void {
     if (!isThemeSelection(selection)) return;
-    if (selection === "visual-studio-dark") {
-      this.preference = "dark";
-      this.variant = "visual-studio-dark";
-    } else {
+    if (isThemePreference(selection)) {
       this.preference = selection;
       this.variant = "default";
+    } else {
+      const theme = getThemeOption(selection);
+      this.preference = theme.baseTheme === "system" ? "system" : theme.baseTheme;
+      this.variant = theme.variant;
     }
     this.persistPreference(this.preference);
     try { localStorage.setItem(THEME_VARIANT_KEY, this.variant); } catch {}
@@ -129,7 +128,9 @@ export class ThemeManager {
   setPreference(preference: ThemePreference, source: ThemeChangeSource = "settings"): void {
     if (!isThemePreference(preference)) return;
     this.preference = preference;
+    this.variant = "default";
     this.persistPreference(preference);
+    try { localStorage.setItem(THEME_VARIANT_KEY, this.variant); } catch {}
     this.apply(source);
   }
 
@@ -170,15 +171,13 @@ export class ThemeManager {
     const changed = this.resolvedTheme !== nextResolved;
     this.resolvedTheme = nextResolved;
     try { localStorage.setItem(LEGACY_THEME_KEY, nextResolved); } catch {}
+    const nextVariant = this.preference === "system" ? "default" : this.variant;
 
     for (const editor of this.opts.getEditorCores()) {
       try { editor.setTheme(nextResolved); } catch {}
     }
     document.documentElement.setAttribute("data-theme", nextResolved);
-    document.documentElement.setAttribute(
-      "data-theme-variant",
-      nextResolved === "dark" ? this.variant : "default"
-    );
+    document.documentElement.setAttribute("data-theme-variant", nextVariant);
 
     const refreshEditorThemes = () => {
       for (const editor of this.opts.getEditorCores()) {
@@ -193,7 +192,7 @@ export class ThemeManager {
     updatePwaThemeColor(nextResolved);
 
     try { window.zion.state.set("ui.themePreference", this.preference); } catch {}
-    try { window.zion.state.set("ui.themeVariant", this.variant); } catch {}
+    try { window.zion.state.set("ui.themeVariant", nextVariant); } catch {}
     try { window.zion.state.set("ui.theme", nextResolved); } catch {}
     this.updateStatusEntry();
     this.updateHeaderMenuEntry();
@@ -202,7 +201,7 @@ export class ThemeManager {
       try {
         window.zion.events.emit("theme/changed", {
           preference: this.preference,
-          variant: this.variant,
+          variant: nextVariant,
           resolvedTheme: nextResolved,
           source
         });
@@ -218,8 +217,7 @@ export class ThemeManager {
   }
 
   private getResolvedThemeLabel(): string {
-    if (this.resolvedTheme === "light") return "Light";
-    return this.variant === "visual-studio-dark" ? "Visual Studio Dark" : "Dark";
+    return getThemeOptionByVariant(this.preference === "system" ? "default" : this.variant, this.resolvedTheme).title;
   }
 
   private updateStatusEntry(): void {

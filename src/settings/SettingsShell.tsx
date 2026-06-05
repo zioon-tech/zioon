@@ -27,14 +27,26 @@ const CATEGORY_ORDER: SettingsCategory[] = [
   "advanced"
 ];
 
-const CATEGORY_META: Record<SettingsCategory, { label: string; description: string }> = {
-  general: { label: "General", description: "基础偏好与通用行为" },
-  editor: { label: "Editor", description: "编辑器行为与显示相关设置" },
-  services: { label: "Services", description: "服务地址、Mail 与外部集成" },
-  workspace: { label: "Workspace", description: "技能索引、文件访问与工作区能力" },
-  extensions: { label: "Extensions", description: "扩展提供的自定义设置" },
-  advanced: { label: "Advanced", description: "实验项和高级能力" }
+const CATEGORY_META: Record<SettingsCategory, { label: string; labelEn: string; description: string; descriptionEn: string }> = {
+  general: { label: "通用", labelEn: "General", description: "基础偏好与通用行为", descriptionEn: "Basic preferences and general behavior" },
+  editor: { label: "编辑器", labelEn: "Editor", description: "编辑器行为与显示相关设置", descriptionEn: "Editor behavior and display settings" },
+  services: { label: "服务", labelEn: "Services", description: "服务地址、Mail 与外部集成", descriptionEn: "Service endpoints, mail, and external integrations" },
+  workspace: { label: "工作区", labelEn: "Workspace", description: "技能索引、文件访问与工作区能力", descriptionEn: "Skill indexing, file access, and workspace capabilities" },
+  extensions: { label: "扩展", labelEn: "Extensions", description: "扩展提供的自定义设置", descriptionEn: "Custom settings provided by extensions" },
+  advanced: { label: "高级", labelEn: "Advanced", description: "实验项和高级能力", descriptionEn: "Experimental options and advanced capabilities" }
 };
+
+function isEnglishLocale(): boolean {
+  try {
+    return String(window.zion?.i18n?.getLocale?.() || window.zion?.state?.get?.("ui.locale") || "").startsWith("en");
+  } catch {
+    return false;
+  }
+}
+
+function ui(zh: string, en: string): string {
+  return isEnglishLocale() ? en : zh;
+}
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
@@ -87,9 +99,9 @@ function valuesEqual(a: unknown, b: unknown): boolean {
 }
 
 function formatDefaultValue(value: unknown): string {
-  if (typeof value === "boolean") return value ? "On" : "Off";
+  if (typeof value === "boolean") return value ? ui("开", "On") : ui("关", "Off");
   if (Array.isArray(value)) return value.join(", ");
-  if (value == null || value === "") return "Empty";
+  if (value == null || value === "") return ui("空", "Empty");
   return String(value);
 }
 
@@ -100,7 +112,7 @@ function isDefaultValue(setting: SettingContribution, value: unknown): boolean {
 
 function getIdleMetaText(setting: SettingContribution, value: unknown): string {
   if (setting.defaultValue === undefined) return "";
-  return isDefaultValue(setting, value) ? "使用默认值" : "已自定义";
+  return isDefaultValue(setting, value) ? ui("使用默认值", "Using default") : ui("已自定义", "Customized");
 }
 
 function getControlLayout(setting: SettingContribution): "compact" | "wide" {
@@ -201,8 +213,8 @@ function buildCategories(pages: SettingsPageContribution[]): CategoryGroup[] {
     const groupPages = (groups.get(category) || []).slice().sort(sortPages);
     return {
       id: category,
-      label: CATEGORY_META[category].label,
-      description: CATEGORY_META[category].description,
+      label: isEnglishLocale() ? CATEGORY_META[category].labelEn : CATEGORY_META[category].label,
+      description: isEnglishLocale() ? CATEGORY_META[category].descriptionEn : CATEGORY_META[category].description,
       pages: groupPages,
       settingCount: groupPages.reduce(
         (sum, page) => sum + page.sections.reduce((sectionSum, section) => sectionSum + section.settings.length, 0),
@@ -261,7 +273,7 @@ function LegacyMount({ setting }: { setting: SettingContribution }) {
   return (
     <div className="zion-settings-item-body">
       <div ref={hostRef} className="zion-settings-legacy-host zion-settings-form-scope" />
-      {error ? <div className="zion-settings-item-error">渲染失败: {error}</div> : null}
+      {error ? <div className="zion-settings-item-error">{ui("渲染失败", "Render failed")}: {error}</div> : null}
     </div>
   );
 }
@@ -330,7 +342,7 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
   const controlLayout = getControlLayout(setting);
   const description = settingDescription(setting);
   const placeholder = tr(setting.placeholderKey, setting.placeholder || "");
-  const actionLabel = tr(setting.actionLabelKey, setting.actionLabel || "执行");
+  const actionLabel = tr(setting.actionLabelKey, setting.actionLabel || ui("执行", "Run"));
   const [loading, setLoading] = useState(setting.kind !== "action");
   const [saving, setSaving] = useState(false);
   const [savedValue, setSavedValue] = useState<unknown>(normalizeDraftValue(setting, setting.defaultValue));
@@ -400,7 +412,7 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
       setSavedValue(next);
       setDraftValue(next);
       setError("");
-      setMessage("已保存");
+      setMessage(ui("已保存", "Saved"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -415,7 +427,7 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
       if (typeof setting.reset === "function") {
         await setting.reset();
         await reload();
-        setMessage("已恢复默认");
+        setMessage(ui("已恢复默认", "Restored default"));
       } else {
         setDraftValue(savedValue);
         setError("");
@@ -434,7 +446,7 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
     setError("");
     try {
       await setting.run();
-      setMessage("已执行");
+      setMessage(ui("已执行", "Done"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -454,7 +466,7 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
               setError("");
             }}
           />
-          <span>{draftValue ? "On" : "Off"}</span>
+          <span>{draftValue ? ui("开", "On") : ui("关", "Off")}</span>
         </label>
       );
     }
@@ -497,7 +509,7 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
       return (
         <div className="zion-settings-multiselect">
           {options.length === 0 ? (
-            <div className="zion-settings-multiselect-empty">暂无可选项</div>
+            <div className="zion-settings-multiselect-empty">{ui("暂无可选项", "No options available")}</div>
           ) : (
             options.map((option) => (
               <label key={option.value} className="zion-settings-multiselect-option">
@@ -523,7 +535,7 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
     if (setting.kind === "action") {
       return (
         <button type="button" className="primary" disabled={saving} onClick={() => void handleAction()}>
-          {saving ? "执行中..." : actionLabel}
+          {saving ? ui("执行中...", "Running...") : actionLabel}
         </button>
       );
     }
@@ -566,11 +578,11 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
             {error
               ? error
               : saving
-                ? "正在保存..."
+                ? ui("正在保存...", "Saving...")
                 : message
                   ? message
                   : dirty
-                    ? "已修改"
+                    ? ui("已修改", "Modified")
                     : getIdleMetaText(setting, savedValue)}
           </div>
           {typeof setting.reset === "function" ? (
@@ -578,16 +590,16 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
               type="button"
               className="zion-settings-link-button"
               disabled={saving}
-              title={setting.defaultValue !== undefined ? `默认值: ${formatDefaultValue(setting.defaultValue)}` : undefined}
+              title={setting.defaultValue !== undefined ? `${ui("默认值", "Default")}: ${formatDefaultValue(setting.defaultValue)}` : undefined}
               onClick={() => void handleReset()}
             >
-              重置
+              {ui("重置", "Reset")}
             </button>
           ) : null}
         </div>
       </div>
       <div className={`zion-settings-standard-control zion-settings-form-scope ${controlLayout === "wide" ? "is-wide" : "is-compact"}`}>
-        {loading ? <div className="zion-settings-inline-help">加载中...</div> : renderControl()}
+        {loading ? <div className="zion-settings-inline-help">{ui("加载中...", "Loading...")}</div> : renderControl()}
       </div>
     </div>
   );
@@ -644,11 +656,11 @@ export function SettingsShell({ onRequestClose }: SettingsShellProps) {
     <div className="zion-settings-shell">
       <div className="zion-settings-topbar">
         <div className="zion-settings-headings">
-          <div className="zion-settings-eyebrow">Preferences</div>
-          <h2 className="zion-settings-title">设置</h2>
+          <div className="zion-settings-eyebrow">{ui("偏好", "Preferences")}</div>
+          <h2 className="zion-settings-title">{ui("设置", "Settings")}</h2>
         </div>
         <button type="button" className="zion-settings-close" onClick={onRequestClose}>
-          关闭
+          {ui("关闭", "Close")}
         </button>
       </div>
 
@@ -656,19 +668,19 @@ export function SettingsShell({ onRequestClose }: SettingsShellProps) {
         <input
           className="zion-settings-search"
           type="text"
-          placeholder="搜索设置"
+          placeholder={ui("搜索设置", "Search settings")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           autoFocus
         />
         <div className="zion-settings-summary">
-          {normalizedQuery ? `${totalCount} 个结果` : `${totalCount} 个设置项`}
+          {normalizedQuery ? ui(`${totalCount} 个结果`, `${totalCount} results`) : ui(`${totalCount} 个设置项`, `${totalCount} settings`)}
         </div>
       </div>
 
       <div className="zion-settings-layout">
         <aside className="zion-settings-sidebar">
-          <div className="zion-settings-sidebar-title">Settings</div>
+          <div className="zion-settings-sidebar-title">{ui("设置", "Settings")}</div>
           {categories.map((category) => {
             return (
               <div key={category.id} className="zion-settings-sidebar-group">
@@ -699,7 +711,7 @@ export function SettingsShell({ onRequestClose }: SettingsShellProps) {
 
         <main className="zion-settings-content">
           {visiblePages.length === 0 ? (
-            <div className="zion-settings-empty">没有匹配的设置项，试试别的关键字。</div>
+            <div className="zion-settings-empty">{ui("没有匹配的设置项，试试别的关键字。", "No matching settings. Try another keyword.")}</div>
           ) : (
             visiblePages.map((page) => (
               <section key={page.id} className="zion-settings-category">
@@ -711,7 +723,7 @@ export function SettingsShell({ onRequestClose }: SettingsShellProps) {
                       <div>
                         <div className="zion-settings-category-label">{pageTitle(page)}</div>
                         <div className="zion-settings-category-meta">
-                          {pageDescription(page) || CATEGORY_META[page.category].description}
+                          {pageDescription(page) || (isEnglishLocale() ? CATEGORY_META[page.category].descriptionEn : CATEGORY_META[page.category].description)}
                         </div>
                       </div>
                     </div>

@@ -1,6 +1,10 @@
 import { createElement } from "react";
 import { installToolCallCards } from "./tool-calls.js";
 import { installToolSwitcher } from "./tool-switcher.js";
+import { registerChangesPanel } from "./changes-panel.js";
+import { registerFilesPanel } from "./files-panel.js";
+import { registerContextPanel } from "./context-panel.js";
+import { getCurrentSessionChangeState, getSessionChangeState } from "./session-change-state.js";
 import { ToolsSettingsPage, buildToolRows } from "./ToolsSettingsPage.jsx";
 
 const I18N_NS = "dev.tools";
@@ -12,6 +16,11 @@ const I18N_MESSAGES = {
     "settings.description": "启用工具与工具入口",
     "settings.section": "工具",
     "settings.manager": "工具",
+    "cmd.openChanges": "打开变更面板",
+    "cmd.openFiles": "打开文件面板",
+    "cmd.openContext": "打开上下文面板",
+    "cmd.openFilesPicker": "文件：打开...",
+    "cmd.openFilesPicker.description": "选择本地文件夹或打开某个终端会话的当前目录",
     "status.tools": "工具：{count}",
     "status.tooltip": "管理已启用工具",
     "switcher.title": "选择工具",
@@ -36,7 +45,128 @@ const I18N_MESSAGES = {
     "call.inlineTitleWithSummary": "调用 {name}：{summary}（点击展开/收起）",
     "call.inlineAria": "调用 {name}（点击展开或收起工具调用卡片）",
     "call.toggle": "展开/收起工具调用卡片",
-    "call.patchTruncated": "patch 过长，已截断显示前 {count} 行"
+    "call.patchTruncated": "patch 过长，已截断显示前 {count} 行",
+    "files.title": "文件",
+    "files.stats": "{dirs} 个文件夹 · {files} 个文件",
+    "files.source": "来源",
+    "files.sourceLocal": "本地授权",
+    "files.sourceActiveTerminal": "终端：当前",
+    "files.sourceActiveTerminalProject": "当前：{project}",
+    "files.sort": "排序",
+    "files.sortLabel": "排序：{sort}",
+    "files.sortName": "名称",
+    "files.sortModified": "修改时间",
+    "files.sortSize": "大小",
+    "files.refresh": "刷新",
+    "files.addFolder": "添加文件夹",
+    "files.openManager": "打开管理器",
+    "files.more": "更多操作",
+    "files.open": "打开预览",
+    "files.preview": "预览",
+    "files.download": "下载",
+    "files.downloadFailed": "下载文件失败",
+    "files.refreshFolder": "刷新文件夹",
+    "files.copyPath": "复制路径",
+    "files.copied": "路径已复制",
+    "files.kind": "类型",
+    "files.kindFile": "文件",
+    "files.kindFolder": "文件夹",
+    "files.size": "大小",
+    "files.modified": "修改时间",
+    "files.emptyTitle": "还没有添加文件夹",
+    "files.emptyDescription": "从文件系统访问管理器添加文件夹或文件后，可以在这里浏览。",
+    "files.noTerminalTitle": "没有终端会话",
+    "files.noTerminalDescription": "创建或选择本地/SSH 终端会话后，可以通过它浏览文件。",
+    "files.openTerminalManager": "打开终端管理器",
+    "files.terminalJsonFailed": "终端命令没有返回 JSON",
+    "files.terminalCommandFailed": "终端命令执行失败",
+    "files.emptyFolder": "空文件夹",
+    "files.loading": "正在加载文件...",
+    "files.errorTitle": "无法加载文件",
+    "files.retry": "重试",
+    "files.permissionDenied": "没有访问权限",
+    "files.binaryUnsupported": "暂不支持二进制预览",
+    "files.tooLarge": "文件太大，暂不预览",
+    "files.openFailed": "打开文件失败",
+    "files.openSubmenu": "打开文件",
+    "files.openSubmenuPlaceholder": "搜索本地文件夹或终端会话...",
+    "files.openSubmenuEmpty": "没有找到匹配的入口",
+    "context.title": "上下文",
+    "context.resizeExplorer": "调整上下文浏览区宽度",
+    "context.close": "关闭",
+    "context.files": "文件",
+    "context.webPages": "网页",
+    "context.tasks": "任务",
+    "context.comments": "评论",
+    "context.modelUsage": "模型消耗",
+    "context.basics": "基础信息",
+    "context.noSession": "暂无打开的会话",
+    "context.session": "会话",
+    "context.terminalContext": "终端上下文",
+    "context.terminalInjected": "会注入聊天",
+    "context.terminalNotInjected": "未注入聊天",
+    "context.terminalSessions": "终端会话",
+    "context.terminalActive": "active {id}",
+    "context.count": "{count} 个",
+    "context.toolArtifacts": "工具产物",
+    "context.itemCount": "{count} 条",
+    "context.emptyFiles": "当前会话里还没有识别到文件路径。",
+    "context.emptyWeb": "当前会话里还没有识别到网页链接。",
+    "context.emptyTasks": "当前会话还没有 todo。",
+    "context.emptyComments": "当前会话还没有评论。",
+    "context.emptyUsage": "当前会话还没有可统计的模型消耗。",
+    "context.emptyBasics": "暂无基础上下文信息。",
+    "context.copyUsage": "复制消耗信息",
+    "context.openInFiles": "在文件面板里定位并打开",
+    "context.copyPath": "复制路径",
+    "context.openUrl": "打开网页",
+    "context.copyUrl": "复制链接",
+    "context.copyInfo": "复制信息",
+    "context.copyComment": "复制评论信息",
+    "context.copyTask": "复制任务信息",
+    "context.copyTodo": "复制 todo",
+    "context.openingFiles": "正在打开文件面板并定位文件...",
+    "context.copied": "已复制到剪贴板",
+    "context.run.streaming": "回答中",
+    "context.run.ready": "可继续对话",
+    "context.run.error": "出错",
+    "context.run.aborted": "已停止",
+    "context.run.idle": "未运行",
+    "context.usage.files": "{count} files",
+    "context.usage.modelCalls": "{count} model calls",
+    "context.usage.input": "input {count}",
+    "context.usage.output": "output {count}",
+    "context.usage.cacheRead": "cache read {count}",
+    "context.usage.cacheWrite": "cache write {count}",
+    "context.tasks.todoLists": "{count} todo lists",
+    "context.tasks.done": "完成 {done}/{total}",
+    "context.tasks.doing": "进行中 {count}",
+    "context.tasks.active": "当前",
+    "context.tasks.activeWithName": "当前 {name}",
+    "context.tasks.list": "Todo 列表 {index}",
+    "context.tasks.emptyTodo": "（空 todo）",
+    "changes.title": "变更",
+    "changes.empty": "当前会话还没有文件修改。当 edit、write 或 apply_patch 工具产生文件产物时，会在这里展示 diff。",
+    "changes.files": "{count} files",
+    "changes.wrap": "换行",
+    "changes.wrapLongLines": "自动换行长行",
+    "changes.scrollLongLines": "横向滚动长行",
+    "changes.expand": "展开",
+    "changes.collapse": "折叠",
+    "changes.expandAll": "展开全部文件",
+    "changes.collapseAll": "折叠全部文件",
+    "changes.refresh": "刷新",
+    "changes.new": "新增",
+    "changes.deleted": "删除",
+    "changes.fileActions": "文件操作",
+    "changes.copyPath": "复制路径",
+    "changes.copyDiff": "复制 Diff",
+    "changes.accept": "接受",
+    "changes.revert": "回退",
+    "changes.pathCopied": "路径已复制",
+    "changes.diffCopied": "diff 已复制",
+    "changes.copied": "已复制",
+    "changes.copyFailed": "复制失败"
   },
   "en-US": {
     "category.tools": "Tools",
@@ -45,6 +175,11 @@ const I18N_MESSAGES = {
     "settings.description": "Enable tools and tool entry points",
     "settings.section": "Tools",
     "settings.manager": "Tools",
+    "cmd.openChanges": "Open Changes",
+    "cmd.openFiles": "Open Files",
+    "cmd.openContext": "Open Context",
+    "cmd.openFilesPicker": "Files: Open...",
+    "cmd.openFilesPicker.description": "Choose a local folder or open the current directory of a terminal session",
     "status.tools": "Tools: {count}",
     "status.tooltip": "Manage enabled tools",
     "switcher.title": "Select Tools",
@@ -69,7 +204,128 @@ const I18N_MESSAGES = {
     "call.inlineTitleWithSummary": "Call {name}: {summary} (click to expand/collapse)",
     "call.inlineAria": "Call {name} (click to expand or collapse tool call card)",
     "call.toggle": "Expand/collapse tool call card",
-    "call.patchTruncated": "Patch is too long; showing the first {count} lines"
+    "call.patchTruncated": "Patch is too long; showing the first {count} lines",
+    "files.title": "Files",
+    "files.stats": "{dirs} folders · {files} files",
+    "files.source": "Source",
+    "files.sourceLocal": "Local Grants",
+    "files.sourceActiveTerminal": "Terminal: Active",
+    "files.sourceActiveTerminalProject": "Active: {project}",
+    "files.sort": "Sort",
+    "files.sortLabel": "Sort: {sort}",
+    "files.sortName": "Name",
+    "files.sortModified": "Modified",
+    "files.sortSize": "Size",
+    "files.refresh": "Refresh",
+    "files.addFolder": "Add Folder",
+    "files.openManager": "Open Manager",
+    "files.more": "More actions",
+    "files.open": "Open Preview",
+    "files.preview": "Preview",
+    "files.download": "Download",
+    "files.downloadFailed": "Failed to download file",
+    "files.refreshFolder": "Refresh Folder",
+    "files.copyPath": "Copy Path",
+    "files.copied": "Path copied",
+    "files.kind": "Kind",
+    "files.kindFile": "File",
+    "files.kindFolder": "Folder",
+    "files.size": "Size",
+    "files.modified": "Modified",
+    "files.emptyTitle": "No folders added",
+    "files.emptyDescription": "Add a folder or file from File System Access Manager to browse it here.",
+    "files.noTerminalTitle": "No terminal session",
+    "files.noTerminalDescription": "Create or select a local/SSH terminal session to browse files through it.",
+    "files.openTerminalManager": "Open Terminal Manager",
+    "files.terminalJsonFailed": "Terminal command did not return JSON",
+    "files.terminalCommandFailed": "Terminal command failed",
+    "files.emptyFolder": "Empty folder",
+    "files.loading": "Loading files...",
+    "files.errorTitle": "Unable to load files",
+    "files.retry": "Retry",
+    "files.permissionDenied": "Permission denied",
+    "files.binaryUnsupported": "Binary preview is not supported yet",
+    "files.tooLarge": "File is too large to preview",
+    "files.openFailed": "Failed to open file",
+    "files.openSubmenu": "Open Files",
+    "files.openSubmenuPlaceholder": "Search local folders or terminal sessions...",
+    "files.openSubmenuEmpty": "No matching entries",
+    "context.title": "Context",
+    "context.resizeExplorer": "Resize Context Explorer",
+    "context.close": "Close",
+    "context.files": "Files",
+    "context.webPages": "Web Pages",
+    "context.tasks": "Tasks",
+    "context.comments": "Comments",
+    "context.modelUsage": "Model Usage",
+    "context.basics": "Basics",
+    "context.noSession": "No open session",
+    "context.session": "Session",
+    "context.terminalContext": "Terminal Context",
+    "context.terminalInjected": "Injected into chat",
+    "context.terminalNotInjected": "Not injected into chat",
+    "context.terminalSessions": "Terminal Sessions",
+    "context.terminalActive": "active {id}",
+    "context.count": "{count}",
+    "context.toolArtifacts": "Tool Artifacts",
+    "context.itemCount": "{count}",
+    "context.emptyFiles": "No file paths detected in the current session.",
+    "context.emptyWeb": "No web links detected in the current session.",
+    "context.emptyTasks": "No todos in the current session.",
+    "context.emptyComments": "No comments in the current session.",
+    "context.emptyUsage": "No model usage available for the current session.",
+    "context.emptyBasics": "No basic context information.",
+    "context.copyUsage": "Copy usage info",
+    "context.openInFiles": "Reveal and open in Files",
+    "context.copyPath": "Copy path",
+    "context.openUrl": "Open webpage",
+    "context.copyUrl": "Copy link",
+    "context.copyInfo": "Copy info",
+    "context.copyComment": "Copy comment info",
+    "context.copyTask": "Copy task info",
+    "context.copyTodo": "Copy todo",
+    "context.openingFiles": "Opening Files and locating file...",
+    "context.copied": "Copied to clipboard",
+    "context.run.streaming": "Answering",
+    "context.run.ready": "Ready to continue",
+    "context.run.error": "Error",
+    "context.run.aborted": "Stopped",
+    "context.run.idle": "Not running",
+    "context.usage.files": "{count} files",
+    "context.usage.modelCalls": "{count} model calls",
+    "context.usage.input": "input {count}",
+    "context.usage.output": "output {count}",
+    "context.usage.cacheRead": "cache read {count}",
+    "context.usage.cacheWrite": "cache write {count}",
+    "context.tasks.todoLists": "{count} todo lists",
+    "context.tasks.done": "{done}/{total} done",
+    "context.tasks.doing": "{count} doing",
+    "context.tasks.active": "active {name}",
+    "context.tasks.activeWithName": "active {name}",
+    "context.tasks.list": "Todo List {index}",
+    "context.tasks.emptyTodo": "(empty todo)",
+    "changes.title": "Changes",
+    "changes.empty": "No file changes in the current session yet. Diffs from edit, write, or apply_patch tools will appear here.",
+    "changes.files": "{count} files",
+    "changes.wrap": "Wrap",
+    "changes.wrapLongLines": "Wrap long lines",
+    "changes.scrollLongLines": "Scroll long lines",
+    "changes.expand": "Expand",
+    "changes.collapse": "Collapse",
+    "changes.expandAll": "Expand all files",
+    "changes.collapseAll": "Collapse all files",
+    "changes.refresh": "Refresh",
+    "changes.new": "New",
+    "changes.deleted": "Deleted",
+    "changes.fileActions": "File actions",
+    "changes.copyPath": "Copy Path",
+    "changes.copyDiff": "Copy Diff",
+    "changes.accept": "Accept",
+    "changes.revert": "Revert",
+    "changes.pathCopied": "Path copied",
+    "changes.diffCopied": "Diff copied",
+    "changes.copied": "Copied",
+    "changes.copyFailed": "Copy failed"
   }
 };
 
@@ -105,6 +361,25 @@ export async function activate(ctx) {
 
   // 注册默认工具与处理器
   registerDefaultTools();
+
+  try {
+    registerContextPanel(ctx);
+  } catch (e) {
+    console.warn("[dev.tools] register context panel failed", e);
+  }
+
+  // 右侧 Changes 面板：集中查看当前会话的 edit/write/apply_patch 文件产物
+  try {
+    registerChangesPanel(ctx);
+  } catch (e) {
+    console.warn("[dev.tools] register changes panel failed", e);
+  }
+
+  try {
+    registerFilesPanel(ctx);
+  } catch (e) {
+    console.warn("[dev.tools] register files panel failed", e);
+  }
 
   // 提供“从文档解析工具定义”的命令
   const dispParse = window.zion.commands.registerCommand("tools.parseFromContent", (content) => {
@@ -151,6 +426,14 @@ export async function activate(ctx) {
     findToolCalls(predicate) {
       const tools = this.getAllToolCalls();
       return tools.filter(predicate);
+    },
+
+    getSessionChangeState(sessionId) {
+      return getSessionChangeState(sessionId);
+    },
+
+    getCurrentSessionChangeState() {
+      return getCurrentSessionChangeState();
     }
   };
 
@@ -169,6 +452,7 @@ export async function activate(ctx) {
   const dispSwitcher = window.zion.editor.registerDecorator({
     id: "dev.tools.switcher",
     apply(editor) {
+      if (String(editor?.panelId || "").startsWith("comments:")) return { dispose() {} };
       toolSwitcher = installToolSwitcher();
       return { dispose() { toolSwitcher?.dispose?.(); toolSwitcher = null; } };
     }

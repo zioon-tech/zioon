@@ -30,7 +30,7 @@ export function createSessionsListRendererFactory(deps) {
     return fallback;
   }
 
-  return function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, onSwitchSession, onAfterChange, viewId = null }) {
+  return function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, getSessionFilter, onSwitchSession, onAfterChange, viewId = null }) {
     const getEffectiveCurrentSessionId = () => {
       try {
         const panelId = window.zion?.panelManager?.getActivePanelId?.() || window.zion?.panels?.getActivePanelId?.() || null;
@@ -255,6 +255,14 @@ export function createSessionsListRendererFactory(deps) {
       }
       const query = String(getQuery() || "").trim().toLowerCase();
       const sortBy = (getSort && getSort()) || "updated";
+      const sessionFilter = typeof getSessionFilter === "function" ? getSessionFilter() : null;
+      const matchesSessionFilter = (node) => {
+        try {
+          return typeof sessionFilter === "function" ? !!sessionFilter(node) : true;
+        } catch {
+          return true;
+        }
+      };
 
       const tree = loadTree() || ensureInitialTree();
       const visibleOrder = [];
@@ -327,6 +335,20 @@ export function createSessionsListRendererFactory(deps) {
         try { setLastSelectedId(id); } catch {}
       };
 
+      const createFolderInline = (parentId) => {
+        const pid = String(parentId || "root");
+        let id = "";
+        try {
+          try { setFolderOpen(pid, true); } catch {}
+          id = String(window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: pid, targetView: viewId, skipRefresh: true }) || "");
+          if (id) {
+            pendingEdit = { id, type: "folder", isNew: true };
+            try { window.zion?.state?.set?.(PENDING_INLINE_EDIT_KEY, null); } catch {}
+          }
+        } catch {}
+        render();
+      };
+
       const shouldUseRootContextMenu = (ev) => {
         const target = ev?.target;
         if (!target?.closest) return true;
@@ -345,6 +367,7 @@ export function createSessionsListRendererFactory(deps) {
 
       listEl.onclick = (ev) => {
         if (ev.target?.closest?.(".zion-session-row")) return;
+        if (ev.target?.closest?.(".session-row-menu")) return;
         hideOpenMenus();
         try { window.zion.state.set("sessions.selectedFolderId", "root"); } catch {}
         try { clearSelection(); } catch {}
@@ -491,13 +514,7 @@ export function createSessionsListRendererFactory(deps) {
           render();
         }));
         menu.appendChild(mkItem(t("ui.newFolder", "New Folder"), () => {
-          try {
-            try { setFolderOpen(folder.id, true); } catch {}
-            window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id, targetView: viewId });
-          } catch {}
-          if (viewId === "sidebar") return;
-          if (typeof onAfterChange === "function") onAfterChange();
-          render();
+          createFolderInline(folder.id);
         }));
         menu.appendChild(mkItem(t("ui.renameFolder", "Rename Folder"), () => {
           pendingEdit = { id: folder.id, type: "folder" };
@@ -545,12 +562,7 @@ export function createSessionsListRendererFactory(deps) {
           render();
         }));
         menu.appendChild(mkItem(t("ui.newFolder", "New Folder"), () => {
-          try {
-            window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: "root", targetView: viewId });
-          } catch {}
-          if (viewId === "sidebar") return;
-          if (typeof onAfterChange === "function") onAfterChange();
-          render();
+          createFolderInline("root");
         }));
         menu.appendChild(mkItem(t("ui.import", "Import Sessions"), () => {
           window.zion.commands.executeCommand("zion.sessions.import");
@@ -692,13 +704,7 @@ export function createSessionsListRendererFactory(deps) {
           t("ui.newFolderHere", "New folder here"),
           (ev) => {
             ev.stopPropagation();
-            try {
-              try { setFolderOpen(folder.id, true); } catch {}
-              window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: folder.id, targetView: viewId });
-            } catch {}
-            if (viewId === "sidebar") return;
-            if (typeof onAfterChange === "function") onAfterChange();
-            render();
+            createFolderInline(folder.id);
           }
         );
 
@@ -921,12 +927,12 @@ export function createSessionsListRendererFactory(deps) {
                 const sub = filterTree(n.children || []);
                 if (matchNode(n) || sub.length > 0) out.push({ ...n, children: sub });
               } else if (n.type === "session") {
-                if (matchNode(n)) out.push(n);
+                if (matchNode(n) && matchesSessionFilter(n)) out.push(n);
               }
             }
             return out;
           };
-          const nodes = query ? filterTree(children) : children;
+          const nodes = (query || sessionFilter) ? filterTree(children) : children;
 
           const sortNodes = (nodes) => {
             const activePendingEdit = getPendingEditForView();

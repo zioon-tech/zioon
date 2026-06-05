@@ -7,6 +7,18 @@
  * - 空列表时提供“创建第一个模型”入口
  * - 行内操作：编辑/删除（仅 user.dynamic 可删除/保存）
  */
+import {
+  THINKING_MODE_FIELDS,
+  getThinkingEffortOptions,
+  getThinkingEffortOptionLabel,
+  getThinkingModeBadge,
+  getThinkingModeLabel,
+  getThinkingModeOptions,
+  getThinkingModeOptionLabel,
+  normalizeThinkingEffort,
+  normalizeThinkingMode
+} from "./model-config-fields.js";
+
 function t(key, fallback, values) {
   const fullKey = `dev.langchain-chat.${key}`;
   try {
@@ -275,8 +287,10 @@ export function installModelSwitcher() {
       if (metaWrap && m) {
         if (m.stream) metaWrap.appendChild(metaBadge("stream"));
         if (m.supportsImage) metaWrap.appendChild(metaBadge("img"));
-        if (m.preservedThinking) metaWrap.appendChild(metaBadge("pThink"));
-        if (m.interleavedThinking) metaWrap.appendChild(metaBadge("iThink"));
+        if (m.thinkingMode && m.thinkingMode !== "auto") metaWrap.appendChild(metaBadge(getThinkingModeOptionLabel(m.thinkingMode)));
+        if (m.thinkingEffort && m.thinkingEffort !== "auto") metaWrap.appendChild(metaBadge(getThinkingEffortOptionLabel(m.thinkingEffort)));
+        if (m.preservedThinking) metaWrap.appendChild(metaBadge(getThinkingModeBadge("preservedThinking")));
+        if (m.interleavedThinking) metaWrap.appendChild(metaBadge(getThinkingModeBadge("interleavedThinking")));
       }
       return;
     }
@@ -286,6 +300,8 @@ export function installModelSwitcher() {
       const m = {
         stream: cfg && cfg.stream !== false,
         supportsImage: !!cfg?.supportsImage,
+        thinkingMode: normalizeThinkingMode(cfg?.thinkingMode),
+        thinkingEffort: normalizeThinkingEffort(cfg?.thinkingEffort),
         preservedThinking: !!cfg?.preservedThinking,
         interleavedThinking: !!cfg?.interleavedThinking
       };
@@ -294,8 +310,10 @@ export function installModelSwitcher() {
       if (metaWrap && m) {
         if (m.stream) metaWrap.appendChild(metaBadge("stream"));
         if (m.supportsImage) metaWrap.appendChild(metaBadge("img"));
-        if (m.preservedThinking) metaWrap.appendChild(metaBadge("pThink"));
-        if (m.interleavedThinking) metaWrap.appendChild(metaBadge("iThink"));
+        if (m.thinkingMode && m.thinkingMode !== "auto") metaWrap.appendChild(metaBadge(getThinkingModeOptionLabel(m.thinkingMode)));
+        if (m.thinkingEffort && m.thinkingEffort !== "auto") metaWrap.appendChild(metaBadge(getThinkingEffortOptionLabel(m.thinkingEffort)));
+        if (m.preservedThinking) metaWrap.appendChild(metaBadge(getThinkingModeBadge("preservedThinking")));
+        if (m.interleavedThinking) metaWrap.appendChild(metaBadge(getThinkingModeBadge("interleavedThinking")));
       }
     } catch {
       // ignore
@@ -716,7 +734,6 @@ export function installModelSwitcher() {
     const providerId = spec?.providerId || DYN_PROVIDER_ID;
     // 对于 deepseek 提供者，允许编辑 API Key，其他字段只读
     const isDeepseekProvider = providerId === "deepseek";
-    const isDynamicProvider = providerId === DYN_PROVIDER_ID;
     const readonly = !!spec?.readonly && !isDeepseekProvider;
 
     const title = document.createElement("div");
@@ -725,8 +742,8 @@ export function installModelSwitcher() {
     editorWrap.appendChild(title);
 
     // 字段
-    const inpId = textInput("e.g. deepseek-chat");
-    const inpLabel = textInput("Display label (optional)");
+    const inpId = textInput(t("modelSwitcher.placeholder.modelId", "e.g. deepseek-chat"));
+    const inpLabel = textInput(t("modelSwitcher.placeholder.label", "e.g. My Model"));
     const selProviderType = document.createElement("select");
     Object.assign(selProviderType.style, {
       flex: "1",
@@ -744,18 +761,48 @@ export function installModelSwitcher() {
     ["openai", "claude", "gemini"].forEach(v => {
       const opt = document.createElement("option");
       opt.value = v;
-      opt.textContent = v === "openai" ? "OpenAI Compatible" : (v === "claude" ? "Claude (Anthropic)" : "Gemini (Google)");
+      opt.textContent = v === "openai" ? t("modelSwitcher.openaiCompatible", "OpenAI compatible") : (v === "claude" ? "Claude" : "Gemini");
       selProviderType.appendChild(opt);
     });
-    const inpUrl = textInput("OpenAI-compatible base URL, e.g. https://api.openai.com/v1/chat/completions");
+    const createSelect = (options) => {
+      const el = document.createElement("select");
+      Object.assign(el.style, {
+        flex: "1",
+        minWidth: "0",
+        boxSizing: "border-box",
+        border: "1px solid var(--border)",
+        borderRadius: "4px",
+        background: "var(--panel)",
+        color: "var(--fg)",
+        outline: "none",
+        padding: "4px 6px",
+        fontSize: "11px",
+        fontFamily: "inherit"
+      });
+      options.forEach((option) => {
+        const opt = document.createElement("option");
+        opt.value = option.value;
+        opt.textContent = option.label;
+        el.appendChild(opt);
+      });
+      return el;
+    };
+    const selThinkingMode = createSelect(getThinkingModeOptions());
+    const selThinkingEffort = createSelect(getThinkingEffortOptions());
+    const inpUrl = textInput(t("modelSwitcher.placeholder.baseUrl", "e.g. https://api.openai.com/v1/chat/completions"));
     const inpKey = textInput("API Key", "password");
-    const inpModelName = textInput("Override body.model (optional)");
-    const inpTemp = numberInput("Temperature (0-2)");
-    const inpMaxTok = numberInput("Max tokens (optional)");
-    const { wrap: cbStreamWrap, cb: cbStream } = checkboxInput("Stream");
-    const { wrap: cbImgWrap, cb: cbImg } = checkboxInput("Supports Image");
-    const { wrap: cbPreservedThinkingWrap, cb: cbPreservedThinking } = checkboxInput("Preserved Thinking");
-    const { wrap: cbInterleavedThinkingWrap, cb: cbInterleavedThinking } = checkboxInput("Interleaved Thinking");
+    const inpModelName = textInput(t("modelSwitcher.placeholder.modelOverride", "Optional, e.g. gpt-4o-mini"));
+    const inpTemp = numberInput("0.7");
+    const inpMaxTok = numberInput("4096");
+    const inpInputPrice = numberInput("0");
+    const inpOutputPrice = numberInput("0");
+    const { wrap: cbStreamWrap, cb: cbStream } = checkboxInput(t("modelSwitcher.stream", "Stream"));
+    const { wrap: cbImgWrap, cb: cbImg } = checkboxInput(t("modelSwitcher.supportsImage", "Supports images"));
+    const thinkingControls = Object.fromEntries(
+      THINKING_MODE_FIELDS.map((field) => [field.key, checkboxInput(getThinkingModeLabel(field.key))])
+    );
+    const cbPreservedThinking = thinkingControls.preservedThinking.cb;
+    const cbInterleavedThinking = thinkingControls.interleavedThinking.cb;
 
     // 赋初值
     if (isNew) {
@@ -767,8 +814,12 @@ export function installModelSwitcher() {
       inpModelName.value = "";
       inpTemp.value = "0";
       inpMaxTok.value = "";
+      inpInputPrice.value = "";
+      inpOutputPrice.value = "";
       cbStream.checked = true;
       cbImg.checked = false;
+      selThinkingMode.value = "auto";
+      selThinkingEffort.value = "auto";
       cbPreservedThinking.checked = false;
       cbInterleavedThinking.checked = false;
     } else {
@@ -781,8 +832,12 @@ export function installModelSwitcher() {
       inpModelName.value = cfg.modelName || cfg.model || "";
       inpTemp.value = typeof cfg.temperature === "number" ? String(cfg.temperature) : "0";
       inpMaxTok.value = cfg.max_tokens != null ? String(cfg.max_tokens) : "";
+      inpInputPrice.value = cfg.pricing?.inputPerMTok != null ? String(cfg.pricing.inputPerMTok) : "";
+      inpOutputPrice.value = cfg.pricing?.outputPerMTok != null ? String(cfg.pricing.outputPerMTok) : "";
       cbStream.checked = cfg.stream !== false;
       cbImg.checked = !!cfg.supportsImage;
+      selThinkingMode.value = normalizeThinkingMode(cfg.thinkingMode);
+      selThinkingEffort.value = normalizeThinkingEffort(cfg.thinkingEffort);
       cbPreservedThinking.checked = !!cfg.preservedThinking;
       cbInterleavedThinking.checked = !!cfg.interleavedThinking;
       
@@ -797,12 +852,16 @@ export function installModelSwitcher() {
         inpModelName.disabled = false;
         inpTemp.disabled = false;
         inpMaxTok.disabled = false;
+        inpInputPrice.disabled = false;
+        inpOutputPrice.disabled = false;
+        selThinkingMode.disabled = false;
+        selThinkingEffort.disabled = false;
         cbStream.disabled = false;
         cbImg.disabled = false;
         cbPreservedThinking.disabled = false;
         cbInterleavedThinking.disabled = false;
       } else if (readonly) {
-        [inpId, inpLabel, selProviderType, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok].forEach(el => el.disabled = true);
+        [inpId, inpLabel, selProviderType, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok, inpInputPrice, inpOutputPrice, selThinkingMode, selThinkingEffort].forEach(el => el.disabled = true);
         [cbStream, cbImg, cbPreservedThinking, cbInterleavedThinking].forEach(el => el.disabled = true);
       }
     }
@@ -810,26 +869,30 @@ export function installModelSwitcher() {
     // ID 只在新建时可编辑；编辑时避免改 keyPath 带来不一致
     if (!isNew && !isDeepseekProvider) inpId.disabled = true;
 
-    editorWrap.appendChild(fieldRow("Provider", (() => {
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.provider", "Provider"), (() => {
       const el = document.createElement("div");
       let providerText = providerId;
       if (isDeepseekProvider) {
-        providerText += " (edit parameters)";
+        providerText += t("modelSwitcher.editableSuffix", " (editable)");
       } else if (providerId !== DYN_PROVIDER_ID) {
-        providerText += " (read-only)";
+        providerText += t("modelSwitcher.readonlySuffix", " (read-only)");
       }
       el.textContent = providerText;
       Object.assign(el.style, { fontSize: "11px", opacity: "0.8" });
       return el;
     })()));
-    editorWrap.appendChild(fieldRow("Model ID", inpId));
-    editorWrap.appendChild(fieldRow("Label", inpLabel));
-    editorWrap.appendChild(fieldRow("Provider Type", selProviderType));
-    editorWrap.appendChild(fieldRow("Base URL", inpUrl));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.modelId", "Model ID"), inpId));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.displayName", "Display Name"), inpLabel));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.providerType", "Provider Type"), selProviderType));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.baseUrl", "Base URL"), inpUrl));
     editorWrap.appendChild(fieldRow("API Key", inpKey));
-    editorWrap.appendChild(fieldRow("Model Param", inpModelName));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.modelOverride", "Model Override"), inpModelName));
     editorWrap.appendChild(fieldRow("Temperature", inpTemp));
     editorWrap.appendChild(fieldRow("Max Tokens", inpMaxTok));
+    editorWrap.appendChild(fieldRow("Input $/1M Tokens", inpInputPrice));
+    editorWrap.appendChild(fieldRow("Output $/1M Tokens", inpOutputPrice));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.thinkingMode", "Thinking Mode"), selThinkingMode));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.thinkingEffort", "Thinking Effort"), selThinkingEffort));
 
     const flagsRow = document.createElement("div");
     Object.assign(flagsRow.style, { display: "flex", gap: "12px", alignItems: "center", marginBottom: "2px", marginTop: "-2px" });
@@ -839,8 +902,13 @@ export function installModelSwitcher() {
 
     const thinkingRow = document.createElement("div");
     Object.assign(thinkingRow.style, { display: "flex", gap: "12px", alignItems: "center", marginBottom: "2px" });
-    thinkingRow.appendChild(cbPreservedThinkingWrap);
-    thinkingRow.appendChild(cbInterleavedThinkingWrap);
+    THINKING_MODE_FIELDS.forEach((field) => {
+      const control = thinkingControls[field.key];
+      if (control?.wrap) {
+        control.wrap.title = String(window.zion?.i18n?.getLocale?.() || "").startsWith("en") ? field.descriptionEn || field.description || "" : field.description || "";
+        thinkingRow.appendChild(control.wrap);
+      }
+    });
     editorWrap.appendChild(thinkingRow);
 
     // 状态行（测试结果）
@@ -882,8 +950,15 @@ export function installModelSwitcher() {
             modelName: inpModelName.value.trim() || undefined,
             temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
             max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
+            pricing: {
+              inputPerMTok: inpInputPrice.value === "" ? undefined : Number(inpInputPrice.value),
+              outputPerMTok: inpOutputPrice.value === "" ? undefined : Number(inpOutputPrice.value),
+              currency: "USD"
+            },
             stream: !!cbStream.checked,
             supportsImage: !!cbImg.checked,
+            thinkingMode: normalizeThinkingMode(selThinkingMode.value),
+            thinkingEffort: normalizeThinkingEffort(selThinkingEffort.value),
             preservedThinking: !!cbPreservedThinking.checked,
             interleavedThinking: !!cbInterleavedThinking.checked
           };
@@ -893,6 +968,7 @@ export function installModelSwitcher() {
           status.style.color = "rgb(60,180,90)";
           // 刷新模型目录以更新状态
           await refreshCatalog();
+          try { window.zion?.events?.emit?.("models/configChanged", { providerId, modelId: id }); } catch {}
           // 刷新列表并关闭编辑器
           refresh();
           setTimeout(() => closeEditor(), 300);
@@ -918,7 +994,14 @@ export function installModelSwitcher() {
         stream: !!cbStream.checked,
         temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
         max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
+        pricing: {
+          inputPerMTok: inpInputPrice.value === "" ? undefined : Number(inpInputPrice.value),
+          outputPerMTok: inpOutputPrice.value === "" ? undefined : Number(inpOutputPrice.value),
+          currency: "USD"
+        },
         supportsImage: !!cbImg.checked,
+        thinkingMode: normalizeThinkingMode(selThinkingMode.value),
+        thinkingEffort: normalizeThinkingEffort(selThinkingEffort.value),
         preservedThinking: !!cbPreservedThinking.checked,
         interleavedThinking: !!cbInterleavedThinking.checked,
         providerType: selProviderType.value || "openai"
@@ -933,6 +1016,7 @@ export function installModelSwitcher() {
       dict[id] = cfg;
       saveDynamicStore(dict);
       await refreshCatalog();
+      try { window.zion?.events?.emit?.("models/configChanged", { providerId: DYN_PROVIDER_ID, modelId: id }); } catch {}
       const cat = catalog();
       const item = cat.find(x => x.providerId === DYN_PROVIDER_ID && x.id === id);
       setActive(DYN_PROVIDER_ID, id, item?.label || id);

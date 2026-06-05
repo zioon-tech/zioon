@@ -119,8 +119,17 @@ function toggleWrapMarker(view: EditorView, marker: string): boolean {
   return true;
 }
 
-function runSelectionAI() {
+function runSelectionAI(view: EditorView) {
   try {
+    const editor = (window as any).zion?.editor?.getEditorForView?.(view);
+    if (editor) {
+      (window as any).zion?.commands?.executeCommand?.("chat.runSelection", {
+        editor,
+        panelId: editor.panelId || null,
+        sessionId: editor.sessionId || null
+      });
+      return;
+    }
     (window as any).zion?.commands?.executeCommand?.("chat.runSelection");
   } catch {}
 }
@@ -272,7 +281,7 @@ export function selectionToolbarExtension(): Extension {
 
         const ai = mkBtn({
           title: "AI with selection",
-          onClick: () => runSelectionAI(),
+          onClick: () => runSelectionAI(this.view),
           label: "AI"
         });
         const divider = document.createElement("span");
@@ -379,6 +388,8 @@ export function selectionToolbarExtension(): Extension {
           this.el.style.visibility = "";
           return;
         }
+
+        this.renderButtons();
 
         const sel = view.state.selection.main;
         const fromCoords = view.coordsAtPos(sel.from);

@@ -109,10 +109,19 @@ function blockClass(role) {
   return `cm-role-block cm-role-block-${safe}`;
 }
 
- 
+const ROLES_NAV_FLASH_EVENT = "zion:roles-nav-flash";
+
+function flashRoleNavLine(view, lineIndex) {
+  if (!view || typeof lineIndex !== "number" || lineIndex < 0) return;
+  try {
+    window.dispatchEvent(new CustomEvent(ROLES_NAV_FLASH_EVENT, {
+      detail: { view, lineIndex }
+    }));
+  } catch {}
+}
 
 /** @param {import('@codemirror/view').EditorView} view @param {string[]} prefixes @param {string[]} highlightBlockRoles @param {RegExp|null} atRegex */
-function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
+function buildDecorations(view, prefixes, highlightBlockRoles, atRegex, flashLineIndex = null, flashSerial = 0) {
   const doc = view.state.doc;
   const builder = new RangeSetBuilder();
 
@@ -187,6 +196,9 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
       let cls = blockClass(currentRole);
       if (shouldStart) cls += " cm-role-block-start";
       if (shouldEnd) cls += " cm-role-block-end";
+      if (line.number - 1 === flashLineIndex) {
+        cls += ` cm-role-nav-flash cm-role-nav-flash-${flashSerial % 2 ? "b" : "a"}`;
+      }
       builder.add(line.from, line.from, Decoration.line({ class: cls }));
     }
 
@@ -399,15 +411,46 @@ function rolesView(opts = {}) {
   return ViewPlugin.fromClass(
     class {
       constructor(view) {
-        this.decorations = buildDecorations(view, prefixes, highlightBlockRoles, atRegex);
+        this.view = view;
+        this.flashLineIndex = null;
+        this.flashSerial = 0;
+        this.flashTimer = 0;
+        this.onFlash = (event) => {
+          const detail = event?.detail || {};
+          if (detail.view !== this.view) return;
+          if (typeof detail.lineIndex !== "number" || detail.lineIndex < 0) return;
+          this.flashLineIndex = detail.lineIndex;
+          this.flashSerial += 1;
+          if (this.flashTimer) window.clearTimeout(this.flashTimer);
+          this.decorations = buildDecorations(this.view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
+          try {
+            this.view.dispatch({});
+          } catch {}
+          this.flashTimer = window.setTimeout(() => {
+            this.flashLineIndex = null;
+            this.decorations = buildDecorations(this.view, prefixes, highlightBlockRoles, atRegex, null, this.flashSerial);
+            try {
+              this.view.dispatch({});
+            } catch {}
+          }, 900);
+        };
+        try { window.addEventListener(ROLES_NAV_FLASH_EVENT, this.onFlash); } catch {}
+        this.decorations = buildDecorations(view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
         try { buildRolesIndexFromState(view.state, prefixes); } catch {}
       }
       update(update) {
         if (update.docChanged || update.viewportChanged) {
-          this.decorations = buildDecorations(update.view, prefixes, highlightBlockRoles, atRegex);
+          this.decorations = buildDecorations(update.view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
         }
         if (update.docChanged) {
           try { buildRolesIndexFromState(update.view.state, prefixes); } catch {}
+        }
+      }
+      destroy() {
+        try { window.removeEventListener(ROLES_NAV_FLASH_EVENT, this.onFlash); } catch {}
+        if (this.flashTimer) {
+          try { window.clearTimeout(this.flashTimer); } catch {}
+          this.flashTimer = 0;
         }
       }
     },
@@ -435,12 +478,13 @@ export function roles(opts = {}) {
     }
   })();
 
-  const jumpToPos = (view, pos) => {
+  const jumpToPos = (view, pos, flashLineIndex = null) => {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
     view.dispatch({
       selection: { anchor: p },
       scrollIntoView: true
     });
+    if (typeof flashLineIndex === "number") flashRoleNavLine(view, flashLineIndex);
     return true;
   };
 
@@ -448,7 +492,7 @@ export function roles(opts = {}) {
     const idx = window?.zion?.state?.get?.("roles.index");
     if (!idx || !Array.isArray(idx.blocks) || !Array.isArray(idx.prefixes)) return null;
     if (idx.prefixes.join("\n") !== prefixes.join("\n")) return null;
-    return idx.blocks.filter(b => b && b.role !== "system");
+    return idx.blocks.filter(b => b && b.role === "user");
   };
 
   const computeNav = (view, blocks) => {
@@ -471,13 +515,14 @@ export function roles(opts = {}) {
     return { curLine0, nextIndex, prevIndex, inside, currentIndex, currentStartLine };
   };
 
-  const setSelectionToPos = (view, pos) => {
+  const setSelectionToPos = (view, pos, flashLineIndex = null) => {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
     const main = view.state.selection.main;
     view.dispatch({
       selection: { anchor: main.anchor, head: p },
       scrollIntoView: true
     });
+    if (typeof flashLineIndex === "number") flashRoleNavLine(view, flashLineIndex);
     return true;
   };
 
@@ -487,13 +532,13 @@ export function roles(opts = {}) {
     const nav = computeNav(view, blocks);
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
     }
 
     const targetIndex = nav.inside ? nav.currentIndex - 1 : nav.prevIndex;
     if (targetIndex < 0) return jumpToPos(view, 0);
     const line0 = blocks[targetIndex].startLine;
-    return jumpToPos(view, view.state.doc.line(line0 + 1).from);
+    return jumpToPos(view, view.state.doc.line(line0 + 1).from, line0);
   };
 
   const selectToPrevRole = (view) => {
@@ -502,13 +547,13 @@ export function roles(opts = {}) {
     const nav = computeNav(view, blocks);
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
     }
 
     const targetIndex = nav.inside ? nav.currentIndex - 1 : nav.prevIndex;
     if (targetIndex < 0) return setSelectionToPos(view, 0);
     const line0 = blocks[targetIndex].startLine;
-    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from);
+    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from, line0);
   };
 
   const jumpToNextRole = (view) => {
@@ -521,13 +566,13 @@ export function roles(opts = {}) {
     }
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
     }
 
     const targetIndex = nav.nextIndex;
     if (targetIndex >= blocks.length) return jumpToPos(view, view.state.doc.length);
     const line0 = blocks[targetIndex].startLine;
-    return jumpToPos(view, view.state.doc.line(line0 + 1).from);
+    return jumpToPos(view, view.state.doc.line(line0 + 1).from, line0);
   };
 
   const selectToNextRole = (view) => {
@@ -540,13 +585,13 @@ export function roles(opts = {}) {
     }
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
     }
 
     const targetIndex = nav.nextIndex;
     if (targetIndex >= blocks.length) return setSelectionToPos(view, view.state.doc.length);
     const line0 = blocks[targetIndex].startLine;
-    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from);
+    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from, line0);
   };
 
   const navBindings = [];

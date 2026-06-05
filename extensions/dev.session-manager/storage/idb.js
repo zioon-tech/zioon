@@ -48,11 +48,19 @@ export async function idbSet(dbName, store, record) {
   const db = await openSessionsDB(dbName);
   return new Promise((resolve, reject) => {
     try {
+      let settled = false;
+      const settle = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        fn(value);
+      };
       const tx = db.transaction(store, "readwrite");
       const st = tx.objectStore(store);
       const req = st.put(record);
-      req.onsuccess = () => resolve(true);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => settle(reject, req.error || tx.error || new Error("idb put error"));
+      tx.oncomplete = () => settle(resolve, true);
+      tx.onabort = () => settle(reject, tx.error || req.error || new Error("idb transaction aborted"));
+      tx.onerror = () => settle(reject, tx.error || req.error || new Error("idb transaction error"));
     } catch (e) {
       reject(e);
     }
@@ -63,11 +71,19 @@ export async function idbDel(dbName, store, key) {
   const db = await openSessionsDB(dbName);
   return new Promise((resolve, reject) => {
     try {
+      let settled = false;
+      const settle = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        fn(value);
+      };
       const tx = db.transaction(store, "readwrite");
       const st = tx.objectStore(store);
       const req = st.delete(key);
-      req.onsuccess = () => resolve(true);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => settle(reject, req.error || tx.error || new Error("idb delete error"));
+      tx.oncomplete = () => settle(resolve, true);
+      tx.onabort = () => settle(reject, tx.error || req.error || new Error("idb transaction aborted"));
+      tx.onerror = () => settle(reject, tx.error || req.error || new Error("idb transaction error"));
     } catch (e) {
       reject(e);
     }
@@ -77,4 +93,3 @@ export async function idbDel(dbName, store, key) {
 export const idbGetKV = (dbName, key) => idbGet(dbName, "kv", key);
 export const idbSetKV = (dbName, key, value) => idbSet(dbName, "kv", { key, value });
 export const idbDelKV = (dbName, key) => idbDel(dbName, "kv", key);
-

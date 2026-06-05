@@ -1,4 +1,4 @@
-import { RangeSetBuilder, type Extension, Transaction } from "@codemirror/state";
+import { Facet, RangeSetBuilder, type Extension, Transaction } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type ViewUpdate } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 import katex from "katex";
@@ -185,7 +185,34 @@ function appendTableInlineMarkdown(parent: HTMLElement, source: string) {
   }
 }
 
+function serializeTableInlineMarkdown(root: Node): string {
+  const serialize = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
+    if (!(node instanceof HTMLElement)) return Array.from(node.childNodes).map(serialize).join("");
+    const children = Array.from(node.childNodes).map(serialize).join("");
+    const tag = node.tagName.toLowerCase();
+    if (tag === "br") return "<br>";
+    if (tag === "strong" || node.classList.contains("cm-md-strong")) return `**${children}**`;
+    if (tag === "s" || node.classList.contains("cm-md-strike")) return `~~${children}~~`;
+    if (tag === "em" || node.classList.contains("cm-md-em")) return `_${children}_`;
+    if (tag === "code" || node.classList.contains("cm-md-code")) return `\`${children}\``;
+    if (tag === "a") {
+      const href = node.getAttribute("href") || "";
+      return href ? `[${children}](${href})` : children;
+    }
+    if (tag === "div" || tag === "p") return children ? `${children}<br>` : "";
+    return children;
+  };
+  return Array.from(root.childNodes).map(serialize).join("").replace(/(<br>)+$/g, "");
+}
+
 type AddDecoration = (from: number, to: number, dec: Decoration) => void;
+
+const wysiwygKeepActiveLineRenderedFacet = Facet.define<boolean, boolean>({
+  combine(values) {
+    return values.length ? values[values.length - 1] !== false : true;
+  }
+});
 
 function addNestedInlineDecorations(add: AddDecoration, contentStart: number, content: string) {
   const nested = /(`([^`\n]+)`)|(!\[([^\]]*)\]\(([^)\n]+)\))|(\[([^\]]+)\]\(([^)\n]+)\))|(\$([^\$\n]+)\$)/g;
@@ -665,28 +692,25 @@ class TableWidget extends WidgetType {
       span.innerHTML = "";
       appendTableInlineMarkdown(span, span.dataset.raw || "");
     };
-    const enterEditMode = () => {
+    const enterRawEditMode = () => {
       if (span.dataset.editing === "true") return;
       span.dataset.editing = "true";
+      span.dataset.editMode = "raw";
       span.contentEditable = "true";
       span.textContent = span.dataset.raw || "";
     };
-    const focusEditable = () => {
-      try {
-        enterEditMode();
-        span.focus();
-        const sel = window.getSelection();
-        if (!sel) return;
-        const range = document.createRange();
-        range.selectNodeContents(span);
-        range.collapse(false);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      } catch {}
+    const enterRenderedEditMode = () => {
+      if (span.dataset.editing === "true") return;
+      span.dataset.editing = "true";
+      span.dataset.editMode = "rendered";
+      span.contentEditable = "true";
+      span.innerHTML = "";
+      appendTableInlineMarkdown(span, span.dataset.raw || "");
     };
-    const focusEditableAtPoint = (clientX: number, clientY: number) => {
+    const focusEditableAtPoint = (clientX: number, clientY: number, raw = false) => {
       try {
-        enterEditMode();
+        if (raw) enterRawEditMode();
+        else enterRenderedEditMode();
         span.focus();
         const docWithCaret = document as Document & {
           caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
@@ -713,31 +737,103 @@ class TableWidget extends WidgetType {
         sel.addRange(range);
       } catch {}
     };
+    const selectCellContents = () => {
+      try {
+        enterRawEditMode();
+        span.focus();
+        const range = document.createRange();
+        range.selectNodeContents(span);
+        const sel = window.getSelection();
+        if (!sel) return;
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch {}
+    };
+    const selectWordAtPoint = (clientX: number, clientY: number) => {
+      try {
+        enterRawEditMode();
+        span.focus();
+        const docWithCaret = document as Document & {
+          caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+          caretRangeFromPoint?: (x: number, y: number) => Range | null;
+        };
+        let node: Node | null = null;
+        let offset = 0;
+        const pos = docWithCaret.caretPositionFromPoint?.(clientX, clientY);
+        if (pos && span.contains(pos.offsetNode)) {
+          node = pos.offsetNode;
+          offset = pos.offset;
+        } else {
+          const hitRange = docWithCaret.caretRangeFromPoint?.(clientX, clientY) || null;
+          if (hitRange && span.contains(hitRange.startContainer)) {
+            node = hitRange.startContainer;
+            offset = hitRange.startOffset;
+          }
+        }
+        if (node && node.nodeType !== Node.TEXT_NODE) {
+          const child = node.childNodes[Math.max(0, Math.min(offset, node.childNodes.length - 1))];
+          if (child?.nodeType === Node.TEXT_NODE) {
+            node = child;
+            offset = 0;
+          }
+        }
+        if (!node || node.nodeType !== Node.TEXT_NODE) {
+          selectCellContents();
+          return;
+        }
+        const text = node.textContent || "";
+        let start = Math.max(0, Math.min(offset, text.length));
+        let end = start;
+        const isWord = (ch: string) => /[\p{L}\p{N}_:/.-]/u.test(ch);
+        while (start > 0 && isWord(text[start - 1])) start--;
+        while (end < text.length && isWord(text[end])) end++;
+        if (start === end) {
+          selectCellContents();
+          return;
+        }
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, end);
+        const sel = window.getSelection();
+        if (!sel) return;
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch {}
+    };
     renderDisplay();
     // 输入时只更新内存，不立即提交
     span.addEventListener("input", () => {
       const setter = getSetter();
-      const nextValue = span.textContent || "";
+      const nextValue = span.dataset.editMode === "raw" ? (span.textContent || "") : serializeTableInlineMarkdown(span);
       span.dataset.raw = nextValue;
       setter(nextValue);
     });
-    span.addEventListener("focus", enterEditMode);
     span.addEventListener("mousedown", (ev) => {
       if (ev.target instanceof HTMLElement && ev.target.closest("a")) return;
       ev.stopPropagation();
-      if (ev.detail >= 2) {
-        enterEditMode();
-        span.focus();
+      ev.preventDefault();
+      if (ev.detail >= 3) {
+        selectCellContents();
         return;
       }
-      ev.preventDefault();
-      focusEditableAtPoint(ev.clientX, ev.clientY);
+      if (ev.detail >= 2) {
+        selectWordAtPoint(ev.clientX, ev.clientY);
+        return;
+      }
+      focusEditableAtPoint(ev.clientX, ev.clientY, false);
     });
     span.addEventListener("dblclick", (ev) => {
+      ev.preventDefault();
       ev.stopPropagation();
     });
     // Enter/Meta+Enter 提交；Shift+Enter 插入换行（但提交时会被替换为空格）
     span.addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "a") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        selectCellContents();
+        return;
+      }
       if (ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
         (ev.target as HTMLElement).blur();
@@ -748,8 +844,9 @@ class TableWidget extends WidgetType {
         const next = document.activeElement as HTMLElement | null;
         const nextIsCellEditor = !!next?.closest(".cm-md-cell-edit");
         if (nextIsCellEditor) return;
-        span.dataset.raw = span.textContent || "";
+        span.dataset.raw = span.dataset.editMode === "raw" ? (span.textContent || "") : serializeTableInlineMarkdown(span);
         span.dataset.editing = "false";
+        span.dataset.editMode = "";
         this.commit();
         renderDisplay();
       });
@@ -762,7 +859,6 @@ class TableWidget extends WidgetType {
       if (e.target.closest("a")) return;
       if (e.target.closest(".cm-md-cell-edit")) return;
       e.preventDefault();
-      focusEditable();
     };
     td.onclick = (e) => {
       e.stopPropagation();
@@ -771,7 +867,6 @@ class TableWidget extends WidgetType {
       if (e.target.closest("a")) return;
       if (e.target.closest(".cm-md-cell-edit")) return;
       e.preventDefault();
-      focusEditable();
     };
     td.innerHTML = "";
     td.appendChild(span);
@@ -1262,14 +1357,13 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         if (name === "Header" || name === "HeaderMark") {
           const line = doc.lineAt(from);
           const text = doc.sliceString(line.from, line.to);
-          const m = /^(#{1,6})\s*(.*)$/.exec(text);
+          const m = /^([ \t]*)(#{1,6})([ \t]*)(.*)$/.exec(text);
           if (m) {
-            const level = Math.min(6, m[1].length);
-            const content = m[2] || "";
-            const markerEnd = line.from + (m[0].length - content.length);
+            const level = Math.min(6, m[2].length);
+            const markerEnd = line.from + m[1].length + m[2].length + m[3].length;
             const isActive = activeLines.has(line.number);
             if (!isActive) {
-              add(line.from, markerEnd, Decoration.mark({ class: "cm-z-hide-syntax" }));
+              add(line.from, markerEnd, Decoration.mark({ class: "cm-z-hide-heading-marker" }));
             }
             const cls = `cm-md-heading cm-md-h${level}`;
             add(markerEnd, line.to, Decoration.mark({ class: cls }));
@@ -1873,7 +1967,7 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
 
   constructor(view: EditorView) {
     try {
-      this.decorations = buildDecorations(view, getActiveLines(view), this.expandedDiagrams, this.rawTables);
+      this.decorations = buildDecorations(view, getSourceRevealLines(view), this.expandedDiagrams, this.rawTables);
     } catch (e) {
       console.error("[wysiwyg] buildDecorations (constructor) error", e);
       this.decorations = Decoration.none;
@@ -1913,10 +2007,85 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
     };
     window.addEventListener("focus", onFocus);
 
+    const readHeadingClick = (ev: MouseEvent | PointerEvent) => {
+      const pos = view.posAtCoords({ x: ev.clientX, y: ev.clientY });
+      if (pos == null) return null;
+      const line = view.state.doc.lineAt(pos);
+      const text = view.state.doc.sliceString(line.from, line.to);
+      const match = /^([ \t]*#{1,6}[ \t]+)/.exec(text);
+      if (!match) return null;
+      const markerEnd = line.from + match[1].length;
+      return {
+        pos,
+        line,
+        markerEnd,
+        markerEndRect: view.coordsAtPos(markerEnd),
+        firstCharEndRect: markerEnd < line.to ? view.coordsAtPos(markerEnd + 1) : null
+      };
+    };
+    const onHeadingPointerEvent = (ev: MouseEvent | PointerEvent) => {
+      try {
+        const hit = readHeadingClick(ev);
+        if (!hit) return;
+        const keepRendered = view.state.facet(wysiwygKeepActiveLineRenderedFacet);
+        const markerEndX = hit.markerEndRect?.left ?? hit.markerEndRect?.right ?? null;
+        const firstCharEndX = hit.firstCharEndRect?.left ?? hit.firstCharEndRect?.right ?? null;
+        const firstCharMidX = markerEndX != null && firstCharEndX != null ? (markerEndX + firstCharEndX) / 2 : null;
+        const isBeforeOrLeftHalfOfFirstChar = hit.pos < hit.markerEnd
+          || (hit.pos === hit.markerEnd + 1 && firstCharMidX != null && ev.clientX <= firstCharMidX);
+        const shouldNormalize = keepRendered
+          && ev.button === 0
+          && !ev.shiftKey
+          && !ev.metaKey
+          && !ev.ctrlKey
+          && !ev.altKey
+          && isBeforeOrLeftHalfOfFirstChar;
+        if (shouldNormalize) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          view.focus();
+          view.dispatch({ selection: { anchor: hit.markerEnd } });
+          return;
+        }
+      } catch {}
+    };
+    view.dom.addEventListener("pointerdown", onHeadingPointerEvent, true);
+    view.dom.addEventListener("mousedown", onHeadingPointerEvent, true);
+    view.dom.addEventListener("mouseup", onHeadingPointerEvent, true);
+    view.dom.addEventListener("click", onHeadingPointerEvent, true);
+
+    const onHeadingKeyDown = (ev: KeyboardEvent) => {
+      try {
+        if (ev.key !== " " || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+        if (!view.state.facet(wysiwygKeepActiveLineRenderedFacet)) return;
+        const range = view.state.selection.main;
+        if (!range.empty) return;
+        const line = view.state.doc.lineAt(range.head);
+        const text = view.state.doc.sliceString(line.from, line.to);
+        const match = /^([ \t]*#{1,6}[ \t]+)/.exec(text);
+        if (!match) return;
+        const contentStart = line.from + match[1].length;
+        if (range.head !== contentStart) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        view.dispatch({
+          changes: { from: range.head, to: range.head, insert: "\u00a0" },
+          selection: { anchor: range.head + 1 },
+          annotations: Transaction.userEvent.of("input.type")
+        });
+      } catch {}
+    };
+    view.dom.addEventListener("keydown", onHeadingKeyDown, true);
+
     (view as any)._wysiwyg_cleanup = () => {
       try { mo.disconnect(); } catch {}
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
+      view.dom.removeEventListener("pointerdown", onHeadingPointerEvent, true);
+      view.dom.removeEventListener("mousedown", onHeadingPointerEvent, true);
+      view.dom.removeEventListener("mouseup", onHeadingPointerEvent, true);
+      view.dom.removeEventListener("click", onHeadingPointerEvent, true);
+      view.dom.removeEventListener("keydown", onHeadingKeyDown, true);
     };
   }
 
@@ -1968,7 +2137,7 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
     }
 
     if (needRebuild || selectionOnly || collapsed) {
-      const activeLines = getActiveLines(update.view);
+      const activeLines = getSourceRevealLines(update.view);
       try {
         this.decorations = buildDecorations(update.view, activeLines, this.expandedDiagrams, this.rawTables);
       } catch (e) {
@@ -1993,6 +2162,53 @@ function getActiveLines(view: EditorView): Set<number> {
     const fromLine = view.state.doc.lineAt(r.from).number;
     const toLine = view.state.doc.lineAt(r.to).number;
     for (let n = fromLine; n <= toLine; n++) lines.add(n);
+  }
+  return lines;
+}
+
+function isIncompleteMarkdownStructureLine(lineText: string): boolean {
+  const text = lineText.trim();
+  return /^(#{1,6}|#{1,6}\s+)$/.test(text)
+    || /^([-+*]|\d+[.)])\s*$/.test(text)
+    || /^>\s*$/.test(text)
+    || /^(- \[[ xX]?\])\s*$/.test(text);
+}
+
+function hasUnfinishedInlineMarkdown(lineText: string): boolean {
+  const withoutEscaped = lineText.replace(/\\./g, "");
+  const ticks = (withoutEscaped.match(/`/g) || []).length;
+  if (ticks % 2 === 1) return true;
+  const dollars = (withoutEscaped.match(/\$/g) || []).length;
+  if (dollars % 2 === 1) return true;
+  if (/!?\[[^\]]*$/.test(withoutEscaped)) return true;
+  if (/!?\[[^\]]+\]\([^)]*$/.test(withoutEscaped)) return true;
+  const boldDelimiters = (withoutEscaped.match(/\*\*/g) || []).length;
+  if (boldDelimiters % 2 === 1) return true;
+  const strikeDelimiters = (withoutEscaped.match(/~~/g) || []).length;
+  if (strikeDelimiters % 2 === 1) return true;
+  return false;
+}
+
+function shouldRevealSourceForSelectionLine(view: EditorView, lineNumber: number): boolean {
+  const line = view.state.doc.line(lineNumber);
+  const text = view.state.doc.sliceString(line.from, line.to);
+  const incomplete = isIncompleteMarkdownStructureLine(text);
+  const unfinished = hasUnfinishedInlineMarkdown(text);
+  const reveal = incomplete || unfinished;
+  return reveal;
+}
+
+function getSourceRevealLines(view: EditorView): Set<number> {
+  const activeLines = getActiveLines(view);
+  const keepRendered = view.state.facet(wysiwygKeepActiveLineRenderedFacet);
+  if (!keepRendered) {
+    return activeLines;
+  }
+  const lines = new Set<number>();
+  for (const ln of activeLines) {
+    try {
+      if (shouldRevealSourceForSelectionLine(view, ln)) lines.add(ln);
+    } catch {}
   }
   return lines;
 }
@@ -2032,6 +2248,9 @@ function getTableBlockRangeAtPos(view: EditorView, startPos: number): { from: nu
   }
 }
 
-export function wysiwyg(): Extension {
-  return [wysiwygPlugin];
+export function wysiwyg(options: { keepActiveLineRendered?: boolean } = {}): Extension {
+  return [
+    wysiwygKeepActiveLineRenderedFacet.of(options.keepActiveLineRendered !== false),
+    wysiwygPlugin
+  ];
 }

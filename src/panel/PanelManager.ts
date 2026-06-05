@@ -89,8 +89,10 @@ export class PanelManager {
       nextSplitNum: this.nextSplitNum,
       panels: this.listPanels().map((panel) => ({
         id: panel.id,
-        tabs: panel.tabs.map((tab) => ({ ...tab })),
-        activeTabId: panel.activeTabId
+        tabs: panel.tabs.filter((tab) => tab.kind !== "file").map((tab) => ({ ...tab })),
+        activeTabId: panel.activeTabId && panel.tabs.some((tab) => tab.id === panel.activeTabId && tab.kind !== "file")
+          ? panel.activeTabId
+          : (panel.tabs.find((tab) => tab.kind !== "file")?.id || null)
       }))
     };
   }
@@ -143,7 +145,9 @@ export class PanelManager {
               .map((tab: any) => ({
                 id: String(tab?.id || "").trim(),
                 title: String(tab?.title || tab?.id || "").trim(),
-                isDirty: !!tab?.isDirty
+                isDirty: !!tab?.isDirty,
+                kind: tab?.kind === "file" ? "file" : "session",
+                meta: tab?.meta && typeof tab.meta === "object" ? { ...tab.meta } : undefined
               }))
               .filter((tab: any) => !!tab.id)
           : [];

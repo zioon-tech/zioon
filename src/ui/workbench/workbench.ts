@@ -233,6 +233,16 @@ export function initWorkbench(host: HTMLElement): {
     }
   };
 
+  const getBottomPanelOverlayRightPx = (isMobile: boolean) => {
+    if (isMobile) return 0;
+    try {
+      const hasAux = auxiliaryBarRuntime.isVisible() && auxiliaryBarRuntime.getViews().length > 0;
+      return hasAux ? getOverlayAuxWidthPx(false) : 0;
+    } catch {
+      return 0;
+    }
+  };
+
   const getMediumOverlayLeftPx = () => {
     try {
       const activityW = activityBarRuntime.isVisible() ? 48 : 0;
@@ -410,6 +420,18 @@ export function initWorkbench(host: HTMLElement): {
   const auxHeader = el("div", "zion-auxbar-header");
   const auxHeadLeft = el("div", "zion-auxbar-headleft");
   const auxTabs = el("div", "zion-auxbar-tabs");
+  auxTabs.addEventListener(
+    "wheel",
+    (event) => {
+      if (auxTabs.scrollWidth <= auxTabs.clientWidth + 1) return;
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      if (!delta) return;
+      const prev = auxTabs.scrollLeft;
+      auxTabs.scrollLeft = prev + delta;
+      if (Math.abs(auxTabs.scrollLeft - prev) > 0.5) event.preventDefault();
+    },
+    { passive: false }
+  );
   const auxTitle = el("div", "zion-auxbar-title");
   const auxActions = el("div", "zion-auxbar-actions");
   const auxHideBtn = el("button", "zion-auxbar-action") as HTMLButtonElement;
@@ -610,10 +632,19 @@ export function initWorkbench(host: HTMLElement): {
         const title = translatedTitle(v);
         tab.title = title;
         tab.setAttribute("aria-label", title);
+        tab.dataset.viewId = v.id;
         tab.textContent = safeText(v.icon ? `${v.icon} ${title}` : title);
         if (v.id === activeViewId) tab.classList.add("is-active");
         (tab as HTMLButtonElement).onclick = () => auxiliaryBarRuntime.activateView(v.id);
         auxTabs.appendChild(tab);
+      }
+      const activeTab = activeViewId
+        ? Array.from(auxTabs.querySelectorAll<HTMLElement>(".zion-auxbar-tab")).find(tab => tab.dataset.viewId === activeViewId) || null
+        : null;
+      if (activeTab) {
+        requestAnimationFrame(() => {
+          try { activeTab.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch {}
+        });
       }
     }
 
@@ -656,6 +687,8 @@ export function initWorkbench(host: HTMLElement): {
       if (!dragging) return;
       dragging = false;
       document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      auxResizer.classList.remove("is-dragging");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       try {
@@ -664,10 +697,13 @@ export function initWorkbench(host: HTMLElement): {
     };
 
     auxResizer.onmousedown = (e) => {
+      e.preventDefault();
       dragging = true;
       startX = e.clientX;
       startW = auxiliaryBarRuntime.getWidth();
       document.body.style.userSelect = "none";
+      document.body.style.cursor = "col-resize";
+      auxResizer.classList.add("is-dragging");
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     };
@@ -840,7 +876,7 @@ export function initWorkbench(host: HTMLElement): {
       bottomPanelEl.style.left = isMobile
         ? "0"
         : `${getMediumOverlayLeftPx()}px`;
-      bottomPanelEl.style.right = "0";
+      bottomPanelEl.style.right = `${getBottomPanelOverlayRightPx(isMobile)}px`;
       bottomPanelEl.style.top = "";
       bottomPanelEl.style.bottom = `${getOverlayReservedBottom()}px`;
       bottomPanelEl.style.height = `${visible ? getOverlayBottomHeightPx() : 0}px`;

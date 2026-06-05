@@ -1,0 +1,33 @@
+{
+  "name": "dev.comments",
+  "version": "0.0.1",
+  "description": "Anchored comment threads with CodeMirror chat-style discussions",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.comments",
+    "name": "Comments",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "comments.createFromSelection",
+          "title": "Create Comment From Selection",
+          "category": "Comments"
+        },
+        {
+          "id": "comments.openPanel",
+          "title": "Open Comments",
+          "category": "Comments"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

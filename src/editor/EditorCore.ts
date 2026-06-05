@@ -2,10 +2,12 @@ import { EditorState, EditorSelection, Compartment, Prec, Transaction, type Exte
 import {
   EditorView,
   keymap,
+  drawSelection,
   highlightActiveLine,
   highlightActiveLineGutter,
   lineNumbers,
-  scrollPastEnd
+  scrollPastEnd,
+  type ViewUpdate
 } from "@codemirror/view";
 import { history, historyKeymap, defaultKeymap, indentWithTab, indentLess, insertNewlineAndIndent } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
@@ -25,6 +27,8 @@ import { linkDetector, linkStyles } from "./link-detector";
 import { autocompleteTheme } from "./extensions/autocompletion/AutocompleteTheme";
 import { insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import { selectionToolbarExtension } from "./extensions/selection-toolbar";
+import { getCM, vim, Vim } from "@replit/codemirror-vim";
+import { inlineWidgetDecorationsExtension } from "./inlineWidgets";
 
 function selectNextOccurrenceDown(view: EditorView): boolean {
   const { state } = view;
@@ -73,6 +77,51 @@ const optionDSelectNext = EditorView.domEventHandlers({
   }
 });
 
+function getSelectedTextForClipboard(view: EditorView): string {
+  const { state } = view;
+  return state.selection.ranges
+    .filter(range => !range.empty)
+    .map(range => state.sliceDoc(range.from, range.to))
+    .join("\n");
+}
+
+function writeSystemClipboard(text: string): void {
+  if (!text) return;
+  try {
+    void navigator.clipboard?.writeText?.(text);
+    return;
+  } catch {}
+
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  } catch {}
+}
+
+const vimVisualYankClipboardSync = EditorView.domEventHandlers({
+  keydown: (event, view) => {
+    if (event.defaultPrevented) return false;
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    if (event.key !== "y" && event.key !== "Y") return false;
+
+    const cm = getCM(view) as any;
+    const vimState = cm?.state?.vim;
+    if (!vimState?.visualMode) return false;
+
+    const selectedText = getSelectedTextForClipboard(view);
+    if (selectedText) writeSystemClipboard(selectedText);
+    return false;
+  }
+});
+
 const selectionHighlightTheme = EditorView.theme({
   ".cm-selectionMatch": {
     backgroundColor: "var(--selection-match-bg)",
@@ -92,10 +141,98 @@ export type EditorSetValueOptions = {
   source?: "session-load";
 };
 
+export type VimOperationalMode = "normal" | "insert" | "replace" | "visual";
+
 let nextEditorCoreSeq = 1;
 
 function createEditorId(panelId: string): string {
   return `${panelId || "editor"}:${nextEditorCoreSeq++}`;
+}
+
+// #region debug-point H:focus-return-scroll-logger
+const FOCUS_RETURN_DEBUG_URL = "http://127.0.0.1:7777/event";
+const FOCUS_RETURN_DEBUG_SESSION = "focus-return-scroll-jump";
+function reportFocusReturnDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown> = {}): void {
+  try {
+    fetch(FOCUS_RETURN_DEBUG_URL, {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: FOCUS_RETURN_DEBUG_SESSION,
+        runId: "post-fix",
+        hypothesisId,
+        location,
+        msg: `[DEBUG] ${msg}`,
+        data,
+        ts: Date.now()
+      })
+    }).catch(() => {});
+  } catch {}
+}
+// #endregion
+
+function getDebugScrollSnapshot(view: EditorView): Record<string, unknown> {
+  const scrollDOM = view.scrollDOM;
+  const selection = view.state.selection.main;
+  const line = view.state.doc.lineAt(selection.head);
+  const active = document.activeElement;
+  return {
+    editorId: view.dom.getAttribute("data-editor-id") || "",
+    panelId: view.dom.getAttribute("data-panel-id") || "",
+    sessionId: view.dom.getAttribute("data-session-id") || "",
+    hasFocus: view.hasFocus,
+    documentHidden: document.hidden,
+    scrollTop: scrollDOM.scrollTop,
+    scrollLeft: scrollDOM.scrollLeft,
+    clientHeight: scrollDOM.clientHeight,
+    scrollHeight: scrollDOM.scrollHeight,
+    viewportFrom: view.viewport.from,
+    viewportTo: view.viewport.to,
+    selectionHead: selection.head,
+    selectionLine: line.number,
+    activeTag: active instanceof HTMLElement ? active.tagName : "",
+    activeClass: active instanceof HTMLElement ? active.className : "",
+    inlineWidgets: getDebugInlineWidgetSnapshot(view)
+  };
+}
+
+function getDebugInlineWidgetSnapshot(view: EditorView): Record<string, unknown> {
+  try {
+    const scrollerRect = view.scrollDOM.getBoundingClientRect();
+    const rows = Array.from(view.dom.querySelectorAll(".zion-inline-widget-row")) as HTMLElement[];
+    let totalHeight = 0;
+    let visibleHeight = 0;
+    let visibleCount = 0;
+    const visibleRows: Array<Record<string, unknown>> = [];
+    for (const row of rows) {
+      const rect = row.getBoundingClientRect();
+      const height = Math.round(rect.height * 10) / 10;
+      totalHeight += height;
+      const visible = rect.bottom >= scrollerRect.top && rect.top <= scrollerRect.bottom;
+      if (!visible) continue;
+      visibleCount++;
+      visibleHeight += height;
+      if (visibleRows.length < 8) {
+        visibleRows.push({
+          top: Math.round((rect.top - scrollerRect.top) * 10) / 10,
+          height,
+          childClass: Array.from(row.children).slice(0, 4).map((child) => (child as HTMLElement).className || child.nodeName)
+        });
+      }
+    }
+    return {
+      rowCount: rows.length,
+      visibleRowCount: visibleCount,
+      totalHeight: Math.round(totalHeight * 10) / 10,
+      visibleHeight: Math.round(visibleHeight * 10) / 10,
+      thinkingInlineCount: view.dom.querySelectorAll(".zion-thinking-inline").length,
+      thinkingCardCount: view.dom.querySelectorAll(".zion-thinking-card").length,
+      toolInlineCount: view.dom.querySelectorAll(".zion-tool-call-inline").length,
+      toolCardCount: view.dom.querySelectorAll(".zion-tool-call-card").length,
+      visibleRows
+    };
+  } catch {
+    return {};
+  }
 }
 
 export class EditorCore {
@@ -113,6 +250,13 @@ export class EditorCore {
   private minimapComp = new Compartment();
   private selectionHighlightEnabled = true;
   private selectionHighlightComp = new Compartment();
+  private vimModeEnabled = false;
+  private vimComp = new Compartment();
+  private vimOperationalMode: VimOperationalMode = "normal";
+  private vimOperationalModeListeners = new Set<(mode: VimOperationalMode) => void>();
+  private vimModeChangeTarget: any = null;
+  private vimModeChangeHandler: ((payload: any) => void) | null = null;
+  private applyingVimOperationalMode = false;
 
   // runtime flags for feature toggles
   private lineNumbersEnabled = true;
@@ -121,10 +265,14 @@ export class EditorCore {
   private syntaxHighlightEnabled = true;
   private foldEnabled = true;
   private lineWrapEnabled = true;
+  private wysiwygEnabled = true;
+  private wysiwygKeepActiveLineRendered = true;
   private disposed = false;
   private _panelId: string;
   private _editorId: string;
   private _sessionId: string | null = null;
+  private debugWindowDisposers: Array<() => void> = [];
+  private focusReturnScrollGuard: { until: number; scrollTop: number; scrollLeft: number; reason: string } | null = null;
 
   constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0") {
     this._panelId = panelId;
@@ -169,7 +317,7 @@ export class EditorCore {
           this.mdComp.of(markdown({ codeLanguages: languages, extensions: [GFM] })),
           this.autocompletionComp.of(getAutocompletionExtension()),
           this.themeComp.of(oneDark),
-          this.uiComp.of(wysiwyg()),
+          this.uiComp.of(this.buildWysiwygExtension()),
           selectionToolbarExtension(),
           linkDetector,
           linkStyles,
@@ -177,6 +325,9 @@ export class EditorCore {
           this.minimapComp.of([]),
           // selection highlight compartment
           this.selectionHighlightComp.of(getSelectionHighlightExtensions(this.selectionHighlightEnabled)),
+          // Vim mode is compartmentalized so the editor can switch modes without recreation.
+          this.vimComp.of([]),
+          inlineWidgetDecorationsExtension(),
           // external visual extensions compartment (extensions can push CM6 ViewPlugins)
           this.externalComp.of(this.externalExtensions),
           this.keymapComp.of(
@@ -189,12 +340,14 @@ export class EditorCore {
             ])
           ),
           // line wrap compartment
-          this.lineWrapComp.of(CMEditorView.lineWrapping)
+          this.lineWrapComp.of(CMEditorView.lineWrapping),
+          this.createFocusReturnDebugExtension()
         ]
       }),
       parent
     });
     this.applyDomIdentity();
+    this.attachFocusReturnDebugWindowListeners();
   }
 
   private applyDomIdentity(): void {
@@ -289,7 +442,13 @@ export class EditorCore {
   }
 
   focus(): void {
+    // #region debug-point B:editor-core-focus
+    reportFocusReturnDebug("B", "src/editor/EditorCore.ts:focus", "EditorCore.focus before view.focus", getDebugScrollSnapshot(this.view));
+    // #endregion
     this.view.focus();
+    // #region debug-point B:editor-core-focus-after
+    requestAnimationFrame(() => reportFocusReturnDebug("B", "src/editor/EditorCore.ts:focus", "EditorCore.focus after frame", getDebugScrollSnapshot(this.view)));
+    // #endregion
   }
 
   updateKeymap(bindings: { key: string; run: () => boolean; preventDefault?: boolean }[]): void {
@@ -310,9 +469,143 @@ export class EditorCore {
 
   // Enable/disable WYSIWYG live preview dynamically
   setWysiwygEnabled(enabled: boolean): void {
+    this.wysiwygEnabled = !!enabled;
     this.view.dispatch({
-      effects: this.uiComp.reconfigure(enabled ? wysiwyg() : [])
+      effects: this.uiComp.reconfigure(this.buildWysiwygExtension())
     });
+  }
+
+  setWysiwygKeepActiveLineRendered(enabled: boolean): void {
+    this.wysiwygKeepActiveLineRendered = !!enabled;
+    this.view.dispatch({
+      effects: this.uiComp.reconfigure(this.buildWysiwygExtension())
+    });
+  }
+
+  private buildWysiwygExtension(): Extension {
+    return this.wysiwygEnabled
+      ? wysiwyg({ keepActiveLineRendered: this.wysiwygKeepActiveLineRendered })
+      : [];
+  }
+
+  private createFocusReturnDebugExtension(): Extension {
+    let lastScrollTop = -1;
+    return [
+      EditorView.domEventHandlers({
+        focus: (_event, view) => {
+          // #region debug-point B:dom-focus
+          reportFocusReturnDebug("B", "src/editor/EditorCore.ts:dom-focus", "CodeMirror DOM focus", getDebugScrollSnapshot(view));
+          // #endregion
+          return false;
+        },
+        blur: (_event, view) => {
+          // #region debug-point B:dom-blur
+          reportFocusReturnDebug("B", "src/editor/EditorCore.ts:dom-blur", "CodeMirror DOM blur", getDebugScrollSnapshot(view));
+          // #endregion
+          return false;
+        },
+        scroll: (_event, view) => {
+          const next = view.scrollDOM.scrollTop;
+          const delta = lastScrollTop < 0 ? 0 : next - lastScrollTop;
+          lastScrollTop = next;
+          // #region debug-point A:cm-scroll
+          reportFocusReturnDebug("A", "src/editor/EditorCore.ts:cm-scroll", "CodeMirror scroller scroll event", {
+            ...getDebugScrollSnapshot(view),
+            delta
+          });
+          // #endregion
+          return false;
+        }
+      }),
+      EditorView.updateListener.of((update: ViewUpdate) => {
+        const scrollChanged = update.view.scrollDOM.scrollTop !== lastScrollTop;
+        if (!update.docChanged && !update.selectionSet && !update.viewportChanged && !update.geometryChanged && !scrollChanged) return;
+        const guard = this.focusReturnScrollGuard;
+        const hasScrollIntoView = update.transactions.some((tr) => tr.scrollIntoView);
+        const now = Date.now();
+        if (
+          guard &&
+          now <= guard.until &&
+          update.geometryChanged &&
+          !update.docChanged &&
+          !update.selectionSet &&
+          !hasScrollIntoView
+        ) {
+          const currentTop = update.view.scrollDOM.scrollTop;
+          const currentLeft = update.view.scrollDOM.scrollLeft;
+          const topDelta = currentTop - guard.scrollTop;
+          const leftDelta = currentLeft - guard.scrollLeft;
+          if ((topDelta || leftDelta) && Math.abs(topDelta) <= 96 && Math.abs(leftDelta) <= 32) {
+            // #region debug-point F:focus-return-scroll-guard
+            reportFocusReturnDebug("F", "src/editor/EditorCore.ts:focus-return-scroll-guard", "Restoring focus-return geometry scroll drift", {
+              ...getDebugScrollSnapshot(update.view),
+              guardReason: guard.reason,
+              guardScrollTop: guard.scrollTop,
+              guardScrollLeft: guard.scrollLeft,
+              topDelta,
+              leftDelta
+            });
+            // #endregion
+            try {
+              update.view.scrollDOM.scrollTop = guard.scrollTop;
+              update.view.scrollDOM.scrollLeft = guard.scrollLeft;
+              lastScrollTop = guard.scrollTop;
+            } catch {}
+            this.focusReturnScrollGuard = null;
+          }
+        }
+        // #region debug-point A:cm-update
+        reportFocusReturnDebug("A", "src/editor/EditorCore.ts:cm-update", "CodeMirror update after transaction/layout", {
+          ...getDebugScrollSnapshot(update.view),
+          docChanged: update.docChanged,
+          selectionSet: update.selectionSet,
+          viewportChanged: update.viewportChanged,
+          geometryChanged: update.geometryChanged,
+          scrollChanged,
+          transactions: update.transactions.map((tr) => ({
+            userEvent: tr.annotation(Transaction.userEvent),
+            scrollIntoView: tr.scrollIntoView,
+            docChanged: tr.docChanged,
+            selection: !!tr.selection
+          }))
+        });
+        // #endregion
+      })
+    ];
+  }
+
+  private attachFocusReturnDebugWindowListeners(): void {
+    const record = (eventName: string) => {
+      if (eventName === "focus" || eventName === "visibilitychange:visible") {
+        this.focusReturnScrollGuard = {
+          until: Date.now() + 260,
+          scrollTop: this.view.scrollDOM.scrollTop,
+          scrollLeft: this.view.scrollDOM.scrollLeft,
+          reason: eventName
+        };
+      }
+      // #region debug-point C:window-focus-visibility
+      reportFocusReturnDebug("C", "src/editor/EditorCore.ts:window-listener", `Window ${eventName}`, {
+        ...getDebugScrollSnapshot(this.view),
+        guardUntil: this.focusReturnScrollGuard?.until || 0,
+        guardScrollTop: this.focusReturnScrollGuard?.scrollTop ?? null
+      });
+      requestAnimationFrame(() => reportFocusReturnDebug("C", "src/editor/EditorCore.ts:window-listener", `Window ${eventName} after frame`, getDebugScrollSnapshot(this.view)));
+      // #endregion
+    };
+    const onFocus = () => record("focus");
+    const onBlur = () => record("blur");
+    const onVisibility = () => record(`visibilitychange:${document.hidden ? "hidden" : "visible"}`);
+    try {
+      window.addEventListener("focus", onFocus);
+      window.addEventListener("blur", onBlur);
+      document.addEventListener("visibilitychange", onVisibility);
+      this.debugWindowDisposers.push(
+        () => window.removeEventListener("focus", onFocus),
+        () => window.removeEventListener("blur", onBlur),
+        () => document.removeEventListener("visibilitychange", onVisibility)
+      );
+    } catch {}
   }
 
   // Theme switcher (light/dark)
@@ -511,12 +804,149 @@ export class EditorCore {
     });
   }
 
+  setVimModeEnabled(enabled: boolean): void {
+    this.vimModeEnabled = !!enabled;
+    this.view.dispatch({
+      effects: this.vimComp.reconfigure(
+        this.vimModeEnabled
+          ? [
+              drawSelection(),
+              Prec.highest(vimVisualYankClipboardSync),
+              Prec.highest(vim({ status: true }))
+            ]
+          : []
+      )
+    });
+    if (this.vimModeEnabled) {
+      this.attachVimModeChangeListener();
+    } else {
+      this.detachVimModeChangeListener();
+      this.setStoredVimOperationalMode("normal", false);
+    }
+  }
+
+  getVimOperationalMode(): VimOperationalMode {
+    return this.vimOperationalMode;
+  }
+
+  onVimOperationalModeChange(listener: (mode: VimOperationalMode) => void): { dispose(): void } {
+    this.vimOperationalModeListeners.add(listener);
+    return { dispose: () => this.vimOperationalModeListeners.delete(listener) };
+  }
+
+  setVimOperationalMode(mode: VimOperationalMode, options: { preserveViewState?: boolean } = {}): void {
+    const preserved = options.preserveViewState ? {
+      scrollTop: this.view.scrollDOM.scrollTop,
+      scrollLeft: this.view.scrollDOM.scrollLeft,
+      selection: this.view.state.selection
+    } : null;
+    const restorePreservedViewState = () => {
+      if (!preserved) return;
+      try {
+        if (this.view.state.selection !== preserved.selection) {
+          this.view.dispatch({ selection: preserved.selection });
+        }
+      } catch {}
+      try {
+        this.view.scrollDOM.scrollTop = preserved.scrollTop;
+        this.view.scrollDOM.scrollLeft = preserved.scrollLeft;
+      } catch {}
+    };
+    this.setStoredVimOperationalMode(mode, false);
+    if (!this.vimModeEnabled) {
+      restorePreservedViewState();
+      return;
+    }
+    const cm = getCM(this.view) as any;
+    const vimState = cm?.state?.vim;
+    if (!cm || !vimState) {
+      restorePreservedViewState();
+      return;
+    }
+    this.attachVimModeChangeListener();
+    this.applyingVimOperationalMode = true;
+    try {
+      if (getVimStateOperationalMode(vimState) === mode) {
+        restorePreservedViewState();
+        return;
+      }
+      if (mode === "normal") {
+        if (vimState.visualMode) Vim.exitVisualMode(cm, false);
+        if (vimState.insertMode) Vim.exitInsertMode(cm, true);
+        return;
+      }
+      if (vimState.visualMode) Vim.exitVisualMode(cm, false);
+      if (vimState.insertMode) Vim.exitInsertMode(cm, true);
+      Vim.handleKey(cm, mode === "replace" ? "R" : mode === "visual" ? "v" : "i", "zion-vim-sync");
+    } catch {
+    } finally {
+      this.applyingVimOperationalMode = false;
+      restorePreservedViewState();
+      if (preserved) {
+        try { requestAnimationFrame(restorePreservedViewState); } catch {}
+      }
+    }
+  }
+
+  private attachVimModeChangeListener(): void {
+    const cm = getCM(this.view) as any;
+    if (!cm || this.vimModeChangeTarget === cm) return;
+    this.detachVimModeChangeListener();
+    this.vimModeChangeTarget = cm;
+    this.vimModeChangeHandler = (payload: any) => {
+      const mode = normalizeVimOperationalMode(payload?.mode, payload?.subMode);
+      this.setStoredVimOperationalMode(mode, !this.applyingVimOperationalMode);
+    };
+    try { cm.on?.("vim-mode-change", this.vimModeChangeHandler); } catch {}
+  }
+
+  private detachVimModeChangeListener(): void {
+    try {
+      if (this.vimModeChangeTarget && this.vimModeChangeHandler) {
+        this.vimModeChangeTarget.off?.("vim-mode-change", this.vimModeChangeHandler);
+      }
+    } catch {}
+    this.vimModeChangeTarget = null;
+    this.vimModeChangeHandler = null;
+  }
+
+  private setStoredVimOperationalMode(mode: VimOperationalMode, notify: boolean): void {
+    const next = normalizeVimOperationalMode(mode);
+    if (this.vimOperationalMode === next) return;
+    this.vimOperationalMode = next;
+    if (!notify) return;
+    for (const listener of this.vimOperationalModeListeners) {
+      try { listener(next); } catch {}
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.externalExtensions = [];
+    for (const dispose of this.debugWindowDisposers.splice(0)) {
+      try { dispose(); } catch {}
+    }
+    this.detachVimModeChangeListener();
+    this.vimOperationalModeListeners.clear();
     try {
       this.view.destroy();
     } catch {}
   }
+}
+
+function normalizeVimOperationalMode(mode: unknown, subMode?: unknown): VimOperationalMode {
+  const raw = String(mode || "").toLowerCase();
+  if (raw === "insert") return "insert";
+  if (raw === "replace") return "replace";
+  if (raw === "visual") return "visual";
+  if (String(subMode || "").toLowerCase().includes("visual")) return "visual";
+  return "normal";
+}
+
+function getVimStateOperationalMode(vimState: any): VimOperationalMode {
+  if (vimState?.visualMode) return "visual";
+  if (vimState?.insertMode && vimState?.mode === "replace") return "replace";
+  if (vimState?.insertMode) return "insert";
+  return "normal";
 }
