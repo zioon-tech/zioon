@@ -13,7 +13,27 @@
       "commands": [
         {
           "id": "tools.parseFromContent",
-          "title": "Parse Tools From Content"
+          "title": "Parse Tools From Content",
+          "titleKey": "dev.tools.cmd.parseFromContent",
+          "categoryKey": "dev.tools.category.tools"
+        },
+        {
+          "id": "tools.openChanges",
+          "title": "Open Changes",
+          "titleKey": "dev.tools.cmd.openChanges",
+          "categoryKey": "dev.tools.category.tools"
+        },
+        {
+          "id": "tools.openFiles",
+          "title": "Open Files",
+          "titleKey": "dev.tools.cmd.openFiles",
+          "categoryKey": "dev.tools.category.tools"
+        },
+        {
+          "id": "tools.openContext",
+          "title": "Open Context",
+          "titleKey": "dev.tools.cmd.openContext",
+          "categoryKey": "dev.tools.category.tools"
         }
       ]
     },
@@ -22,6 +42,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.tools",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.tools"
   }
 }

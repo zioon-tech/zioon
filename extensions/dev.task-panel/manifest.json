@@ -13,15 +13,21 @@
       "commands": [
         {
           "id": "tasks.togglePanel",
-          "title": "Toggle Tasks Panel"
+          "title": "Toggle Tasks Panel",
+          "titleKey": "dev.task-panel.cmd.togglePanel",
+          "categoryKey": "dev.task-panel.category.tasks"
         },
         {
           "id": "tasks.addTask",
-          "title": "Add Task"
+          "title": "Add Task",
+          "titleKey": "dev.task-panel.cmd.addTask",
+          "categoryKey": "dev.task-panel.category.tasks"
         },
         {
           "id": "tasks.clearTasks",
-          "title": "Clear All Tasks"
+          "title": "Clear All Tasks",
+          "titleKey": "dev.task-panel.cmd.clearTasks",
+          "categoryKey": "dev.task-panel.category.tasks"
         }
       ]
     },
@@ -30,6 +36,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.task-panel",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.task-panel"
   }
 }

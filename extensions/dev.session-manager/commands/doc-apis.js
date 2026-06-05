@@ -60,6 +60,7 @@ export function registerSessionDocCommands(opts) {
   const upsertIndexEntry = opts?.upsertIndexEntry;
   const getIndex = opts?.getIndex;
   const refreshSessionsSidebarViewIfOpen = opts?.refreshSessionsSidebarViewIfOpen;
+  const onDocChanged = opts?.onDocChanged;
   const docQueues = new Map();
 
   const enqueueDocWrite = (id, task) => {
@@ -82,6 +83,7 @@ export function registerSessionDocCommands(opts) {
     meta.size = nextText.length;
     meta.hash = hashString(nextText);
     saveMeta(id, meta);
+    try { onDocChanged?.(id, nextText, meta); } catch {}
     const updatedEditors = new Set();
     try {
       const panelsApi = zion.panels || zion.panelManager;
@@ -122,6 +124,11 @@ export function registerSessionDocCommands(opts) {
     if (!id) return "";
     return loadDoc(id);
   });
+  const dGetDocAsync = zion.commands.registerCommand("zion.sessions.getDocAsync", async (id) => {
+    if (!id) return "";
+    if (typeof opts?.loadDocAsync === "function") return opts.loadDocAsync(id);
+    return loadDoc(id);
+  });
   const dGetMeta = zion.commands.registerCommand("zion.sessions.getMeta", (id) => {
     if (!id) return null;
     return loadMeta(id);
@@ -160,5 +167,5 @@ export function registerSessionDocCommands(opts) {
     return true;
   });
 
-  return [dGetDoc, dGetMeta, dSetDoc, dTransformDoc, dAppendToken, dBumpUpdated];
+  return [dGetDoc, dGetDocAsync, dGetMeta, dSetDoc, dTransformDoc, dAppendToken, dBumpUpdated];
 }

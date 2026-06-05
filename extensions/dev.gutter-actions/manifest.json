@@ -7,13 +7,17 @@
   "zion": {
     "id": "dev.gutter-actions",
     "name": "dev.gutter-actions",
+    "nameKey": "dev.plugins.pluginName.dev.gutter-actions",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.gutter-actions",
     "version": "0.0.1",
     "main": "./main.js",
     "contributes": {
       "commands": [
         {
           "id": "dev.gutter-actions.toggle",
-          "title": "Toggle Gutter Actions"
+          "title": "Toggle Gutter Actions",
+          "titleKey": "dev.gutter-actions.cmd.toggle",
+          "categoryKey": "dev.gutter-actions.category.editor"
         }
       ]
     },

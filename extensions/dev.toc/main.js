@@ -3,16 +3,61 @@
  * Features:
  * - Command: toc.show -> open TOC overlay with clickable headings
  * - Command: toc.insert -> insert Markdown TOC list at cursor
- * - Keybinding: Mod-Shift-T -> open TOC
  * - StatusBar button "TOC"
  * - Editor context menu item "Table of Contents"
  */
 import { ViewPlugin } from "@codemirror/view";
 
 let extensionCtx = null;
+const I18N_NS = "dev.toc";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.toc": "目录",
+    "cmd.show": "显示目录",
+    "cmd.insert": "插入目录 (Markdown)",
+    "cmd.toggleGroupByRole": "切换目录按角色分组",
+    "menu.contents": "目录",
+    "menu.groupByRole": "目录：按角色分组",
+    "ui.contents": "目录",
+    "ui.empty": "未找到标题 (使用 #、##、### ...)",
+    "ui.insertHere": "在此插入目录",
+    "ui.close": "关闭",
+    "slash.show.description": "显示文档目录",
+    "slash.insert.description": "在当前位置插入 Markdown 目录",
+    "slash.group.description": "切换目录是否按角色分组"
+  },
+  "en-US": {
+    "category.toc": "TOC",
+    "cmd.show": "Show TOC",
+    "cmd.insert": "Insert TOC (Markdown)",
+    "cmd.toggleGroupByRole": "Toggle TOC Group by Role",
+    "menu.contents": "Contents",
+    "menu.groupByRole": "TOC: Group by Role",
+    "ui.contents": "Contents",
+    "ui.empty": "No headings found (use #, ##, ### ...)",
+    "ui.insertHere": "Insert TOC Here",
+    "ui.close": "Close",
+    "slash.show.description": "Show document table of contents",
+    "slash.insert.description": "Insert Markdown TOC at current position",
+    "slash.group.description": "Toggle whether TOC groups by role"
+  }
+};
+
+function t(key, fallback) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
 
 export async function activate(ctx) {
   extensionCtx = ctx;
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
   // Inject TOC scrollbar hiding style (WebKit + Firefox + IE) to hide vertical scrollbar in TOC area
   try {
     if (!document.getElementById('zion-toc-scrollbar-style')) {
@@ -22,8 +67,8 @@ export async function activate(ctx) {
 .zion-toc-sidepanel, .zion-toc-list, #zion-toc-panel { -ms-overflow-style: none; scrollbar-width: none; }
 .zion-toc-sidepanel::-webkit-scrollbar, .zion-toc-list::-webkit-scrollbar, #zion-toc-panel::-webkit-scrollbar { display: none; width: 0; height: 0; }
 @keyframes toc-pulse {
-  0%, 100% { transform: scale(1); opacity: 0.6; box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4); }
-  50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px rgba(33, 150, 243, 0); }
+  0%, 100% { transform: scale(1); opacity: 0.6; box-shadow: 0 0 0 0 color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 36%, transparent); }
+  50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 0%, transparent); }
 }
       `;
       document.head.appendChild(style);
@@ -775,6 +820,7 @@ export async function activate(ctx) {
       if (shouldOverlay) {
         // Overlay: panel floats above the left side; editor pane keeps full width.
         ui.overlay = true;
+        edEl.style.setProperty("--zion-toc-inline-width", "0px");
         ui.panel.style.position = "absolute";
         ui.panel.style.left = "0";
         ui.panel.style.top = "0";
@@ -787,6 +833,7 @@ export async function activate(ctx) {
       } else {
         // Inline: panel sits left, editor pane fills the rest.
         ui.overlay = false;
+        edEl.style.setProperty("--zion-toc-inline-width", `${basis}px`);
         ui.panel.style.position = "relative";
         ui.panel.style.left = "";
         ui.panel.style.top = "";
@@ -815,6 +862,9 @@ export async function activate(ctx) {
         list.className = 'zion-toc-list';
         // Prevent horizontal scrolling and ensure it fits the panel
         list.style.flex = '1';
+        list.style.fontFamily = 'var(--font-sans)';
+        list.style.fontSize = '13px';
+        list.style.lineHeight = '1.5';
         list.style.overflowY = 'auto';
         list.style.overflowX = 'hidden';
         list.style.minHeight = '0';
@@ -870,19 +920,19 @@ export async function activate(ctx) {
           } catch {}
           row.style.display = "flex";
           row.style.alignItems = "center";
-          row.style.padding = "4px 8px";
-          row.style.gap = "6px";
+          row.style.padding = "5px 4px";
+          row.style.gap = "4px";
           row.style.cursor = "pointer";
           // indentation by semantic level (offset inside role block when grouped)
-          row.style.paddingLeft = `${(item.level - 1 + baseLevelOffset) * 12}px`;
+          row.style.paddingLeft = `${(item.level - 1 + baseLevelOffset) * 10}px`;
 
           // Always create left column for consistent spacing
           const leftCol = document.createElement("div");
           leftCol.style.display = "flex";
           leftCol.style.alignItems = "center";
           leftCol.style.justifyContent = "center";
-          leftCol.style.flex = "0 0 24px";
-          leftCol.style.width = "24px";
+          leftCol.style.flex = "0 0 12px";
+          leftCol.style.width = "12px";
           
           if (item.children && item.children.length > 0) {
             const isCollapsed = tocState.collapsed.has(item.id);
@@ -895,8 +945,8 @@ export async function activate(ctx) {
             chevronBtn.title = isCollapsed ? '展开' : '收起';
             chevronBtn.style.background = 'transparent';
             chevronBtn.style.border = 'none';
-            chevronBtn.style.width = '24px';
-            chevronBtn.style.height = '24px';
+            chevronBtn.style.width = '16px';
+            chevronBtn.style.height = '18px';
             chevronBtn.style.padding = '0';
             chevronBtn.style.cursor = 'pointer';
             chevronBtn.style.display = 'inline-flex';
@@ -926,7 +976,9 @@ export async function activate(ctx) {
           const label = document.createElement("span");
           label.className = "toc-label";
           label.textContent = item.title;
-          label.style.fontSize = "12px";
+          label.style.fontSize = "13px";
+          label.style.lineHeight = "1.5";
+          label.style.letterSpacing = "0";
           label.style.whiteSpace = "nowrap";
           label.style.textOverflow = "ellipsis";
           label.style.overflow = "hidden";
@@ -966,10 +1018,10 @@ export async function activate(ctx) {
         const headings = maybeView ? parseHeadingsFromView(maybeView) : parseHeadingsFromText(ed.getValue());
         if (headings.length === 0) {
           const empty = document.createElement("div");
-          empty.textContent = "No headings found (use #, ##, ### ...)";
+          empty.textContent = t("ui.empty", "No headings found (use #, ##, ### ...)");
           empty.style.opacity = "0.8";
-          empty.style.fontSize = "12px";
-          empty.style.padding = "8px";
+          empty.style.fontSize = "13px";
+          empty.style.padding = "8px 10px";
           list.appendChild(empty);
         } else {
           const roots = buildTree(headings);
@@ -1017,8 +1069,8 @@ export async function activate(ctx) {
             } catch {}
             row.style.display = "flex";
             row.style.alignItems = "center";
-            row.style.padding = "4px 8px";
-            row.style.gap = "6px";
+            row.style.padding = "6px 4px";
+            row.style.gap = "4px";
             row.style.cursor = "pointer";
 
             // chevron or spacer
@@ -1027,8 +1079,8 @@ export async function activate(ctx) {
             leftCol.style.display = "flex";
             leftCol.style.alignItems = "center";
             leftCol.style.justifyContent = "center";
-            leftCol.style.flex = "0 0 24px";
-            leftCol.style.width = "24px";
+            leftCol.style.flex = "0 0 12px";
+            leftCol.style.width = "12px";
             
             if (roots.length > 0) {
               const isCollapsed = tocState.collapsed.has(blockId);
@@ -1041,8 +1093,8 @@ export async function activate(ctx) {
               chevronBtn.title = isCollapsed ? '展开' : '收起';
               chevronBtn.style.background = 'transparent';
               chevronBtn.style.border = 'none';
-              chevronBtn.style.width = '24px';
-              chevronBtn.style.height = '24px';
+              chevronBtn.style.width = '16px';
+              chevronBtn.style.height = '18px';
               chevronBtn.style.padding = '0';
               chevronBtn.style.cursor = 'pointer';
               chevronBtn.style.display = 'inline-flex';
@@ -1072,7 +1124,11 @@ export async function activate(ctx) {
             const label = document.createElement("span");
             label.className = "toc-label";
             // Use color dot to mark role (方案4) - more subtle
-            const roleColors = { user: '#4caf50', assistant: '#2196f3', system: '#9e9e9e' };
+            const roleColors = {
+              user: 'var(--ext-toc-role-user, var(--role-user-fg, #4caf50))',
+              assistant: 'var(--ext-toc-role-assistant, var(--role-assistant-fg, #2196f3))',
+              system: 'var(--ext-toc-role-system, var(--role-system-fg, #9e9e9e))'
+            };
             const dotColor = roleColors[b.role?.toLowerCase()] || roleColors.user;
             // 判断是否是正在生成的块
             const isGenerating = generatingBlockId === blockId;
@@ -1083,10 +1139,10 @@ export async function activate(ctx) {
             dotContainer.style.display = "inline-flex";
             dotContainer.style.alignItems = "center";
             dotContainer.style.justifyContent = "center";
-            dotContainer.style.width = "16px"; // 增加宽度以容纳放大效果
+            dotContainer.style.width = "12px";
             dotContainer.style.height = "16px";
             dotContainer.style.flexShrink = "0";
-            dotContainer.style.marginRight = "4px";
+            dotContainer.style.marginRight = "5px";
 
             if (isLastGenerated) {
               // 持久化指示器 - 使用 SVG 图标代替字符
@@ -1121,7 +1177,9 @@ export async function activate(ctx) {
 
             const textSpan = document.createElement("span");
             textSpan.textContent = (b.preview || '').trim() || '(empty)';
-            textSpan.style.fontSize = "12px";
+            textSpan.style.fontSize = "13px";
+            textSpan.style.lineHeight = "1.5";
+            textSpan.style.letterSpacing = "0";
             textSpan.style.whiteSpace = "nowrap";
             textSpan.style.textOverflow = "ellipsis";
             textSpan.style.overflow = "hidden";
@@ -1272,6 +1330,7 @@ export async function activate(ctx) {
     if (ui.editorEl) {
       ui.editorEl.style.flex = ui.prevEditorFlex || "";
       ui.editorEl.style.width = ui.prevEditorWidth || "";
+      ui.editorEl.style.removeProperty("--zion-toc-inline-width");
     }
     ui.prevScrollerMarginLeft = "";
     ui.prevScrollerMarginRight = "";
@@ -1347,25 +1406,31 @@ export async function activate(ctx) {
     panel.style.borderRadius = "6px";
     panel.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)";
     panel.style.padding = "10px";
+    panel.style.fontFamily = "var(--font-sans)";
+    panel.style.fontSize = "13px";
+    panel.style.lineHeight = "1.5";
     panel.style.zIndex = "99999";
     panel.onclick = (e) => e.stopPropagation();
 
     const title = document.createElement("div");
-    title.textContent = "Contents";
+    title.textContent = t("ui.contents", "Contents");
     title.style.fontWeight = "600";
     title.style.marginBottom = "8px";
     panel.appendChild(title);
 
     const list = document.createElement("div");
     // Constrain list to avoid horizontal scrolling
+    list.style.fontFamily = "var(--font-sans)";
+    list.style.fontSize = "13px";
+    list.style.lineHeight = "1.5";
     list.style.overflowY = "auto";
     list.style.overflowX = "hidden";
     list.style.maxWidth = "100%";
     if (headings.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "No headings found (use #, ##, ### ...)";
+      empty.textContent = t("ui.empty", "No headings found (use #, ##, ### ...)");
       empty.style.opacity = "0.8";
-      empty.style.fontSize = "12px";
+      empty.style.fontSize = "13px";
       list.appendChild(empty);
     } else {
       headings.forEach(h => {
@@ -1373,10 +1438,11 @@ export async function activate(ctx) {
         row.className = "toc-row";
         row.style.display = "flex";
         row.style.alignItems = "center";
-        row.style.padding = "4px 2px";
+        row.style.padding = "5px 4px";
+        row.style.gap = "4px";
         row.style.cursor = "pointer";
         // indent by level (still set inline for per-item indentation)
-        row.style.paddingLeft = `${(h.level - 1) * 12}px`;
+        row.style.paddingLeft = `${(h.level - 1) * 10}px`;
 
         const bullet = document.createElement("span");
         bullet.className = "toc-bullet";
@@ -1385,7 +1451,9 @@ export async function activate(ctx) {
         const label = document.createElement("span");
         label.className = "toc-label";
         label.textContent = h.title;
-        label.style.fontSize = "12px";
+        label.style.fontSize = "13px";
+        label.style.lineHeight = "1.5";
+        label.style.letterSpacing = "0";
         label.style.whiteSpace = "nowrap";
         label.style.textOverflow = "ellipsis";
         label.style.overflow = "hidden";
@@ -1414,7 +1482,7 @@ export async function activate(ctx) {
     footer.style.justifyContent = "space-between";
 
     const insertBtn = document.createElement("button");
-    insertBtn.textContent = "Insert TOC Here";
+    insertBtn.textContent = t("ui.insertHere", "Insert TOC Here");
     insertBtn.style.background = "var(--ext-toc-btn-bg, var(--panel))";
     insertBtn.style.color = "var(--ext-toc-fg, var(--fg))";
     insertBtn.style.border = "1px solid var(--ext-toc-accent, var(--accent))";
@@ -1426,7 +1494,7 @@ export async function activate(ctx) {
     };
 
     const closeBtn = document.createElement("button");
-    closeBtn.textContent = "Close";
+    closeBtn.textContent = t("ui.close", "Close");
     closeBtn.style.background = "var(--ext-toc-btn-bg, var(--panel))";
     closeBtn.style.color = "var(--ext-toc-fg, var(--fg))";
     closeBtn.style.border = "1px solid var(--ext-toc-accent, var(--accent))";
@@ -1540,14 +1608,6 @@ export async function activate(ctx) {
   const d2 = window.zion.commands.registerCommand("toc.insert", () => insertMarkdownTOC());
   ctx.subscriptions.push(d1, d2);
 
-  // keybinding
-  const d3 = window.zion.keybindings.register({
-    command: "toc.show",
-    key: "Mod-Shift-t",
-    when: "editorFocus"
-  });
-  ctx.subscriptions.push(d3);
-
   // 初始化分组开关状态（localStorage -> state）
   try {
     const saved = localStorage.getItem('zion.toc.groupByRole');
@@ -1582,9 +1642,9 @@ export async function activate(ctx) {
   const dSlash1 = window.zion.slash?.registerCommand?.({
     id: "toc.show",
     trigger: ["toc", "table-of-contents"],
-    title: "显示目录",
-    description: "打开文档目录侧边栏",
-    category: "navigation",
+    title: t("cmd.show", "显示目录"),
+    description: t("slash.show.description", "打开文档目录侧边栏"),
+    category: t("category.toc", "目录"),
     icon: "📑",
     priority: 100,
     execute: () => {
@@ -1595,9 +1655,9 @@ export async function activate(ctx) {
   const dSlash2 = window.zion.slash?.registerCommand?.({
     id: "toc.insert",
     trigger: ["insert-toc", "toc-insert"],
-    title: "插入目录",
-    description: "在光标位置插入 Markdown 目录",
-    category: "markdown",
+    title: t("cmd.insert", "插入目录"),
+    description: t("slash.insert.description", "在光标位置插入 Markdown 目录"),
+    category: t("category.toc", "目录"),
     icon: "📋",
     priority: 90,
     execute: () => {
@@ -1608,9 +1668,9 @@ export async function activate(ctx) {
   const dSlash3 = window.zion.slash?.registerCommand?.({
     id: "toc.toggleGroupByRole",
     trigger: ["toc-group", "group-toc"],
-    title: "切换目录分组",
-    description: "按角色分组显示目录",
-    category: "navigation",
+    title: t("cmd.toggleGroupByRole", "切换目录分组"),
+    description: t("slash.group.description", "按角色分组显示目录"),
+    category: t("category.toc", "目录"),
     icon: "📑",
     priority: 80,
     execute: () => {
@@ -1674,15 +1734,15 @@ export async function activate(ctx) {
           const panel = document.createElement("div");
           panel.className = "zion-toc-sidepanel";
           panel.style.display = "none";
-          panel.style.flex = "0 0 240px";
-          panel.style.width = "240px";
-          panel.style.minWidth = "220px";
+          panel.style.flex = "0 0 268px";
+          panel.style.width = "268px";
+          panel.style.minWidth = "240px";
           panel.style.maxWidth = "480px";
           panel.style.height = "100%";
           // Prevent horizontal scrolling in the TOC side panel; allow only vertical scrolling
           panel.style.display = "none";
           panel.style.flexDirection = "column";
-          panel.style.background = "var(--ext-toc-bg, var(--bg))";
+          panel.style.background = "var(--ext-toc-bg, var(--editor-bg, var(--bg)))";
           // remove right border to avoid visual divider
           panel.style.borderRight = "none";
           // panel.style.boxShadow = "2px 0 8px rgba(0,0,0,0.15)";
@@ -1704,7 +1764,7 @@ export async function activate(ctx) {
           let isResizing = false;
           let startX = 0;
           let startWidth = 0;
-          const minWidth = 220;
+          const minWidth = 240;
           const maxWidth = 480;
 
           resizer.addEventListener("mousedown", (e) => {
@@ -1741,8 +1801,9 @@ export async function activate(ctx) {
           const toolbar = document.createElement("div");
           toolbar.style.display = "flex";
           toolbar.style.alignItems = "center";
-          toolbar.style.gap = "6px";
-          toolbar.style.padding = "8px 0px 8px 35px";
+          toolbar.style.gap = "8px";
+          toolbar.style.padding = "10px 8px 8px";
+          toolbar.style.justifyContent = "flex-start";
           toolbar.style.flexShrink = "0";
           toolbar.style.flexGrow = "0";
           // ensure toolbar spans full width and align buttons to the right

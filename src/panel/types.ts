@@ -9,6 +9,8 @@ export interface PanelTab {
   id: PanelTabId;
   title: string;
   isDirty: boolean;
+  kind?: "session" | "file";
+  meta?: Record<string, any>;
 }
 
 export interface PanelDomRefs {

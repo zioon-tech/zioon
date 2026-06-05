@@ -119,8 +119,17 @@ function toggleWrapMarker(view: EditorView, marker: string): boolean {
   return true;
 }
 
-function runSelectionAI() {
+function runSelectionAI(view: EditorView) {
   try {
+    const editor = (window as any).zion?.editor?.getEditorForView?.(view);
+    if (editor) {
+      (window as any).zion?.commands?.executeCommand?.("chat.runSelection", {
+        editor,
+        panelId: editor.panelId || null,
+        sessionId: editor.sessionId || null
+      });
+      return;
+    }
     (window as any).zion?.commands?.executeCommand?.("chat.runSelection");
   } catch {}
 }
@@ -148,6 +157,9 @@ function mkBtn(opts: { title: string; onClick: () => void; label?: string; codic
 
 function shouldShowToolbar(view: EditorView): boolean {
   try {
+    const suppressUntil = Number((window as any).zion?.state?.get?.("selectionToolbar.suppressUntil") || 0);
+    if (suppressUntil && Date.now() < suppressUntil) return false;
+    if (typeof document.hasFocus === "function" && !document.hasFocus()) return false;
     const sel = view.state.selection.main;
     if (sel.empty) return false;
     if (!(view.dom.contains(document.activeElement) || view.hasFocus)) return false;
@@ -176,6 +188,7 @@ export function selectionToolbarExtension(): Extension {
       lastPointerAtMs = 0;
       onPointerDown: ((e: PointerEvent) => void) | null = null;
       onPointerUp: ((e: PointerEvent) => void) | null = null;
+      onWindowBlur: (() => void) | null = null;
       regDisp: { dispose: () => void } | null = null;
       buttonsWrap: HTMLDivElement;
 
@@ -227,10 +240,19 @@ export function selectionToolbarExtension(): Extension {
           this.pointerDownAt = null;
           this.scheduleUpdate(true);
         };
+        this.onWindowBlur = () => {
+          try { this.el.classList.remove("is-visible"); } catch {}
+          try { this.el.style.visibility = ""; } catch {}
+          try {
+            if (this.showTimer) window.clearTimeout(this.showTimer);
+            this.showTimer = 0;
+          } catch {}
+        };
         try {
           view.dom.addEventListener("pointerdown", this.onPointerDown, true);
           window.addEventListener("pointerup", this.onPointerUp, true);
           window.addEventListener("pointercancel", this.onPointerUp, true);
+          window.addEventListener("blur", this.onWindowBlur, true);
         } catch {}
 
         try {
@@ -259,7 +281,7 @@ export function selectionToolbarExtension(): Extension {
 
         const ai = mkBtn({
           title: "AI with selection",
-          onClick: () => runSelectionAI(),
+          onClick: () => runSelectionAI(this.view),
           label: "AI"
         });
         const divider = document.createElement("span");
@@ -367,6 +389,8 @@ export function selectionToolbarExtension(): Extension {
           return;
         }
 
+        this.renderButtons();
+
         const sel = view.state.selection.main;
         const fromCoords = view.coordsAtPos(sel.from);
         const toCoords = view.coordsAtPos(sel.to);
@@ -451,6 +475,7 @@ export function selectionToolbarExtension(): Extension {
             window.removeEventListener("pointerup", this.onPointerUp, true);
             window.removeEventListener("pointercancel", this.onPointerUp, true);
           }
+          if (this.onWindowBlur) window.removeEventListener("blur", this.onWindowBlur, true);
         } catch {}
         try { this.el.remove(); } catch {}
       }

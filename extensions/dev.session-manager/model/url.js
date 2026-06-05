@@ -51,9 +51,11 @@ export function createSessionUrlModel(opts) {
 
   function setLastActiveId(id, opts2) {
     try { setSessionIdToURL(id, opts2); } catch {}
-    try { localStorage.setItem(lsLastKey, id); } catch {}
+    try {
+      if (id) localStorage.setItem(lsLastKey, id);
+      else localStorage.removeItem(lsLastKey);
+    } catch {}
   }
 
   return { getSessionIdFromURL, setSessionIdToURL, buildSessionURL, getLastActiveId, setLastActiveId };
 }
-

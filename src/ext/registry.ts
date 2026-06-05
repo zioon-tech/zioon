@@ -19,6 +19,7 @@ import {
   responsiveRuntime,
   sideBarRuntime
 } from "../ui/workbench/runtime";
+import { createChatUsageStore } from "../chat/usage";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -107,6 +108,7 @@ class Registry {
     this.attachPasteListener(panelId);
     this.attachContextMenu(panelId);
     this.applyDecorators(panelId);
+    try { this.events.emit("editor/attached", { panelId, editorId: editorKey, editor: proxy, core }); } catch {}
 
     // 加载菜单使用统计
     (this as any).loadMenuUsageStats();
@@ -335,6 +337,12 @@ class Registry {
     }
   }
 
+  listAttachedEditorCores(): EditorCore[] {
+    const out: EditorCore[] = [];
+    this.forEachEditorCore((core) => out.push(core));
+    return out;
+  }
+
   private getActiveEditorProxy(): EditorProxy | null {
     if (this.activePanelId && this.editorProxies.has(this.activePanelId)) {
       return this.editorProxies.get(this.activePanelId) || null;
@@ -342,14 +350,25 @@ class Registry {
     return null;
   }
 
+  private getEditorProxyForView(view: EditorView | null | undefined): EditorProxy | null {
+    if (!view) return null;
+    for (const proxy of this.editorProxies.values()) {
+      try {
+        if (proxy.getView?.() === view) return proxy;
+      } catch {}
+    }
+    return null;
+  }
+
   detachEditor(panelId: string) {
     const proxy = this.editorProxies.get(panelId) || null;
+    const editorKey = proxy?.editorId || panelId;
     this.editorCores.delete(panelId);
     this.editorProxies.delete(panelId);
     this.pasteAttached.delete(panelId);
     this.contextMenuAttached.delete(panelId);
     for (const [key, disp] of Array.from(this.decoratorDisposables.entries())) {
-      if (!key.endsWith(`:${panelId}`)) continue;
+      if (!key.endsWith(`:${panelId}`) && !key.endsWith(`:${editorKey}`)) continue;
       try { disp?.dispose?.(); } catch {}
       this.decoratorDisposables.delete(key);
     }
@@ -455,7 +474,7 @@ class Registry {
     el.style.top = `${ny}px`;
   }
 
-  private buildContextMenuPanel(items: MenuItem[], closeMenu: () => void, menuId: string = "editor/context", ctx?: { panelId?: string | null }): HTMLDivElement {
+  private buildContextMenuPanel(items: MenuItem[], closeMenu: () => void, menuId: string = "editor/context", ctx?: { panelId?: string | null; editor?: IEditorProxy | null; sessionId?: string | null }): HTMLDivElement {
     const menu = document.createElement("div");
     menu.className = "zion-context-menu";
     menu.setAttribute("role", "menu");
@@ -585,7 +604,7 @@ class Registry {
           const cmd = it.command;
           if (!cmd) return;
           try {
-            if (menuId === "editor/context" && ctx?.panelId) this.executeCommand(cmd, { panelId: ctx.panelId });
+            if (ctx?.panelId || ctx?.editor || ctx?.sessionId) this.executeCommand(cmd, { panelId: ctx?.panelId || null, editor: ctx?.editor || null, sessionId: ctx?.sessionId || null });
             else this.executeCommand(cmd);
           } finally {
             closeMenu();
@@ -613,7 +632,7 @@ class Registry {
           const cmd = it.command;
           if (!cmd) return;
           try {
-            if (menuId === "editor/context" && ctx?.panelId) this.executeCommand(cmd, { panelId: ctx.panelId });
+            if (ctx?.panelId || ctx?.editor || ctx?.sessionId) this.executeCommand(cmd, { panelId: ctx?.panelId || null, editor: ctx?.editor || null, sessionId: ctx?.sessionId || null });
             else this.executeCommand(cmd);
             // 记录点击统计
             const menuKey = `${menuId}:${cmd}`;
@@ -876,7 +895,7 @@ class Registry {
         // 重新渲染菜单
         const sorted = this.sortMenuItems(items, menuId);
         menu.innerHTML = "";
-        this.rebuildMenuItems(menu, sorted, closeMenu, sorted, menuId);
+        this.rebuildMenuItems(menu, sorted, closeMenu, sorted, menuId, ctx);
       });
 
       // 防止置顶按钮触发菜单点击
@@ -893,7 +912,7 @@ class Registry {
   }
 
   // 重新构建菜单项（用于拖拽后刷新）
-  private rebuildMenuItems(menu: HTMLDivElement, items: MenuItem[], closeMenu: () => void, filtered: MenuItem[], menuId: string = "editor/context"): void {
+  private rebuildMenuItems(menu: HTMLDivElement, items: MenuItem[], closeMenu: () => void, filtered: MenuItem[], menuId: string = "editor/context", ctx?: { panelId?: string | null; editor?: IEditorProxy | null; sessionId?: string | null }): void {
     const isPinnedItem = (item: MenuItem) => {
       const cmd = item.command || "";
       if (!cmd) return false;
@@ -945,7 +964,7 @@ class Registry {
       if (hasKids) {
         // 为二级菜单生成唯一的 menuId，避免与一级菜单的 menuKey 冲突
         const subMenuId = `${menuId}:${it.command || 'submenu'}`;
-        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu, subMenuId);
+        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu, subMenuId, ctx);
         submenu.classList.add("zion-context-submenu");
         submenu.style.position = "fixed";
         submenu.style.display = "none";
@@ -956,7 +975,8 @@ class Registry {
           const cmd = it.command;
           if (!cmd) return;
           try {
-            this.executeCommand(cmd);
+            if (ctx?.panelId || ctx?.editor || ctx?.sessionId) this.executeCommand(cmd, { panelId: ctx?.panelId || null, editor: ctx?.editor || null, sessionId: ctx?.sessionId || null });
+            else this.executeCommand(cmd);
             // 记录点击统计
             const menuKey = `${menuId}:${cmd}`;
             if (this.menuUsageStats[menuKey]) {
@@ -1247,6 +1267,8 @@ class Registry {
 
     const filtered = this.filterMenuTree(items, { hasSelection, editorFocus });
     if (filtered.length === 0) return;
+    const targetEditor = targetPanelId ? (this.editorProxies.get(targetPanelId) || null) : this.getActiveEditorProxy();
+    const targetSessionId = targetEditor?.sessionId || active.getSessionId?.() || null;
 
     // 应用排序
     const sorted = this.sortMenuItems(filtered, "editor/context");
@@ -1271,7 +1293,11 @@ class Registry {
       document.removeEventListener("keydown", escHandler);
     };
 
-    const menu = this.buildContextMenuPanel(sorted, closeMenu, "editor/context", { panelId: targetPanelId || null });
+    const menu = this.buildContextMenuPanel(sorted, closeMenu, "editor/context", {
+      panelId: targetPanelId || null,
+      editor: targetEditor as unknown as IEditorProxy | null,
+      sessionId: targetSessionId
+    });
     menu.style.position = "fixed";
     menu.style.zIndex = "99999";
 
@@ -1589,7 +1615,19 @@ class Registry {
         // Only trigger searchReplaceVisible bindings when the search panel currently has focus.
         if (kb.when === "searchReplaceVisible" && !searchPanelFocused) return false;
 
-        this.executeCommand(kb.command);
+        const result = this.executeCommand(kb.command);
+        try {
+          if (localStorage.getItem("zion.debug.keybindings") === "1") {
+            console.debug("[zion:keybinding]", {
+              key: kb.key,
+              command: kb.command,
+              when: kb.when || "",
+              editorFocus,
+              hasSelection,
+              result
+            });
+          }
+        } catch {}
         return true;
       }
     }));
@@ -2181,6 +2219,7 @@ class Registry {
 }
 
 const registry = new Registry();
+const chatUsageStore = createChatUsageStore();
 
 // Expose window.zion API
 (function expose() {
@@ -2224,7 +2263,11 @@ const registry = new Registry();
     },
     editor: {
       registerPasteHandler: (handler: PasteHandler) => registry.registerPasteHandler(handler),
-      registerDecorator: (dec: Decorator) => (registry as any).registerDecorator(dec)
+      registerDecorator: (dec: Decorator) => (registry as any).registerDecorator(dec),
+      attachEditor: (core: EditorCore, panelId?: string) => (registry as any).attachEditor(core, panelId),
+      detachEditor: (panelId: string) => (registry as any).detachEditor(panelId),
+      listAttachedEditorCores: () => (registry as any).listAttachedEditorCores(),
+      getEditorForView: (view: EditorView) => (registry as any).getEditorProxyForView(view)
     },
     models: {
       registerProvider: (p: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }) =>
@@ -2239,6 +2282,7 @@ const registry = new Registry();
       setActiveModel: (m: { providerId: string; modelId: string } | null) => (registry as any).__chatSetActiveModel(m),
       getActiveModel: () => (registry as any).__chatGetActiveModel()
     },
+    usage: chatUsageStore,
     notification: {
       show: (message: string, options?: {
         type?: 'info' | 'success' | 'warning' | 'error';
@@ -2362,4 +2406,8 @@ export function setActiveEditorPanel(panelId: string | null) {
 
 export function detachEditor(panelId: string) {
   return (registry as any).detachEditor(panelId);
+}
+
+export function listAttachedEditorCores() {
+  return (registry as any).listAttachedEditorCores();
 }

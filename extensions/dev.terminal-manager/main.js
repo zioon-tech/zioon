@@ -1,6 +1,121 @@
 import { mountTerminalManagerSidebarViewInto } from "./session-tools.js";
 
+const I18N_NS = "dev.terminal-manager";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.terminal": "终端",
+    "cmd.openManager": "打开终端管理器",
+    "cmd.closeManager": "关闭终端管理器",
+    "cmd.newSameLevel": "同级新建会话",
+    "ui.terminal": "终端",
+    "ui.refresh": "刷新会话",
+    "ui.sessions": "终端会话",
+    "ui.loading": "正在读取会话...",
+    "ui.newTerminal": "新建终端",
+    "ui.collapseNew": "收起新建",
+    "ui.create": "创建终端",
+    "ui.cancel": "取消",
+    "ui.injectContext": "在对话中注入终端上下文",
+    "ui.type": "类型",
+    "ui.sshUser": "SSH 用户",
+    "ui.sshHost": "SSH 主机（或别名）",
+    "ui.sshHostTitle": "可以使用 SSH config 别名（如 las-dev）或直接填写主机名（如 101.126.47.38）",
+    "ui.sshPort": "SSH 端口",
+    "ui.initialCwd": "初始工作目录",
+    "ui.noSessionsSummary": "还没有终端会话。可以先新建一个本地终端。",
+    "ui.summaryActive": "共 {count} 个会话，当前使用 {name}。",
+    "ui.summaryNoActive": "共 {count} 个会话，还没有当前终端。",
+    "ui.noSessions": "还没有终端会话。点击“新建终端”创建一个本地会话。",
+    "ui.sshSession": "SSH 会话",
+    "ui.localTerminal": "本地终端",
+    "ui.local": "本地",
+    "ui.cwdUnset": "未设置工作目录",
+    "ui.unknown": "未知",
+    "ui.justNow": "刚刚",
+    "ui.current": "当前",
+    "ui.more": "更多",
+    "ui.collapse": "收起",
+    "ui.cwd": "工作目录",
+    "ui.updateCwd": "更新目录",
+    "ui.openTerminal": "打开终端",
+    "ui.reconnect": "重新连接",
+    "ui.closeSession": "关闭会话",
+    "msg.closeFailed": "关闭终端失败，请稍后再试。",
+    "msg.closeFailedWithError": "关闭终端失败：{message}",
+    "msg.cwdFailed": "更新工作目录失败，请稍后再试。",
+    "msg.cwdFailedWithError": "更新工作目录失败：{message}",
+    "msg.cwdUpdated": "已更新工作目录。",
+    "msg.reconnected": "已重新连接终端会话。",
+    "msg.reconnectFailed": "重新连接失败，请稍后再试。",
+    "msg.reconnectFailedWithError": "重新连接失败：{message}",
+    "msg.refreshFailed": "刷新终端列表失败。",
+    "msg.refreshFailedWithError": "刷新终端列表失败：{message}",
+    "msg.createFailed": "创建终端失败，请检查填写内容。",
+    "msg.createFailedWithError": "创建终端失败：{message}",
+    "msg.created": "终端已创建，并设为当前会话。",
+    "msg.closed": "已关闭终端会话。"
+  },
+  "en-US": {
+    "category.terminal": "Terminal",
+    "cmd.openManager": "Open Terminal Manager",
+    "cmd.closeManager": "Close Terminal Manager",
+    "cmd.newSameLevel": "New Session at Same Level",
+    "ui.terminal": "Terminal",
+    "ui.refresh": "Refresh sessions",
+    "ui.sessions": "Terminal Sessions",
+    "ui.loading": "Loading sessions...",
+    "ui.newTerminal": "New Terminal",
+    "ui.collapseNew": "Collapse",
+    "ui.create": "Create Terminal",
+    "ui.cancel": "Cancel",
+    "ui.injectContext": "Inject terminal context into chat",
+    "ui.type": "Type",
+    "ui.sshUser": "SSH User",
+    "ui.sshHost": "SSH Host (or alias)",
+    "ui.sshHostTitle": "Use an SSH config alias (for example las-dev) or direct hostname (for example 101.126.47.38)",
+    "ui.sshPort": "SSH Port",
+    "ui.initialCwd": "Initial CWD",
+    "ui.noSessionsSummary": "No terminal sessions yet. Create a local terminal first.",
+    "ui.summaryActive": "{count} sessions, currently using {name}.",
+    "ui.summaryNoActive": "{count} sessions, no current terminal.",
+    "ui.noSessions": "No terminal sessions yet. Click \"New Terminal\" to create a local session.",
+    "ui.sshSession": "SSH Session",
+    "ui.localTerminal": "Local Terminal",
+    "ui.local": "Local",
+    "ui.cwdUnset": "No working directory",
+    "ui.unknown": "unknown",
+    "ui.justNow": "just now",
+    "ui.current": "Current",
+    "ui.more": "More",
+    "ui.collapse": "Collapse",
+    "ui.cwd": "Working Directory",
+    "ui.updateCwd": "Update CWD",
+    "ui.openTerminal": "Open Terminal",
+    "ui.reconnect": "Reconnect",
+    "ui.closeSession": "Close Session",
+    "msg.closeFailed": "Failed to close terminal. Try again later.",
+    "msg.closeFailedWithError": "Failed to close terminal: {message}",
+    "msg.cwdFailed": "Failed to update working directory. Try again later.",
+    "msg.cwdFailedWithError": "Failed to update working directory: {message}",
+    "msg.cwdUpdated": "Working directory updated.",
+    "msg.reconnected": "Terminal session reconnected.",
+    "msg.reconnectFailed": "Reconnect failed. Try again later.",
+    "msg.reconnectFailedWithError": "Reconnect failed: {message}",
+    "msg.refreshFailed": "Failed to refresh terminal list.",
+    "msg.refreshFailedWithError": "Failed to refresh terminal list: {message}",
+    "msg.createFailed": "Failed to create terminal. Check the form values.",
+    "msg.createFailedWithError": "Failed to create terminal: {message}",
+    "msg.created": "Terminal created and set as current session.",
+    "msg.closed": "Terminal session closed."
+  }
+};
+
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   // 注册 terminalManage 工具 schema 到 chat.tools
   try {
     const terminalManageTool = {
@@ -319,6 +434,7 @@ export async function activate(ctx) {
       pluginId: "dev.terminal-manager",
       icon: "$(terminal)",
       tooltip: "Terminal",
+      tooltipKey: "dev.terminal-manager.ui.terminal",
       sideBarViewId: "terminal.manager",
       order: 30
     });
@@ -326,6 +442,7 @@ export async function activate(ctx) {
       id: "terminal.manager",
       pluginId: "dev.terminal-manager",
       title: "Terminal",
+      titleKey: "dev.terminal-manager.ui.terminal",
       icon: "💻",
       order: 30,
       location: "sidebar",
@@ -333,7 +450,9 @@ export async function activate(ctx) {
         {
           id: "terminal.refresh",
           title: "Refresh sessions",
+          titleKey: "dev.terminal-manager.ui.refresh",
           ariaLabel: "Refresh sessions",
+          ariaLabelKey: "dev.terminal-manager.ui.refresh",
           icon: "↻",
           onClick: () => {
             try {

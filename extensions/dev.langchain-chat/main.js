@@ -5,6 +5,15 @@ import {
   normalizeToolCallsReasoningContentMode,
   shouldForceReasoningContentWithToolCalls
 } from "./reasoning-policy.js";
+import {
+  THINKING_EFFORT_OPTIONS,
+  getThinkingEffortOptionLabel,
+  getThinkingModeOptionLabel,
+  inferThinkingCapability,
+  inferThinkingEffortCapability,
+  normalizeThinkingEffort,
+  normalizeThinkingMode
+} from "./model-config-fields.js";
 import { deepseekProvider } from "./deepseek-provider.js";
 import { claudeProvider } from "./claude-provider.js";
 import { geminiProvider } from "./gemini-provider.js";
@@ -21,6 +30,200 @@ import {
   parseMessages
 } from "../../src/chat/doc";
 import { createChatRuntime } from "../../src/chat/runtime";
+
+const I18N_NS = "dev.langchain-chat";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.chat": "聊天",
+    "category.models": "模型",
+    "cmd.runSelection": "运行聊天（选中内容）",
+    "cmd.run": "运行聊天",
+    "cmd.stop": "停止聊天",
+    "cmd.retry": "重试聊天",
+    "settings.models.title": "模型",
+    "settings.models.description": "管理模型提供商与默认模型",
+    "settings.models.section": "模型",
+    "settings.models.label": "模型",
+    "slash.chat.title": "聊天",
+    "slash.chat.description": "使用当前上下文运行聊天",
+    "slash.chatSelection.title": "聊天（选中内容）",
+    "slash.chatSelection.description": "使用当前选中内容运行聊天",
+    "slash.stop.title": "停止聊天",
+    "slash.stop.description": "中止当前流式运行",
+    "slash.retry.title": "重试聊天",
+    "slash.retry.description": "使用上一次提示重新运行",
+    "slash.selectModel.title": "选择模型",
+    "slash.selectModel.description": "选择一个模型",
+    "slash.openModelSwitcher.title": "打开模型切换器",
+    "slash.openModelSwitcher.description": "打开模型切换面板",
+    "slash.setActiveModel.title": "设置当前模型",
+    "slash.model.label": "模型",
+    "status.model": "模型：{label}",
+    "status.runFinishedSound": "结束提示音",
+    "modelSwitcher.title": "选择模型",
+    "modelSwitcher.add": "添加",
+    "modelSwitcher.addModel": "添加模型",
+    "modelSwitcher.search": "搜索模型...",
+    "modelSwitcher.footer": "Enter：选择 • Esc：关闭 • ↑↓：导航",
+    "modelSwitcher.noModels": "未找到模型",
+    "modelSwitcher.createFirst": "创建第一个模型",
+    "modelSwitcher.edit": "编辑模型",
+    "modelSwitcher.view": "查看模型（只读）",
+    "modelSwitcher.delete": "删除模型",
+    "modelSwitcher.missingUrlOrKey": "缺少 URL 或 Key",
+    "modelSwitcher.testing": "测试中...",
+    "modelSwitcher.timeout": "超时",
+    "modelSwitcher.viewModel": "查看模型",
+    "modelSwitcher.saveChanges": "保存更改",
+    "modelSwitcher.saveModel": "保存模型",
+    "modelSwitcher.test": "测试",
+    "modelSwitcher.testConnectivity": "测试连通性",
+    "modelSwitcher.save": "保存",
+    "modelSwitcher.cancel": "取消",
+    "modelSwitcher.missingModelId": "缺少 Model ID",
+    "modelSwitcher.missingBaseUrl": "缺少 Base URL",
+    "modelSwitcher.missingApiKey": "缺少 API Key",
+    "modelSwitcher.deepseekSaved": "DeepSeek 配置已保存",
+    "modelSwitcher.failedSave": "保存失败：{message}",
+    "modelSwitcher.modelExists": "模型已存在：{id}",
+    "modelSwitcher.saved": "已保存",
+    "modelSwitcher.provider": "提供方",
+    "modelSwitcher.modelId": "模型 ID",
+    "modelSwitcher.displayName": "显示名称",
+    "modelSwitcher.providerType": "接口类型",
+    "modelSwitcher.baseUrl": "接口地址",
+    "modelSwitcher.modelOverride": "模型名覆盖",
+    "modelSwitcher.thinkingMode": "思考方式",
+    "modelSwitcher.thinkingEffort": "思考强度",
+    "modelSwitcher.stream": "流式返回",
+    "modelSwitcher.supportsImage": "支持图片",
+    "modelSwitcher.openaiCompatible": "OpenAI 兼容",
+    "modelSwitcher.editableSuffix": "（可编辑参数）",
+    "modelSwitcher.readonlySuffix": "（只读）",
+    "modelSwitcher.placeholder.modelId": "例如：deepseek-chat",
+    "modelSwitcher.placeholder.label": "例如：My Model",
+    "modelSwitcher.placeholder.baseUrl": "例如：https://api.openai.com/v1/chat/completions",
+    "modelSwitcher.placeholder.modelOverride": "可选，例如：gpt-4o-mini",
+    "status.imageSupported": "图像",
+    "status.imageUnsupported": "无图",
+    "status.thinking.auto": "思考:自动",
+    "status.thinking.off": "思考:关",
+    "status.thinking.on": "思考:开",
+    "status.thinking.none": "思考:无",
+    "status.thinking.prefix": "思考",
+    "status.tooltip.model": "模型: {label}",
+    "status.tooltip.thinkingMode": "思考方式: {value}",
+    "status.tooltip.thinkingEffort": "思考强度: {value}",
+    "status.tooltip.thinkingCapability": "思考能力: {value}",
+    "status.tooltip.effortCapability": "强度调节: {value}",
+    "status.tooltip.imageInput": "图片输入: {value}",
+    "status.tooltip.supported": "支持",
+    "status.tooltip.unsupported": "不支持",
+    "status.tooltip.unknown": "未知",
+    "status.tooltip.unconfirmed": "未确认",
+    "status.tooltip.openSwitcher": "点击模型项打开模型切换器。",
+    "status.tooltip.cycleThinking": "点击直接切换思考强度：自动 → 低 → 中 → 高。"
+  },
+  "en-US": {
+    "category.chat": "Chat",
+    "category.models": "Models",
+    "cmd.runSelection": "Run Chat (Selection)",
+    "cmd.run": "Run Chat",
+    "cmd.stop": "Stop Chat",
+    "cmd.retry": "Retry Chat",
+    "settings.models.title": "Models",
+    "settings.models.description": "Manage model providers and default model",
+    "settings.models.section": "Models",
+    "settings.models.label": "Models",
+    "slash.chat.title": "Chat",
+    "slash.chat.description": "Run chat with current context",
+    "slash.chatSelection.title": "Chat (Selection)",
+    "slash.chatSelection.description": "Run chat using current selection",
+    "slash.stop.title": "Stop Chat",
+    "slash.stop.description": "Abort current streaming run",
+    "slash.retry.title": "Retry Chat",
+    "slash.retry.description": "Re-run chat with the last prompt",
+    "slash.selectModel.title": "Select Model",
+    "slash.selectModel.description": "Pick a model",
+    "slash.openModelSwitcher.title": "Open Model Switcher",
+    "slash.openModelSwitcher.description": "Open the model switcher panel",
+    "slash.setActiveModel.title": "Set Active Model",
+    "slash.model.label": "Model",
+    "status.model": "Model: {label}",
+    "status.runFinishedSound": "Run Finished Sound",
+    "modelSwitcher.title": "Select Model",
+    "modelSwitcher.add": "Add",
+    "modelSwitcher.addModel": "Add Model",
+    "modelSwitcher.search": "Search models...",
+    "modelSwitcher.footer": "Enter: select • Esc: close • ↑↓: navigate",
+    "modelSwitcher.noModels": "No models found",
+    "modelSwitcher.createFirst": "Create your first model",
+    "modelSwitcher.edit": "Edit Model",
+    "modelSwitcher.view": "View Model (read-only)",
+    "modelSwitcher.delete": "Delete Model",
+    "modelSwitcher.missingUrlOrKey": "Missing url or key",
+    "modelSwitcher.testing": "Testing...",
+    "modelSwitcher.timeout": "Timeout",
+    "modelSwitcher.viewModel": "View Model",
+    "modelSwitcher.saveChanges": "Save Changes",
+    "modelSwitcher.saveModel": "Save Model",
+    "modelSwitcher.test": "Test",
+    "modelSwitcher.testConnectivity": "Test connectivity",
+    "modelSwitcher.save": "Save",
+    "modelSwitcher.cancel": "Cancel",
+    "modelSwitcher.missingModelId": "Missing Model ID",
+    "modelSwitcher.missingBaseUrl": "Missing Base URL",
+    "modelSwitcher.missingApiKey": "Missing API Key",
+    "modelSwitcher.deepseekSaved": "DeepSeek configuration saved",
+    "modelSwitcher.failedSave": "Failed to save: {message}",
+    "modelSwitcher.modelExists": "Model already exists: {id}",
+    "modelSwitcher.saved": "Saved",
+    "modelSwitcher.provider": "Provider",
+    "modelSwitcher.modelId": "Model ID",
+    "modelSwitcher.displayName": "Display Name",
+    "modelSwitcher.providerType": "Provider Type",
+    "modelSwitcher.baseUrl": "Base URL",
+    "modelSwitcher.modelOverride": "Model Override",
+    "modelSwitcher.thinkingMode": "Thinking Mode",
+    "modelSwitcher.thinkingEffort": "Thinking Effort",
+    "modelSwitcher.stream": "Stream",
+    "modelSwitcher.supportsImage": "Supports images",
+    "modelSwitcher.openaiCompatible": "OpenAI compatible",
+    "modelSwitcher.editableSuffix": " (editable)",
+    "modelSwitcher.readonlySuffix": " (read-only)",
+    "modelSwitcher.placeholder.modelId": "e.g. deepseek-chat",
+    "modelSwitcher.placeholder.label": "e.g. My Model",
+    "modelSwitcher.placeholder.baseUrl": "e.g. https://api.openai.com/v1/chat/completions",
+    "modelSwitcher.placeholder.modelOverride": "Optional, e.g. gpt-4o-mini",
+    "status.imageSupported": "image",
+    "status.imageUnsupported": "no image",
+    "status.thinking.auto": "Thinking:auto",
+    "status.thinking.off": "Thinking:off",
+    "status.thinking.on": "Thinking:on",
+    "status.thinking.none": "Thinking:none",
+    "status.thinking.prefix": "Thinking",
+    "status.tooltip.model": "Model: {label}",
+    "status.tooltip.thinkingMode": "Thinking mode: {value}",
+    "status.tooltip.thinkingEffort": "Thinking effort: {value}",
+    "status.tooltip.thinkingCapability": "Thinking capability: {value}",
+    "status.tooltip.effortCapability": "Effort control: {value}",
+    "status.tooltip.imageInput": "Image input: {value}",
+    "status.tooltip.supported": "Supported",
+    "status.tooltip.unsupported": "Unsupported",
+    "status.tooltip.unknown": "Unknown",
+    "status.tooltip.unconfirmed": "Unconfirmed",
+    "status.tooltip.openSwitcher": "Click the model item to open the model switcher.",
+    "status.tooltip.cycleThinking": "Click to cycle thinking effort: Auto → Low → Medium → High."
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
 
 function findAssistantEndLineFromDoc(text, startLineHint = 0) {
   const lines = String(text || "").replace(/\r/g, "").split("\n");
@@ -134,6 +337,11 @@ function ensureTrailingUserPromptVisible(editor, opts = {}) {
 }
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   const RUN_FINISHED_SOUND_STATE_KEY = "chat.runFinishedSoundEnabled";
   const RUN_FINISHED_SOUND_LS_KEY = "zion.chat.runFinishedSoundEnabled";
   const llm = window.zion.llm || (window.zion.llm = {});
@@ -210,7 +418,8 @@ export async function activate(ctx) {
     return {
       providerId,
       modelId,
-      label: String(active?.label || item?.label || modelId)
+      label: String(active?.label || item?.label || modelId),
+      thinkingEffort: normalizeThinkingEffort(active?.thinkingEffort)
     };
   }
   function ensureActiveModel() {
@@ -277,7 +486,8 @@ export async function activate(ctx) {
   let modelSwitcher = null;
   const decSwitcher = window.zion.editor.registerDecorator({
     id: "dev.langchain-chat.model-switcher",
-    apply() {
+    apply(editor) {
+      if (String(editor?.panelId || "").startsWith("comments:")) return { dispose() {} };
       modelSwitcher = installModelSwitcher();
       return { dispose() { modelSwitcher?.dispose?.(); modelSwitcher = null; } };
     }
@@ -287,6 +497,7 @@ export async function activate(ctx) {
   const decOverviewRail = window.zion.editor.registerDecorator({
     id: "dev.langchain-chat.overview-rail",
     apply(editor) {
+      if (String(editor?.panelId || "").startsWith("comments:")) return { dispose() {} };
       return createChatOverviewRail(editor);
     }
   });
@@ -579,11 +790,16 @@ export async function activate(ctx) {
       return;
     }
     const panelSessionId = panelId ? getPanelSessionId(panelId) : null;
-    if (panelId && panelSessionId && sid !== panelSessionId) {
+    const hasExplicitEditorSession = !!(opts?.editor && opts?.sessionId);
+    if (panelId && panelSessionId && sid !== panelSessionId && !hasExplicitEditorSession) {
       console.warn("[langchain-chat] run aborted: target session does not match editor panel", { panelId, sid, panelSessionId });
       return;
     }
-    const runModel = getResolvedModelSnapshot();
+    const runThinkingEffort = normalizeThinkingEffort(opts?.thinkingEffort);
+    const skipSessionPersistence = !!opts?.skipSessionPersistence;
+    const runModel = getResolvedModelSnapshot(
+      runThinkingEffort === "auto" ? null : { ...window.zion.state.get("chat.activeModel"), thinkingEffort: runThinkingEffort }
+    );
     const streaming = !!getRunState(sid)?.streaming;
     if (streaming) {
       console.log("[langchain-chat] already streaming in current session, abort");
@@ -627,6 +843,9 @@ export async function activate(ctx) {
 
     // 解析角色块
     const baseMessages = parseMessages(contentBeforeCursor);
+    if (Array.isArray(opts?.contextMessages) && opts.contextMessages.length) {
+      baseMessages.unshift(...opts.contextMessages.filter((m) => m?.role && typeof m.content === "string"));
+    }
     if (baseMessages.length === 0) {
       window.zion.events.emit("chat/runError", { error: "No content to send" });
       console.log("[langchain-chat] no content, abort");
@@ -824,14 +1043,14 @@ export async function activate(ctx) {
             startLineHint: insertLine,
             autoInsertUserPrompt: !!autoInsert
           });
-          if (finalized.text !== currentDoc) {
+          if (!skipSessionPersistence && finalized.text !== currentDoc) {
             window.zion.commands.executeCommand("zion.sessions.setDoc", { id: sid, text: finalized.text });
           }
         } catch {}
       }
       tokenBuffer.stop();
       runtime.markAwaiting(sid);
-      window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
+      if (!skipSessionPersistence) window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
       window.zion.events.emit("chat/runFinished", { runId, sessionId: sid, panelId });
     };
 
@@ -843,6 +1062,8 @@ export async function activate(ctx) {
       const promises = [];
 
       let stepReasoning = "";
+      const stepIndex = Number(window.zion?.state?.get?.(`chat.usageStep.${runId}`) || 0) + 1;
+      try { window.zion?.state?.set?.(`chat.usageStep.${runId}`, stepIndex); } catch {}
 
       const streamResult = await runStream({
         messages: msgs,
@@ -901,6 +1122,25 @@ export async function activate(ctx) {
       });
 
       stepReasoning = String(streamResult?.reasoning_content || "");
+      if (streamResult?.usage) {
+        try {
+          const prov = window.zion?.models?.getProvider?.(runModel?.providerId);
+          const cfg = await prov?.resolve?.(runModel?.modelId);
+          window.zion?.usage?.record?.({
+            runId,
+            sessionId: opts?.usageSessionId || sid,
+            panelId,
+            providerId: runModel?.providerId,
+            providerType: cfg?.providerType || runModel?.providerId,
+            modelId: runModel?.modelId,
+            modelName: cfg?.modelName || runModel?.modelId,
+            label: runModel?.label || cfg?.label || cfg?.modelName || runModel?.modelId,
+            stepIndex,
+            usage: streamResult.usage,
+            cfg
+          });
+        } catch {}
+      }
 
       // 等待工具执行完成，确保生成 tool 结果
       if (promises.length > 0) {
@@ -1285,7 +1525,7 @@ export async function activate(ctx) {
     const reg = window.zion?.__editorHeaderMenuRegistry;
     const disp = reg?.register?.({
       id: "dev.langchain-chat.runFinishedSound.headerMenu",
-      title: "Run Finished Sound",
+      title: t("status.runFinishedSound", "Run Finished Sound"),
       section: "Chat",
       order: 35,
       kind: "toggle",
@@ -1345,7 +1585,6 @@ export async function activate(ctx) {
   const kbs = [
     window.zion.keybindings.register({ command: "chat.runSelection", key: "Mod-Enter", when: "editorFocus" }),
     window.zion.keybindings.register({ command: "chat.stop", key: "Escape", when: "editorFocus" }),
-    window.zion.keybindings.register({ command: "chat.retry", key: "Mod-Shift-r", when: "editorFocus" }),
     window.zion.keybindings.register({ command: "models.openSwitcher", key: "Mod-Shift-m", when: "editorFocus" })
   ];
   ctx.subscriptions.push(...kbs);
@@ -1362,13 +1601,13 @@ export async function activate(ctx) {
 
     const runChatMenuItem = {
       command: "chat.run",
-      title: "Run Chat",
+      title: t("cmd.run", "Run Chat"),
       when: "editorFocus",
       submenu: []
     };
     const selectModelMenuItem = {
       command: "models.openSwitcher",
-      title: "Select Model...",
+      title: t("slash.selectModel.title", "Select Model") + "...",
       when: "editorFocus",
       submenu: []
     };
@@ -1378,12 +1617,12 @@ export async function activate(ctx) {
       window.zion.menus.register("editor/context", selectModelMenuItem),
       window.zion.menus.register("editor/context", {
         command: "chat.stop",
-        title: "Stop Chat",
+        title: t("cmd.stop", "Stop Chat"),
         when: "editorFocus"
       }),
       window.zion.menus.register("editor/context", {
         command: "chat.retry",
-        title: "Retry Chat",
+        title: t("cmd.retry", "Retry Chat"),
         when: "editorFocus"
       })
     ];
@@ -1423,11 +1662,42 @@ export async function activate(ctx) {
       return items;
     };
 
+    const getActiveThinkingEffortSync = () => {
+      const active = window.zion.state.get("chat.activeModel");
+      if (!active?.providerId || !active?.modelId) return "auto";
+      try {
+        if (active.providerId === "user.dynamic") {
+          const raw = localStorage.getItem("zion.models.dynamic");
+          const dict = raw ? JSON.parse(raw) : {};
+          return normalizeThinkingEffort(dict?.[active.modelId]?.thinkingEffort);
+        }
+        const key =
+          active.providerId === "deepseek" ? "zion.deepseek.config" :
+          active.providerId === "anthropic" ? "zion.claude.config" :
+          active.providerId === "google" ? "zion.gemini.config" :
+          "";
+        if (!key) return "auto";
+        const raw = localStorage.getItem(key);
+        const cfg = raw ? JSON.parse(raw) : {};
+        return normalizeThinkingEffort(cfg?.thinkingEffort);
+      } catch {
+        return "auto";
+      }
+    };
+
+    const buildThinkingRunMenuItems = () => ([
+      { command: "chat.setThinkingEffort.low", title: `${getActiveThinkingEffortSync() === "low" ? "✓ " : ""}思考强度：低`, when: "editorFocus" },
+      { command: "chat.setThinkingEffort.medium", title: `${getActiveThinkingEffortSync() === "medium" ? "✓ " : ""}思考强度：中`, when: "editorFocus" },
+      { command: "chat.setThinkingEffort.high", title: `${getActiveThinkingEffortSync() === "high" ? "✓ " : ""}思考强度：高`, when: "editorFocus" }
+    ]);
+
     const rebuildContextMenu = () => {
       const active = window.zion.state.get("chat.activeModel");
       const defaultLabel = active?.label || active?.modelId || "unknown";
-      runChatMenuItem.title = `Run Chat (${defaultLabel})`;
-      runChatMenuItem.submenu = [];
+      const thinkingEffort = getActiveThinkingEffortSync();
+      const thinkingText = thinkingEffort === "auto" ? "模型默认" : getThinkingEffortOptionLabel(thinkingEffort);
+      runChatMenuItem.title = `${t("cmd.run", "Run Chat")} (${defaultLabel} · 思考强度：${thinkingText})`;
+      runChatMenuItem.submenu = buildThinkingRunMenuItems();
       selectModelMenuItem.submenu = buildModelMenuItems("models.setDefaultModel");
     };
 
@@ -1445,13 +1715,155 @@ export async function activate(ctx) {
         }
       },
       window.zion.state.onDidChange("chat.activeModel", rebuildContextMenu),
-      window.zion.state.onDidChange("models.catalog", rebuildContextMenu)
+      window.zion.state.onDidChange("models.catalog", rebuildContextMenu),
+      window.zion.events.on("models/configChanged", rebuildContextMenu)
     );
   }
 
   // 状态栏 Model 按钮（动态展示与切换）
   let modelBtnDisp = null;
-  const updateModelBtn = () => {
+  let thinkingBtnDisp = null;
+  let modelStatusSeq = 0;
+  const DYN_MODELS_KEY = "zion.models.dynamic";
+  const providerConfigKey = (providerId) => {
+    if (providerId === "deepseek") return "zion.deepseek.config";
+    if (providerId === "anthropic") return "zion.claude.config";
+    if (providerId === "google") return "zion.gemini.config";
+    return "";
+  };
+  const loadLocalJson = (key, fallback = {}) => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const saveActiveModelConfigPatch = async (patch) => {
+    const active = window.zion.state.get("chat.activeModel");
+    if (!active?.providerId || !active?.modelId) return;
+    if (active.providerId === "user.dynamic") {
+      const dict = loadLocalJson(DYN_MODELS_KEY, {});
+      const prev = dict[active.modelId] || {};
+      dict[active.modelId] = { ...prev, ...patch };
+      localStorage.setItem(DYN_MODELS_KEY, JSON.stringify(dict));
+    } else {
+      const key = providerConfigKey(active.providerId);
+      if (!key) return;
+      const prev = loadLocalJson(key, {});
+      localStorage.setItem(key, JSON.stringify({ ...prev, ...patch }));
+    }
+    try { await window.zion.commands.executeCommand("models.listModels"); } catch {}
+    try { window.zion.events.emit("models/configChanged", { providerId: active.providerId, modelId: active.modelId }); } catch {}
+    await updateModelBtn();
+  };
+  const setActiveThinkingEffort = async (effort) => {
+    const next = normalizeThinkingEffort(effort);
+    if (next === "auto") return;
+    await saveActiveModelConfigPatch({
+      thinkingEffort: next,
+      thinkingMode: "on"
+    });
+    try {
+      window.zion?.notification?.show?.(`思考强度已切换为：${getThinkingEffortOptionLabel(next)}`, {
+        type: "info",
+        duration: 2200
+      });
+    } catch {}
+  };
+  ctx.subscriptions.push(
+    window.zion.commands.registerCommand("chat.setThinkingEffort.low", () => setActiveThinkingEffort("low")),
+    window.zion.commands.registerCommand("chat.setThinkingEffort.medium", () => setActiveThinkingEffort("medium")),
+    window.zion.commands.registerCommand("chat.setThinkingEffort.high", () => setActiveThinkingEffort("high"))
+  );
+  const cycleActiveThinkingEffort = async () => {
+    const active = window.zion.state.get("chat.activeModel");
+    if (!active?.providerId || !active?.modelId) return;
+    let cfg = null;
+    try {
+      cfg = await window.zion.models.getProvider(active.providerId)?.resolve?.(active.modelId);
+    } catch {}
+    const current = normalizeThinkingEffort(cfg?.thinkingEffort);
+    const values = THINKING_EFFORT_OPTIONS.map((option) => option.value);
+    const next = values[(Math.max(0, values.indexOf(current)) + 1) % values.length] || "auto";
+    await saveActiveModelConfigPatch({
+      thinkingEffort: next,
+      thinkingMode: next === "auto" ? "auto" : "on"
+    });
+  };
+  const buildModelStatus = ({ active, cfg, activeItem }) => {
+    const modelLabel = active?.label || activeItem?.label || active?.modelId || "unknown";
+    const providerId = active?.providerId || activeItem?.providerId || cfg?.providerId || "";
+    const modelId = active?.modelId || activeItem?.id || cfg?.id || "";
+    const modelName = cfg?.modelName || modelId;
+    const thinkingMode = normalizeThinkingMode(cfg?.thinkingMode);
+    const thinkingEffort = normalizeThinkingEffort(cfg?.thinkingEffort);
+    const thinkingCapability = inferThinkingCapability({
+      providerId,
+      providerType: cfg?.providerType,
+      modelId,
+      modelName,
+      cfg
+    });
+    const supportsThinkingEffort = inferThinkingEffortCapability({
+      providerId,
+      providerType: cfg?.providerType,
+      modelId,
+      modelName,
+      cfg
+    });
+    const imageText = cfg?.supportsImage ? t("status.imageSupported", "image") : t("status.imageUnsupported", "no image");
+    let thinkingText = t("status.thinking.auto", "Thinking:auto");
+    if (thinkingMode === "off") {
+      thinkingText = t("status.thinking.off", "Thinking:off");
+    } else if (thinkingEffort !== "auto") {
+      thinkingText = `${t("status.thinking.prefix", "Thinking")}:${getThinkingEffortOptionLabel(thinkingEffort)}`;
+    } else if (thinkingMode === "on") {
+      thinkingText = t("status.thinking.on", "Thinking:on");
+    } else if (thinkingCapability === "unsupported") {
+      thinkingText = t("status.thinking.none", "Thinking:none");
+    }
+
+    const modelText = `${modelLabel} · ${imageText}`;
+    if (supportsThinkingEffort && thinkingEffort === "auto" && thinkingMode === "auto") {
+      thinkingText = t("status.thinking.auto", "Thinking:auto");
+    }
+    const capabilityText =
+      thinkingCapability === "supported"
+        ? t("status.tooltip.supported", "Supported")
+        : thinkingCapability === "unsupported"
+          ? t("status.tooltip.unsupported", "Unsupported")
+          : t("status.tooltip.unknown", "Unknown");
+    const tooltipLines = [
+      t("status.tooltip.model", "Model: {label}", { label: modelLabel }),
+      `Provider: ${providerId || "unknown"}`,
+      `Model ID: ${modelId || "unknown"}`,
+      t("status.tooltip.thinkingMode", "Thinking mode: {value}", { value: getThinkingModeOptionLabel(thinkingMode) }),
+      t("status.tooltip.thinkingEffort", "Thinking effort: {value}", { value: getThinkingEffortOptionLabel(thinkingEffort) }),
+      t("status.tooltip.thinkingCapability", "Thinking capability: {value}", { value: capabilityText }),
+      t("status.tooltip.effortCapability", "Effort control: {value}", {
+        value: supportsThinkingEffort ? t("status.tooltip.supported", "Supported") : t("status.tooltip.unconfirmed", "Unconfirmed")
+      }),
+      t("status.tooltip.imageInput", "Image input: {value}", {
+        value: cfg?.supportsImage ? t("status.tooltip.supported", "Supported") : t("status.tooltip.unsupported", "Unsupported")
+      }),
+      t("status.tooltip.openSwitcher", "Click the model item to open the model switcher.")
+    ];
+    const thinkingTooltip = [
+      t("status.tooltip.thinkingMode", "Thinking mode: {value}", { value: getThinkingModeOptionLabel(thinkingMode) }),
+      t("status.tooltip.thinkingEffort", "Thinking effort: {value}", { value: getThinkingEffortOptionLabel(thinkingEffort) }),
+      t("status.tooltip.thinkingCapability", "Thinking capability: {value}", { value: capabilityText }),
+      t("status.tooltip.effortCapability", "Effort control: {value}", {
+        value: supportsThinkingEffort ? t("status.tooltip.supported", "Supported") : t("status.tooltip.unconfirmed", "Unconfirmed")
+      }),
+      t("status.tooltip.cycleThinking", "Click to cycle thinking effort: Auto -> Low -> Medium -> High.")
+    ].join("\n");
+    return { modelText, thinkingText, modelTooltip: tooltipLines.join("\n"), thinkingTooltip };
+  };
+  const updateModelBtn = async () => {
+    const seq = ++modelStatusSeq;
     const active = window.zion.state.get("chat.activeModel");
     const catalog = window.zion.state.get("models.catalog") || [];
     const activeItem = catalog.find(m => 
@@ -1460,6 +1872,21 @@ export async function activate(ctx) {
     
     let label = active?.label || active?.modelId || "unknown";
     let tooltip = "Select Model (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)";
+    let thinkingLabel = t("status.thinking.auto", "Thinking:auto");
+    let thinkingTooltip = t("status.tooltip.cycleThinking", "Click to cycle thinking effort: Auto -> Low -> Medium -> High.");
+    let cfg = null;
+    try {
+      const provider = active?.providerId ? window.zion.models.getProvider(active.providerId) : null;
+      cfg = active?.modelId ? await provider?.resolve?.(active.modelId) : null;
+    } catch {}
+    if (seq !== modelStatusSeq) return;
+    if (cfg) {
+      const summary = buildModelStatus({ active, cfg, activeItem });
+      label = summary.modelText;
+      tooltip = summary.modelTooltip;
+      thinkingLabel = summary.thinkingText;
+      thinkingTooltip = summary.thinkingTooltip;
+    }
     
     if (activeItem?.requiresConfig) {
       label = `⚠️ ${label}`;
@@ -1467,29 +1894,39 @@ export async function activate(ctx) {
     }
     
     modelBtnDisp?.dispose?.();
+    thinkingBtnDisp?.dispose?.();
     modelBtnDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: "langchain.chat.model",
-      text: `Model: ${label}`,
+      text: label,
       tooltip,
       priority: 80,
       onClick: () => window.zion.commands.executeCommand("models.openSwitcher")
     }) || window.zion.editorHeaderMenu?.register?.({
       id: "langchain.chat.model",
-      title: `模型：${label}`,
+      title: t("status.model", "Model: {label}", { label }),
       section: "Chat",
       order: 10,
       onClick: () => window.zion.commands.executeCommand("models.openSwitcher")
     }) || window.zion.statusBar.registerItem({
       id: "langchain.chat.model",
-      text: `Model: ${label}`,
+      text: t("status.model", "Model: {label}", { label }),
       tooltip,
       onClick: () => window.zion.commands.executeCommand("models.openSwitcher")
+    });
+    thinkingBtnDisp = window.zion.bottomStatusBar?.registerItem?.({
+      id: "langchain.chat.thinking",
+      text: thinkingLabel,
+      tooltip: thinkingTooltip,
+      priority: 79,
+      onClick: () => cycleActiveThinkingEffort()
     });
   };
   updateModelBtn();
   ctx.subscriptions.push(
     window.zion.state.onDidChange("chat.activeModel", updateModelBtn),
-    window.zion.state.onDidChange("models.catalog", updateModelBtn)
+    window.zion.state.onDidChange("models.catalog", updateModelBtn),
+    window.zion.events.on("models/configChanged", updateModelBtn),
+    window.zion.events.on("i18n/changed", updateModelBtn)
   );
 
   // Editor header Run/Stop button (only when this plugin is active)
@@ -1581,6 +2018,9 @@ export async function activate(ctx) {
     const settingsDisp = window.zion?.settings?.registerPage?.({
       id: "services.langchain-models",
       title: "Models",
+      titleKey: "dev.langchain-chat.settings.models.title",
+      description: "Manage model providers and default model",
+      descriptionKey: "dev.langchain-chat.settings.models.description",
       category: "services",
       order: 30,
       pluginId: "dev.langchain-chat",
@@ -1589,10 +2029,12 @@ export async function activate(ctx) {
         {
           id: "langchain.models.manage",
           title: "Models",
+          titleKey: "dev.langchain-chat.settings.models.section",
           settings: [
             {
               id: "chat.models.manager",
               label: "Models",
+              labelKey: "dev.langchain-chat.settings.models.label",
               kind: "custom",
               order: 10,
               renderCustom: () => createElement(ModelsSettingsPage)
@@ -1620,9 +2062,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.chat.run",
           trigger: ["chat", "ask"],
-          title: "Chat",
-          description: "Run chat with current context",
-          category: "chat",
+          title: t("slash.chat.title", "Chat"),
+          description: t("slash.chat.description", "Run chat with current context"),
+          category: t("category.chat", "chat"),
           icon: "💬",
           execute: () => window.zion.commands.executeCommand("chat.run")
         })
@@ -1632,9 +2074,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.chat.runSelection",
           trigger: ["chatSelection", "chatSel"],
-          title: "Chat (Selection)",
-          description: "Run chat using current selection",
-          category: "chat",
+          title: t("slash.chatSelection.title", "Chat (Selection)"),
+          description: t("slash.chatSelection.description", "Run chat using current selection"),
+          category: t("category.chat", "chat"),
           icon: "📝",
           execute: () => window.zion.commands.executeCommand("chat.runSelection")
         })
@@ -1644,9 +2086,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.chat.stop",
           trigger: ["stop", "stopChat"],
-          title: "Stop Chat",
-          description: "Abort current streaming run",
-          category: "chat",
+          title: t("slash.stop.title", "Stop Chat"),
+          description: t("slash.stop.description", "Abort current streaming run"),
+          category: t("category.chat", "chat"),
           icon: "⏹️",
           execute: () => window.zion.commands.executeCommand("chat.stop")
         })
@@ -1656,9 +2098,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.chat.retry",
           trigger: ["retry", "chatRetry"],
-          title: "Retry Chat",
-          description: "Re-run chat with the last prompt",
-          category: "chat",
+          title: t("slash.retry.title", "Retry Chat"),
+          description: t("slash.retry.description", "Re-run chat with the last prompt"),
+          category: t("category.chat", "chat"),
           icon: "🔁",
           execute: () => window.zion.commands.executeCommand("chat.retry")
         })
@@ -1668,9 +2110,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.models.pick",
           trigger: ["models", "model"],
-          title: "Select Model",
-          description: "Pick a model",
-          category: "models",
+          title: t("slash.selectModel.title", "Select Model"),
+          description: t("slash.selectModel.description", "Pick a model"),
+          category: t("category.models", "models"),
           icon: "🧠",
           submenu: async () => {
             await refreshCatalog().catch(() => {});
@@ -1710,9 +2152,9 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.models.openSwitcher",
           trigger: ["modelSwitcher"],
-          title: "Open Model Switcher",
-          description: "Open the model switcher panel",
-          category: "models",
+          title: t("slash.openModelSwitcher.title", "Open Model Switcher"),
+          description: t("slash.openModelSwitcher.description", "Open the model switcher panel"),
+          category: t("category.models", "models"),
           icon: "🧠",
           execute: () => window.zion.commands.executeCommand("models.openSwitcher")
         })
@@ -1722,15 +2164,15 @@ export async function activate(ctx) {
         slash.registerCommand({
           id: "langchain.models.select",
           trigger: ["modelSelect", "setModel"],
-          title: "Set Active Model",
-          description: "Pick a model",
-          category: "models",
+          title: t("slash.setActiveModel.title", "Set Active Model"),
+          description: t("slash.selectModel.description", "Pick a model"),
+          category: t("category.models", "models"),
           icon: "🧠",
           params: [
             {
               name: "model",
               type: "select",
-              label: "Model",
+              label: t("slash.model.label", "Model"),
               asyncOptions: async () => {
                 await refreshCatalog().catch(() => {});
                 const catalog = window.zion?.state?.get("models.catalog") || [];

@@ -20,6 +20,96 @@ import { KVCacheOptimizer } from './kv-cache-optimizer.js';
 import { CompressionSettingsPanel } from './ui/settings-panel.js';
 import { CompressionStatus } from './ui/compression-status.js';
 
+const I18N_NS = 'dev.context-compression';
+const I18N_MESSAGES = {
+  'zh-CN': {
+    'category.compression': '压缩',
+    'cmd.manual': '压缩对话（手动）',
+    'cmd.strategy.opencode': '使用 OpenCode 策略压缩',
+    'cmd.strategy.claudeCode': '使用 Claude Code 策略压缩',
+    'cmd.strategy.cursor': '使用 Cursor 策略压缩',
+    'cmd.strategy.manus': '使用 Manus 策略压缩',
+    'cmd.strategy.focusAgent': '使用 Focus Agent 策略压缩',
+    'cmd.settings': '打开压缩设置',
+    'cmd.stats': '显示压缩统计',
+    'settings.title': '压缩',
+    'settings.description': '上下文压缩与摘要策略',
+    'settings.basics': '基础设置',
+    'settings.actions': '更多操作',
+    'settings.autoCompression.label': '自动压缩',
+    'settings.autoCompression.description': '在上下文过长时自动触发压缩',
+    'settings.strategy.label': '默认策略',
+    'settings.strategy.description': '决定自动压缩优先采用的方式',
+    'settings.strategy.auto': '自动选择',
+    'settings.threshold.label': '触发阈值',
+    'settings.threshold.description': '达到上下文比例后触发压缩，通常建议 0.8',
+    'settings.limit.label': '上下文上限',
+    'settings.limit.description': '压缩计算时参考的 token 上限',
+    'settings.advanced.label': '高级压缩配置',
+    'settings.advanced.description': '打开完整压缩设置面板',
+    'settings.advanced.action': '打开高级配置',
+    'settings.stats.label': '压缩统计',
+    'settings.stats.description': '查看压缩次数与节省情况',
+    'settings.stats.action': '查看统计',
+    'slash.compress.title': '压缩',
+    'slash.compress.description': '压缩当前编辑器对话',
+    'slash.settings.title': '压缩设置',
+    'slash.settings.description': '打开压缩设置',
+    'slash.stats.title': '压缩统计',
+    'slash.stats.description': '显示压缩统计',
+    'status.text': '上下文：{saved}',
+    'status.title': '上下文压缩：{saved}',
+    'status.tooltip': '已节省 tokens：{saved}'
+  },
+  'en-US': {
+    'category.compression': 'Compression',
+    'cmd.manual': 'Compress Conversation (Manual)',
+    'cmd.strategy.opencode': 'Compress with OpenCode Strategy',
+    'cmd.strategy.claudeCode': 'Compress with Claude Code Strategy',
+    'cmd.strategy.cursor': 'Compress with Cursor Strategy',
+    'cmd.strategy.manus': 'Compress with Manus Strategy',
+    'cmd.strategy.focusAgent': 'Compress with Focus Agent Strategy',
+    'cmd.settings': 'Open Compression Settings',
+    'cmd.stats': 'Show Compression Statistics',
+    'settings.title': 'Compression',
+    'settings.description': 'Context compression and summary strategy',
+    'settings.basics': 'Basics',
+    'settings.actions': 'More Actions',
+    'settings.autoCompression.label': 'Auto Compression',
+    'settings.autoCompression.description': 'Automatically compress when context gets too long',
+    'settings.strategy.label': 'Default Strategy',
+    'settings.strategy.description': 'Choose the preferred strategy for automatic compression',
+    'settings.strategy.auto': 'Auto',
+    'settings.threshold.label': 'Trigger Threshold',
+    'settings.threshold.description': 'Trigger compression when context ratio reaches this value',
+    'settings.limit.label': 'Context Limit',
+    'settings.limit.description': 'Token limit used for compression calculation',
+    'settings.advanced.label': 'Advanced Compression',
+    'settings.advanced.description': 'Open full compression settings',
+    'settings.advanced.action': 'Open Advanced',
+    'settings.stats.label': 'Compression Stats',
+    'settings.stats.description': 'View compression count and savings',
+    'settings.stats.action': 'View Stats',
+    'slash.compress.title': 'Compress',
+    'slash.compress.description': 'Compress current editor conversation',
+    'slash.settings.title': 'Compression Settings',
+    'slash.settings.description': 'Open compression settings',
+    'slash.stats.title': 'Compression Stats',
+    'slash.stats.description': 'Show compression statistics',
+    'status.text': 'Ctx: {saved}',
+    'status.title': 'Context Compression: {saved}',
+    'status.tooltip': 'Tokens saved: {saved}'
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 let __settingsPanelSingleton = null;
 
 const __compressionMem = { kv: {}, versions: {} };
@@ -430,6 +520,11 @@ async function clearVersionsForActiveSession() {
 }
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   console.log('dev.context-compression plugin activated');
   const log = (...args) => console.log('[context-compression]', ...args);
   const warn = (...args) => console.warn('[context-compression]', ...args);
@@ -617,25 +712,25 @@ export async function activate(ctx) {
       window.zion.slash.registerCommand({
         id: 'compression.slash.compress',
         trigger: ['compress', 'compact'],
-        title: 'Compress',
-        description: 'Compress current editor conversation',
-        category: 'compression',
+        title: t('slash.compress.title', 'Compress'),
+        description: t('slash.compress.description', 'Compress current editor conversation'),
+        category: t('category.compression', 'compression'),
         execute: () => window.zion.commands.executeCommand('compression.preview')
       }),
       window.zion.slash.registerCommand({
         id: 'compression.slash.settings',
         trigger: ['compressSettings', 'compressionSettings'],
-        title: 'Compression Settings',
-        description: 'Open compression settings',
-        category: 'compression',
+        title: t('slash.settings.title', 'Compression Settings'),
+        description: t('slash.settings.description', 'Open compression settings'),
+        category: t('category.compression', 'compression'),
         execute: () => window.zion.commands.executeCommand('compression.settings')
       }),
       window.zion.slash.registerCommand({
         id: 'compression.slash.stats',
         trigger: ['compressStats', 'compressionStats'],
-        title: 'Compression Stats',
-        description: 'Show compression statistics',
-        category: 'compression',
+        title: t('slash.stats.title', 'Compression Stats'),
+        description: t('slash.stats.description', 'Show compression statistics'),
+        category: t('category.compression', 'compression'),
         execute: () => window.zion.commands.executeCommand('compression.stats')
       })
     );
@@ -662,18 +757,23 @@ export async function activate(ctx) {
       pluginId: 'dev.context-compression',
       category: 'workspace',
       title: 'Compression',
+      titleKey: 'dev.context-compression.settings.title',
       description: '上下文压缩与摘要策略',
+      descriptionKey: 'dev.context-compression.settings.description',
       order: 30,
       sections: [
         {
           id: 'compression.basics',
           title: '基础设置',
+          titleKey: 'dev.context-compression.settings.basics',
           settings: [
             {
               id: 'compression.autoCompression',
               kind: 'boolean',
               label: '自动压缩',
+              labelKey: 'dev.context-compression.settings.autoCompression.label',
               description: '在上下文过长时自动触发压缩',
+              descriptionKey: 'dev.context-compression.settings.autoCompression.description',
               getValue: async () => !!(await getCompressionSettings()).autoCompression,
               setValue: async (value) => updateCompressionSetting('autoCompression', !!value)
             },
@@ -681,9 +781,11 @@ export async function activate(ctx) {
               id: 'compression.defaultStrategy',
               kind: 'select',
               label: '默认策略',
+              labelKey: 'dev.context-compression.settings.strategy.label',
               description: '决定自动压缩优先采用的方式',
+              descriptionKey: 'dev.context-compression.settings.strategy.description',
               enumOptions: [
-                { value: 'auto', label: '自动选择' },
+                { value: 'auto', label: '自动选择', labelKey: 'dev.context-compression.settings.strategy.auto' },
                 { value: 'opencode', label: 'OpenCode' },
                 { value: 'claude-code', label: 'Claude Code' },
                 { value: 'cursor', label: 'Cursor' },
@@ -698,7 +800,9 @@ export async function activate(ctx) {
               id: 'compression.threshold',
               kind: 'number',
               label: '触发阈值',
+              labelKey: 'dev.context-compression.settings.threshold.label',
               description: '达到上下文比例后触发压缩，通常建议 0.8',
+              descriptionKey: 'dev.context-compression.settings.threshold.description',
               getValue: async () => String((await getCompressionSettings()).threshold ?? 0.8),
               setValue: async (value) => updateCompressionSetting('threshold', value, (raw) => {
                 const parsed = Number(raw);
@@ -709,7 +813,9 @@ export async function activate(ctx) {
               id: 'compression.contextLimitTokens',
               kind: 'number',
               label: '上下文上限',
+              labelKey: 'dev.context-compression.settings.limit.label',
               description: '压缩计算时参考的 token 上限',
+              descriptionKey: 'dev.context-compression.settings.limit.description',
               getValue: async () => String((await getCompressionSettings()).contextLimitTokens ?? 200000),
               setValue: async (value) => updateCompressionSetting('contextLimitTokens', value, (raw) => {
                 const parsed = Number(raw);
@@ -721,21 +827,28 @@ export async function activate(ctx) {
         {
           id: 'compression.actions',
           title: '更多操作',
+          titleKey: 'dev.context-compression.settings.actions',
           settings: [
             {
               id: 'compression.openAdvanced',
               kind: 'action',
               label: '高级压缩配置',
+              labelKey: 'dev.context-compression.settings.advanced.label',
               description: '打开完整压缩设置面板',
+              descriptionKey: 'dev.context-compression.settings.advanced.description',
               actionLabel: '打开高级配置',
+              actionLabelKey: 'dev.context-compression.settings.advanced.action',
               action: async () => window.zion.commands.executeCommand('compression.settings')
             },
             {
               id: 'compression.openStats',
               kind: 'action',
               label: '压缩统计',
+              labelKey: 'dev.context-compression.settings.stats.label',
               description: '查看压缩次数与节省情况',
+              descriptionKey: 'dev.context-compression.settings.stats.description',
               actionLabel: '查看统计',
+              actionLabelKey: 'dev.context-compression.settings.stats.action',
               action: async () => window.zion.commands.executeCommand('compression.stats')
             }
           ]
@@ -854,29 +967,31 @@ export async function activate(ctx) {
   const updateStatus = () => {
     const stats = window.zion.state.get('compression.stats') || {};
     const saved = stats.totalTokensSaved || 0;
+    const savedText = formatTokens(saved);
     try { statusDisp?.dispose?.(); } catch {}
     statusDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: 'compression.status',
-      text: `Ctx: ${formatTokens(saved)}`,
-      tooltip: `Tokens saved: ${saved}`,
+      text: t('status.text', 'Ctx: {saved}', { saved: savedText }),
+      tooltip: t('status.tooltip', 'Tokens saved: {saved}', { saved }),
       priority: 60,
       onClick: () => openCompressionPanel()
     }) || window.zion.editorHeaderMenu?.register?.({
       id: 'compression.status',
-      title: `上下文压缩：${formatTokens(saved)}`,
+      title: t('status.title', 'Context Compression: {saved}', { saved: savedText }),
       section: 'Chat',
       order: 30,
       onClick: () => openCompressionPanel()
     }) || window.zion.statusBar.registerItem({
       id: 'compression.status',
-      text: `Ctx: ${formatTokens(saved)}`,
-      tooltip: `Tokens saved: ${saved}`,
+      text: t('status.text', 'Ctx: {saved}', { saved: savedText }),
+      tooltip: t('status.tooltip', 'Tokens saved: {saved}', { saved }),
       onClick: () => openCompressionPanel()
     });
   };
   updateStatus();
   ctx.subscriptions.push({ dispose: () => { try { statusDisp?.dispose?.(); } catch {} } });
   ctx.subscriptions.push(window.zion.state.onDidChange('compression.stats', updateStatus));
+  ctx.subscriptions.push(window.zion.events.on('i18n/changed', updateStatus));
   
   return {
     deactivate: () => {

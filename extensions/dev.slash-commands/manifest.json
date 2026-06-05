@@ -13,7 +13,9 @@
       "commands": [
         {
           "id": "slash.show",
-          "title": "Show Slash Commands"
+          "title": "Show Slash Commands",
+          "titleKey": "dev.slash-commands.cmd.show",
+          "categoryKey": "dev.slash-commands.category.slash"
         }
       ]
     },
@@ -22,6 +24,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.slash-commands",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.slash-commands"
   }
 }

@@ -49,8 +49,15 @@ export const geminiProvider = {
         providerType: "gemini",
         temperature: config.temperature ?? 0.9,
         max_tokens: config.max_tokens ?? 8192,
+        pricing: config.pricing,
         stream: config.stream !== false,
         supportsImage: true,
+        supportsThinking: config.supportsThinking,
+        supportsThinkingEffort: config.supportsThinkingEffort,
+        thinkingMode: config.thinkingMode || "auto",
+        thinkingEffort: config.thinkingEffort || "auto",
+        preservedThinking: !!config.preservedThinking,
+        interleavedThinking: !!config.interleavedThinking,
         _requiresConfig: true,
         _configHint: "请使用 modelsManage 工具配置 Gemini API key，或设置 localStorage 键 'zion.gemini.apiKey'"
       };
@@ -65,8 +72,15 @@ export const geminiProvider = {
       providerType: "gemini",
       temperature: config.temperature ?? 0.9,
       max_tokens: config.max_tokens ?? 8192,
+      pricing: config.pricing,
       stream: config.stream !== false,
-      supportsImage: true
+      supportsImage: true,
+      supportsThinking: config.supportsThinking,
+      supportsThinkingEffort: config.supportsThinkingEffort,
+      thinkingMode: config.thinkingMode || "auto",
+      thinkingEffort: config.thinkingEffort || "auto",
+      preservedThinking: !!config.preservedThinking,
+      interleavedThinking: !!config.interleavedThinking
     };
   }
 };

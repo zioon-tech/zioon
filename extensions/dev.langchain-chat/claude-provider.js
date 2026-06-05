@@ -49,8 +49,15 @@ export const claudeProvider = {
         anthropicVersion: "2023-06-01",
         temperature: config.temperature ?? 1.0,
         max_tokens: config.max_tokens ?? 4096,
+        pricing: config.pricing,
         stream: config.stream !== false,
         supportsImage: true,
+        supportsThinking: config.supportsThinking,
+        supportsThinkingEffort: config.supportsThinkingEffort,
+        thinkingMode: config.thinkingMode || "auto",
+        thinkingEffort: config.thinkingEffort || "auto",
+        preservedThinking: !!config.preservedThinking,
+        interleavedThinking: !!config.interleavedThinking,
         _requiresConfig: true,
         _configHint: "请使用 modelsManage 工具配置 Claude API key，或设置 localStorage 键 'zion.claude.apiKey'"
       };
@@ -66,8 +73,15 @@ export const claudeProvider = {
       anthropicVersion: "2023-06-01",
       temperature: config.temperature ?? 1.0,
       max_tokens: config.max_tokens ?? 4096,
+      pricing: config.pricing,
       stream: config.stream !== false,
-      supportsImage: true
+      supportsImage: true,
+      supportsThinking: config.supportsThinking,
+      supportsThinkingEffort: config.supportsThinkingEffort,
+      thinkingMode: config.thinkingMode || "auto",
+      thinkingEffort: config.thinkingEffort || "auto",
+      preservedThinking: !!config.preservedThinking,
+      interleavedThinking: !!config.interleavedThinking
     };
   }
 };

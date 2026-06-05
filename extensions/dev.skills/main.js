@@ -14,7 +14,62 @@ const DEFAULT_CONFIG = {
   }
 };
 
+const I18N_NS = "dev.skills";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.skills": "技能",
+    "cmd.openPanel": "打开技能面板",
+    "cmd.scanNow": "立即扫描技能",
+    "cmd.clearCache": "清除使用历史",
+    "cmd.showStats": "显示技能统计",
+    "cmd.openPanel.description": "管理技能目录、扫描 SKILL.md、启用或禁用技能",
+    "cmd.scanNow.description": "扫描已配置目录中的 SKILL.md 文件",
+    "cmd.clearCache.description": "清除使用历史统计",
+    "cmd.showStats.description": "显示使用统计和性能指标",
+    "status.skills": "技能：{enabled}/{total}",
+    "status.tooltip": "管理技能",
+    "settings.title": "Skills 配置",
+    "settings.description": "管理技能目录、重新扫描技能索引，并批量启用或清理缓存。",
+    "settings.enabled": "已启用 {enabled}/{total} 个 skills",
+    "settings.paths": "Skills 目录",
+    "settings.add": "添加",
+    "settings.scan": "立即扫描",
+    "settings.enableAll": "全部启用",
+    "settings.clear": "清除缓存"
+  },
+  "en-US": {
+    "category.skills": "Skills",
+    "cmd.openPanel": "Open Skills Panel",
+    "cmd.scanNow": "Scan Skills Now",
+    "cmd.clearCache": "Clear Usage History",
+    "cmd.showStats": "Show Skills Statistics",
+    "cmd.openPanel.description": "Manage skill directories, scan SKILL.md, enable or disable skills",
+    "cmd.scanNow.description": "Scan configured directories for SKILL.md files",
+    "cmd.clearCache.description": "Clear usage history statistics",
+    "cmd.showStats.description": "Display usage statistics and performance metrics",
+    "status.skills": "Skills: {enabled}/{total}",
+    "status.tooltip": "Manage Skills",
+    "settings.title": "Skills",
+    "settings.description": "Manage skill directories, rescan skills, enable all, or clear cache.",
+    "settings.enabled": "{enabled}/{total} skills enabled",
+    "settings.paths": "Skills Directories",
+    "settings.add": "Add",
+    "settings.scan": "Scan Now",
+    "settings.enableAll": "Enable All",
+    "settings.clear": "Clear Cache"
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 const SKILLS_SNAPSHOT_STORAGE_KEY = "zion.skills.snapshot.v1";
+let skillsStatusDisp = null;
 
 function getState() {
   return window.zion && window.zion.state;
@@ -574,23 +629,24 @@ function updateStatusBar() {
   try {
     const catalog = getCatalog();
     const enabled = getEnabledSet();
-    const text = `Skills: ${enabled.size}/${catalog.length}`;
-    window.zion.bottomStatusBar?.registerItem?.({
+    const text = t("status.skills", "Skills: {enabled}/{total}", { enabled: enabled.size, total: catalog.length });
+    try { skillsStatusDisp?.dispose?.(); } catch {}
+    skillsStatusDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: "dev.skills.status",
       text,
-      tooltip: "Manage Skills",
+      tooltip: t("status.tooltip", "Manage Skills"),
       priority: 69,
       onClick: () => window.zion.commands.executeCommand("skills.openPanel")
     }) || window.zion.editorHeaderMenu?.register?.({
       id: "dev.skills.status",
-      title: `Skills：${enabled.size}/${catalog.length}`,
+      title: text,
       section: "Extensions",
       order: 20,
       onClick: () => window.zion.commands.executeCommand("skills.openPanel")
     }) || window.zion.statusBar.registerItem({
       id: "dev.skills.status",
       text,
-      tooltip: "Manage Skills",
+      tooltip: t("status.tooltip", "Manage Skills"),
       onClick: () => window.zion.commands.executeCommand("skills.openPanel"),
       priority: 78
     });
@@ -1190,6 +1246,8 @@ function registerStateListeners() {
   try {
     disposers.push(window.zion.state.onDidChange("skills.enabled", () => updateStatusBar()));
     disposers.push(window.zion.state.onDidChange("skills.catalog", () => updateStatusBar()));
+    disposers.push(window.zion.events.on("i18n/changed", () => updateStatusBar()));
+    disposers.push({ dispose: () => { try { skillsStatusDisp?.dispose?.(); skillsStatusDisp = null; } catch {} } });
     const keysToPersist = [
       "skills.paths",
       "skills.enabled",
@@ -1209,6 +1267,11 @@ function registerStateListeners() {
 }
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   ensureDefaults();
   restoreFromSnapshotIfNeeded();
 
@@ -1234,7 +1297,7 @@ export async function activate(ctx) {
         category: "Workspace",
         section: "Skills",
         title: "Skills 配置",
-        description: "管理技能目录、重新扫描技能索引，并批量启用或清理缓存。",
+        description: t("settings.description", "管理技能目录、重新扫描技能索引，并批量启用或清理缓存。"),
         keywords: ["skills", "catalog", "scan", "paths", "workspace"],
         order: 30,
         render(container) {
@@ -1266,7 +1329,7 @@ export async function activate(ctx) {
           const en = getEnabledSet();
           const info = document.createElement("div");
           info.className = "sk-cfg-info";
-          info.textContent = `已启用 ${en.size}/${cat.length} 个 skills`;
+          info.textContent = t("settings.enabled", "已启用 {enabled}/{total} 个 skills", { enabled: en.size, total: cat.length });
           container.appendChild(info);
 
           // Paths section
@@ -1274,7 +1337,7 @@ export async function activate(ctx) {
           pathsSection.className = "sk-cfg-section";
           const pathsLabel = document.createElement("div");
           pathsLabel.className = "sk-cfg-label";
-          pathsLabel.textContent = "Skills 目录";
+          pathsLabel.textContent = t("settings.paths", "Skills 目录");
           pathsSection.appendChild(pathsLabel);
 
           const pathList = document.createElement("div");
@@ -1313,7 +1376,7 @@ export async function activate(ctx) {
           input.placeholder = "/path/to/skills/directory";
           const addBtn = document.createElement("button");
           addBtn.className = "sk-cfg-btn";
-          addBtn.textContent = "添加";
+          addBtn.textContent = t("settings.add", "添加");
           addBtn.onclick = () => {
             const v = input.value.trim();
             if (!v) return;
@@ -1335,30 +1398,30 @@ export async function activate(ctx) {
 
           const scanBtn = document.createElement("button");
           scanBtn.className = "sk-cfg-btn primary";
-          scanBtn.textContent = "立即扫描";
+          scanBtn.textContent = t("settings.scan", "立即扫描");
           scanBtn.onclick = async () => {
             await window.zion.commands.executeCommand("skills.scanNow");
             refreshPaths();
             const newCat = getCatalog();
             const newEn = getEnabledSet();
-            info.textContent = `已启用 ${newEn.size}/${newCat.length} 个 skills`;
+            info.textContent = t("settings.enabled", "已启用 {enabled}/{total} 个 skills", { enabled: newEn.size, total: newCat.length });
           };
           actions.appendChild(scanBtn);
 
           const enableAllBtn = document.createElement("button");
           enableAllBtn.className = "sk-cfg-btn";
-          enableAllBtn.textContent = "全部启用";
+          enableAllBtn.textContent = t("settings.enableAll", "全部启用");
           enableAllBtn.onclick = () => {
             const allCat = getCatalog();
             st.set("skills.enabled", allCat.map(s => s.id));
             const newEn = getEnabledSet();
-            info.textContent = `已启用 ${newEn.size}/${allCat.length} 个 skills`;
+            info.textContent = t("settings.enabled", "已启用 {enabled}/{total} 个 skills", { enabled: newEn.size, total: allCat.length });
           };
           actions.appendChild(enableAllBtn);
 
           const clearBtn = document.createElement("button");
           clearBtn.className = "sk-cfg-btn";
-          clearBtn.textContent = "清除缓存";
+          clearBtn.textContent = t("settings.clear", "清除缓存");
           clearBtn.onclick = () => {
             window.zion.commands.executeCommand("skills.clearCache");
           };

@@ -13,10 +13,13 @@
       "commands": [
         {
           "id": "zion.plugins.show",
-          "title": "Show Plugins"
+          "title": "Show Plugins",
+          "titleKey": "dev.plugins.cmd.show",
+          "categoryKey": "dev.plugins.category.plugins"
         }
       ]
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.plugins",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.plugins"
   }
 }
-

@@ -153,6 +153,37 @@ declare global {
       statusBar: {
         registerItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable;
       };
+      settings?: {
+        registerPage(page: any): Disposable;
+        registerItem(item: any): Disposable;
+        open(): void;
+        close(): void;
+      };
+      i18n?: {
+        getLocale(): "zh-CN" | "en-US";
+        getDefaultLocale(): "zh-CN";
+        getSupportedLocales(): Array<{ value: "zh-CN" | "en-US"; label: string; nativeLabel: string }>;
+        setLocale(locale: "zh-CN" | "en-US"): void;
+        toggleLocale(): void;
+        registerNamespace(
+          namespace: string,
+          messages: Partial<Record<"zh-CN" | "en-US", Record<string, string>>>
+        ): Disposable;
+        t(key: string, values?: Record<string, string | number | boolean | null | undefined>): string;
+        getMessageVariants(key: string, values?: Record<string, string | number | boolean | null | undefined>): string[];
+      };
+      theme?: {
+        getPreference(): "system" | "light" | "dark";
+        getSelection(): "system" | "light" | "dark" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus";
+        getResolvedTheme(): "light" | "dark";
+        getVariant(): "default" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus";
+        setPreference(preference: "system" | "light" | "dark"): void;
+        setSelection(selection: "system" | "light" | "dark" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus"): void;
+        setVariant(variant: "default" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus"): void;
+        toggle(): void;
+        refresh(): void;
+        getToken(name: string): string;
+      };
       editorHeaderMenu?: {
         register(item: {
           id: string;
@@ -179,6 +210,7 @@ declare global {
           pluginId: string;
           icon: string;
           tooltip?: string;
+          tooltipKey?: string;
           order?: number;
           when?: string;
           sideBarViewId?: string;
@@ -197,12 +229,13 @@ declare global {
           id: string;
           pluginId: string;
           title: string;
+          titleKey?: string;
           icon?: string;
           location?: 'sidebar' | string;
           order?: number;
           when?: string;
           canClose?: boolean;
-          headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };
@@ -223,13 +256,14 @@ declare global {
           id: string;
           pluginId: string;
           title: string;
+          titleKey?: string;
           icon?: string;
           location?: 'auxiliarybar' | string;
           order?: number;
           when?: string;
           canClose?: boolean;
           keepWhenActive?: boolean;
-          headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };
@@ -251,6 +285,7 @@ declare global {
           id: string;
           pluginId: string;
           title: string;
+          titleKey?: string;
           icon?: string;
           location?: 'bottompanel' | string;
           order?: number;
@@ -291,6 +326,10 @@ declare global {
       editor: {
         registerPasteHandler(handler: PasteHandler): Disposable;
         registerDecorator(dec: { id: string; apply: (editor: EditorProxy) => Disposable }): Disposable;
+        attachEditor?(core: any, panelId?: string): EditorProxy | null;
+        detachEditor?(panelId: string): EditorProxy | null;
+        listAttachedEditorCores?(): any[];
+        getEditorForView?(view: any): EditorProxy | null;
         selectionToolbar?: {
           registerItem(item: SelectionToolbarItem): Disposable;
           list(): SelectionToolbarItem[];
@@ -303,14 +342,21 @@ declare global {
       };
       panels?: {
         getActivePanelId(): string | null;
+        getMaximizedPanelId(): string | null;
+        isMaximized(panelId?: string): boolean;
         list(): Array<{ id: string; activeTabId: string | null }>;
         findAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         ensureAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         openSession(panelId: string, sessionId: string, opts?: { focus?: boolean; forceReload?: boolean }): boolean | Promise<boolean>;
+        openTab?(panelId: string, tabId: string, opts?: { focus?: boolean }): boolean | Promise<boolean>;
+        openFileTab?(args: { panelId?: string; id?: string; title?: string; name?: string; path?: string; displayPath?: string; language?: string; meta?: any; file?: any; focus?: boolean }): boolean | Promise<boolean>;
         split(direction: "horizontal" | "vertical", panelId?: string): string | null;
         splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         focus(panelId: string): void;
         close(panelId?: string): void;
+        maximize(panelId?: string): void;
+        restore(): void;
+        toggleMaximize(panelId?: string): void;
         getEditor(panelId: string): EditorProxy | null;
         getEditorBySession(panelId: string, sessionId: string): EditorProxy | null;
         listEditors(panelId?: string): Array<{ panelId: string; sessionId: string; editorId: string | null; active: boolean }>;

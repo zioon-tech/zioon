@@ -5,6 +5,7 @@ export type ActivityBarItem = {
   pluginId: string;
   icon: string;
   tooltip?: string;
+  tooltipKey?: string;
   order?: number;
   when?: string;
   sideBarViewId?: string;
@@ -21,11 +22,12 @@ export type SideBarView = {
   id: string;
   pluginId: string;
   title: string;
+  titleKey?: string;
   icon?: string;
   order?: number;
   when?: string;
   canClose?: boolean;
-  headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+  headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
   component: SideBarViewComponent;
   onActivate?: () => void | Promise<void>;
   onDeactivate?: () => void | Promise<void>;
@@ -41,6 +43,7 @@ export type BottomPanelView = {
   id: string;
   pluginId: string;
   title: string;
+  titleKey?: string;
   icon?: string;
   order?: number;
   when?: string;
@@ -61,12 +64,13 @@ export type AuxiliaryBarView = {
   id: string;
   pluginId: string;
   title: string;
+  titleKey?: string;
   icon?: string;
   order?: number;
   when?: string;
   canClose?: boolean;
   keepWhenActive?: boolean;
-  headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+  headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
   component: AuxiliaryBarViewComponent;
   onActivate?: () => void | Promise<void>;
   onDeactivate?: () => void | Promise<void>;

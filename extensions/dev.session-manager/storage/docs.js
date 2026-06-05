@@ -26,20 +26,29 @@ export function createSessionDocRepo(opts) {
         const rec = await idbGet(dbName, "docs", id);
         const text = rec?.text || "";
         try { zion?.state?.set(`sessions.doc.${id}`, text); } catch {}
-      } catch {}
+      } catch (e) {
+        try { warnStorageIssue?.("loadDoc", e); } catch {}
+      }
     })();
     return "";
   }
 
   function saveDoc(id, text) {
     const zion = getZion();
+    const nextText = String(text || "");
+    let previous;
+    try { previous = zion?.state?.get(`sessions.doc.${id}`); } catch {}
+    try { zion?.state?.set(`sessions.doc.${id}`, nextText); } catch {}
     (async () => {
       try {
-        await idbSet(dbName, "docs", { id, text: String(text || "") });
+        await idbSet(dbName, "docs", { id, text: nextText });
       } catch (e) {
+        try {
+          if (zion?.state?.get(`sessions.doc.${id}`) === nextText) {
+            zion?.state?.set(`sessions.doc.${id}`, previous);
+          }
+        } catch {}
         try { warnStorageIssue?.("saveDoc", e); } catch {}
-      } finally {
-        try { zion?.state?.set(`sessions.doc.${id}`, String(text || "")); } catch {}
       }
     })();
   }
@@ -55,8 +64,9 @@ export function createSessionDocRepo(opts) {
       const text = rec?.text || "";
       try { zion?.state?.set(`sessions.doc.${id}`, text); } catch {}
       return text;
-    } catch {
-      return "";
+    } catch (e) {
+      try { warnStorageIssue?.("loadDocAsync", e); } catch {}
+      throw e;
     }
   }
 
@@ -71,20 +81,28 @@ export function createSessionDocRepo(opts) {
         const rec = await idbGet(dbName, "metas", id);
         const meta = rec?.meta || { id, title: `Session ${id}`, createdAt: now(), updatedAt: now(), size: 0, hash: "", titleAuto: true };
         try { zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
-      } catch {}
+      } catch (e) {
+        try { warnStorageIssue?.("loadMeta", e); } catch {}
+      }
     })();
     return { id, title: `Session ${id}`, createdAt: now(), updatedAt: now(), size: 0, hash: "", titleAuto: true };
   }
 
   function saveMeta(id, meta) {
     const zion = getZion();
+    let previous;
+    try { previous = zion?.state?.get(`sessions.meta.${id}`); } catch {}
+    try { zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
     (async () => {
       try {
         await idbSet(dbName, "metas", { id, meta });
       } catch (e) {
+        try {
+          if (zion?.state?.get(`sessions.meta.${id}`) === meta) {
+            zion?.state?.set(`sessions.meta.${id}`, previous);
+          }
+        } catch {}
         try { warnStorageIssue?.("saveMeta", e); } catch {}
-      } finally {
-        try { zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
       }
     })();
   }

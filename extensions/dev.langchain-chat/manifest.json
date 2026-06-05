@@ -13,19 +13,27 @@
       "commands": [
         {
           "id": "chat.runSelection",
-          "title": "Run Chat (Selection)"
+          "title": "Run Chat (Selection)",
+          "titleKey": "dev.langchain-chat.cmd.runSelection",
+          "categoryKey": "dev.langchain-chat.category.chat"
         },
         {
           "id": "chat.run",
-          "title": "Run Chat"
+          "title": "Run Chat",
+          "titleKey": "dev.langchain-chat.cmd.run",
+          "categoryKey": "dev.langchain-chat.category.chat"
         },
         {
           "id": "chat.stop",
-          "title": "Stop Chat"
+          "title": "Stop Chat",
+          "titleKey": "dev.langchain-chat.cmd.stop",
+          "categoryKey": "dev.langchain-chat.category.chat"
         },
         {
           "id": "chat.retry",
-          "title": "Retry Chat"
+          "title": "Retry Chat",
+          "titleKey": "dev.langchain-chat.cmd.retry",
+          "categoryKey": "dev.langchain-chat.category.chat"
         }
       ],
       "keybindings": [
@@ -38,11 +46,6 @@
           "command": "chat.stop",
           "key": "Escape",
           "when": "editorFocus"
-        },
-        {
-          "command": "chat.retry",
-          "key": "Mod-Shift-r",
-          "when": "editorFocus"
         }
       ]
     },
@@ -51,6 +54,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.langchain-chat",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.langchain-chat"
   }
 }

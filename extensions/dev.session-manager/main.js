@@ -18,6 +18,176 @@ import { createSessionsPanelManager } from "./ui/panel.js";
 import { createSessionsListRendererFactory } from "./ui/list-renderer.js";
 import { SessionDocumentRuntime } from "../../src/session/document-runtime";
 
+const I18N_NS = "dev.session-manager";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.sessions": "会话",
+    "cmd.new": "新建会话",
+    "cmd.newInFolder": "会话：在指定文件夹中新建",
+    "cmd.newInFolder.description": "选择目标文件夹并创建新会话",
+    "cmd.saveAsNew": "另存为新会话",
+    "cmd.rename": "重命名会话",
+    "cmd.autoRename": "AI 重命名会话",
+    "cmd.delete": "删除会话",
+    "cmd.switch": "切换会话",
+    "cmd.clone": "克隆会话",
+    "cmd.export": "导出会话",
+    "cmd.import": "导入会话",
+    "cmd.showPanel": "显示会话面板",
+    "cmd.showSidebar": "显示会话侧边栏",
+    "cmd.hideSidebar": "隐藏会话侧边栏",
+    "cmd.toggleSidebar": "切换会话侧边栏",
+    "slash.new.description": "创建新的会话",
+    "slash.showPanel.description": "打开会话管理面板",
+    "slash.toggleSidebar.description": "显示/隐藏会话侧边栏",
+    "slash.saveAsNew.description": "将当前内容另存为新会话",
+    "ui.sessions": "会话",
+    "ui.createNew": "新建会话",
+    "ui.newFolder": "新建文件夹",
+    "ui.actions": "操作",
+    "ui.import": "导入会话",
+    "ui.exportAll": "导出全部会话",
+    "ui.exportSelected": "导出所选项",
+    "ui.close": "关闭",
+    "ui.closePanel": "关闭会话面板",
+    "ui.sort": "排序",
+    "ui.sortSessions": "排序会话",
+    "ui.sortUpdated": "按更新时间排序（最新在前）",
+    "ui.sortTitle": "按标题排序（A 到 Z）",
+    "ui.moreActions": "更多操作",
+    "ui.selectedCount": "已选择 {count} 项",
+    "ui.updated": "更新于",
+    "ui.chars": "{count} 字符",
+    "ui.noSessionsYet": "暂无会话。",
+    "ui.cancel": "取消",
+    "ui.delete": "删除",
+    "ui.deleteConfirm": "确认删除？",
+    "ui.openNewTab": "在新标签页打开",
+    "ui.rename": "重命名",
+    "ui.autoRename": "自动重命名",
+    "ui.clone": "克隆",
+    "ui.export": "导出",
+    "ui.renameFolder": "重命名文件夹",
+    "ui.exportFolder": "导出文件夹",
+    "ui.deleteFolder": "删除文件夹",
+    "ui.deleteFolderConfirm": "确认删除文件夹？",
+    "ui.deleteSessionConfirm": "确认删除会话？",
+    "ui.newSessionHere": "在此新建会话",
+    "ui.newFolderHere": "在此新建文件夹",
+    "ui.folderActions": "文件夹操作",
+    "ui.folderName": "文件夹名称",
+    "ui.sessionTitle": "会话标题",
+    "ui.fork": "分叉会话",
+    "ui.refresh": "刷新",
+    "dialog.newTitle": "新会话标题",
+    "dialog.rename": "重命名会话",
+    "dialog.deleteSelected": "删除所选项",
+    "heatmap.expand": "展开热力图",
+    "heatmap.collapse": "折叠热力图",
+    "heatmap.previous35Days": "查看更早的 35 天",
+    "heatmap.next35Days": "查看之后的 35 天",
+    "heatmap.clear": "Clear",
+    "heatmap.today": "Today",
+    "heatmap.clearTitle": "清除日期筛选，显示全部会话",
+    "heatmap.todayTitle": "跳到今天并筛选今天",
+    "heatmap.allRange": "全部 · {range}",
+    "heatmap.dayTitle": "{day} · {sessions} 个会话 · {tokens} tok · {cost}",
+    "heatmap.costNA": "cost n/a",
+    "heatmap.sessions": "sessions",
+    "heatmap.tokens": "tokens",
+    "heatmap.cache": "cache",
+    "heatmap.cost": "cost",
+    "heatmap.noModelUsage": "当天没有模型消耗"
+  },
+  "en-US": {
+    "category.sessions": "Sessions",
+    "cmd.new": "New Session",
+    "cmd.newInFolder": "Sessions: New in Folder",
+    "cmd.newInFolder.description": "Choose a target folder and create a new session",
+    "cmd.saveAsNew": "Save As New Session",
+    "cmd.rename": "Rename Session",
+    "cmd.autoRename": "AI Rename Session",
+    "cmd.delete": "Delete Session",
+    "cmd.switch": "Switch Session",
+    "cmd.clone": "Clone Session",
+    "cmd.export": "Export Sessions",
+    "cmd.import": "Import Sessions",
+    "cmd.showPanel": "Show Sessions Panel",
+    "cmd.showSidebar": "Show Sessions Sidebar",
+    "cmd.hideSidebar": "Hide Sessions Sidebar",
+    "cmd.toggleSidebar": "Toggle Sessions Sidebar",
+    "slash.new.description": "Create a new session",
+    "slash.showPanel.description": "Open the sessions panel",
+    "slash.toggleSidebar.description": "Show or hide the sessions sidebar",
+    "slash.saveAsNew.description": "Save current content as a new session",
+    "ui.sessions": "Sessions",
+    "ui.createNew": "Create new session",
+    "ui.newFolder": "New Folder",
+    "ui.actions": "Actions",
+    "ui.import": "Import Sessions",
+    "ui.exportAll": "Export All Sessions",
+    "ui.exportSelected": "Export Selected",
+    "ui.close": "Close",
+    "ui.closePanel": "Close sessions panel",
+    "ui.sort": "Sort",
+    "ui.sortSessions": "Sort sessions",
+    "ui.sortUpdated": "Sort by updated (newest first)",
+    "ui.sortTitle": "Sort by title (A to Z)",
+    "ui.moreActions": "More actions",
+    "ui.selectedCount": "{count} Selected",
+    "ui.updated": "Updated",
+    "ui.chars": "{count} chars",
+    "ui.noSessionsYet": "No sessions yet.",
+    "ui.cancel": "Cancel",
+    "ui.delete": "Delete",
+    "ui.deleteConfirm": "Delete?",
+    "ui.openNewTab": "Open in New Tab",
+    "ui.rename": "Rename",
+    "ui.autoRename": "Auto Rename",
+    "ui.clone": "Clone",
+    "ui.export": "Export",
+    "ui.renameFolder": "Rename Folder",
+    "ui.exportFolder": "Export Folder",
+    "ui.deleteFolder": "Delete Folder",
+    "ui.deleteFolderConfirm": "Delete folder?",
+    "ui.deleteSessionConfirm": "Delete session?",
+    "ui.newSessionHere": "New session here",
+    "ui.newFolderHere": "New folder here",
+    "ui.folderActions": "Folder actions",
+    "ui.folderName": "Folder name",
+    "ui.sessionTitle": "Session title",
+    "ui.fork": "Fork Session",
+    "ui.refresh": "Refresh",
+    "dialog.newTitle": "New session title",
+    "dialog.rename": "Rename session",
+    "dialog.deleteSelected": "Delete selected",
+    "heatmap.expand": "Expand heatmap",
+    "heatmap.collapse": "Collapse heatmap",
+    "heatmap.previous35Days": "View earlier 35 days",
+    "heatmap.next35Days": "View next 35 days",
+    "heatmap.clear": "Clear",
+    "heatmap.today": "Today",
+    "heatmap.clearTitle": "Clear date filter and show all sessions",
+    "heatmap.todayTitle": "Jump to today and filter today",
+    "heatmap.allRange": "All · {range}",
+    "heatmap.dayTitle": "{day} · {sessions} sessions · {tokens} tok · {cost}",
+    "heatmap.costNA": "cost n/a",
+    "heatmap.sessions": "sessions",
+    "heatmap.tokens": "tokens",
+    "heatmap.cache": "cache",
+    "heatmap.cost": "cost",
+    "heatmap.noModelUsage": "No model usage on this day"
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 /** ========== Storage & Utils ========== */
 const LS_INDEX = "zion.sessions.index";
 const LS_TREE = "zion.sessions.tree";
@@ -26,6 +196,7 @@ const LS_AUTO = "zion.autosave";
 const LS_FOLDER_OPEN = "zion.sessions.folderOpen";
 const URL_SESSION = "zionSession";
 const URL_SESSION_ALT = "session";
+const PENDING_INLINE_EDIT_KEY = "sessions.pendingInlineEdit";
 function debugSessions(event, payload) {
   void event;
   void payload;
@@ -54,6 +225,7 @@ function warnStorageIssue(where, error) {
     console.error("[sessions] storage write failed at", where, error);
     // mark an error state for diagnostics
     try { window.zion?.state?.set("sessions.storageError", { where, error: String(error) }); } catch {}
+    try { window.zion?.state?.set("sessions.storageUnavailable", true); } catch {}
     // Surface storage failures as a notification now that the top status bar is hidden.
     try {
       window.zion?.notification?.show?.("Sessions storage write failed. Some changes may not persist.", {
@@ -82,21 +254,33 @@ async function initSessionsStorage() {
   try {
     await openSessionsDB(DB_NAME);
     // preload KV: tree/index
+    let treeFromIDB = null;
     try {
       const tree = await idbGetKV(DB_NAME, "tree");
       if (tree && tree.type === "folder" && Array.isArray(tree.children)) {
+        treeFromIDB = tree;
         try { window.zion?.state?.set("sessions.treeMem", tree); } catch {}
+      } else if (tree != null) {
+        const error = new Error("invalid sessions tree in IndexedDB");
+        try { warnStorageIssue("loadTree", error); } catch {}
+        return { ok: false, reason: "invalidTree", error };
       }
-    } catch {}
+    } catch (e) {
+      try { warnStorageIssue("loadTree", e); } catch {}
+      return { ok: false, reason: "loadTree", error: e };
+    }
     try {
       const idx = await idbGetKV(DB_NAME, "index");
       if (Array.isArray(idx)) {
         try { window.zion?.state?.set("sessions.indexMem", idx); } catch {}
       }
-    } catch {}
+    } catch (e) {
+      try { warnStorageIssue("loadIndex", e); } catch {}
+      return { ok: false, reason: "loadIndex", error: e };
+    }
 
     // migrate from localStorage if no tree in IDB but legacy tree/index exist
-    const hasTreeInIDB = !!(await idbGetKV(DB_NAME, "tree"));
+    const hasTreeInIDB = !!treeFromIDB;
     const legacyTreeRaw = localStorage.getItem(LS_TREE);
     const legacyIndexRaw = localStorage.getItem(LS_INDEX);
     if (!hasTreeInIDB && (legacyTreeRaw || legacyIndexRaw)) {
@@ -111,6 +295,7 @@ async function initSessionsStorage() {
         if (Array.isArray(legacyIndex)) ids = legacyIndex.map(it => it.id).filter(Boolean);
       }
       // migrate docs/metas
+      const migrationErrors = [];
       for (const sid of ids) {
         try {
           const d = localStorage.getItem(docKey(sid)) || "";
@@ -120,8 +305,12 @@ async function initSessionsStorage() {
           try { window.zion?.state?.set(`sessions.doc.${sid}`, d); } catch {}
           try { window.zion?.state?.set(`sessions.meta.${sid}`, m); } catch {}
         } catch (e) {
+          migrationErrors.push(e);
           console.warn("[sessions] migrate doc/meta error:", sid, e);
         }
+      }
+      if (migrationErrors.length) {
+        throw new Error(`session migration failed for ${migrationErrors.length} item(s)`);
       }
       // persist tree/index to idb
       if (legacyTree) {
@@ -154,8 +343,11 @@ async function initSessionsStorage() {
         tooltip: "Sessions migrated to IndexedDB"
       });
     }
+    return { ok: true };
   } catch (e) {
     console.error("[sessions] initSessionsStorage error:", e);
+    try { warnStorageIssue("initSessionsStorage", e); } catch {}
+    return { ok: false, reason: "initSessionsStorage", error: e };
   }
 }
 
@@ -346,58 +538,76 @@ function isDefaultTitle(t) {
   return /^Session\b/i.test(s) || /^Imported Session\b/i.test(s);
 }
 
-/** 当前是否应自动标题：显式开启时遵循；否则只要标题仍是默认样式（Session/Imported Session）就继续尝试自动派生。 */
-function shouldAutoTitle(meta) {
-  if (!meta) return false;
-  if (meta.titleAuto === true) return true;
-  // 即便显式标记为 false，只要还是默认标题，也允许自动派生一次以提升可用性
-  if (isDefaultTitle(meta.title)) return true;
+function getLatestSessionText(id) {
+  try {
+    const ed = window.zion.window.activeEditor;
+    const editorPanelId = ed?.panelId || null;
+    const editorPanelSessionId = ed?.sessionId || (editorPanelId
+      ? (window.zion?.panelManager?.getPanel?.(editorPanelId)?.activeTabId || null)
+      : null);
+    if (ed && editorPanelSessionId === id) return ed.getValue() || "";
+  } catch {}
+  return loadDoc(id) || "";
+}
+
+function isMeaningfulAutoRenameContent(text) {
+  const cleaned = String(text || "")
+    .replace(/^\s*(system|user|assistant|tool)\s+/gim, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.length >= 12;
+}
+
+/** 未触发对话前，用首行/首句本地派生标题；仍保留 titleAuto=true，之后可被 AI 标题替换。 */
+function maybeUpdateLocalAutoTitle(id) {
+  try {
+    const meta = loadMeta(id);
+    if (!meta || meta.titleAuto !== true) return false;
+    const derived = deriveTitleFromText(getLatestSessionText(id));
+    if (!derived || derived === meta.title) return false;
+    meta.title = derived;
+    meta.titleAuto = true;
+    saveMeta(id, meta);
+    try { window.zion.state.set(`sessions.meta.${id}`, meta); } catch {}
+
+    const tree = loadTree() || ensureInitialTree();
+    const { node } = findNodeAndParent(tree, id);
+    if (node && node.type === "session") {
+      node.title = meta.title;
+      saveTree(tree);
+    }
+    rebuildIndexFromTree();
+    try { window.zion.state.set("sessions.catalog", getIndex()); } catch {}
+    try { refreshStatusBar(); } catch {}
+    if (!opts?.skipRefresh) {
+      try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    }
+    try { updatePageTitle(id); } catch {}
+    return true;
+  } catch {}
   return false;
 }
 
-/** 当需要自动标题时，基于文档内容更新会话标题（首个非空行或首句）。同步树与索引，并刷新状态。 */
-function maybeUpdateAutoTitle(id) {
+/** 对话首次触发时，再启动 AI 标题生成；手动改名会通过 titleAuto=false 自动阻止。 */
+function maybeTriggerChatAutoRename(id) {
   try {
     const meta = loadMeta(id);
-    // 优先使用当前编辑器中的最新文本（避免依赖未及时写入的 localStorage）
-    let text = "";
-    let source = "loadDoc";
-    try {
-      const ed = window.zion.window.activeEditor;
-      const editorPanelId = ed?.panelId || null;
-      const editorPanelSessionId = ed?.sessionId || (editorPanelId
-        ? (window.zion?.panelManager?.getPanel?.(editorPanelId)?.activeTabId || null)
-        : null);
-      if (ed && editorPanelSessionId === id) {
-        text = ed.getValue() || "";
-        source = "activeEditor";
-      } else {
-        text = loadDoc(id) || "";
-        source = "loadDoc";
-      }
-    } catch {
-      text = loadDoc(id) || "";
-      source = "loadDoc";
-    }
-    const derived = deriveTitleFromText(text);
-    // 仅当仍为“默认标题”或未明确禁用自动标题时执行；派生成功后“锁定”标题（titleAuto=false）
-    if (shouldAutoTitle(meta) && derived && derived !== meta.title) {
-      meta.title = derived;
-      meta.titleAuto = false; // 首次派生后锁定，后续不再自动更新（仅重命名可改变）
-      saveMeta(id, meta);
-      // 更新树节点标题
-      const tree = loadTree() || ensureInitialTree();
-      const { node } = findNodeAndParent(tree, id);
-      if (node && node.type === "session") {
-        node.title = meta.title;
-        saveTree(tree);
-      }
-      // 重建索引并刷新状态
-      rebuildIndexFromTree();
-      try { window.zion.state.set("sessions.catalog", getIndex()); } catch {}
-      try { refreshStatusBar(); } catch {}
-      return true;
-    }
+    if (!meta || meta.titleAuto !== true || meta.autoRenameChatTriggeredAt) return false;
+    const text = getLatestSessionText(id);
+    if (!isMeaningfulAutoRenameContent(text)) return false;
+
+    meta.autoRenameChatTriggeredAt = now();
+    saveMeta(id, meta);
+    try { window.zion.state.set(`sessions.meta.${id}`, meta); } catch {}
+
+    const run = () => {
+      try {
+        window.zion.commands.executeCommand("zion.sessions.autoRename", { id, onlyIfAuto: true, silent: true, reason: "chat-run-started" });
+      } catch {}
+    };
+    if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 1500 });
+    else setTimeout(run, 800);
+    return true;
   } catch {}
   return false;
 }
@@ -681,7 +891,9 @@ function refreshSessionsOverlayIfOpen() {
 const __sidebarViewManager = createSessionsSidebarViewManager({
   zion: window.zion,
   createSessionsListRenderer,
-  openAncestors
+  openAncestors,
+  getIndex,
+  loadMeta
 });
 
 function refreshSessionsSidebarViewIfOpen() {
@@ -949,35 +1161,42 @@ function injectScrollbarStyles() {
 
 /** ========== Activate Extension ========== */
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
 
   // Inject custom scrollbar styles
   injectScrollbarStyles();
   // 初始化 IndexedDB 并预载数据/迁移
-  await initSessionsStorage();
+  const storageStatus = await initSessionsStorage();
+  if (!storageStatus?.ok) {
+    try { window.zion?.state?.set("sessions.storageUnavailable", true); } catch {}
+    try { window.zion?.state?.set("sessions.catalog", getIndex()); } catch {}
+    try {
+      window.zion?.notification?.show?.(
+        "Sessions storage is unavailable. Free disk space and refresh before editing sessions.",
+        { type: "error", duration: 0, dismissible: true }
+      );
+    } catch {}
+    return;
+  }
+  try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
 
   // 初始化树/索引/会话
   ensureInitialTree();
   rebuildIndexFromTree();
   // 注册会话相关工具（供大模型使用）
   try { registerSessionTools(); } catch {}
-  let currentId = getLastActiveId() || getIndex()[0]?.id || null;
+  const shouldStartEmpty = window.zion?.state?.get?.("sessions.startEmpty") === true;
+  let currentId = shouldStartEmpty ? null : (getLastActiveId() || getIndex()[0]?.id || null);
   try {
     if (currentId && !findInIndex(currentId)) {
       currentId = getIndex()[0]?.id || null;
     }
   } catch {}
-  if (!currentId) {
-    // 没有会话，创建一个空的
-    const id = genId();
-    const doc = "";
-    const title = "Session 1";
-    const meta = { id, title, createdAt: now(), updatedAt: now(), size: 0, hash: hashString(doc), titleAuto: true };
-    saveDoc(id, doc);
-    saveMeta(id, meta);
-    upsertIndexEntry({ id, title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
-    currentId = id;
-  }
-  setLastActiveId(currentId);
+  if (currentId) setLastActiveId(currentId);
+  else setLastActiveId(null);
   window.zion.state.set("sessions.currentId", currentId);
   window.zion.state.set("sessions.catalog", getIndex());
   const sessionUiState = new Map();
@@ -987,7 +1206,7 @@ export async function activate(ctx) {
 
   // 将当前会话内容加载到编辑器
   const ed = window.zion.window.activeEditor;
-  if (ed) {
+  if (ed && currentId) {
     try {
       const text = await loadDocAsync(currentId);
       ed.setValue(text, { source: "session-load" });
@@ -1011,7 +1230,7 @@ export async function activate(ctx) {
       try {
         dispRun = window.zion.state.onDidChange(`chat.runs.${sid}`, () => {
           updateTitle();
-          try { maybeUpdateAutoTitle(sid); } catch {}
+          try { maybeUpdateLocalAutoTitle(sid); } catch {}
         });
       } catch {
         dispRun = null;
@@ -1037,8 +1256,20 @@ export async function activate(ctx) {
         }
       } catch {}
     });
+    const dispReveal = window.zion.events.on("sessions/revealRequested", (payload) => {
+      const sid = payload?.sessionId ? String(payload.sessionId) : null;
+      if (!sid) return;
+      try {
+        __sidebarViewManager.revealSessionIfOpen(sid, {
+          openAncestors: true,
+          clearSearch: false,
+          flash: false,
+          block: "center"
+        });
+      } catch {}
+    });
     const dispStreaming = window.zion.state.onDidChange("chat.streaming", () => updateTitle());
-    ctx.subscriptions.push(dispCur, dispStreaming, { dispose() { try { dispRun?.dispose?.(); } catch {} } });
+    ctx.subscriptions.push(dispCur, dispReveal, dispStreaming, { dispose() { try { dispRun?.dispose?.(); } catch {} } });
   } catch {}
 
   try {
@@ -1058,23 +1289,27 @@ export async function activate(ctx) {
     const dispItem = window.zion.activityBar.registerItem({
       id: "sessions.activity",
       pluginId: "dev.session-manager",
-      icon: "$(comment-discussion)",
-      tooltip: "Sessions",
+      icon: "$(history)",
+      tooltip: t("ui.sessions", "Sessions"),
+      tooltipKey: "dev.session-manager.ui.sessions",
       sideBarViewId: "sessions.list",
       order: 10
     });
     const dispView = window.zion.sideBar.registerView({
       id: "sessions.list",
       pluginId: "dev.session-manager",
-      title: "Sessions",
+      title: t("ui.sessions", "Sessions"),
+      titleKey: "dev.session-manager.ui.sessions",
       icon: "💬",
       order: 10,
       location: "sidebar",
       headerActions: [
         {
           id: "sessions.new",
-          title: "Create new session",
-          ariaLabel: "Create new session",
+          title: t("ui.createNew", "Create new session"),
+          titleKey: "dev.session-manager.ui.createNew",
+          ariaLabel: t("ui.createNew", "Create new session"),
+          ariaLabelKey: "dev.session-manager.ui.createNew",
           icon: "$(add)",
           onClick: () => window.zion.commands.executeCommand("zion.sessions.new", {
             parentId: window.zion.state.get("sessions.selectedFolderId") || "root"
@@ -1082,8 +1317,10 @@ export async function activate(ctx) {
         },
         {
           id: "sessions.actions",
-          title: "Actions",
-          ariaLabel: "Actions",
+          title: t("ui.actions", "Actions"),
+          titleKey: "dev.session-manager.ui.actions",
+          ariaLabel: t("ui.actions", "Actions"),
+          ariaLabelKey: "dev.session-manager.ui.actions",
           icon: "⋮",
           onClick: () => {
             try {
@@ -1104,6 +1341,10 @@ export async function activate(ctx) {
       }
     });
     ctx.subscriptions.push(dispItem, dispView);
+    ctx.subscriptions.push(window.zion.events.on("i18n/changed", () => {
+      try { refreshSessionsSidebarViewIfOpen(); } catch {}
+      try { refreshSessionsOverlayIfOpen(); } catch {}
+    }));
     try { window.zion.activityBar.activateItem("sessions.activity"); } catch {}
     focusCurrentSessionInSidebar();
   } catch {}
@@ -1130,17 +1371,17 @@ export async function activate(ctx) {
   try {
     const dispMenu1 = window.zion.menus.register("editor/context", {
       command: "zion.sessions.saveAsNew",
-      title: "Save As New Session",
+      title: t("cmd.saveAsNew", "Save As New Session"),
       when: "editorFocus"
     });
     const dispMenu2 = window.zion.menus.register("editor/context", {
       command: "zion.sessions.showPanel",
-      title: "Sessions…",
+      title: t("ui.sessions", "Sessions") + "…",
       when: "editorFocus"
     });
     const dispMenu3 = window.zion.menus.register("editor/context", {
       command: "zion.sessions.fork",
-      title: "Fork Session",
+      title: t("ui.fork", "Fork Session"),
       when: "editorFocus"
     });
     ctx.subscriptions.push(dispMenu1, dispMenu2, dispMenu3);
@@ -1164,7 +1405,7 @@ export async function activate(ctx) {
               duration: 0,
               dismissible: true,
               actions: [{
-                label: "刷新",
+                label: t("ui.refresh", "刷新"),
                 handler: () => {
                   (async () => {
                     try {
@@ -1216,6 +1457,7 @@ export async function activate(ctx) {
           refreshSessionsSidebarViewIfOpen();
         }
       } catch {}
+      try { maybeUpdateLocalAutoTitle(meta?.id); } catch {}
     }
   );
   const dispDec = window.zion.editor.registerDecorator({
@@ -1282,10 +1524,9 @@ export async function activate(ctx) {
     const targetPanelId = opts?.panelId || (() => {
       try { return window.zion?.panels?.getActivePanelId?.() || null; } catch { return null; }
     })();
-    // title: prefer provided; else derive from content; else fallback suggested
-    const derived = deriveTitleFromText(text);
+    // Keep new sessions on a stable placeholder; AI rename runs once after real content arrives.
     const explicitTitle = String(opts?.title || "").trim();
-    const title = explicitTitle || derived || suggested;
+    const title = explicitTitle || suggested;
     const meta = {
       id,
       title,
@@ -1293,7 +1534,7 @@ export async function activate(ctx) {
       updatedAt: now(),
       size: text.length,
       hash: hashString(text),
-      titleAuto: !explicitTitle && !!derived
+      titleAuto: !explicitTitle
     };
     saveDoc(id, text);
     saveMeta(id, meta);
@@ -1342,6 +1583,7 @@ export async function activate(ctx) {
     postSaved(id, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(id);
+    try { maybeUpdateLocalAutoTitle(id); } catch {}
     return id;
   });
   ctx.subscriptions.push(dNew);
@@ -1353,7 +1595,7 @@ export async function activate(ctx) {
     const text = ed?.getValue() || "";
     const suggested = `Session ${getIndex().length + 1}`;
     const rawTitle = await openModalInput({
-      title: "New session title",
+      title: t("dialog.newTitle", "New session title"),
       value: suggested,
       placeholder: "Session title",
       okText: "Create",
@@ -1388,6 +1630,7 @@ export async function activate(ctx) {
     postSaved(id, meta.updatedAt, meta.hash);
     // 更新页面标题
     updatePageTitle(id);
+    try { maybeUpdateLocalAutoTitle(id); } catch {}
   });
   ctx.subscriptions.push(dSaveAsNew);
 
@@ -1408,7 +1651,7 @@ export async function activate(ctx) {
     const raw = nv
       ? nv
       : await openModalInput({
-        title: "Rename session",
+        title: t("dialog.rename", "Rename session"),
         value: entry?.title || "",
         placeholder: "Session title",
         okText: "Rename",
@@ -1468,7 +1711,8 @@ export async function activate(ctx) {
           } catch {}
         }
       } else {
-        window.zion.commands.executeCommand("zion.sessions.new");
+        setLastActiveId(null);
+        try { window.zion.window.activeEditor?.setValue("", { source: "session-load" }); } catch {}
       }
     }
     refreshStatusBar();
@@ -1514,7 +1758,7 @@ export async function activate(ctx) {
         saveMeta(sessionId, metaPrev);
       }
     } catch {}
-    try { maybeUpdateAutoTitle(sessionId); } catch {}
+    try { maybeUpdateLocalAutoTitle(sessionId); } catch {}
   };
 
   const restoreSessionViewState = (id, panelId) => {
@@ -1569,7 +1813,7 @@ export async function activate(ctx) {
     applyAnnotations: applyAnnotationsForSession,
     restoreUiState: restoreSessionViewState,
     afterSwitch: (id) => {
-      try { maybeUpdateAutoTitle(id); } catch {}
+      try { maybeUpdateLocalAutoTitle(id); } catch {}
       try { window.zion.state.update(`chat.runs.${id}`, (rs) => ({ ...(rs || {}), awaiting: false })); } catch {}
       const rs = window.zion.state.get(`chat.runs.${id}`);
       window.zion.state.set("chat.streaming", !!rs?.streaming);
@@ -1641,6 +1885,7 @@ export async function activate(ctx) {
     ...registerSessionDocCommands({
       zion: window.zion,
       loadDoc,
+      loadDocAsync,
       loadMeta,
       saveDoc,
       saveMeta,
@@ -1648,7 +1893,10 @@ export async function activate(ctx) {
       hashString,
       upsertIndexEntry,
       getIndex,
-      refreshSessionsSidebarViewIfOpen
+      refreshSessionsSidebarViewIfOpen,
+      onDocChanged: (id) => {
+        try { maybeUpdateLocalAutoTitle(id); } catch {}
+      }
     })
   );
 
@@ -1662,6 +1910,7 @@ export async function activate(ctx) {
         window.zion.state.set(key, 0);
       }
     } catch {}
+    try { maybeTriggerChatAutoRename(sessionId); } catch {}
     // Refresh UI to reflect "streaming" status badge immediately
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
@@ -2010,7 +2259,7 @@ export async function activate(ctx) {
     const sel = getSelection();
     if (!sel.length) return false;
     const ok = await openModalConfirm({
-      title: "Delete selected",
+      title: t("dialog.deleteSelected", "Delete selected"),
       message: `Delete ${sel.length} selected item(s)? This cannot be undone.`,
       okText: "Delete",
       cancelText: "Cancel"
@@ -2041,6 +2290,9 @@ export async function activate(ctx) {
         if (!window.zion?.panels?.getActivePanelId?.()) {
           window.zion.window.activeEditor?.setValue(loadDoc(nextId), { source: "session-load" });
         }
+      } else {
+        setLastActiveId(null);
+        try { window.zion.window.activeEditor?.setValue("", { source: "session-load" }); } catch {}
       }
     } else {
       await Promise.all(sel.filter((it) => it.type !== "folder").map((it) => removeSessionFromPanels(it.id)));
@@ -2087,19 +2339,27 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dDeleteSelected, dExportSelected);
 
   // Folder commands
-  const dNewFolder = window.zion.commands.registerCommand("zion.sessions.newFolder", async (opts) => {
-    let title = String(opts?.title || "");
-    if (!title) {
-      const input = await openModalInput({
-        title: "Folder name",
-        value: "New Folder",
-        placeholder: "Folder name",
-        okText: "Create",
-        cancelText: "Use default"
-      });
-      title = String((input == null ? "New Folder" : input) || "New Folder").trim() || "New Folder";
+  const dNewFolder = window.zion.commands.registerCommand("zion.sessions.newFolder", (opts) => {
+    const parentId = String(opts?.parentId || window.zion.state.get("sessions.selectedFolderId") || "root") || "root";
+    const title = String(opts?.title || "").trim() || "New Folder";
+    const shouldStartInlineRename = opts?.startInlineRename !== false;
+    const targetView = String(opts?.targetView || "").trim() || null;
+    const id = insertFolder(parentId, title);
+    try { openAncestors(id); } catch {}
+    try { setFolderOpen(parentId, true); } catch {}
+    try { setSelection([{ id, type: "folder" }]); } catch {}
+    try { setLastSelectedId(id); } catch {}
+    try { window.zion.state.set("sessions.selectedFolderId", id); } catch {}
+    if (shouldStartInlineRename) {
+      try {
+        window.zion.state.set(PENDING_INLINE_EDIT_KEY, {
+          id,
+          type: "folder",
+          isNew: true,
+          targetView
+        });
+      } catch {}
     }
-    const id = insertFolder(opts?.parentId || window.zion.state.get("sessions.selectedFolderId") || "root", title);
     window.zion.state.set("sessions.catalog", getIndex());
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return id;
@@ -2142,29 +2402,29 @@ export async function activate(ctx) {
       {
         id: "zion.sessions.new",
         triggers: ["new", "new-session", "ns"],
-        title: "新建会话",
-        description: "创建新的会话",
+        title: t("cmd.new", "新建会话"),
+        description: t("slash.new.description", "创建新的会话"),
         priority: 100
       },
       {
         id: "zion.sessions.showPanel",
         triggers: ["sessions", "show-sessions", "session-panel"],
-        title: "显示会话面板",
-        description: "打开会话管理面板",
+        title: t("cmd.showPanel", "显示会话面板"),
+        description: t("slash.showPanel.description", "打开会话管理面板"),
         priority: 90
       },
       {
         id: "zion.sessions.toggleSidebar",
         triggers: ["sidebar", "sessions-sidebar"],
-        title: "切换会话侧边栏",
-        description: "显示/隐藏会话侧边栏",
+        title: t("cmd.toggleSidebar", "切换会话侧边栏"),
+        description: t("slash.toggleSidebar.description", "显示/隐藏会话侧边栏"),
         priority: 80
       },
       {
         id: "zion.sessions.saveAsNew",
         triggers: ["save-as", "save-session"],
-        title: "另存为新会话",
-        description: "将当前内容另存为新会话",
+        title: t("cmd.saveAsNew", "另存为新会话"),
+        description: t("slash.saveAsNew.description", "将当前内容另存为新会话"),
         priority: 70
       }
     ];

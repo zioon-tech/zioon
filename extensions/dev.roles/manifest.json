@@ -13,11 +13,15 @@
       "commands": [
         {
           "id": "roles.toggle",
-          "title": "Toggle Roles"
+          "title": "Toggle Roles",
+          "titleKey": "dev.roles.cmd.toggle",
+          "categoryKey": "dev.roles.category.roles"
         },
         {
           "id": "roles.configure",
-          "title": "Configure Roles"
+          "title": "Configure Roles",
+          "titleKey": "dev.roles.cmd.configure",
+          "categoryKey": "dev.roles.category.roles"
         }
       ]
     },
@@ -28,6 +32,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.roles",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.roles"
   }
 }

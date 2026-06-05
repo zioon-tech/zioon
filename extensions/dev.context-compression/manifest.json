@@ -13,35 +13,51 @@
       "commands": [
         {
           "id": "compression.manual",
-          "title": "Compress Conversation (Manual)"
+          "title": "Compress Conversation (Manual)",
+          "titleKey": "dev.context-compression.cmd.manual",
+          "categoryKey": "dev.context-compression.category.compression"
         },
         {
           "id": "compression.strategy.opencode",
-          "title": "Compress with OpenCode Strategy"
+          "title": "Compress with OpenCode Strategy",
+          "titleKey": "dev.context-compression.cmd.strategy.opencode",
+          "categoryKey": "dev.context-compression.category.compression"
         },
         {
           "id": "compression.strategy.claude-code",
-          "title": "Compress with Claude Code Strategy"
+          "title": "Compress with Claude Code Strategy",
+          "titleKey": "dev.context-compression.cmd.strategy.claudeCode",
+          "categoryKey": "dev.context-compression.category.compression"
         },
         {
           "id": "compression.strategy.cursor",
-          "title": "Compress with Cursor Strategy"
+          "title": "Compress with Cursor Strategy",
+          "titleKey": "dev.context-compression.cmd.strategy.cursor",
+          "categoryKey": "dev.context-compression.category.compression"
         },
         {
           "id": "compression.strategy.manus",
-          "title": "Compress with Manus Strategy"
+          "title": "Compress with Manus Strategy",
+          "titleKey": "dev.context-compression.cmd.strategy.manus",
+          "categoryKey": "dev.context-compression.category.compression"
         },
         {
           "id": "compression.strategy.focus-agent",
-          "title": "Compress with Focus Agent Strategy"
+          "title": "Compress with Focus Agent Strategy",
+          "titleKey": "dev.context-compression.cmd.strategy.focusAgent",
+          "categoryKey": "dev.context-compression.category.compression"
         },
         {
           "id": "compression.settings",
-          "title": "Open Compression Settings"
+          "title": "Open Compression Settings",
+          "titleKey": "dev.context-compression.cmd.settings",
+          "categoryKey": "dev.context-compression.category.compression"
         },
         {
           "id": "compression.stats",
-          "title": "Show Compression Statistics"
+          "title": "Show Compression Statistics",
+          "titleKey": "dev.context-compression.cmd.stats",
+          "categoryKey": "dev.context-compression.category.compression"
         }
       ],
       "keybindings": [
@@ -61,19 +77,22 @@
           {
             "command": "compression.manual",
             "title": "Compress Conversation",
-            "when": "editorFocus"
+            "when": "editorFocus",
+            "titleKey": "dev.context-compression.cmd.manual"
           },
           {
             "command": "compression.settings",
             "title": "Compression Settings",
-            "when": "editorFocus"
+            "when": "editorFocus",
+            "titleKey": "dev.context-compression.cmd.settings"
           }
         ]
       },
       "views": {
         "status-bar/compression": {
           "type": "status-bar-item",
-          "title": "Compression"
+          "title": "Compression",
+          "titleKey": "dev.context-compression.settings.title"
         }
       }
     },
@@ -85,6 +104,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.context-compression",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.context-compression"
   }
 }

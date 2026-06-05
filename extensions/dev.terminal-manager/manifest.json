@@ -13,15 +13,21 @@
       "commands": [
         {
           "id": "terminal.openManager",
-          "title": "Open Terminal Manager"
+          "title": "Open Terminal Manager",
+          "titleKey": "dev.terminal-manager.cmd.openManager",
+          "categoryKey": "dev.terminal-manager.category.terminal"
         },
         {
           "id": "terminal.closeManager",
-          "title": "Close Terminal Manager"
+          "title": "Close Terminal Manager",
+          "titleKey": "dev.terminal-manager.cmd.closeManager",
+          "categoryKey": "dev.terminal-manager.category.terminal"
         },
         {
           "id": "terminal.newSessionAtSameLevel",
           "title": "New Session at Same Level",
+          "titleKey": "dev.terminal-manager.cmd.newSameLevel",
+          "categoryKey": "dev.terminal-manager.category.terminal",
           "keybinding": "Alt+N"
         }
       ]
@@ -31,6 +37,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.terminal-manager",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.terminal-manager"
   }
 }

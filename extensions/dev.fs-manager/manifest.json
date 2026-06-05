@@ -13,23 +13,33 @@
       "commands": [
         {
           "id": "fs.showManager",
-          "title": "Open Files Access Manager"
+          "title": "Open Files Access Manager",
+          "titleKey": "dev.fs-manager.cmd.showManager",
+          "categoryKey": "dev.fs-manager.category.fs"
         },
         {
           "id": "fs.addFile",
-          "title": "Add File Access"
+          "title": "Add File Access",
+          "titleKey": "dev.fs-manager.cmd.addFile",
+          "categoryKey": "dev.fs-manager.category.fs"
         },
         {
           "id": "fs.addFolder",
-          "title": "Add Folder Access"
+          "title": "Add Folder Access",
+          "titleKey": "dev.fs-manager.cmd.addFolder",
+          "categoryKey": "dev.fs-manager.category.fs"
         },
         {
           "id": "fs.getEntries",
-          "title": "Get FS Entries"
+          "title": "Get FS Entries",
+          "titleKey": "dev.fs-manager.cmd.getEntries",
+          "categoryKey": "dev.fs-manager.category.fs"
         },
         {
           "id": "fs.clearAll",
-          "title": "Clear All FS Entries"
+          "title": "Clear All FS Entries",
+          "titleKey": "dev.fs-manager.cmd.clearAll",
+          "categoryKey": "dev.fs-manager.category.fs"
         }
       ],
       "keybindings": []
@@ -39,6 +49,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.fs-manager",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.fs-manager"
   }
 }

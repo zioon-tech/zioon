@@ -10,6 +10,15 @@ const MARKER_START = "<<<<<<< SEARCH";
 const MARKER_EQ = "=======";
 const MARKER_END = ">>>>>>> REPLACE";
 
+function t(key, fallback, values) {
+  const fullKey = `dev.search-replace-plus.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 function countOccurrencesOutside(text, needle, excluded) {
   if (!needle) return 0;
   let cnt = 0;
@@ -402,14 +411,14 @@ function requestFSAuthorization(targetPath) {
       panel.onclick = (e) => e.stopPropagation();
 
       const title = document.createElement("div");
-      title.textContent = "需要访问权限";
+      title.textContent = t("ui.permissionTitle", "需要访问权限");
       title.style.fontWeight = "600";
       title.style.marginBottom = "6px";
 
       const msg = document.createElement("div");
       msg.style.fontSize = "12px";
       msg.style.opacity = "0.9";
-      msg.textContent = `未授权访问目标文件：${targetPath || "(未知路径)"}`;
+      msg.textContent = t("ui.permissionMessage", "未授权访问目标文件：{path}", { path: targetPath || `(${t("ui.unknownPath", "未知路径")})` });
 
       const btns = document.createElement("div");
       btns.style.display = "flex";
@@ -438,20 +447,20 @@ function requestFSAuthorization(targetPath) {
         } catch { return false; }
       };
 
-      const addFileBtn = mkBtn("添加文件", async () => {
+      const addFileBtn = mkBtn(t("ui.addFile", "添加文件"), async () => {
         try { await window.zion.commands.executeCommand("fs.addFile"); } catch {}
         const ok = await refreshAndCheck();
         cleanup(ok);
       });
-      const addFolderBtn = mkBtn("添加文件夹", async () => {
+      const addFolderBtn = mkBtn(t("ui.addFolder", "添加文件夹"), async () => {
         try { await window.zion.commands.executeCommand("fs.addFolder"); } catch {}
         const ok = await refreshAndCheck();
         cleanup(ok);
       });
-      const openMgrBtn = mkBtn("打开管理面板", () => {
+      const openMgrBtn = mkBtn(t("ui.openManager", "打开管理面板"), () => {
         try { window.zion.commands.executeCommand("fs.showManager"); } catch {}
       });
-      const cancelBtn = mkBtn("取消", () => cleanup(false));
+      const cancelBtn = mkBtn(t("ui.cancel", "取消"), () => cleanup(false));
 
       btns.append(addFileBtn, addFolderBtn, openMgrBtn, cancelBtn);
       panel.append(title, msg, btns);
@@ -561,46 +570,46 @@ class ToolbarWidget extends WidgetType {
     };
 
     const initialCounts = this.getCounts(this.block); // fallback (document counts or cached file counts)
-    const diffBtn = mkBtn(state.diff ? "Diff: On" : "Diff: Off", "Toggle inline diff colors", () => {
+    const diffBtn = mkBtn(state.diff ? t("ui.diffOn", "Diff: On") : t("ui.diffOff", "Diff: Off"), t("ui.toggleDiff", "Toggle inline diff colors"), () => {
       const st = this.getState(blockKey(this.block)) || { diff: false, applied: false };
       st.diff = !st.diff;
       this.setState(blockKey(this.block), st);
       document.dispatchEvent(new CustomEvent("dev.srp/refresh"));
     });
 
-    const copyS = mkBtn(`CopySearch (${initialCounts.searchMatches})`, "Copy Search text", async () => {
-      try { await navigator.clipboard.writeText(this.block.searchText); window.showToast?.("已复制 Search 文本"); } catch {}
+    const copyS = mkBtn(t("ui.copySearch", "Copy Search ({count})", { count: initialCounts.searchMatches }), t("ui.copySearchAria", "Copy Search text"), async () => {
+      try { await navigator.clipboard.writeText(this.block.searchText); window.showToast?.(t("msg.copiedSearch", "已复制 Search 文本")); } catch {}
       // After copy, compute file counts and adjust AR intent: Accept if search>=1
       await updateCountsFromFile();
       const st = this.getState(blockKey(this.block)) || { diff: false, applied: false };
       if (st.fsCounts && st.fsCounts.searchMatches >= 1) {
         st.applied = false; // next action: Accept
         this.setState(blockKey(this.block), st);
-        arBtn.textContent = "Accept";
-        arBtn.setAttribute("aria-label", "Accept replacements");
+        arBtn.textContent = t("ui.accept", "Accept");
+        arBtn.setAttribute("aria-label", t("ui.acceptAria", "Accept replacements"));
       }
     });
-    const copyR = mkBtn(`CopyReplace (${initialCounts.replaceMatches})`, "Copy Replace text", async () => {
-      try { await navigator.clipboard.writeText(this.block.replaceText); window.showToast?.("已复制 Replace 文本"); } catch {}
+    const copyR = mkBtn(t("ui.copyReplace", "Copy Replace ({count})", { count: initialCounts.replaceMatches }), t("ui.copyReplaceAria", "Copy Replace text"), async () => {
+      try { await navigator.clipboard.writeText(this.block.replaceText); window.showToast?.(t("msg.copiedReplace", "已复制 Replace 文本")); } catch {}
       // After copy, compute file counts and adjust AR intent: Revert if replace>=1
       await updateCountsFromFile();
       const st = this.getState(blockKey(this.block)) || { diff: false, applied: false };
       if (st.fsCounts && st.fsCounts.replaceMatches >= 1) {
         st.applied = true; // next action: Revert
         this.setState(blockKey(this.block), st);
-        arBtn.textContent = "Revert";
-        arBtn.setAttribute("aria-label", "Revert replacements");
+        arBtn.textContent = t("ui.revert", "Revert");
+        arBtn.setAttribute("aria-label", t("ui.revertAria", "Revert replacements"));
       }
     });
 
-    const arBtn = mkBtn(state.applied ? "Revert" : "Accept", state.applied ? "Revert replacements" : "Accept replacements", async () => {
+    const arBtn = mkBtn(state.applied ? t("ui.revert", "Revert") : t("ui.accept", "Accept"), state.applied ? t("ui.revertAria", "Revert replacements") : t("ui.acceptAria", "Accept replacements"), async () => {
       const st = this.getState(blockKey(this.block)) || { diff: false, applied: false };
       // 获取最新计数（优先文件计数，否则文档计数）
       const counts = this.getCounts(this.block);
       if (!st.applied) {
         // Accept operation
         if (counts && counts.searchMatches > 5) {
-          window.showToast?.("匹配过多，请检查");
+          window.showToast?.(t("msg.tooManyMatches", "匹配过多，请检查"));
         }
         
         let changed = 0;
@@ -609,7 +618,7 @@ class ToolbarWidget extends WidgetType {
         // Try FS-targeted accept first
         try { 
           changed = await this.applyReplaceFile(this.block); 
-          operationType = "文件";
+          operationType = t("msg.scopeFile", "文件");
         } catch (e) {
           console.warn("[dev.srp] FS accept failed, falling back to document", e);
         }
@@ -618,7 +627,7 @@ class ToolbarWidget extends WidgetType {
         if (changed === 0) {
           try {
             changed = await this.applyReplace(this.block);
-            operationType = "文档";
+            operationType = t("msg.scopeDocument", "文档");
           } catch (e) {
             console.error("[dev.srp] Document accept failed", e);
           }
@@ -627,12 +636,12 @@ class ToolbarWidget extends WidgetType {
         if (changed > 0) {
           st.applied = true;
           this.setState(blockKey(this.block), st);
-          window.showToast?.(`替换 ${changed} 处（${operationType}）`);
+          window.showToast?.(t("msg.changed", "{action} {count} 处（{scope}）", { action: t("msg.accepted", "已替换"), count: changed, scope: operationType }));
           // Update button text immediately
-          arBtn.textContent = "Revert";
-          arBtn.setAttribute("aria-label", "Revert replacements");
+          arBtn.textContent = t("ui.revert", "Revert");
+          arBtn.setAttribute("aria-label", t("ui.revertAria", "Revert replacements"));
         } else {
-          window.showToast?.("无可替换项");
+          window.showToast?.(t("msg.noAcceptItems", "无可替换项"));
         }
       } else {
         // Revert operation
@@ -642,7 +651,7 @@ class ToolbarWidget extends WidgetType {
         // Try FS-targeted revert first
         try { 
           changed = await this.applyRevertFile(this.block); 
-          operationType = "文件";
+          operationType = t("msg.scopeFile", "文件");
         } catch (e) {
           console.warn("[dev.srp] FS revert failed, falling back to document", e);
         }
@@ -651,7 +660,7 @@ class ToolbarWidget extends WidgetType {
         if (changed === 0) {
           try {
             changed = await this.applyRevert(this.block);
-            operationType = "文档";
+            operationType = t("msg.scopeDocument", "文档");
           } catch (e) {
             console.error("[dev.srp] Document revert failed", e);
           }
@@ -660,12 +669,12 @@ class ToolbarWidget extends WidgetType {
         if (changed > 0) {
           st.applied = false;
           this.setState(blockKey(this.block), st);
-          window.showToast?.(`回退 ${changed} 处（${operationType}）`);
+          window.showToast?.(t("msg.changed", "{action} {count} 处（{scope}）", { action: t("msg.reverted", "已回退"), count: changed, scope: operationType }));
           // Update button text immediately
-          arBtn.textContent = "Accept";
-          arBtn.setAttribute("aria-label", "Accept replacements");
+          arBtn.textContent = t("ui.accept", "Accept");
+          arBtn.setAttribute("aria-label", t("ui.acceptAria", "Accept replacements"));
         } else {
-          window.showToast?.("无可回退项");
+          window.showToast?.(t("msg.noRevertItems", "无可回退项"));
         }
       }
       document.dispatchEvent(new CustomEvent("dev.srp/refresh"));
@@ -676,8 +685,8 @@ class ToolbarWidget extends WidgetType {
       try {
         const counts = await this.computeCountsInFile?.(this.block);
         if (counts && typeof counts.searchMatches === "number" && typeof counts.replaceMatches === "number") {
-          copyS.textContent = `CopySearch (${counts.searchMatches})`;
-          copyR.textContent = `CopyReplace (${counts.replaceMatches})`;
+          copyS.textContent = t("ui.copySearch", "Copy Search ({count})", { count: counts.searchMatches });
+          copyR.textContent = t("ui.copyReplace", "Copy Replace ({count})", { count: counts.replaceMatches });
         }
       } catch {}
     };
@@ -731,7 +740,7 @@ export function conflictBlocks() {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "srp-fold-btn " + (this.kind === "search" ? "srp-search" : "srp-replace");
-      btn.title = this.kind === "search" ? "折叠/展开 Search 部分" : "折叠/展开 Replace 部分";
+      btn.title = this.kind === "search" ? t("ui.foldSearch", "折叠/展开 Search 部分") : t("ui.foldReplace", "折叠/展开 Replace 部分");
       // 简单内联样式（与主题相容）
       btn.style.width = "14px";
       btn.style.height = "14px";
@@ -806,9 +815,9 @@ export function conflictBlocks() {
         }
         if (changed > 0) {
           this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: cur } });
-          window.showToast?.(`替换 ${changed} 处（mock，全局）`);
+          window.showToast?.(t("msg.changed", "{action} {count} 处（{scope}）", { action: t("msg.accepted", "已替换"), count: changed, scope: "mock" }));
         } else {
-          window.showToast?.("无可替换项（mock）");
+          window.showToast?.(t("msg.noAcceptItems", "无可替换项"));
         }
       };
       this._onRevertAll = () => {
@@ -830,9 +839,9 @@ export function conflictBlocks() {
         }
         if (changed > 0) {
           this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: cur } });
-          window.showToast?.(`回退 ${changed} 处（mock，全局）`);
+          window.showToast?.(t("msg.changed", "{action} {count} 处（{scope}）", { action: t("msg.reverted", "已回退"), count: changed, scope: "mock" }));
         } else {
-          window.showToast?.("无可回退项（mock）");
+          window.showToast?.(t("msg.noRevertItems", "无可回退项"));
         }
       };
       this._onToggleDiffAll = () => {
@@ -935,21 +944,21 @@ export function conflictBlocks() {
         if (!picked) {
           const okAuth = await requestFSAuthorization(path);
           if (!okAuth) {
-            window.showToast?.(`未找到匹配的文件: ${path}`);
+            window.showToast?.(t("msg.noMatchingFile", "未找到匹配的文件：{path}", { path }));
             return 0;
           }
           const entries2 = await window.zion.commands.executeCommand("fs.getEntries");
           files = await listAllFilesFromEntries(entries2 || []);
           picked = pickBestFile(files, path);
           if (!picked) {
-            window.showToast?.(`未找到匹配的文件: ${path}`);
+            window.showToast?.(t("msg.noMatchingFile", "未找到匹配的文件：{path}", { path }));
             return 0;
           }
         }
         
         const ok = await ensureRW(picked.fileHandle);
         if (!ok) {
-          window.showToast?.("目标文件未授予读写权限");
+          window.showToast?.(t("msg.noWritePermission", "目标文件未授予读写权限"));
           return 0;
         }
         
@@ -961,13 +970,13 @@ export function conflictBlocks() {
           const w = await picked.fileHandle.createWritable();
           await w.write(res.out);
           await w.close();
-          window.showToast?.(`在文件 ${picked.path} 中替换 ${res.count} 处`);
+          window.showToast?.(t("msg.fileChanged", "在文件 {path} 中{action} {count} 处", { path: picked.path, action: t("msg.accepted", "已替换"), count: res.count }));
         }
         
         return res.count;
       } catch (e) {
         console.error("[dev.srp] applyReplaceInFile error", e);
-        window.showToast?.("文件替换失败: " + (e.message || String(e)));
+        window.showToast?.(t("msg.fileReplaceFailed", "文件替换失败：{message}", { message: e.message || String(e) }));
         return 0;
       }
     }
@@ -994,21 +1003,21 @@ export function conflictBlocks() {
         if (!picked) {
           const okAuth = await requestFSAuthorization(path);
           if (!okAuth) {
-            window.showToast?.(`未找到匹配的文件: ${path}`);
+            window.showToast?.(t("msg.noMatchingFile", "未找到匹配的文件：{path}", { path }));
             return 0;
           }
           const entries2 = await window.zion.commands.executeCommand("fs.getEntries");
           files = await listAllFilesFromEntries(entries2 || []);
           picked = pickBestFile(files, path);
           if (!picked) {
-            window.showToast?.(`未找到匹配的文件: ${path}`);
+            window.showToast?.(t("msg.noMatchingFile", "未找到匹配的文件：{path}", { path }));
             return 0;
           }
         }
         
         const ok = await ensureRW(picked.fileHandle);
         if (!ok) {
-          window.showToast?.("目标文件未授予读写权限");
+          window.showToast?.(t("msg.noWritePermission", "目标文件未授予读写权限"));
           return 0;
         }
 
@@ -1020,13 +1029,13 @@ export function conflictBlocks() {
           const w = await picked.fileHandle.createWritable();
           await w.write(res.out);
           await w.close();
-          window.showToast?.(`在文件 ${picked.path} 中回退 ${res.count} 处`);
+          window.showToast?.(t("msg.fileChanged", "在文件 {path} 中{action} {count} 处", { path: picked.path, action: t("msg.reverted", "已回退"), count: res.count }));
         }
 
         return res.count;
       } catch (e) {
         console.error("[dev.srp] applyRevertInFile error", e);
-        window.showToast?.("文件回退失败: " + (e.message || String(e)));
+        window.showToast?.(t("msg.fileRevertFailed", "文件回退失败：{message}", { message: e.message || String(e) }));
         return 0;
       }
     }

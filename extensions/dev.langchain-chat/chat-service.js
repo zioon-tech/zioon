@@ -5,6 +5,7 @@ import {
   resolveToolCallsReasoningContentMode,
   shouldForceReasoningContentWithToolCalls
 } from "./reasoning-policy.js";
+import { normalizeThinkingEffort, normalizeThinkingMode } from "./model-config-fields.js";
 import { proxyLLMRequest } from "./llm-proxy.ts";
 
 /**
@@ -80,6 +81,10 @@ function transformToolsForProvider(tools, providerType) {
  * 为特定 provider 构建完整的请求体
  */
 function buildProviderRequestBody(cfg, formattedMessages, tools, providerType) {
+  const thinkingMode = normalizeThinkingMode(cfg.thinkingMode);
+  const thinkingEffort = normalizeThinkingEffort(cfg.thinkingEffort);
+  const wantsThinking = thinkingMode === "on" || thinkingEffort !== "auto";
+  const effortBudget = { low: 1024, medium: 4096, high: 8192 }[thinkingEffort];
   const base = {
     model: cfg.modelName,
     messages: formattedMessages,
@@ -94,6 +99,9 @@ function buildProviderRequestBody(cfg, formattedMessages, tools, providerType) {
     if (tools && tools.length > 0) {
       base.tools = transformToolsForProvider(tools, "claude");
     }
+    if (wantsThinking) {
+      base.thinking = { type: "enabled", budget_tokens: effortBudget || 4096 };
+    }
     return base;
   }
 
@@ -107,6 +115,11 @@ function buildProviderRequestBody(cfg, formattedMessages, tools, providerType) {
         maxOutputTokens: cfg.max_tokens || 8192
       }
     };
+    if (thinkingMode === "off") {
+      geminiBody.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    } else if (wantsThinking) {
+      geminiBody.generationConfig.thinkingConfig = { thinkingBudget: effortBudget || -1 };
+    }
     if (tools && tools.length > 0) {
       geminiBody.generationConfig.tools = transformToolsForProvider(tools, "gemini");
     }
@@ -115,6 +128,12 @@ function buildProviderRequestBody(cfg, formattedMessages, tools, providerType) {
 
   // OpenAI 格式
   base.max_tokens = cfg.max_tokens;
+  if (base.stream) {
+    base.stream_options = { include_usage: true };
+  }
+  if (wantsThinking && thinkingEffort !== "auto") {
+    base.reasoning_effort = thinkingEffort;
+  }
   if (tools && tools.length > 0) {
     base.tools = tools;
     base.tool_choice = "auto";
@@ -161,6 +180,28 @@ function buildProviderURL(cfg, providerType) {
 
   // OpenAI/Claude 使用原来的 URL
   return cfg.url;
+}
+
+function normalizeProviderUsage(raw, providerType) {
+  if (!raw || typeof raw !== "object") return null;
+  if (providerType === "gemini") {
+    const meta = raw.usageMetadata || raw.usage_metadata || raw;
+    return {
+      input: meta.promptTokenCount,
+      output: meta.candidatesTokenCount,
+      total: meta.totalTokenCount,
+      cacheRead: meta.cachedContentTokenCount,
+      reasoning: meta.thoughtsTokenCount
+    };
+  }
+  return {
+    input: raw.prompt_tokens ?? raw.input_tokens,
+    output: raw.completion_tokens ?? raw.output_tokens,
+    total: raw.total_tokens,
+    cacheRead: raw.prompt_tokens_details?.cached_tokens ?? raw.cache_read_input_tokens ?? raw.cached_tokens,
+    cacheWrite: raw.cache_creation_input_tokens ?? raw.cache_creation?.input_tokens,
+    reasoning: raw.completion_tokens_details?.reasoning_tokens ?? raw.output_tokens_details?.reasoning_tokens
+  };
 }
 
 /**
@@ -246,6 +287,15 @@ function parseClaudeStreamLine(line, { toolCallsBuffer, emittedReasoningStart, r
 
     // 处理 message_delta (结束信号)
     if (eventType === "message_delta" || json.type === "message_delta") {
+      if (json.usage) {
+        result.usage = {
+          input: json.usage.input_tokens,
+          output: json.usage.output_tokens,
+          total: Number(json.usage.input_tokens || 0) + Number(json.usage.output_tokens || 0),
+          cacheRead: json.usage.cache_read_input_tokens,
+          cacheWrite: json.usage.cache_creation_input_tokens
+        };
+      }
       const delta = json.delta || {};
       if (delta.stop_reason) {
         result.done = true;
@@ -460,8 +510,16 @@ export async function runStream({
   const active = activeModel || window.zion.state.get("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
   const provider = window.zion.models.getProvider(active.providerId);
   if (!provider) throw new Error(`Provider not found: ${active.providerId}`);
-  const cfg = await provider.resolve(active.modelId);
+  let cfg = await provider.resolve(active.modelId);
   if (!cfg) throw new Error(`Model config not found: ${active.providerId}:${active.modelId}`);
+  const thinkingEffortOverride = normalizeThinkingEffort(active?.thinkingEffort);
+  if (thinkingEffortOverride !== "auto") {
+    cfg = {
+      ...cfg,
+      thinkingEffort: thinkingEffortOverride,
+      thinkingMode: "on"
+    };
+  }
   
   // 检查是否需要配置 API key
   if (cfg._requiresConfig && (!cfg.key || !cfg.key.trim())) {
@@ -622,6 +680,7 @@ export async function runStream({
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
+      let usage = null;
       // tool calls 按 index 聚合（OpenAI 流式会分片）
       const toolCallsBuffer = [];
       // reasoning/think 流式起止标志
@@ -670,6 +729,7 @@ export async function runStream({
             } else {
               try {
                 const json = JSON.parse(payload);
+              if (json?.usage) usage = normalizeProviderUsage(json.usage, providerType);
                 // 解析 tool_calls（delta）
                 const delta = json?.choices?.[0]?.delta;
                 const toolCalls = delta?.tool_calls;
@@ -726,6 +786,8 @@ export async function runStream({
           }
 
           // 处理解析结果
+          if (parseResult.usage) usage = normalizeProviderUsage(parseResult.usage, providerType);
+
           if (parseResult.done) {
             try {
               if (emittedReasoningStart) {
@@ -734,7 +796,7 @@ export async function runStream({
               }
             } catch {}
             onEnd();
-            return { reasoning_content: reasoningBuf };
+            return { reasoning_content: reasoningBuf, usage };
           }
 
           if (parseResult.thinkingStart) {
@@ -744,6 +806,11 @@ export async function runStream({
           }
 
           if (parseResult.thinkingToken) {
+            if (!emittedReasoningStart) {
+              emittedReasoningStart = true;
+              try { beforeControlEvent?.("reasoningStart"); } catch {}
+              try { window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId, panelId, silentReasoning }); } catch {}
+            }
             reasoningBuf += parseResult.thinkingToken;
             try { beforeControlEvent?.("reasoningToken"); } catch {}
             try { window.zion?.events?.emit("chat/reasoningToken", { runId, token: parseResult.thinkingToken, sessionId, panelId, silentReasoning }); } catch {}
@@ -769,10 +836,11 @@ export async function runStream({
         }
       } catch {}
       onEnd();
-      return { reasoning_content: reasoningBuf };
+      return { reasoning_content: reasoningBuf, usage };
     } else {
       // 非流式：一次性返回
       const j = await res.json().catch(() => ({}));
+      const usage = normalizeProviderUsage(j?.usage || j?.usageMetadata || j?.usage_metadata, providerType);
 
       let content = "";
       let reasoningContent = "";
@@ -869,7 +937,7 @@ export async function runStream({
 
       if (content) onToken(content);
       onEnd();
-      return { reasoning_content: reasoningBuf };
+      return { reasoning_content: reasoningBuf, usage };
     }
   } catch (e) {
     if (e.name === "AbortError") {

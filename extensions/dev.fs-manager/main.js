@@ -7,7 +7,56 @@
  */
 import { registerFsTools } from "./fs-tools.js";
 
+const I18N_NS = "dev.fs-manager";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.fs": "文件系统",
+    "cmd.showManager": "打开文件访问管理",
+    "cmd.addFile": "添加文件访问",
+    "cmd.addFolder": "添加文件夹访问",
+    "cmd.getEntries": "获取文件系统条目",
+    "cmd.clearAll": "清除所有文件系统条目",
+    "ui.title": "文件系统访问管理",
+    "ui.tooltip": "管理文件/文件夹访问",
+    "settings.description": "维护已授权的文件和目录句柄，并保存它们的本地路径映射。",
+    "settings.authorized": "已授权 {count} 个文件/文件夹",
+    "settings.addFile": "+ 文件",
+    "settings.addFolder": "+ 文件夹",
+    "settings.clearAll": "清除全部",
+    "settings.empty": "尚未添加任何文件或文件夹"
+  },
+  "en-US": {
+    "category.fs": "File System",
+    "cmd.showManager": "Open Files Access Manager",
+    "cmd.addFile": "Add File Access",
+    "cmd.addFolder": "Add Folder Access",
+    "cmd.getEntries": "Get FS Entries",
+    "cmd.clearAll": "Clear All FS Entries",
+    "ui.title": "Files Access Manager",
+    "ui.tooltip": "Manage file/folder access",
+    "settings.description": "Manage authorized file and directory handles and their local path mappings.",
+    "settings.authorized": "{count} files/folders authorized",
+    "settings.addFile": "+ File",
+    "settings.addFolder": "+ Folder",
+    "settings.clearAll": "Clear All",
+    "settings.empty": "No files or folders added yet"
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   // IndexedDB helpers
   const DB_NAME = "dev.fs-handles-db";
   const STORE = "handles";
@@ -369,19 +418,27 @@ export async function activate(ctx) {
   );
 
   // Workspace entry: prefer editor header menu, keep statusBar as legacy fallback.
-  const status = window.zion.editorHeaderMenu?.register?.({
-    id: "core.fsmanager",
-    title: "文件系统访问管理",
-    section: "Workspace",
-    order: 10,
-    onClick: () => window.zion.commands.executeCommand("fs.showManager")
-  }) || window.zion.statusBar.registerItem({
-    id: "core.fsmanager",
-    text: "FS",
-    tooltip: "Manage file/folder access",
-    onClick: () => window.zion.commands.executeCommand("fs.showManager")
-  });
-  ctx.subscriptions.push(status);
+  let status = null;
+  const updateStatus = () => {
+    try { status?.dispose?.(); } catch {}
+    status = window.zion.editorHeaderMenu?.register?.({
+      id: "core.fsmanager",
+      title: t("ui.title", "文件系统访问管理"),
+      section: "Workspace",
+      order: 10,
+      onClick: () => window.zion.commands.executeCommand("fs.showManager")
+    }) || window.zion.statusBar.registerItem({
+      id: "core.fsmanager",
+      text: "FS",
+      tooltip: t("ui.tooltip", "Manage file/folder access"),
+      onClick: () => window.zion.commands.executeCommand("fs.showManager")
+    });
+  };
+  updateStatus();
+  ctx.subscriptions.push(
+    { dispose: () => { try { status?.dispose?.(); } catch {} } },
+    window.zion.events.on("i18n/changed", updateStatus)
+  );
 
   // Register FS tools for LLM usage
   try { registerFsTools(); } catch {}
@@ -393,8 +450,8 @@ export async function activate(ctx) {
         id: "fs-manager-config",
         category: "Workspace",
         section: "File System",
-        title: "文件系统访问管理",
-        description: "维护已授权的文件和目录句柄，并保存它们的本地路径映射。",
+        title: t("ui.title", "文件系统访问管理"),
+        description: t("settings.description", "维护已授权的文件和目录句柄，并保存它们的本地路径映射。"),
         keywords: ["filesystem", "handles", "workspace", "permissions", "paths"],
         order: 40,
         render(container) {
@@ -421,7 +478,7 @@ export async function activate(ctx) {
 
           const info = document.createElement("div");
           info.className = "fs-cfg-info";
-          info.textContent = `已授权 ${entries.length} 个文件/文件夹`;
+          info.textContent = t("settings.authorized", "已授权 {count} 个文件/文件夹", { count: entries.length });
           container.appendChild(info);
 
           const actions = document.createElement("div");
@@ -429,19 +486,19 @@ export async function activate(ctx) {
 
           const addFileBtn = document.createElement("button");
           addFileBtn.className = "fs-cfg-btn primary";
-          addFileBtn.textContent = "+ 文件";
+          addFileBtn.textContent = t("settings.addFile", "+ 文件");
           addFileBtn.onclick = async () => { await addFiles(); renderEntries(); };
           actions.appendChild(addFileBtn);
 
           const addFolderBtn = document.createElement("button");
           addFolderBtn.className = "fs-cfg-btn primary";
-          addFolderBtn.textContent = "+ 文件夹";
+          addFolderBtn.textContent = t("settings.addFolder", "+ 文件夹");
           addFolderBtn.onclick = async () => { await addFolder(); renderEntries(); };
           actions.appendChild(addFolderBtn);
 
           const clearBtn = document.createElement("button");
           clearBtn.className = "fs-cfg-btn danger";
-          clearBtn.textContent = "清除全部";
+          clearBtn.textContent = t("settings.clearAll", "清除全部");
           clearBtn.onclick = async () => { await clearAll(); renderEntries(); };
           actions.appendChild(clearBtn);
 
@@ -452,11 +509,11 @@ export async function activate(ctx) {
 
           const renderEntries = () => {
             list.innerHTML = "";
-            info.textContent = `已授权 ${entries.length} 个文件/文件夹`;
+            info.textContent = t("settings.authorized", "已授权 {count} 个文件/文件夹", { count: entries.length });
             if (entries.length === 0) {
               const empty = document.createElement("div");
               empty.className = "fs-cfg-empty";
-              empty.textContent = "尚未添加任何文件或文件夹";
+              empty.textContent = t("settings.empty", "尚未添加任何文件或文件夹");
               list.appendChild(empty);
               return;
             }

@@ -22,10 +22,85 @@
  *   into the editor and trigger chat.run automatically (with a simple re-entrancy lock).
  */
 
+const I18N_NS = 'dev.task-panel';
+const LS_TASKS_STATE = 'zion.devTaskPanel.tasksState.v1';
+const MAX_PERSISTED_TASKS = 200;
+const TASK_PANEL_UI_ENABLED = false;
+const I18N_MESSAGES = {
+  'zh-CN': {
+    'category.tasks': '任务',
+    'cmd.togglePanel': '切换任务面板',
+    'cmd.addTask': '添加任务',
+    'cmd.clearTasks': '清空所有任务',
+    'ui.title': '任务',
+    'ui.addTask': '添加任务',
+    'ui.hidePanel': '隐藏面板',
+    'ui.activeUnfinished': '当前任务还有未完成待办。',
+    'ui.taskUnfinished': '任务“{name}”还有未完成待办。',
+    'ui.continue': '继续',
+    'ui.auto': '自动',
+    'ui.filter': '筛选任务...',
+    'ui.footer': '点击任务激活，点击待办内容推进状态',
+    'ui.empty': '暂无任务',
+    'ui.emptyFilter': '没有匹配的任务',
+    'ui.untitled': '未命名',
+    'ui.pending': '待办',
+    'ui.inProgress': '进行中',
+    'ui.completed': '完成',
+    'ui.taskCount': '{count} 个任务',
+    'ui.todoSummary': '{done}/{total} 已完成',
+    'ui.activate': '设为当前任务',
+    'ui.newTaskName': '任务名称',
+    'status.text': '任务：{count}',
+    'status.tooltip': '切换任务面板'
+  },
+  'en-US': {
+    'category.tasks': 'Tasks',
+    'cmd.togglePanel': 'Toggle Tasks Panel',
+    'cmd.addTask': 'Add Task',
+    'cmd.clearTasks': 'Clear All Tasks',
+    'ui.title': 'Tasks',
+    'ui.addTask': 'Add task',
+    'ui.hidePanel': 'Hide panel',
+    'ui.activeUnfinished': 'Active task has unfinished todos.',
+    'ui.taskUnfinished': 'Task "{name}" has unfinished todos.',
+    'ui.continue': 'Continue',
+    'ui.auto': 'Auto',
+    'ui.filter': 'Filter tasks...',
+    'ui.footer': 'Click a task to activate, click todo text to advance status',
+    'ui.empty': 'No tasks',
+    'ui.emptyFilter': 'No matching tasks',
+    'ui.untitled': 'untitled',
+    'ui.pending': 'Todo',
+    'ui.inProgress': 'Doing',
+    'ui.completed': 'Done',
+    'ui.taskCount': '{count} tasks',
+    'ui.todoSummary': '{done}/{total} done',
+    'ui.activate': 'Set active task',
+    'ui.newTaskName': 'Task name',
+    'status.text': 'Tasks: {count}',
+    'status.tooltip': 'Toggle Tasks Panel'
+  }
+};
+
+const STYLE_ID = 'zion-task-panel-style';
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
 function ensureStateKeys() {
   if (!window.zion?.state) return;
   if (!Array.isArray(window.zion.state.get('todo.tasks'))) {
-    window.zion.state.set('todo.tasks', []);
+    const persisted = loadPersistedTasksState();
+    window.zion.state.set('todo.tasks', persisted.tasks);
+    if (persisted.activeTaskId && !window.zion.state.get('todo.activeTaskId')) {
+      window.zion.state.set('todo.activeTaskId', persisted.activeTaskId);
+    }
   }
   // autoContinue flag default false
   if (typeof window.zion.state.get('todo.autoContinue') === 'undefined') {
@@ -33,10 +108,247 @@ function ensureStateKeys() {
   }
 }
 
+function ensureTaskPanelStyles() {
+  if (document.getElementById(STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = STYLE_ID;
+  style.textContent = `
+#zion-task-panel-root {
+  pointer-events: auto;
+}
+#zion-task-panel {
+  scrollbar-color: var(--scrollbar-thumb, var(--border)) transparent;
+  scrollbar-width: thin;
+}
+#zion-task-panel::-webkit-scrollbar {
+  width: 10px;
+}
+#zion-task-panel::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb, var(--border));
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+.ztp-button {
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, var(--fg));
+  color: var(--fg);
+  border-radius: 7px;
+  cursor: pointer;
+  font: inherit;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.ztp-button:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+}
+.ztp-button:active {
+  transform: translateY(1px);
+}
+.ztp-icon-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ztp-primary-button {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+}
+.ztp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ztp-title {
+  flex: 1;
+  min-width: 0;
+}
+.ztp-title-main {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+.ztp-stats {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.ztp-pill {
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+  background: color-mix(in srgb, var(--bg) 28%, transparent);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.ztp-search {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 28%, var(--panel));
+  color: var(--fg);
+  outline: none;
+  padding: 7px 9px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.ztp-search:focus {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.ztp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ztp-task-card {
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 94%, var(--bg));
+  overflow: hidden;
+}
+.ztp-task-card.is-active {
+  border-color: color-mix(in srgb, var(--accent) 78%, var(--border));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.ztp-task-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  cursor: pointer;
+  user-select: none;
+}
+.ztp-task-header:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.ztp-task-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ztp-task-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ztp-progress {
+  height: 3px;
+  background: color-mix(in srgb, var(--border) 36%, transparent);
+}
+.ztp-progress-bar {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+.ztp-todos {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+}
+.ztp-todo-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border-radius: 7px;
+  padding: 5px 4px;
+}
+.ztp-todo-row:hover {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.ztp-status-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+}
+.ztp-status-dot[data-status="in_progress"] {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  color: var(--accent);
+}
+.ztp-status-dot[data-status="completed"] {
+  border-color: color-mix(in srgb, var(--ok) 75%, var(--border));
+  color: var(--ok);
+}
+.ztp-todo-content {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+  cursor: pointer;
+}
+.ztp-todo-row[data-status="completed"] .ztp-todo-content {
+  color: color-mix(in srgb, var(--fg) 54%, transparent);
+  text-decoration: line-through;
+}
+.ztp-status-actions {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border-radius: 999px;
+}
+.ztp-status-action {
+  border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 66%, transparent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 6px;
+}
+.ztp-status-action:last-child {
+  border-right: 0;
+}
+.ztp-status-action.is-selected {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--fg);
+}
+.ztp-empty {
+  border: 1px dashed color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 10px;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  padding: 16px 10px;
+  text-align: center;
+  font-size: 12px;
+}
+.ztp-footer {
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: 8px;
+  text-align: center;
+}
+`;
+  document.head.appendChild(style);
+}
+
 /**
  * Create a DOM panel and return handle { open, close, toggle, renderTasks, dispose, showContinueBanner }
  */
 function createPanelHandle() {
+  ensureTaskPanelStyles();
   // Root overlay for click outside close (transparent)
   const root = document.createElement('div');
   root.id = 'zion-task-panel-root';
@@ -45,8 +357,10 @@ function createPanelHandle() {
     inset: '0',
     background: 'transparent',
     zIndex: '100001',
-    display: 'none'
+    display: 'none',
+    fontFamily: 'var(--font-sans, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif)'
   });
+  root.tabIndex = -1;
 
   // Panel
   const panel = document.createElement('div');
@@ -61,53 +375,48 @@ function createPanelHandle() {
     overflow: 'auto',
     background: 'var(--panel)',
     color: 'var(--fg)',
-    border: '1px solid var(--border)',
-    borderRadius: '8px',
+    border: '1px solid color-mix(in srgb, var(--border) 88%, transparent)',
+    borderRadius: '12px',
     boxShadow: '0 12px 32px rgba(0,0,0,0.32)',
-    padding: '8px',
-    fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif'
+    padding: '10px',
+    fontFamily: 'inherit'
   });
   panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-label', 'Tasks');
+  panel.setAttribute('aria-label', t('ui.title', 'Tasks'));
 
   // Header toolbar
   const header = document.createElement('div');
-  Object.assign(header.style, {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    marginBottom: '8px'
-  });
+  header.className = 'ztp-header';
 
   const title = document.createElement('div');
-  title.textContent = 'Tasks';
-  Object.assign(title.style, { fontSize: '13px', fontWeight: '600', flex: '1' });
+  title.className = 'ztp-title';
+  const titleMain = document.createElement('div');
+  titleMain.className = 'ztp-title-main';
+  titleMain.textContent = t('ui.title', 'Tasks');
+  title.appendChild(titleMain);
 
   const btnAdd = document.createElement('button');
   btnAdd.textContent = '+';
-  btnAdd.title = 'Add task';
-  Object.assign(btnAdd.style, {
-    padding: '4px 6px',
-    borderRadius: '4px',
-    border: '1px solid var(--border)',
-    background: 'transparent',
-    cursor: 'pointer'
-  });
+  btnAdd.title = t('ui.addTask', 'Add task');
+  btnAdd.className = 'ztp-button ztp-icon-button ztp-primary-button';
 
   const btnClose = document.createElement('button');
   btnClose.textContent = '×';
-  btnClose.title = 'Hide panel';
-  Object.assign(btnClose.style, {
-    padding: '4px 6px',
-    borderRadius: '4px',
-    border: '1px solid var(--border)',
-    background: 'transparent',
-    cursor: 'pointer'
-  });
+  btnClose.title = t('ui.hidePanel', 'Hide panel');
+  btnClose.className = 'ztp-button ztp-icon-button';
 
   header.appendChild(title);
   header.appendChild(btnAdd);
   header.appendChild(btnClose);
+
+  const stats = document.createElement('div');
+  stats.className = 'ztp-stats';
+  const taskCountPill = document.createElement('span');
+  taskCountPill.className = 'ztp-pill';
+  const todoSummaryPill = document.createElement('span');
+  todoSummaryPill.className = 'ztp-pill';
+  stats.appendChild(taskCountPill);
+  stats.appendChild(todoSummaryPill);
 
   // Continue banner (hidden by default)
   const continueBanner = document.createElement('div');
@@ -122,19 +431,13 @@ function createPanelHandle() {
   });
 
   const bannerText = document.createElement('div');
-  bannerText.textContent = 'Active task has unfinished todos.';
+  bannerText.textContent = t('ui.activeUnfinished', 'Active task has unfinished todos.');
   Object.assign(bannerText.style, { flex: '1', fontSize: '12px' });
 
   const btnContinue = document.createElement('button');
-  btnContinue.textContent = 'Continue';
-  Object.assign(btnContinue.style, {
-    padding: '4px 8px',
-    borderRadius: '4px',
-    border: '1px solid var(--border)',
-    background: 'transparent',
-    cursor: 'pointer',
-    marginRight: '6px'
-  });
+  btnContinue.textContent = t('ui.continue', 'Continue');
+  btnContinue.className = 'ztp-button ztp-primary-button';
+  Object.assign(btnContinue.style, { padding: '4px 8px', marginRight: '6px' });
 
   const autoLabel = document.createElement('label');
   Object.assign(autoLabel.style, { display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px' });
@@ -142,7 +445,7 @@ function createPanelHandle() {
   autoChk.type = 'checkbox';
   autoChk.checked = !!window.zion.state.get('todo.autoContinue');
   const autoText = document.createElement('span');
-  autoText.textContent = 'Auto';
+  autoText.textContent = t('ui.auto', 'Auto');
   autoLabel.appendChild(autoChk);
   autoLabel.appendChild(autoText);
 
@@ -152,37 +455,18 @@ function createPanelHandle() {
 
   const search = document.createElement('input');
   search.type = 'text';
-  search.placeholder = 'Filter tasks...';
-  Object.assign(search.style, {
-    width: '100%',
-    boxSizing: 'border-box',
-    border: '1px solid var(--border)',
-    borderRadius: '4px',
-    background: 'var(--panel)',
-    color: 'var(--fg)',
-    outline: 'none',
-    padding: '6px',
-    fontSize: '12px',
-    marginBottom: '8px'
-  });
+  search.placeholder = t('ui.filter', 'Filter tasks...');
+  search.className = 'ztp-search';
 
   const list = document.createElement('div');
-  Object.assign(list.style, {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px'
-  });
+  list.className = 'ztp-list';
 
   const footer = document.createElement('div');
-  footer.textContent = 'Click task to activate • Click todo to toggle state';
-  Object.assign(footer.style, {
-    fontSize: '11px',
-    opacity: '0.6',
-    marginTop: '8px',
-    textAlign: 'center'
-  });
+  footer.textContent = t('ui.footer', 'Click a task to activate, click todo text to advance status');
+  footer.className = 'ztp-footer';
 
   panel.appendChild(header);
+  panel.appendChild(stats);
   panel.appendChild(continueBanner);
   panel.appendChild(search);
   panel.appendChild(list);
@@ -196,122 +480,134 @@ function createPanelHandle() {
     list.innerHTML = '';
   }
 
-  function formatStatusBadge(status) {
-    const el = document.createElement('span');
-    el.textContent = status === 'completed' ? '✓' : (status === 'in_progress' ? '…' : '▢');
-    Object.assign(el.style, {
-      display: 'inline-block',
-      width: '20px',
-      textAlign: 'center',
-      marginRight: '8px',
-      opacity: '0.9',
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
-    });
-    return el;
-  }
-
   function renderTasks(tasks) {
     clearList();
     const q = (search.value || '').trim().toLowerCase();
+    const safeTasks = Array.isArray(tasks) ? tasks : [];
+    const totals = safeTasks.reduce((acc, task) => {
+      const todos = Array.isArray(task.todos) ? task.todos : [];
+      acc.total += todos.length;
+      acc.done += todos.filter(td => td?.status === 'completed').length;
+      return acc;
+    }, { total: 0, done: 0 });
+    taskCountPill.textContent = t('ui.taskCount', '{count} tasks', { count: safeTasks.length });
+    todoSummaryPill.textContent = t('ui.todoSummary', '{done}/{total} done', totals);
 
-    if (!Array.isArray(tasks) || tasks.length === 0) {
+    if (safeTasks.length === 0) {
       const empty = document.createElement('div');
-      empty.textContent = 'No tasks';
-      Object.assign(empty.style, { fontSize: '12px', opacity: '0.6', textAlign: 'center' });
+      empty.className = 'ztp-empty';
+      empty.textContent = t('ui.empty', 'No tasks');
       list.appendChild(empty);
       return;
     }
 
     // Filter tasks by query
-    const filtered = q ? tasks.filter(t => (t.name || '').toLowerCase().includes(q)) : tasks;
+    const filtered = q ? safeTasks.filter(task => {
+      const haystack = [
+        task.name,
+        ...(Array.isArray(task.todos) ? task.todos.map(td => td?.content) : [])
+      ].filter(Boolean).join('\n').toLowerCase();
+      return haystack.includes(q);
+    }) : safeTasks;
+
+    if (filtered.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'ztp-empty';
+      empty.textContent = t('ui.emptyFilter', 'No matching tasks');
+      list.appendChild(empty);
+      return;
+    }
 
     filtered.forEach((task) => {
+      const arr = Array.isArray(task.todos) ? task.todos : [];
+      const done = arr.filter(td => td?.status === 'completed').length;
+      const pct = arr.length ? Math.round((done / arr.length) * 100) : 0;
       const card = document.createElement('div');
-      Object.assign(card.style, {
-        border: '1px solid var(--border)',
-        borderRadius: '4px',
-        padding: '6px',
-        background: 'transparent'
-      });
+      card.className = 'ztp-task-card';
+      card.dataset.taskId = task.id || '';
 
       const row = document.createElement('div');
-      Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' });
+      row.className = 'ztp-task-header';
+      row.setAttribute('role', 'button');
+      row.tabIndex = 0;
+      row.title = t('ui.activate', 'Set active task');
 
       const name = document.createElement('div');
-      name.textContent = `${task.name || '(untitled)'} `;
-      Object.assign(name.style, { fontWeight: '600', fontSize: '12px', flex: '1' });
+      name.className = 'ztp-task-name';
+      name.textContent = task.name || `(${t('ui.untitled', 'untitled')})`;
 
-      const ts = document.createElement('div');
+      const meta = document.createElement('div');
+      meta.className = 'ztp-task-meta';
+      const count = document.createElement('span');
+      count.textContent = `${done}/${arr.length}`;
+      const ts = document.createElement('span');
       ts.textContent = task.updatedAt ? new Date(task.updatedAt).toLocaleTimeString() : '';
-      Object.assign(ts.style, { fontSize: '11px', opacity: '0.6', marginLeft: '6px' });
+      meta.appendChild(count);
+      meta.appendChild(ts);
 
       row.appendChild(name);
-      row.appendChild(ts);
+      row.appendChild(meta);
 
-      // Click card header to activate task
-      row.addEventListener('click', (e) => {
+      const activateTask = (e) => {
         e.preventDefault();
         try { window.zion.state.set('todo.activeTaskId', task.id); } catch {}
         updateActiveStyles();
+      };
+      row.addEventListener('click', activateTask);
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') activateTask(e);
       });
+
+      const progress = document.createElement('div');
+      progress.className = 'ztp-progress';
+      const progressBar = document.createElement('div');
+      progressBar.className = 'ztp-progress-bar';
+      progressBar.style.width = `${pct}%`;
+      progress.appendChild(progressBar);
 
       // todos list
       const todosWrap = document.createElement('div');
-      Object.assign(todosWrap.style, { display: 'flex', flexDirection: 'column', gap: '6px' });
+      todosWrap.className = 'ztp-todos';
 
-      const arr = Array.isArray(task.todos) ? task.todos : [];
       arr.forEach((td, idx) => {
+        const status = normalizeTodoStatus(td.status);
         const trow = document.createElement('div');
-        Object.assign(trow.style, { display: 'flex', alignItems: 'center', gap: '8px' });
+        trow.className = 'ztp-todo-row';
+        trow.dataset.status = status;
 
-        const badge = formatStatusBadge(td.status || 'pending');
+        const badge = document.createElement('span');
+        badge.className = 'ztp-status-dot';
+        badge.dataset.status = status;
+        badge.textContent = status === 'completed' ? '✓' : (status === 'in_progress' ? '…' : '');
         const content = document.createElement('div');
+        content.className = 'ztp-todo-content';
         content.textContent = td.content || '';
-        Object.assign(content.style, { flex: '1', fontSize: '12px', wordBreak: 'break-word' });
-
-        // actions
-        const actions = document.createElement('div');
-        Object.assign(actions.style, { display: 'flex', gap: '6px', alignItems: 'center' });
-
-        const btnToggle = document.createElement('button');
-        btnToggle.textContent = 'Toggle';
-        Object.assign(btnToggle.style, {
-          fontSize: '11px',
-          padding: '2px 6px',
-          borderRadius: '3px',
-          border: '1px solid var(--border)',
-          background: 'transparent',
-          cursor: 'pointer'
-        });
-
-        btnToggle.addEventListener('click', (ev) => {
+        content.title = t('ui.footer', 'Click a task to activate, click todo text to advance status');
+        content.addEventListener('click', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          // toggle status: pending -> in_progress -> completed -> pending
-          const next = td.status === 'pending' ? 'in_progress' : (td.status === 'in_progress' ? 'completed' : 'pending');
-          // update global state: modify todo.tasks
-          try {
-            const tasksNow = Array.isArray(window.zion.state.get('todo.tasks')) ? window.zion.state.get('todo.tasks').slice() : [];
-            const i = tasksNow.findIndex(x => x.id === task.id);
-            if (i >= 0) {
-              tasksNow[i].todos = tasksNow[i].todos || [];
-              // find the matching todo by index (fallback)
-              if (tasksNow[i].todos[idx]) {
-                tasksNow[i].todos[idx].status = next;
-              } else {
-                // best-effort: try to match by content
-                const matchIdx = tasksNow[i].todos.findIndex(tt => tt.content === td.content);
-                if (matchIdx >= 0) tasksNow[i].todos[matchIdx].status = next;
-              }
-              tasksNow[i].updatedAt = Date.now();
-              window.zion.state.set('todo.tasks', tasksNow);
-            }
-          } catch (err) {
-            console.error('[task-panel] toggle todo error', err);
-          }
+          const next = status === 'pending' ? 'in_progress' : (status === 'in_progress' ? 'completed' : 'pending');
+          updateTodoStatus(task, idx, td, next);
         });
 
-        actions.appendChild(btnToggle);
+        const actions = document.createElement('div');
+        actions.className = 'ztp-status-actions';
+        [
+          ['pending', t('ui.pending', 'Todo')],
+          ['in_progress', t('ui.inProgress', 'Doing')],
+          ['completed', t('ui.completed', 'Done')]
+        ].forEach(([nextStatus, label]) => {
+          const btn = document.createElement('button');
+          btn.className = `ztp-status-action${status === nextStatus ? ' is-selected' : ''}`;
+          btn.textContent = label;
+          btn.setAttribute('aria-pressed', String(status === nextStatus));
+          btn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            updateTodoStatus(task, idx, td, nextStatus);
+          });
+          actions.appendChild(btn);
+        });
 
         trow.appendChild(badge);
         trow.appendChild(content);
@@ -320,6 +616,7 @@ function createPanelHandle() {
       });
 
       card.appendChild(row);
+      card.appendChild(progress);
       card.appendChild(todosWrap);
       list.appendChild(card);
     });
@@ -329,29 +626,35 @@ function createPanelHandle() {
 
   function updateActiveStyles() {
     const activeId = window.zion?.state?.get('todo.activeTaskId');
-    const cards = list.querySelectorAll('div');
-    // iterate tasks in order and mark active header bold/with accent
-    // simple approach: re-render to update styles is handled by renderTasks caller
-    // but we do small visual update:
-    const allCards = list.children;
-    for (let i = 0; i < allCards.length; i++) {
-      const c = allCards[i];
-      const hd = c.querySelector('div'); // header row
-      if (!hd) continue;
-      const nameDiv = hd.querySelector('div');
-      if (!nameDiv) continue;
-      // find task name and match with state
-      const text = (nameDiv.textContent || '').trim();
-      const tasks = window.zion?.state?.get('todo.tasks') || [];
-      const task = tasks.find(t => `${t.name || '(untitled)'} ` === text || t.name === text);
-      if (!task) continue;
-      if (task.id === activeId) {
-        hd.style.background = 'var(--accent)';
-        hd.style.color = 'var(--panel)';
+    for (const card of list.querySelectorAll('.ztp-task-card')) {
+      card.classList.toggle('is-active', !!activeId && card.dataset.taskId === activeId);
+    }
+  }
+
+  function normalizeTodoStatus(status) {
+    return status === 'completed' || status === 'in_progress' ? status : 'pending';
+  }
+
+  function updateTodoStatus(task, idx, todo, nextStatus) {
+    try {
+      const tasksNow = Array.isArray(window.zion.state.get('todo.tasks')) ? window.zion.state.get('todo.tasks').slice() : [];
+      const i = tasksNow.findIndex(x => x.id === task.id);
+      if (i < 0) return;
+      tasksNow[i] = { ...tasksNow[i], todos: Array.isArray(tasksNow[i].todos) ? tasksNow[i].todos.slice() : [] };
+      const todoId = String(todo?.id || '');
+      const idIdx = todoId ? tasksNow[i].todos.findIndex(tt => String(tt?.id || '') === todoId) : -1;
+      if (idIdx >= 0) {
+        tasksNow[i].todos[idIdx] = { ...tasksNow[i].todos[idIdx], status: nextStatus };
+      } else if (tasksNow[i].todos[idx]) {
+        tasksNow[i].todos[idx] = { ...tasksNow[i].todos[idx], status: nextStatus };
       } else {
-        hd.style.background = 'transparent';
-        hd.style.color = 'var(--fg)';
+        const matchIdx = tasksNow[i].todos.findIndex(tt => tt.content === todo.content);
+        if (matchIdx >= 0) tasksNow[i].todos[matchIdx] = { ...tasksNow[i].todos[matchIdx], status: nextStatus };
       }
+      tasksNow[i].updatedAt = Date.now();
+      window.zion.state.set('todo.tasks', tasksNow);
+    } catch (err) {
+      console.error('[task-panel] update todo status error', err);
     }
   }
 
@@ -362,8 +665,9 @@ function createPanelHandle() {
 
   btnAdd.addEventListener('click', (e) => {
     e.preventDefault();
-    // create new task via zion command
-    try { window.zion.commands.executeCommand('tasks.addTask'); } catch {}
+    const name = window.prompt?.(t('ui.newTaskName', 'Task name'), '');
+    if (name === null) return;
+    try { window.zion.commands.executeCommand('tasks.addTask', (name || '').trim() || undefined); } catch {}
   });
 
   // click outside closes
@@ -389,7 +693,9 @@ function createPanelHandle() {
       continueBanner.style.display = 'none';
       return;
     }
-    bannerText.textContent = `Task "${task.name || '(untitled)'}" has unfinished todos.`;
+    bannerText.textContent = t('ui.taskUnfinished', 'Task "{name}" has unfinished todos.', {
+      name: task.name || `(${t('ui.untitled', 'untitled')})`
+    });
     continueBanner.style.display = 'flex';
   }
   function hideContinueBanner() {
@@ -455,7 +761,6 @@ function createPanelHandle() {
     renderTasks(tasks);
     positionPanel();
     search.focus();
-    search.select();
   }
 
   function close() {
@@ -471,19 +776,125 @@ function createPanelHandle() {
     root.remove();
   }
 
-  return { open, close, toggle, renderTasks, dispose, showContinueBanner, hideContinueBanner };
+  function refreshI18n() {
+    panel.setAttribute('aria-label', t('ui.title', 'Tasks'));
+    titleMain.textContent = t('ui.title', 'Tasks');
+    btnAdd.title = t('ui.addTask', 'Add task');
+    btnClose.title = t('ui.hidePanel', 'Hide panel');
+    btnContinue.textContent = t('ui.continue', 'Continue');
+    autoText.textContent = t('ui.auto', 'Auto');
+    search.placeholder = t('ui.filter', 'Filter tasks...');
+    footer.textContent = t('ui.footer', 'Click a task to activate, click todo text to advance status');
+    renderTasks(window.zion?.state?.get('todo.tasks') || []);
+  }
+
+  return { open, close, toggle, renderTasks, dispose, showContinueBanner, hideContinueBanner, refreshI18n };
 }
 
 /**
  * Helper: create a new task object
  */
-function createTaskObject(name) {
+function createTaskObject(name, id) {
   return {
-    id: 'task-' + (Date.now()) + '-' + Math.random().toString(36).slice(2,8),
+    id: id || createTaskId(),
     name: name || `Session ${new Date().toLocaleString()}`,
     todos: [],
     updatedAt: Date.now()
   };
+}
+
+function createTaskId() {
+  return 'task-' + (Date.now()) + '-' + Math.random().toString(36).slice(2,8);
+}
+
+function createTodoId(index = 0) {
+  return 'todo-' + Date.now() + '-' + index + '-' + Math.random().toString(36).slice(2,7);
+}
+
+function getCurrentChatSessionId() {
+  try { return String(window.zion?.state?.get?.('sessions.currentId') || ''); } catch { return ''; }
+}
+
+function normalizeTodoItems(list) {
+  return (Array.isArray(list) ? list : []).map((it, index) => ({
+    id: String(it?.id || createTodoId(index)),
+    content: it?.content || (typeof it === 'string' ? it : ''),
+    status: it?.status || 'pending',
+    activeForm: it?.activeForm || ''
+  }));
+}
+
+function signatureForTodos(todos) {
+  return JSON.stringify((todos || []).map(t => [
+    String(t?.content || '').trim(),
+    String(t?.activeForm || '').trim()
+  ]));
+}
+
+function countSessionTasks(tasks, sessionId) {
+  return (tasks || []).filter(t => String(t?.sessionId || '') === String(sessionId || '')).length;
+}
+
+function mergeTodoItems(nextTodos, previousTodos) {
+  const previous = Array.isArray(previousTodos) ? previousTodos : [];
+  const used = new Set();
+  return (Array.isArray(nextTodos) ? nextTodos : []).map((todo, index) => {
+    const id = String(todo?.id || '').trim();
+    const byId = id ? previous.find(item => String(item?.id || '') === id) : null;
+    const matched = byId || findReusableTodo(todo, index, previous, used);
+    const stableId = id || String(matched?.id || '') || createTodoId(index);
+    if (matched?.id) used.add(String(matched.id));
+    return { ...todo, id: stableId };
+  });
+}
+
+function findReusableTodo(todo, index, previous, used) {
+  const exact = previous.find(item =>
+    item?.id &&
+    !used.has(String(item.id)) &&
+    String(item?.content || '').trim() === String(todo?.content || '').trim() &&
+    String(item?.activeForm || '').trim() === String(todo?.activeForm || '').trim()
+  );
+  if (exact) return exact;
+  const sameIndex = previous[index];
+  if (sameIndex?.id && !used.has(String(sameIndex.id))) return sameIndex;
+  return null;
+}
+
+function loadPersistedTasksState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_TASKS_STATE) || '{}');
+    return {
+      tasks: sanitizePersistedTasks(raw?.tasks),
+      activeTaskId: typeof raw?.activeTaskId === 'string' ? raw.activeTaskId : null
+    };
+  } catch {
+    return { tasks: [], activeTaskId: null };
+  }
+}
+
+function savePersistedTasksState(tasks, activeTaskId) {
+  try {
+    localStorage.setItem(LS_TASKS_STATE, JSON.stringify({
+      version: 1,
+      activeTaskId: typeof activeTaskId === 'string' ? activeTaskId : null,
+      tasks: sanitizePersistedTasks(tasks).slice(0, MAX_PERSISTED_TASKS)
+    }));
+  } catch (e) {
+    console.warn('[task-panel] persist tasks failed', e);
+  }
+}
+
+function sanitizePersistedTasks(tasks) {
+  if (!Array.isArray(tasks)) return [];
+  return tasks.filter(Boolean).map((task) => ({
+    ...task,
+    id: String(task?.id || createTaskId()),
+    name: String(task?.name || 'Task'),
+    sessionId: String(task?.sessionId || ''),
+    todos: normalizeTodoItems(task?.todos),
+    updatedAt: Number(task?.updatedAt || Date.now())
+  })).filter(task => task.todos.length || task.source === 'manual');
 }
 
 /**
@@ -519,7 +930,7 @@ async function appendUserInstructionAndRun(task) {
       todos: task.todos
     };
     const instr = `Task "${task.name || ''}" has unfinished todos.
-Please read the info above, check the task status and continue to work out the following todos for task "${task.name || ''}".\n\nImportant: After completing each todo item, use the todoWrite tool to update the task status so we can track progress.\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\`\n`;
+Please read the info above, check the task status and continue to work out the following todos for task "${task.name || ''}".\n\nImportant: After completing each todo item, use the todoWrite tool to update the task status so we can track progress. Keep the same taskId and todo ids when updating this list.\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\`\n`;
 
     const current = ed.getValue() || '';
     const append = (current.endsWith('\n') ? '' : '\n') + 'user ' + instr + '\n';
@@ -577,24 +988,34 @@ Please read the info above, check the task status and continue to work out the f
 
 import { registerTaskTools } from "./task-tools.js";
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   ensureStateKeys();
 
   // Panel handle (created via decorator apply)
   let panelHandle = null;
 
-  // Decorator: mount panel when editor ready
-  const dec = window.zion.editor.registerDecorator({
-    id: 'dev.task-panel.decorator',
-    apply(editor) {
-      panelHandle = createPanelHandle();
-      return { dispose() { try { panelHandle?.dispose?.(); } catch {} finally { panelHandle = null; } } };
-    }
-  });
-  ctx.subscriptions.push(dec);
+  try {
+    document.getElementById('zion-task-panel-root')?.remove?.();
+  } catch {}
+  if (TASK_PANEL_UI_ENABLED) {
+    // Legacy floating task panel is disabled; @Context owns the task UX now.
+    const dec = window.zion.editor.registerDecorator({
+      id: 'dev.task-panel.decorator',
+      apply() {
+        panelHandle = createPanelHandle();
+        return { dispose() { try { panelHandle?.dispose?.(); } catch {} finally { panelHandle = null; } } };
+      }
+    });
+    ctx.subscriptions.push(dec);
+  }
 
   // Command: toggle panel
   const cmdToggle = window.zion.commands.registerCommand('tasks.togglePanel', () => {
-    if (panelHandle) panelHandle.toggle();
+    if (TASK_PANEL_UI_ENABLED && panelHandle) panelHandle.toggle();
   });
   ctx.subscriptions.push(cmdToggle);
 
@@ -603,11 +1024,11 @@ export async function activate(ctx) {
     try {
       const tasks = Array.isArray(window.zion.state.get('todo.tasks')) ? window.zion.state.get('todo.tasks').slice() : [];
       const t = createTaskObject(name || `Task ${tasks.length + 1}`);
+      t.sessionId = getCurrentChatSessionId();
+      t.source = 'manual';
       tasks.unshift(t); // newest first
       window.zion.state.set('todo.tasks', tasks);
       window.zion.state.set('todo.activeTaskId', t.id);
-      // open panel if exists
-      if (panelHandle) panelHandle.open();
     } catch (e) { console.warn('[task-panel] add task failed', e); }
   });
   ctx.subscriptions.push(cmdAdd);
@@ -617,81 +1038,83 @@ export async function activate(ctx) {
     try {
       window.zion.state.set('todo.tasks', []);
       window.zion.state.set('todo.activeTaskId', null);
+      savePersistedTasksState([], null);
     } catch (e) { console.warn('[task-panel] clear tasks failed', e); }
   });
   ctx.subscriptions.push(cmdClear);
 
-  // Status bar button showing number of tasks
-  let statusDisp = null;
-  function updateStatusBar() {
-    try {
-      statusDisp?.dispose?.();
-      const tasks = Array.isArray(window.zion.state.get('todo.tasks')) ? window.zion.state.get('todo.tasks') : [];
-      statusDisp = window.zion.bottomStatusBar?.registerItem?.({
-        id: 'dev.task-panel.status',
-        text: `Tasks: ${tasks.length}`,
-        tooltip: 'Toggle Tasks Panel',
-        priority: 50,
-        onClick: () => window.zion.commands.executeCommand('tasks.togglePanel')
-      }) || window.zion.editorHeaderMenu?.register?.({
-        id: 'dev.task-panel.status',
-        title: `任务：${tasks.length}`,
-        section: 'Workspace',
-        order: 20,
-        onClick: () => window.zion.commands.executeCommand('tasks.togglePanel')
-      }) || window.zion.statusBar.registerItem({
-        id: 'dev.task-panel.status',
-        text: `Tasks: ${tasks.length}`,
-        tooltip: 'Toggle Tasks Panel',
-        onClick: () => window.zion.commands.executeCommand('tasks.togglePanel')
-      });
-      ctx.subscriptions.push(statusDisp);
-    } catch (e) {
-      console.warn('[task-panel] updateStatusBar failed', e);
-    }
-  }
-  updateStatusBar();
+  try {
+    document.querySelectorAll('[data-zion-status-id="dev.task-panel.status"]').forEach(el => el.remove());
+  } catch {}
 
-  // Listen to tasks state changes to re-render and update status bar
+  // Listen to tasks state changes to re-render the panel.
   const dispTasksChange = window.zion.state.onDidChange('todo.tasks', (newVal) => {
     try {
-      updateStatusBar();
+      savePersistedTasksState(newVal || [], window.zion.state.get('todo.activeTaskId'));
       if (panelHandle) panelHandle.renderTasks(newVal || []);
     } catch (e) { console.warn('[task-panel] tasks change render error', e); }
   });
   ctx.subscriptions.push(dispTasksChange);
 
-  // When todo.list changes (from tool calls), append/update active task snapshot
+  const dispActiveTaskChange = window.zion.state.onDidChange('todo.activeTaskId', (newVal) => {
+    try {
+      const tasks = Array.isArray(window.zion.state.get('todo.tasks')) ? window.zion.state.get('todo.tasks') : [];
+      savePersistedTasksState(tasks, newVal || null);
+    } catch (e) { console.warn('[task-panel] active task persist error', e); }
+  });
+  ctx.subscriptions.push(dispActiveTaskChange);
+
+  // When todo.list changes (from tool calls), append/update the matching session task snapshot.
   const dispTodoList = window.zion.state.onDidChange('todo.list', (newList) => {
     try {
-      const list = Array.isArray(newList) ? newList : [];
+      let todos = normalizeTodoItems(newList);
       const tasks = Array.isArray(window.zion.state.get('todo.tasks')) ? window.zion.state.get('todo.tasks').slice() : [];
-      let active = window.zion.state.get('todo.activeTaskId');
-
-      if (!active) {
-        // create a new task automatically
-        const t = createTaskObject(`Session ${tasks.length + 1}`);
-        t.todos = list.map(it => ({ content: it?.content || (typeof it === 'string' ? it : ''), status: it?.status || 'pending', activeForm: it?.activeForm || '' }));
-        t.updatedAt = Date.now();
+      const write = window.zion.state.get('todo.lastWrite') || {};
+      const sessionId = String(write?.sessionId || getCurrentChatSessionId() || '');
+      const taskId = String(write?.taskId || '');
+      const signature = String(write?.signature || signatureForTodos(todos));
+      let idx = taskId ? tasks.findIndex(t => String(t?.id || '') === taskId) : -1;
+      if (idx < 0 && !taskId) {
+        const activeTaskId = String(window.zion.state.get('todo.activeTaskId') || '');
+        idx = activeTaskId ? tasks.findIndex(t =>
+          String(t?.id || '') === activeTaskId &&
+          String(t?.sessionId || '') === sessionId
+        ) : -1;
+      }
+      if (idx < 0 && !taskId) {
+        idx = tasks.findIndex(t =>
+          String(t?.sessionId || '') === sessionId &&
+          String(t?.todoSignature || '') === signature
+        );
+      }
+      const now = Date.now();
+      if (idx >= 0) {
+        todos = mergeTodoItems(todos, tasks[idx]?.todos);
+        tasks[idx] = {
+          ...tasks[idx],
+          todos,
+          sessionId,
+          todoSignature: signature,
+          source: tasks[idx]?.source || 'todoWrite',
+          sourceToolCallId: write?.toolCallId || tasks[idx]?.sourceToolCallId || '',
+          sourceWriteSeq: write?.seq || tasks[idx]?.sourceWriteSeq || 0,
+          updatedAt: now
+        };
+        window.zion.state.set('todo.tasks', tasks);
+        window.zion.state.set('todo.activeTaskId', tasks[idx].id);
+      } else {
+        const t = createTaskObject(`Task ${countSessionTasks(tasks, sessionId) + 1}`, taskId || undefined);
+        t.todos = todos;
+        t.sessionId = sessionId;
+        t.todoSignature = signature;
+        t.source = 'todoWrite';
+        t.sourceToolCallId = write?.toolCallId || '';
+        t.sourceWriteSeq = write?.seq || 0;
+        t.createdAt = write?.createdAt || now;
+        t.updatedAt = now;
         tasks.unshift(t);
         window.zion.state.set('todo.tasks', tasks);
         window.zion.state.set('todo.activeTaskId', t.id);
-      } else {
-        // update the active task's todos (replace)
-        const idx = tasks.findIndex(t => t.id === active);
-        if (idx >= 0) {
-          tasks[idx].todos = list.map(it => ({ content: it?.content || (typeof it === 'string' ? it : ''), status: it?.status || 'pending', activeForm: it?.activeForm || '' }));
-          tasks[idx].updatedAt = Date.now();
-          window.zion.state.set('todo.tasks', tasks);
-        } else {
-          // fallback: create new task
-          const t = createTaskObject(`Session ${tasks.length + 1}`);
-          t.todos = list.map(it => ({ content: it?.content || (typeof it === 'string' ? it : ''), status: it?.status || 'pending', activeForm: it?.activeForm || '' }));
-          t.updatedAt = Date.now();
-          tasks.unshift(t);
-          window.zion.state.set('todo.tasks', tasks);
-          window.zion.state.set('todo.activeTaskId', t.id);
-        }
       }
     } catch (e) {
       console.warn('[task-panel] on todo.list change error', e);
@@ -703,37 +1126,24 @@ export async function activate(ctx) {
   function getActiveTask() {
     const tasks = Array.isArray(window.zion.state.get('todo.tasks')) ? window.zion.state.get('todo.tasks') : [];
     const activeId = window.zion.state.get('todo.activeTaskId');
-    return tasks.find(t => t.id === activeId) || null;
+    const sessionId = getCurrentChatSessionId();
+    return tasks.find(t => t.id === activeId && String(t?.sessionId || '') === sessionId) || null;
   }
 
-  // When a chat run finishes or is aborted, check active task and prompt or auto-continue
-  const handleRunEnd = async () => {
+  // When a chat run finishes, auto-continue if explicitly enabled. No legacy panel popup.
+  const handleRunEnd = async ({ aborted = false } = {}) => {
     try {
+      if (aborted) return;
       const task = getActiveTask();
       if (!task) return;
       if (!hasIncompleteTodos(task)) {
-        // nothing to do
-        if (panelHandle) panelHandle.hideContinueBanner?.();
         return;
       }
 
-      // If auto-continue enabled and not locked, start continuation
       const auto = !!window.zion.state.get('todo.autoContinue');
       const lock = !!window.zion.state.get('__todo_auto_continue_lock');
       if (auto && !lock) {
-        // show panel to give visual feedback
-        if (panelHandle) {
-          panelHandle.open();
-          panelHandle.showContinueBanner(task);
-        }
         await appendUserInstructionAndRun(task);
-        return;
-      }
-
-      // else show banner and open panel so user can continue manually
-      if (panelHandle) {
-        panelHandle.open();
-        panelHandle.showContinueBanner(task);
       }
     } catch (e) {
       console.warn('[task-panel] handleRunEnd error', e);
@@ -748,9 +1158,8 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dispRunFinished);
 
   const dispAborted = window.zion.events.on('chat/aborted', (p) => {
-    // when aborted, notify user similarly
     try { window.zion.state.set('__todo_auto_continue_lock', false); } catch {}
-    handleRunEnd();
+    handleRunEnd({ aborted: true });
   });
   ctx.subscriptions.push(dispAborted);
 
@@ -759,6 +1168,13 @@ export async function activate(ctx) {
     try { /* keep lock until finished */ } catch {}
   });
   ctx.subscriptions.push(dispRunStarted);
+
+  const dispI18n = window.zion.events.on('i18n/changed', () => {
+    try {
+      panelHandle?.refreshI18n?.();
+    } catch {}
+  });
+  ctx.subscriptions.push(dispI18n);
 
   // Ensure panel is in sync on startup
   try {

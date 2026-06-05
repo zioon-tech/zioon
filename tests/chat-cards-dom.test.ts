@@ -181,6 +181,30 @@ describe("chat cards DOM lifecycle", () => {
     }
   });
 
+  it("restores mirrored thinking widgets after session-load text sync without clearing annotations", async () => {
+    const h = createHarness({ "panel-a": "session-1", "panel-b": "session-1" }, "user hi\nassistant \n");
+    try {
+      window.zion.events.emit("chat/runStarted", { sessionId: "session-1", panelId: "panel-a", runId: "run-thinking-sync" });
+      window.zion.events.emit("chat/reasoningStart", { sessionId: "session-1", panelId: "panel-a", runId: "run-thinking-sync" });
+      window.zion.events.emit("chat/reasoningToken", { sessionId: "session-1", panelId: "panel-a", runId: "run-thinking-sync", token: "thinking" });
+      window.zion.events.emit("chat/reasoningEnd", { sessionId: "session-1", panelId: "panel-a", runId: "run-thinking-sync" });
+      await wait(160);
+
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(1);
+      expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(1);
+
+      const syncedText = h.editors.get("panel-a")!.getValue();
+      h.cores.get("panel-b")!.setValue(syncedText, { source: "session-load" });
+      await wait(80);
+
+      const ann = window.zion.commands.executeCommand("zion.chatCards.getSessionAnnotations", "session-1");
+      expect(Array.isArray(ann.thinking) ? ann.thinking.length : 0).toBeGreaterThan(0);
+      expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(1);
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("does not sync text or annotations into panels showing a different session", async () => {
     const h = createHarness({ "panel-a": "session-1", "panel-b": "session-2" }, "user hi\nassistant \n");
     try {

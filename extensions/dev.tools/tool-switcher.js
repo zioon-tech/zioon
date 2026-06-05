@@ -2,6 +2,15 @@
  * 工具切换器面板（与模型选择器交互保持一致：搜索、键盘导航、Enter/Esc）
  * 行为差异：Enter/点击为“切换启用状态”（多选），Esc 关闭。
  */
+function t(key, fallback, values) {
+  const fullKey = `dev.tools.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 export function installToolSwitcher() {
   let root = document.getElementById("zion-tools-switcher-root");
   if (root) return createHandle(root);
@@ -36,11 +45,10 @@ export function installToolSwitcher() {
     fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
   });
   panel.setAttribute("role", "dialog");
-  panel.setAttribute("aria-label", "Select Tools");
+  panel.setAttribute("aria-label", t("switcher.title", "Select Tools"));
 
   // 标题
   const header = document.createElement("div");
-  header.textContent = "Select Tools";
   Object.assign(header.style, {
     fontSize: "11px",
     opacity: "0.8",
@@ -52,7 +60,6 @@ export function installToolSwitcher() {
   // 搜索框
   const input = document.createElement("input");
   input.type = "text";
-  input.placeholder = "Search tools…";
   Object.assign(input.style, {
     width: "100%",
     boxSizing: "border-box",
@@ -83,7 +90,6 @@ export function installToolSwitcher() {
 
   // 底部提示
   const footer = document.createElement("div");
-  footer.textContent = "Enter: toggle • Esc: close • ↑↓: navigate";
   Object.assign(footer.style, {
     fontSize: "10px",
     opacity: "0.6",
@@ -190,15 +196,15 @@ export function installToolSwitcher() {
     Object.assign(title.style, { fontSize: "13px", fontWeight: "600", marginBottom: "6px" });
 
     const desc = document.createElement("div");
-    desc.textContent = tool.description || "No description";
+    desc.textContent = tool.description || t("switcher.noDescription", "No description");
     Object.assign(desc.style, { fontSize: "12px", opacity: "0.72", lineHeight: "1.5", marginBottom: "10px" });
 
     const schemaTitle = document.createElement("div");
-    schemaTitle.textContent = "Parameters";
+    schemaTitle.textContent = t("switcher.parameters", "Parameters");
     Object.assign(schemaTitle.style, { fontSize: "11px", fontWeight: "600", opacity: "0.72", marginBottom: "6px" });
 
     const pre = document.createElement("pre");
-    pre.textContent = tool.schema ? JSON.stringify(tool.schema, null, 2) : "(none)";
+    pre.textContent = tool.schema ? JSON.stringify(tool.schema, null, 2) : t("switcher.none", "(none)");
     Object.assign(pre.style, {
       margin: "0",
       padding: "8px",
@@ -226,7 +232,7 @@ export function installToolSwitcher() {
 
     if (items.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "No tools found";
+      empty.textContent = t("switcher.noTools", "No tools found");
       Object.assign(empty.style, { 
         fontSize: "11px", 
         opacity: "0.6", 
@@ -292,8 +298,8 @@ export function installToolSwitcher() {
 
       const preview = document.createElement("button");
       preview.type = "button";
-      preview.textContent = "Preview";
-      preview.title = "Preview tool details";
+      preview.textContent = t("switcher.preview", "Preview");
+      preview.title = t("switcher.previewTitle", "Preview tool details");
       Object.assign(preview.style, {
         flexShrink: "0",
         padding: "2px 6px",
@@ -453,10 +459,23 @@ export function installToolSwitcher() {
     root.style.display = "none";
   }
 
+  function refreshLabels() {
+    const titleText = t("switcher.title", "Select Tools");
+    panel.setAttribute("aria-label", titleText);
+    header.textContent = titleText;
+    input.placeholder = t("switcher.search", "Search tools...");
+    footer.textContent = t("switcher.footer", "Enter: toggle • Esc: close • ↑↓: navigate");
+    refresh();
+  }
+
+  const dispI18n = window.zion?.events?.on?.("i18n/changed", refreshLabels);
+
   function dispose() {
+    try { dispI18n?.dispose?.(); } catch {}
     root.remove();
   }
 
+  refreshLabels();
   return { open, close, dispose };
 }
 

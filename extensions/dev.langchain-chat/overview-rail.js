@@ -2,6 +2,7 @@ import { EditorView } from "@codemirror/view";
 
 const ROLE_HEAD_RE = /^\s*(system|user|assistant|tool)\s+/;
 const ASSISTANT_HEAD_RE = /^\s*assistant\s+/;
+const USER_HEAD_RE = /^\s*user\s+/;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -16,6 +17,10 @@ function getPanelSessionId(panelId) {
 }
 
 function getEditorSessionId(editor) {
+  try {
+    const direct = editor?.getSessionId?.() || editor?.sessionId || editor?.core?.getSessionId?.() || editor?.core?.sessionId;
+    if (direct) return String(direct);
+  } catch {}
   const panelId = editor?.panelId || null;
   if (panelId) {
     return getPanelSessionId(panelId);
@@ -128,6 +133,82 @@ function clearHiddenState(el) {
   el.classList.remove("is-hidden");
 }
 
+function getUserHeadLines(doc) {
+  const lines = [];
+  if (!doc) return lines;
+  try {
+    for (let lineNo = 1; lineNo <= doc.lines; lineNo++) {
+      const line = doc.line(lineNo);
+      if (USER_HEAD_RE.test(doc.sliceString(line.from, line.to))) {
+        lines.push(lineNo - 1);
+      }
+    }
+  } catch {}
+  return lines;
+}
+
+function computeUserNavState(view) {
+  const doc = view?.state?.doc;
+  if (!view || !doc) return { userLines: [], prevLine: null, nextLine: null };
+  const userLines = getUserHeadLines(doc);
+  if (!userLines.length) return { userLines, prevLine: null, nextLine: null };
+
+  const cursorLine = Math.max(0, doc.lineAt(view.state.selection.main.head).number - 1);
+  let prevLine = null;
+  let nextLine = null;
+
+  for (const line of userLines) {
+    if (line < cursorLine) prevLine = line;
+    if (line > cursorLine) {
+      nextLine = line;
+      break;
+    }
+  }
+
+  if (USER_HEAD_RE.test(doc.sliceString(doc.line(cursorLine + 1).from, doc.line(cursorLine + 1).to))) {
+    prevLine = prevLine ?? null;
+  } else {
+    for (let i = userLines.length - 1; i >= 0; i--) {
+      if (userLines[i] <= cursorLine) {
+        prevLine = userLines[i];
+        break;
+      }
+    }
+  }
+
+  return { userLines, prevLine, nextLine };
+}
+
+function jumpToLine(view, lineIndex) {
+  if (!view || typeof lineIndex !== "number" || lineIndex < 0) return false;
+  try {
+    const doc = view.state.doc;
+    const line = doc.line(Math.max(1, Math.min(doc.lines, lineIndex + 1)));
+    view.dispatch({
+      selection: { anchor: line.from },
+      scrollIntoView: true
+    });
+    view.focus?.();
+    try {
+      window.dispatchEvent(new CustomEvent("zion:roles-nav-flash", {
+        detail: { view, lineIndex }
+      }));
+    } catch {}
+    return true;
+  } catch {}
+  return false;
+}
+
+function createNavButton(className, symbol, label, title) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `zion-chat-overview-nav-btn ${className}`;
+  button.title = title;
+  button.setAttribute("aria-label", title);
+  button.innerHTML = `<span class="zion-chat-overview-nav-symbol" aria-hidden="true">${symbol}</span><span class="zion-chat-overview-nav-label">${label}</span>`;
+  return button;
+}
+
 export function createChatOverviewRail(editor) {
   const view = editor?.getView?.();
   if (!view?.dom) {
@@ -145,19 +226,18 @@ export function createChatOverviewRail(editor) {
   cursorEl.className = "zion-chat-overview-marker zion-chat-overview-marker-cursor";
   rail.appendChild(cursorEl);
 
-  const followBtn = document.createElement("button");
-  followBtn.type = "button";
-  followBtn.className = "zion-chat-overview-follow-btn is-hidden";
-  followBtn.title = "跳转到最新回答并继续跟随";
-  followBtn.setAttribute("aria-label", "跳转到最新回答并继续跟随");
-  followBtn.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">
-    <path d="M3.5 2.75a.75.75 0 0 1 1.5 0v6.69l2.22-2.22a.75.75 0 1 1 1.06 1.06l-3.5 3.5a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 1 1 1.06-1.06L3.5 9.44V2.75Z"></path>
-    <path d="M9.5 11.75a.75.75 0 0 1 0-1.5h4a.75.75 0 0 1 0 1.5h-4Z"></path>
-    <path d="M11 8.75A.75.75 0 0 1 11.75 8h1.75a.75.75 0 0 1 0 1.5h-1.75A.75.75 0 0 1 11 8.75Z"></path>
-  </svg>`;
+  const navDock = document.createElement("div");
+  navDock.className = "zion-chat-overview-nav";
+  navDock.setAttribute("aria-label", "聊天导航");
+  const prevUserBtn = createNavButton("zion-chat-overview-nav-prev-user", "↑", "上问", "跳到上一个 user 行");
+  const nextUserBtn = createNavButton("zion-chat-overview-nav-next-user", "↓", "下问", "跳到下一个 user 行");
+  const latestBtn = createNavButton("zion-chat-overview-nav-latest", "A", "最新", "回到最新回答并恢复自动跟随");
+  navDock.appendChild(prevUserBtn);
+  navDock.appendChild(nextUserBtn);
+  navDock.appendChild(latestBtn);
 
   view.dom.appendChild(rail);
-  view.dom.appendChild(followBtn);
+  view.dom.appendChild(navDock);
 
   let disposed = false;
   let rafId = 0;
@@ -208,7 +288,29 @@ export function createChatOverviewRail(editor) {
     });
   };
 
-  followBtn.onclick = (e) => {
+  prevUserBtn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const nav = computeUserNavState(view);
+    if (nav.prevLine == null) return;
+    const sessionId = getEditorSessionId(editor);
+    if (sessionId) setFollowLatest(sessionId, false);
+    jumpToLine(view, nav.prevLine);
+    scheduleRender();
+  };
+
+  nextUserBtn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const nav = computeUserNavState(view);
+    if (nav.nextLine == null) return;
+    const sessionId = getEditorSessionId(editor);
+    if (sessionId) setFollowLatest(sessionId, false);
+    jumpToLine(view, nav.nextLine);
+    scheduleRender();
+  };
+
+  latestBtn.onclick = (e) => {
     e.preventDefault();
     e.stopPropagation();
     const sessionId = getEditorSessionId(editor);
@@ -223,8 +325,8 @@ export function createChatOverviewRail(editor) {
     if (!view.dom.contains(rail)) {
       view.dom.appendChild(rail);
     }
-    if (!view.dom.contains(followBtn)) {
-      view.dom.appendChild(followBtn);
+    if (!view.dom.contains(navDock)) {
+      view.dom.appendChild(navDock);
     }
 
     const doc = view.state.doc;
@@ -246,8 +348,15 @@ export function createChatOverviewRail(editor) {
       ? !!window.zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming
       : false;
     const followLatest = sessionId ? isFollowLatestEnabled(sessionId) : false;
+    const userNav = computeUserNavState(view);
 
     assistantRangeEl.classList.toggle("is-streaming", isStreaming);
+    navDock.classList.toggle("is-hidden", userNav.userLines.length === 0 && !range);
+    prevUserBtn.disabled = userNav.prevLine == null;
+    nextUserBtn.disabled = userNav.nextLine == null;
+    latestBtn.disabled = !sessionId || !range;
+    latestBtn.classList.toggle("is-detached", !!sessionId && !!range && !followLatest);
+    latestBtn.classList.toggle("is-streaming", !!range && isStreaming);
 
     if (!range || railHeight <= 0) {
       createHiddenState(assistantRangeEl);
@@ -265,14 +374,10 @@ export function createChatOverviewRail(editor) {
     assistantRangeEl.title = `Assistant: 第 ${range.headLine + 1}-${range.endLine + 1} 行`;
     clearHiddenState(assistantRangeEl);
 
-    const showFollowBtn = !!sessionId && (isStreaming || !followLatest);
-    followBtn.classList.toggle("is-hidden", !showFollowBtn);
-    followBtn.classList.toggle("is-detached", showFollowBtn && !followLatest);
-    followBtn.classList.toggle("is-following", showFollowBtn && followLatest);
-    followBtn.title = followLatest
+    latestBtn.title = followLatest
       ? "正在跟随最新回答，点击可重新定位到回答位置"
       : "回到最新回答并恢复自动跟随";
-    followBtn.setAttribute("aria-label", followBtn.title);
+    latestBtn.setAttribute("aria-label", latestBtn.title);
   };
 
   function scheduleRender() {
@@ -420,7 +525,7 @@ export function createChatOverviewRail(editor) {
         rail.remove();
       } catch {}
       try {
-        followBtn.remove();
+        navDock.remove();
       } catch {}
     }
   };

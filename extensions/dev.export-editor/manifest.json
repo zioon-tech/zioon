@@ -7,42 +7,54 @@
   "zion": {
     "id": "dev.export-editor",
     "name": "dev.export-editor",
+    "nameKey": "dev.plugins.pluginName.dev.export-editor",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.export-editor",
     "version": "0.0.1",
     "main": "./main.js",
     "contributes": {
       "commands": [
         {
           "id": "exportEditor.asPng",
-          "title": "Export Editor as PNG"
+          "title": "Export Editor as PNG",
+          "titleKey": "dev.export-editor.cmd.png",
+          "categoryKey": "dev.export-editor.category.export"
         },
         {
           "id": "exportEditor.asPngMulti",
-          "title": "Export Editor as PNG (pages)"
+          "title": "Export Editor as PNG (pages)",
+          "titleKey": "dev.export-editor.cmd.pngPages",
+          "categoryKey": "dev.export-editor.category.export"
         },
         {
           "id": "exportEditor.asPdf",
-          "title": "Export Editor as PDF"
+          "title": "Export Editor as PDF",
+          "titleKey": "dev.export-editor.cmd.pdf",
+          "categoryKey": "dev.export-editor.category.export"
         }
       ],
       "menus": {
         "editor/context": [
           {
             "title": "Export",
+            "titleKey": "dev.export-editor.category.export",
             "when": "editorFocus",
             "submenu": [
               {
                 "command": "exportEditor.asPng",
                 "title": "Export as PNG",
+                "titleKey": "dev.export-editor.cmd.png",
                 "when": "editorFocus"
               },
               {
                 "command": "exportEditor.asPngMulti",
                 "title": "Export as PNG (pages)",
+                "titleKey": "dev.export-editor.cmd.pngPages",
                 "when": "editorFocus"
               },
               {
                 "command": "exportEditor.asPdf",
                 "title": "Export as PDF",
+                "titleKey": "dev.export-editor.cmd.pdf",
                 "when": "editorFocus"
               }
             ]
