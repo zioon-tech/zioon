@@ -9,6 +9,7 @@ const LS_CONTEXT_EXPANDED = "zion.devTools.context.expanded";
 const LS_CONTEXT_URL_TITLES = "zion.devTools.context.urlTitles";
 const LS_CONTEXT_EXPLORER_WIDTH = "zion.devTools.context.explorerWidth";
 const LS_COMMENTS_THREADS = "zion.comments.threads.v1";
+const LS_AGENT_TASKS = "zion.agents.tasks.v1";
 
 function t(key, fallback, values) {
   const fullKey = `${I18N_NS}.${key}`;
@@ -119,11 +120,17 @@ function createContextPanel(container) {
   try { disposables.push(window.zion.events?.on?.("panel/tabsChanged", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("editor/activeChanged", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("comments/changed", scheduleContextRefresh)); } catch {}
+  try { disposables.push(window.zion.events?.on?.("agents/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("i18n/changed", () => { lastRenderedSignature = ""; scheduleRender(); })); } catch {}
   try {
     const onCommentsChanged = () => scheduleContextRefresh();
     window.addEventListener("zion:comments-changed", onCommentsChanged);
     disposables.push({ dispose: () => window.removeEventListener("zion:comments-changed", onCommentsChanged) });
+  } catch {}
+  try {
+    const onAgentsChanged = () => scheduleContextRefresh();
+    window.addEventListener("zion:agents-changed", onAgentsChanged);
+    disposables.push({ dispose: () => window.removeEventListener("zion:agents-changed", onAgentsChanged) });
   } catch {}
   const pollTimer = setInterval(() => {
     const signature = getContextRefreshSignature();
@@ -483,13 +490,15 @@ function buildContextSnapshot(urlTitleCache = {}) {
   const taskSummary = buildTaskSummary(tasks, activeTaskId);
   const comments = getCommentsForSession(sessionId);
   const commentSummary = buildCommentSummary(comments);
+  const agentTasks = getAgentTasksForSession(sessionId);
+  const agentSummary = buildAgentTaskSummary(agentTasks);
   const basics = [
     { label: t("context.session", "Session"), value: sessionId ? shortId(sessionId) : t("context.noSession", "No open session") },
     { label: t("context.terminalContext", "Terminal Context"), value: includeTerminal ? t("context.terminalInjected", "Injected into chat") : t("context.terminalNotInjected", "Not injected into chat") },
     { label: t("context.terminalSessions", "Terminal Sessions"), value: `${t("context.count", "{count}", { count: terminalSessions.length })}${activeTerminalId ? ` · ${t("context.terminalActive", "active {id}", { id: shortId(activeTerminalId) })}` : ""}` },
     { label: t("context.toolArtifacts", "Tool Artifacts"), value: t("context.itemCount", "{count}", { count: tools.length }) }
   ];
-  return { sessionId, files, urls, basics, usage, tasks, activeTaskId, taskSummary, comments, commentSummary };
+  return { sessionId, files, urls, basics, usage, tasks, activeTaskId, taskSummary, comments, commentSummary, agentTasks, agentSummary };
 }
 
 function getSnapshotRenderSignature(snapshot, expanded, changeState) {
@@ -500,6 +509,7 @@ function getSnapshotRenderSignature(snapshot, expanded, changeState) {
     usage: compactUsageSignature(snapshot.usage),
     tasks: compactTaskSignature(snapshot.taskSummary, snapshot.tasks, snapshot.activeTaskId),
     comments: compactCommentSignature(snapshot.commentSummary, snapshot.comments),
+    agents: compactAgentTaskSignature(snapshot.agentSummary, snapshot.agentTasks),
     changes: changeState?.fingerprint || "",
     expanded: Array.from(expanded || []).sort()
   });
@@ -549,6 +559,16 @@ function renderResourceTree(snapshot, state) {
     meta: formatCommentSummaryMeta(snapshot.commentSummary),
     empty: t("context.emptyComments", "No comments in the current session."),
     children: renderCommentRows(snapshot.comments, state),
+    state
+  }));
+  tree.appendChild(renderGroup({
+    key: "agents",
+    depth: 0,
+    label: t("context.agents", "Agents"),
+    count: snapshot.agentSummary?.total || 0,
+    meta: formatAgentTaskSummaryMeta(snapshot.agentSummary),
+    empty: t("context.emptyAgents", "No agent tasks in the current session."),
+    children: renderAgentTaskRows(snapshot.agentTasks, state),
     state
   }));
   tree.appendChild(renderGroup({
@@ -1093,6 +1113,41 @@ function renderCommentRows(comments, state) {
   });
 }
 
+function renderAgentTaskRows(tasks, state) {
+  return (Array.isArray(tasks) ? tasks : []).slice(0, 24).map((item, index) => {
+    const key = `agent:${item.id || index}`;
+    const status = String(item.status || "idle");
+    const agent = String(item.agentId || "agent");
+    const anchor = agentTaskAnchorLabel(item);
+    const policy = agentTaskPolicyLabel(item);
+    const metaText = [agent, status, policy, anchor, formatCompactTime(item.updatedAt || item.createdAt)].filter(Boolean).join(" · ");
+    return renderTreeRow({
+      key,
+      depth: 1,
+      icon: "codicon-hubot",
+      label: compactEnd(item.title || item.anchorText || "Agent Task", 88),
+      meta: metaText,
+      title: [
+        item.title || item.anchorText || "Agent Task",
+        `Agent: ${agent}`,
+        `Status: ${status}`,
+        policy ? `Policy: ${policy}` : "",
+        anchor ? `Anchor: ${anchor}` : "",
+        item.id ? `Task: ${item.id}` : ""
+      ].filter(Boolean).join("\n"),
+      kind: "agent",
+      selected: state.selectedKey === key,
+      onClick: () => {
+        try { window.zion?.commands?.executeCommand?.("agents.revealTask", item.id || "", { focus: false }); } catch {}
+      },
+      onSelect: state.onSelect,
+      secondaryActionIcon: "codicon-copy",
+      secondaryActionTitle: t("context.copyAgentTask", "Copy agent task info"),
+      onSecondaryAction: () => copyText(formatAgentTaskCopyText(item))
+    });
+  });
+}
+
 function getCommentsForSession(sessionId) {
   const sid = String(sessionId || "global");
   try {
@@ -1102,6 +1157,24 @@ function getCommentsForSession(sessionId) {
     return list
       .filter((item) => String(item?.sessionId || "global") === sid)
       .sort((a, b) => commentOrder(a) - commentOrder(b) || (Number(a?.createdAt || 0) - Number(b?.createdAt || 0)));
+  } catch {
+    return [];
+  }
+}
+
+function getAgentTasksForSession(sessionId) {
+  const sid = String(sessionId || "global");
+  try {
+    const apiTasks = window.zion?.agents?.getTasksForSession?.(sid);
+    if (Array.isArray(apiTasks)) return apiTasks;
+  } catch {}
+  try {
+    const raw = localStorage.getItem(LS_AGENT_TASKS);
+    const parsed = raw ? JSON.parse(raw) : [];
+    const list = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    return list
+      .filter((item) => String(item?.sessionId || "global") === sid)
+      .sort((a, b) => agentTaskOrder(a) - agentTaskOrder(b) || Number(b?.updatedAt || 0) - Number(a?.updatedAt || 0));
   } catch {
     return [];
   }
@@ -1119,12 +1192,37 @@ function buildCommentSummary(comments) {
   }, { total: 0, open: 0, resolved: 0, anchored: 0, noAnchor: 0 });
 }
 
+function buildAgentTaskSummary(tasks) {
+  const safe = Array.isArray(tasks) ? tasks : [];
+  return safe.reduce((acc, item) => {
+    acc.total += 1;
+    const status = String(item?.status || "idle");
+    if (status === "running") acc.running += 1;
+    else if (status === "done") acc.done += 1;
+    else if (status === "error") acc.error += 1;
+    else acc.idle += 1;
+    if (hasAgentTaskAnchor(item)) acc.anchored += 1;
+    return acc;
+  }, { total: 0, running: 0, done: 0, error: 0, idle: 0, anchored: 0 });
+}
+
 function formatCommentSummaryMeta(summary) {
   const total = Number(summary?.total || 0);
   if (!total) return "0";
   const parts = [`${Number(summary?.open || 0)} open`];
   if (summary?.resolved) parts.push(`${Number(summary.resolved)} resolved`);
   if (summary?.noAnchor) parts.push(`${Number(summary.noAnchor)} no anchor`);
+  return parts.join(" · ");
+}
+
+function formatAgentTaskSummaryMeta(summary) {
+  const total = Number(summary?.total || 0);
+  if (!total) return "0";
+  const parts = [];
+  if (summary?.running) parts.push(`${Number(summary.running)} running`);
+  if (summary?.done) parts.push(`${Number(summary.done)} done`);
+  if (summary?.error) parts.push(`${Number(summary.error)} error`);
+  if (!parts.length) parts.push(`${Number(summary?.idle || 0)} idle`);
   return parts.join(" · ");
 }
 
@@ -1145,6 +1243,25 @@ function compactCommentSignature(summary, comments) {
   });
 }
 
+function compactAgentTaskSignature(summary, tasks) {
+  return stableStringify({
+    summary,
+    tasks: (tasks || []).slice(0, 32).map((item) => [
+      item?.id || "",
+      item?.title || item?.anchorText || "",
+      item?.agentId || "",
+      item?.status || "",
+      item?.updatedAt || 0,
+      item?.runner?.runner || "",
+      item?.runner?.isolation || item?.isolation || "",
+      item?.runner?.permissionMode || item?.permissionMode || "",
+      item?.lineFrom ?? null,
+      item?.lineTo ?? null,
+      item?.from ?? null
+    ])
+  });
+}
+
 function commentOrder(item) {
   if (typeof item?.from === "number") return item.from;
   if (typeof item?.startLine === "number") return item.startLine * 1000000;
@@ -1152,8 +1269,18 @@ function commentOrder(item) {
   return Number.MAX_SAFE_INTEGER;
 }
 
+function agentTaskOrder(item) {
+  if (typeof item?.from === "number") return item.from;
+  if (typeof item?.lineFrom === "number") return item.lineFrom * 1000000;
+  return Number.MAX_SAFE_INTEGER;
+}
+
 function hasCommentAnchor(item) {
   return typeof item?.from === "number" || typeof item?.startLine === "number" || typeof item?.lineFrom === "number";
+}
+
+function hasAgentTaskAnchor(item) {
+  return typeof item?.from === "number" || typeof item?.lineFrom === "number";
 }
 
 function commentAnchorLabel(item) {
@@ -1163,12 +1290,41 @@ function commentAnchorLabel(item) {
   return "no anchor";
 }
 
+function agentTaskAnchorLabel(item) {
+  if (typeof item?.lineFrom === "number") {
+    const from = Number(item.lineFrom) + 1;
+    const to = Number(item.lineTo ?? item.lineFrom) + 1;
+    return from === to ? `L${from}` : `L${from}-${to}`;
+  }
+  if (typeof item?.from === "number") return "anchor";
+  return "no anchor";
+}
+
+function agentTaskPolicyLabel(item) {
+  const runner = item?.runner || {};
+  const isolation = runner.isolation || item?.isolation || "";
+  const permission = runner.permissionMode || item?.permissionMode || "";
+  const running = item?.activeRunId ? "active" : "";
+  return [isolation, permission, running].filter(Boolean).join("/");
+}
+
 function formatCommentCopyText(item) {
   return [
     `Comment: ${item?.quote || item?.anchorText || ""}`,
     `Anchor: ${commentAnchorLabel(item)}`,
     `Status: ${item?.resolved ? "resolved" : "open"}`,
     `Thread: ${item?.id || ""}`
+  ].filter(Boolean).join("\n");
+}
+
+function formatAgentTaskCopyText(item) {
+  return [
+    `Agent Task: ${item?.title || item?.anchorText || ""}`,
+    `Agent: ${item?.agentId || ""}`,
+    `Status: ${item?.status || "idle"}`,
+    `Policy: ${agentTaskPolicyLabel(item)}`,
+    `Anchor: ${agentTaskAnchorLabel(item)}`,
+    `Task: ${item?.id || ""}`
   ].filter(Boolean).join("\n");
 }
 

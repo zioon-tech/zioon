@@ -409,6 +409,22 @@ declare global {
         setActiveModel(model: { providerId: string; modelId: string } | null): void;
         getActiveModel(): { providerId: string; modelId: string } | null;
       };
+      agents?: {
+        listTasks(): any[];
+        getTask(id: string): any | null;
+        getTasksForSession(sessionId?: string | null): any[];
+        getExecutionPlan(task: any): any;
+        isRunning(id: string): boolean;
+        runTask(id: string, handle?: any): Promise<void> | null;
+        stopTask(id: string): void | null;
+        createTask(task: any): any;
+        updateTask(id: string, patch: any): any | null;
+        deleteTask(id: string): void;
+        revealTask(id: string, opts?: any): boolean;
+        openPanel(): void;
+        listAgents(): any[];
+        getAgent(id: string): any;
+      };
       notification?: {
         show(message: string, options?: {
           type?: 'info' | 'success' | 'warning' | 'error';

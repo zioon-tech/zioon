@@ -1629,6 +1629,19 @@ html, body {
   gap: 4px;
 }
 
+.zion-auxbar-tab .codicon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.zion-workbench-text-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1em;
+  line-height: 1;
+}
+
 .zion-auxbar-tab:hover {
   background: var(--auxbar-tab-hover-bg);
 }

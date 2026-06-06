@@ -27,6 +27,29 @@ function translatedTooltip(item: { tooltip?: string; tooltipKey?: string } | nul
   return tr(item?.tooltipKey, safeText(item?.tooltip || fallback));
 }
 
+function appendIconAndLabel(target: HTMLElement, icon: string, label: string) {
+  const value = String(icon || "").trim();
+  target.textContent = "";
+  const codiconMatch = value.match(/^\$\(([^)]+)\)$/);
+  if (codiconMatch) {
+    const span = document.createElement("span");
+    span.className = `codicon codicon-${codiconMatch[1]}`;
+    span.setAttribute("aria-hidden", "true");
+    target.appendChild(span);
+  } else if (value) {
+    const span = document.createElement("span");
+    span.className = "zion-workbench-text-icon";
+    span.textContent = safeText(value);
+    span.setAttribute("aria-hidden", "true");
+    target.appendChild(span);
+  }
+  if (label) {
+    const text = document.createElement("span");
+    text.textContent = safeText(label);
+    target.appendChild(text);
+  }
+}
+
 function isScrollableY(el: HTMLElement): boolean {
   try {
     const st = getComputedStyle(el);
@@ -633,7 +656,7 @@ export function initWorkbench(host: HTMLElement): {
         tab.title = title;
         tab.setAttribute("aria-label", title);
         tab.dataset.viewId = v.id;
-        tab.textContent = safeText(v.icon ? `${v.icon} ${title}` : title);
+        appendIconAndLabel(tab, String(v.icon || ""), title);
         if (v.id === activeViewId) tab.classList.add("is-active");
         (tab as HTMLButtonElement).onclick = () => auxiliaryBarRuntime.activateView(v.id);
         auxTabs.appendChild(tab);
