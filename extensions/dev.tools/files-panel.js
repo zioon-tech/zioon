@@ -1,3 +1,4 @@
+/* global CSS, atob */
 import { EditorState, Prec, StateEffect } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, rectangularSelection } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
@@ -7,6 +8,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { tags as cmTags } from "@lezer/highlight";
+import { getEditorCore } from "./editor-core.js";
 
 export const FILES_VIEW_ID = "dev.tools.files";
 
@@ -14,7 +16,6 @@ const I18N_NS = "dev.tools";
 const LS_EXPANDED = "zion.devTools.files.expanded";
 const LS_SORT = "zion.devTools.files.sort";
 const LS_SOURCE = "zion.devTools.files.source";
-const LS_EXPLORER_WIDTH = "zion.devTools.files.explorerWidth";
 const LS_TREE_CACHE_PREFIX = "zion.devTools.files.treeCache.";
 const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
 const TERMINAL_READ_CHUNK_BYTES = 12 * 1024;
@@ -124,7 +125,8 @@ function createFilesPanel(container) {
   const prefetchPromises = new Map();
   const prefetchQueue = [];
   const failedKeys = new Map();
-  const openFileTabs = new Map();
+  const editorCore = getEditorCore();
+  const openFileTabs = editorCore.tabs;
   const disposables = [];
 
   let roots = [];
@@ -139,10 +141,13 @@ function createFilesPanel(container) {
   let prefetchSeq = 0;
   let prefetchTimer = 0;
   let activePrefetchCount = 0;
-  let activeFileTabId = "";
+  let activeFileTabId = editorCore.getActiveTabId();
   let previewCodeView = null;
+  let previewMemoryEditorItemId = "";
+  let previewMemoryEditorSaveTimer = 0;
+  let previewMemoryEditorDirty = false;
   let previewObjectUrl = "";
-  let explorerWidth = loadExplorerWidth();
+  let explorerWidth = editorCore.getExplorerWidth();
   let lastTerminalSessionIds = terminalSessionIdsSignature();
   let lastActiveTerminalSessionId = getActiveTerminalSessionId();
   let revealStatus = "";
@@ -200,6 +205,11 @@ function createFilesPanel(container) {
     scheduleRender();
   })); } catch {}
   try { disposables.push(window.zion.events.on("i18n/changed", scheduleRender)); } catch {}
+  disposables.push(editorCore.subscribe(() => {
+    activeFileTabId = editorCore.getActiveTabId();
+    explorerWidth = editorCore.getExplorerWidth();
+    scheduleRender();
+  }));
 
   setTimeout(() => {
     if (disposed || !pendingRevealCommandPayload) return;
@@ -227,8 +237,6 @@ function createFilesPanel(container) {
       prefetchingKeys.clear();
       prefetchPromises.clear();
       disposePreviewResources();
-      for (const tab of openFileTabs.values()) disposeFileTabResources(tab);
-      openFileTabs.clear();
       for (const d of disposables.splice(0)) {
         try { d?.dispose?.(); } catch {}
       }
@@ -264,10 +272,12 @@ function createFilesPanel(container) {
     } catch (e) {
       if (seq !== refreshSeq || disposed) return;
       if (!background) roots = [];
-      rootsError = e?.message || String(e || "");    } finally {
-      if (seq !== refreshSeq || disposed) return;
-      rootsLoading = false;
-      scheduleRender();
+      rootsError = e?.message || String(e || "");
+    } finally {
+      if (seq === refreshSeq && !disposed) {
+        rootsLoading = false;
+        scheduleRender();
+      }
     }
   }
 
@@ -435,7 +445,7 @@ function createFilesPanel(container) {
       item.title = tab.displayPath || tab.title;
       item.dataset.tabId = tab.id;
       item.onclick = () => {
-        activeFileTabId = tab.id;
+        activeFileTabId = editorCore.setActiveTab(tab.id);
         renderPreviewOnly();
       };
       item.onauxclick = (event) => {
@@ -444,7 +454,7 @@ function createFilesPanel(container) {
         closeFileTab(tab.id);
       };
       const icon = document.createElement("span");
-      icon.className = `zion-files-preview-tab-icon codicon ${iconForFile(tab.title)}`;
+      icon.className = `zion-files-preview-tab-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
       icon.setAttribute("aria-hidden", "true");
       const label = document.createElement("span");
       label.className = "zion-files-preview-tab-label";
@@ -495,12 +505,12 @@ function createFilesPanel(container) {
         const rect = workspace.getBoundingClientRect();
         const max = Math.max(220, rect.width - 260);
         const next = Math.max(180, Math.min(max, moveEvent.clientX - rect.left));
-        explorerWidth = Math.round(next);
+        explorerWidth = editorCore.setExplorerWidth(next, { silent: true });
         explorer.style.flexBasis = `${explorerWidth}px`;
       };
       const stop = () => {
         root.classList.remove("is-resizing-files");
-        saveExplorerWidth(explorerWidth);
+        editorCore.notify("resize");
         try { handle.releasePointerCapture(pointerId); } catch {}
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", stop);
@@ -514,22 +524,40 @@ function createFilesPanel(container) {
   }
 
   function renderPreviewHeader(tab) {
+    tab = resolveEditorTab(tab);
     const header = document.createElement("div");
     header.className = "zion-files-preview-header";
     const icon = document.createElement("span");
-    icon.className = `zion-files-preview-header-icon codicon ${iconForFile(tab.title)}`;
+    icon.className = `zion-files-preview-header-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
     icon.setAttribute("aria-hidden", "true");
     const title = renderBreadcrumb(tab.displayPath || tab.path || tab.title);
     const meta = document.createElement("div");
     meta.className = "zion-files-preview-meta";
     const parts = [];
+    if (tab.kind === "memory") parts.push("Memory");
     if (typeof tab.size === "number") parts.push(formatBytes(tab.size));
     if (tab.language && tab.language !== "text") parts.push(tab.language);
     meta.textContent = parts.join(" · ");
     header.appendChild(icon);
     header.appendChild(title);
     if (meta.textContent) header.appendChild(meta);
+    if (isMarkdownTab(tab)) header.appendChild(renderMarkdownPreviewToggle(tab));
     return header;
+  }
+
+  function renderMarkdownPreviewToggle(tab) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `zion-files-preview-mode-button${shouldShowMarkdownPreview(tab) ? " is-active" : ""}`;
+    button.title = shouldShowMarkdownPreview(tab) ? t("files.disableMarkdownPreview", "Disable Markdown preview") : t("files.previewMarkdown", "Preview Markdown");
+    const icon = document.createElement("span");
+    icon.className = "codicon codicon-eye";
+    icon.setAttribute("aria-hidden", "true");
+    button.appendChild(icon);
+    button.onclick = () => {
+      editorCore.updateTab(tab.id, { markdownPreview: !shouldShowMarkdownPreview(tab) }, { reason: "markdown-preview" });
+    };
+    return button;
   }
 
   function renderBreadcrumb(path) {
@@ -597,6 +625,7 @@ function createFilesPanel(container) {
   }
 
   function renderFileTabContent(parent, tab) {
+    tab = resolveEditorTab(tab);
     if (tab.file?.kind === "loading") {
       parent.appendChild(renderPreviewMessage(t("files.opening", "Opening file...")));
       return;
@@ -618,10 +647,35 @@ function createFilesPanel(container) {
       return;
     }
     if (tab.file?.kind === "text") {
+      if (shouldShowMarkdownPreview(tab)) {
+        createFilesMarkdownPreview(parent, String(tab.file.content || ""));
+        return;
+      }
       const codeHost = document.createElement("div");
       codeHost.className = "zion-files-preview-code-host";
       parent.appendChild(codeHost);
       previewCodeView = createFilesCodeViewer(codeHost, String(tab.file.content || ""), tab);
+      return;
+    }
+    if (tab.file?.kind === "memory-text") {
+      if (shouldShowMarkdownPreview(tab)) {
+        createFilesMarkdownPreview(parent, String(tab.file.content || ""));
+        return;
+      }
+      const codeHost = document.createElement("div");
+      codeHost.className = "zion-files-preview-code-host";
+      parent.appendChild(codeHost);
+      previewMemoryEditorItemId = tab.memoryId || "";
+      previewCodeView = createFilesCodeEditor(codeHost, String(tab.file.content || ""), tab, (value) => {
+        previewMemoryEditorDirty = true;
+        if (previewMemoryEditorSaveTimer) window.clearTimeout(previewMemoryEditorSaveTimer);
+        previewMemoryEditorSaveTimer = window.setTimeout(() => {
+          previewMemoryEditorSaveTimer = 0;
+          previewMemoryEditorDirty = false;
+          try { window.zion?.memory?.updateMemory?.(previewMemoryEditorItemId, { content: value }, { silent: true }); } catch {}
+        }, 250);
+      });
+      codeHost.addEventListener("focusout", () => flushPreviewMemoryEditor());
       return;
     }
     const empty = document.createElement("div");
@@ -640,19 +694,46 @@ function createFilesPanel(container) {
   function closeFileTab(tabId) {
     const tab = openFileTabs.get(tabId);
     if (tab) disposeFileTabResources(tab);
-    openFileTabs.delete(tabId);
-    if (activeFileTabId === tabId) {
-      activeFileTabId = Array.from(openFileTabs.keys()).pop() || "";
-    }
+    editorCore.closeTab(tabId);
+    activeFileTabId = editorCore.getActiveTabId();
     if (openFileTabs.size) renderPreviewOnly();
     else scheduleRender();
   }
 
   function disposePreviewResources() {
+    flushPreviewMemoryEditor();
     try { previewCodeView?.destroy?.(); } catch {}
     previewCodeView = null;
     try { if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl); } catch {}
     previewObjectUrl = "";
+  }
+
+  function flushPreviewMemoryEditor() {
+    if (previewMemoryEditorSaveTimer) {
+      window.clearTimeout(previewMemoryEditorSaveTimer);
+      previewMemoryEditorSaveTimer = 0;
+    }
+    if (previewMemoryEditorDirty && previewCodeView && previewMemoryEditorItemId) {
+      try { window.zion?.memory?.updateMemory?.(previewMemoryEditorItemId, { content: previewCodeView.state.doc.toString() }); } catch {}
+    }
+    previewMemoryEditorItemId = "";
+    previewMemoryEditorDirty = false;
+  }
+
+  function resolveEditorTab(tab) {
+    if (tab?.kind !== "memory") return tab;
+    const item = window.zion?.memory?.getMemory?.(tab.memoryId) || null;
+    if (!item) return { ...tab, file: { kind: "error", message: "Memory not found" } };
+    return {
+      ...tab,
+      title: basenameFromPath(item.path || item.title || "memory.md"),
+      path: item.path || item.title || "memory.md",
+      displayPath: item.path || item.title || "memory.md",
+      language: languageFromFilename(item.path || "memory.md"),
+      size: typeof item.content === "string" ? item.content.length : 0,
+      memory: item,
+      file: { kind: "memory-text", content: item.content || "" }
+    };
   }
 
   function disposeFileTabResources(tab) {
@@ -1212,8 +1293,8 @@ function createFilesPanel(container) {
       token
     };
     const hadPreview = !!root.querySelector(".zion-files-preview-pane") || openFileTabs.size > 0;
-    openFileTabs.set(tabId, baseTab);
-    activeFileTabId = tabId;
+    editorCore.openTab(baseTab);
+    activeFileTabId = editorCore.getActiveTabId();
     if (hadPreview) renderPreviewOnly();
     else showPreviewPaneIncremental();
 
@@ -1227,15 +1308,15 @@ function createFilesPanel(container) {
         size: typeof file?.size === "number" ? file.size : current.size,
         file
       };
-      openFileTabs.set(tabId, tab);
-      activeFileTabId = tabId;
+      editorCore.openTab(tab);
+      activeFileTabId = editorCore.getActiveTabId();
       renderPreviewOnly();
     } catch (e) {
       const message = e?.message || String(e || t("files.openFailed", "Failed to open file"));
       const current = openFileTabs.get(tabId);
       if (current && current.token === token) {
-        openFileTabs.set(tabId, { ...current, file: { kind: "error", message } });
-        activeFileTabId = tabId;
+        editorCore.openTab({ ...current, file: { kind: "error", message } });
+        activeFileTabId = editorCore.getActiveTabId();
         renderPreviewOnly();
       }
       window.showToast?.(message);
@@ -1244,7 +1325,7 @@ function createFilesPanel(container) {
 
   async function refreshOpenFileTab(node, tabId, existing) {
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    openFileTabs.set(tabId, {
+    editorCore.openTab({
       ...existing,
       title: node.name || existing.title,
       path: node.path || node.displayPath || existing.path || "",
@@ -1254,26 +1335,26 @@ function createFilesPanel(container) {
       file: { kind: "loading" },
       token
     });
-    activeFileTabId = tabId;
+    activeFileTabId = editorCore.getActiveTabId();
     renderPreviewOnly();
     try {
       const provider = getProvider(node.sourceId || sourceId);
       const file = await provider.readFile(node);
       const current = openFileTabs.get(tabId);
       if (!current || current.token !== token) return;
-      openFileTabs.set(tabId, {
+      editorCore.openTab({
         ...current,
         size: typeof file?.size === "number" ? file.size : current.size,
         file
       });
-      activeFileTabId = tabId;
+      activeFileTabId = editorCore.getActiveTabId();
       renderPreviewOnly();
     } catch (e) {
       const message = e?.message || String(e || t("files.openFailed", "Failed to open file"));
       const current = openFileTabs.get(tabId);
       if (current && current.token === token) {
-        openFileTabs.set(tabId, { ...current, file: { kind: "error", message } });
-        activeFileTabId = tabId;
+        editorCore.openTab({ ...current, file: { kind: "error", message } });
+        activeFileTabId = editorCore.getActiveTabId();
         renderPreviewOnly();
       }
       window.showToast?.(message);
@@ -1719,19 +1800,6 @@ function loadSort() {
   } catch {
     return "name";
   }
-}
-
-function loadExplorerWidth() {
-  try {
-    const value = Number(localStorage.getItem(LS_EXPLORER_WIDTH) || "296");
-    return Number.isFinite(value) ? Math.max(180, Math.min(520, value)) : 296;
-  } catch {
-    return 296;
-  }
-}
-
-function saveExplorerWidth(value) {
-  try { localStorage.setItem(LS_EXPLORER_WIDTH, String(Math.round(Number(value) || 296))); } catch {}
 }
 
 function loadSourceId() {
@@ -2281,6 +2349,7 @@ export function languageFromFilename(name) {
     tsx: "typescript",
     json: "json",
     md: "markdown",
+    markdown: "markdown",
     py: "python",
     sh: "shell",
     bash: "shell",
@@ -2586,6 +2655,114 @@ const filesFindWidgetTheme = Prec.highest(EditorView.theme({
 }));
 
 export function createFilesCodeViewer(parent, content, meta) {
+  return createFilesCodeView(parent, content, meta, { readOnly: true });
+}
+
+export function createFilesCodeEditor(parent, content, meta, onChange) {
+  return createFilesCodeView(parent, content, meta, { readOnly: false, onChange });
+}
+
+export function isMarkdownTab(tab) {
+  const name = String(tab?.path || tab?.displayPath || tab?.title || "").toLowerCase();
+  return tab?.language === "markdown" || /\.md(?:own)?$|\.markdown$/.test(name);
+}
+
+export function shouldShowMarkdownPreview(tab) {
+  return isMarkdownTab(tab) && tab?.markdownPreview !== false;
+}
+
+export function createFilesMarkdownPreview(parent, content) {
+  const wrap = document.createElement("div");
+  wrap.className = "zion-files-markdown-preview";
+  wrap.innerHTML = renderMarkdownHtml(content);
+  parent.appendChild(wrap);
+  return wrap;
+}
+
+function renderMarkdownHtml(markdown) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let paragraph = [];
+  let list = [];
+  let inCode = false;
+  let code = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    html.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    html.push(`<ul>${list.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+    list = [];
+  };
+  const flushBlocks = () => {
+    flushParagraph();
+    flushList();
+  };
+
+  for (const line of lines) {
+    const fence = line.match(/^```/);
+    if (fence && !inCode) {
+      flushBlocks();
+      inCode = true;
+      code = [];
+      continue;
+    }
+    if (fence && inCode) {
+      html.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+      inCode = false;
+      code = [];
+      continue;
+    }
+    if (inCode) {
+      code.push(line);
+      continue;
+    }
+    if (!line.trim()) {
+      flushBlocks();
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushBlocks();
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+    const item = line.match(/^\s*[-*]\s+(.+)$/);
+    if (item) {
+      flushParagraph();
+      list.push(item[1]);
+      continue;
+    }
+    flushList();
+    paragraph.push(line.trim());
+  }
+  if (inCode) html.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+  flushBlocks();
+  return html.join("");
+}
+
+function renderInlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function createFilesCodeView(parent, content, meta, opts = {}) {
+  const readOnly = opts.readOnly !== false;
   const view = new EditorView({
     parent,
     state: EditorState.create({
@@ -2604,10 +2781,13 @@ export function createFilesCodeViewer(parent, content, meta) {
         search({ top: true }),
         highlightSelectionMatches(),
         filesFindWidgetTheme,
-        EditorState.readOnly.of(true),
-        filesReadOnlyGuard,
+        readOnly ? EditorState.readOnly.of(true) : null,
+        readOnly ? filesReadOnlyGuard : null,
+        !readOnly && typeof opts.onChange === "function" ? EditorView.updateListener.of((update) => {
+          if (update.docChanged) opts.onChange(update.state.doc.toString(), update);
+        }) : null,
         EditorView.contentAttributes.of({
-          "aria-readonly": "true",
+          "aria-readonly": readOnly ? "true" : "false",
           spellcheck: "false",
           autocapitalize: "off",
           autocomplete: "off"

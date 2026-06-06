@@ -1,4 +1,6 @@
-import { createFilesCodeViewer, ensureRevealSourceForPath, getProvider, iconForFile, languageFromFilename, stableFileTabId } from "./files-panel.js";
+/* global CSS */
+import { getEditorCore } from "./editor-core.js";
+import { createFilesCodeEditor, createFilesCodeViewer, createFilesMarkdownPreview, ensureRevealSourceForPath, getProvider, iconForFile, isMarkdownTab, languageFromFilename, shouldShowMarkdownPreview, stableFileTabId } from "./files-panel.js";
 import { formatCompactChangeCount, formatChangeSummary, getCurrentSessionChangeState, normalizeChangePath } from "./session-change-state.js";
 
 export const CONTEXT_VIEW_ID = "dev.tools.context";
@@ -7,9 +9,9 @@ const I18N_NS = "dev.tools";
 const PATH_ARG_KEYS = new Set(["path", "file", "filename", "file_path", "target_file", "absolute_path", "relative_path"]);
 const LS_CONTEXT_EXPANDED = "zion.devTools.context.expanded";
 const LS_CONTEXT_URL_TITLES = "zion.devTools.context.urlTitles";
-const LS_CONTEXT_EXPLORER_WIDTH = "zion.devTools.context.explorerWidth";
 const LS_COMMENTS_THREADS = "zion.comments.threads.v1";
 const LS_AGENT_TASKS = "zion.agents.tasks.v1";
+const LS_MEMORY_ITEMS = "zion.memory.items.v1";
 
 function t(key, fallback, values) {
   const fullKey = `${I18N_NS}.${key}`;
@@ -71,14 +73,18 @@ function createContextPanel(container) {
   let lastRefreshSignature = "";
   let lastRenderedSignature = "";
   let preservedScrollTop = 0;
-  let activeFileTabId = "";
+  const editorCore = getEditorCore();
+  let activeFileTabId = editorCore.getActiveTabId();
   let previewCodeView = null;
+  let previewMemoryEditorItemId = "";
+  let previewMemoryEditorSaveTimer = 0;
+  let previewMemoryEditorDirty = false;
   let previewObjectUrl = "";
-  let explorerWidth = loadContextExplorerWidth();
+  let explorerWidth = editorCore.getExplorerWidth();
   const expanded = loadExpandedGroups();
   const urlTitleCache = loadUrlTitleCache();
   const pendingTitleFetches = new Set();
-  const openFileTabs = new Map();
+  const openFileTabs = editorCore.tabs;
 
   const scheduleRender = () => {
     if (disposed) return;
@@ -121,7 +127,14 @@ function createContextPanel(container) {
   try { disposables.push(window.zion.events?.on?.("editor/activeChanged", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("comments/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("agents/changed", scheduleContextRefresh)); } catch {}
+  try { disposables.push(window.zion.events?.on?.("memory/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("i18n/changed", () => { lastRenderedSignature = ""; scheduleRender(); })); } catch {}
+  disposables.push(editorCore.subscribe(() => {
+    activeFileTabId = editorCore.getActiveTabId();
+    explorerWidth = editorCore.getExplorerWidth();
+    lastRenderedSignature = "";
+    scheduleRender();
+  }));
   try {
     const onCommentsChanged = () => scheduleContextRefresh();
     window.addEventListener("zion:comments-changed", onCommentsChanged);
@@ -132,13 +145,18 @@ function createContextPanel(container) {
     window.addEventListener("zion:agents-changed", onAgentsChanged);
     disposables.push({ dispose: () => window.removeEventListener("zion:agents-changed", onAgentsChanged) });
   } catch {}
-  const pollTimer = setInterval(() => {
+  try {
+    const onMemoryChanged = () => scheduleContextRefresh();
+    window.addEventListener("zion:memory-changed", onMemoryChanged);
+    disposables.push({ dispose: () => window.removeEventListener("zion:memory-changed", onMemoryChanged) });
+  } catch {}
+  const pollTimer = window.setInterval(() => {
     const signature = getContextRefreshSignature();
     if (signature === lastRefreshSignature) return;
     lastRefreshSignature = signature;
     scheduleRender();
   }, 700);
-  disposables.push({ dispose: () => clearInterval(pollTimer) });
+  disposables.push({ dispose: () => window.clearInterval(pollTimer) });
 
   render();
 
@@ -189,7 +207,8 @@ function createContextPanel(container) {
         selectedKey = key || "";
         syncSelectedRow(root, selectedKey);
       },
-      onOpenFile: openContextFilePreview
+      onOpenFile: openContextFilePreview,
+      onOpenMemory: openContextMemoryPreview
     }));
     workspace.appendChild(scroll);
     if (openFileTabs.size) {
@@ -214,12 +233,12 @@ function createContextPanel(container) {
     const sourceHint = item.sourceId || inferFileSource();
     const provisionalTabId = `file:pending:${sourceHint}:${path}`;
     const existing = openFileTabs.get(provisionalTabId);
-    if (existing) {      activeFileTabId = provisionalTabId;
+    if (existing) {      activeFileTabId = editorCore.setActiveTab(provisionalTabId);
       renderPreviewOnly();
       return;
     }
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    openFileTabs.set(provisionalTabId, {
+    editorCore.openTab({
       id: provisionalTabId,
       title: name,
       path,
@@ -229,7 +248,7 @@ function createContextPanel(container) {
       sourceId: sourceHint,
       token
     });
-    activeFileTabId = provisionalTabId;
+    activeFileTabId = editorCore.getActiveTabId();
     renderPreviewOnly();
 
     let tabId = provisionalTabId;
@@ -240,41 +259,60 @@ function createContextPanel(container) {
       const current = openFileTabs.get(provisionalTabId);
       if (!current || current.token !== token) return;
       if (resolvedTabId !== provisionalTabId) {
-        openFileTabs.delete(provisionalTabId);
+        editorCore.closeTab(provisionalTabId, { reason: "resolve-file-tab" });
         const resolvedExisting = openFileTabs.get(resolvedTabId);
-        if (resolvedExisting) {          activeFileTabId = resolvedTabId;
+        if (resolvedExisting) {          activeFileTabId = editorCore.setActiveTab(resolvedTabId);
           renderPreviewOnly();
           return;
         }
       }
       tabId = resolvedTabId;
-      openFileTabs.set(tabId, {
+      editorCore.openTab({
         ...current,
         id: tabId,
         sourceId,
         file: { kind: "loading" }
       });
-      activeFileTabId = tabId;
+      activeFileTabId = editorCore.getActiveTabId();
       renderPreviewOnly();
       const file = await getProvider(sourceId).readFile(node);
       const latest = openFileTabs.get(tabId);
       if (!latest || latest.token !== token) return;
-      openFileTabs.set(tabId, {
+      editorCore.openTab({
         ...latest,
         size: typeof file?.size === "number" ? file.size : latest.size,
         file
       });
-      activeFileTabId = tabId;
+      activeFileTabId = editorCore.getActiveTabId();
       renderPreviewOnly();
     } catch (e) {      const current = openFileTabs.get(tabId) || openFileTabs.get(provisionalTabId);
       if (!current || current.token !== token) return;
-      openFileTabs.set(current.id || tabId, {
+      editorCore.openTab({
         ...current,
+        id: current.id || tabId,
         file: { kind: "error", message: e?.message || String(e || "Failed to open file") }
       });
-      activeFileTabId = current.id || tabId;
+      activeFileTabId = editorCore.getActiveTabId();
       renderPreviewOnly();
     }
+  }
+
+  function openContextMemoryPreview(item) {
+    if (!item?.id) return;
+    const tabId = `memory:${item.id}`;
+    const latest = window.zion?.memory?.getMemory?.(item.id) || item;
+    editorCore.openTab({
+      id: tabId,
+      kind: "memory",
+      memoryId: item.id,
+      title: displayFileName(latest.path || latest.title || "memory.md"),
+      path: latest.path || latest.title || "memory.md",
+      displayPath: latest.path || latest.title || "memory.md",
+      language: languageFromFilename(latest.path || "memory.md"),
+      size: typeof latest.content === "string" ? latest.content.length : 0
+    });
+    activeFileTabId = editorCore.getActiveTabId();
+    renderPreviewOnly();
   }
 
   function createContextFileNode(path, sourceId, name = displayFileName(path)) {
@@ -336,12 +374,12 @@ function createContextPanel(container) {
         const rect = workspace.getBoundingClientRect();
         const max = Math.max(220, rect.width - 280);
         const next = Math.max(180, Math.min(max, moveEvent.clientX - rect.left));
-        explorerWidth = Math.round(next);
+        explorerWidth = editorCore.setExplorerWidth(next, { silent: true });
         explorer.style.flexBasis = `${explorerWidth}px`;
       };
       const stop = () => {
         root.classList.remove("is-resizing-context");
-        saveContextExplorerWidth(explorerWidth);
+        editorCore.notify("resize");
         try { handle.releasePointerCapture(pointerId); } catch {}
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", stop);
@@ -366,11 +404,11 @@ function createContextPanel(container) {
       item.title = tab.displayPath || tab.title;
       item.dataset.tabId = tab.id;
       item.onclick = () => {
-        activeFileTabId = tab.id;
+        activeFileTabId = editorCore.setActiveTab(tab.id);
         renderPreviewOnly();
       };
       const icon = document.createElement("span");
-      icon.className = `zion-files-preview-tab-icon codicon ${iconForFile(tab.title)}`;
+      icon.className = `zion-files-preview-tab-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
       const label = document.createElement("span");
       label.className = "zion-files-preview-tab-label";
       label.textContent = tab.title;
@@ -391,13 +429,29 @@ function createContextPanel(container) {
     const tab = openFileTabs.get(activeFileTabId) || openFileTabs.values().next().value;
     if (tab) {
       activeFileTabId = tab.id;
-      pane.appendChild(renderContextPreviewHeader(tab));
+      pane.appendChild(renderContextPreviewHeader(resolveContextPreviewTab(tab)));
       const content = document.createElement("div");
       content.className = "zion-files-preview-content";
-      renderContextFileTabContent(content, tab);
+      renderContextFileTabContent(content, resolveContextPreviewTab(tab));
       pane.appendChild(content);
     }
     return pane;
+  }
+
+  function resolveContextPreviewTab(tab) {
+    if (tab?.kind !== "memory") return tab;
+    const item = window.zion?.memory?.getMemory?.(tab.memoryId) || null;
+    if (!item) return { ...tab, file: { kind: "error", message: "Memory not found" } };
+    return {
+      ...tab,
+      title: displayFileName(item.path || item.title || "memory.md"),
+      path: item.path || item.title || "memory.md",
+      displayPath: item.path || item.title || "memory.md",
+      language: languageFromFilename(item.path || "memory.md"),
+      size: typeof item.content === "string" ? item.content.length : 0,
+      memory: item,
+      file: { kind: "memory-text", content: item.content || "" }
+    };
   }
 
   function renderContextPreviewHeader(tab) {
@@ -411,11 +465,31 @@ function createContextPanel(container) {
     title.textContent = compactMiddle(tab.displayPath || tab.path || tab.title, 72);
     const meta = document.createElement("div");
     meta.className = "zion-files-preview-meta";
-    meta.textContent = [typeof tab.size === "number" ? formatBytes(tab.size) : "", tab.language && tab.language !== "text" ? tab.language : ""].filter(Boolean).join(" · ");
+    meta.textContent = [
+      tab.kind === "memory" ? "Memory" : "",
+      typeof tab.size === "number" ? formatBytes(tab.size) : "",
+      tab.language && tab.language !== "text" ? tab.language : ""
+    ].filter(Boolean).join(" · ");
     header.appendChild(icon);
     header.appendChild(title);
     if (meta.textContent) header.appendChild(meta);
+    if (isMarkdownTab(tab)) header.appendChild(renderMarkdownPreviewToggle(tab));
     return header;
+  }
+
+  function renderMarkdownPreviewToggle(tab) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `zion-files-preview-mode-button${shouldShowMarkdownPreview(tab) ? " is-active" : ""}`;
+    button.title = shouldShowMarkdownPreview(tab) ? "Disable Markdown preview" : "Preview Markdown";
+    const icon = document.createElement("span");
+    icon.className = "codicon codicon-eye";
+    icon.setAttribute("aria-hidden", "true");
+    button.appendChild(icon);
+    button.onclick = () => {
+      editorCore.updateTab(tab.id, { markdownPreview: !shouldShowMarkdownPreview(tab) }, { reason: "markdown-preview" });
+    };
+    return button;
   }
 
   function renderContextFileTabContent(parent, tab) {    if (tab.file?.kind === "loading") {
@@ -439,10 +513,35 @@ function createContextPanel(container) {
       return;
     }
     if (tab.file?.kind === "text") {
+      if (shouldShowMarkdownPreview(tab)) {
+        createFilesMarkdownPreview(parent, String(tab.file.content || ""));
+        return;
+      }
       const codeHost = document.createElement("div");
       codeHost.className = "zion-files-preview-code-host";
       parent.appendChild(codeHost);
       previewCodeView = createFilesCodeViewer(codeHost, String(tab.file.content || ""), tab);
+      return;
+    }
+    if (tab.file?.kind === "memory-text") {
+      if (shouldShowMarkdownPreview(tab)) {
+        createFilesMarkdownPreview(parent, String(tab.file.content || ""));
+        return;
+      }
+      const codeHost = document.createElement("div");
+      codeHost.className = "zion-files-preview-code-host";
+      parent.appendChild(codeHost);
+      previewMemoryEditorItemId = tab.memoryId || "";
+      previewCodeView = createFilesCodeEditor(codeHost, String(tab.file.content || ""), tab, (value) => {
+        previewMemoryEditorDirty = true;
+        if (previewMemoryEditorSaveTimer) window.clearTimeout(previewMemoryEditorSaveTimer);
+        previewMemoryEditorSaveTimer = window.setTimeout(() => {
+          previewMemoryEditorSaveTimer = 0;
+          previewMemoryEditorDirty = false;
+          try { window.zion?.memory?.updateMemory?.(previewMemoryEditorItemId, { content: value }, { silent: true }); } catch {}
+        }, 250);
+      });
+      codeHost.addEventListener("focusout", () => flushPreviewMemoryEditor());
       return;
     }
     parent.appendChild(renderContextPreviewMessage("Binary preview is not supported yet"));
@@ -456,18 +555,31 @@ function createContextPanel(container) {
   }
 
   function closeContextFileTab(tabId) {
-    openFileTabs.delete(tabId);
-    if (activeFileTabId === tabId) activeFileTabId = Array.from(openFileTabs.keys()).pop() || "";
+    editorCore.closeTab(tabId);
+    activeFileTabId = editorCore.getActiveTabId();
     renderPreviewOnly();
   }
 
   function disposePreviewResources() {
+    flushPreviewMemoryEditor();
     try { previewCodeView?.destroy?.(); } catch {}
     previewCodeView = null;
     if (previewObjectUrl) {
       try { URL.revokeObjectURL(previewObjectUrl); } catch {}
       previewObjectUrl = "";
     }
+  }
+
+  function flushPreviewMemoryEditor() {
+    if (previewMemoryEditorSaveTimer) {
+      window.clearTimeout(previewMemoryEditorSaveTimer);
+      previewMemoryEditorSaveTimer = 0;
+    }
+    if (previewMemoryEditorDirty && previewCodeView && previewMemoryEditorItemId) {
+      try { window.zion?.memory?.updateMemory?.(previewMemoryEditorItemId, { content: previewCodeView.state.doc.toString() }); } catch {}
+    }
+    previewMemoryEditorItemId = "";
+    previewMemoryEditorDirty = false;
   }
 }
 
@@ -492,13 +604,15 @@ function buildContextSnapshot(urlTitleCache = {}) {
   const commentSummary = buildCommentSummary(comments);
   const agentTasks = getAgentTasksForSession(sessionId);
   const agentSummary = buildAgentTaskSummary(agentTasks);
+  const memories = getMemoryItems();
+  const memorySummary = buildMemorySummary(memories);
   const basics = [
     { label: t("context.session", "Session"), value: sessionId ? shortId(sessionId) : t("context.noSession", "No open session") },
     { label: t("context.terminalContext", "Terminal Context"), value: includeTerminal ? t("context.terminalInjected", "Injected into chat") : t("context.terminalNotInjected", "Not injected into chat") },
     { label: t("context.terminalSessions", "Terminal Sessions"), value: `${t("context.count", "{count}", { count: terminalSessions.length })}${activeTerminalId ? ` · ${t("context.terminalActive", "active {id}", { id: shortId(activeTerminalId) })}` : ""}` },
     { label: t("context.toolArtifacts", "Tool Artifacts"), value: t("context.itemCount", "{count}", { count: tools.length }) }
   ];
-  return { sessionId, files, urls, basics, usage, tasks, activeTaskId, taskSummary, comments, commentSummary, agentTasks, agentSummary };
+  return { sessionId, files, urls, basics, usage, tasks, activeTaskId, taskSummary, comments, commentSummary, agentTasks, agentSummary, memories, memorySummary };
 }
 
 function getSnapshotRenderSignature(snapshot, expanded, changeState) {
@@ -510,6 +624,7 @@ function getSnapshotRenderSignature(snapshot, expanded, changeState) {
     tasks: compactTaskSignature(snapshot.taskSummary, snapshot.tasks, snapshot.activeTaskId),
     comments: compactCommentSignature(snapshot.commentSummary, snapshot.comments),
     agents: compactAgentTaskSignature(snapshot.agentSummary, snapshot.agentTasks),
+    memory: compactMemorySignature(snapshot.memorySummary, snapshot.memories),
     changes: changeState?.fingerprint || "",
     expanded: Array.from(expanded || []).sort()
   });
@@ -569,6 +684,16 @@ function renderResourceTree(snapshot, state) {
     meta: formatAgentTaskSummaryMeta(snapshot.agentSummary),
     empty: t("context.emptyAgents", "No agent tasks in the current session."),
     children: renderAgentTaskRows(snapshot.agentTasks, state),
+    state
+  }));
+  tree.appendChild(renderGroup({
+    key: "memory",
+    depth: 0,
+    label: t("context.memory", "Memory"),
+    count: snapshot.memorySummary?.total || 0,
+    meta: formatMemorySummaryMeta(snapshot.memorySummary),
+    empty: t("context.emptyMemory", "No selected memory notes."),
+    children: renderMemoryRows(snapshot.memories, state),
     state
   }));
   tree.appendChild(renderGroup({
@@ -1148,6 +1273,44 @@ function renderAgentTaskRows(tasks, state) {
   });
 }
 
+function renderMemoryRows(memories, state) {
+  return (Array.isArray(memories) ? memories : []).slice(0, 24).map((item, index) => {
+    const key = `memory:${item.id || index}`;
+    const metaText = [
+      item.enabled === false ? "off" : "on",
+      item.layer || "long-term",
+      item.type || "semantic",
+      item.path || ""
+    ].filter(Boolean).join(" · ");
+    return renderTreeRow({
+      key,
+      depth: 1,
+      icon: item.layer === "working" ? "codicon-pinned" : "codicon-file-code",
+      label: compactEnd(item.path || item.title || "Memory", 88),
+      meta: metaText,
+      title: [
+        item.title || "Memory",
+        `Path: ${item.path || ""}`,
+        `Layer: ${item.layer || "long-term"}`,
+        `Type: ${item.type || "semantic"}`,
+        `Scope: ${item.scope || "project"}`,
+        `Provider: ${item.providerId || "local-markdown-files"}`,
+        item.tags?.length ? `Tags: ${item.tags.join(", ")}` : "",
+        item.id ? `Memory: ${item.id}` : ""
+      ].filter(Boolean).join("\n"),
+      kind: "memory",
+      selected: state.selectedKey === key,
+      onClick: () => {
+        state.onOpenMemory?.(item);
+      },
+      onSelect: state.onSelect,
+      secondaryActionIcon: "codicon-copy",
+      secondaryActionTitle: t("context.copyMemory", "Copy memory info"),
+      onSecondaryAction: () => copyText(formatMemoryCopyText(item))
+    });
+  });
+}
+
 function getCommentsForSession(sessionId) {
   const sid = String(sessionId || "global");
   try {
@@ -1180,6 +1343,20 @@ function getAgentTasksForSession(sessionId) {
   }
 }
 
+function getMemoryItems() {
+  try {
+    const apiItems = window.zion?.memory?.listMemories?.();
+    if (Array.isArray(apiItems)) return apiItems.filter(Boolean).sort(compareMemoryItems);
+  } catch {}
+  try {
+    const raw = localStorage.getItem(LS_MEMORY_ITEMS);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean).sort(compareMemoryItems) : [];
+  } catch {
+    return [];
+  }
+}
+
 function buildCommentSummary(comments) {
   const safe = Array.isArray(comments) ? comments : [];
   return safe.reduce((acc, item) => {
@@ -1206,6 +1383,21 @@ function buildAgentTaskSummary(tasks) {
   }, { total: 0, running: 0, done: 0, error: 0, idle: 0, anchored: 0 });
 }
 
+function buildMemorySummary(memories) {
+  const safe = Array.isArray(memories) ? memories : [];
+  return safe.reduce((acc, item) => {
+    acc.total += 1;
+    if (item?.enabled === false) acc.disabled += 1;
+    else acc.enabled += 1;
+    if (item?.pinned) acc.pinned += 1;
+    if (item?.layer === "working") acc.working += 1;
+    else acc.longTerm += 1;
+    const type = String(item?.type || "semantic");
+    acc.types[type] = (acc.types[type] || 0) + 1;
+    return acc;
+  }, { total: 0, enabled: 0, disabled: 0, pinned: 0, working: 0, longTerm: 0, types: {} });
+}
+
 function formatCommentSummaryMeta(summary) {
   const total = Number(summary?.total || 0);
   if (!total) return "0";
@@ -1226,6 +1418,15 @@ function formatAgentTaskSummaryMeta(summary) {
   return parts.join(" · ");
 }
 
+function formatMemorySummaryMeta(summary) {
+  const total = Number(summary?.total || 0);
+  if (!total) return "0";
+  const parts = [`${Number(summary?.working || 0)} working`];
+  if (summary?.longTerm) parts.push(`${Number(summary.longTerm)} long-term`);
+  if (summary?.disabled) parts.push(`${Number(summary.disabled)} off`);
+  return parts.join(" · ");
+}
+
 function compactCommentSignature(summary, comments) {
   return stableStringify({
     summary,
@@ -1239,6 +1440,23 @@ function compactCommentSignature(summary, comments) {
       item?.endLine ?? item?.lineTo ?? null,
       item?.from ?? null,
       commentRunStatus(item)
+    ])
+  });
+}
+
+function compactMemorySignature(summary, memories) {
+  return stableStringify({
+    summary,
+    memories: (memories || []).slice(0, 32).map((item) => [
+      item?.id || "",
+      item?.path || "",
+      item?.title || "",
+      item?.layer || "",
+      item?.type || "",
+      item?.scope || "",
+      item?.enabled !== false,
+      !!item?.pinned,
+      item?.updatedAt || 0
     ])
   });
 }
@@ -1273,6 +1491,10 @@ function agentTaskOrder(item) {
   if (typeof item?.from === "number") return item.from;
   if (typeof item?.lineFrom === "number") return item.lineFrom * 1000000;
   return Number.MAX_SAFE_INTEGER;
+}
+
+function compareMemoryItems(a, b) {
+  return String(a?.path || "").localeCompare(String(b?.path || "")) || Number(b?.updatedAt || b?.createdAt || 0) - Number(a?.updatedAt || a?.createdAt || 0);
 }
 
 function hasCommentAnchor(item) {
@@ -1325,6 +1547,20 @@ function formatAgentTaskCopyText(item) {
     `Policy: ${agentTaskPolicyLabel(item)}`,
     `Anchor: ${agentTaskAnchorLabel(item)}`,
     `Task: ${item?.id || ""}`
+  ].filter(Boolean).join("\n");
+}
+
+function formatMemoryCopyText(item) {
+  return [
+    `Memory: ${item?.title || ""}`,
+    `Path: ${item?.path || ""}`,
+    `Layer: ${item?.layer || "long-term"}`,
+    `Type: ${item?.type || "semantic"}`,
+    `Scope: ${item?.scope || "project"}`,
+    `Provider: ${item?.providerId || "local-markdown-files"}`,
+    `Enabled: ${item?.enabled !== false}`,
+    item?.tags?.length ? `Tags: ${item.tags.join(", ")}` : "",
+    item?.content ? `\n${item.content}` : ""
   ].filter(Boolean).join("\n");
 }
 
@@ -1788,21 +2024,6 @@ function hasStoredExpandedGroups() {
 function saveExpandedGroups(expanded) {
   try {
     localStorage.setItem(LS_CONTEXT_EXPANDED, JSON.stringify(Array.from(expanded || [])));
-  } catch {}
-}
-
-function loadContextExplorerWidth() {
-  try {
-    const n = Number(localStorage.getItem(LS_CONTEXT_EXPLORER_WIDTH) || "");
-    return Number.isFinite(n) && n >= 160 ? n : 300;
-  } catch {
-    return 300;
-  }
-}
-
-function saveContextExplorerWidth(width) {
-  try {
-    localStorage.setItem(LS_CONTEXT_EXPLORER_WIDTH, String(Math.round(Number(width) || 300)));
   } catch {}
 }
 

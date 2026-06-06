@@ -1,0 +1,38 @@
+{
+  "name": "dev.memory",
+  "version": "0.0.1",
+  "description": "Memory panel, local markdown memory, and extensible memory providers",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.memory",
+    "name": "Memory",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "memory.openPanel",
+          "title": "Open Memory",
+          "category": "Memory"
+        },
+        {
+          "id": "memory.create",
+          "title": "Create Memory",
+          "category": "Memory"
+        },
+        {
+          "id": "memory.rememberSelection",
+          "title": "Remember Selection",
+          "category": "Memory"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

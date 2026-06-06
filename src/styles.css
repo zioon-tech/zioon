@@ -6159,6 +6159,37 @@ body.is-dragging-panel-tabs-scrollbar {
   font-family: var(--font-mono);
   font-size: 10px;
 }
+.zion-files-preview-mode-button {
+  flex: 0 0 auto;
+  height: 22px;
+  width: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--files-muted-fg);
+  font: 11px/1 var(--font-sans);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.zion-files-preview-mode-button .codicon {
+  font-size: 13px;
+}
+.zion-files-preview-mode-button:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.zion-files-preview-mode-button.is-active {
+  color: color-mix(in srgb, var(--fg) 84%, var(--files-muted-fg));
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border-color: transparent;
+}
+.zion-files-preview-mode-button.is-active:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+}
 .zion-files-preview-content {
   flex: 1 1 auto;
   min-height: 0;
@@ -6187,6 +6218,54 @@ body.is-dragging-panel-tabs-scrollbar {
   min-width: max-content;
 }
 .zion-files-preview-code-host .cm-line {
+  white-space: pre;
+}
+.zion-files-markdown-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 24px 32px;
+  color: var(--fg);
+  font: 13px/1.65 var(--font-sans);
+}
+.zion-files-markdown-preview h1,
+.zion-files-markdown-preview h2,
+.zion-files-markdown-preview h3,
+.zion-files-markdown-preview h4,
+.zion-files-markdown-preview h5,
+.zion-files-markdown-preview h6 {
+  margin: 1.1em 0 0.45em;
+  line-height: 1.25;
+  color: var(--fg);
+}
+.zion-files-markdown-preview h1 { font-size: 22px; }
+.zion-files-markdown-preview h2 { font-size: 18px; }
+.zion-files-markdown-preview h3 { font-size: 15px; }
+.zion-files-markdown-preview p { margin: 0 0 0.85em; }
+.zion-files-markdown-preview ul {
+  margin: 0 0 0.85em;
+  padding-left: 20px;
+}
+.zion-files-markdown-preview code {
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+.zion-files-markdown-preview pre {
+  margin: 0 0 1em;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  padding: 10px 12px;
+}
+.zion-files-markdown-preview pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
   white-space: pre;
 }
 .zion-files-preview-image-stage {

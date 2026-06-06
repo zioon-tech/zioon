@@ -45,6 +45,39 @@ export type Decorator = {
   apply(editor: EditorProxy): Disposable;
 };
 
+export type MemoryItem = {
+  id: string;
+  providerId?: string;
+  path?: string;
+  title: string;
+  content: string;
+  layer?: "working" | "long-term" | string;
+  type?: "semantic" | "episodic" | "procedural" | "preference" | string;
+  scope?: "user" | "project" | "workspace" | "agent" | string;
+  tags?: string[];
+  enabled?: boolean;
+  pinned?: boolean;
+  confidence?: number;
+  source?: string;
+  createdAt?: number;
+  updatedAt?: number;
+};
+
+export type MemoryProvider = {
+  id: string;
+  label?: string;
+  kind?: "local" | "external" | string;
+  writable?: boolean;
+  disabled?: boolean;
+  description?: string;
+  capabilities?: string[];
+  list?: () => MemoryItem[] | Promise<MemoryItem[]>;
+  search?: (query: string, opts?: any) => MemoryItem[] | Promise<MemoryItem[]>;
+  read?: (id: string) => MemoryItem | null | Promise<MemoryItem | null>;
+  write?: (item: Partial<MemoryItem>) => MemoryItem | Promise<MemoryItem>;
+  delete?: (id: string) => boolean | Promise<boolean>;
+};
+
 export type MenuItem = {
   command?: string;
   title?: string;
@@ -158,6 +191,26 @@ declare global {
         registerItem(item: any): Disposable;
         open(): void;
         close(): void;
+      };
+      memory?: {
+        registerProvider(provider: MemoryProvider): Disposable;
+        listProviders(): MemoryProvider[];
+        listMemories(): MemoryItem[];
+        getMemory(id: string): MemoryItem | null;
+        getMemoryByPath(path: string): MemoryItem | null;
+        getRootPath(): string;
+        createMemory(input?: Partial<MemoryItem>): MemoryItem;
+        updateMemory(id: string, patch: Partial<MemoryItem>): MemoryItem | null;
+        deleteMemory(id: string): void;
+        search(query?: string, opts?: any): MemoryItem[];
+        buildContext(query?: string, opts?: any): { text: string; items: MemoryItem[]; maxChars: number };
+        importMarkdown(markdown: string, opts?: Partial<MemoryItem>): MemoryItem;
+        exportMarkdown(items?: MemoryItem[]): string;
+        getSettings(): Record<string, any>;
+        saveSettings(patch: Record<string, any>): Record<string, any>;
+        setActiveMemory(id: string): void;
+        openMemory(id: string): void;
+        getActiveMemory(): MemoryItem | null;
       };
       i18n?: {
         getLocale(): "zh-CN" | "en-US";
