@@ -17,7 +17,7 @@ export function updatePwaThemeColor(theme: ResolvedTheme): void {
     const themeColor =
       String(cs.getPropertyValue("--app-theme-color") || "").trim() ||
       String(cs.getPropertyValue("--panel") || "").trim();
-    const fallback = theme === "light" ? "#ffffff" : "#282a36";
+    const fallback = theme === "light" ? "#ffffff" : "#3a3a58";
     meta.setAttribute("content", themeColor || fallback);
   } catch {}
 }

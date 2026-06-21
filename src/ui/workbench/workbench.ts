@@ -27,6 +27,15 @@ function translatedTooltip(item: { tooltip?: string; tooltipKey?: string } | nul
   return tr(item?.tooltipKey, safeText(item?.tooltip || fallback));
 }
 
+/** 在元素上设置纯 codicon（无文字标签） */
+function setCodiconOnly(el: HTMLElement, iconName: string) {
+  el.textContent = "";
+  const span = document.createElement("span");
+  span.className = `codicon codicon-${iconName}`;
+  span.setAttribute("aria-hidden", "true");
+  el.appendChild(span);
+}
+
 function appendIconAndLabel(target: HTMLElement, icon: string, label: string) {
   const value = String(icon || "").trim();
   target.textContent = "";
@@ -377,7 +386,7 @@ export function initWorkbench(host: HTMLElement): {
     cmdBtn.type = "button";
     cmdBtn.title = "Commands";
     cmdBtn.setAttribute("aria-label", "Commands");
-    cmdBtn.textContent = "⌘";
+    setCodiconOnly(cmdBtn, "search");
     cmdBtn.onclick = () => {
       try {
         (window as any).zion?.commands?.executeCommand?.("commandPalette.open");
@@ -438,7 +447,7 @@ export function initWorkbench(host: HTMLElement): {
     cmdBtn.type = "button";
     cmdBtn.title = "Commands";
     cmdBtn.setAttribute("aria-label", "Commands");
-    cmdBtn.textContent = "⌘";
+    setCodiconOnly(cmdBtn, "search");
     cmdBtn.onclick = () => {
       try {
         (window as any).zion?.commands?.executeCommand?.("commandPalette.open");
@@ -459,9 +468,9 @@ export function initWorkbench(host: HTMLElement): {
   const headerActions = el("div", "zion-sidebar-actions");
   const hideBtn = el("button", "zion-sidebar-action");
   hideBtn.type = "button";
-  hideBtn.title = "Hide";
-  hideBtn.setAttribute("aria-label", "Hide sidebar");
-  hideBtn.textContent = "×";
+  hideBtn.title = "Hide Side Bar";
+  hideBtn.setAttribute("aria-label", "Hide Side Bar");
+  setCodiconOnly(hideBtn, "close");
   hideBtn.onclick = () => sideBarRuntime.hide();
   headerActions.appendChild(hideBtn);
   header.appendChild(headerTitle);
@@ -529,9 +538,9 @@ export function initWorkbench(host: HTMLElement): {
   const auxActions = el("div", "zion-auxbar-actions");
   const auxHideBtn = el("button", "zion-auxbar-action") as HTMLButtonElement;
   auxHideBtn.type = "button";
-  auxHideBtn.title = "Hide";
-  auxHideBtn.setAttribute("aria-label", "Hide auxiliary bar");
-  auxHideBtn.textContent = "×";
+  auxHideBtn.title = "Hide Auxiliary Bar";
+  auxHideBtn.setAttribute("aria-label", "Hide Auxiliary Bar");
+  setCodiconOnly(auxHideBtn, "close");
   auxHideBtn.onclick = () => {
     try {
       auxiliaryBarRuntime.hide();
@@ -809,9 +818,9 @@ export function initWorkbench(host: HTMLElement): {
   const bottomActions = el("div", "zion-bottompanel-actions");
   const bottomMaxBtn = el("button", "zion-bottompanel-action") as HTMLButtonElement;
   bottomMaxBtn.type = "button";
-  bottomMaxBtn.title = "Maximize";
-  bottomMaxBtn.setAttribute("aria-label", "Maximize bottom panel");
-  bottomMaxBtn.textContent = "⬆";
+  bottomMaxBtn.title = "Maximize Panel";
+  bottomMaxBtn.setAttribute("aria-label", "Maximize Panel");
+  setCodiconOnly(bottomMaxBtn, "chevron-up");
   bottomMaxBtn.onclick = () => {
     try {
       if (bottomPanelRuntime.isMaximized()) bottomPanelRuntime.restore();
@@ -820,9 +829,9 @@ export function initWorkbench(host: HTMLElement): {
   };
   const bottomHideBtn = el("button", "zion-bottompanel-action") as HTMLButtonElement;
   bottomHideBtn.type = "button";
-  bottomHideBtn.title = "Hide";
-  bottomHideBtn.setAttribute("aria-label", "Hide bottom panel");
-  bottomHideBtn.textContent = "×";
+  bottomHideBtn.title = "Hide Panel";
+  bottomHideBtn.setAttribute("aria-label", "Hide Panel");
+  setCodiconOnly(bottomHideBtn, "close");
   bottomHideBtn.onclick = () => {
     try {
       bottomPanelRuntime.hide();
@@ -1081,9 +1090,9 @@ export function initWorkbench(host: HTMLElement): {
       bottomActions.insertBefore(btn, bottomMaxBtn);
     }
 
-    bottomMaxBtn.textContent = bottomPanelRuntime.isMaximized() ? "⬇" : "⬆";
-    bottomMaxBtn.title = bottomPanelRuntime.isMaximized() ? "Restore" : "Maximize";
-    bottomMaxBtn.setAttribute("aria-label", bottomPanelRuntime.isMaximized() ? "Restore bottom panel" : "Maximize bottom panel");
+    setCodiconOnly(bottomMaxBtn, bottomPanelRuntime.isMaximized() ? "chevron-down" : "chevron-up");
+    bottomMaxBtn.title = bottomPanelRuntime.isMaximized() ? "Restore Panel" : "Maximize Panel";
+    bottomMaxBtn.setAttribute("aria-label", bottomPanelRuntime.isMaximized() ? "Restore Panel" : "Maximize Panel");
 
     if (views.length === 0) {
       if (!bottomContent.contains(bottomEmpty)) {

@@ -637,8 +637,8 @@ class SideBarRuntime {
   }
 
   show(): void {
-    const wasVisible = this.isVisible();
-    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
+    if (this.isVisible()) return;
+    this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.sideBar.visible", true);
     this.emitter.emit();
   }
@@ -768,8 +768,8 @@ class AuxiliaryBarRuntime {
   }
 
   show() {
-    const wasVisible = this.isVisible();
-    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
+    if (this.isVisible()) return;
+    this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.auxiliaryBar.visible", true);
     this.emitter.emit();
   }
@@ -897,8 +897,8 @@ class BottomPanelRuntime {
   }
 
   show() {
-    const wasVisible = this.isVisible();
-    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
+    if (this.isVisible()) return;
+    this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.bottomPanel.visible", true);
     this.emitter.emit();
   }
