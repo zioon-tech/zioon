@@ -1,0 +1,102 @@
+/* =============================================
+   dev.theme-demo — 自定义主题 CSS 示例
+   主题名：Neon Glow （霓虹光）
+   基色：暗色（dark）
+   ============================================= */
+
+/* 第 1 种方式：CSS 变量覆盖（推荐）
+   直接覆盖 CSS 变量，自动作用于所有 UI 组件 */
+:root[data-theme="dark"][data-theme-variant="neon-glow"] {
+  /* 核心底色 — 深紫黑 */
+  --bg: #0a0015;
+  --panel: #120022;
+  --border: #2a0050;
+
+  /* 文字颜色 */
+  --fg: #e0d0ff;
+  --dim: rgba(224, 208, 255, 0.55);
+
+  /* 强调色 — 霓虹蓝绿 */
+  --accent: #00f0ff;
+  --accent-rgb: 0, 240, 255;
+  --ok: #39ff14;
+
+  /* 角色 token 颜色 — 霓虹风格 */
+  --role-user-fg: #39ff14;
+  --role-user-bg: rgba(57, 255, 20, 0.18);
+  --role-user-border: rgba(57, 255, 20, 0.25);
+  --role-assistant-fg: #00f0ff;
+  --role-assistant-bg: rgba(0, 240, 255, 0.12);
+  --role-assistant-border: rgba(0, 240, 255, 0.22);
+  --role-system-fg: #ff00aa;
+  --role-system-bg: rgba(255, 0, 170, 0.18);
+  --role-system-border: rgba(255, 0, 170, 0.28);
+
+  /* 字体 — 更现代的等宽字体（如果安装了） */
+  --font-sans: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Noto Sans SC", "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Fira Code", "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* 编辑器 */
+  --editor-bg: #0a0015;
+  --editor-gutter-bg: #0a0015;
+  --editor-gutter-fg: rgba(0, 240, 255, 0.35);
+  --editor-gutter-active-bg: rgba(0, 240, 255, 0.10);
+  --files-preview-bg: #0c0018;
+  --files-explorer-bg: #120022;
+
+  /* 面板活跃边框 + 发光 */
+  --panel-active-border: rgba(0, 240, 255, 0.58);
+  --panel-active-glow: rgba(0, 240, 255, 0.48);
+  --panel-active-shadow: 0 0 0 1px rgba(0, 240, 255, 0.30), 0 0 0 3px rgba(0, 240, 255, 0.10), 0 12px 24px rgba(10, 0, 21, 0.10);
+
+  /* 交互 */
+  --hover-bg: rgba(0, 240, 255, 0.08);
+  --active-bg: rgba(0, 240, 255, 0.15);
+  --focus-ring: 0 0 0 1px rgba(0, 240, 255, 0.48);
+
+  /* 滚动条 */
+  --scrollbar-thumb: rgba(0, 240, 255, 0.35);
+  --scrollbar-thumb-hover: rgba(0, 240, 255, 0.55);
+  --scrollbar-track: rgba(18, 0, 34, 0.5);
+
+  /* TOC 面板 */
+  --ext-toc-bg: var(--editor-bg);
+  --ext-toc-fg: rgba(224, 208, 255, 0.78);
+  --ext-toc-active-fg: var(--accent);
+  --ext-toc-hover: rgba(0, 240, 255, 0.06);
+  --ext-toc-role-user: var(--role-user-fg);
+  --ext-toc-role-assistant: var(--role-assistant-fg);
+  --ext-toc-role-system: var(--role-system-fg);
+
+  /* 活动栏 */
+  --activitybar-item-hover-bg: rgba(0, 240, 255, 0.08);
+  --activitybar-item-active-bg: rgba(0, 240, 255, 0.18);
+
+  /* 侧边栏 / 辅助栏 / 底栏 */
+  --auxbar-tab-hover-bg: rgba(0, 240, 255, 0.06);
+  --auxbar-tab-active-bg: rgba(0, 240, 255, 0.20);
+  --sidebar-tab-active-bg: rgba(0, 240, 255, 0.16);
+  --sidebar-tab-active-border: rgba(0, 240, 255, 0.22);
+  --bottompanel-tab-active-bg: rgba(0, 240, 255, 0.20);
+
+  /* 会话面板 */
+  --sessions-current-bg: rgba(0, 240, 255, 0.10);
+  --sessions-heatmap-active: var(--ok);
+  --sessions-heatmap-empty: rgba(0, 240, 255, 0.07);
+}
+
+/* 第 2 种方式：直接覆盖具体元素（需要 CSS 选择器）
+   如果某个组件没有用 CSS 变量，可以这样兜底 */
+:root[data-theme="dark"][data-theme-variant="neon-glow"] .zion-thinking-card {
+  border-color: rgba(0, 240, 255, 0.30);
+  background: linear-gradient(135deg, rgba(0, 240, 255, 0.04), rgba(255, 0, 170, 0.04));
+}
+
+:root[data-theme="dark"][data-theme-variant="neon-glow"] .zion-thinking-card:hover {
+  border-color: rgba(0, 240, 255, 0.60);
+}
+
+:root[data-theme="dark"][data-theme-variant="neon-glow"] .zion-tool-call-inline {
+  background: rgba(0, 240, 255, 0.08);
+  border-color: rgba(0, 240, 255, 0.25);
+}

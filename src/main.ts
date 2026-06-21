@@ -1,4 +1,6 @@
 import "katex/dist/katex.min.css";
+// Vite: eagerly bundle extension CSS (extracted from src/styles.css)
+import.meta.glob("/extensions/**/styles.css", { eager: true });
 import { EditorCore, type VimOperationalMode } from "./editor/EditorCore";
 import "./pwa-test";
 import { attachEditor, detachEditor, listAttachedEditorCores, setActiveEditorPanel } from "./ext/registry";

@@ -1,5 +1,5 @@
 import { matchSorter, rankings } from "match-sorter";
-import { BUILT_IN_THEME_OPTIONS } from "../../theme/themes";
+import { BUILT_IN_THEME_OPTIONS, getRegisteredThemeOptions } from "../../theme/themes";
 
 type CommandMeta = {
   id: string;
@@ -44,7 +44,9 @@ type PaletteItem =
       contentSnippet?: string;
     };
 
-const THEME_OPTIONS = BUILT_IN_THEME_OPTIONS;
+
+
+
 
 const LANGUAGE_OPTIONS = [
   {
@@ -925,7 +927,9 @@ export function initCommandPalette() {
       (window as any).zion?.state?.get?.("ui.theme") ||
       "system"
     );
-    return THEME_OPTIONS.map(theme => {
+    // Combine built-in themes with dynamically registered ones (e.g. plugins)
+    const allOptions = [...BUILT_IN_THEME_OPTIONS, ...getRegisteredThemeOptions()];
+    return allOptions.map(theme => {
       const isActive = theme.id === current;
       return {
         kind: "action" as const,

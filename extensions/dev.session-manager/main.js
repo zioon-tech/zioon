@@ -1079,88 +1079,6 @@ async function importSessionsFromFile() {
   });
 }
 
-/** ========== CSS for custom scrollbars ========== */
-// Inject custom scrollbar styles to make them appear only when needed and with better styling
-function injectScrollbarStyles() {
-  try {
-    const styleId = "zion-session-manager-scrollbar-styles";
-    if (document.getElementById(styleId)) return;
-
-    const style = document.createElement("style");
-    style.id = styleId;
-    style.textContent = `
-      /* Session manager scrollbar behavior:
-         - keep width stable to avoid layout shift (status lamp not squeezed)
-         - show thumb only while scrolling (zion-scroll-active), consistent with editor panels
-       */
-      .zion-sessions-list,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content {
-        scrollbar-color: transparent transparent;
-        scrollbar-width: thin;
-        scrollbar-gutter: stable;
-      }
-
-      .zion-sessions-list::-webkit-scrollbar,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar {
-        width: 10px;
-        height: 10px;
-      }
-      .zion-sessions-list::-webkit-scrollbar-track,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      .zion-sessions-list::-webkit-scrollbar-thumb,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb {
-        background-color: transparent;
-        border-radius: 6px;
-        border: 2px solid transparent;
-        background-clip: content-box;
-      }
-      .zion-sessions-list.zion-scroll-active::-webkit-scrollbar-thumb,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content.zion-scroll-active::-webkit-scrollbar-thumb {
-        background-color: var(--scrollbar-thumb, var(--border, rgba(128, 128, 128, 0.4)));
-      }
-      /* Disable hover-to-show for session-manager (prefer scroll-active only) */
-      .zion-sessions-list:hover::-webkit-scrollbar-thumb,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content:hover::-webkit-scrollbar-thumb {
-        background-color: transparent;
-      }
-
-      /* Scroll container background - ensure clean background */
-      .zion-sessions-list {
-        background: transparent;
-      }
-
-      #zion-sessions-panel-overlay .zion-sessions-panel-content {
-        background: var(--panel);
-      }
-
-      /* Highlight styles for current session */
-      .zion-session-row.is-current {
-        background: var(--sessions-current-bg, var(--ext-session-active-bg, rgba(128, 128, 128, 0.15)));
-        border: none !important;
-        outline: none !important;
-        box-shadow: none !important;
-      }
-      .zion-session-row.is-current:hover {
-        background: var(--sessions-current-hover-bg, var(--ext-session-active-hover-bg, rgba(128, 128, 128, 0.25)));
-      }
-      .zion-session-row:focus,
-      .zion-session-row:focus-visible {
-        outline: none !important;
-        box-shadow: none !important;
-      }
-      .zion-session-row.is-selected {
-        background: var(--sessions-selected-bg, var(--ext-session-selected-bg, rgba(33, 150, 243, 0.2)));
-        box-shadow: none !important;
-      }
-    `;
-    document.head.appendChild(style);
-  } catch (e) {
-    console.warn("[sessions] Failed to inject scrollbar styles:", e);
-  }
-}
-
 /** ========== Activate Extension ========== */
 export async function activate(ctx) {
   try {
@@ -1168,8 +1086,6 @@ export async function activate(ctx) {
     if (disp) ctx.subscriptions.push(disp);
   } catch {}
 
-  // Inject custom scrollbar styles
-  injectScrollbarStyles();
   // 初始化 IndexedDB 并预载数据/迁移
   const storageStatus = await initSessionsStorage();
   if (!storageStatus?.ok) {

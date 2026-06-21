@@ -23,6 +23,9 @@
           "titleKey": "dev.roles.cmd.configure",
           "categoryKey": "dev.roles.category.roles"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "activationEvents": [

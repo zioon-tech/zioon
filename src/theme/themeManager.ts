@@ -5,6 +5,8 @@ import {
   isThemePreference,
   isThemeSelection,
   isThemeVariant,
+  registerThemeOption,
+  type BuiltInThemeOption,
   type ThemePreference,
   type ThemeSelection,
   type ThemeVariant
@@ -149,6 +151,48 @@ export class ThemeManager {
     this.apply("refresh", { force: true });
   }
 
+  registerVariant(id: string, opts: {
+    title: string;
+    baseTheme: ThemePreference;
+    css: string;
+  }): { dispose(): void } {
+    // Inject the CSS using the same attribute-selector pattern as built-in preset themes
+    const styleId = `zion-theme-variant-${id}`;
+    const existing = document.getElementById(styleId);
+    if (existing) existing.remove();
+
+    const variant = id;
+    const attr = opts.baseTheme === "system" ? "[data-theme]" : `[data-theme="${opts.baseTheme}"]`;
+
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `\n${attr}[data-theme-variant="${variant}"] {\n${opts.css}\n}\n`;
+    document.head.appendChild(style);
+
+    // Register the theme option so theme selection UI can find it
+    const option: BuiltInThemeOption = {
+      id,
+      title: opts.title,
+      description: opts.title,
+      keywords: [opts.title, id],
+      baseTheme: opts.baseTheme,
+      variant
+    };
+    const optionDisposable = registerThemeOption(option);
+
+    return {
+      dispose: () => {
+        const el = document.getElementById(styleId);
+        if (el) el.remove();
+        optionDisposable.dispose();
+        // If this variant was active, reset to default
+        if (this.variant === variant) {
+          this.setVariant("default", "command");
+        }
+      }
+    };
+  }
+
   getToken(name: string): string {
     try {
       return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -276,6 +320,8 @@ export class ThemeManager {
         setSelection: (selection: ThemeSelection) => this.setSelection(selection, "settings"),
         setPreference: (preference: ThemePreference) => this.setPreference(preference, "settings"),
         setVariant: (variant: ThemeVariant) => this.setVariant(variant, "settings"),
+        registerVariant: (id: string, opts: { title: string; baseTheme: ThemePreference; css: string }) =>
+          this.registerVariant(id, opts),
         toggle: () => this.toggle("command"),
         refresh: () => this.refresh(),
         getToken: (name: string) => this.getToken(name)

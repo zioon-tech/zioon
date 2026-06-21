@@ -1,0 +1,122 @@
+/* ===== Sessions UI (panel/sidebar) ===== */
+:root {
+  --sessions-row-hover-bg: color-mix(in srgb, var(--fg) 7%, transparent);
+  --sessions-current-bg: color-mix(in srgb, var(--fg) 9%, transparent);
+  --sessions-current-hover-bg: color-mix(in srgb, var(--fg) 12%, transparent);
+  --sessions-selected-bg: color-mix(in srgb, var(--fg) 11%, transparent);
+  --sessions-highlight-bg: var(--sessions-current-bg);
+}
+:root[data-theme="light"] {
+  --sessions-row-hover-bg: color-mix(in srgb, var(--fg) 6%, transparent);
+  --sessions-current-bg: color-mix(in srgb, var(--fg) 7%, transparent);
+  --sessions-current-hover-bg: color-mix(in srgb, var(--fg) 10%, transparent);
+  --sessions-selected-bg: color-mix(in srgb, var(--fg) 9%, transparent);
+  --sessions-highlight-bg: var(--sessions-current-bg);
+}
+.zion-session-row {
+  min-height: 28px;
+  margin: 1px 6px 1px 0;
+  border-radius: 7px;
+  transition: background 120ms ease, box-shadow 120ms ease;
+  box-sizing: border-box;             /* 让背景裁剪时以内容盒为准 */
+  background-clip: padding-box;       /* 根据缩进（border-left）裁剪高亮宽度 */
+  white-space: nowrap;                /* 强制单行展示，避免换行 */
+  background: transparent;
+}
+/* 根据层级缩进，缩短高亮宽度（仅占文字内容宽度，不覆盖缩进空白区） */
+.zion-session-row[data-level="0"], .zion-session-row[data-depth="0"] { padding-left: 0; }
+.zion-session-row[data-level="1"], .zion-session-row[data-depth="1"] { padding-left: calc(var(--sessions-indent-step) * 1); }
+.zion-session-row[data-level="2"], .zion-session-row[data-depth="2"] { padding-left: calc(var(--sessions-indent-step) * 2); }
+.zion-session-row[data-level="3"], .zion-session-row[data-depth="3"] { padding-left: calc(var(--sessions-indent-step) * 3); }
+.zion-session-row[data-level="4"], .zion-session-row[data-depth="4"] { padding-left: calc(var(--sessions-indent-step) * 4); }
+.zion-session-row:hover {
+  background: var(--sessions-row-hover-bg);
+}
+.zion-session-row.is-current {
+  background: var(--sessions-current-bg);
+}
+.zion-session-row.is-current:hover {
+  background: var(--sessions-current-hover-bg);
+}
+.zion-session-row.is-selected {
+  background: var(--sessions-selected-bg);
+}
+.zion-session-row:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 禁用会话行过渡效果，防止闪烁 */
+body.zion-sessions-no-transitions .zion-session-row,
+body.zion-sessions-no-transitions .zion-session-row * {
+  transition: none !important;
+}
+
+/* 多选状态：移除选中项边框，保留高亮背景 */
+.zion-selection-multiple .zion-session-row.is-selected {
+  box-shadow: none;
+}
+
+/* 拖拽落点提示（类似 VSCode） */
+.zion-session-row.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+/* Sessions sidebar list scrollbar theming (consistent with editor/table) */
+.zion-sessions-list {
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-gutter: stable;
+}
+.zion-sessions-list.zion-scroll-active {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.zion-sessions-list::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.zion-sessions-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.zion-sessions-list::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.zion-sessions-list.zion-scroll-active::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+
+/* Status badge for sessions (compact, pill background) */
+.zion-session-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+/*   padding: 0 4px; */
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg);
+  background: transparent;
+  /* 背景色由脚本动态设置为与行背景一致（并且为不透明的合成色） */
+}
+/* 状态颜色：回答中用 accent，小圆点完成用 ok 绿色 */
+.zion-session-status-badge.streaming { color: var(--accent); }
+.zion-session-status-badge.ready { color: var(--ok); }
+
+
+/* JS-injected: scrollbar behavior + current-row highlight */
+.zion-sessions-list, #zion-sessions-panel-overlay .zion-sessions-panel-content { scrollbar-color: transparent transparent; scrollbar-width: thin; scrollbar-gutter: stable; }
+.zion-sessions-list::-webkit-scrollbar, #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar { width: 10px; height: 10px; }
+.zion-sessions-list::-webkit-scrollbar-track, #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-track { background: transparent; }
+.zion-sessions-list::-webkit-scrollbar-thumb, #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb { background-color: transparent; border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+.zion-sessions-list.zion-scroll-active::-webkit-scrollbar-thumb, #zion-sessions-panel-overlay .zion-sessions-panel-content.zion-scroll-active::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb, var(--border, rgba(128,128,128,0.4))); }
+.zion-sessions-list:hover::-webkit-scrollbar-thumb, #zion-sessions-panel-overlay .zion-sessions-panel-content:hover::-webkit-scrollbar-thumb { background-color: transparent; }
+.zion-sessions-list { background: transparent; }
+#zion-sessions-panel-overlay .zion-sessions-panel-content { background: var(--panel); }
+.zion-session-row.is-current { background: var(--sessions-current-bg, var(--ext-session-active-bg, rgba(128,128,128,0.15))); border: none !important; outline: none !important; }
+.zion-session-row.is-current .zion-session-name { font-weight: 600; color: var(--accent); }

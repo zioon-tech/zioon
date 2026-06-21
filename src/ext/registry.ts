@@ -2282,6 +2282,24 @@ const chatUsageStore = createChatUsageStore();
       setActiveModel: (m: { providerId: string; modelId: string } | null) => (registry as any).__chatSetActiveModel(m),
       getActiveModel: () => (registry as any).__chatGetActiveModel()
     },
+
+    styles: {
+      register: (id: string, css: string): Disposable => {
+        const existing = document.getElementById('zion-style-' + id);
+        if (existing) existing.remove();
+        const style = document.createElement('style');
+        style.id = 'zion-style-' + id;
+        style.textContent = css;
+        document.head.appendChild(style);
+        return {
+          dispose: () => { const el = document.getElementById('zion-style-' + id); if (el) el.remove(); }
+        };
+      },
+      get: (id: string) => {
+        try { const el = document.getElementById('zion-style-' + id); return el?.textContent || undefined; } catch { return undefined; }
+      },
+      list: () => Array.from(document.querySelectorAll('style[id^="zion-style-"]')).map(function(el) { return el.id.replace('zion-style-', ''); })
+    },
     usage: chatUsageStore,
     notification: {
       show: (message: string, options?: {

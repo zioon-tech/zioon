@@ -46,6 +46,7 @@ export class PluginManager extends EventEmitter {
   private activePlugins = new Map<string, { info: PluginInfo; module: PluginModule; context: PluginContext }>();
   private enabledPlugins = new Set<string>();
   private disabledPlugins = new Set<string>();
+  private pluginStyleElements = new Map<string, HTMLStyleElement[]>();
 
   constructor(options: PluginManagerOptions) {
     super();
@@ -620,6 +621,7 @@ export class PluginManager extends EventEmitter {
       });
 
       // 更新最终状态
+      await this.autoLoadStyles(pluginInfo);
       pluginInfo.state = 'active';
 
       // 触发事件
@@ -649,6 +651,45 @@ export class PluginManager extends EventEmitter {
   /**
    * 停用插件
    */
+  private async autoLoadStyles(info: PluginInfo): Promise<void> {
+    try {
+      const m = info.manifest as any;
+      const styles = m.zion?.contributes?.styles;
+      if (!Array.isArray(styles) || styles.length === 0) return;
+      const basePath = (info.path || '').replace(/\/+$/, '');
+      const els: HTMLStyleElement[] = [];
+      for (let i = 0; i < styles.length; i++) {
+        try {
+          const rel = String(styles[i] || '').replace(/^\.\//, '');
+          const url = basePath ? basePath + '/' + rel : rel;
+          if (!basePath) continue;
+          if (typeof document === 'undefined') continue;
+          const resp = await fetch(url);
+          if (!resp.ok) { this.log('warn', 'Failed style ' + rel + ' for ' + info.id + ': HTTP ' + resp.status); continue; }
+          const css = await resp.text();
+          const id = 'zion-style-' + info.id + '-' + i;
+          const old = document.getElementById(id);
+          if (old) old.remove();
+          const style = document.createElement('style');
+          style.id = id;
+          style.textContent = css;
+          document.head.appendChild(style);
+          els.push(style);
+        } catch (e) {
+          this.log('warn', 'Failed load style for ' + info.id);
+        }
+      }
+      if (els.length > 0) this.pluginStyleElements.set(info.id, els);
+    } catch (e) { this.log('warn', 'autoLoadStyles error for ' + info.id); }
+  }
+
+  private removePluginStyles(id: string): void {
+    const els = this.pluginStyleElements.get(id);
+    if (!els) return;
+    for (const el of els) { try { if (el.parentNode) el.parentNode.removeChild(el); } catch {} }
+    this.pluginStyleElements.delete(id);
+  }
+
   async deactivate(pluginId: string): Promise<void> {
     this.log('info', `停用插件: ${pluginId}`);
 

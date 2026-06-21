@@ -89,6 +89,7 @@ export interface PluginManifest {
         uiTheme: 'vs-dark' | 'vs-light';
         path: string;
       }>;
+      styles?: string[];
       languages?: Array<{
         id: string;
         extensions: string[];

@@ -58,23 +58,6 @@ export async function activate(ctx) {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) ctx.subscriptions.push(disp);
   } catch {}
-  // Inject TOC scrollbar hiding style (WebKit + Firefox + IE) to hide vertical scrollbar in TOC area
-  try {
-    if (!document.getElementById('zion-toc-scrollbar-style')) {
-      const style = document.createElement('style');
-      style.id = 'zion-toc-scrollbar-style';
-      style.textContent = `
-.zion-toc-sidepanel, .zion-toc-list, #zion-toc-panel { -ms-overflow-style: none; scrollbar-width: none; }
-.zion-toc-sidepanel::-webkit-scrollbar, .zion-toc-list::-webkit-scrollbar, #zion-toc-panel::-webkit-scrollbar { display: none; width: 0; height: 0; }
-@keyframes toc-pulse {
-  0%, 100% { transform: scale(1); opacity: 0.6; box-shadow: 0 0 0 0 color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 36%, transparent); }
-  50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 0%, transparent); }
-}
-      `;
-      document.head.appendChild(style);
-    }
-  } catch {}
-
   // Helper: strip markdown formatting from title text
   const cleanTitle = (title) => {
     // Remove bold/italic/strikethrough: **text**, _text_, ~~text~~

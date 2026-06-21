@@ -27,6 +27,9 @@
           "category": "Developer",
           "categoryKey": "dev.llm-payloads.category.developer"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "activationEvents": [
