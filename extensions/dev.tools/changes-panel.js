@@ -4,7 +4,7 @@ import {
   normalizeToolName,
   statusLabel
 } from "./artifact-model.js";
-import { getCurrentSessionChangeState, subscribeSessionChangeState } from "./session-change-state.js";
+import { getCurrentSessionChangeState, normalizeChangePath, subscribeSessionChangeState } from "./session-change-state.js";
 import { highlightLine, inferLanguageFromPath } from "./syntax-highlight.js";
 
 export const CHANGES_VIEW_ID = "dev.tools.changes";
@@ -18,7 +18,12 @@ function t(key, fallback, values) {
     const translated = window.zion?.i18n?.t?.(fullKey, values);
     if (translated && translated !== fullKey) return translated;
   } catch {}
-  return fallback;
+  return interpolate(fallback || key, values);
+}
+
+function interpolate(text, values) {
+  if (!values || typeof values !== "object") return String(text || "");
+  return String(text || "").replace(/\{([^}]+)\}/g, (_, key) => String(values[key] ?? ""));
 }
 
 export function registerChangesPanel(ctx) {
@@ -64,11 +69,12 @@ function createChangesPanel(container, getPendingSelection) {
 
   let selectedId = null;
   let wrapLines = loadChangesPreference("wrapLines", false);
+  let summaryMode = loadChangesPreference("summaryMode", false);
   const expandedIds = new Set();
   let disposed = false;
   let renderTimer = 0;
   let syncTimer = 0;
-  let currentArtifacts = [];
+  let currentItems = [];
   let shouldScrollSelected = false;
   const disposables = [];
 
@@ -106,7 +112,7 @@ function createChangesPanel(container, getPendingSelection) {
   disposables.push(subscribeSessionChangeState((payload) => {
     if (!payload?.sessionId) {
       selectedId = null;
-      currentArtifacts = [];
+      currentItems = [];
     }
     scheduleSync(payload);
   }));
@@ -134,17 +140,14 @@ function createChangesPanel(container, getPendingSelection) {
     shouldScrollSelected = false;
     const changeState = getCurrentSessionChangeState();
     const allArtifacts = changeState.artifacts;
-    const artifacts = allArtifacts;
+    const fileGroups = buildFileGroups(changeState);
+    const displayItems = summaryMode ? fileGroups : allArtifacts;
     const totals = { added: changeState.summary.addedLines, removed: changeState.summary.removedLines };
+    const selectedDisplayId = summaryMode ? resolveSelectedGroupId(fileGroups) : resolveSelectedArtifactId(allArtifacts);
 
-    if (selectedId && !artifacts.some(item => item.toolCallId === selectedId || item.id === selectedId)) {
-      selectedId = artifacts[0]?.toolCallId || null;
-    }
-    if (!selectedId && artifacts.length) selectedId = artifacts[0].toolCallId;
-    currentArtifacts = artifacts;
+    currentItems = displayItems;
 
-    root.innerHTML = "";
-    root.appendChild(renderHeader(artifacts.length, totals, artifacts));
+    root.replaceChildren(renderHeader(displayItems.length, totals, displayItems));
 
     const scroll = document.createElement("div");
     scroll.className = "zion-changes-scroll";
@@ -155,8 +158,10 @@ function createChangesPanel(container, getPendingSelection) {
       return;
     }
 
-    for (const artifact of artifacts) {
-      scroll.appendChild(renderArtifactSection(artifact, artifact.toolCallId === selectedId));
+    for (const item of displayItems) {
+      scroll.appendChild(summaryMode
+        ? renderFileGroupSection(item, item.id === selectedDisplayId)
+        : renderArtifactSection(item, item.toolCallId === selectedDisplayId));
     }
     if (scrollToSelected) {
       scrollSelectedIntoView();
@@ -170,54 +175,55 @@ function createChangesPanel(container, getPendingSelection) {
       render();
       return;
     }
-    const nextArtifacts = getCurrentSessionChangeState().artifacts;
+    const nextState = getCurrentSessionChangeState();
+    const nextArtifacts = nextState.artifacts;
+    const nextGroups = buildFileGroups(nextState);
+    const nextItems = summaryMode ? nextGroups : nextArtifacts;
     const scroll = root.querySelector(".zion-changes-scroll");
     const previousScrollTop = scroll ? scroll.scrollTop : 0;
-    const hadArtifacts = currentArtifacts.length > 0;
-    const hasArtifacts = nextArtifacts.length > 0;
-    if (!hadArtifacts || !hasArtifacts) {
-      currentArtifacts = nextArtifacts;
+    const hadItems = currentItems.length > 0;
+    const hasItems = nextItems.length > 0;
+    if (!hadItems || !hasItems) {
+      currentItems = nextItems;
       render();
       return;
     }
 
-    if (selectedId && !nextArtifacts.some(item => item.toolCallId === selectedId || item.id === selectedId)) {
-      selectedId = nextArtifacts[0]?.toolCallId || null;
-    }
-    if (!selectedId && nextArtifacts.length) selectedId = nextArtifacts[0].toolCallId;
+    const selectedDisplayId = summaryMode ? resolveSelectedGroupId(nextGroups) : resolveSelectedArtifactId(nextArtifacts);
 
-    replaceHeader(nextArtifacts);
+    updateHeader(nextItems.length, { added: nextState.summary.addedLines, removed: nextState.summary.removedLines }, nextItems);
     const existing = new Map();
     for (const section of scroll.querySelectorAll(".zion-changes-section")) {
-      const id = section.dataset.toolCallId;
+      const id = summaryMode ? section.dataset.fileId : section.dataset.toolCallId;
       if (id) existing.set(id, section);
     }
-    const nextIds = new Set(nextArtifacts.map(item => item.toolCallId));
+    const nextIds = new Set(nextItems.map(item => summaryMode ? item.id : item.toolCallId));
     for (const [id, section] of existing.entries()) {
       if (!nextIds.has(id)) section.remove();
     }
 
     let cursor = null;
-    for (const artifact of nextArtifacts) {
-      const active = artifact.toolCallId === selectedId;
-      const prev = currentArtifacts.find(item => item.toolCallId === artifact.toolCallId);
-      let section = existing.get(artifact.toolCallId) || null;
-      const changed = !section || artifactFingerprint(prev) !== artifactFingerprint(artifact);
+    for (const item of nextItems) {
+      const itemId = summaryMode ? item.id : item.toolCallId;
+      const active = itemId === selectedDisplayId;
+      const prev = currentItems.find(prevItem => (summaryMode ? prevItem.id : prevItem.toolCallId) === itemId);
+      let section = existing.get(itemId) || null;
+      const changed = !section || (summaryMode ? groupFingerprint(prev) !== groupFingerprint(item) : artifactFingerprint(prev) !== artifactFingerprint(item));
       if (changed) {
-        const nextSection = renderArtifactSection(artifact, active);
+        const nextSection = summaryMode ? renderFileGroupSection(item, active) : renderArtifactSection(item, active);
         if (section) section.replaceWith(nextSection);
         else if (cursor?.nextSibling) scroll.insertBefore(nextSection, cursor.nextSibling);
         else scroll.appendChild(nextSection);
         section = nextSection;
       } else {
         section.classList.toggle("is-active", active);
-        section.classList.toggle("is-expanded", expandedIds.has(artifact.toolCallId));
+        section.classList.toggle("is-expanded", summaryMode ? isGroupExpanded(item) : expandedIds.has(item.toolCallId));
       }
       if (cursor && section.previousSibling !== cursor) scroll.insertBefore(section, cursor.nextSibling);
       else if (!cursor && section !== scroll.firstElementChild) scroll.insertBefore(section, scroll.firstElementChild);
       cursor = section;
     }
-    currentArtifacts = nextArtifacts;
+    currentItems = nextItems;
     if (shouldScrollSelected) {
       shouldScrollSelected = false;
       scrollSelectedIntoView();
@@ -226,29 +232,50 @@ function createChangesPanel(container, getPendingSelection) {
     }
   }
 
-  function replaceHeader(artifacts) {
-    const totals = artifacts.reduce((acc, item) => {
-      acc.added += Number(item.addedLines || 0);
-      acc.removed += Number(item.removedLines || 0);
-      return acc;
-    }, { added: 0, removed: 0 });
-    const nextHeader = renderHeader(artifacts.length, totals, artifacts);
+  function updateHeader(count, totals, items) {
     const prevHeader = root.querySelector(".zion-changes-header");
-    if (prevHeader) prevHeader.replaceWith(nextHeader);
-    else root.prepend(nextHeader);
+    if (!prevHeader) {
+      root.prepend(renderHeader(count, totals, items));
+      return;
+    }
+    const stats = prevHeader.querySelector(".zion-changes-stats");
+    if (stats) fillHeaderStats(stats, count, totals);
+    const summary = prevHeader.querySelector("[data-changes-action='summary']");
+    if (summary) {
+      summary.classList.toggle("is-active", summaryMode);
+      summary.title = summaryMode ? t("changes.showIndividual", "Show individual changes") : t("changes.showSummary", "Show file summary");
+    }
+    const expand = prevHeader.querySelector("[data-changes-action='expand']");
+    if (expand) {
+      const allExpanded = allItemsExpanded(items);
+      expand.title = allExpanded ? t("changes.collapseAll", "Collapse all files") : t("changes.expandAll", "Expand all files");
+      expand.textContent = allExpanded ? t("changes.collapse", "Collapse") : t("changes.expand", "Expand");
+    }
   }
 
-  function renderHeader(count, totals, artifacts) {
+  function renderHeader(count, totals, items) {
     const header = document.createElement("div");
     header.className = "zion-changes-header";
 
     const stats = document.createElement("div");
     stats.className = "zion-changes-stats";
-    stats.innerHTML = `<span>${t("changes.files", "{count} files", { count })}</span><span class="is-add">+${totals.added}</span><span class="is-remove">-${totals.removed}</span>`;
+    fillHeaderStats(stats, count, totals);
 
     header.appendChild(stats);
     const controls = document.createElement("div");
     controls.className = "zion-changes-header-controls";
+
+    const summary = document.createElement("button");
+    summary.className = `zion-changes-icon-button${summaryMode ? " is-active" : ""}`;
+    summary.dataset.changesAction = "summary";
+    summary.type = "button";
+    summary.title = summaryMode ? t("changes.showIndividual", "Show individual changes") : t("changes.showSummary", "Show file summary");
+    summary.textContent = t("changes.summary", "Summary");
+    summary.addEventListener("click", () => {
+      summaryMode = !summaryMode;
+      saveChangesPreference("summaryMode", summaryMode);
+      render();
+    });
 
     const wrap = document.createElement("button");
     wrap.className = `zion-changes-icon-button${wrapLines ? " is-active" : ""}`;
@@ -261,9 +288,10 @@ function createChangesPanel(container, getPendingSelection) {
       render();
     });
 
-    const allExpanded = artifacts.length > 0 && artifacts.every(item => expandedIds.has(item.toolCallId));
+    const allExpanded = allItemsExpanded(items);
     const expand = document.createElement("button");
     expand.className = "zion-changes-icon-button";
+    expand.dataset.changesAction = "expand";
     expand.type = "button";
     expand.title = allExpanded ? t("changes.collapseAll", "Collapse all files") : t("changes.expandAll", "Expand all files");
     expand.textContent = allExpanded ? t("changes.collapse", "Collapse") : t("changes.expand", "Expand");
@@ -271,7 +299,7 @@ function createChangesPanel(container, getPendingSelection) {
       if (allExpanded) {
         expandedIds.clear();
       } else {
-        for (const artifact of artifacts) expandedIds.add(artifact.toolCallId);
+        for (const item of items) expandedIds.add(summaryMode ? item.id : item.toolCallId);
       }
       render();
     });
@@ -282,13 +310,35 @@ function createChangesPanel(container, getPendingSelection) {
     refresh.textContent = t("changes.refresh", "Refresh");
     refresh.addEventListener("click", scheduleRender);
 
-    if (artifacts.length) {
+    if (items.length) {
+      controls.appendChild(summary);
       controls.appendChild(wrap);
       controls.appendChild(expand);
     }
     controls.appendChild(refresh);
     header.appendChild(controls);
     return header;
+  }
+
+  function fillHeaderStats(stats, count, totals) {
+    stats.replaceChildren();
+    const countText = document.createElement("span");
+    countText.textContent = summaryMode
+      ? t("changes.files", "{count} files", { count })
+      : t("changes.items", "{count} changes", { count });
+    const add = document.createElement("span");
+    add.className = "is-add";
+    add.textContent = `+${totals.added}`;
+    const remove = document.createElement("span");
+    remove.className = "is-remove";
+    remove.textContent = `-${totals.removed}`;
+    stats.appendChild(countText);
+    stats.appendChild(add);
+    stats.appendChild(remove);
+  }
+
+  function allItemsExpanded(items) {
+    return items.length > 0 && items.every(item => expandedIds.has(summaryMode ? item.id : item.toolCallId));
   }
 
   function renderArtifactSection(artifact, active) {
@@ -366,6 +416,112 @@ function createChangesPanel(container, getPendingSelection) {
     return section;
   }
 
+  function renderFileGroupSection(group, active) {
+    const expanded = isGroupExpanded(group);
+    const section = document.createElement("section");
+    section.className = `zion-changes-section${active ? " is-active" : ""}${expanded ? " is-expanded" : ""}`;
+    section.dataset.fileId = group.id;
+
+    const row = document.createElement("div");
+    row.className = "zion-changes-section-header";
+    const toggle = document.createElement("button");
+    toggle.className = "zion-changes-section-toggle";
+    toggle.type = "button";
+    toggle.title = group.path;
+    toggle.addEventListener("click", () => {
+      selectedId = group.id;
+      if (expandedIds.has(group.id)) {
+        expandedIds.delete(group.id);
+      } else {
+        expandedIds.add(group.id);
+      }
+      render();
+    });
+
+    const left = document.createElement("div");
+    left.className = "zion-changes-section-left";
+    const chevron = document.createElement("span");
+    chevron.className = "zion-changes-chevron";
+    chevron.textContent = expanded ? "⌄" : "›";
+    const name = document.createElement("span");
+    name.className = "zion-changes-section-name";
+    name.textContent = group.basename || group.path;
+    const dir = document.createElement("span");
+    dir.className = "zion-changes-section-dir";
+    dir.textContent = compactDirname(group.path);
+    dir.title = pathDirname(group.path);
+    const fileText = document.createElement("span");
+    fileText.className = "zion-changes-section-filetext";
+    fileText.appendChild(name);
+    if (dir.textContent) fileText.appendChild(dir);
+    left.appendChild(chevron);
+    left.appendChild(fileText);
+
+    const right = document.createElement("div");
+    right.className = "zion-changes-section-right";
+    if (group.changeCount > 1) {
+      const badge = document.createElement("span");
+      badge.className = "zion-changes-kind is-modified";
+      badge.textContent = t("changes.changeCount", "{count} changes", { count: group.changeCount });
+      right.appendChild(badge);
+    } else if (group.kind === "created" || group.kind === "deleted") {
+      const badge = document.createElement("span");
+      badge.className = `zion-changes-kind is-${group.kind}`;
+      badge.textContent = group.kind === "created" ? t("changes.new", "New") : t("changes.deleted", "Deleted");
+      right.appendChild(badge);
+    }
+
+    const status = document.createElement("span");
+    status.className = `zion-changes-status is-${group.status}`;
+    status.textContent = statusLabel(group.status);
+    const stats = document.createElement("span");
+    stats.className = "zion-changes-file-meta";
+    stats.innerHTML = `<span class="is-add">+${formatDiffCount(group.addedLines || 0)}</span><span class="is-remove">-${formatDiffCount(group.removedLines || 0)}</span>`;
+    right.appendChild(status);
+    right.appendChild(stats);
+
+    toggle.appendChild(left);
+    toggle.appendChild(right);
+    row.appendChild(toggle);
+
+    row.appendChild(renderGroupActionsMenu(group));
+    section.appendChild(row);
+
+    if (expanded) {
+      const body = document.createElement("div");
+      body.className = "zion-changes-section-body";
+      body.appendChild(renderFileGroupBody(group));
+      section.appendChild(body);
+    }
+    return section;
+  }
+
+  function renderFileGroupBody(group) {
+    const wrap = document.createElement("div");
+    wrap.className = "zion-changes-file-group-body";
+    const artifacts = group.artifacts || [];
+    for (const artifact of artifacts) {
+      if (artifacts.length > 1) wrap.appendChild(renderArtifactSubhead(artifact));
+      wrap.appendChild(renderArtifactBody(artifact));
+    }
+    return wrap;
+  }
+
+  function renderArtifactSubhead(artifact) {
+    const row = document.createElement("div");
+    row.className = "zion-changes-artifact-subhead";
+    const label = document.createElement("span");
+    label.className = "zion-changes-artifact-label";
+    label.textContent = `${normalizeToolName(artifact.toolName) || "tool"} · ${statusLabel(artifact.status)}`;
+    const stats = document.createElement("span");
+    stats.className = "zion-changes-file-meta";
+    stats.innerHTML = `<span class="is-add">+${formatDiffCount(artifact.addedLines || 0)}</span><span class="is-remove">-${formatDiffCount(artifact.removedLines || 0)}</span>`;
+    row.appendChild(label);
+    row.appendChild(stats);
+    row.appendChild(renderActionsMenu(artifact));
+    return row;
+  }
+
   function renderArtifactBody(artifact) {
     const wrap = document.createElement("div");
     wrap.className = "zion-changes-detail-inner";
@@ -422,6 +578,34 @@ function createChangesPanel(container, getPendingSelection) {
     }
   }
 
+  function renderGroupActionsMenu(group) {
+    const details = document.createElement("details");
+    details.className = "zion-changes-actions-menu";
+    details.addEventListener("click", (event) => event.stopPropagation());
+    details.addEventListener("toggle", () => {
+      const section = details.closest(".zion-changes-section");
+      if (section) section.classList.toggle("is-menu-open", details.open);
+      closeSiblingMenus(details);
+    });
+
+    const summary = document.createElement("summary");
+    summary.className = "zion-changes-actions-trigger";
+    summary.title = t("changes.fileActions", "File actions");
+    summary.textContent = "⋯";
+    details.appendChild(summary);
+
+    const menu = document.createElement("div");
+    menu.className = "zion-changes-actions-popover";
+    menu.appendChild(menuButton(t("changes.copyPath", "Copy Path"), () => copyText(group.path, t("changes.pathCopied", "Path copied"))));
+    menu.appendChild(menuButton(t("changes.copyDiff", "Copy Diff"), () => copyText(groupToText(group), t("changes.diffCopied", "Diff copied"))));
+    if (group.artifacts.length === 1 && canAcceptOrRevert(group.artifacts[0])) {
+      menu.appendChild(menuButton(t("changes.accept", "Accept"), () => emitToolAction(group.artifacts[0], "accept"), "primary"));
+      menu.appendChild(menuButton(t("changes.revert", "Revert"), () => emitToolAction(group.artifacts[0], "revert"), "danger"));
+    }
+    details.appendChild(menu);
+    return details;
+  }
+
   function renderActionsMenu(artifact) {
     const details = document.createElement("details");
     details.className = "zion-changes-actions-menu";
@@ -455,12 +639,48 @@ function createChangesPanel(container, getPendingSelection) {
     window.setTimeout(() => {
       if (disposed) return;
       for (const el of root.querySelectorAll(".zion-changes-section")) {
-        if (el.dataset.toolCallId === selectedId) {
+        const id = summaryMode ? el.dataset.fileId : el.dataset.toolCallId;
+        if (id === selectedId) {
           try { el.scrollIntoView({ block: "nearest" }); } catch {}
           break;
         }
       }
     }, 0);
+  }
+
+  function resolveSelectedGroupId(groups) {
+    if (!groups.length) {
+      selectedId = null;
+      return null;
+    }
+    const selected = String(selectedId || "");
+    let group = selected ? groups.find(item =>
+      item.id === selected ||
+      item.path === selected ||
+      item.artifacts.some(artifact => artifact.toolCallId === selected || artifact.id === selected)
+    ) : null;
+    if (!group) group = groups[0];
+    if (selected && group.artifacts.some(artifact => artifact.toolCallId === selected || artifact.id === selected)) {
+      expandedIds.add(group.id);
+    }
+    selectedId = group.id;
+    return group.id;
+  }
+
+  function resolveSelectedArtifactId(artifacts) {
+    if (!artifacts.length) {
+      selectedId = null;
+      return null;
+    }
+    const selected = String(selectedId || "");
+    let artifact = selected ? artifacts.find(item => item.toolCallId === selected || item.id === selected || normalizeChangePath(item.path) === selected) : null;
+    if (!artifact) artifact = artifacts[0];
+    selectedId = artifact.toolCallId;
+    return artifact.toolCallId;
+  }
+
+  function isGroupExpanded(group) {
+    return !!group && (expandedIds.has(group.id) || group.artifacts.some(artifact => expandedIds.has(artifact.toolCallId) || expandedIds.has(artifact.id)));
   }
 }
 
@@ -520,6 +740,60 @@ function artifactFingerprint(artifact) {
   ].join("\u001f");
 }
 
+function buildFileGroups(changeState) {
+  const sourceGroups = changeState?.byPath instanceof Map
+    ? Array.from(changeState.byPath.values())
+    : [];
+  return sourceGroups.map((entry) => {
+    const artifacts = Array.isArray(entry.artifacts) ? entry.artifacts : [];
+    const latest = artifacts[artifacts.length - 1] || {};
+    const path = normalizeChangePath(entry.path || latest.path || "");
+    return {
+      id: path,
+      path,
+      basename: pathBasename(path),
+      artifacts,
+      latestArtifact: latest,
+      kind: artifacts.length === 1 ? latest.kind : "modified",
+      status: summarizeGroupStatus(artifacts),
+      addedLines: Number(entry.addedLines || 0),
+      removedLines: Number(entry.removedLines || 0),
+      changeCount: artifacts.length
+    };
+  }).filter(group => group.id);
+}
+
+function summarizeGroupStatus(artifacts) {
+  const statuses = (Array.isArray(artifacts) ? artifacts : []).map(item => item?.status || "unknown");
+  if (!statuses.length) return "unknown";
+  if (statuses.includes("failed")) return "failed";
+  if (statuses.every(status => status === "accepted")) return "accepted";
+  if (statuses.every(status => status === "reverted")) return "reverted";
+  if (statuses.includes("pending")) return "pending";
+  return "unknown";
+}
+
+function groupFingerprint(group) {
+  if (!group) return "";
+  return [
+    group.id,
+    group.path,
+    group.status,
+    group.addedLines || 0,
+    group.removedLines || 0,
+    ...(group.artifacts || []).map(artifactFingerprint)
+  ].join("\u001e");
+}
+
+function groupToText(group) {
+  const parts = [];
+  for (const artifact of group?.artifacts || []) {
+    parts.push(`# ${artifact.toolName || "tool"} ${artifact.path || group.path}`);
+    parts.push(artifactToText(artifact));
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
+
 function getCurrentSessionId() {
   try { return window.zion.state?.get?.("sessions.currentId") || null; } catch { return null; }
 }
@@ -535,6 +809,11 @@ function pathDirname(path) {
   const normalized = String(path || "").replace(/\\/g, "/");
   const index = normalized.lastIndexOf("/");
   return index > 0 ? normalized.slice(0, index) : "";
+}
+
+function pathBasename(path) {
+  const parts = String(path || "").replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] || String(path || "");
 }
 
 function compactDirname(path) {

@@ -67,6 +67,12 @@ function debugChatCards(event, payload) {
   void payload;
 }
 
+function getRunAssistantAnchorHint(payload, sessionId) {
+  if (typeof payload?.answerAnchorPos === "number") return payload.answerAnchorPos;
+  return (sessionId ? window.zion?.state?.get(`chat.answerAnchorPos.${sessionId}`) : undefined)
+    ?? window.zion?.state?.get("chat.answerAnchorPos");
+}
+
 // #region debug-point E:thinking-focus-return-logger
 const FOCUS_RETURN_DEBUG_URL = "http://127.0.0.1:7777/event";
 const FOCUS_RETURN_DEBUG_SESSION = "focus-return-scroll-jump";
@@ -335,6 +341,13 @@ const thinkingField = StateField.define({
         }
       });
       if (toRemove.length) {
+        const isSessionLoad = (() => {
+          try {
+            return tr?.annotation?.(Transaction.userEvent) === "zion.sessionLoad";
+          } catch {
+            return false;
+          }
+        })();
         const removedBySession = new Map();
         toRemove.forEach((id) => {
           const it = items.get(id);
@@ -344,17 +357,19 @@ const thinkingField = StateField.define({
           removedBySession.get(sid).push(String(id));
         });
         toRemove.forEach(id => items.delete(id));
-        removedBySession.forEach((ids, sid) => {
-          try {
-            updateSessionAnnotations(sid, (ann) => {
-              const del = Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds.slice() : [];
-              ids.forEach((id) => {
-                if (!del.includes(id)) del.push(id);
+        if (!isSessionLoad) {
+          removedBySession.forEach((ids, sid) => {
+            try {
+              updateSessionAnnotations(sid, (ann) => {
+                const del = Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds.slice() : [];
+                ids.forEach((id) => {
+                  if (!del.includes(id)) del.push(id);
+                });
+                return { ...ann, deletedThinkingIds: del };
               });
-              return { ...ann, deletedThinkingIds: del };
-            });
-          } catch {}
-        });
+            } catch {}
+          });
+        }
       }
     } catch {}
 
@@ -741,7 +756,7 @@ export function installThinkingCards() {
 
       this.ensureAssistantHead();
 
-      const hint = (sid ? window.zion?.state?.get(`chat.answerAnchorPos.${sid}`) : undefined) ?? window.zion?.state?.get("chat.answerAnchorPos");
+      const hint = getRunAssistantAnchorHint(payload, sid);
       const plan = planAssistantMarkerInsertion({
         docText: this.view.state.doc.toString(),
         markerText: "思考",

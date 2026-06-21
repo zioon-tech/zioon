@@ -288,7 +288,7 @@ declare global {
           order?: number;
           when?: string;
           canClose?: boolean;
-          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; text?: string; textKey?: string; active?: boolean | (() => boolean); onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };
@@ -316,7 +316,7 @@ declare global {
           when?: string;
           canClose?: boolean;
           keepWhenActive?: boolean;
-          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; text?: string; active?: boolean | (() => boolean); onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };
@@ -328,6 +328,8 @@ declare global {
         activateView(id: string): void;
         closeView(id: string): void;
         getViews(): any[];
+        getActiveViewId(): string | null;
+        getLastOpenedViewId(): string | null;
         show(): void;
         hide(): void;
         toggle(): boolean;
@@ -345,6 +347,7 @@ declare global {
           when?: string;
           keepWhenActive?: boolean;
           maximizable?: boolean;
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };

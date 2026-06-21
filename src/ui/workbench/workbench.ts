@@ -50,6 +50,76 @@ function appendIconAndLabel(target: HTMLElement, icon: string, label: string) {
   }
 }
 
+function clearTabDragClasses(container: HTMLElement) {
+  try {
+    container.querySelectorAll(".is-dragging, .is-drag-over, .is-drop-before, .is-drop-after").forEach((node) => {
+      node.classList.remove("is-dragging", "is-drag-over", "is-drop-before", "is-drop-after");
+    });
+  } catch {}
+}
+
+function installReorderableTab(
+  tab: HTMLElement,
+  container: HTMLElement,
+  viewId: string,
+  applyOrder: (ids: string[]) => void
+) {
+  let dragged = false;
+  tab.draggable = true;
+  tab.addEventListener("dragstart", (event) => {
+    dragged = true;
+    tab.classList.add("is-dragging");
+    try {
+      event.dataTransfer?.setData("text/plain", viewId);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    } catch {}
+  });
+  tab.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    try {
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    } catch {}
+    clearTabDragClasses(container);
+    tab.classList.add("is-drag-over");
+    const rect = tab.getBoundingClientRect();
+    tab.classList.add(event.clientX > rect.left + rect.width / 2 ? "is-drop-after" : "is-drop-before");
+  });
+  tab.addEventListener("dragleave", () => {
+    tab.classList.remove("is-drag-over");
+  });
+  tab.addEventListener("drop", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const fromId = event.dataTransfer?.getData("text/plain") || "";
+    const toId = viewId;
+    clearTabDragClasses(container);
+    if (!fromId || fromId === toId) return;
+    const ids = Array.from(container.querySelectorAll<HTMLElement>("[data-view-id]"))
+      .map((node) => node.dataset.viewId || "")
+      .filter(Boolean);
+    const fromIndex = ids.indexOf(fromId);
+    const toIndex = ids.indexOf(toId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const rect = tab.getBoundingClientRect();
+    let insertIndex = event.clientX > rect.left + rect.width / 2 ? toIndex + 1 : toIndex;
+    const [moved] = ids.splice(fromIndex, 1);
+    if (fromIndex < insertIndex) insertIndex -= 1;
+    ids.splice(Math.max(0, Math.min(ids.length, insertIndex)), 0, moved);
+    applyOrder(ids);
+  });
+  tab.addEventListener("dragend", () => {
+    clearTabDragClasses(container);
+    window.setTimeout(() => {
+      dragged = false;
+    }, 0);
+  });
+  tab.addEventListener("click", (event) => {
+    if (!dragged) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+}
+
 function isScrollableY(el: HTMLElement): boolean {
   try {
     const st = getComputedStyle(el);
@@ -659,6 +729,7 @@ export function initWorkbench(host: HTMLElement): {
         appendIconAndLabel(tab, String(v.icon || ""), title);
         if (v.id === activeViewId) tab.classList.add("is-active");
         (tab as HTMLButtonElement).onclick = () => auxiliaryBarRuntime.activateView(v.id);
+        installReorderableTab(tab, auxTabs, v.id, (ids) => auxiliaryBarRuntime.setViewOrder(ids));
         auxTabs.appendChild(tab);
       }
       const activeTab = activeViewId
@@ -940,10 +1011,74 @@ export function initWorkbench(host: HTMLElement): {
       const title = translatedTitle(v);
       tab.title = title;
       tab.setAttribute("aria-label", title);
-      tab.textContent = safeText(v.icon ? `${v.icon} ${title}` : title);
+      tab.dataset.viewId = v.id;
+      tab.textContent = "";
+      const icon = String(v.icon || "").trim();
+      const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
+      if (codiconMatch) {
+        const span = document.createElement("span");
+        span.className = `codicon codicon-${codiconMatch[1]}`;
+        span.setAttribute("aria-hidden", "true");
+        tab.appendChild(span);
+      } else if (icon) {
+        const span = document.createElement("span");
+        span.textContent = safeText(icon);
+        span.setAttribute("aria-hidden", "true");
+        tab.appendChild(span);
+      }
+      const label = document.createElement("span");
+      label.textContent = safeText(title);
+      tab.appendChild(label);
       if (v.id === nextId) tab.classList.add("is-active");
       tab.onclick = () => bottomPanelRuntime.activateView(v.id);
+      installReorderableTab(tab, bottomTabs, v.id, (ids) => bottomPanelRuntime.setViewOrder(ids));
       bottomTabs.appendChild(tab);
+    }
+
+    const activeView = nextId ? bottomPanelRuntime.getView(nextId) : null;
+    bottomActions.querySelectorAll(".zion-bottompanel-plugin-action").forEach((node) => node.remove());
+    for (const action of activeView?.headerActions || []) {
+      const btn = el("button", "zion-bottompanel-action zion-bottompanel-plugin-action") as HTMLButtonElement;
+      btn.type = "button";
+      const title = translatedTitle(action as any);
+      btn.title = title;
+      btn.setAttribute("aria-label", tr((action as any).ariaLabelKey, safeText(action.ariaLabel || title)));
+      btn.textContent = "";
+      const actionActive = (() => {
+        try {
+          return typeof action.active === "function" ? !!action.active() : !!action.active;
+        } catch {
+          return false;
+        }
+      })();
+      if (actionActive) btn.classList.add("is-active");
+      const icon = String(action.icon || "").trim();
+      const text = tr((action as any).textKey, String((action as any).text || "").trim()).trim();
+      const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
+      if (codiconMatch) {
+        const span = document.createElement("span");
+        span.className = `codicon codicon-${codiconMatch[1]}`;
+        span.setAttribute("aria-hidden", "true");
+        btn.appendChild(span);
+      } else if (icon) {
+        btn.textContent = safeText(icon || title);
+      }
+      if (text) {
+        btn.classList.add("has-label");
+        const label = document.createElement("span");
+        label.textContent = safeText(text);
+        btn.appendChild(label);
+      } else if (!icon) {
+        btn.textContent = safeText(title);
+      }
+      btn.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+          action.onClick();
+        } catch {}
+      };
+      bottomActions.insertBefore(btn, bottomMaxBtn);
     }
 
     bottomMaxBtn.textContent = bottomPanelRuntime.isMaximized() ? "⬇" : "⬆";

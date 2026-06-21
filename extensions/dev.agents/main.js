@@ -10,12 +10,13 @@ const I18N_NS = "dev.agents";
 
 const I18N_MESSAGES = {
   "zh-CN": {
-    "title": "Agents",
-    "toolbar.task": "Task",
-    "toolbar.createTask": "创建 Agent Task",
-    "cmd.openPanel": "打开 Agents",
-    "cmd.createFromSelection": "为选区创建 Agent Task",
-    "task.created": "已创建 Agent Task",
+    "title": "智能体",
+    "description": "锚定式智能体任务和委派的 AI 工作项",
+    "toolbar.task": "任务",
+    "toolbar.createTask": "创建智能体任务",
+    "cmd.openPanel": "打开智能体",
+    "cmd.createFromSelection": "为选区创建智能体任务",
+    "task.created": "已创建智能体任务",
     "task.noPrompt": "没有找到可委派的 user 提示或选区。",
     "task.defaultPrompt": "请基于选中的上下文，先整理 Context Brief，再给出可执行方案。",
     "task.run": "运行",
@@ -35,32 +36,43 @@ const I18N_MESSAGES = {
     "task.status.done": "已完成",
     "task.status.error": "出错",
     "task.status.aborted": "已停止",
-    "task.empty.title": "还没有 Agent Task",
-    "task.empty.description": "选中文本后点击工具条里的 Task，或在右键菜单中创建一个可委派任务。",
+    "task.empty.title": "还没有智能体任务",
+    "task.empty.description": "选中文本后点击工具条里的任务，或在右键菜单中创建一个可委派任务。",
     "task.policy": "执行策略",
     "task.transcript": "运行日志",
     "task.result": "结构化结果",
     "task.noTranscript": "还没有运行日志。",
     "task.noResult": "运行完成后会提取 Context Brief、结果、证据和下一步。",
+    "task.anchor.open": "打开智能体任务",
+    "task.anchor.count": "{count} 个智能体任务",
+    "task.promotedTitle": "智能体任务：{title}",
+    "policy.none": "无",
+    "policy.yes": "是",
+    "policy.no": "否",
+    "output.contextBrief": "Context Brief",
+    "output.workResult": "Work Result",
+    "output.evidence": "Evidence",
+    "output.nextActions": "Next Actions",
     "policy.isolation": "隔离",
     "policy.permissions": "权限",
     "policy.tools": "工具",
     "policy.background": "后台",
     "policy.output": "输出",
-    "agent.researcher": "Researcher",
-    "agent.planner": "Planner",
-    "agent.implementer": "Implementer",
-    "agent.reviewer": "Reviewer",
-    "best.title": "Sub Agent 最佳实践",
+    "agent.researcher": "研究员",
+    "agent.planner": "规划员",
+    "agent.implementer": "实现者",
+    "agent.reviewer": "评审员",
+    "best.title": "子智能体最佳实践",
     "best.context": "隔离上下文：任务只接收必要背景，主会话只收摘要。",
     "best.permissions": "权限约束：按 agent 类型限制工具、写入能力和确认策略。",
     "best.lifecycle": "生命周期：可后台运行、可停止、可恢复，并保留 transcript。",
     "best.outputs": "输出契约：先给 Context Brief，再给结果、证据和下一步。",
     "overview.subtitle": "由大模型通过 agentsManage 工具自主创建，也可以从选区创建。",
-    "overview.empty": "等待模型委派 Agent Task"
+    "overview.empty": "等待模型委派智能体任务"
   },
   "en-US": {
     "title": "Agents",
+    "description": "Anchored sub-agent tasks and delegated AI work items",
     "toolbar.task": "Task",
     "toolbar.createTask": "Create Agent Task",
     "cmd.openPanel": "Open Agents",
@@ -92,6 +104,16 @@ const I18N_MESSAGES = {
     "task.result": "Structured Result",
     "task.noTranscript": "No run log yet.",
     "task.noResult": "Context Brief, result, evidence, and next steps will be extracted after a run.",
+    "task.anchor.open": "Open Agent Task",
+    "task.anchor.count": "{count} Agent Tasks",
+    "task.promotedTitle": "Agent Task: {title}",
+    "policy.none": "none",
+    "policy.yes": "yes",
+    "policy.no": "no",
+    "output.contextBrief": "Context Brief",
+    "output.workResult": "Work Result",
+    "output.evidence": "Evidence",
+    "output.nextActions": "Next Actions",
     "policy.isolation": "Isolation",
     "policy.permissions": "Permissions",
     "policy.tools": "Tools",
@@ -202,7 +224,12 @@ function t(key, fallback, values) {
     const translated = window.zion?.i18n?.t?.(fullKey, values);
     if (translated && translated !== fullKey) return translated;
   } catch {}
-  return fallback;
+  return interpolate(fallback || key, values);
+}
+
+function interpolate(text, values) {
+  if (!values || typeof values !== "object") return String(text || "");
+  return String(text || "").replace(/\{([^}]+)\}/g, (_, key) => String(values[key] ?? ""));
 }
 
 function now() {
@@ -599,7 +626,9 @@ class AgentMarkerWidget extends WidgetType {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "zion-agent-anchor";
-    button.title = this.count > 1 ? `${this.count} Agent Tasks` : "Open Agent Task";
+    button.title = this.count > 1
+      ? t("task.anchor.count", "{count} Agent Tasks", { count: this.count })
+      : t("task.anchor.open", "Open Agent Task");
     button.textContent = this.count > 1 ? String(this.count) : "T";
     button.onclick = (event) => {
       try { event.preventDefault(); event.stopPropagation(); } catch {}
@@ -667,6 +696,7 @@ function renderAgentsPanel(container) {
 
   try { disposables.push(window.zion?.state?.onDidChange?.(ACTIVE_KEY, scheduleRender)); } catch {}
   try { disposables.push(window.zion?.events?.on?.(CHANGED_EVENT, scheduleRender)); } catch {}
+  try { disposables.push(window.zion?.events?.on?.("i18n/changed", scheduleRender)); } catch {}
   try {
     const onChanged = () => scheduleRender();
     window.addEventListener("zion:agents-changed", onChanged);
@@ -852,8 +882,8 @@ function renderExecutionPolicy(task) {
   chips.className = "zion-agents-policy";
   chips.appendChild(policyChip(t("policy.isolation", "Isolation"), plan.isolation));
   chips.appendChild(policyChip(t("policy.permissions", "Permissions"), plan.permissionMode));
-  chips.appendChild(policyChip(t("policy.tools", "Tools"), (plan.tools || []).join(", ") || "none"));
-  chips.appendChild(policyChip(t("policy.background", "Background"), plan.background ? "yes" : "no"));
+  chips.appendChild(policyChip(t("policy.tools", "Tools"), (plan.tools || []).join(", ") || t("policy.none", "none")));
+  chips.appendChild(policyChip(t("policy.background", "Background"), plan.background ? t("policy.yes", "yes") : t("policy.no", "no")));
   chips.appendChild(policyChip(t("policy.output", "Output"), (plan.outputContract || []).map((item) => item.heading).join(" / ")));
   card.appendChild(chips);
   return card;
@@ -881,7 +911,7 @@ function renderStructuredResult(task) {
     const section = document.createElement("section");
     section.className = "zion-agents-result-section";
     const h = document.createElement("b");
-    h.textContent = item.label;
+    h.textContent = t(`output.${item.id}`, item.label);
     const p = document.createElement("div");
     p.textContent = value;
     section.appendChild(h);
@@ -1061,6 +1091,7 @@ async function runTask(task, handle) {
       panelId: handle.panelId,
       skipSessionPersistence: true,
       usageSessionId: task.sessionId,
+      requestSource: "agents",
       contextMessages: buildTaskContextMessages(task)
     });
     const body = handle.view.state.doc.toString();
@@ -1137,7 +1168,7 @@ async function promoteTask(task, handle) {
   ].join("\n");
   try {
     const id = await window.zion?.commands?.executeCommand?.("zion.sessions.new", {
-      title: `Agent Task: ${compactText(task.title || task.id, 42)}`,
+      title: t("task.promotedTitle", "Agent Task: {title}", { title: compactText(task.title || task.id, 42) }),
       content,
       panelId: task.panelId || window.zion?.panels?.getActivePanelId?.() || null,
       focus: true
@@ -1523,7 +1554,8 @@ export async function activate(ctx) {
       id: "agents.activity",
       pluginId: "dev.agents",
       icon: "$(hubot)",
-      tooltip: "Agents",
+      tooltip: t("title", "Agents"),
+      tooltipKey: "dev.agents.title",
       order: 34,
       onClick: openAgentsPanel
     });
@@ -1547,6 +1579,7 @@ export async function activate(ctx) {
     const menu = window.zion.menus?.register?.("editor/context", {
       command: "agents.createTaskFromSelection",
       title: t("toolbar.createTask", "Create Agent Task"),
+      titleKey: "dev.agents.toolbar.createTask",
       when: "editorFocus",
       order: 19
     });

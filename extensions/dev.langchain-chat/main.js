@@ -225,6 +225,52 @@ function t(key, fallback, values) {
   return fallback;
 }
 
+function escapeXml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function buildTerminalSessionsContextXml(activeSessionId, sessions) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const body = list.map((session) => {
+    const id = String(session?.id || "").trim();
+    const attrs = [
+      `id="${escapeXml(id)}"`,
+      id && String(activeSessionId || "") === id ? "active=\"true\"" : "",
+      session?.type ? `type="${escapeXml(session.type)}"` : "",
+      session?.status ? `status="${escapeXml(session.status)}"` : "",
+      session?.exit_code != null ? `exit_code="${escapeXml(session.exit_code)}"` : "",
+      session?.pid != null ? `pid="${escapeXml(session.pid)}"` : ""
+    ].filter(Boolean).join(" ");
+    return [
+      `    <session ${attrs}>`,
+      session?.name ? `      <name>${escapeXml(session.name)}</name>` : "",
+      session?.cwd ? `      <cwd>${escapeXml(session.cwd)}</cwd>` : "",
+      session?.command ? `      <command>${escapeXml(session.command)}</command>` : "",
+      session?.created_at ? `      <created_at>${escapeXml(session.created_at)}</created_at>` : "",
+      session?.updated_at ? `      <updated_at>${escapeXml(session.updated_at)}</updated_at>` : "",
+      "    </session>"
+    ].filter(Boolean).join("\n");
+  }).join("\n");
+  return [
+    "<terminal_context>",
+    "  <instructions>",
+    "    This is the current terminal session inventory.",
+    "    Use it to understand available shells, active session, working directories, and session state.",
+    "    Do not assume command output unless it appears in recent terminal output context or the conversation.",
+    "  </instructions>",
+    `  <active_session_id>${escapeXml(activeSessionId || "")}</active_session_id>`,
+    `  <sessions count="${list.length}">`,
+    body,
+    "  </sessions>",
+    "</terminal_context>"
+  ].filter((line) => line !== "").join("\n");
+}
+
 function findAssistantEndLineFromDoc(text, startLineHint = 0) {
   const lines = String(text || "").replace(/\r/g, "").split("\n");
   const roleHeadRe = /^\s*(system|user|assistant|tool)\s+/;
@@ -554,6 +600,13 @@ export async function activate(ctx) {
     } catch {}
     return null;
   };
+  const inferRequestSource = ({ sessionId, panelId } = {}) => {
+    const pid = String(panelId || "");
+    const sid = String(sessionId || "");
+    if (pid.startsWith("comments:") || sid.startsWith("comment:")) return "comments";
+    if (pid.startsWith("agents:") || sid.startsWith("agent-task:")) return "agents";
+    return "";
+  };
   const isEditorShowingSession = (editor, sid) => {
     if (!editor || !sid) return false;
     try {
@@ -575,9 +628,78 @@ export async function activate(ctx) {
   const setRunState = runtime.setRunState;
   ctx.subscriptions.push(runtime);
 
+  const buildMockCurrentMessages = async (opts = {}) => {
+    const ed = getEd(opts);
+    if (!ed) throw new Error("No active editor");
+    ensureActiveModel();
+    const panelId = opts?.panelId || ed?.panelId || null;
+    const sid = getSessionId({ ...opts, panelId });
+    if (!sid) throw new Error("No target session");
+    const runThinkingEffort = normalizeThinkingEffort(opts?.thinkingEffort);
+    const runModel = getResolvedModelSnapshot(
+      runThinkingEffort === "auto" ? null : { ...window.zion.state.get("chat.activeModel"), thinkingEffort: runThinkingEffort }
+    );
+    const cursor = ed.getCursor();
+    const fullDoc = ed.getValue();
+    const lines = fullDoc.split("\n");
+    const cursorLine = cursor.line;
+    const contentBeforeCursor = lines.slice(0, cursorLine + 1).join("\n");
+    let messages = parseMessages(contentBeforeCursor);
+    if (Array.isArray(opts?.contextMessages) && opts.contextMessages.length) {
+      messages.unshift(...opts.contextMessages.filter((m) => m?.role && typeof m.content === "string"));
+    }
+    if (!messages.length) throw new Error("No content to mock");
+
+    try {
+      let includeTerminal = window.zion?.state?.get("chat.includeTerminalContext");
+      if (includeTerminal === undefined) includeTerminal = true;
+      if (includeTerminal !== false) {
+        const sessions = Array.isArray(window.zion?.state?.get("terminal.sessions"))
+          ? window.zion.state.get("terminal.sessions")
+          : [];
+        const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
+        messages.unshift({ role: "system", content: buildTerminalSessionsContextXml(activeId, sessions) });
+      }
+    } catch {}
+
+    const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
+    if (window.zion?.__runMessageContributors) {
+      try { messages = await window.zion.__runMessageContributors(messages, "pre"); } catch (e) {
+        console.warn("[langchain-chat] mock pre contributors error:", e);
+      }
+      try { messages = await window.zion.__runMessageContributors(messages, "post"); } catch (e) {
+        console.warn("[langchain-chat] mock post contributors error:", e);
+      }
+    }
+
+    return {
+      id: `llm_mock_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      mock: true,
+      timestamp: Date.now(),
+      runId: "mock",
+      sessionId: sid,
+      panelId,
+      providerId: runModel.providerId,
+      modelId: runModel.modelId,
+      modelLabel: runModel.label || runModel.modelId,
+      url: "mock://current-editor",
+      stream: true,
+      messageCount: messages.length,
+      toolCount: Array.isArray(tools) ? tools.length : 0,
+      payload: {
+        model: runModel.modelId,
+        messages,
+        tools: Array.isArray(tools) && tools.length ? tools : undefined,
+        stream: true,
+        mock: true
+      }
+    };
+  };
+
   window.zion.chat = {
     ...(window.zion.chat || {}),
     run: (opts = {}) => doRun(opts),
+    mockCurrentMessages: (opts = {}) => buildMockCurrentMessages(opts),
     stop: (sid) => runtime.stopSession(sid),
     retry: (_sid) => doRun({}),
     isStreaming: (sid) => {
@@ -888,9 +1010,7 @@ export async function activate(ctx) {
           }
         }
         const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
-        const ctxObj = { activeSessionId: activeId, sessions };
-        const text = `Terminal Context\n${JSON.stringify(ctxObj, null, 2)}`;
-        baseMessages.unshift({ role: "system", content: text });
+        baseMessages.unshift({ role: "system", content: buildTerminalSessionsContextXml(activeId, sessions) });
       }
     } catch {}
 
@@ -908,6 +1028,11 @@ export async function activate(ctx) {
 
     // 4. 状态 & 事件
     const runId = "run_" + Math.random().toString(36).slice(2);
+    const runAnchorPayload = {
+      answerAnchorPos: typeof anchor?.anchorPos === "number" ? anchor.anchorPos : null,
+      answerHeadLine: typeof anchor?.headLine === "number" ? anchor.headLine : null,
+      insertLine
+    };
     runtime.beginRun(sid, runId);
     setRunState(sid, { aborted: false, model: runModel });
     try { window.zion?.state?.set?.(`chat.followLatest.${sid}`, true); } catch {}
@@ -928,7 +1053,7 @@ export async function activate(ctx) {
         setTimeout(syncInsertedAssistantVisibility, 0);
       }
     }
-    window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId, model: runModel });
+    window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId, model: runModel, ...runAnchorPayload });
 
     // 工具调用收集（多步链式调用在每一步内局部收集）
     let aborted = false;
@@ -1079,7 +1204,7 @@ export async function activate(ctx) {
           // 收集本步的 assistant tool_calls
           calls.push({ id: tc.id, name: tc.name, args: tc.args });
           // 执行工具并收集结果
-          window.zion.events.emit("chat/toolCall", { runId, toolCall: tc, sessionId: sid, panelId });
+          window.zion.events.emit("chat/toolCall", { runId, toolCall: tc, sessionId: sid, panelId, ...runAnchorPayload });
           const p = executeToolCall(tc, sid)
             .then(res => {
               if (aborted || getRunState(sid)?.aborted) return;
@@ -1118,7 +1243,10 @@ export async function activate(ctx) {
         },
         runId,
         sessionId: sid,
-        panelId
+        panelId,
+        requestSource: opts?.requestSource || inferRequestSource({ sessionId: sid, panelId }),
+        stepIndex,
+        ...runAnchorPayload
       });
 
       stepReasoning = String(streamResult?.reasoning_content || "");
@@ -1441,6 +1569,7 @@ export async function activate(ctx) {
   const cmds = [
     window.zion.commands.registerCommand("chat.runSelection", (opts) => doRun({ ...opts, useSelection: true })),
     window.zion.commands.registerCommand("chat.run", (opts) => doRun(opts || {})),
+    window.zion.commands.registerCommand("chat.mockCurrentMessages", (opts) => buildMockCurrentMessages(opts || {})),
     window.zion.commands.registerCommand("chat.stop", (sid) => {
       const targetSid = sid || (() => {
         const activePanelId = window.zion?.panels?.getActivePanelId?.();

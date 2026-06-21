@@ -5,20 +5,69 @@ export function createSessionsSidebarViewManager(opts) {
   const getIndex = opts?.getIndex;
   const loadMeta = opts?.loadMeta;
   const LS_SELECTED_DAY = "zion.sessions.sidebar.selectedDay";
+  const LS_SELECTED_RANGE_DAYS = "zion.sessions.sidebar.selectedRangeDays";
   const LS_DAY_PANEL_COLLAPSED = "zion.sessions.sidebar.dayPanelCollapsed";
   const LS_DAY_PANEL_END_DAY = "zion.sessions.sidebar.dayPanelEndDay";
 
   function t(key, fallback, values) {
     const fullKey = `dev.session-manager.${key}`;
+    const interpolate = (input) => String(input || "").replace(/\{(\w+)\}/g, (match, name) => {
+      const value = values?.[name];
+      return value === undefined || value === null ? match : String(value);
+    });
     try {
       const translated = zion?.i18n?.t?.(fullKey, values);
       if (translated && translated !== fullKey) return translated;
     } catch {}
-    return fallback;
+    return interpolate(fallback);
   }
 
   let current = null;
   let revealRaf = 0;
+  let heatmapTooltip = null;
+
+  function hideHeatmapTooltip() {
+    try {
+      heatmapTooltip?.remove?.();
+    } catch {}
+    heatmapTooltip = null;
+  }
+
+  function moveHeatmapTooltip(x, y) {
+    if (!heatmapTooltip) return;
+    const pad = 10;
+    const rect = heatmapTooltip.getBoundingClientRect();
+    let left = x + 10;
+    let top = y + 12;
+    if (left + rect.width + pad > window.innerWidth) left = Math.max(pad, x - rect.width - 10);
+    if (top + rect.height + pad > window.innerHeight) top = Math.max(pad, y - rect.height - 10);
+    heatmapTooltip.style.left = `${left}px`;
+    heatmapTooltip.style.top = `${top}px`;
+  }
+
+  function showHeatmapTooltip(text, x, y) {
+    const value = String(text || "").trim();
+    if (!value) return;
+    hideHeatmapTooltip();
+    const tip = document.createElement("div");
+    tip.className = "zion-sessions-heatmap-tooltip";
+    tip.textContent = value;
+    tip.style.position = "fixed";
+    tip.style.zIndex = "100000";
+    tip.style.pointerEvents = "none";
+    tip.style.maxWidth = "260px";
+    tip.style.padding = "5px 7px";
+    tip.style.borderRadius = "6px";
+    tip.style.border = "1px solid var(--border)";
+    tip.style.background = "var(--panel)";
+    tip.style.color = "var(--fg)";
+    tip.style.boxShadow = "0 6px 18px rgba(0, 0, 0, 0.22)";
+    tip.style.fontSize = "11px";
+    tip.style.lineHeight = "1.35";
+    document.body.appendChild(tip);
+    heatmapTooltip = tip;
+    moveHeatmapTooltip(x, y);
+  }
 
   function dayKey(ts = Date.now()) {
     const d = new Date(ts);
@@ -35,22 +84,32 @@ export function createSessionsSidebarViewManager(opts) {
     return String(Math.round(n));
   }
 
-  function formatCost(value, currency = "USD") {
-    if (typeof value !== "number" || !Number.isFinite(value)) return "cost n/a";
-    if (value === 0) return `${currency} 0`;
-    if (value < 0.01) return `${currency} ${value.toFixed(4)}`;
-    return `${currency} ${value.toFixed(2)}`;
-  }
-
   function sessionTouchesDay(meta, day) {
     if (!meta || !day) return false;
     return dayKey(meta.updatedAt || 0) === day || dayKey(meta.createdAt || 0) === day;
+  }
+
+  function sessionTouchesAnyDay(meta, days) {
+    if (!meta || !days?.size) return false;
+    return days.has(dayKey(meta.updatedAt || 0)) || days.has(dayKey(meta.createdAt || 0));
   }
 
   function shiftDay(day, delta) {
     const d = new Date(`${day || dayKey()}T00:00:00`);
     d.setDate(d.getDate() + Number(delta || 0));
     return dayKey(d.getTime());
+  }
+
+  function recentDays(count, endDay = dayKey()) {
+    const n = Math.max(1, Number(count || 1));
+    const endDate = new Date(`${endDay || dayKey()}T00:00:00`);
+    const days = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date(endDate);
+      d.setDate(endDate.getDate() - i);
+      days.push(dayKey(d.getTime()));
+    }
+    return days;
   }
 
   function getUsageRecords() {
@@ -157,6 +216,12 @@ export function createSessionsSidebarViewManager(opts) {
     let selectedDay = (() => {
       try { return localStorage.getItem(LS_SELECTED_DAY) || dayKey(); } catch { return dayKey(); }
     })();
+    let selectedRangeDays = (() => {
+      try {
+        const value = Number(localStorage.getItem(LS_SELECTED_RANGE_DAYS) || "0");
+        return Number.isFinite(value) && value > 0 ? value : 0;
+      } catch { return 0; }
+    })();
     let calendarCollapsed = (() => {
       try { return localStorage.getItem(LS_DAY_PANEL_COLLAPSED) === "1"; } catch { return false; }
     })();
@@ -200,15 +265,15 @@ export function createSessionsSidebarViewManager(opts) {
       getQuery: () => "",
       getSort: () => "updated",
       getSessionFilter: () => {
-        const day = selectedDay;
-        if (!day) return null;
-        const usageSessionIds = new Set(getUsageRecords().filter(r => r?.day === day && r?.sessionId).map(r => String(r.sessionId)));
+        if (!selectedDay && !selectedRangeDays) return null;
+        const filterDays = selectedRangeDays ? new Set(recentDays(selectedRangeDays)) : new Set([selectedDay]);
+        const usageSessionIds = new Set(getUsageRecords().filter(r => filterDays.has(r?.day) && r?.sessionId).map(r => String(r.sessionId)));
         return (node) => {
           const sid = String(node?.id || "");
           if (!sid) return false;
           if (usageSessionIds.has(sid)) return true;
           const meta = typeof loadMeta === "function" ? loadMeta(sid) : node;
-          return sessionTouchesDay(meta || node, day);
+          return selectedRangeDays ? sessionTouchesAnyDay(meta || node, filterDays) : sessionTouchesDay(meta || node, selectedDay);
         };
       },
       onSwitchSession: (id) => {
@@ -229,6 +294,7 @@ export function createSessionsSidebarViewManager(opts) {
     try { disposables.push(zion?.state?.onDidChange?.("sessions.indexMem", () => renderAll())); } catch {}
 
     const renderCalendar = () => {
+      hideHeatmapTooltip();
       calendarHost.innerHTML = "";
       const records = getUsageRecords();
       const sessions = getSessionIndex();
@@ -283,48 +349,78 @@ export function createSessionsSidebarViewManager(opts) {
         sessionIds: new Set(sessions.map(s => String(s.id || "")).filter(Boolean)),
         tokens: 0,
         cacheTokens: 0,
-        cost: 0,
-        hasKnownCost: false,
-        currency: "USD",
         models: new Map()
       };
       for (const record of records) {
         allSummary.tokens += Number(record?.tokens?.total || 0);
         allSummary.cacheTokens += Number(record?.tokens?.cacheRead || 0) + Number(record?.tokens?.cacheWrite || 0);
-        if (typeof record?.cost === "number" && Number.isFinite(record.cost)) {
-          allSummary.cost += record.cost;
-          allSummary.hasKnownCost = true;
-          allSummary.currency = record.currency || allSummary.currency;
-        }
         const label = record.label || record.modelName || record.modelId || "Unknown";
         const prev = allSummary.models.get(label) || { label, tokens: 0, calls: 0 };
         prev.tokens += Number(record?.tokens?.total || 0);
         prev.calls += 1;
         allSummary.models.set(label, prev);
       }
-      const selected = selectedDay ? (statsByDay.get(selectedDay) || {
-        day: selectedDay,
-        sessionIds: new Set(),
-        tokens: 0,
-        cacheTokens: 0,
-        cost: 0,
-        hasKnownCost: false,
-        currency: "USD",
-        models: new Map()
-      }) : allSummary;
+      const selected = (() => {
+        if (selectedRangeDays) {
+          const summary = {
+            day: "",
+            sessionIds: new Set(),
+            tokens: 0,
+            cacheTokens: 0,
+            models: new Map()
+          };
+          for (const day of recentDays(selectedRangeDays)) {
+            const stat = statsByDay.get(day);
+            if (!stat) continue;
+            for (const sid of stat.sessionIds || []) summary.sessionIds.add(sid);
+            summary.tokens += Number(stat.tokens || 0);
+            summary.cacheTokens += Number(stat.cacheTokens || 0);
+            for (const model of stat.models?.values?.() || []) {
+              const prev = summary.models.get(model.label) || { label: model.label, tokens: 0, calls: 0 };
+              prev.tokens += Number(model.tokens || 0);
+              prev.calls += Number(model.calls || 0);
+              summary.models.set(model.label, prev);
+            }
+          }
+          return summary;
+        }
+        return selectedDay ? (statsByDay.get(selectedDay) || {
+          day: selectedDay,
+          sessionIds: new Set(),
+          tokens: 0,
+          cacheTokens: 0,
+          models: new Map()
+        }) : allSummary;
+      })();
       const maxTokens = Math.max(1, ...Array.from(statsByDay.values()).map(s => Number(s.tokens || 0)));
+      const selectedRangeSet = selectedRangeDays ? new Set(recentDays(selectedRangeDays)) : null;
+      const setDateFilter = (day, rangeDays = 0) => {
+        selectedDay = day || "";
+        selectedRangeDays = Math.max(0, Number(rangeDays || 0));
+        if (selectedRangeDays) windowEndDay = todayKey;
+        try {
+          localStorage.setItem(LS_DAY_PANEL_END_DAY, windowEndDay);
+          if (selectedDay) localStorage.setItem(LS_SELECTED_DAY, selectedDay);
+          else localStorage.removeItem(LS_SELECTED_DAY);
+          if (selectedRangeDays) localStorage.setItem(LS_SELECTED_RANGE_DAYS, String(selectedRangeDays));
+          else localStorage.removeItem(LS_SELECTED_RANGE_DAYS);
+        } catch {}
+        renderAll();
+      };
 
       const header = document.createElement("div");
       header.style.display = "flex";
       header.style.alignItems = "center";
       header.style.justifyContent = "space-between";
-      header.style.gap = "6px";
+      header.style.gap = "8px";
       const leftHead = document.createElement("div");
       leftHead.style.display = "inline-flex";
       leftHead.style.alignItems = "center";
       leftHead.style.gap = "4px";
       leftHead.style.minWidth = "0";
       leftHead.style.flex = "1 1 auto";
+      leftHead.style.cursor = "pointer";
+      leftHead.title = calendarCollapsed ? t("heatmap.expand", "Expand heatmap") : t("heatmap.collapse", "Collapse heatmap");
       const collapseBtn = document.createElement("button");
       collapseBtn.textContent = calendarCollapsed ? "▸" : "▾";
       collapseBtn.title = calendarCollapsed ? t("heatmap.expand", "Expand heatmap") : t("heatmap.collapse", "Collapse heatmap");
@@ -343,8 +439,12 @@ export function createSessionsSidebarViewManager(opts) {
         ev.stopPropagation();
         toggleCollapsed();
       };
+      leftHead.onclick = (ev) => {
+        ev.stopPropagation();
+        toggleCollapsed();
+      };
       const title = document.createElement("div");
-      title.textContent = selectedDay ? selectedDay : t("heatmap.allRange", "All · {range}", { range: rangeLabel });
+      title.textContent = t("heatmap.activity", "Activity");
       title.style.fontSize = "11px";
       title.style.fontWeight = "500";
       title.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
@@ -356,7 +456,7 @@ export function createSessionsSidebarViewManager(opts) {
       const controls = document.createElement("div");
       controls.style.display = "inline-flex";
       controls.style.alignItems = "center";
-      controls.style.gap = "5px";
+      controls.style.gap = "4px";
       const navBtn = (text, titleText, onClick) => {
         const btn = document.createElement("button");
         btn.textContent = text;
@@ -384,32 +484,41 @@ export function createSessionsSidebarViewManager(opts) {
         try { localStorage.setItem(LS_DAY_PANEL_END_DAY, windowEndDay); } catch {}
         renderAll();
       });
-      const allBtn = document.createElement("button");
-      allBtn.textContent = selectedDay ? t("heatmap.clear", "Clear") : t("heatmap.today", "Today");
-      allBtn.title = selectedDay ? t("heatmap.clearTitle", "Clear date filter and show all sessions") : t("heatmap.todayTitle", "Jump to today and filter today");
-      allBtn.style.border = "1px solid var(--border)";
-      allBtn.style.borderRadius = "999px";
-      allBtn.style.background = "transparent";
-      allBtn.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
-      allBtn.style.fontSize = "10px";
-      allBtn.style.padding = "2px 7px";
-      allBtn.style.cursor = "pointer";
-      allBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        if (selectedDay) {
-          selectedDay = "";
-        } else {
-          windowEndDay = dayKey();
-          selectedDay = dayKey();
-        }
-        try {
-          localStorage.setItem(LS_DAY_PANEL_END_DAY, windowEndDay);
-          if (selectedDay) localStorage.setItem(LS_SELECTED_DAY, selectedDay);
-          else localStorage.removeItem(LS_SELECTED_DAY);
-        } catch {}
-        renderAll();
+      const rangeSelect = document.createElement("select");
+      rangeSelect.title = t("heatmap.filterRange", "Filter sessions by date range");
+      rangeSelect.style.minWidth = "88px";
+      rangeSelect.style.maxWidth = "120px";
+      rangeSelect.style.border = "0";
+      rangeSelect.style.borderRadius = "6px";
+      rangeSelect.style.background = "color-mix(in srgb, var(--fg) 5%, transparent)";
+      rangeSelect.style.color = "var(--fg)";
+      rangeSelect.style.fontSize = "11px";
+      rangeSelect.style.padding = "2px 6px";
+      rangeSelect.style.outline = "none";
+      rangeSelect.style.cursor = "pointer";
+      const addRangeOption = (value, label) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        rangeSelect.appendChild(option);
       };
-      controls.append(prevBtn, nextBtn, allBtn);
+      addRangeOption("all", t("heatmap.all", "All"));
+      addRangeOption("today", t("heatmap.today", "Today"));
+      addRangeOption("1", t("heatmap.last1Day", "1d"));
+      addRangeOption("3", t("heatmap.last3Days", "3d"));
+      addRangeOption("7", t("heatmap.last7Days", "7d"));
+      addRangeOption("14", t("heatmap.last14Days", "14d"));
+      addRangeOption("30", t("heatmap.last30Days", "30d"));
+      if (selectedDay && selectedDay !== todayKey && !selectedRangeDays) addRangeOption("day", selectedDay);
+      rangeSelect.value = selectedRangeDays ? String(selectedRangeDays) : selectedDay === todayKey ? "today" : selectedDay ? "day" : "all";
+      rangeSelect.onchange = (ev) => {
+        ev.stopPropagation();
+        const value = rangeSelect.value;
+        if (value === "all") setDateFilter("", 0);
+        else if (value === "today") setDateFilter(dayKey(), 0);
+        else setDateFilter("", Number(value || 0));
+      };
+      controls.append(prevBtn, nextBtn, rangeSelect);
       header.append(leftHead, controls);
       calendarHost.appendChild(header);
 
@@ -424,25 +533,41 @@ export function createSessionsSidebarViewManager(opts) {
         const stat = statsByDay.get(day);
         const btn = document.createElement("button");
         const intensity = Math.min(1, Number(stat?.tokens || 0) / maxTokens);
-        btn.title = t("heatmap.dayTitle", "{day} · {sessions} sessions · {tokens} tok · {cost}", {
+        const isSelectedDay = day === selectedDay;
+        const isInSelectedRange = !!selectedRangeSet?.has(day);
+        const isSelected = isSelectedDay || isInSelectedRange;
+        const tooltipText = t("heatmap.dayTitleNoCost", "{day} · {sessions} sessions · {tokens} tok", {
           day,
           sessions: stat?.sessionIds?.size || 0,
-          tokens: formatCompactNumber(stat?.tokens || 0),
-          cost: stat?.hasKnownCost ? formatCost(stat.cost, stat.currency) : t("heatmap.costNA", "cost n/a")
+          tokens: formatCompactNumber(stat?.tokens || 0)
         });
+        btn.title = tooltipText;
+        btn.setAttribute("aria-label", tooltipText);
         btn.style.height = "14px";
-        btn.style.border = day === selectedDay ? "1px solid var(--accent)" : "1px solid transparent";
-        btn.style.borderRadius = "4px";
+        btn.style.border = "0";
+        btn.style.borderRadius = "3px";
         btn.style.cursor = "pointer";
         btn.style.padding = "0";
-        btn.style.background = intensity > 0
-          ? `color-mix(in srgb, var(--sessions-heatmap-active, #3fb950) ${Math.round(24 + intensity * 58)}%, var(--panel))`
+        const baseBg = intensity > 0
+          ? `color-mix(in srgb, var(--accent) ${Math.round(12 + intensity * 42)}%, var(--panel))`
           : "var(--sessions-heatmap-empty, color-mix(in srgb, var(--fg) 7%, transparent))";
+        btn.style.background = isSelected
+          ? `linear-gradient(color-mix(in srgb, var(--accent) ${isSelectedDay ? 18 : 10}%, transparent), color-mix(in srgb, var(--accent) ${isSelectedDay ? 18 : 10}%, transparent)), ${baseBg}`
+          : baseBg;
+        btn.style.boxShadow = "none";
+        btn.style.opacity = selectedRangeSet && !isInSelectedRange ? "0.62" : "1";
+        btn.addEventListener("mouseenter", (ev) => showHeatmapTooltip(tooltipText, ev.clientX, ev.clientY));
+        btn.addEventListener("mousemove", (ev) => moveHeatmapTooltip(ev.clientX, ev.clientY));
+        btn.addEventListener("mouseleave", hideHeatmapTooltip);
+        btn.addEventListener("focus", () => {
+          const rect = btn.getBoundingClientRect();
+          showHeatmapTooltip(tooltipText, rect.left + rect.width / 2, rect.bottom);
+        });
+        btn.addEventListener("blur", hideHeatmapTooltip);
         btn.onclick = (ev) => {
           ev.stopPropagation();
-          selectedDay = day;
-          try { localStorage.setItem(LS_SELECTED_DAY, selectedDay); } catch {}
-          renderAll();
+          hideHeatmapTooltip();
+          setDateFilter(day, 0);
         };
         grid.appendChild(btn);
       }
@@ -450,7 +575,7 @@ export function createSessionsSidebarViewManager(opts) {
 
       const summary = document.createElement("div");
       summary.style.display = "grid";
-      summary.style.gridTemplateColumns = "repeat(4, minmax(0, 1fr))";
+      summary.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
       summary.style.gap = "6px";
       summary.style.marginTop = "8px";
       const metric = (label, value) => {
@@ -473,8 +598,7 @@ export function createSessionsSidebarViewManager(opts) {
       summary.append(
         metric(t("heatmap.sessions", "sessions"), String(selected?.sessionIds?.size || 0)),
         metric(t("heatmap.tokens", "tokens"), formatCompactNumber(selected?.tokens || 0)),
-        metric(t("heatmap.cache", "cache"), formatCompactNumber(selected?.cacheTokens || 0)),
-        metric(t("heatmap.cost", "cost"), selected?.hasKnownCost ? formatCost(selected.cost, selected.currency) : "n/a")
+        metric(t("heatmap.cache", "cache"), formatCompactNumber(selected?.cacheTokens || 0))
       );
       calendarHost.appendChild(summary);
 

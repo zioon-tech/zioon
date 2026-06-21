@@ -117,6 +117,57 @@ function t(key, fallback, values) {
   return fallback;
 }
 
+function escapeXml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function insertAfterLeadingSystem(messages, systemMsg) {
+  const list = Array.isArray(messages) ? messages : [];
+  let insertAt = 0;
+  while (insertAt < list.length && list[insertAt]?.role === "system") insertAt += 1;
+  return [
+    ...list.slice(0, insertAt),
+    systemMsg,
+    ...list.slice(insertAt)
+  ];
+}
+
+function buildRecentTerminalOutputsXml(outputs) {
+  const recent = Array.isArray(outputs) ? outputs.slice(-8) : [];
+  const entries = recent.map((r) => {
+    const output = String(r?.output || "").split("\n").slice(0, 40).join("\n");
+    const attrs = [
+      `session_id="${escapeXml(r?.sessionId)}"`,
+      `timestamp="${escapeXml(new Date(r?.timestamp || Date.now()).toISOString())}"`,
+      r?.exitCode != null ? `exit_code="${escapeXml(r.exitCode)}"` : "",
+      r?.duration != null ? `duration_ms="${escapeXml(r.duration)}"` : ""
+    ].filter(Boolean).join(" ");
+    return [
+      `    <command_output ${attrs}>`,
+      `      <command>${escapeXml(r?.command)}</command>`,
+      `      <output>${escapeXml(output)}</output>`,
+      "    </command_output>"
+    ].join("\n");
+  }).join("\n");
+  return [
+    "<terminal_recent_outputs>",
+    "  <instructions>",
+    "    These are recent terminal command outputs.",
+    "    Use them as observed runtime evidence, including command, session, exit code, duration, and output.",
+    "    Prefer this evidence over assumptions when reasoning about current environment state.",
+    "  </instructions>",
+    `  <outputs count="${recent.length}">`,
+    entries,
+    "  </outputs>",
+    "</terminal_recent_outputs>"
+  ].filter((line) => line !== "").join("\n");
+}
+
 /**
  * Read local tools base URL (shared convention with terminal-manager)
  */
@@ -497,22 +548,21 @@ export async function activate(ctx) {
     }
   };
 
-  const isPanelActive = () => {
-    try {
-      return window.zion?.state?.get("ui.bottomPanel.activeViewId") === VIEW_ID;
-    } catch {
-      return false;
-    }
-  };
-
   // 3) Register commands
   const cmdOpen = window.zion.commands.registerCommand("terminal.openPanel", async () => {
     const h = await ensureBottomPanelReady();
     try { h?.open?.(); } catch {}
   });
   const cmdToggle = window.zion.commands.registerCommand("terminal.togglePanel", async () => {
-    if (isPanelVisible() && isPanelActive()) {
+    if (isPanelVisible()) {
       try { window.zion.bottomPanel?.hide?.(); } catch {}
+      return;
+    }
+    const lastOpenedViewId = (() => {
+      try { return window.zion?.bottomPanel?.getLastOpenedViewId?.() || ""; } catch { return ""; }
+    })();
+    if (lastOpenedViewId && lastOpenedViewId !== VIEW_ID) {
+      try { window.zion.bottomPanel?.activateView?.(lastOpenedViewId); } catch {}
       return;
     }
     const h = await ensureBottomPanelReady();
@@ -614,15 +664,8 @@ export async function activate(ctx) {
           if (include === false) return messages;
           const outputs = window.zion?.state?.get("terminal.outputs") || [];
           if (!Array.isArray(outputs) || outputs.length === 0) return messages;
-          const recent = outputs.slice(-8);
-          const text = recent.map(r => {
-            const ts = new Date(r.timestamp || Date.now()).toISOString();
-            const header = `[${ts}] (${r.sessionId}) $ ${r.command}`;
-            const out = String(r.output || "").split("\n").slice(0, 40).join("\n");
-            return `${header}\n${out}\n(exit=${r.exitCode}, ${r.duration}ms)\n`;
-          }).join("\n----\n");
-          const systemMsg = { role: "system", content: `Recent terminal context:\n${text}` };
-          return [...messages, systemMsg];
+          const systemMsg = { role: "system", content: buildRecentTerminalOutputsXml(outputs) };
+          return insertAfterLeadingSystem(messages, systemMsg);
         } catch {
           return messages;
         }
@@ -661,7 +704,7 @@ export async function activate(ctx) {
                 try { window.zion.bottomPanel?.hide?.(); } catch {}
               }
             },
-            { mount: container, rootId: "zion-terminal-enhanced-root-bottom" }
+            { mount: container, rootId: "zion-terminal-enhanced-root-bottom", embedTabsInBottomHeader: true }
           );
           bottomPanel = h;
           try {

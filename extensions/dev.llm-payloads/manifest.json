@@ -1,0 +1,39 @@
+{
+  "name": "dev.llm-payloads",
+  "version": "0.0.1",
+  "description": "Inspect outgoing LLM requests",
+  "descriptionKey": "dev.llm-payloads.description",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.llm-payloads",
+    "name": "LLM Requests",
+    "nameKey": "dev.llm-payloads.title",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "contributes": {
+      "commands": [
+        {
+          "id": "llmPayloads.open",
+          "title": "Open LLM Requests",
+          "titleKey": "dev.llm-payloads.cmd.open",
+          "category": "Developer",
+          "categoryKey": "dev.llm-payloads.category.developer"
+        },
+        {
+          "id": "llmPayloads.clear",
+          "title": "Clear LLM Requests",
+          "titleKey": "dev.llm-payloads.cmd.clear",
+          "category": "Developer",
+          "categoryKey": "dev.llm-payloads.category.developer"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

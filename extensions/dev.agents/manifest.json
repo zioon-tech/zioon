@@ -2,11 +2,13 @@
   "name": "dev.agents",
   "version": "0.0.1",
   "description": "Anchored sub-agent tasks and delegated AI work items",
+  "descriptionKey": "dev.agents.description",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.agents",
     "name": "Agents",
+    "nameKey": "dev.agents.title",
     "version": "0.0.1",
     "main": "./main.js",
     "contributes": {
@@ -14,12 +16,16 @@
         {
           "id": "agents.createTaskFromSelection",
           "title": "Create Agent Task From Selection",
-          "category": "Agents"
+          "titleKey": "dev.agents.cmd.createFromSelection",
+          "category": "Agents",
+          "categoryKey": "dev.agents.title"
         },
         {
           "id": "agents.openPanel",
           "title": "Open Agents",
-          "category": "Agents"
+          "titleKey": "dev.agents.cmd.openPanel",
+          "category": "Agents",
+          "categoryKey": "dev.agents.title"
         }
       ]
     },

@@ -92,6 +92,7 @@ const I18N_MESSAGES = {
     "heatmap.todayTitle": "跳到今天并筛选今天",
     "heatmap.allRange": "全部 · {range}",
     "heatmap.dayTitle": "{day} · {sessions} 个会话 · {tokens} tok · {cost}",
+    "heatmap.dayTitleNoCost": "{day} · {sessions} 个会话 · {tokens} tok",
     "heatmap.costNA": "cost n/a",
     "heatmap.sessions": "sessions",
     "heatmap.tokens": "tokens",
@@ -171,6 +172,7 @@ const I18N_MESSAGES = {
     "heatmap.todayTitle": "Jump to today and filter today",
     "heatmap.allRange": "All · {range}",
     "heatmap.dayTitle": "{day} · {sessions} sessions · {tokens} tok · {cost}",
+    "heatmap.dayTitleNoCost": "{day} · {sessions} sessions · {tokens} tok",
     "heatmap.costNA": "cost n/a",
     "heatmap.sessions": "sessions",
     "heatmap.tokens": "tokens",
@@ -1929,14 +1931,14 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispRunStarted, dispRunFinishedUI, dispRunErrorUI, dispAbortedUI);
 
-  const dispReasoningStart = window.zion.events.on("chat/reasoningStart", async ({ runId, sessionId, silentReasoning }) => {
+  const dispReasoningStart = window.zion.events.on("chat/reasoningStart", async ({ runId, sessionId, silentReasoning, answerAnchorPos }) => {
     try {
       if (silentReasoning) return;
       const cur = window.zion.state.get("sessions.currentId");
       if (!sessionId || sessionId === cur) return; // current session handled by plugin
 
       // Compute insertion position in background doc
-      const hint = window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
+      const hint = typeof answerAnchorPos === "number" ? answerAnchorPos : window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
       let start = 0;
       let end = 0;
       await window.zion.commands.executeCommand("zion.sessions.transformDoc", {
@@ -1994,13 +1996,13 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispReasoningToken);
 
-  const dispToolCall = window.zion.events.on("chat/toolCall", async ({ runId, sessionId, toolCall }) => {
+  const dispToolCall = window.zion.events.on("chat/toolCall", async ({ runId, sessionId, toolCall, answerAnchorPos }) => {
     try {
       const cur = window.zion.state.get("sessions.currentId");
       if (!sessionId || sessionId === cur) return;
       const name = toolCall?.name || "tool";
 
-      const hint = window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
+      const hint = typeof answerAnchorPos === "number" ? answerAnchorPos : window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
       let start = 0;
       let end = 0;
       await window.zion.commands.executeCommand("zion.sessions.transformDoc", {

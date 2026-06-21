@@ -13,31 +13,39 @@ const DEFAULT_MEMORY_ROOT = "~/zion-next/memory";
 
 const I18N_MESSAGES = {
   "zh-CN": {
-    "title": "Memory",
-    "cmd.openPanel": "打开 Memory",
-    "cmd.create": "创建 Memory",
+    "title": "记忆",
+    "description": "记忆面板、本地 Markdown 记忆和可扩展记忆提供方",
+    "cmd.openPanel": "打开记忆",
+    "cmd.create": "创建记忆",
     "cmd.rememberSelection": "记住选区",
-    "memory.emptyTitle": "还没有 Memory",
-    "memory.emptyDescription": "点击 New 添加项目规则、偏好、架构事实或调试经验。",
-    "memory.new": "New",
+    "memory.emptyTitle": "还没有记忆",
+    "memory.emptyDescription": "点击新建添加项目规则、偏好、架构事实或调试经验。",
+    "memory.new": "新建",
     "memory.save": "保存",
     "memory.delete": "删除",
     "memory.include": "提供给模型",
     "memory.disable": "从上下文移除",
     "memory.pin": "固定",
     "memory.unpin": "取消固定",
-    "memory.search": "搜索 memory...",
-    "memory.providers": "Providers",
-    "memory.providerLocal": "Local Markdown Files",
-    "memory.context": "Context",
-    "memory.root": "Root",
+    "memory.search": "搜索记忆...",
+    "memory.providers": "提供方",
+    "memory.providerLocal": "本地 Markdown 文件",
+    "memory.context": "上下文",
+    "memory.root": "根目录",
     "memory.pathPlaceholder": "long-term/semantic/topic.md",
-    "memory.titlePlaceholder": "Memory 标题",
+    "memory.titlePlaceholder": "记忆标题",
     "memory.bodyPlaceholder": "写下模型以后应该记住的事实、偏好或流程...",
     "memory.tagsPlaceholder": "tags, comma separated",
     "memory.stats": "{working} working · {longTerm} long-term",
     "memory.enabled": "已启用",
     "memory.disabled": "未启用",
+    "memory.newTitle": "新记忆",
+    "memory.selectionTitle": "选区记忆",
+    "memory.listTitle": "记忆",
+    "memory.details": "记忆详情",
+    "file.opening": "正在打开文件...",
+    "file.openFailed": "打开文件失败",
+    "file.binaryUnsupported": "暂不支持二进制预览",
     "layer.working": "Working",
     "layer.long-term": "Long-term",
     "type.semantic": "Semantic",
@@ -53,6 +61,7 @@ const I18N_MESSAGES = {
   },
   "en-US": {
     "title": "Memory",
+    "description": "Memory panel, local markdown memory, and extensible memory providers",
     "cmd.openPanel": "Open Memory",
     "cmd.create": "Create Memory",
     "cmd.rememberSelection": "Remember Selection",
@@ -77,6 +86,13 @@ const I18N_MESSAGES = {
     "memory.stats": "{working} working · {longTerm} long-term",
     "memory.enabled": "Enabled",
     "memory.disabled": "Disabled",
+    "memory.newTitle": "New Memory",
+    "memory.selectionTitle": "Selection Memory",
+    "memory.listTitle": "Memory",
+    "memory.details": "Memory Details",
+    "file.opening": "Opening file...",
+    "file.openFailed": "Failed to open file",
+    "file.binaryUnsupported": "Binary preview is not supported yet",
     "layer.working": "Working",
     "layer.long-term": "Long-term",
     "type.semantic": "Semantic",
@@ -274,7 +290,7 @@ function createMemory(input = {}) {
   const id = uid();
   const type = input.type || "semantic";
   const layer = input.layer || "long-term";
-  const title = input.title || "New Memory";
+  const title = input.title || t("memory.newTitle", "New Memory");
   const item = normalizeMemory({
     id,
     title,
@@ -358,6 +374,15 @@ function scoreMemory(item, query) {
   return score;
 }
 
+function escapeXml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 function selectMemoriesForContext(query = "", opts = {}) {
   const settings = getSettings();
   const maxItems = Number(opts.maxItems || 12);
@@ -375,18 +400,65 @@ function buildMemoryContext(query = "", opts = {}) {
   const settings = getSettings();
   const items = selectMemoriesForContext(query, opts);
   const maxChars = Math.max(800, Number(opts.maxChars || settings.maxContextChars || 5000));
+  const footer = "\n</working_memory>";
   const parts = [
-    "## Zion Working Memory",
-    `Root: ${settings.memoryRootPath || DEFAULT_MEMORY_ROOT}`,
-    "The following notes are working memory and are intentionally kept in the model context. Long-term memory lives under the same root and should be retrieved on demand with memoryManage search/read."
+    "<working_memory>",
+    `  <root>${escapeXml(settings.memoryRootPath || DEFAULT_MEMORY_ROOT)}</root>`,
+    "  <instructions>",
+    "    These notes are working memory and are intentionally kept in the model context.",
+    "    Treat them as persistent user/project preferences and relevant facts.",
+    "    Long-term memory lives under the same root and should be retrieved on demand with the memoryManage tool.",
+    "  </instructions>",
+    `  <memories count="${items.length}">`
   ];
+  let truncated = false;
   for (const item of items) {
-    const tags = item.tags?.length ? ` tags=${item.tags.join(",")}` : "";
-    parts.push(`\n### ${item.title}\n- path: ${item.path}\n- id: ${item.id}\n- type: ${item.type}; scope: ${item.scope}; layer: ${item.layer}; provider: ${item.providerId}${tags}\n${item.content.trim()}`);
+    const attrs = [
+      `id="${escapeXml(item.id)}"`,
+      `path="${escapeXml(item.path)}"`,
+      `type="${escapeXml(item.type)}"`,
+      `scope="${escapeXml(item.scope)}"`,
+      `layer="${escapeXml(item.layer)}"`,
+      `provider="${escapeXml(item.providerId)}"`,
+      `enabled="${item.enabled !== false ? "true" : "false"}"`,
+      item.pinned ? "pinned=\"true\"" : "",
+      item.confidence != null ? `confidence="${escapeXml(item.confidence)}"` : "",
+      item.tags?.length ? `tags="${escapeXml(item.tags.join(","))}"` : ""
+    ].filter(Boolean).join(" ");
+    const prefix = [
+      `    <memory ${attrs}>`,
+      `      <title>${escapeXml(item.title)}</title>`,
+      "      <content>"
+    ].join("\n");
+    const suffix = "\n      </content>\n    </memory>";
+    const currentLen = `${parts.join("\n")}\n  </memories>${footer}`.length;
+    const remaining = maxChars - currentLen - prefix.length - suffix.length - 64;
+    if (remaining <= 0) {
+      truncated = true;
+      break;
+    }
+    let content = String(item.content || "").trim();
+    if (content.length > remaining) {
+      content = `${content.slice(0, Math.max(0, remaining))}\n[Memory truncated]`;
+      truncated = true;
+    }
+    parts.push(`${prefix}\n${escapeXml(content)}${suffix}`);
   }
-  let text = parts.join("\n");
-  if (text.length > maxChars) text = `${text.slice(0, maxChars - 32)}\n\n[Memory truncated]`;
+  if (truncated) parts.push("    <truncated>true</truncated>");
+  parts.push("  </memories>");
+  const text = `${parts.join("\n")}${footer}`;
   return { text, items, maxChars };
+}
+
+function insertWorkingMemoryAfterLeadingSystem(messages, memoryMessage) {
+  const list = Array.isArray(messages) ? messages : [];
+  let insertAt = 0;
+  while (insertAt < list.length && list[insertAt]?.role === "system") insertAt += 1;
+  return [
+    ...list.slice(0, insertAt),
+    memoryMessage,
+    ...list.slice(insertAt)
+  ];
 }
 
 function registerDefaultProviders() {
@@ -471,10 +543,10 @@ function rememberSelection() {
   const editor = window.zion?.window?.activeEditor;
   const view = editor?.getView?.();
   const sel = view?.state?.selection?.main;
-  if (!view || !sel || sel.from === sel.to) return createMemory({ title: "New Memory" });
+  if (!view || !sel || sel.from === sel.to) return createMemory({ title: t("memory.newTitle", "New Memory") });
   const text = view.state.sliceDoc(sel.from, sel.to);
   const item = createMemory({
-    title: compactText(text, 48) || "Selection Memory",
+    title: compactText(text, 48) || t("memory.selectionTitle", "Selection Memory"),
     content: text,
     type: "semantic",
     scope: "project",
@@ -532,6 +604,7 @@ function renderMemoryPanel(container) {
   const root = document.createElement("div");
   root.className = "zion-memory-panel";
   container.appendChild(root);
+
   let disposed = false;
   let renderTimer = 0;
   let memoryEditorView = null;
@@ -539,10 +612,13 @@ function renderMemoryPanel(container) {
   let memoryEditorSaveTimer = 0;
   let memoryEditorDirty = false;
   let memoryObjectUrl = "";
-  const editorCore = getEditorCore();
+  const editorCore = getEditorCore(VIEW_ID);
   const openMemoryTabs = editorCore.tabs;
   let activeMemoryTabId = editorCore.getActiveTabId();
+  let renderedMemoryDetailTabId = "";
+  let renderedMemoryDetailSignature = "";
   let explorerWidth = editorCore.getExplorerWidth();
+  let suppressEditorCoreRender = 0;
   const expanded = loadExpandedFolders();
   const disposables = [];
 
@@ -558,9 +634,14 @@ function renderMemoryPanel(container) {
   try { disposables.push(window.zion?.events?.on?.(CHANGED_EVENT, scheduleRender)); } catch {}
   try { disposables.push(window.zion?.events?.on?.(ACTIVE_CHANGED_EVENT, ({ id } = {}) => openMemoryById(id))); } catch {}
   try { disposables.push(window.zion?.events?.on?.("i18n/changed", scheduleRender)); } catch {}
-  disposables.push(editorCore.subscribe(() => {
+  disposables.push(editorCore.subscribe((payload) => {
     activeMemoryTabId = editorCore.getActiveTabId();
     explorerWidth = editorCore.getExplorerWidth();
+    if (suppressEditorCoreRender > 0) return;
+    if (shouldRefreshDetailOnly(payload?.reason)) {
+      renderDetailOnly();
+      return;
+    }
     scheduleRender();
   }));
   try {
@@ -578,6 +659,7 @@ function renderMemoryPanel(container) {
 
   return {
     dispose() {
+
       disposed = true;
       if (renderTimer) window.cancelAnimationFrame(renderTimer);
       disposeMemoryEditor(true);
@@ -589,23 +671,59 @@ function renderMemoryPanel(container) {
   };
 
   function render() {
-    disposeMemoryEditor(true);
     const all = readMemories();
     syncOpenMemoryTabs(all);
     ensureActiveMemoryTab(all);
     const activeTab = resolveEditorTab(editorCore.getActiveTab() || openMemoryTabs.values().next().value || null);
     const activeMemory = activeTab?.kind === "memory" ? activeTab.memory : null;
+    const existingBody = root.querySelector(".zion-memory-body");
+    const existingList = existingBody?.querySelector(".zion-memory-list-wrap");
+    const existingDetail = existingBody?.querySelector(".zion-memory-detail");
+    const activeDetailSignature = memoryDetailSignature(activeTab);
+    const canPreserveDetail = !!existingBody && !!existingList && !!existingDetail && !!activeTab?.id && activeTab.id === renderedMemoryDetailTabId && activeDetailSignature === renderedMemoryDetailSignature;
+
+
     const body = document.createElement("div");
     body.className = "zion-memory-body";
     const list = renderList(all, activeMemory?.id || "");
     list.style.flexBasis = `${explorerWidth}px`;
+    if (canPreserveDetail) {
+
+      existingList.replaceWith(list);
+      const resizer = existingBody.querySelector(".zion-memory-split-resizer");
+      if (resizer) resizer.replaceWith(renderResizeHandle(existingBody, list));
+      else existingBody.insertBefore(renderResizeHandle(existingBody, list), existingDetail);
+      return;
+    }
+
+    disposeMemoryEditor(true);
+
     body.appendChild(list);
     body.appendChild(renderResizeHandle(body, list));
     body.appendChild(renderDetail(activeTab));
+    renderedMemoryDetailTabId = activeTab?.id || "";
+    renderedMemoryDetailSignature = activeDetailSignature;
     root.replaceChildren(body);
   }
 
+  function renderDetailOnly() {
+    const existingBody = root.querySelector(".zion-memory-body");
+    const existingDetail = existingBody?.querySelector(".zion-memory-detail");
+
+    if (!existingBody || !existingDetail) {
+      scheduleRender();
+      return;
+    }
+    disposeMemoryEditor(true);
+    const activeTab = resolveEditorTab(editorCore.getActiveTab() || openMemoryTabs.values().next().value || null);
+    const nextDetail = renderDetail(activeTab);
+    renderedMemoryDetailTabId = activeTab?.id || "";
+    renderedMemoryDetailSignature = memoryDetailSignature(activeTab);
+    existingDetail.replaceWith(nextDetail);
+  }
+
   function disposeMemoryEditor(flush = false) {
+
     if (memoryEditorSaveTimer) {
       window.clearTimeout(memoryEditorSaveTimer);
       memoryEditorSaveTimer = 0;
@@ -619,12 +737,14 @@ function renderMemoryPanel(container) {
     memoryEditorItemId = "";
     memoryEditorDirty = false;
     memoryObjectUrl = "";
+    renderedMemoryDetailTabId = "";
+    renderedMemoryDetailSignature = "";
   }
 
   function syncOpenMemoryTabs(items) {
     const ids = new Set((Array.isArray(items) ? items : []).map((item) => item.id));
     for (const tab of Array.from(openMemoryTabs.values())) {
-      if (tab.kind === "memory" && !ids.has(tab.memoryId)) editorCore.closeTab(tab.id, { reason: "memory-sync" });
+      if (tab.kind === "memory" && !ids.has(tab.memoryId)) runWithoutEditorCoreRender(() => editorCore.closeTab(tab.id, { reason: "memory-sync" }));
     }
     if (activeMemoryTabId && !openMemoryTabs.has(activeMemoryTabId)) {
       activeMemoryTabId = editorCore.getActiveTabId();
@@ -643,32 +763,73 @@ function renderMemoryPanel(container) {
   function openMemoryById(id) {
     const item = readMemories().find((entry) => entry.id === id);
     if (!item) return;
-    openMemoryTab(item);
-    scheduleRender();
+    if (activeMemoryTabId === `memory:${item.id}` && memoryDetailSignature(resolveEditorTab(editorCore.getActiveTab())) === memoryDetailSignature(resolveMemoryItemTab(item))) return;
+    if (openMemoryTab(item)) scheduleRender();
   }
 
   function openMemoryTab(item) {
-    if (!item?.id) return;
+    if (!item?.id) return false;
     const tabId = `memory:${item.id}`;
-    editorCore.openTab({
+    const nextTab = resolveMemoryItemTab(item);
+    if (activeMemoryTabId === tabId && memoryDetailSignature(resolveEditorTab(editorCore.getActiveTab())) === memoryDetailSignature(nextTab)) return false;
+    runWithoutEditorCoreRender(() => editorCore.openTab({
       id: tabId,
+      kind: nextTab.kind,
+      memoryId: nextTab.memoryId,
+      title: nextTab.title,
+      path: nextTab.path,
+      displayPath: nextTab.displayPath,
+      language: nextTab.language,
+      size: nextTab.size
+    }));
+    activeMemoryTabId = editorCore.getActiveTabId();
+    setActiveMemory(item.id, { silent: true });
+    return true;
+  }
+
+  function resolveMemoryItemTab(item) {
+    return {
+      id: `memory:${item.id}`,
       kind: "memory",
       memoryId: item.id,
       title: memoryFileName(item),
       path: item.path || item.title || "memory.md",
       displayPath: memoryDisplayPath(item),
       language: languageFromFilename(item.path || "memory.md"),
-      size: typeof item.content === "string" ? item.content.length : 0
+      size: typeof item.content === "string" ? item.content.length : 0,
+      memory: item,
+      file: { kind: "memory-text", content: item.content || "" }
+    };
+  }
+
+  function memoryDetailSignature(tab) {
+    if (!tab) return "";
+    if (tab.kind === "memory") {
+      return JSON.stringify({
+        id: tab.id,
+        memoryId: tab.memoryId,
+        path: tab.path || "",
+        title: tab.title || "",
+        size: tab.size || 0,
+        markdownPreview: !!tab.markdownPreview,
+        content: tab.file?.content || tab.memory?.content || ""
+      });
+    }
+    return JSON.stringify({
+      id: tab.id || "",
+      kind: tab.kind || "",
+      fileKind: tab.file?.kind || "",
+      size: tab.size || 0,
+      markdownPreview: !!tab.markdownPreview,
+      content: tab.file?.content || ""
     });
-    activeMemoryTabId = editorCore.getActiveTabId();
-    setActiveMemory(item.id, { silent: true });
   }
 
   function closeMemoryTab(id) {
     const raw = String(id || "");
     const tabId = openMemoryTabs.has(raw) ? raw : `memory:${raw}`;
     if (tabId === activeMemoryTabId) disposeMemoryEditor(true);
-    editorCore.closeTab(tabId);
+    runWithoutEditorCoreRender(() => editorCore.closeTab(tabId));
     activeMemoryTabId = editorCore.getActiveTabId();
     const activeTab = resolveEditorTab(editorCore.getActiveTab());
     if (activeTab?.kind === "memory") setActiveMemory(activeTab.memoryId, { silent: true });
@@ -716,9 +877,9 @@ function renderMemoryPanel(container) {
     toolbar.className = "zion-memory-list-toolbar";
     const spacer = document.createElement("div");
     spacer.className = "zion-memory-list-title";
-    spacer.textContent = "Memory";
+    spacer.textContent = t("memory.listTitle", "Memory");
     const add = iconButton("add", () => {
-      const item = createMemory({ title: "New Memory", content: "", type: "semantic", layer: "long-term", scope: "project" });
+      const item = createMemory({ title: t("memory.newTitle", "New Memory"), content: "", type: "semantic", layer: "long-term", scope: "project" });
       openMemoryTab(item);
       scheduleRender();
     }, t("memory.new", "New"));
@@ -778,8 +939,7 @@ function renderMemoryPanel(container) {
       main.type = "button";
       main.className = "zion-files-row-main";
       main.onclick = () => {
-        openMemoryTab(item);
-        scheduleRender();
+        if (openMemoryTab(item)) scheduleRender();
       };
       main.innerHTML = [
         `<span class="zion-files-chevron" aria-hidden="true"></span>`,
@@ -859,9 +1019,9 @@ function renderMemoryPanel(container) {
     } else {
       const empty = document.createElement("div");
       empty.className = "zion-files-preview-empty";
-      if (tab.file?.kind === "loading") empty.textContent = "Opening file...";
-      else if (tab.file?.kind === "error") empty.textContent = tab.file.message || "Failed to open file";
-      else empty.textContent = "Binary preview is not supported yet";
+      if (tab.file?.kind === "loading") empty.textContent = t("file.opening", "Opening file...");
+      else if (tab.file?.kind === "error") empty.textContent = tab.file.message || t("file.openFailed", "Failed to open file");
+      else empty.textContent = t("file.binaryUnsupported", "Binary preview is not supported yet");
       codeHost.replaceChildren(empty);
     }
     detail.appendChild(editorHost);
@@ -928,7 +1088,8 @@ function renderMemoryPanel(container) {
     icon.setAttribute("aria-hidden", "true");
     button.appendChild(icon);
     button.onclick = () => {
-      editorCore.updateTab(tab.id, { markdownPreview: !shouldShowMarkdownPreview(tab) }, { reason: "markdown-preview" });
+      runWithoutEditorCoreRender(() => editorCore.updateTab(tab.id, { markdownPreview: !shouldShowMarkdownPreview(tab) }, { reason: "markdown-preview" }));
+      renderDetailOnly();
     };
     return button;
   }
@@ -945,9 +1106,10 @@ function renderMemoryPanel(container) {
       button.title = tab.displayPath || tab.path || tab.title;
       button.dataset.tabId = tab.id;
       button.onclick = () => {
-        activeMemoryTabId = editorCore.setActiveTab(tab.id);
+        if (tab.id === activeMemoryTabId) return;
+        activeMemoryTabId = runWithoutEditorCoreRender(() => editorCore.setActiveTab(tab.id));
         if (tab.kind === "memory") setActiveMemory(tab.memoryId, { silent: true });
-        scheduleRender();
+        renderDetailOnly();
       };
       button.onauxclick = (event) => {
         if (event.button !== 1) return;
@@ -975,6 +1137,21 @@ function renderMemoryPanel(container) {
       tabs.appendChild(button);
     }
     return tabs;
+  }
+
+  function shouldRefreshDetailOnly(reason) {
+    return ["active", "open", "update", "close", "markdown-preview", "memory-sync"].includes(String(reason || ""));
+  }
+
+  function runWithoutEditorCoreRender(fn) {
+    suppressEditorCoreRender += 1;
+    try {
+      return typeof fn === "function" ? fn() : undefined;
+    } finally {
+      suppressEditorCoreRender = Math.max(0, suppressEditorCoreRender - 1);
+      activeMemoryTabId = editorCore.getActiveTabId();
+      explorerWidth = editorCore.getExplorerWidth();
+    }
   }
 
   function renderMemoryEmptyEditor() {
@@ -1036,7 +1213,7 @@ function renderMemoryPanel(container) {
     summary.className = "zion-memory-details-summary";
     const label = document.createElement("span");
     label.className = "zion-memory-details-label";
-    label.textContent = "Memory Details";
+    label.textContent = t("memory.details", "Memory Details");
     const chips = document.createElement("span");
     chips.className = "zion-memory-details-chips";
     const tagValues = (item.tags || []).filter(Boolean).slice(0, 6);
@@ -1202,10 +1379,7 @@ function registerMessageContributor(disposables) {
       const query = extractLatestUserText(messages);
       const context = buildMemoryContext(query);
       if (!context.items.length) return messages;
-      return [
-        { role: "system", content: context.text },
-        ...messages
-      ];
+      return insertWorkingMemoryAfterLeadingSystem(messages, { role: "system", content: context.text });
     }
   });
   if (disp) disposables.push(disp);
@@ -1387,6 +1561,18 @@ export async function activate(ctx) {
       component: { render: renderMemoryPanel }
     });
     if (view) disposables.push(view);
+  } catch {}
+  try {
+    const activity = window.zion.activityBar?.registerItem?.({
+      id: "memory.activity",
+      pluginId: "dev.memory",
+      icon: "$(database)",
+      tooltip: t("title", "Memory"),
+      tooltipKey: "dev.memory.title",
+      order: 36,
+      onClick: openMemoryPanel
+    });
+    if (activity) disposables.push(activity);
   } catch {}
   const disposable = {
     dispose() {

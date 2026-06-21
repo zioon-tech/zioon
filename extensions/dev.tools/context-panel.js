@@ -65,6 +65,7 @@ function createContextPanel(container) {
   root.className = "zion-context-panel";
   container.appendChild(root);
 
+
   const disposables = [];
   let disposed = false;
   let renderTimer = 0;
@@ -73,7 +74,7 @@ function createContextPanel(container) {
   let lastRefreshSignature = "";
   let lastRenderedSignature = "";
   let preservedScrollTop = 0;
-  const editorCore = getEditorCore();
+  const editorCore = getEditorCore(CONTEXT_VIEW_ID);
   let activeFileTabId = editorCore.getActiveTabId();
   let previewCodeView = null;
   let previewMemoryEditorItemId = "";
@@ -81,6 +82,8 @@ function createContextPanel(container) {
   let previewMemoryEditorDirty = false;
   let previewObjectUrl = "";
   let explorerWidth = editorCore.getExplorerWidth();
+  let suppressEditorCoreRender = 0;
+  let previewScrollCleanup = null;
   const expanded = loadExpandedGroups();
   const urlTitleCache = loadUrlTitleCache();
   const pendingTitleFetches = new Set();
@@ -129,9 +132,15 @@ function createContextPanel(container) {
   try { disposables.push(window.zion.events?.on?.("agents/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("memory/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("i18n/changed", () => { lastRenderedSignature = ""; scheduleRender(); })); } catch {}
-  disposables.push(editorCore.subscribe(() => {
+  disposables.push(editorCore.subscribe((payload) => {
     activeFileTabId = editorCore.getActiveTabId();
     explorerWidth = editorCore.getExplorerWidth();
+    if (suppressEditorCoreRender > 0) return;
+    if (shouldRefreshPreviewOnly(payload?.reason)) {
+      if (openFileTabs.size) renderPreviewOnly();
+      else scheduleRender();
+      return;
+    }
     lastRenderedSignature = "";
     scheduleRender();
   }));
@@ -162,6 +171,7 @@ function createContextPanel(container) {
 
   return {
     dispose() {
+
       disposed = true;
       if (renderTimer) window.cancelAnimationFrame(renderTimer);
       disposePreviewResources();
@@ -175,6 +185,7 @@ function createContextPanel(container) {
   function render() {
     const previousScroll = root.querySelector(".zion-context-scroll");
     if (previousScroll) preservedScrollTop = previousScroll.scrollTop || 0;
+
     const snapshot = buildContextSnapshot(urlTitleCache);
     const changeState = getCurrentSessionChangeState();
     prefetchUrlTitles(snapshot.urls, urlTitleCache, pendingTitleFetches, scheduleRender);
@@ -185,6 +196,10 @@ function createContextPanel(container) {
       return;
     }
     lastRenderedSignature = renderSignature;
+    const existingWorkspace = root.querySelector(".zion-context-workspace");
+    const existingScroll = existingWorkspace?.querySelector(".zion-context-scroll");
+    const existingPreview = existingWorkspace?.querySelector(".zion-context-preview-pane");
+
     const workspace = document.createElement("div");
     workspace.className = `zion-context-workspace${openFileTabs.size ? " has-preview" : ""}`;
     const scroll = document.createElement("div");
@@ -210,14 +225,25 @@ function createContextPanel(container) {
       onOpenFile: openContextFilePreview,
       onOpenMemory: openContextMemoryPreview
     }));
-    workspace.appendChild(scroll);
-    if (openFileTabs.size) {
-      disposePreviewResources();
-      workspace.appendChild(renderContextResizeHandle(workspace, scroll));
-      workspace.appendChild(renderContextPreviewPane());
-    }
 
-    root.replaceChildren(workspace);
+    if (existingWorkspace && existingScroll && existingPreview && openFileTabs.size) {
+
+      existingWorkspace.classList.add("has-preview");
+      scroll.style.flexBasis = `${explorerWidth}px`;
+      existingScroll.replaceWith(scroll);
+      const resizer = existingWorkspace.querySelector(".zion-context-split-resizer");
+      if (resizer) resizer.replaceWith(renderContextResizeHandle(existingWorkspace, scroll));
+      else existingWorkspace.insertBefore(renderContextResizeHandle(existingWorkspace, scroll), existingPreview);
+    } else {
+      workspace.appendChild(scroll);
+      if (openFileTabs.size) {
+
+        disposePreviewResources();
+        workspace.appendChild(renderContextResizeHandle(workspace, scroll));
+        workspace.appendChild(renderContextPreviewPane());
+      }
+      root.replaceChildren(workspace);
+    }
     restoreScrollTop(scroll, preservedScrollTop);
     if (!selectedKey || !root.querySelector(`.zion-context-tree-row[data-key="${cssEscape(selectedKey)}"]`)) {
       const firstRow = root.querySelector(".zion-context-tree-row[data-key]");
@@ -229,16 +255,35 @@ function createContextPanel(container) {
   async function openContextFilePreview(item) {
     const path = item?.path || item?.label || "";
     if (!path) return;
+
+    const existingByPath = Array.from(openFileTabs.values()).find((tab) => tab.path === path || tab.displayPath === path);
+    if (existingByPath) {
+
+      if (existingByPath.id === activeFileTabId) {
+        return refreshExistingContextFileTab(item, existingByPath);
+      }
+      saveActivePreviewScrollState();
+      activeFileTabId = runWithoutEditorCoreRender(() => editorCore.setActiveTab(existingByPath.id));
+
+      renderPreviewOnly();
+      return refreshExistingContextFileTab(item, existingByPath);
+    }
     const name = displayFileName(path);
     const sourceHint = item.sourceId || inferFileSource();
     const provisionalTabId = `file:pending:${sourceHint}:${path}`;
     const existing = openFileTabs.get(provisionalTabId);
-    if (existing) {      activeFileTabId = editorCore.setActiveTab(provisionalTabId);
+    if (existing) {
+      if (existing.id === activeFileTabId) {
+
+        return;
+      }
+      activeFileTabId = runWithoutEditorCoreRender(() => editorCore.setActiveTab(provisionalTabId));
+
       renderPreviewOnly();
       return;
     }
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    editorCore.openTab({
+    runWithoutEditorCoreRender(() => editorCore.openTab({
       id: provisionalTabId,
       title: name,
       path,
@@ -247,7 +292,7 @@ function createContextPanel(container) {
       file: { kind: "loading" },
       sourceId: sourceHint,
       token
-    });
+    }));
     activeFileTabId = editorCore.getActiveTabId();
     renderPreviewOnly();
 
@@ -256,52 +301,113 @@ function createContextPanel(container) {
       const sourceId = await ensureRevealSourceForPath(path, sourceHint);
       const node = createContextFileNode(path, sourceId, name);
       const resolvedTabId = `file:${stableFileTabId(node)}`;
+
       const current = openFileTabs.get(provisionalTabId);
-      if (!current || current.token !== token) return;
+      if (!current || current.token !== token) {
+
+        return;
+      }
       if (resolvedTabId !== provisionalTabId) {
-        editorCore.closeTab(provisionalTabId, { reason: "resolve-file-tab" });
+        runWithoutEditorCoreRender(() => editorCore.closeTab(provisionalTabId, { reason: "resolve-file-tab" }));
         const resolvedExisting = openFileTabs.get(resolvedTabId);
-        if (resolvedExisting) {          activeFileTabId = editorCore.setActiveTab(resolvedTabId);
+        if (resolvedExisting) {
+          activeFileTabId = runWithoutEditorCoreRender(() => editorCore.setActiveTab(resolvedTabId));
           renderPreviewOnly();
           return;
         }
       }
       tabId = resolvedTabId;
-      editorCore.openTab({
+      runWithoutEditorCoreRender(() => editorCore.openTab({
         ...current,
         id: tabId,
         sourceId,
         file: { kind: "loading" }
-      });
+      }));
       activeFileTabId = editorCore.getActiveTabId();
       renderPreviewOnly();
+
       const file = await getProvider(sourceId).readFile(node);
+
       const latest = openFileTabs.get(tabId);
-      if (!latest || latest.token !== token) return;
-      editorCore.openTab({
+      if (!latest || latest.token !== token) {
+
+        return;
+      }
+      runWithoutEditorCoreRender(() => editorCore.openTab({
         ...latest,
         size: typeof file?.size === "number" ? file.size : latest.size,
         file
-      });
+      }));
       activeFileTabId = editorCore.getActiveTabId();
+
       renderPreviewOnly();
     } catch (e) {      const current = openFileTabs.get(tabId) || openFileTabs.get(provisionalTabId);
+
       if (!current || current.token !== token) return;
-      editorCore.openTab({
+      runWithoutEditorCoreRender(() => editorCore.openTab({
         ...current,
         id: current.id || tabId,
         file: { kind: "error", message: e?.message || String(e || "Failed to open file") }
-      });
+      }));
       activeFileTabId = editorCore.getActiveTabId();
       renderPreviewOnly();
     }
+  }
+
+  async function refreshExistingContextFileTab(item, existingTab) {
+    const path = item?.path || item?.label || existingTab?.path || existingTab?.displayPath || "";
+    const tabId = existingTab?.id || "";
+    if (!path || !tabId) return;
+    saveActivePreviewScrollState(tabId);
+    const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+    runWithoutEditorCoreRender(() => editorCore.updateTab(tabId, { token }, { reason: "refresh-existing" }));
+    try {
+      const sourceId = existingTab.sourceId || await ensureRevealSourceForPath(path, item?.sourceId || inferFileSource());
+      const node = createContextFileNode(path, sourceId, existingTab.title || displayFileName(path));
+
+      const file = await getProvider(sourceId).readFile(node);
+
+      const current = openFileTabs.get(tabId);
+      if (!current || current.token !== token) {
+
+        return;
+      }
+      const sameFile = sameContextPreviewFile(current.file, file);
+
+      if (sameFile) {
+
+        return;
+      }
+      runWithoutEditorCoreRender(() => editorCore.openTab({
+        ...current,
+        sourceId,
+        size: typeof file?.size === "number" ? file.size : current.size,
+        file
+      }, { reason: "refresh-existing" }));
+      activeFileTabId = editorCore.getActiveTabId();
+
+      renderPreviewOnly();
+    } catch (e) {
+
+      window.showToast?.(e?.message || String(e || "Failed to refresh file"));
+    }
+  }
+
+  function sameContextPreviewFile(a, b) {
+    if (!a || !b || a.kind !== b.kind) return false;
+    if (a.kind === "text" || a.kind === "memory-text") return String(a.content || "") === String(b.content || "");
+    if (a.kind === "binary") return Number(a.size || 0) === Number(b.size || 0);
+    if (a.kind === "image") return Number(a.blob?.size || 0) === Number(b.blob?.size || 0);
+    return JSON.stringify(a) === JSON.stringify(b);
   }
 
   function openContextMemoryPreview(item) {
     if (!item?.id) return;
     const tabId = `memory:${item.id}`;
     const latest = window.zion?.memory?.getMemory?.(item.id) || item;
-    editorCore.openTab({
+    const existing = openFileTabs.get(tabId);
+    const nextTab = {
       id: tabId,
       kind: "memory",
       memoryId: item.id,
@@ -310,7 +416,9 @@ function createContextPanel(container) {
       displayPath: latest.path || latest.title || "memory.md",
       language: languageFromFilename(latest.path || "memory.md"),
       size: typeof latest.content === "string" ? latest.content.length : 0
-    });
+    };
+    if (existing?.id === activeFileTabId && sameContextPreviewFile(resolveContextPreviewTab(existing).file, resolveContextPreviewTab(nextTab).file)) return;
+    runWithoutEditorCoreRender(() => editorCore.openTab(nextTab));
     activeFileTabId = editorCore.getActiveTabId();
     renderPreviewOnly();
   }
@@ -329,6 +437,7 @@ function createContextPanel(container) {
 
   function renderPreviewOnly() {
     const existing = root.querySelector(".zion-context-preview-pane");
+
     if (!openFileTabs.size) {
       if (existing) {
         disposePreviewResources();
@@ -338,6 +447,8 @@ function createContextPanel(container) {
       return;
     }
     if (existing) {
+      saveActivePreviewScrollState();
+
       disposePreviewResources();
       const next = renderContextPreviewPane();
       existing.replaceWith(next);
@@ -404,7 +515,8 @@ function createContextPanel(container) {
       item.title = tab.displayPath || tab.title;
       item.dataset.tabId = tab.id;
       item.onclick = () => {
-        activeFileTabId = editorCore.setActiveTab(tab.id);
+        if (tab.id === activeFileTabId) return;
+        activeFileTabId = runWithoutEditorCoreRender(() => editorCore.setActiveTab(tab.id));
         renderPreviewOnly();
       };
       const icon = document.createElement("span");
@@ -434,6 +546,9 @@ function createContextPanel(container) {
       content.className = "zion-files-preview-content";
       renderContextFileTabContent(content, resolveContextPreviewTab(tab));
       pane.appendChild(content);
+      pane.dataset.activeTabId = tab.id;
+      attachPreviewScrollTracking(tab.id, pane);
+      restorePreviewScrollState(tab.id, pane);
     }
     return pane;
   }
@@ -487,7 +602,8 @@ function createContextPanel(container) {
     icon.setAttribute("aria-hidden", "true");
     button.appendChild(icon);
     button.onclick = () => {
-      editorCore.updateTab(tab.id, { markdownPreview: !shouldShowMarkdownPreview(tab) }, { reason: "markdown-preview" });
+      runWithoutEditorCoreRender(() => editorCore.updateTab(tab.id, { markdownPreview: !shouldShowMarkdownPreview(tab) }, { reason: "markdown-preview" }));
+      renderPreviewOnly();
     };
     return button;
   }
@@ -555,12 +671,32 @@ function createContextPanel(container) {
   }
 
   function closeContextFileTab(tabId) {
-    editorCore.closeTab(tabId);
+    runWithoutEditorCoreRender(() => editorCore.closeTab(tabId));
     activeFileTabId = editorCore.getActiveTabId();
     renderPreviewOnly();
   }
 
+  function shouldRefreshPreviewOnly(reason) {
+    return ["active", "open", "update", "close", "markdown-preview", "resolve-file-tab"].includes(String(reason || ""));
+  }
+
+  function runWithoutEditorCoreRender(fn) {
+    suppressEditorCoreRender += 1;
+    try {
+      return typeof fn === "function" ? fn() : undefined;
+    } finally {
+      suppressEditorCoreRender = Math.max(0, suppressEditorCoreRender - 1);
+      activeFileTabId = editorCore.getActiveTabId();
+      explorerWidth = editorCore.getExplorerWidth();
+    }
+  }
+
   function disposePreviewResources() {
+
+    if (previewScrollCleanup) {
+      try { previewScrollCleanup(); } catch {}
+      previewScrollCleanup = null;
+    }
     flushPreviewMemoryEditor();
     try { previewCodeView?.destroy?.(); } catch {}
     previewCodeView = null;
@@ -568,6 +704,86 @@ function createContextPanel(container) {
       try { URL.revokeObjectURL(previewObjectUrl); } catch {}
       previewObjectUrl = "";
     }
+  }
+
+  function saveActivePreviewScrollState(tabId = "") {
+    const pane = root.querySelector(".zion-context-preview-pane");
+    const id = tabId || pane?.dataset.activeTabId || activeFileTabId;
+    if (!id || !pane || pane.querySelector(".zion-files-preview-empty")) return;
+    const scrollEl = getPreviewScrollElement(pane);
+    if (!scrollEl) return;
+    editorCore.setPreviewScroll?.(id, {
+      top: scrollEl.scrollTop || 0,
+      left: scrollEl.scrollLeft || 0
+    });
+  }
+
+  function restorePreviewScrollState(tabId, pane) {
+    const state = editorCore.getPreviewScroll?.(tabId);
+    if (!state) return;
+    [0, 1, 4].forEach((frames) => restorePreviewScrollStateSoon(tabId, pane, state, frames));
+    for (const img of Array.from(pane.querySelectorAll("img"))) {
+      if (!img.complete) {
+        img.addEventListener("load", () => restorePreviewScrollStateSoon(tabId, pane, state, 0), { once: true });
+        img.addEventListener("error", () => restorePreviewScrollStateSoon(tabId, pane, state, 0), { once: true });
+      }
+    }
+  }
+
+  function restorePreviewScrollStateSoon(tabId, pane, state, frames) {
+    let leftFrames = Math.max(0, Number(frames || 0));
+    const apply = () => {
+      if (disposed || !pane.isConnected || pane.dataset.activeTabId !== tabId) return;
+      if (leftFrames > 0) {
+        leftFrames -= 1;
+        requestAnimationFrame(apply);
+        return;
+      }
+      const scrollEl = getPreviewScrollElement(pane);
+      if (!scrollEl) return;
+      scrollEl.scrollTop = state.top || 0;
+      scrollEl.scrollLeft = state.left || 0;
+    };
+    requestAnimationFrame(apply);
+  }
+
+  function attachPreviewScrollTracking(tabId, pane) {
+    if (previewScrollCleanup) {
+      try { previewScrollCleanup(); } catch {}
+      previewScrollCleanup = null;
+    }
+    requestAnimationFrame(() => {
+      if (disposed || !pane.isConnected || pane.dataset.activeTabId !== tabId) return;
+      const scrollEl = getPreviewScrollElement(pane);
+      if (!scrollEl) return;
+      let ticking = false;
+      const save = () => {
+        ticking = false;
+        if (disposed || !pane.isConnected || pane.dataset.activeTabId !== tabId) return;
+        editorCore.setPreviewScroll?.(tabId, {
+          top: scrollEl.scrollTop || 0,
+          left: scrollEl.scrollLeft || 0
+        });
+      };
+      const onScroll = () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(save);
+      };
+      scrollEl.addEventListener("scroll", onScroll, { passive: true });
+      previewScrollCleanup = () => {
+        save();
+        scrollEl.removeEventListener("scroll", onScroll);
+      };
+    });
+  }
+
+  function getPreviewScrollElement(pane) {
+    if (previewCodeView?.scrollDOM && pane.contains(previewCodeView.dom)) return previewCodeView.scrollDOM;
+    return pane.querySelector(".zion-files-markdown-preview")
+      || pane.querySelector(".zion-files-preview-image-stage")
+      || pane.querySelector(".zion-files-preview-code-host .cm-scroller")
+      || pane.querySelector(".zion-files-preview-content");
   }
 
   function flushPreviewMemoryEditor() {
@@ -1276,18 +1492,12 @@ function renderAgentTaskRows(tasks, state) {
 function renderMemoryRows(memories, state) {
   return (Array.isArray(memories) ? memories : []).slice(0, 24).map((item, index) => {
     const key = `memory:${item.id || index}`;
-    const metaText = [
-      item.enabled === false ? "off" : "on",
-      item.layer || "long-term",
-      item.type || "semantic",
-      item.path || ""
-    ].filter(Boolean).join(" · ");
+    const enabled = item.enabled !== false;
     return renderTreeRow({
       key,
       depth: 1,
-      icon: item.layer === "working" ? "codicon-pinned" : "codicon-file-code",
       label: compactEnd(item.path || item.title || "Memory", 88),
-      meta: metaText,
+      meta: enabled ? "on" : "off",
       title: [
         item.title || "Memory",
         `Path: ${item.path || ""}`,
@@ -1303,10 +1513,7 @@ function renderMemoryRows(memories, state) {
       onClick: () => {
         state.onOpenMemory?.(item);
       },
-      onSelect: state.onSelect,
-      secondaryActionIcon: "codicon-copy",
-      secondaryActionTitle: t("context.copyMemory", "Copy memory info"),
-      onSecondaryAction: () => copyText(formatMemoryCopyText(item))
+      onSelect: state.onSelect
     });
   });
 }
