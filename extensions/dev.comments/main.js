@@ -258,7 +258,7 @@ function compactText(value, max = 88) {
 
 function cssEscape(value) {
   try {
-    return CSS.escape(String(value || ""));
+    return globalThis.CSS?.escape?.(String(value || "")) || String(value || "").replace(/["\\]/g, "\\$&");
   } catch {
     return String(value || "").replace(/["\\]/g, "\\$&");
   }
@@ -450,6 +450,51 @@ function lineRangeFor(view, from, to) {
   }
 }
 
+function buildSourceContextSnapshot(view, anchorTo) {
+  try {
+    const doc = view?.state?.doc;
+    if (!view || !doc) return null;
+    const to = Math.max(0, Math.min(doc.length, Number(anchorTo) || 0));
+    const lines = lineRangeFor(view, 0, to);
+    return {
+      text: view.state.sliceDoc(0, to),
+      from: 0,
+      to,
+      startLine: 0,
+      endLine: lines.endLine
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveThreadSourceContext(thread) {
+  try {
+    const editor = getEditorForThread(thread);
+    const view = editor?.getView?.();
+    const anchor = view ? locateThreadAnchor(view, thread) : null;
+    const to = typeof anchor?.to === "number" ? anchor.to : Number(thread?.to);
+    const snapshot = buildSourceContextSnapshot(view, to);
+    if (snapshot?.text) return { ...snapshot, current: true };
+  } catch {}
+  const text = String(thread?.sourceContextText || "");
+  if (!text) return null;
+  return {
+    text,
+    from: Number(thread?.sourceContextFrom) || 0,
+    to: Number(thread?.sourceContextTo) || text.length,
+    startLine: Number(thread?.sourceContextStartLine) || 0,
+    endLine: Number(thread?.sourceContextEndLine) || Number(thread?.endLine) || Number(thread?.startLine) || 0,
+    current: false
+  };
+}
+
+function formatThreadLineRange(thread, context) {
+  const start = Number.isFinite(Number(thread?.startLine)) ? Number(thread.startLine) : Number(context?.startLine) || 0;
+  const end = Number.isFinite(Number(thread?.endLine)) ? Number(thread.endLine) : Number(context?.endLine) || start;
+  return `${start + 1}-${end + 1}`;
+}
+
 function getAnchorText(thread) {
   return String(thread?.anchorText || thread?.quote || "");
 }
@@ -503,6 +548,7 @@ function createThreadFromSelection({ view, from, to, selectionText }) {
     quote = anchorText.trim() || `L${line.number}`;
   }
   const lines = lineRangeFor(view, anchorFrom, anchorTo);
+  const sourceContext = buildSourceContextSnapshot(view, anchorTo);
   const id = uid();
   const thread = {
     id,
@@ -516,6 +562,11 @@ function createThreadFromSelection({ view, from, to, selectionText }) {
     endLine: lines.endLine,
     anchorText,
     quote: quote.slice(0, 4000),
+    sourceContextText: sourceContext?.text || anchorText,
+    sourceContextFrom: sourceContext?.from ?? 0,
+    sourceContextTo: sourceContext?.to ?? anchorTo,
+    sourceContextStartLine: sourceContext?.startLine ?? 0,
+    sourceContextEndLine: sourceContext?.endLine ?? lines.endLine,
     body: "",
     resolved: false,
     createdAt: now(),
@@ -666,17 +717,22 @@ function installCommentAnchors(editor) {
 }
 
 function buildThreadContextMessages(thread) {
+  const sourceContext = resolveThreadSourceContext(thread);
+  const sourceContextText = String(sourceContext?.text || thread?.anchorText || thread?.quote || "（无）");
   const system = [
     "你正在回复 Zion Comments 中的一个独立评论会话。",
-    "这个会话独立于主编辑器，但继承主文档中被评论片段的上下文。",
+    "这个会话独立于主编辑器，但继承主文档中选区以及选区以上的上下文。",
     "请重点围绕被评论片段回答，必要时给出可执行的修改建议；不要假设你正在直接编辑主文档。",
     "",
     `主会话 ID：${thread?.parentSessionId || thread?.sessionId || "unknown"}`,
     `评论线程 ID：${thread?.id || "unknown"}`,
-    `锚点行：${thread?.lineFrom || "?"}-${thread?.lineTo || "?"}`,
+    `锚点行：${formatThreadLineRange(thread, sourceContext)}`,
     "",
     "被评论片段：",
-    thread?.anchorText || thread?.quote || "（无）"
+    thread?.anchorText || thread?.quote || "（无）",
+    "",
+    "原会话编辑器上下文（从文档开头到被评论片段结束，包含被评论片段）：",
+    sourceContextText
   ].join("\n");
   return [{ role: "system", content: system }];
 }
@@ -1324,6 +1380,7 @@ async function runThread(thread, handle) {
       panelId: handle?.panelId || `comments:${thread.id}`,
       skipSessionPersistence: true,
       usageSessionId: thread.parentSessionId || thread.sessionId,
+      requestSource: "comments",
       contextMessages: buildThreadContextMessages(thread)
     });
     try {

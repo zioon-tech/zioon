@@ -182,6 +182,20 @@ function buildProviderURL(cfg, providerType) {
   return cfg.url;
 }
 
+function redactRequestUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (/^(key|api_key|apikey|token|access_token|authorization)$/i.test(key)) {
+        parsed.searchParams.set(key, "<redacted>");
+      }
+    }
+    return parsed.toString();
+  } catch {
+    return String(url || "").replace(/([?&](?:key|api_key|apikey|token|access_token|authorization)=)[^&]+/gi, "$1<redacted>");
+  }
+}
+
 function normalizeProviderUsage(raw, providerType) {
   if (!raw || typeof raw !== "object") return null;
   if (providerType === "gemini") {
@@ -503,11 +517,16 @@ export async function runStream({
   runId,
   sessionId,
   panelId,
+  answerAnchorPos,
+  answerHeadLine,
+  requestSource,
+  stepIndex,
   silentReasoning = false,
   activeModel = null
 }) {
   // 读取当前激活的模型（默认 deepseek:deepseek-chat）
   const active = activeModel || window.zion.state.get("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+  const controlEventBase = { runId, sessionId, panelId, answerAnchorPos, answerHeadLine, silentReasoning };
   const provider = window.zion.models.getProvider(active.providerId);
   if (!provider) throw new Error(`Provider not found: ${active.providerId}`);
   let cfg = await provider.resolve(active.modelId);
@@ -650,6 +669,35 @@ export async function runStream({
       // 根据 provider 类型构建请求体
       const body = buildProviderRequestBody(cfg, formattedMessages, tools, providerType);
       const headers = getProviderHeaders(cfg, providerType);
+      try {
+        const requestPayload = {
+          id: `llm_payload_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: Date.now(),
+          runId,
+          sessionId,
+          panelId,
+          source: requestSource,
+          stepIndex,
+          providerId: active.providerId,
+          modelId: active.modelId,
+          modelLabel: active.label || cfg.label || cfg.modelName || active.modelId,
+          providerType,
+          url: redactRequestUrl(url),
+          stream: cfg.stream !== false,
+          retryWithReasoningContent: !!forcedOnce,
+          messageCount: formattedMessages.length,
+          toolCount: tools ? (Array.isArray(tools) ? tools.length : Object.keys(tools || {}).length) : 0,
+          payload: body
+        };
+        window.zion?.events?.emit?.("llm/requestPayload", requestPayload);
+        if (typeof window.zion?.llmPayloads?.add === "function") {
+          window.zion.llmPayloads.add(requestPayload);
+        } else {
+          const queue = window.zion.__llmPayloadQueue || (window.zion.__llmPayloadQueue = []);
+          queue.push(requestPayload);
+          while (queue.length > 80) queue.shift();
+        }
+      } catch {}
 
       return await fetchWithRetry(
         url,
@@ -792,7 +840,7 @@ export async function runStream({
             try {
               if (emittedReasoningStart) {
                 try { beforeControlEvent?.("reasoningEnd"); } catch {}
-                window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId, panelId, silentReasoning });
+                window.zion?.events?.emit("chat/reasoningEnd", controlEventBase);
               }
             } catch {}
             onEnd();
@@ -802,18 +850,18 @@ export async function runStream({
           if (parseResult.thinkingStart) {
             emittedReasoningStart = true;
             try { beforeControlEvent?.("reasoningStart"); } catch {}
-            try { window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId, panelId, silentReasoning }); } catch {}
+            try { window.zion?.events?.emit("chat/reasoningStart", controlEventBase); } catch {}
           }
 
           if (parseResult.thinkingToken) {
             if (!emittedReasoningStart) {
               emittedReasoningStart = true;
               try { beforeControlEvent?.("reasoningStart"); } catch {}
-              try { window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId, panelId, silentReasoning }); } catch {}
+              try { window.zion?.events?.emit("chat/reasoningStart", controlEventBase); } catch {}
             }
             reasoningBuf += parseResult.thinkingToken;
             try { beforeControlEvent?.("reasoningToken"); } catch {}
-            try { window.zion?.events?.emit("chat/reasoningToken", { runId, token: parseResult.thinkingToken, sessionId, panelId, silentReasoning }); } catch {}
+            try { window.zion?.events?.emit("chat/reasoningToken", { ...controlEventBase, token: parseResult.thinkingToken }); } catch {}
           }
 
           if (parseResult.contentToken) {
@@ -832,7 +880,7 @@ export async function runStream({
       try {
         if (emittedReasoningStart) {
           try { beforeControlEvent?.("reasoningEnd"); } catch {}
-          window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId, panelId, silentReasoning });
+          window.zion?.events?.emit("chat/reasoningEnd", controlEventBase);
         }
       } catch {}
       onEnd();
@@ -927,11 +975,11 @@ export async function runStream({
         reasoningBuf += String(reasoningContent);
         try {
           try { beforeControlEvent?.("reasoningStart"); } catch {}
-          window.zion?.events?.emit("chat/reasoningStart", { runId, sessionId, panelId, silentReasoning });
+          window.zion?.events?.emit("chat/reasoningStart", controlEventBase);
           try { beforeControlEvent?.("reasoningToken"); } catch {}
-          window.zion?.events?.emit("chat/reasoningToken", { runId, token: reasoningContent, sessionId, panelId, silentReasoning });
+          window.zion?.events?.emit("chat/reasoningToken", { ...controlEventBase, token: reasoningContent });
           try { beforeControlEvent?.("reasoningEnd"); } catch {}
-          window.zion?.events?.emit("chat/reasoningEnd", { runId, sessionId, panelId, silentReasoning });
+          window.zion?.events?.emit("chat/reasoningEnd", controlEventBase);
         } catch {}
       }
 

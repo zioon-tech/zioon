@@ -1,3 +1,4 @@
+/* global CSS, atob */
 import { EditorState, Prec, StateEffect } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, rectangularSelection } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
@@ -7,6 +8,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { tags as cmTags } from "@lezer/highlight";
+import { getEditorCore } from "./editor-core.js";
 
 export const FILES_VIEW_ID = "dev.tools.files";
 
@@ -14,7 +16,6 @@ const I18N_NS = "dev.tools";
 const LS_EXPANDED = "zion.devTools.files.expanded";
 const LS_SORT = "zion.devTools.files.sort";
 const LS_SOURCE = "zion.devTools.files.source";
-const LS_EXPLORER_WIDTH = "zion.devTools.files.explorerWidth";
 const LS_TREE_CACHE_PREFIX = "zion.devTools.files.treeCache.";
 const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
 const TERMINAL_READ_CHUNK_BYTES = 12 * 1024;
@@ -116,6 +117,7 @@ function createFilesPanel(container) {
   root.className = "zion-files-panel";
   container.appendChild(root);
 
+
   const expanded = loadExpanded();
   const dirCache = new Map();
   const loadingKeys = new Set();
@@ -124,7 +126,8 @@ function createFilesPanel(container) {
   const prefetchPromises = new Map();
   const prefetchQueue = [];
   const failedKeys = new Map();
-  const openFileTabs = new Map();
+  const editorCore = getEditorCore(FILES_VIEW_ID);
+  const openFileTabs = editorCore.tabs;
   const disposables = [];
 
   let roots = [];
@@ -139,16 +142,21 @@ function createFilesPanel(container) {
   let prefetchSeq = 0;
   let prefetchTimer = 0;
   let activePrefetchCount = 0;
-  let activeFileTabId = "";
+  let activeFileTabId = editorCore.getActiveTabId();
   let previewCodeView = null;
+  let previewMemoryEditorItemId = "";
+  let previewMemoryEditorSaveTimer = 0;
+  let previewMemoryEditorDirty = false;
   let previewObjectUrl = "";
-  let explorerWidth = loadExplorerWidth();
+  let explorerWidth = editorCore.getExplorerWidth();
   let lastTerminalSessionIds = terminalSessionIdsSignature();
   let lastActiveTerminalSessionId = getActiveTerminalSessionId();
   let revealStatus = "";
   let hydratedFromTreeCache = false;
   let saveTreeCacheTimer = 0;
   let refreshExpandedTimer = 0;
+  let previewScrollCleanup = null;
+  let suppressEditorCoreRender = 0;
   let contextMenuEl = null;
   let pendingReveal = null;
 
@@ -200,6 +208,17 @@ function createFilesPanel(container) {
     scheduleRender();
   })); } catch {}
   try { disposables.push(window.zion.events.on("i18n/changed", scheduleRender)); } catch {}
+  disposables.push(editorCore.subscribe((payload) => {
+    activeFileTabId = editorCore.getActiveTabId();
+    explorerWidth = editorCore.getExplorerWidth();
+    if (suppressEditorCoreRender > 0) return;
+    if (shouldRefreshPreviewOnly(payload?.reason)) {
+      if (openFileTabs.size) renderPreviewOnly();
+      else scheduleRender();
+      return;
+    }
+    scheduleRender();
+  }));
 
   setTimeout(() => {
     if (disposed || !pendingRevealCommandPayload) return;
@@ -212,6 +231,7 @@ function createFilesPanel(container) {
 
   return {
     dispose() {
+
       disposed = true;
       if (renderTimer) window.cancelAnimationFrame(renderTimer);
       for (const timer of loadingRenderTimers.values()) window.clearTimeout(timer);
@@ -227,8 +247,6 @@ function createFilesPanel(container) {
       prefetchingKeys.clear();
       prefetchPromises.clear();
       disposePreviewResources();
-      for (const tab of openFileTabs.values()) disposeFileTabResources(tab);
-      openFileTabs.clear();
       for (const d of disposables.splice(0)) {
         try { d?.dispose?.(); } catch {}
       }
@@ -264,10 +282,12 @@ function createFilesPanel(container) {
     } catch (e) {
       if (seq !== refreshSeq || disposed) return;
       if (!background) roots = [];
-      rootsError = e?.message || String(e || "");    } finally {
-      if (seq !== refreshSeq || disposed) return;
-      rootsLoading = false;
-      scheduleRender();
+      rootsError = e?.message || String(e || "");
+    } finally {
+      if (seq === refreshSeq && !disposed) {
+        rootsLoading = false;
+        scheduleRender();
+      }
     }
   }
 
@@ -354,9 +374,21 @@ function createFilesPanel(container) {
 
   function render() {
     const previousScrollTop = root.querySelector(".zion-files-scroll")?.scrollTop || 0;
+    saveActivePreviewScrollState();
+
     const body = document.createElement("div");
     body.className = "zion-files-scroll";
     const mount = () => {
+      const existingWorkspace = root.querySelector(".zion-files-workspace");
+      const existingExplorer = existingWorkspace?.querySelector(".zion-files-explorer");
+      const existingPreview = existingWorkspace?.querySelector(".zion-files-preview-pane");
+      if (existingWorkspace && existingExplorer && existingPreview && openFileTabs.size) {
+
+        existingWorkspace.classList.add("has-preview");
+        existingExplorer.style.flexBasis = `${explorerWidth}px`;
+        existingExplorer.replaceChildren(renderSourceBar(), body);
+        return;
+      }
       const workspace = document.createElement("div");
       workspace.className = `zion-files-workspace${openFileTabs.size ? " has-preview" : ""}`;
       const explorer = document.createElement("div");
@@ -365,6 +397,7 @@ function createFilesPanel(container) {
       explorer.appendChild(renderSourceBar());
       explorer.appendChild(body);
       workspace.appendChild(explorer);
+
       disposePreviewResources();
       if (openFileTabs.size) {
         workspace.appendChild(renderResizeHandle(workspace, explorer));
@@ -435,7 +468,14 @@ function createFilesPanel(container) {
       item.title = tab.displayPath || tab.title;
       item.dataset.tabId = tab.id;
       item.onclick = () => {
-        activeFileTabId = tab.id;
+
+        if (tab.id === activeFileTabId) {
+
+          return;
+        }
+        saveActivePreviewScrollState();
+        activeFileTabId = runWithoutEditorCoreRender(() => editorCore.setActiveTab(tab.id));
+
         renderPreviewOnly();
       };
       item.onauxclick = (event) => {
@@ -444,7 +484,7 @@ function createFilesPanel(container) {
         closeFileTab(tab.id);
       };
       const icon = document.createElement("span");
-      icon.className = `zion-files-preview-tab-icon codicon ${iconForFile(tab.title)}`;
+      icon.className = `zion-files-preview-tab-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
       icon.setAttribute("aria-hidden", "true");
       const label = document.createElement("span");
       label.className = "zion-files-preview-tab-label";
@@ -470,12 +510,17 @@ function createFilesPanel(container) {
     const tab = openFileTabs.get(activeFileTabId) || openFileTabs.values().next().value;
     if (tab) {
       activeFileTabId = tab.id;
+      pane.dataset.activeTabId = tab.id;
       pane.appendChild(renderPreviewHeader(tab));
       renderFileTabContent(content, tab);
     } else {
       content.appendChild(renderEmptyState(t("files.noPreview", "No file open"), "", []));
     }
     pane.appendChild(content);
+    if (tab) {
+      attachPreviewScrollTracking(tab.id, pane);
+      restorePreviewScrollState(tab.id, pane);
+    }
     scrollActiveFileTabIntoView();
     return pane;
   }
@@ -495,12 +540,12 @@ function createFilesPanel(container) {
         const rect = workspace.getBoundingClientRect();
         const max = Math.max(220, rect.width - 260);
         const next = Math.max(180, Math.min(max, moveEvent.clientX - rect.left));
-        explorerWidth = Math.round(next);
+        explorerWidth = editorCore.setExplorerWidth(next, { silent: true });
         explorer.style.flexBasis = `${explorerWidth}px`;
       };
       const stop = () => {
         root.classList.remove("is-resizing-files");
-        saveExplorerWidth(explorerWidth);
+        editorCore.notify("resize");
         try { handle.releasePointerCapture(pointerId); } catch {}
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", stop);
@@ -514,22 +559,42 @@ function createFilesPanel(container) {
   }
 
   function renderPreviewHeader(tab) {
+    tab = resolveEditorTab(tab);
     const header = document.createElement("div");
     header.className = "zion-files-preview-header";
     const icon = document.createElement("span");
-    icon.className = `zion-files-preview-header-icon codicon ${iconForFile(tab.title)}`;
+    icon.className = `zion-files-preview-header-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
     icon.setAttribute("aria-hidden", "true");
     const title = renderBreadcrumb(tab.displayPath || tab.path || tab.title);
     const meta = document.createElement("div");
     meta.className = "zion-files-preview-meta";
     const parts = [];
+    if (tab.kind === "memory") parts.push("Memory");
     if (typeof tab.size === "number") parts.push(formatBytes(tab.size));
     if (tab.language && tab.language !== "text") parts.push(tab.language);
     meta.textContent = parts.join(" · ");
     header.appendChild(icon);
     header.appendChild(title);
     if (meta.textContent) header.appendChild(meta);
+    if (isMarkdownTab(tab)) header.appendChild(renderMarkdownPreviewToggle(tab));
     return header;
+  }
+
+  function renderMarkdownPreviewToggle(tab) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `zion-files-preview-mode-button${shouldShowMarkdownPreview(tab) ? " is-active" : ""}`;
+    button.title = shouldShowMarkdownPreview(tab) ? t("files.disableMarkdownPreview", "Disable Markdown preview") : t("files.previewMarkdown", "Preview Markdown");
+    const icon = document.createElement("span");
+    icon.className = "codicon codicon-eye";
+    icon.setAttribute("aria-hidden", "true");
+    button.appendChild(icon);
+    button.onclick = () => {
+      saveActivePreviewScrollState(tab.id);
+      runWithoutEditorCoreRender(() => editorCore.updateTab(tab.id, { markdownPreview: !shouldShowMarkdownPreview(tab) }, { reason: "markdown-preview" }));
+      renderPreviewOnly();
+    };
+    return button;
   }
 
   function renderBreadcrumb(path) {
@@ -564,12 +629,31 @@ function createFilesPanel(container) {
 
   function renderPreviewOnly() {
     const existing = root.querySelector(".zion-files-preview-pane");
+    const tab = openFileTabs.get(activeFileTabId);
+
     if (!existing) {
       showPreviewPaneIncremental();
       return;
     }
+    saveActivePreviewScrollState();
     disposePreviewResources();
+
     existing.replaceWith(renderPreviewPane());
+  }
+
+  function shouldRefreshPreviewOnly(reason) {
+    return ["active", "open", "update", "close", "markdown-preview"].includes(String(reason || ""));
+  }
+
+  function runWithoutEditorCoreRender(fn) {
+    suppressEditorCoreRender += 1;
+    try {
+      return typeof fn === "function" ? fn() : undefined;
+    } finally {
+      suppressEditorCoreRender = Math.max(0, suppressEditorCoreRender - 1);
+      activeFileTabId = editorCore.getActiveTabId();
+      explorerWidth = editorCore.getExplorerWidth();
+    }
   }
 
   function scrollActiveFileTabIntoView() {
@@ -591,12 +675,105 @@ function createFilesPanel(container) {
     }
     workspace.classList.add("has-preview");
     explorer.style.flexBasis = `${explorerWidth}px`;
+    saveActivePreviewScrollState();
     disposePreviewResources();
     workspace.appendChild(renderResizeHandle(workspace, explorer));
     workspace.appendChild(renderPreviewPane());
   }
 
+  function saveActivePreviewScrollState(tabId = "") {
+    const pane = root.querySelector(".zion-files-preview-pane");
+    const id = tabId || pane?.dataset.activeTabId || activeFileTabId;
+    if (!id || !pane) return;
+    if (pane.querySelector(".zion-files-preview-empty")) return;
+    const scrollEl = getPreviewScrollElement(pane);
+    if (!scrollEl) return;
+
+    editorCore.setPreviewScroll?.(id, {
+      top: scrollEl.scrollTop || 0,
+      left: scrollEl.scrollLeft || 0
+    });
+  }
+
+  function restorePreviewScrollState(tabId, pane) {
+    const state = editorCore.getPreviewScroll?.(tabId);
+    if (!state) return;
+    restorePreviewScrollStateSoon(tabId, pane, state, 0);
+    restorePreviewScrollStateSoon(tabId, pane, state, 1);
+    restorePreviewScrollStateSoon(tabId, pane, state, 4);
+    for (const img of Array.from(pane.querySelectorAll("img"))) {
+      if (!img.complete) {
+        img.addEventListener("load", () => restorePreviewScrollStateSoon(tabId, pane, state, 0), { once: true });
+        img.addEventListener("error", () => restorePreviewScrollStateSoon(tabId, pane, state, 0), { once: true });
+      }
+    }
+  }
+
+  function restorePreviewScrollStateSoon(tabId, pane, state, frames) {
+    let leftFrames = Math.max(0, Number(frames || 0));
+    const apply = () => {
+      if (disposed || !pane.isConnected) return;
+      if (pane.dataset.activeTabId !== tabId) return;
+      if (leftFrames > 0) {
+        leftFrames -= 1;
+        requestAnimationFrame(apply);
+        return;
+      }
+      const scrollEl = getPreviewScrollElement(pane);
+      if (!scrollEl) return;
+
+      scrollEl.scrollTop = state.top || 0;
+      scrollEl.scrollLeft = state.left || 0;
+    };
+    requestAnimationFrame(apply);
+  }
+
+  function attachPreviewScrollTracking(tabId, pane) {
+    if (previewScrollCleanup) {
+      try { previewScrollCleanup(); } catch {}
+      previewScrollCleanup = null;
+    }
+    requestAnimationFrame(() => {
+      if (disposed || !pane.isConnected || pane.dataset.activeTabId !== tabId) return;
+      const scrollEl = getPreviewScrollElement(pane);
+      if (!scrollEl) return;
+
+      let ticking = false;
+      const save = () => {
+        ticking = false;
+        if (disposed || !pane.isConnected || pane.dataset.activeTabId !== tabId) return;
+        editorCore.setPreviewScroll?.(tabId, {
+          top: scrollEl.scrollTop || 0,
+          left: scrollEl.scrollLeft || 0
+        });
+      };
+      const onScroll = () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(save);
+      };
+      scrollEl.addEventListener("scroll", onScroll, { passive: true });
+      previewScrollCleanup = () => {
+        save();
+        scrollEl.removeEventListener("scroll", onScroll);
+      };
+    });
+  }
+
+  function getPreviewScrollElement(pane) {
+    if (previewCodeView?.scrollDOM && pane.contains(previewCodeView.dom)) return previewCodeView.scrollDOM;
+    const candidates = [
+      pane.querySelector(".zion-files-markdown-preview"),
+      pane.querySelector(".zion-files-preview-image-stage"),
+      pane.querySelector(".zion-files-preview-code-host .cm-scroller"),
+      pane.querySelector(".zion-files-preview-code-host"),
+      pane.querySelector(".zion-files-preview-content")
+    ].filter(Boolean);
+    return candidates.find((el) => el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth) || candidates[0] || null;
+  }
+
   function renderFileTabContent(parent, tab) {
+    tab = resolveEditorTab(tab);
     if (tab.file?.kind === "loading") {
       parent.appendChild(renderPreviewMessage(t("files.opening", "Opening file...")));
       return;
@@ -618,10 +795,35 @@ function createFilesPanel(container) {
       return;
     }
     if (tab.file?.kind === "text") {
+      if (shouldShowMarkdownPreview(tab)) {
+        createFilesMarkdownPreview(parent, String(tab.file.content || ""));
+        return;
+      }
       const codeHost = document.createElement("div");
       codeHost.className = "zion-files-preview-code-host";
       parent.appendChild(codeHost);
       previewCodeView = createFilesCodeViewer(codeHost, String(tab.file.content || ""), tab);
+      return;
+    }
+    if (tab.file?.kind === "memory-text") {
+      if (shouldShowMarkdownPreview(tab)) {
+        createFilesMarkdownPreview(parent, String(tab.file.content || ""));
+        return;
+      }
+      const codeHost = document.createElement("div");
+      codeHost.className = "zion-files-preview-code-host";
+      parent.appendChild(codeHost);
+      previewMemoryEditorItemId = tab.memoryId || "";
+      previewCodeView = createFilesCodeEditor(codeHost, String(tab.file.content || ""), tab, (value) => {
+        previewMemoryEditorDirty = true;
+        if (previewMemoryEditorSaveTimer) window.clearTimeout(previewMemoryEditorSaveTimer);
+        previewMemoryEditorSaveTimer = window.setTimeout(() => {
+          previewMemoryEditorSaveTimer = 0;
+          previewMemoryEditorDirty = false;
+          try { window.zion?.memory?.updateMemory?.(previewMemoryEditorItemId, { content: value }, { silent: true }); } catch {}
+        }, 250);
+      });
+      codeHost.addEventListener("focusout", () => flushPreviewMemoryEditor());
       return;
     }
     const empty = document.createElement("div");
@@ -638,21 +840,55 @@ function createFilesPanel(container) {
   }
 
   function closeFileTab(tabId) {
+    if (tabId === activeFileTabId) saveActivePreviewScrollState(tabId);
     const tab = openFileTabs.get(tabId);
     if (tab) disposeFileTabResources(tab);
-    openFileTabs.delete(tabId);
-    if (activeFileTabId === tabId) {
-      activeFileTabId = Array.from(openFileTabs.keys()).pop() || "";
-    }
+    editorCore.deletePreviewScroll?.(tabId);
+    runWithoutEditorCoreRender(() => editorCore.closeTab(tabId));
+    activeFileTabId = editorCore.getActiveTabId();
     if (openFileTabs.size) renderPreviewOnly();
     else scheduleRender();
   }
 
   function disposePreviewResources() {
+
+    if (previewScrollCleanup) {
+      try { previewScrollCleanup(); } catch {}
+      previewScrollCleanup = null;
+    }
+    flushPreviewMemoryEditor();
     try { previewCodeView?.destroy?.(); } catch {}
     previewCodeView = null;
     try { if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl); } catch {}
     previewObjectUrl = "";
+  }
+
+  function flushPreviewMemoryEditor() {
+    if (previewMemoryEditorSaveTimer) {
+      window.clearTimeout(previewMemoryEditorSaveTimer);
+      previewMemoryEditorSaveTimer = 0;
+    }
+    if (previewMemoryEditorDirty && previewCodeView && previewMemoryEditorItemId) {
+      try { window.zion?.memory?.updateMemory?.(previewMemoryEditorItemId, { content: previewCodeView.state.doc.toString() }); } catch {}
+    }
+    previewMemoryEditorItemId = "";
+    previewMemoryEditorDirty = false;
+  }
+
+  function resolveEditorTab(tab) {
+    if (tab?.kind !== "memory") return tab;
+    const item = window.zion?.memory?.getMemory?.(tab.memoryId) || null;
+    if (!item) return { ...tab, file: { kind: "error", message: "Memory not found" } };
+    return {
+      ...tab,
+      title: basenameFromPath(item.path || item.title || "memory.md"),
+      path: item.path || item.title || "memory.md",
+      displayPath: item.path || item.title || "memory.md",
+      language: languageFromFilename(item.path || "memory.md"),
+      size: typeof item.content === "string" ? item.content.length : 0,
+      memory: item,
+      file: { kind: "memory-text", content: item.content || "" }
+    };
   }
 
   function disposeFileTabResources(tab) {
@@ -1189,7 +1425,9 @@ function createFilesPanel(container) {
   async function openFile(node, details) {    try { details.open = false; } catch {}
     selectedKey = node.key;
     syncActiveRows();
+
     if (node.provider === "local" && !node.handle) {
+
       window.showToast?.(t("files.refreshingTree", "Refreshing file tree..."));
       refreshExpandedDirectoriesSoon();
       return;
@@ -1197,7 +1435,16 @@ function createFilesPanel(container) {
     const tabId = `file:${stableFileTabId(node)}`;
     const existing = openFileTabs.get(tabId);
     if (existing) {
-      return refreshOpenFileTab(node, tabId, existing);
+      saveActivePreviewScrollState();
+      const nextSignature = fileNodeVersionSignature(node);
+      const shouldRefresh = !!nextSignature && !!existing.sourceSignature && nextSignature !== existing.sourceSignature;
+
+      if (shouldRefresh) return refreshExistingOpenFileTab(node, tabId, nextSignature);
+      if (existing.id === activeFileTabId) return refreshExistingOpenFileTab(node, tabId, nextSignature || existing.sourceSignature || "");
+      activeFileTabId = runWithoutEditorCoreRender(() => editorCore.setActiveTab(tabId));
+
+      renderPreviewOnly();
+      return;
     }
 
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -1208,76 +1455,109 @@ function createFilesPanel(container) {
       displayPath: node.displayPath || node.path || node.name,
       language: languageFromFilename(node.name),
       size: typeof node.size === "number" ? node.size : undefined,
+      sourceSignature: fileNodeVersionSignature(node),
       file: { kind: "loading" },
       token
     };
     const hadPreview = !!root.querySelector(".zion-files-preview-pane") || openFileTabs.size > 0;
-    openFileTabs.set(tabId, baseTab);
-    activeFileTabId = tabId;
+
+    saveActivePreviewScrollState();
+    runWithoutEditorCoreRender(() => editorCore.openTab(baseTab));
+    activeFileTabId = editorCore.getActiveTabId();
     if (hadPreview) renderPreviewOnly();
     else showPreviewPaneIncremental();
 
     try {
       const provider = getProvider(node.sourceId || sourceId);
+
       const file = await provider.readFile(node);
+
       const current = openFileTabs.get(tabId);
-      if (!current || current.token !== token) return;
+      if (!current || current.token !== token) {
+
+        return;
+      }
       const tab = {
         ...current,
         size: typeof file?.size === "number" ? file.size : current.size,
+        sourceSignature: fileNodeVersionSignature(node, file),
         file
       };
-      openFileTabs.set(tabId, tab);
-      activeFileTabId = tabId;
+      runWithoutEditorCoreRender(() => editorCore.openTab(tab));
+      activeFileTabId = editorCore.getActiveTabId();
+
       renderPreviewOnly();
     } catch (e) {
       const message = e?.message || String(e || t("files.openFailed", "Failed to open file"));
+
       const current = openFileTabs.get(tabId);
       if (current && current.token === token) {
-        openFileTabs.set(tabId, { ...current, file: { kind: "error", message } });
-        activeFileTabId = tabId;
+        runWithoutEditorCoreRender(() => editorCore.openTab({ ...current, file: { kind: "error", message } }));
+        activeFileTabId = editorCore.getActiveTabId();
         renderPreviewOnly();
       }
       window.showToast?.(message);
     }
   }
 
-  async function refreshOpenFileTab(node, tabId, existing) {
+  async function refreshExistingOpenFileTab(node, tabId, sourceSignature) {
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    openFileTabs.set(tabId, {
-      ...existing,
-      title: node.name || existing.title,
-      path: node.path || node.displayPath || existing.path || "",
-      displayPath: node.displayPath || node.path || existing.displayPath || node.name,
-      language: languageFromFilename(node.name || existing.title),
-      size: typeof node.size === "number" ? node.size : existing.size,
-      file: { kind: "loading" },
-      token
-    });
-    activeFileTabId = tabId;
-    renderPreviewOnly();
+    const before = openFileTabs.get(tabId);
+
+    runWithoutEditorCoreRender(() => editorCore.updateTab(tabId, { token }, { reason: "refresh-existing" }));
+    activeFileTabId = runWithoutEditorCoreRender(() => editorCore.setActiveTab(tabId));
     try {
       const provider = getProvider(node.sourceId || sourceId);
+
       const file = await provider.readFile(node);
+
       const current = openFileTabs.get(tabId);
-      if (!current || current.token !== token) return;
-      openFileTabs.set(tabId, {
+      if (!current || current.token !== token) {
+
+        return;
+      }
+      const nextSignature = fileNodeVersionSignature(node, file) || sourceSignature;
+      const sameFile = samePreviewFile(current.file, file);
+      const sameSignature = !nextSignature || current.sourceSignature === nextSignature;
+
+      if (sameFile && sameSignature) {
+
+        return;
+      }
+      const next = {
         ...current,
+        title: node.name || current.title,
+        path: node.path || node.displayPath || current.path || "",
+        displayPath: node.displayPath || node.path || current.displayPath || node.name,
+        language: languageFromFilename(node.name || current.title),
         size: typeof file?.size === "number" ? file.size : current.size,
+        sourceSignature: nextSignature,
         file
-      });
-      activeFileTabId = tabId;
+      };
+      runWithoutEditorCoreRender(() => editorCore.openTab(next, { reason: "refresh-existing" }));
+      activeFileTabId = editorCore.getActiveTabId();
+
       renderPreviewOnly();
     } catch (e) {
       const message = e?.message || String(e || t("files.openFailed", "Failed to open file"));
-      const current = openFileTabs.get(tabId);
-      if (current && current.token === token) {
-        openFileTabs.set(tabId, { ...current, file: { kind: "error", message } });
-        activeFileTabId = tabId;
-        renderPreviewOnly();
-      }
+
       window.showToast?.(message);
     }
+  }
+
+  function fileNodeVersionSignature(node, file = null) {
+    const size = typeof file?.size === "number" ? file.size : typeof node?.size === "number" ? node.size : "";
+    const modified = typeof file?.lastModified === "number" ? file.lastModified : typeof node?.modified === "number" ? node.modified : "";
+    if (size === "" && modified === "") return "";
+    return `${size}:${modified}`;
+  }
+
+  function samePreviewFile(a, b) {
+    if (!a || !b || a.kind !== b.kind) return false;
+    if (a.kind === "text" || a.kind === "memory-text") return String(a.content || "") === String(b.content || "");
+    if (a.kind === "binary") return Number(a.size || 0) === Number(b.size || 0);
+    if (a.kind === "image") return Number(a.blob?.size || 0) === Number(b.blob?.size || 0);
+    return JSON.stringify(a) === JSON.stringify(b);
   }
 
   async function downloadFile(node, details) {
@@ -1719,19 +1999,6 @@ function loadSort() {
   } catch {
     return "name";
   }
-}
-
-function loadExplorerWidth() {
-  try {
-    const value = Number(localStorage.getItem(LS_EXPLORER_WIDTH) || "296");
-    return Number.isFinite(value) ? Math.max(180, Math.min(520, value)) : 296;
-  } catch {
-    return 296;
-  }
-}
-
-function saveExplorerWidth(value) {
-  try { localStorage.setItem(LS_EXPLORER_WIDTH, String(Math.round(Number(value) || 296))); } catch {}
 }
 
 function loadSourceId() {
@@ -2281,6 +2548,7 @@ export function languageFromFilename(name) {
     tsx: "typescript",
     json: "json",
     md: "markdown",
+    markdown: "markdown",
     py: "python",
     sh: "shell",
     bash: "shell",
@@ -2586,6 +2854,257 @@ const filesFindWidgetTheme = Prec.highest(EditorView.theme({
 }));
 
 export function createFilesCodeViewer(parent, content, meta) {
+  return createFilesCodeView(parent, content, meta, { readOnly: true });
+}
+
+export function createFilesCodeEditor(parent, content, meta, onChange) {
+  return createFilesCodeView(parent, content, meta, { readOnly: false, onChange });
+}
+
+export function isMarkdownTab(tab) {
+  const name = String(tab?.path || tab?.displayPath || tab?.title || "").toLowerCase();
+  return tab?.language === "markdown" || /\.md(?:own)?$|\.markdown$/.test(name);
+}
+
+export function shouldShowMarkdownPreview(tab) {
+  return isMarkdownTab(tab) && tab?.markdownPreview !== false;
+}
+
+export function createFilesMarkdownPreview(parent, content) {
+
+  const wrap = document.createElement("div");
+  wrap.className = "zion-files-markdown-preview";
+  wrap.innerHTML = renderMarkdownHtml(content);
+  parent.appendChild(wrap);
+  return wrap;
+}
+
+function renderMarkdownHtml(markdown) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let paragraph = [];
+  let list = [];
+  let listType = "";
+  let inCode = false;
+  let code = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    html.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    const tag = listType === "ol" ? "ol" : "ul";
+    html.push(`<${tag}>${list.map((item) => `<li>${renderListItemContent(item)}</li>`).join("")}</${tag}>`);
+    list = [];
+    listType = "";
+  };
+  const flushBlocks = () => {
+    flushParagraph();
+    flushList();
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const fence = line.match(/^```/);
+    if (fence && !inCode) {
+      flushBlocks();
+      inCode = true;
+      code = [];
+      continue;
+    }
+    if (fence && inCode) {
+      html.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+      inCode = false;
+      code = [];
+      continue;
+    }
+    if (inCode) {
+      code.push(line);
+      continue;
+    }
+    if (!line.trim()) {
+      flushBlocks();
+      continue;
+    }
+    if (/^\s*---+\s*$/.test(line)) {
+      flushBlocks();
+      html.push("<hr>");
+      continue;
+    }
+    const quote = line.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      flushBlocks();
+      const quoted = [quote[1]];
+      while (i + 1 < lines.length) {
+        const nextQuote = lines[i + 1].match(/^\s*>\s?(.*)$/);
+        if (!nextQuote) break;
+        quoted.push(nextQuote[1]);
+        i += 1;
+      }
+      html.push(renderMarkdownBlockquote(quoted));
+      continue;
+    }
+    const standardImage = line.match(/^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$/);
+    if (standardImage) {
+      flushBlocks();
+      html.push(renderMarkdownImage(standardImage[1], standardImage[2]));
+      continue;
+    }
+    const quickImage = line.match(/^\s*!\s*(?:`([^`]+)`|(https?:\/\/\S+))\s*$/i);
+    if (quickImage) {
+      flushBlocks();
+      const src = quickImage[1] || quickImage[2] || "";
+      html.push(renderMarkdownImage("", src));
+      continue;
+    }
+    if (looksLikeTableHeader(line, lines[i + 1])) {
+      flushBlocks();
+      const headers = splitMarkdownTableRow(line);
+      const align = splitMarkdownTableRow(lines[i + 1]).map(parseTableAlign);
+      const rows = [];
+      i += 2;
+      while (i < lines.length && splitMarkdownTableRow(lines[i]).length) {
+        rows.push(splitMarkdownTableRow(lines[i]));
+        i += 1;
+      }
+      i -= 1;
+      html.push(renderMarkdownTable(headers, align, rows));
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushBlocks();
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+    const unorderedItem = line.match(/^\s*[-*]\s+(.+)$/);
+    if (unorderedItem) {
+      flushParagraph();
+      if (listType && listType !== "ul") flushList();
+      listType = "ul";
+      list.push(renderTaskListItem(unorderedItem[1]));
+      continue;
+    }
+    const orderedItem = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (orderedItem) {
+      flushParagraph();
+      if (listType && listType !== "ol") flushList();
+      listType = "ol";
+      list.push(orderedItem[1]);
+      continue;
+    }
+    flushList();
+    paragraph.push(line.trim());
+  }
+  if (inCode) html.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+  flushBlocks();
+  return html.join("");
+}
+
+function renderListItemContent(item) {
+  if (item && typeof item === "object" && item.html) return item.html;
+  return renderInlineMarkdown(item);
+}
+
+function renderMarkdownBlockquote(lines) {
+  const content = (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line || "").trim())
+    .filter(Boolean)
+    .map((line) => `<p>${renderInlineMarkdown(line)}</p>`)
+    .join("");
+  return `<blockquote>${content}</blockquote>`;
+}
+
+function renderMarkdownImage(alt, src) {
+  const safeSrc = sanitizeMarkdownSrc(src);
+  if (!safeSrc) return `<p>${renderInlineMarkdown(String(src || ""))}</p>`;
+  return `<figure><img src="${safeSrc}" alt="${escapeHtml(alt || "")}" loading="lazy"></figure>`;
+}
+
+function renderTaskListItem(text) {
+  const task = String(text || "").match(/^\[([ xX])\]\s+(.+)$/);
+  if (!task) return text;
+  const checked = task[1].toLowerCase() === "x" ? " checked" : "";
+  return { html: `<span class="zion-files-markdown-task"><input type="checkbox" disabled${checked}> ${renderInlineMarkdown(task[2])}</span>` };
+}
+
+function looksLikeTableHeader(line, nextLine) {
+  const headers = splitMarkdownTableRow(line);
+  if (headers.length < 2) return false;
+  return isTableSeparatorRow(nextLine, headers.length);
+}
+
+function splitMarkdownTableRow(line) {
+  const raw = String(line || "").trim();
+  if (!raw.includes("|")) return [];
+  return raw
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isTableSeparatorRow(line, expectedCells) {
+  const cells = splitMarkdownTableRow(line);
+  if (cells.length < 2 || cells.length !== expectedCells) return false;
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseTableAlign(cell) {
+  const value = String(cell || "").trim();
+  if (value.startsWith(":") && value.endsWith(":")) return "center";
+  if (value.endsWith(":")) return "right";
+  if (value.startsWith(":")) return "left";
+  return "";
+}
+
+function renderMarkdownTable(headers, align, rows) {
+  const alignAttr = (index) => align[index] ? ` style="text-align:${align[index]}"` : "";
+  const head = headers.map((cell, index) => `<th${alignAttr(index)}>${renderInlineMarkdown(cell)}</th>`).join("");
+  const body = rows.map((row) => {
+    const cells = headers.map((_, index) => `<td${alignAttr(index)}>${renderInlineMarkdown(row[index] || "")}</td>`).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+  return `<div class="zion-files-markdown-table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function renderInlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt, src) => renderMarkdownImage(alt, src))
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => `<a href="${sanitizeMarkdownHref(href)}">${label}</a>`)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+}
+
+function sanitizeMarkdownHref(href) {
+  const value = String(href || "").trim();
+  if (/^(https?:|mailto:|#|\/|\.\/|\.\.\/)/i.test(value)) return value;
+  return "#";
+}
+
+function sanitizeMarkdownSrc(src) {
+  const value = String(src || "").trim();
+  if (/^(https?:|data:image\/|blob:|app:\/\/|\/|\.\/|\.\.\/)/i.test(value)) return value;
+  return "";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function createFilesCodeView(parent, content, meta, opts = {}) {
+  const readOnly = opts.readOnly !== false;
+
   const view = new EditorView({
     parent,
     state: EditorState.create({
@@ -2604,10 +3123,13 @@ export function createFilesCodeViewer(parent, content, meta) {
         search({ top: true }),
         highlightSelectionMatches(),
         filesFindWidgetTheme,
-        EditorState.readOnly.of(true),
-        filesReadOnlyGuard,
+        readOnly ? EditorState.readOnly.of(true) : null,
+        readOnly ? filesReadOnlyGuard : null,
+        !readOnly && typeof opts.onChange === "function" ? EditorView.updateListener.of((update) => {
+          if (update.docChanged) opts.onChange(update.state.doc.toString(), update);
+        }) : null,
         EditorView.contentAttributes.of({
-          "aria-readonly": "true",
+          "aria-readonly": readOnly ? "true" : "false",
           spellcheck: "false",
           autocapitalize: "off",
           autocomplete: "off"

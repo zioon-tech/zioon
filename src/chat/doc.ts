@@ -249,6 +249,7 @@ export function insertAssistantBlock(editor: EditorProxy, opts: InsertAssistantB
   const fullDoc = editor.getValue();
   const lines = fullDoc.split("\n");
   const insertLine = cursor.line + 1;
+  let expectedHeadLine = insertLine;
 
   if (insertLine >= lines.length) {
     let targetLine = lines.length - 1;
@@ -258,6 +259,7 @@ export function insertAssistantBlock(editor: EditorProxy, opts: InsertAssistantB
     } else {
       targetLine = Math.max(0, lines.length - 1);
     }
+    expectedHeadLine = targetLine;
     editor.replaceRange("assistant ", { line: targetLine, ch: 0 });
   } else {
     let hasContentBelow = false;
@@ -279,7 +281,7 @@ export function insertAssistantBlock(editor: EditorProxy, opts: InsertAssistantB
 
   const docAfter = editor.getValue();
   const afterLines = docAfter.split("\n");
-  const headLine = findAssistantHeadLine(afterLines, insertLine);
+  const headLine = findAssistantHeadLine(afterLines, expectedHeadLine);
   if (headLine < 0) {
     return { anchor: null, insertLine };
   }

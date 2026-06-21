@@ -73,6 +73,12 @@ function debugChatCards(event, payload) {
   void payload;
 }
 
+function getRunAssistantAnchorHint(payload, sessionId) {
+  if (typeof payload?.answerAnchorPos === "number") return payload.answerAnchorPos;
+  return (sessionId ? window.zion?.state?.get(`chat.answerAnchorPos.${sessionId}`) : undefined)
+    ?? window.zion?.state?.get("chat.answerAnchorPos");
+}
+
 function debugToolFieldStats(_view) {
   return {};
 }
@@ -282,16 +288,24 @@ function parseMaybeJson(value) {
 
 function createMetaPill(text) {
   const el = document.createElement("span");
+  el.className = "zion-tool-meta-pill";
   el.textContent = text;
+  el.title = String(text || "");
   Object.assign(el.style, {
     display: "inline-flex",
     alignItems: "center",
+    minWidth: "0",
+    maxWidth: "100%",
     padding: "2px 6px",
     borderRadius: "999px",
     fontSize: "10px",
+    lineHeight: "1.2",
     color: "var(--muted-fg, var(--fg))",
     background: "rgba(128,128,128,0.08)",
-    border: "1px solid rgba(128,128,128,0.12)"
+    border: "1px solid rgba(128,128,128,0.12)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap"
   });
   return el;
 }
@@ -2492,7 +2506,7 @@ export function installToolCallCards() {
 
       // 2) 计算插入位置：基于当前会话锚点的 assistant 区块末尾
       const sid = this.sessionId;
-      const hint = (sid ? window.zion?.state?.get(`chat.answerAnchorPos.${sid}`) : undefined) ?? window.zion?.state?.get("chat.answerAnchorPos");
+      const hint = getRunAssistantAnchorHint(payload, sid);
       const plan = planAssistantMarkerInsertion({
         docText: this.view.state.doc.toString(),
         markerText: `调用 ${name}`,

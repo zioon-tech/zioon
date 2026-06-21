@@ -27,7 +27,7 @@ export type SideBarView = {
   order?: number;
   when?: string;
   canClose?: boolean;
-  headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
+  headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; text?: string; textKey?: string; active?: boolean | (() => boolean); onClick: () => void }>;
   component: SideBarViewComponent;
   onActivate?: () => void | Promise<void>;
   onDeactivate?: () => void | Promise<void>;
@@ -49,6 +49,7 @@ export type BottomPanelView = {
   when?: string;
   keepWhenActive?: boolean;
   maximizable?: boolean;
+  headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
   component: BottomPanelViewComponent;
   onActivate?: () => void | Promise<void>;
   onDeactivate?: () => void | Promise<void>;
@@ -108,6 +109,41 @@ function evalWhen(expr?: string): boolean {
   if (s === "true") return true;
   if (s === "false") return false;
   return true;
+}
+
+function readViewOrder(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.map((item) => String(item || "")).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeViewOrder(key: string, ids: string[]): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(ids.map((id) => String(id || "")).filter(Boolean)));
+  } catch {}
+}
+
+function sortViewsWithCustomOrder<T extends { id: string; order?: number }>(views: T[], storageKey: string): T[] {
+  const defaults = [...views].sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
+  const custom = readViewOrder(storageKey);
+  if (!custom.length) return defaults;
+  const byId = new Map(defaults.map((view) => [view.id, view]));
+  const used = new Set<string>();
+  const ordered: T[] = [];
+  for (const id of custom) {
+    const view = byId.get(id);
+    if (!view || used.has(id)) continue;
+    ordered.push(view);
+    used.add(id);
+  }
+  for (const view of defaults) {
+    if (!used.has(view.id)) ordered.push(view);
+  }
+  return ordered;
 }
 
 type FocusSnapshot =
@@ -654,6 +690,7 @@ class AuxiliaryBarRuntime {
   private views = new Map<string, AuxiliaryBarView>();
   private emitter = new ChangeEmitter();
   private returnFocus: FocusSnapshot = null;
+  private readonly orderKey = "zion.ui.auxiliaryBar.viewOrder";
 
   onDidChange(fn: () => void): Disposable {
     return this.emitter.onDidChange(fn);
@@ -685,8 +722,18 @@ class AuxiliaryBarRuntime {
 
   getViews(): AuxiliaryBarView[] {
     const arr = Array.from(this.views.values()).filter(v => evalWhen(v.when));
-    arr.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
-    return arr;
+    return sortViewsWithCustomOrder(arr, this.orderKey);
+  }
+
+  setViewOrder(ids: string[]): void {
+    const alive = new Set(Array.from(this.views.keys()));
+    const normalized = ids.filter((id) => alive.has(id));
+    const present = new Set(normalized);
+    for (const view of this.getViews()) {
+      if (!present.has(view.id)) normalized.push(view.id);
+    }
+    writeViewOrder(this.orderKey, normalized);
+    this.emitter.emit();
   }
 
   getView(id: string): AuxiliaryBarView | null {
@@ -766,6 +813,7 @@ class BottomPanelRuntime {
   private emitter = new ChangeEmitter();
   private lastNonMaximizedHeight: number | null = null;
   private returnFocus: FocusSnapshot = null;
+  private readonly orderKey = "zion.ui.bottomPanel.viewOrder";
 
   onDidChange(fn: () => void): Disposable {
     return this.emitter.onDidChange(fn);
@@ -797,8 +845,18 @@ class BottomPanelRuntime {
 
   getViews(): BottomPanelView[] {
     const arr = Array.from(this.views.values()).filter(v => evalWhen(v.when));
-    arr.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
-    return arr;
+    return sortViewsWithCustomOrder(arr, this.orderKey);
+  }
+
+  setViewOrder(ids: string[]): void {
+    const alive = new Set(Array.from(this.views.keys()));
+    const normalized = ids.filter((id) => alive.has(id));
+    const present = new Set(normalized);
+    for (const view of this.getViews()) {
+      if (!present.has(view.id)) normalized.push(view.id);
+    }
+    writeViewOrder(this.orderKey, normalized);
+    this.emitter.emit();
   }
 
   getView(id: string): BottomPanelView | null {
@@ -809,10 +867,16 @@ class BottomPanelRuntime {
     return (core?.state.get<string>("ui.bottomPanel.activeViewId") ?? null) as any;
   }
 
+  getLastOpenedViewId(): string | null {
+    const id = (core?.state.get<string>("ui.bottomPanel.lastOpenedViewId") ?? null) as any;
+    return id && this.views.has(id) ? id : null;
+  }
+
   activateView(id: string): void {
     if (!this.views.has(id)) return;
     this.show();
     core?.state.set("ui.bottomPanel.activeViewId", id);
+    core?.state.set("ui.bottomPanel.lastOpenedViewId", id);
     core?.events.emit("ui/bottomPanelActiveViewChanged", { id });
     this.emitter.emit();
   }

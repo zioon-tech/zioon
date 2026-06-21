@@ -18,6 +18,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const mountEl = opts && opts.mount instanceof HTMLElement ? opts.mount : null;
   const embedded = !!mountEl;
   const rootId = typeof opts?.rootId === "string" && opts.rootId.trim() ? opts.rootId.trim() : null;
+  const embedTabsInBottomHeader = embedded && opts?.embedTabsInBottomHeader === true;
 
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const viewportH = () => window.innerHeight || document.documentElement?.clientHeight || 800;
@@ -163,6 +164,34 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   gap: 8px;
   border-bottom: none;
   background: transparent;
+}
+
+.zte-topbar.is-bottom-header {
+  height: 28px;
+  min-width: 0;
+  flex: 1 1 0;
+  max-width: min(440px, 40vw);
+  padding: 0;
+  margin: 0 6px 0 auto;
+  overflow: hidden;
+}
+.zte-topbar.is-bottom-header .zte-tabs {
+  padding: 0;
+}
+.zte-topbar.is-bottom-header .zte-tab {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 5px;
+}
+.zte-topbar.is-bottom-header .zte-tab-label {
+  max-width: 160px;
+}
+.zte-topbar.is-bottom-header .zte-icon-btn {
+  width: 22px;
+  height: 22px;
+}
+.zte-topbar.is-bottom-header .zte-actions {
+  gap: 2px;
 }
 
 .zte-tabs {
@@ -979,7 +1008,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     borderRadius: "0",
     boxShadow: "none",
     display: "grid",
-    gridTemplateRows: "auto 1fr auto",
+    gridTemplateRows: embedTabsInBottomHeader ? "1fr auto" : "auto 1fr auto",
     padding: "0",
     boxSizing: "border-box",
     fontFamily: "var(--font-sans)"
@@ -993,6 +1022,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
   const topbar = document.createElement("div");
   topbar.className = "zte-topbar";
+  if (embedTabsInBottomHeader) topbar.classList.add("is-bottom-header");
   Object.assign(topbar.style, {
     overflow: "hidden"
   });
@@ -1180,7 +1210,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   });
   footer.appendChild(suggestBox);
 
-  panel.appendChild(topbar);
+  if (!embedTabsInBottomHeader) panel.appendChild(topbar);
   panel.appendChild(content);
   panel.appendChild(footer);
   root.appendChild(panel);
@@ -1189,6 +1219,31 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   } else {
     document.body.appendChild(root);
     ensureDocking(root);
+  }
+
+  let hostHeader = null;
+  function syncHostHeaderTabsVisibility() {
+    if (!embedTabsInBottomHeader) return;
+    try {
+      const activeId = window.zion?.state?.get?.("ui.bottomPanel.activeViewId");
+      const visible = window.zion?.state?.get?.("ui.bottomPanel.visible") === true;
+      topbar.style.display = visible && activeId === "terminal.enhanced.view" ? "flex" : "none";
+    } catch {
+      topbar.style.display = "flex";
+    }
+  }
+  if (embedTabsInBottomHeader) {
+    try {
+      const panelHost = mountEl?.closest?.(".zion-bottompanel");
+      hostHeader = panelHost?.querySelector?.(".zion-bottompanel-header") || null;
+      const actionsHost = hostHeader?.querySelector?.(".zion-bottompanel-actions") || null;
+      if (hostHeader && actionsHost) hostHeader.insertBefore(topbar, actionsHost);
+      else if (hostHeader) hostHeader.appendChild(topbar);
+      else panel.insertBefore(topbar, content);
+    } catch {
+      try { panel.insertBefore(topbar, content); } catch {}
+    }
+    syncHostHeaderTabsVisibility();
   }
 
   const toast = document.createElement("div");
@@ -3731,6 +3786,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const disp3 = window.zion.state.onDidChange("terminal.outputs", () => { if (!isActiveUsingPty()) renderFallbackOutputs(); });
   const disp4 = window.zion.events.on("terminal/commandExecuted", () => { if (!isActiveUsingPty()) renderFallbackOutputs(); });
   const disp5 = window.zion.events.on("i18n/changed", refreshI18n);
+  const disp6 = embedTabsInBottomHeader ? window.zion.state.onDidChange("ui.bottomPanel.activeViewId", syncHostHeaderTabsVisibility) : null;
+  const disp7 = embedTabsInBottomHeader ? window.zion.state.onDidChange("ui.bottomPanel.visible", syncHostHeaderTabsVisibility) : null;
 
   async function open(opts = {}) {
     // 先显示 root，确保 DOM 准备好
@@ -3840,7 +3897,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     try { setTimeout(() => window.zion?.window?.activeEditor?.focus?.(), 0); } catch {}
   }
   function dispose() {
-    try { disp1?.dispose?.(); disp2?.dispose?.(); disp3?.dispose?.(); disp4?.dispose?.(); disp5?.dispose?.(); } catch {}
+    try { disp1?.dispose?.(); disp2?.dispose?.(); disp3?.dispose?.(); disp4?.dispose?.(); disp5?.dispose?.(); disp6?.dispose?.(); disp7?.dispose?.(); } catch {}
     try {
       // termWrap.removeEventListener("mousemove", onTermWrapMouseMove);
       termWrap.removeEventListener("mouseleave", onTermWrapMouseLeave);
@@ -3863,6 +3920,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     try { root?._zteDockingDispose?.(); } catch {}
     try { setRightDockShiftEnabled(false); } catch {}
     try { setBottomDockShiftEnabled(false); } catch {}
+    try { if (embedTabsInBottomHeader) topbar.remove(); } catch {}
     try { root.remove(); } catch {}
   }
 
