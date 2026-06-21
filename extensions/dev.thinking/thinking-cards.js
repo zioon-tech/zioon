@@ -73,44 +73,6 @@ function getRunAssistantAnchorHint(payload, sessionId) {
     ?? window.zion?.state?.get("chat.answerAnchorPos");
 }
 
-// #region debug-point E:thinking-focus-return-logger
-const FOCUS_RETURN_DEBUG_URL = "http://127.0.0.1:7777/event";
-const FOCUS_RETURN_DEBUG_SESSION = "focus-return-scroll-jump";
-function reportFocusReturnDebug(hypothesisId, location, msg, data = {}) {
-  try {
-    fetch(FOCUS_RETURN_DEBUG_URL, {
-      method: "POST",
-      body: JSON.stringify({
-        sessionId: FOCUS_RETURN_DEBUG_SESSION,
-        runId: "post-fix",
-        hypothesisId,
-        location,
-        msg: `[DEBUG] ${msg}`,
-        data,
-        ts: Date.now()
-      })
-    }).catch(() => {});
-  } catch {}
-}
-function getViewScrollDebugSnapshot(view) {
-  try {
-    const scroller = view?.scrollDOM;
-    const selection = view?.state?.selection?.main;
-    return {
-      sessionId: getViewSessionId(view) || "",
-      hasFocus: !!view?.hasFocus,
-      documentHidden: document.hidden,
-      scrollTop: scroller?.scrollTop ?? null,
-      scrollHeight: scroller?.scrollHeight ?? null,
-      clientHeight: scroller?.clientHeight ?? null,
-      viewportFrom: view?.viewport?.from ?? null,
-      viewportTo: view?.viewport?.to ?? null,
-      selectionHead: selection?.head ?? null
-    };
-  } catch {
-    return {};
-  }
-}
 // #endregion
 
 function scheduleRevealThinkingContent(view, { id, pos } = {}) {
@@ -453,13 +415,6 @@ export function installThinkingCards() {
       let wasHidden = document.hidden;
       const checkAndRestore = () => {
         const isHidden = document.hidden;
-        // #region debug-point E:thinking-visibility
-        reportFocusReturnDebug("E", "extensions/dev.thinking/thinking-cards.js:visibilitychange", "thinking visibility recovery handler", {
-          wasHidden,
-          isHidden,
-          view: getViewScrollDebugSnapshot(this.view)
-        });
-        // #endregion
         if (wasHidden && !isHidden) {
           // 页面从休眠中唤醒，检查并恢复丢失的 widgets
           this.checkAndRestoreWidgets();
@@ -473,11 +428,6 @@ export function installThinkingCards() {
       });
       // 也监听 window focus 事件作为备份
       const onFocus = () => {
-        // #region debug-point E:thinking-window-focus
-        reportFocusReturnDebug("E", "extensions/dev.thinking/thinking-cards.js:window-focus", "thinking window focus handler", {
-          view: getViewScrollDebugSnapshot(this.view)
-        });
-        // #endregion
         setTimeout(() => {
           this.checkAndRestoreWidgets();
         }, 100);
@@ -505,23 +455,8 @@ export function installThinkingCards() {
         // 基于 StateField 中的已挂载 id 判断是否需要恢复
         const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
         const missing = wantIds.some(id => !mountedIds.includes(id));
-                // #region debug-point E:thinking-restore-check
-        reportFocusReturnDebug("E", "extensions/dev.thinking/thinking-cards.js:checkAndRestoreWidgets", "thinking checkAndRestoreWidgets decision", {
-          sessionId: sid,
-          listCount: list.length,
-          mountedCount: mountedIds.length,
-          missing,
-          view: getViewScrollDebugSnapshot(this.view)
-        });
-        // #endregion
         if (missing) {
           this.onRestore({ items: list });
-          // #region debug-point E:thinking-restore-after
-          requestAnimationFrame(() => reportFocusReturnDebug("E", "extensions/dev.thinking/thinking-cards.js:checkAndRestoreWidgets", "thinking onRestore after frame", {
-            sessionId: sid,
-            view: getViewScrollDebugSnapshot(this.view)
-          }));
-          // #endregion
         }
       } catch (e) {
         console.error("[thinking] checkAndRestoreWidgets error:", e);

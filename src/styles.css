@@ -10,9 +10,53 @@
   --app-theme-color: var(--panel);
   --app-background-color: var(--bg);
 
-  /* Font stacks (system-first, CJK-friendly) */
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Noto Sans", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", "Source Han Sans SC", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  /* ========================================
+     Design Tokens - Typographic Scale
+     ======================================== */
+  --text-title:   13px / 600 var(--font-sans);
+  --text-body:    13px / 400 var(--font-sans);
+  --text-body-mono: 13px / 400 var(--font-mono);
+  --text-secondary: 12px / 400 var(--font-sans);
+  --text-meta:    11px / 400 var(--font-sans);
+  --text-caption: 10px / 500 var(--font-sans);
+
+  /* ========================================
+     Design Tokens - Spacing System (4px grid)
+     ======================================== */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* ========================================
+     Design Tokens - Interaction States
+     ======================================== */
+  --hover-bg: color-mix(in srgb, var(--fg) 6%, transparent);
+  --active-bg: color-mix(in srgb, var(--accent) 10%, transparent);
+  --active-border-left: 2px solid var(--accent);
+  --focus-ring: 0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent);
+  --transition-fast: 80ms ease;
+  --transition-normal: 150ms ease;
+
+  /* ========================================
+     Design Tokens - Panel Header
+     ======================================== */
+  --panel-header-height: 30px;
+  --panel-header-padding: 0 var(--space-3);
+  --panel-header-font: var(--text-title);
+  --panel-header-border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+
+  /* ========================================
+     Design Tokens - List Item
+     ======================================== */
+  --list-item-height: 26px;
+  --list-item-padding: 3px var(--space-3);
+  --list-item-hover-bg: var(--hover-bg);
+  --list-item-active-bg: var(--active-bg);
+  --list-item-icon-size: 16px;
+  --list-item-gap: 6px;
 
   /* Role tokens (Dark defaults) - 与 TOC 插件颜色对应 */
   /* user: #4caf50 (绿色), assistant: #2196f3 (蓝色), system: #9e9e9e (灰色) */
@@ -7054,14 +7098,18 @@ body.is-dragging-panel-tabs-scrollbar {
   max-width: 100%;
   border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
   border-radius: 9px;
-  background: color-mix(in srgb, var(--panel) 86%, var(--bg));
+  background: color-mix(in srgb, var(--panel) 90%, var(--bg));
   color: var(--fg);
   box-shadow: none;
-  min-height: 44px;
-  max-height: 220px;
-  overflow: auto;
+  min-height: 30px;
+  max-height: none;
+  overflow: visible;
   font-family: var(--font-mono);
   font-size: 11px;
+  transition: border-color var(--transition-fast);
+}
+.zion-thinking-card:hover {
+  border-color: color-mix(in srgb, var(--border) 92%, var(--accent));
 }
 .zion-thinking-card-body {
   margin: 0;
