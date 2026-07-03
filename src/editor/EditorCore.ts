@@ -19,16 +19,17 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { acceptCompletion, completionKeymap } from "@codemirror/autocomplete";
 import { getAutocompletionExtension } from "./extensions/autocompletion";
-import { wysiwyg } from "./wysiwyg";
+import { getRenderedLineVisibleCursorPos, wysiwyg } from "./wysiwyg";
 import { EditorView as CMEditorView } from "@codemirror/view";
 import { showMinimap } from "@replit/codemirror-minimap";
-import { highlightSelectionMatches } from "@codemirror/search";
+import { selectionMatchHighlighter } from "./extensions/selection-match-layer";
 import { linkDetector, linkStyles } from "./link-detector";
 import { autocompleteTheme } from "./extensions/autocompletion/AutocompleteTheme";
 import { insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import { selectionToolbarExtension } from "./extensions/selection-toolbar";
 import { getCM, vim, Vim } from "@replit/codemirror-vim";
 import { inlineWidgetDecorationsExtension } from "./inlineWidgets";
+import { obsidianSyntaxExtension } from "./extensions/obsidian";
 
 function selectNextOccurrenceDown(view: EditorView): boolean {
   const { state } = view;
@@ -67,10 +68,106 @@ function selectNextOccurrenceDown(view: EditorView): boolean {
   return true;
 }
 
-const optionDSelectNext = EditorView.domEventHandlers({
+function getDocPositionVisibility(view: EditorView, pos: number, margin = 24) {
+  try {
+    const scrollDOM = view.scrollDOM;
+    const block = view.lineBlockAt(Math.max(0, Math.min(view.state.doc.length, pos)));
+    const viewportTop = scrollDOM.scrollTop;
+    const viewportBottom = viewportTop + scrollDOM.clientHeight;
+    return {
+      fullyVisible: block.top >= viewportTop && block.bottom <= viewportBottom,
+      comfortablyVisible: block.top >= viewportTop + margin && block.bottom <= viewportBottom - margin,
+      blockTop: block.top,
+      blockBottom: block.bottom,
+      viewportTop,
+      viewportBottom
+    };
+  } catch {
+    return null;
+  }
+}
+
+function forceScrollDocBoundary(view: EditorView, pos: number): void {
+  try {
+    const scrollDOM = view.scrollDOM;
+    const maxTop = Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight);
+    const targetTop = pos <= 0 ? 0 : maxTop;
+    scrollDOM.scrollTo?.({ top: targetTop, behavior: "auto" });
+    scrollDOM.scrollTop = targetTop;
+    requestAnimationFrame(() => {
+      try {
+        scrollDOM.scrollTo?.({ top: targetTop, behavior: "auto" });
+        scrollDOM.scrollTop = targetTop;
+      } catch {}
+    });
+  } catch {}
+}
+
+function moveSelectionToDocBoundary(view: EditorView, head: number, extend = false): boolean {
+  const pos = Math.max(0, Math.min(view.state.doc.length, head));
+  const selectionPos = !extend && pos <= 0
+    ? Math.max(pos, getRenderedLineVisibleCursorPos(view, 1) ?? pos)
+    : pos;
+  const main = view.state.selection.main;
+  const selection = extend
+    ? EditorSelection.create([EditorSelection.range(main.anchor, pos)])
+    : EditorSelection.create([EditorSelection.cursor(selectionPos)]);
+  const beforeVisibility = getDocPositionVisibility(view, pos);
+  const isStartBoundary = pos <= 0;
+  view.focus();
+  if (beforeVisibility?.fullyVisible) {
+    view.dispatch({ selection });
+    return true;
+  } else {
+    view.dispatch({
+      selection,
+      effects: EditorView.scrollIntoView(pos, {
+        y: isStartBoundary ? "start" : "end",
+        yMargin: 24
+      })
+    });
+  }
+  if (isStartBoundary) forceScrollDocBoundary(view, pos);
+  try {
+    requestAnimationFrame(() => {
+      try {
+        const headNow = view.state.selection.main.head;
+        if (headNow !== selectionPos) return;
+        if (isStartBoundary) forceScrollDocBoundary(view, pos);
+        const afterVisibility = getDocPositionVisibility(view, pos);
+        if (afterVisibility?.fullyVisible) return;
+        view.dispatch({
+          effects: EditorView.scrollIntoView(pos, {
+            y: isStartBoundary ? "start" : "end",
+            yMargin: 24
+          })
+        });
+      } catch {}
+    });
+  } catch {}
+  return true;
+}
+
+function cursorDocStartAndScroll(view: EditorView): boolean {
+  return moveSelectionToDocBoundary(view, 0, false);
+}
+
+function cursorDocEndAndScroll(view: EditorView): boolean {
+  return moveSelectionToDocBoundary(view, view.state.doc.length, false);
+}
+
+function selectDocStartAndScroll(view: EditorView): boolean {
+  return moveSelectionToDocBoundary(view, 0, true);
+}
+
+function selectDocEndAndScroll(view: EditorView): boolean {
+  return moveSelectionToDocBoundary(view, view.state.doc.length, true);
+}
+
+const modDSelectNext = EditorView.domEventHandlers({
   keydown: (event, view) => {
     if (event.defaultPrevented) return false;
-    if (!event.altKey || event.metaKey || event.ctrlKey) return false;
+    if (!event.metaKey || event.altKey || event.ctrlKey) return false;
     if (event.code !== "KeyD") return false;
     event.preventDefault();
     return selectNextOccurrenceDown(view);
@@ -122,17 +219,9 @@ const vimVisualYankClipboardSync = EditorView.domEventHandlers({
   }
 });
 
-const selectionHighlightTheme = EditorView.theme({
-  ".cm-selectionMatch": {
-    backgroundColor: "var(--selection-match-bg)",
-    borderRadius: "0",
-    boxShadow: "none"
-  }
-});
-
 function getSelectionHighlightExtensions(enabled: boolean): Extension[] {
   if (!enabled) return [];
-  return [highlightSelectionMatches(), selectionHighlightTheme];
+  return [selectionMatchHighlighter()];
 }
 
 export type CursorPos = { line: number; ch: number };
@@ -149,91 +238,6 @@ function createEditorId(panelId: string): string {
   return `${panelId || "editor"}:${nextEditorCoreSeq++}`;
 }
 
-// #region debug-point H:focus-return-scroll-logger
-const FOCUS_RETURN_DEBUG_URL = "http://127.0.0.1:7777/event";
-const FOCUS_RETURN_DEBUG_SESSION = "focus-return-scroll-jump";
-function reportFocusReturnDebug(hypothesisId: string, location: string, msg: string, data: Record<string, unknown> = {}): void {
-  try {
-    fetch(FOCUS_RETURN_DEBUG_URL, {
-      method: "POST",
-      body: JSON.stringify({
-        sessionId: FOCUS_RETURN_DEBUG_SESSION,
-        runId: "post-fix",
-        hypothesisId,
-        location,
-        msg: `[DEBUG] ${msg}`,
-        data,
-        ts: Date.now()
-      })
-    }).catch(() => {});
-  } catch {}
-}
-// #endregion
-
-function getDebugScrollSnapshot(view: EditorView): Record<string, unknown> {
-  const scrollDOM = view.scrollDOM;
-  const selection = view.state.selection.main;
-  const line = view.state.doc.lineAt(selection.head);
-  const active = document.activeElement;
-  return {
-    editorId: view.dom.getAttribute("data-editor-id") || "",
-    panelId: view.dom.getAttribute("data-panel-id") || "",
-    sessionId: view.dom.getAttribute("data-session-id") || "",
-    hasFocus: view.hasFocus,
-    documentHidden: document.hidden,
-    scrollTop: scrollDOM.scrollTop,
-    scrollLeft: scrollDOM.scrollLeft,
-    clientHeight: scrollDOM.clientHeight,
-    scrollHeight: scrollDOM.scrollHeight,
-    viewportFrom: view.viewport.from,
-    viewportTo: view.viewport.to,
-    selectionHead: selection.head,
-    selectionLine: line.number,
-    activeTag: active instanceof HTMLElement ? active.tagName : "",
-    activeClass: active instanceof HTMLElement ? active.className : "",
-    inlineWidgets: getDebugInlineWidgetSnapshot(view)
-  };
-}
-
-function getDebugInlineWidgetSnapshot(view: EditorView): Record<string, unknown> {
-  try {
-    const scrollerRect = view.scrollDOM.getBoundingClientRect();
-    const rows = Array.from(view.dom.querySelectorAll(".zion-inline-widget-row")) as HTMLElement[];
-    let totalHeight = 0;
-    let visibleHeight = 0;
-    let visibleCount = 0;
-    const visibleRows: Array<Record<string, unknown>> = [];
-    for (const row of rows) {
-      const rect = row.getBoundingClientRect();
-      const height = Math.round(rect.height * 10) / 10;
-      totalHeight += height;
-      const visible = rect.bottom >= scrollerRect.top && rect.top <= scrollerRect.bottom;
-      if (!visible) continue;
-      visibleCount++;
-      visibleHeight += height;
-      if (visibleRows.length < 8) {
-        visibleRows.push({
-          top: Math.round((rect.top - scrollerRect.top) * 10) / 10,
-          height,
-          childClass: Array.from(row.children).slice(0, 4).map((child) => (child as HTMLElement).className || child.nodeName)
-        });
-      }
-    }
-    return {
-      rowCount: rows.length,
-      visibleRowCount: visibleCount,
-      totalHeight: Math.round(totalHeight * 10) / 10,
-      visibleHeight: Math.round(visibleHeight * 10) / 10,
-      thinkingInlineCount: view.dom.querySelectorAll(".zion-thinking-inline").length,
-      thinkingCardCount: view.dom.querySelectorAll(".zion-thinking-card").length,
-      toolInlineCount: view.dom.querySelectorAll(".zion-tool-call-inline").length,
-      toolCardCount: view.dom.querySelectorAll(".zion-tool-call-card").length,
-      visibleRows
-    };
-  } catch {
-    return {};
-  }
-}
 
 export class EditorCore {
   public view: EditorView;
@@ -271,7 +275,7 @@ export class EditorCore {
   private _panelId: string;
   private _editorId: string;
   private _sessionId: string | null = null;
-  private debugWindowDisposers: Array<() => void> = [];
+  private windowDisposers: Array<() => void> = [];
   private focusReturnScrollGuard: { until: number; scrollTop: number; scrollLeft: number; reason: string } | null = null;
 
   constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0") {
@@ -283,8 +287,23 @@ export class EditorCore {
         doc: initialValue,
         extensions: [
           EditorState.allowMultipleSelections.of(true),
+            drawSelection(),
           Prec.highest(
             keymap.of([
+              {
+                mac: "Cmd-ArrowUp",
+                key: "Mod-Home",
+                run: cursorDocStartAndScroll,
+                shift: selectDocStartAndScroll,
+                preventDefault: true
+              },
+              {
+                mac: "Cmd-ArrowDown",
+                key: "Mod-End",
+                run: cursorDocEndAndScroll,
+                shift: selectDocEndAndScroll,
+                preventDefault: true
+              },
               {
                 key: "Enter",
                 run: (view) =>
@@ -310,7 +329,7 @@ export class EditorCore {
             this.createFoldGutter()
           ]),
           scrollPastEnd(),
-          optionDSelectNext,
+            modDSelectNext,
           history(),
           // markdown is put into its own compartment so code-language highlighting can
           // be enabled/disabled at runtime.
@@ -321,6 +340,7 @@ export class EditorCore {
           selectionToolbarExtension(),
           linkDetector,
           linkStyles,
+          obsidianSyntaxExtension(),
           // minimap compartment (can be toggled)
           this.minimapComp.of([]),
           // selection highlight compartment
@@ -341,13 +361,13 @@ export class EditorCore {
           ),
           // line wrap compartment
           this.lineWrapComp.of(CMEditorView.lineWrapping),
-          this.createFocusReturnDebugExtension()
+            this.createFocusReturnGuardExtension()
         ]
       }),
       parent
     });
     this.applyDomIdentity();
-    this.attachFocusReturnDebugWindowListeners();
+    this.attachFocusReturnWindowListeners();
   }
 
   private applyDomIdentity(): void {
@@ -442,13 +462,7 @@ export class EditorCore {
   }
 
   focus(): void {
-    // #region debug-point B:editor-core-focus
-    reportFocusReturnDebug("B", "src/editor/EditorCore.ts:focus", "EditorCore.focus before view.focus", getDebugScrollSnapshot(this.view));
-    // #endregion
     this.view.focus();
-    // #region debug-point B:editor-core-focus-after
-    requestAnimationFrame(() => reportFocusReturnDebug("B", "src/editor/EditorCore.ts:focus", "EditorCore.focus after frame", getDebugScrollSnapshot(this.view)));
-    // #endregion
   }
 
   updateKeymap(bindings: { key: string; run: () => boolean; preventDefault?: boolean }[]): void {
@@ -456,7 +470,7 @@ export class EditorCore {
       effects: this.keymapComp.reconfigure(
         keymap.of([
           ...bindings,
-          { key: "Alt-d", run: () => selectNextOccurrenceDown(this.view), preventDefault: true },
+            { key: "Mod-d", run: () => selectNextOccurrenceDown(this.view), preventDefault: true },
           ...completionKeymap,
           indentWithTab,
           { key: "Shift-Tab", run: indentLess },
@@ -488,36 +502,9 @@ export class EditorCore {
       : [];
   }
 
-  private createFocusReturnDebugExtension(): Extension {
+  private createFocusReturnGuardExtension(): Extension {
     let lastScrollTop = -1;
-    return [
-      EditorView.domEventHandlers({
-        focus: (_event, view) => {
-          // #region debug-point B:dom-focus
-          reportFocusReturnDebug("B", "src/editor/EditorCore.ts:dom-focus", "CodeMirror DOM focus", getDebugScrollSnapshot(view));
-          // #endregion
-          return false;
-        },
-        blur: (_event, view) => {
-          // #region debug-point B:dom-blur
-          reportFocusReturnDebug("B", "src/editor/EditorCore.ts:dom-blur", "CodeMirror DOM blur", getDebugScrollSnapshot(view));
-          // #endregion
-          return false;
-        },
-        scroll: (_event, view) => {
-          const next = view.scrollDOM.scrollTop;
-          const delta = lastScrollTop < 0 ? 0 : next - lastScrollTop;
-          lastScrollTop = next;
-          // #region debug-point A:cm-scroll
-          reportFocusReturnDebug("A", "src/editor/EditorCore.ts:cm-scroll", "CodeMirror scroller scroll event", {
-            ...getDebugScrollSnapshot(view),
-            delta
-          });
-          // #endregion
-          return false;
-        }
-      }),
-      EditorView.updateListener.of((update: ViewUpdate) => {
+    return EditorView.updateListener.of((update: ViewUpdate) => {
         const scrollChanged = update.view.scrollDOM.scrollTop !== lastScrollTop;
         if (!update.docChanged && !update.selectionSet && !update.viewportChanged && !update.geometryChanged && !scrollChanged) return;
         const guard = this.focusReturnScrollGuard;
@@ -536,16 +523,6 @@ export class EditorCore {
           const topDelta = currentTop - guard.scrollTop;
           const leftDelta = currentLeft - guard.scrollLeft;
           if ((topDelta || leftDelta) && Math.abs(topDelta) <= 96 && Math.abs(leftDelta) <= 32) {
-            // #region debug-point F:focus-return-scroll-guard
-            reportFocusReturnDebug("F", "src/editor/EditorCore.ts:focus-return-scroll-guard", "Restoring focus-return geometry scroll drift", {
-              ...getDebugScrollSnapshot(update.view),
-              guardReason: guard.reason,
-              guardScrollTop: guard.scrollTop,
-              guardScrollLeft: guard.scrollLeft,
-              topDelta,
-              leftDelta
-            });
-            // #endregion
             try {
               update.view.scrollDOM.scrollTop = guard.scrollTop;
               update.view.scrollDOM.scrollLeft = guard.scrollLeft;
@@ -554,27 +531,11 @@ export class EditorCore {
             this.focusReturnScrollGuard = null;
           }
         }
-        // #region debug-point A:cm-update
-        reportFocusReturnDebug("A", "src/editor/EditorCore.ts:cm-update", "CodeMirror update after transaction/layout", {
-          ...getDebugScrollSnapshot(update.view),
-          docChanged: update.docChanged,
-          selectionSet: update.selectionSet,
-          viewportChanged: update.viewportChanged,
-          geometryChanged: update.geometryChanged,
-          scrollChanged,
-          transactions: update.transactions.map((tr) => ({
-            userEvent: tr.annotation(Transaction.userEvent),
-            scrollIntoView: tr.scrollIntoView,
-            docChanged: tr.docChanged,
-            selection: !!tr.selection
-          }))
-        });
-        // #endregion
-      })
-    ];
+        lastScrollTop = update.view.scrollDOM.scrollTop;
+      });
   }
 
-  private attachFocusReturnDebugWindowListeners(): void {
+  private attachFocusReturnWindowListeners(): void {
     const record = (eventName: string) => {
       if (eventName === "focus" || eventName === "visibilitychange:visible") {
         this.focusReturnScrollGuard = {
@@ -584,14 +545,6 @@ export class EditorCore {
           reason: eventName
         };
       }
-      // #region debug-point C:window-focus-visibility
-      reportFocusReturnDebug("C", "src/editor/EditorCore.ts:window-listener", `Window ${eventName}`, {
-        ...getDebugScrollSnapshot(this.view),
-        guardUntil: this.focusReturnScrollGuard?.until || 0,
-        guardScrollTop: this.focusReturnScrollGuard?.scrollTop ?? null
-      });
-      requestAnimationFrame(() => reportFocusReturnDebug("C", "src/editor/EditorCore.ts:window-listener", `Window ${eventName} after frame`, getDebugScrollSnapshot(this.view)));
-      // #endregion
     };
     const onFocus = () => record("focus");
     const onBlur = () => record("blur");
@@ -600,7 +553,7 @@ export class EditorCore {
       window.addEventListener("focus", onFocus);
       window.addEventListener("blur", onBlur);
       document.addEventListener("visibilitychange", onVisibility);
-      this.debugWindowDisposers.push(
+      this.windowDisposers.push(
         () => window.removeEventListener("focus", onFocus),
         () => window.removeEventListener("blur", onBlur),
         () => document.removeEventListener("visibilitychange", onVisibility)
@@ -790,7 +743,7 @@ export class EditorCore {
   setAutocompletionEnabled(enabled: boolean): void {
     this.view.dispatch({
       effects: this.autocompletionComp.reconfigure(
-        enabled ? getAutocompletionExtension() : []
+        getAutocompletionExtension({ includeWordCompletion: !!enabled })
       )
     });
   }
@@ -810,7 +763,6 @@ export class EditorCore {
       effects: this.vimComp.reconfigure(
         this.vimModeEnabled
           ? [
-              drawSelection(),
               Prec.highest(vimVisualYankClipboardSync),
               Prec.highest(vim({ status: true }))
             ]
@@ -924,7 +876,7 @@ export class EditorCore {
     if (this.disposed) return;
     this.disposed = true;
     this.externalExtensions = [];
-    for (const dispose of this.debugWindowDisposers.splice(0)) {
+    for (const dispose of this.windowDisposers.splice(0)) {
       try { dispose(); } catch {}
     }
     this.detachVimModeChangeListener();

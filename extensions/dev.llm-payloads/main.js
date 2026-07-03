@@ -120,8 +120,8 @@ function interpolate(text, values) {
 }
 
 export async function activate(ctx) {
-  injectStyles();
-  try {
+  
+try {
     const disp = window.zion?.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) ctx.subscriptions.push(disp);
   } catch {}
@@ -778,52 +778,3 @@ function formatTime(ts) {
   }
 }
 
-function injectStyles() {
-  if (document.getElementById("zion-llm-payloads-style")) return;
-  const style = document.createElement("style");
-  style.id = "zion-llm-payloads-style";
-  style.textContent = `
-.zion-llm-payloads { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--panel); color: var(--fg); font: 12px/1.4 var(--font-sans); }
-.zion-llm-payloads-title { flex: 1 1 auto; min-width: 0; color: color-mix(in srgb, var(--fg) 64%, transparent); font-size: 10px; font-weight: 600; }
-.zion-llm-payloads-filter { flex: 0 0 auto; width: calc(100% - 12px); height: 21px; margin: 0 6px 4px; border: 1px solid color-mix(in srgb, var(--border) 58%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--fg) 3%, transparent); color: var(--fg); padding: 0 6px; font: 10px/1.4 var(--font-sans); }
-.zion-llm-payloads-button { flex: 0 0 auto; height: 22px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: color-mix(in srgb, var(--fg) 72%, transparent); padding: 0 7px; font: 11px/1 var(--font-sans); cursor: pointer; }
-.zion-llm-payloads-button:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 7%, transparent); }
-.zion-llm-payloads-body { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
-.zion-llm-payloads-list { flex: 0 0 220px; min-width: 180px; max-width: 34%; overflow: auto; border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent); font-size: 10px; }
-.zion-llm-payloads-list-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 4px; height: 24px; padding: 0 6px; background: var(--panel); border-bottom: 1px solid color-mix(in srgb, var(--border) 44%, transparent); }
-.zion-llm-payloads-row { width: 100%; display: block; text-align: left; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 36%, transparent); background: transparent; color: var(--fg); padding: 4px 6px; cursor: pointer; }
-.zion-llm-payloads-row:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
-.zion-llm-payloads-row.is-active { background: color-mix(in srgb, var(--fg) 7%, transparent); }
-.zion-llm-payloads-row.is-mock .zion-llm-payloads-model { color: color-mix(in srgb, var(--fg) 86%, #d7ba7d 24%); }
-.zion-llm-payloads-row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.zion-llm-payloads-model { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 520; }
-.zion-llm-payloads-time { flex: 0 0 auto; color: color-mix(in srgb, var(--fg) 48%, transparent); font: 9px/1.4 var(--font-mono); }
-.zion-llm-payloads-meta { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 50%, transparent); font-size: 9px; }
-.zion-llm-payloads-detail { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.zion-llm-payloads-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.zion-llm-payloads-summary { padding: 6px 8px 4px; border-bottom: 1px solid color-mix(in srgb, var(--border) 30%, transparent); }
-.zion-llm-payloads-summary-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.zion-llm-payloads-summary-chip { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 999px; background: color-mix(in srgb, var(--fg) 5%, transparent); color: color-mix(in srgb, var(--fg) 66%, transparent); padding: 1px 6px; font: 10px/1.45 var(--font-mono); }
-.zion-llm-payloads-endpoint { margin-top: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 48%, transparent); font: 10px/1.4 var(--font-mono); }
-.zion-llm-payloads-message { position: relative; margin: 5px 8px; padding-left: 9px; border: 1px solid color-mix(in srgb, var(--border) 38%, transparent); border-radius: 6px; overflow: visible; background: color-mix(in srgb, var(--fg) 1.2%, transparent); }
-.zion-llm-payloads-message-rail { position: absolute; left: 0; top: 0; bottom: 0; z-index: 3; width: 9px; padding: 0; border: 0; border-right: 1px solid color-mix(in srgb, var(--border) 34%, transparent); border-radius: 5px 0 0 5px; cursor: pointer; background: color-mix(in srgb, var(--fg) 4%, transparent); }
-.zion-llm-payloads-message-rail::before { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 3px; background: color-mix(in srgb, var(--fg) 18%, transparent); }
-.zion-llm-payloads-message.is-open .zion-llm-payloads-message-rail::before,
-.zion-llm-payloads-message-rail:hover::before { background: color-mix(in srgb, var(--fg) 42%, transparent); }
-.zion-llm-payloads-message-head { position: sticky; top: 0; z-index: 4; display: grid; grid-template-columns: minmax(130px, max-content) minmax(0, 1fr); gap: 8px; align-items: center; min-width: 0; padding: 4px 7px; border-radius: 0 5px 0 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 30%, transparent); background: var(--panel); box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--border) 30%, transparent), 0 1px 0 var(--panel), 0 -1px 0 var(--panel); color: color-mix(in srgb, var(--fg) 62%, transparent); font: 10px/1.4 var(--font-mono); cursor: pointer; user-select: none; }
-.zion-llm-payloads-message-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 58%, transparent); }
-.zion-llm-payloads-message-excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 72%, transparent); font-family: var(--font-sans); }
-.zion-llm-payloads-message:not(.is-open) .zion-llm-payloads-message-head { border-bottom: 0; }
-.zion-llm-payloads-message-text { min-width: 0; margin: 0; overflow: visible; padding: 7px; background: transparent; color: color-mix(in srgb, var(--fg) 78%, transparent); font: 11px/1.45 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
-.zion-llm-payloads-toolcalls { min-width: 0; border-top: 1px solid color-mix(in srgb, var(--border) 32%, transparent); padding: 6px 8px; }
-.zion-llm-payloads-message:not(.is-open) .zion-llm-payloads-message-text,
-.zion-llm-payloads-message:not(.is-open) .zion-llm-payloads-toolcalls { display: none; }
-.zion-llm-payloads-toolcall { margin: 2px 0; color: color-mix(in srgb, var(--fg) 64%, transparent); font: 11px/1.45 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
-.zion-llm-payloads-raw-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.zion-llm-payloads-raw-note { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 5px 8px; color: color-mix(in srgb, var(--fg) 52%, transparent); font-size: 11px; border-bottom: 1px solid color-mix(in srgb, var(--border) 34%, transparent); }
-.zion-llm-payloads-raw-note > span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zion-llm-payloads-json { flex: 1 1 auto; min-height: 0; margin: 0; overflow: auto; padding: 10px 12px; background: transparent; color: color-mix(in srgb, var(--fg) 82%, transparent); font: 11px/1.5 var(--font-mono); white-space: pre; }
-.zion-llm-payloads-empty { padding: 18px 12px; color: color-mix(in srgb, var(--fg) 54%, transparent); }
-`;
-  document.head.appendChild(style);
-}

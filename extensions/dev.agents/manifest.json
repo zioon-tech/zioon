@@ -27,6 +27,9 @@
           "category": "Agents",
           "categoryKey": "dev.agents.title"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "activationEvents": [

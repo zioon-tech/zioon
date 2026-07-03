@@ -13,8 +13,28 @@ export type RestoreItem = {
 };
 
 const ROLE_HEADER_RE = /^(system|user|assistant|tool)\s+/;
-const CARD_MARKER_RE = /^(?:思考|调用 [^\n]{1,300})$/;
-const CARD_MARKER_TAIL_RE = /(?:^|\n)(?:思考|调用 [^\n]{1,300})\n+$/;
+const CARD_ID_COMMENT_RE = /\s*<!--\s*zion-(?:thinking|tool):id=[^>\s]+\s*-->\s*$/;
+const CARD_MARKER_RE = /^(?:思考(?:\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->)?|调用 [^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?)$/;
+const CARD_MARKER_TAIL_RE = /(?:^|\n)(?:思考(?:\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->)?|调用 [^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?)\n+$/;
+
+export function sanitizeCardMarkerId(id: string | null | undefined): string {
+  return String(id || "").replace(/-->/g, "").replace(/[\r\n\t ]+/g, "_").trim();
+}
+
+export function thinkingMarkerText(id: string | null | undefined): string {
+  const safeId = sanitizeCardMarkerId(id);
+  return safeId ? `思考 <!-- zion-thinking:id=${safeId} -->` : "思考";
+}
+
+export function toolMarkerText(name: string | null | undefined, id: string | null | undefined): string {
+  const safeId = sanitizeCardMarkerId(id);
+  const safeName = String(name || "tool").trim() || "tool";
+  return safeId ? `调用 ${safeName} <!-- zion-tool:id=${safeId} -->` : `调用 ${safeName}`;
+}
+
+export function stripCardMarkerIdComment(text: string): string {
+  return String(text || "").replace(CARD_ID_COMMENT_RE, "").trim();
+}
 
 function splitLines(text: string) {
   return String(text || "").replace(/\r/g, "").split("\n");
@@ -35,6 +55,22 @@ function lineEndOffset(lines: string[], lineIndex: number) {
   let cursor = 0;
   for (let i = 0; i < lineIndex; i++) cursor += lines[i].length + 1;
   return cursor + (lines[lineIndex]?.length || 0);
+}
+
+function findAssistantHeadIndexFromLine(lines: string[], hintLine?: number | null): number {
+  if (typeof hintLine !== "number" || !Number.isFinite(hintLine)) return -1;
+  const start = Math.max(0, Math.min(lines.length - 1, Math.floor(hintLine)));
+  for (let i = start; i < lines.length; i++) {
+    const match = lines[i].match(ROLE_HEADER_RE);
+    if (match && match[1] === "assistant") return i;
+    if (match) break;
+  }
+  for (let i = start - 1; i >= 0; i--) {
+    const match = lines[i].match(ROLE_HEADER_RE);
+    if (match && match[1] === "assistant") return i;
+    if (match) break;
+  }
+  return -1;
 }
 
 export function findAssistantBlockEndOffset(docText: string, hintPos?: number | null): number {
@@ -68,16 +104,33 @@ export function findAssistantBlockEndOffset(docText: string, hintPos?: number | 
   return lineEndOffset(lines, endIdx);
 }
 
+export function findAssistantBlockEndOffsetByLine(docText: string, hintLine?: number | null, fallbackHintPos?: number | null): number {
+  const text = String(docText || "").replace(/\r/g, "");
+  const lines = splitLines(text);
+  if (!lines.length) return 0;
+  let headIdx = findAssistantHeadIndexFromLine(lines, hintLine);
+  if (headIdx < 0) return findAssistantBlockEndOffset(text, fallbackHintPos);
+  let endIdx = headIdx;
+  for (let i = headIdx + 1; i < lines.length; i++) {
+    if (ROLE_HEADER_RE.test(lines[i])) break;
+    endIdx = i;
+  }
+  return lineEndOffset(lines, endIdx);
+}
+
 export function planAssistantMarkerInsertion(args: {
   docText: string;
   markerText: string;
   hintPos?: number | null;
+  hintLine?: number | null;
   trailingNewlines?: number;
 }) {
   const docText = String(args?.docText || "").replace(/\r/g, "");
   const markerText = String(args?.markerText || "");
   const trailingNewlines = Math.max(0, Number(args?.trailingNewlines ?? 1));
-  const insertPos = findAssistantBlockEndOffset(docText, args?.hintPos);
+  const insertPos = typeof args?.hintLine === "number" && Number.isFinite(args.hintLine)
+    ? findAssistantBlockEndOffsetByLine(docText, args.hintLine, args?.hintPos)
+    : findAssistantBlockEndOffset(docText, args?.hintPos);
   let replaceFrom = insertPos;
   let replaceTo = insertPos;
   let prefix = "";
@@ -129,6 +182,27 @@ export function buildRegexAnchors<T extends RestoreAnchor = RestoreAnchor>(
 export function filterDeletedItems<T extends RestoreItem>(items: T[], deletedIds: Iterable<string>): T[] {
   const deleted = new Set(Array.from(deletedIds || []).map((id) => String(id)));
   return (Array.isArray(items) ? items : []).filter((item) => !deleted.has(String(item?.id || "")));
+}
+
+export function mergeItemsFromAnchors<T extends RestoreItem, A extends RestoreAnchor>(args: {
+  items?: T[] | null;
+  anchors?: A[] | null;
+  deletedIds?: Iterable<string> | null;
+  createItem: (anchor: A) => T | null | undefined;
+}): { items: T[]; synthesized: T[] } {
+  const items = Array.isArray(args.items) ? args.items.slice() : [];
+  const known = new Set(items.map((item) => String(item?.id || "")).filter(Boolean));
+  const deleted = new Set(Array.from(args.deletedIds || []).map((id) => String(id)));
+  const synthesized: T[] = [];
+  for (const anchor of Array.isArray(args.anchors) ? args.anchors : []) {
+    const next = args.createItem(anchor);
+    const id = String(next?.id || "");
+    if (!id || known.has(id) || deleted.has(id)) continue;
+    items.push(next);
+    known.add(id);
+    synthesized.push(next);
+  }
+  return { items, synthesized };
 }
 
 export function reconcileMountedItems<T extends RestoreItem, M = any>(args: {

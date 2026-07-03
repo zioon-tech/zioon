@@ -38,4 +38,90 @@ describe("chat doc streaming", () => {
       " 2s, 4s）"
     ].join("\n"));
   });
+
+  it("does not steal an existing non-empty user selection while streaming", () => {
+    const docText = [
+      "user hello",
+      "assistant streaming"
+    ].join("\n");
+    let dispatched: any = null;
+    const editor = {
+      getValue: () => docText,
+      getView: () => ({
+        state: {
+          selection: { main: { empty: false, from: 0, to: 4 } },
+          doc: {
+            lines: 2,
+            line: (lineNumber: number) => {
+              expect(lineNumber).toBe(2);
+              return { from: "user hello\n".length, length: "assistant streaming".length };
+            }
+          }
+        },
+        dispatch: (spec: any) => {
+          dispatched = spec;
+        }
+      })
+    };
+
+    const ok = appendAssistantToken(editor as any, {
+      token: " token",
+      anchor: { sessionId: "s1", headLine: 1, anchorPos: "user hello\n".length }
+    });
+
+    expect(ok).toBe(true);
+    expect(dispatched?.changes).toEqual({
+      from: docText.length,
+      insert: " token"
+    });
+    expect(dispatched).not.toHaveProperty("selection");
+  });
+
+  it("does not steal selection while a user selection gesture is active", () => {
+    const docText = [
+      "user hello",
+      "assistant streaming"
+    ].join("\n");
+    let dispatched: any = null;
+    const previousZion = (window as any).zion;
+    (window as any).zion = {
+      state: {
+        get: (key: string) => key === "editor.selectionGestureUntil" ? Date.now() + 1000 : undefined
+      }
+    };
+    const editor = {
+      getValue: () => docText,
+      getView: () => ({
+        state: {
+          selection: { main: { empty: true, from: 0, to: 0 } },
+          doc: {
+            lines: 2,
+            line: (lineNumber: number) => {
+              expect(lineNumber).toBe(2);
+              return { from: "user hello\n".length, length: "assistant streaming".length };
+            }
+          }
+        },
+        dispatch: (spec: any) => {
+          dispatched = spec;
+        }
+      })
+    };
+
+    try {
+      const ok = appendAssistantToken(editor as any, {
+        token: " token",
+        anchor: { sessionId: "s1", headLine: 1, anchorPos: "user hello\n".length }
+      });
+
+      expect(ok).toBe(true);
+      expect(dispatched?.changes).toEqual({
+        from: docText.length,
+        insert: " token"
+      });
+      expect(dispatched).not.toHaveProperty("selection");
+    } finally {
+      (window as any).zion = previousZion;
+    }
+  });
 });

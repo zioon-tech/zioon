@@ -29,6 +29,9 @@
           "titleKey": "dev.task-panel.cmd.clearTasks",
           "categoryKey": "dev.task-panel.category.tasks"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "activationEvents": [

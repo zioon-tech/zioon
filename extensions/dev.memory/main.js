@@ -43,6 +43,11 @@ const I18N_MESSAGES = {
     "memory.selectionTitle": "选区记忆",
     "memory.listTitle": "记忆",
     "memory.details": "记忆详情",
+      "memory.moreActions": "更多操作",
+      "memory.openPreview": "打开预览",
+      "memory.openInFolder": "在文件夹中打开",
+      "memory.copyPath": "复制路径",
+      "memory.pathCopied": "路径已复制",
     "file.opening": "正在打开文件...",
     "file.openFailed": "打开文件失败",
     "file.binaryUnsupported": "暂不支持二进制预览",
@@ -90,6 +95,11 @@ const I18N_MESSAGES = {
     "memory.selectionTitle": "Selection Memory",
     "memory.listTitle": "Memory",
     "memory.details": "Memory Details",
+      "memory.moreActions": "More actions",
+      "memory.openPreview": "Open Preview",
+      "memory.openInFolder": "Open in Folder",
+      "memory.copyPath": "Copy Path",
+      "memory.pathCopied": "Path copied",
     "file.opening": "Opening file...",
     "file.openFailed": "Failed to open file",
     "file.binaryUnsupported": "Binary preview is not supported yet",
@@ -535,8 +545,19 @@ function firstHeading(markdown) {
 }
 
 function openMemoryPanel() {
-  try { window.zion?.auxiliaryBar?.setWidth?.(Math.max(760, window.zion.state?.get?.("ui.auxiliaryBar.width") || 0)); } catch {}
   try { window.zion?.auxiliaryBar?.activateView?.(VIEW_ID); } catch {}
+}
+
+function requestMemoryAuxWidth() {
+  try {
+    const aux = window.zion?.auxiliaryBar;
+    if (aux?.requestTemporaryWidth) aux.requestTemporaryWidth(VIEW_ID, 760);
+    else aux?.setWidth?.(Math.max(760, window.zion.state?.get?.("ui.auxiliaryBar.width") || 0));
+  } catch {}
+}
+
+function releaseMemoryAuxWidth() {
+  try { window.zion?.auxiliaryBar?.releaseTemporaryWidth?.(VIEW_ID); } catch {}
 }
 
 function rememberSelection() {
@@ -593,6 +614,12 @@ function flattenMemoryTree(node, expanded, depth = 0, out = []) {
 function memoryDisplayPath(item) {
   const root = getSettings().memoryRootPath || DEFAULT_MEMORY_ROOT;
   return `${root.replace(/\/$/, "")}/${normalizeMemoryPath(item?.path)}`;
+}
+
+function memoryFolderDisplayPath(path) {
+  const root = getSettings().memoryRootPath || DEFAULT_MEMORY_ROOT;
+  const relative = String(path || "").replace(/^\/+|\/+$/g, "");
+  return relative ? `${root.replace(/\/$/, "")}/${relative}` : root;
 }
 
 function memoryFileName(item) {
@@ -673,20 +700,22 @@ function renderMemoryPanel(container) {
   function render() {
     const all = readMemories();
     syncOpenMemoryTabs(all);
-    ensureActiveMemoryTab(all);
+    const hasPreview = openMemoryTabs.size > 0;
+    if (!hasPreview) releaseMemoryAuxWidth();
     const activeTab = resolveEditorTab(editorCore.getActiveTab() || openMemoryTabs.values().next().value || null);
     const activeMemory = activeTab?.kind === "memory" ? activeTab.memory : null;
     const existingBody = root.querySelector(".zion-memory-body");
     const existingList = existingBody?.querySelector(".zion-memory-list-wrap");
     const existingDetail = existingBody?.querySelector(".zion-memory-detail");
     const activeDetailSignature = memoryDetailSignature(activeTab);
-    const canPreserveDetail = !!existingBody && !!existingList && !!existingDetail && !!activeTab?.id && activeTab.id === renderedMemoryDetailTabId && activeDetailSignature === renderedMemoryDetailSignature;
+    const canPreserveDetail = hasPreview && !!existingBody && !!existingList && !!existingDetail && !!activeTab?.id && activeTab.id === renderedMemoryDetailTabId && activeDetailSignature === renderedMemoryDetailSignature;
 
 
     const body = document.createElement("div");
     body.className = "zion-memory-body";
     const list = renderList(all, activeMemory?.id || "");
-    list.style.flexBasis = `${explorerWidth}px`;
+    if (hasPreview) applyExplorerWidth(list);
+    else applyExplorerFill(list);
     if (canPreserveDetail) {
 
       existingList.replaceWith(list);
@@ -699,6 +728,12 @@ function renderMemoryPanel(container) {
     disposeMemoryEditor(true);
 
     body.appendChild(list);
+    if (!hasPreview) {
+      renderedMemoryDetailTabId = "";
+      renderedMemoryDetailSignature = "";
+      root.replaceChildren(body);
+      return;
+    }
     body.appendChild(renderResizeHandle(body, list));
     body.appendChild(renderDetail(activeTab));
     renderedMemoryDetailTabId = activeTab?.id || "";
@@ -751,15 +786,6 @@ function renderMemoryPanel(container) {
     }
   }
 
-  function ensureActiveMemoryTab(items) {
-    if (openMemoryTabs.size) return;
-    const activeId = getActiveMemoryId();
-    if (!activeId) return;
-    const item = (Array.isArray(items) ? items : []).find((entry) => entry.id === activeId);
-    if (!item) return;
-    openMemoryTab(item);
-  }
-
   function openMemoryById(id) {
     const item = readMemories().find((entry) => entry.id === id);
     if (!item) return;
@@ -772,6 +798,8 @@ function renderMemoryPanel(container) {
     const tabId = `memory:${item.id}`;
     const nextTab = resolveMemoryItemTab(item);
     if (activeMemoryTabId === tabId && memoryDetailSignature(resolveEditorTab(editorCore.getActiveTab())) === memoryDetailSignature(nextTab)) return false;
+    const hadPreview = openMemoryTabs.size > 0;
+    if (!hadPreview) requestMemoryAuxWidth();
     runWithoutEditorCoreRender(() => editorCore.openTab({
       id: tabId,
       kind: nextTab.kind,
@@ -831,6 +859,7 @@ function renderMemoryPanel(container) {
     if (tabId === activeMemoryTabId) disposeMemoryEditor(true);
     runWithoutEditorCoreRender(() => editorCore.closeTab(tabId));
     activeMemoryTabId = editorCore.getActiveTabId();
+    if (!openMemoryTabs.size) releaseMemoryAuxWidth();
     const activeTab = resolveEditorTab(editorCore.getActiveTab());
     if (activeTab?.kind === "memory") setActiveMemory(activeTab.memoryId, { silent: true });
     else setActiveMemory("", { silent: true });
@@ -853,7 +882,7 @@ function renderMemoryPanel(container) {
         const max = Math.max(220, rect.width - 280);
         const next = Math.max(180, Math.min(max, moveEvent.clientX - rect.left));
         explorerWidth = editorCore.setExplorerWidth(next, { silent: true });
-        explorer.style.flexBasis = `${explorerWidth}px`;
+        applyExplorerWidth(explorer);
       };
       const stop = () => {
         root.classList.remove("is-resizing-memory");
@@ -924,6 +953,7 @@ function renderMemoryPanel(container) {
           `<span class="zion-files-name">${escapeHtml(node.name)}</span>`
         ].join("");
         row.appendChild(main);
+          row.appendChild(renderMemoryRowActionsMenu({ kind: "directory", path: memoryFolderDisplayPath(node.path) }));
         tree.appendChild(row);
         continue;
       }
@@ -947,11 +977,100 @@ function renderMemoryPanel(container) {
         `<span class="zion-files-name">${escapeHtml(node.name || item.title || item.id)}</span>`
       ].join("");
       row.appendChild(main);
+        row.appendChild(renderMemoryRowActionsMenu({ kind: "file", item, path: memoryDisplayPath(item), onOpen: () => {
+          if (openMemoryTab(item)) scheduleRender();
+        } }));
       tree.appendChild(row);
     }
     list.appendChild(tree);
     wrap.appendChild(list);
     return wrap;
+  }
+
+  function renderMemoryRowActionsMenu({ kind, path, onOpen }) {
+    const details = document.createElement("details");
+    details.className = "zion-files-actions-menu";
+    details.onclick = (event) => event.stopPropagation();
+    details.onkeydown = (event) => event.stopPropagation();
+
+    const summary = document.createElement("summary");
+    summary.className = "zion-files-actions-trigger codicon codicon-ellipsis";
+    summary.title = t("memory.moreActions", "More actions");
+    summary.setAttribute("aria-label", t("memory.moreActions", "More actions"));
+    details.appendChild(summary);
+
+    const popover = document.createElement("div");
+    popover.className = "zion-files-actions-popover";
+    if (kind === "file" && onOpen) {
+      popover.appendChild(memoryMenuItem(t("memory.openPreview", "Open Preview"), () => {
+        details.open = false;
+        onOpen();
+      }));
+    }
+    popover.appendChild(memoryMenuItem(t("memory.openInFolder", "Open in Folder"), () => {
+      details.open = false;
+      openMemoryPathInFolder(path);
+    }));
+    popover.appendChild(memoryMenuItem(t("memory.copyPath", "Copy Path"), () => {
+      details.open = false;
+      copyMemoryPath(path);
+    }));
+    details.appendChild(popover);
+    return details;
+  }
+
+  function memoryMenuItem(label, action) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "zion-files-menu-item";
+    button.textContent = label;
+    button.onclick = (event) => {
+      event.stopPropagation();
+      action?.();
+    };
+    return button;
+  }
+
+  function openMemoryPathInFolder(path) {
+    const value = String(path || "").trim();
+    if (!value) return;
+    const payload = { path: value };
+    try { console.info("[memory.openInFolder] click", payload); } catch {}
+    try {
+      const ret = window.zion?.commands?.executeCommand?.("fs.openInFolder", payload);
+      Promise.resolve(ret).then((result) => {
+        try { console.info("[memory.openInFolder] result", result); } catch {}
+      }).catch((err) => {
+        try { console.error("[memory.openInFolder] failed", err); } catch {}
+      });
+    } catch (err) {
+      try { console.error("[memory.openInFolder] failed", err); } catch {}
+    }
+  }
+
+  async function copyMemoryPath(path) {
+    const value = String(path || "").trim();
+    if (!value) return;
+    try {
+      await navigator.clipboard?.writeText?.(value);
+      window.showToast?.(t("memory.pathCopied", "Path copied"));
+    } catch {
+      window.showToast?.(value);
+    }
+  }
+
+  function applyExplorerWidth(explorer) {
+    if (!explorer) return;
+    explorer.style.flex = `0 0 ${explorerWidth}px`;
+    explorer.style.width = `${explorerWidth}px`;
+    explorer.style.maxWidth = "520px";
+  }
+
+  function applyExplorerFill(explorer) {
+    if (!explorer) return;
+    explorer.style.flex = "1 1 auto";
+    explorer.style.width = "auto";
+    explorer.style.maxWidth = "none";
   }
 
   function renderDetail(tab) {
@@ -1487,57 +1606,10 @@ function registerMemoryTool(disposables) {
   });
 }
 
-function injectStyles() {
-  if (document.getElementById("zion-memory-style")) return;
-  const style = document.createElement("style");
-  style.id = "zion-memory-style";
-  style.textContent = `
-.zion-memory-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; color: var(--fg); background: linear-gradient(180deg, color-mix(in srgb, var(--panel-bg) 96%, var(--bg, #000)) 0%, var(--panel-bg) 100%); }
-.zion-memory-body { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: row; overflow: hidden; }
-.zion-memory-list-wrap { flex: 0 0 280px; min-width: 180px; min-height: 0; display: flex; flex-direction: column; border-bottom: 0; }
-.zion-memory-split-resizer { flex: 0 0 4px; width: 4px; cursor: col-resize; background: color-mix(in srgb, var(--border) 54%, transparent); position: relative; z-index: 2; }
-.zion-memory-split-resizer::after { content: ""; position: absolute; inset: 0 -3px; background: transparent; }
-.zion-memory-split-resizer:hover, .zion-memory-panel.is-resizing-memory .zion-memory-split-resizer { background: var(--accent); }
-.zion-memory-panel.is-resizing-memory, .zion-memory-panel.is-resizing-memory * { cursor: col-resize !important; user-select: none !important; }
-.zion-memory-list-toolbar { flex: 0 0 auto; height: 30px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 6px 4px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border) 54%, transparent); }
-.zion-memory-list-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 62%, transparent); font: 11px/1.4 var(--font-sans); font-weight: 600; }
-.zion-memory-title-input, .zion-memory-path-input, .zion-memory-tags-input, .zion-memory-field-row select { min-width: 0; border: 1px solid color-mix(in srgb, var(--border) 76%, transparent); border-radius: 6px; background: transparent; color: var(--fg); font: 11px/1.4 var(--font-sans); padding: 4px 6px; }
-.zion-memory-empty { padding: 20px 12px; color: color-mix(in srgb, var(--fg) 58%, transparent); font-size: 12px; line-height: 1.6; }
-.zion-memory-empty b { display: block; margin-bottom: 4px; color: color-mix(in srgb, var(--fg) 78%, transparent); font-weight: 650; }
-.zion-memory-detail { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 0; }
-.zion-memory-action { width: 26px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg); opacity: 0.7; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
-.zion-memory-action:hover { opacity: 1; background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.10); }
-.zion-memory-action svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.zion-memory-action.primary { color: var(--fg); }
-.zion-memory-action.danger { color: #ef4444; }
-.zion-memory-action.danger:hover { background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.35); }
-.zion-memory-code-editor { flex: 1 1 auto; min-height: 0; overflow: hidden; background: var(--files-preview-bg, transparent); }
-.zion-memory-details { flex: 0 0 auto; max-height: 42%; overflow: auto; border-top: 1px solid color-mix(in srgb, var(--border) 64%, transparent); color: color-mix(in srgb, var(--fg) 64%, transparent); font-size: 11px; background: var(--files-preview-bg, transparent); }
-.zion-memory-details > summary { cursor: pointer; padding: 5px 8px 5px 10px; color: color-mix(in srgb, var(--fg) 68%, transparent); user-select: none; }
-.zion-memory-preview-actions { flex: 0 0 auto; margin-left: auto; display: inline-flex; align-items: center; gap: 2px; }
-.zion-memory-details-summary { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 8px; min-height: 26px; }
-.zion-memory-details-summary::-webkit-details-marker { display: none; }
-.zion-memory-details-summary::before { content: "›"; display: inline-block; color: color-mix(in srgb, var(--fg) 46%, transparent); font-size: 14px; line-height: 1; transition: transform 120ms ease; }
-.zion-memory-details[open] > .zion-memory-details-summary::before { transform: rotate(90deg); }
-.zion-memory-details-label { color: color-mix(in srgb, var(--fg) 72%, transparent); font-weight: 600; }
-.zion-memory-details-chips { min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; }
-.zion-memory-chip { flex: 0 1 auto; min-width: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--border) 58%, transparent); border-radius: 999px; color: color-mix(in srgb, var(--fg) 62%, transparent); background: color-mix(in srgb, var(--fg) 4%, transparent); font: 10.5px/1.45 var(--font-sans); }
-.zion-memory-chip.empty { color: color-mix(in srgb, var(--fg) 38%, transparent); border-style: dashed; background: transparent; }
-.zion-memory-details-actions { display: flex; align-items: center; gap: 3px; padding: 0 8px 6px; }
-.zion-memory-details-form { display: flex; flex-direction: column; gap: 6px; padding: 0 8px 8px; }
-.zion-memory-field-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
-.zion-memory-details-context { max-height: 160px; overflow: auto; margin: 0; padding: 6px 10px 10px; color: color-mix(in srgb, var(--fg) 58%, transparent); font: 10.5px/1.45 var(--font-mono, monospace); white-space: pre-wrap; border-top: 1px solid color-mix(in srgb, var(--border) 46%, transparent); }
-.zion-memory-editor-empty { flex: 1 1 auto; display: grid; place-content: center; gap: 4px; padding: 24px; color: color-mix(in srgb, var(--fg) 58%, transparent); font-size: 12px; text-align: center; }
-.zion-memory-editor-empty b { color: color-mix(in srgb, var(--fg) 78%, transparent); }
-:root[data-theme="light"] .zion-memory-action:hover, :root[data-theme="light"] .zion-memory-action.primary:hover { background: rgba(0, 0, 0, 0.04); border-color: rgba(0, 0, 0, 0.08); }
-:root[data-theme="light"] .zion-memory-action.danger { color: #dc2626; }
-`;
-  document.head.appendChild(style);
-}
 
 export async function activate(ctx) {
-  injectStyles();
-  const disposables = [];
+  
+const disposables = [];
   try {
     const disp = window.zion?.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) disposables.push(disp);

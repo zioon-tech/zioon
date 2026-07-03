@@ -110,10 +110,6 @@
           "key": "Mod-Shift-n"
         },
         {
-          "command": "zion.sessions.newInFolder",
-          "key": "Mod-Shift-t"
-        },
-        {
           "command": "zion.sessions.toggleSidebar",
           "key": "Mod-Shift-s"
         },

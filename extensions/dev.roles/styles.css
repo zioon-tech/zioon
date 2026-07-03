@@ -1,0 +1,37 @@
+/* ===== Roles Config Modal ===== */
+.roles-config-panel {
+  background: var(--panel) !important;
+  color: var(--fg) !important;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  font-family: var(--font-sans);
+}
+.roles-config-panel label {
+  color: var(--fg);
+}
+.roles-config-panel input[type="text"] {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.roles-config-btn {
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 12px;
+  margin-left: 4px;
+}
+.roles-config-btn-save {
+  background: var(--accent);
+  color: var(--panel);
+  border: 1px solid var(--accent);
+}
+.roles-config-btn-cancel {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+

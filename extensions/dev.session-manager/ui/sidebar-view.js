@@ -1,13 +1,17 @@
+import { extractObsidianMetadata } from "../../shared/obsidian-metadata.js";
+
 export function createSessionsSidebarViewManager(opts) {
   const zion = opts?.zion || window.zion;
   const createSessionsListRenderer = opts?.createSessionsListRenderer;
   const openAncestors = opts?.openAncestors;
   const getIndex = opts?.getIndex;
   const loadMeta = opts?.loadMeta;
+  const loadDoc = opts?.loadDoc;
   const LS_SELECTED_DAY = "zion.sessions.sidebar.selectedDay";
   const LS_SELECTED_RANGE_DAYS = "zion.sessions.sidebar.selectedRangeDays";
   const LS_DAY_PANEL_COLLAPSED = "zion.sessions.sidebar.dayPanelCollapsed";
   const LS_DAY_PANEL_END_DAY = "zion.sessions.sidebar.dayPanelEndDay";
+  const LS_TAG_PANEL_COLLAPSED = "zion.sessions.sidebar.tagPanelCollapsed";
 
   function t(key, fallback, values) {
     const fullKey = `dev.session-manager.${key}`;
@@ -25,6 +29,8 @@ export function createSessionsSidebarViewManager(opts) {
   let current = null;
   let revealRaf = 0;
   let heatmapTooltip = null;
+  let selectedTag = "";
+  const sessionTagsCache = new Map();
 
   function hideHeatmapTooltip() {
     try {
@@ -118,6 +124,77 @@ export function createSessionsSidebarViewManager(opts) {
 
   function getSessionIndex() {
     try { return typeof getIndex === "function" ? (getIndex() || []) : []; } catch { return []; }
+  }
+
+  function hashText(text) {
+    let h = 2166136261;
+    const s = String(text || "");
+    for (let i = 0; i < s.length; i += 1) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return `${s.length}:${h >>> 0}`;
+  }
+
+  function getSessionTags(sessionId) {
+    const sid = String(sessionId || "");
+    if (!sid || typeof loadDoc !== "function") return [];
+    let text = "";
+    try { text = String(loadDoc(sid) || ""); } catch { return []; }
+    const cached = sessionTagsCache.get(sid);
+    const signature = hashText(text);
+    if (cached?.signature === signature) return cached.tags || [];
+    const tags = extractObsidianMetadata(text).tags.map((tag) => tag.label).filter(Boolean);
+    sessionTagsCache.set(sid, { signature, tags });
+    return tags;
+  }
+
+  function tagMatchesFilter(tags, filter) {
+    const selected = String(filter || "").trim();
+    if (!selected) return true;
+    return (Array.isArray(tags) ? tags : []).some((tag) => tag === selected || tag.startsWith(`${selected}/`));
+  }
+
+  function buildTagTreeForSessionIds(sessionIds) {
+    const root = { children: new Map(), sessions: new Set(), tag: "", label: "" };
+    const all = new Map();
+    for (const sid of sessionIds || []) {
+      for (const tag of getSessionTags(sid)) {
+        const clean = String(tag || "").replace(/^#/, "").trim();
+        if (!clean) continue;
+        const parts = clean.split("/").map((part) => part.trim()).filter(Boolean);
+        let node = root;
+        let path = "";
+        root.sessions.add(sid);
+        for (const part of parts) {
+          path = path ? `${path}/${part}` : part;
+          const fullTag = `#${path}`;
+          if (!node.children.has(part)) {
+            node.children.set(part, {
+              label: part,
+              tag: fullTag,
+              children: new Map(),
+              sessions: new Set()
+            });
+          }
+          node = node.children.get(part);
+          node.sessions.add(sid);
+          all.set(fullTag, node);
+        }
+      }
+    }
+    const sortNode = (node) => {
+      node.children = new Map(
+        Array.from(node.children.values())
+          .sort((a, b) => b.sessions.size - a.sessions.size || a.label.localeCompare(b.label))
+          .map((child) => {
+            sortNode(child);
+            return [child.label, child];
+          })
+      );
+    };
+    sortNode(root);
+    return { root, count: all.size };
   }
 
   function refreshIfOpen() {
@@ -225,9 +302,19 @@ export function createSessionsSidebarViewManager(opts) {
     let calendarCollapsed = (() => {
       try { return localStorage.getItem(LS_DAY_PANEL_COLLAPSED) === "1"; } catch { return false; }
     })();
+    let tagPanelCollapsed = (() => {
+      try { return localStorage.getItem(LS_TAG_PANEL_COLLAPSED) === "1"; } catch { return false; }
+    })();
     let windowEndDay = (() => {
       try { return localStorage.getItem(LS_DAY_PANEL_END_DAY) || dayKey(); } catch { return dayKey(); }
     })();
+
+    const tagsHost = document.createElement("div");
+    tagsHost.className = "zion-sessions-tags-panel";
+    tagsHost.style.flex = "0 0 auto";
+    tagsHost.style.margin = "2px 8px 0 8px";
+    tagsHost.style.padding = "6px 0 6px 0";
+    tagsHost.style.borderTop = "1px solid color-mix(in srgb, var(--border) 72%, transparent)";
 
     const calendarHost = document.createElement("div");
     calendarHost.className = "zion-sessions-day-panel";
@@ -244,6 +331,7 @@ export function createSessionsSidebarViewManager(opts) {
     const list = document.createElement("div");
     listWrap.appendChild(list);
     container.appendChild(listWrap);
+    container.appendChild(tagsHost);
     container.appendChild(calendarHost);
 
     const isRowFullyVisible = (row) => {
@@ -265,12 +353,18 @@ export function createSessionsSidebarViewManager(opts) {
       getQuery: () => "",
       getSort: () => "updated",
       getSessionFilter: () => {
-        if (!selectedDay && !selectedRangeDays) return null;
-        const filterDays = selectedRangeDays ? new Set(recentDays(selectedRangeDays)) : new Set([selectedDay]);
-        const usageSessionIds = new Set(getUsageRecords().filter(r => filterDays.has(r?.day) && r?.sessionId).map(r => String(r.sessionId)));
+        const tagFilter = String(selectedTag || "").trim();
+        const hasDateFilter = !!(selectedDay || selectedRangeDays);
+        if (!hasDateFilter && !tagFilter) return null;
+        const filterDays = hasDateFilter ? (selectedRangeDays ? new Set(recentDays(selectedRangeDays)) : new Set([selectedDay])) : null;
+        const usageSessionIds = filterDays
+          ? new Set(getUsageRecords().filter(r => filterDays.has(r?.day) && r?.sessionId).map(r => String(r.sessionId)))
+          : new Set();
         return (node) => {
           const sid = String(node?.id || "");
           if (!sid) return false;
+          if (tagFilter && !tagMatchesFilter(getSessionTags(sid), tagFilter)) return false;
+          if (!filterDays) return true;
           if (usageSessionIds.has(sid)) return true;
           const meta = typeof loadMeta === "function" ? loadMeta(sid) : node;
           return selectedRangeDays ? sessionTouchesAnyDay(meta || node, filterDays) : sessionTouchesDay(meta || node, selectedDay);
@@ -292,6 +386,147 @@ export function createSessionsSidebarViewManager(opts) {
     try { disposables.push(zion?.events?.on?.("chat/usageChanged", () => renderAll())); } catch {}
     try { disposables.push(zion?.state?.onDidChange?.("sessions.treeMem", () => renderAll())); } catch {}
     try { disposables.push(zion?.state?.onDidChange?.("sessions.indexMem", () => renderAll())); } catch {}
+
+    const renderTagsPanel = () => {
+      tagsHost.innerHTML = "";
+      const sessions = getSessionIndex();
+      const tagTree = buildTagTreeForSessionIds(sessions.map((session) => String(session.id || "")).filter(Boolean));
+      const header = document.createElement("div");
+      header.style.display = "flex";
+      header.style.alignItems = "center";
+      header.style.justifyContent = "space-between";
+      header.style.gap = "8px";
+
+      const leftHead = document.createElement("button");
+      leftHead.type = "button";
+      leftHead.style.display = "inline-flex";
+      leftHead.style.alignItems = "center";
+      leftHead.style.gap = "4px";
+      leftHead.style.minWidth = "0";
+      leftHead.style.flex = "1 1 auto";
+      leftHead.style.border = "0";
+      leftHead.style.background = "transparent";
+      leftHead.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
+      leftHead.style.padding = "0";
+      leftHead.style.cursor = "pointer";
+      leftHead.title = tagPanelCollapsed ? t("tags.expand", "Expand tags") : t("tags.collapse", "Collapse tags");
+      const chevron = document.createElement("span");
+      chevron.textContent = tagPanelCollapsed ? "▸" : "▾";
+      chevron.style.fontSize = "12px";
+      const title = document.createElement("span");
+      title.textContent = t("tags.title", "Tags");
+      title.style.fontSize = "11px";
+      title.style.fontWeight = "500";
+      title.style.overflow = "hidden";
+      title.style.textOverflow = "ellipsis";
+      title.style.whiteSpace = "nowrap";
+      const count = document.createElement("span");
+      count.textContent = String(tagTree.count);
+      count.style.fontSize = "10px";
+      count.style.opacity = "0.72";
+      leftHead.append(chevron, title, count);
+      leftHead.onclick = (ev) => {
+        ev.stopPropagation();
+        tagPanelCollapsed = !tagPanelCollapsed;
+        try { localStorage.setItem(LS_TAG_PANEL_COLLAPSED, tagPanelCollapsed ? "1" : "0"); } catch {}
+        renderAll();
+      };
+      header.appendChild(leftHead);
+
+      if (selectedTag) {
+        const clear = document.createElement("button");
+        clear.type = "button";
+        clear.textContent = t("tags.clear", "Clear");
+        clear.title = t("tags.clearTitle", "Clear tag filter");
+        clear.style.border = "0";
+        clear.style.borderRadius = "999px";
+        clear.style.padding = "2px 6px";
+        clear.style.fontSize = "10px";
+        clear.style.cursor = "pointer";
+        clear.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
+        clear.style.background = "color-mix(in srgb, var(--fg) 5%, transparent)";
+        clear.onclick = (ev) => {
+          ev.stopPropagation();
+          selectedTag = "";
+          renderAll();
+        };
+        header.appendChild(clear);
+      }
+
+      tagsHost.appendChild(header);
+      if (tagPanelCollapsed) return;
+
+      const body = document.createElement("div");
+      body.style.marginTop = "7px";
+      body.style.maxHeight = "148px";
+      body.style.overflowY = "auto";
+      const renderTagNode = (node, depth) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.title = t("tags.filterTitle", "Filter sessions by {tag}", { tag: node.tag });
+        row.style.width = "100%";
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.gap = "6px";
+        row.style.border = "0";
+        row.style.borderRadius = "7px";
+        row.style.padding = "3px 7px";
+        row.style.paddingLeft = `${7 + depth * 14}px`;
+        row.style.margin = "1px 0";
+        row.style.cursor = "pointer";
+        row.style.textAlign = "left";
+        row.style.color = node.tag === selectedTag ? "var(--accent)" : "var(--fg)";
+        row.style.background = node.tag === selectedTag
+          ? "color-mix(in srgb, var(--accent) 14%, transparent)"
+          : "transparent";
+        row.onmouseenter = () => {
+          if (node.tag !== selectedTag) row.style.background = "color-mix(in srgb, var(--fg) 5%, transparent)";
+        };
+        row.onmouseleave = () => {
+          if (node.tag !== selectedTag) row.style.background = "transparent";
+        };
+        row.onclick = (ev) => {
+          ev.stopPropagation();
+          selectedTag = selectedTag === node.tag ? "" : node.tag;
+          renderAll();
+        };
+        const marker = document.createElement("span");
+        marker.textContent = node.children.size ? "▾" : "";
+        marker.style.width = "10px";
+        marker.style.flex = "0 0 auto";
+        marker.style.fontSize = "10px";
+        marker.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
+        const label = document.createElement("span");
+        label.textContent = depth === 0 ? `#${node.label}` : node.label;
+        label.style.flex = "1 1 auto";
+        label.style.minWidth = "0";
+        label.style.overflow = "hidden";
+        label.style.textOverflow = "ellipsis";
+        label.style.whiteSpace = "nowrap";
+        label.style.fontSize = "11px";
+        const countEl = document.createElement("span");
+        countEl.textContent = String(node.sessions.size);
+        countEl.style.flex = "0 0 auto";
+        countEl.style.fontSize = "10px";
+        countEl.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
+        row.append(marker, label, countEl);
+        body.appendChild(row);
+        for (const child of node.children.values()) {
+          renderTagNode(child, depth + 1);
+        }
+      };
+      if (tagTree.count) {
+        for (const node of tagTree.root.children.values()) renderTagNode(node, 0);
+      } else {
+        const empty = document.createElement("span");
+        empty.textContent = t("tags.empty", "No tags yet");
+        empty.style.fontSize = "10px";
+        empty.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
+        empty.style.opacity = "0.72";
+        body.appendChild(empty);
+      }
+      tagsHost.appendChild(body);
+    };
 
     const renderCalendar = () => {
       hideHeatmapTooltip();
@@ -617,6 +852,7 @@ export function createSessionsSidebarViewManager(opts) {
     };
 
     const renderAll = () => {
+      renderTagsPanel();
       renderCalendar();
       innerRender();
     };

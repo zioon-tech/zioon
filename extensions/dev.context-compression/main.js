@@ -1397,8 +1397,9 @@ function sanitizeChatMessages(compressed, original, opts = {}) {
 
   const lastRole = out.length > 0 ? out[out.length - 1].role : null;
   const shouldAppendFinalUser = opts?.appendFinalUser !== false;
-  if (shouldAppendFinalUser && lastRole !== 'user') {
-    const orig = Array.isArray(original) ? original : [];
+  const orig = Array.isArray(original) ? original : [];
+  const originalLastRole = orig.length > 0 ? String(orig[orig.length - 1]?.role || '') : null;
+  if (shouldAppendFinalUser && originalLastRole === 'user' && lastRole !== 'user') {
     for (let i = orig.length - 1; i >= 0; i--) {
       if (orig[i]?.role === 'user') {
         out.push({ role: 'user', content: normalizeContent(orig[i]?.content) });
@@ -1428,7 +1429,8 @@ function stripWidgetStubs(text) {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (/^(思考|调用\s+\S+|Thinking|Call\s+\S+)/.test(trimmed)) continue;
+    if (/^(思考|Thinking)(?:\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->)?$/i.test(trimmed)) continue;
+    if (/^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?$/i.test(trimmed)) continue;
     // Strip leading role headers like "system|user|assistant <content>"
     const roleMatch = trimmed.match(/^(system|user|assistant)\s+(.*)$/);
     if (roleMatch) {

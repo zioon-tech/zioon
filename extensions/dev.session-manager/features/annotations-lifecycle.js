@@ -20,10 +20,18 @@ export function createAnnotationsLifecycle(opts) {
     }
   }
 
+  function snapshotSessionAnnotations(id, panelId = null) {
+    try {
+      if (!id) return;
+      getZion()?.commands?.executeCommand?.("zion.chatCards.snapshotSession", { sessionId: id, panelId });
+    } catch {}
+  }
+
   function persistCurrentAnnotations() {
     try {
       const id = getZion()?.state?.get("sessions.currentId");
       if (!id) return;
+      snapshotSessionAnnotations(id);
       const meta = loadMeta(id);
       const ann = getAnnotationsState(id) || meta.annotations;
       if (ann) {
@@ -104,6 +112,13 @@ export function createAnnotationsLifecycle(opts) {
         return [];
       };
       const loadAnnotations = async (id) => {
+        let liveAnn = null;
+        try {
+          liveAnn = getZion()?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", id, {
+            includeMetaFallback: false,
+            includePending: true
+          }) || null;
+        } catch {}
         let ann = null;
         try {
           const rec = await idbGet(dbName, "metas", id);
@@ -113,10 +128,7 @@ export function createAnnotationsLifecycle(opts) {
             try { getZion()?.state?.set(`sessions.meta.${id}`, meta); } catch {}
           }
         } catch {}
-        if (!ann) {
-          try { ann = getZion()?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", id) || null; } catch {}
-        }
-        return ann;
+        return ann || liveAnn;
       };
       const doRestore = async () => {
         try {
@@ -126,6 +138,7 @@ export function createAnnotationsLifecycle(opts) {
           for (const target of targets) {
             const id = target?.sessionId;
             if (!id) continue;
+            snapshotSessionAnnotations(id, target.panelId);
             let ann = cache.get(id);
             if (ann === undefined) {
               ann = await loadAnnotations(id);
@@ -136,7 +149,8 @@ export function createAnnotationsLifecycle(opts) {
               getZion()?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
                 sessionId: id,
                 panelId: target.panelId,
-                annotations: ann
+                annotations: ann,
+                clearFirst: false
               });
             } catch {}
           }

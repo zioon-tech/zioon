@@ -16,9 +16,14 @@ const I18N_MESSAGES = {
     "toolbar.createTask": "创建智能体任务",
     "cmd.openPanel": "打开智能体",
     "cmd.createFromSelection": "为选区创建智能体任务",
+    "cmd.createScratch": "新建临时智能体会话",
     "task.created": "已创建智能体任务",
+    "task.scratchCreated": "已创建临时智能体会话",
     "task.noPrompt": "没有找到可委派的 user 提示或选区。",
     "task.defaultPrompt": "请基于选中的上下文，先整理 Context Brief，再给出可执行方案。",
+    "task.scratchTitle": "临时探索",
+    "task.scratchPrompt": "这是一个独立的临时 sub-agent 对话，不绑定当前主编辑器。请在这里输入要探索的问题。",
+    "task.scratchContext": "独立临时对话",
     "task.run": "运行",
     "task.stop": "停止",
     "task.delete": "删除",
@@ -77,9 +82,14 @@ const I18N_MESSAGES = {
     "toolbar.createTask": "Create Agent Task",
     "cmd.openPanel": "Open Agents",
     "cmd.createFromSelection": "Create Agent Task From Selection",
+    "cmd.createScratch": "New Temporary Agent Session",
     "task.created": "Agent Task created",
+    "task.scratchCreated": "Temporary Agent session created",
     "task.noPrompt": "No delegatable user prompt or selection found.",
     "task.defaultPrompt": "Use the selected context. Start with a Context Brief, then provide an actionable plan.",
+    "task.scratchTitle": "Temporary Exploration",
+    "task.scratchPrompt": "This is an independent temporary sub-agent conversation, not bound to the current main editor. Type what you want to explore here.",
+    "task.scratchContext": "Independent temporary conversation",
     "task.run": "Run",
     "task.stop": "Stop",
     "task.delete": "Delete",
@@ -139,6 +149,7 @@ const OUTPUT_CONTRACT = [
   { id: "evidence", heading: "Evidence", label: "Evidence" },
   { id: "nextActions", heading: "Next Actions", label: "Next Actions" }
 ];
+const AUTO_TITLE_MAX_LENGTH = 36;
 
 const DEFAULT_AGENTS = [
   {
@@ -216,6 +227,7 @@ const DEFAULT_AGENTS = [
 ];
 
 let lastTaskEditorHandle = null;
+let pendingFocusTaskId = "";
 const activeRuns = new Map();
 
 function t(key, fallback, values) {
@@ -583,6 +595,50 @@ function createTaskFromPrompt(opts = {}) {
   return task;
 }
 
+function isScratchTask(task) {
+  return !!task?.scratch;
+}
+
+function createScratchTask() {
+  const agent = getAgentDefinition("researcher");
+  const task = {
+    id: uid("task"),
+    sessionId: `scratch:${uid("session")}`,
+    panelId: "",
+    agentId: agent.id,
+    title: t("task.scratchTitle", "Temporary Exploration"),
+    prompt: t("task.scratchPrompt", "This is an independent temporary sub-agent conversation, not bound to the current main editor. Type what you want to explore here."),
+    body: "user ",
+    anchorText: "",
+    quote: t("task.scratchContext", "Independent temporary conversation"),
+    status: "idle",
+    scratch: true,
+    titleAuto: true,
+    isolation: "context",
+    background: agent.background,
+    permissionMode: agent.permissionMode,
+    tools: agent.tools,
+    disallowedTools: agent.disallowedTools,
+    modelPolicy: agent.modelPolicy,
+    maxTurns: agent.maxTurns,
+    events: [createRunEvent("task.created", { message: "created as scratch sub-agent session" })],
+    result: null,
+    runCount: 0,
+    createdAt: now(),
+    updatedAt: now()
+  };
+  const list = readTasks();
+  list.push(task);
+  writeTasks(list);
+  setActiveTask(task.id);
+  pendingFocusTaskId = task.id;
+  openAgentsPanel();
+  try {
+    window.zion?.notification?.show?.(t("task.scratchCreated", "Temporary Agent session created"), { type: "success", duration: 1400 });
+  } catch {}
+  return task;
+}
+
 function inferAgentId(text) {
   const value = String(text || "").toLowerCase();
   if (/review|code review|审查|评审/.test(value)) return "reviewer";
@@ -679,8 +735,8 @@ function installAgentAnchors(editor) {
 }
 
 function renderAgentsPanel(container) {
-  injectStyles();
-  const root = document.createElement("div");
+  
+const root = document.createElement("div");
   root.className = "zion-agents-panel";
   container.appendChild(root);
   const disposables = [];
@@ -766,7 +822,7 @@ function renderAgentsPanel(container) {
       row.type = "button";
       row.className = `zion-agents-row is-${statusClass(task.status)}${task.id === activeId ? " is-active" : ""}`;
       row.onclick = () => setActiveTask(task.id);
-      const lineLabel = `L${Number(task.lineFrom || 0) + 1}`;
+      const lineLabel = isScratchTask(task) ? t("task.scratchContext", "Independent temporary conversation") : `L${Number(task.lineFrom || 0) + 1}`;
       const metaLabel = [lineLabel, formatTime(task.updatedAt || task.createdAt)].filter(Boolean).join(" · ");
       row.innerHTML = [
         `<span class="zion-agents-row-icon codicon codicon-hubot" aria-hidden="true"></span>`,
@@ -794,13 +850,15 @@ function renderAgentsPanel(container) {
     const editorHeader = document.createElement("div");
     editorHeader.className = "zion-agents-editor-header";
     editorFrame.appendChild(editorHeader);
+    const scratch = isScratchTask(task);
 
     const quoteButton = document.createElement("button");
     quoteButton.type = "button";
-    quoteButton.className = "zion-agents-quote";
-    quoteButton.title = t("task.focusSource", "Focus source");
-    quoteButton.innerHTML = `<span class="zion-agents-quote-label">${escapeHtml(getAgentLabel(agent))} · ${escapeHtml(statusLabel(task.status))}</span><span class="zion-agents-quote-text">${escapeHtml(compactText(task.anchorText || task.quote || task.title || task.id, 120))}</span>`;
-    quoteButton.onclick = () => revealTask(task.id);
+    quoteButton.className = `zion-agents-quote${scratch ? " is-scratch" : ""}`;
+    quoteButton.title = scratch ? t("task.scratchContext", "Independent temporary conversation") : t("task.focusSource", "Focus source");
+    quoteButton.innerHTML = `<span class="zion-agents-quote-label">${escapeHtml(getAgentLabel(agent))} · ${escapeHtml(statusLabel(task.status))}</span><span class="zion-agents-quote-text">${escapeHtml(compactText(scratch ? t("task.scratchContext", "Independent temporary conversation") : (task.anchorText || task.quote || task.title || task.id), 120))}</span>`;
+    if (scratch) quoteButton.disabled = true;
+    else quoteButton.onclick = () => revealTask(task.id);
     editorHeader.appendChild(quoteButton);
 
     const actions = document.createElement("div");
@@ -829,12 +887,24 @@ function renderAgentsPanel(container) {
     moreContent.className = "zion-agents-more-content";
     if (result) moreContent.appendChild(result);
     moreContent.appendChild(policy);
-    moreContent.appendChild(contextBlock(task));
+    if (!scratch) moreContent.appendChild(contextBlock(task));
     if (log) moreContent.appendChild(log);
     more.appendChild(moreContent);
     detail.appendChild(more);
     taskEditorHandle = createTaskEditor(editorHost, task);
     lastTaskEditorHandle = taskEditorHandle;
+    if (pendingFocusTaskId === task.id) {
+      pendingFocusTaskId = "";
+      requestAnimationFrame(() => {
+        try {
+          const view = taskEditorHandle?.view;
+          const pos = view?.state?.doc?.length;
+          if (Number.isFinite(pos)) view.dispatch({ selection: { anchor: pos } });
+          taskEditorHandle?.proxy?.focus?.();
+          view?.focus?.();
+        } catch {}
+      });
+    }
     return detail;
   }
 }
@@ -967,6 +1037,12 @@ function createTaskEditor(container, task) {
   const sessionId = getTaskSessionId(task);
   const core = new EditorCore(container, String(task.body || `user ${task.prompt || ""}`), panelId);
   core.setSessionId(sessionId);
+  if (isScratchTask(task)) {
+    try {
+      const pos = core.view?.state?.doc?.length;
+      if (Number.isFinite(pos)) core.view.dispatch({ selection: { anchor: pos } });
+    } catch {}
+  }
   try { core.setLineNumbersEnabled(false); } catch {}
   try { core.setFoldingEnabled(false); } catch {}
   const proxy = window.zion?.editor?.attachEditor?.(core, panelId) || null;
@@ -1042,6 +1118,102 @@ function buildTaskContextMessages(task) {
   return [{ role: "system", content: system }];
 }
 
+function parseAutoTitlePayload(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const withoutFence = text
+    .replace(/^\s*```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+  const tryParse = (candidate) => {
+    try {
+      const parsed = JSON.parse(candidate);
+      const title = parsed && typeof parsed === "object" ? (parsed.title ?? parsed.name) : "";
+      return typeof title === "string" ? title : "";
+    } catch {
+      return "";
+    }
+  };
+  const direct = tryParse(withoutFence);
+  if (direct) return direct;
+  const match = withoutFence.match(/\{[\s\S]*?\}/);
+  return match ? tryParse(match[0]) : "";
+}
+
+function looksLikeAnswerTitle(title) {
+  const value = String(title || "").trim();
+  if (!value) return true;
+  if (Array.from(value).length > AUTO_TITLE_MAX_LENGTH) return true;
+  if (/[。！？!?]\s*.+/.test(value)) return true;
+  return /^(当然|可以|好的|首先|其次|以下|这里|这是|这个问题|答案|建议|Sure|Certainly|Here|You can|To )/i.test(value);
+}
+
+function cleanAutoTaskTitle(raw) {
+  let title = parseAutoTitlePayload(raw);
+  if (!title) title = String(raw || "").split("\n").find((line) => String(line || "").trim().length > 0) || "";
+  title = title.replace(/^\s*(title|session title)\s*[:：]\s*/i, "");
+  title = title.replace(/^\s*(name|session name)\s*[:：]\s*/i, "");
+  title = title.replace(/^\s*标题\s*[:：]\s*/i, "");
+  title = title.replace(/^\s*会话名\s*[:：]\s*/i, "");
+  title = title.replace(/^["'“”‘’]+/, "").replace(/["'“”‘’]+$/, "");
+  title = title.replace(/\s+/g, " ").trim();
+  title = title.replace(/^[\-–—:：#*]+/, "").replace(/[\-–—:：#*]+$/, "").trim();
+  if (looksLikeAnswerTitle(title)) return "";
+  return title;
+}
+
+async function maybeGenerateScratchTaskTitle(task, transcript) {
+  if (!isScratchTask(task) || task.titleAuto !== true) return false;
+  const runStream = window.zion?.llm?.runStream;
+  if (typeof runStream !== "function") return false;
+  const text = String(transcript || task.body || "").trim();
+  if (text.length < 12) return false;
+  const excerpt = text.length > 6000 ? text.slice(0, 6000) : text;
+  const messages = [
+    {
+      role: "system",
+      content: [
+        "你是会话标题生成器，不是聊天助手。",
+        "任务：只根据用户提供的临时 sub-agent 对话内容生成一个会话名。",
+        "禁止：不要回答会话里的问题，不要给建议，不要解释，不要复述内容，不要输出 Markdown。",
+        "标题要求：2-18 个中文字符或 2-8 个英文单词；短、具体、像文件/会话标题；不要引号；不要句号。",
+        "如果内容是在提问，也要概括主题，而不是回答问题。",
+        "必须只输出一行严格 JSON，格式为：{\"title\":\"会话名\"}"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        "为下面的临时 sub-agent 对话生成会话名。",
+        "再次强调：不要回答会话内容，只返回 JSON。",
+        "",
+        "<conversation>",
+        excerpt,
+        "</conversation>"
+      ].join("\n")
+    }
+  ];
+  let out = "";
+  let error = null;
+  await runStream({
+    messages,
+    tools: null,
+    onToken: (token) => { out += String(token || ""); },
+    onEnd: () => {},
+    onError: (err) => { error = err || new Error("LLM error"); },
+    runId: `agentTaskTitle-${task.id}-${Date.now()}`,
+    sessionId: `agent-title:${task.id}`,
+    silentReasoning: true
+  });
+  if (error) return false;
+  const title = cleanAutoTaskTitle(out);
+  if (!title) return false;
+  const latest = readTasks().find((item) => item?.id === task.id);
+  if (!latest || !isScratchTask(latest) || latest.titleAuto !== true) return false;
+  patchTask(task.id, { title, titleAuto: false }, { silent: true });
+  return true;
+}
+
 async function runTask(task, handle) {
   if (!task || !handle?.view || !handle?.proxy) return;
   if (activeRuns.has(task.id)) return;
@@ -1104,6 +1276,7 @@ async function runTask(task, handle) {
       body,
       result
     }, { silent: true });
+    try { await maybeGenerateScratchTaskTitle(task, body); } catch {}
   } catch (err) {
     record("runner.error", { message: err?.message || String(err || "unknown") });
     patchTask(task.id, {
@@ -1263,78 +1436,6 @@ function installAgentApi() {
   return { dispose() { try { if (window.zion.agents === api) delete window.zion.agents; } catch {} } };
 }
 
-function injectStyles() {
-  if (document.getElementById("zion-agents-style")) return;
-  const style = document.createElement("style");
-  style.id = "zion-agents-style";
-  style.textContent = `
-.zion-agent-range { background: color-mix(in srgb, var(--accent) 13%, transparent); border-bottom: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent); }
-.zion-agent-anchor { border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 14%, var(--panel-bg)); color: var(--accent); border-radius: 999px; font: 10px/1 var(--font-sans); padding: 2px 5px; margin-left: 3px; cursor: pointer; }
-.zion-agents-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; color: var(--fg); background: linear-gradient(180deg, color-mix(in srgb, var(--panel-bg) 96%, var(--bg, #000)) 0%, var(--panel-bg) 100%); }
-.zion-agents-shell { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.zion-agents-header { flex: 0 0 auto; display: flex; align-items: center; padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
-.zion-agents-stats { flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: color-mix(in srgb, var(--fg) 56%, transparent); font-size: 11px; }
-.zion-agents-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: minmax(96px, 30%) minmax(0, 1fr); }
-.zion-agents-list { min-height: 0; overflow: auto; padding: 4px 6px; border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent); }
-.zion-agents-empty { padding: 22px 12px; color: color-mix(in srgb, var(--fg) 58%, transparent); font-size: 12px; line-height: 1.6; }
-.zion-agents-empty b { display: block; margin-bottom: 4px; color: color-mix(in srgb, var(--fg) 78%, transparent); font-weight: 650; }
-.zion-agents-row { width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 7px; border: 0; border-radius: 6px; background: transparent; color: inherit; text-align: left; cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
-.zion-agents-row:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
-.zion-agents-row.is-active { background: color-mix(in srgb, var(--fg) 6%, transparent); }
-.zion-agents-row-icon { flex: 0 0 auto; width: 16px; color: color-mix(in srgb, var(--fg) 50%, transparent); font-size: 14px; line-height: 1; }
-.zion-agents-row.is-active .zion-agents-row-icon { color: color-mix(in srgb, var(--fg) 74%, transparent); }
-.zion-agents-row-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 0; }
-.zion-agents-row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 68%, transparent); font-size: 12.5px; line-height: 1.38; font-weight: 450; }
-.zion-agents-row.is-active .zion-agents-row-title { color: color-mix(in srgb, var(--fg) 92%, transparent); font-weight: 620; }
-.zion-agents-row-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; color: color-mix(in srgb, var(--fg) 42%, transparent); font-size: 10.5px; line-height: 1; white-space: nowrap; }
-.zion-agents-row.is-active .zion-agents-row-meta { color: color-mix(in srgb, var(--fg) 54%, transparent); }
-.zion-agents-session-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 999px; background: color-mix(in srgb, var(--fg) 28%, transparent); }
-.zion-agents-session-dot.is-running { background: #75beff; box-shadow: 0 0 0 3px color-mix(in srgb, #75beff 16%, transparent); }
-.zion-agents-session-dot.is-done { background: #3fb950; }
-.zion-agents-session-dot.is-error { background: #ef4444; }
-.zion-agents-session-dot.is-aborted { background: #d29922; }
-.zion-agents-detail { min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 0 8px; }
-.zion-agents-editor-frame { flex: 1 1 auto; min-height: 150px; overflow: hidden; border: 0; border-radius: 0; background: transparent; display: flex; flex-direction: column; }
-.zion-agents-editor-header { flex: 0 0 auto; min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 2px 0 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 54%, transparent); color: color-mix(in srgb, var(--fg) 62%, transparent); font-size: 11px; }
-.zion-agents-quote { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.zion-agents-quote:hover { color: var(--fg); }
-.zion-agents-quote-label { flex: 0 0 auto; color: color-mix(in srgb, var(--fg) 54%, transparent); font-size: 10.5px; }
-.zion-agents-quote-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 72%, transparent); font-size: 11.5px; }
-.zion-agents-actions { flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 2px; padding: 0; }
-.zion-agents-action { width: 26px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg); opacity: 0.7; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
-.zion-agents-action:hover { opacity: 1; background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.10); }
-.zion-agents-action svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.zion-agents-action.primary svg { fill: currentColor; stroke: none; }
-.zion-agents-action.primary { background: transparent; color: var(--fg); }
-.zion-agents-action.danger { color: #ef4444; }
-.zion-agents-action.danger:hover { background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.35); }
-:root[data-theme="light"] .zion-agents-action:hover, :root[data-theme="light"] .zion-agents-action.primary:hover { background: rgba(0, 0, 0, 0.04); border-color: rgba(0, 0, 0, 0.08); }
-:root[data-theme="light"] .zion-agents-action.danger { color: #dc2626; }
-:root[data-theme="light"] .zion-agents-action.danger:hover { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.28); }
-.zion-agents-editor-host { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.zion-agents-editor-host .cm-editor { height: 100%; background: transparent; }
-.zion-agents-editor-host .cm-scroller { background: transparent; font-size: 12px; }
-.zion-agents-editor-host .cm-content { padding: 4px 2px 10px; }
-.zion-agents-editor-host .cm-line { line-height: 1.48; }
-.zion-agents-editor-host .cm-gutters { display: none; }
-.zion-agents-more { flex: 0 0 auto; margin: 4px 0 0; color: color-mix(in srgb, var(--fg) 58%, transparent); font-size: 11px; }
-.zion-agents-more > summary { cursor: pointer; padding: 4px 2px 6px; border-top: 1px solid color-mix(in srgb, var(--border) 54%, transparent); }
-.zion-agents-more-content { display: grid; gap: 6px; padding-bottom: 8px; }
-.zion-agents-card { border: 1px solid color-mix(in srgb, var(--border) 68%, transparent); border-radius: 6px; background: transparent; padding: 5px 0 6px; }
-.zion-agents-card > summary { cursor: pointer; color: color-mix(in srgb, var(--fg) 58%, transparent); font-size: 10.5px; font-weight: 650; padding: 0 8px; list-style-position: inside; }
-.zion-agents-policy { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px 8px 0; }
-.zion-agents-policy-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: 999px; background: transparent; padding: 2px 6px; font-size: 10px; color: color-mix(in srgb, var(--fg) 52%, transparent); }
-.zion-agents-policy-chip b { color: color-mix(in srgb, var(--fg) 72%, transparent); font-weight: 650; }
-.zion-agents-policy-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zion-agents-context { max-height: 88px; overflow: auto; margin: 5px 8px 0; padding: 0; border: 0; color: color-mix(in srgb, var(--fg) 58%, transparent); font-size: 11px; line-height: 1.45; white-space: pre-wrap; }
-.zion-agents-result, .zion-agents-transcript { font-size: 11px; }
-.zion-agents-result summary, .zion-agents-transcript summary { color: color-mix(in srgb, var(--fg) 72%, transparent); }
-.zion-agents-result-section { display: grid; gap: 3px; margin: 8px 8px 0; color: color-mix(in srgb, var(--fg) 58%, transparent); line-height: 1.45; white-space: pre-wrap; }
-.zion-agents-result-section b { color: color-mix(in srgb, var(--fg) 76%, transparent); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; }
-.zion-agents-event { padding: 5px 8px; border-top: 1px solid color-mix(in srgb, var(--border) 54%, transparent); color: color-mix(in srgb, var(--fg) 52%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-`;
-  document.head.appendChild(style);
-}
 
 function registerAgentTool(disposables) {
   const tool = {
@@ -1519,8 +1620,8 @@ async function runTaskHeadless(taskId) {
 }
 
 export async function activate(ctx) {
-  injectStyles();
-  const disposables = [];
+  
+const disposables = [];
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) disposables.push(disp);
@@ -1534,7 +1635,27 @@ export async function activate(ctx) {
     if (!view || !sel) return null;
     return createTaskFromSelection({ view, from: sel.from, to: sel.to, selectionText: view.state.sliceDoc(sel.from, sel.to) });
   }));
+  disposables.push(window.zion.commands.registerCommand("agents.createScratch", createScratchTask));
   disposables.push(window.zion.commands.registerCommand("agents.revealTask", revealTask));
+  try {
+    const onScratchShortcut = (event) => {
+      try {
+        const key = String(event?.key || "").toLowerCase();
+        if (event?.repeat) return;
+        if (key !== "i" || !event?.metaKey || !event?.shiftKey || event?.ctrlKey || event?.altKey) return;
+        const target = event?.target;
+        const tag = String(target?.tagName || "").toLowerCase();
+        const inPlainInput = tag === "input" || tag === "textarea" || tag === "select";
+        if (inPlainInput) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        createScratchTask();
+      } catch {}
+    };
+    window.addEventListener("keydown", onScratchShortcut, true);
+    disposables.push({ dispose: () => window.removeEventListener("keydown", onScratchShortcut, true) });
+  } catch {}
   registerAgentTool(disposables);
   try {
     const view = window.zion.auxiliaryBar?.registerView?.({

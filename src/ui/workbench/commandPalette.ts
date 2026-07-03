@@ -1,5 +1,5 @@
 import { matchSorter, rankings } from "match-sorter";
-import { BUILT_IN_THEME_OPTIONS } from "../../theme/themes";
+import { BUILT_IN_THEME_OPTIONS, getRegisteredThemeOptions } from "../../theme/themes";
 
 type CommandMeta = {
   id: string;
@@ -19,6 +19,25 @@ type CommandMetaContribution = Pick<CommandMeta, "id" | "title" | "titleKey" | "
 
 const STYLE_ID = "zion-command-palette-style";
 const RECENT_KEY = "zion.commandPalette.recent.v2";
+const TAG_RE = /(^|[\s([{])#([\p{L}\p{N}_/-]+)(?=$|[\s)\]},.;:!?])/gu;
+
+function isFenceLine(lineText: string): boolean {
+  return /^\s*`{3,}/.test(lineText) || /^\s*~{3,}/.test(lineText);
+}
+
+function isEscapedAt(text: string, index: number): boolean {
+  let count = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) count++;
+  return count % 2 === 1;
+}
+
+function isInsideInlineCode(text: string, pos: number): boolean {
+  let inCode = false;
+  for (let i = 0; i < pos; i++) {
+    if (text[i] === "`" && !isEscapedAt(text, i)) inCode = !inCode;
+  }
+  return inCode;
+}
 
 type PaletteItem =
   | {
@@ -41,10 +60,13 @@ type PaletteItem =
       updatedAt?: number;
       open: boolean;
       path?: string;
+      tags?: string[];
       contentSnippet?: string;
     };
 
-const THEME_OPTIONS = BUILT_IN_THEME_OPTIONS;
+
+
+
 
 const LANGUAGE_OPTIONS = [
   {
@@ -262,6 +284,60 @@ function pruneRecent(valid: { sessions: Set<string>; commands: Set<string> }) {
   if (next.length !== cur.length) writeRecent(next);
 }
 
+const sessionTagCache = new Map<string, { signature: string; tags: string[] }>();
+
+function hashText(text: string): string {
+  let h = 2166136261;
+  const s = String(text || "");
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `${s.length}:${h >>> 0}`;
+}
+
+function extractSessionTags(text: string): string[] {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  let inFence = false;
+  for (const line of safeText(text).split(/\r?\n/)) {
+    const wasInFence = inFence;
+    if (isFenceLine(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (wasInFence || /^\s{0,3}#{1,6}\s/.test(line)) continue;
+    TAG_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = TAG_RE.exec(line)) !== null) {
+      const tagStart = match.index + match[1].length;
+      if (isInsideInlineCode(line, tagStart)) continue;
+      const label = `#${match[2]}`;
+      if (seen.has(label)) continue;
+      seen.add(label);
+      tags.push(label);
+    }
+  }
+  return tags;
+}
+
+function getSessionTags(sessionId: string): string[] {
+  const id = safeText(sessionId).trim();
+  if (!id) return [];
+  let doc = "";
+  try {
+    doc = safeText((window as any).zion?.commands?.executeCommand?.("zion.sessions.getDoc", id));
+  } catch {
+    doc = "";
+  }
+  const signature = hashText(doc);
+  const cached = sessionTagCache.get(id);
+  if (cached?.signature === signature) return cached.tags;
+  const tags = extractSessionTags(doc);
+  sessionTagCache.set(id, { signature, tags });
+  return tags;
+}
+
 function injectStyles() {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
@@ -292,8 +368,10 @@ function injectStyles() {
 .zion-cmdk-path{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-top:2px;font-size:11px}
 .zion-cmdk-path-left{opacity:.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .zion-cmdk-path-right{flex:0 0 auto;opacity:.55;white-space:nowrap;margin-left:auto}
+.zion-cmdk-tags{display:flex;gap:4px;align-items:center;justify-content:flex-end;max-width:240px;overflow:hidden}
+.zion-cmdk-tag{display:inline-flex;align-items:center;max-width:92px;padding:1px 6px;border:1px solid color-mix(in srgb,var(--accent,#6272a4) 28%,var(--border,#3c3c3c));border-radius:999px;color:color-mix(in srgb,var(--accent,#6272a4) 82%,var(--fg,#ccc));background:color-mix(in srgb,var(--accent,#6272a4) 8%,transparent);font-size:10px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .zion-cmdk-id{opacity:.7;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:11px;white-space:nowrap}
-.zion-cmdk-right{flex:0 0 auto;display:flex;gap:8px;align-items:center}
+.zion-cmdk-right{flex:0 0 auto;display:flex;gap:6px;align-items:center;max-width:46%;min-width:0}
 .zion-cmdk-kbd{padding:2px 6px;border:1px solid var(--border,#3c3c3c);border-radius:6px;opacity:.9;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:11px}
 .zion-cmdk-badge{padding:2px 6px;border:1px solid var(--border,#3c3c3c);border-radius:999px;opacity:.7;font-size:11px}
 .zion-cmdk-badge[data-status="streaming"]{opacity:1;border-color:color-mix(in srgb,var(--accent,#6272a4) 55%,transparent);color:var(--accent,#6272a4);background:color-mix(in srgb,var(--accent,#6272a4) 12%,transparent)}
@@ -328,6 +406,27 @@ function normalizeKeybindingLabel(key: string): string {
     .trim();
 }
 
+function compactTagLabel(tag: string, options: { max?: number; visualLimit?: number } = {}): string {
+  const max = options.max ?? 24;
+  const visualLimit = options.visualLimit ?? 20;
+  const value = safeText(tag).trim();
+  const body = value.startsWith("#") ? value.slice(1) : value;
+  const parts = body.split("/").filter(Boolean);
+  const visualLength = Array.from(value).reduce((sum, ch) => sum + (ch.charCodeAt(0) > 127 ? 2 : 1), 0);
+  if (parts.length >= 2 && visualLength > visualLimit) {
+    const first = parts[0];
+    const last = parts[parts.length - 1];
+    const head = Array.from(first).slice(0, 4).join("");
+    return `#${head}…/${last}`;
+  }
+  if (value.length <= max && visualLength <= visualLimit) return value;
+  if (parts.length >= 2) {
+    const last = parts[parts.length - 1];
+    return `#…/${last}`;
+  }
+  return `${value.slice(0, Math.max(8, max - 1))}…`;
+}
+
 function getItemSearchText(item: PaletteItem): string {
   if (item.kind === "command") {
     const meta = item.meta;
@@ -355,6 +454,7 @@ function getItemSearchText(item: PaletteItem): string {
     item.title,
     item.id,
     item.path,
+    ...(item.tags || []),
     item.contentSnippet
   ]).join(" ");
 }
@@ -415,7 +515,7 @@ function fmtRelTime(ts?: number): string {
   return `${dd}d`;
 }
 
-function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?: number; path?: string }> {
+function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?: number; path?: string; tags?: string[] }> {
   try {
     const raw = (window as any).zion?.state?.get?.("sessions.catalog");
     if (!Array.isArray(raw)) return [];
@@ -475,7 +575,8 @@ function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?:
           id,
           title,
           updatedAt: typeof x?.updatedAt === "number" ? x.updatedAt : undefined,
-          path: id ? computeSessionPath(id, title) : undefined
+          path: id ? computeSessionPath(id, title) : undefined,
+          tags: id ? getSessionTags(id) : []
         };
       })
       .filter(x => {
@@ -874,7 +975,7 @@ export function initCommandPalette() {
   let open = false;
   let lastActive: HTMLElement | null = null;
   let commands: CommandMeta[] = [];
-  let sessions: Array<{ id: string; title: string; updatedAt?: number; path?: string }> = [];
+  let sessions: Array<{ id: string; title: string; updatedAt?: number; path?: string; tags?: string[] }> = [];
   const sessionContentCache = new Map<string, string>();
   const sessionContentSnippets = new Map<string, Map<string, string>>();
   let contentSearchToken = 0;
@@ -925,7 +1026,9 @@ export function initCommandPalette() {
       (window as any).zion?.state?.get?.("ui.theme") ||
       "system"
     );
-    return THEME_OPTIONS.map(theme => {
+    // Combine built-in themes with dynamically registered ones (e.g. plugins)
+    const allOptions = [...BUILT_IN_THEME_OPTIONS, ...getRegisteredThemeOptions()];
+    return allOptions.map(theme => {
       const isActive = theme.id === current;
       return {
         kind: "action" as const,
@@ -1327,6 +1430,7 @@ export function initCommandPalette() {
       updatedAt: s.updatedAt,
       open: openSet.has(s.id),
       path: s.path,
+      tags: s.tags || [],
       contentSnippet: snippets?.get(s.id)
     }));
 
@@ -1480,6 +1584,28 @@ export function initCommandPalette() {
         right.appendChild(badge);
       }
       if (it.kind === "session") {
+        if (it.tags?.length) {
+          const tagsRow = document.createElement("div");
+          tagsRow.className = "zion-cmdk-tags";
+          const visibleTags = it.tags.slice(0, 2);
+          const singleTag = visibleTags.length === 1 && it.tags.length === 1;
+          for (const tag of visibleTags) {
+            const chip = document.createElement("span");
+            chip.className = "zion-cmdk-tag";
+            if (singleTag) chip.style.maxWidth = "130px";
+            chip.textContent = compactTagLabel(tag, singleTag ? { max: 32, visualLimit: 26 } : { max: 24, visualLimit: 20 });
+            chip.title = tag;
+            tagsRow.appendChild(chip);
+          }
+          if (it.tags.length > 2) {
+            const more = document.createElement("span");
+            more.className = "zion-cmdk-tag";
+            more.textContent = `+${it.tags.length - 2}`;
+            more.title = it.tags.slice(2).join(" ");
+            tagsRow.appendChild(more);
+          }
+          right.appendChild(tagsRow);
+        }
         const st = getSessionStatusBadge(it.id);
         if (st) {
           const badge = document.createElement("div");

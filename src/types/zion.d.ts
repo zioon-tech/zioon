@@ -182,6 +182,11 @@ declare global {
           handler: (newVal: T | undefined, oldVal: T | undefined) => void
         ): Disposable;
       };
+        styles: {
+        register(id: string, css: string): Disposable;
+        get(id: string): string | undefined;
+        list(): string[];
+      };
       // ui
       statusBar: {
         registerItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable;
@@ -227,12 +232,13 @@ declare global {
       };
       theme?: {
         getPreference(): "system" | "light" | "dark";
-        getSelection(): "system" | "light" | "dark" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus";
+        getSelection(): string;
         getResolvedTheme(): "light" | "dark";
-        getVariant(): "default" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus";
+        getVariant(): string;
         setPreference(preference: "system" | "light" | "dark"): void;
-        setSelection(selection: "system" | "light" | "dark" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus"): void;
-        setVariant(variant: "default" | "visual-studio-dark" | "github-dark" | "github-light" | "catppuccin-mocha" | "catppuccin-latte" | "tokyo-night" | "rose-pine-dawn" | "everforest-light" | "kanagawa-lotus"): void;
+        setSelection(selection: string): void;
+        setVariant(variant: string): void;
+        registerVariant(id: string, opts: { title: string; baseTheme: "system" | "light" | "dark"; css: string }): Disposable;
         toggle(): void;
         refresh(): void;
         getToken(name: string): string;
@@ -334,6 +340,8 @@ declare global {
         hide(): void;
         toggle(): boolean;
         setWidth(w: number): void;
+        requestTemporaryWidth(ownerId: string, w: number): void;
+        releaseTemporaryWidth(ownerId: string): void;
       };
       bottomPanel?: {
         registerView(opts: {

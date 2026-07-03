@@ -637,8 +637,8 @@ class SideBarRuntime {
   }
 
   show(): void {
-    const wasVisible = this.isVisible();
-    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
+    if (this.isVisible()) return;
+    this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.sideBar.visible", true);
     this.emitter.emit();
   }
@@ -691,6 +691,7 @@ class AuxiliaryBarRuntime {
   private emitter = new ChangeEmitter();
   private returnFocus: FocusSnapshot = null;
   private readonly orderKey = "zion.ui.auxiliaryBar.viewOrder";
+  private transientWidth: { baseWidth: number; appliedWidth: number; owners: Map<string, number> } | null = null;
 
   onDidChange(fn: () => void): Disposable {
     return this.emitter.onDidChange(fn);
@@ -768,8 +769,8 @@ class AuxiliaryBarRuntime {
   }
 
   show() {
-    const wasVisible = this.isVisible();
-    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
+    if (this.isVisible()) return;
+    this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.auxiliaryBar.visible", true);
     this.emitter.emit();
   }
@@ -795,11 +796,55 @@ class AuxiliaryBarRuntime {
     return v == null ? false : !!v;
   }
 
-  setWidth(px: number): void {
-    const w = Math.max(240, Math.min(960, Math.round(px)));
+  private clampWidth(px: number): number {
+    return Math.max(240, Math.min(960, Math.round(px)));
+  }
+
+  private applyWidth(px: number, options: { preserveTransient?: boolean } = {}): number {
+    const w = this.clampWidth(px);
+    if (!options.preserveTransient) this.transientWidth = null;
     core?.state.set("ui.auxiliaryBar.width", w);
     core?.state.set("ui.auxiliaryBar.visible", true);
     this.emitter.emit();
+    return w;
+  }
+
+  setWidth(px: number): void {
+    this.applyWidth(px);
+  }
+
+  requestTemporaryWidth(ownerId: string, px: number): void {
+    const owner = String(ownerId || "default");
+    const target = this.clampWidth(px);
+    const current = this.getWidth();
+    if (!this.transientWidth && current >= target) return;
+    if (!this.transientWidth) {
+      this.transientWidth = { baseWidth: current, appliedWidth: current, owners: new Map() };
+    }
+    this.transientWidth.owners.set(owner, target);
+    const desired = Math.max(...Array.from(this.transientWidth.owners.values()));
+    if (desired > current) {
+      this.transientWidth.appliedWidth = this.applyWidth(desired, { preserveTransient: true });
+    }
+  }
+
+  releaseTemporaryWidth(ownerId: string): void {
+    const transient = this.transientWidth;
+    if (!transient) return;
+    transient.owners.delete(String(ownerId || "default"));
+    const current = this.getWidth();
+    const canRestore = Math.abs(current - transient.appliedWidth) <= 2;
+    if (!canRestore) {
+      this.transientWidth = null;
+      return;
+    }
+    if (transient.owners.size > 0) {
+      const desired = Math.max(...Array.from(transient.owners.values()));
+      if (desired < current) transient.appliedWidth = this.applyWidth(desired, { preserveTransient: true });
+      return;
+    }
+    this.transientWidth = null;
+    if (transient.baseWidth < current) this.applyWidth(transient.baseWidth, { preserveTransient: true });
   }
 
   getWidth(): number {
@@ -897,8 +942,8 @@ class BottomPanelRuntime {
   }
 
   show() {
-    const wasVisible = this.isVisible();
-    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
+    if (this.isVisible()) return;
+    this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.bottomPanel.visible", true);
     this.emitter.emit();
   }

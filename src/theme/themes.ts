@@ -2,24 +2,15 @@ import type { ResolvedTheme } from "./pwa";
 
 export type ThemePreference = "system" | "light" | "dark";
 
-export type ThemeVariant =
-  | "default"
-  | "visual-studio-dark"
-  | "github-dark"
-  | "github-light"
-  | "catppuccin-mocha"
-  | "catppuccin-latte"
-  | "tokyo-night"
-  | "rose-pine-dawn"
-  | "everforest-light"
-  | "kanagawa-lotus"
-  | "xiaohongshu"
-  | "wechat";
+// Stricter variant type for built-in theme options:
+// expose a union of built-in values but accept any string at runtime via a branded type.
+// This lets TypeScript autocomplete built-in names while also accepting plugin-registered ones.
+export type ThemeVariant = string;
 
-export type ThemeSelection = ThemePreference | Exclude<ThemeVariant, "default">;
+export type ThemeSelection = string;
 
 export type BuiltInThemeOption = {
-  id: ThemeSelection;
+  id: string;
   title: string;
   description: string;
   keywords: string[];
@@ -142,26 +133,63 @@ export const BUILT_IN_THEME_OPTIONS: readonly BuiltInThemeOption[] = [
   }
 ] as const;
 
+// ---- Registered (plugin) theme options ----
+
+const registeredThemeOptions = new Map<string, BuiltInThemeOption>();
+
+export function registerThemeOption(option: BuiltInThemeOption): { dispose(): void } {
+  const id = option.id;
+  registeredThemeOptions.set(id, option);
+  return {
+    dispose: () => { registeredThemeOptions.delete(id); }
+  };
+}
+
+export function getRegisteredThemeOptions(): BuiltInThemeOption[] {
+  return Array.from(registeredThemeOptions.values());
+}
+
 export function isThemePreference(value: unknown): value is ThemePreference {
   return value === "system" || value === "light" || value === "dark";
 }
 
 export function isThemeVariant(value: unknown): value is ThemeVariant {
-  return value === "default" || BUILT_IN_THEME_OPTIONS.some((theme) => theme.variant === value);
+  if (value === "default") return true;
+  if (BUILT_IN_THEME_OPTIONS.some((t) => t.variant === value)) return true;
+  for (const opt of registeredThemeOptions.values()) {
+    if (opt.variant === value) return true;
+  }
+  return typeof value === "string" && value.length > 0;
 }
 
 export function isThemeSelection(value: unknown): value is ThemeSelection {
-  return BUILT_IN_THEME_OPTIONS.some((theme) => theme.id === value);
+  if (BUILT_IN_THEME_OPTIONS.some((t) => t.id === value)) return true;
+  for (const opt of registeredThemeOptions.values()) {
+    if (opt.id === value || opt.variant === value) return true;
+  }
+  return false;
 }
 
 export function getThemeOption(selection: ThemeSelection): BuiltInThemeOption {
-  return BUILT_IN_THEME_OPTIONS.find((theme) => theme.id === selection) || BUILT_IN_THEME_OPTIONS[0];
+  // Check built-in first
+  const builtIn = BUILT_IN_THEME_OPTIONS.find((t) => t.id === selection);
+  if (builtIn) return builtIn;
+  // Check registered
+  const registered = registeredThemeOptions.get(selection);
+  if (registered) return registered;
+  // Fallback
+  return BUILT_IN_THEME_OPTIONS[0];
 }
 
 export function getThemeOptionByVariant(variant: ThemeVariant, resolvedTheme: ResolvedTheme): BuiltInThemeOption {
   if (variant !== "default") {
-    const match = BUILT_IN_THEME_OPTIONS.find((theme) => theme.variant === variant);
-    if (match) return match;
+    // Check built-in
+    const builtIn = BUILT_IN_THEME_OPTIONS.find((t) => t.variant === variant);
+    if (builtIn) return builtIn;
+    // Check registered
+    for (const opt of registeredThemeOptions.values()) {
+      if (opt.variant === variant) return opt;
+    }
   }
   return getThemeOption(resolvedTheme);
 }

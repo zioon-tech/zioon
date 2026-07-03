@@ -196,6 +196,43 @@ function redactRequestUrl(url) {
   }
 }
 
+function summarizeDebugPayloadMessages(list) {
+  return Array.isArray(list) ? list.map((m, i) => ({
+    i,
+    role: m?.role || "",
+    contentType: Array.isArray(m?.content) ? "array" : typeof m?.content,
+    contentLen: typeof m?.content === "string" ? m.content.length : (Array.isArray(m?.content) ? m.content.length : 0),
+    contentPreview: typeof m?.content === "string" ? String(m.content).slice(0, 120) : "",
+    hasReasoning: typeof m?.reasoning_content === "string",
+    reasoningLen: typeof m?.reasoning_content === "string" ? m.reasoning_content.length : 0,
+    reasoningPreview: typeof m?.reasoning_content === "string" ? String(m.reasoning_content).slice(0, 120) : "",
+    toolCalls: Array.isArray(m?.tool_calls) ? m.tool_calls.length : 0,
+    toolCallIds: Array.isArray(m?.tool_calls) ? m.tool_calls.map((tc) => tc?.id || "") : [],
+    toolCallId: m?.tool_call_id || ""
+  })) : [];
+}
+
+function diffDebugPayloadMessages(prev, next) {
+  const before = Array.isArray(prev) ? prev : [];
+  const after = Array.isArray(next) ? next : [];
+  const max = Math.min(before.length, after.length);
+  let samePrefix = 0;
+  while (samePrefix < max) {
+    try {
+      if (JSON.stringify(before[samePrefix] || null) !== JSON.stringify(after[samePrefix] || null)) break;
+    } catch {
+      break;
+    }
+    samePrefix += 1;
+  }
+  return {
+    prevCount: before.length,
+    nextCount: after.length,
+    samePrefix,
+    appended: summarizeDebugPayloadMessages(after.slice(samePrefix))
+  };
+}
+
 function normalizeProviderUsage(raw, providerType) {
   if (!raw || typeof raw !== "object") return null;
   if (providerType === "gemini") {
@@ -225,7 +262,7 @@ function normalizeProviderUsage(raw, providerType) {
  * - event: content_block_delta, data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"..."}}
  * - event: message_delta, data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":123}}
  */
-function parseClaudeStreamLine(line, { toolCallsBuffer, emittedReasoningStart, reasoningBuf, onToken, onToolCall, runId, sessionId }) {
+function parseClaudeStreamLine(line, { toolCallsBuffer, emittedReasoningStart, onToken, onToolCall, runId, sessionId }) {
   let eventType = "message";
   let dataStr = line;
 
@@ -272,7 +309,6 @@ function parseClaudeStreamLine(line, { toolCallsBuffer, emittedReasoningStart, r
         const thinking = delta.thinking || "";
         if (thinking) {
           result.thinkingToken = thinking;
-          reasoningBuf += thinking;
           if (!emittedReasoningStart) {
             result.thinkingStart = true;
           }
@@ -461,7 +497,7 @@ async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
       // 非 429 错误，直接抛出
       if (response.status === 400) {
         const lowerText = String(text).toLowerCase();
-        if (lowerText.includes("reasoning_content") && lowerText.includes("missing")) {
+        if (lowerText.includes("reasoning_content") && (lowerText.includes("missing") || lowerText.includes("passed back") || lowerText.includes("pass back"))) {
           const err = new Error(`HTTP ${response.status}: ${text.slice(0, 256)}`);
           err.code = "missing_reasoning_content";
           err.httpStatus = 400;
@@ -526,7 +562,8 @@ export async function runStream({
 }) {
   // 读取当前激活的模型（默认 deepseek:deepseek-chat）
   const active = activeModel || window.zion.state.get("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
-  const controlEventBase = { runId, sessionId, panelId, answerAnchorPos, answerHeadLine, silentReasoning };
+  const reasoningSegmentId = stepIndex != null ? `${runId}:step:${stepIndex}` : runId;
+  const controlEventBase = { runId, reasoningSegmentId, stepIndex, sessionId, panelId, answerAnchorPos, answerHeadLine, silentReasoning };
   const provider = window.zion.models.getProvider(active.providerId);
   if (!provider) throw new Error(`Provider not found: ${active.providerId}`);
   let cfg = await provider.resolve(active.modelId);
@@ -565,7 +602,10 @@ export async function runStream({
     const baseForceReasoning = shouldForceReasoningContentWithToolCalls({
       mode,
       modelId: active?.modelId,
-      modelName: cfg?.modelName
+      modelName: cfg?.modelName,
+      providerId: active?.providerId,
+      providerType,
+      cfg
     });
 
     // 将 providerType 提升到外层，以便在流式处理中使用
@@ -663,13 +703,25 @@ export async function runStream({
           return { role: "tool", tool_call_id: m.tool_call_id, content };
         }
         const content = useArray ? await toArrayContent(m) : toStringContent(m);
-        return isEmptyContent(content) ? { role: m.role, content: useArray ? [{ type: "text", text: " " }] : " " } : { role: m.role, content };
+        const msg = isEmptyContent(content)
+          ? { role: m.role, content: useArray ? [{ type: "text", text: " " }] : " " }
+          : { role: m.role, content };
+        if (m && m.role === "assistant" && m.reasoning_content != null) {
+          msg.reasoning_content = m.reasoning_content;
+        }
+        return msg;
       }));
 
       // 根据 provider 类型构建请求体
       const body = buildProviderRequestBody(cfg, formattedMessages, tools, providerType);
       const headers = getProviderHeaders(cfg, providerType);
       try {
+        const payloadMsgs = Array.isArray(body?.messages) ? body.messages : (Array.isArray(body?.contents) ? body.contents : []);
+        const prevPayloadMsgs = Array.isArray(window.zion?.__debugLastProviderPayloadMessages?.[runId]) ? window.zion.__debugLastProviderPayloadMessages[runId] : null;
+        try {
+          if (!window.zion.__debugLastProviderPayloadMessages) window.zion.__debugLastProviderPayloadMessages = {};
+          window.zion.__debugLastProviderPayloadMessages[runId] = Array.isArray(payloadMsgs) ? JSON.parse(JSON.stringify(payloadMsgs)) : [];
+        } catch {}
         const requestPayload = {
           id: `llm_payload_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
           timestamp: Date.now(),
@@ -687,6 +739,8 @@ export async function runStream({
           retryWithReasoningContent: !!forcedOnce,
           messageCount: formattedMessages.length,
           toolCount: tools ? (Array.isArray(tools) ? tools.length : Object.keys(tools || {}).length) : 0,
+          debugSummary: summarizeDebugPayloadMessages(payloadMsgs),
+          debugDiffFromPrevStep: diffDebugPayloadMessages(prevPayloadMsgs, payloadMsgs),
           payload: body
         };
         window.zion?.events?.emit?.("llm/requestPayload", requestPayload);
@@ -983,7 +1037,9 @@ export async function runStream({
         } catch {}
       }
 
-      if (content) onToken(content);
+      if (content) {
+        onToken(content);
+      }
       onEnd();
       return { reasoning_content: reasoningBuf, usage };
     }

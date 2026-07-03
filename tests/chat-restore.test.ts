@@ -106,6 +106,37 @@ describe("chat restore helpers", () => {
     expect(plan.insertPos).toBe(hintedEnd);
   });
 
+  it("uses answer head line over a stale position hint when planning card insertion", () => {
+    const docText = [
+      "user old",
+      "assistant old answer",
+      "user new",
+      "assistant new answer"
+    ].join("\n");
+
+    const stalePreviousAssistantPos = docText.indexOf("assistant old");
+    const currentAssistantLine = 3;
+    const plan = planAssistantMarkerInsertion({
+      docText,
+      markerText: "思考 <!-- zion-thinking:id=thinking:run:1 -->",
+      hintPos: stalePreviousAssistantPos,
+      hintLine: currentAssistantLine,
+      trailingNewlines: 2
+    });
+
+    const nextText = docText.slice(0, plan.replaceFrom) + plan.insertText + docText.slice(plan.replaceTo);
+    expect(nextText).toBe([
+      "user old",
+      "assistant old answer",
+      "user new",
+      "assistant new answer",
+      "思考 <!-- zion-thinking:id=thinking:run:1 -->",
+      "",
+      ""
+    ].join("\n"));
+    expect(plan.insertPos).toBe(docText.length);
+  });
+
   it("collapses blank lines between consecutive card markers to one newline", () => {
     const docText = "user hi\nassistant \n思考\n\n";
     const plan = planAssistantMarkerInsertion({

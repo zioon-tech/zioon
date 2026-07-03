@@ -17,6 +17,9 @@
           "titleKey": "dev.slash-commands.cmd.show",
           "categoryKey": "dev.slash-commands.category.slash"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "activationEvents": [

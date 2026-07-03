@@ -59,10 +59,16 @@ export function resolveToolCallsReasoningContentMode({ cfg, stateMode }) {
   return normalizeToolCallsReasoningContentMode(stateMode);
 }
 
-export function shouldForceReasoningContentWithToolCalls({ mode, modelId, modelName }) {
+export function shouldForceReasoningContentWithToolCalls({ mode, modelId, modelName, providerId, providerType, cfg } = {}) {
   const m = normalizeToolCallsReasoningContentMode(mode);
   if (m === "always") return true;
   if (m === "never") return false;
+  const provider = String(providerId || providerType || cfg?.providerId || cfg?.providerType || "").toLowerCase();
+  const name = String(modelName || modelId || cfg?.modelName || cfg?.id || "").toLowerCase();
+  const thinkingMode = String(cfg?.thinkingMode || cfg?.thinking_mode || "").toLowerCase();
+  if ((provider.includes("deepseek") || name.includes("deepseek")) && thinkingMode !== "off" && thinkingMode !== "disabled") {
+    return true;
+  }
   return isLikelyReasoningModelId(modelName) || isLikelyReasoningModelId(modelId);
 }
 

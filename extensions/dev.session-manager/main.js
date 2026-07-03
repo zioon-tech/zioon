@@ -16,6 +16,7 @@ import { createSessionAutoSavePlugin } from "./editor/autosave-plugin.js";
 import { createSessionsSidebarViewManager } from "./ui/sidebar-view.js";
 import { createSessionsPanelManager } from "./ui/panel.js";
 import { createSessionsListRendererFactory } from "./ui/list-renderer.js";
+import { thinkingMarkerText, toolMarkerText } from "../../src/chat/restore";
 import { SessionDocumentRuntime } from "../../src/session/document-runtime";
 
 const I18N_NS = "dev.session-manager";
@@ -98,7 +99,14 @@ const I18N_MESSAGES = {
     "heatmap.tokens": "tokens",
     "heatmap.cache": "cache",
     "heatmap.cost": "cost",
-    "heatmap.noModelUsage": "当天没有模型消耗"
+    "heatmap.noModelUsage": "当天没有模型消耗",
+    "tags.title": "全部标签",
+    "tags.expand": "展开标签",
+    "tags.collapse": "折叠标签",
+    "tags.empty": "暂无标签",
+    "tags.clear": "清除",
+    "tags.clearTitle": "清除标签筛选",
+    "tags.filterTitle": "按 {tag} 筛选会话"
   },
   "en-US": {
     "category.sessions": "Sessions",
@@ -178,7 +186,14 @@ const I18N_MESSAGES = {
     "heatmap.tokens": "tokens",
     "heatmap.cache": "cache",
     "heatmap.cost": "cost",
-    "heatmap.noModelUsage": "No model usage on this day"
+    "heatmap.noModelUsage": "No model usage on this day",
+    "tags.title": "All Tags",
+    "tags.expand": "Expand tags",
+    "tags.collapse": "Collapse tags",
+    "tags.empty": "No tags yet",
+    "tags.clear": "Clear",
+    "tags.clearTitle": "Clear tag filter",
+    "tags.filterTitle": "Filter sessions by {tag}"
   }
 };
 
@@ -561,7 +576,7 @@ function isMeaningfulAutoRenameContent(text) {
 }
 
 /** 未触发对话前，用首行/首句本地派生标题；仍保留 titleAuto=true，之后可被 AI 标题替换。 */
-function maybeUpdateLocalAutoTitle(id) {
+function maybeUpdateLocalAutoTitle(id, opts = {}) {
   try {
     const meta = loadMeta(id);
     if (!meta || meta.titleAuto !== true) return false;
@@ -593,6 +608,7 @@ function maybeUpdateLocalAutoTitle(id) {
 /** 对话首次触发时，再启动 AI 标题生成；手动改名会通过 titleAuto=false 自动阻止。 */
 function maybeTriggerChatAutoRename(id) {
   try {
+    try { window.zion.commands.executeCommand("zion.sessions.flushPendingSave", id); } catch {}
     const meta = loadMeta(id);
     if (!meta || meta.titleAuto !== true || meta.autoRenameChatTriggeredAt) return false;
     const text = getLatestSessionText(id);
@@ -602,9 +618,9 @@ function maybeTriggerChatAutoRename(id) {
     saveMeta(id, meta);
     try { window.zion.state.set(`sessions.meta.${id}`, meta); } catch {}
 
-    const run = () => {
+    const run = async () => {
       try {
-        window.zion.commands.executeCommand("zion.sessions.autoRename", { id, onlyIfAuto: true, silent: true, reason: "chat-run-started" });
+        await window.zion.commands.executeCommand("zion.sessions.autoRename", { id, onlyIfAuto: true, silent: true, reason: "chat-run-finished" });
       } catch {}
     };
     if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 1500 });
@@ -895,7 +911,8 @@ const __sidebarViewManager = createSessionsSidebarViewManager({
   createSessionsListRenderer,
   openAncestors,
   getIndex,
-  loadMeta
+  loadMeta,
+  loadDoc
 });
 
 function refreshSessionsSidebarViewIfOpen() {
@@ -1079,88 +1096,6 @@ async function importSessionsFromFile() {
   });
 }
 
-/** ========== CSS for custom scrollbars ========== */
-// Inject custom scrollbar styles to make them appear only when needed and with better styling
-function injectScrollbarStyles() {
-  try {
-    const styleId = "zion-session-manager-scrollbar-styles";
-    if (document.getElementById(styleId)) return;
-
-    const style = document.createElement("style");
-    style.id = styleId;
-    style.textContent = `
-      /* Session manager scrollbar behavior:
-         - keep width stable to avoid layout shift (status lamp not squeezed)
-         - show thumb only while scrolling (zion-scroll-active), consistent with editor panels
-       */
-      .zion-sessions-list,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content {
-        scrollbar-color: transparent transparent;
-        scrollbar-width: thin;
-        scrollbar-gutter: stable;
-      }
-
-      .zion-sessions-list::-webkit-scrollbar,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar {
-        width: 10px;
-        height: 10px;
-      }
-      .zion-sessions-list::-webkit-scrollbar-track,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      .zion-sessions-list::-webkit-scrollbar-thumb,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb {
-        background-color: transparent;
-        border-radius: 6px;
-        border: 2px solid transparent;
-        background-clip: content-box;
-      }
-      .zion-sessions-list.zion-scroll-active::-webkit-scrollbar-thumb,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content.zion-scroll-active::-webkit-scrollbar-thumb {
-        background-color: var(--scrollbar-thumb, var(--border, rgba(128, 128, 128, 0.4)));
-      }
-      /* Disable hover-to-show for session-manager (prefer scroll-active only) */
-      .zion-sessions-list:hover::-webkit-scrollbar-thumb,
-      #zion-sessions-panel-overlay .zion-sessions-panel-content:hover::-webkit-scrollbar-thumb {
-        background-color: transparent;
-      }
-
-      /* Scroll container background - ensure clean background */
-      .zion-sessions-list {
-        background: transparent;
-      }
-
-      #zion-sessions-panel-overlay .zion-sessions-panel-content {
-        background: var(--panel);
-      }
-
-      /* Highlight styles for current session */
-      .zion-session-row.is-current {
-        background: var(--sessions-current-bg, var(--ext-session-active-bg, rgba(128, 128, 128, 0.15)));
-        border: none !important;
-        outline: none !important;
-        box-shadow: none !important;
-      }
-      .zion-session-row.is-current:hover {
-        background: var(--sessions-current-hover-bg, var(--ext-session-active-hover-bg, rgba(128, 128, 128, 0.25)));
-      }
-      .zion-session-row:focus,
-      .zion-session-row:focus-visible {
-        outline: none !important;
-        box-shadow: none !important;
-      }
-      .zion-session-row.is-selected {
-        background: var(--sessions-selected-bg, var(--ext-session-selected-bg, rgba(33, 150, 243, 0.2)));
-        box-shadow: none !important;
-      }
-    `;
-    document.head.appendChild(style);
-  } catch (e) {
-    console.warn("[sessions] Failed to inject scrollbar styles:", e);
-  }
-}
-
 /** ========== Activate Extension ========== */
 export async function activate(ctx) {
   try {
@@ -1168,8 +1103,6 @@ export async function activate(ctx) {
     if (disp) ctx.subscriptions.push(disp);
   } catch {}
 
-  // Inject custom scrollbar styles
-  injectScrollbarStyles();
   // 初始化 IndexedDB 并预载数据/迁移
   const storageStatus = await initSessionsStorage();
   if (!storageStatus?.ok) {
@@ -1772,27 +1705,51 @@ export async function activate(ctx) {
           try {
             const view = ed.core.view;
             const cursor = state?.cursor;
+            const anchor = state?.scrollAnchor;
+            const st = state?.scrollTop;
+            const hasExplicitScrollState = !!(anchor && typeof anchor.pos === "number" && isFinite(anchor.pos));
+            const preservedScroll = !hasExplicitScrollState && view?.scrollDOM
+              ? {
+                  top: Math.max(0, Number(view.scrollDOM.scrollTop) || 0),
+                  left: Math.max(0, Number(view.scrollDOM.scrollLeft) || 0)
+                }
+              : null;
+            const restorePreservedScroll = (phase) => {
+              if (!preservedScroll || !view?.scrollDOM) return;
+              try {
+                const beforeTop = Math.max(0, Number(view.scrollDOM.scrollTop) || 0);
+                view.scrollDOM.scrollTop = preservedScroll.top;
+                view.scrollDOM.scrollLeft = preservedScroll.left;
+              } catch {}
+            };
             if (cursor && typeof cursor.line === "number" && typeof cursor.ch === "number") {
               const doc = view.state.doc;
               const line = doc.line(Math.max(1, Math.min(doc.lines, cursor.line + 1)));
               const pos = line.from + Math.max(0, Math.min(line.length, cursor.ch));
               view.dispatch({ selection: { anchor: pos } });
+              restorePreservedScroll("sync-after-selection");
+              requestAnimationFrame(() => {
+                try {
+                  restorePreservedScroll("raf1-after-selection");
+                  requestAnimationFrame(() => restorePreservedScroll("raf2-after-selection"));
+                } catch {}
+              });
+              setTimeout(() => restorePreservedScroll("timeout80-after-selection"), 80);
+              setTimeout(() => restorePreservedScroll("timeout180-after-selection"), 180);
             }
             const applyScroll = () => {
               try {
                 if (!view?.scrollDOM) return;
                 const doc = view.state.doc;
-                const anchor = state?.scrollAnchor;
                 if (anchor && typeof anchor.pos === "number" && isFinite(anchor.pos)) {
                   const p = Math.max(0, Math.min(doc.length, anchor.pos));
                   const block = view.lineBlockAt(p);
                   const yOff = typeof anchor.yOffset === "number" && isFinite(anchor.yOffset) ? anchor.yOffset : 0;
-                  view.scrollDOM.scrollTop = Math.max(0, block.top + yOff);
+                  const nextTop = Math.max(0, block.top + yOff);
+                  view.scrollDOM.scrollTop = nextTop;
                   return;
                 }
-                const st = state?.scrollTop;
                 if (typeof st === "number" && isFinite(st)) {
-                  view.scrollDOM.scrollTop = Math.max(0, st);
                 }
               } catch {}
             };
@@ -1912,12 +1869,12 @@ export async function activate(ctx) {
         window.zion.state.set(key, 0);
       }
     } catch {}
-    try { maybeTriggerChatAutoRename(sessionId); } catch {}
     // Refresh UI to reflect "streaming" status badge immediately
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
   const dispRunFinishedUI = window.zion.events.on("chat/runFinished", ({ sessionId }) => {
+    try { maybeTriggerChatAutoRename(sessionId); } catch {}
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
@@ -1937,6 +1894,12 @@ export async function activate(ctx) {
       const cur = window.zion.state.get("sessions.currentId");
       if (!sessionId || sessionId === cur) return; // current session handled by plugin
 
+      // seq for this run
+      const key = `thinking.seq.${sessionId}.${runId}`;
+      const seq = (window.zion.state.get(key) || 0) + 1;
+      window.zion.state.set(key, seq);
+      const thinkingId = `thinking:${runId}:${seq}`;
+
       // Compute insertion position in background doc
       const hint = typeof answerAnchorPos === "number" ? answerAnchorPos : window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
       let start = 0;
@@ -1947,18 +1910,13 @@ export async function activate(ctx) {
           const pos = findAssistantBlockEndInText(doc, hint);
           const prevChar = pos > 0 ? doc.slice(pos - 1, pos) : "";
           const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-          const text = `${prefix}思考\n\n`;
+          const marker = thinkingMarkerText(thinkingId);
+          const text = `${prefix}${marker}\n\n`;
           start = pos + prefix.length;
-          end = start + "思考".length;
+          end = start + marker.length;
           return doc.slice(0, pos) + text + doc.slice(pos);
         }
       });
-
-      // seq for this run
-      const key = `thinking.seq.${sessionId}.${runId}`;
-      const seq = (window.zion.state.get(key) || 0) + 1;
-      window.zion.state.set(key, seq);
-      const thinkingId = `thinking:${runId}:${seq}`;
 
       // Merge into meta.annotations
       const meta = loadMeta(sessionId);
@@ -2001,6 +1959,7 @@ export async function activate(ctx) {
       const cur = window.zion.state.get("sessions.currentId");
       if (!sessionId || sessionId === cur) return;
       const name = toolCall?.name || "tool";
+      const toolId = String(toolCall?.id || "");
 
       const hint = typeof answerAnchorPos === "number" ? answerAnchorPos : window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
       let start = 0;
@@ -2011,9 +1970,10 @@ export async function activate(ctx) {
           const pos = findAssistantBlockEndInText(doc, hint);
           const prevChar = pos > 0 ? doc.slice(pos - 1, pos) : "";
           const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-          const text = `${prefix}调用 ${name}\n`;
+          const marker = toolMarkerText(name, toolId);
+          const text = `${prefix}${marker}\n`;
           start = pos + prefix.length;
-          end = start + (`调用 ${name}`).length;
+          end = start + marker.length;
           return doc.slice(0, pos) + text + doc.slice(pos);
         }
       });

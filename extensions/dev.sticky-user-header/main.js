@@ -175,25 +175,6 @@ function roleTheme(role) {
   return { fg: "var(--role-user-fg)", bg: "var(--role-user-bg)", bd: "var(--role-user-border)" };
 }
 
-function ensureStyle() {
-  const id = "dev-sticky-user-header-style";
-  if (document.getElementById(id)) return;
-  const style = document.createElement("style");
-  style.id = id;
-  style.textContent = `
-.zion-cm-sticky-user-header{position:absolute;top:0;left:0;right:0;z-index:95;background:var(--bg);border-bottom:none;color:var(--fg);font-family:var(--font-sans);font-size:var(--editor-font-size);line-height:var(--editor-line-height);letter-spacing:0.01em;box-shadow:0 1px 2px 0 rgba(0,0,0,0.05);clip-path:inset(0 0 -10px 0);opacity:0.98;display:flex;flex-direction:column;gap:0;padding:0}
-
-.zion-cm-sticky-user-header.is-empty{display:none}
-.zion-cm-sticky-user-header .zion-sticky-content{display:flex;flex-direction:column;min-width:0}
-.zion-cm-sticky-user-header .zion-sticky-line{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;padding:2px 0;position:relative}
-.zion-cm-sticky-user-header .zion-sticky-rail{position:absolute;top:0;bottom:0;width:3px;left:calc(var(--zion-sticky-gutters-left,0px) - var(--zion-sticky-text-left,0px));pointer-events:none}
-.zion-cm-sticky-user-header .zion-sticky-badge{display:inline-flex;flex:0 0 auto;padding:1px 6px;border-radius:6px;font-size:0.8em;font-weight:500;vertical-align:middle;margin-right:6px;border:none}
-.zion-cm-sticky-user-header .zion-sticky-text{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
-  `;
-  document.head.appendChild(style);
-}
-
 function stickyUserHeaderView() {
   const prefixes = getEffectivePrefixes();
   const targetRole = "user";
@@ -201,8 +182,7 @@ function stickyUserHeaderView() {
   return ViewPlugin.fromClass(
     class {
       constructor(view) {
-        ensureStyle();
-        this.view = view;
+this.view = view;
         this.prefixes = prefixes;
         this.index = buildIndexForView(view, prefixes);
         this.lastKey = "";

@@ -1,3 +1,4 @@
+import "./styles.css";
 import { createElement } from "react";
 import { installToolCallCards } from "./tool-calls.js";
 import { installToolSwitcher } from "./tool-switcher.js";
@@ -45,6 +46,7 @@ const I18N_MESSAGES = {
     "call.inlineTitleWithSummary": "调用 {name}：{summary}（点击展开/收起）",
     "call.inlineAria": "调用 {name}（点击展开或收起工具调用卡片）",
     "call.toggle": "展开/收起工具调用卡片",
+    "call.openInContext": "在 Context 中打开",
     "call.patchTruncated": "patch 过长，已截断显示前 {count} 行",
     "files.title": "文件",
     "files.stats": "{dirs} 个文件夹 · {files} 个文件",
@@ -61,7 +63,9 @@ const I18N_MESSAGES = {
     "files.addFolder": "添加文件夹",
     "files.openManager": "打开管理器",
     "files.more": "更多操作",
+    "files.moreActions": "更多操作",
     "files.open": "打开预览",
+    "files.openInFolder": "在文件夹中打开",
     "files.preview": "预览",
     "files.download": "下载",
     "files.downloadFailed": "下载文件失败",
@@ -99,6 +103,10 @@ const I18N_MESSAGES = {
     "context.tasks": "任务",
     "context.comments": "评论",
     "context.agents": "Agents",
+    "context.tags": "标签",
+    "context.links": "引用",
+    "context.headings": "标题",
+    "context.anchors": "锚点",
     "context.modelUsage": "模型消耗",
     "context.basics": "基础信息",
     "context.noSession": "暂无打开的会话",
@@ -116,10 +124,15 @@ const I18N_MESSAGES = {
     "context.emptyTasks": "当前会话还没有 todo。",
     "context.emptyComments": "当前会话还没有评论。",
     "context.emptyAgents": "当前会话还没有 Agent Task。",
+    "context.emptyTags": "当前会话还没有标签。",
+    "context.emptyLinks": "当前会话还没有 wiki 引用。",
+    "context.emptyHeadings": "当前会话还没有 Markdown 标题。",
+    "context.emptyAnchors": "当前会话还没有块锚点。",
     "context.emptyUsage": "当前会话还没有可统计的模型消耗。",
     "context.emptyBasics": "暂无基础上下文信息。",
     "context.copyUsage": "复制消耗信息",
     "context.openInFiles": "在文件面板里定位并打开",
+    "context.openInFolder": "在文件夹中打开",
     "context.copyPath": "复制路径",
     "context.openUrl": "打开网页",
     "context.copyUrl": "复制链接",
@@ -207,6 +220,7 @@ const I18N_MESSAGES = {
     "call.inlineTitleWithSummary": "Call {name}: {summary} (click to expand/collapse)",
     "call.inlineAria": "Call {name} (click to expand or collapse tool call card)",
     "call.toggle": "Expand/collapse tool call card",
+    "call.openInContext": "Open in Context",
     "call.patchTruncated": "Patch is too long; showing the first {count} lines",
     "files.title": "Files",
     "files.stats": "{dirs} folders · {files} files",
@@ -223,7 +237,9 @@ const I18N_MESSAGES = {
     "files.addFolder": "Add Folder",
     "files.openManager": "Open Manager",
     "files.more": "More actions",
+    "files.moreActions": "More actions",
     "files.open": "Open Preview",
+    "files.openInFolder": "Open in Folder",
     "files.preview": "Preview",
     "files.download": "Download",
     "files.downloadFailed": "Failed to download file",
@@ -261,6 +277,10 @@ const I18N_MESSAGES = {
     "context.tasks": "Tasks",
     "context.comments": "Comments",
     "context.agents": "Agents",
+    "context.tags": "Tags",
+    "context.links": "Links",
+    "context.headings": "Headings",
+    "context.anchors": "Anchors",
     "context.modelUsage": "Model Usage",
     "context.basics": "Basics",
     "context.noSession": "No open session",
@@ -278,10 +298,15 @@ const I18N_MESSAGES = {
     "context.emptyTasks": "No todos in the current session.",
     "context.emptyComments": "No comments in the current session.",
     "context.emptyAgents": "No agent tasks in the current session.",
+    "context.emptyTags": "No tags in the current session.",
+    "context.emptyLinks": "No wiki links in the current session.",
+    "context.emptyHeadings": "No Markdown headings in the current session.",
+    "context.emptyAnchors": "No block anchors in the current session.",
     "context.emptyUsage": "No model usage available for the current session.",
     "context.emptyBasics": "No basic context information.",
     "context.copyUsage": "Copy usage info",
     "context.openInFiles": "Reveal and open in Files",
+    "context.openInFolder": "Open in Folder",
     "context.copyPath": "Copy path",
     "context.openUrl": "Open webpage",
     "context.copyUrl": "Copy link",
@@ -869,14 +894,14 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "read",
-          description: "Read a file's content (supports local or SSH session via local tools service).",
+            description: "Read a file's content (supports local or SSH session via local tools service). If multiple terminal sessions exist, especially with SSH or different working directories, prefer passing the correct session_id explicitly instead of relying on the current active session.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "File path to read" },
               offset: { type: "number", description: "Start line (1-based, optional)" },
               limit: { type: "number", description: "Number of lines to read (optional)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+                session_id: { type: "string", description: "Optional terminal session ID (local/ssh). Strongly recommended when multiple sessions, SSH sessions, or different cwd values are present." }
             },
             required: ["path"],
             additionalProperties: false
@@ -888,14 +913,14 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "write",
-          description: "Write content to a file (supports local or SSH session via local tools service).",
+            description: "Write content to a file (supports local or SSH session via local tools service). If multiple terminal sessions exist, especially with SSH or different working directories, prefer passing the correct session_id explicitly instead of relying on the current active session.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "File path to write" },
               content: { type: "string", description: "Content to write" },
               prompt: { type: "string", description: "Short summary of what is being written (<=100 chars)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+                session_id: { type: "string", description: "Optional terminal session ID (local/ssh). Strongly recommended when multiple sessions, SSH sessions, or different cwd values are present." }
             },
             required: ["path", "content"],
             additionalProperties: false
@@ -907,7 +932,7 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "edit",
-          description: "Edit a file by exact string replacement (supports local or SSH session via local tools service).",
+            description: "Edit a file by exact string replacement (supports local or SSH session via local tools service). If multiple terminal sessions exist, especially with SSH or different working directories, prefer passing the correct session_id explicitly instead of relying on the current active session.",
           parameters: {
             type: "object",
             properties: {
@@ -916,7 +941,7 @@ function registerDefaultTools() {
               new_string: { type: "string", description: "Replacement string" },
               replace_all: { type: "boolean", description: "Replace all occurrences (default false)" },
               prompt: { type: "string", description: "Short summary of what is being edited (<=100 chars)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+                session_id: { type: "string", description: "Optional terminal session ID (local/ssh). Strongly recommended when multiple sessions, SSH sessions, or different cwd values are present." }
             },
             required: ["path", "old_string", "new_string"],
             additionalProperties: false
@@ -962,7 +987,7 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "Bash",
-          description: "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.\n\nBefore executing the command, please follow these steps:\n\n1. Directory Verification:\n   - If the command will create new directories or files, first use the LS tool to verify the parent directory exists and is the correct location\n   - For example, before running \"mkdir foo/bar\", first use LS to check that \"foo\" exists and is the intended parent directory\n\n2. Command Execution:\n   - Always quote file paths that contain spaces with double quotes (e.g., cd \"path with spaces/file.txt\")\n   - Examples of proper quoting:\n     - cd \"/Users/name/My Documents\" (correct)\n     - cd /Users/name/My Documents (incorrect - will fail)\n     - python \"/path/with spaces/script.py\" (correct)\n     - python /path/with spaces/script.py (incorrect - will fail)\n   - After ensuring proper quoting, execute the command.\n   - Capture the output of the command.\n\nUsage notes:\n  - The command argument is required.\n  - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).\n  - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.\n  - If the output exceeds 30000 characters, output will be truncated before being returned to you.\n  - VERY IMPORTANT: Avoid using search commands like `find` and `grep`. Instead use Grep, Glob.\n  - When issuing multiple commands, use ';' or '&&'. DO NOT use newlines (except inside quoted strings).\n  - Prefer absolute paths over 'cd' unless the user requests it explicitly.",
+            description: "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures. When multiple terminal sessions exist, always prefer the correct session_id that matches the intended machine and cwd instead of assuming the current active session is right.\n\nBefore executing the command, please follow these steps:\n\n1. Directory Verification:\n   - If the command will create new directories or files, first use the LS tool to verify the parent directory exists and is the correct location\n   - For example, before running \"mkdir foo/bar\", first use LS to check that \"foo\" exists and is the intended parent directory\n\n2. Command Execution:\n   - Always quote file paths that contain spaces with double quotes (e.g., cd \"path with spaces/file.txt\")\n   - Examples of proper quoting:\n     - cd \"/Users/name/My Documents\" (correct)\n     - cd /Users/name/My Documents (incorrect - will fail)\n     - python \"/path/with spaces/script.py\" (correct)\n     - python /path/with spaces/script.py (incorrect - will fail)\n   - After ensuring proper quoting, execute the command.\n   - Capture the output of the command.\n\nUsage notes:\n  - The command argument is required.\n  - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).\n  - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.\n  - If the output exceeds 30000 characters, output will be truncated before being returned to you.\n  - VERY IMPORTANT: Avoid using search commands like `find` and `grep`. Instead use Grep, Glob.\n  - When issuing multiple commands, use ';' or '&&'. DO NOT use newlines (except inside quoted strings).\n  - Prefer absolute paths over 'cd' unless the user requests it explicitly.",
           parameters: {
             type: "object",
             properties: {
@@ -984,7 +1009,7 @@ function registerDefaultTools() {
               },
               session_id: {
                 type: "string",
-                description: "Optional terminal session ID to execute within (see terminalManage)"
+                  description: "Optional terminal session ID to execute within (see terminalManage). Strongly recommended when multiple sessions, SSH sessions, or different cwd values are present."
               }
             },
             required: ["command"],

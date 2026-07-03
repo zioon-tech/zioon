@@ -2,6 +2,7 @@
 import { getEditorCore } from "./editor-core.js";
 import { createFilesCodeEditor, createFilesCodeViewer, createFilesMarkdownPreview, ensureRevealSourceForPath, getProvider, iconForFile, isMarkdownTab, languageFromFilename, shouldShowMarkdownPreview, stableFileTabId } from "./files-panel.js";
 import { formatCompactChangeCount, formatChangeSummary, getCurrentSessionChangeState, normalizeChangePath } from "./session-change-state.js";
+import { extractObsidianMetadata, findObsidianTargetPosition } from "../shared/obsidian-metadata.js";
 
 export const CONTEXT_VIEW_ID = "dev.tools.context";
 
@@ -12,6 +13,8 @@ const LS_CONTEXT_URL_TITLES = "zion.devTools.context.urlTitles";
 const LS_COMMENTS_THREADS = "zion.comments.threads.v1";
 const LS_AGENT_TASKS = "zion.agents.tasks.v1";
 const LS_MEMORY_ITEMS = "zion.memory.items.v1";
+const PREVIEW_AUX_WIDTH = 760;
+let pendingContextOpenFilePayload = null;
 
 function t(key, fallback, values) {
   const fullKey = `${I18N_NS}.${key}`;
@@ -30,6 +33,22 @@ export function registerContextPanel(ctx) {
     try { window.zion.auxiliaryBar?.activateView?.(CONTEXT_VIEW_ID); } catch {}
   });
   disposables.push(openCommand);
+
+  const openFilePreviewCommand = window.zion.commands.registerCommand("tools.context.openFilePreview", (payload = {}) => {
+    const path = typeof payload === "string" ? payload : payload?.path;
+    if (!String(path || "").trim()) return false;
+    pendingContextOpenFilePayload = {
+      path: String(path).trim(),
+      sourceId: typeof payload === "object" ? String(payload?.sourceId || "") : ""
+    };
+    try { window.zion.auxiliaryBar?.activateView?.(CONTEXT_VIEW_ID); } catch {}
+    try { window.zion.events?.emit?.("dev.tools.context/openFilePreview", pendingContextOpenFilePayload); } catch {}
+    setTimeout(() => {
+      try { window.zion.events?.emit?.("dev.tools.context/openFilePreview", pendingContextOpenFilePayload); } catch {}
+    }, 0);
+    return true;
+  });
+  disposables.push(openFilePreviewCommand);
 
   const viewDisposable = window.zion.auxiliaryBar?.registerView?.({
     id: CONTEXT_VIEW_ID,
@@ -111,6 +130,7 @@ function createContextPanel(container) {
     } catch {}
   };
   watchState("sessions.currentId");
+  watchState("comments.activeThreadId");
   watchState("terminal.sessions");
   watchState("terminal.activeSessionId");
   watchState("chat.includeTerminalContext");
@@ -132,6 +152,16 @@ function createContextPanel(container) {
   try { disposables.push(window.zion.events?.on?.("agents/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("memory/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("i18n/changed", () => { lastRenderedSignature = ""; scheduleRender(); })); } catch {}
+  try { disposables.push(window.zion.events?.on?.("dev.tools.context/openFilePreview", (payload) => {
+    const path = String(payload?.path || "").trim();
+    if (!path) return;
+    pendingContextOpenFilePayload = null;
+    openContextFilePreview({
+      path,
+      label: path,
+      sourceId: String(payload?.sourceId || "")
+    });
+  })); } catch {}
   disposables.push(editorCore.subscribe((payload) => {
     activeFileTabId = editorCore.getActiveTabId();
     explorerWidth = editorCore.getExplorerWidth();
@@ -168,6 +198,10 @@ function createContextPanel(container) {
   disposables.push({ dispose: () => window.clearInterval(pollTimer) });
 
   render();
+  setTimeout(() => {
+    if (disposed || !pendingContextOpenFilePayload) return;
+    try { window.zion.events?.emit?.("dev.tools.context/openFilePreview", pendingContextOpenFilePayload); } catch {}
+  }, 0);
 
   return {
     dispose() {
@@ -282,7 +316,9 @@ function createContextPanel(container) {
       renderPreviewOnly();
       return;
     }
+    const hadPreview = openFileTabs.size > 0 || !!root.querySelector(".zion-context-preview-pane");
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    if (!hadPreview) requestPreviewAuxWidth();
     runWithoutEditorCoreRender(() => editorCore.openTab({
       id: provisionalTabId,
       title: name,
@@ -418,6 +454,8 @@ function createContextPanel(container) {
       size: typeof latest.content === "string" ? latest.content.length : 0
     };
     if (existing?.id === activeFileTabId && sameContextPreviewFile(resolveContextPreviewTab(existing).file, resolveContextPreviewTab(nextTab).file)) return;
+    const hadPreview = openFileTabs.size > 0 || !!root.querySelector(".zion-context-preview-pane");
+    if (!hadPreview) requestPreviewAuxWidth();
     runWithoutEditorCoreRender(() => editorCore.openTab(nextTab));
     activeFileTabId = editorCore.getActiveTabId();
     renderPreviewOnly();
@@ -443,6 +481,7 @@ function createContextPanel(container) {
         disposePreviewResources();
         existing.remove();
       }
+      releasePreviewAuxWidth();
       root.querySelector(".zion-context-workspace")?.classList.remove("has-preview");
       return;
     }
@@ -676,6 +715,14 @@ function createContextPanel(container) {
     renderPreviewOnly();
   }
 
+  function requestPreviewAuxWidth() {
+    try { window.zion.auxiliaryBar?.requestTemporaryWidth?.(CONTEXT_VIEW_ID, PREVIEW_AUX_WIDTH); } catch {}
+  }
+
+  function releasePreviewAuxWidth() {
+    try { window.zion.auxiliaryBar?.releaseTemporaryWidth?.(CONTEXT_VIEW_ID); } catch {}
+  }
+
   function shouldRefreshPreviewOnly(reason) {
     return ["active", "open", "update", "close", "markdown-preview", "resolve-file-tab"].includes(String(reason || ""));
   }
@@ -822,13 +869,14 @@ function buildContextSnapshot(urlTitleCache = {}) {
   const agentSummary = buildAgentTaskSummary(agentTasks);
   const memories = getMemoryItems();
   const memorySummary = buildMemorySummary(memories);
+  const obsidian = extractObsidianMetadata(editorText);
   const basics = [
     { label: t("context.session", "Session"), value: sessionId ? shortId(sessionId) : t("context.noSession", "No open session") },
     { label: t("context.terminalContext", "Terminal Context"), value: includeTerminal ? t("context.terminalInjected", "Injected into chat") : t("context.terminalNotInjected", "Not injected into chat") },
     { label: t("context.terminalSessions", "Terminal Sessions"), value: `${t("context.count", "{count}", { count: terminalSessions.length })}${activeTerminalId ? ` · ${t("context.terminalActive", "active {id}", { id: shortId(activeTerminalId) })}` : ""}` },
     { label: t("context.toolArtifacts", "Tool Artifacts"), value: t("context.itemCount", "{count}", { count: tools.length }) }
   ];
-  return { sessionId, files, urls, basics, usage, tasks, activeTaskId, taskSummary, comments, commentSummary, agentTasks, agentSummary, memories, memorySummary };
+  return { sessionId, files, urls, basics, usage, tasks, activeTaskId, taskSummary, comments, commentSummary, agentTasks, agentSummary, memories, memorySummary, obsidian };
 }
 
 function getSnapshotRenderSignature(snapshot, expanded, changeState) {
@@ -841,6 +889,7 @@ function getSnapshotRenderSignature(snapshot, expanded, changeState) {
     comments: compactCommentSignature(snapshot.commentSummary, snapshot.comments),
     agents: compactAgentTaskSignature(snapshot.agentSummary, snapshot.agentTasks),
     memory: compactMemorySignature(snapshot.memorySummary, snapshot.memories),
+    obsidian: compactObsidianSignature(snapshot.obsidian),
     changes: changeState?.fingerprint || "",
     expanded: Array.from(expanded || []).sort()
   });
@@ -900,6 +949,42 @@ function renderResourceTree(snapshot, state) {
     meta: formatAgentTaskSummaryMeta(snapshot.agentSummary),
     empty: t("context.emptyAgents", "No agent tasks in the current session."),
     children: renderAgentTaskRows(snapshot.agentTasks, state),
+    state
+  }));
+  tree.appendChild(renderGroup({
+    key: "tags",
+    depth: 0,
+    label: t("context.tags", "Tags"),
+    count: snapshot.obsidian?.tags?.length || 0,
+    empty: t("context.emptyTags", "No tags in the current session."),
+    children: renderObsidianTagsRows(snapshot.obsidian?.tags || [], state),
+    state
+  }));
+  tree.appendChild(renderGroup({
+    key: "wiki-links",
+    depth: 0,
+    label: t("context.links", "Links"),
+    count: snapshot.obsidian?.wikiLinks?.length || 0,
+    empty: t("context.emptyLinks", "No wiki links in the current session."),
+    children: renderObsidianWikiLinkRows(snapshot.obsidian?.wikiLinks || [], state),
+    state
+  }));
+  tree.appendChild(renderGroup({
+    key: "headings",
+    depth: 0,
+    label: t("context.headings", "Headings"),
+    count: snapshot.obsidian?.headings?.length || 0,
+    empty: t("context.emptyHeadings", "No Markdown headings in the current session."),
+    children: renderObsidianLocationRows(snapshot.obsidian?.headings || [], "heading", state),
+    state
+  }));
+  tree.appendChild(renderGroup({
+    key: "anchors",
+    depth: 0,
+    label: t("context.anchors", "Anchors"),
+    count: snapshot.obsidian?.anchors?.length || 0,
+    empty: t("context.emptyAnchors", "No block anchors in the current session."),
+    children: renderObsidianLocationRows(snapshot.obsidian?.anchors || [], "anchor", state),
     state
   }));
   tree.appendChild(renderGroup({
@@ -991,6 +1076,16 @@ function compactUsageSignature(usage) {
     tokens: usage.tokens || {},
     cost: usage.cost ?? null,
     byModel: (usage.byModel || []).map((item) => [item.key, item.calls, item.tokens?.total, item.cost ?? null])
+  });
+}
+
+function compactObsidianSignature(obsidian) {
+  if (!obsidian) return "";
+  return stableStringify({
+    tags: (obsidian.tags || []).map((item) => [item.label, item.line, item.pos]),
+    wikiLinks: (obsidian.wikiLinks || []).map((item) => [item.target, item.label, item.line, item.pos]),
+    headings: (obsidian.headings || []).map((item) => [item.label, item.level, item.line, item.pos]),
+    anchors: (obsidian.anchors || []).map((item) => [item.label, item.line, item.pos])
   });
 }
 
@@ -1347,7 +1442,10 @@ function renderFileNode(node, depth, state) {
     selected: state.selectedKey === node.key,
     kind: "folder",
     onClick: () => state.onToggle(node.key),
-    onSelect: state.onSelect
+      onSelect: state.onSelect,
+      actionIcon: "codicon-folder-opened",
+      actionTitle: t("context.openInFolder", "Open in Folder"),
+      onAction: () => openFileInLocalFolder({ path: node.fullPath, sourceId: node.sourceId })
   })];
   if (isExpanded) {
     for (const child of node.children) rows.push(...renderFileNode(child, depth + 1, state));
@@ -1372,8 +1470,8 @@ function renderFileTreeRow(item, keySuffix, label, depth, state) {
     onClick: () => state.onOpenFile?.(item),
     onSelect: state.onSelect,
     actionIcon: "codicon-folder-opened",
-    actionTitle: t("context.openInFiles", "Reveal and open in Files"),
-    onAction: () => openFileInExplorer(item, { open: true }),
+      actionTitle: t("context.openInFolder", "Open in Folder"),
+      onAction: () => openFileInLocalFolder(item),
     secondaryActionIcon: "codicon-copy",
     secondaryActionTitle: t("context.copyPath", "Copy path"),
     onSecondaryAction: () => copyText(item.path || item.label || "")
@@ -1403,6 +1501,102 @@ function renderUrlTreeRow(item, index, state) {
     secondaryActionTitle: t("context.copyUrl", "Copy link"),
     onSecondaryAction: () => copyText(item.url || "")
   });
+}
+
+function renderObsidianTagsRows(tags, state) {
+  return (Array.isArray(tags) ? tags : []).slice(0, 80).map((item, index) => {
+    const key = `tag:${item.label || index}`;
+    return renderTreeRow({
+      key,
+      depth: 1,
+      icon: "codicon-tag",
+      label: item.label,
+      meta: `L${item.line || 1}`,
+      title: `${item.label} · line ${item.line || 1}`,
+      kind: "tag",
+      selected: state.selectedKey === key,
+      onClick: () => jumpToEditorPosition(item.pos),
+      onSelect: state.onSelect,
+      secondaryActionIcon: "codicon-copy",
+      secondaryActionTitle: t("context.copyInfo", "Copy info"),
+      onSecondaryAction: () => copyText(item.label || "")
+    });
+  });
+}
+
+function renderObsidianWikiLinkRows(links, state) {
+  return (Array.isArray(links) ? links : []).slice(0, 80).map((item, index) => {
+    const key = `wiki:${item.target || index}`;
+    return renderTreeRow({
+      key,
+      depth: 1,
+      icon: "codicon-link",
+      label: item.label || item.target,
+      meta: `L${item.line || 1}`,
+      title: `${item.raw || item.target} · line ${item.line || 1}`,
+      kind: "wiki",
+      selected: state.selectedKey === key,
+      onClick: () => jumpToObsidianTarget(item.target, item.pos),
+      onSelect: state.onSelect,
+      secondaryActionIcon: "codicon-copy",
+      secondaryActionTitle: t("context.copyInfo", "Copy info"),
+      onSecondaryAction: () => copyText(`[[${item.raw || item.target || ""}]]`)
+    });
+  });
+}
+
+function renderObsidianLocationRows(items, kind, state) {
+  return (Array.isArray(items) ? items : []).slice(0, 80).map((item, index) => {
+    const key = `${kind}:${item.label || index}`;
+    const icon = kind === "heading" ? "codicon-list-tree" : "codicon-symbol-property";
+    const meta = kind === "heading" ? `H${item.level || 1} · L${item.line || 1}` : `L${item.line || 1}`;
+    return renderTreeRow({
+      key,
+      depth: 1,
+      icon,
+      label: item.label,
+      meta,
+      title: `${item.label} · line ${item.line || 1}`,
+      kind,
+      selected: state.selectedKey === key,
+      onClick: () => jumpToEditorPosition(item.pos),
+      onSelect: state.onSelect,
+      secondaryActionIcon: "codicon-copy",
+      secondaryActionTitle: t("context.copyInfo", "Copy info"),
+      onSecondaryAction: () => copyText(kind === "anchor" ? `[[${item.label || ""}]]` : `[[${item.label || ""}]]`)
+    });
+  });
+}
+
+function jumpToEditorPosition(pos) {
+  const n = Number(pos);
+  if (!Number.isFinite(n) || n < 0) return;
+  try {
+    const editor = window.zion?.window?.activeEditor;
+    const view = editor?.getView?.();
+    if (view?.dispatch) {
+      const safePos = Math.max(0, Math.min(n, view.state?.doc?.length || n));
+      view.dispatch({ selection: { anchor: safePos }, scrollIntoView: true });
+      view.focus?.();
+      return;
+    }
+    const text = String(editor?.getValue?.() || "");
+    const before = text.slice(0, n);
+    const line = before.split(/\r?\n/).length;
+    const ch = before.length - Math.max(before.lastIndexOf("\n"), before.lastIndexOf("\r")) - 1;
+    editor?.setCursor?.({ line, ch: Math.max(0, ch) });
+    editor?.focus?.();
+  } catch {}
+}
+
+function jumpToObsidianTarget(target, fallbackPos) {
+  try {
+    const text = getActiveEditorText();
+    const pos = findObsidianTargetPosition(text, target);
+    jumpToEditorPosition(pos == null ? fallbackPos : pos);
+  } catch {
+    jumpToEditorPosition(fallbackPos);
+  }
 }
 
 function renderBasicTreeRow(item, index, state) {
@@ -1524,9 +1718,10 @@ function getCommentsForSession(sessionId) {
     const raw = localStorage.getItem(LS_COMMENTS_THREADS);
     const parsed = raw ? JSON.parse(raw) : [];
     const list = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-    return list
+    const comments = list
       .filter((item) => String(item?.sessionId || "global") === sid)
       .sort((a, b) => commentOrder(a) - commentOrder(b) || (Number(a?.createdAt || 0) - Number(b?.createdAt || 0)));
+    return comments;
   } catch {
     return [];
   }
@@ -2115,17 +2310,24 @@ function renderTreeRow({
   return row;
 }
 
-function openFileInExplorer(item, options = {}) {
+  function openFileInLocalFolder(item) {
   const path = item?.path || item?.label || "";
   if (!path) return;
-  try {
-    window.showToast?.(t("context.openingFiles", "Opening Files and locating file..."));
-    window.zion.commands?.executeCommand?.("tools.files.revealPath", {
+    const payload = {
       path,
-      sourceId: item.sourceId || inferFileSource(),
-      open: options.open !== false
-    });
-  } catch {}
+      sourceId: item.sourceId || inferFileSource()
+    };
+    try { console.info("[context.openInFolder] click", { item, payload }); } catch {}
+  try {
+      const ret = window.zion.commands?.executeCommand?.("fs.openInFolder", payload);
+      Promise.resolve(ret).then((result) => {
+        try { console.info("[context.openInFolder] result", result); } catch {}
+      }).catch((err) => {
+        try { console.error("[context.openInFolder] failed", err); } catch {}
+      });
+    } catch (err) {
+      try { console.error("[context.openInFolder] failed", err); } catch {}
+    }
 }
 
 function handleTreeRowKeydown(event, row, { key, onClick, onSelect }) {
@@ -2348,11 +2550,42 @@ function cssEscape(value) {
   }
 }
 
+function isCommentPanelId(panelId) {
+  return String(panelId || "").startsWith("comments:");
+}
+
+function getCommentSourceSessionId() {
+  try {
+    const activeThreadId = window.zion?.state?.get?.("comments.activeThreadId") || "";
+    if (!activeThreadId) return null;
+    const raw = localStorage.getItem(LS_COMMENTS_THREADS);
+    const parsed = raw ? JSON.parse(raw) : [];
+    const thread = Array.isArray(parsed) ? parsed.find((item) => item?.id === activeThreadId) : null;
+    return thread ? String(thread.parentSessionId || thread.sessionId || "") : null;
+  } catch {
+    return null;
+  }
+}
+
 function getCurrentSessionId() {
   try {
+    const editor = window.zion?.window?.activeEditor;
+    if (editor && !isCommentPanelId(editor?.panelId) && editor?.sessionId) {
+      return String(editor.sessionId);
+    }
+    if (editor && isCommentPanelId(editor?.panelId)) {
+      const sourceSessionId = getCommentSourceSessionId();
+      if (sourceSessionId) {
+        return sourceSessionId;
+      }
+    }
     const panelId = window.zion?.panels?.getActivePanelId?.() || null;
     const panel = (window.zion?.panels?.list?.() || []).find((p) => p?.id === panelId);
-    return panel?.activeTabId || window.zion?.state?.get?.("sessions.currentId") || null;
+    if (panel?.activeTabId && !String(panel.activeTabId).startsWith("comment:")) {
+      return panel.activeTabId;
+    }
+    const fallbackSessionId = getCommentSourceSessionId() || panel?.activeTabId || window.zion?.state?.get?.("sessions.currentId") || null;
+    return fallbackSessionId;
   } catch {
     return window.zion?.state?.get?.("sessions.currentId") || null;
   }
@@ -2361,6 +2594,7 @@ function getCurrentSessionId() {
 function getActiveEditorText() {
   try {
     const editor = window.zion?.window?.activeEditor;
+    if (editor && isCommentPanelId(editor?.panelId)) return "";
     if (editor?.getValue) return String(editor.getValue() || "");
   } catch {}
   return "";

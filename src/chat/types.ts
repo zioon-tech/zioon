@@ -29,3 +29,8 @@ export interface ChatDocInsertResult {
   anchor: AssistantAnchor | null;
   insertLine: number;
 }
+
+export interface ChatDocFinalizeResult {
+  ok: boolean;
+  userLine: number | null;
+}

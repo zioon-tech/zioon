@@ -1,3 +1,4 @@
+import "./styles.css";
 import { installThinkingCards } from "./thinking-cards.js";
 
 const I18N_NS = "dev.thinking";

@@ -1,4 +1,4 @@
-import { Facet, RangeSetBuilder, type Extension, Transaction } from "@codemirror/state";
+import { Facet, RangeSetBuilder, StateEffect, StateField, type EditorState, type Extension, Transaction } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type ViewUpdate } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 import katex from "katex";
@@ -22,7 +22,7 @@ const INLINE_FALLBACK = /(\*\*([^*\n]+)\*\*)|(_([^_\n]+)_)|(`([^`\n]+)`)|(\[([^\
 const ROLE_HEAD_RE = /^\s*(system|user|assistant|tool)\s+/;
 const FENCE_START_RE = /^\s*`{3,}\s*([^\s`]*)?.*$/;
 const FENCE_CLOSE_RE = /^\s*`{3,}\s*$/;
-const TABLE_SEPARATOR_CELL_RE = /^:?-{3,}:?$/;
+const TABLE_SEPARATOR_CELL_RE = /^:?-+:?$/;
 const ESCAPABLE_MARKDOWN_RE = /[\\`*_[\]{}()#+\-.!~|>]/;
 
 function isEscapedAt(text: string, index: number): boolean {
@@ -33,7 +33,8 @@ function isEscapedAt(text: string, index: number): boolean {
 
 /* Helper: Check if line contains tool call or thinking markers (skip WYSIWYG processing) */
 const isToolOrThinkingLine = (lineText: string): boolean => {
-  return /^\s*调用\s+/.test(lineText) || /^\s*思考\s*$/.test(lineText.trim());
+  return /^\s*调用\s+[^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/.test(lineText)
+    || /^\s*思考\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/.test(lineText);
 };
 
 function isRoleHeadLine(lineText: string): boolean {
@@ -78,6 +79,60 @@ function splitMarkdownTableCells(s: string): string[] {
   return cells;
 }
 
+type TableCellSourceRange = { from: number; to: number };
+type TableSourceLine = { from: number; to: number; text: string };
+type TableCommentRange = { id: string; from: number; to: number; active?: boolean };
+type TablePreviewRange = {
+  from: number;
+  to: number;
+  startLine: number;
+  endLine: number;
+  headers: string[];
+  aligns: Array<"left" | "center" | "right">;
+  rows: string[][];
+  sourceLines: TableSourceLine[];
+};
+
+function getMarkdownTableCellSourceRange(lineText: string, lineFrom: number, cellIndex: number): TableCellSourceRange | null {
+  let start = 0;
+  let end = lineText.length;
+  while (start < end && /\s/.test(lineText[start])) start++;
+  while (end > start && /\s/.test(lineText[end - 1])) end--;
+  if (lineText[start] === "|") start++;
+
+  let slashCount = 0;
+  for (let i = end - 2; i >= start && lineText[i] === "\\"; i--) slashCount++;
+  if (end > start && lineText[end - 1] === "|" && slashCount % 2 === 0) end--;
+
+  let inCode = false;
+  let cellStart = start;
+  let currentIndex = 0;
+  for (let i = start; i <= end; i++) {
+    const ch = lineText[i];
+    const next = lineText[i + 1];
+    if (i < end && ch === "\\" && next) {
+      i++;
+      continue;
+    }
+    if (i < end && ch === "`") {
+      inCode = !inCode;
+      continue;
+    }
+    if (i === end || (ch === "|" && !inCode)) {
+      if (currentIndex === cellIndex) {
+        let from = cellStart;
+        let to = i;
+        while (from < to && /\s/.test(lineText[from])) from++;
+        while (to > from && /\s/.test(lineText[to - 1])) to--;
+        return { from: lineFrom + from, to: lineFrom + to };
+      }
+      currentIndex++;
+      cellStart = i + 1;
+    }
+  }
+  return null;
+}
+
 function isMarkdownTableSeparatorRow(s: string): boolean {
   const t = s.trim();
   if (!t.includes("|")) return false;
@@ -89,6 +144,17 @@ function isMarkdownTableContentRow(s: string): boolean {
   const t = s.trim();
   if (!t.includes("|")) return false;
   return !isMarkdownTableSeparatorRow(t) && splitMarkdownTableCells(t).length >= 2;
+}
+
+function parseMarkdownTableAligns(s: string): Array<"left" | "center" | "right"> {
+  const cells = splitMarkdownTableCells(s);
+  return cells.map(seg => {
+    const left = seg.startsWith(":");
+    const right = seg.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    return "left";
+  }) as Array<"left" | "center" | "right">;
 }
 
 function normalizeTableRows(headers: string[], aligns: Array<"left" | "center" | "right">, rows: string[][]) {
@@ -185,25 +251,57 @@ function appendTableInlineMarkdown(parent: HTMLElement, source: string) {
   }
 }
 
-function serializeTableInlineMarkdown(root: Node): string {
-  const serialize = (node: Node): string => {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
-    if (!(node instanceof HTMLElement)) return Array.from(node.childNodes).map(serialize).join("");
-    const children = Array.from(node.childNodes).map(serialize).join("");
-    const tag = node.tagName.toLowerCase();
-    if (tag === "br") return "<br>";
-    if (tag === "strong" || node.classList.contains("cm-md-strong")) return `**${children}**`;
-    if (tag === "s" || node.classList.contains("cm-md-strike")) return `~~${children}~~`;
-    if (tag === "em" || node.classList.contains("cm-md-em")) return `_${children}_`;
-    if (tag === "code" || node.classList.contains("cm-md-code")) return `\`${children}\``;
-    if (tag === "a") {
-      const href = node.getAttribute("href") || "";
-      return href ? `[${children}](${href})` : children;
-    }
-    if (tag === "div" || tag === "p") return children ? `${children}<br>` : "";
-    return children;
-  };
-  return Array.from(root.childNodes).map(serialize).join("").replace(/(<br>)+$/g, "");
+function getTableCommentRanges(view: EditorView, from: number, to: number): TableCommentRange[] {
+  try {
+    const ranges = (window as any).__zionCommentAnchorsByView?.get?.(view);
+    if (!Array.isArray(ranges)) return [];
+    return ranges
+      .map((item: any) => ({
+        id: String(item?.id || ""),
+        from: Number(item?.from),
+        to: Number(item?.to),
+        active: !!item?.active
+      }))
+      .filter((item: TableCommentRange) =>
+        item.id && Number.isFinite(item.from) && Number.isFinite(item.to) && item.to > from && item.from < to
+      )
+      .sort((a: TableCommentRange, b: TableCommentRange) => a.from - b.from || a.to - b.to);
+  } catch {
+    return [];
+  }
+}
+
+function appendTableInlineMarkdownWithComments(
+  parent: HTMLElement,
+  source: string,
+  sourceRange: TableCellSourceRange | null,
+  comments: TableCommentRange[]
+) {
+  if (!sourceRange || !comments.length) {
+    appendTableInlineMarkdown(parent, source);
+    return;
+  }
+  let cursor = 0;
+  for (const comment of comments) {
+    const start = Math.max(0, Math.min(source.length, comment.from - sourceRange.from));
+    const end = Math.max(start, Math.min(source.length, comment.to - sourceRange.from));
+    if (end <= cursor) continue;
+    if (start > cursor) appendTableInlineMarkdown(parent, source.slice(cursor, start));
+
+    const mark = document.createElement("span");
+    mark.className = `zion-comment-range${comment.active ? " is-active" : ""}`;
+    mark.dataset.commentId = comment.id;
+    mark.title = "打开评论";
+    const openComment = (event: Event) => {
+      try { event.preventDefault(); event.stopPropagation(); } catch {}
+      try { (window as any).zion?.commands?.executeCommand?.("comments.revealThread", comment.id); } catch {}
+    };
+    mark.addEventListener("click", openComment);
+    appendTableInlineMarkdown(mark, source.slice(start, end));
+    parent.appendChild(mark);
+    cursor = end;
+  }
+  if (cursor < source.length) appendTableInlineMarkdown(parent, source.slice(cursor));
 }
 
 type AddDecoration = (from: number, to: number, dec: Decoration) => void;
@@ -337,6 +435,264 @@ function collectRoleScopedFenceBlocks(doc: EditorView["state"]["doc"]): RoleFenc
   return blocks;
 }
 
+type RoleLineRange = {
+  startLine: number;
+  endLine: number;
+};
+
+function collectRoleLineRanges(doc: EditorView["state"]["doc"]): RoleLineRange[] {
+  const ranges: RoleLineRange[] = [];
+  let startLine = 1;
+  while (startLine <= doc.lines) {
+    let endLine = startLine;
+    while (endLine < doc.lines) {
+      const next = doc.line(endLine + 1);
+      if (isRoleHeadLine(doc.sliceString(next.from, next.to))) break;
+      endLine++;
+    }
+    ranges.push({ startLine, endLine });
+    startLine = endLine + 1;
+  }
+  return ranges;
+}
+
+function collectMarkdownTableRanges(
+  doc: EditorView["state"]["doc"],
+  isInsideFencedCode: (pos: number) => boolean
+): TablePreviewRange[] {
+  const ranges: TablePreviewRange[] = [];
+  const roleLineRanges = collectRoleLineRanges(doc);
+  let roleLineRangeIndex = 0;
+  const getRoleLineRange = (lineNo: number): RoleLineRange => {
+    while (roleLineRangeIndex < roleLineRanges.length - 1 && lineNo > roleLineRanges[roleLineRangeIndex].endLine) {
+      roleLineRangeIndex++;
+    }
+    return roleLineRanges[roleLineRangeIndex] || { startLine: 1, endLine: doc.lines };
+  };
+  let ln = 1;
+  while (ln <= doc.lines) {
+    const line = doc.line(ln);
+    const text = doc.sliceString(line.from, line.to);
+    if (isInsideFencedCode(line.from) || isToolOrThinkingLine(text) || !isMarkdownTableContentRow(text)) {
+      ln++;
+      continue;
+    }
+
+    try {
+      const roleRange = getRoleLineRange(ln);
+      let start = ln;
+      while (start > 1) {
+        const prev = doc.line(start - 1);
+        const prevText = doc.sliceString(prev.from, prev.to);
+        if (start - 1 < roleRange.startLine) break;
+        if (isInsideFencedCode(prev.from)) break;
+        if (!isMarkdownTableContentRow(prevText)) break;
+        start--;
+      }
+
+      const sepLn = start + 1;
+      if (sepLn > doc.lines) {
+        ln++;
+        continue;
+      }
+
+      const headerLine = doc.line(start);
+      const headerText = doc.sliceString(headerLine.from, headerLine.to);
+      const sepLine = doc.line(sepLn);
+      const sepText = doc.sliceString(sepLine.from, sepLine.to);
+      if (!isMarkdownTableContentRow(headerText) || !isMarkdownTableSeparatorRow(sepText)) {
+        ln++;
+        continue;
+      }
+
+      const rows: string[][] = [];
+      const sourceLines: TableSourceLine[] = [
+        { from: headerLine.from, to: headerLine.to, text: headerText },
+        { from: sepLine.from, to: sepLine.to, text: sepText }
+      ];
+      let rowLn = sepLn + 1;
+      while (rowLn <= doc.lines) {
+        const rowLine = doc.line(rowLn);
+        const rowText = doc.sliceString(rowLine.from, rowLine.to);
+        if (rowLn > roleRange.endLine) break;
+        if (!isMarkdownTableContentRow(rowText) || isInsideFencedCode(rowLine.from)) break;
+        rows.push(splitMarkdownTableCells(rowText));
+        sourceLines.push({ from: rowLine.from, to: rowLine.to, text: rowText });
+        rowLn++;
+      }
+
+      ranges.push({
+        from: headerLine.from,
+        to: doc.line(rowLn - 1).to,
+        startLine: start,
+        endLine: rowLn - 1,
+        headers: splitMarkdownTableCells(headerText),
+        aligns: parseMarkdownTableAligns(sepText),
+        rows,
+        sourceLines
+      });
+      ln = rowLn;
+      continue;
+    } catch (err) {
+      console.error("[wysiwyg] table range collection error", err);
+    }
+
+    ln++;
+  }
+  return ranges;
+}
+
+type SourceRange = { from: number; to: number };
+
+function collectStateBlockMathRanges(state: EditorState): SourceRange[] {
+  const ranges: SourceRange[] = [];
+  try {
+    const tree = syntaxTree(state) as any;
+    tree.iterate({
+      enter: (node: any) => {
+        const name = node.name || node.type?.name;
+        if (name === "BlockMath") {
+          ranges.push({ from: node.from, to: node.to });
+        }
+      }
+    });
+  } catch {}
+  return ranges;
+}
+
+function isStateInsideFencedCode(roleFenceBlocks: RoleFenceBlock[], blockMathRanges: SourceRange[], pos: number): boolean {
+  for (const block of roleFenceBlocks) {
+    if (pos >= block.from && pos <= block.to) return true;
+  }
+  for (const range of blockMathRanges) {
+    if (pos >= range.from && pos < range.to) return true;
+  }
+  return false;
+}
+
+function selectionIntersectsTable(state: EditorState, range: TablePreviewRange): boolean {
+  for (const sel of state.selection.ranges) {
+    if (sel.empty) {
+      if (sel.from >= range.from && sel.from < range.to) return true;
+    } else if (sel.from < range.to && sel.to > range.from) {
+      return true;
+    }
+  }
+  return false;
+}
+
+type TableBlockState = {
+  ranges: TablePreviewRange[];
+  decorations: ReturnType<typeof Decoration.set>;
+  rawTables: Set<number>;
+};
+
+const tableRawEditEffect = StateEffect.define<number>();
+
+function buildTableBlockState(state: EditorState): TableBlockState {
+  const doc = state.doc;
+  const roleFenceBlocks = collectRoleScopedFenceBlocks(doc);
+  const blockMathRanges = collectStateBlockMathRanges(state);
+  const ranges = collectMarkdownTableRanges(doc, (pos) => isStateInsideFencedCode(roleFenceBlocks, blockMathRanges, pos));
+  return buildTableBlockStateFromRanges(state, ranges);
+}
+
+function pruneRawTablesForSelection(state: EditorState, ranges: TablePreviewRange[], rawTables: Set<number>): Set<number> {
+  if (!rawTables.size) return rawTables;
+  const next = new Set<number>();
+  for (const range of ranges) {
+    if (rawTables.has(range.from) && selectionIntersectsTable(state, range)) {
+      next.add(range.from);
+    }
+  }
+  return next;
+}
+
+function mapRawTables(rawTables: Set<number>, changes: Transaction["changes"]): Set<number> {
+  if (!rawTables.size) return rawTables;
+  const next = new Set<number>();
+  for (const pos of rawTables) {
+    next.add(changes.mapPos(pos, 1));
+  }
+  return next;
+}
+
+function buildTableBlockStateFromRanges(state: EditorState, ranges: TablePreviewRange[], rawTables = new Set<number>()): TableBlockState {
+  const builder = new RangeSetBuilder<Decoration>();
+  for (const range of ranges) {
+    if (rawTables.has(range.from)) continue;
+    builder.add(range.from, range.to, Decoration.replace({
+      widget: new TableBlockWidget(range),
+      block: true
+    }));
+  }
+  return { ranges, decorations: builder.finish(), rawTables };
+}
+
+function mapTableRange(range: TablePreviewRange, changes: Transaction["changes"]): TablePreviewRange {
+  return {
+    ...range,
+    from: changes.mapPos(range.from, 1),
+    to: changes.mapPos(range.to, -1),
+    sourceLines: range.sourceLines.map(line => ({
+      ...line,
+      from: changes.mapPos(line.from, 1),
+      to: changes.mapPos(line.to, -1)
+    }))
+  };
+}
+
+function canReuseTableRangesOnChange(state: TableBlockState, tr: Transaction): boolean {
+  let safe = true;
+  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    if (!safe) return;
+    const text = inserted.toString();
+    if (/[|\n\r]/.test(text)) {
+      safe = false;
+      return;
+    }
+    for (const range of state.ranges) {
+      // Edits just outside a table can turn adjacent lines into table rows, so
+      // keep a small guard band around known table ranges.
+      if (fromA <= range.to + 2 && toA >= range.from - 2) {
+        safe = false;
+        return;
+      }
+    }
+  });
+  return safe;
+}
+
+const tableBlockDecorationsField = StateField.define({
+  create(state) {
+    return buildTableBlockState(state);
+  },
+  update(value, tr) {
+    let rawTables = value.rawTables;
+    let rawModeChanged = false;
+    for (const effect of tr.effects) {
+      if (effect.is(tableRawEditEffect)) {
+        if (!rawModeChanged) rawTables = new Set(rawTables);
+        rawTables.add(effect.value);
+        rawModeChanged = true;
+      }
+    }
+    if (tr.docChanged) {
+      rawTables = mapRawTables(rawTables, tr.changes);
+      if (canReuseTableRangesOnChange(value, tr)) {
+        return buildTableBlockStateFromRanges(tr.state, value.ranges.map(range => mapTableRange(range, tr.changes)), rawTables);
+      }
+      const next = buildTableBlockState(tr.state);
+      return buildTableBlockStateFromRanges(tr.state, next.ranges, pruneRawTablesForSelection(tr.state, next.ranges, rawTables));
+    }
+    if (tr.selection || rawModeChanged) {
+      return buildTableBlockStateFromRanges(tr.state, value.ranges, pruneRawTablesForSelection(tr.state, value.ranges, rawTables));
+    }
+    return value;
+  },
+  provide: field => EditorView.decorations.from(field, value => value.decorations)
+});
+
 /* App image short link resolver: app://img/<id> -> DataURL from IndexedDB ("dev.paste-image-db"/"images") */
 const APP_IMG_PREFIX = "app://img/";
 const appImageCache = new Map<string, string>();
@@ -364,6 +720,39 @@ function updateCachedHeight(el: HTMLElement, key: string) {
     const h = Math.round(r.height);
     if (isFinite(h) && h > 0) wysiwygHeightCache.set(key, h);
   } catch {}
+}
+
+function getCachedEstimatedHeight(key: string, fallback: number) {
+  const h = wysiwygHeightCache.get(key);
+  return typeof h === "number" && isFinite(h) && h > 0 ? h : fallback;
+}
+
+function sanitizeTableCellText(s: string): string {
+  return s.replace(/\n+/g, " ").replace(/\|/g, "\\|").trim();
+}
+
+function buildMarkdownTableSource(headers: string[], aligns: Array<"left" | "center" | "right">, rows: string[][]) {
+  const headerLine = "| " + headers.map(sanitizeTableCellText).join(" | ") + " |";
+  const alignToken = (a: "left" | "center" | "right") => {
+    if (a === "center") return ":---:";
+    if (a === "right") return "---:";
+    return ":---";
+  };
+  const sepLine = "| " + aligns.map(a => alignToken(a)).join(" | ") + " |";
+  const rowLines = rows.map(r => "| " + r.map(sanitizeTableCellText).join(" | ") + " |");
+  return [headerLine, sepLine, ...rowLines].join("\n");
+}
+
+function getTableHeightCacheKey(headers: string[], aligns: Array<"left" | "center" | "right">, rows: string[][]) {
+  return `table:${hashString(buildMarkdownTableSource(headers, aligns, rows))}`;
+}
+
+function estimateTableHeight(headers: string[], rows: string[][]) {
+  const rowCount = Math.max(1, rows.length + 1);
+  const cells = [...headers, ...rows.flat()];
+  const longestCell = cells.reduce((max, cell) => Math.max(max, cell.length), 0);
+  const wrappedLineAllowance = Math.max(0, Math.ceil(longestCell / 28) - 1);
+  return Math.max(96, 54 + rowCount * 42 + wrappedLineAllowance * 18);
 }
 
 function openPasteImageDB(): Promise<IDBDatabase> {
@@ -621,21 +1010,21 @@ class MathWidget extends WidgetType {
 }
 
 /**
- * 可编辑/可拖动的表格组件：
- * - 单元格与表头可 contentEditable，失焦或回车触发提交，回写到 Markdown 源文本。
- * - 列宽可通过表头右侧把手拖动，使用 table-layout: fixed 控制布局。
- * - 单元格内容随宽度自动换行（CSS 配合）。
+ * Lightweight read-only table preview.
+ *
+ * Editing is intentionally kept out of the block widget. A full editable table
+ * DOM inside CodeMirror couples cell layout, contentEditable events, and virtual
+ * scroll height estimation too tightly, which is the source of the jumpiness in
+ * table-heavy documents. Users can switch to Markdown source mode explicitly.
  */
 class TableWidget extends WidgetType {
-  private columnWidths: number[] = [];
-
   constructor(
     private headers: string[],
     private aligns: Array<"left" | "center" | "right">,
     private rows: string[][],
+    private sourceLines: TableSourceLine[],
+    private commentRanges: TableCommentRange[],
     private sourceFrom: number,
-    private sourceTo: number,
-    private onCommit: (text: string) => void,
     private onEditSource: () => void
   ) {
     super();
@@ -645,299 +1034,51 @@ class TableWidget extends WidgetType {
     this.rows = normalized.rows;
   }
 
+  get estimatedHeight() {
+    return getCachedEstimatedHeight(
+      getTableHeightCacheKey(this.headers, this.aligns, this.rows),
+      estimateTableHeight(this.headers, this.rows)
+    );
+  }
+
   eq(other: TableWidget) {
     const sameHdr = this.headers.join("|") === other.headers.join("|");
     const sameAlign = this.aligns.join(",") === other.aligns.join(",");
     const thisRows = this.rows.map(r => r.join("|")).join("\n");
     const otherRows = other.rows.map(r => r.join("|")).join("\n");
+      const thisComments = this.commentRanges.map(r => `${r.id}:${r.from}-${r.to}:${r.active ? 1 : 0}`).join("|");
+      const otherComments = other.commentRanges.map(r => `${r.id}:${r.from}-${r.to}:${r.active ? 1 : 0}`).join("|");
     // 列宽不是语义的一部分，不参与 eq 比较
-    return sameHdr && sameAlign && thisRows === otherRows;
-  }
-
-  private sanitizeCellText(s: string): string {
-    // 去掉换行，转义管道，修剪首尾空白
-    return s.replace(/\n+/g, " ").replace(/\|/g, "\\|").trim();
+      return sameHdr && sameAlign && thisRows === otherRows && thisComments === otherComments;
   }
 
   private buildMarkdown(): string {
-    const headerLine = "| " + this.headers.map(h => this.sanitizeCellText(h)).join(" | ") + " |";
-    const alignToken = (a: "left" | "center" | "right") => {
-      if (a === "center") return ":---:";
-      if (a === "right") return "---:";
-      return ":---"; // GFM 左对齐常用 :---
-    };
-    const sepLine = "| " + this.aligns.map(a => alignToken(a)).join(" | ") + " |";
-    const rowLines = this.rows.map(r => "| " + r.map(c => this.sanitizeCellText(c)).join(" | ") + " |");
-    return [headerLine, sepLine, ...rowLines].join("\n");
+    return buildMarkdownTableSource(this.headers, this.aligns, this.rows);
   }
 
-  private commit() {
-    try {
-      const md = this.buildMarkdown();
-      this.onCommit(md);
-    } catch (e) {
-      console.error("[wysiwyg] table commit error", e);
-    }
-  }
-
-  private attachCellEdit(td: HTMLTableCellElement, value: string, getSetter: () => (val: string) => void) {
-    const span = document.createElement("span");
-    span.className = "cm-md-cell-edit";
-    span.contentEditable = "true";
-    span.spellcheck = false;
-    span.dataset.raw = value;
-    span.dataset.editing = "false";
-    const renderDisplay = () => {
-      span.contentEditable = "false";
-      span.innerHTML = "";
-      appendTableInlineMarkdown(span, span.dataset.raw || "");
-    };
-    const enterRawEditMode = () => {
-      if (span.dataset.editing === "true") return;
-      span.dataset.editing = "true";
-      span.dataset.editMode = "raw";
-      span.contentEditable = "true";
-      span.textContent = span.dataset.raw || "";
-    };
-    const enterRenderedEditMode = () => {
-      if (span.dataset.editing === "true") return;
-      span.dataset.editing = "true";
-      span.dataset.editMode = "rendered";
-      span.contentEditable = "true";
-      span.innerHTML = "";
-      appendTableInlineMarkdown(span, span.dataset.raw || "");
-    };
-    const focusEditableAtPoint = (clientX: number, clientY: number, raw = false) => {
-      try {
-        if (raw) enterRawEditMode();
-        else enterRenderedEditMode();
-        span.focus();
-        const docWithCaret = document as Document & {
-          caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
-          caretRangeFromPoint?: (x: number, y: number) => Range | null;
-        };
-        let range: Range | null = null;
-        const pos = docWithCaret.caretPositionFromPoint?.(clientX, clientY);
-        if (pos && span.contains(pos.offsetNode)) {
-          range = document.createRange();
-          range.setStart(pos.offsetNode, pos.offset);
-          range.collapse(true);
-        } else {
-          const hitRange = docWithCaret.caretRangeFromPoint?.(clientX, clientY) || null;
-          if (hitRange && span.contains(hitRange.startContainer)) range = hitRange;
-        }
-        if (!range) {
-          range = document.createRange();
-          range.selectNodeContents(span);
-          range.collapse(false);
-        }
-        const sel = window.getSelection();
-        if (!sel) return;
-        sel.removeAllRanges();
-        sel.addRange(range);
-      } catch {}
-    };
-    const selectCellContents = () => {
-      try {
-        enterRawEditMode();
-        span.focus();
-        const range = document.createRange();
-        range.selectNodeContents(span);
-        const sel = window.getSelection();
-        if (!sel) return;
-        sel.removeAllRanges();
-        sel.addRange(range);
-      } catch {}
-    };
-    const selectWordAtPoint = (clientX: number, clientY: number) => {
-      try {
-        enterRawEditMode();
-        span.focus();
-        const docWithCaret = document as Document & {
-          caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
-          caretRangeFromPoint?: (x: number, y: number) => Range | null;
-        };
-        let node: Node | null = null;
-        let offset = 0;
-        const pos = docWithCaret.caretPositionFromPoint?.(clientX, clientY);
-        if (pos && span.contains(pos.offsetNode)) {
-          node = pos.offsetNode;
-          offset = pos.offset;
-        } else {
-          const hitRange = docWithCaret.caretRangeFromPoint?.(clientX, clientY) || null;
-          if (hitRange && span.contains(hitRange.startContainer)) {
-            node = hitRange.startContainer;
-            offset = hitRange.startOffset;
-          }
-        }
-        if (node && node.nodeType !== Node.TEXT_NODE) {
-          const child = node.childNodes[Math.max(0, Math.min(offset, node.childNodes.length - 1))];
-          if (child?.nodeType === Node.TEXT_NODE) {
-            node = child;
-            offset = 0;
-          }
-        }
-        if (!node || node.nodeType !== Node.TEXT_NODE) {
-          selectCellContents();
-          return;
-        }
-        const text = node.textContent || "";
-        let start = Math.max(0, Math.min(offset, text.length));
-        let end = start;
-        const isWord = (ch: string) => /[\p{L}\p{N}_:/.-]/u.test(ch);
-        while (start > 0 && isWord(text[start - 1])) start--;
-        while (end < text.length && isWord(text[end])) end++;
-        if (start === end) {
-          selectCellContents();
-          return;
-        }
-        const range = document.createRange();
-        range.setStart(node, start);
-        range.setEnd(node, end);
-        const sel = window.getSelection();
-        if (!sel) return;
-        sel.removeAllRanges();
-        sel.addRange(range);
-      } catch {}
-    };
-    renderDisplay();
-    // 输入时只更新内存，不立即提交
-    span.addEventListener("input", () => {
-      const setter = getSetter();
-      const nextValue = span.dataset.editMode === "raw" ? (span.textContent || "") : serializeTableInlineMarkdown(span);
-      span.dataset.raw = nextValue;
-      setter(nextValue);
-    });
-    span.addEventListener("mousedown", (ev) => {
-      if (ev.target instanceof HTMLElement && ev.target.closest("a")) return;
-      ev.stopPropagation();
-      ev.preventDefault();
-      if (ev.detail >= 3) {
-        selectCellContents();
-        return;
-      }
-      if (ev.detail >= 2) {
-        selectWordAtPoint(ev.clientX, ev.clientY);
-        return;
-      }
-      focusEditableAtPoint(ev.clientX, ev.clientY, false);
-    });
-    span.addEventListener("dblclick", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-    });
-    // Enter/Meta+Enter 提交；Shift+Enter 插入换行（但提交时会被替换为空格）
-    span.addEventListener("keydown", (ev) => {
-      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "a") {
-        ev.preventDefault();
-        ev.stopPropagation();
-        selectCellContents();
-        return;
-      }
-      if (ev.key === "Enter" && !ev.shiftKey) {
-        ev.preventDefault();
-        (ev.target as HTMLElement).blur();
-      }
-    });
-    span.addEventListener("blur", () => {
-      requestAnimationFrame(() => {
-        const next = document.activeElement as HTMLElement | null;
-        const nextIsCellEditor = !!next?.closest(".cm-md-cell-edit");
-        if (nextIsCellEditor) return;
-        span.dataset.raw = span.dataset.editMode === "raw" ? (span.textContent || "") : serializeTableInlineMarkdown(span);
-        span.dataset.editing = "false";
-        span.dataset.editMode = "";
-        this.commit();
-        renderDisplay();
-      });
-    });
-    // 点击单元格 padding / 边框时，也留在表格内处理，避免命中到底层编辑器造成滚动跳变
-    td.onmousedown = (e) => {
-      e.stopPropagation();
-      if (!(e.target instanceof HTMLElement)) return;
-      if (e.target.closest(".cm-md-col-resizer")) return;
-      if (e.target.closest("a")) return;
-      if (e.target.closest(".cm-md-cell-edit")) return;
-      e.preventDefault();
-    };
-    td.onclick = (e) => {
-      e.stopPropagation();
-      if (!(e.target instanceof HTMLElement)) return;
-      if (e.target.closest(".cm-md-col-resizer")) return;
-      if (e.target.closest("a")) return;
-      if (e.target.closest(".cm-md-cell-edit")) return;
-      e.preventDefault();
-    };
-    td.innerHTML = "";
-    td.appendChild(span);
-  }
-
-  private setColumnWidth(table: HTMLTableElement, colIndex: number, widthPx: number) {
-    const minWidth = Math.max(40, Math.round(widthPx)); // 最小宽度 40px
-    this.columnWidths[colIndex] = minWidth;
-    // 设定表头与每行对应单元格宽度
-    const theadRow = table.tHead?.rows[0];
-    if (theadRow && theadRow.cells[colIndex]) {
-      (theadRow.cells[colIndex] as HTMLElement).style.width = `${minWidth}px`;
-    }
-    const rows = Array.from(table.tBodies[0]?.rows || []);
-    for (const r of rows) {
-      const cell = r.cells[colIndex] as HTMLElement | undefined;
-      if (cell) cell.style.width = `${minWidth}px`;
-    }
-  }
-
-  private attachResizer(th: HTMLTableCellElement, table: HTMLTableElement, colIndex: number) {
-    const res = document.createElement("span");
-    res.className = "cm-md-col-resizer";
-    // th.style.position = "relative"; // CSS handles this (sticky)
-    th.appendChild(res);
-
-    let dragging = false;
-    let startX = 0;
-    let startW = 0;
-
-    const onMove = (e: MouseEvent) => {
-      if (!dragging) return;
-      const dx = e.clientX - startX;
-      const w = startW + dx;
-      this.setColumnWidth(table, colIndex, w);
-    };
-    const onUp = () => {
-      if (!dragging) return;
-      dragging = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      try { document.body.style.cursor = ""; } catch {}
-    };
-
-    res.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dragging = true;
-      startX = e.clientX;
-      startW = th.getBoundingClientRect().width;
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-      try { document.body.style.cursor = "col-resize"; } catch {}
-    });
+  private renderReadOnlyCell(cell: HTMLTableCellElement, value: string, sourceRange: TableCellSourceRange | null) {
+    const content = document.createElement("span");
+    content.className = "cm-md-table-cell-content";
+    const cellComments = sourceRange
+      ? this.commentRanges.filter((item) => item.to > sourceRange.from && item.from < sourceRange.to)
+      : [];
+    appendTableInlineMarkdownWithComments(content, value, sourceRange, cellComments);
+    cell.appendChild(content);
   }
 
   toDOM() {
     const wrap = document.createElement("div");
-    wrap.className = "cm-md-table-wrap";
-    wrap.addEventListener("mousedown", (e) => {
+    wrap.className = "cm-md-table-wrap cm-md-table-readonly";
+    const cacheKey = getTableHeightCacheKey(this.headers, this.aligns, this.rows);
+    applyCachedMinHeight(wrap, cacheKey);
+    const keepEventInTable = (e: Event) => {
       if (!(e.target instanceof HTMLElement)) return;
-      if (e.target.closest(".cm-md-table-btn") || e.target.closest(".cm-md-col-resizer") || e.target.closest(".cm-md-cell-edit")) return;
-      e.preventDefault();
+      if (e.target.closest(".cm-md-table-btn")) return;
       e.stopPropagation();
-    });
-    wrap.addEventListener("click", (e) => {
-      if (!(e.target instanceof HTMLElement)) return;
-      if (e.target.closest(".cm-md-table-btn") || e.target.closest(".cm-md-col-resizer") || e.target.closest(".cm-md-cell-edit")) return;
-      e.preventDefault();
-      e.stopPropagation();
-    });
+    };
+    wrap.addEventListener("pointerdown", keepEventInTable);
+    wrap.addEventListener("mousedown", keepEventInTable);
+    wrap.addEventListener("click", keepEventInTable);
 
     const toolbar = document.createElement("div");
     toolbar.className = "cm-md-table-toolbar";
@@ -994,16 +1135,8 @@ class TableWidget extends WidgetType {
     this.headers.forEach((h, i) => {
       const th = document.createElement("th");
       th.style.textAlign = this.aligns[i] || "left";
-      // 表头可编辑
-      this.attachCellEdit(th as unknown as HTMLTableCellElement, h, () => {
-        return (val: string) => {
-          this.headers[i] = val;
-        };
-      });
-
-      // 拖动列宽
-      this.attachResizer(th as unknown as HTMLTableCellElement, table, i);
-
+      const sourceRange = getMarkdownTableCellSourceRange(this.sourceLines[0]?.text || "", this.sourceLines[0]?.from || this.sourceFrom, i);
+      this.renderReadOnlyCell(th as HTMLTableCellElement, h, sourceRange);
       trh.appendChild(th);
     });
     thead.appendChild(trh);
@@ -1016,30 +1149,72 @@ class TableWidget extends WidgetType {
       row.forEach((cell, ci) => {
         const td = document.createElement("td");
         td.style.textAlign = this.aligns[ci] || "left";
-        // 单元格可编辑
-        this.attachCellEdit(td, cell, () => {
-          return (val: string) => {
-            this.rows[ri][ci] = val;
-          };
-        });
-
+        const sourceLine = this.sourceLines[ri + 2];
+        const sourceRange = sourceLine ? getMarkdownTableCellSourceRange(sourceLine.text, sourceLine.from, ci) : null;
+        this.renderReadOnlyCell(td, cell, sourceRange);
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
 
-    // 初始列宽应用（如果已有）
-    if (this.columnWidths.length) {
-      this.columnWidths.forEach((w, i) => this.setColumnWidth(table, i, w));
-    }
-
     scroller.appendChild(table);
     wrap.appendChild(scroller);
+    requestAnimationFrame(() => {
+      updateCachedHeight(wrap, cacheKey);
+      applyCachedMinHeight(wrap, cacheKey);
+    });
     return wrap;
   }
 
   // 在表格区域内交互不让编辑器改变光标位置
+  ignoreEvent() { return true; }
+}
+
+class TableBlockWidget extends WidgetType {
+  constructor(private range: TablePreviewRange) {
+    super();
+  }
+
+  get estimatedHeight() {
+    return getCachedEstimatedHeight(
+      getTableHeightCacheKey(this.range.headers, this.range.aligns, this.range.rows),
+      estimateTableHeight(this.range.headers, this.range.rows)
+    );
+  }
+
+  eq(other: TableBlockWidget) {
+    if (this.range.from !== other.range.from || this.range.to !== other.range.to) return false;
+    if (this.range.headers.join("|") !== other.range.headers.join("|")) return false;
+    if (this.range.aligns.join(",") !== other.range.aligns.join(",")) return false;
+    return this.range.rows.map(row => row.join("|")).join("\n") === other.range.rows.map(row => row.join("|")).join("\n");
+  }
+
+  toDOM(view: EditorView) {
+    const range = this.range;
+    const comments = getTableCommentRanges(view, range.from, range.to);
+    const table = new TableWidget(
+      range.headers,
+      range.aligns,
+      range.rows,
+      range.sourceLines,
+      comments,
+      range.from,
+      () => {
+        try {
+          view.dispatch({
+            effects: tableRawEditEffect.of(range.from),
+            selection: { anchor: range.from },
+            scrollIntoView: true
+          });
+        } catch (e) {
+          console.error("[wysiwyg] table raw edit dispatch error", e);
+        }
+      }
+    );
+    return table.toDOM();
+  }
+
   ignoreEvent() { return true; }
 }
 
@@ -1312,7 +1487,19 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
 
   // Collect then sort to respect RangeSetBuilder ordering
   const pending: { from: number; to: number; dec: Decoration }[] = [];
+  let previewTableRanges: TablePreviewRange[] = [];
+  const overlapsPreviewTable = (from: number, to: number) => {
+    for (const range of previewTableRanges) {
+      if (from === to) {
+        if (from >= range.from && from < range.to) return true;
+      } else if (from < range.to && to > range.from) {
+        return true;
+      }
+    }
+    return false;
+  };
   const add = (from: number, to: number, dec: Decoration) => {
+    if (overlapsPreviewTable(from, to)) return;
     pending.push({ from, to, dec });
   };
   // track processed quote block starts to avoid duplicate processing when syntax tree yields multiple QuoteMark nodes
@@ -1339,6 +1526,11 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
 
   // Track lines processed by fallback scanners to avoid overlap/conflicts
   const processedFallbackLines = new Set<number>();
+  try {
+    previewTableRanges = view.state.field(tableBlockDecorationsField, false)?.ranges || [];
+  } catch {
+    previewTableRanges = [];
+  }
 
   // 1) Block-level via syntax tree (only for nodes within viewport)
   try {
@@ -1501,8 +1693,11 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
   } catch {}
 
   // 1.5) Role-scoped fenced code blocks: each role matches its own ``` pairs independently.
+  // These decorations affect vertical layout (padding, collapsed diagram lines,
+  // toolbar anchors), so keep them document-wide instead of viewport-local.
+  // Otherwise code blocks entering/leaving the viewport change scrollHeight and
+  // can make CodeMirror adjust scrollTop to a different anchor.
   for (const block of roleFenceBlocks) {
-    if (!inViewport(view, block.from, block.to)) continue;
     const fromLineNum = block.startLine;
     const toLineNum = block.endLine;
     const firstLine = doc.line(fromLineNum);
@@ -1731,29 +1926,15 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       add(start, start, Decoration.widget({ widget: new FootnoteRefWidget(m[1] || ""), side: 1 }));
     }
 
-// 2.2 tables (pipe-style GFM): header + separator + rows
-    // NOTE: 扫描整张表（超出可见区域），一次性折叠，避免视口反复重算引发测量循环告警
+    // 2.2 line-level fallback decorations that are safe to keep viewport-local.
     const startLine = doc.lineAt(vr.from).number;
     const endLine = doc.lineAt(vr.to).number;
-
-    const parseAligns = (s: string) => {
-      const cells = splitMarkdownTableCells(s);
-      return cells.map(seg => {
-        const left = seg.startsWith(":");
-        const right = seg.endsWith(":");
-        if (left && right) return "center";
-        if (right) return "right";
-        return "left";
-      }) as Array<"left" | "center" | "right">;
-    };
-
     let ln = startLine;
     while (ln <= endLine) {
       if (processedFallbackLines.has(ln)) { ln++; continue; }
       const line = doc.line(ln);
       const ltxt = doc.sliceString(line.from, line.to);
       if (isInsideFencedCode(line.from)) { ln++; continue; }
-      // Skip tool call and thinking lines
       if (isToolOrThinkingLine(ltxt)) { ln++; continue; }
 
       const footnoteDefMatch = /^\s*\[\^([^\]]+)\]:\s*/.exec(ltxt);
@@ -1770,97 +1951,6 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
 
       if (/^\s*<\/?(details|summary|dl|dt|dd|p)\b/i.test(ltxt)) {
         add(line.from, line.from, Decoration.line({ class: "cm-md-html-line" }));
-      }
-
-      if (isMarkdownTableContentRow(ltxt)) {
-        try {
-          const roleRange = getRoleBlockRange(doc, line.from);
-          let start = ln;
-          while (start > 1) {
-            const prev = doc.line(start - 1);
-            const ptxt = doc.sliceString(prev.from, prev.to);
-            if (start - 1 < roleRange.startLine) break;
-            if (isInsideFencedCode(prev.from)) break;
-            if (processedFallbackLines.has(start - 1)) break;
-            if (!isMarkdownTableContentRow(ptxt)) break;
-            start--;
-          }
-
-          const sepLn = start + 1;
-          if (sepLn > doc.lines) { ln++; continue; }
-          const headerLine = doc.line(start);
-          const headerTxt = doc.sliceString(headerLine.from, headerLine.to);
-          const sepLine = doc.line(sepLn);
-          const sepTxt = doc.sliceString(sepLine.from, sepLine.to);
-
-          if (isMarkdownTableContentRow(headerTxt) && isMarkdownTableSeparatorRow(sepTxt)) {
-            const headers = splitMarkdownTableCells(headerTxt);
-            const aligns = parseAligns(sepTxt);
-            const rows: string[][] = [];
-            let rowLn = sepLn + 1;
-            // 扫描整块表格，直到遇到非表格行/围栏或文档末尾（不受可见范围限制）
-            while (rowLn <= doc.lines) {
-              const rline = doc.line(rowLn);
-              const rtxt = doc.sliceString(rline.from, rline.to);
-              if (rowLn > roleRange.endLine) break;
-              if (!isMarkdownTableContentRow(rtxt) || isInsideFencedCode(rline.from) || processedFallbackLines.has(rowLn)) break;
-              rows.push(splitMarkdownTableCells(rtxt));
-              rowLn++;
-            }
-
-            // Mark lines as processed to avoid overlap with other scanners
-            for (let k = start; k < rowLn; k++) processedFallbackLines.add(k);
-
-            const sourceFrom = headerLine.from;
-            const sourceTo = doc.line(rowLn - 1).to;
-            const rawEditing = rawTables.has(sourceFrom);
-            if (!rawEditing) {
-              for (let hideLn = start; hideLn < rowLn; hideLn++) {
-                const hline = doc.line(hideLn);
-                add(hline.from, hline.to, Decoration.mark({ class: "cm-z-hide-syntax-fixed" }));
-                if (hideLn > start) {
-                  add(hline.from, hline.from, Decoration.line({ class: "cm-md-table-hiddenline" }));
-                }
-              }
-              add(headerLine.from, headerLine.from, Decoration.widget({
-                widget: new TableWidget(
-                  headers,
-                  aligns,
-                  rows,
-                  sourceFrom,
-                  sourceTo,
-                  (newText: string) => {
-                    try {
-                      view.dispatch({
-                        changes: { from: sourceFrom, to: sourceTo, insert: newText }
-                      });
-                    } catch (e) {
-                      console.error("[wysiwyg] table commit dispatch error", e);
-                    }
-                  },
-                  () => {
-                    rawTables.add(sourceFrom);
-                    try {
-                      view.dispatch({
-                        selection: { anchor: sourceFrom },
-                        scrollIntoView: true,
-                        annotations: Transaction.userEvent.of("wysiwyg-refresh")
-                      });
-                    } catch (e) {
-                      console.error("[wysiwyg] table raw edit dispatch error", e);
-                    }
-                  }
-                ),
-                side: 1
-              }));
-            }
-
-            ln = rowLn;
-            continue;
-          }
-        } catch (err) {
-          console.error("[wysiwyg] table processing error", err);
-        }
       }
       ln++;
     }
@@ -2091,9 +2181,16 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
 
   update(update: ViewUpdate) {
     const selectionOnly = update.selectionSet && !update.docChanged && !update.viewportChanged;
-    const needRebuild = update.docChanged || update.viewportChanged || (Array.isArray(update.transactions) && update.transactions.some(t => {
-      try { return t.annotation(Transaction.userEvent) === "wysiwyg-refresh"; } catch { return false; }
-    }));
+      let refresh = false;
+      if (Array.isArray(update.transactions)) {
+        for (const t of update.transactions) {
+          try {
+            const userEvent = t.annotation(Transaction.userEvent);
+            if (userEvent === "wysiwyg-refresh") refresh = true;
+          } catch {}
+      }
+      }
+      const needRebuild = update.docChanged || update.viewportChanged || refresh;
 
     // 当编辑模式下（已展开为原文）且光标离开该代码块时，自动恢复预览
     let collapsed = false;
@@ -2126,7 +2223,7 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
           const sFrom = sel.from;
           const sTo = sel.to;
           // A cursor placed at the first table character should keep source mode open.
-          if (sel.empty ? (sFrom >= rng.from && sFrom <= rng.to) : !(sTo <= rng.from || sFrom >= rng.to)) { intersects = true; break; }
+          if (sel.empty ? (sFrom >= rng.from && sFrom < rng.to) : !(sTo <= rng.from || sFrom >= rng.to)) { intersects = true; break; }
         }
         if (!intersects) toDelete.push(start);
       }
@@ -2198,6 +2295,23 @@ function shouldRevealSourceForSelectionLine(view: EditorView, lineNumber: number
   return reveal;
 }
 
+export function getRenderedLineVisibleCursorPos(view: EditorView, lineNumber: number): number | null {
+  try {
+    if (!view.state.facet(wysiwygKeepActiveLineRenderedFacet)) return null;
+    if (shouldRevealSourceForSelectionLine(view, lineNumber)) return null;
+    const line = view.state.doc.line(lineNumber);
+    const text = view.state.doc.sliceString(line.from, line.to);
+    const heading = /^([ \t]*)(#{1,6})([ \t]+)/.exec(text);
+    if (heading) {
+      const pos = line.from + heading[0].length;
+      return pos <= line.to ? pos : line.to;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function getSourceRevealLines(view: EditorView): Set<number> {
   const activeLines = getActiveLines(view);
   const keepRendered = view.state.facet(wysiwygKeepActiveLineRenderedFacet);
@@ -2251,6 +2365,7 @@ function getTableBlockRangeAtPos(view: EditorView, startPos: number): { from: nu
 export function wysiwyg(options: { keepActiveLineRendered?: boolean } = {}): Extension {
   return [
     wysiwygKeepActiveLineRenderedFacet.of(options.keepActiveLineRendered !== false),
+    tableBlockDecorationsField,
     wysiwygPlugin
   ];
 }

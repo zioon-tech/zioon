@@ -161,13 +161,36 @@ function shouldShowToolbar(view: EditorView): boolean {
     if (suppressUntil && Date.now() < suppressUntil) return false;
     if (typeof document.hasFocus === "function" && !document.hasFocus()) return false;
     const sel = view.state.selection.main;
-    if (sel.empty) return false;
+    if (sel.empty) {
+      const domAnchor = getDomSelectionToolbarAnchor(view);
+      return !!domAnchor;
+    }
     if (!(view.dom.contains(document.activeElement) || view.hasFocus)) return false;
     const text = view.state.sliceDoc(sel.from, sel.to);
     if (!text || !text.trim()) return false;
     return true;
   } catch {
     return false;
+  }
+}
+
+function getDomSelectionToolbarAnchor(view: EditorView): { left: number; right: number; top: number; bottom: number; from: number; to: number; selectionText: string } | null {
+  try {
+    if (!(view.dom.contains(document.activeElement) || view.hasFocus)) return null;
+    const r = (window as any).zion?.state?.get?.("selectionToolbar.domAnchorRect");
+    if (!r || Date.now() - Number(r.ts || 0) > 1500) return null;
+    const left = Number(r.left);
+    const right = Number(r.right);
+    const top = Number(r.top);
+    const bottom = Number(r.bottom);
+    const from = Number(r.from);
+    const to = Number(r.to);
+    const selectionText = String(r.selectionText || "");
+    if (![left, right, top, bottom, from, to].every(Number.isFinite)) return null;
+    if (right <= left || bottom <= top || to <= from || !selectionText.trim()) return null;
+    return { left, right, top, bottom, from, to, selectionText };
+  } catch {
+    return null;
   }
 }
 
@@ -189,8 +212,10 @@ export function selectionToolbarExtension(): Extension {
       onPointerDown: ((e: PointerEvent) => void) | null = null;
       onPointerUp: ((e: PointerEvent) => void) | null = null;
       onWindowBlur: (() => void) | null = null;
+      onDomAnchorChanged: (() => void) | null = null;
       regDisp: { dispose: () => void } | null = null;
       buttonsWrap: HTMLDivElement;
+      lastButtonsRenderKey = "";
 
       constructor(view: EditorView) {
         this.view = view;
@@ -217,6 +242,7 @@ export function selectionToolbarExtension(): Extension {
 
         this.onPointerDown = (e: PointerEvent) => {
           if (e.button !== 0) return;
+          try { (window as any).zion?.state?.set?.("editor.selectionGestureUntil", Date.now() + 5000); } catch {}
           this.pointerDown = true;
           this.pointerDownAt = { x: e.clientX, y: e.clientY };
           try { this.el.classList.remove("is-visible"); } catch {}
@@ -228,6 +254,7 @@ export function selectionToolbarExtension(): Extension {
         this.onPointerUp = (e: PointerEvent) => {
           if (!this.pointerDown) return;
           this.pointerDown = false;
+          try { (window as any).zion?.state?.set?.("editor.selectionGestureUntil", Date.now() + 900); } catch {}
           this.lastPointerUpAt = { x: e.clientX, y: e.clientY };
           const fromY = this.pointerDownAt?.y;
           const toY = e.clientY;
@@ -248,16 +275,21 @@ export function selectionToolbarExtension(): Extension {
             this.showTimer = 0;
           } catch {}
         };
+        this.onDomAnchorChanged = () => {
+          this.scheduleUpdate(true);
+        };
         try {
           view.dom.addEventListener("pointerdown", this.onPointerDown, true);
           window.addEventListener("pointerup", this.onPointerUp, true);
           window.addEventListener("pointercancel", this.onPointerUp, true);
           window.addEventListener("blur", this.onWindowBlur, true);
+          window.addEventListener("selectionToolbar.domAnchorChanged", this.onDomAnchorChanged, true);
         } catch {}
 
         try {
           this.regDisp = registry.onDidChange(() => {
-            this.renderButtons();
+            this.lastButtonsRenderKey = "";
+            this.renderButtons(true);
             this.scheduleUpdate(true);
           });
         } catch {}
@@ -266,7 +298,16 @@ export function selectionToolbarExtension(): Extension {
       private buildCtx(): SelectionToolbarContext | null {
         try {
           const sel = this.view.state.selection.main;
-          if (sel.empty) return null;
+          if (sel.empty) {
+            const domAnchor = getDomSelectionToolbarAnchor(this.view);
+            if (!domAnchor) return null;
+            return {
+              view: this.view,
+              selectionText: domAnchor.selectionText,
+              from: domAnchor.from,
+              to: domAnchor.to
+            };
+          }
           const selectionText = this.view.state.sliceDoc(sel.from, sel.to);
           return { view: this.view, selectionText, from: sel.from, to: sel.to };
         } catch {
@@ -274,10 +315,24 @@ export function selectionToolbarExtension(): Extension {
         }
       }
 
-      private renderButtons() {
+      private getButtonsRenderKey(ctxBase: SelectionToolbarContext | null, extra: SelectionToolbarItem[]) {
+        const ctxKey = ctxBase
+          ? `${ctxBase.from}:${ctxBase.to}:${ctxBase.selectionText}`
+          : "no-selection";
+        const itemsKey = extra.map((it) => `${it.id}:${it.label || ""}:${it.title || ""}:${it.codicon || ""}:${typeof it.render === "function" ? "render" : "run"}`).join("|");
+        return `${ctxKey}::${itemsKey}`;
+      }
+
+      private renderButtons(force = false) {
         const wrap = this.buttonsWrap;
-        wrap.innerHTML = "";
         const ctxBase = this.buildCtx();
+        const extra = registry.list();
+        const renderKey = this.getButtonsRenderKey(ctxBase, extra);
+        if (!force && renderKey === this.lastButtonsRenderKey) {
+          return;
+        }
+        this.lastButtonsRenderKey = renderKey;
+        wrap.innerHTML = "";
 
         const ai = mkBtn({
           title: "AI with selection",
@@ -293,7 +348,6 @@ export function selectionToolbarExtension(): Extension {
 
         wrap.append(ai, divider, bold, italic, strike);
 
-        const extra = registry.list();
         const effective = ctxBase
           ? extra.filter(it => {
               try {
@@ -384,25 +438,13 @@ export function selectionToolbarExtension(): Extension {
         const visible = shouldShowToolbar(view);
         this.lastVisible = visible;
         if (!visible) {
+          this.lastButtonsRenderKey = "";
           this.el.classList.remove("is-visible");
           this.el.style.visibility = "";
           return;
         }
 
         this.renderButtons();
-
-        const sel = view.state.selection.main;
-        const fromCoords = view.coordsAtPos(sel.from);
-        const toCoords = view.coordsAtPos(sel.to);
-        const midPos = Math.min(sel.from + Math.floor((sel.to - sel.from) / 2), sel.to);
-        const midCoords = view.coordsAtPos(midPos);
-        const a = fromCoords || midCoords;
-        const b = toCoords || midCoords;
-        if (!a || !b) {
-          this.el.classList.remove("is-visible");
-          this.el.style.visibility = "";
-          return;
-        }
 
         const parentRect = parent.getBoundingClientRect();
         const wasVisible = this.el.classList.contains("is-visible");
@@ -412,10 +454,35 @@ export function selectionToolbarExtension(): Extension {
         }
         const elRect = this.el.getBoundingClientRect();
 
-        const selLeft = Math.min(a.left, b.left);
-        const selRight = Math.max(a.right, b.right);
-        const selTop = Math.min(a.top, b.top);
-        const selBottom = Math.max(a.bottom, b.bottom);
+          const sel = view.state.selection.main;
+          const domAnchor = (() => {
+            try {
+              const r = getDomSelectionToolbarAnchor(view);
+              if (!r) return null;
+              const { left, right, top, bottom } = r;
+              if (![left, right, top, bottom].every(Number.isFinite)) return null;
+              if (right <= parentRect.left || left >= parentRect.right || bottom <= parentRect.top || top >= parentRect.bottom) return null;
+              return { left, right, top, bottom };
+            } catch {
+              return null;
+            }
+          })();
+          const fromCoords = domAnchor ? null : view.coordsAtPos(sel.from);
+          const toCoords = domAnchor ? null : view.coordsAtPos(sel.to);
+          const midPos = Math.min(sel.from + Math.floor((sel.to - sel.from) / 2), sel.to);
+          const midCoords = domAnchor ? null : view.coordsAtPos(midPos);
+          const a = domAnchor || fromCoords || midCoords;
+          const b = domAnchor || toCoords || midCoords;
+          if (!a || !b) {
+            this.el.classList.remove("is-visible");
+            this.el.style.visibility = "";
+            return;
+          }
+
+          const selLeft = Math.min(a.left, b.left);
+          const selRight = Math.max(a.right, b.right);
+          const selTop = Math.min(a.top, b.top);
+          const selBottom = Math.max(a.bottom, b.bottom);
         const centerX = (selLeft + selRight) / 2;
 
         const margin = 10;
@@ -476,6 +543,7 @@ export function selectionToolbarExtension(): Extension {
             window.removeEventListener("pointercancel", this.onPointerUp, true);
           }
           if (this.onWindowBlur) window.removeEventListener("blur", this.onWindowBlur, true);
+          if (this.onDomAnchorChanged) window.removeEventListener("selectionToolbar.domAnchorChanged", this.onDomAnchorChanged, true);
         } catch {}
         try { this.el.remove(); } catch {}
       }

@@ -1,0 +1,374 @@
+/* ===== Search/Replace Plus (dev.search-replace-plus) ===== */
+/* Toolbar positioning to appear above marker lines */
+.srp-toolbar {
+  position: relative;
+  margin-top: -24px;
+  /* margin-bottom: 8px; */
+  z-index: 10;
+}
+
+/* GitHub-like diff colors (dark defaults) */
+:root {
+  --srp-del-bg: #ec342b40;
+  --srp-del-diff-bg: #f8514966;
+  --srp-add-bg: #2d5544f0;
+  --srp-add-diff-bg: #2ea04366;
+}
+
+/* Light theme overrides */
+:root[data-theme="light"] {
+  --srp-del-bg: #ffebe9;
+  --srp-del-diff-bg: #ffcecb;
+  --srp-add-bg: #dafbe1;
+  --srp-add-diff-bg: #aceebb;
+}
+
+/* Line decorations for SRP regions */
+.srp-line.srp-search {
+  background: var(--srp-del-bg);
+}
+.srp-line.srp-replace {
+  background: var(--srp-add-bg);
+}
+
+/* "Diff" mode just uses stronger borders (same bg kept for clarity) */
+.srp-line.srp-search-diff {
+  background: var(--srp-del-bg);
+}
+.srp-line.srp-replace-diff {
+  background: var(--srp-add-bg);
+}
+
+/* Inline diff highlight segments (GitHub-like, filled) */
+.srp-inline-del {
+  background: var(--srp-del-diff-bg);
+  border-radius: 3px;
+  padding: 1px 2px; /* 轻微内边距，视觉上覆盖整行高度区域 */
+  box-shadow: none;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.srp-inline-add {
+  background: var(--srp-add-diff-bg);
+  border-radius: 3px;
+  padding: 1px 2px; /* 轻微内边距，视觉上覆盖整行高度区域 */
+  box-shadow: none;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Toolbar buttons (compact, theme-aware) */
+.srp-toolbar .srp-btn {
+  font-family: var(--font-sans);
+}
+
+/* slightly larger dot for easier hit target, still compact */
+.zion-gutter-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.18);
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  display: inline-block;
+  vertical-align: middle;
+  opacity: 0;
+  transition: opacity 120ms ease-in-out, box-shadow 120ms ease-in-out, filter 120ms ease-in-out, transform 120ms ease-in-out;
+}
+
+.zion-gutter-dot:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.22);
+  transform: translateY(-1px);
+}
+
+.zion-gutter-dot.zion-gutter-dot-persistent {
+  opacity: 1;
+  background: var(--role-user-fg);
+  border-color: var(--role-user-border);
+}
+
+.zion-scrollbar-markers {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  overflow: hidden;
+  contain: layout paint;
+  pointer-events: none;
+  z-index: 100;
+}
+
+.zion-scrollbar-marker {
+  position: absolute;
+  right: -3px;
+  width: 5px;
+  height: 5px;
+  padding: 4px;
+  border-radius: 1px;
+  background: var(--role-user-fg);
+  background-clip: content-box;
+  pointer-events: auto;
+  box-sizing: content-box;
+  cursor: pointer;
+  opacity: 0.8;
+  transform-origin: center;
+  will-change: transform;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.zion-scrollbar-marker:hover {
+  opacity: 1;
+  transform: scale(1.3);
+}
+
+.zion-scrollbar-tooltip {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  z-index: 10000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.zion-scrollbar-tooltip.visible {
+  opacity: 1;
+}
+
+.zion-chat-overview-rail {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  bottom: 2px;
+  width: 16px;
+  pointer-events: none;
+  z-index: 99;
+  opacity: 0.85;
+}
+
+.zion-chat-overview-rail::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  bottom: 3px;
+  width: 1px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 40%, transparent);
+  opacity: 0.55;
+}
+
+.zion-chat-overview-marker {
+  position: absolute;
+  right: 0;
+  border-radius: 999px;
+  transform-origin: center;
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease;
+}
+
+.zion-chat-overview-marker.is-hidden {
+  opacity: 0;
+  transform: scaleY(0.7);
+}
+
+.zion-chat-overview-marker-assistant {
+  right: 3px;
+  width: 2px;
+  min-height: 8px;
+  background: color-mix(in srgb, var(--fg) 35%, transparent);
+  border: none;
+  opacity: 0.7;
+}
+
+.zion-chat-overview-marker-cursor {
+  right: 1px;
+  width: 5px;
+  height: 2px;
+  background: color-mix(in srgb, var(--fg) 75%, transparent);
+  opacity: 1;
+  border-radius: 0;
+}
+
+.zion-chat-overview-marker-assistant.is-streaming {
+  animation: zion-chat-overview-pulse 1.4s ease-in-out infinite;
+}
+
+.zion-chat-overview-nav {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+  pointer-events: auto;
+  z-index: 101;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.10);
+  opacity: 0;
+  transform: translateX(4px);
+  transition: opacity 140ms ease, transform 140ms ease, border-color 140ms ease;
+}
+
+.zion-comments-thread-editor .zion-chat-overview-nav {
+  right: 10px;
+  bottom: 10px;
+  transform: translateX(0);
+}
+
+.cm-editor:has(.cm-vim-panel) .zion-chat-overview-nav {
+  bottom: 40px;
+}
+
+.zion-comments-thread-editor:has(.cm-vim-panel) .zion-chat-overview-nav {
+  bottom: 38px;
+}
+
+.cm-editor:hover .zion-chat-overview-nav,
+.zion-chat-overview-nav:hover,
+.zion-chat-overview-nav:focus-within {
+  opacity: 1;
+  transform: translateX(0);
+  border-color: color-mix(in srgb, var(--border) 68%, transparent);
+}
+
+.zion-chat-overview-nav.is-hidden {
+  display: none;
+}
+
+.zion-chat-overview-nav-btn {
+  width: 26px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 1;
+  cursor: pointer;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 100ms ease, color 100ms ease, opacity 100ms ease;
+}
+
+.zion-chat-overview-nav-symbol {
+  width: 26px;
+  flex: 0 0 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.zion-chat-overview-nav-label {
+  display: none;
+}
+
+.zion-chat-overview-nav-btn:hover,
+.zion-chat-overview-nav-btn:focus-visible {
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg);
+  outline: none;
+}
+
+.zion-chat-overview-nav-btn:disabled {
+  cursor: default;
+  opacity: 0.32;
+  transform: none;
+}
+
+.zion-chat-overview-nav-btn:disabled:hover {
+  background: transparent;
+  color: inherit;
+}
+
+.zion-chat-overview-nav-btn.is-detached {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg);
+  box-shadow: none;
+}
+
+.zion-chat-overview-nav-btn.is-streaming:not(:disabled) {
+  animation: zion-chat-overview-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes zion-chat-overview-pulse {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scaleX(1);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scaleX(1.18);
+  }
+}
+
+.zion-inline-confirm {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+  z-index: 100002;
+  pointer-events: auto;
+  user-select: none;
+  white-space: nowrap;
+}
+.zion-inline-confirm-label {
+  font-size: 12px;
+  opacity: 0.85;
+}
+.zion-inline-confirm-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.zion-inline-confirm-btn {
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.zion-inline-confirm-btn:hover {
+  background: var(--border);
+}
+.zion-inline-confirm-btn.danger {
+  color: #cc3a3a;
+  font-weight: 600;
+}
+
