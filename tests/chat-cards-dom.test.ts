@@ -91,6 +91,21 @@ function createHarness(panelSessions: Record<string, string | null>, initialText
 }
 
 afterEach(() => {
+  for (const sessionId of ["session-1", "session-2"]) {
+    try {
+      window.zion?.state?.set?.(`sessions.annotations.${sessionId}`, {
+        tools: [],
+        thinking: [],
+        deletedToolIds: [],
+        deletedThinkingIds: [],
+        toolActions: {}
+      });
+      window.zion?.state?.set?.(`sessions.pendingRestore.tools.${sessionId}`, []);
+      window.zion?.state?.set?.(`sessions.pendingRestore.thinking.${sessionId}`, []);
+      window.zion?.state?.set?.(`sessions.widgets.tools.${sessionId}`, { ids: [], count: 0, stamp: Date.now() });
+      window.zion?.state?.set?.(`sessions.widgets.thinking.${sessionId}`, { ids: [], count: 0, stamp: Date.now() });
+    } catch {}
+  }
   document.body.innerHTML = "";
 });
 
@@ -121,6 +136,10 @@ describe("chat cards DOM lifecycle", () => {
       expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(1);
       expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(1);
       expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(1);
+        expect(h.editors.get("panel-a")!.getValue()).toContain("思考 <!-- zion-thinking:id=thinking:run-1:1 -->");
+        expect(h.editors.get("panel-a")!.getValue()).toContain("调用 read <!-- zion-tool:id=tool-1 -->");
+        expect(h.editors.get("panel-b")!.getValue()).toContain("思考 <!-- zion-thinking:id=thinking:run-1:1 -->");
+        expect(h.editors.get("panel-b")!.getValue()).toContain("调用 read <!-- zion-tool:id=tool-1 -->");
     } finally {
       h.dispose();
     }
@@ -168,7 +187,7 @@ describe("chat cards DOM lifecycle", () => {
       h.cores.get("panel-b")!.setValue(syncedText, { source: "session-load" });
       await wait(20);
 
-      expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(0);
+      expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(1);
 
       window.zion.events.emit("toolcards/toolsUpdated", { sessionId: "session-1" });
       await wait(80);
@@ -200,6 +219,89 @@ describe("chat cards DOM lifecycle", () => {
       const ann = window.zion.commands.executeCommand("zion.chatCards.getSessionAnnotations", "session-1");
       expect(Array.isArray(ann.thinking) ? ann.thinking.length : 0).toBeGreaterThan(0);
       expect(h.cores.get("panel-b")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(1);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("restores id-backed card anchors even when annotations are missing entries", async () => {
+    const text = [
+      "user hi",
+      "assistant ",
+      "思考 <!-- zion-thinking:id=thinking:run-missing:1 -->",
+      "调用 read <!-- zion-tool:id=tool-missing-1 -->",
+      "思考 <!-- zion-thinking:id=thinking:run-missing:2 -->",
+      "调用 webFetch <!-- zion-tool:id=tool-missing-2 -->",
+      ""
+    ].join("\n");
+    const h = createHarness({ "panel-a": "session-1" }, text);
+    try {
+      window.zion.commands.executeCommand("zion.chatCards.setSessionAnnotations", {
+        sessionId: "session-1",
+        annotations: {
+          thinking: [{ id: "thinking:run-missing:1", text: "known", expanded: false }],
+          tools: [{ id: "tool-missing-1", name: "read", args: { path: "a.txt" }, expanded: false }]
+        }
+      });
+
+      window.zion.commands.executeCommand("zion.chatCards.restoreSession", {
+        sessionId: "session-1",
+        panelId: "panel-a"
+      });
+      await wait(80);
+
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(2);
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(2);
+
+      const ann = window.zion.commands.executeCommand("zion.chatCards.getSessionAnnotations", "session-1");
+      expect((ann.thinking || []).map((it: any) => it.id).sort()).toEqual([
+        "thinking:run-missing:1",
+        "thinking:run-missing:2"
+      ]);
+      expect((ann.tools || []).map((it: any) => it.id).sort()).toEqual([
+        "tool-missing-1",
+        "tool-missing-2"
+      ]);
+      expect((ann.tools || []).find((it: any) => it.id === "tool-missing-2")?.name).toBe("webFetch");
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("repairs duplicate thinking anchor ids before restoring widgets", async () => {
+    const text = [
+      "user hi",
+      "assistant ",
+      "思考 <!-- zion-thinking:id=thinking:dup-run:1 -->",
+      "some answer",
+      "思考 <!-- zion-thinking:id=thinking:dup-run:1 -->",
+      ""
+    ].join("\n");
+    const h = createHarness({ "panel-a": "session-1" }, text);
+    try {
+      window.zion.commands.executeCommand("zion.chatCards.setSessionAnnotations", {
+        sessionId: "session-1",
+        annotations: {
+          thinking: [{ id: "thinking:dup-run:1", text: "known", expanded: false }]
+        }
+      });
+
+      window.zion.commands.executeCommand("zion.chatCards.restoreSession", {
+        sessionId: "session-1",
+        panelId: "panel-a"
+      });
+      await wait(80);
+
+      const value = h.editors.get("panel-a")!.getValue();
+      expect(value).toContain("思考 <!-- zion-thinking:id=thinking:dup-run:1 -->");
+      expect(value).toContain("思考 <!-- zion-thinking:id=thinking:dup-run:1:dup2 -->");
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(2);
+
+      const ann = window.zion.commands.executeCommand("zion.chatCards.getSessionAnnotations", "session-1");
+      expect((ann.thinking || []).map((it: any) => it.id).sort()).toEqual([
+        "thinking:dup-run:1",
+        "thinking:dup-run:1:dup2"
+      ]);
     } finally {
       h.dispose();
     }

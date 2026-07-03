@@ -11,7 +11,8 @@ export function applyAnnotationsForSessionImpl(args) {
     zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
       sessionId: id,
       panelId: targetPanelId || zion?.panelManager?.getActivePanelId?.() || null,
-      annotations: ann
+      annotations: ann,
+      clearFirst: false
     });
   } catch (e) {
     console.error("[sessions] apply annotations error:", e);

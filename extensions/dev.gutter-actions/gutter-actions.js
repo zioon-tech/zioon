@@ -36,6 +36,37 @@ async function copyText(text) {
 
 let menuGuard = null;
 
+function getRolesIndexForView(view) {
+  try {
+    const fromApi = window?.zion?.roles?.getIndex?.(view);
+    if (fromApi && Array.isArray(fromApi.blocks)) return fromApi;
+    const state = window?.zion?.state;
+    if (!state?.get) return null;
+    const dom = view?.dom || null;
+    const editorId = dom?.getAttribute?.("data-editor-id") || "";
+    const panelId = dom?.getAttribute?.("data-panel-id") || dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || "";
+    const sessionId = dom?.getAttribute?.("data-session-id") || dom?.closest?.("[data-session-id]")?.getAttribute?.("data-session-id") || "";
+    const keys = [
+      editorId ? `roles.index.editor.${editorId}` : "",
+      panelId && sessionId ? `roles.index.panelSession.${panelId}.${sessionId}` : "",
+      panelId ? `roles.index.panel.${panelId}` : "",
+      "roles.index"
+    ].filter(Boolean);
+    for (const key of keys) {
+      const idx = state.get(key);
+      if (!idx || !Array.isArray(idx.blocks)) continue;
+      const scope = idx.scope || {};
+      if (key === "roles.index") {
+        if (editorId && scope.editorId && scope.editorId !== editorId) continue;
+        if (panelId && scope.panelId && scope.panelId !== panelId) continue;
+        if (sessionId && scope.sessionId && scope.sessionId !== sessionId) continue;
+      }
+      return idx;
+    }
+  } catch {}
+  return null;
+}
+
 function ensureUserPromptBelow(view, line) {
   try {
     const doc = view.state.doc;
@@ -124,7 +155,7 @@ function onDocMouseMove(ev) {
  * Compute batch info (accept/revert counts) for a given user message line.
  * Returns null if no pending tool actions are found.
  */
-function computeBatchInfoForLine(doc, userStartLine, isUserLikeLine) {
+function computeBatchInfoForLine(view, doc, userStartLine, isUserLikeLine) {
   if (!isUserLikeLine) return null;
   const sid = window.zion?.state?.get?.("sessions.currentId");
   const ann = sid ? (window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sid) || {}) : {};
@@ -133,7 +164,7 @@ function computeBatchInfoForLine(doc, userStartLine, isUserLikeLine) {
 
   let range = null;
   try {
-    const idx = window.zion?.state?.get?.("roles.index");
+    const idx = getRolesIndexForView(view);
     const blocks = Array.isArray(idx?.blocks) ? idx.blocks : [];
     const userIndex = blocks.findIndex(b => b && b.role === "user" && b.startLine === userStartLine);
     if (userIndex >= 0) {
@@ -213,13 +244,13 @@ function openMenu(view, clientX, clientY, line) {
       at: Date.now()
     });
   } catch {}
-  const batch = computeBatchInfoForLine(doc, userStartLine, isUserLikeLine);
+  const batch = computeBatchInfoForLine(view, doc, userStartLine, isUserLikeLine);
 
   // Determine foldable range at this line
   const foldRange = (() => {
     // 0) 角色块优先：如果是角色行，使用 roles.index 的整块范围（包含角色行）
     try {
-      const idx = (window?.zion?.state?.get && window.zion.state.get('roles.index')) || null;
+      const idx = getRolesIndexForView(view);
       if (idx && Array.isArray(idx.blocks)) {
         const ln0 = line.number - 1; // roles.index 使用 0-based 行号
         const blk = idx.blocks.find(b => b.startLine === ln0);
@@ -393,9 +424,6 @@ function openMenu(view, clientX, clientY, line) {
             || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
             || null)
           : (window.zion?.state?.get?.("sessions.currentId") || null);
-        // #region debug-point A:menu-batch-accept-click
-        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"A",location:"extensions/dev.gutter-actions/gutter-actions.js:380",msg:"[DEBUG] gutter menu batch accept clicked",data:{userStartLine:batch.userStartLine,from:batch.range?.from ?? null,to:batch.range?.to ?? null,panelId,sessionId,acceptCount:batch.acceptCount,revertCount:batch.revertCount,total:batch.total,disabled:acceptDisabled},ts:Date.now()})}).catch(()=>{});
-        // #endregion
         window.zion?.events?.emit("toolcards/batchAccept", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to, panelId, sessionId });
       } catch {}
       return Promise.resolve(true);
@@ -408,9 +436,6 @@ function openMenu(view, clientX, clientY, line) {
             || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
             || null)
           : (window.zion?.state?.get?.("sessions.currentId") || null);
-        // #region debug-point A:menu-batch-revert-click
-        fetch("http://127.0.0.1:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"batch-accept-revert",runId:"pre-fix",hypothesisId:"A",location:"extensions/dev.gutter-actions/gutter-actions.js:392",msg:"[DEBUG] gutter menu batch revert clicked",data:{userStartLine:batch.userStartLine,from:batch.range?.from ?? null,to:batch.range?.to ?? null,panelId,sessionId,acceptCount:batch.acceptCount,revertCount:batch.revertCount,total:batch.total,disabled:revertDisabled},ts:Date.now()})}).catch(()=>{});
-        // #endregion
         window.zion?.events?.emit("toolcards/batchRevert", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to, panelId, sessionId });
       } catch {}
       return Promise.resolve(true);

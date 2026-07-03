@@ -24,7 +24,7 @@ import { foldGutter, HighlightStyle, syntaxHighlighting } from "@codemirror/lang
 import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
-import { highlightSelectionMatches } from "@codemirror/search";
+import { selectionMatchHighlighter } from "./editor/extensions/selection-match-layer";
 import { tags as cmTags } from "@lezer/highlight";
 
 
@@ -202,7 +202,7 @@ function createFileCodeViewer(parent: HTMLElement, content: string, meta: any): 
         highlightActiveLineGutter(),
         highlightActiveLine(),
         foldGutter(),
-        highlightSelectionMatches(),
+        selectionMatchHighlighter(),
         EditorView.lineWrapping,
         Prec.high(keymap.of(defaultKeymap)),
         syntaxHighlighting(createChangesLikeHighlightStyle(dark), { fallback: true }),
@@ -1521,7 +1521,6 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
 
     try {
       window.zion.keybindings.register({ command: "zion.sessions.new", key: "Mod-t", when: "editorFocus" });
-      window.zion.keybindings.register({ command: "zion.sessions.newInFolder", key: "Mod-Shift-t", when: "editorFocus" });
       window.zion.keybindings.register({ command: "zion.editorTabs.closeActiveSession", key: "Mod-w", when: "editorFocus" });
       window.zion.keybindings.register({ command: "zion.editorTabs.prevSessionTab", key: "Mod-Shift-,", when: "editorFocus" });
       window.zion.keybindings.register({ command: "zion.editorTabs.nextSessionTab", key: "Mod-Shift-.", when: "editorFocus" });
@@ -3337,9 +3336,7 @@ async function bootstrap() {
   (window.zion as any).chatCards = chatAnnotations;
   let activateCachedEditorSlot: (panelId: string, sessionId: string) => boolean = () => false;
   let ensureEditorSlotForSession: (panelId: string, sessionId: string, seedText?: string) => any = () => null;
-  const debugPanelSlots = (event: string, payload?: any) => {
-    void event;
-    void payload;
+  const debugPanelSlots = (_event: string, _payload?: any) => {
   };
   const debugPanelSlotSummary = (panelId: string) => {
     try {
@@ -3360,7 +3357,10 @@ async function bootstrap() {
           connected: !!slot.core?.view?.dom?.isConnected,
           docLength: slot.core?.view?.state?.doc?.length || 0,
           inlineDom: slot.core?.view?.dom?.querySelectorAll?.(".zion-tool-call-inline")?.length || 0,
-          cardDom: slot.core?.view?.dom?.querySelectorAll?.(".zion-tool-call-card")?.length || 0
+          thinkingDom: slot.core?.view?.dom?.querySelectorAll?.(".zion-thinking-inline")?.length || 0,
+          cardDom: slot.core?.view?.dom?.querySelectorAll?.(".zion-tool-call-card,.zion-thinking-card")?.length || 0,
+          plainThinkingCount: String(slot.core?.view?.state?.doc?.toString?.() || "").split(/\n/).filter((line) => line.trim() === "思考").length,
+          idThinkingCount: (String(slot.core?.view?.state?.doc?.toString?.() || "").match(/思考\s*<!--\s*zion-thinking:id=/g) || []).length
         }))
       };
     } catch {
@@ -4105,11 +4105,30 @@ async function bootstrap() {
     try { nextProxy?.setSessionId?.(activeSessionId); } catch {}
     if (activeSessionId) {
       registerEditorSlot(panelId, activeSessionId, nextCore, nextProxy, slotHost || undefined, seedFromSource !== false);
-      showOnlyEditorSlot(panelId, activeSessionId);
       if (!restoringPanelWorkspace) {
         panel.tabs = [{ id: activeSessionId, title: activeSessionId, isDirty: false }];
         panel.activeTabId = activeSessionId;
       }
+      if (!restoringPanelWorkspace) {
+        try {
+          debugPanelSlots("panel.created.restoreSession.before", {
+            panelId,
+            activeSessionId,
+            summary: debugPanelSlotSummary(panelId)
+          });
+          window.zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
+            sessionId: activeSessionId,
+            panelId,
+            clearFirst: false
+          });
+          debugPanelSlots("panel.created.restoreSession.after", {
+            panelId,
+            activeSessionId,
+            summary: debugPanelSlotSummary(panelId)
+          });
+        } catch {}
+      }
+      showOnlyEditorSlot(panelId, activeSessionId);
       panelManager.activateTab(panelId, activeSessionId);
     }
     mountCurrentSessionPath(panel.pathEl, panelId);
@@ -4126,32 +4145,6 @@ async function bootstrap() {
     mountEditorHeaderSettingsMenu(panel.pathEl);
     mountPanelHeaderRunStopButton(panel.pathEl, panelId, () => panelManager.getEditor(panelId));
     attachPanelScrollPersistence(panelId);
-    if (activeSessionId && !restoringPanelWorkspace) {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          try {
-            debugPanelSlots("panel.created.restoreSession.before", {
-              panelId,
-              activeSessionId,
-              summary: debugPanelSlotSummary(panelId)
-            });
-            window.zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
-              sessionId: activeSessionId,
-              panelId,
-              clearFirst: false
-            });
-            debugPanelSlots("panel.created.restoreSession.after", {
-              panelId,
-              activeSessionId,
-              summary: debugPanelSlotSummary(panelId)
-            });
-            requestAnimationFrame(() => {
-              try { restoreSplitViewportFromSource(sourceEditor, nextProxy); } catch {}
-            });
-          } catch {}
-        });
-      });
-    }
     try { nextProxy.focus(); } catch {}
     try { restoreSplitViewportFromSource(sourceEditor, nextProxy); } catch {}
     schedulePanelWorkspacePersist();
@@ -4223,6 +4216,17 @@ async function bootstrap() {
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) markFocusReturn();
       }, true);
+      const nativeScrollTo = (proto as any).scrollTo;
+      if (typeof nativeScrollTo === "function") {
+        Object.defineProperty(proto, "scrollTo", {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: function guardedScrollTo(this: Element, ...args: any[]) {
+            return nativeScrollTo.apply(this, args);
+          }
+        });
+      }
       Object.defineProperty(Element.prototype, "scrollTop", {
         configurable: true,
         enumerable: descriptor.enumerable,
@@ -4232,6 +4236,7 @@ async function bootstrap() {
         set: function guardedScrollTopSetter(this: Element, value: number) {
           try {
             const el = this as HTMLElement;
+              const before = Number(descriptor.get?.call(this) || 0);
             const panelId = panelIdOf(el);
             const activePanelId = panelManager.getActivePanelId?.() || "";
             const focusedPanelId = panelIdOf(document.activeElement as Element | null);
@@ -4244,7 +4249,6 @@ async function bootstrap() {
               panelId !== focusedPanelId &&
               !isRecentPointerPanel;
             if (isInactiveEditorScroller) {
-              const before = Number(descriptor.get?.call(this) || 0);
               if (Math.round(before) !== Math.round(Number(value) || 0)) return;
             }
           } catch {}
@@ -4313,6 +4317,20 @@ async function bootstrap() {
   themeManager.init();
   window.zion.commands.registerCommand("zion.panels.splitHorizontal", () => panelManager.splitPanel(undefined, "horizontal"));
   window.zion.commands.registerCommand("zion.panels.splitVertical", () => panelManager.splitPanel(undefined, "vertical"));
+  window.zion.commands.registerCommand("zion.panels.newSessionOnRight", async () => {
+    const sourcePanelId = panelManager.getActivePanelId();
+    if (!sourcePanelId) return false;
+    const created = panelManager.splitPanelAt(sourcePanelId, "right", { seedFromSource: false });
+    const panelId = created?.id || null;
+    if (!panelId) return false;
+    try { panelManager.focusPanel(panelId); } catch {}
+    try {
+      await Promise.resolve(window.zion.commands.executeCommand("zion.sessions.new", { panelId, focus: true }));
+      return true;
+    } catch {
+      return false;
+    }
+  });
   window.zion.commands.registerCommand("zion.panels.closeActive", () => panelManager.closePanel());
   const focusPanelInDirection = (direction: "left" | "right" | "up" | "down") => {
     const activeId = panelManager.getActivePanelId();
@@ -4490,6 +4508,7 @@ async function bootstrap() {
   try {
     window.zion.keybindings.register({ command: "zion.panels.splitHorizontal", key: "Mod-\\", when: "editorFocus" });
     window.zion.keybindings.register({ command: "zion.panels.splitVertical", key: "Mod-Shift-\\", when: "editorFocus" });
+    window.zion.keybindings.register({ command: "zion.panels.newSessionOnRight", key: "Mod-Shift-t", when: "editorFocus" });
     window.zion.keybindings.register({ command: "zion.panels.closeActive", key: "Mod-Alt-w", when: "editorFocus" });
     window.zion.keybindings.register({ command: "zion.panels.focusPanel1", key: "Mod-Alt-1", when: "editorFocus" });
     window.zion.keybindings.register({ command: "zion.panels.focusPanel2", key: "Mod-Alt-2", when: "editorFocus" });
@@ -4537,6 +4556,7 @@ async function bootstrap() {
       if (!ev.altKey && !ev.shiftKey && (key === "r" || code === "KeyR")) return handleEditorShortcut(ev, "zion.sessions.autoRename");
       if (!ev.altKey && ev.shiftKey && (key === "r" || code === "KeyR")) return handleEditorShortcut(ev, "zion.sessions.renameInline");
       if (!ev.altKey && !ev.shiftKey && (key === "t" || code === "KeyT")) return handleEditorShortcut(ev, "zion.sessions.new");
+      if (!ev.altKey && ev.shiftKey && (key === "t" || code === "KeyT")) return handleEditorShortcut(ev, "zion.panels.newSessionOnRight");
       if (!ev.altKey && !ev.shiftKey && (key === "w" || code === "KeyW")) return handleEditorShortcut(ev, "zion.editorTabs.closeActiveSession");
       if (!ev.altKey && ev.shiftKey && (code === "Comma" || key === "<")) return handleEditorShortcut(ev, "zion.editorTabs.prevSessionTab");
       if (!ev.altKey && ev.shiftKey && (code === "Period" || key === ">")) return handleEditorShortcut(ev, "zion.editorTabs.nextSessionTab");
@@ -4915,42 +4935,42 @@ async function bootstrap() {
   const applyLineNumbers = (enabled: boolean) => {
     lineNumbersEnabled = enabled;
     try { localStorage.setItem("zion.lineNumbers", enabled ? "1" : "0"); } catch {}
-    forEachPanelCore((targetCore) => targetCore.setLineNumbersEnabled(enabled));
+      forEachAttachedEditorCore((targetCore) => targetCore.setLineNumbersEnabled(enabled));
     window.zion.state.set("ui.lineNumbers", enabled);
   };
 
   const applyActiveLineHighlight = (enabled: boolean) => {
     activeLineHighlightEnabled = enabled;
     try { localStorage.setItem("zion.activeLineHighlight", enabled ? "1" : "0"); } catch {}
-    forEachPanelCore((targetCore) => targetCore.setActiveLineHighlightEnabled(enabled));
+      forEachAttachedEditorCore((targetCore) => targetCore.setActiveLineHighlightEnabled(enabled));
     window.zion.state.set("ui.activeLineHighlight", enabled);
   };
 
   const applySyntaxHighlight = (enabled: boolean) => {
     syntaxHighlightEnabled = enabled;
     try { localStorage.setItem("zion.syntaxHighlight", enabled ? "1" : "0"); } catch {}
-    forEachPanelCore((targetCore) => targetCore.setSyntaxHighlightEnabled(enabled));
+      forEachAttachedEditorCore((targetCore) => targetCore.setSyntaxHighlightEnabled(enabled));
     window.zion.state.set("ui.syntaxHighlight", enabled);
   };
 
   const applyAutoIndent = (enabled: boolean) => {
     autoIndentEnabled = enabled;
     try { localStorage.setItem("zion.autoIndent", enabled ? "1" : "0"); } catch {}
-    forEachPanelCore((targetCore) => targetCore.setAutoIndentEnabled(enabled));
+      forEachAttachedEditorCore((targetCore) => targetCore.setAutoIndentEnabled(enabled));
     window.zion.state.set("ui.autoIndent", enabled);
   };
 
   const applyFolding = (enabled: boolean) => {
     foldingEnabled = enabled;
     try { localStorage.setItem("zion.folding", enabled ? "1" : "0"); } catch {}
-    forEachPanelCore((targetCore) => targetCore.setFoldingEnabled(enabled));
+      forEachAttachedEditorCore((targetCore) => targetCore.setFoldingEnabled(enabled));
     window.zion.state.set("ui.folding", enabled);
   };
 
   const applyLineWrap = (enabled: boolean) => {
     lineWrapEnabled = enabled;
     try { localStorage.setItem("zion.lineWrap", enabled ? "1" : "0"); } catch {}
-    forEachPanelCore((targetCore) => targetCore.setLineWrapEnabled(enabled));
+      forEachAttachedEditorCore((targetCore) => targetCore.setLineWrapEnabled(enabled));
     window.zion.state.set("ui.lineWrap", enabled);
   };
 
@@ -5002,6 +5022,7 @@ async function bootstrap() {
       const targetCore = payload?.core;
       if (!targetCore) return;
       registerVimOperationalModeSync(targetCore);
+        applyEditorPreferences(targetCore);
       targetCore.setVimModeEnabled(vimModeEnabled);
       if (vimModeEnabled) targetCore.setVimOperationalMode(vimOperationalMode, { preserveViewState: !isFocusedEditorCore(targetCore) });
     });

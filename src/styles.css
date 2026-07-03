@@ -75,17 +75,17 @@
   --role-system-bg: rgba(158,158,158,0.18);
   --role-system-border: rgba(158,158,158,0.28);
 
-  /* Editor typography - obsidian-like */
-  --editor-font-size: 15px;
-  --editor-line-height: 1.6;
+  /* Editor typography — aligned with .zion-files-markdown-preview */
+  --editor-font-size: 14px;
+  --editor-line-height: 1.62;
   --editor-content-font-family: var(--font-sans);
   --editor-content-font-size: var(--editor-font-size);
   --editor-content-line-height: var(--editor-line-height);
   --editor-text-fg: var(--fg);
 
   /* Font stacks - refined for readability */
-  --font-sans: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Noto Sans SC", "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: "SF Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Noto Sans SC", "Noto Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "Fira Code", Menlo, Monaco, Consolas, monospace;
 
   /* WYSIWYG heading sizes - obsidian-like, subtle */
   --md-h1-size: 1.25em;
@@ -96,11 +96,11 @@
   --md-h6-size: 1em;
 
   /* Markdown UI tokens (dark defaults) */
-  --md-code-bg: rgba(110, 118, 129, 0.4);
+  --md-code-bg: rgba(110, 118, 129, 0.35);
   --md-code-border: transparent;
-  --md-codeblock-bg: rgba(0,0,0,0.2);
-  --md-codeblock-border: rgba(98,114,164,0.25);
-  --md-quote-bg: color-mix(in srgb, var(--border) 10%, transparent);
+  --md-codeblock-bg: rgba(0,0,0,0.25);
+  --md-codeblock-border: rgba(98,114,164,0.18);
+  --md-quote-bg: rgba(110, 118, 129, 0.08);
   --md-quote-border: color-mix(in srgb, var(--border) 72%, var(--dim));
   --md-table-header-bg: rgba(98,114,164,0.12);
 
@@ -206,12 +206,9 @@
   --md-code-border: transparent;
   --md-codeblock-bg: rgba(0,0,0,0.03);
   --md-codeblock-border: rgba(0,0,0,0.1);
-  --md-quote-bg: color-mix(in srgb, var(--border) 18%, transparent);
+  --md-quote-bg: rgba(0,0,0,0.03);
   --md-quote-border: color-mix(in srgb, var(--border) 86%, var(--dim));
   --md-table-header-bg: rgba(0,0,0,0.04);
-  /* Base editor font size override for light theme (keep consistent) */
-  --editor-font-size: 15px;
-  --editor-line-height: 1.6;
 
   /* Scrollbar theme (light overrides, improved contrast for Chrome/WebKit) */
   --scrollbar-track: #f8f8fa;
@@ -1330,6 +1327,7 @@ html, body {
   position: relative;
   --mobilebar-h: 48px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --panel-min-width: 420px;
 }
 
 .zion-overlay-mask {
@@ -1759,7 +1757,7 @@ html, body {
   top: 0;
   left: 0;
   bottom: 0;
-  width: 12px;
+  width: 6px;
   z-index: 100;
   cursor: col-resize;
   background: transparent;
@@ -1787,6 +1785,7 @@ html, body {
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
   background: var(--panel);
   color: var(--fg);
   min-height: 0;
@@ -1966,8 +1965,10 @@ html, body {
   pointer-events: none;
 }
 
-.zion-bottompanel-resizer:hover::after {
-  opacity: 0.9;
+.zion-bottompanel-resizer:hover::after,
+.zion-bottompanel-resizer.is-dragging::after {
+  background: var(--accent);
+  height: 2px;
 }
 
 .zion-sidebar-header {
@@ -2073,10 +2074,23 @@ html, body {
   width: 6px;
   cursor: col-resize;
   background: transparent;
+  z-index: 100;
+  touch-action: none;
 }
 
-.zion-sidebar-resizer:hover {
-  background: var(--border);
+.zion-sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: transparent;
+}
+
+.zion-sidebar-resizer:hover::after,
+.zion-sidebar-resizer.is-dragging::after {
+  background: var(--accent);
 }
 
 .zion-editor {
@@ -2097,6 +2111,16 @@ html, body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.zion-panels-root.is-horizontal-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+.zion-panels-root.is-horizontal-scroll > .zion-split-container {
+  min-width: var(--panel-layout-min-width, var(--panel-min-width));
 }
 
 .zion-panel {
@@ -2916,6 +2940,7 @@ body.is-dragging-panel-tabs-scrollbar {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
 }
 
 .zion-editor-slot > .cm-editor,
@@ -3024,6 +3049,8 @@ body.is-dragging-panel-tabs-scrollbar {
 .cm-editor .cm-scroller {
   background: var(--editor-bg) !important;
   overflow-anchor: none;
+  font-family: var(--font-sans) !important;
+  line-height: inherit !important;
 }
 .cm-editor .cm-content {
   background: transparent !important;
@@ -3032,6 +3059,22 @@ body.is-dragging-panel-tabs-scrollbar {
 .cm-editor .cm-dropCursor {
   border-left-color: var(--caret-color) !important;
 }
+.cm-editor .cm-cursor-secondary {
+  border-left-color: color-mix(in srgb, var(--caret-color) 78%, var(--accent)) !important;
+}
+.cm-editor .cm-selectionLayer {
+  z-index: 12 !important;
+  pointer-events: none;
+}
+.cm-editor .cm-selectionBackground {
+  background: var(--selection-bg) !important;
+  border-radius: 0;
+  box-shadow: none;
+}
+.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
+  background: var(--selection-bg) !important;
+  box-shadow: none;
+}
 .cm-editor.cm-focused {
   outline: none;
 }
@@ -3039,17 +3082,54 @@ body.is-dragging-panel-tabs-scrollbar {
   color: var(--editor-text-fg);
   font-size: var(--editor-content-font-size);
   line-height: var(--editor-content-line-height);
-  padding: 0 16px;
+  padding: 18px 24px 32px;
   font-family: var(--editor-content-font-family);
-  letter-spacing: 0.01em; /* subtle letter spacing for better readability */
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
 }
+.zion-editor-slot .cm-editor .cm-content {
+  font-size: 14px !important;
+  line-height: 1.62 !important;
+  font-family: var(--editor-content-font-family) !important;
+  padding-top: 18px !important;
+  padding-left: 22px !important;
+  padding-right: 24px !important;
+}
+.zion-editor-slot .cm-editor .cm-scroller:has(.cm-gutters .cm-gutter:not(.zion-gutter-left)) .cm-content,
+body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scroller:has(.cm-gutters .cm-gutter.zion-gutter-left) .cm-content {
+  padding-left: 12px !important;
+}
+@container (max-width: 520px) {
+  .zion-editor-slot .cm-editor .cm-content {
+    padding-right: 18px !important;
+  }
+}
 .cm-line {
-  padding: 1px 0;         /* slightly tighter per-line padding */
+  padding: 0;
   max-width: 100%;
   box-sizing: border-box;
+  line-height: inherit;
+  color: var(--fg);
+  font-family: var(--font-sans);
+}
+.zion-editor-slot .cm-editor .cm-line {
+  font-size: inherit !important;
+  line-height: inherit !important;
+  font-family: var(--font-sans) !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+.zion-editor-slot .cm-editor .cm-md-quote {
+  padding: 8px 12px !important;
+}
+.zion-editor-slot .cm-editor .cm-line.cm-md-codeblock {
+  padding: 2px 14px !important;
+}
+
+/* Normal text lines: no extra padding, let line-height do the work (like Typora) */
+.cm-content > .cm-line:not(:has(.cm-md-heading)):not(:has(.cm-md-quote)):not(.cm-md-codeblock):not(:has(.cm-md-table-wrap)):not(:has(.cm-md-diagram)):not(:has(.cm-md-math-block)):not(.cm-md-html-line):not(.cm-md-footnote-def-line):not(.cm-md-hr-line):not(.zion-inline-widget-row):not(.zion-inline-widget-anchor-row) {
+  padding: 0;
 }
 .cm-line.zion-inline-widget-row,
 .cm-line.zion-inline-widget-anchor-row {
@@ -3146,7 +3226,8 @@ body.is-dragging-panel-tabs-scrollbar {
 .cm-editor a.cm-md-link:hover {
   color: var(--accent) !important;
   -webkit-text-fill-color: var(--accent);
-  opacity: 0.9;
+  text-decoration: underline !important;
+  opacity: 1;
 }
 
 .cm-editor .cm-detected-link {
@@ -3154,19 +3235,57 @@ body.is-dragging-panel-tabs-scrollbar {
   -webkit-text-fill-color: var(--accent);
   text-decoration: none !important;
 }
-.cm-editor .cm-detected-link:hover { color: var(--accent) !important; opacity: 0.9; }
+.cm-editor .cm-detected-link:hover { color: var(--accent) !important; text-decoration: underline !important; opacity: 1; }
+
+.cm-editor .cm-obsidian-wikilink {
+  color: var(--accent) !important;
+  -webkit-text-fill-color: var(--accent);
+  text-decoration: none !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  cursor: pointer;
+}
+.cm-editor .cm-obsidian-wikilink:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: 4px;
+}
+.cm-editor .cm-obsidian-tag {
+  color: color-mix(in srgb, var(--accent) 88%, var(--fg)) !important;
+  -webkit-text-fill-color: color-mix(in srgb, var(--accent) 88%, var(--fg));
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 999px;
+  padding: 0 5px;
+  font-size: 0.92em;
+}
+.cm-editor .cm-obsidian-block-id {
+  color: color-mix(in srgb, var(--dim) 82%, transparent) !important;
+  -webkit-text-fill-color: color-mix(in srgb, var(--dim) 82%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.cm-editor .cm-line.cm-obsidian-callout-line {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 70%, var(--md-quote-border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 6px;
+  padding: 6px 10px !important;
+}
+.cm-editor .cm-obsidian-callout-token {
+  color: var(--accent) !important;
+  -webkit-text-fill-color: var(--accent);
+  font-weight: 600;
+}
 
 .cm-editor .cm-md-strong { font-weight: 600; }
 .cm-editor .cm-md-em { font-style: italic; }
-.cm-editor .cm-md-strike { text-decoration: line-through; opacity: 0.9; }
+.cm-editor .cm-md-strike { text-decoration: line-through; opacity: 0.7; }
 
 .cm-editor .cm-md-code {
   font-family: var(--font-mono);
-  background: var(--md-code-bg) !important;
+  background: color-mix(in srgb, var(--fg) 8%, transparent) !important;
   border: 0;
-  padding: 0.2em 0.4em;
+  padding: 1px 4px;
   border-radius: 4px;
-  font-size: 0.85em;
+  font-size: 0.92em;
   font-weight: 400;
   line-height: inherit;
   white-space: break-spaces !important;
@@ -3181,7 +3300,6 @@ body.is-dragging-panel-tabs-scrollbar {
   border-bottom-right-radius: 0;
 }
 
-.cm-editor .cm-md-code:has(+ .cm-selectionMatch > .cm-md-code),
 .cm-editor .cm-md-code:has(+ .cm-searchMatch > .cm-md-code),
 .cm-editor .cm-md-code:has(+ .cm-searchMatch-selected > .cm-md-code) {
   padding-right: 0;
@@ -3195,7 +3313,6 @@ body.is-dragging-panel-tabs-scrollbar {
   border-bottom-left-radius: 0;
 }
 
-.cm-editor .cm-selectionMatch:has(> .cm-md-code) + .cm-md-code,
 .cm-editor .cm-searchMatch:has(> .cm-md-code) + .cm-md-code,
 .cm-editor .cm-searchMatch-selected:has(> .cm-md-code) + .cm-md-code {
   padding-left: 0;
@@ -3203,7 +3320,6 @@ body.is-dragging-panel-tabs-scrollbar {
   border-bottom-left-radius: 0;
 }
 
-.cm-editor .cm-selectionMatch > .cm-md-code,
 .cm-editor .cm-searchMatch > .cm-md-code,
 .cm-editor .cm-searchMatch-selected > .cm-md-code {
   padding-left: 0;
@@ -3211,7 +3327,6 @@ body.is-dragging-panel-tabs-scrollbar {
   border-radius: 0;
 }
 
-.cm-editor .cm-z-hide-syntax + .cm-selectionMatch:has(> .cm-md-code),
 .cm-editor .cm-z-hide-syntax + .cm-searchMatch:has(> .cm-md-code),
 .cm-editor .cm-z-hide-syntax + .cm-searchMatch-selected:has(> .cm-md-code) {
   padding-left: calc(0.4em * 0.85);
@@ -3220,7 +3335,6 @@ body.is-dragging-panel-tabs-scrollbar {
   border-bottom-left-radius: 6px;
 }
 
-.cm-editor .cm-selectionMatch:has(> .cm-md-code) + .cm-z-hide-syntax,
 .cm-editor .cm-searchMatch:has(> .cm-md-code) + .cm-z-hide-syntax,
 .cm-editor .cm-searchMatch-selected:has(> .cm-md-code) + .cm-z-hide-syntax {
   padding-right: calc(0.4em * 0.85);
@@ -3318,8 +3432,16 @@ body.is-dragging-panel-tabs-scrollbar {
 
 .cm-md-heading {
   font-weight: 600;
-  line-height: 1.3;
-  color: var(--fg);
+  line-height: 1.25;
+  color: var(--fg) !important;
+  -webkit-text-fill-color: var(--fg) !important;
+  text-decoration: none !important;
+}
+.cm-md-heading *,
+.cm-line:has(.cm-md-heading) {
+  color: var(--fg) !important;
+  -webkit-text-fill-color: var(--fg) !important;
+  text-decoration: none !important;
 }
 /* heading level sizes (obsidian-like: subtle hierarchy) */
 .cm-md-h1 { font-size: var(--md-h1-size); font-weight: 700; letter-spacing: -0.01em; }
@@ -3330,26 +3452,50 @@ body.is-dragging-panel-tabs-scrollbar {
 .cm-md-h6 { font-size: var(--md-h6-size); font-weight: 600; }
 
 
-/* GitHub-style spacing around headings (tighter, use padding to保持与 gutter 对齐) */
+/* Heading line spacing — matches preview margins (1.1em top, 0.45em bottom) */
 .cm-line:has(.cm-md-heading) {
-  padding-top: 0.35em;
-  padding-bottom: 0.35em;
-  margin-top: 0;           /* 避免外边距导致 gutter 不跟随 */
+  padding-top: 1.1em;
+  padding-bottom: 0.45em;
+  margin-top: 0;
   margin-bottom: 0;
 }
 /* 文档首行标题：保持紧凑并与 gutter 高度一致 */
 .cm-content > .cm-line:first-child:has(.cm-md-heading) {
-  padding-top: 0.15em;
+  padding-top: 0.45em;
   margin-top: 0 !important;
 }
 
 .cm-md-quote {
   display: block;
-  border-left: 2px solid var(--md-quote-border);
-  padding: 4px 12px;
+  border-left: 3px solid var(--md-quote-border);
+  padding: 8px 12px !important;
+  border-radius: 6px;
   background: var(--md-quote-bg);
-  color: color-mix(in srgb, var(--fg) 70%, var(--dim));
-  font-style: italic;
+  color: color-mix(in srgb, var(--fg) 82%, transparent);
+  -webkit-text-fill-color: color-mix(in srgb, var(--fg) 82%, transparent);
+  font-style: normal;
+}
+.cm-md-quote * {
+  color: inherit !important;
+  -webkit-text-fill-color: inherit !important;
+}
+
+/* Horizontal rule (thematic break) */
+.cm-line.cm-md-hr-line {
+  position: relative;
+  padding-top: 0;
+  padding-bottom: 0;
+  min-height: 24px;
+}
+.cm-line.cm-md-hr-line::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  border-top: 1px solid color-mix(in srgb, var(--border) 52%, transparent);
+  pointer-events: none;
 }
 
 .cm-md-task {
@@ -3363,11 +3509,10 @@ body.is-dragging-panel-tabs-scrollbar {
   width: 1.15ch;
   text-align: center;
   white-space: nowrap;
-  color: var(--fg);
+  color: var(--dim);
   font-size: 1em;
   font-weight: 700;
   line-height: 1;
-  opacity: 0.9;
   vertical-align: 0;
   margin-right: 0;
 }
@@ -3378,53 +3523,51 @@ body.is-dragging-panel-tabs-scrollbar {
   text-align: right;
   white-space: nowrap;
   margin-right: 0;
-  color: var(--fg);
-  opacity: 0.6;
+  color: var(--dim);
 }
 
-/* Code fence block lines - Modern flat style */
+/* Code fence block lines */
 .cm-line.cm-md-codeblock {
-  background-color: var(--md-codeblock-bg);
-  border: none;
-  border-radius: 0;
-  padding: 2px 16px;
-  line-height: 1.5;
+  background-color: color-mix(in srgb, var(--fg) 4.5%, transparent);
+  border: 0;
+  padding: 2px 14px !important;
+  line-height: 1.55;
   font-family: var(--font-mono);
-  font-size: 0.85em;
+  font-size: 0.92em;
 }
 
 /* 块首：圆角 + 上间距 */
 .cm-content > .cm-line.cm-md-codeblock:first-child,
 .cm-content > .cm-line:not(.cm-md-codeblock) + .cm-line.cm-md-codeblock {
-  border-top-left-radius: 6px;
-  border-top-right-radius: 6px;
-  padding-top: 12px;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  padding-top: 11px !important;
 }
 
 /* 块尾：圆角 + 下间距 */
 .cm-content > .cm-line.cm-md-codeblock:has(+ .cm-line:not(.cm-md-codeblock)),
 .cm-content > .cm-line.cm-md-codeblock:last-child {
-  border-bottom-left-radius: 6px;
-  border-bottom-right-radius: 6px;
-  padding-bottom: 12px;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+  padding-bottom: 11px !important;
 }
 
 .cm-line.cm-md-codeblock.cm-activeLine {
-  background-color: color-mix(in srgb, var(--md-codeblock-bg) 80%, var(--accent) 20%);
+  background-color: color-mix(in srgb, var(--fg) 6.5%, var(--accent) 5%);
 }
 
 :root[data-theme="light"] .cm-line.cm-md-codeblock.cm-activeLine {
-  background-color: color-mix(in srgb, var(--md-codeblock-bg) 90%, var(--accent) 10%);
+  background-color: color-mix(in srgb, var(--fg) 5.5%, var(--accent) 4%);
 }
 
 /* Opening/closing fence lines - subtle marker */
 .cm-line.cm-md-codeblock.cm-md-codeblock-fence {
   color: var(--dim);
   font-size: 0.75em;
-  opacity: 0.6;
-  background-color: var(--md-codeblock-bg);
-  padding-top: 2px;
-  padding-bottom: 2px;
+  opacity: 0.52;
+  background-color: color-mix(in srgb, var(--fg) 4.5%, transparent);
+  padding-top: 3px !important;
+  padding-bottom: 3px !important;
   user-select: none;
 }
 
@@ -3515,10 +3658,11 @@ body.is-dragging-panel-tabs-scrollbar {
 .cm-md-table-wrap {
   display: block;
   position: relative;
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
   overflow: visible;
-  margin: 32px 0 8px;
+  margin: 0;
+  padding-bottom: 1em;
   box-sizing: border-box;
 }
 .cm-md-table-wrap::before {
@@ -3531,14 +3675,14 @@ body.is-dragging-panel-tabs-scrollbar {
   z-index: 11;
 }
 .cm-md-table-scroll {
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background-color: var(--bg);
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
   box-sizing: border-box;
 }
 .cm-md-table-toolbar {
@@ -3601,27 +3745,25 @@ body.is-dragging-panel-tabs-scrollbar {
 }
 
 .cm-md-table {
-  border-collapse: separate;
+  border-collapse: collapse;
   border-spacing: 0;
-  width: max-content;
-  min-width: 100%;
-  font-size: 14px;
-  line-height: 1.6;
-  table-layout: auto;
+  width: 100%;
+  font-size: 0.96em;
+  line-height: inherit;
+  table-layout: fixed;
   color: var(--fg);
 }
 
 /* Header Styling */
 .cm-md-table thead th {
-  position: sticky;
+  position: relative;
   top: 0;
   background-color: var(--md-table-header-bg, #f6f8fa);
   color: var(--fg);
   font-weight: 600;
   text-align: left;
   z-index: 10;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-  padding: 8px 12px;
+  padding: 5px 8px;
 }
 
 :root[data-theme="dark"] .cm-md-table thead th {
@@ -3631,33 +3773,31 @@ body.is-dragging-panel-tabs-scrollbar {
 /* Cell Styling */
 .cm-md-table th,
 .cm-md-table td {
-  border: 0;
-  border-right: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  padding: 5px 8px;
   min-width: 8ch;
+  vertical-align: top;
   white-space: normal;
-  word-break: normal;
-  max-width: 42ch;
-  overflow-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
-.cm-md-table th:last-child,
-.cm-md-table td:last-child {
-  border-right: 0;
+.cm-md-table-cell-content {
+  display: block;
+  min-height: 20px;
 }
 
-.cm-md-table tbody tr:last-child td {
-  border-bottom: 0;
+.cm-md-table th {
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 
 .cm-md-table td {
-  background-color: var(--bg);
+  background-color: transparent;
 }
 
 /* Zebra Striping */
 .cm-md-table tbody tr:nth-child(2n) td {
-  background-color: var(--md-table-stripe-bg, rgba(127,127,127,0.03));
+  background-color: color-mix(in srgb, var(--fg) 2.5%, transparent);
 }
 
 /* Row Hover */
@@ -3676,37 +3816,6 @@ body.is-dragging-panel-tabs-scrollbar {
   font-size: 12px;
 }
 
-/* Editable Cell */
-.cm-md-cell-edit {
-  display: block;
-  width: 100%;
-  min-height: 24px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  outline: none;
-  border: 1px solid transparent;
-  background: transparent;
-  color: inherit;
-  font-family: inherit;
-  font-size: inherit;
-  line-height: inherit;
-  transition: all 0.2s ease-in-out;
-}
-
-.cm-md-cell-edit[contenteditable="false"] {
-  cursor: default;
-}
-
-.cm-md-cell-edit[data-editing="true"] {
-  white-space: pre-wrap;
-}
-
-.cm-md-cell-edit:focus {
-  background-color: var(--bg);
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
-}
-
 .cm-md-table .cm-md-code {
   padding: 1px 4px;
   border-radius: 4px;
@@ -3715,29 +3824,6 @@ body.is-dragging-panel-tabs-scrollbar {
 
 .cm-md-table .cm-md-table-link {
   word-break: break-word;
-}
-
-/* Column Resizer */
-.cm-md-col-resizer {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  cursor: col-resize;
-  background-color: transparent;
-  transition: background-color 0.2s;
-  z-index: 20;
-}
-
-.cm-md-table th:hover .cm-md-col-resizer {
-  background-color: rgba(127,127,127,0.2);
-}
-
-.cm-md-col-resizer:hover,
-.cm-md-col-resizer:active {
-  background-color: var(--accent) !important;
-  width: 4px;
 }
 
 /* Diagram toolbar */
@@ -3827,10 +3913,22 @@ body.is-dragging-panel-tabs-scrollbar {
   vertical-align: middle;
 }
 
-/* 角色区域之间的间距：只在行首角色令牌时应用（避免内联 @role 引起额外间距） */
-.cm-line:has(> .cm-role-token-head) {
+/* 角色区域之间的间距：只作用在角色起始行，避免内联 @role 引起额外间距 */
+.cm-line.cm-role-boundary-start {
   padding-top: 6px;
-  padding-bottom: 6px;
+  padding-bottom: 4px;
+}
+
+.cm-line.cm-role-boundary-start:not(.cm-role-boundary-first) {
+  margin-top: 0;
+  padding-top: 16px;
+  border-top: 0;
+}
+
+.cm-line.cm-role-boundary-first {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .cm-line.cm-role-nav-flash {
@@ -3963,6 +4061,7 @@ body.is-dragging-panel-tabs-scrollbar {
   opacity: 0.75;
   color: var(--editor-gutter-active-fg);
 }
+
 
 /* ===== Light theme contrast tweaks ===== */
 :root[data-theme="light"] .cm-line.cm-md-codeblock.cm-md-codeblock-fence {
@@ -4188,6 +4287,3 @@ body.is-dragging-panel-tabs-scrollbar {
 .cm-sticky-header:hover {
   background: var(--panel);
 }
-
-
-

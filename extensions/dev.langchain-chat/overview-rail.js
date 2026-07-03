@@ -147,16 +147,56 @@ function getUserHeadLines(doc) {
   return lines;
 }
 
+function getUserRoleBlocks(view) {
+  try {
+    const blocks = window.zion?.roles?.getBlocks?.(view);
+    if (Array.isArray(blocks) && blocks.length) {
+      return blocks
+        .filter((block) => block?.role === "user" && typeof block.startLine === "number")
+        .sort((a, b) => a.startLine - b.startLine);
+    }
+  } catch {}
+  return null;
+}
+
 function computeUserNavState(view) {
   const doc = view?.state?.doc;
   if (!view || !doc) return { userLines: [], prevLine: null, nextLine: null };
-  const userLines = getUserHeadLines(doc);
+  const roleBlocks = getUserRoleBlocks(view);
+  const userLines = roleBlocks
+    ? roleBlocks.map((block) => block.startLine)
+    : getUserHeadLines(doc);
   if (!userLines.length) return { userLines, prevLine: null, nextLine: null };
 
   const cursorLine = Math.max(0, doc.lineAt(view.state.selection.main.head).number - 1);
+  if (roleBlocks) {
+    let nextIndex = roleBlocks.findIndex((block) => block.startLine > cursorLine);
+    if (nextIndex === -1) nextIndex = roleBlocks.length;
+    const prevIndex = nextIndex - 1;
+    const currentIndex = roleBlocks.findIndex((block) => {
+      const startLine = typeof block?.startLine === "number" ? block.startLine : null;
+      const endLine = typeof block?.endLine === "number" ? block.endLine : startLine;
+      return startLine != null && cursorLine >= startLine && cursorLine <= endLine;
+    });
+
+    let prevLine = null;
+    let nextLine = null;
+    if (currentIndex >= 0 && cursorLine !== roleBlocks[currentIndex].startLine) {
+      prevLine = roleBlocks[currentIndex].startLine;
+    } else {
+      const targetIndex = currentIndex >= 0 ? currentIndex - 1 : prevIndex;
+      if (targetIndex >= 0) prevLine = roleBlocks[targetIndex].startLine;
+    }
+    if (currentIndex >= 0 && cursorLine !== roleBlocks[currentIndex].startLine) {
+      nextLine = roleBlocks[currentIndex].startLine;
+    } else if (nextIndex < roleBlocks.length) {
+      nextLine = roleBlocks[nextIndex].startLine;
+    }
+    return { userLines, prevLine, nextLine };
+  }
+
   let prevLine = null;
   let nextLine = null;
-
   for (const line of userLines) {
     if (line < cursorLine) prevLine = line;
     if (line > cursorLine) {
@@ -164,10 +204,7 @@ function computeUserNavState(view) {
       break;
     }
   }
-
-  if (USER_HEAD_RE.test(doc.sliceString(doc.line(cursorLine + 1).from, doc.line(cursorLine + 1).to))) {
-    prevLine = prevLine ?? null;
-  } else {
+  if (!USER_HEAD_RE.test(doc.sliceString(doc.line(cursorLine + 1).from, doc.line(cursorLine + 1).to))) {
     for (let i = userLines.length - 1; i >= 0; i--) {
       if (userLines[i] <= cursorLine) {
         prevLine = userLines[i];
@@ -175,8 +212,22 @@ function computeUserNavState(view) {
       }
     }
   }
-
   return { userLines, prevLine, nextLine };
+}
+
+function isLineVisible(view, lineIndex) {
+  try {
+    const doc = view?.state?.doc;
+    if (!view || !doc || typeof lineIndex !== "number" || lineIndex < 0) return false;
+    const line = doc.line(Math.max(1, Math.min(doc.lines, lineIndex + 1)));
+    const block = view.lineBlockAt(line.from);
+    const scrollDOM = view.scrollDOM;
+    const viewportTop = scrollDOM.scrollTop;
+    const viewportBottom = viewportTop + scrollDOM.clientHeight;
+    return block.top >= viewportTop && block.bottom <= viewportBottom;
+  } catch {
+    return false;
+  }
 }
 
 function jumpToLine(view, lineIndex) {
@@ -184,10 +235,14 @@ function jumpToLine(view, lineIndex) {
   try {
     const doc = view.state.doc;
     const line = doc.line(Math.max(1, Math.min(doc.lines, lineIndex + 1)));
-    view.dispatch({
-      selection: { anchor: line.from },
-      scrollIntoView: true
-    });
+    if (isLineVisible(view, lineIndex)) {
+      view.dispatch({ selection: { anchor: line.from } });
+    } else {
+      view.dispatch({
+        selection: { anchor: line.from },
+        effects: EditorView.scrollIntoView(line.from, { y: "center", yMargin: 48 })
+      });
+    }
     view.focus?.();
     try {
       window.dispatchEvent(new CustomEvent("zion:roles-nav-flash", {
@@ -245,8 +300,8 @@ export function createChatOverviewRail(editor) {
   const scrollDOM = view.scrollDOM || null;
   let suppressScrollTracking = false;
   const resizeObserver =
-    typeof ResizeObserver === "function"
-      ? new ResizeObserver(() => scheduleRender())
+    typeof window.ResizeObserver === "function"
+      ? new window.ResizeObserver(() => scheduleRender())
       : null;
 
   const revealLatestAnswer = (sessionId, forceFollow = false) => {

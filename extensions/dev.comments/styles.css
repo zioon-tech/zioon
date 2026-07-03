@@ -1,34 +1,85 @@
 /* ===== Comments ===== */
 .zion-comment-range {
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-  border-bottom: 1px dotted color-mix(in srgb, var(--accent) 36%, transparent);
+  border-radius: 2px;
+  background: color-mix(in srgb, #f5c542 17%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, #d9a300 48%, transparent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  cursor: pointer;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.zion-comment-range.is-active {
+  background: color-mix(in srgb, #f5c542 28%, transparent);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, #d9a300 76%, transparent),
+    0 0 0 1px color-mix(in srgb, #d9a300 18%, transparent);
 }
 
 .zion-comment-anchor {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 20px;
-  height: 18px;
-  margin-left: 6px;
-  padding: 0 5px;
-  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 13%, var(--panel));
-  color: color-mix(in srgb, var(--accent) 82%, var(--fg));
-  box-shadow: 0 1px 3px rgba(0,0,0,0.14);
-  font-size: 11px;
-  font-weight: 700;
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  z-index: 4;
+  min-width: 15px;
+  height: 15px;
+  margin: 0;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, #d9a300 42%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, #f5c542 15%, var(--editor-bg));
+  color: color-mix(in srgb, #c28a00 86%, var(--fg));
+  box-shadow: none;
+  font-size: 9.5px;
+  font-weight: 600;
   line-height: 1;
   cursor: pointer;
   vertical-align: middle;
+  opacity: 0.78;
+  transition: opacity 120ms ease, background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.zion-comment-anchor:not([data-count])::before {
+  content: "";
+  width: 7px;
+  height: 5px;
+  border: 1.4px solid currentColor;
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+
+.zion-comment-anchor:not([data-count])::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  bottom: 3px;
+  width: 3px;
+  height: 3px;
+  border-left: 1.4px solid currentColor;
+  border-bottom: 1.4px solid currentColor;
+  background: inherit;
+  transform: rotate(-45deg);
+  box-sizing: border-box;
 }
 
 .zion-comment-anchor:hover {
-  background: color-mix(in srgb, var(--accent) 20%, var(--panel));
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  color: var(--accent);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 22%, transparent);
+  opacity: 1;
+  background: color-mix(in srgb, #f5c542 24%, var(--editor-bg));
+  border-color: color-mix(in srgb, #d9a300 68%, transparent);
+  color: color-mix(in srgb, #a87500 92%, var(--fg));
+  box-shadow: 0 1px 4px color-mix(in srgb, #d9a300 18%, transparent);
+}
+
+.zion-comment-anchor.is-active {
+  opacity: 1;
+  background: color-mix(in srgb, #f5c542 34%, var(--editor-bg));
+  border-color: color-mix(in srgb, #d9a300 78%, transparent);
+  color: color-mix(in srgb, #8f6200 94%, var(--fg));
+  box-shadow: 0 0 0 2px color-mix(in srgb, #f5c542 16%, transparent);
 }
 
 .zion-comments-panel {
@@ -43,9 +94,10 @@
 .zion-comments-header {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  padding: 7px 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 
@@ -60,22 +112,26 @@
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
+  line-height: 1.25;
 }
 
 .zion-comments-subtitle {
   color: color-mix(in srgb, var(--fg) 52%, transparent);
   font-size: 11px;
+  line-height: 1.25;
 }
 
 .zion-comments-stats {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   color: color-mix(in srgb, var(--fg) 56%, transparent);
   font-size: 11px;
+  line-height: 1.25;
+  text-align: right;
 }
 
 .zion-comments-stats .is-orphan {
@@ -85,15 +141,24 @@
 .zion-comments-body {
   flex: 1 1 auto;
   min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(120px, 32%) minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
 }
 
 .zion-comments-list {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 4px 6px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0 8px 8px;
+}
+
+.zion-comments-list::after {
+  content: "";
+  flex: 0 0 var(--zion-comments-end-spacer, max(45vh, 220px));
+  pointer-events: none;
 }
 
 .zion-comments-empty {
@@ -110,95 +175,108 @@
 }
 
 .zion-comments-row {
+  flex: 0 0 auto;
   width: 100%;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 7px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
   border: 0;
-  border-radius: 6px;
-  background: transparent;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 88%, var(--bg));
   color: inherit;
   text-align: left;
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  overflow: hidden;
+  box-shadow: none;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
 }
 
-.zion-comments-row-icon {
-  flex: 0 0 auto;
-  width: 16px;
-  color: color-mix(in srgb, var(--fg) 50%, transparent);
-  font-size: 14px;
-  line-height: 1;
-}
-
-.zion-comments-row.is-active .zion-comments-row-icon {
-  color: color-mix(in srgb, var(--fg) 74%, transparent);
+.zion-comments-action:focus-visible,
+.zion-comments-quote:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #75beff) 58%, transparent);
+  outline-offset: -2px;
 }
 
 .zion-comments-row:hover {
-  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  background: color-mix(in srgb, var(--panel) 94%, var(--fg));
 }
 
 .zion-comments-row.is-active {
-  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  background: color-mix(in srgb, var(--panel) 96%, #f5c542);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 12%, transparent);
+}
+
+.zion-comments-row.is-located {
+  animation: zion-comments-located-pulse 1300ms ease-out;
+}
+
+@keyframes zion-comments-located-pulse {
+  0% {
+    background: color-mix(in srgb, var(--panel) 78%, #f5c542);
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, #f5c542 58%, transparent),
+      0 12px 28px color-mix(in srgb, #000 16%, transparent);
+  }
+  45% {
+    background: color-mix(in srgb, var(--panel) 88%, #f5c542);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, #f5c542 36%, transparent),
+      0 10px 24px color-mix(in srgb, #000 13%, transparent);
+  }
+  100% {
+    background: color-mix(in srgb, var(--panel) 96%, #f5c542);
+    box-shadow: 0 8px 24px color-mix(in srgb, #000 12%, transparent);
+  }
 }
 
 .zion-comments-row.is-resolved {
   opacity: 0.58;
 }
 
+.zion-comments-row.is-resolved.is-active {
+  opacity: 0.82;
+}
+
 .zion-comments-row.is-orphan {
-  background: transparent;
+  background: color-mix(in srgb, var(--panel) 94%, #cc8a2e);
 }
 
 .zion-comments-row.is-orphan.is-active {
-  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  background: color-mix(in srgb, var(--panel) 96%, #cc8a2e);
 }
 
-.zion-comments-row-main {
-  min-width: 0;
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+.zion-comments-row.is-expanded {
+  overflow: visible;
 }
 
-.zion-comments-row-title {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: color-mix(in srgb, var(--fg) 68%, transparent);
-  font-size: 12.5px;
-  line-height: 1.38;
-  font-weight: 450;
-}
-
-.zion-comments-row.is-active .zion-comments-row-title {
-  color: color-mix(in srgb, var(--fg) 92%, transparent);
-  font-weight: 620;
-}
-
-.zion-comments-row-title-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.zion-comments-row-meta {
+.zion-comments-state-badge {
   flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: color-mix(in srgb, var(--fg) 42%, transparent);
-  font-size: 10.5px;
-  line-height: 1;
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.zion-comments-state-badge.is-resolved {
+  background: color-mix(in srgb, #3fb950 13%, transparent);
+  color: color-mix(in srgb, #3fb950 82%, var(--fg));
+}
+
+.zion-comments-state-badge.is-lost {
+  background: color-mix(in srgb, #cc8a2e 14%, transparent);
+  color: color-mix(in srgb, #cc8a2e 86%, var(--fg));
+}
+
+.zion-comments-state-badge.is-moved {
+  background: color-mix(in srgb, #75beff 12%, transparent);
+  color: color-mix(in srgb, #75beff 76%, var(--fg));
 }
 
 .zion-comments-session-dot,
@@ -231,16 +309,18 @@
   background: #d29922;
 }
 
-.zion-comments-row.is-active .zion-comments-row-meta {
-  color: color-mix(in srgb, var(--fg) 54%, transparent);
-}
-
 .zion-comments-detail {
+  flex: 0 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 0 8px 0;
+  padding: 6px;
+}
+
+.zion-comments-row.is-expanded .zion-comments-detail {
+  overflow: visible;
+  padding-top: 0;
 }
 
 .zion-comments-detail-top {
@@ -300,27 +380,40 @@
 }
 
 .zion-comments-editor-frame {
-  flex: 1 1 auto;
-  min-height: 150px;
+  flex: 0 0 auto;
+  height: 132px;
+  min-height: 132px;
   overflow: hidden;
   border: 0;
-  border-radius: 0;
-  background: transparent;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--editor-bg, var(--bg)) 88%, transparent);
   display: flex;
   flex-direction: column;
+  transition: height 140ms ease;
 }
 
 .zion-comments-editor-header {
+  position: relative;
+  z-index: 1;
   flex: 0 0 auto;
-  min-height: 32px;
+  min-height: 28px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 0 2px 0 0;
+  gap: 6px;
+  padding: 0 5px 0 7px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
   color: color-mix(in srgb, var(--fg) 62%, transparent);
   font-size: 11px;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor-header {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  border-radius: 8px 8px 0 0;
+  background: color-mix(in srgb, var(--editor-bg, var(--bg)) 94%, var(--panel));
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 44%, transparent);
 }
 
 .zion-comments-editor-hint {
@@ -330,8 +423,17 @@
 
 .zion-comments-editor {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 84px;
   overflow: hidden;
+}
+
+.zion-comments-row:not(.is-expanded) .zion-comments-editor {
+  cursor: pointer;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor-frame {
+  height: auto;
+  overflow: visible;
 }
 
 .zion-comments-editor .cm-editor {
@@ -341,20 +443,46 @@
 
 .zion-comments-thread-editor {
   color: var(--fg);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .zion-comments-thread-editor .cm-scroller {
   background: transparent;
-  font-size: 12px;
+  font-family: var(--editor-content-font-family, var(--font-sans)) !important;
+  font-size: 14px !important;
+  line-height: 1.62 !important;
+}
+
+.zion-comments-row:not(.is-expanded) .zion-comments-thread-editor .cm-scroller {
+  overflow: hidden !important;
+}
+
+.zion-comments-row:not(.is-expanded) .zion-comments-thread-editor .cm-editor {
+  pointer-events: none;
+}
+
+.zion-comments-row.is-expanded .zion-comments-thread-editor .cm-scroller {
+  overflow: visible !important;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor,
+.zion-comments-row.is-expanded .zion-comments-editor .cm-editor {
+  height: auto;
+  overflow: visible;
 }
 
 .zion-comments-thread-editor .cm-content {
-  padding: 4px 2px 10px;
+  padding: 8px 8px 12px;
+  padding-bottom: 12px !important;
+  font-family: var(--editor-content-font-family, var(--font-sans)) !important;
+  font-size: 14px !important;
+  line-height: 1.62 !important;
 }
 
 .zion-comments-thread-editor .cm-line {
-  line-height: 1.48;
+  font-family: var(--editor-content-font-family, var(--font-sans)) !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
 }
 
 .zion-comments-thread-editor .cm-gutters {
@@ -784,7 +912,7 @@
 
 /* Place custom gutter to the far left of other gutters (fold/lineNumbers) */
 .cm-gutters .cm-gutter.zion-gutter-left {
-  min-width: 22px;
+  min-width: 18px;
   order: -100; /* ensure leftmost */
 }
 
@@ -814,4 +942,3 @@
 .cm-gutter.zion-gutter-left .cm-gutterElement {
   position: relative;
 }
-

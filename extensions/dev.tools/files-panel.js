@@ -24,6 +24,7 @@ const PREFETCH_MAX_DIRS_PER_BATCH = 8;
 const PREFETCH_MAX_CONCURRENCY = 2;
 const PREFETCH_DEPTH = 1;
 const TREE_CACHE_MAX_DIRS = 120;
+const PREVIEW_AUX_WIDTH = 760;
 
 let pendingRevealCommandPayload = null;
 const TREE_CACHE_MAX_CHILDREN_PER_DIR = 400;
@@ -656,6 +657,14 @@ function createFilesPanel(container) {
     }
   }
 
+  function requestPreviewAuxWidth() {
+    try { window.zion.auxiliaryBar?.requestTemporaryWidth?.(FILES_VIEW_ID, PREVIEW_AUX_WIDTH); } catch {}
+  }
+
+  function releasePreviewAuxWidth() {
+    try { window.zion.auxiliaryBar?.releaseTemporaryWidth?.(FILES_VIEW_ID); } catch {}
+  }
+
   function scrollActiveFileTabIntoView() {
     const tabId = activeFileTabId;
     if (!tabId) return;
@@ -847,7 +856,10 @@ function createFilesPanel(container) {
     runWithoutEditorCoreRender(() => editorCore.closeTab(tabId));
     activeFileTabId = editorCore.getActiveTabId();
     if (openFileTabs.size) renderPreviewOnly();
-    else scheduleRender();
+    else {
+      releasePreviewAuxWidth();
+      scheduleRender();
+    }
   }
 
   function disposePreviewResources() {
@@ -978,6 +990,7 @@ function createFilesPanel(container) {
     main.appendChild(label);
 
     row.appendChild(main);
+      row.appendChild(renderRowActionsMenu(node));
     row.oncontextmenu = (e) => {
       e.preventDefault();
       selectedKey = node.key;
@@ -1034,6 +1047,34 @@ function createFilesPanel(container) {
     }
   }
 
+    function renderRowActionsMenu(node) {
+      const details = document.createElement("details");
+      details.className = "zion-files-actions-menu";
+      details.onclick = (event) => event.stopPropagation();
+      details.onkeydown = (event) => event.stopPropagation();
+
+      const summary = document.createElement("summary");
+      summary.className = "zion-files-actions-trigger codicon codicon-ellipsis";
+      summary.title = t("files.moreActions", "More actions");
+      summary.setAttribute("aria-label", t("files.moreActions", "More actions"));
+      details.appendChild(summary);
+
+      const popover = document.createElement("div");
+      popover.className = "zion-files-actions-popover";
+      if (node.kind === "file") {
+        popover.appendChild(menuItem(t("files.open", "Open Preview"), () => { details.open = false; openFile(node); }));
+      }
+      popover.appendChild(menuItem(t("files.openInFolder", "Open in Folder"), () => { details.open = false; revealNodeInFolder(node); }));
+      if (node.kind === "file") {
+        popover.appendChild(menuItem(t("files.download", "Download"), () => { details.open = false; downloadFile(node); }));
+      } else {
+        popover.appendChild(menuItem(t("files.refreshFolder", "Refresh Folder"), () => { details.open = false; refreshDirectory(node); }));
+      }
+      popover.appendChild(menuItem(t("files.copyPath", "Copy Path"), () => { details.open = false; copyPath(node); }));
+      details.appendChild(popover);
+      return details;
+    }
+
   function showContextMenu(node, x, y) {
     closeContextMenu();
     const popover = document.createElement("div");
@@ -1045,6 +1086,7 @@ function createFilesPanel(container) {
     } else {
       popover.appendChild(menuItem(t("files.refreshFolder", "Refresh Folder"), () => { closeContextMenu(); refreshDirectory(node); }));
     }
+      popover.appendChild(menuItem(t("files.openInFolder", "Open in Folder"), () => { closeContextMenu(); revealNodeInFolder(node); }));
     popover.appendChild(menuItem(t("files.copyPath", "Copy Path"), () => { closeContextMenu(); copyPath(node); }));
     popover.oncontextmenu = (event) => event.preventDefault();
     document.body.appendChild(popover);
@@ -1462,6 +1504,7 @@ function createFilesPanel(container) {
     const hadPreview = !!root.querySelector(".zion-files-preview-pane") || openFileTabs.size > 0;
 
     saveActivePreviewScrollState();
+    if (!hadPreview) requestPreviewAuxWidth();
     runWithoutEditorCoreRender(() => editorCore.openTab(baseTab));
     activeFileTabId = editorCore.getActiveTabId();
     if (hadPreview) renderPreviewOnly();
@@ -1626,6 +1669,26 @@ function createFilesPanel(container) {
     try { row.scrollIntoView({ block: "center", inline: "nearest" }); } catch {}
     try { row.focus?.({ preventScroll: true }); } catch {}
   }
+
+    function revealNodeInFolder(node) {
+      const path = buildNodeAbsolutePath(node) || node?.full_path || node?.fullPath || node?.path || node?.displayPath || node?.name || "";
+      if (!path) return;
+      const payload = {
+        path,
+        sourceId: node?.sourceId || sourceId
+      };
+      try { console.info("[files.openInFolder] click", { node, payload }); } catch {}
+      try {
+        const ret = window.zion.commands?.executeCommand?.("fs.openInFolder", payload);
+        Promise.resolve(ret).then((result) => {
+          try { console.info("[files.openInFolder] result", result); } catch {}
+        }).catch((err) => {
+          try { console.error("[files.openInFolder] failed", err); } catch {}
+        });
+      } catch (err) {
+        try { console.error("[files.openInFolder] failed", err); } catch {}
+      }
+    }
 
   function nodeMatchesReveal(node, target) {
     const candidates = [
@@ -3050,7 +3113,7 @@ function splitMarkdownTableRow(line) {
 function isTableSeparatorRow(line, expectedCells) {
   const cells = splitMarkdownTableRow(line);
   if (cells.length < 2 || cells.length !== expectedCells) return false;
-  return cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  return cells.every((cell) => /^:?-+:?$/.test(cell));
 }
 
 function parseTableAlign(cell) {

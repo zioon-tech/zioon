@@ -13,8 +13,11 @@ export const inlineWidgetSourceFacet = Facet.define<InlineWidgetDecorationSource
 
 
 function isInlineWidgetAnchorLine(text: string): boolean {
-  return /^\s*调用\s+/.test(text) || /^\s*思考\s*$/.test(text.trim());
+  return /^\s*调用\s+[^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/.test(text)
+    || /^\s*思考\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/.test(text);
 }
+
+const CARD_MARKER_ID_COMMENT_RE = /<!--\s*zion-(?:thinking|tool):id=[^>\s]+\s*-->/g;
 
 function buildAnchorLineDecorations(state: EditorState): Range<Decoration>[] {
   const decorations: Range<Decoration>[] = [];
@@ -23,6 +26,16 @@ function buildAnchorLineDecorations(state: EditorState): Range<Decoration>[] {
     const text = state.doc.sliceString(line.from, line.to);
     if (!isInlineWidgetAnchorLine(text)) continue;
     decorations.push(Decoration.line({ class: "zion-inline-widget-anchor-row" }).range(line.from));
+      let match: RegExpExecArray | null;
+      const re = new RegExp(CARD_MARKER_ID_COMMENT_RE.source, "g");
+      while ((match = re.exec(text)) !== null) {
+        decorations.push(Decoration.mark({
+          attributes: {
+            class: "zion-card-marker-id-comment",
+            style: "display: none;"
+          }
+        }).range(line.from + match.index, line.from + match.index + match[0].length));
+      }
   }
   return decorations;
 }

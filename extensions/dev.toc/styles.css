@@ -207,22 +207,22 @@
 
 .cm-editor .cm-selectionBackground {
   background: var(--selection-bg) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: none;
 }
 
 .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
-  background: color-mix(in srgb, var(--selection-bg) 78%, var(--accent)) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 36%, transparent);
+  background: var(--selection-bg) !important;
+  box-shadow: none;
 }
 
 .cm-editor .cm-vimMode .cm-selectionBackground {
-  background: color-mix(in srgb, var(--selection-bg) 68%, var(--accent)) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
+  background: var(--selection-bg) !important;
+  box-shadow: none;
 }
 
 .cm-editor.cm-focused .cm-vimMode .cm-selectionBackground {
-  background: color-mix(in srgb, var(--selection-bg) 46%, var(--accent)) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 58%, transparent);
+  background: var(--selection-bg) !important;
+  box-shadow: none;
 }
 
 .cm-selectionMatch {

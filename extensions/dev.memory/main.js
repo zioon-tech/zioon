@@ -43,6 +43,11 @@ const I18N_MESSAGES = {
     "memory.selectionTitle": "选区记忆",
     "memory.listTitle": "记忆",
     "memory.details": "记忆详情",
+      "memory.moreActions": "更多操作",
+      "memory.openPreview": "打开预览",
+      "memory.openInFolder": "在文件夹中打开",
+      "memory.copyPath": "复制路径",
+      "memory.pathCopied": "路径已复制",
     "file.opening": "正在打开文件...",
     "file.openFailed": "打开文件失败",
     "file.binaryUnsupported": "暂不支持二进制预览",
@@ -90,6 +95,11 @@ const I18N_MESSAGES = {
     "memory.selectionTitle": "Selection Memory",
     "memory.listTitle": "Memory",
     "memory.details": "Memory Details",
+      "memory.moreActions": "More actions",
+      "memory.openPreview": "Open Preview",
+      "memory.openInFolder": "Open in Folder",
+      "memory.copyPath": "Copy Path",
+      "memory.pathCopied": "Path copied",
     "file.opening": "Opening file...",
     "file.openFailed": "Failed to open file",
     "file.binaryUnsupported": "Binary preview is not supported yet",
@@ -535,8 +545,19 @@ function firstHeading(markdown) {
 }
 
 function openMemoryPanel() {
-  try { window.zion?.auxiliaryBar?.setWidth?.(Math.max(760, window.zion.state?.get?.("ui.auxiliaryBar.width") || 0)); } catch {}
   try { window.zion?.auxiliaryBar?.activateView?.(VIEW_ID); } catch {}
+}
+
+function requestMemoryAuxWidth() {
+  try {
+    const aux = window.zion?.auxiliaryBar;
+    if (aux?.requestTemporaryWidth) aux.requestTemporaryWidth(VIEW_ID, 760);
+    else aux?.setWidth?.(Math.max(760, window.zion.state?.get?.("ui.auxiliaryBar.width") || 0));
+  } catch {}
+}
+
+function releaseMemoryAuxWidth() {
+  try { window.zion?.auxiliaryBar?.releaseTemporaryWidth?.(VIEW_ID); } catch {}
 }
 
 function rememberSelection() {
@@ -593,6 +614,12 @@ function flattenMemoryTree(node, expanded, depth = 0, out = []) {
 function memoryDisplayPath(item) {
   const root = getSettings().memoryRootPath || DEFAULT_MEMORY_ROOT;
   return `${root.replace(/\/$/, "")}/${normalizeMemoryPath(item?.path)}`;
+}
+
+function memoryFolderDisplayPath(path) {
+  const root = getSettings().memoryRootPath || DEFAULT_MEMORY_ROOT;
+  const relative = String(path || "").replace(/^\/+|\/+$/g, "");
+  return relative ? `${root.replace(/\/$/, "")}/${relative}` : root;
 }
 
 function memoryFileName(item) {
@@ -673,20 +700,22 @@ function renderMemoryPanel(container) {
   function render() {
     const all = readMemories();
     syncOpenMemoryTabs(all);
-    ensureActiveMemoryTab(all);
+    const hasPreview = openMemoryTabs.size > 0;
+    if (!hasPreview) releaseMemoryAuxWidth();
     const activeTab = resolveEditorTab(editorCore.getActiveTab() || openMemoryTabs.values().next().value || null);
     const activeMemory = activeTab?.kind === "memory" ? activeTab.memory : null;
     const existingBody = root.querySelector(".zion-memory-body");
     const existingList = existingBody?.querySelector(".zion-memory-list-wrap");
     const existingDetail = existingBody?.querySelector(".zion-memory-detail");
     const activeDetailSignature = memoryDetailSignature(activeTab);
-    const canPreserveDetail = !!existingBody && !!existingList && !!existingDetail && !!activeTab?.id && activeTab.id === renderedMemoryDetailTabId && activeDetailSignature === renderedMemoryDetailSignature;
+    const canPreserveDetail = hasPreview && !!existingBody && !!existingList && !!existingDetail && !!activeTab?.id && activeTab.id === renderedMemoryDetailTabId && activeDetailSignature === renderedMemoryDetailSignature;
 
 
     const body = document.createElement("div");
     body.className = "zion-memory-body";
     const list = renderList(all, activeMemory?.id || "");
-    list.style.flexBasis = `${explorerWidth}px`;
+    if (hasPreview) applyExplorerWidth(list);
+    else applyExplorerFill(list);
     if (canPreserveDetail) {
 
       existingList.replaceWith(list);
@@ -699,6 +728,12 @@ function renderMemoryPanel(container) {
     disposeMemoryEditor(true);
 
     body.appendChild(list);
+    if (!hasPreview) {
+      renderedMemoryDetailTabId = "";
+      renderedMemoryDetailSignature = "";
+      root.replaceChildren(body);
+      return;
+    }
     body.appendChild(renderResizeHandle(body, list));
     body.appendChild(renderDetail(activeTab));
     renderedMemoryDetailTabId = activeTab?.id || "";
@@ -751,15 +786,6 @@ function renderMemoryPanel(container) {
     }
   }
 
-  function ensureActiveMemoryTab(items) {
-    if (openMemoryTabs.size) return;
-    const activeId = getActiveMemoryId();
-    if (!activeId) return;
-    const item = (Array.isArray(items) ? items : []).find((entry) => entry.id === activeId);
-    if (!item) return;
-    openMemoryTab(item);
-  }
-
   function openMemoryById(id) {
     const item = readMemories().find((entry) => entry.id === id);
     if (!item) return;
@@ -772,6 +798,8 @@ function renderMemoryPanel(container) {
     const tabId = `memory:${item.id}`;
     const nextTab = resolveMemoryItemTab(item);
     if (activeMemoryTabId === tabId && memoryDetailSignature(resolveEditorTab(editorCore.getActiveTab())) === memoryDetailSignature(nextTab)) return false;
+    const hadPreview = openMemoryTabs.size > 0;
+    if (!hadPreview) requestMemoryAuxWidth();
     runWithoutEditorCoreRender(() => editorCore.openTab({
       id: tabId,
       kind: nextTab.kind,
@@ -831,6 +859,7 @@ function renderMemoryPanel(container) {
     if (tabId === activeMemoryTabId) disposeMemoryEditor(true);
     runWithoutEditorCoreRender(() => editorCore.closeTab(tabId));
     activeMemoryTabId = editorCore.getActiveTabId();
+    if (!openMemoryTabs.size) releaseMemoryAuxWidth();
     const activeTab = resolveEditorTab(editorCore.getActiveTab());
     if (activeTab?.kind === "memory") setActiveMemory(activeTab.memoryId, { silent: true });
     else setActiveMemory("", { silent: true });
@@ -853,7 +882,7 @@ function renderMemoryPanel(container) {
         const max = Math.max(220, rect.width - 280);
         const next = Math.max(180, Math.min(max, moveEvent.clientX - rect.left));
         explorerWidth = editorCore.setExplorerWidth(next, { silent: true });
-        explorer.style.flexBasis = `${explorerWidth}px`;
+        applyExplorerWidth(explorer);
       };
       const stop = () => {
         root.classList.remove("is-resizing-memory");
@@ -924,6 +953,7 @@ function renderMemoryPanel(container) {
           `<span class="zion-files-name">${escapeHtml(node.name)}</span>`
         ].join("");
         row.appendChild(main);
+          row.appendChild(renderMemoryRowActionsMenu({ kind: "directory", path: memoryFolderDisplayPath(node.path) }));
         tree.appendChild(row);
         continue;
       }
@@ -947,11 +977,100 @@ function renderMemoryPanel(container) {
         `<span class="zion-files-name">${escapeHtml(node.name || item.title || item.id)}</span>`
       ].join("");
       row.appendChild(main);
+        row.appendChild(renderMemoryRowActionsMenu({ kind: "file", item, path: memoryDisplayPath(item), onOpen: () => {
+          if (openMemoryTab(item)) scheduleRender();
+        } }));
       tree.appendChild(row);
     }
     list.appendChild(tree);
     wrap.appendChild(list);
     return wrap;
+  }
+
+  function renderMemoryRowActionsMenu({ kind, path, onOpen }) {
+    const details = document.createElement("details");
+    details.className = "zion-files-actions-menu";
+    details.onclick = (event) => event.stopPropagation();
+    details.onkeydown = (event) => event.stopPropagation();
+
+    const summary = document.createElement("summary");
+    summary.className = "zion-files-actions-trigger codicon codicon-ellipsis";
+    summary.title = t("memory.moreActions", "More actions");
+    summary.setAttribute("aria-label", t("memory.moreActions", "More actions"));
+    details.appendChild(summary);
+
+    const popover = document.createElement("div");
+    popover.className = "zion-files-actions-popover";
+    if (kind === "file" && onOpen) {
+      popover.appendChild(memoryMenuItem(t("memory.openPreview", "Open Preview"), () => {
+        details.open = false;
+        onOpen();
+      }));
+    }
+    popover.appendChild(memoryMenuItem(t("memory.openInFolder", "Open in Folder"), () => {
+      details.open = false;
+      openMemoryPathInFolder(path);
+    }));
+    popover.appendChild(memoryMenuItem(t("memory.copyPath", "Copy Path"), () => {
+      details.open = false;
+      copyMemoryPath(path);
+    }));
+    details.appendChild(popover);
+    return details;
+  }
+
+  function memoryMenuItem(label, action) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "zion-files-menu-item";
+    button.textContent = label;
+    button.onclick = (event) => {
+      event.stopPropagation();
+      action?.();
+    };
+    return button;
+  }
+
+  function openMemoryPathInFolder(path) {
+    const value = String(path || "").trim();
+    if (!value) return;
+    const payload = { path: value };
+    try { console.info("[memory.openInFolder] click", payload); } catch {}
+    try {
+      const ret = window.zion?.commands?.executeCommand?.("fs.openInFolder", payload);
+      Promise.resolve(ret).then((result) => {
+        try { console.info("[memory.openInFolder] result", result); } catch {}
+      }).catch((err) => {
+        try { console.error("[memory.openInFolder] failed", err); } catch {}
+      });
+    } catch (err) {
+      try { console.error("[memory.openInFolder] failed", err); } catch {}
+    }
+  }
+
+  async function copyMemoryPath(path) {
+    const value = String(path || "").trim();
+    if (!value) return;
+    try {
+      await navigator.clipboard?.writeText?.(value);
+      window.showToast?.(t("memory.pathCopied", "Path copied"));
+    } catch {
+      window.showToast?.(value);
+    }
+  }
+
+  function applyExplorerWidth(explorer) {
+    if (!explorer) return;
+    explorer.style.flex = `0 0 ${explorerWidth}px`;
+    explorer.style.width = `${explorerWidth}px`;
+    explorer.style.maxWidth = "520px";
+  }
+
+  function applyExplorerFill(explorer) {
+    if (!explorer) return;
+    explorer.style.flex = "1 1 auto";
+    explorer.style.width = "auto";
+    explorer.style.maxWidth = "none";
   }
 
   function renderDetail(tab) {

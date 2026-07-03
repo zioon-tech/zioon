@@ -286,9 +286,41 @@ export async function activate(ctx) {
   };
   const getActiveHeadingStateKey = (target) => getScopedStateKey("toc.activeHeadingId", target);
   const getActiveBlockStateKey = (target) => getScopedStateKey("toc.activeBlockId", target);
+  const getRoleIndexForEditor = (ed, maybeView) => {
+    try {
+      const fromApi = window?.zion?.roles?.getIndex?.(maybeView || ed);
+      if (fromApi && Array.isArray(fromApi.blocks)) return fromApi;
+      const state = window?.zion?.state;
+      if (!state?.get) return null;
+      const dom = maybeView?.dom || getEditorEl(ed);
+      const editorId = ed?.editorId || ed?.core?.getEditorId?.() || dom?.getAttribute?.("data-editor-id") || "";
+      const panelId = getPanelIdFromEditor(ed) || dom?.getAttribute?.("data-panel-id") || dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || "";
+      const sessionId = ed?.sessionId || ed?.core?.getSessionId?.() || dom?.getAttribute?.("data-session-id") || dom?.closest?.("[data-session-id]")?.getAttribute?.("data-session-id") || "";
+      const candidates = [
+        editorId ? `roles.index.editor.${editorId}` : "",
+        panelId && sessionId ? `roles.index.panelSession.${panelId}.${sessionId}` : "",
+        panelId ? `roles.index.panel.${panelId}` : "",
+        "roles.index"
+      ].filter(Boolean);
+      for (const key of candidates) {
+        const idx = state.get(key);
+        if (!idx || !Array.isArray(idx.blocks)) continue;
+        const scope = idx.scope || {};
+        if (key === "roles.index") {
+          if (editorId && scope.editorId && scope.editorId !== editorId) continue;
+          if (panelId && scope.panelId && scope.panelId !== panelId) continue;
+          if (sessionId && scope.sessionId && scope.sessionId !== sessionId) continue;
+        }
+        return idx;
+      }
+    } catch {}
+    return null;
+  };
   const getRoleBlocksForEditor = (ed, maybeView) => {
     try {
       const text = String(ed?.getValue?.() || "");
+      const idx = getRoleIndexForEditor(ed, maybeView);
+      if (idx?.blocks?.length) return idx.blocks;
       const blocks = parseRoleBlocksFromText(text, getRolePrefixes());
       return ensureLeadingUserBlock(blocks, text, maybeView);
     } catch {
@@ -460,11 +492,7 @@ export async function activate(ctx) {
   // - topOffset: pixels to keep between top of viewport and the target line (default 48)
   const scrollLineIntoViewTop = (ed, maybeView, line, topOffset = 48) => {
     try {
-      // Set cursor and focus first (best-effort)
-      try { ed.setCursor({ line, ch: 0 }); } catch {}
-      try { ed.focus(); } catch {}
-
-      if (maybeView && maybeView.coordsAtPos) {
+      if (maybeView && typeof maybeView.lineBlockAt === "function") {
         try {
           let stickyHeight = 0;
           try {
@@ -476,23 +504,44 @@ export async function activate(ctx) {
           const effectiveTopOffset = Math.max(topOffset || 0, (stickyHeight || 0) + 10);
 
           // Convert line to a document position
-          const pos = maybeView.state.doc.line(line + 1).from;
-          const coords = maybeView.coordsAtPos(pos);
-          if (!coords) return;
+          const targetLine = maybeView.state.doc.line(line + 1);
+          const pos = targetLine.from;
+          const lineText = maybeView.state.doc.sliceString(targetLine.from, targetLine.to);
+          const heading = /^([ \t]*#{1,6}[ \t]+)/.exec(lineText);
+          const cursorPos = heading ? Math.min(targetLine.from + heading[1].length, targetLine.to) : pos;
+          try {
+            maybeView.dispatch({ selection: { anchor: cursorPos } });
+            maybeView.focus();
+          } catch {
+            try { ed.setCursor({ line, ch: 0 }); } catch {}
+            try { ed.focus(); } catch {}
+          }
+
+          const block = maybeView.lineBlockAt(pos);
+          if (!block) return;
 
           // Determine scroll container (CodeMirror exposes scrollDOM)
           const scroller = maybeView.scrollDOM || maybeView.dom || document.scrollingElement || document.documentElement;
-          const scrollerRect = scroller.getBoundingClientRect ? scroller.getBoundingClientRect() : { top: 0 };
-          const currentScrollTop = scroller.scrollTop || 0;
 
-          // coords.top is viewport-relative; compute desired scrollTop on scroller
-          const targetScrollTop = currentScrollTop + (coords.top - scrollerRect.top) - effectiveTopOffset;
+          // Use CodeMirror document coordinates instead of viewport coords, so large
+          // documents and in-flight smooth scrolling do not skew the target.
+          const targetScrollTop = Math.max(0, Number(block.top || 0) - effectiveTopOffset);
 
-          if (typeof scroller.scrollTo === 'function') {
-            try { scroller.scrollTo({ top: targetScrollTop, left: 0, behavior: 'smooth' }); } catch { scroller.scrollTop = targetScrollTop; }
-          } else {
+          const applyScroll = () => {
             scroller.scrollTop = targetScrollTop;
-          }
+            try {
+              if (typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: targetScrollTop, left: 0, behavior: 'auto' });
+            } catch {}
+          };
+          applyScroll();
+          try {
+            requestAnimationFrame(() => {
+              applyScroll();
+              requestAnimationFrame(() => {
+                applyScroll();
+              });
+            });
+          } catch {}
         } catch {}
       } else {
         // Fallback: if the editor abstraction provides a scroll API, try it (best-effort)

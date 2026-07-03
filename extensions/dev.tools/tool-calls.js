@@ -6,10 +6,13 @@ import { highlightLine, inferLanguageFromPath } from "./syntax-highlight.js";
 import {
   buildRegexAnchors,
   filterDeletedItems,
+  mergeItemsFromAnchors,
   planAssistantMarkerInsertion,
   reconcileExactAnchors,
   reconcileMountedItems,
-  reconcileNearestAnchors
+  reconcileNearestAnchors,
+  stripCardMarkerIdComment,
+  toolMarkerText
 } from "../../src/chat/restore";
 import { inlineWidgetSourceFacet } from "../../src/editor/inlineWidgets";
 
@@ -37,6 +40,152 @@ const updateAction = StateEffect.define(); // { id, action }
 const removeTool = StateEffect.define();   // { id }
 const clearAll = StateEffect.define();
 const inlineWidgetLineClass = "zion-inline-widget-row";
+const TOOL_ANCHOR_RE = /调用\s+([^\n<]{1,300}?)\s*<!--\s*zion-tool:id=([^>\s]+)\s*-->|调用\s+([^\n<]{1,300})/g;
+
+function parseToolAnchorText(text) {
+  const raw = String(text || "").trim();
+  const match = /^调用\s+([^\n<]{1,300}?)(?:\s*<!--\s*zion-tool:id=([^>\s]+)\s*-->)?$/.exec(raw);
+  if (!match) return null;
+  return {
+    name: String(match[1] || "").trim(),
+    id: match[2] ? String(match[2]) : null,
+    visibleText: stripCardMarkerIdComment(raw)
+  };
+}
+
+function buildToolAnchors(docString) {
+  return buildRegexAnchors(docString, TOOL_ANCHOR_RE, (match) => {
+    const hasId = !!match[2];
+    const name = String(hasId ? match[1] : match[3] || "").trim();
+    if (!name || name.length > 300) return null;
+    return {
+      from: match.index,
+      to: match.index + match[0].length,
+      name,
+      markerId: hasId ? String(match[2]) : null
+    };
+  });
+}
+
+function isToolAnchorForItem(anchorText, item, id) {
+  const parsed = parseToolAnchorText(anchorText);
+  if (!parsed) return false;
+  const expectedId = String(id || "");
+  if (parsed.id && expectedId && parsed.id !== expectedId) return false;
+  return parsed.name === String(item?.name || "tool");
+}
+
+function migrateLegacyToolAnchors(view, items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return false;
+  const anchors = buildToolAnchors(view.state.doc.toString()).filter((anchor) => !anchor.markerId);
+  if (!anchors.length) return false;
+  const used = new Set();
+  const changes = [];
+  for (const item of list) {
+    const id = String(item?.id || "");
+    const name = String(item?.name || "tool");
+    if (!id || !name) continue;
+    let anchor = anchors.find((candidate) =>
+      !used.has(candidate)
+      && candidate.name === name
+      && typeof item.from === "number"
+      && typeof item.to === "number"
+      && candidate.from === item.from
+      && candidate.to === item.to
+    );
+    if (!anchor) anchor = anchors.find((candidate) => !used.has(candidate) && candidate.name === name);
+    if (!anchor) continue;
+    used.add(anchor);
+    const marker = toolMarkerText(name, id);
+    changes.push({ from: anchor.from, to: anchor.to, insert: marker });
+    item.from = anchor.from;
+    item.to = anchor.from + marker.length;
+  }
+  if (!changes.length) return false;
+  changes.sort((a, b) => a.from - b.from);
+  view.dispatch({
+    changes,
+    annotations: Transaction.userEvent.of("zion.cardAnchorMigrate")
+  });
+  return true;
+}
+
+function mergeToolItemsFromAnchors(view, items, deletedIds) {
+  return mergeItemsFromAnchors({
+    items,
+    deletedIds,
+    anchors: buildToolAnchors(view.state.doc.toString()).filter((anchor) => anchor.markerId),
+    createItem: (anchor) => ({
+      id: String(anchor.markerId || ""),
+      name: anchor.name || "tool",
+      args: {},
+      expanded: false,
+      from: anchor.from,
+      to: anchor.to
+    })
+  }).items;
+}
+
+  function reviveDeletedToolIdsForAnchors(sessionId, deletedIds, anchors) {
+    const deleted = Array.isArray(deletedIds) ? deletedIds.map(String).filter(Boolean) : [];
+    if (!sessionId || !deleted.length || !Array.isArray(anchors) || !anchors.length) return deleted;
+    const anchorIds = new Set(anchors.map((anchor) => String(anchor?.markerId || "")).filter(Boolean));
+    const remaining = deleted.filter((id) => !anchorIds.has(id));
+    if (remaining.length === deleted.length) return deleted;
+    try {
+      updateSessionAnnotations(sessionId, (ann) => ({ ...ann, deletedToolIds: remaining }));
+    } catch {}
+    return remaining;
+  }
+
+  function isEmptyArgs(value) {
+    if (value === undefined || value === null) return true;
+    if (typeof value === "object") return Object.keys(value).length === 0;
+    return false;
+  }
+
+  function mergeToolSnapshotItem(previous, current) {
+    const prev = previous && typeof previous === "object" ? previous : {};
+    const next = current && typeof current === "object" ? current : {};
+    const merged = { ...prev, ...next };
+    if (isEmptyArgs(next.args) && !isEmptyArgs(prev.args)) merged.args = prev.args;
+    if (next.result == null && prev.result != null) {
+      merged.result = prev.result;
+      if (prev.ok !== undefined) merged.ok = prev.ok;
+    }
+    if (next.action == null && prev.action != null) merged.action = prev.action;
+    if (next.userStartLine == null && prev.userStartLine != null) merged.userStartLine = prev.userStartLine;
+    if (next.actionAt == null && prev.actionAt != null) merged.actionAt = prev.actionAt;
+    return merged;
+  }
+
+  function toolItemNeedsHydration(stored, mounted) {
+    if (!stored || !mounted) return false;
+    if (stored.args !== undefined) {
+      try {
+        if (JSON.stringify(stored.args ?? null) !== JSON.stringify(mounted.args ?? null)) return true;
+      } catch {
+        if (mounted.args === undefined) return true;
+      }
+    }
+    if (stored.result != null && mounted.result == null) return true;
+    if (stored.name && mounted.name !== stored.name) return true;
+    if (stored.action && !mounted.action) return true;
+    if (typeof stored.userStartLine === "number" && mounted.userStartLine == null) return true;
+    return false;
+  }
+
+  function needsToolRestore(list, fieldVal) {
+    const mounted = fieldVal?.items || new Map();
+    for (const it of Array.isArray(list) ? list : []) {
+      const id = String(it?.id || "");
+      if (!id) continue;
+      const current = mounted.get(id);
+      if (!current || toolItemNeedsHydration(it, current)) return true;
+    }
+    return false;
+  }
 
 function getSessionAnnotations(sessionId) {
   try {
@@ -77,6 +226,12 @@ function getRunAssistantAnchorHint(payload, sessionId) {
   if (typeof payload?.answerAnchorPos === "number") return payload.answerAnchorPos;
   return (sessionId ? window.zion?.state?.get(`chat.answerAnchorPos.${sessionId}`) : undefined)
     ?? window.zion?.state?.get("chat.answerAnchorPos");
+}
+
+function getRunAssistantHeadLineHint(payload, sessionId) {
+  if (typeof payload?.answerHeadLine === "number") return payload.answerHeadLine;
+  return (sessionId ? window.zion?.state?.get(`chat.answerHeadLine.${sessionId}`) : undefined)
+    ?? window.zion?.state?.get("chat.answerHeadLine");
 }
 
 function debugToolFieldStats(_view) {
@@ -208,17 +363,7 @@ function toolStatusAttr(ok, done) {
 }
 
 function toolStatusIcon(status) {
-  const s = String(status || "");
-  if (s === "ok") {
-    return `<svg class="zion-tool-call-status-icon" width="8" height="8" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 8.2l2.7 2.7L12.4 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  }
-  if (s === "error") {
-    return `<svg class="zion-tool-call-status-icon" width="8" height="8" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
-  }
-  if (s === "pending") {
-    return `<svg class="zion-tool-call-status-icon zion-tool-call-status-icon--pending" width="8" height="8" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="18 10"/></svg>`;
-  }
-  return `<svg class="zion-tool-call-status-icon" width="8" height="8" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="1.6" fill="currentColor"/></svg>`;
+    return "";
 }
 
 function normalizeToolAction(action) {
@@ -296,18 +441,64 @@ function createMetaPill(text) {
     alignItems: "center",
     minWidth: "0",
     maxWidth: "100%",
-    padding: "2px 6px",
-    borderRadius: "999px",
+    padding: "0",
+    borderRadius: "0",
     fontSize: "10px",
-    lineHeight: "1.2",
+    lineHeight: "1.35",
     color: "var(--muted-fg, var(--fg))",
-    background: "rgba(128,128,128,0.08)",
-    border: "1px solid rgba(128,128,128,0.12)",
+    background: "transparent",
+    border: "0",
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap"
   });
   return el;
+}
+
+function isContextOpenableTool(name) {
+  const n = normalizeToolName(name);
+  return n === "read" || n === "fsread" || n === "write" || n === "fswrite" || n === "edit" || n === "fsedit";
+}
+
+function getToolPrimaryPath(args = {}) {
+  return String(args?.path || args?.file_path || args?.target_file || args?.absolute_path || "").trim();
+}
+
+function getToolContextSourceId(args = {}, context = {}) {
+  const explicitSessionId = String(args?.session_id || "").trim();
+  if (explicitSessionId) return `terminal:${explicitSessionId}`;
+  const fallbackSessionId = String(context?.sessionId || "").trim();
+  return fallbackSessionId ? `terminal:${fallbackSessionId}` : "";
+}
+
+function openToolInContext(name, args = {}, context = {}) {
+  if (!isContextOpenableTool(name)) return false;
+  const path = getToolPrimaryPath(args);
+  if (!path) return false;
+  try {
+    window.zion?.commands?.executeCommand?.("tools.context.openFilePreview", {
+      path,
+      sourceId: getToolContextSourceId(args, context)
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createOpenInContextButton(name, args = {}, context = {}) {
+  if (!isContextOpenableTool(name) || !getToolPrimaryPath(args)) return null;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "zion-tool-open-file-button codicon codicon-link-external";
+  btn.title = t("call.openInContext", "在 Context 中打开");
+  btn.setAttribute("aria-label", t("call.openInContext", "在 Context 中打开"));
+  btn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openToolInContext(name, args, context);
+  });
+  return btn;
 }
 
 function getToolArtifactMeta(id, name, args, result = null, ok = null, action = null, sessionId = "") {
@@ -462,7 +653,7 @@ function parseReadOutput(text, args = {}) {
   };
 }
 
-function createReadPreviewView(result, args = {}) {
+function createReadPreviewView(result, args = {}, context = {}) {
   const { path, lines } = parseReadOutput(result, args);
   const displayPath = path || String(args?.path || args?.file_path || "").trim() || "read result";
   const language = inferLanguageFromPath(displayPath);
@@ -497,6 +688,8 @@ function createReadPreviewView(result, args = {}) {
 
   const headerRight = document.createElement("div");
   headerRight.className = "zion-tool-artifact-preview-right";
+  const openButton = createOpenInContextButton("read", args, context);
+  if (openButton) headerRight.appendChild(openButton);
   if (offset != null) headerRight.appendChild(createMetaPill(`offset ${offset}`));
   if (limit != null) headerRight.appendChild(createMetaPill(`limit ${limit}`));
   headerRight.appendChild(createMetaPill(`${lines.length} lines`));
@@ -702,6 +895,8 @@ function createArtifactDiffPreview(name, args, { id = "preview", result = null, 
 
   const headerRight = document.createElement("div");
   headerRight.className = "zion-tool-artifact-preview-right";
+  const openButton = createOpenInContextButton(name, args, getContext?.() || {});
+  if (openButton) headerRight.appendChild(openButton);
   if (canAcceptRevertTool(name, args)) {
     const actions = document.createElement("div");
     actions.className = "zion-tool-artifact-preview-actions";
@@ -1236,10 +1431,10 @@ function createMarkdownView(text) {
   return wrap;
 }
 
-function createToolResponseRenderer(name, result, args = {}) {
+function createToolResponseRenderer(name, result, args = {}, context = {}) {
   const n = normalizeToolName(name);
   if (n === "read" || n === "fsread") {
-    return createReadPreviewView(result, args);
+    return createReadPreviewView(result, args, context);
   }
   if (isTerminalCommandTool(name)) {
     return createTerminalCommandView(name, args, result);
@@ -1701,7 +1896,7 @@ class ToolCallCardWidget extends WidgetType {
       title.textContent = this.name;
       Object.assign(title.style, {
         fontSize: "11px",
-        fontWeight: "650",
+          fontWeight: "400",
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
@@ -1770,7 +1965,7 @@ class ToolCallCardWidget extends WidgetType {
 
     // 响应结果部分
     if (this.result && (!inlineArtifact || ok === false)) {
-      wrap.appendChild(createToolResponseRenderer(this.name, this.result, this.args || {}));
+        wrap.appendChild(createToolResponseRenderer(this.name, this.result, this.args || {}, getActionContext()));
     }
 
     return wrap;
@@ -1890,6 +2085,9 @@ class ToolInlineWidget extends WidgetType {
     const actionPill = createToolActionPill(this.action);
     if (actionPill) span.appendChild(actionPill);
 
+    const openBtn = createOpenInContextButton(this.name, this.args || {}, { sessionId: this.sessionId || "" });
+    if (openBtn) span.appendChild(openBtn);
+
     const badge = document.createElement("span");
     badge.className = "zion-tool-call-status";
     const status = toolStatusAttr(this.ok, this.done);
@@ -1912,34 +2110,49 @@ function buildToolDecorations(state, field) {
   const decorations = [];
   let fieldVal = null;
   try { fieldVal = state.field(field, false); } catch {}
-  const items = fieldVal?.items;
-  if (!items?.size) return decorations;
+  const items = fieldVal?.items || null;
 
+  // Inline pills are driven directly by the document anchors (which carry the tool
+  // name + id). A mirror/split panel renders pills from its seeded document on first
+  // build, so the bare "调用 xxx <!-- ... -->" text can never leak through while the
+  // asynchronous restore is still pending. StateField items only enrich the pill
+  // (args/result/status) and drive the expanded card.
+  const docLen = state.doc.length;
+  let anchors = [];
   try {
-    const addedLines = new Set();
-    items.forEach((it) => {
-      if (typeof it.from !== "number" || it.from < 0 || it.from > state.doc.length) return;
-      const line = state.doc.lineAt(it.from);
-      if (addedLines.has(line.number)) return;
-      addedLines.add(line.number);
-      decorations.push(Decoration.line({ class: inlineWidgetLineClass }).range(line.from));
-    });
+    anchors = buildToolAnchors(state.doc.toString()).filter((anchor) => anchor.markerId);
   } catch {}
 
-  items.forEach((it, id) => {
-    if (typeof it.from !== "number" || typeof it.to !== "number") return;
-    if (it.from < 0 || it.to > state.doc.length || it.from >= it.to) return;
-    const done = it.result != null;
-    decorations.push(Decoration.replace({
-      widget: new ToolInlineWidget(id, it.name, it.args, it.ok, done, it.action || null, it.result, it.sessionId || null)
-    }).range(it.from, it.to));
-    if (it.expanded) {
-      decorations.push(Decoration.widget({
-        widget: new ToolCallCardWidget(id, it.name, it.args, it.result, it.ok, it.sessionId || null, it.action || null),
-        side: 1
-      }).range(it.to));
+  const addedLines = new Set();
+  const renderedIds = new Set();
+  for (const anchor of anchors) {
+    if (typeof anchor.from !== "number" || typeof anchor.to !== "number") continue;
+    if (anchor.from < 0 || anchor.to > docLen || anchor.from >= anchor.to) continue;
+    const id = String(anchor.markerId);
+    if (renderedIds.has(id)) continue;
+    renderedIds.add(id);
+
+    let line;
+    try { line = state.doc.lineAt(anchor.from); } catch { continue; }
+    if (!addedLines.has(line.number)) {
+      addedLines.add(line.number);
+      decorations.push(Decoration.line({ class: inlineWidgetLineClass }).range(line.from));
     }
-  });
+
+    const it = items?.get?.(id) || null;
+    const name = it?.name || anchor.name || "tool";
+    const done = it ? it.result != null : false;
+    decorations.push(Decoration.replace({
+      widget: new ToolInlineWidget(id, name, it?.args, it?.ok ?? null, done, it?.action || null, it?.result ?? null, it?.sessionId || null)
+    }).range(anchor.from, anchor.to));
+
+    if (it?.expanded) {
+      decorations.push(Decoration.widget({
+        widget: new ToolCallCardWidget(id, name, it.args, it.result, it.ok, it.sessionId || null, it.action || null),
+        side: 1
+      }).range(anchor.to));
+    }
+  }
   return decorations;
 }
 
@@ -2031,21 +2244,20 @@ const toolInlineField = StateField.define({
       }
     }
     // 3) 文本一致性校验：如果用户删除或修改了“调用 xxx”文本，则清理对应条目与装饰，并写入删除标记
-    try {
-      const doc = tr.state.doc;
-      const toRemove = [];
-      items.forEach((it, id) => {
-        const invalidPos = typeof it.from !== "number" || typeof it.to !== "number" || it.from < 0 || it.to > doc.length || it.from >= it.to;
-        if (invalidPos) {
-          toRemove.push(id);
-          return;
-        }
-        const anchor = doc.sliceString(it.from, it.to);
-        const expected = `调用 ${it.name}`;
-        if (anchor !== expected) {
-          toRemove.push(id);
-        }
-      });
+      try {
+        const doc = tr.state.doc;
+        const toRemove = [];
+        items.forEach((it, id) => {
+          const invalidPos = typeof it.from !== "number" || typeof it.to !== "number" || it.from < 0 || it.to > doc.length || it.from >= it.to;
+          if (invalidPos) {
+            toRemove.push(id);
+            return;
+          }
+          const anchor = doc.sliceString(it.from, it.to);
+          if (!isToolAnchorForItem(anchor, it, id)) {
+            toRemove.push(id);
+          }
+        });
       if (toRemove.length) {
         debugRemovedIds = toRemove.map(id => String(id));
         const isSessionLoad = (() => {
@@ -2162,7 +2374,10 @@ export function installToolCallCards() {
           const sid = this.sessionId;
           const pending = sid ? window.zion?.commands?.executeCommand?.("zion.chatCards.getPendingRestore", { sessionId: sid, kind: "tools" }) : null;
           const ann = sid ? getSessionAnnotations(sid) : {};
-          const list = Array.isArray(ann.tools) ? ann.tools : [];
+            const rawList = Array.isArray(ann.tools) ? ann.tools : [];
+              const anchors = buildToolAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
+              const deletedIds = reviveDeletedToolIdsForAnchors(sid, Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [], anchors);
+            const list = mergeToolItemsFromAnchors(this.view, rawList, deletedIds);
           debugChatCards("plugin.initialRestoreCheck", {
             panelId: this.panelId,
             sessionId: sid,
@@ -2176,12 +2391,13 @@ export function installToolCallCards() {
           if (!list.length) return;
           // 基于 StateField 中的已挂载 id 判断是否需要恢复
           let mountedIds = [];
+            let fieldVal = null;
           try {
-            const fieldVal = this.view.state.field(toolInlineField);
+              fieldVal = this.view.state.field(toolInlineField);
             if (fieldVal?.items) fieldVal.items.forEach((_it, id) => mountedIds.push(String(id)));
           } catch {}
           const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
-          const missing = wantIds.some(id => !mountedIds.includes(id));
+            const missing = wantIds.some(id => !mountedIds.includes(id)) || needsToolRestore(list, fieldVal);
           if (!missing) return;
           this.onRestore({ items: list });
         } catch {}
@@ -2227,7 +2443,10 @@ export function installToolCallCards() {
         const sid = this.sessionId;
         if (!sid) return;
         const ann = getSessionAnnotations(sid);
-        const list = Array.isArray(ann.tools) ? ann.tools : [];
+          const rawList = Array.isArray(ann.tools) ? ann.tools : [];
+            const anchors = buildToolAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
+            const deletedIds = reviveDeletedToolIdsForAnchors(sid, Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [], anchors);
+          const list = mergeToolItemsFromAnchors(this.view, rawList, deletedIds);
         let mountedIds = [];
         try {
           const fieldVal = this.view.state.field(toolInlineField);
@@ -2255,20 +2474,30 @@ export function installToolCallCards() {
     };
 
     update(update) {
+      const isSessionLoad = (() => {
+        try {
+          return !!update.transactions?.some?.((tr) => tr?.annotation?.(Transaction.userEvent) === "zion.sessionLoad");
+        } catch {
+          return false;
+        }
+      })();
       const debugBeforeSessionId = this.sessionId;
       const debugBeforeVisibleSessionId = getViewSessionId(this.view);
+      if (isSessionLoad) {
+        setTimeout(() => this.checkAndRestoreWidgets(), 0);
+      }
       if (update.docChanged) {
         // 将锚点映射到新文档位置
-        this.anchorPos = update.changes.mapPos(this.anchorPos, 1);
+          const mappedAnchorPos = update.changes.mapPos(this.anchorPos, 1);
+          this.anchorPos = mappedAnchorPos;
         if (this.runActive) {
-          // 优先使用当前选择的光标位置作为回答插入点
-          const selHead = update.state.selection?.main?.head ?? this.anchorPos;
-          this.anchorPos = selHead;
-          // 回答过程中，锚点跟随最近一次插入的末尾（回退）
-          let lastToB = this.anchorPos;
+            // 回答过程中，锚点只前进不回退，避免选择区跳动把后续 widget 拖回旧 assistant 块。
+            let lastToB = mappedAnchorPos;
           update.changes.iterChanges((_fromA, _toA, _fromB, toB) => {
             if (toB > lastToB) lastToB = toB;
           });
+            const selHead = update.state.selection?.main?.head;
+            if (typeof selHead === "number" && selHead > lastToB) lastToB = selHead;
           this.anchorPos = lastToB;
         }
       } else if (update.selectionSet && this.runActive) {
@@ -2285,6 +2514,9 @@ export function installToolCallCards() {
           return;
         }
       }
+        if (update.docChanged && !this.runActive) {
+          setTimeout(() => this.checkAndRestoreWidgets(), 0);
+        }
       this.snapshot();
       try {
         if (update.docChanged || update.viewportChanged) {
@@ -2372,7 +2604,21 @@ export function installToolCallCards() {
             });
             return prev;
           }
-          return { ...prev, tools: arr };
+            const prevById = new Map(prevTools.map((it) => [String(it?.id || ""), it]).filter(([key]) => !!key));
+            const nextTools = [];
+            const seen = new Set();
+            for (const it of arr) {
+              const key = String(it?.id || "");
+              if (!key) continue;
+              seen.add(key);
+              nextTools.push(mergeToolSnapshotItem(prevById.get(key), it));
+            }
+            for (const it of prevTools) {
+              const key = String(it?.id || "");
+              if (!key || seen.has(key)) continue;
+              nextTools.push(it);
+            }
+            return { ...prev, tools: nextTools };
         });
         debugChatCards("snapshot", {
           panelId: this.panelId,
@@ -2399,12 +2645,20 @@ export function installToolCallCards() {
       const visibleSessionId = this.getVisibleSessionId();
       if (!visibleSessionId) return false;
       if (payload?.sessionId && payload.sessionId !== visibleSessionId) return false;
-      if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return false;
+      if (payload?.panelId && payload.panelId !== this.panelId) return false;
       if (!payload?.panelId && !payload?.sessionId) {
         const activePanelId = window.zion?.panels?.getActivePanelId?.() || null;
         if (this.panelId && activePanelId && this.panelId !== activePanelId) return false;
       }
       this.sessionId = visibleSessionId;
+      return true;
+    };
+    isPrimaryWriterPayload = (payload) => {
+      if (payload?.panelId && this.panelId) return payload.panelId === this.panelId;
+      if (payload?.sessionId) {
+        const activePanelId = window.zion?.panels?.getActivePanelId?.() || null;
+        if (activePanelId && this.panelId && activePanelId !== this.panelId) return false;
+      }
       return true;
     };
     loadToolActions = () => {
@@ -2456,7 +2710,9 @@ export function installToolCallCards() {
       if (!this.shouldHandleScopedPayload(payload)) return;
       this.runActive = true;
       const sel = this.view.state.selection?.main?.head;
-      this.anchorPos = typeof sel === "number" ? sel : this.view.state.doc.length;
+        this.anchorPos = typeof payload?.answerAnchorPos === "number"
+          ? payload.answerAnchorPos
+          : (typeof sel === "number" ? sel : this.view.state.doc.length);
     };
     onFinish = (payload) => {
       if (!this.shouldHandleScopedPayload(payload)) return;
@@ -2468,12 +2724,8 @@ export function installToolCallCards() {
       if (!tc?.id) return;
       const name = tc.name || "tool";
 
-      const isMirrorPanel = !!(payload?.panelId && payload.panelId !== this.panelId);
-      if (isMirrorPanel) {
-        const anchorCountBefore = buildRegexAnchors(this.view.state.doc.toString(), /调用\s+([^\n]+)/g, (match) => {
-          if (match[0].length > 300) return null;
-          return { from: match.index, to: match.index + match[0].length, name: match[1].trim() };
-        }).length;
+      if (!this.isPrimaryWriterPayload(payload)) {
+          const anchorCountBefore = buildToolAnchors(this.view.state.doc.toString()).length;
         debugChatCards("toolCall.mirrorPending", { panelId: this.panelId, sourcePanelId: payload?.panelId, sessionId: this.sessionId, id: tc.id, name, anchorCountBefore });
         this.mirrorToolCalls.set(String(tc.id), { ...tc, name, sessionId: this.sessionId, anchorCountBefore, attempts: 0 });
         if (this.attachPendingMirrorToolCalls(String(tc.id))) return;
@@ -2487,6 +2739,17 @@ export function installToolCallCards() {
         }, delay));
         return;
       }
+
+      try {
+        const fieldVal = this.view.state.field(toolInlineField);
+        if (fieldVal?.items?.has?.(String(tc.id))) return;
+        const anchors = buildToolAnchors(this.view.state.doc.toString());
+        const anchor = anchors.find((it) => String(it.markerId || "") === String(tc.id));
+        if (anchor) {
+          this.view.dispatch({ effects: [addInline.of({ from: anchor.from, to: anchor.to, id: tc.id, name, args: tc.args, sessionId: this.sessionId })] });
+          return;
+        }
+      } catch {}
 
       // 1) 若无 assistant 头，先补充一个（确保工具调用信息插入到 assistant 区块）
       const docBefore = this.view.state.doc;
@@ -2506,11 +2769,15 @@ export function installToolCallCards() {
 
       // 2) 计算插入位置：基于当前会话锚点的 assistant 区块末尾
       const sid = this.sessionId;
-      const hint = getRunAssistantAnchorHint(payload, sid);
+        const staticHint = getRunAssistantAnchorHint(payload, sid);
+        const hintCandidates = [this.anchorPos, staticHint].filter((value) => typeof value === "number" && Number.isFinite(value));
+        const hint = hintCandidates.length ? Math.max(...hintCandidates) : null;
+        const hintLine = getRunAssistantHeadLineHint(payload, sid);
       const plan = planAssistantMarkerInsertion({
         docText: this.view.state.doc.toString(),
-        markerText: `调用 ${name}`,
+        markerText: toolMarkerText(name, tc.id),
         hintPos: typeof hint === "number" ? hint : null,
+        hintLine: typeof hintLine === "number" ? hintLine : null,
         trailingNewlines: 1
       });
       const userStartLine = findPrevRoleStartLine(this.view.state.doc, plan.markerFrom, "user");
@@ -2547,16 +2814,9 @@ export function installToolCallCards() {
         const fieldVal = this.view.state.field(toolInlineField);
         const occupied = new Set();
         try { fieldVal?.items?.forEach?.((it) => occupied.add(`${it.from}:${it.to}`)); } catch {}
-        const doc = this.view.state.doc;
-        const docString = doc.toString();
-        const anchors = buildRegexAnchors(docString, /调用\s+([^\n]+)/g, (match) => {
-          if (match[0].length > 300) return null;
-          return {
-            from: match.index,
-            to: match.index + match[0].length,
-            name: match[1].trim()
-          };
-        });
+          const doc = this.view.state.doc;
+          const docString = doc.toString();
+          const anchors = buildToolAnchors(docString);
         const entries = Array.from(this.mirrorToolCalls.entries());
         debugChatCards("mirror.attach.scan", {
           panelId: this.panelId,
@@ -2589,6 +2849,7 @@ export function installToolCallCards() {
           for (let i = candidates.length - 1; i >= 0; i--) {
             const anchor = candidates[i];
             if (anchor.occupied) continue;
+              if (anchor.markerId && anchor.markerId !== id) continue;
             if (anchor.name !== tc.name) continue;
             if (occupied.has(`${anchor.from}:${anchor.to}`)) continue;
             anchor.occupied = true;
@@ -2618,10 +2879,14 @@ export function installToolCallCards() {
         if (fieldVal?.items?.has?.(String(payload.id))) return true;
         const occupied = new Set();
         try { fieldVal?.items?.forEach?.((it) => occupied.add(`${it.from}:${it.to}`)); } catch {}
-        const anchors = buildRegexAnchors(this.view.state.doc.toString(), /调用\s+([^\n]+)/g, (match) => {
-          if (match[0].length > 300) return null;
-          return { from: match.index, to: match.index + match[0].length, name: match[1].trim() };
-        }).filter((anchor) => anchor.name === payload.name && !anchor.occupied && !occupied.has(`${anchor.from}:${anchor.to}`));
+          const payloadId = String(payload.id);
+          const anchors = buildToolAnchors(this.view.state.doc.toString())
+            .filter((anchor) =>
+              anchor.name === payload.name
+              && (!anchor.markerId || anchor.markerId === payloadId)
+              && !anchor.occupied
+              && !occupied.has(`${anchor.from}:${anchor.to}`)
+            );
         const hintFrom = typeof payload.from === "number" ? payload.from : null;
         const ranked = anchors
           .map((anchor) => ({ anchor, score: hintFrom == null ? 0 : Math.abs(anchor.from - hintFrom) }))
@@ -3162,7 +3427,10 @@ export function installToolCallCards() {
             }
           }
           const ann = getSessionAnnotations(sid);
-          const list = Array.isArray(ann.tools) ? ann.tools : [];
+            const rawList = Array.isArray(ann.tools) ? ann.tools : [];
+              const anchors = buildToolAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
+              const deletedIds = reviveDeletedToolIdsForAnchors(sid, Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [], anchors);
+            const list = mergeToolItemsFromAnchors(this.view, rawList, deletedIds);
           if (!list.length) return;
           this.onRestore({ items: list, panelId: this.panelId, __fromToolsUpdated: true });
         } catch {}
@@ -3203,30 +3471,22 @@ export function installToolCallCards() {
         });
         return;
       }
-      try {
-        const sid = restoreSessionId;
-        if (sid) clearPendingRestore(sid, "tools");
-      } catch {}
 
-      const doc = this.view.state.doc;
-      const docLen = doc.length;
-      const docString = doc.toString();
       let deletedIds = [];
       try {
         const sid = restoreSessionId;
         const ann = sid ? getSessionAnnotations(sid) : {};
-        deletedIds = Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [];
+          const anchorsForRevive = buildToolAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
+          deletedIds = reviveDeletedToolIdsForAnchors(sid, Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [], anchorsForRevive);
       } catch {}
-      const anchors = buildRegexAnchors(docString, /调用\s+([^\n]+)/g, (match) => {
-        if (match[0].length > 300) return null;
-        return {
-          from: match.index,
-          to: match.index + match[0].length,
-          text: match[0],
-          name: match[1].trim()
-        };
-      });
+      const mergedList = mergeToolItemsFromAnchors(this.view, list, deletedIds);
+      const itemsToProcess = filterDeletedItems(mergedList, deletedIds);
+      migrateLegacyToolAnchors(this.view, itemsToProcess);
 
+      const doc = this.view.state.doc;
+      const docLen = doc.length;
+      const docString = doc.toString();
+      const anchors = buildToolAnchors(docString);
       const batchedEffects = [];
       const batchedToggles = [];
       const actionFor = (it) => normalizeToolAction(it?.action) || this.toolActions.get(String(it?.id || ""))?.action || null;
@@ -3236,7 +3496,6 @@ export function installToolCallCards() {
         const fieldVal = this.view.state.field(toolInlineField);
         if (fieldVal?.items) fieldVal.items.forEach((it, id) => existingItems.set(String(id), it));
       } catch {}
-      const itemsToProcess = filterDeletedItems(list, deletedIds);
       debugChatCards("restore.inputs", {
         panelId: this.panelId,
         sessionId: restoreSessionId,
@@ -3253,6 +3512,19 @@ export function installToolCallCards() {
         existingItems,
         onMounted: (it, mounted) => {
           const id = String(it?.id || "");
+            const needsHydration = toolItemNeedsHydration(it, mounted);
+            if (needsHydration) {
+              batchedEffects.push(addInline.of({
+                from: mounted.from,
+                to: mounted.to,
+                id,
+                name: it.name,
+                args: it.args,
+                action: actionFor(it),
+                userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null,
+                sessionId: restoreSessionId
+              }));
+            }
           if (it.result != null && (mounted.result !== it.result || mounted.ok !== it.ok)) {
             batchedEffects.push(updateResult.of({ id, result: it.result, ok: it.ok }));
           }
@@ -3260,7 +3532,7 @@ export function installToolCallCards() {
           if ((mounted.action || null) !== action) {
             batchedEffects.push(updateAction.of({ id, action }));
           }
-          if (!!it.expanded && !mounted.expanded) {
+            if (!!it.expanded && (!mounted.expanded || needsHydration)) {
             batchedToggles.push(id);
           }
         }
@@ -3274,7 +3546,9 @@ export function installToolCallCards() {
         isExactMatch: (it, anchor) => {
           if (typeof it.from !== "number" || typeof it.to !== "number") return false;
           if (it.from < 0 || it.to > docLen || it.from >= it.to) return false;
-          return anchor.from === it.from && anchor.to === it.to && doc.sliceString(it.from, it.to) === `调用 ${it.name}`;
+          if (anchor.from !== it.from || anchor.to !== it.to) return false;
+          if (anchor.markerId && anchor.markerId !== String(it.id || "")) return false;
+          return isToolAnchorForItem(doc.sliceString(it.from, it.to), it, it.id);
         },
         onMatch: (it, anchor) => {
           batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, name: it.name, args: it.args, action: actionFor(it), userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null, sessionId: restoreSessionId }));
@@ -3288,7 +3562,7 @@ export function installToolCallCards() {
         items: itemsToProcess,
         processedIds,
         anchors,
-        canUseAnchor: (it, anchor) => anchor.name === it.name,
+        canUseAnchor: (it, anchor) => anchor.name === it.name && (!anchor.markerId || anchor.markerId === String(it.id || "")),
         onMatch: (it, anchor) => {
           batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, name: it.name, args: it.args, action: actionFor(it), userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null, sessionId: restoreSessionId }));
           if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
@@ -3332,7 +3606,7 @@ export function installToolCallCards() {
         // 重新获取 doc，因为前面的 dispatch 可能没改变 doc (effects only)，但在 Phase 3 循环中我们会修改 doc
         const plan = planAssistantMarkerInsertion({
           docText: this.view.state.doc.toString(),
-          markerText: `调用 ${name}`,
+          markerText: toolMarkerText(name, it.id),
           trailingNewlines: 1
         });
         const userStartLine = typeof it.userStartLine === "number"
@@ -3360,6 +3634,9 @@ export function installToolCallCards() {
         processedIds.add(it.id);
       }
 
+      try {
+        if (restoreSessionId) clearPendingRestore(restoreSessionId, "tools");
+      } catch {}
 
       this.snapshot();
       debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
@@ -3399,6 +3676,7 @@ export function installToolCallCards() {
       if (!el) return false;
       const id = el.getAttribute("data-tool-id");
       if (!id) return false;
+      ensureToolItemFromDoc(view, id);
       view.dispatch({ effects: [toggleInline.of({ id })] });
       event.preventDefault();
       return true;
@@ -3406,4 +3684,54 @@ export function installToolCallCards() {
   });
 
   return [toolInlineField, plugin, handlers];
+}
+
+/**
+ * Lazily materialise a tool item into the StateField from the document anchor.
+ * Inline pills render straight from the document, so a mirror/split panel may not
+ * have run restore yet; this lets expand/collapse work on first click there.
+ */
+function ensureToolItemFromDoc(view, id) {
+  const wantId = String(id || "");
+  if (!wantId) return false;
+  try {
+    const fieldVal = view.state.field(toolInlineField, false);
+    if (fieldVal?.items?.has?.(wantId)) return true;
+  } catch {}
+
+  let anchor = null;
+  try {
+    anchor = buildToolAnchors(view.state.doc.toString())
+      .find((a) => String(a.markerId || "") === wantId) || null;
+  } catch {}
+  if (!anchor) return false;
+
+  const sid = getViewSessionId(view);
+  let stored = null;
+  try {
+    const ann = sid ? getSessionAnnotations(sid) : {};
+      reviveDeletedToolIdsForAnchors(sid, Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [], [anchor]);
+    const list = Array.isArray(ann.tools) ? ann.tools : [];
+    stored = list.find((x) => String(x?.id || "") === wantId) || null;
+  } catch {}
+
+  try {
+    const effects = [addInline.of({
+      from: anchor.from,
+      to: anchor.to,
+      id: wantId,
+      name: stored?.name || anchor.name || "tool",
+      args: stored?.args,
+      action: stored?.action || null,
+      sessionId: sid
+    })];
+    if (stored && stored.result != null) {
+      effects.push(updateResult.of({ id: wantId, result: stored.result, ok: stored.ok }));
+    }
+    view.dispatch({ effects });
+    if (stored?.expanded) view.dispatch({ effects: [toggleInline.of({ id: wantId })] });
+    return true;
+  } catch {
+    return false;
+  }
 }

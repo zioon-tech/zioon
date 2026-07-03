@@ -1,12 +1,12 @@
 import type { EditorProxy } from "../types/zion";
-import type { AssistantAnchor, ChatDocInsertResult, ChatMessage, ChatMessagePart } from "./types";
+import type { AssistantAnchor, ChatDocFinalizeResult, ChatDocInsertResult, ChatMessage, ChatMessagePart } from "./types";
 
 const ASSISTANT_ROLE_RE = /^\s*assistant\s+/;
 const ANY_ROLE_RE = /^\s*(system|user|assistant|tool)\s+/;
 const MESSAGE_ROLE_RE = /^(system|user|assistant)\s+(.*)$/;
 const IMAGE_LINE_RE = /^!\[.*\]\((.*)\)$/;
-const WIDGET_STUB_RE = /^(思考|Thinking)$/i;
-const TOOL_WIDGET_STUB_RE = /^(调用|Call)\s+\S+$/i;
+const WIDGET_STUB_RE = /^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->$/i;
+const TOOL_WIDGET_STUB_RE = /^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?$/i;
 
 type StateLike = {
   set<T = unknown>(key: string, value: T): void;
@@ -211,7 +211,8 @@ export function parseMessages(content: string): ChatMessage[] {
 
     if (roleMatch) {
       const body = roleMatch[2].trim();
-      if (/^(思考|Thinking|调用|Call)\s*/i.test(body)) continue;
+        if (/^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/i.test(body)) continue;
+        if (/^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/i.test(body)) continue;
       if (currentContent.length > 0 || currentImages.length > 0) {
         messages.push({
           role: currentRole,
@@ -318,11 +319,37 @@ export function appendAssistantToken(editor: EditorProxy, opts: AppendAssistantT
   if (endLine === -1) return false;
 
   const lastLineText = currentLines[endLine] || "";
+  try {
+    const view = editor.getView?.();
+    const doc = view?.state?.doc;
+    if (view && doc) {
+      const line = doc.line(Math.max(1, Math.min(doc.lines, endLine + 1)));
+      const from = line.from + Math.min(line.length, lastLineText.length);
+      const nextHead = from + opts.token.length;
+      let followLatest = true;
+      try {
+        const sid = opts.anchor?.sessionId;
+        if (sid) followLatest = (window as any).zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
+      } catch {}
+      const userHasSelection = !view.state.selection.main.empty;
+      let userSelectionGestureActive = false;
+      try {
+        const selectionGestureUntil = Number((window as any).zion?.state?.get?.("editor.selectionGestureUntil") || 0);
+        userSelectionGestureActive = selectionGestureUntil > Date.now();
+      } catch {}
+      const shouldPreserveUserSelection = userHasSelection || userSelectionGestureActive;
+      view.dispatch({
+        changes: { from, insert: opts.token },
+        ...(followLatest && !shouldPreserveUserSelection ? { selection: { anchor: nextHead } } : {})
+      });
+      return true;
+    }
+  } catch {}
   editor.replaceRange(opts.token, { line: endLine, ch: lastLineText.length });
   return true;
 }
 
-export function finalizeAssistantBlock(editor: EditorProxy, opts: FinalizeAssistantBlockOptions): boolean {
+export function finalizeAssistantBlock(editor: EditorProxy, opts: FinalizeAssistantBlockOptions): ChatDocFinalizeResult {
   const currentDoc = editor.getValue();
   const currentLines = currentDoc.split("\n");
   const assistantLine = findAssistantHeadLine(
@@ -331,10 +358,10 @@ export function finalizeAssistantBlock(editor: EditorProxy, opts: FinalizeAssist
       ? opts.anchor.headLine
       : Math.max(0, (opts.startLineHint ?? 0) - 1)
   );
-  if (assistantLine === -1) return false;
+  if (assistantLine === -1) return { ok: false, userLine: null };
 
   const endLine = findAssistantBlockEndLine(currentLines, assistantLine);
-  if (endLine === -1) return false;
+  if (endLine === -1) return { ok: false, userLine: null };
 
   const nextLineText = currentLines[endLine + 1];
   const lastLineText = currentLines[endLine] || "";
@@ -353,20 +380,20 @@ export function finalizeAssistantBlock(editor: EditorProxy, opts: FinalizeAssist
       ? opts.anchor.headLine
       : Math.max(0, (opts.startLineHint ?? 0) - 1)
   );
-  if (newAssistantLine === -1) return true;
+  if (newAssistantLine === -1) return { ok: true, userLine: null };
 
   const blockEndLine = findAssistantBlockEndLine(linesNow, newAssistantLine);
-  if (blockEndLine === -1) return true;
+  if (blockEndLine === -1) return { ok: true, userLine: null };
 
   const plan = planTrailingUserPrompt(linesNow, blockEndLine, !!opts.autoInsertUserPrompt);
   if (plan.kind === "existing-user") {
     if (opts.autoFocusUserPrompt && shouldRestoreFocusToEditor(editor)) {
       focusUserPromptNoScroll(editor, plan.userLine, plan.focusCh);
     }
-    return true;
+    return { ok: true, userLine: plan.userLine };
   }
   if (plan.kind === "none") {
-    return true;
+    return { ok: true, userLine: null };
   }
 
   try {
@@ -384,5 +411,5 @@ export function finalizeAssistantBlock(editor: EditorProxy, opts: FinalizeAssist
     }
   } catch {}
 
-  return true;
+  return { ok: true, userLine: plan.userLine };
 }

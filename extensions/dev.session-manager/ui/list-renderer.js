@@ -107,6 +107,38 @@ export function createSessionsListRendererFactory(deps) {
 
     const isConfirming = (id, type) => !!pendingConfirm && pendingConfirm.id === id && pendingConfirm.type === type;
 
+    const markSessionViewed = (id) => {
+      if (!id) return;
+      try {
+        window.zion?.state?.update?.(`chat.runs.${id}`, (rs) => rs ? { ...rs, awaiting: false } : rs);
+      } catch {
+        try {
+          const key = `chat.runs.${id}`;
+          const rs = window.zion?.state?.get?.(key) || null;
+          if (rs) window.zion?.state?.set?.(key, { ...rs, awaiting: false });
+        } catch {}
+      }
+      try {
+        const rs = window.zion?.state?.get?.(`chat.runs.${id}`) || null;
+        window.zion?.state?.set?.("chat.streaming", !!rs?.streaming);
+      } catch {}
+    };
+
+    const switchSession = (id) => {
+      if (typeof onSwitchSession !== "function") {
+        markSessionViewed(id);
+        render();
+        return null;
+      }
+      const result = onSwitchSession(id);
+      Promise.resolve(result).then((ok) => {
+        if (ok === false) return;
+        markSessionViewed(id);
+        render();
+      }).catch(() => {});
+      return result;
+    };
+
     const mountInlineConfirm = ({ row, label, onCancel, onConfirm }) => {
       try { row.querySelector(".zion-inline-confirm")?.remove?.(); } catch {}
       const wrap = document.createElement("div");
@@ -1027,10 +1059,10 @@ export function createSessionsListRendererFactory(deps) {
 
               const rightWrap = document.createElement("div");
               rightWrap.style.display = "flex";
-              rightWrap.style.gap = "6px";
+              rightWrap.style.gap = "4px";
               rightWrap.style.alignItems = "center";
               rightWrap.style.position = "absolute";
-              rightWrap.style.right = "8px";
+              rightWrap.style.right = "6px";
               rightWrap.style.top = "50%";
               rightWrap.style.transform = "translateY(-50%)";
 
@@ -1040,21 +1072,6 @@ export function createSessionsListRendererFactory(deps) {
               srow.addEventListener("click", () => { sMenu.style.display = "none"; });
 
               const confirmSession = isConfirming(ch.id, "session");
-
-              const bOpenNewTab = mkIconBtn(
-                '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 4H4.5A1.5 1.5 0 0 0 3 5.5v6A1.5 1.5 0 0 0 4.5 13h6A1.5 1.5 0 0 0 12 11.5V10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9 3h4v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3L8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-                t("ui.openNewTab", "Open in new tab"),
-                (ev) => {
-                  ev.stopPropagation();
-                  const u = buildSessionURL(ch.id);
-                  const a = document.createElement("a");
-                  a.href = u;
-                  a.target = "_blank";
-                  a.rel = "noopener noreferrer";
-                  a.click();
-                }
-              );
-              bOpenNewTab.style.opacity = "0";
 
               const bMore2 = mkIconBtn(
                 '<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="4" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="12" cy="8" r="1.5" fill="currentColor"/></svg>',
@@ -1101,13 +1118,12 @@ export function createSessionsListRendererFactory(deps) {
 
                 // Apply mask to titleLine to prevent text overlap
                 try {
-                  titleLine.style.maskImage = "linear-gradient(to right, black calc(100% - 80px), transparent 100%)";
-                  titleLine.style.webkitMaskImage = "linear-gradient(to right, black calc(100% - 80px), transparent 100%)";
+                  titleLine.style.maskImage = "linear-gradient(to right, black calc(100% - 44px), transparent 100%)";
+                  titleLine.style.webkitMaskImage = "linear-gradient(to right, black calc(100% - 44px), transparent 100%)";
                 } catch {}
               }
 
               if (!confirmSession) {
-                rightWrap.appendChild(bOpenNewTab);
                 rightWrap.appendChild(bMore2);
                 if (statusBadge) rightWrap.appendChild(statusBadge);
               }
@@ -1118,14 +1134,12 @@ export function createSessionsListRendererFactory(deps) {
                 const reserve = (rightWrap.offsetWidth || 0) + 8;
                 srow.style.paddingRight = reserve + "px";
                 rightWrap.style.pointerEvents = "auto";
-                bOpenNewTab.style.opacity = "1";
                 bMore2.style.opacity = "1";
               });
               srow.addEventListener("mouseleave", () => {
                 if (confirmSession) return;
                 srow.style.paddingRight = "";
                 rightWrap.style.pointerEvents = "none";
-                bOpenNewTab.style.opacity = "0";
                 bMore2.style.opacity = "0";
               });
               srow.addEventListener("focus", () => {
@@ -1133,14 +1147,12 @@ export function createSessionsListRendererFactory(deps) {
                 const reserve = (rightWrap.offsetWidth || 0) + 8;
                 srow.style.paddingRight = reserve + "px";
                 rightWrap.style.pointerEvents = "auto";
-                bOpenNewTab.style.opacity = "1";
                 bMore2.style.opacity = "1";
               });
               srow.addEventListener("blur", () => {
                 if (confirmSession) return;
                 srow.style.paddingRight = "";
                 rightWrap.style.pointerEvents = "none";
-                bOpenNewTab.style.opacity = "0";
                 bMore2.style.opacity = "0";
               });
 
@@ -1198,7 +1210,7 @@ export function createSessionsListRendererFactory(deps) {
                 }
                 if (ev.key === "Enter") {
                   ev.preventDefault();
-                  if (typeof onSwitchSession === "function") onSwitchSession(ch.id);
+                  switchSession(ch.id);
                 } else if (ev.key.toLowerCase() === "r") {
                   ev.preventDefault();
                   pendingEdit = { id: ch.id, type: "session" };
@@ -1229,7 +1241,7 @@ export function createSessionsListRendererFactory(deps) {
                 if (t && t.closest && t.closest("input[data-zion-inline-edit='1']")) return;
                 if (t && rightWrap.contains(t)) return;
                 if (isConfirming(ch.id, "session")) return;
-                if (bOpenNewTab.contains(ev.target) || bMore2.contains(ev.target) || sMenu.contains(ev.target)) return;
+                if (bMore2.contains(ev.target) || sMenu.contains(ev.target)) return;
                 const anchorId = getLastSelectedId();
                 if (ev.shiftKey) {
                   if (anchorId) {
@@ -1261,7 +1273,7 @@ export function createSessionsListRendererFactory(deps) {
                 try {
                   Array.from(listEl.querySelectorAll(".zion-session-row.is-selected")).forEach((row) => row.classList.remove("is-selected"));
                 } catch {}
-                if (typeof onSwitchSession === "function") onSwitchSession(ch.id);
+                switchSession(ch.id);
               });
 
               srow.append(labelWrap2);

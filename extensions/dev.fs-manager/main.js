@@ -16,6 +16,7 @@ const I18N_MESSAGES = {
     "cmd.addFolder": "添加文件夹访问",
     "cmd.getEntries": "获取文件系统条目",
     "cmd.clearAll": "清除所有文件系统条目",
+      "cmd.openInFolder": "在文件夹中打开",
     "ui.title": "文件系统访问管理",
     "ui.tooltip": "管理文件/文件夹访问",
     "settings.description": "维护已授权的文件和目录句柄，并保存它们的本地路径映射。",
@@ -23,7 +24,11 @@ const I18N_MESSAGES = {
     "settings.addFile": "+ 文件",
     "settings.addFolder": "+ 文件夹",
     "settings.clearAll": "清除全部",
-    "settings.empty": "尚未添加任何文件或文件夹"
+      "settings.empty": "尚未添加任何文件或文件夹",
+      "openInFolder.remoteUnsupported": "SSH/远端项目暂不支持在本地文件夹中打开",
+      "openInFolder.pathUnavailable": "没有可用的本地路径，无法在文件夹中打开",
+      "openInFolder.nativeUnsupported": "当前运行环境不支持打开本地文件夹",
+      "openInFolder.failed": "打开本地文件夹失败"
   },
   "en-US": {
     "category.fs": "File System",
@@ -32,6 +37,7 @@ const I18N_MESSAGES = {
     "cmd.addFolder": "Add Folder Access",
     "cmd.getEntries": "Get FS Entries",
     "cmd.clearAll": "Clear All FS Entries",
+      "cmd.openInFolder": "Open in Folder",
     "ui.title": "Files Access Manager",
     "ui.tooltip": "Manage file/folder access",
     "settings.description": "Manage authorized file and directory handles and their local path mappings.",
@@ -39,7 +45,11 @@ const I18N_MESSAGES = {
     "settings.addFile": "+ File",
     "settings.addFolder": "+ Folder",
     "settings.clearAll": "Clear All",
-    "settings.empty": "No files or folders added yet"
+      "settings.empty": "No files or folders added yet",
+      "openInFolder.remoteUnsupported": "SSH/remote projects cannot be opened in a local folder yet",
+      "openInFolder.pathUnavailable": "No local path is available to open in folder",
+      "openInFolder.nativeUnsupported": "This runtime cannot open local folders",
+      "openInFolder.failed": "Failed to open local folder"
   }
 };
 
@@ -227,7 +237,172 @@ export async function activate(ctx) {
     refreshState();
   }
 
-  function openPanel() {
+    function getTerminalSessionForSource(sourceId) {
+      const source = String(sourceId || "");
+      const sessionId = source === "terminal:active"
+        ? String(window.zion?.state?.get?.("terminal.activeSessionId") || "").trim()
+        : source.startsWith("terminal:") ? source.slice("terminal:".length) : "";
+      if (!sessionId) return null;
+      try {
+        const sessions = window.zion?.state?.get?.("terminal.sessions");
+        return (Array.isArray(sessions) ? sessions : []).find((session) => String(session?.id || "") === sessionId) || null;
+      } catch {
+        return null;
+      }
+    }
+
+    function getTerminalSessions() {
+      try {
+        const sessions = window.zion?.state?.get?.("terminal.sessions");
+        return Array.isArray(sessions) ? sessions : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function isRemoteSession(session) {
+      const type = String(session?.type || "").trim().toLowerCase();
+      const host = String(session?.ssh_host || session?.host || session?.hostname || session?.remote_host || "").trim();
+      return type === "ssh" || !!host;
+    }
+
+    function isLocalSession(session) {
+      return !!session?.id && !isRemoteSession(session);
+    }
+
+    function isRemoteSource(sourceId) {
+      const source = String(sourceId || "");
+      if (!source.startsWith("terminal:")) return false;
+      const session = getTerminalSessionForSource(source);
+      return isRemoteSession(session);
+    }
+
+    function getNativeFolderOpener() {
+      const candidates = [
+        window.zion?.native?.showItemInFolder,
+        window.zion?.host?.showItemInFolder,
+        window.zion?.desktop?.showItemInFolder,
+        window.electron?.showItemInFolder
+      ].filter((fn) => typeof fn === "function");
+      try {
+        const shell = window.electron?.shell || window.require?.("electron")?.shell;
+        if (typeof shell?.showItemInFolder === "function") candidates.push((path) => shell.showItemInFolder(path));
+        if (typeof shell?.openPath === "function") candidates.push((path) => shell.openPath(path));
+      } catch {}
+      return candidates[0] || null;
+    }
+
+    function debugOpenInFolder(stage, detail = {}) {
+      try { console.info("[fs.openInFolder]", stage, detail); } catch {}
+    }
+
+    async function openInFolder(payload = {}) {
+      const path = String(typeof payload === "string" ? payload : payload?.path || "").trim();
+      const sourceId = typeof payload === "object" ? String(payload?.sourceId || "") : "";
+      debugOpenInFolder("start", { payload, path, sourceId });
+      if (isRemoteSource(sourceId) || payload?.remote === true) {
+        debugOpenInFolder("remote-unsupported", { sourceId, payload });
+        window.showToast?.(t("openInFolder.remoteUnsupported", "SSH/remote projects cannot be opened in a local folder yet"));
+        return { ok: false, reason: "remote" };
+      }
+      if (!path) {
+        debugOpenInFolder("missing-path", { payload });
+        window.showToast?.(t("openInFolder.pathUnavailable", "No local path is available to open in folder"));
+        return { ok: false, reason: "path-unavailable" };
+      }
+      const opener = getNativeFolderOpener();
+      debugOpenInFolder("native-opener", { available: !!opener });
+      if (opener) {
+        try {
+          await opener(path);
+          debugOpenInFolder("native-success", { path });
+          return { ok: true, method: "native" };
+        } catch (err) {
+          debugOpenInFolder("native-failed", { message: err?.message || String(err || "") });
+        }
+      }
+      if (!hasLocalPathShape(path)) {
+        debugOpenInFolder("invalid-local-path-shape", { path });
+        window.showToast?.(t("openInFolder.pathUnavailable", "No local path is available to open in folder"));
+        return { ok: false, reason: "path-unavailable" };
+      }
+      try {
+        const sessionId = await resolveLocalTerminalSessionId(sourceId);
+        debugOpenInFolder("resolved-session", { sourceId, sessionId });
+        if (!sessionId) {
+          window.showToast?.(t("openInFolder.nativeUnsupported", "This runtime cannot open local folders"));
+          return { ok: false, reason: "no-local-session" };
+        }
+        const command = buildOpenInFolderCommand(path);
+        debugOpenInFolder("execute", { sessionId, command });
+        const rec = await window.zion?.commands?.executeCommand?.("terminal.executeCommand", {
+          session_id: sessionId,
+          command,
+          timeout: 8000
+        });
+        debugOpenInFolder("result", rec);
+        const failure = getCommandFailureMessage(rec);
+        if (failure) throw new Error(failure);
+        return { ok: true, method: "terminal", sessionId };
+      } catch (err) {
+        debugOpenInFolder("failed", { message: err?.message || String(err || "") });
+        window.showToast?.(`${t("openInFolder.failed", "Failed to open local folder")}: ${err?.message || String(err || "")}`);
+        return { ok: false, reason: "failed" };
+      }
+    }
+
+    function hasLocalPathShape(path) {
+      const value = String(path || "").trim();
+      return /^([/~]|[A-Za-z]:[\\/]|file:\/\/)/.test(value);
+    }
+
+    function getCommandFailureMessage(rec) {
+      if (!rec) return "No response";
+      if (typeof rec === "string") return rec;
+      if (rec.success === false || (typeof rec.exitCode === "number" && rec.exitCode !== 0)) {
+        return String(rec.output || `exitCode ${rec.exitCode ?? "unknown"}`);
+      }
+      return "";
+    }
+
+    function shellSingleQuote(value) {
+      return `'${String(value || "").replace(/'/g, `'\\''`)}'`;
+    }
+
+    function buildOpenInFolderCommand(path) {
+      const p = shellSingleQuote(String(path || "").replace(/^file:\/\//, ""));
+      return [
+        `p=${p}`,
+        `case "$p" in "~/"*) p="$HOME/\${p#~/}" ;; esac`,
+        `if [ -d "$p" ]; then target="$p"; else target="$(dirname "$p")"; fi`,
+        `sys="$(uname -s 2>/dev/null || echo unknown)"`,
+        `case "$sys" in`,
+        `  Darwin*) if [ -d "$p" ]; then open "$p"; else open -R "$p"; fi ;;`,
+        `  Linux*) if command -v xdg-open >/dev/null 2>&1; then (nohup xdg-open "$target" >/dev/null 2>&1 &); else exit 127; fi ;;`,
+        `  MINGW*|MSYS*|CYGWIN*) explorer.exe "$target" ;;`,
+        `  *) if command -v open >/dev/null 2>&1; then open "$target"; elif command -v xdg-open >/dev/null 2>&1; then (nohup xdg-open "$target" >/dev/null 2>&1 &); else exit 127; fi ;;`,
+        `esac`
+      ].join("\n");
+    }
+
+    async function resolveLocalTerminalSessionId(sourceId) {
+      const sourceSession = getTerminalSessionForSource(sourceId);
+      if (isLocalSession(sourceSession)) return String(sourceSession.id);
+
+      const activeId = String(window.zion?.state?.get?.("terminal.activeSessionId") || "").trim();
+      const sessions = getTerminalSessions();
+      const active = sessions.find((session) => String(session?.id || "") === activeId);
+      if (isLocalSession(active)) return String(active.id);
+
+      const local = sessions.find(isLocalSession);
+      if (local?.id) return String(local.id);
+
+      const created = await window.zion?.commands?.executeCommand?.("terminal.createSession", { type: "local" });
+      if (created?.id && isLocalSession(created)) return String(created.id);
+      return "";
+    }
+
+    function openPanel() {
     const existing = document.getElementById("zion-fs-panel");
     if (existing) existing.remove();
 
@@ -416,6 +591,9 @@ export async function activate(ctx) {
   ctx.subscriptions.push(
     window.zion.commands.registerCommand("fs.getEntries", () => entries.slice())
   );
+    ctx.subscriptions.push(
+      window.zion.commands.registerCommand("fs.openInFolder", openInFolder)
+    );
 
   // Workspace entry: prefer editor header menu, keep statusBar as legacy fallback.
   let status = null;

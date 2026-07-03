@@ -662,6 +662,8 @@ export async function activate(ctx) {
         try {
           const include = window.zion?.state?.get("chat.includeTerminalContext");
           if (include === false) return messages;
+            const includeRecentOutputs = window.zion?.state?.get("chat.includeRecentTerminalOutputs");
+            if (includeRecentOutputs !== true) return messages;
           const outputs = window.zion?.state?.get("terminal.outputs") || [];
           if (!Array.isArray(outputs) || outputs.length === 0) return messages;
           const systemMsg = { role: "system", content: buildRecentTerminalOutputsXml(outputs) };

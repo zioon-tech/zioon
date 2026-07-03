@@ -146,7 +146,7 @@ export async function activate(ctx) {
       const view = editor?.getView?.();
       if (!view?.dom) return;
       const target = event?.target;
-      if (!(target instanceof Node) || !view.dom.contains(target)) return;
+      if (!globalThis.Node || !(target instanceof globalThis.Node) || !view.dom.contains(target)) return;
       const pos = view.posAtCoords?.({ x: event.clientX, y: event.clientY });
       if (typeof pos !== "number") return;
       lastContextMenuInfo = { view, pos, at: Date.now() };
@@ -158,6 +158,37 @@ export async function activate(ctx) {
       try { document.removeEventListener("contextmenu", onContextMenuCapture, true); } catch {}
     }
   });
+
+  const getRolesIndexForView = (view) => {
+    try {
+      const fromApi = window?.zion?.roles?.getIndex?.(view);
+      if (fromApi && Array.isArray(fromApi.blocks)) return fromApi;
+      const state = window?.zion?.state;
+      if (!state?.get) return null;
+      const dom = view?.dom || null;
+      const editorId = dom?.getAttribute?.("data-editor-id") || "";
+      const panelId = dom?.getAttribute?.("data-panel-id") || dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || "";
+      const sessionId = dom?.getAttribute?.("data-session-id") || dom?.closest?.("[data-session-id]")?.getAttribute?.("data-session-id") || "";
+      const keys = [
+        editorId ? `roles.index.editor.${editorId}` : "",
+        panelId && sessionId ? `roles.index.panelSession.${panelId}.${sessionId}` : "",
+        panelId ? `roles.index.panel.${panelId}` : "",
+        "roles.index"
+      ].filter(Boolean);
+      for (const key of keys) {
+        const idx = state.get(key);
+        if (!idx || !Array.isArray(idx.blocks)) continue;
+        const scope = idx.scope || {};
+        if (key === "roles.index") {
+          if (editorId && scope.editorId && scope.editorId !== editorId) continue;
+          if (panelId && scope.panelId && scope.panelId !== panelId) continue;
+          if (sessionId && scope.sessionId && scope.sessionId !== sessionId) continue;
+        }
+        return idx;
+      }
+    } catch {}
+    return null;
+  };
 
   const computeBatchInfoForCursor = () => {
     try {
@@ -180,7 +211,7 @@ export async function activate(ctx) {
       const list = Array.isArray(ann.tools) ? ann.tools : [];
       const toolActions = ann && typeof ann.toolActions === "object" ? ann.toolActions : {};
 
-      const idx = window.zion?.state?.get?.("roles.index");
+      const idx = getRolesIndexForView(view);
       const blocks = Array.isArray(idx?.blocks) ? idx.blocks : [];
       let role = null;
       let curBlockIndex = -1;

@@ -50,10 +50,81 @@ function cloneArrayMaybe<T = any>(value: unknown): T[] | null {
   return Array.isArray(value) ? value.slice() as T[] : null;
 }
 
+function hasMeaningfulValue(value: any): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "string") return value.length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function mergeAnnotationItem(stored: any, live: any): any {
+  const a = stored && typeof stored === "object" ? stored : {};
+  const b = live && typeof live === "object" ? live : {};
+  const out: Record<string, any> = {};
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    const liveValue = b[key];
+    const storedValue = a[key];
+    out[key] = hasMeaningfulValue(liveValue) ? liveValue : storedValue;
+  }
+  if (hasMeaningfulValue(a.id) || hasMeaningfulValue(b.id)) out.id = hasMeaningfulValue(b.id) ? b.id : a.id;
+  return out;
+}
+
+function mergeAnnotationList(stored: any, live: any): any[] | undefined {
+  const storedList = Array.isArray(stored) ? stored : [];
+  const liveList = Array.isArray(live) ? live : [];
+  if (!storedList.length && !liveList.length) return Array.isArray(stored) || Array.isArray(live) ? [] : undefined;
+
+  const byId = new Map<string, any>();
+  const anonymous: any[] = [];
+  const add = (item: any, preferLive: boolean) => {
+    const id = String(item?.id || "");
+    if (!id) {
+      anonymous.push(item);
+      return;
+    }
+    const prev = byId.get(id);
+    byId.set(id, prev ? (preferLive ? mergeAnnotationItem(prev, item) : mergeAnnotationItem(item, prev)) : item);
+  };
+  storedList.forEach((item) => add(item, false));
+  liveList.forEach((item) => add(item, true));
+  return [...byId.values(), ...anonymous];
+}
+
+function unionStringList(a: any, b: any): string[] | undefined {
+  const values = [
+    ...(Array.isArray(a) ? a : []),
+    ...(Array.isArray(b) ? b : [])
+  ].map((id) => String(id || "")).filter(Boolean);
+  return values.length ? Array.from(new Set(values)) : undefined;
+}
+
+function mergeAnnotations(stored: SessionAnnotations | null | undefined, live: SessionAnnotations | null | undefined): SessionAnnotations {
+  const a = normalizeAnnotations(stored);
+  const b = normalizeAnnotations(live);
+  const next: SessionAnnotations = { ...a, ...b };
+  const tools = mergeAnnotationList(a.tools, b.tools);
+  const thinking = mergeAnnotationList(a.thinking, b.thinking);
+  if (tools !== undefined) next.tools = tools;
+  if (thinking !== undefined) next.thinking = thinking;
+  const deletedToolIds = unionStringList(a.deletedToolIds, b.deletedToolIds);
+  const deletedThinkingIds = unionStringList(a.deletedThinkingIds, b.deletedThinkingIds);
+  if (deletedToolIds) next.deletedToolIds = deletedToolIds;
+  if (deletedThinkingIds) next.deletedThinkingIds = deletedThinkingIds;
+  next.toolActions = { ...(a.toolActions || {}), ...(b.toolActions || {}) };
+  return next;
+}
+
 export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) {
   const disposables: Disposable[] = [];
   const reasoningSeq = new Map<string, number>();
   const activeThinkingByRun = new Map<string, string>();
+  const reasoningRunKey = (sessionId: string, runId: string) => `${sessionId}:${runId}`;
+  const reasoningSegmentKey = (runId: string, payload: any) =>
+    String(payload?.reasoningSegmentId || (payload?.stepIndex != null ? `${runId}:step:${payload.stepIndex}` : runId));
+  const reasoningActiveKey = (sessionId: string, segmentKey: string) => `${sessionId}:${segmentKey}`;
 
   const debugLog = (_event: string, _payload?: any) => {};
 
@@ -96,22 +167,14 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
     const includePending = opts2?.includePending !== false;
     const stateAnn = normalizeAnnotations(getStateAnnotations(sessionId));
     const metaAnn = includeMetaFallback ? normalizeAnnotations(getMetaAnnotations(sessionId)) : {};
-    const tools = Array.isArray(stateAnn.tools)
-      ? stateAnn.tools
-      : (Array.isArray(metaAnn.tools)
-        ? metaAnn.tools
-        : (includePending ? (getPendingRestore(sessionId, "tools") || []) : []));
-    const thinking = Array.isArray(stateAnn.thinking)
-      ? stateAnn.thinking
-      : (Array.isArray(metaAnn.thinking)
-        ? metaAnn.thinking
-        : (includePending ? (getPendingRestore(sessionId, "thinking") || []) : []));
-    return {
-      ...metaAnn,
-      ...stateAnn,
-      tools,
-      thinking
-    };
+    const pendingAnn = includePending ? {
+      tools: getPendingRestore(sessionId, "tools") || undefined,
+      thinking: getPendingRestore(sessionId, "thinking") || undefined
+    } : {};
+    const next = mergeAnnotations(mergeAnnotations(pendingAnn, metaAnn), stateAnn);
+    if (Array.isArray(stateAnn.tools) && stateAnn.tools.length === 0) next.tools = [];
+    if (Array.isArray(stateAnn.thinking) && stateAnn.thinking.length === 0) next.thinking = [];
+    return next;
   };
 
   const setSessionAnnotations = (sessionId: string | null | undefined, annotations: SessionAnnotations | null | undefined) => {
@@ -124,7 +187,7 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
   const mergeSessionAnnotations = (sessionId: string | null | undefined, patch: SessionAnnotations | null | undefined) => {
     if (!sessionId) return {};
     const prev = getSessionAnnotations(sessionId);
-    const next = { ...prev, ...normalizeAnnotations(patch) };
+    const next = mergeAnnotations(prev, normalizeAnnotations(patch));
     setSessionAnnotations(sessionId, next);
     return next;
   };
@@ -135,7 +198,10 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
   ) => {
     if (!sessionId || typeof updater !== "function") return {};
     const prev = getSessionAnnotations(sessionId);
-    const next = normalizeAnnotations(updater(prev));
+    const patch = normalizeAnnotations(updater(prev));
+    const next = mergeAnnotations(prev, patch);
+    if (Array.isArray(patch.tools) && patch.tools.length === 0) next.tools = [];
+    if (Array.isArray(patch.thinking) && patch.thinking.length === 0) next.thinking = [];
     setSessionAnnotations(sessionId, next);
     return next;
   };
@@ -233,7 +299,10 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
     const sessionId = restoreOpts?.sessionId;
     if (!sessionId) return { annotations: null, tools: [], thinking: [] };
     const panelId = restoreOpts?.panelId ?? opts.getActivePanelId?.() ?? null;
-    const annotations = normalizeAnnotations(restoreOpts?.annotations || getSessionAnnotations(sessionId));
+    const liveAnnotations = getSessionAnnotations(sessionId, { includeMetaFallback: true, includePending: true });
+    const annotations = restoreOpts?.annotations
+      ? mergeAnnotations(normalizeAnnotations(restoreOpts.annotations), liveAnnotations)
+      : liveAnnotations;
     const tools = Array.isArray(annotations.tools) ? annotations.tools : [];
     const thinking = Array.isArray(annotations.thinking) ? annotations.thinking : [];
     setSessionAnnotations(sessionId, annotations);
@@ -385,8 +454,13 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
       const sessionId = payload?.sessionId;
       const runId = payload?.runId;
       if (!sessionId || !runId) return;
-      reasoningSeq.set(`${sessionId}:${runId}`, 0);
-      activeThinkingByRun.delete(`${sessionId}:${runId}`);
+      const key = reasoningRunKey(sessionId, runId);
+      for (const existingKey of activeThinkingByRun.keys()) {
+        if (existingKey.startsWith(`${sessionId}:`)) {
+          activeThinkingByRun.delete(existingKey);
+        }
+      }
+      reasoningSeq.set(key, 0);
       debugLog("event.runStarted", { sessionId, runId, panelId: payload?.panelId });
     }));
     disposables.push(eventOn("chat/toolCall", (payload: any) => {
@@ -419,17 +493,31 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
       const sessionId = payload?.sessionId;
       const runId = payload?.runId || "run";
       if (!sessionId) return;
-      const key = `${sessionId}:${runId}`;
-      const seq = (reasoningSeq.get(key) || 0) + 1;
-      reasoningSeq.set(key, seq);
+      const runKey = reasoningRunKey(sessionId, runId);
+      const segmentKey = reasoningSegmentKey(runId, payload);
+      const activeKey = reasoningActiveKey(sessionId, segmentKey);
+      const currentId = activeThinkingByRun.get(activeKey);
+      if (currentId) {
+        upsertAnnotationItem(sessionId, "thinking", {
+          id: currentId,
+          runId,
+          segmentKey
+        });
+        debugLog("event.reasoningStart.reuse", { sessionId, panelId: payload?.panelId, runId, segmentKey, id: currentId });
+        return;
+      }
+      const seq = (reasoningSeq.get(runKey) || 0) + 1;
+      reasoningSeq.set(runKey, seq);
       const id = `thinking:${runId}:${seq}`;
-      activeThinkingByRun.set(key, id);
+      activeThinkingByRun.set(activeKey, id);
       upsertAnnotationItem(sessionId, "thinking", {
         id,
+        runId,
+        segmentKey,
         text: "",
         expanded: false
       });
-      debugLog("event.reasoningStart", { sessionId, panelId: payload?.panelId, runId, id });
+      debugLog("event.reasoningStart", { sessionId, panelId: payload?.panelId, runId, segmentKey, id });
     }));
     disposables.push(eventOn("chat/reasoningToken", (payload: any) => {
       if (payload?.silentReasoning) return;
@@ -438,13 +526,15 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
       const runId = payload?.runId || "run";
       const token = String(payload?.token || "");
       if (!sessionId || !token) return;
-      const key = `${sessionId}:${runId}`;
-      let id = activeThinkingByRun.get(key);
+      const runKey = reasoningRunKey(sessionId, runId);
+      const segmentKey = reasoningSegmentKey(runId, payload);
+      const activeKey = reasoningActiveKey(sessionId, segmentKey);
+      let id = activeThinkingByRun.get(activeKey);
       if (!id) {
-        const seq = (reasoningSeq.get(key) || 0) + 1;
-        reasoningSeq.set(key, seq);
+        const seq = (reasoningSeq.get(runKey) || 0) + 1;
+        reasoningSeq.set(runKey, seq);
         id = `thinking:${runId}:${seq}`;
-        activeThinkingByRun.set(key, id);
+        activeThinkingByRun.set(activeKey, id);
       }
       updateSessionAnnotations(sessionId, (prev) => {
         const prevList = Array.isArray(prev.thinking) ? prev.thinking : [];
@@ -452,19 +542,21 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
         const nextList = prevList.slice();
         if (idx >= 0) {
           const prevText = String(nextList[idx]?.text || "");
-          nextList[idx] = { ...nextList[idx], text: prevText + token };
+          nextList[idx] = { ...nextList[idx], runId, segmentKey, text: prevText + token };
         } else {
-          nextList.push({ id, text: token, expanded: false });
+          nextList.push({ id, runId, segmentKey, text: token, expanded: false });
         }
         return { ...prev, thinking: nextList };
       });
-      debugLog("event.reasoningToken", { sessionId, panelId: payload?.panelId, runId, id, tokenLength: token.length });
+      debugLog("event.reasoningToken", { sessionId, panelId: payload?.panelId, runId, segmentKey, id, tokenLength: token.length });
     }));
     disposables.push(eventOn("chat/reasoningEnd", (payload: any) => {
       const sessionId = payload?.sessionId;
       const runId = payload?.runId || "run";
       if (!sessionId) return;
-      activeThinkingByRun.delete(`${sessionId}:${runId}`);
+      // Keep the active id until the next run starts. Some providers emit a
+      // reasoningEnd control marker before all reasoning tokens have drained;
+      // dropping the id here makes those late tokens create thinking:run:2.
       debugLog("event.reasoningEnd", { sessionId, panelId: payload?.panelId, runId });
     }));
   }

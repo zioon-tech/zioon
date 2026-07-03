@@ -20,6 +20,7 @@ export const autocompleteTheme = EditorView.theme({
       fontFamily: "inherit",
       gap: "2px",
       maxHeight: "300px",
+      overflowY: "auto",
       scrollbarColor: "var(--scrollbar-thumb, var(--border, #44475a)) transparent",
       scrollbarWidth: "thin"
     },

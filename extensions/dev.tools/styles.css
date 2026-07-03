@@ -1,28 +1,35 @@
 /* ===== Tool calls (dev.tools) ===== */
-/* 行内提示“调用 xxx”样式：替换为不可编辑的内联 widget（主题友好、略大、可达性更好） */
+/*
+ * Modern tool call widget - inspired by Claude Code, ChatGPT, Cursor
+ * Inline pill: compact, tool-name-centric, with subtle status dot
+ * Card: clean header + content, consistent with overall theme
+ */
+
+/* -- Inline pill widget -- */
 .zion-tool-call-inline {
   display: inline-flex;
-  align-items: center;             /* 与文本居中对齐，容纳行数和状态胶囊 */
-  flex-wrap: nowrap;               /* 子项不换行，整体作为一个单元参与行内换行 */
-  gap: 6px;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 5px;
   margin: 2px 3px;
   min-height: 22px;
-  padding: 2px 6px 2px 3px;
+  padding: 2px 7px 2px 5px;
   box-sizing: border-box;
-  border-radius: 7px;
-  border: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
-  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
   color: var(--fg);
-  font-size: 12px; /* 提升可读性 */
+  font-size: 12px;
   cursor: pointer;
   user-select: none;
   line-height: 1.35;
-  max-width: min(760px, 96%);      /* 参考展开卡片，随编辑器宽度展示更多信息 */
+  max-width: min(760px, 96%);
 }
 .zion-tool-call-inline .zion-tool-call-inline-text {
-  color: inherit;
+  color: color-mix(in srgb, var(--fg) 88%, var(--muted-fg, var(--fg)));
   font-size: inherit;
-  opacity: 0.85;
+  font-weight: 400;
+  opacity: 1;
 }
 .zion-tool-call-inline .zion-tool-call-inline-summary {
   color: inherit;
@@ -69,7 +76,7 @@
   flex: 0 1 auto;
   max-width: 96px;
   min-width: 0;
-  color: color-mix(in srgb, var(--accent) 62%, var(--muted-fg, var(--fg)));
+  color: var(--muted-fg, rgba(127,127,127,0.86));
   font-family: var(--font-sans);
   font-size: 9px;
   white-space: nowrap;
@@ -86,19 +93,19 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 12px;
-  width: 12px;
-  min-width: 12px; /* 强制最小宽度防止压缩 */
+  height: 5px;
+  width: 5px;
+  min-width: 5px;
   border-radius: 999px;
-  border: 1px solid var(--border);
+  border: 0;
+  background: var(--border);
   white-space: nowrap;
   user-select: none;
-  opacity: 0.85;
-  flex: 0 0 auto; /* 防止 flex 压缩 */
+  flex: 0 0 auto;
 }
 .zion-tool-call-status .zion-tool-call-status-icon {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   display: block;
 }
 .zion-tool-call-status .zion-tool-call-status-icon--pending {
@@ -109,18 +116,21 @@
   to { transform: rotate(360deg); }
 }
 .zion-tool-call-status[data-status="pending"] {
-  opacity: 0.55;
+  background: color-mix(in srgb, var(--fg) 40%, transparent);
+  animation: zion-tool-status-pulse 1.4s ease-in-out infinite;
+}
+@keyframes zion-tool-status-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
 }
 .zion-tool-call-status[data-status="ok"] {
-  color: var(--ok);
-  border-color: currentColor;
+  background: var(--ok);
 }
 .zion-tool-call-status[data-status="error"] {
-  color: #ff5555;
-  border-color: currentColor;
+  background: #ff5555;
 }
 .zion-tool-call-status[data-status="unknown"] {
-  opacity: 0.65;
+  background: color-mix(in srgb, var(--fg) 30%, transparent);
 }
 
 /* 信息容器：使“调用 XX + 摘要”作为整体参与换行 */
@@ -159,11 +169,31 @@
   display: block;
   pointer-events: none;
 }
-
-/* hover 时轻微增强文字强调 */
-.zion-tool-call-inline:hover .zion-tool-call-inline-text {
-  text-decoration: underline;
+.zion-tool-open-file-button {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  min-width: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted-fg, rgba(127,127,127,0.82));
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.82;
+}
+.zion-tool-open-file-button:hover {
+  background: rgba(255,255,255,0.06);
+  color: var(--fg);
   opacity: 1;
+}
+:root[data-theme="light"] .zion-tool-open-file-button:hover {
+  background: rgba(0,0,0,0.05);
 }
 
 /* 展开卡片：普通工具和文件变更工具保持同一套卡片节奏 */
@@ -173,13 +203,13 @@
   padding: 0;
   width: min(100%, 760px);
   max-width: 100%;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--panel) 86%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--border) 56%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 92%, var(--bg));
   color: var(--fg);
   box-shadow: none;
-  max-height: min(520px, calc(100vh - 160px));
-  overflow: auto;
+  max-height: none;
+  overflow: visible;
   font-family: var(--font-mono);
   font-size: 11px;
 }
@@ -188,11 +218,11 @@
 }
 .zion-tool-call-card-header {
   align-items: center !important;
-  margin-bottom: 10px !important;
-  padding: 7px 10px;
-  min-height: 36px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
-  background: color-mix(in srgb, var(--panel) 78%, var(--bg));
+  margin-bottom: 8px !important;
+  padding: 6px 10px;
+  min-height: 34px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+  background: transparent;
 }
 .zion-tool-call-card.is-artifact {
   display: block;
@@ -321,10 +351,10 @@
 }
 .zion-tool-artifact-preview-header {
   display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 6px;
   min-width: 0;
   padding: 5px 8px;
   min-height: 32px;
@@ -332,21 +362,21 @@
   background: color-mix(in srgb, var(--panel) 78%, var(--bg));
 }
 .zion-tool-artifact-preview-right {
-  flex: 1 1 120px;
+  flex: 0 0 auto;
   min-width: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 5px;
 }
 .zion-tool-artifact-preview-title {
-  flex: 999 1 220px;
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: row;
   align-items: baseline;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
 }
 .zion-tool-artifact-preview-name-row {
@@ -410,10 +440,10 @@
   color: #f85149;
 }
 .zion-tool-artifact-preview-actions {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 3px;
 }
 .zion-tool-artifact-preview-action {
@@ -463,32 +493,32 @@
 .zion-tool-artifact-preview-title .zion-tool-meta-pill {
   flex: 0 1 auto;
   max-width: min(180px, 100%);
+  color: var(--muted-fg, rgba(127,127,127,0.9));
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
 }
 .zion-tool-read-preview .zion-tool-artifact-preview-right .zion-tool-meta-pill {
   max-width: 96px;
 }
+.zion-tool-artifact-preview-right .zion-tool-meta-pill::before,
+.zion-tool-artifact-preview-title .zion-tool-meta-pill::before {
+  content: "· ";
+  opacity: 0.6;
+}
 @container (max-width: 360px) {
   .zion-tool-artifact-preview-header {
-    gap: 5px;
-  }
-  .zion-tool-artifact-preview-title,
-  .zion-tool-artifact-preview-right {
-    flex-basis: 100%;
-  }
-  .zion-tool-artifact-preview-right {
-    justify-content: flex-start;
+    gap: 4px;
   }
   .zion-tool-artifact-preview-name-row,
   .zion-tool-artifact-preview-dir,
   .zion-tool-artifact-preview-scope {
     max-width: 100%;
-  }
-  .zion-tool-artifact-preview-actions {
-    width: 100%;
+    min-width: 0;
   }
   .zion-tool-artifact-preview-action {
-    flex: 1 1 auto;
-    min-width: 0;
+    padding: 0 5px;
   }
 }
 .zion-tool-read-editor {
@@ -2523,4 +2553,3 @@
   font-size: 12px;
   line-height: 1.6;
 }
-

@@ -1,5 +1,8 @@
 import type { PanelRecord, SplitNode } from "./types";
 
+export const PANEL_MIN_WIDTH_PX = 420;
+const PANEL_MIN_WIDTH_CSS = `var(--panel-min-width, ${PANEL_MIN_WIDTH_PX}px)`;
+
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -12,9 +15,64 @@ export function renderSplitLayout(
   resolvePanel: (panelId: string) => PanelRecord | null,
   onSplitRatioChange?: (splitId: string, ratio: number) => void
 ): void {
+  installHorizontalWheelBridge(host);
   host.innerHTML = "";
+  const horizontalColumns = root ? countHorizontalPanelColumns(root) : 0;
+  const hasHorizontalSplit = horizontalColumns > 1;
+  host.classList.toggle("is-horizontal-scroll", hasHorizontalSplit);
+  if (hasHorizontalSplit) {
+    host.style.setProperty("--panel-horizontal-columns", String(horizontalColumns));
+    host.style.setProperty("--panel-layout-min-width", panelColumnsWidthCss(horizontalColumns));
+  } else {
+    host.style.removeProperty("--panel-horizontal-columns");
+    host.style.removeProperty("--panel-layout-min-width");
+  }
   if (!root) return;
   host.appendChild(renderNode(root, resolvePanel, onSplitRatioChange));
+}
+
+function installHorizontalWheelBridge(host: HTMLElement): void {
+  if (host.dataset.horizontalWheelBridgeBound === "1") return;
+  host.dataset.horizontalWheelBridgeBound = "1";
+  host.addEventListener(
+    "wheel",
+    (event) => {
+      if (!host.classList.contains("is-horizontal-scroll")) return;
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const tableWrap = target.closest(".cm-md-table-wrap");
+      if (!tableWrap || !host.contains(tableWrap)) return;
+
+      const absX = Math.abs(event.deltaX || 0);
+      const absY = Math.abs(event.deltaY || 0);
+      const useX = event.shiftKey || absX > absY;
+      if (!useX) return;
+      const delta = event.deltaX || (event.shiftKey ? event.deltaY : 0);
+      if (!delta) return;
+
+      const tableScroller = target.closest(".cm-md-table-scroll") as HTMLElement | null;
+      if (tableScroller && canScrollX(tableScroller, delta)) return;
+      if (!canScrollX(host, delta)) return;
+
+      const prev = host.scrollLeft;
+      host.scrollLeft = prev + delta;
+      if (Math.abs(host.scrollLeft - prev) <= 0.5) return;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    { capture: true, passive: false }
+  );
+}
+
+function canScrollX(el: HTMLElement, delta: number): boolean {
+  try {
+    const max = Math.max(0, el.scrollWidth - el.clientWidth);
+    if (max <= 1) return false;
+    const left = el.scrollLeft || 0;
+    return delta < 0 ? left > 0.5 : left < max - 0.5;
+  } catch {
+    return false;
+  }
 }
 
 function renderNode(
@@ -37,6 +95,7 @@ function renderNode(
 
   const first = el("div", "zion-split-child");
   applySplitRatio(first, node.ratio);
+  applyHorizontalMinWidth(first, node.direction, node.first);
   first.appendChild(renderNode(node.first, resolvePanel, onSplitRatioChange));
 
   const handle = el("div", "zion-split-handle");
@@ -44,6 +103,7 @@ function renderNode(
 
   const second = el("div", "zion-split-child");
   applySplitRatio(second, 1 - node.ratio);
+  applyHorizontalMinWidth(second, node.direction, node.second);
   second.appendChild(renderNode(node.second, resolvePanel, onSplitRatioChange));
 
   attachHandleDrag(split, handle, first, second, node.direction, node.id, onSplitRatioChange);
@@ -57,6 +117,26 @@ function renderNode(
 function applySplitRatio(el: HTMLElement, ratio: number): void {
   const clamped = Math.max(0.1, Math.min(0.9, ratio));
   el.style.flex = `${clamped} 1 0%`;
+}
+
+function applyHorizontalMinWidth(el: HTMLElement, direction: "horizontal" | "vertical", child: SplitNode): void {
+  if (direction !== "horizontal") return;
+  const columns = Math.max(1, countHorizontalPanelColumns(child));
+  el.style.minWidth = panelColumnsWidthCss(columns);
+}
+
+function panelColumnsWidthCss(columns: number): string {
+  const count = Math.max(1, Math.round(columns || 1));
+  return count === 1 ? PANEL_MIN_WIDTH_CSS : `calc(${PANEL_MIN_WIDTH_CSS} * ${count})`;
+}
+
+export function countHorizontalPanelColumns(node: SplitNode | null): number {
+  if (!node) return 0;
+  if (node.type === "leaf") return 1;
+  const first = countHorizontalPanelColumns(node.first);
+  const second = countHorizontalPanelColumns(node.second);
+  if (node.direction === "horizontal") return first + second;
+  return Math.max(first, second);
 }
 
 function attachHandleDrag(

@@ -39,6 +39,8 @@ export class PanelManager {
   private maximizedPanelId: PanelId | null = null;
   private maximizedSplitRatios: Map<string, number> | null = null;
   private pendingMaximizedFocusRender: ReturnType<typeof setTimeout> | null = null;
+  private pendingActivePanelReveal: ReturnType<typeof setTimeout> | number | null = null;
+  private hostResizeObserver: ResizeObserver | null = null;
 
   constructor(opts: PanelManagerOptions) {
     this.host = opts.host;
@@ -48,6 +50,7 @@ export class PanelManager {
     this.root = { type: "leaf", panelId: opts.initialPanel.id };
     this.activePanelId = opts.initialPanel.id;
     this.noteActivePanel(opts.initialPanel.id);
+    this.installHostResizeObserver();
     this.render();
   }
 
@@ -220,6 +223,7 @@ export class PanelManager {
       return;
     }
     this.applyActiveClasses();
+    this.scheduleActivePanelReveal();
     this.fire("panel/focusChanged", { panelId });
   }
 
@@ -428,6 +432,7 @@ export class PanelManager {
       } catch {}
     }
     this.applyActiveClasses();
+    this.scheduleActivePanelReveal();
     this.fire("panel/layoutChanged", { root: this.root, activePanelId: this.activePanelId });
   }
 
@@ -458,6 +463,62 @@ export class PanelManager {
       this.pendingMaximizedFocusRender = null;
       this.render();
     }, 0);
+  }
+
+  private installHostResizeObserver(): void {
+    try {
+      const ResizeObserverCtor = (globalThis as any).ResizeObserver;
+      if (typeof ResizeObserverCtor !== "function") return;
+      this.hostResizeObserver = new ResizeObserverCtor(() => {
+        this.scheduleActivePanelReveal();
+      });
+      this.hostResizeObserver.observe(this.host);
+    } catch {
+      this.hostResizeObserver = null;
+    }
+  }
+
+  private scheduleActivePanelReveal(): void {
+    if (this.pendingActivePanelReveal != null) return;
+    const run = () => {
+      this.pendingActivePanelReveal = null;
+      this.revealActivePanelInScroller();
+    };
+    try {
+      if (typeof requestAnimationFrame === "function") {
+        this.pendingActivePanelReveal = requestAnimationFrame(run);
+        return;
+      }
+    } catch {}
+    this.pendingActivePanelReveal = setTimeout(run, 0);
+  }
+
+  private revealActivePanelInScroller(): void {
+    const panelId = this.activePanelId;
+    if (!panelId || !this.host.classList.contains("is-horizontal-scroll")) return;
+    const host = this.host;
+    const maxScroll = Math.max(0, host.scrollWidth - host.clientWidth);
+    if (maxScroll <= 1) return;
+    const panelEl = this.panels.get(panelId)?.rootEl;
+    if (!panelEl || !host.contains(panelEl)) return;
+    const bounds = getElementBoundsInScroller(panelEl, host);
+    if (!bounds || bounds.width <= 0) return;
+
+    const margin = Math.min(24, Math.max(8, Math.round(host.clientWidth * 0.04)));
+    const viewLeft = host.scrollLeft || 0;
+    const viewRight = viewLeft + host.clientWidth;
+    const panelLeft = bounds.left;
+    const panelRight = bounds.left + bounds.width;
+    let nextLeft = viewLeft;
+
+    if (panelLeft < viewLeft + margin) {
+      nextLeft = panelLeft - margin;
+    } else if (panelRight > viewRight - margin) {
+      nextLeft = panelRight - host.clientWidth + margin;
+    }
+    nextLeft = Math.max(0, Math.min(maxScroll, nextLeft));
+    if (Math.abs(nextLeft - viewLeft) <= 0.5) return;
+    host.scrollLeft = nextLeft;
   }
 
   private allocatePanelId(): PanelId {
@@ -604,6 +665,34 @@ function restoreSplitRatios(node: SplitNode | null, ratios: Map<string, number> 
   }
   restoreSplitRatios(node.first, ratios);
   restoreSplitRatios(node.second, ratios);
+}
+
+function getElementBoundsInScroller(el: HTMLElement, scroller: HTMLElement): { left: number; width: number } | null {
+  try {
+    const elRect = el.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    if (elRect.width > 0 || elRect.right > elRect.left) {
+      return {
+        left: elRect.left - scrollerRect.left + (scroller.scrollLeft || 0),
+        width: elRect.width || Math.max(0, elRect.right - elRect.left)
+      };
+    }
+  } catch {}
+
+  try {
+    let left = 0;
+    let cur: HTMLElement | null = el;
+    while (cur && cur !== scroller) {
+      left += cur.offsetLeft || 0;
+      cur = cur.offsetParent as HTMLElement | null;
+    }
+    return {
+      left,
+      width: el.offsetWidth || el.clientWidth || 0
+    };
+  } catch {
+    return null;
+  }
 }
 
 function computeNextSequence(ids: string[], re: RegExp): number {

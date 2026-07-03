@@ -41,6 +41,36 @@ function createEvents() {
 }
 
 describe("chat annotations api", () => {
+  it("keeps existing edit/write args when a snapshot writes back an empty args object", () => {
+    const state = createState({
+      "sessions.annotations.s-edit": {
+        tools: [
+          { id: "edit-1", name: "edit", args: { path: "a.ts", old_string: "foo", new_string: "bar" }, result: "edit ok: a.ts", ok: true, expanded: false }
+        ]
+      }
+    });
+    const api = createChatAnnotationsApi({
+      state,
+      commands: createCommands(),
+      events: createEvents()
+    });
+
+    // Simulate a post-wake snapshot re-synthesising the card from the doc anchor:
+    // the mounted widget only knows its id/name, so it writes back an empty args object.
+    api.mergeSessionAnnotations("s-edit", {
+      tools: [{ id: "edit-1", name: "edit", args: {}, result: null, ok: null, expanded: false }]
+    });
+
+    const ann = api.getSessionAnnotations("s-edit");
+    expect(ann.tools?.[0]).toMatchObject({
+      id: "edit-1",
+      args: { path: "a.ts", old_string: "foo", new_string: "bar" },
+      result: "edit ok: a.ts",
+      ok: true
+    });
+    api.dispose();
+  });
+
   it("keeps explicit empty state arrays instead of falling back to stale meta or pending restore", () => {
     const state = createState({
       "sessions.annotations.s1": { tools: [], thinking: [] },
@@ -95,6 +125,83 @@ describe("chat annotations api", () => {
       { topic: "toolcards/restore", payload: { items: [{ id: "tool-1" }], panelId: "panel-2", sessionId: "s2" } },
       { topic: "thinking/restore", payload: { items: [{ id: "thinking-1" }], panelId: "panel-2", sessionId: "s2" } }
     ]);
+    api.dispose();
+  });
+
+  it("keeps richer live card payloads when restore receives stale persisted annotations", () => {
+    const state = createState({
+      "sessions.annotations.s2": {
+        tools: [{ id: "tool-1", name: "read", args: { path: "fresh.txt" }, result: "fresh result", ok: true }],
+        thinking: [{ id: "thinking-1", text: "fresh thinking", expanded: true }]
+      }
+    });
+    const emitted: Array<{ topic: string; payload: any }> = [];
+    const commands = createCommands();
+    const api = createChatAnnotationsApi({
+      state,
+      commands,
+      events: {
+        emit(topic, payload) {
+          emitted.push({ topic, payload });
+        }
+      }
+    });
+
+    api.restoreSession({
+      sessionId: "s2",
+      panelId: "panel-2",
+      annotations: {
+        tools: [{ id: "tool-1", name: "read", args: { path: "old.txt" }, result: null, ok: null }],
+        thinking: [{ id: "thinking-1", text: "", expanded: false }]
+      },
+      clearFirst: false
+    });
+
+    const ann = api.getSessionAnnotations("s2");
+    expect(ann.tools?.[0]).toMatchObject({
+      id: "tool-1",
+      args: { path: "fresh.txt" },
+      result: "fresh result",
+      ok: true
+    });
+    expect(ann.thinking?.[0]).toMatchObject({
+      id: "thinking-1",
+      text: "fresh thinking",
+      expanded: true
+    });
+    expect(emitted).toContainEqual({
+      topic: "toolcards/restore",
+      payload: {
+        items: [expect.objectContaining({ id: "tool-1", result: "fresh result" })],
+        panelId: "panel-2",
+        sessionId: "s2"
+      }
+    });
+    api.dispose();
+  });
+
+  it("preserves existing widget payloads when an annotation update only patches sibling fields", () => {
+    const state = createState({
+      "sessions.annotations.s-patch": {
+        tools: [{ id: "tool-1", name: "read", result: "kept", ok: true }],
+        thinking: [{ id: "thinking-1", text: "kept thinking", expanded: true }]
+      }
+    });
+    const api = createChatAnnotationsApi({
+      state,
+      commands: createCommands(),
+      events: createEvents()
+    });
+
+    api.updateSessionAnnotations("s-patch", (prev) => ({
+      ...prev,
+      toolActions: { "tool-1": { action: "accept", at: 1 } }
+    }));
+
+    const ann = api.getSessionAnnotations("s-patch");
+    expect(ann.tools?.[0]).toMatchObject({ id: "tool-1", result: "kept", ok: true });
+    expect(ann.thinking?.[0]).toMatchObject({ id: "thinking-1", text: "kept thinking", expanded: true });
+    expect(ann.toolActions?.["tool-1"]).toEqual({ action: "accept", at: 1 });
     api.dispose();
   });
 
@@ -179,7 +286,7 @@ describe("chat annotations api", () => {
     events.emit("chat/reasoningEnd", { sessionId: "s4", runId: "r1" });
 
     expect(api.getSessionAnnotations("s4").thinking).toEqual([
-      { id: "thinking:r1:1", text: "hello world", expanded: false }
+      { id: "thinking:r1:1", runId: "r1", segmentKey: "r1", text: "hello world", expanded: false }
     ]);
     api.dispose();
   });
@@ -198,10 +305,10 @@ describe("chat annotations api", () => {
     events.emit("chat/reasoningToken", { sessionId: "session-b", runId: "run-1", token: "B" });
 
     expect(api.getSessionAnnotations("session-a").thinking).toEqual([
-      { id: "thinking:run-1:1", text: "A", expanded: false }
+      { id: "thinking:run-1:1", runId: "run-1", segmentKey: "run-1", text: "A", expanded: false }
     ]);
     expect(api.getSessionAnnotations("session-b").thinking).toEqual([
-      { id: "thinking:run-1:1", text: "B", expanded: false }
+      { id: "thinking:run-1:1", runId: "run-1", segmentKey: "run-1", text: "B", expanded: false }
     ]);
     api.dispose();
   });

@@ -2334,7 +2334,9 @@ const chatUsageStore = createChatUsageStore();
       show: () => auxiliaryBarRuntime.show(),
       hide: () => auxiliaryBarRuntime.hide(),
       toggle: () => auxiliaryBarRuntime.toggle(),
-      setWidth: (w: number) => auxiliaryBarRuntime.setWidth(w)
+      setWidth: (w: number) => auxiliaryBarRuntime.setWidth(w),
+      requestTemporaryWidth: (ownerId: string, w: number) => auxiliaryBarRuntime.requestTemporaryWidth(ownerId, w),
+      releaseTemporaryWidth: (ownerId: string) => auxiliaryBarRuntime.releaseTemporaryWidth(ownerId)
     },
     bottomPanel: {
       registerView: (opts: any) => bottomPanelRuntime.registerView(opts),

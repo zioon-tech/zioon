@@ -427,17 +427,26 @@ export async function activate(ctx) {
 
   // Include Tool History init (persist + commands)
   try {
+    const TOOL_HISTORY_STORAGE_KEY = "zion.includeToolHistory";
+    const TOOL_HISTORY_USER_SET_KEY = "zion.includeToolHistory.userSet";
     let incV = true;
     try {
-      const v = localStorage.getItem("zion.includeToolHistory");
-      if (v === "0" || v === "false") incV = false;
+      const v = localStorage.getItem(TOOL_HISTORY_STORAGE_KEY);
+      const userSet = localStorage.getItem(TOOL_HISTORY_USER_SET_KEY) === "1";
+      if ((v === "0" || v === "false") && userSet) incV = false;
       if (v === "1" || v === "true") incV = true;
+      if ((v === "0" || v === "false") && !userSet) {
+        localStorage.setItem(TOOL_HISTORY_STORAGE_KEY, "1");
+      }
     } catch {}
     window.zion.state.set("chat.includeToolHistory", incV);
 
     const setInc = window.zion.commands.registerCommand("dev.editor.setIncludeToolHistory", (val) => {
       const b = !!val;
-      try { localStorage.setItem("zion.includeToolHistory", b ? "1" : "0"); } catch {}
+      try {
+        localStorage.setItem(TOOL_HISTORY_STORAGE_KEY, b ? "1" : "0");
+        localStorage.setItem(TOOL_HISTORY_USER_SET_KEY, "1");
+      } catch {}
       window.zion.state.set("chat.includeToolHistory", b);
       return b;
     });
@@ -1165,7 +1174,7 @@ export async function activate(ctx) {
               description: "在聊天上下文里包含工具调用历史",
               descriptionKey: "dev.editor-config.settings.toolHistory.description",
               getValue: () => getBool("chat.includeToolHistory", true),
-              setValue: async (value) => setStoredState("chat.includeToolHistory", "zion.includeToolHistory", !!value)
+              setValue: async (value) => window.zion.commands.executeCommand("dev.editor.setIncludeToolHistory", !!value)
             },
             {
               id: "editor.includeThinkingHistory",

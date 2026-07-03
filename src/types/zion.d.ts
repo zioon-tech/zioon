@@ -340,6 +340,8 @@ declare global {
         hide(): void;
         toggle(): boolean;
         setWidth(w: number): void;
+        requestTemporaryWidth(ownerId: string, w: number): void;
+        releaseTemporaryWidth(ownerId: string): void;
       };
       bottomPanel?: {
         registerView(opts: {

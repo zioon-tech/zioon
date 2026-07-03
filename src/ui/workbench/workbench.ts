@@ -1126,6 +1126,8 @@ export function initWorkbench(host: HTMLElement): {
       if (!dragging) return;
       dragging = false;
       document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      bottomResizer.classList.remove("is-dragging");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       try {
@@ -1134,10 +1136,13 @@ export function initWorkbench(host: HTMLElement): {
     };
 
     bottomResizer.onmousedown = (e) => {
+      e.preventDefault();
       dragging = true;
       startY = e.clientY;
       startH = bottomPanelRuntime.getHeight();
       document.body.style.userSelect = "none";
+      document.body.style.cursor = "row-resize";
+      bottomResizer.classList.add("is-dragging");
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     };
@@ -1283,6 +1288,8 @@ export function initWorkbench(host: HTMLElement): {
       if (!dragging) return;
       dragging = false;
       document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      resizer.classList.remove("is-dragging");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       try {
@@ -1291,10 +1298,13 @@ export function initWorkbench(host: HTMLElement): {
     };
 
     resizer.onmousedown = (e) => {
+      e.preventDefault();
       dragging = true;
       startX = e.clientX;
       startW = sideBarRuntime.getWidth();
       document.body.style.userSelect = "none";
+      document.body.style.cursor = "col-resize";
+      resizer.classList.add("is-dragging");
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     };

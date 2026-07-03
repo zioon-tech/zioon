@@ -3,9 +3,12 @@ import { StateField, StateEffect, Transaction } from "@codemirror/state";
 import {
   buildRegexAnchors,
   filterDeletedItems,
+  mergeItemsFromAnchors,
   planAssistantMarkerInsertion,
   reconcileExactAnchors,
-  reconcileNearestAnchors
+  reconcileNearestAnchors,
+  stripCardMarkerIdComment,
+  thinkingMarkerText
 } from "../../src/chat/restore";
 import { inlineWidgetSourceFacet } from "../../src/editor/inlineWidgets";
 
@@ -31,6 +34,169 @@ const updateText = StateEffect.define();    // { id, text, replace? }
 const removeItem = StateEffect.define();    // { id }
 const clearAll = StateEffect.define();
 const inlineWidgetLineClass = "zion-inline-widget-row";
+const THINKING_ANCHOR_RE = /思考\s*<!--\s*zion-thinking:id=([^>\s]+)\s*-->/g;
+
+function parseThinkingAnchorText(text) {
+  const raw = String(text || "").trim();
+  const match = /^思考(?:\s*<!--\s*zion-thinking:id=([^>\s]+)\s*-->)?$/.exec(raw);
+  if (!match) return null;
+  return {
+    id: match[1] ? String(match[1]) : null,
+    visibleText: stripCardMarkerIdComment(raw)
+  };
+}
+
+function buildThinkingAnchors(docString) {
+  return buildRegexAnchors(docString, THINKING_ANCHOR_RE, (match) => ({
+    from: match.index,
+    to: match.index + match[0].length,
+    markerId: match[1] ? String(match[1]) : null
+  }));
+}
+
+function isThinkingAnchorForItem(anchorText, id) {
+  const parsed = parseThinkingAnchorText(anchorText);
+  if (!parsed || parsed.visibleText !== "思考") return false;
+  const expectedId = String(id || "");
+  return !parsed.id || !expectedId || parsed.id === expectedId;
+}
+
+function migrateLegacyThinkingAnchors(view, items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return false;
+  const allAnchors = buildThinkingAnchors(view.state.doc.toString());
+  const anchors = allAnchors.filter((anchor) => !anchor.markerId);
+  if (!anchors.length) return false;
+  const used = new Set();
+  const changes = [];
+  for (const item of list) {
+    const id = String(item?.id || "");
+    if (!id) continue;
+    let anchor = anchors.find((candidate) =>
+      !used.has(candidate)
+      && typeof item.from === "number"
+      && typeof item.to === "number"
+      && candidate.from === item.from
+      && candidate.to === item.to
+    );
+    if (!anchor) anchor = anchors.find((candidate) => !used.has(candidate));
+    if (!anchor) continue;
+    used.add(anchor);
+    const marker = thinkingMarkerText(id);
+    changes.push({ from: anchor.from, to: anchor.to, insert: marker });
+    item.from = anchor.from;
+    item.to = anchor.from + marker.length;
+  }
+  if (!changes.length) return false;
+  changes.sort((a, b) => a.from - b.from);
+  view.dispatch({
+    changes,
+    annotations: Transaction.userEvent.of("zion.cardAnchorMigrate")
+  });
+  return true;
+}
+
+function mergeThinkingItemsFromAnchors(view, items, deletedIds) {
+  return mergeItemsFromAnchors({
+    items,
+    deletedIds,
+    anchors: buildThinkingAnchors(view.state.doc.toString()).filter((anchor) => anchor.markerId),
+    createItem: (anchor) => ({
+      id: String(anchor.markerId || ""),
+      text: "",
+      expanded: false,
+      from: anchor.from,
+      to: anchor.to
+    })
+  }).items;
+}
+
+  function reviveDeletedThinkingIdsForAnchors(sessionId, deletedIds, anchors) {
+    const deleted = Array.isArray(deletedIds) ? deletedIds.map(String).filter(Boolean) : [];
+    if (!sessionId || !deleted.length || !Array.isArray(anchors) || !anchors.length) return deleted;
+    const anchorIds = new Set(anchors.map((anchor) => String(anchor?.markerId || "")).filter(Boolean));
+    const remaining = deleted.filter((id) => !anchorIds.has(id));
+    if (remaining.length === deleted.length) return deleted;
+    try {
+      updateSessionAnnotations(sessionId, (ann) => ({ ...ann, deletedThinkingIds: remaining }));
+    } catch {}
+    return remaining;
+  }
+
+  function mergeThinkingSnapshotItem(previous, current) {
+    const prev = previous && typeof previous === "object" ? previous : {};
+    const next = current && typeof current === "object" ? current : {};
+    const merged = { ...prev, ...next };
+    if (!next.text && prev.text) merged.text = prev.text;
+    return merged;
+  }
+
+  function thinkingItemNeedsHydration(stored, mounted) {
+    if (!stored || !mounted) return false;
+    if (stored.text && !mounted.text) return true;
+    return false;
+  }
+
+  function needsThinkingRestore(list, fieldVal) {
+    const mounted = fieldVal?.items || new Map();
+    for (const it of Array.isArray(list) ? list : []) {
+      const id = String(it?.id || "");
+      if (!id) continue;
+      const current = mounted.get(id);
+      if (!current || thinkingItemNeedsHydration(it, current)) return true;
+    }
+    return false;
+  }
+
+function repairDuplicateThinkingAnchorIds(view, items, deletedIds) {
+  const sourceItems = Array.isArray(items) ? items.slice() : [];
+  const deleted = new Set(Array.from(deletedIds || []).map((id) => String(id)));
+  const anchors = buildThinkingAnchors(view.state.doc.toString()).filter((anchor) => anchor.markerId);
+  if (anchors.length < 2) return { items: sourceItems, repaired: 0 };
+
+  const seen = new Map();
+  const usedIds = new Set(sourceItems.map((item) => String(item?.id || "")).filter(Boolean));
+  anchors.forEach((anchor) => {
+    const id = String(anchor.markerId || "");
+    if (id) usedIds.add(id);
+  });
+
+  const changes = [];
+  const clonedItems = [];
+  for (const anchor of anchors) {
+    const id = String(anchor.markerId || "");
+    if (!id || deleted.has(id)) continue;
+    const count = seen.get(id) || 0;
+    seen.set(id, count + 1);
+    if (count === 0) continue;
+
+    let suffix = count + 1;
+    let nextId = `${id}:dup${suffix}`;
+    while (usedIds.has(nextId) || deleted.has(nextId)) {
+      suffix += 1;
+      nextId = `${id}:dup${suffix}`;
+    }
+    usedIds.add(nextId);
+    const marker = thinkingMarkerText(nextId);
+    changes.push({ from: anchor.from, to: anchor.to, insert: marker });
+    const source = sourceItems.find((item) => String(item?.id || "") === id) || {};
+    clonedItems.push({
+      ...source,
+      id: nextId,
+      expanded: false,
+      from: anchor.from,
+      to: anchor.from + marker.length
+    });
+  }
+
+  if (!changes.length) return { items: sourceItems, repaired: 0 };
+  changes.sort((a, b) => a.from - b.from);
+  view.dispatch({
+    changes,
+    annotations: Transaction.userEvent.of("zion.cardAnchorRepair")
+  });
+  return { items: sourceItems.concat(clonedItems), repaired: clonedItems.length };
+}
 
 function getSessionAnnotations(sessionId) {
   try {
@@ -73,6 +239,12 @@ function getRunAssistantAnchorHint(payload, sessionId) {
     ?? window.zion?.state?.get("chat.answerAnchorPos");
 }
 
+function getRunAssistantHeadLineHint(payload, sessionId) {
+  if (typeof payload?.answerHeadLine === "number") return payload.answerHeadLine;
+  return (sessionId ? window.zion?.state?.get(`chat.answerHeadLine.${sessionId}`) : undefined)
+    ?? window.zion?.state?.get("chat.answerHeadLine");
+}
+
 // #endregion
 
 function scheduleRevealThinkingContent(view, { id, pos } = {}) {
@@ -95,15 +267,11 @@ function scheduleRevealThinkingContent(view, { id, pos } = {}) {
           const rect = thinkingEl.getBoundingClientRect();
           if (rect.bottom > viewportRect.bottom - margin) {
             nextScrollTop = scrollDOM.scrollTop + (rect.bottom - (viewportRect.bottom - margin));
-          } else if (rect.top < viewportRect.top + margin) {
-            nextScrollTop = Math.max(0, scrollDOM.scrollTop - ((viewportRect.top + margin) - rect.top));
           }
         } else if (typeof pos === "number") {
           const coords = view.coordsAtPos(Math.max(0, pos), 1);
           if (coords?.bottom > viewportRect.bottom - margin) {
             nextScrollTop = scrollDOM.scrollTop + (coords.bottom - (viewportRect.bottom - margin));
-          } else if (coords?.top < viewportRect.top + margin) {
-            nextScrollTop = Math.max(0, scrollDOM.scrollTop - ((viewportRect.top + margin) - coords.top));
           }
         }
         if (nextScrollTop == null) return;
@@ -191,28 +359,41 @@ function buildThinkingDecorations(state, field) {
   const decorations = [];
   let fieldVal = null;
   try { fieldVal = state.field(field, false); } catch {}
-  const items = fieldVal?.items;
-  if (!items?.size) return decorations;
+  const items = fieldVal?.items || null;
 
+  // Inline pills are driven directly by the document anchors (which carry the id),
+  // not by the asynchronously-restored StateField items. A mirror/split panel renders
+  // pills from its seeded document on first build, so the bare "思考 <!-- ... -->"
+  // text can never leak through while restore is still pending.
+  const docLen = state.doc.length;
+  let anchors = [];
   try {
-    const addedLines = new Set();
-    items.forEach((it) => {
-      if (typeof it.from !== "number" || it.from < 0 || it.from > state.doc.length) return;
-      const line = state.doc.lineAt(it.from);
-      if (addedLines.has(line.number)) return;
-      addedLines.add(line.number);
-      decorations.push(Decoration.line({ class: inlineWidgetLineClass }).range(line.from));
-    });
+    anchors = buildThinkingAnchors(state.doc.toString()).filter((anchor) => anchor.markerId);
   } catch {}
 
-  items.forEach((it, id) => {
-    if (typeof it.from !== "number" || typeof it.to !== "number") return;
-    if (it.from < 0 || it.to > state.doc.length || it.from >= it.to) return;
-    decorations.push(Decoration.replace({ widget: new ThinkingInlineWidget(id) }).range(it.from, it.to));
-    if (it.expanded) {
-      decorations.push(Decoration.widget({ widget: new ThinkingCardWidget(id, it.text), side: 1 }).range(it.to));
+  const addedLines = new Set();
+  const renderedIds = new Set();
+  for (const anchor of anchors) {
+    if (typeof anchor.from !== "number" || typeof anchor.to !== "number") continue;
+    if (anchor.from < 0 || anchor.to > docLen || anchor.from >= anchor.to) continue;
+    const id = String(anchor.markerId);
+    if (renderedIds.has(id)) continue;
+    renderedIds.add(id);
+
+    let line;
+    try { line = state.doc.lineAt(anchor.from); } catch { continue; }
+    if (!addedLines.has(line.number)) {
+      addedLines.add(line.number);
+      decorations.push(Decoration.line({ class: inlineWidgetLineClass }).range(line.from));
     }
-  });
+
+    decorations.push(Decoration.replace({ widget: new ThinkingInlineWidget(id) }).range(anchor.from, anchor.to));
+
+    const it = items?.get?.(id);
+    if (it?.expanded) {
+      decorations.push(Decoration.widget({ widget: new ThinkingCardWidget(id, it.text), side: 1 }).range(anchor.to));
+    }
+  }
   return decorations;
 }
 
@@ -247,8 +428,8 @@ const thinkingField = StateField.define({
         continue;
       }
       if (e.is(addInline)) {
-        const { from, to, id, sessionId } = e.value;
-        items.set(id, { from, to, expanded: false, text: "", sessionId: sessionId || null });
+        const { from, to, id, sessionId, runId, segmentKey } = e.value;
+        items.set(id, { from, to, expanded: false, text: "", sessionId: sessionId || null, runId: runId || null, segmentKey: segmentKey || null });
       }
       if (e.is(toggleInline)) {
         const id = e.value?.id;
@@ -298,7 +479,7 @@ const thinkingField = StateField.define({
           return;
         }
         const anchor = doc.sliceString(it.from, it.to);
-        if (String(anchor).trim() !== "思考") {
+        if (!isThinkingAnchorForItem(anchor, id)) {
           toRemove.push(id);
         }
       });
@@ -352,6 +533,8 @@ export function installThinkingCards() {
       this.sessionId = null;
       this.suspendSnapshot = false;
       this.currentId = null;
+      this.currentRunId = "";
+      this.currentSegmentKey = "";
       this.buffer = "";
       this.timer = null;
       this.selRaf = 0;
@@ -380,7 +563,11 @@ export function installThinkingCards() {
           const sid = this.sessionId;
           const pending = sid ? window.zion?.commands?.executeCommand?.("zion.chatCards.getPendingRestore", { sessionId: sid, kind: "thinking" }) : null;
           const ann = sid ? getSessionAnnotations(sid) : {};
-          const list = Array.isArray(ann.thinking) ? ann.thinking : [];
+          const rawList = Array.isArray(ann.thinking) ? ann.thinking : [];
+            const anchors = buildThinkingAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
+            const deletedIds = reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], anchors);
+          const repair = repairDuplicateThinkingAnchorIds(this.view, rawList, deletedIds);
+          const list = mergeThinkingItemsFromAnchors(this.view, repair.items, deletedIds);
           debugChatCards("plugin.initialRestoreCheck", {
             panelId: this.panelId,
             sessionId: sid,
@@ -394,13 +581,14 @@ export function installThinkingCards() {
           if (!list.length) return;
           // 基于 StateField 中的已挂载 id 判断是否需要恢复
           let mountedIds = [];
+            let fieldVal = null;
           try {
-            const fieldVal = this.view.state.field(thinkingField);
+              fieldVal = this.view.state.field(thinkingField);
             if (fieldVal?.items) fieldVal.items.forEach((_it, id) => mountedIds.push(String(id)));
           } catch {}
           const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
-          const missing = wantIds.some(id => !mountedIds.includes(id));
-                  if (!missing) return;
+            const missing = repair.repaired > 0 || wantIds.some(id => !mountedIds.includes(id)) || needsThinkingRestore(list, fieldVal);
+          if (!missing) return;
           this.onRestore({ items: list });
         } catch {}
       });
@@ -444,7 +632,11 @@ export function installThinkingCards() {
         const sid = this.sessionId;
         if (!sid) return;
         const ann = getSessionAnnotations(sid);
-        const list = Array.isArray(ann.thinking) ? ann.thinking : [];
+        const rawList = Array.isArray(ann.thinking) ? ann.thinking : [];
+          const anchors = buildThinkingAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
+          const deletedIds = reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], anchors);
+        const repair = repairDuplicateThinkingAnchorIds(this.view, rawList, deletedIds);
+        const list = mergeThinkingItemsFromAnchors(this.view, repair.items, deletedIds);
         let mountedIds = [];
         try {
           const fieldVal = this.view.state.field(thinkingField);
@@ -452,11 +644,22 @@ export function installThinkingCards() {
         } catch {}
         if (!list.length) return;
 
-        // 基于 StateField 中的已挂载 id 判断是否需要恢复
-        const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
-        const missing = wantIds.some(id => !mountedIds.includes(id));
+        // 基于文档锚点判断是否需要恢复。annotations 里可能保留历史 orphan id，
+        // 这些 id 没有对应锚点时不应该触发反复 restore。
+        const anchorIds = anchors.map((anchor) => anchor?.markerId).filter(Boolean).map(String);
+        const anchorIdSet = new Set(anchorIds);
+        const wantIds = list
+          .map(it => it?.id)
+          .filter(Boolean)
+          .map(String)
+          .filter(id => anchorIdSet.has(id));
+          let fieldVal = null;
+          try { fieldVal = this.view.state.field(thinkingField); } catch {}
+          const mountedSet = new Set(mountedIds);
+          const listForAnchors = list.filter((it) => anchorIdSet.has(String(it?.id || "")));
+          const missing = repair.repaired > 0 || wantIds.some(id => !mountedSet.has(id)) || needsThinkingRestore(listForAnchors, fieldVal);
         if (missing) {
-          this.onRestore({ items: list });
+          this.onRestore({ items: listForAnchors });
         }
       } catch (e) {
         console.error("[thinking] checkAndRestoreWidgets error:", e);
@@ -475,6 +678,9 @@ export function installThinkingCards() {
       if (isSessionLoad) {
         setTimeout(() => this.checkAndRestoreWidgets(), 0);
       } else {
+          if (update.docChanged) {
+            setTimeout(() => this.checkAndRestoreWidgets(), 0);
+          }
         this.snapshot();
       }
       if (update.selectionSet || update.docChanged || update.viewportChanged) {
@@ -523,7 +729,9 @@ export function installThinkingCards() {
             text: it.text,
             expanded: it.expanded,
             from: it.from,
-            to: it.to
+            to: it.to,
+            runId: this.currentId === key ? this.currentRunId : it.runId,
+            segmentKey: this.currentId === key ? this.currentSegmentKey : it.segmentKey
           });
         });
         updateSessionAnnotations(id, (prev) => {
@@ -537,7 +745,21 @@ export function installThinkingCards() {
             });
             return prev;
           }
-          return { ...prev, thinking: arr };
+            const prevById = new Map(prevThinking.map((it) => [String(it?.id || ""), it]).filter(([key]) => !!key));
+            const nextThinking = [];
+            const seen = new Set();
+            for (const it of arr) {
+              const key = String(it?.id || "");
+              if (!key) continue;
+              seen.add(key);
+              nextThinking.push(mergeThinkingSnapshotItem(prevById.get(key), it));
+            }
+            for (const it of prevThinking) {
+              const key = String(it?.id || "");
+              if (!key || seen.has(key)) continue;
+              nextThinking.push(it);
+            }
+            return { ...prev, thinking: nextThinking };
         });
                 debugChatCards("snapshot", { panelId: this.panelId, sessionId: id, count: arr.length, ids: arr.map(it => it.id) });
         // 同步当前挂载的 widget id 列表与计数，供生命周期判定使用（避免依赖 DOM 计数）
@@ -566,6 +788,10 @@ export function installThinkingCards() {
     seqKey(sid, runId) {
       return `thinking.seq.${sid}.${runId}`;
     }
+    getSegmentKey(runId, payload = {}) {
+      const rid = runId || payload?.runId || "run";
+      return String(payload?.reasoningSegmentId || (payload?.stepIndex != null ? `${rid}:step:${payload.stepIndex}` : rid));
+    }
     getVisibleSessionId = () => {
       return getViewSessionId(this.view);
     };
@@ -573,7 +799,7 @@ export function installThinkingCards() {
       const visibleSessionId = this.getVisibleSessionId();
       if (!visibleSessionId) return false;
       if (payload?.sessionId && payload.sessionId !== visibleSessionId) return false;
-      if (!payload?.sessionId && payload?.panelId && this.panelId && payload.panelId !== this.panelId) return false;
+      if (payload?.panelId && this.panelId && payload.panelId !== this.panelId) return false;
       if (!payload?.panelId && !payload?.sessionId) {
         const activePanelId = window.zion?.panels?.getActivePanelId?.() || null;
         if (this.panelId && activePanelId && this.panelId !== activePanelId) return false;
@@ -581,17 +807,80 @@ export function installThinkingCards() {
       this.sessionId = visibleSessionId;
       return true;
     };
+    isPrimaryWriterPayload = (payload) => {
+      if (payload?.panelId && this.panelId) return payload.panelId === this.panelId;
+      if (payload?.sessionId) {
+        const activePanelId = window.zion?.panels?.getActivePanelId?.() || null;
+        if (activePanelId && this.panelId && activePanelId !== this.panelId) return false;
+      }
+      return true;
+    };
     getSeq(sid, runId) {
       try {
         const v = this.reasoningSeq.get(this.seqKey(sid, runId));
-        return typeof v === "number" && Number.isFinite(v) ? v : 0;
+        const localSeq = typeof v === "number" && Number.isFinite(v) ? v : 0;
+        const sharedSeq = Number(window.zion?.state?.get?.(this.seqKey(sid, runId)) || 0);
+        return Math.max(localSeq, Number.isFinite(sharedSeq) ? sharedSeq : 0);
       } catch {
         return 0;
       }
     }
     setSeq(sid, runId, seq) {
-      try { this.reasoningSeq.set(this.seqKey(sid, runId), seq); } catch {}
+      try {
+        const key = this.seqKey(sid, runId);
+        this.reasoningSeq.set(key, seq);
+        window.zion?.state?.set?.(key, seq);
+      } catch {}
     }
+    getMaxExistingSeq(sid, runId) {
+      const prefix = `thinking:${runId}:`;
+      let maxSeq = 0;
+      const acceptId = (id) => {
+        const raw = String(id || "");
+        if (!raw.startsWith(prefix)) return;
+        const n = Number(raw.slice(prefix.length).split(":")[0]);
+        if (Number.isFinite(n) && n > maxSeq) maxSeq = n;
+      };
+      try {
+        for (const anchor of buildThinkingAnchors(this.view.state.doc.toString())) {
+          acceptId(anchor.markerId);
+        }
+      } catch {}
+      try {
+        const ann = sid ? getSessionAnnotations(sid) : {};
+        for (const item of Array.isArray(ann.thinking) ? ann.thinking : []) {
+          acceptId(item?.id);
+        }
+      } catch {}
+      return maxSeq;
+    }
+      parseThinkingSeq(runId, id) {
+        const raw = String(id || "");
+        const prefix = `thinking:${runId}:`;
+        if (!raw.startsWith(prefix)) return 0;
+        const n = Number(raw.slice(prefix.length).split(":")[0]);
+        return Number.isFinite(n) ? n : 0;
+      }
+      getExistingThinkingIdForSegment(sid, runId, segmentKey) {
+        const prefix = `thinking:${runId}:`;
+        let bestId = "";
+        let bestSeq = 0;
+        try {
+          const ann = sid ? getSessionAnnotations(sid) : {};
+          for (const item of Array.isArray(ann.thinking) ? ann.thinking : []) {
+            const id = String(item?.id || "");
+            if (!id.startsWith(prefix)) continue;
+            const storedSegmentKey = String(item?.segmentKey || "");
+            if (segmentKey && storedSegmentKey && storedSegmentKey !== String(segmentKey) && storedSegmentKey !== `${sid}:${segmentKey}`) continue;
+            const seq = this.parseThinkingSeq(runId, id);
+            if (seq > bestSeq) {
+              bestSeq = seq;
+              bestId = id;
+            }
+          }
+        } catch {}
+        return bestId;
+      }
     ensureInlineForThinkingId(sid, id) {
       try {
         const fieldVal = this.view.state.field(thinkingField);
@@ -607,7 +896,7 @@ export function installThinkingCards() {
         const hasRange = typeof it.from === "number" && typeof it.to === "number";
         const validRange = hasRange && it.from >= 0 && it.from < it.to && it.to <= docLen;
         if (!validRange) return false;
-        this.view.dispatch({ effects: [addInline.of({ from: it.from, to: it.to, id, sessionId: sid })] });
+        this.view.dispatch({ effects: [addInline.of({ from: it.from, to: it.to, id, sessionId: sid, runId: it.runId, segmentKey: it.segmentKey })] });
         if (it.text) this.view.dispatch({ effects: [updateText.of({ id, text: it.text, replace: true })] });
         if (it.expanded) this.view.dispatch({ effects: [toggleInline.of({ id })] });
         return true;
@@ -627,6 +916,8 @@ export function installThinkingCards() {
       } catch {}
       // 新一轮运行，清空缓冲（保留历史思考行）
       this.currentId = null;
+      this.currentRunId = "";
+      this.currentSegmentKey = "";
       this.buffer = "";
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     };
@@ -654,34 +945,20 @@ export function installThinkingCards() {
       this.suspendSnapshot = false;
 
       const runId = payload?.runId || Math.random().toString(36).slice(2);
+      const segmentKey = this.getSegmentKey(runId, payload);
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
       const sid = this.sessionId;
-      const seq = sid ? (this.getSeq(sid, runId) + 1) : 1;
-      if (sid) this.setSeq(sid, runId, seq);
-      const id = `thinking:${runId}:${seq}`;
-      this.currentId = id;
+      if (this.currentId && this.currentRunId === runId && this.currentSegmentKey === segmentKey) {
+        return;
+      }
+      const existingId = sid ? this.getExistingThinkingIdForSegment(sid, runId, segmentKey) : "";
+      const existingSeq = existingId ? this.parseThinkingSeq(runId, existingId) : 0;
+      const seq = existingSeq || (sid ? (Math.max(this.getSeq(sid, runId), this.getMaxExistingSeq(sid, runId)) + 1) : 1);
+      const id = existingId || `thinking:${runId}:${seq}`;
 
-      const isMirrorPanel = !!(payload?.panelId && payload.panelId !== this.panelId);
-      if (isMirrorPanel) {
+      if (!this.isPrimaryWriterPayload(payload)) {
         try {
-          const fieldVal = this.view.state.field(thinkingField);
-          if (fieldVal?.items?.has?.(id)) return;
-          const doc = this.view.state.doc;
-          const docString = doc.toString();
-          const occupied = new Set();
-          try { fieldVal?.items?.forEach?.((it) => occupied.add(`${it.from}:${it.to}`)); } catch {}
-          const anchors = [];
-          const regex = /思考/g;
-          let match;
-          while ((match = regex.exec(docString)) !== null) {
-            anchors.push({ from: match.index, to: match.index + "思考".length });
-          }
-          for (let i = anchors.length - 1; i >= 0; i--) {
-            const anchor = anchors[i];
-            if (occupied.has(`${anchor.from}:${anchor.to}`)) continue;
-            this.view.dispatch({ effects: [addInline.of({ from: anchor.from, to: anchor.to, id, sessionId: sid })] });
-            this.snapshot();
-            return;
-          }
+          this.checkAndRestoreWidgets();
         } catch {}
         setTimeout(() => {
           try { this.ensureInlineForThinkingId(sid, id) || this.checkAndRestoreWidgets(); } catch {}
@@ -689,19 +966,26 @@ export function installThinkingCards() {
         return;
       }
 
+      if (sid) this.setSeq(sid, runId, seq);
+      this.currentId = id;
+      this.currentRunId = runId;
+      this.currentSegmentKey = segmentKey;
+
       this.ensureAssistantHead();
 
       const hint = getRunAssistantAnchorHint(payload, sid);
+      const hintLine = getRunAssistantHeadLineHint(payload, sid);
       const plan = planAssistantMarkerInsertion({
         docText: this.view.state.doc.toString(),
-        markerText: "思考",
+        markerText: thinkingMarkerText(id),
         hintPos: typeof hint === "number" ? hint : null,
+        hintLine: typeof hintLine === "number" ? hintLine : null,
         trailingNewlines: 2
       });
 
       this.view.dispatch({
         changes: { from: plan.replaceFrom ?? plan.insertPos, to: plan.replaceTo ?? plan.insertPos, insert: plan.insertText },
-        effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id, sessionId: sid })]
+        effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id, sessionId: sid, runId, segmentKey })]
       });
       scheduleRevealThinkingContent(this.view, { id, pos: plan.markerTo });
       this.snapshot();
@@ -711,18 +995,32 @@ export function installThinkingCards() {
       const visible = !!window.zion.state.get("chat.thinkingVisible");
       if (!visible) return;
       if (!this.shouldHandleScopedPayload(payload)) return;
+      if (!this.isPrimaryWriterPayload(payload)) {
+        try { this.checkAndRestoreWidgets(); } catch {}
+        return;
+      }
 
       const runId = payload?.runId;
+      const segmentKey = this.getSegmentKey(runId, payload);
+      if (payload?.sessionId) this.sessionId = payload.sessionId;
       const sid = this.sessionId;
+      if (this.currentId && ((this.currentRunId && runId && this.currentRunId !== runId) || (this.currentSegmentKey && segmentKey && this.currentSegmentKey !== segmentKey))) {
+        this.currentId = null;
+        this.currentRunId = "";
+        this.currentSegmentKey = "";
+      }
       if (!this.currentId && sid && runId) {
-        const seq = this.getSeq(sid, runId);
+        const existingId = this.getExistingThinkingIdForSegment(sid, runId, segmentKey);
+        const seq = existingId ? this.parseThinkingSeq(runId, existingId) : 0;
         if (seq > 0) {
-          const id = `thinking:${runId}:${seq}`;
+          const id = existingId || `thinking:${runId}:${seq}`;
           this.currentId = id;
+          this.currentRunId = runId;
+          this.currentSegmentKey = segmentKey;
           this.ensureInlineForThinkingId(sid, id);
         }
       }
-      if (!this.currentId) this.onReasoningStart({ runId: payload?.runId, sessionId: payload?.sessionId });
+      if (!this.currentId) this.onReasoningStart({ ...payload, runId: payload?.runId, sessionId: payload?.sessionId });
 
       const tk = String(payload?.token || "");
       if (!tk) return;
@@ -758,6 +1056,8 @@ export function installThinkingCards() {
       if (!this.shouldHandleScopedPayload(payload)) return;
       const sid = payload?.sessionId || this.getVisibleSessionId();
       if (sid) this.sessionId = sid;
+      if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+      this.flush();
       this.snapshot();
     };
     onSessionChanged = () => {
@@ -799,28 +1099,25 @@ export function installThinkingCards() {
         return;
       }
 
-      try {
-        const sid = restoreSessionId;
-        if (sid) clearPendingRestore(sid, "thinking");
-      } catch {}
-
-      const doc = this.view.state.doc;
-      const docLen = doc.length;
-      const docString = doc.toString();
       let deletedIds = [];
       try {
         const sid = restoreSessionId;
         const ann = sid ? getSessionAnnotations(sid) : {};
-        deletedIds = Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [];
+          const anchorsForRevive = buildThinkingAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
+          deletedIds = reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], anchorsForRevive);
       } catch {}
-      const anchors = buildRegexAnchors(docString, /思考/g, (match) => ({
-        from: match.index,
-        to: match.index + "思考".length
-      }));
+      const repair = repairDuplicateThinkingAnchorIds(this.view, list, deletedIds);
+      const mergedList = mergeThinkingItemsFromAnchors(this.view, repair.items, deletedIds);
+      const activeStreamingId = this.currentId && (this.buffer || this.timer) ? String(this.currentId) : "";
+      const itemsToProcess = filterDeletedItems(mergedList, deletedIds).filter((it) => String(it?.id || "") !== activeStreamingId);
+      migrateLegacyThinkingAnchors(this.view, itemsToProcess);
 
+      const doc = this.view.state.doc;
+      const docLen = doc.length;
+      const docString = doc.toString();
+      const anchors = buildThinkingAnchors(docString);
       const batchedEffects = [];
       const batchedToggles = [];
-      const itemsToProcess = filterDeletedItems(list, deletedIds);
       const processedIds = new Set();
 
       // Phase 1: 精确位置匹配
@@ -831,10 +1128,12 @@ export function installThinkingCards() {
         isExactMatch: (it, anchor) => {
           if (typeof it.from !== "number" || typeof it.to !== "number") return false;
           if (it.from < 0 || it.to > docLen || it.from >= it.to) return false;
-          return anchor.from === it.from && anchor.to === it.to && doc.sliceString(it.from, it.to) === "思考";
+          if (anchor.from !== it.from || anchor.to !== it.to) return false;
+          if (anchor.markerId && anchor.markerId !== String(it.id || "")) return false;
+          return isThinkingAnchorForItem(doc.sliceString(it.from, it.to), it.id);
         },
         onMatch: (it, anchor) => {
-          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId }));
+          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey }));
           if (it?.text) batchedEffects.push(updateText.of({ id: it.id, text: it.text, replace: true }));
           if (it.expanded) batchedToggles.push(it.id);
         }
@@ -845,8 +1144,9 @@ export function installThinkingCards() {
         items: itemsToProcess,
         processedIds,
         anchors,
+        canUseAnchor: (it, anchor) => !anchor.markerId || anchor.markerId === String(it.id || ""),
         onMatch: (it, anchor) => {
-          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId }));
+          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey }));
           if (it?.text) batchedEffects.push(updateText.of({ id: it.id, text: it.text, replace: true }));
           if (it.expanded) batchedToggles.push(it.id);
           it.from = anchor.from;
@@ -855,7 +1155,7 @@ export function installThinkingCards() {
       });
 
       if (batchedEffects.length) {
-                this.view.dispatch({ effects: batchedEffects });
+        this.view.dispatch({ effects: batchedEffects });
       }
       if (batchedEffects.length) {
         const lastAddInline = [...batchedEffects].reverse().find((eff) => eff?.is?.(addInline));
@@ -879,16 +1179,16 @@ export function installThinkingCards() {
 
         const plan = planAssistantMarkerInsertion({
           docText: this.view.state.doc.toString(),
-          markerText: "思考",
+          markerText: thinkingMarkerText(it.id),
           trailingNewlines: 2
         });
 
         this.view.dispatch({
           changes: { from: plan.replaceFrom ?? plan.insertPos, to: plan.replaceTo ?? plan.insertPos, insert: plan.insertText },
           annotations: Transaction.userEvent.of("zion.cardRestore"),
-          effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: it.id, sessionId: restoreSessionId })]
+          effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey })]
         });
-                scheduleRevealThinkingContent(this.view, { id: it.id, pos: plan.markerTo });
+        scheduleRevealThinkingContent(this.view, { id: it.id, pos: plan.markerTo });
         
         if (it?.text) {
           this.view.dispatch({ effects: [updateText.of({ id: it.id, text: it.text, replace: true })] });
@@ -902,9 +1202,12 @@ export function installThinkingCards() {
         processedIds.add(it.id);
       }
 
+      try {
+        if (restoreSessionId) clearPendingRestore(restoreSessionId, "thinking");
+      } catch {}
 
       this.snapshot();
-            debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
+      debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
     };
     destroy() {
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
@@ -920,6 +1223,7 @@ export function installThinkingCards() {
       if (!el) return false;
       const id = el.getAttribute("data-thinking-id");
       if (!id) return false;
+      ensureThinkingItemFromDoc(view, id);
       view.dispatch({ effects: [toggleInline.of({ id })] });
       event.preventDefault();
       return true;
@@ -927,4 +1231,51 @@ export function installThinkingCards() {
   });
 
   return [thinkingField, plugin, handlers];
+}
+
+/**
+ * Lazily materialise a thinking item into the StateField from the document anchor.
+ * Inline pills render straight from the document, so a mirror/split panel may not
+ * have run restore yet; this lets expand/collapse work on first click there.
+ */
+function ensureThinkingItemFromDoc(view, id) {
+  const wantId = String(id || "");
+  if (!wantId) return false;
+  try {
+    const fieldVal = view.state.field(thinkingField, false);
+    if (fieldVal?.items?.has?.(wantId)) return true;
+  } catch {}
+
+  let anchor = null;
+  try {
+    anchor = buildThinkingAnchors(view.state.doc.toString())
+      .find((a) => String(a.markerId || "") === wantId) || null;
+  } catch {}
+  if (!anchor) return false;
+
+  const sid = getViewSessionId(view);
+  let text = "";
+  let expanded = false;
+  try {
+    const ann = sid ? getSessionAnnotations(sid) : {};
+      reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], [anchor]);
+    const list = Array.isArray(ann.thinking) ? ann.thinking : [];
+    const stored = list.find((x) => String(x?.id || "") === wantId);
+    if (stored) {
+      text = typeof stored.text === "string" ? stored.text : "";
+      expanded = !!stored.expanded;
+    }
+  } catch {}
+
+  try {
+    const effects = [addInline.of({ from: anchor.from, to: anchor.to, id: wantId, sessionId: sid })];
+    if (text) effects.push(updateText.of({ id: wantId, text, replace: true }));
+    view.dispatch({ effects });
+    // The pill click toggles afterwards; align stored expanded state so the first
+    // click produces the expected open/closed result.
+    if (expanded) view.dispatch({ effects: [toggleInline.of({ id: wantId })] });
+    return true;
+  } catch {
+    return false;
+  }
 }
