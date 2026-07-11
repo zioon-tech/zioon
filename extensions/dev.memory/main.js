@@ -136,6 +136,23 @@ function t(key, fallback, values) {
   return out;
 }
 
+function createMemoryIcon(codiconName, className) {
+  const span = document.createElement("span");
+  span.className = className || "";
+  span.setAttribute("aria-hidden", "true");
+  const name = String(codiconName || "").replace(/^codicon-/, "");
+  if (!name) return span;
+  try {
+    const icon = window.zionIcons?.createFromCodicon?.(name);
+    if (icon) {
+      span.appendChild(icon);
+      return span;
+    }
+  } catch {}
+  span.className = `${className || ""} codicon codicon-${name}`.trim();
+  return span;
+}
+
 function now() {
   return Date.now();
 }
@@ -947,11 +964,12 @@ function renderMemoryPanel(container) {
           saveExpandedFolders(expanded);
           scheduleRender();
         };
-        main.innerHTML = [
-          `<span class="zion-files-chevron codicon ${expanded.has(node.path) ? "codicon-chevron-down" : "codicon-chevron-right"}" aria-hidden="true"></span>`,
-          `<span class="zion-files-icon codicon ${expanded.has(node.path) ? "codicon-folder-opened" : "codicon-folder"}" aria-hidden="true"></span>`,
-          `<span class="zion-files-name">${escapeHtml(node.name)}</span>`
-        ].join("");
+        main.appendChild(createMemoryIcon(expanded.has(node.path) ? "chevron-down" : "chevron-right", "zion-files-chevron"));
+        main.appendChild(createMemoryIcon(expanded.has(node.path) ? "folder-opened" : "folder", "zion-files-icon"));
+        const name = document.createElement("span");
+        name.className = "zion-files-name";
+        name.textContent = node.name;
+        main.appendChild(name);
         row.appendChild(main);
           row.appendChild(renderMemoryRowActionsMenu({ kind: "directory", path: memoryFolderDisplayPath(node.path) }));
         tree.appendChild(row);
@@ -971,11 +989,12 @@ function renderMemoryPanel(container) {
       main.onclick = () => {
         if (openMemoryTab(item)) scheduleRender();
       };
-      main.innerHTML = [
-        `<span class="zion-files-chevron" aria-hidden="true"></span>`,
-        `<span class="zion-files-icon codicon ${iconForFile(node.name || item.path)}" aria-hidden="true"></span>`,
-        `<span class="zion-files-name">${escapeHtml(node.name || item.title || item.id)}</span>`
-      ].join("");
+      main.appendChild(createMemoryIcon("", "zion-files-chevron"));
+      main.appendChild(createMemoryIcon(iconForFile(node.name || item.path), "zion-files-icon"));
+      const name = document.createElement("span");
+      name.className = "zion-files-name";
+      name.textContent = node.name || item.title || item.id;
+      main.appendChild(name);
       row.appendChild(main);
         row.appendChild(renderMemoryRowActionsMenu({ kind: "file", item, path: memoryDisplayPath(item), onOpen: () => {
           if (openMemoryTab(item)) scheduleRender();
@@ -994,9 +1013,10 @@ function renderMemoryPanel(container) {
     details.onkeydown = (event) => event.stopPropagation();
 
     const summary = document.createElement("summary");
-    summary.className = "zion-files-actions-trigger codicon codicon-ellipsis";
+    summary.className = "zion-files-actions-trigger";
     summary.title = t("memory.moreActions", "More actions");
     summary.setAttribute("aria-label", t("memory.moreActions", "More actions"));
+    summary.appendChild(createMemoryIcon("ellipsis", ""));
     details.appendChild(summary);
 
     const popover = document.createElement("div");
@@ -1168,9 +1188,7 @@ function renderMemoryPanel(container) {
     if (tab.kind === "memory") return renderMemoryPreviewHeader(tab.memory);
     const header = document.createElement("div");
     header.className = "zion-files-preview-header";
-    const icon = document.createElement("span");
-    icon.className = `zion-files-preview-header-icon codicon ${iconForFile(tab.title || tab.path)}`;
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createMemoryIcon(iconForFile(tab.title || tab.path), "zion-files-preview-header-icon");
     const breadcrumb = document.createElement("div");
     breadcrumb.className = "zion-files-preview-breadcrumb";
     breadcrumb.title = tab.displayPath || tab.path || tab.title;
@@ -1181,9 +1199,7 @@ function renderMemoryPanel(container) {
       seg.textContent = part;
       breadcrumb.appendChild(seg);
       if (index < parts.length - 1) {
-        const sep = document.createElement("span");
-        sep.className = "zion-files-preview-breadcrumb-separator codicon codicon-chevron-right";
-        sep.setAttribute("aria-hidden", "true");
+        const sep = createMemoryIcon("chevron-right", "zion-files-preview-breadcrumb-separator");
         breadcrumb.appendChild(sep);
       }
     });
@@ -1202,9 +1218,7 @@ function renderMemoryPanel(container) {
     button.type = "button";
     button.className = `zion-files-preview-mode-button${shouldShowMarkdownPreview(tab) ? " is-active" : ""}`;
     button.title = shouldShowMarkdownPreview(tab) ? "Disable Markdown preview" : "Preview Markdown";
-    const icon = document.createElement("span");
-    icon.className = "codicon codicon-eye";
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createMemoryIcon("eye", "");
     button.appendChild(icon);
     button.onclick = () => {
       runWithoutEditorCoreRender(() => editorCore.updateTab(tab.id, { markdownPreview: !shouldShowMarkdownPreview(tab) }, { reason: "markdown-preview" }));
@@ -1235,15 +1249,11 @@ function renderMemoryPanel(container) {
         event.preventDefault();
         closeMemoryTab(tab.id);
       };
-      const icon = document.createElement("span");
-      icon.className = `zion-files-preview-tab-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title || tab.path)}`;
-      icon.setAttribute("aria-hidden", "true");
+      const icon = createMemoryIcon(tab.kind === "memory" ? "database" : iconForFile(tab.title || tab.path), "zion-files-preview-tab-icon");
       const label = document.createElement("span");
       label.className = "zion-files-preview-tab-label";
       label.textContent = tab.title || memoryFileName(tab.memory);
-      const close = document.createElement("span");
-      close.className = "zion-files-preview-tab-close codicon codicon-close";
-      close.setAttribute("aria-hidden", "true");
+      const close = createMemoryIcon("close", "zion-files-preview-tab-close");
       close.title = "Close";
       close.onclick = (event) => {
         event.preventDefault();
@@ -1283,9 +1293,7 @@ function renderMemoryPanel(container) {
   function renderMemoryPreviewHeader(item) {
     const header = document.createElement("div");
     header.className = "zion-files-preview-header";
-    const icon = document.createElement("span");
-    icon.className = `zion-files-preview-header-icon codicon ${iconForFile(item.path || item.title)}`;
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createMemoryIcon(iconForFile(item.path || item.title), "zion-files-preview-header-icon");
     const breadcrumb = document.createElement("div");
     breadcrumb.className = "zion-files-preview-breadcrumb";
     breadcrumb.title = memoryDisplayPath(item);
@@ -1296,9 +1304,7 @@ function renderMemoryPanel(container) {
       seg.textContent = part;
       breadcrumb.appendChild(seg);
       if (index < parts.length - 1) {
-        const sep = document.createElement("span");
-        sep.className = "zion-files-preview-breadcrumb-separator codicon codicon-chevron-right";
-        sep.setAttribute("aria-hidden", "true");
+        const sep = createMemoryIcon("chevron-right", "zion-files-preview-breadcrumb-separator");
         breadcrumb.appendChild(sep);
       }
     });
@@ -1432,16 +1438,21 @@ function iconButton(icon, onClick, title = "", tone = "") {
 }
 
 function iconSvg(name) {
-  const paths = {
-    add: `<path d="M12 5v14"></path><path d="M5 12h14"></path>`,
-    check: `<path d="M20 6 9 17l-5-5"></path>`,
-    edit: `<path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>`,
-    eye: `<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"></path><path d="M12 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"></path>`,
-    more: `<path d="M12 6h.01"></path><path d="M12 12h.01"></path><path d="M12 18h.01"></path>`,
-    pin: `<path d="m15 4 5 5-4 1-4 7-2-2 7-4 1-4-5-5z"></path><path d="m9 15-5 5"></path>`,
-    trash: `<path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 14h10l1-14"></path><path d="M10 11v5"></path><path d="M14 11v5"></path>`
+  const map = {
+    add: "add",
+    check: "check",
+    edit: "edit",
+    eye: "eye",
+    more: "ellipsis",
+    pin: "pin",
+    trash: "trash"
   };
-  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.check}</svg>`;
+  const codicon = map[name] || "check";
+  try {
+    const html = window.zionIcons?.htmlFromCodicon?.(codicon);
+    if (html) return html;
+  } catch {}
+  return `<span class="codicon codicon-${codicon}" aria-hidden="true"></span>`;
 }
 
 function installMemoryApi() {

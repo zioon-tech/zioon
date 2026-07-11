@@ -250,12 +250,13 @@ export class EditorCore {
   private autocompletionComp = new Compartment();
   private externalComp = new Compartment();
   private externalExtensions: Extension[] = [];
-  private minimapEnabled = true;
+  private minimapEnabled = false;
   private minimapComp = new Compartment();
   private selectionHighlightEnabled = true;
   private selectionHighlightComp = new Compartment();
   private vimModeEnabled = false;
   private vimComp = new Compartment();
+  private themeMode: "light" | "dark" = "dark";
   private vimOperationalMode: VimOperationalMode = "normal";
   private vimOperationalModeListeners = new Set<(mode: VimOperationalMode) => void>();
   private vimModeChangeTarget: any = null;
@@ -483,6 +484,7 @@ export class EditorCore {
 
   // Enable/disable WYSIWYG live preview dynamically
   setWysiwygEnabled(enabled: boolean): void {
+    if (this.wysiwygEnabled === !!enabled) return;
     this.wysiwygEnabled = !!enabled;
     this.view.dispatch({
       effects: this.uiComp.reconfigure(this.buildWysiwygExtension())
@@ -490,6 +492,7 @@ export class EditorCore {
   }
 
   setWysiwygKeepActiveLineRendered(enabled: boolean): void {
+    if (this.wysiwygKeepActiveLineRendered === !!enabled) return;
     this.wysiwygKeepActiveLineRendered = !!enabled;
     this.view.dispatch({
       effects: this.uiComp.reconfigure(this.buildWysiwygExtension())
@@ -563,6 +566,8 @@ export class EditorCore {
 
   // Theme switcher (light/dark)
   setTheme(theme: "light" | "dark"): void {
+    if (this.themeMode === theme) return;
+    this.themeMode = theme;
     this.view.dispatch({
       effects: this.themeComp.reconfigure(
         theme === "dark"
@@ -612,6 +617,7 @@ export class EditorCore {
   }
 
   setLineNumbersEnabled(enabled: boolean): void {
+    if (this.lineNumbersEnabled === !!enabled) return;
     this.lineNumbersEnabled = !!enabled;
     this.view.dispatch({
       effects: this.featuresComp.reconfigure(this.buildFeaturesArray())
@@ -619,6 +625,7 @@ export class EditorCore {
   }
 
   setActiveLineHighlightEnabled(enabled: boolean): void {
+    if (this.activeLineHighlightEnabled === !!enabled) return;
     this.activeLineHighlightEnabled = !!enabled;
     this.view.dispatch({
       effects: this.featuresComp.reconfigure(this.buildFeaturesArray())
@@ -626,6 +633,7 @@ export class EditorCore {
   }
 
   setAutoIndentEnabled(enabled: boolean): void {
+    if (this.autoIndentEnabled === !!enabled) return;
     this.autoIndentEnabled = !!enabled;
     this.view.dispatch({
       effects: this.featuresComp.reconfigure(this.buildFeaturesArray())
@@ -633,6 +641,7 @@ export class EditorCore {
   }
 
   setFoldingEnabled(enabled: boolean): void {
+    if (this.foldEnabled === !!enabled) return;
     this.foldEnabled = !!enabled;
     this.view.dispatch({
       effects: this.featuresComp.reconfigure(this.buildFeaturesArray())
@@ -640,6 +649,7 @@ export class EditorCore {
   }
 
   setSyntaxHighlightEnabled(enabled: boolean): void {
+    if (this.syntaxHighlightEnabled === !!enabled) return;
     this.syntaxHighlightEnabled = !!enabled;
     // Reconfigure markdown compartment: with or without language-data
     this.view.dispatch({
@@ -652,6 +662,7 @@ export class EditorCore {
   }
 
   setLineWrapEnabled(enabled: boolean): void {
+    if (this.lineWrapEnabled === !!enabled) return;
     this.lineWrapEnabled = !!enabled;
     this.view.dispatch({
       effects: this.lineWrapComp.reconfigure(
@@ -672,6 +683,7 @@ export class EditorCore {
   
 
   setMinimapEnabled(enabled: boolean): void {
+    if (this.minimapEnabled === !!enabled) return;
     this.minimapEnabled = !!enabled;
     this.view.dispatch({
       effects: this.minimapComp.reconfigure(
@@ -749,6 +761,7 @@ export class EditorCore {
   }
 
   setSelectionHighlightEnabled(enabled: boolean): void {
+    if (this.selectionHighlightEnabled === !!enabled) return;
     this.selectionHighlightEnabled = !!enabled;
     this.view.dispatch({
       effects: this.selectionHighlightComp.reconfigure(
@@ -758,6 +771,7 @@ export class EditorCore {
   }
 
   setVimModeEnabled(enabled: boolean): void {
+    if (this.vimModeEnabled === !!enabled) return;
     this.vimModeEnabled = !!enabled;
     this.view.dispatch({
       effects: this.vimComp.reconfigure(

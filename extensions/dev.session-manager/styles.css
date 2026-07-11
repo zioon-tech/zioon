@@ -1,22 +1,23 @@
 /* ===== Sessions UI (panel/sidebar) ===== */
 :root {
-  --sessions-row-hover-bg: color-mix(in srgb, var(--fg) 7%, transparent);
-  --sessions-current-bg: color-mix(in srgb, var(--fg) 9%, transparent);
-  --sessions-current-hover-bg: color-mix(in srgb, var(--fg) 12%, transparent);
-  --sessions-selected-bg: color-mix(in srgb, var(--fg) 11%, transparent);
+  --sessions-row-hover-bg: var(--hover-bg);
+  --sessions-current-bg: var(--active-bg);
+  --sessions-current-hover-bg: color-mix(in srgb, var(--accent) 16%, transparent);
+  --sessions-selected-bg: color-mix(in srgb, var(--accent) 14%, transparent);
   --sessions-highlight-bg: var(--sessions-current-bg);
 }
 :root[data-theme="light"] {
-  --sessions-row-hover-bg: color-mix(in srgb, var(--fg) 6%, transparent);
-  --sessions-current-bg: color-mix(in srgb, var(--fg) 7%, transparent);
-  --sessions-current-hover-bg: color-mix(in srgb, var(--fg) 10%, transparent);
-  --sessions-selected-bg: color-mix(in srgb, var(--fg) 9%, transparent);
+  --sessions-row-hover-bg: var(--hover-bg);
+  --sessions-current-bg: var(--active-bg);
+  --sessions-current-hover-bg: color-mix(in srgb, var(--accent) 14%, transparent);
+  --sessions-selected-bg: color-mix(in srgb, var(--accent) 12%, transparent);
   --sessions-highlight-bg: var(--sessions-current-bg);
 }
 .zion-session-row {
+  position: relative;
   min-height: 28px;
   margin: 1px 6px 1px 0;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   transition: background 120ms ease, box-shadow 120ms ease;
   box-sizing: border-box;             /* 让背景裁剪时以内容盒为准 */
   background-clip: padding-box;       /* 根据缩进（border-left）裁剪高亮宽度 */
@@ -67,7 +68,7 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-list {
   scrollbar-color: transparent transparent;
   scrollbar-width: thin; /* Firefox */
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 .zion-sessions-list.zion-scroll-active {
   scrollbar-color: var(--scrollbar-thumb) transparent;
@@ -110,7 +111,7 @@ body.zion-sessions-no-transitions .zion-session-row * {
 
 
 /* JS-injected: scrollbar behavior + current-row highlight */
-.zion-sessions-list, #zion-sessions-panel-overlay .zion-sessions-panel-content { scrollbar-color: transparent transparent; scrollbar-width: thin; scrollbar-gutter: stable; }
+.zion-sessions-list, #zion-sessions-panel-overlay .zion-sessions-panel-content { scrollbar-color: transparent transparent; scrollbar-width: thin; scrollbar-gutter: auto; }
 .zion-sessions-list::-webkit-scrollbar, #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar { width: 10px; height: 10px; }
 .zion-sessions-list::-webkit-scrollbar-track, #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-track { background: transparent; }
 .zion-sessions-list::-webkit-scrollbar-thumb, #zion-sessions-panel-overlay .zion-sessions-panel-content::-webkit-scrollbar-thumb { background-color: transparent; border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
@@ -120,3 +121,453 @@ body.zion-sessions-no-transitions .zion-session-row * {
 #zion-sessions-panel-overlay .zion-sessions-panel-content { background: var(--panel); }
 .zion-session-row.is-current { background: var(--sessions-current-bg, var(--ext-session-active-bg, rgba(128,128,128,0.15))); border: none !important; outline: none !important; }
 .zion-session-row.is-current .zion-session-name { font-weight: 600; color: var(--accent); }
+
+/* ========================================
+   Visual System V2 Sample - Session Manager
+   List items use soft row selection, no left accent bar.
+   ======================================== */
+
+.zion-sessions-list {
+  padding: 4px 4px 12px 6px !important;
+  background: transparent;
+}
+
+.zion-session-row {
+  min-height: 28px !important;
+  margin: 1px 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  border-radius: 8px !important;
+  color: color-mix(in srgb, var(--fg) 76%, transparent);
+  font-size: 12px;
+  overflow: hidden;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.zion-session-row:hover {
+  background: var(--surface-raised, var(--hover-bg));
+  color: var(--fg);
+}
+
+.zion-session-row.is-current,
+.zion-session-row.is-selected {
+  background: var(--sessions-current-bg);
+  color: var(--fg);
+}
+
+.zion-session-row.is-current:hover,
+.zion-session-row.is-selected:hover {
+  background: var(--sessions-current-hover-bg);
+}
+
+.zion-session-row.is-current .zion-session-name,
+.zion-session-row.is-selected .zion-session-name {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.zion-session-row.is-current .zion-session-icon,
+.zion-session-row.is-selected .zion-session-icon {
+  color: var(--accent);
+}
+
+.zion-session-child-toggle {
+  width: 14px;
+  height: 18px;
+  flex: 0 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 42%, transparent);
+  cursor: pointer;
+}
+
+.zion-session-child-toggle:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+.zion-session-child-row {
+  min-height: 26px !important;
+  color: color-mix(in srgb, var(--fg) 64%, transparent);
+}
+
+.zion-session-child-row::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--sessions-indent-step, 12px) + 10px);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--border) 42%, transparent);
+  opacity: 0.6;
+}
+
+.zion-session-child-row:hover {
+  color: var(--fg);
+}
+
+.zion-session-child-row.is-current .zion-session-child-title {
+  color: var(--accent);
+}
+
+.zion-session-child-icon {
+  color: color-mix(in srgb, var(--fg) 38%, transparent);
+}
+
+.zion-session-child-main {
+  overflow: hidden;
+}
+
+.zion-session-child-title {
+  display: block;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.zion-session-row:focus,
+.zion-session-row:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.zion-session-status-badge {
+  min-width: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  overflow: hidden;
+  text-indent: -999px;
+  color: transparent;
+  flex: 0 0 6px;
+}
+
+.zion-session-status-badge[hidden] {
+  display: none !important;
+}
+
+.zion-session-child-status {
+  margin-left: auto;
+}
+
+.zion-session-status-badge.streaming {
+  background: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--sessions-current-bg);
+  animation: zion-session-pulse-dot 1.5s ease-in-out infinite;
+}
+
+.zion-session-status-badge.ready {
+  background: var(--ok) !important;
+}
+
+.zion-session-title-line {
+  flex-direction: row !important;
+  gap: 6px !important;
+  min-width: 0;
+}
+
+.zion-session-icon {
+  width: 16px;
+  flex: 0 0 16px;
+  color: color-mix(in srgb, var(--fg) 42%, transparent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zion-session-icon .codicon,
+.zion-session-chevron .codicon {
+  font-size: inherit;
+}
+
+.zion-session-name,
+.zion-session-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.zion-session-chevron {
+  width: 14px;
+  flex: 0 0 14px;
+  color: color-mix(in srgb, var(--fg) 38%, transparent);
+  font-size: 11px;
+  text-align: center;
+}
+
+.zion-session-more-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px !important;
+  color: color-mix(in srgb, var(--fg) 56%, transparent) !important;
+}
+
+.zion-session-more-btn:hover {
+  background: var(--hover-bg) !important;
+  color: var(--fg) !important;
+}
+
+.zion-sessions-tags-panel,
+.zion-sessions-day-panel {
+  margin-right: 8px !important;
+  margin-left: 8px !important;
+  border-top: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 36%, transparent)) !important;
+}
+
+.zion-sessions-tags-panel {
+  padding: 7px 0 6px !important;
+}
+
+.zion-sessions-day-panel {
+  padding: 8px 0 8px !important;
+}
+
+.zion-sessions-section-header {
+  min-height: 24px;
+}
+
+.zion-sessions-section-title {
+  color: color-mix(in srgb, var(--fg) 58%, transparent) !important;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.zion-sessions-section-title:hover {
+  color: var(--fg) !important;
+}
+
+.zion-sessions-section-title-text,
+.zion-sessions-section-title span:not(.codicon) {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.01em;
+}
+
+.zion-sessions-section-toggle,
+.zion-sessions-heatmap-nav {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: color-mix(in srgb, var(--fg) 42%, transparent) !important;
+  padding: 0 !important;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.zion-sessions-section-toggle:hover,
+.zion-sessions-heatmap-nav:hover {
+  background: var(--surface-raised, var(--hover-bg)) !important;
+  color: var(--fg) !important;
+}
+
+.zion-sessions-clear-filter {
+  height: 21px;
+  border-radius: var(--radius-pill) !important;
+  background: var(--active-bg) !important;
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+
+.zion-sessions-tags-body {
+  max-height: 170px !important;
+  padding: 2px 0 4px;
+  scrollbar-width: thin;
+}
+
+.zion-sessions-tag-row {
+  min-height: 25px;
+  border-radius: 7px !important;
+  color: color-mix(in srgb, var(--fg) 68%, transparent) !important;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.zion-sessions-tag-row:hover {
+  background: var(--surface-raised, var(--hover-bg)) !important;
+  color: var(--fg) !important;
+}
+
+.zion-sessions-tag-row.is-selected {
+  background: var(--active-bg) !important;
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+
+.zion-sessions-tag-marker {
+  color: color-mix(in srgb, var(--fg) 36%, transparent) !important;
+}
+
+.zion-sessions-tag-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 7px;
+  opacity: 0.72;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--surface-panel, var(--panel)) 70%, transparent);
+  transition: opacity var(--transition-fast);
+}
+
+.zion-sessions-tag-row.is-selected .zion-sessions-tag-dot {
+  opacity: 1;
+}
+
+.zion-sessions-tag-label {
+  font-size: 12px !important;
+}
+
+.zion-sessions-tag-count {
+  font-size: 9px !important;
+  color: color-mix(in srgb, var(--fg) 42%, transparent) !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.zion-sessions-tag-row.is-selected .zion-sessions-tag-count {
+  color: color-mix(in srgb, var(--accent) 72%, transparent) !important;
+}
+
+.zion-sessions-empty-note {
+  color: color-mix(in srgb, var(--fg) 46%, transparent) !important;
+}
+
+.zion-sessions-heatmap-controls {
+  gap: 2px !important;
+}
+
+.zion-sessions-heatmap-range {
+  min-width: 48px !important;
+  max-width: 68px !important;
+  height: 20px;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: color-mix(in srgb, var(--fg) 58%, transparent) !important;
+  font-size: 11px !important;
+  font-weight: 500;
+  padding: 0 4px !important;
+}
+
+.zion-sessions-heatmap-range:hover,
+.zion-sessions-heatmap-range:focus {
+  background: var(--surface-raised, var(--hover-bg)) !important;
+  color: var(--fg) !important;
+}
+
+.zion-sessions-heatmap-grid {
+  --zion-heatmap-cell-size: 10px;
+  --zion-heatmap-cell-gap: 3px;
+  display: grid !important;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, var(--zion-heatmap-cell-size));
+  grid-auto-columns: var(--zion-heatmap-cell-size);
+  grid-template-columns: repeat(var(--zion-heatmap-weeks, 5), var(--zion-heatmap-cell-size)) !important;
+  gap: var(--zion-heatmap-cell-gap) !important;
+  width: max-content;
+  max-width: 100%;
+  margin-top: 8px !important;
+  padding: 8px !important;
+  border: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  border-radius: 8px;
+  background: var(--surface-panel, var(--panel)) !important;
+  overflow: hidden;
+}
+
+.zion-sessions-heatmap-day {
+  width: var(--zion-heatmap-cell-size) !important;
+  min-width: var(--zion-heatmap-cell-size) !important;
+  height: var(--zion-heatmap-cell-size) !important;
+  min-height: var(--zion-heatmap-cell-size) !important;
+  border-radius: 2px !important;
+  background: var(--zion-heatmap-day-bg) !important;
+  transition:
+    transform var(--transition-fast),
+    filter var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.zion-sessions-heatmap-day:hover {
+  transform: scale(1.08);
+  filter: brightness(1.16);
+}
+
+.zion-sessions-heatmap-day.is-selected {
+  background: color-mix(in srgb, var(--accent) 72%, var(--panel)) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent) !important;
+}
+
+.zion-sessions-heatmap-day.is-dimmed {
+  opacity: 0.3 !important;
+}
+
+.zion-sessions-heatmap-stats {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  align-items: start;
+  gap: 4px !important;
+  margin-top: 6px !important;
+  padding: 6px 0 2px;
+}
+
+.zion-sessions-heatmap-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.zion-sessions-heatmap-stat-value {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.zion-sessions-heatmap-stat-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--fg) 38%, transparent) !important;
+}
+
+.zion-sessions-heatmap-models {
+  padding: 2px 2px 0;
+  color: color-mix(in srgb, var(--fg) 42%, transparent) !important;
+  line-height: 1.4;
+}
+
+.zion-sessions-heatmap-tooltip {
+  border-color: var(--surface-border-soft, var(--border)) !important;
+  background: var(--surface-overlay, var(--panel)) !important;
+}
+
+@keyframes zion-session-pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

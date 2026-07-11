@@ -1,4 +1,5 @@
 import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
+import { createZionIcon, hasZionIcon, setZionIconOnly, zionIconName } from "../icons";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -27,13 +28,9 @@ function translatedTooltip(item: { tooltip?: string; tooltipKey?: string } | nul
   return tr(item?.tooltipKey, safeText(item?.tooltip || fallback));
 }
 
-/** 在元素上设置纯 codicon（无文字标签） */
+/** 在元素上设置纯 ZionIcon（无文字标签） */
 function setCodiconOnly(el: HTMLElement, iconName: string) {
-  el.textContent = "";
-  const span = document.createElement("span");
-  span.className = `codicon codicon-${iconName}`;
-  span.setAttribute("aria-hidden", "true");
-  el.appendChild(span);
+  setZionIconOnly(el, zionIconName(iconName));
 }
 
 function appendIconAndLabel(target: HTMLElement, icon: string, label: string) {
@@ -41,10 +38,9 @@ function appendIconAndLabel(target: HTMLElement, icon: string, label: string) {
   target.textContent = "";
   const codiconMatch = value.match(/^\$\(([^)]+)\)$/);
   if (codiconMatch) {
-    const span = document.createElement("span");
-    span.className = `codicon codicon-${codiconMatch[1]}`;
-    span.setAttribute("aria-hidden", "true");
-    target.appendChild(span);
+    target.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+  } else if (hasZionIcon(value)) {
+    target.appendChild(createZionIcon(zionIconName(value)));
   } else if (value) {
     const span = document.createElement("span");
     span.className = "zion-workbench-text-icon";
@@ -278,6 +274,8 @@ export function initWorkbench(host: HTMLElement): {
       root.style.setProperty("--activitybar-w", "0px");
       root.style.setProperty("--sidebar-w", "0px");
       root.style.setProperty("--auxbar-w", "0px");
+      root.style.setProperty("--sidebar-editor-gap", "0px");
+      root.style.setProperty("--editor-auxbar-gap", "0px");
       root.style.setProperty("--sidebar-overlay-w", `${w}px`);
       root.style.setProperty("--auxbar-overlay-w", `${xw}px`);
       activityBarEl.style.visibility = "hidden";
@@ -286,6 +284,8 @@ export function initWorkbench(host: HTMLElement): {
       root.style.setProperty("--activitybar-w", aVisible ? "48px" : "0px");
       root.style.setProperty("--sidebar-w", sVisible ? `${w}px` : "0px");
       root.style.setProperty("--auxbar-w", !isCompactOverlay && xVisible ? `${xw}px` : "0px");
+      root.style.setProperty("--sidebar-editor-gap", sVisible ? "8px" : "0px");
+      root.style.setProperty("--editor-auxbar-gap", !isCompactOverlay && xVisible ? "8px" : "0px");
       root.style.setProperty("--auxbar-overlay-w", `${xw}px`);
       activityBarEl.style.visibility = aVisible ? "visible" : "hidden";
       activityBarEl.style.pointerEvents = aVisible ? "auto" : "none";
@@ -372,9 +372,9 @@ export function initWorkbench(host: HTMLElement): {
       btn.textContent = "";
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        const span = document.createElement("span");
-        span.className = `codicon codicon-${codiconMatch[1]}`;
-        btn.appendChild(span);
+        btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+      } else if (hasZionIcon(icon)) {
+        btn.appendChild(createZionIcon(zionIconName(icon)));
       } else {
         btn.textContent = safeText(icon);
       }
@@ -415,9 +415,9 @@ export function initWorkbench(host: HTMLElement): {
       btn.textContent = "";
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        const span = document.createElement("span");
-        span.className = `codicon codicon-${codiconMatch[1]}`;
-        btn.appendChild(span);
+        btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+      } else if (hasZionIcon(icon)) {
+        btn.appendChild(createZionIcon(zionIconName(icon)));
       } else {
         btn.textContent = safeText(icon);
       }
@@ -433,9 +433,7 @@ export function initWorkbench(host: HTMLElement): {
     settingsBtn.type = "button";
     settingsBtn.title = "设置";
     settingsBtn.setAttribute("aria-label", "设置");
-    const settingsIcon = document.createElement("span");
-    settingsIcon.className = "codicon codicon-gear";
-    settingsBtn.appendChild(settingsIcon);
+    settingsBtn.appendChild(createZionIcon("settings"));
     settingsBtn.onclick = () => {
       try {
         (window as any).zion?.settings?.open?.();
@@ -1025,10 +1023,9 @@ export function initWorkbench(host: HTMLElement): {
       const icon = String(v.icon || "").trim();
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        const span = document.createElement("span");
-        span.className = `codicon codicon-${codiconMatch[1]}`;
-        span.setAttribute("aria-hidden", "true");
-        tab.appendChild(span);
+        tab.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+      } else if (hasZionIcon(icon)) {
+        tab.appendChild(createZionIcon(zionIconName(icon)));
       } else if (icon) {
         const span = document.createElement("span");
         span.textContent = safeText(icon);
@@ -1053,9 +1050,10 @@ export function initWorkbench(host: HTMLElement): {
       btn.title = title;
       btn.setAttribute("aria-label", tr((action as any).ariaLabelKey, safeText(action.ariaLabel || title)));
       btn.textContent = "";
+      const actionAny = action as any;
       const actionActive = (() => {
         try {
-          return typeof action.active === "function" ? !!action.active() : !!action.active;
+          return typeof actionAny.active === "function" ? !!actionAny.active() : !!actionAny.active;
         } catch {
           return false;
         }
@@ -1065,10 +1063,9 @@ export function initWorkbench(host: HTMLElement): {
       const text = tr((action as any).textKey, String((action as any).text || "").trim()).trim();
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        const span = document.createElement("span");
-        span.className = `codicon codicon-${codiconMatch[1]}`;
-        span.setAttribute("aria-hidden", "true");
-        btn.appendChild(span);
+        btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+      } else if (hasZionIcon(icon)) {
+        btn.appendChild(createZionIcon(zionIconName(icon)));
       } else if (icon) {
         btn.textContent = safeText(icon || title);
       }
@@ -1217,10 +1214,9 @@ export function initWorkbench(host: HTMLElement): {
         btn.textContent = "";
         const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
         if (codiconMatch) {
-          const span = document.createElement("span");
-          span.className = `codicon codicon-${codiconMatch[1]}`;
-          span.setAttribute("aria-hidden", "true");
-          btn.appendChild(span);
+          btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+        } else if (hasZionIcon(icon)) {
+          btn.appendChild(createZionIcon(zionIconName(icon)));
         } else {
           btn.textContent = safeText(icon);
         }

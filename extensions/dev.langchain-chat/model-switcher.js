@@ -79,11 +79,11 @@ export function installModelSwitcher() {
     maxWidth: "calc(100vw - 16px)",
     maxHeight: "65vh",
     overflow: "auto",
-    background: "var(--panel)",
+    background: "var(--surface-overlay, var(--panel))",
     color: "var(--fg)",
-    border: "1px solid var(--border)",
-    borderRadius: "8px",
-    boxShadow: "0 12px 32px rgba(0,0,0,0.32)",
+    border: "1px solid var(--surface-border, var(--border))",
+    borderRadius: "10px",
+    boxShadow: "var(--elevation-overlay, 0 18px 56px rgba(0,0,0,0.18))",
     padding: "8px",
     fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
   });
@@ -112,11 +112,11 @@ export function installModelSwitcher() {
   btnAdd.title = t("modelSwitcher.addModel", "Add Model");
   btnAdd.setAttribute("aria-label", t("modelSwitcher.addModel", "Add Model"));
   Object.assign(btnAdd.style, {
-    border: "1px solid var(--border)",
-    background: "var(--panel)",
-    color: "var(--fg)",
-    borderRadius: "4px",
-    padding: "2px 6px",
+    border: "1px solid transparent",
+    background: "var(--active-bg)",
+    color: "var(--accent)",
+    borderRadius: "8px",
+    padding: "4px 8px",
     fontSize: "11px",
     cursor: "pointer"
   });
@@ -138,9 +138,9 @@ export function installModelSwitcher() {
   Object.assign(input.style, {
     width: "100%",
     boxSizing: "border-box",
-    border: "1px solid var(--border)",
-    borderRadius: "4px",
-    background: "var(--panel)",
+    border: "1px solid var(--surface-border-soft, var(--border))",
+    borderRadius: "8px",
+    background: "var(--surface-raised, var(--panel))",
     color: "var(--fg)",
     outline: "none",
     padding: "4px 6px",
@@ -161,10 +161,10 @@ export function installModelSwitcher() {
   const editorWrap = document.createElement("div");
   Object.assign(editorWrap.style, {
     display: "none",
-    border: "1px solid var(--border)",
-    borderRadius: "6px",
+    border: "1px solid var(--surface-border-soft, var(--border))",
+    borderRadius: "10px",
     padding: "8px",
-    background: "var(--panel)",
+    background: "var(--surface-raised, var(--panel))",
     marginTop: "6px"
   });
 
@@ -206,15 +206,15 @@ export function installModelSwitcher() {
 
   function rowStyle(div, active, requiresConfig) {
     Object.assign(div.style, {
-      padding: "4px 6px",
-      borderRadius: "4px",
+      padding: "6px 8px",
+      borderRadius: "8px",
       display: "flex",
       justifyContent: "space-between",
       alignItems: "center",
       cursor: "pointer",
-      background: active ? "var(--accent)" : (requiresConfig ? "rgba(255, 200, 0, 0.1)" : "transparent"),
-      color: active ? "var(--panel)" : (requiresConfig ? "rgb(220, 150, 0)" : "var(--fg)"),
-      border: requiresConfig ? "1px solid rgba(255, 200, 0, 0.3)" : "none",
+      background: active ? "var(--active-bg)" : (requiresConfig ? "rgba(255, 200, 0, 0.1)" : "transparent"),
+      color: active ? "var(--accent)" : (requiresConfig ? "rgb(220, 150, 0)" : "var(--fg)"),
+      border: requiresConfig ? "1px solid rgba(255, 200, 0, 0.3)" : "1px solid transparent",
       transition: "background-color 120ms ease, color 120ms ease",
       fontFamily: "inherit",
       fontSize: "11px",
@@ -228,8 +228,8 @@ export function installModelSwitcher() {
     Object.assign(el.style, {
       fontSize: "9px",
       opacity: "0.7",
-      border: "1px solid var(--border)",
-      borderRadius: "3px",
+      border: "1px solid transparent",
+      borderRadius: "999px",
       padding: "0 2px",
       marginLeft: "4px",
       background: "rgba(128,128,128,0.08)",
@@ -252,8 +252,8 @@ export function installModelSwitcher() {
     Object.assign(btn.style, {
       border: "none",
       background: "transparent",
-      color: "var(--fg)",
-      borderRadius: "4px",
+      color: "color-mix(in srgb, var(--fg) 64%, transparent)",
+      borderRadius: "7px",
       padding: "2px",
       width: "20px",
       height: "20px",
@@ -268,11 +268,13 @@ export function installModelSwitcher() {
     btn.innerHTML = svg;
     btn.addEventListener("mouseenter", () => {
       btn.style.opacity = "1";
-      btn.style.backgroundColor = "rgba(128, 128, 128, 0.1)";
+      btn.style.backgroundColor = "var(--hover-bg)";
+      btn.style.color = "var(--fg)";
     });
     btn.addEventListener("mouseleave", () => {
       btn.style.opacity = "0.7";
       btn.style.backgroundColor = "transparent";
+      btn.style.color = "color-mix(in srgb, var(--fg) 64%, transparent)";
     });
     btn.addEventListener("mousedown", (e) => e.stopPropagation());
     btn.addEventListener("click", (e) => e.stopPropagation());
@@ -574,9 +576,9 @@ export function installModelSwitcher() {
       flex: "1",
       minWidth: "0",
       boxSizing: "border-box",
-      border: "1px solid var(--border)",
-      borderRadius: "4px",
-      background: "var(--panel)",
+      border: "1px solid var(--surface-border-soft, var(--border))",
+      borderRadius: "8px",
+      background: "var(--surface-raised, var(--panel))",
       color: "var(--fg)",
       outline: "none",
       padding: "4px 6px",
@@ -614,10 +616,10 @@ export function installModelSwitcher() {
     btn.title = text;
     btn.setAttribute("aria-label", aria || text);
     Object.assign(btn.style, {
-      border: "1px solid var(--border)",
-      background: "var(--accent)",
-      color: "var(--panel)",
-      borderRadius: "4px",
+      border: "1px solid transparent",
+      background: "var(--active-bg)",
+      color: "var(--accent)",
+      borderRadius: "8px",
       padding: "4px 8px",
       fontSize: "11px",
       cursor: "pointer",
@@ -634,10 +636,10 @@ export function installModelSwitcher() {
     btn.title = text;
     btn.setAttribute("aria-label", aria || text);
     Object.assign(btn.style, {
-      border: "1px solid var(--border)",
-      background: "var(--panel)",
+      border: "1px solid var(--surface-border-soft, var(--border))",
+      background: "transparent",
       color: "var(--fg)",
-      borderRadius: "4px",
+      borderRadius: "8px",
       padding: "4px 8px",
       fontSize: "11px",
       cursor: "pointer",
@@ -749,9 +751,9 @@ export function installModelSwitcher() {
       flex: "1",
       minWidth: "0",
       boxSizing: "border-box",
-      border: "1px solid var(--border)",
-      borderRadius: "4px",
-      background: "var(--panel)",
+      border: "1px solid var(--surface-border-soft, var(--border))",
+      borderRadius: "8px",
+      background: "var(--surface-raised, var(--panel))",
       color: "var(--fg)",
       outline: "none",
       padding: "4px 6px",
@@ -770,9 +772,9 @@ export function installModelSwitcher() {
         flex: "1",
         minWidth: "0",
         boxSizing: "border-box",
-        border: "1px solid var(--border)",
-        borderRadius: "4px",
-        background: "var(--panel)",
+        border: "1px solid var(--surface-border-soft, var(--border))",
+        borderRadius: "8px",
+        background: "var(--surface-raised, var(--panel))",
         color: "var(--fg)",
         outline: "none",
         padding: "4px 6px",
@@ -1057,24 +1059,32 @@ export function installModelSwitcher() {
     }
   }
 
-  // ====== SVG 图标 ======
+  function iconHtml(name) {
+    try {
+      const html = window.zionIcons?.htmlFromCodicon?.(name, "", 14);
+      if (html) return html;
+    } catch {}
+    const raw = String(name || "").replace(/^codicon-/, "");
+    return `<span class="codicon codicon-${raw}" aria-hidden="true" style="font-size:14px;"></span>`;
+  }
+
   function svgPlus() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z"/></svg>`;
+    return iconHtml("add");
   }
   function svgEdit() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`;
+    return iconHtml("edit");
   }
   function svgTrash() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19a2 2 0 002 2h8a2 2 0 002-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
+    return iconHtml("trash");
   }
   function svgBolt() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 21h-1l1-7H7l6-11h1l-1 7h4l-6 11z"/></svg>`;
+    return iconHtml("zap");
   }
   function svgCheck() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 16.2l-3.5-3.5-1.4 1.4L9 19 20.3 7.7l-1.4-1.4z"/></svg>`;
+    return iconHtml("check");
   }
   function svgClose() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.3 5.71L12 12l6.3 6.29-1.41 1.42L12 13.41l-6.29 6.3-1.42-1.42L10.59 12 4.29 5.71 5.7 4.29 12 10.59l6.29-6.3z"/></svg>`;
+    return iconHtml("close");
   }
 
   return { open, close, dispose };

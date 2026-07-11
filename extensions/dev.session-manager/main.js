@@ -80,25 +80,41 @@ const I18N_MESSAGES = {
     "ui.sessionTitle": "会话标题",
     "ui.fork": "分叉会话",
     "ui.refresh": "刷新",
+    "ui.comment": "评论",
+    "ui.commentOpen": "未解决",
+    "ui.commentResolved": "已解决",
+    "ui.agentTask": "子 Agent",
+    "ui.expandChildren": "展开评论和子 Agent",
+    "ui.collapseChildren": "折叠评论和子 Agent",
     "dialog.newTitle": "新会话标题",
     "dialog.rename": "重命名会话",
     "dialog.deleteSelected": "删除所选项",
+    "heatmap.activity": "活动",
     "heatmap.expand": "展开热力图",
     "heatmap.collapse": "折叠热力图",
     "heatmap.previous35Days": "查看更早的 35 天",
     "heatmap.next35Days": "查看之后的 35 天",
-    "heatmap.clear": "Clear",
-    "heatmap.today": "Today",
+    "heatmap.previousDays": "查看更早日期",
+    "heatmap.nextDays": "查看之后日期",
+    "heatmap.filterRange": "按日期范围筛选会话",
+    "heatmap.clear": "清除",
+    "heatmap.all": "全部",
+    "heatmap.today": "今天",
+    "heatmap.last1Day": "1 天",
+    "heatmap.last3Days": "3 天",
+    "heatmap.last7Days": "7 天",
+    "heatmap.last14Days": "14 天",
+    "heatmap.last30Days": "30 天",
     "heatmap.clearTitle": "清除日期筛选，显示全部会话",
     "heatmap.todayTitle": "跳到今天并筛选今天",
     "heatmap.allRange": "全部 · {range}",
     "heatmap.dayTitle": "{day} · {sessions} 个会话 · {tokens} tok · {cost}",
     "heatmap.dayTitleNoCost": "{day} · {sessions} 个会话 · {tokens} tok",
     "heatmap.costNA": "cost n/a",
-    "heatmap.sessions": "sessions",
-    "heatmap.tokens": "tokens",
-    "heatmap.cache": "cache",
-    "heatmap.cost": "cost",
+    "heatmap.sessions": "会话",
+    "heatmap.tokens": "Token",
+    "heatmap.cache": "缓存",
+    "heatmap.cost": "费用",
     "heatmap.noModelUsage": "当天没有模型消耗",
     "tags.title": "全部标签",
     "tags.expand": "展开标签",
@@ -106,6 +122,8 @@ const I18N_MESSAGES = {
     "tags.empty": "暂无标签",
     "tags.clear": "清除",
     "tags.clearTitle": "清除标签筛选",
+    "tags.expandNode": "展开 {tag}",
+    "tags.collapseNode": "折叠 {tag}",
     "tags.filterTitle": "按 {tag} 筛选会话"
   },
   "en-US": {
@@ -167,15 +185,31 @@ const I18N_MESSAGES = {
     "ui.sessionTitle": "Session title",
     "ui.fork": "Fork Session",
     "ui.refresh": "Refresh",
+    "ui.comment": "Comment",
+    "ui.commentOpen": "Open",
+    "ui.commentResolved": "Resolved",
+    "ui.agentTask": "Sub-agent",
+    "ui.expandChildren": "Expand comments and sub-agents",
+    "ui.collapseChildren": "Collapse comments and sub-agents",
     "dialog.newTitle": "New session title",
     "dialog.rename": "Rename session",
     "dialog.deleteSelected": "Delete selected",
+    "heatmap.activity": "Activity",
     "heatmap.expand": "Expand heatmap",
     "heatmap.collapse": "Collapse heatmap",
     "heatmap.previous35Days": "View earlier 35 days",
     "heatmap.next35Days": "View next 35 days",
+    "heatmap.previousDays": "View earlier days",
+    "heatmap.nextDays": "View next days",
+    "heatmap.filterRange": "Filter sessions by date range",
     "heatmap.clear": "Clear",
+    "heatmap.all": "All",
     "heatmap.today": "Today",
+    "heatmap.last1Day": "1d",
+    "heatmap.last3Days": "3d",
+    "heatmap.last7Days": "7d",
+    "heatmap.last14Days": "14d",
+    "heatmap.last30Days": "30d",
     "heatmap.clearTitle": "Clear date filter and show all sessions",
     "heatmap.todayTitle": "Jump to today and filter today",
     "heatmap.allRange": "All · {range}",
@@ -193,6 +227,8 @@ const I18N_MESSAGES = {
     "tags.empty": "No tags yet",
     "tags.clear": "Clear",
     "tags.clearTitle": "Clear tag filter",
+    "tags.expandNode": "Expand {tag}",
+    "tags.collapseNode": "Collapse {tag}",
     "tags.filterTitle": "Filter sessions by {tag}"
   }
 };
@@ -1235,7 +1271,7 @@ export async function activate(ctx) {
       pluginId: "dev.session-manager",
       title: t("ui.sessions", "Sessions"),
       titleKey: "dev.session-manager.ui.sessions",
-      icon: "💬",
+      icon: "$(history)",
       order: 10,
       location: "sidebar",
       headerActions: [
@@ -1256,7 +1292,7 @@ export async function activate(ctx) {
           titleKey: "dev.session-manager.ui.actions",
           ariaLabel: t("ui.actions", "Actions"),
           ariaLabelKey: "dev.session-manager.ui.actions",
-          icon: "⋮",
+          icon: "$(ellipsis)",
           onClick: () => {
             try {
               __sidebarViewManager.toggleMenuIfOpen();
@@ -1280,6 +1316,17 @@ export async function activate(ctx) {
       try { refreshSessionsSidebarViewIfOpen(); } catch {}
       try { refreshSessionsOverlayIfOpen(); } catch {}
     }));
+    const refreshRelatedChildren = () => {
+      try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    };
+    window.addEventListener("zion:comments-changed", refreshRelatedChildren);
+    window.addEventListener("zion:agents-changed", refreshRelatedChildren);
+    ctx.subscriptions.push({
+      dispose() {
+        try { window.removeEventListener("zion:comments-changed", refreshRelatedChildren); } catch {}
+        try { window.removeEventListener("zion:agents-changed", refreshRelatedChildren); } catch {}
+      }
+    });
     try { window.zion.activityBar.activateItem("sessions.activity"); } catch {}
     focusCurrentSessionInSidebar();
   } catch {}
@@ -2398,7 +2445,7 @@ export async function activate(ctx) {
         title: cmd.title,
         description: cmd.description,
         category: "session",
-        icon: "📄",
+        icon: "$(history)",
         priority: cmd.priority,
         execute: () => {
           window.zion.commands.executeCommand(cmd.id);

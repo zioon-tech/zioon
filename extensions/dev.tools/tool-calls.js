@@ -217,6 +217,10 @@ function getViewSessionId(view) {
   }
 }
 
+function isCommentPanelId(panelId) {
+  return String(panelId || "").startsWith("comments:");
+}
+
 function debugChatCards(event, payload) {
   void event;
   void payload;
@@ -490,7 +494,12 @@ function createOpenInContextButton(name, args = {}, context = {}) {
   if (!isContextOpenableTool(name) || !getToolPrimaryPath(args)) return null;
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "zion-tool-open-file-button codicon codicon-link-external";
+  btn.className = "zion-tool-open-file-button";
+  try {
+      const icon = window.zionIcons?.createFromCodicon?.("eye", "zion-tool-open-file-icon", 12);
+    if (icon) btn.appendChild(icon);
+  } catch {}
+    if (!btn.firstElementChild) btn.classList.add("codicon", "codicon-eye");
   btn.title = t("call.openInContext", "在 Context 中打开");
   btn.setAttribute("aria-label", t("call.openInContext", "在 Context 中打开"));
   btn.addEventListener("click", (event) => {
@@ -2022,10 +2031,7 @@ class ToolInlineWidget extends WidgetType {
     btn.type = "button";
     btn.title = t("call.toggle", "展开/收起工具调用卡片");
     btn.setAttribute("aria-label", t("call.toggle", "展开/收起工具调用卡片"));
-    // 内联 SVG（chevron-down），主题跟随 currentColor
-    btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-  <path d="M4.646 6.646a.5.5 0 0 1 .708 0L8 9.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z"></path>
-</svg>`;
+      btn.innerHTML = `<span class="codicon codicon-chevron-down" aria-hidden="true"></span>`;
     Object.assign(btn.style, {
       flex: "0 0 auto"
     });
@@ -2454,19 +2460,31 @@ export function installToolCallCards() {
         } catch {}
         if (!list.length) return;
 
-        // 基于 StateField 中的已挂载 id 判断是否需要恢复
-        const wantIds = list.map(it => it?.id).filter(Boolean).map(String);
-        const missing = wantIds.some(id => !mountedIds.includes(id));
+        // 基于文档锚点判断是否需要恢复。annotations 里可能保留历史 orphan id，
+        // 这些 id 没有对应锚点时不应该触发反复 restore。
+        const anchorIds = anchors.map((anchor) => anchor?.markerId).filter(Boolean).map(String);
+        const anchorIdSet = new Set(anchorIds);
+        const wantIds = list
+          .map(it => it?.id)
+          .filter(Boolean)
+          .map(String)
+          .filter(id => anchorIdSet.has(id));
+        let fieldVal = null;
+        try { fieldVal = this.view.state.field(toolInlineField); } catch {}
+        const mountedSet = new Set(mountedIds);
+        const listForAnchors = list.filter((it) => anchorIdSet.has(String(it?.id || "")));
+        const missing = wantIds.some(id => !mountedSet.has(id)) || needsToolRestore(listForAnchors, fieldVal);
         debugChatCards("visibility.checkAndRestore", {
           panelId: this.panelId,
           sessionId: sid,
           annotations: list.length,
+          anchors: anchorIds.length,
           mounted: mountedIds.length,
           missing,
           stats: debugToolFieldStats(this.view)
         });
         if (missing) {
-          this.onRestore({ items: list });
+          this.onRestore({ items: listForAnchors });
         }
       } catch (e) {
         console.error("[tool-calls] checkAndRestoreWidgets error:", e);
@@ -2595,7 +2613,7 @@ export function installToolCallCards() {
         });
         updateSessionAnnotations(id, (prev) => {
           const prevTools = Array.isArray(prev.tools) ? prev.tools : [];
-          if (!arr.length && prevTools.length && /调用\s+([^\n]+)/.test(this.view.state.doc.toString())) {
+          if (!arr.length && prevTools.length) {
             debugChatCards("snapshot.skipEmpty", {
               panelId: this.panelId,
               sessionId: id,
@@ -3490,6 +3508,7 @@ export function installToolCallCards() {
       const batchedEffects = [];
       const batchedToggles = [];
       const actionFor = (it) => normalizeToolAction(it?.action) || this.toolActions.get(String(it?.id || ""))?.action || null;
+      let skippedFallback = false;
       debugChatCards("restore.anchors", { panelId: this.panelId, sessionId: restoreSessionId, items: list.length, anchors: anchors.length });
       let existingItems = new Map();
       try {
@@ -3601,6 +3620,16 @@ export function installToolCallCards() {
       // Phase 3: 兜底 (创建新锚点)
       for (const it of itemsToProcess) {
         if (processedIds.has(it.id)) continue;
+        if (isCommentPanelId(this.panelId)) {
+          skippedFallback = true;
+          debugChatCards("restore.skipFallbackInComments", {
+            panelId: this.panelId,
+            sessionId: restoreSessionId,
+            id: it.id,
+            name: it.name || "tool"
+          });
+          continue;
+        }
 
         const name = it.name || "tool";
         // 重新获取 doc，因为前面的 dispatch 可能没改变 doc (effects only)，但在 Phase 3 循环中我们会修改 doc
@@ -3638,7 +3667,7 @@ export function installToolCallCards() {
         if (restoreSessionId) clearPendingRestore(restoreSessionId, "tools");
       } catch {}
 
-      this.snapshot();
+      if (!skippedFallback) this.snapshot();
       debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
       requestAnimationFrame(() => {
         try {

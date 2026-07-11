@@ -183,7 +183,7 @@ export async function activate(ctx) {
         title: `${i}级标题`,
         description: `插入 ${i} 级标题 (${hashes})`,
         category: 'markdown',
-        icon: '📌',
+        icon: '$(symbol-property)',
         priority: 100 - i,
         execute: (params, editor) => {
           if (!editor) return;
@@ -199,7 +199,7 @@ export async function activate(ctx) {
       title: '标题',
       description: '插入标题（可选级别 1-6）',
       category: 'markdown',
-      icon: '📌',
+      icon: '$(symbol-property)',
       params: [
         {
           name: 'level',
@@ -226,7 +226,7 @@ export async function activate(ctx) {
       title: '粗体',
       description: '插入粗体文本 (**text**)',
       category: 'markdown',
-      icon: '🔤',
+      icon: '$(symbol-string)',
       execute: (params, editor) => {
         if (!editor) return;
         const selection = editor.getSelection();
@@ -246,7 +246,7 @@ export async function activate(ctx) {
       title: '斜体',
       description: '插入斜体文本 (*text*)',
       category: 'markdown',
-      icon: '🔤',
+      icon: '$(symbol-string)',
       execute: (params, editor) => {
         if (!editor) return;
         const selection = editor.getSelection();
@@ -266,7 +266,7 @@ export async function activate(ctx) {
       title: '删除线',
       description: '插入删除线文本 (~~text~~)',
       category: 'markdown',
-      icon: '🔤',
+      icon: '$(symbol-string)',
       execute: (params, editor) => {
         if (!editor) return;
         const selection = editor.getSelection();
@@ -287,7 +287,7 @@ export async function activate(ctx) {
       title: '无序列表',
       description: '插入无序列表 (- item)',
       category: 'markdown',
-      icon: '📋',
+      icon: '$(list-tree)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('- ');
@@ -300,7 +300,7 @@ export async function activate(ctx) {
       title: '有序列表',
       description: '插入有序列表 (1. item)',
       category: 'markdown',
-      icon: '📋',
+      icon: '$(list-tree)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('1. ');
@@ -313,7 +313,7 @@ export async function activate(ctx) {
       title: '任务列表',
       description: '插入任务列表 (- [ ] item)',
       category: 'markdown',
-      icon: '✅',
+      icon: '$(check)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('- [ ] ');
@@ -327,7 +327,7 @@ export async function activate(ctx) {
       title: '引用',
       description: '插入引用块 (> quote)',
       category: 'markdown',
-      icon: '💬',
+      icon: '$(comment-discussion)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('> ');
@@ -340,7 +340,7 @@ export async function activate(ctx) {
       title: '代码块',
       description: '插入代码块',
       category: 'markdown',
-      icon: '💻',
+      icon: '$(file-code)',
       execute: (params, editor) => {
         if (!editor) return;
         const codeblock = `\`\`\`\n\n\`\`\``;
@@ -356,7 +356,7 @@ export async function activate(ctx) {
       title: '分隔线',
       description: '插入分隔线 (---)',
       category: 'markdown',
-      icon: '➖',
+      icon: '$(horizontal-rule)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('\n---\n');
@@ -370,7 +370,7 @@ export async function activate(ctx) {
       title: '链接',
       description: '插入链接 ([text](url))',
       category: 'markdown',
-      icon: '🔗',
+      icon: '$(link)',
       execute: (params, editor) => {
         if (!editor) return;
         const selection = editor.getSelection();
@@ -390,7 +390,7 @@ export async function activate(ctx) {
       title: '图片',
       description: '插入图片\n![alt](url)',
       category: 'markdown',
-      icon: '🖼️',
+      icon: '$(file-media)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('\n![alt](url)\n');
@@ -405,7 +405,7 @@ export async function activate(ctx) {
       title: '表格',
       description: '插入表格模板',
       category: 'markdown',
-      icon: '📊',
+      icon: '$(table)',
       execute: (params, editor) => {
         if (!editor) return;
         const table = `
@@ -426,7 +426,7 @@ export async function activate(ctx) {
       title: '时间戳',
       description: '插入当前时间戳',
       category: 'utility',
-      icon: '⏰',
+      icon: '$(clock)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection(new Date().toISOString());
@@ -439,7 +439,7 @@ export async function activate(ctx) {
       title: '日期',
       description: '插入当前日期',
       category: 'utility',
-      icon: '📅',
+      icon: '$(calendar)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection(new Date().toLocaleDateString('zh-CN'));
@@ -600,6 +600,23 @@ export async function activate(ctx) {
     slashActiveCommand = slashCurrentCommands[slashSelectedIndex] || null;
   };
 
+  const setSlashIcon = (target, value, fallback = 'zap') => {
+    target.textContent = '';
+    const raw = String(value || '').trim();
+    const codiconMatch = raw.match(/^\$\(([^)]+)\)$/);
+    const name = codiconMatch ? codiconMatch[1] : raw || fallback;
+    try {
+      const icon = window.zionIcons?.has?.(name)
+        ? window.zionIcons.createFromCodicon(name)
+        : window.zionIcons?.createFromCodicon?.(fallback);
+      if (icon) {
+        target.appendChild(icon);
+        return;
+      }
+    } catch {}
+    target.textContent = raw || fallback;
+  };
+
   const renderSlashCommands = (filter = '') => {
     if (!slashList) return;
 
@@ -634,7 +651,7 @@ export async function activate(ctx) {
 
         const icon = document.createElement('div');
         icon.className = 'zion-slash-icon';
-        icon.textContent = cmd.icon || (cmd.__navBack ? '↩︎' : (hasSubmenu(cmd) ? '›' : '⚡'));
+        setSlashIcon(icon, cmd.icon || (cmd.__navBack ? '$(chevron-left)' : (hasSubmenu(cmd) ? '$(chevron-right)' : '$(zap)')));
         icon.style.fontSize = '18px';
         icon.style.flexShrink = '0';
 
@@ -681,7 +698,7 @@ export async function activate(ctx) {
           __navBack: true,
           title: 'Back',
           description: getBreadcrumbText(),
-          icon: '←'
+          icon: '$(chevron-left)'
         });
       }
 
@@ -778,7 +795,7 @@ export async function activate(ctx) {
         // Icon
         const icon = document.createElement('div');
         icon.className = 'zion-slash-icon';
-        icon.textContent = cmd.icon || '⚡';
+        setSlashIcon(icon, cmd.icon || '$(zap)');
         icon.style.fontSize = '18px';
         icon.style.flexShrink = '0';
 

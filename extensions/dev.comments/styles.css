@@ -34,7 +34,7 @@
   background: color-mix(in srgb, #f5c542 15%, var(--editor-bg));
   color: color-mix(in srgb, #c28a00 86%, var(--fg));
   box-shadow: none;
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
@@ -260,7 +260,7 @@
   border-radius: 999px;
   background: color-mix(in srgb, var(--fg) 7%, transparent);
   color: color-mix(in srgb, var(--fg) 58%, transparent);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -367,7 +367,7 @@
 .zion-comments-quote-label {
   flex: 0 0 auto;
   color: color-mix(in srgb, var(--fg) 54%, transparent);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .zion-comments-quote-text {
@@ -376,7 +376,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: color-mix(in srgb, var(--fg) 72%, transparent);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .zion-comments-editor-frame {
@@ -519,23 +519,13 @@
 
 .zion-comments-action:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.10);
+  background: var(--hover-bg);
+  border-color: color-mix(in srgb, var(--fg) 10%, transparent);
 }
 
-.zion-comments-action svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.zion-comments-action.primary svg {
-  fill: currentColor;
-  stroke: none;
+.zion-comments-action .codicon {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .zion-comments-action.primary {
@@ -544,8 +534,8 @@
 }
 
 .zion-comments-action.primary:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.10);
+  background: var(--hover-bg);
+  border-color: color-mix(in srgb, var(--fg) 10%, transparent);
 }
 
 .zion-comments-action.muted {
@@ -560,12 +550,6 @@
   opacity: 1;
   background: rgba(239, 68, 68, 0.16);
   border-color: rgba(239, 68, 68, 0.35);
-}
-
-:root[data-theme="light"] .zion-comments-action:hover,
-:root[data-theme="light"] .zion-comments-action.primary:hover {
-  background: rgba(0, 0, 0, 0.04);
-  border-color: rgba(0, 0, 0, 0.08);
 }
 
 :root[data-theme="light"] .zion-comments-action.danger {
@@ -584,10 +568,10 @@
   align-items: center;
   gap: 6px;
   padding: 6px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel) 88%, transparent);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.22);
+  box-shadow: var(--elevation-2);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   user-select: none;
@@ -600,7 +584,7 @@
 .zion-selection-toolbar-btn {
   width: 28px;
   height: 28px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--fg);
@@ -612,12 +596,8 @@
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
 }
 .zion-selection-toolbar-btn:hover {
-  background: rgba(98,114,164,0.16);
-  border-color: rgba(98,114,164,0.22);
-}
-:root[data-theme="light"] .zion-selection-toolbar-btn:hover {
-  background: rgba(59,130,246,0.12);
-  border-color: rgba(59,130,246,0.18);
+  background: var(--hover-bg);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .zion-selection-toolbar-btn:active {
   transform: translateY(1px);
@@ -632,8 +612,8 @@
   font-weight: 600;
 }
 .zion-selection-toolbar-btn.is-ai:hover {
-  background: rgba(98,114,164,0.16);
-  border-color: rgba(98,114,164,0.22);
+  background: var(--hover-bg);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .zion-selection-toolbar-divider {
   width: 1px;
@@ -647,8 +627,8 @@
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-2);
   padding: 4px;
   min-width: 140px;
   max-width: 320px;
@@ -681,15 +661,9 @@
 /* hover / focus visual that is subtle and works for light/dark */
 .zion-gutter-menu-item:hover:not(.disabled),
 .zion-gutter-menu-item:focus:not(.disabled) {
-  background: rgba(248,248,242,0.04);
+  background: var(--hover-bg);
   outline: none;
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
-}
-
-/* light theme tweak for hover */
-:root[data-theme="light"] .zion-gutter-menu-item:hover:not(.disabled),
-:root[data-theme="light"] .zion-gutter-menu-item:focus:not(.disabled) {
-  background: rgba(0,0,0,0.04);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 4%, transparent);
 }
 
 .zion-gutter-menu-item.disabled {
@@ -708,8 +682,8 @@
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-2);
   padding: 4px;
   min-width: 120px;
   max-width: 220px;
@@ -854,7 +828,9 @@
 }
 
 .zion-context-menu-row.has-submenu .zion-context-menu-item::after {
-  content: "›";
+  content: "\eab6";
+  font-family: "codicon";
+  font-size: 14px;
   position: absolute;
   right: 8px;
   top: 50%;
@@ -868,13 +844,8 @@
 
 .zion-context-menu-item:hover,
 .zion-context-menu-item:focus {
-  background: rgba(248,248,242,0.04);
+  background: var(--hover-bg);
   outline: none;
-}
-
-:root[data-theme="light"] .zion-context-menu-item:hover,
-:root[data-theme="light"] .zion-context-menu-item:focus {
-  background: rgba(0,0,0,0.04);
 }
 
 .zion-context-submenu {
@@ -941,4 +912,115 @@
 /* Ensure each gutter cell can position its children precisely if needed */
 .cm-gutter.zion-gutter-left .cm-gutterElement {
   position: relative;
+}
+
+/* ========================================
+   Visual System V2 Sample - Comments Panel
+   ======================================== */
+
+.zion-comments-panel {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-header {
+  min-height: 42px;
+  padding: 8px 10px;
+  border-bottom-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-title {
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.zion-comments-subtitle,
+.zion-comments-stats {
+  color: color-mix(in srgb, var(--fg) 52%, transparent);
+}
+
+.zion-comments-list {
+  gap: 6px;
+  padding: 8px;
+}
+
+.zion-comments-row {
+  border: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  border-radius: 10px;
+  background: var(--surface-raised, color-mix(in srgb, var(--panel) 94%, var(--bg)));
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.zion-comments-row:hover {
+  background: color-mix(in srgb, var(--panel) 97%, var(--bg));
+  border-color: var(--surface-border, color-mix(in srgb, var(--border) 46%, transparent));
+}
+
+.zion-comments-row.is-active {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 26%, transparent);
+  box-shadow: none;
+}
+
+.zion-comments-row.is-located {
+  animation: zion-comments-v2-located-pulse 1300ms ease-out;
+}
+
+@keyframes zion-comments-v2-located-pulse {
+  0% {
+    background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+    border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  }
+  100% {
+    background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+    border-color: color-mix(in srgb, var(--accent) 26%, transparent);
+  }
+}
+
+.zion-comments-state-badge {
+  border-radius: var(--radius-pill);
+  border-color: transparent;
+  background: var(--active-bg);
+  color: color-mix(in srgb, var(--accent) 86%, var(--fg));
+}
+
+/* Final auxbar surface pass. */
+.zion-comments-panel,
+.zion-comments-body,
+.zion-comments-list {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-editor-frame,
+.zion-comments-editor,
+.zion-comments-thread-editor,
+.zion-comments-thread-editor .cm-editor,
+.zion-comments-thread-editor .cm-scroller {
+  background: transparent !important;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor-header {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-row {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-row:hover {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-row.is-active,
+.zion-comments-row.is-active:hover,
+.zion-comments-row.is-resolved.is-active,
+.zion-comments-row.is-resolved.is-active:hover,
+.zion-comments-row.is-orphan.is-active,
+.zion-comments-row.is-orphan.is-active:hover {
+  background: var(--surface-panel, var(--panel));
 }

@@ -2237,7 +2237,7 @@ export async function activate(ctx) {
     }
     
     if (activeItem?.requiresConfig) {
-      label = `⚠️ ${label}`;
+      label = `$(warning) ${label}`;
       tooltip = `${activeItem.configHint || "需要配置 API key"} - ${tooltip}`;
     }
     
@@ -2313,7 +2313,7 @@ export async function activate(ctx) {
 
       const update = () => {
         const streaming = !!window.zion?.state?.get?.("chat.streaming");
-        btn.innerHTML = `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
+        btn.innerHTML = window.zionIcons?.htmlFromCodicon?.(streaming ? "debug-stop" : "play") || `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
         btn.title = streaming ? "Stop (Esc)" : "Run (Mod-Enter)";
         try { btn.classList.toggle("is-stop", streaming); } catch {}
       };
@@ -2339,7 +2339,7 @@ export async function activate(ctx) {
         try {
           if (btn && btn.isConnected) {
             const streaming = !!window.zion?.state?.get?.("chat.streaming");
-            btn.innerHTML = `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
+            btn.innerHTML = window.zionIcons?.htmlFromCodicon?.(streaming ? "debug-stop" : "play") || `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
             btn.title = streaming ? "Stop (Esc)" : "Run (Mod-Enter)";
             try { btn.classList.toggle("is-stop", streaming); } catch {}
           }
@@ -2413,7 +2413,7 @@ export async function activate(ctx) {
           title: t("slash.chat.title", "Chat"),
           description: t("slash.chat.description", "Run chat with current context"),
           category: t("category.chat", "chat"),
-          icon: "💬",
+          icon: "$(comment-discussion)",
           execute: () => window.zion.commands.executeCommand("chat.run")
         })
       );
@@ -2425,7 +2425,7 @@ export async function activate(ctx) {
           title: t("slash.chatSelection.title", "Chat (Selection)"),
           description: t("slash.chatSelection.description", "Run chat using current selection"),
           category: t("category.chat", "chat"),
-          icon: "📝",
+          icon: "$(file-text)",
           execute: () => window.zion.commands.executeCommand("chat.runSelection")
         })
       );
@@ -2437,7 +2437,7 @@ export async function activate(ctx) {
           title: t("slash.stop.title", "Stop Chat"),
           description: t("slash.stop.description", "Abort current streaming run"),
           category: t("category.chat", "chat"),
-          icon: "⏹️",
+          icon: "$(debug-stop)",
           execute: () => window.zion.commands.executeCommand("chat.stop")
         })
       );
@@ -2449,7 +2449,7 @@ export async function activate(ctx) {
           title: t("slash.retry.title", "Retry Chat"),
           description: t("slash.retry.description", "Re-run chat with the last prompt"),
           category: t("category.chat", "chat"),
-          icon: "🔁",
+          icon: "$(loading)",
           execute: () => window.zion.commands.executeCommand("chat.retry")
         })
       );
@@ -2461,7 +2461,7 @@ export async function activate(ctx) {
           title: t("slash.selectModel.title", "Select Model"),
           description: t("slash.selectModel.description", "Pick a model"),
           category: t("category.models", "models"),
-          icon: "🧠",
+          icon: "$(zap)",
           submenu: async () => {
             await refreshCatalog().catch(() => {});
             const catalog = window.zion?.state?.get("models.catalog") || [];
@@ -2475,7 +2475,7 @@ export async function activate(ctx) {
               return {
                 title: `${isActive ? "✓ " : ""}${label}${suffix}${providerId ? ` — ${providerId}` : ""}`,
                 description: `${providerId}:${modelId}`,
-                icon: m?.requiresConfig ? "⚠️" : "🧠",
+                icon: m?.requiresConfig ? "$(warning)" : "$(zap)",
                 execute: () => {
                   window.zion.commands.executeCommand("models.selectModel", `${providerId}:${modelId}`);
                 }
@@ -2503,7 +2503,7 @@ export async function activate(ctx) {
           title: t("slash.openModelSwitcher.title", "Open Model Switcher"),
           description: t("slash.openModelSwitcher.description", "Open the model switcher panel"),
           category: t("category.models", "models"),
-          icon: "🧠",
+          icon: "$(zap)",
           execute: () => window.zion.commands.executeCommand("models.openSwitcher")
         })
       );
@@ -2515,7 +2515,7 @@ export async function activate(ctx) {
           title: t("slash.setActiveModel.title", "Set Active Model"),
           description: t("slash.selectModel.description", "Pick a model"),
           category: t("category.models", "models"),
-          icon: "🧠",
+          icon: "$(zap)",
           params: [
             {
               name: "model",

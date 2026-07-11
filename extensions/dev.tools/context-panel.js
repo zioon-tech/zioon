@@ -16,6 +16,23 @@ const LS_MEMORY_ITEMS = "zion.memory.items.v1";
 const PREVIEW_AUX_WIDTH = 760;
 let pendingContextOpenFilePayload = null;
 
+function createContextIcon(codiconName, className) {
+  const span = document.createElement("span");
+  span.className = className || "";
+  span.setAttribute("aria-hidden", "true");
+  const name = String(codiconName || "").replace(/^codicon-/, "");
+  if (!name) return span;
+  try {
+    const icon = window.zionIcons?.createFromCodicon?.(name);
+    if (icon) {
+      span.appendChild(icon);
+      return span;
+    }
+  } catch {}
+  span.className = `${className || ""} codicon codicon-${name}`.trim();
+  return span;
+}
+
 function t(key, fallback, values) {
   const fullKey = `${I18N_NS}.${key}`;
   try {
@@ -55,7 +72,7 @@ export function registerContextPanel(ctx) {
     pluginId: "dev.tools",
     title: "Context",
     titleKey: "dev.tools.context.title",
-    icon: "@",
+    icon: "$(layers)",
     order: 0,
     keepWhenActive: true,
     component: {
@@ -558,13 +575,11 @@ function createContextPanel(container) {
         activeFileTabId = runWithoutEditorCoreRender(() => editorCore.setActiveTab(tab.id));
         renderPreviewOnly();
       };
-      const icon = document.createElement("span");
-      icon.className = `zion-files-preview-tab-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
+      const icon = createContextIcon(tab.kind === "memory" ? "database" : iconForFile(tab.title), "zion-files-preview-tab-icon");
       const label = document.createElement("span");
       label.className = "zion-files-preview-tab-label";
       label.textContent = tab.title;
-      const close = document.createElement("span");
-      close.className = "zion-files-preview-tab-close codicon codicon-close";
+      const close = createContextIcon("close", "zion-files-preview-tab-close");
       close.title = t("context.close", "Close");
       close.onclick = (event) => {
         event.preventDefault();
@@ -611,8 +626,7 @@ function createContextPanel(container) {
   function renderContextPreviewHeader(tab) {
     const header = document.createElement("div");
     header.className = "zion-files-preview-header";
-    const icon = document.createElement("span");
-    icon.className = `zion-files-preview-header-icon codicon ${iconForFile(tab.title)}`;
+    const icon = createContextIcon(iconForFile(tab.title), "zion-files-preview-header-icon");
     const title = document.createElement("div");
     title.className = "zion-files-preview-breadcrumb";
     title.title = tab.displayPath || tab.path || tab.title;
@@ -636,9 +650,7 @@ function createContextPanel(container) {
     button.type = "button";
     button.className = `zion-files-preview-mode-button${shouldShowMarkdownPreview(tab) ? " is-active" : ""}`;
     button.title = shouldShowMarkdownPreview(tab) ? "Disable Markdown preview" : "Preview Markdown";
-    const icon = document.createElement("span");
-    icon.className = "codicon codicon-eye";
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createContextIcon("eye", "");
     button.appendChild(icon);
     button.onclick = () => {
       runWithoutEditorCoreRender(() => editorCore.updateTab(tab.id, { markdownPreview: !shouldShowMarkdownPreview(tab) }, { reason: "markdown-preview" }));
@@ -2283,17 +2295,13 @@ function renderTreeRow({
   };
   main.onkeydown = (event) => handleTreeRowKeydown(event, row, { key, onClick, onSelect });
 
-  const chevron = document.createElement("span");
-  chevron.className = `zion-context-tree-chevron codicon ${expanded == null ? "" : expanded ? "codicon-chevron-down" : "codicon-chevron-right"}`;
-  chevron.setAttribute("aria-hidden", "true");
+  const chevron = createContextIcon(expanded == null ? "" : expanded ? "chevron-down" : "chevron-right", "zion-context-tree-chevron");
   const text = document.createElement("span");
   text.className = "zion-context-tree-label";
   text.textContent = label || "";
   main.appendChild(chevron);
   if (icon) {
-    const iconEl = document.createElement("span");
-    iconEl.className = `zion-context-tree-icon codicon ${icon}`;
-    iconEl.setAttribute("aria-hidden", "true");
+    const iconEl = createContextIcon(icon, "zion-context-tree-icon");
     main.appendChild(iconEl);
   }
   main.appendChild(text);
@@ -2834,9 +2842,7 @@ function iconButton(icon, title, onClick) {
   btn.className = "zion-context-icon-button";
   btn.title = title;
   btn.setAttribute("aria-label", title);
-  const span = document.createElement("span");
-  span.className = `codicon ${icon}`;
-  btn.appendChild(span);
+  btn.appendChild(createContextIcon(icon, ""));
   btn.onclick = onClick;
   return btn;
 }

@@ -443,7 +443,7 @@ export async function activate(ctx) {
       pluginId: "dev.terminal-manager",
       title: "Terminal",
       titleKey: "dev.terminal-manager.ui.terminal",
-      icon: "💻",
+      icon: "$(terminal)",
       order: 30,
       location: "sidebar",
       headerActions: [
@@ -453,7 +453,7 @@ export async function activate(ctx) {
           titleKey: "dev.terminal-manager.ui.refresh",
           ariaLabel: "Refresh sessions",
           ariaLabelKey: "dev.terminal-manager.ui.refresh",
-          icon: "↻",
+          icon: "$(loading)",
           onClick: () => {
             try {
               window.zion.commands.executeCommand("terminal.refreshSessions");
@@ -498,7 +498,7 @@ export async function activate(ctx) {
           {
             title: "No sessions",
             description: "先创建或刷新会话",
-            icon: "ℹ️",
+            icon: "$(info)",
             execute: () => window.zion.commands.executeCommand("terminal.openManager")
           }
         ];
@@ -515,7 +515,7 @@ export async function activate(ctx) {
           return {
             title,
             description,
-            icon: mode === "close" ? "🗑️" : (isActive ? "✅" : "💻"),
+            icon: mode === "close" ? "$(trash)" : (isActive ? "$(check)" : "$(terminal)"),
             execute: async () => {
               if (mode === "close") {
                 await window.zion.commands.executeCommand("terminal.closeSession", { session_id: id });
@@ -534,7 +534,7 @@ export async function activate(ctx) {
       title: "Terminal",
       description: "创建/切换/关闭会话，设置 CWD，以及打开管理器",
       category: "terminal",
-      icon: "💻",
+      icon: "$(terminal)",
       priority: 110,
       submenu: async () => {
         const include = window.zion?.state?.get("chat.includeTerminalContext");
@@ -543,13 +543,13 @@ export async function activate(ctx) {
           {
             title: "打开终端管理器",
             description: "打开终端会话管理面板",
-            icon: "🪟",
+            icon: "$(window)",
             execute: () => window.zion.commands.executeCommand("terminal.openManager")
           },
           {
             title: "刷新会话列表",
             description: "从本地 tools 服务同步 sessions",
-            icon: "🔄",
+            icon: "$(loading)",
             execute: async () => {
               await window.zion.commands.executeCommand("terminal.refreshSessions");
             }
@@ -557,12 +557,12 @@ export async function activate(ctx) {
           {
             title: "创建会话",
             description: "创建本地或 SSH 终端会话",
-            icon: "➕",
+            icon: "$(add)",
             submenu: async () => [
               {
                 title: "创建本地会话",
                 description: "local session",
-                icon: "🖥️",
+                icon: "$(terminal)",
                 params: [
                   { name: "initial_cwd", type: "string", label: "Initial CWD", placeholder: "/" }
                 ],
@@ -576,7 +576,7 @@ export async function activate(ctx) {
               {
                 title: "创建 SSH 会话",
                 description: "ssh session",
-                icon: "🌐",
+                icon: "$(remote)",
                 params: [
                   { name: "ssh_host", type: "string", label: "SSH Host", placeholder: "example.com" },
                   { name: "ssh_user", type: "string", label: "SSH User", placeholder: "root" },
@@ -598,12 +598,12 @@ export async function activate(ctx) {
           {
             title: "会话操作",
             description: "设置 Active / 关闭 / 设置 CWD",
-            icon: "🧩",
+            icon: "$(list-tree)",
             submenu: async () => [
               {
                 title: "设为 Active",
                 description: "切换当前 active session",
-                icon: "✅",
+                icon: "$(check)",
                 submenu: async () => await buildSessionItems({ mode: "active" }),
                 execute: async () => {
                   const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
@@ -617,7 +617,7 @@ export async function activate(ctx) {
               {
                 title: "关闭会话",
                 description: "关闭并移除 session",
-                icon: "🗑️",
+                icon: "$(trash)",
                 submenu: async () => await buildSessionItems({ mode: "close" }),
                 execute: async () => {
                   const list = await ensureSessions();
@@ -629,7 +629,7 @@ export async function activate(ctx) {
               {
                 title: "设置 CWD",
                 description: "对指定 session 执行 cd",
-                icon: "📁",
+                icon: "$(folder)",
                 params: [
                   {
                     name: "session_id",
@@ -651,7 +651,7 @@ export async function activate(ctx) {
           {
             title: enabled ? "关闭对话注入终端上下文" : "开启对话注入终端上下文",
             description: "chat.includeTerminalContext",
-            icon: "🧠",
+            icon: "$(zap)",
             execute: () => {
               window.zion.commands.executeCommand("terminal.toggleChatContext");
             }
@@ -771,7 +771,7 @@ export async function activate(ctx) {
         title: cmd.title,
         description: cmd.description,
         category: "terminal",
-        icon: "💻",
+        icon: "$(terminal)",
         priority: cmd.priority,
         submenu: cmd.submenu,
         params: cmd.params,

@@ -228,6 +228,10 @@ function getViewSessionId(view) {
   }
 }
 
+function isCommentPanelId(panelId) {
+  return String(panelId || "").startsWith("comments:");
+}
+
 function debugChatCards(event, payload) {
   void event;
   void payload;
@@ -311,6 +315,11 @@ class ThinkingCardWidget extends WidgetType {
     wrap.className = "zion-thinking-card";
     wrap.setAttribute("data-thinking-card-id", String(this.id).replace(/:card$/, ""));
 
+      const header = document.createElement("div");
+      header.className = "zion-thinking-card-header";
+      header.innerHTML = `<span class="codicon codicon-chevron-down" aria-hidden="true"></span><span>${t("ui.thinking", "思考")}</span>`;
+      wrap.appendChild(header);
+
     const body = document.createElement("pre");
     body.className = "zion-thinking-card-body";
     body.textContent = fmt(this.text, 5000);
@@ -340,9 +349,7 @@ class ThinkingInlineWidget extends WidgetType {
     btn.type = "button";
     btn.title = t("ui.toggleContent", "展开/收起思考内容");
     btn.setAttribute("aria-label", t("ui.toggleContent", "展开/收起思考内容"));
-    btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-  <path d="M4.646 6.646a.5.5 0 0 1 .708 0L8 9.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z"></path>
-</svg>`;
+    btn.innerHTML = `<span class="codicon codicon-chevron-down" aria-hidden="true"></span>`;
     span.appendChild(btn);
 
     const txt = document.createElement("span");
@@ -1119,6 +1126,7 @@ export function installThinkingCards() {
       const batchedEffects = [];
       const batchedToggles = [];
       const processedIds = new Set();
+      let skippedFallback = false;
 
       // Phase 1: 精确位置匹配
       reconcileExactAnchors({
@@ -1176,6 +1184,15 @@ export function installThinkingCards() {
       // Phase 3: 兜底
       for (const it of itemsToProcess) {
         if (processedIds.has(it.id)) continue;
+        if (isCommentPanelId(this.panelId)) {
+          skippedFallback = true;
+          debugChatCards("restore.skipFallbackInComments", {
+            panelId: this.panelId,
+            sessionId: restoreSessionId,
+            id: it.id
+          });
+          continue;
+        }
 
         const plan = planAssistantMarkerInsertion({
           docText: this.view.state.doc.toString(),
@@ -1205,9 +1222,7 @@ export function installThinkingCards() {
       try {
         if (restoreSessionId) clearPendingRestore(restoreSessionId, "thinking");
       } catch {}
-
-      this.snapshot();
-      debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
+      if (!skippedFallback) this.snapshot();
     };
     destroy() {
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }

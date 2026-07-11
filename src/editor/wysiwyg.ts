@@ -952,8 +952,8 @@ class HeadingWidget extends WidgetType {
   toDOM() {
     const span = document.createElement("span");
     span.className = "cm-md-heading";
-    const sizes: Record<number, string> = { 1: "1.6em", 2: "1.4em", 3: "1.25em", 4: "1.15em", 5: "1.05em", 6: "1em" };
-    span.style.fontSize = sizes[this.level] ?? "1em";
+    const lvl = Math.min(6, Math.max(1, this.level));
+    span.style.fontSize = `var(--md-h${lvl}-size, 1em)`;
     // Use inner text only; inline parsing left to fallback renderer if needed
     span.textContent = this.text;
     return span;

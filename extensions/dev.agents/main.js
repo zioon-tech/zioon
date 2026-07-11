@@ -824,8 +824,10 @@ const root = document.createElement("div");
       row.onclick = () => setActiveTask(task.id);
       const lineLabel = isScratchTask(task) ? t("task.scratchContext", "Independent temporary conversation") : `L${Number(task.lineFrom || 0) + 1}`;
       const metaLabel = [lineLabel, formatTime(task.updatedAt || task.createdAt)].filter(Boolean).join(" · ");
+      const rowIcon = window.zionIcons?.htmlFromCodicon?.("agent", "zion-agents-row-icon")
+        || `<span class="zion-agents-row-icon codicon codicon-hubot" aria-hidden="true"></span>`;
       row.innerHTML = [
-        `<span class="zion-agents-row-icon codicon codicon-hubot" aria-hidden="true"></span>`,
+        rowIcon,
         `<span class="zion-agents-row-main">`,
         `<span class="zion-agents-row-title">${escapeHtml(task.title || task.anchorText || task.id)}</span>`,
         `</span>`,
@@ -1023,13 +1025,18 @@ function iconAction(iconName, onClick, tone = "", title = "") {
 }
 
 function iconSvg(name) {
-  const paths = {
-    play: `<path d="M8 5v14l11-7z"></path>`,
-    stop: `<path d="M6 6h12v12H6z"></path>`,
-    external: `<path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M11 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5"></path>`,
-    trash: `<path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 14h10l1-14"></path><path d="M10 11v5"></path><path d="M14 11v5"></path>`
+  const map = {
+    play: "play",
+    stop: "debug-stop",
+    external: "link-external",
+    trash: "trash"
   };
-  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.play}</svg>`;
+  const codicon = map[name] || "play";
+  try {
+    const html = window.zionIcons?.htmlFromCodicon?.(codicon);
+    if (html) return html;
+  } catch {}
+  return `<span class="codicon codicon-${codicon}" aria-hidden="true"></span>`;
 }
 
 function createTaskEditor(container, task) {
@@ -1663,7 +1670,7 @@ const disposables = [];
       pluginId: "dev.agents",
       title: t("title", "Agents"),
       titleKey: "dev.agents.title",
-      icon: "$(hubot)",
+      icon: "$(agent)",
       order: 5,
       keepWhenActive: true,
       component: { render: renderAgentsPanel }
@@ -1674,7 +1681,7 @@ const disposables = [];
     const activity = window.zion.activityBar?.registerItem?.({
       id: "agents.activity",
       pluginId: "dev.agents",
-      icon: "$(hubot)",
+      icon: "$(agent)",
       tooltip: t("title", "Agents"),
       tooltipKey: "dev.agents.title",
       order: 34,
@@ -1690,7 +1697,7 @@ const disposables = [];
       titleKey: "dev.agents.toolbar.createTask",
       label: t("toolbar.task", "Task"),
       labelKey: "dev.agents.toolbar.task",
-      codicon: "hubot",
+      codicon: "agent",
       when: (toolbarCtx) => !!String(toolbarCtx?.selectionText || "").trim(),
       run: createTaskFromSelection
     });

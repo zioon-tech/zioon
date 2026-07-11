@@ -1,0 +1,1369 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zion Workbench UI Concepts</title>
+  <style>
+    :root {
+      --page: #eef1f6;
+      --ink: #1f2430;
+      --ink-soft: #576071;
+      --ink-muted: #8a93a3;
+      --line: rgba(87, 96, 113, 0.18);
+      --line-strong: rgba(87, 96, 113, 0.30);
+      --surface: rgba(255, 255, 255, 0.88);
+      --surface-solid: #ffffff;
+      --surface-soft: #f6f7fa;
+      --surface-tint: #edf3ff;
+      --accent: #3b82f6;
+      --accent-2: #22a6a1;
+      --danger: #dc6b5d;
+      --ok: #2f9d68;
+      --shadow: 0 24px 70px rgba(32, 38, 52, 0.12);
+      --shadow-soft: 0 12px 34px rgba(32, 38, 52, 0.08);
+      --radius-xl: 24px;
+      --radius-lg: 18px;
+      --radius-md: 12px;
+      --radius-sm: 8px;
+      --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    [data-theme="dark"] {
+      --page: #151923;
+      --ink: #e8ebf2;
+      --ink-soft: #aeb6c7;
+      --ink-muted: #727c91;
+      --line: rgba(210, 218, 235, 0.13);
+      --line-strong: rgba(210, 218, 235, 0.24);
+      --surface: rgba(31, 36, 50, 0.82);
+      --surface-solid: #202637;
+      --surface-soft: #252c3f;
+      --surface-tint: #1c2941;
+      --accent: #78a7ff;
+      --accent-2: #56c4bf;
+      --danger: #ee8b7d;
+      --ok: #6fd3a0;
+      --shadow: 0 26px 80px rgba(0, 0, 0, 0.34);
+      --shadow-soft: 0 16px 44px rgba(0, 0, 0, 0.22);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% -6%, rgba(59, 130, 246, 0.16), transparent 34rem),
+        radial-gradient(circle at 92% 12%, rgba(34, 166, 161, 0.12), transparent 30rem),
+        linear-gradient(180deg, var(--page), color-mix(in srgb, var(--page) 86%, #000 14%));
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .page {
+      width: min(1440px, calc(100vw - 48px));
+      margin: 0 auto;
+      padding: 34px 0 60px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: start;
+      margin-bottom: 22px;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 780px;
+      font-size: clamp(30px, 4vw, 52px);
+      line-height: 1.05;
+      letter-spacing: -0.055em;
+    }
+
+    .intro {
+      max-width: 760px;
+      margin: 14px 0 0;
+      color: var(--ink-soft);
+      font-size: 15px;
+    }
+
+    .theme-switch {
+      display: inline-flex;
+      gap: 6px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--surface) 86%, transparent);
+      box-shadow: var(--shadow-soft);
+      backdrop-filter: blur(18px);
+    }
+
+    .theme-switch button,
+    .concept-tab {
+      border: 0;
+      cursor: pointer;
+      color: var(--ink-soft);
+      background: transparent;
+      transition: 160ms ease;
+    }
+
+    .theme-switch button {
+      height: 30px;
+      padding: 0 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .theme-switch button.is-active {
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+    }
+
+    .concept-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 24px 0 18px;
+    }
+
+    .concept-tab {
+      position: relative;
+      min-height: 118px;
+      padding: 16px 16px 14px;
+      text-align: left;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: color-mix(in srgb, var(--surface) 88%, transparent);
+      box-shadow: var(--shadow-soft);
+      overflow: hidden;
+    }
+
+    .concept-tab::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 85% 12%, color-mix(in srgb, var(--tab-accent, var(--accent)) 22%, transparent), transparent 11rem);
+      opacity: 0;
+      transition: 180ms ease;
+    }
+
+    .concept-tab:hover,
+    .concept-tab.is-active {
+      border-color: color-mix(in srgb, var(--tab-accent, var(--accent)) 42%, var(--line));
+      transform: translateY(-1px);
+    }
+
+    .concept-tab.is-active::before {
+      opacity: 1;
+    }
+
+    .concept-tab strong,
+    .concept-tab span,
+    .concept-tab em {
+      position: relative;
+      z-index: 1;
+    }
+
+    .concept-tab strong {
+      display: block;
+      color: var(--ink);
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+
+    .concept-tab span {
+      display: block;
+      margin-top: 6px;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
+    .concept-tab em {
+      display: inline-flex;
+      margin-top: 13px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      color: color-mix(in srgb, var(--tab-accent, var(--accent)) 78%, var(--ink));
+      background: color-mix(in srgb, var(--tab-accent, var(--accent)) 12%, transparent);
+      font-size: 11px;
+      font-style: normal;
+      font-weight: 760;
+    }
+
+    .board {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .mock-card,
+    .notes-card,
+    .module-card,
+    .session-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: color-mix(in srgb, var(--surface) 90%, transparent);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .mock-card {
+      padding: 16px;
+      overflow: hidden;
+    }
+
+    .mock-shell {
+      display: grid;
+      grid-template-rows: 1fr 38px;
+      min-height: 680px;
+      border: 1px solid var(--line-strong);
+      border-radius: 20px;
+      background: var(--surface-solid);
+      overflow: hidden;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 56px 292px minmax(420px, 1fr) 268px;
+      min-height: 0;
+    }
+
+    .activitybar {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 8px;
+      border-right: 1px solid var(--line);
+      background: var(--activity-bg, color-mix(in srgb, var(--surface-soft) 88%, var(--surface-solid)));
+    }
+
+    .activity-item {
+      position: relative;
+      width: 38px;
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: var(--activity-radius, 12px);
+      color: var(--ink-muted);
+      background: transparent;
+    }
+
+    .activity-item.is-active {
+      color: var(--activity-active-color, var(--accent));
+      background: var(--activity-active-bg, color-mix(in srgb, var(--accent) 13%, transparent));
+    }
+
+    .activity-item.is-active::after {
+      content: "";
+      position: absolute;
+      left: var(--activity-indicator-left, -8px);
+      width: var(--activity-indicator-width, 3px);
+      height: var(--activity-indicator-height, 18px);
+      border-radius: 999px;
+      background: var(--activity-active-color, var(--accent));
+      opacity: var(--activity-indicator-opacity, 1);
+    }
+
+    .activity-spacer {
+      flex: 1;
+    }
+
+    .side {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: var(--sidebar-bg, color-mix(in srgb, var(--surface-solid) 92%, var(--surface-soft)));
+    }
+
+    .side-head {
+      padding: 15px 16px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .side-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 780;
+      letter-spacing: -0.01em;
+    }
+
+    .side-subtitle {
+      margin-top: 5px;
+      color: var(--ink-muted);
+      font-size: 12px;
+    }
+
+    .quick-filter {
+      display: flex;
+      gap: 7px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .filter-pill {
+      height: 26px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      color: var(--ink-soft);
+      background: color-mix(in srgb, var(--surface-soft) 86%, transparent);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .filter-pill.is-active {
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 13%, transparent);
+    }
+
+    .session-list {
+      min-height: 0;
+      padding: 10px 10px 14px;
+      overflow: hidden;
+    }
+
+    .day-group {
+      margin: 10px 6px 6px;
+      color: var(--ink-muted);
+      font-size: 11px;
+      font-weight: 780;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .session-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr) auto;
+      gap: 9px;
+      align-items: center;
+      min-height: var(--row-height, 54px);
+      padding: 8px 9px;
+      margin-bottom: 5px;
+      border: 1px solid transparent;
+      border-radius: var(--row-radius, 13px);
+      background: transparent;
+    }
+
+    .session-row.is-current {
+      border-color: var(--row-active-border, transparent);
+      background: var(--row-active-bg, color-mix(in srgb, var(--accent) 10%, transparent));
+      box-shadow: var(--row-active-shadow, none);
+    }
+
+    .session-icon {
+      width: 26px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 9px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+
+    .session-name {
+      overflow: hidden;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 680;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .session-meta {
+      margin-top: 2px;
+      overflow: hidden;
+      color: var(--ink-muted);
+      font-size: 11px;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .session-token {
+      align-self: start;
+      padding: 3px 7px;
+      border-radius: 999px;
+      color: var(--ink-muted);
+      background: color-mix(in srgb, var(--surface-soft) 82%, transparent);
+      font-size: 10px;
+      font-family: var(--font-mono);
+    }
+
+    .editor {
+      display: grid;
+      grid-template-rows: 43px 1fr 210px;
+      min-width: 0;
+      background: var(--editor-bg, var(--surface-solid));
+    }
+
+    .editor-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--editor-head-bg, color-mix(in srgb, var(--surface-solid) 88%, var(--surface-soft)));
+    }
+
+    .tab {
+      height: 30px;
+      min-width: 0;
+      max-width: 240px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 11px;
+      border-radius: 10px;
+      color: var(--ink);
+      background: color-mix(in srgb, var(--accent) 9%, transparent);
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    .editor-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .mini-action {
+      width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: 9px;
+      color: var(--ink-muted);
+      background: transparent;
+    }
+
+    .doc {
+      min-height: 0;
+      padding: var(--doc-padding, 34px 46px);
+      overflow: hidden;
+      background:
+        linear-gradient(90deg, transparent 0, transparent calc(100% - 1px), var(--line) calc(100% - 1px)),
+        var(--editor-bg, var(--surface-solid));
+    }
+
+    .doc h2 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      line-height: 1.25;
+      letter-spacing: -0.03em;
+    }
+
+    .doc p {
+      max-width: 680px;
+      margin: 0 0 12px;
+      color: var(--ink-soft);
+    }
+
+    .message {
+      max-width: 760px;
+      margin: 18px 0;
+      padding: 15px 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: color-mix(in srgb, var(--surface-solid) 86%, var(--surface-soft));
+    }
+
+    .tool-call {
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      max-width: 640px;
+      margin: 12px 0;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      color: var(--ink-soft);
+      background: color-mix(in srgb, var(--surface-soft) 84%, transparent);
+      font-size: 12px;
+    }
+
+    .bottom-panel {
+      display: grid;
+      grid-template-rows: 39px 1fr;
+      border-top: 1px solid var(--line);
+      background: var(--bottom-bg, color-mix(in srgb, var(--surface-solid) 92%, var(--surface-soft)));
+    }
+
+    .bottom-tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .bottom-tab {
+      height: 27px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      border-radius: 9px;
+      color: var(--ink-muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .bottom-tab.is-active {
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 11%, transparent);
+    }
+
+    .log-lines {
+      display: grid;
+      gap: 7px;
+      padding: 12px 14px;
+      color: var(--ink-soft);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .log-line {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .aux {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-width: 0;
+      border-left: 1px solid var(--line);
+      background: var(--aux-bg, color-mix(in srgb, var(--surface-solid) 90%, var(--surface-soft)));
+    }
+
+    .aux-tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      overflow: hidden;
+    }
+
+    .aux-tab {
+      width: 30px;
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      color: var(--ink-muted);
+      background: transparent;
+    }
+
+    .aux-tab.is-active {
+      color: var(--accent-2);
+      background: color-mix(in srgb, var(--accent-2) 13%, transparent);
+    }
+
+    .context-panel {
+      padding: 12px;
+    }
+
+    .context-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .context-head strong {
+      font-size: 13px;
+    }
+
+    .tree-row {
+      display: grid;
+      grid-template-columns: 20px 1fr auto;
+      gap: 8px;
+      align-items: center;
+      min-height: 34px;
+      padding: 6px 8px;
+      border-radius: 10px;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
+    .tree-row.is-active {
+      color: var(--accent-2);
+      background: color-mix(in srgb, var(--accent-2) 11%, transparent);
+    }
+
+    .statusbar {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      border-top: 1px solid var(--line);
+      background: var(--status-bg, color-mix(in srgb, var(--surface-soft) 90%, var(--surface-solid)));
+      color: var(--ink-muted);
+      font-size: 11px;
+    }
+
+    .status-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .status-item {
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 8px;
+      border-radius: 999px;
+      color: var(--ink-soft);
+      background: var(--status-chip-bg, transparent);
+      white-space: nowrap;
+    }
+
+    .status-item.is-strong {
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 11%, transparent);
+    }
+
+    .icon {
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      color: currentColor;
+    }
+
+    .icon svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.85;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .notes-card {
+      position: sticky;
+      top: 18px;
+      padding: 18px;
+    }
+
+    .notes-card h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+
+    .notes-card p {
+      margin: 8px 0 0;
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .metric-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .metric {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: color-mix(in srgb, var(--surface-solid) 70%, transparent);
+    }
+
+    .metric strong {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 5px;
+      color: var(--ink-muted);
+      font-size: 12px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      height: 20px;
+      padding: 0 7px;
+      border-radius: 999px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+      font-size: 10px;
+      font-weight: 780;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 34px 0 14px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: -0.035em;
+    }
+
+    .section-title p {
+      max-width: 680px;
+      margin: 0;
+      color: var(--ink-soft);
+    }
+
+    .modules {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .module-card {
+      padding: 16px;
+    }
+
+    .module-card h3 {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0 0 10px;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+
+    .module-card ul {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
+    .module-card li {
+      position: relative;
+      padding-left: 14px;
+    }
+
+    .module-card li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.68em;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .session-options {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .session-card {
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .session-card h3 {
+      margin: 0 0 4px;
+      font-size: 14px;
+    }
+
+    .session-card p {
+      margin: 0 0 12px;
+      color: var(--ink-muted);
+      font-size: 12px;
+    }
+
+    .mini-session-list {
+      display: grid;
+      gap: 6px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: color-mix(in srgb, var(--surface-solid) 76%, transparent);
+    }
+
+    .mini-session {
+      display: grid;
+      grid-template-columns: 24px 1fr auto;
+      gap: 8px;
+      align-items: center;
+      min-height: 42px;
+      padding: 7px;
+      border-radius: 12px;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
+    .mini-session.is-active {
+      color: var(--ink);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+
+    .mini-dot {
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 9px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+
+    .kbd {
+      color: var(--ink-muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    [data-plan="calm"] {
+      --activity-bg: color-mix(in srgb, var(--surface-soft) 80%, var(--surface-solid));
+      --activity-radius: 12px;
+      --activity-indicator-left: -8px;
+      --activity-indicator-height: 18px;
+      --row-height: 54px;
+      --row-radius: 13px;
+      --row-active-bg: color-mix(in srgb, var(--accent) 10%, transparent);
+      --status-chip-bg: transparent;
+      --doc-padding: 34px 46px;
+    }
+
+    [data-plan="layered"] {
+      --accent: #5865f2;
+      --accent-2: #d48d2f;
+      --activity-bg: linear-gradient(180deg, color-mix(in srgb, var(--surface-solid) 88%, #5865f2 12%), var(--surface-soft));
+      --activity-radius: 16px;
+      --activity-indicator-opacity: 0;
+      --activity-active-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+      --sidebar-bg: color-mix(in srgb, var(--surface-solid) 86%, var(--accent) 5%);
+      --editor-head-bg: color-mix(in srgb, var(--surface-solid) 84%, var(--accent) 5%);
+      --row-height: 58px;
+      --row-radius: 16px;
+      --row-active-border: color-mix(in srgb, var(--accent) 30%, transparent);
+      --row-active-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent), 0 10px 24px rgba(88, 101, 242, 0.10);
+      --status-chip-bg: color-mix(in srgb, var(--surface-solid) 74%, transparent);
+      --doc-padding: 38px 52px;
+    }
+
+    [data-plan="dense"] {
+      --accent: #257c72;
+      --accent-2: #4772d9;
+      --activity-bg: var(--surface-solid);
+      --activity-radius: 9px;
+      --activity-indicator-left: 37px;
+      --activity-indicator-width: 2px;
+      --activity-indicator-height: 22px;
+      --sidebar-bg: var(--surface-solid);
+      --editor-head-bg: var(--surface-solid);
+      --row-height: 46px;
+      --row-radius: 10px;
+      --row-active-bg: color-mix(in srgb, var(--accent) 9%, transparent);
+      --status-chip-bg: color-mix(in srgb, var(--surface-soft) 76%, transparent);
+      --doc-padding: 28px 38px;
+    }
+
+    [data-plan="dense"] .workspace {
+      grid-template-columns: 50px 264px minmax(420px, 1fr) 248px;
+    }
+
+    [data-plan="dense"] .editor {
+      grid-template-rows: 38px 1fr 180px;
+    }
+
+    [data-plan="dense"] .session-icon,
+    [data-plan="dense"] .session-token {
+      transform: scale(0.92);
+    }
+
+    @media (max-width: 1180px) {
+      .board {
+        grid-template-columns: 1fr;
+      }
+
+      .notes-card {
+        position: static;
+      }
+
+      .workspace {
+        grid-template-columns: 52px 270px minmax(360px, 1fr);
+      }
+
+      .aux {
+        display: none;
+      }
+
+      .modules,
+      .session-options {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 820px) {
+      .page {
+        width: min(100vw - 24px, 760px);
+      }
+
+      .hero,
+      .concept-tabs,
+      .modules,
+      .session-options {
+        grid-template-columns: 1fr;
+      }
+
+      .workspace {
+        grid-template-columns: 48px 1fr;
+      }
+
+      .editor {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body data-theme="light" data-plan="calm">
+  <main class="page">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Workbench UI concept board</p>
+        <h1>Zion 工作台整体视觉原型</h1>
+        <p class="intro">这个页面不追求功能一致，而是把现在的 Activity bar、sidebar、editor workbench、bottom status bar、bottom panel 放到一个完整布局里，比较几种更和谐的呈现方向。你可以先挑方向，再决定是否落到 zion-next。</p>
+      </div>
+      <div class="theme-switch" aria-label="主题切换">
+        <button class="is-active" data-theme-btn="light">亮色</button>
+        <button data-theme-btn="dark">暗色</button>
+      </div>
+    </header>
+
+    <section class="concept-tabs" aria-label="方案切换">
+      <button class="concept-tab is-active" data-plan-btn="calm" style="--tab-accent:#3b82f6">
+        <strong>方案 A · 安静聚焦</strong>
+        <span>保留 VS Code 的信息架构，但减弱边界、统一图标与选中态。</span>
+        <em>推荐作为默认方向</em>
+      </button>
+      <button class="concept-tab" data-plan-btn="layered" style="--tab-accent:#5865f2">
+        <strong>方案 B · 分层卡片</strong>
+        <span>把 sidebar、editor、bottom panel 当作几块浮层，视觉更现代。</span>
+        <em>适合产品化演示</em>
+      </button>
+      <button class="concept-tab" data-plan-btn="dense" style="--tab-accent:#257c72">
+        <strong>方案 C · 密度优先</strong>
+        <span>控制高度和留白，强调长期使用效率与列表扫描速度。</span>
+        <em>适合重度用户</em>
+      </button>
+    </section>
+
+    <section class="board">
+      <div class="mock-card">
+        <div class="mock-shell">
+          <div class="workspace">
+            <nav class="activitybar" aria-label="Activity bar">
+              <button class="activity-item is-active" title="会话" data-icon="history"></button>
+              <button class="activity-item" title="插件" data-icon="extensions"></button>
+              <button class="activity-item" title="终端" data-icon="terminal"></button>
+              <button class="activity-item" title="智能体" data-icon="agent"></button>
+              <button class="activity-item" title="评论" data-icon="messages"></button>
+              <button class="activity-item" title="记忆" data-icon="database"></button>
+              <button class="activity-item" title="LLM 请求" data-icon="bug"></button>
+              <div class="activity-spacer"></div>
+              <button class="activity-item" title="设置" data-icon="settings"></button>
+            </nav>
+
+            <aside class="side" aria-label="Session manager">
+              <div class="side-head">
+                <div class="side-title"><span data-icon="history"></span><span>会话</span></div>
+                <div class="side-subtitle">按时间、任务状态和文件夹管理对话</div>
+              </div>
+              <div class="quick-filter">
+                <span class="filter-pill is-active">全部</span>
+                <span class="filter-pill">今天</span>
+                <span class="filter-pill">有文件</span>
+              </div>
+              <div class="session-list">
+                <div class="day-group">Today</div>
+                <div class="session-row is-current">
+                  <span class="session-icon" data-icon="sparkles"></span>
+                  <div>
+                    <div class="session-name">优化 Zion 工作台整体视觉</div>
+                    <div class="session-meta">UI system · 12 条消息 · 3 个文件</div>
+                  </div>
+                  <span class="session-token">12k</span>
+                </div>
+                <div class="session-row">
+                  <span class="session-icon" data-icon="file-text"></span>
+                  <div>
+                    <div class="session-name">整理 Activity bar 图标语义</div>
+                    <div class="session-meta">视觉走查 · 8 条消息</div>
+                  </div>
+                  <span class="session-token">6k</span>
+                </div>
+                <div class="session-row">
+                  <span class="session-icon" data-icon="terminal"></span>
+                  <div>
+                    <div class="session-name">终端状态栏和 bottom panel</div>
+                    <div class="session-meta">交互验证 · 2 个任务</div>
+                  </div>
+                  <span class="session-token">4k</span>
+                </div>
+                <div class="day-group">Pinned</div>
+                <div class="session-row">
+                  <span class="session-icon" data-icon="folder"></span>
+                  <div>
+                    <div class="session-name">Zion Visual System V2</div>
+                    <div class="session-meta">规范文档 · 长期维护</div>
+                  </div>
+                  <span class="session-token">doc</span>
+                </div>
+                <div class="session-row">
+                  <span class="session-icon" data-icon="agent"></span>
+                  <div>
+                    <div class="session-name">Agent 任务面板设计</div>
+                    <div class="session-meta">待评审 · 5 条任务</div>
+                  </div>
+                  <span class="session-token">new</span>
+                </div>
+              </div>
+            </aside>
+
+            <section class="editor" aria-label="Editor workbench">
+              <div class="editor-head">
+                <div class="tab"><span data-icon="file-text"></span><span>icon-comparison.html</span></div>
+                <div class="editor-actions">
+                  <button class="mini-action" title="目录" data-icon="book"></button>
+                  <button class="mini-action" title="分屏" data-icon="columns"></button>
+                  <button class="mini-action" title="运行" data-icon="play"></button>
+                  <button class="mini-action" title="设置" data-icon="settings"></button>
+                </div>
+              </div>
+              <article class="doc">
+                <h2>更和谐的工作台需要先统一层级</h2>
+                <p>当前的问题不是某一个图标或某一个圆角，而是几个区域的视觉语言不一致：Activity bar 像一级导航，sidebar 像数据列表，editor header 像工具条，bottom status 又像插件入口。原型里先把这些角色分清。</p>
+                <div class="message">
+                  <strong>建议原则</strong>
+                  <p>普通列表用整行柔和底色表达选中；一级导航可以保留更明确的 indicator；状态栏只承载低干扰信息，不和 bottom panel tabs 抢层级。</p>
+                </div>
+                <div class="tool-call">
+                  <span data-icon="layers"></span>
+                  <span>分析 Context / Memory / Comments / Agents 的信息密度与入口层级</span>
+                  <span class="tag">done</span>
+                </div>
+                <div class="tool-call">
+                  <span data-icon="bug"></span>
+                  <span>检查 LLM 请求日志在 bottom panel 中的呈现方式</span>
+                  <span class="tag">watch</span>
+                </div>
+              </article>
+              <div class="bottom-panel">
+                <div class="bottom-tabs">
+                  <span class="bottom-tab is-active"><span data-icon="output"></span>Output</span>
+                  <span class="bottom-tab"><span data-icon="terminal"></span>终端</span>
+                  <span class="bottom-tab"><span data-icon="bug"></span>LLM 请求</span>
+                </div>
+                <div class="log-lines">
+                  <div class="log-line">10:24:12  ui.audit  Activity bar icons resolved with semantic Zion icons</div>
+                  <div class="log-line">10:24:18  terminal  active session: zion-next / memory-panel</div>
+                  <div class="log-line">10:24:29  llm      request payload captured · 18.2kb · 200 OK</div>
+                </div>
+              </div>
+            </section>
+
+            <aside class="aux" aria-label="Auxiliary bar">
+              <div class="aux-tabs">
+                <span class="aux-tab is-active" title="上下文" data-icon="layers"></span>
+                <span class="aux-tab" title="智能体" data-icon="agent"></span>
+                <span class="aux-tab" title="记忆" data-icon="database"></span>
+                <span class="aux-tab" title="文件" data-icon="folder"></span>
+                <span class="aux-tab" title="评论" data-icon="messages"></span>
+              </div>
+              <div class="context-panel">
+                <div class="context-head">
+                  <strong>上下文</strong>
+                  <span class="tag">12 items</span>
+                </div>
+                <div class="tree-row is-active"><span data-icon="file-text"></span><span>UI-VISUAL-SYSTEM-V2.md</span><span>doc</span></div>
+                <div class="tree-row"><span data-icon="folder"></span><span>extensions/dev.session-manager</span><span>8</span></div>
+                <div class="tree-row"><span data-icon="database"></span><span>memory panel files</span><span>4</span></div>
+                <div class="tree-row"><span data-icon="messages"></span><span>comments thread</span><span>2</span></div>
+                <div class="tree-row"><span data-icon="agent"></span><span>agent tasks</span><span>3</span></div>
+              </div>
+            </aside>
+          </div>
+
+          <footer class="statusbar" aria-label="Bottom status bar">
+            <div class="status-group">
+              <span class="status-item">行 1, 列 1</span>
+              <span class="status-item">总计 356</span>
+            </div>
+            <div class="status-group">
+              <span class="status-item is-strong"><span data-icon="terminal"></span>zsh · memory-panel</span>
+              <span class="status-item"><span data-icon="sparkles"></span>DeepSeek Chat</span>
+            </div>
+            <div class="status-group">
+              <span class="status-item">工具 20</span>
+              <span class="status-item">技能 0/0</span>
+              <span class="status-item">上下文 12</span>
+            </div>
+          </footer>
+        </div>
+      </div>
+
+      <aside class="notes-card">
+        <h2 id="planTitle">方案 A · 安静聚焦</h2>
+        <p id="planDesc">最稳妥的演进路线：沿用现在布局，统一图标、间距、选中态和 panel 层级。改动成本低，适合作为 zion-next 默认视觉。</p>
+        <div class="metric-list">
+          <div class="metric">
+            <strong>适合场景 <span class="tag" id="fitTag">默认</span></strong>
+            <span id="fitText">长期编辑、会话管理、轻量调试。</span>
+          </div>
+          <div class="metric">
+            <strong>视觉策略 <span class="tag">重点</span></strong>
+            <span id="visualText">弱化重边框，使用整行柔和底色和语义图标建立秩序。</span>
+          </div>
+          <div class="metric">
+            <strong>风险 <span class="tag">注意</span></strong>
+            <span id="riskText">如果继续叠加插件入口，status bar 仍可能变拥挤。</span>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section-title">
+      <div>
+        <h2>逐模块优化建议</h2>
+        <p>这里不是最终 CSS 方案，而是把每个区域应该承担的视觉职责先固定下来。后续落地时，每个模块都可以独立推进。</p>
+      </div>
+    </section>
+
+    <section class="modules">
+      <article class="module-card">
+        <h3><span data-icon="layers"></span>Activity bar</h3>
+        <ul>
+          <li>保留一级导航的强识别，但只在这里允许 indicator。</li>
+          <li>图标必须语义明确：会话 history、插件 extensions、智能体 agent、LLM bug。</li>
+          <li>避免把所有入口都做成同等重量，设置和命令应沉到底部。</li>
+        </ul>
+      </article>
+      <article class="module-card">
+        <h3><span data-icon="history"></span>Sidebar / Session manager</h3>
+        <ul>
+          <li>会话列表更像 inbox，不像文件树；优先突出会话标题、时间、tokens、关联文件。</li>
+          <li>当前会话用整行底色，不加左侧高亮条。</li>
+          <li>文件夹和标签可以作为轻量分组，不要抢会话标题层级。</li>
+        </ul>
+      </article>
+      <article class="module-card">
+        <h3><span data-icon="file-text"></span>Editor workbench</h3>
+        <ul>
+          <li>Header 只放当前文档、TOC、分屏、运行等高频操作。</li>
+          <li>正文区域保持安静，工具调用卡片用低饱和边框承载状态。</li>
+          <li>右侧 auxiliary bar 适合上下文、评论、记忆等辅助信息。</li>
+        </ul>
+      </article>
+      <article class="module-card">
+        <h3><span data-icon="terminal"></span>Bottom status bar</h3>
+        <ul>
+          <li>只放低干扰、短文本、可点击状态；不要承载复杂列表。</li>
+          <li>Terminal 状态应该是小 chip，不应该像 panel tab。</li>
+          <li>模型、工具、上下文指标可以分组显示，减少“满地按钮”的感觉。</li>
+        </ul>
+      </article>
+      <article class="module-card">
+        <h3><span data-icon="output"></span>Bottom panel</h3>
+        <ul>
+          <li>Output、Terminal、LLM 请求是同一层级，tab 样式要统一。</li>
+          <li>日志内容使用 mono 字体和低对比背景，减少抢 editor 注意力。</li>
+          <li>打开时高度稳定，避免每个插件自己定义一套 panel 语言。</li>
+        </ul>
+      </article>
+      <article class="module-card">
+        <h3><span data-icon="database"></span>Memory / Context</h3>
+        <ul>
+          <li>Memory 文件夹/文件必须和 Files panel 同一套图标语言。</li>
+          <li>Context 更适合 layers，而不是 @ 这种输入符号。</li>
+          <li>Comments、Agents、Memory 的入口都应有图标，避免空白破坏节奏。</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="section-title">
+      <div>
+        <h2>Session-manager 的三种具体做法</h2>
+        <p>会话管理是最容易显得乱的地方。下面三种方案可以单独挑，也可以混合：比如默认用 A，重度模式提供 C。</p>
+      </div>
+    </section>
+
+    <section class="session-options">
+      <article class="session-card">
+        <h3>1. Inbox 列表</h3>
+        <p>最推荐。会话像邮件列表一样扫描，适合日常默认模式。</p>
+        <div class="mini-session-list">
+          <div class="mini-session is-active"><span class="mini-dot" data-icon="sparkles"></span><span>优化工作台 UI</span><span class="kbd">12k</span></div>
+          <div class="mini-session"><span class="mini-dot" data-icon="file-text"></span><span>图标替换计划</span><span class="kbd">6k</span></div>
+          <div class="mini-session"><span class="mini-dot" data-icon="terminal"></span><span>终端状态栏</span><span class="kbd">4k</span></div>
+        </div>
+      </article>
+      <article class="session-card">
+        <h3>2. Project 分组</h3>
+        <p>按项目/文件夹组织，适合会话数量很多但仍希望保留上下文。</p>
+        <div class="mini-session-list">
+          <div class="mini-session is-active"><span class="mini-dot" data-icon="folder"></span><span>zion-next</span><span class="kbd">8</span></div>
+          <div class="mini-session"><span class="mini-dot" data-icon="history"></span><span>UI visual system</span><span class="kbd">now</span></div>
+          <div class="mini-session"><span class="mini-dot" data-icon="history"></span><span>icon registry</span><span class="kbd">2d</span></div>
+        </div>
+      </article>
+      <article class="session-card">
+        <h3>3. Compact Dense</h3>
+        <p>更高密度，减少描述行，适合熟悉项目后的快速切换。</p>
+        <div class="mini-session-list">
+          <div class="mini-session is-active"><span class="mini-dot" data-icon="sparkles"></span><span>优化工作台 UI</span><span class="kbd">10:24</span></div>
+          <div class="mini-session"><span class="mini-dot" data-icon="bug"></span><span>LLM 请求图标</span><span class="kbd">09:18</span></div>
+          <div class="mini-session"><span class="mini-dot" data-icon="database"></span><span>Memory 文件树</span><span class="kbd">Mon</span></div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const ICONS = {
+      history: '<path d="M4 12a8 8 0 1 0 2.34-5.66"/><path d="M4 5v4h4"/><path d="M12 8v5l3 2"/>',
+      extensions: '<path d="M9 3h4v4h3a2 2 0 0 1 2 2v3h3v4h-3v3a2 2 0 0 1-2 2h-3v-3H9v3H6a2 2 0 0 1-2-2v-3h3v-4H4V9a2 2 0 0 1 2-2h3V3Z"/>',
+      terminal: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="m8 10 3 2-3 2"/><path d="M13 15h4"/>',
+      agent: '<rect x="5" y="8" width="14" height="10" rx="3"/><path d="M12 4v4"/><path d="M8 13h.01M16 13h.01"/><path d="M9 21h6"/><path d="M7 18l-2 2M17 18l2 2"/>',
+      messages: '<path d="M7 17 4 20v-4a6 6 0 0 1-1-3.3C3 8.5 7 5 12 5s9 3.5 9 7.7-4 7.7-9 7.7a10.6 10.6 0 0 1-5-1.4Z"/><path d="M8 11h8M8 14h5"/>',
+      database: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
+      bug: '<path d="M8 7a4 4 0 0 1 8 0"/><rect x="7" y="7" width="10" height="12" rx="4"/><path d="M3 13h4M17 13h4M5 19l3-3M19 19l-3-3M5 7l3 3M19 7l-3 3"/>',
+      settings: '<path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 2l.05.05a2 2 0 0 1-2.83 2.83l-.05-.05a1.8 1.8 0 0 0-2-.36 1.8 1.8 0 0 0-1.1 1.65V21a2 2 0 0 1-4 0v-.08a1.8 1.8 0 0 0-1.1-1.65 1.8 1.8 0 0 0-2 .36l-.05.05a2 2 0 0 1-2.83-2.83l.05-.05a1.8 1.8 0 0 0 .36-2 1.8 1.8 0 0 0-1.65-1.1H3a2 2 0 0 1 0-4h.08a1.8 1.8 0 0 0 1.65-1.1 1.8 1.8 0 0 0-.36-2l-.05-.05a2 2 0 0 1 2.83-2.83l.05.05a1.8 1.8 0 0 0 2 .36A1.8 1.8 0 0 0 10.3 2.5V2a2 2 0 0 1 4 0v.08a1.8 1.8 0 0 0 1.1 1.65 1.8 1.8 0 0 0 2-.36l.05-.05a2 2 0 0 1 2.83 2.83l-.05.05a1.8 1.8 0 0 0-.36 2 1.8 1.8 0 0 0 1.65 1.1H21a2 2 0 0 1 0 4h-.08A1.8 1.8 0 0 0 19.4 15Z"/>',
+      sparkles: '<path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3Z"/><path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14Z"/><path d="M5 15l.7 1.8L7.5 17.5l-1.8.7L5 20l-.7-1.8-1.8-.7 1.8-.7L5 15Z"/>',
+      "file-text": '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/>',
+      folder: '<path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z"/>',
+      book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21V5.5Z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5A2.5 2.5 0 0 1 20 21V5.5Z"/>',
+      columns: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M12 5v14"/>',
+      play: '<path d="M8 5v14l11-7L8 5Z"/>',
+      output: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h6"/>',
+      layers: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/>'
+    };
+
+    const PLAN_COPY = {
+      calm: {
+        title: "方案 A · 安静聚焦",
+        desc: "最稳妥的演进路线：沿用现在布局，统一图标、间距、选中态和 panel 层级。改动成本低，适合作为 zion-next 默认视觉。",
+        fitTag: "默认",
+        fitText: "长期编辑、会话管理、轻量调试。",
+        visualText: "弱化重边框，使用整行柔和底色和语义图标建立秩序。",
+        riskText: "如果继续叠加插件入口，status bar 仍可能变拥挤。"
+      },
+      layered: {
+        title: "方案 B · 分层卡片",
+        desc: "更像完整产品而不是 IDE shell：sidebar、editor、auxiliary、bottom panel 都有独立容器感，适合演示和高辨识度界面。",
+        fitTag: "展示",
+        fitText: "产品演示、设计感优先、希望 Zion 有更强品牌感。",
+        visualText: "增加浮层、柔和阴影和分区 tint，让每个模块边界更清楚。",
+        riskText: "视觉更重，长时间使用可能不如 A / C 耐看，需要控制阴影和色彩。"
+      },
+      dense: {
+        title: "方案 C · 密度优先",
+        desc: "更接近高效工具：缩小行高、减少装饰、保留必要状态。适合会话很多、经常切换工具和日志的用户。",
+        fitTag: "效率",
+        fitText: "重度使用、会话数量多、经常打开 bottom panel。",
+        visualText: "压缩间距但不牺牲识别，使用更紧凑的 chip 和列表行。",
+        riskText: "如果默认给新用户，可能显得冷；更适合作为紧凑模式。"
+      }
+    };
+
+    function renderIcon(name) {
+      const path = ICONS[name] || ICONS["file-text"];
+      return `<span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24">${path}</svg></span>`;
+    }
+
+    function hydrateIcons(root = document) {
+      root.querySelectorAll("[data-icon]").forEach((el) => {
+        const name = el.getAttribute("data-icon");
+        el.innerHTML = renderIcon(name);
+      });
+    }
+
+    function setPlan(plan) {
+      document.body.setAttribute("data-plan", plan);
+      document.querySelectorAll("[data-plan-btn]").forEach((btn) => {
+        btn.classList.toggle("is-active", btn.dataset.planBtn === plan);
+      });
+      const copy = PLAN_COPY[plan];
+      document.getElementById("planTitle").textContent = copy.title;
+      document.getElementById("planDesc").textContent = copy.desc;
+      document.getElementById("fitTag").textContent = copy.fitTag;
+      document.getElementById("fitText").textContent = copy.fitText;
+      document.getElementById("visualText").textContent = copy.visualText;
+      document.getElementById("riskText").textContent = copy.riskText;
+    }
+
+    document.querySelectorAll("[data-theme-btn]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.body.setAttribute("data-theme", btn.dataset.themeBtn);
+        document.querySelectorAll("[data-theme-btn]").forEach((item) => {
+          item.classList.toggle("is-active", item === btn);
+        });
+      });
+    });
+
+    document.querySelectorAll("[data-plan-btn]").forEach((btn) => {
+      btn.addEventListener("click", () => setPlan(btn.dataset.planBtn));
+    });
+
+    hydrateIcons();
+  </script>
+</body>
+</html>

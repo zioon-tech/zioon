@@ -11,6 +11,7 @@ import type { PluginInfo } from "./plugin/types";
 import { notificationManager } from "./notification/manager";
 import { initWorkbench } from "./ui/workbench/workbench";
 import { initCommandPalette } from "./ui/workbench/commandPalette";
+import { installZionIcons, zionIconHtml } from "./ui/icons";
 import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
@@ -27,6 +28,7 @@ import { languages } from "@codemirror/language-data";
 import { selectionMatchHighlighter } from "./editor/extensions/selection-match-layer";
 import { tags as cmTags } from "@lezer/highlight";
 
+installZionIcons();
 
 // ---------- 自动保存 / 恢复 ----------
 const STORAGE_KEY = 'zion.autosave';
@@ -651,7 +653,7 @@ function mountEditorHeaderNewSessionButton(pathEl: HTMLElement) {
 
     // 使用与 session-manager 插件一致的按钮样式
     btn.className = "zion-editor-header-action is-icon zion-editor-new-session-button";
-    btn.innerHTML = '<span class="codicon codicon-add" aria-hidden="true"></span>';
+    btn.innerHTML = zionIconHtml("plus");
     btn.title = "新增会话（同级）";
     btn.setAttribute("aria-label", "新增会话（同级）");
     btn.setAttribute("data-zion-editor-new-session-button", "1");
@@ -736,7 +738,7 @@ function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
 
     // 应用与 session-manager 一致的按钮样式
     btn.className = "zion-editor-header-action is-icon zion-editor-toc-button";
-    btn.innerHTML = '<span class="codicon codicon-list-tree" aria-hidden="true"></span>';
+    btn.innerHTML = zionIconHtml("list-tree");
     btn.title = "目录";
     btn.setAttribute("aria-label", "目录");
     btn.setAttribute("data-zion-editor-toc-button", "1");
@@ -883,7 +885,7 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
       newBtn = document.createElement("button");
       newBtn.type = "button";
       newBtn.className = "zion-editor-header-action is-icon zion-editor-tabs-new-session-button";
-      newBtn.innerHTML = '<span class="codicon codicon-add" aria-hidden="true"></span>';
+      newBtn.innerHTML = zionIconHtml("plus");
       newBtn.title = "新增会话（同级）";
       newBtn.setAttribute("aria-label", "新增会话（同级）");
       newBtn.setAttribute("data-zion-editor-tabs-new-session-button", "1");
@@ -969,7 +971,7 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
           close.className = "zion-editor-tabs-menu-item-close";
           close.title = "关闭";
           close.setAttribute("aria-label", "关闭标签页");
-          close.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>';
+          close.innerHTML = zionIconHtml("x");
           close.onpointerdown = (e) => {
             try {
               e.stopPropagation();
@@ -1013,7 +1015,7 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
       dropdownBtn = document.createElement("button");
       dropdownBtn.type = "button";
       dropdownBtn.className = "zion-editor-header-action is-icon zion-editor-tabs-dropdown-button";
-      dropdownBtn.innerHTML = '<span class="codicon codicon-chevron-down" aria-hidden="true"></span>';
+      dropdownBtn.innerHTML = zionIconHtml("chevron-down");
       dropdownBtn.title = "查看所有标签页";
       dropdownBtn.setAttribute("aria-label", "查看所有标签页");
       dropdownBtn.setAttribute("data-zion-editor-tabs-dropdown-button", "1");
@@ -1331,7 +1333,7 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
           closeBtn.setAttribute("draggable", "false");
           closeBtn.setAttribute("aria-label", "关闭标签页");
           closeBtn.title = "关闭";
-          closeBtn.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>';
+          closeBtn.innerHTML = zionIconHtml("x");
           closeBtn.onclick = (e) => {
             try {
               e.stopPropagation();
@@ -1622,7 +1624,7 @@ function mountEditorHeaderSettingsMenu(pathEl: HTMLElement) {
     }
 
     btn.className = "zion-editor-header-action is-icon zion-editor-settings-menu-button";
-    btn.innerHTML = '<span class="codicon codicon-ellipsis" aria-hidden="true"></span>';
+    btn.innerHTML = zionIconHtml("more-horizontal");
     btn.title = "设置";
     btn.setAttribute("aria-label", "设置");
     btn.setAttribute("data-zion-editor-settings-menu-button", "1");
@@ -1727,7 +1729,7 @@ function mountEditorHeaderSettingsMenu(pathEl: HTMLElement) {
         secBtn.className = "zion-context-menu-item zion-editor-header-menu-section";
         secBtn.type = "button";
         secBtn.title = sec;
-        secBtn.innerHTML = `<span class="zion-editor-header-menu-section-content"><span class="zion-editor-header-menu-chevron codicon ${collapsed ? "codicon-chevron-right" : "codicon-chevron-down"}" aria-hidden="true"></span><span class="zion-editor-header-menu-section-title">${sec}</span></span>`;
+        secBtn.innerHTML = `<span class="zion-editor-header-menu-section-content">${zionIconHtml(collapsed ? "chevron-right" : "chevron-down", "zion-editor-header-menu-chevron zion-icon-sm")}<span class="zion-editor-header-menu-section-title">${sec}</span></span>`;
         secBtn.onclick = (e) => {
           try { e.stopPropagation(); } catch {}
           collapsedSections[sec] = !collapsed;
@@ -1754,7 +1756,7 @@ function mountEditorHeaderSettingsMenu(pathEl: HTMLElement) {
             item.kind === "toggle"
               ? `is-toggle${checked ? " is-checked" : ""}`
               : "is-placeholder";
-          it.innerHTML = `<span class="zion-editor-header-menu-item-content"><span class="zion-editor-header-menu-item-left"><span class="zion-editor-header-menu-item-title">${label}</span></span><span class="zion-editor-header-menu-item-state ${boxClass}"><span class="codicon codicon-check" aria-hidden="true"></span></span></span>`;
+          it.innerHTML = `<span class="zion-editor-header-menu-item-content"><span class="zion-editor-header-menu-item-left"><span class="zion-editor-header-menu-item-title">${label}</span></span><span class="zion-editor-header-menu-item-state ${boxClass}">${zionIconHtml("check", "zion-icon-sm")}</span></span>`;
 
           it.onclick = (e) => {
             try { e.stopPropagation(); } catch {}
@@ -1840,7 +1842,7 @@ function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement, panelId?: str
     }
 
     btn.className = "zion-editor-header-action is-icon zion-editor-session-rename-button";
-    btn.innerHTML = '<span class="codicon codicon-edit" aria-hidden="true"></span>';
+    btn.innerHTML = zionIconHtml("pencil");
     btn.title = "重命名会话";
     btn.setAttribute("aria-label", "重命名会话");
     btn.setAttribute("data-zion-editor-session-rename-button", "1");
@@ -1978,7 +1980,7 @@ function mountEditorHeaderSplitMenuButton(pathEl: HTMLElement) {
     }
 
     btn.className = "zion-editor-header-action is-icon zion-editor-split-menu-button";
-    btn.innerHTML = '<svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9Zm1.5-.25a.25.25 0 0 0-.25.25v9c0 .14.11.25.25.25h4.25v-9.5H3.5Zm5.5 9.5h3.5c.14 0 .25-.11.25-.25v-9a.25.25 0 0 0-.25-.25H9v9.5Z"/></svg>';
+    btn.innerHTML = zionIconHtml("columns-2");
     btn.title = "分屏";
     btn.setAttribute("aria-label", "分屏");
     btn.setAttribute("data-zion-editor-split-menu-button", "1");
@@ -2129,7 +2131,7 @@ function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, get
         const targetSessionId = window.zion?.panels?.list?.().find((p) => p.id === panelId)?.activeTabId
           || window.zion?.state?.get?.("sessions.currentId");
         const streaming = !!window.zion?.chat?.isStreaming?.(targetSessionId || undefined);
-        btn!.innerHTML = `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
+        btn!.innerHTML = zionIconHtml(streaming ? "square" : "play");
         btn!.title = streaming ? "Stop (Esc)" : "Run (Mod-Enter)";
         try { btn!.classList.toggle("is-stop", streaming); } catch {}
       } catch {}
@@ -2192,7 +2194,7 @@ function mountPanelSessionTabsBar(
       newBtn = document.createElement("button");
       newBtn.type = "button";
       newBtn.className = "zion-editor-header-action is-icon zion-editor-tabs-new-session-button";
-      newBtn.innerHTML = '<span class="codicon codicon-add" aria-hidden="true"></span>';
+      newBtn.innerHTML = zionIconHtml("plus");
       newBtn.title = "新增会话";
       newBtn.setAttribute("aria-label", "新增会话");
       newBtn.setAttribute("data-zion-panel-tabs-new-session-button", "1");
@@ -2319,7 +2321,7 @@ function mountPanelSessionTabsBar(
       dropdownBtn = document.createElement("button");
       dropdownBtn.type = "button";
       dropdownBtn.className = "zion-editor-header-action is-icon zion-editor-tabs-dropdown-button";
-      dropdownBtn.innerHTML = '<span class="codicon codicon-chevron-down" aria-hidden="true"></span>';
+      dropdownBtn.innerHTML = zionIconHtml("chevron-down");
       dropdownBtn.title = "查看当前面板标签页 (Option+Tab)";
       dropdownBtn.setAttribute("aria-label", "查看当前面板标签页");
       dropdownBtn.setAttribute("data-zion-panel-tabs-dropdown-button", "1");
@@ -2459,7 +2461,7 @@ function mountPanelSessionTabsBar(
           close.className = "zion-editor-tabs-menu-item-close";
           close.title = "关闭";
           close.setAttribute("aria-label", "关闭标签页");
-          close.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>';
+          close.innerHTML = zionIconHtml("x");
           close.onclick = (e) => {
             try {
               e.stopPropagation();
@@ -3045,7 +3047,7 @@ function mountPanelSessionTabsBar(
         closeBtn.setAttribute("draggable", "false");
         closeBtn.setAttribute("aria-label", "关闭标签页");
         closeBtn.title = "关闭";
-        closeBtn.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>';
+        closeBtn.innerHTML = zionIconHtml("x");
         closeBtn.onclick = (e) => {
           try {
             e.stopPropagation();
@@ -4087,7 +4089,7 @@ async function bootstrap() {
         });
       } catch {}
     }
-    const seedText = restoringPanelWorkspace
+    const seedText = restoringPanelWorkspace || seedFromSource === false
       ? ""
       : (sourceEditor?.getValue?.() || core.getValue());
     const activeSessionId = panel.activeTabId || (seedFromSource === false
@@ -4097,12 +4099,16 @@ async function bootstrap() {
     try {
       if (slotHost) panel.editorHostEl.appendChild(slotHost);
     } catch {}
-    const nextCore = new EditorCore(slotHost || panel.editorHostEl, seedText, panelId);
+    const editorInitialText = activeSessionId && seedText ? "" : seedText;
+    const nextCore = new EditorCore(slotHost || panel.editorHostEl, editorInitialText, panelId);
     panelCores.set(panelId, nextCore);
     const nextProxy = attachEditor(nextCore, panelId);
     panelManager.setPanelEditor(panelId, nextProxy);
     try { applyEditorPreferences(nextCore); } catch {}
     try { nextProxy?.setSessionId?.(activeSessionId); } catch {}
+    if (seedText !== editorInitialText) {
+      try { nextCore.setValue(seedText, { source: "session-load" }); } catch {}
+    }
     if (activeSessionId) {
       registerEditorSlot(panelId, activeSessionId, nextCore, nextProxy, slotHost || undefined, seedFromSource !== false);
       if (!restoringPanelWorkspace) {
@@ -5249,7 +5255,7 @@ async function bootstrap() {
       id: "core.output",
       pluginId: "core",
       title: "Output",
-      icon: "📄",
+      icon: "$(output)",
       order: 10,
       keepWhenActive: true,
       maximizable: true,
@@ -5329,7 +5335,7 @@ async function bootstrap() {
     const layoutActions = [
       {
         id: "core.bottompanel.toggle",
-        icon: "codicon-layout-panel",
+        icon: "$(layout-panel)",
         label: "Toggle Bottom Panel",
         onClick: () => {
           const st = window.zion.state;
@@ -5340,7 +5346,7 @@ async function bootstrap() {
       },
       {
         id: "core.auxbar.toggle",
-        icon: "codicon-layout-sidebar-right",
+        icon: "$(layout-sidebar-right)",
         label: "Toggle Auxiliary Bar",
         onClick: () => {
           const st = window.zion.state;
@@ -5381,7 +5387,7 @@ async function bootstrap() {
         }
         btn.title = action.label;
         btn.setAttribute("aria-label", action.label);
-        btn.innerHTML = `<span class="codicon ${action.icon}" aria-hidden="true"></span>`;
+        btn.innerHTML = zionIconHtml(String(action.icon || "").replace(/^\$\(([^)]+)\)$/, "$1"));
         btn.onpointerdown = (e) => {
           e.preventDefault();
           e.stopPropagation();

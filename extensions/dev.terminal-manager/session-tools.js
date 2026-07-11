@@ -407,13 +407,17 @@ export function installTerminalManagerPanel() {
       btnReactivate.type = "button";
       btnReactivate.title = t("ui.reconnect", "Reactivate Session (reconnect SSH)");
       btnReactivate.setAttribute("aria-label", t("ui.reconnect", "Reactivate Session"));
-      btnReactivate.textContent = `🔄 ${t("ui.reconnect", "Reactivate")}`;
-      btnReactivate.style.display = isSsh ? "inline-block" : "none";
+      const reactivateIcon = window.zionIcons?.createFromCodicon?.("loading");
+      if (reactivateIcon) btnReactivate.appendChild(reactivateIcon);
+      btnReactivate.appendChild(document.createTextNode(t("ui.reconnect", "Reactivate")));
+      btnReactivate.style.display = isSsh ? "inline-flex" : "none";
       Object.assign(btnReactivate.style, {
+        alignItems: "center",
         border: "1px solid var(--border)",
         borderRadius: "4px",
         background: isSsh && s.active === false ? "rgba(255,165,0,0.15)" : "transparent",
         color: isSsh && s.active === false ? "orange" : "var(--fg)",
+        gap: "4px",
         padding: "4px 8px",
         fontSize: "11px",
         cursor: "pointer"

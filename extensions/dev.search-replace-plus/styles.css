@@ -130,14 +130,14 @@
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 6px 10px;
   font-size: 12px;
   max-width: 280px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  box-shadow: var(--elevation-2);
   z-index: 10000;
   pointer-events: none;
   opacity: 0;
@@ -186,11 +186,11 @@
 
 .zion-chat-overview-marker-assistant {
   right: 3px;
-  width: 2px;
+  width: 1px;
   min-height: 8px;
-  background: color-mix(in srgb, var(--fg) 35%, transparent);
+  background: color-mix(in srgb, var(--fg) 42%, transparent);
   border: none;
-  opacity: 0.7;
+  opacity: 0.72;
 }
 
 .zion-chat-overview-marker-cursor {
@@ -216,12 +216,12 @@
   gap: 2px;
   padding: 3px;
   border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--panel) 90%, transparent);
   color: color-mix(in srgb, var(--fg) 72%, transparent);
   pointer-events: auto;
   z-index: 101;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.10);
+  box-shadow: var(--elevation-2);
   opacity: 0;
   transform: translateX(4px);
   transition: opacity 140ms ease, transform 140ms ease, border-color 140ms ease;
@@ -338,9 +338,9 @@
   gap: 8px;
   padding: 4px 8px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+  box-shadow: var(--elevation-2);
   z-index: 100002;
   pointer-events: auto;
   user-select: none;

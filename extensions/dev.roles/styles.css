@@ -2,8 +2,8 @@
 .roles-config-panel {
   background: var(--panel) !important;
   color: var(--fg) !important;
-  border-radius: 8px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-3);
   font-family: var(--font-sans);
 }
 .roles-config-panel label {

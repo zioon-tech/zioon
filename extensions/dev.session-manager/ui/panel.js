@@ -221,6 +221,12 @@ export function createSessionsPanelManager(opts) {
       sortSelect.addEventListener("change", () => render());
       render();
 
+        const originalRemove = overlay.remove.bind(overlay);
+        overlay.remove = () => {
+          try { render?.dispose?.(); } catch {}
+          originalRemove();
+        };
+
       overlay.appendChild(panel);
       document.body.appendChild(overlay);
     } catch (e) {

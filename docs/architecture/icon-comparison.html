@@ -1,0 +1,991 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zion Icon Comparison</title>
+  <link rel="stylesheet" href="https://unpkg.com/@vscode/codicons@0.0.36/dist/codicon.css">
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --panel-soft: #f1f3f7;
+      --fg: #20242c;
+      --dim: #68707f;
+      --muted: #8b93a3;
+      --border: #dfe3eb;
+      --border-soft: rgba(120, 132, 150, 0.18);
+      --accent: #3b82f6;
+      --active-bg: rgba(59, 130, 246, 0.11);
+      --hover-bg: rgba(37, 46, 64, 0.06);
+      --shadow: 0 16px 48px rgba(24, 31, 44, 0.10);
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    [data-theme="dark"] {
+      --bg: #181827;
+      --panel: #202033;
+      --panel-soft: #282840;
+      --fg: #e6e8ef;
+      --dim: #a3a8b7;
+      --muted: #777f92;
+      --border: #34364a;
+      --border-soft: rgba(214, 219, 235, 0.12);
+      --accent: #7aa2ff;
+      --active-bg: rgba(122, 162, 255, 0.14);
+      --hover-bg: rgba(230, 232, 239, 0.07);
+      --shadow: 0 18px 56px rgba(0, 0, 0, 0.28);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(59, 130, 246, 0.13), transparent 34rem),
+        linear-gradient(180deg, var(--bg), color-mix(in srgb, var(--bg) 88%, #000 12%));
+      color: var(--fg);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .page {
+      width: min(1180px, calc(100vw - 48px));
+      margin: 0 auto;
+      padding: 34px 0 56px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: start;
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+    }
+
+    .intro {
+      margin: 0;
+      max-width: 760px;
+      color: var(--dim);
+      font-size: 14px;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 6px;
+      border: 1px solid var(--border-soft);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--panel) 82%, transparent);
+      box-shadow: var(--shadow);
+    }
+
+    .toggle {
+      height: 30px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--dim);
+      font: 600 12px/1 var(--font-sans);
+      cursor: pointer;
+    }
+
+    .toggle.is-active {
+      background: var(--active-bg);
+      color: var(--accent);
+    }
+
+    .section {
+      margin-top: 18px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-lg);
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--border-soft);
+      background: color-mix(in srgb, var(--panel) 84%, var(--panel-soft));
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.25;
+      letter-spacing: -0.01em;
+    }
+
+    .section-note {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0;
+    }
+
+    .column {
+      padding: 18px 20px 20px;
+    }
+
+    .column + .column {
+      border-left: 1px solid var(--border-soft);
+    }
+
+    .column-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      color: var(--dim);
+      font: 500 11px/1 var(--font-sans);
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .icon-row {
+      display: grid;
+      grid-template-columns: minmax(124px, 1fr) auto auto auto;
+      align-items: center;
+      gap: 12px;
+      min-height: 42px;
+      padding: 6px 0;
+      border-top: 1px solid var(--border-soft);
+    }
+
+    .icon-row:first-of-type {
+      border-top: 0;
+    }
+
+    .name {
+      min-width: 0;
+    }
+
+    .name strong {
+      display: block;
+      color: var(--fg);
+      font-size: 13px;
+      line-height: 1.25;
+    }
+
+    .name span {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .icon-button {
+      width: 30px;
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--dim);
+      cursor: default;
+    }
+
+    .icon-button.sm {
+      width: 24px;
+      height: 24px;
+    }
+
+    .icon-button.hover {
+      background: var(--hover-bg);
+      color: var(--fg);
+    }
+
+    .icon-button.active {
+      background: var(--active-bg);
+      color: var(--accent);
+    }
+
+    .codicon {
+      font-size: 16px;
+      line-height: 1;
+      opacity: 0.78;
+    }
+
+    .icon-button.sm .codicon {
+      font-size: 14px;
+    }
+
+    .zion-icon {
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0.76;
+      color: currentColor;
+    }
+
+    .icon-button.sm .zion-icon {
+      width: 14px;
+      height: 14px;
+    }
+
+    .hover .zion-icon,
+    .active .zion-icon,
+    .hover .codicon,
+    .active .codicon {
+      opacity: 1;
+    }
+
+    .zion-icon svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .preview-shell {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: 280px 1fr 300px;
+      min-height: 280px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .mock-pane {
+      border-right: 1px solid var(--border-soft);
+      background: color-mix(in srgb, var(--panel) 86%, var(--panel-soft));
+    }
+
+    .mock-pane:last-child {
+      border-right: 0;
+      border-left: 1px solid var(--border-soft);
+    }
+
+    .mock-head {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    .mock-title {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .mock-list {
+      padding: 12px;
+    }
+
+    .mock-item {
+      height: 30px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 8px;
+      border-radius: var(--radius-sm);
+      color: var(--dim);
+      font-size: 12px;
+    }
+
+    .mock-item.is-active {
+      background: var(--active-bg);
+      color: var(--fg);
+    }
+
+    .mock-editor {
+      padding: 18px 22px;
+    }
+
+    .mock-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 24px;
+      padding: 0 9px 0 6px;
+      border-radius: var(--radius-sm);
+      background: var(--panel-soft);
+      color: var(--dim);
+      font-size: 12px;
+    }
+
+    .mock-text {
+      margin: 18px 0 0;
+      max-width: 540px;
+      color: var(--fg);
+      font-size: 14px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .legend code {
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      color: var(--dim);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .inventory {
+      padding: 0;
+    }
+
+    .inventory-group {
+      padding: 18px 20px;
+      border-top: 1px solid var(--border-soft);
+    }
+
+    .inventory-group:first-child {
+      border-top: 0;
+    }
+
+    .inventory-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .inventory-title h3 {
+      margin: 0;
+      font-size: 13px;
+      letter-spacing: -0.01em;
+    }
+
+    .inventory-count {
+      color: var(--muted);
+      font: 500 11px/1 var(--font-mono);
+    }
+
+    .inventory-table {
+      display: grid;
+      gap: 6px;
+    }
+
+    .inventory-row {
+      display: grid;
+      grid-template-columns: minmax(120px, 1.1fr) minmax(170px, 1.25fr) minmax(136px, 1fr) minmax(210px, 1.4fr) auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 42px;
+      padding: 8px 10px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-md);
+      background: color-mix(in srgb, var(--panel) 88%, transparent);
+    }
+
+    .inventory-row.is-header {
+      min-height: 30px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: 700 11px/1 var(--font-sans);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .inventory-cell {
+      min-width: 0;
+    }
+
+    .inventory-cell strong {
+      display: block;
+      color: var(--fg);
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .inventory-cell span,
+    .inventory-cell code {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font: 11px/1.35 var(--font-mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .inventory-icon-pair {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .inventory-arrow {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .priority {
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      color: var(--dim);
+      font: 650 11px/1 var(--font-sans);
+      white-space: nowrap;
+    }
+
+    .priority.high {
+      background: var(--active-bg);
+      color: var(--accent);
+    }
+
+    .priority.medium {
+      background: color-mix(in srgb, #f5c542 18%, transparent);
+      color: color-mix(in srgb, #b77900 86%, var(--fg));
+    }
+
+    .priority.low {
+      opacity: 0.78;
+    }
+
+    @media (max-width: 900px) {
+      .hero,
+      .grid,
+      .inventory-row,
+      .preview-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .column + .column {
+        border-left: 0;
+        border-top: 1px solid var(--border-soft);
+      }
+
+      .mock-pane,
+      .mock-pane:last-child {
+        border-left: 0;
+        border-right: 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div>
+        <h1>Zion 图标视觉对比</h1>
+        <p class="intro">左侧是当前 codicon 气质，右侧是建议的 Zion Icon System 方向：更轻、更圆、更安静的线性图标。这个页面只做视觉评审，不代表已经改业务代码。</p>
+      </div>
+      <div class="toolbar" aria-label="主题切换">
+        <button class="toggle is-active" data-theme-button="light">亮色</button>
+        <button class="toggle" data-theme-button="dark">暗色</button>
+      </div>
+    </header>
+
+    <section class="preview-shell" aria-label="整体预览">
+      <aside class="mock-pane">
+        <div class="mock-head">
+          <span class="mock-title">会话</span>
+          <button class="icon-button"><span class="zion-icon" data-icon="plus"></span></button>
+          <button class="icon-button"><span class="zion-icon" data-icon="more-horizontal"></span></button>
+        </div>
+        <div class="mock-list">
+          <div class="mock-item"><span class="zion-icon" data-icon="folder"></span> 多 Agent 社区调研</div>
+          <div class="mock-item is-active"><span class="zion-icon" data-icon="file-text"></span> 社区热门讨论浏览</div>
+          <div class="mock-item"><span class="zion-icon" data-icon="folder-open"></span> 查看昨天的新闻</div>
+        </div>
+      </aside>
+      <section class="mock-editor">
+        <div class="mock-head" style="padding:0;border:0;height:30px;">
+          <span class="mock-title">社区热门讨论浏览</span>
+          <button class="icon-button hover"><span class="zion-icon" data-icon="pencil"></span></button>
+          <button class="icon-button"><span class="zion-icon" data-icon="columns-2"></span></button>
+          <button class="icon-button"><span class="zion-icon" data-icon="play"></span></button>
+          <button class="icon-button"><span class="zion-icon" data-icon="more-horizontal"></span></button>
+        </div>
+        <p class="mock-text"><strong>#hello</strong><br>看看 linux.do、v2ex、reddit 等社区最近的热门讨论。</p>
+        <p class="mock-text"><span class="mock-pill"><span class="zion-icon" data-icon="chevron-down"></span> 调用 webFetch</span></p>
+      </section>
+      <aside class="mock-pane">
+        <div class="mock-head">
+          <span class="mock-title">上下文</span>
+          <button class="icon-button active"><span class="zion-icon" data-icon="panel-right"></span></button>
+        </div>
+        <div class="mock-list">
+          <div class="mock-item is-active"><span class="zion-icon" data-icon="chevron-down"></span> 文件</div>
+          <div class="mock-item"><span class="zion-icon" data-icon="link"></span> URL Source</div>
+          <div class="mock-item"><span class="zion-icon" data-icon="check-circle"></span> 任务</div>
+          <div class="mock-item"><span class="zion-icon" data-icon="tag"></span> 标签</div>
+        </div>
+      </aside>
+    </section>
+
+    <div class="legend">
+      <span>状态示例：</span>
+      <code>default</code>
+      <code>hover</code>
+      <code>active</code>
+      <span>建议默认 opacity 0.72 左右，hover/active 再强调。</span>
+    </div>
+
+    <section class="section" data-group="global">
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">基础动作</h2>
+          <p class="section-note">最常见的新增、关闭、编辑、复制、更多、运行停止。</p>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="column" data-render="codicon" data-items="global"></div>
+        <div class="column" data-render="zion" data-items="global"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">Header / Layout</h2>
+          <p class="section-note">当前最显眼的一组，决定顶部工具栏质感。</p>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="column" data-render="codicon" data-items="layout"></div>
+        <div class="column" data-render="zion" data-items="layout"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">TOC / 展开折叠</h2>
+          <p class="section-note">codicon 的 fold/unfold 和 list-tree 是最硬的一批。</p>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="column" data-render="codicon" data-items="toc"></div>
+        <div class="column" data-render="zion" data-items="toc"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">文件 / 上下文 / 业务面板</h2>
+          <p class="section-note">文件树、上下文、Agent、任务状态等长期出现的图标。</p>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="column" data-render="codicon" data-items="domain"></div>
+        <div class="column" data-render="zion" data-items="domain"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2 class="section-title">全量图标替换清单</h2>
+          <p class="section-note">基于当前代码扫描整理。后续替换时按这张表推进，避免临时不知道哪个 codicon / unicode / SVG 应该换成什么。</p>
+        </div>
+        <span class="chip">Inventory</span>
+      </div>
+      <div class="inventory" id="icon-inventory"></div>
+    </section>
+  </main>
+
+  <script>
+    const iconPaths = {
+      plus: '<path d="M12 5v14M5 12h14"/>',
+      x: '<path d="M18 6 6 18M6 6l12 12"/>',
+      pencil: '<path d="M16.5 4.5 19.5 7.5 8 19l-4 1 1-4 11.5-11.5Z"/><path d="m14.5 6.5 3 3"/>',
+      trash: '<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 14h10l1-14"/><path d="M9 7V4h6v3"/>',
+      copy: '<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>',
+      check: '<path d="m5 12 4 4L19 6"/>',
+      'more-horizontal': '<circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/>',
+      'external-link': '<path d="M14 4h6v6"/><path d="M10 14 20 4"/><path d="M20 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4"/>',
+      play: '<path d="M8 5v14l11-7-11-7Z"/>',
+      square: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+      'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+      'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+      'chevron-left': '<path d="m15 18-6-6 6-6"/>',
+      'fold-vertical': '<path d="M6 4h12"/><path d="M6 20h12"/><path d="m8 9 4 4 4-4"/><path d="m8 15 4-4 4 4"/>',
+      'unfold-vertical': '<path d="M6 4h12"/><path d="M6 20h12"/><path d="m8 13 4-4 4 4"/><path d="m8 11 4 4 4-4"/>',
+      'list-tree': '<path d="M6 5h12"/><path d="M10 12h8"/><path d="M10 19h8"/><path d="M6 5v14"/><path d="M6 12h2M6 19h2"/>',
+      'columns-2': '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M12 5v14"/>',
+      'panel-bottom': '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 14h16"/>',
+      'panel-right': '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M14 5v14"/>',
+      output: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h6"/>',
+      'panel-window': '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 9h16"/><path d="M8 13h4M8 16h7"/>',
+      history: '<path d="M4 12a8 8 0 1 0 2.34-5.66"/><path d="M4 5v4h4"/><path d="M12 8v5l3 2"/>',
+      extensions: '<path d="M9 3h4v4h3a2 2 0 0 1 2 2v3h3v4h-3v3a2 2 0 0 1-2 2h-3v-3H9v3H6a2 2 0 0 1-2-2v-3h3v-4H4V9a2 2 0 0 1 2-2h3V3Z"/>',
+      bug: '<path d="M8 7a4 4 0 0 1 8 0"/><rect x="7" y="7" width="10" height="12" rx="4"/><path d="M3 13h4M17 13h4M5 19l3-3M19 19l-3-3M5 7l3 3M19 7l-3 3"/>',
+      beaker: '<path d="M9 3h6"/><path d="M10 3v5l-5 9a3 3 0 0 0 2.6 4.5h8.8A3 3 0 0 0 19 17l-5-9V3"/><path d="M8 15h8"/>',
+      'file-search': '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"/><path d="M14 3v5h5"/><circle cx="16" cy="16" r="3"/><path d="m18.5 18.5 2.5 2.5"/>',
+      eraser: '<path d="m7 21-4-4L14 6a3 3 0 0 1 4.2 0 3 3 0 0 1 0 4.2L7.4 21H7Z"/><path d="m10 10 6 6"/><path d="M14 21h7"/>',
+      'layout-template': '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 10v10"/>',
+      info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/>',
+      monitor: '<rect x="4" y="5" width="16" height="12" rx="2"/><path d="M9 21h6"/><path d="M12 17v4"/>',
+      globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13 13 0 0 1 0 18"/><path d="M12 3a13 13 0 0 0 0 18"/>',
+      layers: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/>',
+      'book-open': '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21V5.5Z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5A2.5 2.5 0 0 1 20 21V5.5Z"/>',
+      type: '<path d="M4 6V4h16v2"/><path d="M12 4v16"/><path d="M8 20h8"/>',
+      table: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M4 15h16M10 5v14"/>',
+      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      calendar: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/>',
+      'warning-triangle': '<path d="M12 3 22 20H2L12 3Z"/><path d="M12 9v5"/><path d="M12 17h.01"/>',
+      settings: '<path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 2l.05.05a2 2 0 0 1-2.83 2.83l-.05-.05a1.8 1.8 0 0 0-2-.36 1.8 1.8 0 0 0-1.1 1.65V21a2 2 0 0 1-4 0v-.08a1.8 1.8 0 0 0-1.1-1.65 1.8 1.8 0 0 0-2 .36l-.05.05a2 2 0 0 1-2.83-2.83l.05-.05a1.8 1.8 0 0 0 .36-2 1.8 1.8 0 0 0-1.65-1.1H3a2 2 0 0 1 0-4h.08a1.8 1.8 0 0 0 1.65-1.1 1.8 1.8 0 0 0-.36-2l-.05-.05a2 2 0 0 1 2.83-2.83l.05.05a1.8 1.8 0 0 0 2 .36A1.8 1.8 0 0 0 10.3 2.5V2a2 2 0 0 1 4 0v.08a1.8 1.8 0 0 0 1.1 1.65 1.8 1.8 0 0 0 2-.36l.05-.05a2 2 0 0 1 2.83 2.83l-.05.05a1.8 1.8 0 0 0-.36 2 1.8 1.8 0 0 0 1.65 1.1H21a2 2 0 0 1 0 4h-.08A1.8 1.8 0 0 0 19.4 15Z"/>',
+      folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/>',
+      'folder-open': '<path d="M3 9V7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v1"/><path d="M4 19h14.3a2 2 0 0 0 1.9-1.4l1.2-4A2 2 0 0 0 19.5 11H5.7a2 2 0 0 0-1.9 1.4L2.6 16A2 2 0 0 0 4 19Z"/>',
+      'folder-plus': '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M12 11v5M9.5 13.5h5"/>',
+      file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/>',
+      'file-text': '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h5"/>',
+      braces: '<path d="M8 4H7a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2h1"/><path d="M16 4h1a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2h-1"/>',
+      'file-code': '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="m10 13-2 2 2 2M14 13l2 2-2 2"/>',
+      image: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m7 17 4-4 3 3 2-2 2 3"/>',
+      'file-archive': '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M10 6h2M10 9h2M10 12h2M11 15v3"/>',
+      lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+      database: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
+      bot: '<rect x="6" y="8" width="12" height="10" rx="3"/><path d="M12 4v4"/><path d="M9 13h.01M15 13h.01"/><path d="M10 18v2h4v-2"/>',
+      agent: '<rect x="5" y="8" width="14" height="10" rx="3"/><path d="M12 4v4"/><path d="M8 13h.01M16 13h.01"/><path d="M9 21h6"/><path d="M7 18l-2 2M17 18l2 2"/>',
+      'messages-square': '<path d="M21 14a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/>',
+      tag: '<path d="M20 12 12 20 4 12V4h8l8 8Z"/><path d="M8 8h.01"/>',
+      heading: '<path d="M6 5v14M18 5v14M6 12h12"/><path d="M14 19h5"/>',
+      'check-circle': '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
+      circle: '<circle cx="12" cy="12" r="8"/>',
+      'play-circle': '<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5-6-3.5Z"/>',
+      sparkles: '<path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/><path d="m5 16 .8 2.2L8 19l-2.2.8L5 22l-.8-2.2L2 19l2.2-.8L5 16Z"/>',
+      link: '<path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1"/>',
+      eye: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+      search: '<circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/>',
+      terminal: '<path d="m5 7 5 5-5 5"/><path d="M12 17h7"/>',
+      keyboard: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M19 10h.01M7 14h.01M11 14h6"/>',
+      loader: '<path d="M12 3v3M12 18v3M4.9 4.9 7 7M17 17l2.1 2.1M3 12h3M18 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/>'
+    };
+
+    const groups = {
+      global: [
+        ["新增", "codicon-add", "plus"],
+        ["关闭", "codicon-close", "x"],
+        ["编辑/重命名", "codicon-edit", "pencil"],
+        ["删除", "codicon-trash", "trash"],
+        ["复制", "codicon-copy", "copy"],
+        ["确认", "codicon-check", "check"],
+        ["更多", "codicon-ellipsis", "more-horizontal"],
+        ["外链/打开", "codicon-link-external", "external-link"],
+        ["运行", "codicon-play", "play"],
+        ["停止", "codicon-debug-stop", "square"]
+      ],
+      layout: [
+        ["分屏", "codicon-split-horizontal", "columns-2"],
+        ["底部面板", "codicon-layout-panel", "panel-bottom"],
+        ["右侧面板", "codicon-layout-sidebar-right", "panel-right"],
+        ["布局模板", "codicon-editor-layout", "layout-template"],
+        ["目录", "codicon-list-tree", "list-tree"],
+        ["设置", "codicon-gear", "settings"],
+        ["会话入口", "codicon-history", "history"],
+        ["插件入口", "codicon-extensions", "extensions"],
+        ["输出面板", "emoji 📄 / $(output)", "output"],
+        ["LLM 请求调试", "codicon-debug-alt", "bug"],
+        ["上下文入口", "text @", "layers"],
+        ["Agent 入口", "codicon-hubot", "agent"]
+      ],
+      toc: [
+        ["展开", "codicon-chevron-right", "chevron-right"],
+        ["收起", "codicon-chevron-down", "chevron-down"],
+        ["上一项", "codicon-chevron-left", "chevron-left"],
+        ["折叠全部", "codicon-fold", "fold-vertical"],
+        ["展开全部", "codicon-unfold", "unfold-vertical"],
+        ["目录入口", "emoji 📑 / codicon-list-tree", "book-open"],
+        ["分组目录", "codicon-list-tree", "list-tree"]
+      ],
+      domain: [
+        ["文件夹", "codicon-folder", "folder"],
+        ["打开文件夹", "codicon-folder-opened", "folder-open"],
+        ["文件", "codicon-file", "file"],
+        ["Markdown", "codicon-markdown", "file-text"],
+        ["JSON", "codicon-json", "braces"],
+        ["代码文件", "codicon-file-code", "file-code"],
+        ["图片", "codicon-file-media", "image"],
+        ["压缩包", "codicon-file-zip", "file-archive"],
+        ["锁文件", "codicon-lock", "lock"],
+        ["数据库/记忆", "codicon-database", "database"],
+        ["Agent", "codicon-hubot", "agent"],
+        ["评论", "codicon-comment-discussion", "messages-square"],
+        ["标签", "codicon-tag", "tag"],
+        ["标题", "codicon-symbol-property", "heading"],
+        ["任务完成", "codicon-check", "check-circle"],
+        ["任务待办", "codicon-circle-large-outline", "circle"],
+        ["任务进行中", "codicon-play", "play-circle"],
+        ["模型/智能", "codicon-zap", "sparkles"]
+      ]
+    };
+
+    const inventorySections = [
+      {
+        title: "Shell / Editor Header / Workbench",
+        rows: [
+          ["新增会话 / 新增标签", "codicon-add", "plus", "src/main.ts, workbench", "high"],
+          ["关闭标签 / 关闭面板", "codicon-close / unicode ×", "x", "src/main.ts, panel close buttons", "high"],
+          ["更多菜单", "codicon-ellipsis", "more-horizontal", "src/main.ts, session, files", "high"],
+          ["目录入口", "codicon-list-tree", "list-tree", "editor header, TOC", "high"],
+          ["重命名 / 编辑", "codicon-edit", "pencil", "editor header, model switcher", "high"],
+          ["分屏", "codicon-split-horizontal", "columns-2", "editor header", "high"],
+          ["运行 / 停止", "codicon-play / codicon-debug-stop", "play / square", "chat.run, langchain", "high"],
+          ["底部 / 右侧布局", "codicon-layout-panel / codicon-layout-sidebar-right", "panel-bottom / panel-right", "layout commands, terminal dock", "medium"],
+          ["Activity: 会话", "codicon-history", "history", "dev.session-manager activity/sidebar", "high"],
+          ["Activity: 插件", "codicon-extensions", "extensions", "dev.plugins activity/sidebar", "high"],
+          ["Activity: LLM 请求", "codicon-debug-alt", "bug", "dev.llm-payloads activity", "high"],
+          ["Bottom: Output", "emoji 📄 / $(output)", "output", "core.output bottom panel", "high"],
+          ["Bottom Status: Terminal", "codicon-terminal", "terminal", "dev.terminal-enhanced bottombar trigger", "high"],
+          ["Auxiliary: Context", "text @", "layers", "dev.tools context auxiliary view", "high"],
+          ["Auxiliary: Comments", "missing icon", "messages-square", "dev.comments auxiliary view", "high"],
+          ["Auxiliary: Agents", "codicon-hubot", "agent", "dev.agents auxiliary/activity", "high"],
+          ["设置", "codicon-gear", "settings", "workbench settings", "medium"]
+        ]
+      },
+      {
+        title: "展开折叠 / 导航",
+        rows: [
+          ["展开节点", "codicon-chevron-right / unicode ▸", "chevron-right", "TOC, session tags, search diff", "high"],
+          ["收起节点", "codicon-chevron-down / unicode ▾", "chevron-down", "TOC, context, widgets", "high"],
+          ["向左 / 上一项", "codicon-chevron-left / unicode ‹", "chevron-left", "TOC collapse, terminal tabs, heatmap nav", "medium"],
+          ["折叠全部", "codicon-fold", "fold-vertical", "TOC toolbar", "medium"],
+          ["展开全部", "codicon-unfold", "unfold-vertical", "TOC toolbar", "medium"],
+          ["TOC slash / 目录入口", "emoji 📑 / codicon-list-tree", "book-open", "dev.toc slash commands", "high"]
+        ]
+      },
+      {
+        title: "Files / Memory / Context",
+        rows: [
+          ["文件夹", "codicon-folder", "folder", "files-panel, memory, context", "high"],
+          ["打开文件夹", "codicon-folder-opened", "folder-open", "files-panel, memory, context", "high"],
+          ["新建文件夹", "codicon-new-folder", "folder-plus", "session-manager", "medium"],
+          ["普通文件", "codicon-file", "file", "files-panel", "medium"],
+          ["Markdown / 文本", "codicon-markdown / codicon-file-text", "file-text", "files-panel, context styles", "medium"],
+          ["JSON", "codicon-json", "braces", "files-panel, context styles", "medium"],
+          ["配置文件", "codicon-settings", "settings", "yaml/toml/env icons", "medium"],
+          ["代码文件", "codicon-file-code", "file-code", "files-panel", "medium"],
+          ["媒体文件", "codicon-file-media", "image", "files-panel", "medium"],
+          ["压缩包", "codicon-file-zip", "file-archive", "files-panel", "low"],
+          ["锁文件", "codicon-lock", "lock", "files-panel", "low"],
+          ["预览 / 查看", "codicon-eye", "eye", "files/memory preview", "medium"],
+          ["数据库 / 记忆", "codicon-database", "database", "memory tabs, context", "high"],
+          ["Memory 文件树文件夹", "codicon-folder / codicon-folder-opened", "folder / folder-open", "dev.memory explorer", "high"],
+          ["Memory 文件树文件", "codicon-file-*", "file-text / file-code / braces", "dev.memory explorer/header/tabs", "high"],
+          ["加载中", "codicon-loading", "loader", "files reveal spinner", "low"]
+        ]
+      },
+      {
+        title: "Context / Agents / Tasks / Domain",
+        rows: [
+          ["Agent", "codicon-hubot", "agent", "agents panel, context", "high"],
+          ["评论", "codicon-comment-discussion", "messages-square", "comments/context", "medium"],
+          ["标签", "codicon-tag", "tag", "context tags", "medium"],
+          ["标题 / 属性", "codicon-symbol-property", "heading", "context headings", "medium"],
+          ["任务完成", "codicon-check", "check-circle", "context tasks", "medium"],
+          ["任务待办", "codicon-circle-large-outline", "circle", "context tasks", "medium"],
+          ["任务进行中", "codicon-play", "play-circle", "context tasks", "medium"],
+          ["链接", "codicon-link", "link", "context web/reference", "medium"],
+          ["外链打开", "codicon-link-external", "external-link", "tool artifacts, context", "high"],
+          ["复制动作", "codicon-copy", "copy", "context secondary actions, TOC", "high"]
+        ]
+      },
+      {
+        title: "Terminal / Model / Misc Remaining",
+        rows: [
+          ["终端", "codicon-terminal", "terminal", "terminal-enhanced trigger", "medium"],
+          ["终端面板", "emoji ⌨️ / $(terminal)", "terminal", "dev.terminal-enhanced bottom/aux panel", "high"],
+          ["终端状态栏触发器", "codicon-terminal", "terminal", "dev.terminal-enhanced bottombar", "high"],
+          ["终端管理器窗口", "emoji 🪟", "panel-window", "terminal slash menu", "medium"],
+          ["SSH 会话", "emoji 🌐", "globe", "terminal slash submenu", "medium"],
+          ["LLM 请求列表", "codicon-debug-alt", "bug", "dev.llm-payloads bottom panel/activity", "high"],
+          ["LLM Raw JSON", "codicon-json", "braces", "dev.llm-payloads raw tab/action", "medium"],
+          ["LLM Mock/Test", "codicon-beaker", "beaker", "dev.llm-payloads test action", "medium"],
+          ["打开原始文件", "codicon-go-to-file", "file-search", "dev.llm-payloads open raw", "medium"],
+          ["清空日志", "codicon-clear-all", "eraser", "dev.llm-payloads clear", "medium"],
+          ["模型能力 / 测试", "codicon-zap", "sparkles", "model switcher", "medium"],
+          ["模型配置警告", "emoji ⚠️", "warning-triangle", "model status / switcher", "medium"],
+          ["模型确认 / 保存", "codicon-check", "check", "model switcher", "medium"],
+          ["技能删除按钮", "unicode ×", "x", "dev.skills/main.js", "low"],
+          ["任务面板新增 / 关闭", "unicode + / ×", "plus / x", "dev.task-panel/main.js", "low"],
+          ["FS manager 删除", "unicode ×", "x", "dev.fs-manager/main.js", "low"],
+          ["工具调用折叠占位", "unicode ⋯", "more-horizontal", "tool-calls / changes-panel summary", "low"],
+          ["Registry 内联 SVG", "inline SVG", "对应 ZionIcon", "src/ext/registry.ts", "medium"],
+          ["导出编辑器 SVG", "foreignObject SVG", "不替换", "dev.export-editor/main.js 图片导出用途", "low"]
+        ]
+      }
+    ];
+
+    function iconSvg(name) {
+      return '<span class="zion-icon" aria-hidden="true"><svg viewBox="0 0 24 24">' + (iconPaths[name] || iconPaths.file) + '</svg></span>';
+    }
+
+    function codicon(name) {
+      return '<span class="codicon ' + name + '" aria-hidden="true"></span>';
+    }
+
+    function button(content, state, small) {
+      return '<button class="icon-button ' + (small ? 'sm ' : '') + state + '">' + content + '</button>';
+    }
+
+    function renderColumn(node) {
+      const mode = node.dataset.render;
+      const items = groups[node.dataset.items] || [];
+      const label = mode === "codicon" ? "当前 codicon" : "建议 Zion Icon";
+      const chip = mode === "codicon" ? "硬朗 / 密度高" : "圆角线性 / 更轻";
+      let html = '<div class="column-label"><span>' + label + '</span><span class="chip">' + chip + '</span></div>';
+      for (const item of items) {
+        const [name, current, proposed] = item;
+        const iconName = mode === "codicon" ? current : proposed;
+        const markup = mode === "codicon" ? codicon(current) : iconSvg(proposed);
+        html += '<div class="icon-row">';
+        html += '<div class="name"><strong>' + name + '</strong><span>' + iconName + '</span></div>';
+        html += button(markup, "", false);
+        html += button(markup, "hover", false);
+        html += button(markup, "active", true);
+        html += '</div>';
+      }
+      node.innerHTML = html;
+    }
+
+    function priorityLabel(priority) {
+      if (priority === "high") return "P0";
+      if (priority === "medium") return "P1";
+      return "P2";
+    }
+
+    function currentIconMarkup(current) {
+      const match = String(current).match(/codicon-[a-z0-9-]+/);
+      if (match) return codicon(match[0]);
+      if (current.includes("×")) return "×";
+      if (current.includes("+")) return "+";
+      if (current.includes("⋯")) return "⋯";
+      if (current.includes("SVG")) return '<span class="codicon codicon-symbol-method" aria-hidden="true"></span>';
+      return '<span class="codicon codicon-circle-large-outline" aria-hidden="true"></span>';
+    }
+
+    function renderInventory() {
+      const root = document.getElementById("icon-inventory");
+      if (!root) return;
+      root.innerHTML = inventorySections.map((section) => {
+        const rows = section.rows.map(([meaning, current, proposed, location, priority]) => {
+          const proposedName = proposed === "不替换" ? "file" : proposed.split(" / ")[0];
+          const proposedMarkup = proposed === "不替换" ? '<span class="chip">保留</span>' : iconSvg(proposedName);
+          return `
+            <div class="inventory-row">
+              <div class="inventory-cell"><strong>${meaning}</strong><span>${location}</span></div>
+              <div class="inventory-cell"><code>${current}</code></div>
+              <div class="inventory-cell">
+                <span class="inventory-icon-pair">
+                  ${currentIconMarkup(current)}
+                  <span class="inventory-arrow">→</span>
+                  ${proposedMarkup}
+                </span>
+              </div>
+              <div class="inventory-cell"><code>${proposed}</code></div>
+              <div class="inventory-cell"><span class="priority ${priority}">${priorityLabel(priority)}</span></div>
+            </div>
+          `;
+        }).join("");
+        return `
+          <div class="inventory-group">
+            <div class="inventory-title">
+              <h3>${section.title}</h3>
+              <span class="inventory-count">${section.rows.length} items</span>
+            </div>
+            <div class="inventory-table">
+              <div class="inventory-row is-header">
+                <div>语义 / 位置</div>
+                <div>当前来源</div>
+                <div>视觉替换</div>
+                <div>建议 Zion 图标</div>
+                <div>优先级</div>
+              </div>
+              ${rows}
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function hydrateInlineIcons() {
+      document.querySelectorAll("[data-icon]").forEach((node) => {
+        const name = node.getAttribute("data-icon");
+        node.innerHTML = '<svg viewBox="0 0 24 24">' + (iconPaths[name] || iconPaths.file) + '</svg>';
+      });
+    }
+
+    document.querySelectorAll("[data-render]").forEach(renderColumn);
+    hydrateInlineIcons();
+    renderInventory();
+
+    document.querySelectorAll("[data-theme-button]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const theme = button.dataset.themeButton;
+        document.documentElement.dataset.theme = theme;
+        document.querySelectorAll("[data-theme-button]").forEach((item) => {
+          item.classList.toggle("is-active", item === button);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import { EditorState, Prec, Transaction } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap } from "@codemirror/view";
 import { EditorCore } from "../../src/editor/EditorCore.ts";
+import { parseMessages } from "../../src/chat/doc.ts";
 import { createChatOverviewRail } from "../dev.langchain-chat/overview-rail.js";
 import { roles as createRolesExtension } from "../dev.roles/roles.js";
 import { installThinkingCards } from "../dev.thinking/thinking-cards.js";
@@ -213,6 +214,9 @@ function normalizeThreadPayload(payload) {
   const next = payload && typeof payload === "object" ? { ...payload } : {};
   if (typeof next.body !== "string") delete next.body;
   if (!next.chatAnnotations || typeof next.chatAnnotations !== "object") delete next.chatAnnotations;
+  if (typeof next.summary !== "string") delete next.summary;
+  if (!Number.isFinite(Number(next.summaryUpdatedAt))) delete next.summaryUpdatedAt;
+  else next.summaryUpdatedAt = Number(next.summaryUpdatedAt);
   if (typeof next.sourceContextText !== "string") delete next.sourceContextText;
   if (!Number.isFinite(Number(next.sourceContextFrom))) delete next.sourceContextFrom;
   else next.sourceContextFrom = Number(next.sourceContextFrom);
@@ -229,6 +233,7 @@ function hasStoredThreadPayload(payload) {
   if (!payload || typeof payload !== "object") return false;
   return typeof payload.body === "string"
     || typeof payload.sourceContextText === "string"
+    || typeof payload.summary === "string"
     || !!(payload.chatAnnotations && typeof payload.chatAnnotations === "object")
     || Number.isFinite(Number(payload.sourceContextFrom))
     || Number.isFinite(Number(payload.sourceContextTo))
@@ -241,6 +246,8 @@ function extractThreadPayload(thread) {
   return normalizeThreadPayload({
     body: thread.body,
     chatAnnotations: thread.chatAnnotations,
+    summary: thread.summary,
+    summaryUpdatedAt: thread.summaryUpdatedAt,
     sourceContextText: thread.sourceContextText,
     sourceContextFrom: thread.sourceContextFrom,
     sourceContextTo: thread.sourceContextTo,
@@ -254,6 +261,8 @@ function stripThreadForStorage(thread) {
   if (!next || typeof next !== "object") return next;
   delete next.body;
   delete next.chatAnnotations;
+  delete next.summary;
+  delete next.summaryUpdatedAt;
   delete next.sourceContextText;
   delete next.sourceContextFrom;
   delete next.sourceContextTo;
@@ -267,6 +276,8 @@ function applyThreadPayload(thread, payload) {
   const next = { ...thread };
   if ("body" in payload) next.body = payload.body;
   if ("chatAnnotations" in payload) next.chatAnnotations = payload.chatAnnotations;
+  if ("summary" in payload) next.summary = payload.summary;
+  if ("summaryUpdatedAt" in payload) next.summaryUpdatedAt = payload.summaryUpdatedAt;
   if ("sourceContextText" in payload) next.sourceContextText = payload.sourceContextText;
   if ("sourceContextFrom" in payload) next.sourceContextFrom = payload.sourceContextFrom;
   if ("sourceContextTo" in payload) next.sourceContextTo = payload.sourceContextTo;
@@ -696,7 +707,36 @@ function rememberSourcePanelSession(panelId, sessionId) {
   return null;
 }
 
+function rememberThreadSource(thread, editor = null) {
+  try {
+    const sessionId = getThreadSourceSessionId(thread);
+    const panelId = String(editor?.panelId || getCurrentPanelIdForThread(thread) || thread?.panelId || "");
+    if (editor && !isCommentPanelId(editor?.panelId)) {
+      rememberSourceFocus(editor);
+    }
+    lastCommentSourceFocus = {
+      panelId,
+      sessionId,
+      anchor: typeof thread?.from === "number" ? thread.from : null,
+      head: typeof thread?.to === "number" ? thread.to : (typeof thread?.from === "number" ? thread.from : null)
+    };
+  } catch {}
+}
+
 function getSourceEditorForCommentsPanel() {
+  try {
+    const revealId = String(pendingRevealThreadId || pendingLocatedThreadId || "");
+    if (revealId) {
+      const thread = readAllThreads().find((item) => item?.id === revealId) || null;
+      if (thread) {
+        const editor = getEditorForThread(thread);
+        rememberThreadSource(thread, editor);
+        if (editor && !isCommentPanelId(editor?.panelId)) return editor;
+        return null;
+      }
+    }
+  } catch {}
+
   try {
     const active = window.zion?.window?.activeEditor || null;
     if (active && !isCommentPanelId(active?.panelId)) {
@@ -721,6 +761,7 @@ function getSourceEditorForCommentsPanel() {
   if (activeThread) {
     const editor = getEditorForThread(activeThread);
     if (editor && !isCommentPanelId(editor?.panelId)) {
+      rememberThreadSource(activeThread, editor);
       return editor;
     }
   }
@@ -812,7 +853,10 @@ function focusCommentEditor() {
 function setActiveThread(id) {
   const next = id || "";
   try {
-    if ((window.zion?.state?.get?.(ACTIVE_KEY) || "") === next) return;
+      if ((window.zion?.state?.get?.(ACTIVE_KEY) || "") === next) {
+        try { window.dispatchEvent(new CustomEvent("zion:comments-active-changed", { detail: { id: next } })); } catch {}
+        return;
+      }
     window.zion?.state?.set?.(ACTIVE_KEY, next);
   } catch {
     emitChanged();
@@ -947,6 +991,22 @@ function resolveThreadSourceContext(thread) {
   };
 }
 
+function resolveThreadUpstreamText(thread) {
+  try {
+    const editor = getEditorForThread(thread);
+    const view = editor?.getView?.();
+    if (view?.state?.doc) {
+      const anchor = locateThreadAnchor(view, thread);
+      const docLen = view.state.doc.length;
+      const rawTo = typeof anchor?.to === "number" ? anchor.to : Number(thread?.to);
+      const to = Math.max(0, Math.min(docLen, Number.isFinite(rawTo) ? rawTo : docLen));
+      return { text: view.state.sliceDoc(0, to), current: true };
+    }
+  } catch {}
+  const fallback = resolveThreadSourceContext(thread);
+  return { text: String(fallback?.text || ""), current: false };
+}
+
 function formatThreadLineRange(thread, context) {
   const start = Number.isFinite(Number(thread?.startLine)) ? Number(thread.startLine) : Number(context?.startLine) || 0;
   const end = Number.isFinite(Number(thread?.endLine)) ? Number(thread.endLine) : Number(context?.endLine) || start;
@@ -1024,8 +1084,10 @@ function createThreadFromSelection({ view, from, to, selectionText }) {
     sourceContextFrom: sourceContext?.from ?? 0,
     sourceContextTo: sourceContext?.to ?? anchorTo,
     sourceContextStartLine: sourceContext?.startLine ?? 0,
-    sourceContextEndLine: sourceContext?.endLine ?? lines.endLine,
-    body: "",
+      sourceContextEndLine: sourceContext?.endLine ?? lines.endLine,
+      body: "",
+      title: "",
+      titleAuto: true,
     resolved: false,
     createdAt: now(),
     updatedAt: now()
@@ -1113,6 +1175,46 @@ function getEditorForThread(thread, opts = {}) {
   return null;
 }
 
+async function ensureEditorForThread(thread, opts = {}) {
+  const existing = getEditorForThread(thread, opts);
+  if (existing) return existing;
+
+  const sessionId = getThreadSourceSessionId(thread);
+  if (!sessionId || sessionId === "global") return null;
+
+  const panels = (() => {
+    try { return window.zion?.panels?.list?.() || []; } catch { return []; }
+  })();
+  const panelId = String(
+    opts.panelId ||
+    thread?.panelId ||
+    window.zion?.panels?.getActivePanelId?.() ||
+    window.zion?.panelManager?.getActivePanelId?.() ||
+    panels.find((panel) => panel?.id && !isCommentPanelId(panel.id))?.id ||
+    ""
+  );
+
+  if (panelId && typeof window.zion?.panels?.openSession === "function") {
+    try {
+      await Promise.resolve(window.zion.panels.openSession(panelId, sessionId, { focus: opts.focusSource === true }));
+      const editor = window.zion?.panels?.getEditorBySession?.(panelId, sessionId)
+        || window.zion?.panels?.getEditor?.(panelId)
+        || getEditorForThread(thread, opts);
+      if (editor && !isCommentPanelId(editor?.panelId)) {
+        if (thread?.id && thread?.panelId !== panelId) patchThread(thread.id, { panelId }, { silent: true });
+        return editor;
+      }
+    } catch {}
+  }
+
+  try {
+    await Promise.resolve(window.zion?.commands?.executeCommand?.("zion.sessions.switch", sessionId));
+    const editor = getEditorForThread(thread, opts) || window.zion?.window?.activeEditor || null;
+    if (editor && !isCommentPanelId(editor?.panelId)) return editor;
+  } catch {}
+  return getEditorForThread(thread, opts);
+}
+
 function revealThread(threadId, opts = {}) {
   const thread = typeof threadId === "object"
     ? threadId
@@ -1121,14 +1223,24 @@ function revealThread(threadId, opts = {}) {
   pendingRevealThreadId = thread.id || "";
   setActiveThread(thread.id);
   openCommentsPanel();
-  revealThreadAnchor(thread, { focus: false, editor: getEditorForThread(thread, opts) });
+    const shouldRevealSource = opts.revealSource !== false;
+  void ensureEditorForThread(thread, opts).then((editor) => {
+    rememberThreadSource(thread, editor);
+      if (shouldRevealSource) {
+        revealThreadAnchor(thread, { focus: opts.focus === true, editor, smooth: opts.smooth });
+      }
+    signalCommentThreadLocated(thread.id, "reveal");
+  }).catch(() => {
+    rememberThreadSource(thread, null);
+    signalCommentThreadLocated(thread.id, "reveal");
+  });
   try {
-    window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       try {
         const selector = `.zion-comments-row[data-thread-id="${cssEscape(thread.id)}"]`;
         document.querySelector(selector)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
       } catch {}
-    });
+    }));
   } catch {}
   return true;
 }
@@ -1279,10 +1391,13 @@ function installCommentAnchors(editor) {
 
 function buildThreadContextMessages(thread) {
   const sourceContext = resolveThreadSourceContext(thread);
-  const sourceContextText = String(sourceContext?.text || thread?.anchorText || thread?.quote || "（无）");
+  const upstream = resolveThreadUpstreamText(thread);
+  const upstreamText = String(upstream?.text || "");
+  const anchorText = thread?.anchorText || thread?.quote || "（无）";
   const system = [
     "你正在回复 Zion Comments 中的一个独立评论会话。",
-    "这个会话独立于主编辑器，但继承主文档中被评论片段附近的上下文。",
+    "这个会话独立于主编辑器，但继承主文档中被评论片段之前的全部上文。",
+    "上文会以正常的 user/assistant 对话消息形式提供给你（按主编辑器的原始角色解析），请把它当作被评论内容发生的完整背景。",
     "请重点围绕被评论片段回答，必要时给出可执行的修改建议；不要假设你正在直接编辑主文档。",
     "",
     `主会话 ID：${thread?.parentSessionId || thread?.sessionId || "unknown"}`,
@@ -1290,12 +1405,34 @@ function buildThreadContextMessages(thread) {
     `锚点行：${formatThreadLineRange(thread, sourceContext)}`,
     "",
     "被评论片段：",
-    thread?.anchorText || thread?.quote || "（无）",
-    "",
-    "原会话编辑器上下文（围绕被评论片段截取，包含被评论片段）：",
-    sourceContextText
+    anchorText
   ].join("\n");
-  return [{ role: "system", content: system }];
+
+  const messages = [{ role: "system", content: system }];
+
+  let upstreamMessages = [];
+  try {
+    upstreamMessages = parseMessages(upstreamText)
+      .map((m) => ({ role: m?.role, content: m?.content }))
+      .filter((m) => m?.role && typeof m.content === "string" && m.content.trim());
+  } catch {
+    upstreamMessages = [];
+  }
+
+  if (upstreamMessages.length) {
+    messages.push({
+      role: "system",
+      content: "以下为被评论片段之前的原会话上文（已按原始角色解析为对话消息）："
+    });
+    messages.push(...upstreamMessages);
+  } else if (upstreamText.trim()) {
+    messages.push({
+      role: "system",
+      content: `原会话编辑器上文（被评论片段之前的全部内容）：\n${upstreamText}`
+    });
+  }
+
+  return messages;
 }
 
 function createThreadEditor(container, thread, onSave, onRun, onLayoutChange) {
@@ -1443,7 +1580,6 @@ function createFoldedThreadEditor(container, thread, onLoaded) {
     if (disposed || !payload || typeof payload !== "object") return;
     const bodyText = typeof payload.body === "string" ? payload.body : "";
       const payloadThread = applyThreadPayload(thread, payload);
-      restoreFoldedCards(payloadThread);
     try {
         if (bodyText) {
           const current = view.state.doc.toString();
@@ -1454,6 +1590,7 @@ function createFoldedThreadEditor(container, thread, onLoaded) {
             });
           }
         }
+        restoreFoldedCards(payloadThread);
         onLoaded?.();
     } catch {}
   });
@@ -1518,7 +1655,7 @@ function renderCommentsPanel(container) {
             return;
           }
           schedule();
-        }));
+      }));
       } catch {}
       const pulseLocatedThread = (threadId) => {
         try {
@@ -1778,6 +1915,10 @@ function renderCommentsPanel(container) {
           setActiveThread(item.id);
           updateActiveThreadClasses(item.id);
         });
+          row.addEventListener("focusin", () => {
+            setActiveThread(item.id);
+            updateActiveThreadClasses(item.id);
+          });
         row.addEventListener("click", revealSourceFromItem);
       list.appendChild(row);
 
@@ -2030,17 +2171,22 @@ function shouldRevealSourceFromCommentItemPointer(event, expanded) {
   }
 
 function iconSvg(name) {
-  const paths = {
-    play: `<path d="M8 5v14l11-7z"></path>`,
-    stop: `<path d="M6 6h12v12H6z"></path>`,
-    check: `<path d="M20 6L9 17l-5-5"></path>`,
-    undo: `<path d="M9 7H4v5"></path><path d="M4 12a8 8 0 1 0 2.35-5.65L4 8.7"></path>`,
-      expand: `<path d="M8 3H3v5"></path><path d="M3 3l7 7"></path><path d="M16 21h5v-5"></path><path d="M21 21l-7-7"></path>`,
-      collapse: `<path d="M10 4v6H4"></path><path d="M4 10l7-7"></path><path d="M14 20v-6h6"></path><path d="M20 14l-7 7"></path>`,
-    external: `<path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M11 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5"></path>`,
-    trash: `<path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 14h10l1-14"></path><path d="M10 11v5"></path><path d="M14 11v5"></path>`
+  const map = {
+    play: "play",
+    stop: "debug-stop",
+    check: "check",
+    undo: "discard",
+    expand: "screen-full",
+    collapse: "screen-normal",
+    external: "link-external",
+    trash: "trash"
   };
-  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.play}</svg>`;
+  const codicon = map[name] || "play";
+  try {
+    const html = window.zionIcons?.htmlFromCodicon?.(codicon);
+    if (html) return html;
+  } catch {}
+  return `<span class="codicon codicon-${codicon}" aria-hidden="true"></span>`;
 }
 
 function revealThreadAnchor(thread, opts = {}) {
@@ -2119,6 +2265,18 @@ function normalizeThreadAnnotations(annotations) {
   };
 }
 
+function getLiveThreadBodyForSession(sessionId) {
+  const sid = String(sessionId || "");
+  if (!sid) return null;
+  try {
+    const handle = lastCommentsEditorHandle;
+    if (handle?.sessionId === sid && handle?.view?.state?.doc) {
+      return handle.view.state.doc.toString();
+    }
+  } catch {}
+  return null;
+}
+
 function persistThreadAnnotations(threadOrSessionId, annotations = null) {
   const sessionId = typeof threadOrSessionId === "string" ? threadOrSessionId : getThreadSessionId(threadOrSessionId);
   if (!sessionId) return null;
@@ -2127,10 +2285,13 @@ function persistThreadAnnotations(threadOrSessionId, annotations = null) {
     : threadOrSessionId;
   if (!thread?.id) return null;
   const nextAnnotations = normalizeThreadAnnotations(annotations || getSessionAnnotations(sessionId));
-  patchThread(thread.id, {
+  const patch = {
     threadSessionId: sessionId,
     chatAnnotations: nextAnnotations
-  }, { silent: true });
+  };
+  const liveBody = getLiveThreadBodyForSession(sessionId);
+  if (typeof liveBody === "string" && liveBody !== String(thread?.body ?? "")) patch.body = liveBody;
+  patchThread(thread.id, patch, { silent: true });
   return nextAnnotations;
 }
 
@@ -2190,9 +2351,9 @@ async function promoteThread(thread, handle) {
         panelId: handle?.panelId || `comments:${thread.id}`
       });
     } catch {}
-    const annotations = persistThreadAnnotations(thread, getSessionAnnotations(threadSessionId)) || getSessionAnnotations(threadSessionId);
-    patchThread(thread.id, { body: String(bodyText || "") }, { silent: true });
-    const title = t("thread.promotedTitle", "Comment: {title}", { title: compactText(thread.quote || thread.anchorText || thread.id, 48) });
+      const annotations = persistThreadAnnotations(thread, getSessionAnnotations(threadSessionId)) || getSessionAnnotations(threadSessionId);
+      patchThread(thread.id, { body: String(bodyText || "") }, { silent: true });
+      const title = t("thread.promotedTitle", "Comment: {title}", { title: compactText(thread.title || thread.quote || thread.anchorText || thread.id, 48) });
     const panelId = thread.panelId || window.zion?.panels?.getActivePanelId?.() || null;
     const content = buildPromotedSessionContent(thread, bodyText);
     const id = await window.zion?.commands?.executeCommand?.("zion.sessions.new", {
@@ -2274,6 +2435,403 @@ function focusThreadUserPrompt(view) {
   }
 }
 
+const summarizeInflight = new Set();
+const titleInflight = new Set();
+
+function parseTitlePayload(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const withoutFence = text
+    .replace(/^\s*```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+  const tryParse = (candidate) => {
+    try {
+      const parsed = JSON.parse(candidate);
+      const title = parsed && typeof parsed === "object" ? (parsed.title ?? parsed.name) : "";
+      return typeof title === "string" ? title : "";
+    } catch {
+      return "";
+    }
+  };
+  const direct = tryParse(withoutFence);
+  if (direct) return direct;
+  const match = withoutFence.match(/\{[\s\S]*?\}/);
+  return match ? tryParse(match[0]) : "";
+}
+
+function cleanThreadTitle(raw) {
+  let title = parseTitlePayload(raw);
+  if (!title) title = String(raw || "").split("\n").find((line) => String(line || "").trim()) || "";
+  title = title.replace(/^\s*(title|comment title|thread title|name)\s*[:：]\s*/i, "");
+  title = title.replace(/^\s*(标题|评论标题|评论名|会话名)\s*[:：]\s*/i, "");
+  title = title.replace(/^["'“”‘’]+/, "").replace(/["'“”‘’]+$/, "");
+  title = title.replace(/\s+/g, " ").trim();
+  title = title.replace(/^[\-–—:：#*]+/, "").replace(/[\-–—:：#*。.!！?？]+$/, "").trim();
+  if (!title) return "";
+  if (Array.from(title).length > 36) return "";
+  if (/^(当然|可以|好的|首先|其次|以下|这里|这是|这个问题|答案|建议|Sure|Certainly|Here|You can|To )/i.test(title)) return "";
+  return title;
+}
+
+async function autoRenameThreadTitle(thread, transcriptText) {
+  const id = String(thread?.id || "");
+  if (!id) return;
+  if (titleInflight.has(id)) return;
+  const latestBefore = readAllThreads().find((item) => item?.id === id) || thread;
+  if (latestBefore?.titleAuto === false) return;
+  const transcript = String(transcriptText || "").trim();
+  if (!transcript) return;
+  const runStream = window.zion?.llm?.runStream;
+  if (typeof runStream !== "function") return;
+
+  titleInflight.add(id);
+  try {
+    const anchorText = String(thread?.anchorText || thread?.quote || "").slice(0, 600);
+    const excerpt = transcript.length > 6000 ? transcript.slice(-6000) : transcript;
+    const messages = [
+      {
+        role: "system",
+        content: [
+          "你是评论线程标题生成器，不是聊天助手。",
+          "任务：只根据评论线程里的讨论和回答，生成一个短标题。",
+          "禁止：不要回答问题，不要给建议，不要解释，不要复述被评论原文。",
+          "标题要求：2-18 个中文字符或 2-8 个英文单词；短、具体、像列表项标题；不要引号；不要句号。",
+          "必须只输出一行严格 JSON，格式为：{\"title\":\"评论标题\"}"
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: [
+          "为下面的评论线程生成标题。",
+          "再次强调：不要直接用被评论内容作为标题，优先概括评论里实际讨论/回答的主题。",
+          "",
+          "被评论内容：",
+          anchorText || "（无）",
+          "",
+          "评论线程内容：",
+          "<conversation>",
+          excerpt,
+          "</conversation>"
+        ].join("\n")
+      }
+    ];
+
+    let out = "";
+    let err = null;
+    await runStream({
+      messages,
+      tools: null,
+      onToken: (tk) => { out += String(tk || ""); },
+      onEnd: () => {},
+      onError: (e) => { err = e || new Error("LLM error"); },
+      runId: `comments-title-${id}-${Date.now()}`,
+      sessionId: getThreadSessionId(thread),
+      silentReasoning: true
+    });
+    if (err) throw err;
+
+    const title = cleanThreadTitle(out);
+    if (!title) return;
+    const latest = readAllThreads().find((item) => item?.id === id) || thread;
+    if (latest?.titleAuto === false) return;
+    patchThread(id, { title, titleAuto: true, titleUpdatedAt: now() });
+  } catch {
+    // 自动标题是尽力而为的增强，失败不影响评论会话。
+  } finally {
+    titleInflight.delete(id);
+  }
+}
+
+function collectUpstreamCommentSummaries(editor) {
+  try {
+    if (!editor || isCommentPanelId(editor?.panelId)) return [];
+    const view = editor?.getView?.();
+    if (!view?.state?.doc) return [];
+    const sessionId = String(getSessionId(editor) || "");
+    if (!sessionId) return [];
+
+    const cursorPos = (() => {
+      try {
+        const sel = view.state.selection?.main;
+        if (typeof sel?.from === "number") return sel.from;
+      } catch {}
+      return view.state.doc.length;
+    })();
+
+    const threads = getThreadsForSession(sessionId).filter((thread) => {
+      const summary = typeof thread?.summary === "string" ? thread.summary.trim() : "";
+      return !!summary;
+    });
+    if (!threads.length) return [];
+
+    const entries = [];
+    for (const thread of threads) {
+      const anchor = locateThreadAnchor(view, thread);
+      const anchorFrom = typeof anchor?.from === "number" ? anchor.from : Number(thread?.from);
+      const anchorTo = typeof anchor?.to === "number" ? anchor.to : Number(thread?.to);
+      if (!Number.isFinite(anchorFrom)) continue;
+      if (!Number.isFinite(anchorTo)) continue;
+      if (anchorTo > cursorPos) continue;
+      const anchorText = String(thread?.anchorText || thread?.quote || "");
+      entries.push({
+        anchorFrom,
+        anchorTo,
+        anchorText,
+        summary: String(thread.summary || "").trim()
+      });
+    }
+    entries.sort((a, b) => a.anchorTo - b.anchorTo);
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+function buildCommentSummaryMessage(entry) {
+  const label = String(entry?.anchorText || "").replace(/\s+/g, " ").trim().slice(0, 120);
+  const quoted = label ? `“${label}”` : "上方某处内容";
+  return {
+    role: "user",
+    content: [
+      "【评论上下文】",
+      `被评论内容：${quoted}`,
+      `评论总结：${entry?.summary || ""}`,
+      "这是一条插入到被评论 message 下方的上下文备注，请在后续回答中作为已知背景纳入。"
+    ].join("\n")
+  };
+}
+
+function isCommentSummaryMessage(message) {
+  return String(messageContentText(message) || "").trim().startsWith("【评论上下文】");
+}
+
+function messageContentText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => (part?.type === "text" ? String(part.text || "") : "")).join("\n");
+  }
+  return "";
+}
+
+function buildTranscriptMessageSpans(view, cursorPos) {
+  try {
+    const doc = view?.state?.doc;
+    if (!doc) return [];
+    const to = Math.max(0, Math.min(doc.length, Number(cursorPos) || doc.length));
+    const text = view.state.sliceDoc(0, to);
+    const lines = String(text || "").split("\n");
+    const roleRe = /^(system|user|assistant)\s+(.*)$/;
+    const widgetRe = /^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/i;
+    const toolWidgetRe = /^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/i;
+    const imageRe = /^!\[.*\]\((.*)\)$/;
+    const spans = [];
+    let role = "user";
+    let content = [];
+    let spanFrom = 0;
+    let spanTo = 0;
+    let offset = 0;
+
+    const flush = () => {
+      const normalized = content.join("\n").trim();
+      if (!normalized) return;
+      spans.push({ role, content: normalized, from: spanFrom, to: spanTo });
+    };
+
+    for (const line of lines) {
+      const lineStart = offset;
+      const lineEnd = lineStart + line.length;
+      const roleMatch = line.match(roleRe);
+      const trimmed = line.trim();
+      if (widgetRe.test(trimmed) || toolWidgetRe.test(trimmed)) {
+        offset = lineEnd + 1;
+        continue;
+      }
+
+      if (roleMatch) {
+        const body = roleMatch[2] || "";
+        if (widgetRe.test(body.trim()) || toolWidgetRe.test(body.trim())) {
+          offset = lineEnd + 1;
+          continue;
+        }
+        flush();
+        role = roleMatch[1];
+        content = body.trim() ? [body] : [];
+        spanFrom = lineStart;
+        spanTo = lineEnd;
+        offset = lineEnd + 1;
+        continue;
+      }
+
+      if (!imageRe.test(line)) content.push(line);
+      spanTo = lineEnd;
+      offset = lineEnd + 1;
+    }
+    flush();
+    return spans;
+  } catch {
+    return [];
+  }
+}
+
+function insertCommentSummariesIntoMessages(messages, editor) {
+  if (!Array.isArray(messages) || !messages.length) return messages;
+  const baseMessages = messages.filter((m) => !isCommentSummaryMessage(m));
+  const entries = collectUpstreamCommentSummaries(editor);
+  if (!entries.length) return baseMessages.length === messages.length ? messages : baseMessages;
+
+  const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  const normalizedMsgs = baseMessages.map((m) => normalize(messageContentText(m)));
+  const view = editor?.getView?.();
+  const cursorPos = (() => {
+    try {
+      const sel = view?.state?.selection?.main;
+      if (typeof sel?.from === "number") return sel.from;
+    } catch {}
+    return view?.state?.doc?.length || 0;
+  })();
+  const spans = buildTranscriptMessageSpans(view, cursorPos);
+
+  const insertAfter = new Map();
+  const unmatched = [];
+
+  for (const entry of entries) {
+    const anchorFrom = Number(entry.anchorFrom);
+    const anchorTo = Number(entry.anchorTo);
+    const span = spans.find((item) => {
+      if (!Number.isFinite(anchorFrom) || !Number.isFinite(anchorTo)) return false;
+      return item.from <= anchorTo && item.to >= anchorFrom;
+    });
+    const spanText = normalize(span?.content || "");
+    const firstLine = String(entry.anchorText || "").split("\n").find((l) => l.trim()) || entry.anchorText || "";
+    const snippet = normalize(firstLine).slice(0, 120);
+    let target = -1;
+    if (spanText) {
+      for (let i = 0; i < normalizedMsgs.length; i++) {
+        if (normalizedMsgs[i] && (normalizedMsgs[i] === spanText || normalizedMsgs[i].includes(spanText) || spanText.includes(normalizedMsgs[i]))) {
+          target = i;
+          break;
+        }
+      }
+    }
+    if (target < 0 && snippet) {
+      for (let i = 0; i < normalizedMsgs.length; i++) {
+        if (normalizedMsgs[i] && normalizedMsgs[i].includes(snippet)) {
+          target = i;
+          break;
+        }
+      }
+    }
+    const summaryMsg = buildCommentSummaryMessage(entry);
+    if (target >= 0) {
+      if (!insertAfter.has(target)) insertAfter.set(target, []);
+      insertAfter.get(target).push(summaryMsg);
+    } else {
+      unmatched.push(summaryMsg);
+    }
+  }
+
+  if (insertAfter.size === 0 && !unmatched.length) return messages;
+
+  const out = [];
+  const lastIndex = baseMessages.length - 1;
+  for (let i = 0; i < baseMessages.length; i++) {
+    if (unmatched.length && i === lastIndex) {
+      out.push(...unmatched);
+      unmatched.length = 0;
+    }
+    out.push(baseMessages[i]);
+    const inserts = insertAfter.get(i);
+    if (inserts) out.push(...inserts);
+  }
+  if (unmatched.length) out.push(...unmatched);
+  return out;
+}
+
+function extractThreadTranscript(view, thread) {
+  try {
+    const text = String(view?.state?.doc?.toString?.() || thread?.body || "");
+    return text.trim();
+  } catch {
+    return String(thread?.body || "").trim();
+  }
+}
+
+async function summarizeThreadAnswer(thread, transcriptText) {
+  const id = String(thread?.id || "");
+  if (!id) return;
+  if (summarizeInflight.has(id)) return;
+  const transcript = String(transcriptText || "").trim();
+  if (!transcript) return;
+  const runStream = window.zion?.llm?.runStream;
+  if (typeof runStream !== "function") return;
+
+  summarizeInflight.add(id);
+  try {
+    const anchorText = String(thread?.anchorText || thread?.quote || "").slice(0, 800);
+    const excerpt = transcript.length > 8000 ? transcript.slice(-8000) : transcript;
+    const messages = [
+      {
+        role: "system",
+        content: [
+          "你是 Zion Comments 的局部工作记忆总结器，不是聊天助手。",
+          "这条总结会在后续主会话请求中，被插入到被评论内容所在 message 的下方，作为模型继续工作的局部上下文。",
+          "任务：把下面围绕某段被评论内容展开的评论对话，压缩成一条短小、可恢复、可继续执行的工作记忆。",
+          "",
+          "输出契约：",
+          "1. Context Brief: 这条评论关注的局部问题或背景。",
+          "2. Work Result: 已达成的结论、修改方向、设计取舍或约束。",
+          "3. Evidence: 对话中支撑结论的关键依据；没有则写“无明确证据”。",
+          "4. Next Actions: 后续处理该被评论内容时应记住的动作、注意事项或未决问题；没有则写“无”。",
+          "",
+          "要求：",
+          "- 必须使用上述英文标题作为 Markdown 小节标题，方便后续解析和阅读。",
+          "- 每个小节 1 句，整体尽量控制在 120-220 个中文字符。",
+          "- 不要复述完整对话过程，不要写“用户问/助手答”。",
+          "- 不要编造对话里没有的信息。"
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: [
+          "请为下面的评论会话生成局部工作记忆。",
+          "",
+          "被评论内容：",
+          anchorText || "（无）",
+          "",
+          "评论会话内容：",
+          "<conversation>",
+          excerpt,
+          "</conversation>"
+        ].join("\n")
+      }
+    ];
+
+    let out = "";
+    let err = null;
+    await runStream({
+      messages,
+      tools: null,
+      onToken: (tk) => { out += String(tk || ""); },
+      onEnd: () => {},
+      onError: (e) => { err = e || new Error("LLM error"); },
+      runId: `comments-summary-${id}-${Date.now()}`,
+      sessionId: getThreadSessionId(thread),
+      silentReasoning: true
+    });
+    if (err) throw err;
+
+    const summary = String(out || "").trim();
+    if (!summary) return;
+    patchThread(id, { summary, summaryUpdatedAt: now() }, { silent: true });
+  } catch {
+    // 总结是尽力而为的增强，失败时静默忽略，不影响评论会话本身。
+  } finally {
+    summarizeInflight.delete(id);
+  }
+}
+
 async function runThread(thread, handle) {
   const view = handle?.view;
   const editor = handle?.proxy;
@@ -2308,6 +2866,12 @@ async function runThread(thread, handle) {
     } catch {}
     focusThreadUserPrompt(view);
     patchThread(thread.id, { body: view.state.doc.toString(), threadSessionId }, { silent: true });
+    try {
+      const transcript = extractThreadTranscript(view, thread);
+        const latest = readAllThreads().find((item) => item?.id === thread.id) || thread;
+        Promise.resolve().then(() => autoRenameThreadTitle(latest, transcript));
+        Promise.resolve().then(() => summarizeThreadAnswer(latest, transcript));
+    } catch {}
   } catch (err) {
     const msg = `\n\nsystem 评论线程运行失败：${err?.message || String(err || "unknown")}`;
     view.dispatch({ changes: { from: view.state.doc.length, to: view.state.doc.length, insert: msg } });
@@ -2338,6 +2902,21 @@ export async function activate(ctx) {
   }));
   disposables.push(window.zion.commands.registerCommand("comments.focusEditor", focusCommentEditor));
   disposables.push(window.zion.commands.registerCommand("comments.focusSource", () => focusEditorSource(getActiveThread())));
+  try {
+    const disp = window.zion?.messages?.registerContributor?.({
+      id: "dev.comments.upstreamSummaries",
+      stage: "post",
+      order: 40,
+      contribute: (messages, ctx) => {
+        try {
+          const editor = ctx?.editor || window.zion?.window?.activeEditor || null;
+          return insertCommentSummariesIntoMessages(messages, editor);
+        } catch {}
+        return messages;
+      }
+    });
+    if (disp) disposables.push(disp);
+  } catch {}
   try {
     const slash = window.zion?.slash?.registerCommand;
     if (typeof slash === "function") {
@@ -2433,6 +3012,7 @@ export async function activate(ctx) {
     pluginId: "dev.comments",
     title: t("title", "Comments"),
     titleKey: "dev.comments.title",
+    icon: "$(comment-discussion)",
     order: 25,
     keepWhenActive: true,
     component: { render: renderCommentsPanel }

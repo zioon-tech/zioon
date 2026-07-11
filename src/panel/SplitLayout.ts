@@ -52,11 +52,9 @@ function installHorizontalWheelBridge(host: HTMLElement): void {
 
       const tableScroller = target.closest(".cm-md-table-scroll") as HTMLElement | null;
       if (tableScroller && canScrollX(tableScroller, delta)) return;
-      if (!canScrollX(host, delta)) return;
 
-      const prev = host.scrollLeft;
-      host.scrollLeft = prev + delta;
-      if (Math.abs(host.scrollLeft - prev) <= 0.5) return;
+      // Table reached its horizontal edge (or isn't scrollable): contain the
+      // wheel here so it doesn't chain into the panels layout and pan panels.
       event.preventDefault();
       event.stopPropagation();
     },

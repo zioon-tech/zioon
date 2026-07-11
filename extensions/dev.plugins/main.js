@@ -1414,7 +1414,7 @@ export async function activate(ctx) {
       pluginId: "dev.plugins",
       title: "Plugins",
       titleKey: "dev.plugins.ui.plugins",
-      icon: "🧩",
+      icon: "$(extensions)",
       order: 20,
       location: "sidebar",
       headerActions: [
@@ -1424,7 +1424,7 @@ export async function activate(ctx) {
           titleKey: "dev.plugins.ui.reload",
           ariaLabel: "Reload plugins",
           ariaLabelKey: "dev.plugins.ui.reload",
-          icon: "↻",
+          icon: "$(loading)",
           onClick: () => {
             try {
               window.zion.commands.executeCommand("zion.reloadPlugins");

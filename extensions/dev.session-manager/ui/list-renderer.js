@@ -30,6 +30,127 @@ export function createSessionsListRendererFactory(deps) {
     return fallback;
   }
 
+  function iconHtml(name, size) {
+    try {
+      const html = window.zionIcons?.htmlFromCodicon?.(name, "", size);
+      if (html) return html;
+    } catch {}
+    const raw = String(name || "").replace(/^codicon-/, "");
+    const style = typeof size === "number" ? ` style="font-size:${size}px;"` : "";
+    return `<span class="codicon codicon-${raw}" aria-hidden="true"${style}></span>`;
+  }
+
+  const COMMENTS_THREADS_KEY = "zion.comments.threads.v1";
+  const AGENTS_TASKS_KEY = "zion.agents.tasks.v1";
+  const SESSION_CHILDREN_COLLAPSED_KEY = "zion.sessions.relatedChildrenCollapsed.v1";
+
+  function readJsonArray(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function compactText(value, max = 64) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
+  }
+
+  function getThreadSessionId(thread) {
+    if (thread?.threadSessionId) return String(thread.threadSessionId);
+    return thread?.id ? `comment:${thread.id}` : "";
+  }
+
+  function getTaskSessionId(task) {
+    if (task?.taskSessionId) return String(task.taskSessionId);
+    return task?.id ? `agent-task:${task.id}` : "";
+  }
+
+  function readCollapsedSessionChildren() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SESSION_CHILDREN_COLLAPSED_KEY) || "[]");
+      return new Set(Array.isArray(parsed) ? parsed.map((id) => String(id || "").trim()).filter(Boolean) : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function writeCollapsedSessionChildren(values) {
+    try {
+      localStorage.setItem(SESSION_CHILDREN_COLLAPSED_KEY, JSON.stringify(Array.from(values || [])));
+    } catch {}
+  }
+
+  function getRelatedSessionChildren() {
+    const map = new Map();
+    const add = (sessionId, child) => {
+      const sid = String(sessionId || "").trim();
+      if (!sid || sid === "global") return;
+      const list = map.get(sid) || [];
+      list.push(child);
+      map.set(sid, list);
+    };
+
+    for (const thread of readJsonArray(COMMENTS_THREADS_KEY)) {
+      const sourceSessionId = String(thread?.parentSessionId || thread?.sessionId || "").trim();
+      const id = String(thread?.id || "").trim();
+      const childSessionId = getThreadSessionId(thread);
+      if (!sourceSessionId || !id || !childSessionId) continue;
+      const line = Number.isFinite(Number(thread?.startLine)) ? `L${Number(thread.startLine) + 1}` : "";
+      const status = thread?.resolved ? t("ui.commentResolved", "已解决") : t("ui.commentOpen", "未解决");
+      add(sourceSessionId, {
+        type: "comment",
+        id,
+        sessionId: childSessionId,
+          title: compactText(thread?.title || thread?.summary || thread?.quote || thread?.anchorText || id, 72) || t("ui.comment", "评论"),
+        meta: [t("ui.comment", "评论"), status, line].filter(Boolean).join(" · "),
+        order: Number.isFinite(Number(thread?.from)) ? Number(thread.from) : Number.MAX_SAFE_INTEGER,
+          updatedAt: Number(thread?.titleUpdatedAt || thread?.summaryUpdatedAt || thread?.updatedAt || thread?.createdAt || 0)
+      });
+    }
+
+    const taskSource = (() => {
+      try {
+        const stateTasks = window.zion?.state?.get?.("agents.tasks");
+        if (Array.isArray(stateTasks)) return stateTasks;
+      } catch {}
+      return readJsonArray(AGENTS_TASKS_KEY);
+    })();
+    for (const task of taskSource) {
+      const sourceSessionId = String(task?.sessionId || "").trim();
+      const id = String(task?.id || "").trim();
+      const childSessionId = getTaskSessionId(task);
+      if (!sourceSessionId || sourceSessionId.startsWith("scratch:") || !id || !childSessionId) continue;
+      const line = Number.isFinite(Number(task?.lineFrom)) ? `L${Number(task.lineFrom) + 1}` : "";
+      const status = String(task?.status || "idle");
+      add(sourceSessionId, {
+        type: "agent",
+        id,
+        sessionId: childSessionId,
+        title: compactText(task?.title || task?.anchorText || task?.prompt || id, 72) || t("ui.agentTask", "子 Agent"),
+        meta: [t("ui.agentTask", "子 Agent"), status, line].filter(Boolean).join(" · "),
+        order: Number.isFinite(Number(task?.from)) ? Number(task.from) : (Number.isFinite(Number(task?.lineFrom)) ? Number(task.lineFrom) * 1000000 : Number.MAX_SAFE_INTEGER),
+        updatedAt: Number(task?.updatedAt || task?.createdAt || 0)
+      });
+    }
+
+    for (const [sid, children] of map) {
+      children.sort((a, b) => {
+        const byOrder = Number(a.order) - Number(b.order);
+        if (byOrder) return byOrder;
+        const byUpdated = Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+        if (byUpdated) return byUpdated;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
+      map.set(sid, children);
+    }
+    return map;
+  }
+
   return function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, getSessionFilter, onSwitchSession, onAfterChange, viewId = null }) {
     const getEffectiveCurrentSessionId = () => {
       try {
@@ -123,6 +244,99 @@ export function createSessionsListRendererFactory(deps) {
         window.zion?.state?.set?.("chat.streaming", !!rs?.streaming);
       } catch {}
     };
+
+      const getRunStatus = (sessionId) => {
+        const sid = String(sessionId || "").trim();
+        if (!sid) return "";
+        try {
+          const rs = window.zion?.state?.get?.(`chat.runs.${sid}`) || null;
+          if (rs?.streaming) return "streaming";
+          if (rs?.awaiting) return "ready";
+        } catch {}
+        return "";
+      };
+
+      const runStatusTitle = (status) => {
+        if (status === "streaming") return t("ui.modelGenerating", "Model generating…");
+        if (status === "ready") return t("ui.answerReady", "Answer ready");
+        return "";
+      };
+
+      const updateStatusBadge = (badge, sessionId) => {
+        if (!badge) return;
+        const sid = String(sessionId || badge.dataset.sessionId || "").trim();
+        const status = getRunStatus(sid);
+        badge.dataset.sessionId = sid;
+        badge.className = `zion-session-status-badge${status ? ` ${status}` : " idle"}`;
+        badge.hidden = !status;
+        badge.textContent = "●";
+        badge.title = runStatusTitle(status);
+      };
+
+      const createStatusBadge = (sessionId, extraClass = "") => {
+        const badge = document.createElement("span");
+        badge.className = ["zion-session-status-badge", extraClass].filter(Boolean).join(" ");
+        badge.dataset.sessionId = String(sessionId || "");
+        updateStatusBadge(badge, sessionId);
+        return badge;
+      };
+
+      const statusRunDisposables = new Map();
+      const disposeStatusSubscriptions = () => {
+        for (const disposable of statusRunDisposables.values()) {
+          try { disposable?.dispose?.(); } catch {}
+        }
+        statusRunDisposables.clear();
+      };
+
+      const updateVisibleStatusBadges = () => {
+        try {
+          if (!listEl?.isConnected) {
+            disposeStatusSubscriptions();
+            return;
+          }
+          listEl.querySelectorAll(".zion-session-status-badge[data-session-id]").forEach((badge) => {
+            updateStatusBadge(badge, badge.dataset.sessionId);
+          });
+        } catch {}
+      };
+
+      const syncStatusSubscriptions = (sessionIds) => {
+        const nextIds = new Set(Array.from(sessionIds || []).map((id) => String(id || "").trim()).filter(Boolean));
+        for (const [sid, disposable] of statusRunDisposables.entries()) {
+          if (!nextIds.has(sid)) {
+            try { disposable?.dispose?.(); } catch {}
+            statusRunDisposables.delete(sid);
+          }
+        }
+        for (const sid of nextIds) {
+          if (statusRunDisposables.has(sid)) continue;
+          try {
+            const disposable = window.zion?.state?.onDidChange?.(`chat.runs.${sid}`, updateVisibleStatusBadges);
+            if (disposable) statusRunDisposables.set(sid, disposable);
+          } catch {}
+        }
+      };
+
+      const updateActiveCommentChildRows = () => {
+        try {
+          const activeCommentId = String(window.zion?.state?.get?.("comments.activeThreadId") || "");
+            const currentId = String(getEffectiveCurrentSessionId() || "");
+          listEl.querySelectorAll(".zion-session-child-row.is-comment[data-child-id]").forEach((row) => {
+              const isActive = (activeCommentId && row.dataset.childId === activeCommentId)
+                || (!!currentId && row.dataset.sessionId === currentId);
+            row.classList.toggle("is-current", !!isActive);
+          });
+        } catch {}
+      };
+
+      let activeCommentDisposable = null;
+      try {
+        activeCommentDisposable = window.zion?.state?.onDidChange?.("comments.activeThreadId", updateActiveCommentChildRows) || null;
+      } catch {
+        activeCommentDisposable = null;
+      }
+        try { window.addEventListener("zion:comments-active-changed", updateActiveCommentChildRows); } catch {}
 
     const switchSession = (id) => {
       if (typeof onSwitchSession !== "function") {
@@ -281,6 +495,9 @@ export function createSessionsListRendererFactory(deps) {
       // prevent flicker
       document.body.classList.add("zion-sessions-no-transitions");
 
+      try {
+        document.querySelectorAll(".session-row-menu[data-zion-session-menu-portal='1']").forEach((menu) => menu.remove());
+      } catch {}
       listEl.innerHTML = "";
       if (hostElement) {
         hostElement.classList.toggle("zion-selection-multiple", getSelection().length > 1);
@@ -297,7 +514,10 @@ export function createSessionsListRendererFactory(deps) {
       };
 
       const tree = loadTree() || ensureInitialTree();
-      const visibleOrder = [];
+        const relatedChildren = getRelatedSessionChildren();
+        const collapsedSessionChildren = readCollapsedSessionChildren();
+        const visibleOrder = [];
+        const visibleStatusSessionIds = new Set();
       let rootContextMenu = null;
       let selectionContextMenu = null;
 
@@ -306,37 +526,22 @@ export function createSessionsListRendererFactory(deps) {
           Array.from(listEl.querySelectorAll(".session-row-menu")).forEach((m) => {
             m.style.display = "none";
           });
+          Array.from(document.querySelectorAll(".session-row-menu[data-zion-session-menu-portal='1']")).forEach((m) => {
+            m.style.display = "none";
+          });
         } catch {}
       };
 
-      const showAnchoredMenu = (menu) => {
-        hideOpenMenus();
-        menu.style.position = "absolute";
-        menu.style.top = "28px";
-        menu.style.right = "0";
-        menu.style.left = "auto";
-        menu.style.display = "block";
+      const portalMenu = (menu) => {
+        try {
+          if (menu.parentElement !== document.body) {
+            menu.dataset.zionSessionMenuPortal = "1";
+            document.body.appendChild(menu);
+          }
+        } catch {}
       };
 
-      const showContextMenu = (menu, ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        hideOpenMenus();
-        menu.style.position = "fixed";
-        menu.style.right = "auto";
-        menu.style.left = `${ev.clientX}px`;
-        menu.style.top = `${ev.clientY}px`;
-        menu.style.display = "block";
-        requestAnimationFrame(() => {
-          try {
-            const rect = menu.getBoundingClientRect();
-            const pad = 8;
-            const left = Math.min(ev.clientX, window.innerWidth - rect.width - pad);
-            const top = Math.min(ev.clientY, window.innerHeight - rect.height - pad);
-            menu.style.left = `${Math.max(pad, left)}px`;
-            menu.style.top = `${Math.max(pad, top)}px`;
-          } catch {}
-        });
+      const installMenuAutoClose = (menu) => {
         const close = (e) => {
           try {
             if (e?.target && menu.contains(e.target)) return;
@@ -354,6 +559,57 @@ export function createSessionsListRendererFactory(deps) {
         }, 0);
       };
 
+      const showAnchoredMenu = (menu, anchor) => {
+        hideOpenMenus();
+        portalMenu(menu);
+        menu.style.position = "fixed";
+        menu.style.right = "auto";
+        menu.style.left = "auto";
+        menu.style.top = "auto";
+        menu.style.visibility = "hidden";
+        menu.style.display = "block";
+        requestAnimationFrame(() => {
+          try {
+            const anchorRect = anchor?.getBoundingClientRect?.();
+            const menuRect = menu.getBoundingClientRect();
+            const pad = 8;
+            const baseLeft = anchorRect ? anchorRect.right - menuRect.width : window.innerWidth - menuRect.width - pad;
+            const baseTop = anchorRect ? anchorRect.bottom + 4 : pad;
+            const left = Math.max(pad, Math.min(baseLeft, window.innerWidth - menuRect.width - pad));
+            const top = Math.max(pad, Math.min(baseTop, window.innerHeight - menuRect.height - pad));
+            menu.style.left = `${left}px`;
+            menu.style.top = `${top}px`;
+            menu.style.visibility = "visible";
+          } catch {
+            menu.style.visibility = "visible";
+          }
+        });
+        installMenuAutoClose(menu);
+      };
+
+      const showContextMenu = (menu, ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        hideOpenMenus();
+        portalMenu(menu);
+        menu.style.position = "fixed";
+        menu.style.right = "auto";
+        menu.style.left = `${ev.clientX}px`;
+        menu.style.top = `${ev.clientY}px`;
+        menu.style.display = "block";
+        requestAnimationFrame(() => {
+          try {
+            const rect = menu.getBoundingClientRect();
+            const pad = 8;
+            const left = Math.min(ev.clientX, window.innerWidth - rect.width - pad);
+            const top = Math.min(ev.clientY, window.innerHeight - rect.height - pad);
+            menu.style.left = `${Math.max(pad, left)}px`;
+            menu.style.top = `${Math.max(pad, top)}px`;
+          } catch {}
+        });
+        installMenuAutoClose(menu);
+      };
+
       const isInSelection = (id) => {
         try {
           return getSelection().some((it) => it && it.id === id);
@@ -365,6 +621,98 @@ export function createSessionsListRendererFactory(deps) {
       const selectOnlyForContext = (id, type) => {
         try { setSelection([{ id, type }]); } catch {}
         try { setLastSelectedId(id); } catch {}
+      };
+
+      const relatedChildMatchesQuery = (sessionId) => {
+        if (!query) return false;
+        const children = relatedChildren.get(String(sessionId || "")) || [];
+        return children.some((child) => {
+          const text = `${child.title || ""} ${child.meta || ""}`.toLowerCase();
+          return text.includes(query);
+        });
+      };
+
+        const isSessionChildrenCollapsed = (sessionId) => {
+          const sid = String(sessionId || "").trim();
+          return sid ? collapsedSessionChildren.has(sid) : false;
+        };
+
+        const setSessionChildrenCollapsed = (sessionId, collapsed) => {
+          const sid = String(sessionId || "").trim();
+          if (!sid) return;
+          if (collapsed) collapsedSessionChildren.add(sid);
+          else collapsedSessionChildren.delete(sid);
+          writeCollapsedSessionChildren(collapsedSessionChildren);
+        };
+
+      const renderRelatedChild = (child, depth) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = `zion-session-row zion-session-child-row is-${child.type}`;
+        row.dataset.depth = String(depth);
+          row.dataset.sessionId = String(child.sessionId || "");
+          row.dataset.childId = String(child.id || "");
+          if (child.sessionId) visibleStatusSessionIds.add(String(child.sessionId));
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.justifyContent = "space-between";
+        row.style.gap = "8px";
+        row.style.padding = "5px 6px 5px 10px";
+        row.style.paddingLeft = `${10 + (depth * 12)}px`;
+        row.style.width = "100%";
+        row.style.border = "none";
+        row.style.background = "transparent";
+        row.style.textAlign = "left";
+        row.style.cursor = "pointer";
+        row.style.position = "relative";
+        row.style.whiteSpace = "nowrap";
+        row.title = [child.title, child.meta].filter(Boolean).join(" · ");
+
+        const currentId = getEffectiveCurrentSessionId();
+        if (child.sessionId && String(child.sessionId) === String(currentId || "")) row.classList.add("is-current");
+        try {
+          const activeCommentId = String(window.zion?.state?.get?.("comments.activeThreadId") || "");
+          if (child.type === "comment" && activeCommentId && activeCommentId === String(child.id || "")) {
+            row.classList.add("is-current");
+          }
+        } catch {}
+
+        const icon = document.createElement("span");
+        icon.className = "zion-session-icon zion-session-child-icon";
+        icon.innerHTML = iconHtml(child.type === "comment" ? "comment-discussion" : "hubot", 13);
+
+        const main = document.createElement("span");
+        main.className = "zion-session-child-main";
+        main.style.display = "flex";
+        main.style.alignItems = "center";
+        main.style.minWidth = "0";
+        main.style.flex = "1 1 auto";
+
+        const title = document.createElement("span");
+        title.className = "zion-session-name zion-session-child-title";
+        title.textContent = child.title || (child.type === "comment" ? t("ui.comment", "评论") : t("ui.agentTask", "子 Agent"));
+
+          main.append(title);
+          const statusBadge = createStatusBadge(child.sessionId, "zion-session-child-status");
+          row.append(icon, main, statusBadge);
+        row.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          clearSelection();
+          setLastSelectedId("");
+            if (child.type === "comment") {
+              window.zion?.commands?.executeCommand?.("comments.revealThread", child.id, { focus: false, smooth: false });
+          } else {
+            window.zion?.commands?.executeCommand?.("agents.revealTask", child.id, { focus: false });
+          }
+          render();
+        };
+        row.onkeydown = (ev) => {
+          if (ev.key !== "Enter" && ev.key !== " ") return;
+          ev.preventDefault();
+          row.click();
+        };
+        listEl.appendChild(row);
       };
 
       const createFolderInline = (parentId) => {
@@ -668,7 +1016,7 @@ export function createSessionsListRendererFactory(deps) {
         row.style.display = "flex";
         row.style.alignItems = "center";
         row.style.justifyContent = "space-between";
-        row.style.padding = "6px 10px";
+          row.style.padding = "6px 6px 6px 10px";
         row.style.gap = "8px";
         row.style.borderRadius = "8px";
         row.style.transition = "background 120ms ease";
@@ -689,15 +1037,15 @@ export function createSessionsListRendererFactory(deps) {
         labelWrap.style.gap = "8px";
         labelWrap.style.flex = "1 1 auto";
         labelWrap.style.minWidth = "0";
-        labelWrap.style.paddingRight = "10px";
+          labelWrap.style.paddingRight = "4px";
 
         const chevron = document.createElement("span");
-        chevron.innerHTML = isFolderOpen(folder.id)
-          ? '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>'
-          : '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>';
+        chevron.className = "zion-session-chevron";
+        chevron.innerHTML = iconHtml(isFolderOpen(folder.id) ? "chevron-down" : "chevron-right", 14);
         chevron.style.opacity = "0.8";
 
         const ttl = document.createElement("span");
+        ttl.className = "zion-session-folder-name";
         ttl.textContent = folder.title || "Folder";
         ttl.style.fontWeight = "500";
         ttl.style.fontSize = "12px";
@@ -717,12 +1065,12 @@ export function createSessionsListRendererFactory(deps) {
         btns.style.gap = "4px";
         btns.style.alignItems = "center";
         btns.style.position = "absolute";
-        btns.style.right = "8px";
+          btns.style.right = "4px";
         btns.style.top = "50%";
         btns.style.transform = "translateY(-50%)";
 
         const bNewSession = mkIconBtn(
-          '<span class="codicon codicon-add" aria-hidden="true"></span>',
+          iconHtml("add", 14),
           t("ui.newSessionHere", "New session here"),
           (ev) => {
             ev.stopPropagation();
@@ -732,7 +1080,7 @@ export function createSessionsListRendererFactory(deps) {
           }
         );
         const bNewFolder = mkIconBtn(
-          '<span class="codicon codicon-new-folder" aria-hidden="true"></span>',
+          iconHtml("new-folder", 14),
           t("ui.newFolderHere", "New folder here"),
           (ev) => {
             ev.stopPropagation();
@@ -741,7 +1089,7 @@ export function createSessionsListRendererFactory(deps) {
         );
 
         const bMore = mkIconBtn(
-          '<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="4" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="12" cy="8" r="1.5" fill="currentColor"/></svg>',
+          iconHtml("ellipsis", 16),
           t("ui.folderActions", "Folder actions"),
           (ev) => {
             ev.stopPropagation();
@@ -749,7 +1097,7 @@ export function createSessionsListRendererFactory(deps) {
             if (isOpen) {
               folderMenu.style.display = "none";
             } else {
-              showAnchoredMenu(folderMenu);
+              showAnchoredMenu(folderMenu, ev.currentTarget);
             }
           }
         );
@@ -827,7 +1175,7 @@ export function createSessionsListRendererFactory(deps) {
         bMore.style.opacity = "0";
         row.addEventListener("mouseenter", () => {
           if (isConfirming(folder.id, "folder")) return;
-          const reserve = (btns.offsetWidth || 0) + 8;
+            const reserve = (btns.offsetWidth || 0) + 4;
           row.style.paddingRight = reserve + "px";
           btns.style.pointerEvents = "auto";
           bNewSession.style.opacity = "1";
@@ -844,7 +1192,7 @@ export function createSessionsListRendererFactory(deps) {
         });
         row.addEventListener("focus", () => {
           if (isConfirming(folder.id, "folder")) return;
-          const reserve = (btns.offsetWidth || 0) + 8;
+            const reserve = (btns.offsetWidth || 0) + 4;
           row.style.paddingRight = reserve + "px";
           btns.style.pointerEvents = "auto";
           bNewSession.style.opacity = "1";
@@ -951,7 +1299,12 @@ export function createSessionsListRendererFactory(deps) {
         if (depth < 0 || isFolderOpen(folder.id)) {
           const children = (folder.children || []).slice();
 
-          const matchNode = (n) => (n.title || "").toLowerCase().includes(query);
+          const getSessionDisplayTitle = (node) => {
+            if (!node || node.type !== "session") return String(node?.title || "").trim();
+            const meta = loadMeta(node.id);
+            return String(meta?.title || node.title || node.id || "").trim() || String(node.id || "");
+          };
+          const matchNode = (n) => getSessionDisplayTitle(n).toLowerCase().includes(query);
           const filterTree = (nodes) => {
             const out = [];
             for (const n of nodes) {
@@ -959,7 +1312,7 @@ export function createSessionsListRendererFactory(deps) {
                 const sub = filterTree(n.children || []);
                 if (matchNode(n) || sub.length > 0) out.push({ ...n, children: sub });
               } else if (n.type === "session") {
-                if (matchNode(n) && matchesSessionFilter(n)) out.push(n);
+                if ((matchNode(n) || relatedChildMatchesQuery(n.id)) && matchesSessionFilter(n)) out.push(n);
               }
             }
             return out;
@@ -979,9 +1332,8 @@ export function createSessionsListRendererFactory(deps) {
               if (sortBy === "updated") {
                 const am = loadMeta(a.id), bm = loadMeta(b.id);
                 return (bm?.updatedAt || 0) - (am?.updatedAt || 0);
-              } else {
-                return (a.title || a.id).localeCompare(b.title || b.id);
               }
+              return getSessionDisplayTitle(a).localeCompare(getSessionDisplayTitle(b));
             });
             return [...(pendingFolder ? [pendingFolder] : []), ...fs, ...ss];
           };
@@ -995,7 +1347,7 @@ export function createSessionsListRendererFactory(deps) {
               srow.style.display = "flex";
               srow.style.alignItems = "center";
               srow.style.justifyContent = "space-between";
-              srow.style.padding = "6px 10px";
+                srow.style.padding = "6px 6px 6px 10px";
               srow.style.gap = "8px";
               srow.style.borderRadius = "8px";
               srow.style.transition = "background 120ms ease";
@@ -1007,6 +1359,7 @@ export function createSessionsListRendererFactory(deps) {
               srow.dataset.depth = String(depth + 1);
               srow.dataset.sessionId = String(ch.id || "");
               visibleOrder.push({ id: ch.id, type: "session" });
+                if (ch.id) visibleStatusSessionIds.add(String(ch.id));
 
               // drag session
               srow.setAttribute("draggable", "true");
@@ -1018,7 +1371,7 @@ export function createSessionsListRendererFactory(deps) {
                   ev.dataTransfer?.setData("application/zion-nodes", JSON.stringify({ items }));
                   if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
                   const count2 = Array.isArray(items) ? items.length : 1;
-                  const label = count2 > 1 ? `移动 ${count2} 项` : `会话: ${truncate((ch.title || ch.id), 16)}`;
+                  const label = count2 > 1 ? `移动 ${count2} 项` : `会话: ${truncate(getSessionDisplayTitle(ch), 16)}`;
                   setSmallDragImage(ev, label);
                 } catch {}
               });
@@ -1028,23 +1381,49 @@ export function createSessionsListRendererFactory(deps) {
               labelWrap2.style.flexDirection = "column";
               labelWrap2.style.flex = "1 1 auto";
               labelWrap2.style.minWidth = "0";
-              labelWrap2.style.paddingRight = "10px";
+                labelWrap2.style.paddingRight = "4px";
 
               const titleLine = document.createElement("span");
+              titleLine.className = "zion-session-title-line";
               titleLine.style.fontSize = "12px";
               titleLine.style.display = "flex";
               titleLine.style.alignItems = "center";
               titleLine.style.gap = "6px";
-              titleLine.style.fontWeight = "500";
+              titleLine.style.fontWeight = "400";
               titleLine.style.flex = "1 1 auto";
               titleLine.style.minWidth = "0";
 
               const curId = getEffectiveCurrentSessionId();
               if (ch.id === curId) srow.classList.add("is-current");
               if (isSelected(ch.id)) srow.classList.add("is-selected");
+              const sessionChildren = relatedChildren.get(String(ch.id || "")) || [];
+              const hasSessionChildren = sessionChildren.length > 0;
+              const childrenCollapsed = hasSessionChildren && isSessionChildrenCollapsed(ch.id);
+              if (hasSessionChildren) {
+                srow.setAttribute("aria-expanded", childrenCollapsed ? "false" : "true");
+                const childToggle = document.createElement("button");
+                childToggle.type = "button";
+                childToggle.className = "zion-session-child-toggle";
+                childToggle.innerHTML = iconHtml(childrenCollapsed ? "chevron-right" : "chevron-down", 11);
+                childToggle.title = childrenCollapsed
+                  ? t("ui.expandChildren", "展开评论和子 Agent")
+                  : t("ui.collapseChildren", "折叠评论和子 Agent");
+                childToggle.setAttribute("aria-label", childToggle.title);
+                childToggle.onclick = (ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  setSessionChildrenCollapsed(ch.id, !childrenCollapsed);
+                  render();
+                };
+                titleLine.appendChild(childToggle);
+              }
+
+              const meta = loadMeta(ch.id);
+              const displayTitle = getSessionDisplayTitle(ch);
 
               const ttl2 = document.createElement("span");
-              ttl2.textContent = ch.title || ch.id;
+              ttl2.className = "zion-session-name";
+              ttl2.textContent = displayTitle;
               ttl2.style.flex = "1 1 auto";
               ttl2.style.minWidth = "0";
               ttl2.style.whiteSpace = "nowrap";
@@ -1052,7 +1431,6 @@ export function createSessionsListRendererFactory(deps) {
               ttl2.style.textOverflow = "ellipsis";
               titleLine.appendChild(ttl2);
 
-              const meta = loadMeta(ch.id);
               srow.title = `${t("ui.updated", "Updated")}: ${fmtTime(meta?.updatedAt || now())} · ${t("ui.chars", "{count} chars", { count: meta?.size || 0 })}`;
 
               labelWrap2.append(titleLine);
@@ -1062,7 +1440,7 @@ export function createSessionsListRendererFactory(deps) {
               rightWrap.style.gap = "4px";
               rightWrap.style.alignItems = "center";
               rightWrap.style.position = "absolute";
-              rightWrap.style.right = "6px";
+              rightWrap.style.right = "4px";
               rightWrap.style.top = "50%";
               rightWrap.style.transform = "translateY(-50%)";
 
@@ -1074,7 +1452,7 @@ export function createSessionsListRendererFactory(deps) {
               const confirmSession = isConfirming(ch.id, "session");
 
               const bMore2 = mkIconBtn(
-                '<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="4" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="12" cy="8" r="1.5" fill="currentColor"/></svg>',
+                iconHtml("ellipsis", 16),
                 t("ui.moreActions", "More actions"),
                 (ev) => {
                   ev.stopPropagation();
@@ -1082,9 +1460,9 @@ export function createSessionsListRendererFactory(deps) {
                   if (isOpen) {
                     sMenu.style.display = "none";
                   } else {
-                    showAnchoredMenu(sMenu);
+                    showAnchoredMenu(sMenu, ev.currentTarget);
                   }
-                }
+                  }
               );
               bMore2.style.opacity = "0";
               srow.addEventListener("contextmenu", (ev) => {
@@ -1099,39 +1477,21 @@ export function createSessionsListRendererFactory(deps) {
                 showContextMenu(sMenu, ev);
               });
 
-              const rs = window.zion.state.get(`chat.runs.${ch.id}`) || null;
-              let statusBadge = null;
-
-              // Compute an opaque background color that visually matches the row background.
-              // (Functionality removed in favor of masking title text)
-              const applyBadgeBg = (el) => {
-                // no-op
-              };
-
-              if (rs && (rs.streaming || rs.awaiting)) {
-                statusBadge = document.createElement("span");
-                statusBadge.className = `zion-session-status-badge ${rs.streaming ? "streaming" : "ready"}`;
-                statusBadge.textContent = "●";
-                statusBadge.title = rs.streaming ? "Model generating…" : "Answer ready";
-                // Transparent background; text below is masked
-                statusBadge.style.background = "transparent";
-
-                // Apply mask to titleLine to prevent text overlap
+                const statusBadge = createStatusBadge(ch.id);
                 try {
                   titleLine.style.maskImage = "linear-gradient(to right, black calc(100% - 44px), transparent 100%)";
                   titleLine.style.webkitMaskImage = "linear-gradient(to right, black calc(100% - 44px), transparent 100%)";
                 } catch {}
-              }
 
               if (!confirmSession) {
                 rightWrap.appendChild(bMore2);
-                if (statusBadge) rightWrap.appendChild(statusBadge);
+                  rightWrap.appendChild(statusBadge);
               }
 
               if (!confirmSession) rightWrap.style.pointerEvents = "none";
               srow.addEventListener("mouseenter", () => {
                 if (confirmSession) return;
-                const reserve = (rightWrap.offsetWidth || 0) + 8;
+                  const reserve = (rightWrap.offsetWidth || 0) + 4;
                 srow.style.paddingRight = reserve + "px";
                 rightWrap.style.pointerEvents = "auto";
                 bMore2.style.opacity = "1";
@@ -1144,7 +1504,7 @@ export function createSessionsListRendererFactory(deps) {
               });
               srow.addEventListener("focus", () => {
                 if (confirmSession) return;
-                const reserve = (rightWrap.offsetWidth || 0) + 8;
+                  const reserve = (rightWrap.offsetWidth || 0) + 4;
                 srow.style.paddingRight = reserve + "px";
                 rightWrap.style.pointerEvents = "auto";
                 bMore2.style.opacity = "1";
@@ -1208,6 +1568,15 @@ export function createSessionsListRendererFactory(deps) {
                     return;
                   }
                 }
+                  if (hasSessionChildren && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+                    ev.preventDefault();
+                    const nextCollapsed = ev.key === "ArrowLeft";
+                    if (nextCollapsed !== childrenCollapsed) {
+                      setSessionChildrenCollapsed(ch.id, nextCollapsed);
+                      render();
+                    }
+                    return;
+                  }
                 if (ev.key === "Enter") {
                   ev.preventDefault();
                   switchSession(ch.id);
@@ -1278,8 +1647,11 @@ export function createSessionsListRendererFactory(deps) {
 
               srow.append(labelWrap2);
               listEl.appendChild(srow);
-              // 追加到 DOM 后再计算一次徽标背景，确保读取到最终的行背景（含选中/当前状态）
-              try { if (statusBadge) requestAnimationFrame(() => requestAnimationFrame(() => applyBadgeBg(statusBadge))); } catch {}
+                if (hasSessionChildren && (!childrenCollapsed || query)) {
+                  for (const child of sessionChildren) {
+                    renderRelatedChild(child, depth + 2);
+                  }
+              }
             }
           }
         }
@@ -1297,12 +1669,23 @@ export function createSessionsListRendererFactory(deps) {
         empty.style.opacity = "0.8";
         empty.style.fontSize = "12px";
         empty.style.padding = "8px 4px";
-        listEl.appendChild(empty);
+          listEl.appendChild(empty);
+          syncStatusSubscriptions(visibleStatusSessionIds);
+          updateActiveCommentChildRows();
         return;
       }
       try { setFolderOpen(root.id || "root", true); } catch {}
       renderFolder(root, -1);
+        syncStatusSubscriptions(visibleStatusSessionIds);
+        updateVisibleStatusBadges();
+        updateActiveCommentChildRows();
     };
+
+      render.dispose = () => {
+        try { activeCommentDisposable?.dispose?.(); } catch {}
+        try { window.removeEventListener("zion:comments-active-changed", updateActiveCommentChildRows); } catch {}
+        disposeStatusSubscriptions();
+      };
 
     return render;
   };

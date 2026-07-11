@@ -18,7 +18,7 @@ export function createSessionTreeModel(opts) {
   const lsFolderOpenKey = opts?.lsFolderOpenKey;
   const cloneValue = (value) => {
     try {
-      if (typeof structuredClone === "function") return structuredClone(value);
+      if (typeof globalThis.structuredClone === "function") return globalThis.structuredClone(value);
     } catch {}
     try {
       return JSON.parse(JSON.stringify(value));
@@ -68,9 +68,10 @@ export function createSessionTreeModel(opts) {
       if (!node) return;
       if (node.type === "session") {
         const meta = loadMeta(node.id);
+        const title = String(meta?.title || node.title || node.id || "").trim() || node.id;
         out.push({
           id: node.id,
-          title: node.title ?? meta?.title ?? node.id,
+          title,
           updatedAt: meta?.updatedAt ?? 0,
           size: meta?.size ?? 0,
           hash: meta?.hash ?? "",

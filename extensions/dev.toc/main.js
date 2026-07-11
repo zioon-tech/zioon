@@ -52,6 +52,16 @@ function t(key, fallback) {
   return fallback;
 }
 
+function iconHtml(name, size) {
+  try {
+    const html = window.zionIcons?.htmlFromCodicon?.(name, "", size);
+    if (html) return html;
+  } catch {}
+  const raw = String(name || "").replace(/^codicon-/, "");
+  const style = typeof size === "number" ? ` style="font-size:${size}px;"` : "";
+  return `<span class="codicon codicon-${raw}" aria-hidden="true"${style}></span>`;
+}
+
 export async function activate(ctx) {
   extensionCtx = ctx;
   try {
@@ -728,11 +738,11 @@ export async function activate(ctx) {
         }
       }
       if (allCollapsed) {
-        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 5l-5 5h10l-5-5zm0 14l5-5H7l5 5z"/></svg>';
+        btn.innerHTML = iconHtml("unfold", 14);
         btn.setAttribute('aria-label', '展开全部');
         btn.title = '展开全部';
       } else {
-        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7 14l5 5 5-5H7zm0-4h10L12 5 7 10z"/></svg>';
+        btn.innerHTML = iconHtml("fold", 14);
         btn.setAttribute('aria-label', '折叠全部');
         btn.title = '折叠全部';
       }
@@ -969,10 +979,8 @@ export async function activate(ctx) {
           if (item.children && item.children.length > 0) {
             const isCollapsed = tocState.collapsed.has(item.id);
             const chevronBtn = document.createElement("button");
-            chevronBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>';
-            chevronBtn.querySelector('svg').style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(90deg)';
-            chevronBtn.querySelector('svg').style.color = "var(--ext-toc-fg, var(--fg))";
-            chevronBtn.querySelector('svg').style.fill = "var(--ext-toc-fg, var(--fg))";
+            chevronBtn.innerHTML = iconHtml(isCollapsed ? "chevron-right" : "chevron-down", 14);
+            chevronBtn.style.color = "var(--ext-toc-fg, var(--fg))";
             chevronBtn.setAttribute('aria-label', isCollapsed ? '展开子目录' : '收起子目录');
             chevronBtn.title = isCollapsed ? '展开' : '收起';
             chevronBtn.style.background = 'transparent';
@@ -1117,10 +1125,8 @@ export async function activate(ctx) {
             if (roots.length > 0) {
               const isCollapsed = tocState.collapsed.has(blockId);
               const chevronBtn = document.createElement("button");
-              chevronBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>';
-              chevronBtn.querySelector('svg').style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(90deg)';
-              chevronBtn.querySelector('svg').style.color = "var(--ext-toc-fg, var(--fg))";
-              chevronBtn.querySelector('svg').style.fill = "var(--ext-toc-fg, var(--fg))";
+              chevronBtn.innerHTML = iconHtml(isCollapsed ? "chevron-right" : "chevron-down", 14);
+              chevronBtn.style.color = "var(--ext-toc-fg, var(--fg))";
               chevronBtn.setAttribute('aria-label', isCollapsed ? '展开块内目录' : '收起块内目录');
               chevronBtn.title = isCollapsed ? '展开' : '收起';
               chevronBtn.style.background = 'transparent';
@@ -1190,7 +1196,7 @@ export async function activate(ctx) {
               // 这里选用一个向左的箭头，或者一个定位图标。
               // 考虑到 "new answer"，使用一个小圆点带光晕效果的 SVG 可能更好，或者简单的 Left Arrow Icon
               // 试用 Right Arrow
-              indicator.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>';
+              indicator.innerHTML = iconHtml("chevron-right", 12);
               dotContainer.appendChild(indicator);
             } else {
               const dot = document.createElement("span");
@@ -1677,7 +1683,7 @@ export async function activate(ctx) {
     title: t("cmd.show", "显示目录"),
     description: t("slash.show.description", "打开文档目录侧边栏"),
     category: t("category.toc", "目录"),
-    icon: "📑",
+    icon: "$(book)",
     priority: 100,
     execute: () => {
       window.zion.commands.executeCommand("toc.show");
@@ -1690,7 +1696,7 @@ export async function activate(ctx) {
     title: t("cmd.insert", "插入目录"),
     description: t("slash.insert.description", "在光标位置插入 Markdown 目录"),
     category: t("category.toc", "目录"),
-    icon: "📋",
+    icon: "$(list-tree)",
     priority: 90,
     execute: () => {
       window.zion.commands.executeCommand("toc.insert");
@@ -1703,7 +1709,7 @@ export async function activate(ctx) {
     title: t("cmd.toggleGroupByRole", "切换目录分组"),
     description: t("slash.group.description", "按角色分组显示目录"),
     category: t("category.toc", "目录"),
-    icon: "📑",
+    icon: "$(book)",
     priority: 80,
     execute: () => {
       window.zion.commands.executeCommand("toc.toggleGroupByRole");
@@ -1843,7 +1849,7 @@ export async function activate(ctx) {
 
           // 分组模式切换按钮
           const groupBtn = document.createElement("button");
-          groupBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm2 4v-2H3v2h2zM3 9h2V7H3v2zm12 12h2v-2h-2v2zm4-18H9v2h10v10h2V3zm-2 14h-2v2h2v-2zm-4 4h-2v2h2v-2zM9 17h2v-2H9v2zm0-4h2v-2H9v2zm0-4h2V7H9v2zm4 8h2v-2h-2v2zm0-8h2V7h-2v2zm4 4h2v-2h-2v2zm0-4h2V7h-2v2z"/></svg>';
+          groupBtn.innerHTML = iconHtml("list-tree", 14);
           groupBtn.setAttribute('aria-label', '按角色分组 TOC');
           groupBtn.title = "按角色分组 TOC";
           // Use the same base visual style as other toolbar buttons (icon-only, no border/background)
@@ -1898,7 +1904,7 @@ export async function activate(ctx) {
 
           // 复制按钮（内联 clipboard SVG）
           const copyBtn = document.createElement("button");
-          copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+          copyBtn.innerHTML = iconHtml("copy", 14);
           copyBtn.setAttribute('aria-label', '复制 TOC 到剪贴板');
           copyBtn.title = "复制 TOC 到剪贴板";
           copyBtn.style.background = "transparent";
@@ -1938,7 +1944,7 @@ export async function activate(ctx) {
 
           // 插入按钮（内联 plus SVG）
           const insertBtn = document.createElement("button");
-          insertBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M19 13H13v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>';
+          insertBtn.innerHTML = iconHtml("add", 14);
           insertBtn.setAttribute('aria-label', '插入 TOC 到光标处');
           insertBtn.title = "插入 TOC 到光标处";
           insertBtn.style.background = "transparent";
@@ -1957,7 +1963,7 @@ export async function activate(ctx) {
 
           // 收起按钮（使用内联 chevron-left SVG）
           const collapseBtn = document.createElement("button");
-          collapseBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>';
+          collapseBtn.innerHTML = iconHtml("chevron-left", 14);
           collapseBtn.setAttribute('aria-label', '收起目录');
           collapseBtn.title = "收起目录";
           collapseBtn.style.background = "transparent";

@@ -20,6 +20,7 @@ import {
   sideBarRuntime
 } from "../ui/workbench/runtime";
 import { createChatUsageStore } from "../chat/usage";
+import { createZionIcon, hasZionIcon, zionIconName } from "../ui/icons";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -1688,6 +1689,38 @@ class Registry {
   }
 
   // statusbar
+  private renderStatusText(target: HTMLElement, text: string) {
+    target.textContent = "";
+    target.className = "";
+
+    const value = String(text ?? "");
+    const iconOnly = value.match(/^\$\(([^)]+)\)$/);
+    if (iconOnly) {
+      target.appendChild(createZionIcon(zionIconName(iconOnly[1])));
+      return;
+    }
+
+    const inlineIcon = value.match(/^\$\(([^)]+)\)\s*(.*)$/);
+    if (inlineIcon) {
+      target.appendChild(createZionIcon(zionIconName(inlineIcon[1])));
+      const label = String(inlineIcon[2] || "").trim();
+      if (label) {
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "status-item-label";
+        labelSpan.textContent = label;
+        target.appendChild(labelSpan);
+      }
+      return;
+    }
+
+    if (hasZionIcon(value)) {
+      target.appendChild(createZionIcon(zionIconName(value)));
+      return;
+    }
+
+    target.textContent = value;
+  }
+
   registerStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable {
     const bar = document.getElementById("statusbar");
     if (!bar) return { dispose: () => {} };
@@ -1705,22 +1738,10 @@ class Registry {
       // Update in place without clearing innerHTML to preserve hover state and reduce flicker
       const textSpan = existing.el.querySelector("span:not(.status-pin-btn)");
       if (textSpan) {
-        const codiconMatch = opts.text.match(/^\$\(([^)]+)\)$/);
-        if (codiconMatch) {
-          textSpan.className = `codicon codicon-${codiconMatch[1]}`;
-          textSpan.textContent = "";
-        } else {
-          textSpan.className = "";
-          textSpan.textContent = opts.text;
-        }
+        this.renderStatusText(textSpan as HTMLElement, opts.text);
       } else {
         const span = document.createElement("span");
-        const codiconMatch = opts.text.match(/^\$\(([^)]+)\)$/);
-        if (codiconMatch) {
-          span.className = `codicon codicon-${codiconMatch[1]}`;
-        } else {
-          span.textContent = opts.text;
-        }
+        this.renderStatusText(span, opts.text);
         if (existing.el.firstChild) {
           existing.el.insertBefore(span, existing.el.firstChild);
         } else {
@@ -1783,12 +1804,7 @@ class Registry {
     }
     
     const span = document.createElement("span");
-    const codiconMatch = opts.text.match(/^\$\(([^)]+)\)$/);
-    if (codiconMatch) {
-      span.className = `codicon codicon-${codiconMatch[1]}`;
-    } else {
-      span.textContent = opts.text;
-    }
+    this.renderStatusText(span, opts.text);
     el.appendChild(span);
 
     // No dedicated pin button - use Context Menu
@@ -1835,10 +1851,10 @@ class Registry {
       existing.el.setAttribute("data-zion-status-id", opts.id);
       const textSpan = existing.el.querySelector("span:not(.status-pin-btn)");
       if (textSpan) {
-        textSpan.textContent = opts.text;
+        this.renderStatusText(textSpan as HTMLElement, opts.text);
       } else {
         const span = document.createElement("span");
-        span.textContent = opts.text;
+        this.renderStatusText(span, opts.text);
         if (existing.el.firstChild) {
           existing.el.insertBefore(span, existing.el.firstChild as any);
         } else {
@@ -1882,7 +1898,7 @@ class Registry {
     el.setAttribute("data-zion-status-id", opts.id);
 
     const span = document.createElement("span");
-    span.textContent = opts.text;
+    this.renderStatusText(span, opts.text);
     el.appendChild(span);
 
     el.title = typeof opts.tooltip === "string" ? opts.tooltip : "";

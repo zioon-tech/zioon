@@ -29,6 +29,28 @@ const PREVIEW_AUX_WIDTH = 760;
 let pendingRevealCommandPayload = null;
 const TREE_CACHE_MAX_CHILDREN_PER_DIR = 400;
 
+function createPanelIcon(codiconName, className) {
+  const span = document.createElement("span");
+  span.className = className || "";
+  span.setAttribute("aria-hidden", "true");
+  const name = String(codiconName || "").replace(/^codicon-/, "");
+  if (!name) return span;
+  try {
+    const icon = window.zionIcons?.createFromCodicon?.(name);
+    if (icon) {
+      span.appendChild(icon);
+      return span;
+    }
+  } catch {}
+  span.className = `${className || ""} codicon codicon-${name}`.trim();
+  return span;
+}
+
+function setPanelIcon(target, codiconName) {
+  target.textContent = "";
+  target.appendChild(createPanelIcon(codiconName, ""));
+}
+
 const IGNORE_NAMES = new Set([
   ".git",
   ".hg",
@@ -93,7 +115,7 @@ export function registerFilesPanel(ctx) {
     pluginId: "dev.tools",
     title: "Files",
     titleKey: "dev.tools.files.title",
-    icon: "◇",
+    icon: "$(folder)",
     order: 10,
     keepWhenActive: true,
     component: {
@@ -484,15 +506,11 @@ function createFilesPanel(container) {
         event.preventDefault();
         closeFileTab(tab.id);
       };
-      const icon = document.createElement("span");
-      icon.className = `zion-files-preview-tab-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
-      icon.setAttribute("aria-hidden", "true");
+      const icon = createPanelIcon(tab.kind === "memory" ? "database" : iconForFile(tab.title), "zion-files-preview-tab-icon");
       const label = document.createElement("span");
       label.className = "zion-files-preview-tab-label";
       label.textContent = tab.title;
-      const close = document.createElement("span");
-      close.className = "zion-files-preview-tab-close codicon codicon-close";
-      close.setAttribute("aria-hidden", "true");
+      const close = createPanelIcon("close", "zion-files-preview-tab-close");
       close.title = t("files.close", "Close");
       close.onclick = (event) => {
         event.preventDefault();
@@ -563,9 +581,7 @@ function createFilesPanel(container) {
     tab = resolveEditorTab(tab);
     const header = document.createElement("div");
     header.className = "zion-files-preview-header";
-    const icon = document.createElement("span");
-    icon.className = `zion-files-preview-header-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createPanelIcon(tab.kind === "memory" ? "database" : iconForFile(tab.title), "zion-files-preview-header-icon");
     const title = renderBreadcrumb(tab.displayPath || tab.path || tab.title);
     const meta = document.createElement("div");
     meta.className = "zion-files-preview-meta";
@@ -586,9 +602,7 @@ function createFilesPanel(container) {
     button.type = "button";
     button.className = `zion-files-preview-mode-button${shouldShowMarkdownPreview(tab) ? " is-active" : ""}`;
     button.title = shouldShowMarkdownPreview(tab) ? t("files.disableMarkdownPreview", "Disable Markdown preview") : t("files.previewMarkdown", "Preview Markdown");
-    const icon = document.createElement("span");
-    icon.className = "codicon codicon-eye";
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createPanelIcon("eye", "");
     button.appendChild(icon);
     button.onclick = () => {
       saveActivePreviewScrollState(tab.id);
@@ -622,9 +636,7 @@ function createFilesPanel(container) {
   }
 
   function renderBreadcrumbSeparator() {
-    const sep = document.createElement("span");
-    sep.className = "zion-files-preview-breadcrumb-separator codicon codicon-chevron-right";
-    sep.setAttribute("aria-hidden", "true");
+    const sep = createPanelIcon("chevron-right", "zion-files-preview-breadcrumb-separator");
     return sep;
   }
 
@@ -932,9 +944,7 @@ function createFilesPanel(container) {
     if (revealStatus) {
       const status = document.createElement("div");
       status.className = "zion-files-reveal-status";
-      const spinner = document.createElement("span");
-      spinner.className = "zion-files-reveal-spinner codicon codicon-loading";
-      spinner.setAttribute("aria-hidden", "true");
+      const spinner = createPanelIcon("loading", "zion-files-reveal-spinner");
       const text = document.createElement("span");
       text.textContent = revealStatus;
       status.appendChild(spinner);
@@ -973,13 +983,9 @@ function createFilesPanel(container) {
       if (node.kind === "directory") toggleDirectory(node);
     };
 
-    const chevron = document.createElement("span");
-    chevron.className = `zion-files-chevron${isDirectory ? ` codicon ${isExpanded ? "codicon-chevron-down" : "codicon-chevron-right"}` : ""}`;
-    chevron.setAttribute("aria-hidden", "true");
+    const chevron = createPanelIcon(isDirectory ? (isExpanded ? "chevron-down" : "chevron-right") : "", "zion-files-chevron");
 
-    const icon = document.createElement("span");
-    icon.className = `zion-files-icon codicon ${isDirectory ? (isExpanded ? "codicon-folder-opened" : "codicon-folder") : iconForFile(node.name)}`;
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createPanelIcon(isDirectory ? (isExpanded ? "folder-opened" : "folder") : iconForFile(node.name), "zion-files-icon");
 
     const label = document.createElement("span");
     label.className = "zion-files-name";
@@ -1054,7 +1060,8 @@ function createFilesPanel(container) {
       details.onkeydown = (event) => event.stopPropagation();
 
       const summary = document.createElement("summary");
-      summary.className = "zion-files-actions-trigger codicon codicon-ellipsis";
+      summary.className = "zion-files-actions-trigger";
+      setPanelIcon(summary, "ellipsis");
       summary.title = t("files.moreActions", "More actions");
       summary.setAttribute("aria-label", t("files.moreActions", "More actions"));
       details.appendChild(summary);
@@ -1304,14 +1311,11 @@ function createFilesPanel(container) {
     row.setAttribute("aria-expanded", isExpanded ? "true" : "false");
     const chevron = row.querySelector(".zion-files-chevron");
     if (chevron) {
-      chevron.classList.add("codicon");
-      chevron.classList.toggle("codicon-chevron-right", !isExpanded);
-      chevron.classList.toggle("codicon-chevron-down", isExpanded);
+      setPanelIcon(chevron, isExpanded ? "chevron-down" : "chevron-right");
     }
     const icon = row.querySelector(".zion-files-icon");
     if (icon) {
-      icon.classList.toggle("codicon-folder", !isExpanded);
-      icon.classList.toggle("codicon-folder-opened", isExpanded);
+      setPanelIcon(icon, isExpanded ? "folder-opened" : "folder");
     }
   }
 

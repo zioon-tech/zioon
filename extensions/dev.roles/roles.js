@@ -1,5 +1,5 @@
-import { Prec, RangeSetBuilder } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, keymap, gutter, GutterMarker } from "@codemirror/view";
+import { Prec, RangeSetBuilder, StateField } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin, keymap, gutter, GutterMarker, WidgetType } from "@codemirror/view";
 import { foldService } from "@codemirror/language";
 
 /**
@@ -97,7 +97,7 @@ function getRoleForLine(text, prefixes) {
 /** @param {string} role */
 function tokenClass(role) {
   // 根据 TOC 插件中的颜色方案返回对应的类名
-  // user: '#4caf50' (绿色), assistant: '#2196f3' (蓝色), system: '#9e9e9e' (灰色)
+  // Colors are provided by CSS role tokens so assistant follows the active theme.
   if (role === 'assistant') return "cm-role-token-assistant";
   if (role === 'system') return "cm-role-token-system";
   return "cm-role-token-user"; // 默认为 user
@@ -110,6 +110,61 @@ function blockClass(role) {
 }
 
 const ROLES_NAV_FLASH_EVENT = "zion:roles-nav-flash";
+
+class RoleBoundarySpacerWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = "zion-role-boundary-spacer";
+    el.setAttribute("aria-hidden", "true");
+    return el;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+}
+
+const roleBoundarySpacerWidget = new RoleBoundarySpacerWidget();
+
+function buildRoleSpacerDecorations(state, prefixes) {
+  const doc = state.doc;
+  const builder = new RangeSetBuilder();
+  let pos = 1;
+  while (pos <= doc.length) {
+    const line = doc.lineAt(pos);
+    const text = doc.sliceString(line.from, line.to);
+    const roleHere = getRoleForLine(text, prefixes);
+    if (roleHere && line.number !== 1) {
+      builder.add(
+        line.from,
+        line.from,
+        Decoration.widget({
+          widget: roleBoundarySpacerWidget,
+          block: true,
+          side: -1
+        })
+      );
+    }
+    pos = line.to + 1;
+  }
+  return builder.finish();
+}
+
+function roleSpacerField(prefixes) {
+  return StateField.define({
+    create(state) {
+      return buildRoleSpacerDecorations(state, prefixes);
+    },
+    update(value, tr) {
+      return tr.docChanged ? buildRoleSpacerDecorations(tr.state, prefixes) : value.map(tr.changes);
+    },
+    provide: field => EditorView.decorations.from(field)
+  });
+}
 
 function flashRoleNavLine(view, lineIndex) {
   if (!view || typeof lineIndex !== "number" || lineIndex < 0) return;
@@ -207,7 +262,7 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex, flashLin
       if (line.number - 1 === flashLineIndex) {
         lineClasses.push(`cm-role-nav-flash cm-role-nav-flash-${flashSerial % 2 ? "b" : "a"}`);
       }
-      if (lineClasses.length) {
+        if (lineClasses.length) {
         builder.add(line.from, line.from, Decoration.line({ class: lineClasses.join(" ") }));
     }
 
@@ -787,5 +842,5 @@ export function roles(opts = {}) {
     }
   });
 
-  return [rolesView(opts), rolesRailGutter(prefixes, getHighlightBlockRoles(opts)), navKeymap, foldExt];
+    return [roleSpacerField(prefixes), rolesView(opts), rolesRailGutter(prefixes, getHighlightBlockRoles(opts)), navKeymap, foldExt];
 }
