@@ -29,6 +29,9 @@ let pendingLocatedThreadId = "";
 let lastCommentsEditorHandle = null;
 let lastCommentSourceFocus = null;
 const annotationPersistTimers = new Map();
+const commentEditorHandlesBySession = new Map();
+const detachedCommentTailFollowSessions = new Set();
+const commentRunFollowTargetsBySession = new Map();
 const threadPayloadCache = new Map();
 const threadPayloadLoads = new Map();
 
@@ -45,6 +48,74 @@ function reportCommentLayoutDebug(label, data = {}) {
   try {
     if (!isCommentsLayoutDebugEnabled()) return;
     console.debug(`[comments:layout] ${label}`, data);
+  } catch {}
+}
+
+// #region debug-point A:comment-scroll-jitter
+function debugCommentScrollJitter(hypothesisId, location, data = {}) {
+  try {
+    fetch("http://127.0.0.1:7777/event", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: "comment-scroll-jitter",
+        runId: "post-fix",
+        hypothesisId,
+        location,
+        msg: `[DEBUG] ${location}`,
+        data,
+        ts: Date.now()
+      })
+    }).catch(() => {});
+  } catch {}
+}
+// #endregion
+
+function getCommentScrollDebugSnapshot(view) {
+  try {
+    const list = view?.dom?.closest?.(".zion-comments-list") || null;
+    const scroller = view?.scrollDOM || null;
+    const sel = view?.state?.selection?.main || null;
+    const head = typeof sel?.head === "number" ? sel.head : null;
+    const coords = typeof head === "number" ? view.coordsAtPos(head) : null;
+    const sessionId = String(view?.dom?.dataset?.sessionId || "");
+    return {
+      sessionId,
+      listScrollTop: Math.round(Number(list?.scrollTop) || 0),
+      listScrollHeight: Math.round(Number(list?.scrollHeight) || 0),
+      listClientHeight: Math.round(Number(list?.clientHeight) || 0),
+      cmScrollTop: Math.round(Number(scroller?.scrollTop) || 0),
+      cmScrollHeight: Math.round(Number(scroller?.scrollHeight) || 0),
+      cmClientHeight: Math.round(Number(scroller?.clientHeight) || 0),
+      selectionHead: head,
+      cursorTop: coords ? Math.round(Number(coords.top) || 0) : null,
+      cursorBottom: coords ? Math.round(Number(coords.bottom) || 0) : null,
+      docLength: Math.round(Number(view?.state?.doc?.length) || 0),
+      streaming: sessionId ? !!window.zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming : false,
+      runTarget: sessionId ? commentRunFollowTargetsBySession.get(sessionId) || null : null,
+      activeElementClass: String(document.activeElement?.className || "").slice(0, 120)
+    };
+  } catch {
+    return {};
+  }
+}
+
+function markCommentListProgrammaticScroll(list, duration = 180) {
+  try {
+    if (!list) return;
+    list.__zionProgrammaticScrollUntil = Math.max(
+      Number(list.__zionProgrammaticScrollUntil) || 0,
+      Date.now() + duration
+    );
+  } catch {}
+}
+
+function markCommentUserScrollIntent(target, duration = 900) {
+  try {
+    if (!target) return;
+    target.__zionUserScrollIntentUntil = Math.max(
+      Number(target.__zionUserScrollIntentUntil) || 0,
+      Date.now() + duration
+    );
   } catch {}
 }
 
@@ -104,6 +175,8 @@ const I18N_MESSAGES = {
     "thread.reopen": "重新打开评论",
     "thread.expand": "展开编辑器",
     "thread.collapse": "收起编辑器",
+      "thread.emptySummary": "暂无评论内容。展开开始会话。",
+      "threadMeta.updated": "更新于 {time}",
     "threadStatus.resolved": "已解决",
     "threadStatus.lost": "锚点丢失",
     "threadStatus.moved": "已重定位",
@@ -157,6 +230,8 @@ const I18N_MESSAGES = {
     "thread.reopen": "Reopen comment",
     "thread.expand": "Expand editor",
     "thread.collapse": "Collapse editor",
+      "thread.emptySummary": "No comment yet. Expand to start the conversation.",
+      "threadMeta.updated": "Updated {time}",
     "threadStatus.resolved": "Resolved",
     "threadStatus.lost": "Anchor missing",
     "threadStatus.moved": "Relocated",
@@ -528,10 +603,11 @@ function sortThreadsByDocumentOrder(threads, anchorById) {
         const row = list.querySelector(`.zion-comments-row[data-thread-id="${cssEscape(item.id)}"]`);
         if (!row) continue;
         const anchor = anchorById?.get?.(item.id) || null;
+        const minGap = rows.length ? COMMENT_PANEL_MIN_ROW_GAP : 0;
         const anchorTop = anchor
           ? getCommentAnchorTop(view, anchor, item.startLine)
-          : panelCursorTop + COMMENT_PANEL_MIN_ROW_GAP;
-        const rowGap = Math.max(COMMENT_PANEL_MIN_ROW_GAP, Math.round(anchorTop - panelCursorTop));
+          : panelCursorTop + minGap;
+        const rowGap = Math.max(minGap, Math.round(anchorTop - panelCursorTop));
         row.style.marginTop = `${rowGap}px`;
         const rowTop = panelCursorTop + rowGap;
         const rowHeight = Math.max(1, Math.ceil(row.getBoundingClientRect?.().height || row.offsetHeight || 0));
@@ -560,7 +636,7 @@ function sortThreadsByDocumentOrder(threads, anchorById) {
       const currentSpacer = Number(list.__zionCommentsEndSpacer || 0);
       const panelMaxScroll = Math.max(0, Math.ceil((list.scrollHeight || 0) - (list.clientHeight || 0)));
       const panelMaxWithoutSpacer = Math.max(0, panelMaxScroll - currentSpacer);
-      const minSpacer = Math.max(220, Math.ceil((list.clientHeight || 0) * 0.45));
+      const minSpacer = Math.max(360, Math.ceil(list.clientHeight || 0));
       const nextSpacer = Math.max(minSpacer, Math.ceil(sourceMaxScroll - panelMaxWithoutSpacer + 8));
       if (Math.abs(nextSpacer - currentSpacer) > 1) {
         list.__zionCommentsEndSpacer = nextSpacer;
@@ -607,6 +683,28 @@ function compactText(value, max = 88) {
   return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
+  function getThreadSummaryText(thread, fallback = "") {
+    try {
+      const raw = String(thread?.summary || thread?.body || fallback || "").trim();
+      if (!raw) return "";
+      const cleaned = raw
+        .replace(/```[\s\S]*?```/g, " ")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/!\[[^\]]*\]\([^)]+\)/g, " ")
+        .replace(/\[[^\]]+\]\(([^)]+)\)/g, "$1")
+        .split(/\n+/)
+        .map((line) => line
+          .replace(/^\s{0,3}(#{1,6}|[-*+>]|\d+[.)])\s+/g, "")
+          .replace(/^\s*(user|assistant|system)\s*[:：]\s*/i, "")
+          .trim())
+        .filter(Boolean)
+        .join(" ");
+      return compactText(cleaned, 150);
+    } catch {
+      return compactText(fallback, 150);
+    }
+  }
+
 function cssEscape(value) {
   try {
     return globalThis.CSS?.escape?.(String(value || "")) || String(value || "").replace(/["\\]/g, "\\$&");
@@ -627,6 +725,28 @@ function formatCompactTime(ts) {
   if (diff < day) return `${Math.floor(diff / hour)}h`;
   return `${Math.floor(diff / day)}d`;
 }
+
+  function getThreadLatestAt(thread) {
+    try {
+      return Math.max(
+        Number(thread?.summaryUpdatedAt) || 0,
+        Number(thread?.updatedAt) || 0,
+        Number(thread?.createdAt) || 0
+      );
+    } catch {
+      return 0;
+    }
+  }
+
+  function formatThreadTimeTitle(ts) {
+    const value = Number(ts) || 0;
+    if (!value) return "";
+    try {
+      return new Date(value).toLocaleString();
+    } catch {
+      return "";
+    }
+  }
 
 function saveThread(thread) {
   const list = readAllThreads();
@@ -914,7 +1034,6 @@ function threadRunStatusTitle(status) {
 function renderCommentStateBadge(status) {
   if (status === "resolved") return `<span class="zion-comments-state-badge is-resolved">${escapeHtml(t("threadStatus.resolved", "Resolved"))}</span>`;
   if (status === "lost") return `<span class="zion-comments-state-badge is-lost">${escapeHtml(t("threadStatus.lost", "Anchor missing"))}</span>`;
-  if (status === "moved") return `<span class="zion-comments-state-badge is-moved">${escapeHtml(t("threadStatus.moved", "Relocated"))}</span>`;
   return "";
 }
 
@@ -1435,14 +1554,324 @@ function buildThreadContextMessages(thread) {
   return messages;
 }
 
-function createThreadEditor(container, thread, onSave, onRun, onLayoutChange) {
+function scrollCommentThreadCursorIntoView(view, reason = "keyboard") {
+  try {
+    const scroller = view?.scrollDOM;
+    if (!scroller) return;
+    const head = Math.max(0, Math.min(view.state.doc.length, view.state.selection.main.head));
+    const coords = view.coordsAtPos(head);
+    if (!coords) {
+      view.dispatch({ effects: EditorView.scrollIntoView(head, { y: "nearest", yMargin: 40 }) });
+      return;
+    }
+    const scrollerRect = scroller.getBoundingClientRect();
+    if (!scrollerRect?.height) return;
+    const topLimit = scrollerRect.top + 24;
+    const bottomLimit = scrollerRect.bottom - 28;
+    let delta = 0;
+    if (coords.top < topLimit) delta = coords.top - topLimit;
+    else if (coords.bottom > bottomLimit) delta = coords.bottom - bottomLimit;
+    if (!delta) return;
+    scroller.scrollTop += delta;
+    reportCommentLayoutDebug("thread-cursor-scroll", {
+      reason,
+      delta: Math.round(delta),
+      head,
+      cursorTop: Math.round(coords.top),
+      cursorBottom: Math.round(coords.bottom),
+      scrollerTop: Math.round(scrollerRect.top),
+      scrollerBottom: Math.round(scrollerRect.bottom),
+      nextScrollTop: Math.round(scroller.scrollTop)
+    });
+  } catch {}
+}
+
+function scheduleCommentThreadCursorScroll(view, reason) {
+  try {
+    requestAnimationFrame(() => {
+      scrollCommentThreadCursorIntoView(view, reason);
+      requestAnimationFrame(() => scrollCommentThreadCursorIntoView(view, `${reason}:after-layout`));
+    });
+  } catch {}
+}
+
+function shouldFollowCommentThreadSession(sessionId) {
+  const sid = String(sessionId || "");
+  if (!sid.startsWith("comment:")) return false;
+  try {
+    return window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
+  } catch {
+    return true;
+  }
+}
+
+function shouldFollowActiveCommentRun(sessionId, runId = "") {
+  const sid = String(sessionId || "");
+  if (!sid.startsWith("comment:")) return false;
+  const target = commentRunFollowTargetsBySession.get(sid);
+  if (!target) return false;
+  const state = window.zion?.state?.get?.(`chat.runs.${sid}`) || null;
+  if (!state?.streaming) return false;
+  const expectedRunId = String(target.runId || state?.runId || "");
+  const actualRunId = String(runId || state?.runId || "");
+  return !expectedRunId || !actualRunId || expectedRunId === actualRunId;
+}
+
+function shouldRunScheduledCommentTail(sessionId, opts = {}) {
+  const sid = String(sessionId || "");
+  if (!sid.startsWith("comment:")) return false;
+  if (detachedCommentTailFollowSessions.has(sid) && !opts.allowDetached) return false;
+  const state = window.zion?.state?.get?.(`chat.runs.${sid}`) || null;
+  const runId = String(opts.runId || "");
+  if (runId && String(state?.runId || "") !== runId) return false;
+  if (!shouldFollowCommentThreadSession(sid) && !shouldFollowActiveCommentRun(sid, runId)) return false;
+  return !!state?.streaming || !!opts.allowAfterRun;
+}
+
+function shouldFollowCommentChatEvent(eventName, payload) {
+  const sid = String(payload?.sessionId || "");
+  if (!sid || !sid.startsWith("comment:")) return false;
+  if (detachedCommentTailFollowSessions.has(sid)) return false;
+  const state = window.zion?.state?.get?.(`chat.runs.${sid}`) || null;
+  const runId = String(payload?.runId || "");
+  const currentRunId = String(state?.runId || "");
+  if (runId && currentRunId && runId !== currentRunId) return false;
+  if (eventName === "chat/runStarted") return false;
+  if (!shouldFollowCommentThreadSession(sid) && !shouldFollowActiveCommentRun(sid, runId)) return false;
+  if (state?.streaming) return true;
+  return false;
+}
+
+function scrollCommentThreadTailIntoView(view, reason = "thread-tail", opts = {}) {
+  try {
+    const scroller = view?.scrollDOM;
+    if (!scroller) return false;
+    const scrollerRect = scroller.getBoundingClientRect();
+    if (!scrollerRect?.height) return false;
+    const runTarget = getCommentRunFollowTargetRect(view);
+    if (!runTarget) {
+      debugCommentScrollJitter("B", "tail.skipNoRunTarget", {
+        reason,
+        cmScrollTop: Math.round(Number(scroller.scrollTop) || 0),
+        sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0)
+      });
+      return false;
+    }
+    
+    if (runTarget.isVirtual) {
+      const beforeScrollTop = Number(scroller.scrollTop) || 0;
+      const block = view.lineBlockAt?.(runTarget.pos);
+      if (block) {
+        markCommentListProgrammaticScroll(scroller, 900);
+        const targetScrollTop = block.bottom - scrollerRect.height + 40;
+        scroller.scrollTop = Math.max(0, targetScrollTop);
+        debugCommentScrollJitter("B", "tail.applyVirtual", {
+          reason,
+          beforeScrollTop,
+          afterScrollTop: scroller.scrollTop,
+          targetMode: "run-block-virtual",
+          targetLine: runTarget.lineNumber,
+          pos: runTarget.pos,
+          blockTop: block.top,
+          blockBottom: block.bottom
+        });
+      }
+      return true;
+    }
+
+    const bottomLimit = scrollerRect.bottom - 40;
+    const topLimit = scrollerRect.top + 20;
+    const maxDelta = Math.max(120, Math.min(360, scrollerRect.height * 0.8));
+    let delta = 0;
+    if (runTarget.bottom > bottomLimit) {
+      delta = runTarget.bottom - bottomLimit;
+    } else if (runTarget.top < topLimit) {
+      delta = runTarget.top - topLimit;
+    }
+    if (Math.abs(delta) < 1) {
+      debugCommentScrollJitter("B", "tail.alreadyVisible", {
+        reason,
+        forceAlign: !!opts.forceAlign,
+        tailTop: Math.round(runTarget.top),
+        tailBottom: Math.round(runTarget.bottom),
+        topLimit: Math.round(topLimit),
+        bottomLimit: Math.round(bottomLimit),
+        cmScrollTop: Math.round(Number(scroller.scrollTop) || 0)
+      });
+      return false;
+    }
+    if (Math.abs(delta) > maxDelta) {
+      debugCommentScrollJitter("B", "tail.skipLargeDelta", {
+        reason,
+        forceAlign: !!opts.forceAlign,
+        delta: Math.round(delta),
+        maxDelta: Math.round(maxDelta),
+        tailTop: Math.round(runTarget.top),
+        tailBottom: Math.round(runTarget.bottom),
+        topLimit: Math.round(topLimit),
+        bottomLimit: Math.round(bottomLimit),
+        cmScrollTop: Math.round(Number(scroller.scrollTop) || 0)
+      });
+      return false;
+    }
+    const beforeScrollTop = Number(scroller.scrollTop) || 0;
+    markCommentListProgrammaticScroll(scroller, 900);
+    scroller.scrollTop += delta;
+      // #region debug-point B:tail-apply
+      debugCommentScrollJitter("B", "tail.apply", {
+        reason,
+        beforeScrollTop: Math.round(beforeScrollTop),
+        afterScrollTop: Math.round(Number(scroller.scrollTop) || 0),
+        delta: Math.round(delta),
+        tailTop: Math.round(runTarget.top),
+        tailBottom: Math.round(runTarget.bottom),
+        targetMode: "run-block",
+        targetLine: Number.isFinite(runTarget.lineNumber) ? runTarget.lineNumber : null,
+        scrollerBottom: Math.round(scrollerRect.bottom),
+        scrollerTop: Math.round(scrollerRect.top),
+        topLimit: Math.round(topLimit),
+        maxDelta: Math.round(maxDelta),
+        forceAlign: !!opts.forceAlign,
+        sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0)
+      });
+      // #endregion
+    reportCommentLayoutDebug("thread-tail-scroll", {
+      reason,
+      delta: Math.round(delta),
+      tailTop: Math.round(runTarget.top),
+      tailBottom: Math.round(runTarget.bottom),
+      targetMode: "run-block",
+      scrollerBottom: Math.round(scrollerRect.bottom),
+      nextScrollTop: Math.round(scroller.scrollTop)
+    });
+    return true;
+  } catch {}
+  return false;
+}
+
+function getCommentRunFollowTargetRect(view) {
+  try {
+    const sessionId = String(view?.dom?.dataset?.sessionId || "");
+    const target = sessionId ? commentRunFollowTargetsBySession.get(sessionId) : null;
+    const doc = view?.state?.doc;
+    if (!target || !doc) return null;
+    const text = doc.toString();
+    const lines = text.split("\n");
+    const startLine = Math.max(0, Number(target.answerHeadLine ?? target.insertLine ?? 0) || 0);
+    let assistantIndex = -1;
+    for (let i = Math.min(startLine, lines.length - 1); i < lines.length; i++) {
+      if (/^\s*assistant\b/.test(lines[i] || "")) {
+        assistantIndex = i;
+        break;
+      }
+      if (i > startLine && /^\s*(system|user|tool)\b/.test(lines[i] || "")) break;
+    }
+    if (assistantIndex < 0) {
+      for (let i = Math.min(startLine, lines.length - 1); i >= 0; i--) {
+        if (/^\s*assistant\b/.test(lines[i] || "")) {
+          assistantIndex = i;
+          break;
+        }
+        if (i < startLine && /^\s*(system|user|tool)\b/.test(lines[i] || "")) break;
+      }
+    }
+    if (assistantIndex < 0) return null;
+    let endIndex = assistantIndex;
+    for (let i = assistantIndex + 1; i < lines.length; i++) {
+      if (/^\s*(system|user|assistant|tool)\b/.test(lines[i] || "")) break;
+      endIndex = i;
+    }
+    const line = doc.line(Math.max(1, Math.min(doc.lines, endIndex + 1)));
+    const coords = view.coordsAtPos(line.to);
+    return { 
+      lineNumber: endIndex + 1, 
+      pos: line.to, 
+      top: coords ? coords.top : null, 
+      bottom: coords ? coords.bottom : null,
+      isVirtual: !coords 
+    };
+  } catch {}
+  return null;
+}
+
+function scheduleCommentThreadTailScroll(view, sessionId, reason = "thread-tail", opts = {}) {
+  if (!view || !shouldRunScheduledCommentTail(sessionId, opts)) return;
+  // #region debug-point A:tail-schedule
+  debugCommentScrollJitter("A", "tail.schedule", {
+    sessionId: String(sessionId || ""),
+    reason,
+    listScrollTop: Math.round(Number(view?.dom?.closest?.(".zion-comments-list")?.scrollTop) || 0),
+    sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0),
+    streaming: !!window.zion?.state?.get?.(`chat.runs.${String(sessionId || "")}`)?.streaming,
+      followLatest: window.zion?.state?.get?.(`chat.followLatest.${String(sessionId || "")}`),
+        detached: detachedCommentTailFollowSessions.has(String(sessionId || "")),
+      runId: opts.runId || "",
+      allowAfterRun: !!opts.allowAfterRun,
+      forceAlign: !!opts.forceAlign
+  });
+  // #endregion
+  const run = (phase) => {
+      if (shouldRunScheduledCommentTail(sessionId, opts)) {
+      scrollCommentThreadTailIntoView(view, `${reason}:${phase}`, {
+        forceAlign: !!opts.forceAlign
+      });
+    }
+  };
+  try {
+    run("sync");
+    requestAnimationFrame(() => {
+      run("raf1");
+      requestAnimationFrame(() => run("raf2"));
+    });
+  } catch {
+    setTimeout(() => run("timeout0"), 0);
+  }
+  try { setTimeout(() => run("timeout80"), 80); } catch {}
+  try { setTimeout(() => run("timeout180"), 180); } catch {}
+}
+
+function scheduleCommentSessionTailScroll(sessionId, reason = "chat-event", opts = {}) {
+  const sid = String(sessionId || "");
+  if (!sid || !shouldRunScheduledCommentTail(sid, opts)) {
+    // #region debug-point A:tail-session-skipped
+    debugCommentScrollJitter("A", "tail.sessionSkipped", {
+      sessionId: sid,
+      reason,
+      followLatest: sid ? window.zion?.state?.get?.(`chat.followLatest.${sid}`) : null,
+      runId: opts.runId || "",
+      allowAfterRun: !!opts.allowAfterRun,
+      streaming: sid ? !!window.zion?.state?.get?.(`chat.runs.${sid}`)?.streaming : false,
+        currentRunId: sid ? String(window.zion?.state?.get?.(`chat.runs.${sid}`)?.runId || "") : "",
+        detached: detachedCommentTailFollowSessions.has(sid)
+    });
+    // #endregion
+    return;
+  }
+  const handle = commentEditorHandlesBySession.get(sid);
+  if (!handle?.view) {
+    // #region debug-point E:tail-no-handle
+    debugCommentScrollJitter("E", "tail.noHandle", {
+      sessionId: sid,
+      reason,
+      knownSessions: Array.from(commentEditorHandlesBySession.keys()).slice(0, 8)
+    });
+    // #endregion
+    return;
+  }
+  scheduleCommentThreadTailScroll(handle.view, sid, reason, opts);
+}
+
+function createThreadEditor(container, thread, onSave, onRun, onLayoutChange, onUserInteraction) {
   let saveTimer = 0;
   let disposed = false;
+  let pendingKeyboardCursorScrollUntil = 0;
+  const keyDisposers = [];
   const panelId = `comments:${thread.id}`;
   const sessionId = getThreadSessionId(thread);
   const initialValue = typeof thread?.body === "string" ? thread.body : "";
   const core = new EditorCore(container, initialValue, panelId);
   core.setSessionId(sessionId);
+    try { core.view.dom.dataset.sessionId = sessionId; } catch {}
   try { core.setLineNumbersEnabled(false); } catch {}
   try { core.setFoldingEnabled(false); } catch {}
   try { core.setActiveLineHighlightEnabled(false); } catch {}
@@ -1460,18 +1889,118 @@ function createThreadEditor(container, thread, onSave, onRun, onLayoutChange) {
     };
   let overviewRail = null;
   try { overviewRail = createChatOverviewRail(proxy || core); } catch {}
+    try {
+      let lastCmScrollTop = Math.round(Number(view.scrollDOM?.scrollTop) || 0);
+      const createdAt = Date.now();
+      const markThreadScrollIntent = () => markCommentUserScrollIntent(view.scrollDOM, 900);
+      const markThreadKeyScrollIntent = (event) => {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+          markThreadScrollIntent();
+        }
+      };
+      const onCmScroll = () => {
+        const nextCmScrollTop = Math.round(Number(view.scrollDOM?.scrollTop) || 0);
+        const hasUserIntent = Date.now() <= Number(view.scrollDOM?.__zionUserScrollIntentUntil || 0);
+        const isProgrammatic = Date.now() <= Number(view.scrollDOM?.__zionProgrammaticScrollUntil || 0);
+        if (hasUserIntent && !isProgrammatic && Date.now() > createdAt + 500 && Math.abs(nextCmScrollTop - lastCmScrollTop) >= 2) {
+          onUserInteraction?.("comment-thread-scroll", getCommentScrollDebugSnapshot(view));
+        }
+        lastCmScrollTop = nextCmScrollTop;
+        debugCommentScrollJitter("I", "thread.cmScroll", getCommentScrollDebugSnapshot(view));
+      };
+      const bindListScroll = () => {
+        const list = view?.dom?.closest?.(".zion-comments-list");
+        if (!list) return;
+        const onListScroll = () => {
+          debugCommentScrollJitter("I", "thread.listScroll", getCommentScrollDebugSnapshot(view));
+        };
+        list.addEventListener("scroll", onListScroll, { passive: true });
+        keyDisposers.push(() => list.removeEventListener("scroll", onListScroll));
+      };
+      view.scrollDOM?.addEventListener?.("wheel", markThreadScrollIntent, { passive: true });
+      view.scrollDOM?.addEventListener?.("touchstart", markThreadScrollIntent, { passive: true });
+      view.scrollDOM?.addEventListener?.("keydown", markThreadKeyScrollIntent, true);
+      view.scrollDOM?.addEventListener?.("pointerdown", (event) => {
+        try {
+          const rect = view.scrollDOM.getBoundingClientRect();
+          if (event.clientX >= rect.right - 16) markThreadScrollIntent();
+        } catch {}
+      }, { passive: true });
+      view.scrollDOM?.addEventListener?.("scroll", onCmScroll, { passive: true });
+      keyDisposers.push(() => view.scrollDOM?.removeEventListener?.("wheel", markThreadScrollIntent));
+      keyDisposers.push(() => view.scrollDOM?.removeEventListener?.("touchstart", markThreadScrollIntent));
+      keyDisposers.push(() => view.scrollDOM?.removeEventListener?.("keydown", markThreadKeyScrollIntent, true));
+      keyDisposers.push(() => view.scrollDOM?.removeEventListener?.("scroll", onCmScroll));
+      requestAnimationFrame(bindListScroll);
+    } catch {}
   try {
-    view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true });
-      requestAnimationFrame(clampCommentEditorScroll);
+    const handleCapturedKeydown = (event) => {
+      try {
+        const isVerticalJump = (event.key === "ArrowUp" || event.key === "ArrowDown")
+          && (event.metaKey || event.altKey);
+        if (!isVerticalJump) return;
+        if (!view?.dom?.contains?.(event.target)) return;
+        pendingKeyboardCursorScrollUntil = Date.now() + 500;
+        scheduleCommentThreadCursorScroll(view, "thread-keyboard-capture");
+      } catch {}
+    };
+    view.dom?.addEventListener?.("keydown", handleCapturedKeydown, true);
+    keyDisposers.push(() => view.dom?.removeEventListener?.("keydown", handleCapturedKeydown, true));
   } catch {}
   try {
     core.addExternalExtension(EditorView.updateListener.of((update) => {
         requestAnimationFrame(clampCommentEditorScroll);
+        if (update.docChanged || update.selectionSet || update.viewportChanged || update.geometryChanged || update.heightChanged) {
+          debugCommentScrollJitter("I", "thread.update.detail", {
+            ...getCommentScrollDebugSnapshot(update.view),
+            docChanged: !!update.docChanged,
+            selectionSet: !!update.selectionSet,
+            viewportChanged: !!update.viewportChanged,
+            geometryChanged: !!update.geometryChanged,
+            heightChanged: !!update.heightChanged
+          });
+        }
+      if (
+        pendingKeyboardCursorScrollUntil
+        && Date.now() <= pendingKeyboardCursorScrollUntil
+        && (update.selectionSet || update.docChanged || update.geometryChanged)
+      ) {
+        scheduleCommentThreadCursorScroll(update.view, "thread-keyboard-update");
+      }
       if (update.docChanged || update.heightChanged || update.viewportChanged) {
         try { requestAnimationFrame(() => onLayoutChange?.()); } catch {}
       }
+        if (
+          (update.docChanged || update.heightChanged || update.viewportChanged || update.geometryChanged)
+          && window.zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming
+        ) {
+          // #region debug-point A:thread-stream-update
+          const runState = window.zion?.state?.get?.(`chat.runs.${sessionId}`) || null;
+          debugCommentScrollJitter("A", "thread.update.streaming", {
+            sessionId,
+            docChanged: !!update.docChanged,
+            heightChanged: !!update.heightChanged,
+            viewportChanged: !!update.viewportChanged,
+            geometryChanged: !!update.geometryChanged,
+            listScrollTop: Math.round(Number(update.view?.dom?.closest?.(".zion-comments-list")?.scrollTop) || 0),
+            sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0),
+            runId: String(runState?.runId || "")
+          });
+          // #endregion
+          scheduleCommentThreadTailScroll(update.view, sessionId, "thread-stream-update", { runId: String(runState?.runId || "") });
+        }
       if (!update.docChanged) return;
       if (saveTimer) window.clearTimeout(saveTimer);
+      const isUserEdit = update.transactions?.some?.((tr) => {
+        const userEvent = tr?.annotation?.(Transaction.userEvent);
+        return typeof userEvent === "string" && userEvent.startsWith("input");
+      });
+      if (isUserEdit) {
+        onUserInteraction?.("comment-thread-edit", {
+          sessionId,
+          docLength: Math.round(Number(update.view?.state?.doc?.length) || 0)
+        });
+      }
       saveTimer = window.setTimeout(() => onSave(view.state.doc.toString()), 250);
     }));
   } catch {}
@@ -1481,6 +2010,7 @@ function createThreadEditor(container, thread, onSave, onRun, onLayoutChange) {
         key: "Mod-Enter",
         run() {
           onSave(view.state.doc.toString());
+          onUserInteraction?.("comment-run-keyboard", getCommentScrollDebugSnapshot(view));
           onRun?.({ core, proxy, view, panelId, sessionId });
           return true;
         }
@@ -1524,7 +2054,7 @@ function createThreadEditor(container, thread, onSave, onRun, onLayoutChange) {
       restoreSessionAnnotations(sessionId, panelId, annotations);
     }
   });
-  return {
+    const handle = {
     core,
     proxy,
     view,
@@ -1540,10 +2070,18 @@ function createThreadEditor(container, thread, onSave, onRun, onLayoutChange) {
       } catch {}
       try { overviewRail?.dispose?.(); } catch {}
       try { window.zion?.editor?.detachEditor?.(panelId); } catch {}
-      if (lastCommentsEditorHandle?.panelId === panelId) lastCommentsEditorHandle = null;
+      for (const disposeKey of keyDisposers.splice(0)) {
+        try { disposeKey(); } catch {}
+      }
+        if (lastCommentsEditorHandle?.panelId === panelId) lastCommentsEditorHandle = null;
+        if (commentEditorHandlesBySession.get(sessionId)?.panelId === panelId) {
+          commentEditorHandlesBySession.delete(sessionId);
+        }
       core.dispose();
     }
   };
+    commentEditorHandlesBySession.set(sessionId, handle);
+    return handle;
 }
 
 function createFoldedThreadEditor(container, thread, onLoaded) {
@@ -1613,14 +2151,21 @@ function renderCommentsPanel(container) {
   let disposed = false;
     let updateRunActions = new Map();
   let listScrollTop = 0;
+  let panelFollowsSourceScroll = true;
+  let programmaticListScrollUntil = 0;
+  let lastUserListScrollTop = 0;
 
   const disposables = [];
   let renderScheduled = false;
   let lastRenderedSessionId = "";
     let syncedThreadId = "";
+    let lastSourceSyncScrollTop = NaN;
     let syncScheduled = false;
     let suppressPanelSyncUntil = 0;
       let suppressNextActiveRender = false;
+    let filterKind = "all";
+    let filterVisible = false;
+    let historyVisible = false;
     const expandedThreadIds = new Set();
   const schedule = (opts = {}) => {
     if (disposed) return;
@@ -1637,6 +2182,63 @@ function renderCommentsPanel(container) {
         }
       render();
     });
+    };
+    const markProgrammaticListScroll = (duration = 180) => {
+      programmaticListScrollUntil = Math.max(programmaticListScrollUntil, Date.now() + duration);
+      markCommentListProgrammaticScroll(root.querySelector(".zion-comments-list"), duration);
+    };
+    const detachCommentRunTailFollow = (reason, data = {}) => {
+      try {
+        const sessions = new Set();
+        const dataSessionId = String(data?.sessionId || "");
+        if (dataSessionId.startsWith("comment:")) sessions.add(dataSessionId);
+        for (const sid of commentEditorHandlesBySession.keys()) {
+          if (String(sid || "").startsWith("comment:")) sessions.add(String(sid));
+        }
+        for (const sid of sessions) {
+          const state = window.zion?.state?.get?.(`chat.runs.${sid}`) || null;
+          if (!state?.streaming) continue;
+          detachedCommentTailFollowSessions.add(sid);
+          debugCommentScrollJitter("F", "tail.detached", {
+            reason,
+            sessionId: sid,
+            runId: String(state?.runId || ""),
+            listScrollTop: Math.round(Number(root.querySelector(".zion-comments-list")?.scrollTop) || 0),
+            sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0),
+            ...data
+          });
+        }
+      } catch {}
+    };
+    const pausePanelSourceFollow = (reason, data = {}) => {
+      try {
+        if (!panelFollowsSourceScroll) return;
+        panelFollowsSourceScroll = false;
+        const list = root.querySelector(".zion-comments-list");
+        if (list) {
+          listScrollTop = Number(list.scrollTop) || 0;
+          lastUserListScrollTop = listScrollTop;
+        }
+        debugCommentScrollJitter("F", "sync.followPaused", {
+          reason,
+          listScrollTop: Math.round(Number(listScrollTop) || 0),
+          sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0),
+          ...data
+        });
+      } catch {}
+    };
+    const resumePanelSourceFollow = (reason, data = {}) => {
+      try {
+        if (panelFollowsSourceScroll) return;
+        panelFollowsSourceScroll = true;
+        lastSourceSyncScrollTop = NaN;
+        debugCommentScrollJitter("F", "sync.followResumed", {
+          reason,
+          listScrollTop: Math.round(Number(root.querySelector(".zion-comments-list")?.scrollTop) || 0),
+          sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0),
+          ...data
+        });
+      } catch {}
     };
       const updateActiveThreadClasses = (nextId) => {
         try {
@@ -1657,13 +2259,73 @@ function renderCommentsPanel(container) {
           schedule();
       }));
       } catch {}
+      const alignLocatedThreadToSourceViewport = (threadId, row) => {
+        try {
+          const list = root.querySelector(".zion-comments-list");
+          if (!list || !row) return false;
+          const thread = readAllThreads().find((item) => item?.id === threadId) || null;
+          if (!thread) return false;
+          const editor = getEditorForThread(thread) || getSourceEditorForCommentsPanel();
+          const view = editor?.getView?.();
+          const anchor = view ? locateThreadAnchor(view, thread) : null;
+          const scroller = view?.scrollDOM;
+          if (!anchor || !scroller || typeof anchor.from !== "number") return false;
+          const listRect = list.getBoundingClientRect?.();
+          const rowRect = row.getBoundingClientRect?.();
+          if (!listRect || !rowRect) return false;
+          const sourceCoords = view.coordsAtPos?.(anchor.from);
+          let sourceViewportTop = Number(sourceCoords?.top);
+          if (!Number.isFinite(sourceViewportTop)) {
+            const block = view.lineBlockAt?.(anchor.from);
+            const scrollerRect = scroller.getBoundingClientRect?.();
+            const sourceTop = Number(block?.top) - Number(scroller.scrollTop || 0);
+            sourceViewportTop = Number(scrollerRect?.top) + sourceTop;
+          }
+          if (!Number.isFinite(sourceViewportTop)) return false;
+          const desiredTop = sourceViewportTop - Number(listRect.top || 0);
+          const rowTopInList = Number(rowRect.top || 0) - Number(listRect.top || 0);
+          const maxVisibleTop = Math.max(0, list.clientHeight - Math.min(rowRect.height || row.offsetHeight || 0, list.clientHeight));
+          const visibleTop = Math.max(0, Math.min(desiredTop, maxVisibleTop));
+          const maxScroll = Math.max(0, (list.scrollHeight || 0) - (list.clientHeight || 0));
+          const nextScrollTop = Math.max(0, Math.min(maxScroll, Math.round((list.scrollTop || 0) + rowTopInList - visibleTop)));
+          markProgrammaticListScroll(260);
+          list.scrollTop = nextScrollTop;
+          listScrollTop = nextScrollTop;
+          lastUserListScrollTop = nextScrollTop;
+          suppressPanelSyncUntil = Date.now() + 650;
+          reportCommentLayoutDebug("located-align", {
+            threadId,
+            sourceViewportTop: Math.round(sourceViewportTop),
+            listViewportTop: Math.round(Number(listRect.top || 0)),
+            desiredTop: Math.round(desiredTop),
+            visibleTop: Math.round(visibleTop),
+            rowTopInList: Math.round(rowTopInList),
+            listScrollTop: Math.round(nextScrollTop)
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
       const pulseLocatedThread = (threadId) => {
         try {
           const id = String(threadId || "");
           if (!id) return false;
           const row = root.querySelector(`.zion-comments-row[data-thread-id="${cssEscape(id)}"]`);
           if (!row) return false;
-          row.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+          const aligned = alignLocatedThreadToSourceViewport(id, row);
+          if (!aligned) {
+            markProgrammaticListScroll(260);
+            row.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+          }
+            // #region debug-point C:located-pulse
+            debugCommentScrollJitter("C", "located.pulse", {
+              threadId: id,
+              aligned,
+              listScrollTop: Math.round(Number(root.querySelector(".zion-comments-list")?.scrollTop) || 0),
+              rowTop: Math.round(Number(row.getBoundingClientRect?.()?.top) || 0)
+            });
+            // #endregion
           row.classList.remove("is-located");
           void row.offsetWidth;
           row.classList.add("is-located");
@@ -1679,8 +2341,23 @@ function renderCommentsPanel(container) {
         const onThreadLocated = (event) => {
           const threadId = String(event?.detail?.threadId || "");
           if (!threadId) return;
+          resumePanelSourceFollow(`external:${String(event?.detail?.source || "located")}`, { threadId });
           updateActiveThreadClasses(threadId);
-          if (!pulseLocatedThread(threadId)) {
+          const pulsed = pulseLocatedThread(threadId);
+          // #region debug-point C:located-event
+          debugCommentScrollJitter("C", "located.event", {
+            threadId,
+            pulsed,
+            pendingRevealThreadId,
+            pendingLocatedThreadId
+          });
+          // #endregion
+          if (pulsed) {
+            if (pendingLocatedThreadId === threadId) pendingLocatedThreadId = "";
+            if (pendingRevealThreadId === threadId) pendingRevealThreadId = "";
+            return;
+          }
+          if (!pulsed) {
             pendingLocatedThreadId = threadId;
             pendingRevealThreadId = threadId;
             schedule({ force: true });
@@ -1716,7 +2393,11 @@ function renderCommentsPanel(container) {
       if (payloadPanelId && payloadSessionId) {
         const editor = rememberSourcePanelSession(payloadPanelId, payloadSessionId);
         const sourceScrollTop = Number(editor?.getView?.()?.scrollDOM?.scrollTop);
-        listScrollTop = Number.isFinite(sourceScrollTop) ? Math.max(0, sourceScrollTop) : 0;
+        if (panelFollowsSourceScroll) {
+          listScrollTop = Number.isFinite(sourceScrollTop) ? Math.max(0, sourceScrollTop) : listScrollTop;
+          lastUserListScrollTop = listScrollTop;
+        }
+          lastSourceSyncScrollTop = Number.isFinite(sourceScrollTop) ? sourceScrollTop : NaN;
         syncedThreadId = "";
       }
       if (payloadSessionId && payloadSessionId === lastRenderedSessionId) {
@@ -1735,6 +2416,10 @@ function renderCommentsPanel(container) {
     })); } catch {}
   const refreshRunAction = (payload) => {
     if (disposed) return;
+      const sid = String(payload?.sessionId || "");
+      if (sid.startsWith("comment:") && window.zion?.state?.get?.(`chat.runs.${sid}`)?.streaming) {
+        pausePanelSourceFollow("comment-run-event", { sessionId: sid, runId: String(payload?.runId || "") });
+      }
       for (const update of updateRunActions.values()) {
         try { update?.(payload); } catch {}
       }
@@ -1850,23 +2535,146 @@ function renderCommentsPanel(container) {
     threads = sortThreadsByDocumentOrder(threads, anchorById);
     const stateActive = getActiveThread();
     const active = stateActive && threads.some((item) => item.id === stateActive.id) ? stateActive : null;
-    const openCount = threads.filter((item) => !item.resolved).length;
-    const resolvedCount = threads.length - openCount;
-    const orphanCount = threads.filter((item) => !anchorById.get(item.id)).length;
+    const allThreads = threads;
+    const openCount = allThreads.filter((item) => !item.resolved).length;
+    const filteredThreads = allThreads.filter((item) => {
+      const anchor = anchorById.get(item.id);
+      if (filterKind === "open") return !item.resolved;
+      if (filterKind === "resolved") return !!item.resolved;
+      if (filterKind === "lost") return !anchor;
+      return true;
+    });
+    const navigateThread = (direction) => {
+      if (!filteredThreads.length) return;
+      const activeId = String(active?.id || syncedThreadId || "");
+      let currentIndex = filteredThreads.findIndex((item) => String(item.id) === activeId);
+      if (currentIndex < 0) currentIndex = direction > 0 ? -1 : 0;
+      const nextIndex = (currentIndex + direction + filteredThreads.length) % filteredThreads.length;
+      const next = filteredThreads[nextIndex];
+      if (!next?.id) return;
+      historyVisible = false;
+      filterVisible = false;
+      suppressPanelSyncUntil = Date.now() + 900;
+      syncedThreadId = next.id;
+      pendingRevealThreadId = next.id;
+      pendingLocatedThreadId = next.id;
+      setActiveThread(next.id);
+      try {
+        const editor = getEditorForThread(next) || activeEditor || getSourceEditorForCommentsPanel();
+        revealThreadAnchor(next, { focus: false, editor, smooth: false });
+      } catch {}
+      schedule({ force: true });
+    };
 
     const header = document.createElement("div");
     header.className = "zion-comments-header";
+    const filterChip = (kind, label) => `<button class="zion-comments-filter-chip${filterKind === kind ? " is-active" : ""}" data-filter="${kind}" type="button">${escapeHtml(label)}</button>`;
+    const historyItems = allThreads.map((item) => {
+      const anchor = anchorById.get(item.id);
+      const status = item.resolved ? "resolved" : !anchor ? "lost" : getThreadRunStatus(item);
+      const dotClass = status === "resolved" ? "is-resolved" : status === "lost" ? "is-lost" : `is-${status}`;
+      const lineText = anchor ? `L${anchor.startLine + 1}${anchor.endLine > anchor.startLine ? `-${anchor.endLine + 1}` : ""}` : t("threadStatus.lost", "Anchor missing");
+      const title = compactText(item.title || item.quote || item.anchorText || t("row.fallback", "Comment"), 64);
+      return `
+        <button class="zion-comments-popover-item" data-thread-id="${escapeHtml(item.id)}" type="button">
+          <span class="zion-comments-popover-dot ${dotClass}"></span>
+          <span class="zion-comments-popover-item-text">
+            <span class="zion-comments-popover-item-title">${escapeHtml(title)}</span>
+            <span class="zion-comments-popover-item-meta">${escapeHtml(`${lineText} · ${threadRunStatusTitle(status)}`)}</span>
+          </span>
+        </button>`;
+    }).join("");
     header.innerHTML = `
-      <div class="zion-comments-heading">
-        <div class="zion-comments-title">${escapeHtml(t("title", "Comments"))}</div>
-        <div class="zion-comments-subtitle">${escapeHtml(t("header.subtitle", "Anchored comments in the source document"))}</div>
+      <div class="zion-comments-header-left">
+        <button class="zion-comments-hdr-btn js-comments-history${historyVisible ? " is-active" : ""}" type="button" title="${escapeHtml(t("title", "Comments"))}">
+          ${iconSvg("history")}
+        </button>
+        <button class="zion-comments-hdr-btn js-comments-prev" type="button" title="${escapeHtml(t("nav.previous", "Previous comment"))}"${filteredThreads.length ? "" : " disabled"}>
+          ${iconSvg("previous")}
+        </button>
+        <button class="zion-comments-hdr-btn js-comments-next" type="button" title="${escapeHtml(t("nav.next", "Next comment"))}"${filteredThreads.length ? "" : " disabled"}>
+          ${iconSvg("next")}
+        </button>
+        <span class="zion-comments-count${openCount ? " is-open" : ""}" title="${escapeHtml(t("stats.open", "{count} open", { count: openCount }))}">${escapeHtml(String(openCount))}</span>
       </div>
-      <div class="zion-comments-stats">
-        <span>${escapeHtml(t("stats.open", "{count} open", { count: openCount }))}</span>
-        <span>${escapeHtml(t("stats.resolved", "{count} resolved", { count: resolvedCount }))}</span>
-        ${orphanCount ? `<span class="is-orphan">${escapeHtml(t("stats.lost", "{count} lost", { count: orphanCount }))}</span>` : ""}
+      <div class="zion-comments-header-right">
+        <button class="zion-comments-hdr-btn js-comments-filter${filterVisible ? " is-active" : ""}" type="button" title="${escapeHtml(t("stats.open", "{count} open", { count: openCount }))}">
+          ${iconSvg("search")}
+        </button>
+        <button class="zion-comments-hdr-btn js-comments-collapse-all" type="button" title="${escapeHtml(t("thread.collapse", "Collapse editor"))}">
+          ${iconSvg("fold")}
+        </button>
+        <button class="zion-comments-hdr-btn js-comments-expand-all" type="button" title="${escapeHtml(t("thread.expand", "Expand editor"))}">
+          ${iconSvg("unfold")}
+        </button>
+      </div>
+      <div class="zion-comments-filter${filterVisible ? " is-visible" : ""}">
+        ${filterChip("all", "全部")}
+        ${filterChip("open", "未解决")}
+        ${filterChip("resolved", "已解决")}
+        ${filterChip("lost", "锚点丢失")}
       </div>`;
     root.appendChild(header);
+    const popover = document.createElement("div");
+    popover.className = `zion-comments-popover${historyVisible ? " is-visible" : ""}`;
+    popover.innerHTML = `
+      <div class="zion-comments-popover-head">
+        <span>${escapeHtml(t("header.subtitle", "Anchored comments in the source document"))}</span>
+        <span>${escapeHtml(`${allThreads.length}`)}</span>
+      </div>
+      ${historyItems || `<div class="zion-comments-popover-empty">${escapeHtml(t("empty.title", "No comment threads yet"))}</div>`}`;
+    header.appendChild(popover);
+    header.querySelector(".js-comments-history")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      historyVisible = !historyVisible;
+      filterVisible = false;
+      schedule({ force: true });
+    });
+    header.querySelector(".js-comments-filter")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      filterVisible = !filterVisible;
+      historyVisible = false;
+      schedule({ force: true });
+    });
+    header.querySelector(".js-comments-prev")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      resumePanelSourceFollow("nav-previous");
+      navigateThread(-1);
+    });
+    header.querySelector(".js-comments-next")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      resumePanelSourceFollow("nav-next");
+      navigateThread(1);
+    });
+    header.querySelector(".js-comments-collapse-all")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      expandedThreadIds.clear();
+      schedule({ force: true });
+    });
+    header.querySelector(".js-comments-expand-all")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      for (const item of filteredThreads) expandedThreadIds.add(item.id);
+      schedule({ force: true });
+    });
+    header.querySelectorAll(".zion-comments-filter-chip").forEach((chip) => {
+      chip.addEventListener("click", (event) => {
+        event.stopPropagation();
+        filterKind = String(chip.dataset.filter || "all");
+        schedule({ force: true });
+      });
+    });
+    header.querySelectorAll(".zion-comments-popover-item[data-thread-id]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const id = String(button.dataset.threadId || "");
+        historyVisible = false;
+        resumePanelSourceFollow("history-item", { threadId: id });
+        setActiveThread(id);
+        pendingRevealThreadId = id;
+        pendingLocatedThreadId = id;
+        schedule({ force: true });
+      });
+    });
 
     const body = document.createElement("div");
     body.className = "zion-comments-body";
@@ -1874,17 +2682,63 @@ function renderCommentsPanel(container) {
 
     const list = document.createElement("div");
     list.className = "zion-comments-list";
-    list.onscroll = () => { listScrollTop = list.scrollTop; };
+    const markListScrollIntent = () => markCommentUserScrollIntent(list, 900);
+    const markListKeyScrollIntent = (event) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+        markListScrollIntent();
+      }
+    };
+    list.addEventListener("wheel", markListScrollIntent, { passive: true });
+    list.addEventListener("touchstart", markListScrollIntent, { passive: true });
+    list.addEventListener("keydown", markListKeyScrollIntent, true);
+    list.addEventListener("pointerdown", (event) => {
+      try {
+        const rect = list.getBoundingClientRect();
+        if (event.clientX >= rect.right - 16) markListScrollIntent();
+      } catch {}
+    }, { passive: true });
+    list.onscroll = () => {
+      const nextTop = Number(list.scrollTop) || 0;
+      listScrollTop = nextTop;
+      const programmaticUntil = Math.max(
+        Number(programmaticListScrollUntil) || 0,
+        Number(list.__zionProgrammaticScrollUntil) || 0
+      );
+      const hasUserIntent = Date.now() <= Number(list.__zionUserScrollIntentUntil || 0);
+      const scrollDelta = Math.abs(nextTop - lastUserListScrollTop);
+      const looksLikeProgrammaticJump = scrollDelta > Math.max(80, (list.clientHeight || 0) * 0.25);
+      if (hasUserIntent && !looksLikeProgrammaticJump && Date.now() > programmaticUntil && scrollDelta >= 2) {
+        pausePanelSourceFollow("comment-panel-scroll", {
+          beforeScrollTop: Math.round(lastUserListScrollTop),
+          afterScrollTop: Math.round(nextTop)
+        });
+      } else if (looksLikeProgrammaticJump) {
+        debugCommentScrollJitter("F", "commentPanelScroll.ignoredLargeDelta", {
+          beforeScrollTop: Math.round(lastUserListScrollTop),
+          afterScrollTop: Math.round(nextTop),
+          scrollDelta: Math.round(scrollDelta),
+          hasUserIntent,
+          programmaticRemainingMs: Math.max(0, Math.round(programmaticUntil - Date.now()))
+        });
+      }
+      lastUserListScrollTop = nextTop;
+    };
     body.appendChild(list);
-    if (!threads.length) {
+    if (!allThreads.length) {
       const empty = document.createElement("div");
       empty.className = "zion-comments-empty";
       empty.innerHTML = `<div class="zion-comments-empty-title">${escapeHtml(t("empty.title", "No comment threads yet"))}</div><div>${escapeHtml(t("empty.description", "Select text and click Comment in the toolbar to start an anchored discussion."))}</div>`;
       list.appendChild(empty);
       }
-    for (const item of threads) {
+    if (allThreads.length && !filteredThreads.length) {
+      const empty = document.createElement("div");
+      empty.className = "zion-comments-empty";
+      empty.innerHTML = `<div class="zion-comments-empty-title">${escapeHtml(t("empty.title", "No comment threads yet"))}</div><div>${escapeHtml(t("header.subtitle", "Anchored comments in the source document"))}</div>`;
+      list.appendChild(empty);
+    }
+    for (const item of filteredThreads) {
       const anchor = anchorById.get(item.id);
-      const status = item.resolved ? "resolved" : !anchor ? "lost" : anchor.relocated ? "moved" : "open";
+        const status = item.resolved ? "resolved" : !anchor ? "lost" : "open";
       const isActive = item.id === active?.id;
         const isSynced = item.id === syncedThreadId;
         if (pendingExpandThreadId === item.id) {
@@ -1902,6 +2756,7 @@ function renderCommentsPanel(container) {
           const nowTs = Date.now();
           if (nowTs - lastItemRevealAt < 80) return;
           lastItemRevealAt = nowTs;
+          resumePanelSourceFollow("comment-item-reveal-source", { threadId: item.id });
           suppressPanelSyncUntil = Date.now() + 280;
           focusEditorSource(item, { reveal: true });
           requestAnimationFrame(() => {
@@ -1923,9 +2778,6 @@ function renderCommentsPanel(container) {
       list.appendChild(row);
 
         const activeAnchor = anchor || (activeView ? locateThreadAnchor(activeView, item) : null);
-        const quoteLabel = activeAnchor
-          ? `${t("quote.label", "Quote L{from}-{to}", { from: activeAnchor.startLine + 1, to: activeAnchor.endLine + 1 })}${activeAnchor.relocated ? ` · ${t("quote.relocated", "relocated")}` : ""}`
-          : t("quote.lost", "Anchor missing");
 
         const detail = document.createElement("div");
         detail.className = "zion-comments-detail";
@@ -1939,12 +2791,14 @@ function renderCommentsPanel(container) {
         editorHeader.className = "zion-comments-editor-header";
         editorFrame.appendChild(editorHeader);
 
-        const quote = document.createElement("button");
-        quote.type = "button";
+          const quote = document.createElement("div");
         quote.className = `zion-comments-quote${!activeAnchor ? " is-orphan" : ""}`;
-        quote.title = activeAnchor ? t("quote.back", "Jump back to source anchor") : t("quote.unavailable", "Source text changed or was deleted; cannot jump back to anchor");
-        quote.innerHTML = `<span class="zion-comments-quote-label">${escapeHtml(quoteLabel)}</span><span class="zion-comments-quote-text">${escapeHtml(compactText(item.quote || "", 160))}</span>`;
-        quote.onclick = () => revealThreadAnchor(item);
+          quote.title = t("thread.revealSource", "Reveal source");
+        quote.innerHTML = `
+          ${renderThreadStatusDot(item)}
+            <button type="button" class="zion-comments-quote-toggle" aria-label="${escapeHtml(isExpanded ? t("thread.collapse", "Collapse editor") : t("thread.expand", "Expand editor"))}" title="${escapeHtml(isExpanded ? t("thread.collapse", "Collapse editor") : t("thread.expand", "Expand editor"))}">${iconSvg("chevron")}</button>
+          ${renderCommentStateBadge(status)}
+          <span class="zion-comments-quote-text">${escapeHtml(compactText(item.quote || item.anchorText || "", 160))}</span>`;
         editorHeader.appendChild(quote);
 
         const actions = document.createElement("div");
@@ -1954,7 +2808,6 @@ function renderCommentsPanel(container) {
           const expandThread = () => {
             if (expandedThreadIds.has(item.id)) return;
             expandedThreadIds.add(item.id);
-            pendingFocusThreadId = item.id;
             setActiveThread(item.id);
             schedule({ force: true });
           };
@@ -1964,17 +2817,25 @@ function renderCommentsPanel(container) {
             setActiveThread(item.id);
             schedule({ force: true });
           };
-          const expandAction = makeAction(isExpanded ? "collapse" : "expand", () => {
+            const quoteToggle = quote.querySelector(".zion-comments-quote-toggle");
+            quoteToggle?.addEventListener("pointerdown", (event) => {
+              try { event.stopPropagation(); } catch {}
+            });
+            quoteToggle?.addEventListener("click", (event) => {
+            try { event.stopPropagation(); } catch {}
             if (isExpanded) collapseThread();
             else expandThread();
-          }, "", isExpanded ? t("thread.collapse", "Collapse editor") : t("thread.expand", "Expand editor"));
+            });
         const runAction = makeAction("play", () => {
             if (!isExpanded) {
               expandThread();
               return;
             }
           if (isThreadStreaming(item)) stopThread(item);
-          else runThread(item, threadEditorHandle);
+          else {
+            pausePanelSourceFollow("comment-run", { threadId: item.id, sessionId: getThreadSessionId(item) });
+            runThread(item, threadEditorHandle);
+          }
         }, "primary", t("run.start", "Start Chat"));
         const updateRunAction = () => {
           const streaming = isThreadStreaming(item);
@@ -1985,17 +2846,12 @@ function renderCommentsPanel(container) {
         };
         updateRunAction();
         updateRunActions.set(item.id, updateRunAction);
-        actions.appendChild(expandAction);
         actions.appendChild(runAction);
         actions.appendChild(makeAction(item.resolved ? "undo" : "check", () => {
           patchThread(item.id, { resolved: !item.resolved });
           setActiveThread(item.id);
         }, "", item.resolved ? t("thread.reopen", "Reopen comment") : t("thread.resolve", "Mark as resolved")));
         actions.appendChild(makeAction("external", () => promoteThread(item, threadEditorHandle), "", t("thread.promote", "Promote to standalone session")));
-        actions.appendChild(makeAction("trash", () => {
-          deleteThread(item.id);
-          setActiveThread("");
-        }, "danger", t("thread.delete", "Delete comment")));
 
         const editorHost = document.createElement("div");
         editorHost.className = "zion-comments-editor";
@@ -2007,11 +2863,31 @@ function renderCommentsPanel(container) {
             }, (handle) => runThread(item, handle), () => {
               alignCommentRowsToAnchors(list, activeView, threads, anchorById, "expanded-editor-layout");
               updateCommentListScrollRange(list, activeView, "expanded-editor-layout-range");
+            }, (reason, data = {}) => {
+              pausePanelSourceFollow(reason, { threadId: item.id, sessionId: getThreadSessionId(item), ...data });
+              if (reason === "comment-thread-scroll") {
+                detachCommentRunTailFollow(reason, { threadId: item.id, sessionId: getThreadSessionId(item), ...data });
+              }
             });
           } else {
             editorHost.tabIndex = 0;
             editorHost.setAttribute("role", "button");
             editorHost.setAttribute("aria-label", t("thread.expand", "Expand editor"));
+            const renderFoldedSummary = (sourceThread) => {
+              const summaryText = getThreadSummaryText(sourceThread, item.quote || item.anchorText || "");
+              const latestAt = getThreadLatestAt(sourceThread);
+              const latestText = formatCompactTime(latestAt);
+              const latestTitle = formatThreadTimeTitle(latestAt);
+              const updatedLabel = latestText
+                ? t("threadMeta.updated", "Updated {time}", { time: latestText }).replace("{time}", latestText)
+                : "";
+              editorHost.innerHTML = `
+                <div class="zion-comments-summary${summaryText ? "" : " is-empty"}">
+                  ${escapeHtml(summaryText || t("thread.emptySummary", "No comment yet. Expand to start the conversation."))}
+                </div>
+                ${updatedLabel ? `<div class="zion-comments-summary-meta" title="${escapeHtml(latestTitle)}">${escapeHtml(updatedLabel)}</div>` : ""}`;
+            };
+            renderFoldedSummary(editorThread);
             editorHost.addEventListener("dblclick", (event) => {
               try { event.preventDefault(); } catch {}
               expandThread();
@@ -2021,11 +2897,13 @@ function renderCommentsPanel(container) {
               try { event.preventDefault(); } catch {}
               expandThread();
             });
-            threadEditorHandle = createFoldedThreadEditor(editorHost, editorThread, () => {
-              requestAnimationFrame(() => {
-                alignCommentRowsToAnchors(list, activeView, threads, anchorById, "folded-payload");
-                updateCommentListScrollRange(list, activeView, "folded-payload-range");
-              });
+              loadThreadPayload(item).then((payload) => {
+                if (!payload || typeof payload !== "object" || expandedThreadIds.has(item.id)) return;
+                renderFoldedSummary(applyThreadPayload(item, payload));
+                requestAnimationFrame(() => {
+                  alignCommentRowsToAnchors(list, activeView, threads, anchorById, "folded-summary-payload");
+                  updateCommentListScrollRange(list, activeView, "folded-summary-payload-range");
+                });
             });
           }
         editorHandles.set(item.id, threadEditorHandle);
@@ -2053,15 +2931,34 @@ function renderCommentsPanel(container) {
     }
       alignCommentRowsToAnchors(list, activeView, threads, anchorById, "render");
       updateCommentListScrollRange(list, activeView, "render-range");
+        // #region debug-point D:render-restore
+        debugCommentScrollJitter("D", "render.restore", {
+          beforeScrollTop: Math.round(Number(list.scrollTop) || 0),
+          restoreTo: Math.round(Number(listScrollTop) || 0),
+          sourceScrollTop: Math.round(Number(activeView?.scrollDOM?.scrollTop) || 0),
+          pendingRevealThreadId,
+          pendingLocatedThreadId,
+          lastRenderedSessionId
+        });
+        // #endregion
+      markProgrammaticListScroll(180);
       list.scrollTop = listScrollTop;
+      lastUserListScrollTop = Number(list.scrollTop) || 0;
+    const finalLayoutAlignId = String(pendingRevealThreadId || pendingLocatedThreadId || "");
     if (pendingRevealThreadId) {
       const revealId = pendingRevealThreadId;
       pendingRevealThreadId = "";
       try {
         requestAnimationFrame(() => {
           try {
-            list.querySelector(`.zion-comments-row[data-thread-id="${cssEscape(revealId)}"]`)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-            if (pendingLocatedThreadId === revealId && pulseLocatedThread(revealId)) pendingLocatedThreadId = "";
+            const row = list.querySelector(`.zion-comments-row[data-thread-id="${cssEscape(revealId)}"]`);
+            if (pendingLocatedThreadId === revealId) {
+              if (pulseLocatedThread(revealId)) {
+                pendingLocatedThreadId = "";
+                return;
+              }
+            }
+            row?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
           } catch {}
         });
       } catch {}
@@ -2078,6 +2975,13 @@ function renderCommentsPanel(container) {
         alignCommentRowsToAnchors(list, activeView, threads, anchorById, "render-frame");
         updateCommentListScrollRange(list, activeView, "render-frame-range");
         syncListToSourceViewport();
+        if (finalLayoutAlignId) {
+          requestAnimationFrame(() => {
+            try {
+              pulseLocatedThread(finalLayoutAlignId);
+            } catch {}
+          });
+        }
       });
 
   }
@@ -2087,8 +2991,40 @@ function renderCommentsPanel(container) {
         if (disposed) return;
         const list = root.querySelector(".zion-comments-list");
         if (!list) return;
-        if (Date.now() < suppressPanelSyncUntil) {
+        if (pendingRevealThreadId || pendingLocatedThreadId) {
+            // #region debug-point D:sync-pending-target
+            debugCommentScrollJitter("D", "sync.pendingTarget", {
+              listScrollTop: Math.round(Number(list.scrollTop) || 0),
+              pendingRevealThreadId,
+              pendingLocatedThreadId
+            });
+            // #endregion
           listScrollTop = list.scrollTop;
+          lastUserListScrollTop = Number(list.scrollTop) || 0;
+          return;
+        }
+        if (Date.now() < suppressPanelSyncUntil) {
+            // #region debug-point D:sync-suppressed
+            debugCommentScrollJitter("D", "sync.suppressed", {
+              listScrollTop: Math.round(Number(list.scrollTop) || 0),
+              suppressRemainingMs: Math.max(0, Math.round(suppressPanelSyncUntil - Date.now()))
+            });
+            // #endregion
+          listScrollTop = list.scrollTop;
+          lastUserListScrollTop = Number(list.scrollTop) || 0;
+          return;
+        }
+        if (!panelFollowsSourceScroll) {
+            // #region debug-point F:sync-paused
+            debugCommentScrollJitter("F", "sync.paused", {
+              listScrollTop: Math.round(Number(list.scrollTop) || 0),
+              sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0),
+              syncedThreadId,
+              lastRenderedSessionId
+            });
+            // #endregion
+          listScrollTop = list.scrollTop;
+          lastUserListScrollTop = Number(list.scrollTop) || 0;
           return;
         }
         const activeEditor = getSourceEditorForCommentsPanel();
@@ -2105,13 +3041,40 @@ function renderCommentsPanel(container) {
         updateCommentListScrollRange(list, activeView, "sync-range");
         const nextId = pickThreadForViewport(activeView, threads, anchorById);
         const previous = syncedThreadId;
-        if (previous && previous !== nextId) {
+          if (previous && nextId && previous !== nextId) {
           list.querySelector(`.zion-comments-row[data-thread-id="${cssEscape(previous)}"]`)?.classList?.remove?.("is-synced");
         }
-        syncedThreadId = nextId;
+          syncedThreadId = nextId || previous;
         const sourceScrollTop = Number(activeView?.scrollDOM?.scrollTop);
         if (Number.isFinite(sourceScrollTop)) {
-          list.scrollTop = Math.max(0, sourceScrollTop);
+            const beforeScrollTop = Number(list.scrollTop) || 0;
+            const sourceDelta = Number.isFinite(lastSourceSyncScrollTop) ? sourceScrollTop - lastSourceSyncScrollTop : 0;
+            const maxScrollTop = Math.max(0, (Number(list.scrollHeight) || 0) - (Number(list.clientHeight) || 0));
+              const useDeltaFollow = Number.isFinite(lastSourceSyncScrollTop) && (!nextId || (!!previous && previous === nextId));
+              const effectiveThread = syncedThreadId ? threads.find((item) => item?.id === syncedThreadId) : null;
+              const effectiveSessionId = effectiveThread ? getThreadSessionId(effectiveThread) : "";
+            const nextScrollTop = useDeltaFollow
+              ? Math.max(0, Math.min(maxScrollTop, beforeScrollTop + sourceDelta))
+              : Math.max(0, Math.min(maxScrollTop, sourceScrollTop));
+            // #region debug-point B:sync-write
+            debugCommentScrollJitter("B", "sync.write", {
+              nextId,
+              beforeScrollTop: Math.round(beforeScrollTop),
+              nextScrollTop: Math.round(nextScrollTop),
+              sourceScrollTop: Math.round(sourceScrollTop),
+              sourceDelta: Math.round(sourceDelta),
+              mode: useDeltaFollow ? "delta" : "absolute",
+              previousSyncedThreadId: previous,
+                effectiveSyncedThreadId: syncedThreadId,
+                effectiveSessionId,
+                tailDetached: effectiveSessionId ? detachedCommentTailFollowSessions.has(effectiveSessionId) : false,
+              lastRenderedSessionId
+            });
+            // #endregion
+            markProgrammaticListScroll(180);
+            list.scrollTop = nextScrollTop;
+            lastUserListScrollTop = Number(list.scrollTop) || 0;
+            lastSourceSyncScrollTop = sourceScrollTop;
         }
         if (!nextId) {
           listScrollTop = list.scrollTop;
@@ -2152,8 +3115,9 @@ function shouldRevealSourceFromCommentItemPointer(event, expanded) {
   try {
     const target = event?.target;
     if (!target) return true;
-    if (target.closest?.(".zion-comments-quote")) return true;
+      if (target.closest?.(".zion-comments-quote-toggle")) return false;
     if (target.closest?.("button, a, input, textarea, select, [data-no-comment-reveal]")) return false;
+      if (target.closest?.(".zion-comments-quote")) return true;
     if (expanded && target.closest?.(".cm-editor")) return false;
     return true;
   } catch {
@@ -2178,8 +3142,15 @@ function iconSvg(name) {
     undo: "discard",
     expand: "screen-full",
     collapse: "screen-normal",
-    external: "link-external",
-    trash: "trash"
+    external: "arrow-up-right",
+    trash: "trash",
+    history: "history",
+    search: "search",
+    fold: "fold-vertical",
+    unfold: "unfold-vertical",
+    previous: "chevron-up",
+    next: "chevron-down",
+    chevron: "chevron-right"
   };
   const codicon = map[name] || "play";
   try {
@@ -2843,8 +3814,12 @@ async function runThread(thread, handle) {
   }
   patchThread(thread.id, { body: startText, threadSessionId }, { silent: true });
   try {
+    debugCommentScrollJitter("I", "runThread.before", {
+      threadId: thread.id,
+      ...getCommentScrollDebugSnapshot(view)
+    });
     try {
-      window.zion?.state?.set?.(`chat.followLatest.${threadSessionId}`, true);
+      window.zion?.state?.set?.(`chat.followLatest.${threadSessionId}`, false);
       window.zion?.state?.set?.(`chat.followSuppressUntil.${threadSessionId}`, Date.now() + 300);
     } catch {}
     await window.zion?.commands?.executeCommand?.("chat.run", {
@@ -2852,9 +3827,18 @@ async function runThread(thread, handle) {
       sessionId: threadSessionId,
       panelId: handle?.panelId || `comments:${thread.id}`,
       skipSessionPersistence: true,
+      autoInsertUserPrompt: false,
+      autoFocusUserPrompt: false,
+      autoScrollAssistant: false,
+      followLatest: false,
+      moveSelectionToAssistant: false,
       usageSessionId: thread.parentSessionId || thread.sessionId,
       requestSource: "comments",
       contextMessages: buildThreadContextMessages(thread)
+    });
+    debugCommentScrollJitter("I", "runThread.afterChatRun", {
+      threadId: thread.id,
+      ...getCommentScrollDebugSnapshot(view)
     });
     try {
       window.zion?.commands?.executeCommand?.("zion.chatCards.snapshotSession", {
@@ -2864,13 +3848,12 @@ async function runThread(thread, handle) {
       const annotations = persistThreadAnnotations(thread, getSessionAnnotations(threadSessionId)) || getSessionAnnotations(threadSessionId);
       restoreSessionAnnotations(threadSessionId, handle?.panelId || `comments:${thread.id}`, annotations);
     } catch {}
-    focusThreadUserPrompt(view);
     patchThread(thread.id, { body: view.state.doc.toString(), threadSessionId }, { silent: true });
     try {
       const transcript = extractThreadTranscript(view, thread);
-        const latest = readAllThreads().find((item) => item?.id === thread.id) || thread;
-        Promise.resolve().then(() => autoRenameThreadTitle(latest, transcript));
-        Promise.resolve().then(() => summarizeThreadAnswer(latest, transcript));
+      const latest = readAllThreads().find((item) => item?.id === thread.id) || thread;
+      Promise.resolve().then(() => autoRenameThreadTitle(latest, transcript));
+      Promise.resolve().then(() => summarizeThreadAnswer(latest, transcript));
     } catch {}
   } catch (err) {
     const msg = `\n\nsystem 评论线程运行失败：${err?.message || String(err || "unknown")}`;
@@ -2949,6 +3932,61 @@ export async function activate(ctx) {
       if (disp) disposables.push(disp);
     }
   } catch {}
+    try {
+      const followEvents = ["chat/runStarted", "chat/token", "chat/toolCall", "chat/toolResult", "chat/reasoningStart", "chat/reasoningToken", "chat/reasoningEnd", "chat/runFinished", "chat/runError"];
+      for (const eventName of followEvents) {
+        const disp = window.zion?.events?.on?.(eventName, (payload) => {
+          const sid = String(payload?.sessionId || "");
+            if (eventName === "chat/runStarted" && sid) {
+              detachedCommentTailFollowSessions.delete(sid);
+              if (sid.startsWith("comment:")) {
+                commentRunFollowTargetsBySession.set(sid, {
+                  runId: String(payload?.runId || ""),
+                  answerHeadLine: Number(payload?.answerHeadLine),
+                  answerAnchorPos: Number(payload?.answerAnchorPos),
+                  insertLine: Number(payload?.insertLine)
+                });
+                scheduleCommentSessionTailScroll(sid, "chat/runStarted", {
+                  runId: String(payload?.runId || ""),
+                  allowAfterRun: true
+                });
+              }
+            }
+          const allowFollow = shouldFollowCommentChatEvent(eventName, payload);
+          // #region debug-point A:follow-event
+          debugCommentScrollJitter("A", "follow.event", {
+            eventName,
+            sessionId: String(payload?.sessionId || ""),
+            panelId: String(payload?.panelId || ""),
+            runId: String(payload?.runId || ""),
+            followLatest: payload?.sessionId ? window.zion?.state?.get?.(`chat.followLatest.${payload.sessionId}`) : null,
+            streaming: payload?.sessionId ? !!window.zion?.state?.get?.(`chat.runs.${payload.sessionId}`)?.streaming : false,
+            currentRunId: payload?.sessionId ? String(window.zion?.state?.get?.(`chat.runs.${payload.sessionId}`)?.runId || "") : "",
+            hasHandle: payload?.sessionId ? commentEditorHandlesBySession.has(String(payload.sessionId)) : false,
+              runTarget: payload?.sessionId ? commentRunFollowTargetsBySession.get(String(payload.sessionId)) || null : null,
+            detached: payload?.sessionId ? detachedCommentTailFollowSessions.has(String(payload.sessionId)) : false,
+            allowFollow
+          });
+          // #endregion
+          if (!allowFollow) {
+              if ((eventName === "chat/runFinished" || eventName === "chat/runError") && sid) {
+                detachedCommentTailFollowSessions.delete(sid);
+                commentRunFollowTargetsBySession.delete(sid);
+              }
+            return;
+          }
+          scheduleCommentSessionTailScroll(payload?.sessionId, eventName, {
+            runId: String(payload?.runId || ""),
+            allowAfterRun: eventName === "chat/runStarted" || eventName === "chat/runFinished" || eventName === "chat/runError"
+          });
+            if ((eventName === "chat/runFinished" || eventName === "chat/runError") && sid) {
+              detachedCommentTailFollowSessions.delete(sid);
+              commentRunFollowTargetsBySession.delete(sid);
+            }
+        });
+        if (disp) disposables.push(disp);
+      }
+    } catch {}
   try {
     const flushCommentAnnotations = () => {
       try {
