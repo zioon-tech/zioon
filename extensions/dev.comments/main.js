@@ -116,6 +116,7 @@ function markCommentUserScrollIntent(target, duration = 900) {
       Number(target.__zionUserScrollIntentUntil) || 0,
       Date.now() + duration
     );
+    target.__zionProgrammaticScrollUntil = 0;
   } catch {}
 }
 
@@ -2629,7 +2630,10 @@ function renderCommentsPanel(container) {
 
     const list = document.createElement("div");
     list.className = "zion-comments-list";
-    const markListScrollIntent = () => markCommentUserScrollIntent(list, 900);
+    const markListScrollIntent = () => {
+      markCommentUserScrollIntent(list, 900);
+      programmaticListScrollUntil = 0;
+    };
     const markListKeyScrollIntent = (event) => {
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
         markListScrollIntent();
@@ -2656,6 +2660,10 @@ function renderCommentsPanel(container) {
       const looksLikeProgrammaticJump = scrollDelta > Math.max(80, (list.clientHeight || 0) * 0.25);
       if (hasUserIntent && !looksLikeProgrammaticJump && Date.now() > programmaticUntil && scrollDelta >= 2) {
         pausePanelSourceFollow("comment-panel-scroll", {
+          beforeScrollTop: Math.round(lastUserListScrollTop),
+          afterScrollTop: Math.round(nextTop)
+        });
+        detachCommentRunTailFollow("comment-panel-scroll", {
           beforeScrollTop: Math.round(lastUserListScrollTop),
           afterScrollTop: Math.round(nextTop)
         });
