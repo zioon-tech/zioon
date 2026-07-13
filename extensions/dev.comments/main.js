@@ -1644,108 +1644,55 @@ function shouldFollowCommentChatEvent(eventName, payload) {
 
 function scrollCommentThreadTailIntoView(view, reason = "thread-tail", opts = {}) {
   try {
-    const scroller = view?.scrollDOM;
-    if (!scroller) return false;
-    const scrollerRect = scroller.getBoundingClientRect();
-    if (!scrollerRect?.height) return false;
+    const list = view?.dom?.closest(".zion-comments-list");
+    if (!list) return false;
+    const listRect = list.getBoundingClientRect();
+    if (!listRect?.height) return false;
+
     const runTarget = getCommentRunFollowTargetRect(view);
-    if (!runTarget) {
-      debugCommentScrollJitter("B", "tail.skipNoRunTarget", {
-        reason,
-        cmScrollTop: Math.round(Number(scroller.scrollTop) || 0),
-        sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0)
-      });
-      return false;
-    }
-    
-    if (runTarget.isVirtual) {
-      const beforeScrollTop = Number(scroller.scrollTop) || 0;
-      const block = view.lineBlockAt?.(runTarget.pos);
-      if (block) {
-        markCommentListProgrammaticScroll(scroller, 900);
-        const targetScrollTop = block.bottom - scrollerRect.height + 40;
-        scroller.scrollTop = Math.max(0, targetScrollTop);
-        debugCommentScrollJitter("B", "tail.applyVirtual", {
-          reason,
-          beforeScrollTop,
-          afterScrollTop: scroller.scrollTop,
-          targetMode: "run-block-virtual",
-          targetLine: runTarget.lineNumber,
-          pos: runTarget.pos,
-          blockTop: block.top,
-          blockBottom: block.bottom
-        });
-      }
-      return true;
+    if (!runTarget) return false;
+
+    const block = view.lineBlockAt?.(runTarget.pos);
+    if (!block) return false;
+
+    const contentRect = view.contentDOM.getBoundingClientRect();
+    const targetScreenTop = contentRect.top + block.top;
+    const targetScreenBottom = contentRect.top + block.bottom;
+
+    const topLimit = listRect.top + 30 + 40;
+    const bottomLimit = listRect.bottom - 60;
+
+    let delta = 0;
+    if (targetScreenBottom > bottomLimit) {
+      delta = targetScreenBottom - bottomLimit;
+    } else if (targetScreenTop < topLimit) {
+      delta = targetScreenTop - topLimit;
     }
 
-    const bottomLimit = scrollerRect.bottom - 40;
-    const topLimit = scrollerRect.top + 20;
-    const maxDelta = Math.max(120, Math.min(360, scrollerRect.height * 0.8));
-    let delta = 0;
-    if (runTarget.bottom > bottomLimit) {
-      delta = runTarget.bottom - bottomLimit;
-    } else if (runTarget.top < topLimit) {
-      delta = runTarget.top - topLimit;
-    }
-    if (Math.abs(delta) < 1) {
-      debugCommentScrollJitter("B", "tail.alreadyVisible", {
-        reason,
-        forceAlign: !!opts.forceAlign,
-        tailTop: Math.round(runTarget.top),
-        tailBottom: Math.round(runTarget.bottom),
-        topLimit: Math.round(topLimit),
-        bottomLimit: Math.round(bottomLimit),
-        cmScrollTop: Math.round(Number(scroller.scrollTop) || 0)
-      });
-      return false;
-    }
-    if (Math.abs(delta) > maxDelta) {
-      debugCommentScrollJitter("B", "tail.skipLargeDelta", {
-        reason,
-        forceAlign: !!opts.forceAlign,
-        delta: Math.round(delta),
-        maxDelta: Math.round(maxDelta),
-        tailTop: Math.round(runTarget.top),
-        tailBottom: Math.round(runTarget.bottom),
-        topLimit: Math.round(topLimit),
-        bottomLimit: Math.round(bottomLimit),
-        cmScrollTop: Math.round(Number(scroller.scrollTop) || 0)
-      });
-      return false;
-    }
-    const beforeScrollTop = Number(scroller.scrollTop) || 0;
-    markCommentListProgrammaticScroll(scroller, 900);
-    scroller.scrollTop += delta;
-      // #region debug-point B:tail-apply
-      debugCommentScrollJitter("B", "tail.apply", {
-        reason,
-        beforeScrollTop: Math.round(beforeScrollTop),
-        afterScrollTop: Math.round(Number(scroller.scrollTop) || 0),
-        delta: Math.round(delta),
-        tailTop: Math.round(runTarget.top),
-        tailBottom: Math.round(runTarget.bottom),
-        targetMode: "run-block",
-        targetLine: Number.isFinite(runTarget.lineNumber) ? runTarget.lineNumber : null,
-        scrollerBottom: Math.round(scrollerRect.bottom),
-        scrollerTop: Math.round(scrollerRect.top),
-        topLimit: Math.round(topLimit),
-        maxDelta: Math.round(maxDelta),
-        forceAlign: !!opts.forceAlign,
-        sourceScrollTop: Math.round(Number(getSourceEditorForCommentsPanel()?.getView?.()?.scrollDOM?.scrollTop) || 0)
-      });
-      // #endregion
-    reportCommentLayoutDebug("thread-tail-scroll", {
+    if (Math.abs(delta) < 1) return false;
+
+    const beforeScrollTop = Number(list.scrollTop) || 0;
+    markCommentListProgrammaticScroll(list, 900);
+    list.scrollTop += delta;
+    list.dispatchEvent(new Event('scroll'));
+
+    debugCommentScrollJitter("B", "tail.apply", {
       reason,
-      delta: Math.round(delta),
-      tailTop: Math.round(runTarget.top),
-      tailBottom: Math.round(runTarget.bottom),
-      targetMode: "run-block",
-      scrollerBottom: Math.round(scrollerRect.bottom),
-      nextScrollTop: Math.round(scroller.scrollTop)
+      beforeScrollTop,
+      afterScrollTop: list.scrollTop,
+      delta,
+      targetScreenTop,
+      targetScreenBottom,
+      topLimit,
+      bottomLimit,
+      listRectTop: listRect.top,
+      contentRectTop: contentRect.top
     });
+
     return true;
-  } catch {}
+  } catch (err) {
+    console.error(err);
+  }
   return false;
 }
 
