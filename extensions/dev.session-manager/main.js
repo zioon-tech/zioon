@@ -326,7 +326,27 @@ async function initSessionsStorage() {
       const idx = await idbGetKV(DB_NAME, "index");
       if (Array.isArray(idx)) {
         try { window.zion?.state?.set("sessions.indexMem", idx); } catch {}
+          const metadataEntries = await Promise.all(idx
+            .map((entry) => String(entry?.id || "").trim())
+            .filter(Boolean)
+            .map(async (id) => {
+              try {
+                const rec = await idbGet(DB_NAME, "metas", id);
+                return [id, rec?.meta || null];
+              } catch {
+                return [id, null];
+              }
+            }));
+          for (const [id, meta] of metadataEntries) {
+            if (meta && typeof meta === "object") {
+              try { window.zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
+            }
+          }
+          try { window.zion?.state?.set("sessions.metaReady", true); } catch {}
       }
+        else {
+          try { window.zion?.state?.set("sessions.metaReady", true); } catch {}
+        }
     } catch (e) {
       try { warnStorageIssue("loadIndex", e); } catch {}
       return { ok: false, reason: "loadIndex", error: e };
@@ -951,8 +971,8 @@ const __sidebarViewManager = createSessionsSidebarViewManager({
   loadDoc
 });
 
-function refreshSessionsSidebarViewIfOpen() {
-  __sidebarViewManager.refreshIfOpen();
+  function refreshSessionsSidebarViewIfOpen(opts) {
+    __sidebarViewManager.refreshIfOpen(opts);
 }
 
 function mountSessionsSidebarViewInto(container) {
@@ -1316,8 +1336,8 @@ export async function activate(ctx) {
       try { refreshSessionsSidebarViewIfOpen(); } catch {}
       try { refreshSessionsOverlayIfOpen(); } catch {}
     }));
-    const refreshRelatedChildren = () => {
-      try { refreshSessionsSidebarViewIfOpen(); } catch {}
+      const refreshRelatedChildren = () => {
+        try { refreshSessionsSidebarViewIfOpen({ listOnly: true }); } catch {}
     };
     window.addEventListener("zion:comments-changed", refreshRelatedChildren);
     window.addEventListener("zion:agents-changed", refreshRelatedChildren);
@@ -1503,13 +1523,16 @@ export async function activate(ctx) {
     const suggested = `Session ${getIndex().length + 1}`;
     const id = genId();
     const text = String(opts?.content ?? "");
+    const shouldOpen = opts?.open !== false;
     const targetPanelId = opts?.panelId || (() => {
       try { return window.zion?.panels?.getActivePanelId?.() || null; } catch { return null; }
     })();
     // Keep new sessions on a stable placeholder; AI rename runs once after real content arrives.
     const explicitTitle = String(opts?.title || "").trim();
     const title = explicitTitle || suggested;
+    const extraMeta = opts?.meta && typeof opts.meta === "object" ? opts.meta : {};
     const meta = {
+      ...extraMeta,
       id,
       title,
       createdAt: now(),
@@ -1535,12 +1558,14 @@ export async function activate(ctx) {
     console.info("[sessions] new: creating", { id, parentId, title: meta.title });
     insertSessionNode(id, parentId, meta.title);
     rebuildIndexFromTree();
-    setLastActiveId(id, { push: true });
+    if (shouldOpen) setLastActiveId(id, { push: true });
     window.zion.state.set("sessions.catalog", getIndex());
-    try {
-      const rs = window.zion.state.get(`chat.runs.${id}`);
-      window.zion.state.set("chat.streaming", !!rs?.streaming);
-    } catch {}
+    if (shouldOpen) {
+      try {
+        const rs = window.zion.state.get(`chat.runs.${id}`);
+        window.zion.state.set("chat.streaming", !!rs?.streaming);
+      } catch {}
+    }
     try {
       const present = !!getIndex().find(s => s.id === id);
       if (!present) {
@@ -1551,21 +1576,27 @@ export async function activate(ctx) {
     } catch (e) {
       console.warn("[sessions] new: verification error", e);
     }
-    if (targetPanelId && typeof window.zion?.panels?.openSession === "function") {
-      await window.zion.panels.openSession(targetPanelId, id, { focus: opts?.focus !== false, forceReload: true });
-    } else {
-      window.zion.state.set("sessions.currentId", id);
-      const ed = window.zion.window.activeEditor;
-      ed?.setValue(text, { source: "session-load" });
-      try { applyAnnotationsForSession(id); } catch {}
-      ed?.focus?.();
+    // Background callers create a normal indexed session without stealing focus
+    // or replacing the document currently shown in an editor panel.
+    if (shouldOpen) {
+      if (targetPanelId && typeof window.zion?.panels?.openSession === "function") {
+        await window.zion.panels.openSession(targetPanelId, id, { focus: opts?.focus !== false, forceReload: true });
+      } else {
+        window.zion.state.set("sessions.currentId", id);
+        const ed = window.zion.window.activeEditor;
+        ed?.setValue(text, { source: "session-load" });
+        try { applyAnnotationsForSession(id); } catch {}
+        ed?.focus?.();
+      }
     }
     refreshStatusBar();
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     postSaved(id, meta.updatedAt, meta.hash);
-    // 更新页面标题
-    updatePageTitle(id);
-    try { maybeUpdateLocalAutoTitle(id); } catch {}
+    if (shouldOpen) {
+      // 更新页面标题
+      updatePageTitle(id);
+      try { maybeUpdateLocalAutoTitle(id); } catch {}
+    }
     return id;
   });
   ctx.subscriptions.push(dNew);

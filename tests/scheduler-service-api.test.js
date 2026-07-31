@@ -1,0 +1,91 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SchedulerServiceClient } from "../extensions/dev.scheduler/service-api.js";
+
+describe("scheduler service client", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+    delete window.zion;
+  });
+
+  it("persists service-backed task capabilities and schedule semantics", async () => {
+    localStorage.setItem("zion.localTools.baseUrl", "http://127.0.0.1:9999/");
+    const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({
+      id: "remote-1",
+      revision: 1,
+      nextRun: 123
+    }), { status: 201, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new SchedulerServiceClient();
+
+    await client.createTask({
+      id: "local-1",
+      title: "Build",
+      prompt: "Run checks",
+      schedule: { kind: "daily", time: "09:00" },
+      capability: {
+        preset: "trusted-automation",
+        allowedTools: ["terminalExecute"],
+        allowedCommandPrefixes: ["npm test"],
+        maxToolCalls: 20
+      },
+      timeoutSeconds: 300,
+      enabled: true
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:9999/scheduler/tasks");
+    expect(JSON.parse(options.body)).toMatchObject({
+      clientTaskId: "local-1",
+      taskType: "agent",
+      command: "",
+      cwd: "",
+      schedule: { kind: "daily", time: "09:00", misfirePolicy: "run-once", overlapPolicy: "forbid" },
+      capability: {
+        preset: "trusted-automation",
+        allowedTools: ["terminalExecute"],
+        allowedCommandPrefixes: ["npm test"]
+      }
+    });
+  });
+
+  it("retrieves service-backed runs with an optional task filter", async () => {
+    localStorage.setItem("zion.localTools.baseUrl", "http://127.0.0.1:9999/");
+    const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({
+      runs: [{ id: "run-1", taskId: "remote-1", status: "success" }]
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new SchedulerServiceClient();
+
+    await expect(client.listRuns("remote-1")).resolves.toEqual([
+      { id: "run-1", taskId: "remote-1", status: "success" }
+    ]);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:9999/scheduler/runs?task_id=remote-1");
+  });
+
+  it("executes command tasks through the local tools bash endpoint", async () => {
+    localStorage.setItem("zion.localTools.baseUrl", "http://127.0.0.1:9999/");
+    const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({
+      ok: true,
+      exit_code: 0,
+      stdout: "done\n",
+      stderr: ""
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new SchedulerServiceClient();
+
+    await expect(client.executeCommand({
+      command: "bash /tmp/parking_monitor.sh",
+      cwd: "/tmp",
+      timeoutSeconds: 60
+    })).resolves.toMatchObject({ ok: true, stdout: "done\n" });
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:9999/bash");
+    expect(JSON.parse(options.body)).toEqual({
+      command: "bash /tmp/parking_monitor.sh",
+      cwd: "/tmp",
+      timeout: 60000
+    });
+  });
+});

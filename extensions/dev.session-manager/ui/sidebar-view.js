@@ -287,9 +287,9 @@ export function createSessionsSidebarViewManager(opts) {
     return { root, count: all.size };
   }
 
-  function refreshIfOpen() {
+  function refreshIfOpen(opts = {}) {
     try {
-      current?.render?.();
+      current?.render?.(opts);
     } catch {}
   }
 
@@ -395,6 +395,8 @@ export function createSessionsSidebarViewManager(opts) {
     let tagPanelCollapsed = (() => {
       try { return localStorage.getItem(LS_TAG_PANEL_COLLAPSED) === "1"; } catch { return false; }
     })();
+    let tagPanelScrollTop = 0;
+    let renderedTagsKey = "";
     let windowEndDay = (() => {
       try { return localStorage.getItem(LS_DAY_PANEL_END_DAY) || dayKey(); } catch { return dayKey(); }
     })();
@@ -419,6 +421,7 @@ export function createSessionsSidebarViewManager(opts) {
     listWrap.className = "zion-sessions-list";
     listWrap.style.flex = "1 1 auto";
     listWrap.style.overflow = "auto";
+    listWrap.style.overflowAnchor = "none";
     listWrap.style.padding = "6px 0 6px 8px";
     const list = document.createElement("div");
     listWrap.appendChild(list);
@@ -478,10 +481,28 @@ export function createSessionsSidebarViewManager(opts) {
     try { disposables.push(zion?.events?.on?.("chat/usageChanged", () => renderAll())); } catch {}
     try { disposables.push(zion?.state?.onDidChange?.("sessions.treeMem", () => renderAll())); } catch {}
     try { disposables.push(zion?.state?.onDidChange?.("sessions.indexMem", () => renderAll())); } catch {}
+      try { disposables.push(zion?.state?.onDidChange?.("sessions.metaReady", () => renderAll())); } catch {}
+
+    const captureTagsPanelScroll = () => {
+      try {
+        const body = tagsHost.querySelector(".zion-sessions-tags-body");
+        tagPanelScrollTop = Math.max(0, Number(body?.scrollTop) || 0);
+      } catch {}
+    };
 
     const renderTagsPanel = () => {
-      tagsHost.innerHTML = "";
       const sessions = getSessionIndex();
+      const tagSignature = sessions
+        .map((session) => {
+          const sid = String(session?.id || "");
+          return `${sid}:${getSessionTags(sid).join("\u0001")}`;
+        })
+        .join("\u0002");
+      const collapsedSignature = Array.from(collapsedTagNodes).sort().join("\u0001");
+      const nextTagsKey = `${tagSignature}\u0003${selectedTag}\u0003${tagPanelCollapsed ? "1" : "0"}\u0003${collapsedSignature}`;
+      if (nextTagsKey === renderedTagsKey && tagsHost.childElementCount) return;
+      renderedTagsKey = nextTagsKey;
+      tagsHost.innerHTML = "";
       const tagTree = buildTagTreeForSessionIds(sessions.map((session) => String(session.id || "")).filter(Boolean));
       const header = document.createElement("div");
       header.className = "zion-sessions-section-header zion-sessions-tags-header";
@@ -658,6 +679,7 @@ export function createSessionsSidebarViewManager(opts) {
         body.appendChild(empty);
       }
       tagsHost.appendChild(body);
+      try { body.scrollTop = Math.max(0, tagPanelScrollTop); } catch {}
     };
 
     const renderCalendar = () => {
@@ -1011,10 +1033,21 @@ export function createSessionsSidebarViewManager(opts) {
       calendarHost.appendChild(models);
     };
 
-    const renderAll = () => {
-      renderTagsPanel();
-      renderCalendar();
+    const renderAll = (opts = {}) => {
+      const preserveListScroll = opts?.preserveListScroll !== false;
+      const listScrollTop = preserveListScroll ? Math.max(0, Number(listWrap.scrollTop) || 0) : null;
+      if (!opts?.listOnly) {
+        captureTagsPanelScroll();
+        renderTagsPanel();
+        renderCalendar();
+      }
       innerRender();
+      if (preserveListScroll && listScrollTop != null) {
+        try { listWrap.scrollTop = listScrollTop; } catch {}
+        requestAnimationFrame(() => {
+          try { listWrap.scrollTop = listScrollTop; } catch {}
+        });
+      }
     };
 
     if (typeof window.ResizeObserver !== "undefined") {
@@ -1041,7 +1074,7 @@ export function createSessionsSidebarViewManager(opts) {
         const cid = zion?.state?.get("sessions.currentId");
         if (!cid) return;
         try { openAncestors?.(cid); } catch {}
-        renderAll();
+        renderAll({ preserveListScroll: false });
         try {
           const row = container.querySelector(".zion-session-row.is-current");
           if (row && listWrap) {
@@ -1066,7 +1099,7 @@ export function createSessionsSidebarViewManager(opts) {
       const block = opt.block || "nearest";
       try { if (openParents) openAncestors?.(sid); } catch {}
       void clearSearch;
-      renderAll();
+      renderAll({ preserveListScroll: false });
       try {
         const row = Array.from(container.querySelectorAll("[data-session-id]")).find(el => el.dataset?.sessionId === sid) || container.querySelector(".zion-session-row.is-current");
         if (row && listWrap) {

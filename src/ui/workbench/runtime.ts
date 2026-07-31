@@ -79,6 +79,53 @@ export type AuxiliaryBarView = {
   onDispose?: () => void;
 };
 
+export type InspectorFile = {
+  kind?: "loading" | "error" | "text" | "image" | "pdf" | "binary";
+  content?: string;
+  blob?: Blob;
+  message?: string;
+  size?: number;
+  truncated?: boolean;
+  loadedBytes?: number;
+  previewContent?: string;
+  loadFullContent?: () => Promise<string>;
+};
+
+export type InspectorItem = {
+  id: string;
+  ownerId?: string;
+  title: string;
+  path?: string;
+  displayPath?: string;
+  url?: string;
+  language?: string;
+  file?: InspectorFile;
+  editable?: boolean;
+  onSave?: (content: string) => void | Promise<void>;
+  actions?: Array<{
+    id: string;
+    title: string;
+    icon?: string;
+    run: (item: InspectorItem) => void | Promise<void>;
+  }>;
+  render?: (
+    container: HTMLElement,
+    context: {
+      item: InspectorItem;
+      update: (patch: Partial<InspectorItem>) => boolean;
+      close: () => void;
+      openInEditor: () => void;
+    }
+  ) => void | { dispose?: () => void };
+};
+
+export type InspectorRenderer = {
+  id: string;
+  priority?: number;
+  canRender: (item: InspectorItem) => boolean;
+  render: NonNullable<InspectorItem["render"]>;
+};
+
 type StateLike = {
   get: <T = unknown>(key: string) => T | undefined;
   set: <T = unknown>(key: string, value: T) => void;
@@ -797,7 +844,8 @@ class AuxiliaryBarRuntime {
   }
 
   private clampWidth(px: number): number {
-    return Math.max(240, Math.min(960, Math.round(px)));
+      const width = Math.round(px);
+      return Number.isFinite(width) ? Math.max(240, width) : 240;
   }
 
   private applyWidth(px: number, options: { preserveTransient?: boolean } = {}): number {
@@ -850,6 +898,161 @@ class AuxiliaryBarRuntime {
   getWidth(): number {
     const v = core?.state.get<number>("ui.auxiliaryBar.width");
     return typeof v === "number" && isFinite(v) ? v : 300;
+  }
+}
+
+type InspectorWidthOptions = {
+  emit?: boolean;
+};
+
+class InspectorRuntime {
+  private readonly items = new Map<string, InspectorItem>();
+  private readonly renderers = new Map<string, InspectorRenderer>();
+  private readonly emitter = new ChangeEmitter();
+
+  onDidChange(fn: () => void): Disposable {
+    return this.emitter.onDidChange(fn);
+  }
+
+  registerRenderer(renderer: InspectorRenderer): Disposable {
+    const id = String(renderer?.id || "").trim();
+    if (!id || typeof renderer.canRender !== "function" || typeof renderer.render !== "function") {
+      return { dispose() {} };
+    }
+    const registered = { ...renderer, id };
+    this.renderers.set(id, registered);
+    this.emitter.emit();
+    return {
+      dispose: () => {
+        if (this.renderers.get(id) !== registered) return;
+        this.renderers.delete(id);
+        this.emitter.emit();
+      }
+    };
+  }
+
+  getRenderer(item: InspectorItem): InspectorRenderer | null {
+    return Array.from(this.renderers.values())
+      .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+      .find((renderer) => {
+        try { return renderer.canRender(item); } catch { return false; }
+      }) || null;
+  }
+
+  open(input: InspectorItem): string {
+    const id = String(input?.id || "").trim();
+    if (!id) return "";
+    const next: InspectorItem = {
+      ...input,
+      id,
+      ownerId: String(input.ownerId || "core"),
+      title: String(input.title || input.path || "Untitled"),
+      path: String(input.path || ""),
+      displayPath: String(input.displayPath || input.path || ""),
+      language: String(input.language || "text")
+    };
+    const ownerId = next.ownerId || "core";
+    const pathKey = next.path || next.displayPath || next.title;
+    for (const [existingId, existing] of this.items) {
+      if (existingId === id) continue;
+      if (existing.ownerId !== ownerId) continue;
+      const existingPath = existing.path || existing.displayPath || existing.title;
+      if (!pathKey || existingPath !== pathKey) continue;
+      this.items.delete(existingId);
+      if (this.getActiveItemId() === existingId) {
+        core?.state.set("ui.inspector.activeItemId", id);
+      }
+    }
+    this.items.set(id, next);
+    core?.state.set("ui.inspector.activeItemId", id);
+    core?.state.set("ui.inspector.visible", true);
+    this.emitter.emit();
+    return id;
+  }
+
+  update(id: string, patch: Partial<InspectorItem>): boolean {
+    const current = this.items.get(id);
+    if (!current) return false;
+    this.items.set(id, { ...current, ...patch, id });
+    this.emitter.emit();
+    return true;
+  }
+
+  close(id: string): void {
+    const items = this.getItems();
+    const closedIndex = items.findIndex((item) => item.id === id);
+    if (!this.items.delete(id)) return;
+    if (this.getActiveItemId() === id) {
+      const remaining = this.getItems();
+      core?.state.set("ui.inspector.activeItemId", remaining[Math.min(Math.max(0, closedIndex), remaining.length - 1)]?.id || null);
+    }
+    if (this.items.size === 0) core?.state.set("ui.inspector.visible", false);
+    this.emitter.emit();
+  }
+
+  clearOwner(ownerId: string): void {
+    const owner = String(ownerId || "");
+    let changed = false;
+    for (const [id, item] of this.items) {
+      if (item.ownerId !== owner) continue;
+      this.items.delete(id);
+      changed = true;
+    }
+    if (changed) {
+      if (!this.items.has(this.getActiveItemId() || "")) {
+        core?.state.set("ui.inspector.activeItemId", this.getItems()[0]?.id || null);
+      }
+      if (this.items.size === 0) core?.state.set("ui.inspector.visible", false);
+      this.emitter.emit();
+    }
+  }
+
+  getItems(): InspectorItem[] {
+    return Array.from(this.items.values());
+  }
+
+  getActiveItemId(): string | null {
+    return (core?.state.get<string>("ui.inspector.activeItemId") ?? null) as string | null;
+  }
+
+  getActiveItem(): InspectorItem | null {
+    const id = this.getActiveItemId();
+    return id ? this.items.get(id) || null : null;
+  }
+
+  activate(id: string): void {
+    if (!this.items.has(id)) return;
+    core?.state.set("ui.inspector.activeItemId", id);
+    core?.state.set("ui.inspector.visible", true);
+    this.emitter.emit();
+  }
+
+  show(): void {
+    core?.state.set("ui.inspector.visible", true);
+    this.emitter.emit();
+  }
+
+  hide(): void {
+    core?.state.set("ui.inspector.visible", false);
+    this.emitter.emit();
+  }
+
+  isVisible(): boolean {
+    return !!core?.state.get<boolean>("ui.inspector.visible");
+  }
+
+  setWidth(px: number, options: InspectorWidthOptions = {}): void {
+    const width = Math.round(px);
+    core?.state.set("ui.inspector.width", Number.isFinite(width) ? Math.max(340, width) : 340);
+    if (!this.isVisible()) core?.state.set("ui.inspector.visible", true);
+    if (options.emit !== false) this.emitter.emit();
+  }
+
+  getWidth(): number {
+    const value = core?.state.get<number>("ui.inspector.width");
+    return typeof value === "number" && Number.isFinite(value)
+      ? Math.max(340, value)
+      : 480;
   }
 }
 
@@ -1008,5 +1211,6 @@ class BottomPanelRuntime {
 export const activityBarRuntime = new ActivityBarRuntime();
 export const sideBarRuntime = new SideBarRuntime();
 export const auxiliaryBarRuntime = new AuxiliaryBarRuntime();
+export const inspectorRuntime = new InspectorRuntime();
 export const bottomPanelRuntime = new BottomPanelRuntime();
 export const responsiveRuntime = new ResponsiveRuntime();

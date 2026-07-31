@@ -24,13 +24,14 @@ type PanelManagerOptions = {
 };
 
 type Listener<K extends keyof PanelManagerEventMap> = (payload: PanelManagerEventMap[K]) => void;
+type AnyListener = (payload: PanelManagerEventMap[keyof PanelManagerEventMap]) => void;
 
 export class PanelManager {
   private host: HTMLElement;
   private createPanelDom: CreatePanelDom;
   private emit?: EmitFn;
   private panels = new Map<PanelId, PanelRecord>();
-  private listeners = new Map<keyof PanelManagerEventMap, Set<Function>>();
+  private listeners = new Map<keyof PanelManagerEventMap, Set<AnyListener>>();
   private root: SplitNode | null = null;
   private activePanelId: PanelId | null = null;
   private activePanelHistory: PanelId[] = [];
@@ -387,10 +388,10 @@ export class PanelManager {
       set = new Set();
       this.listeners.set(event, set);
     }
-    set.add(handler);
+    set.add(handler as AnyListener);
     return {
       dispose: () => {
-        try { set?.delete(handler); } catch {}
+        try { set?.delete(handler as AnyListener); } catch {}
       }
     };
   }
@@ -469,10 +470,11 @@ export class PanelManager {
     try {
       const ResizeObserverCtor = (globalThis as any).ResizeObserver;
       if (typeof ResizeObserverCtor !== "function") return;
-      this.hostResizeObserver = new ResizeObserverCtor(() => {
+      const ro = new ResizeObserverCtor(() => {
         this.scheduleActivePanelReveal();
       });
-      this.hostResizeObserver.observe(this.host);
+      ro.observe(this.host);
+      this.hostResizeObserver = ro;
     } catch {
       this.hostResizeObserver = null;
     }
@@ -509,6 +511,9 @@ export class PanelManager {
     const viewRight = viewLeft + host.clientWidth;
     const panelLeft = bounds.left;
     const panelRight = bounds.left + bounds.width;
+    const visibleLeft = Math.max(panelLeft, viewLeft);
+    const visibleRight = Math.min(panelRight, viewRight);
+    if (visibleRight - visibleLeft > 24) return;
     let nextLeft = viewLeft;
 
     if (panelLeft < viewLeft + margin) {

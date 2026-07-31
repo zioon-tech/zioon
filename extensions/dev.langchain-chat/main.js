@@ -30,6 +30,8 @@ import {
   parseMessages
 } from "../../src/chat/doc";
 import { createChatRuntime } from "../../src/chat/runtime";
+import { reconstructWidgetHistoryMessages } from "../../src/chat/widget-history";
+import { createProgrammaticExecutor } from "./programmatic-runner.js";
 
 
 const I18N_NS = "dev.langchain-chat";
@@ -333,49 +335,6 @@ function isChatMessageAssemblyDebugEnabled() {
   } catch {
     return false;
   }
-}
-
-function buildChatWidgetAnchorIndex(text) {
-  const tools = new Map();
-  const thinking = new Map();
-  const lines = String(text || "").replace(/\r/g, "").split("\n");
-  let pos = 0;
-  for (const line of lines) {
-    const toolMatch = line.match(/(?:调用|Call)\s+([^\n<]+?)\s*<!--\s*zion-tool:id=([^>\s]+)\s*-->/i);
-    if (toolMatch) {
-      const startInLine = Math.max(0, toolMatch.index || 0);
-      const id = String(toolMatch[2] || "");
-      if (id) {
-        tools.set(id, {
-          from: pos + startInLine,
-          to: pos + startInLine + toolMatch[0].length,
-          name: String(toolMatch[1] || "").trim()
-        });
-      }
-    }
-    const thinkingMatch = line.match(/(?:思考|Thinking)\s*<!--\s*zion-thinking:id=([^>\s]+)\s*-->/i);
-    if (thinkingMatch) {
-      const startInLine = Math.max(0, thinkingMatch.index || 0);
-      const id = String(thinkingMatch[1] || "");
-      if (id) {
-        thinking.set(id, {
-          from: pos + startInLine,
-          to: pos + startInLine + thinkingMatch[0].length
-        });
-      }
-    }
-    pos += line.length + 1;
-  }
-  return { tools, thinking };
-}
-
-function resolveChatWidgetPosition(item, anchorMap) {
-  const id = String(item?.id || "");
-  const anchor = id ? anchorMap?.get?.(id) : null;
-  const from = typeof item?.from === "number" ? item.from : (typeof anchor?.from === "number" ? anchor.from : null);
-  const to = typeof item?.to === "number" ? item.to : (typeof anchor?.to === "number" ? anchor.to : null);
-  if (from == null) return item;
-  return { ...item, from, ...(to == null ? {} : { to }) };
 }
 
 function getEditorBottomSafeMargin(scrollDOM, baseMargin = 24) {
@@ -836,10 +795,17 @@ export async function activate(ctx) {
 
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
     if (window.zion?.__runMessageContributors) {
-      try { messages = await window.zion.__runMessageContributors(messages, "pre"); } catch (e) {
+      const contributorCtx = {
+        editor: ed,
+        sessionId: sid,
+        panelId,
+        requestSource: opts?.requestSource || inferRequestSource({ sessionId: sid, panelId }),
+        runId: "mock"
+      };
+      try { messages = await window.zion.__runMessageContributors(messages, "pre", contributorCtx); } catch (e) {
         console.warn("[langchain-chat] mock pre contributors error:", e);
       }
-      try { messages = await window.zion.__runMessageContributors(messages, "post"); } catch (e) {
+      try { messages = await window.zion.__runMessageContributors(messages, "post", contributorCtx); } catch (e) {
         console.warn("[langchain-chat] mock post contributors error:", e);
       }
     }
@@ -868,11 +834,53 @@ export async function activate(ctx) {
     };
   };
 
+  const executeProgrammatic = createProgrammaticExecutor({
+    runStream,
+    getActiveModel: () => getResolvedModelSnapshot(window.zion.state.get("chat.activeModel")),
+    getTools: () => {
+      const tools = Array.isArray(window.zion?.state?.get?.("chat.tools"))
+        ? window.zion.state.get("chat.tools")
+        : [];
+      const enabled = window.zion?.state?.get?.("chat.enabledTools");
+      if (!Array.isArray(enabled)) return tools;
+      const allowed = new Set(enabled.map(String));
+      return tools.filter((tool) => allowed.has(String(tool?.function?.name || tool?.name || "")));
+    },
+    executeTool: (call, context) => executeToolCall(call, context?.sessionId || `scheduled:${call?.id || "run"}`),
+    runContributors: (messages, stage, contributorCtx) =>
+      window.zion?.__runMessageContributors
+        ? window.zion.__runMessageContributors(messages, stage, contributorCtx)
+        : messages,
+    emit: (topic, payload) => window.zion?.events?.emit?.(topic, payload)
+  });
+    const programmaticRuns = new Map();
+    const executeAndTrack = (request = {}) => {
+      const handle = executeProgrammatic(request);
+      const sessionId = request?.sessionId ? String(request.sessionId) : null;
+      if (sessionId) {
+        programmaticRuns.set(sessionId, handle);
+        handle.completion.finally(() => {
+          if (programmaticRuns.get(sessionId) === handle) programmaticRuns.delete(sessionId);
+        });
+      }
+      return handle;
+    };
+    const stopAnySession = (sessionId) => {
+      const target = sessionId || getSessionId();
+      const scheduled = target ? programmaticRuns.get(target) : null;
+      if (scheduled) {
+        void scheduled.abort("user");
+        return { runId: scheduled.runId, sessionId: target };
+      }
+      return runtime.stopSession(target);
+    };
+
   window.zion.chat = {
     ...(window.zion.chat || {}),
     run: (opts = {}) => doRun(opts),
+      execute: (request = {}) => executeAndTrack(request),
     mockCurrentMessages: (opts = {}) => buildMockCurrentMessages(opts),
-    stop: (sid) => runtime.stopSession(sid),
+      stop: (sid) => stopAnySession(sid),
     retry: (_sid) => doRun({}),
     isStreaming: (sid) => {
       const targetSid = sid || getSessionId();
@@ -885,6 +893,10 @@ export async function activate(ctx) {
   };
   ctx.subscriptions.push({
     dispose() {
+        for (const handle of programmaticRuns.values()) {
+          try { void handle.abort("user"); } catch {}
+        }
+        programmaticRuns.clear();
       try {
         if (prevChatApi) window.zion.chat = prevChatApi;
       } catch {}
@@ -1091,6 +1103,9 @@ export async function activate(ctx) {
     }
     const runThinkingEffort = normalizeThinkingEffort(opts?.thinkingEffort);
     const skipSessionPersistence = !!opts?.skipSessionPersistence;
+      const autoScrollAssistant = opts?.autoScrollAssistant !== false;
+      const moveSelectionToAssistant = opts?.moveSelectionToAssistant !== false;
+      const runFollowLatest = opts?.followLatest === false ? false : true;
     const runModel = getResolvedModelSnapshot(
       runThinkingEffort === "auto" ? null : { ...window.zion.state.get("chat.activeModel"), thinkingEffort: runThinkingEffort }
     );
@@ -1111,8 +1126,31 @@ export async function activate(ctx) {
 
     // 解析角色块
     const baseMessages = parseMessages(contentBeforeCursor);
-    if (Array.isArray(opts?.contextMessages) && opts.contextMessages.length) {
-      baseMessages.unshift(...opts.contextMessages.filter((m) => m?.role && typeof m.content === "string"));
+    let contextMessages = Array.isArray(opts?.contextMessages) ? opts.contextMessages : [];
+    if (!contextMessages.length && (String(panelId || "").startsWith("comments:") || String(sid || "").startsWith("comment:"))) {
+      try {
+        const fallbackContext = await window.zion?.commands?.executeCommand?.("comments.getThreadContextMessages", {
+          sessionId: sid,
+          panelId
+        });
+        if (Array.isArray(fallbackContext) && fallbackContext.length) {
+          contextMessages = fallbackContext;
+        }
+      } catch (e) {
+        console.warn("[langchain-chat] comment context fallback failed:", e);
+      }
+    }
+    if (contextMessages.length) {
+      // 放行重建后的结构化消息：除了普通 string content 外，
+      // 还接受 assistant.tool_calls 与 role:"tool"（tool_call_id）这类没有字符串 content 的消息，
+      // 以便评论线程能继承父会话的思考/工具调用上下文（见 src/chat/widget-history.ts）。
+      baseMessages.unshift(...contextMessages.filter((m) => {
+        if (!m?.role) return false;
+        if (typeof m.content === "string") return true;
+        if (Array.isArray(m.tool_calls) && m.tool_calls.length) return true;
+        if (m.role === "tool" && m.tool_call_id) return true;
+        return false;
+      }));
     }
     if (baseMessages.length === 0) {
       window.zion.events.emit("chat/runError", { error: "No content to send" });
@@ -1171,6 +1209,13 @@ export async function activate(ctx) {
     });
     // 4. 状态 & 事件
     const runId = "run_" + Math.random().toString(36).slice(2);
+    const contributorCtx = {
+      editor: ed,
+      sessionId: sid,
+      panelId,
+      requestSource: opts?.requestSource || inferRequestSource({ sessionId: sid, panelId }),
+      runId
+    };
     const runAnchorPayload = {
       answerAnchorPos: typeof anchor?.anchorPos === "number" ? anchor.anchorPos : null,
       answerHeadLine: typeof anchor?.headLine === "number" ? anchor.headLine : null,
@@ -1178,11 +1223,11 @@ export async function activate(ctx) {
     };
     runtime.beginRun(sid, runId);
     setRunState(sid, { aborted: false, model: runModel });
-    try { window.zion?.state?.set?.(`chat.followLatest.${sid}`, true); } catch {}
+    try { window.zion?.state?.set?.(`chat.followLatest.${sid}`, runFollowLatest); } catch {}
     window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId, model: runModel, ...runAnchorPayload });
-    if (typeof anchor?.headLine === "number") {
+      if (autoScrollAssistant && typeof anchor?.headLine === "number") {
       scheduleDocLineVisible(ed, anchor.headLine, { sessionId: sid, forceBottom: true, structuralRole: true, traceId: runId });
-    } else {
+      } else if (autoScrollAssistant) {
       scheduleAssistantLatestVisible(ed, { startLineHint: insertLine, sessionId: sid, traceId: runId });
     }
 
@@ -1203,7 +1248,9 @@ export async function activate(ctx) {
         if (acc.length === 0) return;
         const text = acc.join("");
         acc = [];
-        if (!getRunState(sid)?.streaming) return;
+        if (!getRunState(sid)?.streaming) {
+          return;
+        }
 
         const editorShowingSession = isEditorShowingSession(ed, sid);
         if (!editorShowingSession) {
@@ -1220,16 +1267,19 @@ export async function activate(ctx) {
           const appended = appendAssistantTokenToEditor(ed, {
             token: text,
             anchor,
-            startLineHint: insertLine
+              startLineHint: insertLine,
+              moveSelectionToAssistant
           });
-          if (!appended) return;
+          if (!appended) {
+            return;
+          }
           window.zion.events.emit("chat/token", { runId, token: text, sessionId: sid, panelId });
 
           // 触底才自动滚动（避免用户上拉时被抢滚）
           const scroller = ed?.getView?.()?.scrollDOM || document.querySelector(".cm-scroller");
           if (scroller) {
             const followLatest = window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
-            if (followLatest) {
+              if (autoScrollAssistant && followLatest) {
               scheduleAssistantLatestVisible(ed, { startLineHint: insertLine, sessionId: sid, traceId: runId });
             }
           }
@@ -1261,12 +1311,16 @@ export async function activate(ctx) {
     // 在最终阶段追加换行并清理（先 flush 剩余缓冲）
     const finalize = () => {
       try { tokenBuffer.flush(); } catch {}
-      let autoInsert = window.zion?.state?.get('chat.autoInsertUserPrompt');
+        let autoInsert = typeof opts?.autoInsertUserPrompt === "boolean"
+          ? opts.autoInsertUserPrompt
+          : window.zion?.state?.get('chat.autoInsertUserPrompt');
       if (autoInsert === undefined) {
         autoInsert = true;
         try { window.zion?.state?.set('chat.autoInsertUserPrompt', true); } catch {}
       }
-      let autoFocus = window.zion?.state?.get('chat.autoFocusUserPrompt');
+        let autoFocus = typeof opts?.autoFocusUserPrompt === "boolean"
+          ? opts.autoFocusUserPrompt
+          : window.zion?.state?.get('chat.autoFocusUserPrompt');
       if (autoFocus === undefined) {
         autoFocus = true;
         try { window.zion?.state?.set('chat.autoFocusUserPrompt', true); } catch {}
@@ -1281,7 +1335,7 @@ export async function activate(ctx) {
             autoFocusUserPrompt: !!autoFocus
           });
           const followLatest = window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
-          if (followLatest) {
+            if (autoScrollAssistant && followLatest) {
             if (typeof finalized?.userLine === "number") {
               scheduleDocLineVisible(ed, finalized.userLine, { sessionId: sid, forceBottom: true, structuralRole: true, traceId: runId });
             } else {
@@ -1352,6 +1406,19 @@ export async function activate(ctx) {
               window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: msg, ok: false, sessionId: sid, panelId });
             });
           promises.push(p);
+        },
+        onInvalidToolCall: (tc) => {
+          if (aborted || getRunState(sid)?.aborted) return;
+          const id = String(tc?.id || "");
+          const name = String(tc?.name || "tool");
+          if (!id) return;
+          const args = tc?.args && typeof tc.args === "object" ? tc.args : {};
+          calls.push({ id, name, args });
+          const msg = `Invalid tool call arguments for "${name}": ${tc?.error || "invalid arguments"}`;
+          const item = { id, content: msg };
+          resultsById.set(id, item);
+          receivedResults.push(item);
+          window.zion.events.emit("chat/toolResult", { runId, toolCallId: id, result: msg, ok: false, sessionId: sid, panelId });
         },
         onEnd: () => { /* 中间步骤不清理，留到链式结束后统一 finalize */ },
         onError: (e) => {
@@ -1443,7 +1510,7 @@ export async function activate(ctx) {
           if (dbgCompression) {
             console.log('[langchain-chat]', 'run contributors: pre (before send)', { stage: 'pre', messages: beforeCount });
           }
-          msgs = await window.zion.__runMessageContributors(msgs, "pre");
+          msgs = await window.zion.__runMessageContributors(msgs, "pre", contributorCtx);
           if (dbgCompression) {
             const afterCount = Array.isArray(msgs) ? msgs.length : 0;
             console.log('[langchain-chat]', 'run contributors: pre done', { stage: 'pre', beforeMessages: beforeCount, afterMessages: afterCount });
@@ -1453,8 +1520,9 @@ export async function activate(ctx) {
         }
       }
 
-      // 根据“发起会话位置（光标）上方”的内容，按编辑器顺序把历史工具调用插入到对应的 assistant 消息之后
+      // 根据“发起会话位置（光标）上方”的内容，按编辑器顺序把历史工具调用/思考插入到对应的 assistant 消息之后。
       // 设置页默认是开启；这里也保持“显式 false 才关闭”，避免 state 尚未初始化时漏掉历史。
+      // 重建逻辑与评论线程共享（见 src/chat/widget-history.ts），确保两处上下文解析一致。
       const includeToolHistory = readChatBoolDefaultTrue("chat.includeToolHistory");
       const includeThinkingHistory = readChatBoolDefaultTrue("chat.includeThinkingHistory");
       if (includeToolHistory || includeThinkingHistory) {
@@ -1468,18 +1536,6 @@ export async function activate(ctx) {
             preservedThinking = !!activeCfg?.preservedThinking;
           } catch {}
 
-          const stripLeadingOmitted = (s) => {
-            const raw = String(s || "");
-            const trimmedStart = raw.replace(/^\s+/, "");
-            const lower = trimmedStart.toLowerCase();
-            const candidates = ["[reasoning omitted]", "reasoning_omitted", "reasoning omitted", "[reasoning_omitted]"];
-            for (const c of candidates) {
-              if (lower.startsWith(c)) {
-                return trimmedStart.slice(c.length).replace(/^\s+/, "");
-              }
-            }
-            return raw;
-          };
           const mode = normalizeToolCallsReasoningContentMode(window.zion?.state?.get?.("chat.toolCallsReasoningContentMode"));
           const forceReasoning = shouldForceReasoningContentWithToolCalls({
             mode,
@@ -1491,211 +1547,20 @@ export async function activate(ctx) {
           });
 
           const ann = window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sid) || {};
-          const limitPos = contentBeforeCursor.length;
-          const widgetAnchors = buildChatWidgetAnchorIndex(contentBeforeCursor);
           const debugAssembly = isChatMessageAssemblyDebugEnabled();
-
-          // tools (must have both call and result to satisfy API constraints)
-          const itemsToolsRaw = Array.isArray(ann.tools) ? ann.tools : [];
-          const deleted = new Set(Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : []);
-          const itemsToolsPositioned = itemsToolsRaw.map((it) => resolveChatWidgetPosition(it, widgetAnchors.tools));
-          const itemsTools = itemsToolsPositioned
-            .filter(it => it && it.id && !deleted.has(String(it.id)))
-            .filter(it => typeof it.from === "number" && it.from >= 0 && it.from < limitPos)
-            .filter(it => it.name && it.args && it.result != null)
-            .sort((a, b) => (a.from || 0) - (b.from || 0));
-
-          // thinking
-          const itemsThinkingRaw = Array.isArray(ann.thinking) ? ann.thinking : [];
-          const deletedThinking = new Set(Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : []);
-          const itemsThinkingPositioned = itemsThinkingRaw.map((it) => resolveChatWidgetPosition(it, widgetAnchors.thinking));
-          const itemsThinking = itemsThinkingPositioned
-            .filter(it => it && it.id && !deletedThinking.has(String(it.id)))
-            .filter(it => typeof it.from === "number" && it.from >= 0 && it.from < limitPos)
-            .filter(it => typeof it.text === "string" && it.text.trim().length > 0)
-            .sort((a, b) => (a.from || 0) - (b.from || 0));
-
-          const missingToolPos = itemsToolsPositioned
-            .filter((it) => it?.id && !deleted.has(String(it.id)) && typeof it.from !== "number")
-            .map((it) => String(it.id));
-          const missingThinkingPos = itemsThinkingPositioned
-            .filter((it) => it?.id && !deletedThinking.has(String(it.id)) && typeof it.from !== "number")
-            .map((it) => String(it.id));
+          const messagesBefore = Array.isArray(msgs) ? msgs.length : 0;
+          msgs = reconstructWidgetHistoryMessages(msgs, contentBeforeCursor, ann, {
+            includeToolHistory,
+            includeThinkingHistory,
+            preservedThinking,
+            forceReasoning,
+            reasoningPlaceholder: DEFAULT_REASONING_CONTENT_PLACEHOLDER
+          });
           if (debugAssembly) {
-            console.log("[langchain-chat] widget history candidates", {
+            console.log("[langchain-chat] widget history injected", {
               sessionId: sid,
-              includeToolHistory,
-              includeThinkingHistory,
-              limitPos,
-              messagesBefore: Array.isArray(msgs) ? msgs.length : 0,
-              annotationTools: itemsToolsRaw.length,
-              annotationThinking: itemsThinkingRaw.length,
-              toolAnchors: widgetAnchors.tools.size,
-              thinkingAnchors: widgetAnchors.thinking.size,
-              eligibleTools: itemsTools.length,
-              eligibleThinking: itemsThinking.length,
-              missingToolPos,
-              missingThinkingPos
-            });
-          }
-          // Build role ranges to locate assistant blocks within contentBeforeCursor
-          const buildRanges = (text) => {
-            const lines = String(text || "").replace(/\r/g, "").split("\n");
-            const ranges = [];
-            let pos = 0;
-            let startPos = 0;
-            let currentRole = "user";
-            for (let i = 0; i < lines.length; i++) {
-              const line = lines[i];
-              const trimmed = line.trim();
-              // Skip widget stubs (e.g., "思考 <!-- zion-thinking:id=... -->", "调用 read")
-              if (/^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->$/i.test(trimmed)) {
-                pos += line.length + 1;
-                continue;
-              }
-              if (/^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?$/i.test(trimmed)) {
-                pos += line.length + 1;
-                continue;
-              }
-              const m = line.match(/^(system|user|assistant)\s+(.*)$/);
-              if (m) {
-                // If the body is a widget stub, treat as part of previous range
-                const body = m[2].trim();
-                if (/^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/i.test(body)
-                  || /^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/i.test(body)) {
-                  pos += line.length + 1;
-                  continue;
-                }
-                if (pos > startPos) {
-                  ranges.push({ role: currentRole, from: startPos, to: pos });
-                }
-                currentRole = m[1];
-                startPos = pos;
-              }
-              pos += line.length + 1;
-            }
-            if (pos > startPos) ranges.push({ role: currentRole, from: startPos, to: pos });
-            return ranges;
-          };
-
-          const ranges = buildRanges(contentBeforeCursor);
-          const assistantRanges = ranges.filter(r => r.role === "assistant");
-          const assistantMsgIdxs = [];
-          for (let i = 0; i < msgs.length; i++) {
-            if (msgs[i]?.role === "assistant") assistantMsgIdxs.push(i);
-          }
-
-          // group ordered units per assistant message index
-          const groups = new Map(); // idx -> Array<{ pos:number, kind:'tool'|'thinking', data:any }>
-          const findAssistantIndexForPos = (p) => {
-            for (let i = 0; i < assistantRanges.length; i++) {
-              const r = assistantRanges[i];
-              if (p >= r.from && p < r.to) {
-                return assistantMsgIdxs[i] ?? -1;
-              }
-            }
-            let fallback = -1;
-            for (let i = 0; i < assistantRanges.length; i++) {
-              if (assistantRanges[i].to <= p) fallback = assistantMsgIdxs[i] ?? -1;
-            }
-            return fallback;
-          };
-
-          // collect tool units
-          if (includeToolHistory && itemsTools.length) {
-            for (const it of itemsTools) {
-              const idx = findAssistantIndexForPos(it.from);
-              if (idx < 0) continue;
-              const arr = groups.get(idx) || [];
-              arr.push({
-                pos: it.from,
-                kind: "tool",
-                data: {
-                  id: it.id,
-                  name: it.name,
-                  args: it.args,
-                  result: String(it.result)
-                }
-              });
-              groups.set(idx, arr);
-            }
-          }
-
-          // collect thinking units
-          if (includeThinkingHistory && itemsThinking.length) {
-            for (const it of itemsThinking) {
-              const idx = findAssistantIndexForPos(it.from);
-              if (idx < 0) continue;
-              const arr = groups.get(idx) || [];
-              arr.push({
-                pos: it.from,
-                kind: "thinking",
-                data: { content: String(it.text || "") }
-              });
-              groups.set(idx, arr);
-            }
-          }
-
-          // write back maintaining editor order:
-          // for each assistant idx, insert units sorted by pos:
-          // - thinking: insert an assistant message with content
-          // - tool: insert an assistant message with single tool_call, then immediately the corresponding tool message
-          if (groups.size > 0) {
-            const beforeHistoryMessages = Array.isArray(msgs) ? msgs.length : 0;
-            const sortedIdxs = Array.from(groups.keys()).sort((a, b) => a - b);
-            let offset = 0;
-            for (const baseIdx of sortedIdxs) {
-              const idx = baseIdx + offset;
-              const units = (groups.get(baseIdx) || []).slice().sort((a, b) => (a.pos || 0) - (b.pos || 0));
-              let localInserted = 0;
-              for (const unit of units) {
-                if (unit.kind === "thinking") {
-                  if (preservedThinking) {
-                    const base = msgs[idx];
-                    if (base && base.role === "assistant") {
-                      const prevRaw = typeof base.reasoning_content === "string" ? base.reasoning_content : "";
-                      const prev = stripLeadingOmitted(prevRaw);
-                      const next = String(unit.data.content || "");
-                      base.reasoning_content = prev ? `${prev}\n\n${next}` : next;
-                    }
-                  } else {
-                    // assistant text in order
-                    msgs.splice(idx + 1 + localInserted, 0, { role: "assistant", content: unit.data.content });
-                    localInserted += 1;
-                    offset += 1;
-                  }
-                } else if (unit.kind === "tool") {
-                  // assistant tool_calls block followed immediately by its tool result
-                  const tc = {
-                    id: unit.data.id,
-                    type: "function",
-                    function: { name: unit.data.name, arguments: JSON.stringify(unit.data.args || {}) }
-                  };
-                  const aMsg = { role: "assistant", tool_calls: [tc] };
-                  if (forceReasoning) aMsg.reasoning_content = DEFAULT_REASONING_CONTENT_PLACEHOLDER;
-                  msgs.splice(idx + 1 + localInserted, 0, aMsg);
-                  msgs.splice(idx + 2 + localInserted, 0, { role: "tool", tool_call_id: unit.data.id, content: unit.data.result });
-                  localInserted += 2;
-                  offset += 2;
-                }
-              }
-            }
-            if (debugAssembly) {
-              console.log("[langchain-chat] widget history injected", {
-                sessionId: sid,
-                groups: groups.size,
-                messagesBefore: beforeHistoryMessages,
-                messagesAfter: Array.isArray(msgs) ? msgs.length : 0
-              });
-            }
-          } else if (debugAssembly) {
-            console.log("[langchain-chat] widget history skipped", {
-              sessionId: sid,
-              reason: "no-groups",
-              assistantRanges: assistantRanges.length,
-              assistantMessages: assistantMsgIdxs.length,
-              eligibleTools: itemsTools.length,
-              eligibleThinking: itemsThinking.length
+              messagesBefore,
+              messagesAfter: Array.isArray(msgs) ? msgs.length : 0
             });
           }
         } catch (e) {
@@ -1716,7 +1581,7 @@ export async function activate(ctx) {
             if (dbgCompression) {
               console.log('[langchain-chat]', 'run contributors: post (before step)', { stage: 'post', messages: beforeCount });
             }
-            msgs = await window.zion.__runMessageContributors(msgs, "post");
+            msgs = await window.zion.__runMessageContributors(msgs, "post", contributorCtx);
             if (dbgCompression) {
               const afterCount = Array.isArray(msgs) ? msgs.length : 0;
               console.log('[langchain-chat]', 'run contributors: post done', { stage: 'post', beforeMessages: beforeCount, afterMessages: afterCount });
@@ -1797,7 +1662,7 @@ export async function activate(ctx) {
         }
         return null;
       })();
-      return runtime.stopSession(targetSid || undefined);
+        return stopAnySession(targetSid || undefined);
     }),
     window.zion.commands.registerCommand("chat.retry", (opts) => doRun(opts || {}))
   ];

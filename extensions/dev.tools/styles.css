@@ -1853,8 +1853,18 @@
   min-height: 0;
   overflow: hidden;
   display: flex;
+  flex-direction: column;
   background: var(--files-preview-bg);
   padding: 0;
+}
+.zion-files-preview-truncated {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  color: color-mix(in srgb, var(--warning, #d97706) 78%, var(--fg));
+  border-bottom: 1px solid color-mix(in srgb, var(--warning, #d97706) 22%, var(--border));
+  background: color-mix(in srgb, var(--warning, #d97706) 8%, var(--files-preview-bg));
+  font-size: 11px;
+  line-height: 1.45;
 }
 .zion-files-preview-code-host {
   flex: 1 1 auto;
@@ -2022,6 +2032,24 @@
   max-height: 100%;
   object-fit: contain;
   box-shadow: 0 8px 28px rgba(0,0,0,0.22);
+}
+.zion-files-preview-pdf-stage {
+  display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: #525659;
+}
+.zion-files-preview-pdf-frame {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: #525659;
 }
 .zion-files-preview-empty {
   flex: 1 1 auto;
@@ -2337,6 +2365,18 @@
   padding: 0 8px 0 calc(35px + var(--depth, 0) * 12px);
   color: var(--files-muted-fg);
   font-size: 11px;
+}
+.zion-files-load-more {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+.zion-files-load-more:disabled {
+  color: var(--files-muted-fg);
+  cursor: default;
 }
 .zion-files-empty {
   min-height: 180px;

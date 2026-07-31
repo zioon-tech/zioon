@@ -261,6 +261,7 @@ async function executeInSession(sessionId, command, options = {}) {
     command: String(command || ""),
     output: combined,
     exitCode,
+    truncated: data?.truncated === true,
     timestamp: Date.now(),
     duration: srvDuration,
     success: (typeof data?.ok === "boolean" ? data.ok : (exitCode === 0))
@@ -275,8 +276,10 @@ async function executeInSession(sessionId, command, options = {}) {
     }
   } catch {}
 
-  pushOutput(rec);
-  pushHistory(rec);
+  if (!options.silent) {
+    pushOutput(rec);
+    pushHistory(rec);
+  }
   return rec;
 }
 
@@ -591,8 +594,12 @@ export async function activate(ctx) {
     if (!command) return false;
     if (!sessionId) return "No active session";
     try {
-      const rec = await executeInSession(sessionId, command, { timeout: Number(args?.timeout || 30000) });
-      window.zion.events.emit("terminal/commandExecuted", rec);
+      const silent = typeof args === "object" && (args?.silent === true || args?.internal === true);
+      const rec = await executeInSession(sessionId, command, {
+        timeout: Number(args?.timeout || 30000),
+        silent
+      });
+      if (!silent) window.zion.events.emit("terminal/commandExecuted", rec);
       return rec;
     } catch (e) {
       return `terminal.executeCommand error: ${e?.message || String(e)}`;

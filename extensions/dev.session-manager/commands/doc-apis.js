@@ -133,6 +133,16 @@ export function registerSessionDocCommands(opts) {
     if (!id) return null;
     return loadMeta(id);
   });
+  const dPatchMeta = zion.commands.registerCommand("zion.sessions.patchMeta", ({ id, patch, updater } = {}) => {
+    if (!id) return null;
+    const current = { ...(loadMeta(id) || {}), id };
+    const candidate = typeof updater === "function" ? updater(current) : { ...current, ...(patch || {}) };
+    if (!candidate || typeof candidate !== "object") return null;
+    const next = { ...candidate, id };
+    saveMeta(id, next);
+    try { zion.state.set(`sessions.meta.${id}`, next); } catch {}
+    return next;
+  });
   const dSetDoc = zion.commands.registerCommand("zion.sessions.setDoc", ({ id, text }) => {
     if (!id) return false;
     return enqueueDocWrite(id, () => applyDocText(id, text));
@@ -167,5 +177,5 @@ export function registerSessionDocCommands(opts) {
     return true;
   });
 
-  return [dGetDoc, dGetDocAsync, dGetMeta, dSetDoc, dTransformDoc, dAppendToken, dBumpUpdated];
+  return [dGetDoc, dGetDocAsync, dGetMeta, dPatchMeta, dSetDoc, dTransformDoc, dAppendToken, dBumpUpdated];
 }

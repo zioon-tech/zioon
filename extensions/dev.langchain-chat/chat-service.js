@@ -7,6 +7,7 @@ import {
 } from "./reasoning-policy.js";
 import { normalizeThinkingEffort, normalizeThinkingMode } from "./model-config-fields.js";
 import { proxyLLMRequest } from "./llm-proxy.ts";
+import { repairToolCallMessageOrder } from "../../src/chat/message-order.ts";
 
 /**
  * 消息格式转换函数 - 将标准消息格式转换为特定 provider 所需的格式
@@ -533,6 +534,75 @@ async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
   throw lastError || new Error('请求失败，已达到最大重试次数');
 }
 
+function findToolDefinition(tools, name) {
+  if (!Array.isArray(tools) || !name) return null;
+  return tools.find((tool) => String(tool?.function?.name || tool?.name || "") === String(name)) || null;
+}
+
+function validateToolCallArgs(name, args, tools) {
+  const def = findToolDefinition(tools, name);
+  const params = def?.function?.parameters || def?.parameters || null;
+  const required = Array.isArray(params?.required) ? params.required.map(String).filter(Boolean) : [];
+  if (!required.length) return "";
+  for (const key of required) {
+    const value = args?.[key];
+    if (value == null) return `missing required argument "${key}"`;
+    if (typeof value === "string" && !value.trim()) return `missing required argument "${key}"`;
+  }
+  return "";
+}
+
+export function emitCompletedOpenAIToolCallBuffer(bufItem, callbacks = {}) {
+  if (!bufItem?.id || !bufItem?.name) return false;
+  let args;
+  try {
+    const raw = String(bufItem.arguments || "").trim();
+    args = raw ? JSON.parse(raw) : {};
+  } catch {
+    return false;
+  }
+  const validationError = validateToolCallArgs(bufItem.name, args, callbacks.tools);
+  if (validationError) {
+    callbacks.onInvalidToolCall?.({ id: bufItem.id, name: bufItem.name, args, error: validationError });
+    bufItem.id = "";
+    bufItem.name = "";
+    bufItem.arguments = "";
+    return true;
+  }
+  try { callbacks.beforeControlEvent?.("toolCall"); } catch {}
+  callbacks.onToolCall?.({ id: bufItem.id, name: bufItem.name, args });
+  bufItem.id = "";
+  bufItem.name = "";
+  bufItem.arguments = "";
+  return true;
+}
+
+export function ingestOpenAIToolCallDeltas(toolCallsBuffer, toolCalls, callbacks = {}) {
+  if (!Array.isArray(toolCalls)) return 0;
+  let emitted = 0;
+  for (const tc of toolCalls) {
+    const idx = tc.index ?? 0;
+    while (toolCallsBuffer.length <= idx) toolCallsBuffer.push({ id: "", name: "", arguments: "" });
+    const bufItem = toolCallsBuffer[idx];
+
+    if (tc.id) bufItem.id = tc.id;
+    const fn = tc.function || tc?.fn;
+    if (fn?.name) bufItem.name = fn.name;
+    if (fn?.arguments) bufItem.arguments += fn.arguments;
+
+  }
+  return emitted;
+}
+
+export function flushCompletedOpenAIToolCalls(toolCallsBuffer, callbacks = {}) {
+  if (!Array.isArray(toolCallsBuffer)) return 0;
+  let emitted = 0;
+  for (const bufItem of toolCallsBuffer) {
+    if (emitCompletedOpenAIToolCallBuffer(bufItem, callbacks)) emitted += 1;
+  }
+  return emitted;
+}
+
 /**
  * 统一的流式调用器，支持：
  * - tools：function calling（OpenAI 兼容）
@@ -549,6 +619,7 @@ export async function runStream({
   onError,
   getController,
   onToolCall,
+  onInvalidToolCall,
   beforeControlEvent,
   runId,
   sessionId,
@@ -612,7 +683,8 @@ export async function runStream({
     let forcedOnce = false;
     const doFetch = async () => {
       // 先构建标准消息格式
-      const patched = patchMessagesForReasoningContentToolCalls(messages, { force: !! (baseForceReasoning || forcedOnce) });
+      const orderedMessages = repairToolCallMessageOrder(messages);
+      const patched = patchMessagesForReasoningContentToolCalls(orderedMessages, { force: !! (baseForceReasoning || forcedOnce) });
 
       const formattedMessages = await Promise.all(patched.map(async (m) => {
         const useArray = !!cfg.supportsImage;
@@ -827,6 +899,7 @@ export async function runStream({
             if (!s.startsWith("data:")) continue;
             const payload = s.slice(5).trim();
             if (payload === "[DONE]") {
+              flushCompletedOpenAIToolCalls(toolCallsBuffer, { beforeControlEvent, onToolCall, onInvalidToolCall, tools });
               parseResult = { done: true };
             } else {
               try {
@@ -835,30 +908,9 @@ export async function runStream({
                 // 解析 tool_calls（delta）
                 const delta = json?.choices?.[0]?.delta;
                 const toolCalls = delta?.tool_calls;
-                if (toolCalls && Array.isArray(toolCalls)) {
-                  for (const tc of toolCalls) {
-                    const idx = tc.index ?? 0;
-                    while (toolCallsBuffer.length <= idx) toolCallsBuffer.push({ id: "", name: "", arguments: "" });
-                    const bufItem = toolCallsBuffer[idx];
-
-                    if (tc.id) bufItem.id = tc.id;
-                    const fn = tc.function || tc?.fn;
-                    if (fn?.name) bufItem.name = fn.name;
-                    if (fn?.arguments) bufItem.arguments += fn.arguments;
-
-                    // 尝试完整解析
-                    if (bufItem.id && bufItem.name && bufItem.arguments) {
-                      try {
-                        const args = JSON.parse(bufItem.arguments);
-                        try { beforeControlEvent?.("toolCall"); } catch {}
-                        onToolCall && onToolCall({ id: bufItem.id, name: bufItem.name, args });
-                        // 清空该 buffer 位置，避免重复触发
-                        toolCallsBuffer[idx] = { id: "", name: "", arguments: "" };
-                      } catch {
-                        // 等待更多参数片段
-                      }
-                    }
-                  }
+                ingestOpenAIToolCallDeltas(toolCallsBuffer, toolCalls);
+                if (json?.choices?.[0]?.finish_reason === "tool_calls") {
+                  flushCompletedOpenAIToolCalls(toolCallsBuffer, { beforeControlEvent, onToolCall, onInvalidToolCall, tools });
                 }
 
                 // 思考内容（reasoning） token
@@ -931,6 +983,7 @@ export async function runStream({
           }
         }
       }
+      flushCompletedOpenAIToolCalls(toolCallsBuffer, { beforeControlEvent, onToolCall, onInvalidToolCall, tools });
       try {
         if (emittedReasoningStart) {
           try { beforeControlEvent?.("reasoningEnd"); } catch {}

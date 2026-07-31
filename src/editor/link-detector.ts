@@ -9,7 +9,11 @@ import {
 
 // Regex to find web URLs and common local file paths.
 // Keep this conservative to avoid turning ordinary markdown fragments into links.
-const linkRegex = /(?:https?:\/\/[^\s<>"'`]+|file:\/\/\/[^\s<>"'`]+|\/(?:Users|Volumes|private|tmp|var|opt|Applications|home|workspace)\/[^\s<>"'`]+)/g;
+const absoluteLocalPathRoot = String.raw`\/(?:Users|Volumes|Applications|Library|System|private|tmp|var|opt|home|workspace)\/`;
+const localPathRoot = `(?:${absoluteLocalPathRoot}|~\\/)`;
+const unquotedLocalPath = `${localPathRoot}[^\\s<>"'\`]+`;
+const quotedLocalPath = `(?:"(?:file:\\/\\/\\/[^"\\r\\n]+|${localPathRoot}[^"\\r\\n]+)"|'(?:file:\\/\\/\\/[^'\\r\\n]+|${localPathRoot}[^'\\r\\n]+)'|\`(?:file:\\/\\/\\/[^\`\\r\\n]+|${localPathRoot}[^\`\\r\\n]+)\`)`;
+const linkRegex = new RegExp(`(?:${quotedLocalPath}|https?:\\/\\/[^\\s<>"'\`]+|file:\\/\\/\\/[^\\s<>"'\`]+|${unquotedLocalPath})`, "g");
 
 const linkDecoration = Decoration.mark({
   class: "cm-detected-link",
@@ -26,7 +30,13 @@ const linkMatcher = new MatchDecorator({
 });
 
 function stripTrailingPunctuation(value: string): string {
-  return String(value || "")
+  const text = String(value || "").trim();
+  const quote = text[0];
+  const unwrapped = text.length >= 2
+    && ((quote === `"` && text.endsWith(`"`)) || (quote === `'` && text.endsWith(`'`)) || (quote === "`" && text.endsWith("`")))
+    ? text.slice(1, -1)
+    : text;
+  return unwrapped
     .replace(/#L\d+(?:-L?\d+)?$/i, "")
     .replace(/[.,:;"')\]}]+$/g, "");
 }
@@ -41,7 +51,18 @@ function localPathFromLink(value: string): string | null {
       return text.replace(/^file:\/\//, "");
     }
   }
-  return text.startsWith("/") ? text : null;
+  return text.startsWith("/") || text.startsWith("~/") ? text : null;
+}
+
+function getLinkContextPayload(target: HTMLElement): { sessionId?: string; panelId?: string } {
+  const host = target.closest("[data-session-id], [data-panel-id]") as HTMLElement | null;
+  const panelHost = target.closest("[data-panel-id]") as HTMLElement | null;
+  const sessionId = host?.getAttribute("data-session-id") || "";
+  const panelId = host?.getAttribute("data-panel-id") || panelHost?.getAttribute("data-panel-id") || "";
+  return {
+    sessionId: sessionId || undefined,
+    panelId: panelId || undefined
+  };
 }
 
 export const linkDetector = ViewPlugin.fromClass(
@@ -74,18 +95,46 @@ export const linkDetector = ViewPlugin.fromClass(
           e.preventDefault();
           const raw = linkElement.textContent || "";
           const localPath = localPathFromLink(raw);
+          const contextPayload = getLinkContextPayload(target);
           if (localPath) {
+            let handled = false;
             try {
-              window.zion?.commands?.executeCommand?.("tools.files.revealPath", {
+              const result = window.zion?.commands?.executeCommand?.("tools.context.openFilePreview", {
                 path: localPath,
-                open: true
+                  ...contextPayload
               });
+              handled = result !== false;
             } catch {}
+            if (!handled) {
+              try {
+                window.zion?.commands?.executeCommand?.("tools.files.revealPath", {
+                  path: localPath,
+                    open: true
+                });
+              } catch {}
+            }
             return;
           }
           const url = stripTrailingPunctuation(raw);
           if (url) {
-            window.open(url, "_blank");
+            try {
+              window.zion?.commands?.executeCommand?.("tools.context.addResource", {
+                kind: "url",
+                url,
+                label: url,
+                source: "link-click",
+                ...contextPayload
+              });
+            } catch {}
+              let handled = false;
+              try {
+                const result = window.zion?.commands?.executeCommand?.("tools.context.openUrlPreview", {
+                  url,
+                  ...contextPayload
+                });
+                handled = result === true;
+              } catch {}
+              if (!handled) window.open(url, "_blank", "noopener,noreferrer");
           }
         }
       }

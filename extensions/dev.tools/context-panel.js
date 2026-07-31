@@ -1,6 +1,6 @@
 /* global CSS */
 import { getEditorCore } from "./editor-core.js";
-import { createFilesCodeEditor, createFilesCodeViewer, createFilesMarkdownPreview, ensureRevealSourceForPath, getProvider, iconForFile, isMarkdownTab, languageFromFilename, shouldShowMarkdownPreview, stableFileTabId } from "./files-panel.js";
+import { createFilesCodeEditor, createFilesCodeViewer, createFilesMarkdownPreview, detectPathKindForContext, ensureRevealSourceForPath, getProvider, iconForFile, isMarkdownTab, languageFromFilename, shouldShowMarkdownPreview, stableFileTabId } from "./files-panel.js";
 import { formatCompactChangeCount, formatChangeSummary, getCurrentSessionChangeState, normalizeChangePath } from "./session-change-state.js";
 import { extractObsidianMetadata, findObsidianTargetPosition } from "../shared/obsidian-metadata.js";
 
@@ -14,7 +14,9 @@ const LS_COMMENTS_THREADS = "zion.comments.threads.v1";
 const LS_AGENT_TASKS = "zion.agents.tasks.v1";
 const LS_MEMORY_ITEMS = "zion.memory.items.v1";
 const PREVIEW_AUX_WIDTH = 760;
+const MAX_SESSION_CONTEXT_RESOURCES = 80;
 let pendingContextOpenFilePayload = null;
+let contextFolderMenuEl = null;
 
 function createContextIcon(codiconName, className) {
   const span = document.createElement("span");
@@ -51,14 +53,44 @@ export function registerContextPanel(ctx) {
   });
   disposables.push(openCommand);
 
-  const openFilePreviewCommand = window.zion.commands.registerCommand("tools.context.openFilePreview", (payload = {}) => {
+  const addResourceCommand = window.zion.commands.registerCommand("tools.context.addResource", (payload = {}) => {
+    return registerSessionContextResource(payload);
+  });
+  disposables.push(addResourceCommand);
+
+  const openUrlPreviewCommand = window.zion.commands.registerCommand("tools.context.openUrlPreview", (payload = {}) => {
+    const url = typeof payload === "string" ? payload : payload?.url;
+    return openUrlInInspector(url);
+  });
+  disposables.push(openUrlPreviewCommand);
+
+  const openFilePreviewCommand = window.zion.commands.registerCommand("tools.context.openFilePreview", async (payload = {}) => {
     const path = typeof payload === "string" ? payload : payload?.path;
     if (!String(path || "").trim()) return false;
+    const sourceId = typeof payload === "object" ? String(payload?.sourceId || "") : "";
+    const detected = await detectPathKindForContext(path, sourceId).catch(() => null);
+    const detectedKind = String(detected?.kind || "unknown");
+    const rawPath = String(path).trim();
+    const resourceKind = detectedKind === "directory" || (detectedKind === "unknown" && shouldTreatUnknownContextPathAsFolder(rawPath))
+      ? "folder"
+      : "file";
+    const resourceSourceId = detected?.sourceId || sourceId;
+    registerSessionContextResource({
+      kind: resourceKind,
+      path: rawPath,
+      sourceId: resourceSourceId,
+      sessionId: typeof payload === "object" ? String(payload?.sessionId || "") : "",
+      panelId: typeof payload === "object" ? String(payload?.panelId || "") : "",
+      source: "openFilePreview"
+    });
+    if (resourceKind === "folder" || !shouldOpenContextFilePreview(rawPath, detectedKind)) {
+      try { window.zion.auxiliaryBar?.activateView?.(CONTEXT_VIEW_ID); } catch {}
+      return true;
+    }
     pendingContextOpenFilePayload = {
-      path: String(path).trim(),
-      sourceId: typeof payload === "object" ? String(payload?.sourceId || "") : ""
+      path: rawPath,
+      sourceId: resourceSourceId
     };
-    try { window.zion.auxiliaryBar?.activateView?.(CONTEXT_VIEW_ID); } catch {}
     try { window.zion.events?.emit?.("dev.tools.context/openFilePreview", pendingContextOpenFilePayload); } catch {}
     setTimeout(() => {
       try { window.zion.events?.emit?.("dev.tools.context/openFilePreview", pendingContextOpenFilePayload); } catch {}
@@ -94,6 +126,22 @@ export function registerContextPanel(ctx) {
   };
   try { ctx?.subscriptions?.push?.(disposable); } catch {}
   return disposable;
+}
+
+function shouldOpenContextFilePreview(path, detectedKind) {
+  const kind = String(detectedKind || "unknown");
+  if (kind === "file") return true;
+  if (kind === "directory" || kind === "other" || kind === "missing") return false;
+  return !shouldTreatUnknownContextPathAsFolder(path);
+}
+
+function shouldTreatUnknownContextPathAsFolder(path) {
+  const raw = stripLineSuffix(String(path || "").trim()).replace(/^file:\/\//, "").replace(/\\/g, "/");
+  if (!/^\/(?:Users|Volumes|Applications|Library|System|private|tmp|var|opt)(?:\/|$)/.test(raw)) return false;
+  if (raw.endsWith("/")) return true;
+  const name = raw.replace(/\/+$/, "").split("/").filter(Boolean).pop() || "";
+  if (!name) return false;
+  return !/\.[^/.]+$/.test(name);
 }
 
 function createContextPanel(container) {
@@ -168,6 +216,7 @@ function createContextPanel(container) {
   try { disposables.push(window.zion.events?.on?.("comments/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("agents/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("memory/changed", scheduleContextRefresh)); } catch {}
+  try { disposables.push(window.zion.events?.on?.("dev.tools.context/resourcesChanged", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("i18n/changed", () => { lastRenderedSignature = ""; scheduleRender(); })); } catch {}
   try { disposables.push(window.zion.events?.on?.("dev.tools.context/openFilePreview", (payload) => {
     const path = String(payload?.path || "").trim();
@@ -225,6 +274,7 @@ function createContextPanel(container) {
 
       disposed = true;
       if (renderTimer) window.cancelAnimationFrame(renderTimer);
+      closeContextFolderMenu();
       disposePreviewResources();
       for (const d of disposables.splice(0)) {
         try { d?.dispose?.(); } catch {}
@@ -242,7 +292,8 @@ function createContextPanel(container) {
     prefetchUrlTitles(snapshot.urls, urlTitleCache, pendingTitleFetches, scheduleRender);
     const renderSignature = getSnapshotRenderSignature(snapshot, expanded, changeState);
     const hasPreviewPane = !!root.querySelector(".zion-context-preview-pane");
-    if (renderSignature === lastRenderedSignature && previousScroll && hasPreviewPane === (openFileTabs.size > 0)) {
+    const hasLocalPreview = openFileTabs.size > 0 && !window.zion?.inspector?.open;
+    if (renderSignature === lastRenderedSignature && previousScroll && hasPreviewPane === hasLocalPreview) {
       syncSelectedRow(root, selectedKey);
       return;
     }
@@ -252,10 +303,10 @@ function createContextPanel(container) {
     const existingPreview = existingWorkspace?.querySelector(".zion-context-preview-pane");
 
     const workspace = document.createElement("div");
-    workspace.className = `zion-context-workspace${openFileTabs.size ? " has-preview" : ""}`;
+    workspace.className = `zion-context-workspace${hasLocalPreview ? " has-preview" : ""}`;
     const scroll = document.createElement("div");
     scroll.className = "zion-context-scroll";
-    if (openFileTabs.size) scroll.style.flexBasis = `${explorerWidth}px`;
+    if (hasLocalPreview) scroll.style.flexBasis = `${explorerWidth}px`;
     scroll.appendChild(renderResourceTree(snapshot, {
       expanded,
       defaultExpandFolders: autoExpandFileFolders,
@@ -277,7 +328,7 @@ function createContextPanel(container) {
       onOpenMemory: openContextMemoryPreview
     }));
 
-    if (existingWorkspace && existingScroll && existingPreview && openFileTabs.size) {
+    if (existingWorkspace && existingScroll && existingPreview && hasLocalPreview) {
 
       existingWorkspace.classList.add("has-preview");
       scroll.style.flexBasis = `${explorerWidth}px`;
@@ -287,7 +338,7 @@ function createContextPanel(container) {
       else existingWorkspace.insertBefore(renderContextResizeHandle(existingWorkspace, scroll), existingPreview);
     } else {
       workspace.appendChild(scroll);
-      if (openFileTabs.size) {
+      if (hasLocalPreview) {
 
         disposePreviewResources();
         workspace.appendChild(renderContextResizeHandle(workspace, scroll));
@@ -335,7 +386,7 @@ function createContextPanel(container) {
     }
     const hadPreview = openFileTabs.size > 0 || !!root.querySelector(".zion-context-preview-pane");
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    if (!hadPreview) requestPreviewAuxWidth();
+    if (!hadPreview && !window.zion?.inspector?.open) requestPreviewAuxWidth();
     runWithoutEditorCoreRender(() => editorCore.openTab({
       id: provisionalTabId,
       title: name,
@@ -394,7 +445,8 @@ function createContextPanel(container) {
       activeFileTabId = editorCore.getActiveTabId();
 
       renderPreviewOnly();
-    } catch (e) {      const current = openFileTabs.get(tabId) || openFileTabs.get(provisionalTabId);
+    } catch (e) {
+      const current = openFileTabs.get(tabId) || openFileTabs.get(provisionalTabId);
 
       if (!current || current.token !== token) return;
       runWithoutEditorCoreRender(() => editorCore.openTab({
@@ -415,9 +467,10 @@ function createContextPanel(container) {
     const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
     runWithoutEditorCoreRender(() => editorCore.updateTab(tabId, { token }, { reason: "refresh-existing" }));
+    renderPreviewOnly();
     try {
       const sourceId = existingTab.sourceId || await ensureRevealSourceForPath(path, item?.sourceId || inferFileSource());
-      const node = createContextFileNode(path, sourceId, existingTab.title || displayFileName(path));
+        const node = createContextFileNode(path, sourceId, existingTab.title || displayFileName(path));
 
       const file = await getProvider(sourceId).readFile(node);
 
@@ -472,25 +525,54 @@ function createContextPanel(container) {
     };
     if (existing?.id === activeFileTabId && sameContextPreviewFile(resolveContextPreviewTab(existing).file, resolveContextPreviewTab(nextTab).file)) return;
     const hadPreview = openFileTabs.size > 0 || !!root.querySelector(".zion-context-preview-pane");
-    if (!hadPreview) requestPreviewAuxWidth();
+    if (!hadPreview && !window.zion?.inspector?.open) requestPreviewAuxWidth();
     runWithoutEditorCoreRender(() => editorCore.openTab(nextTab));
     activeFileTabId = editorCore.getActiveTabId();
     renderPreviewOnly();
   }
 
-  function createContextFileNode(path, sourceId, name = displayFileName(path)) {
-    return {
-      key: `context:${sourceId}:${path}`,
-      sourceId,
-      provider: sourceId.startsWith("terminal:") ? "terminal" : "local",
-      kind: "file",
-      name,
-      path,
-      displayPath: path
-    };
-  }
+    function createContextFileNode(path, sourceId, name = displayFileName(path)) {
+      return {
+        key: `context:${sourceId}:${path}`,
+        sourceId,
+        provider: sourceId.startsWith("terminal:") ? "terminal" : "local",
+        kind: "file",
+        name,
+        path,
+        displayPath: path
+      };
+    }
 
   function renderPreviewOnly() {
+    const rawTab = openFileTabs.get(activeFileTabId) || openFileTabs.values().next().value;
+    const tab = rawTab ? resolveContextPreviewTab(rawTab) : null;
+    if (window.zion?.inspector?.open) {
+      releasePreviewAuxWidth();
+      if (tab) {
+        window.zion.inspector.open({
+          id: `context:${tab.id}`,
+          ownerId: CONTEXT_VIEW_ID,
+          title: tab.title,
+          path: tab.path,
+          displayPath: tab.displayPath,
+          language: tab.language,
+          file: tab.file?.kind === "memory-text"
+            ? { kind: "text", content: tab.file.content || "" }
+            : tab.file,
+          editable: tab.file?.kind === "memory-text",
+          onSave: tab.file?.kind === "memory-text"
+            ? (content) => window.zion?.memory?.updateMemory?.(tab.memoryId, { content })
+            : undefined
+        });
+      } else {
+        window.zion.inspector.clearOwner?.(CONTEXT_VIEW_ID);
+      }
+      disposePreviewResources();
+      root.querySelector(".zion-context-preview-pane")?.remove();
+      root.querySelector(".zion-context-split-resizer")?.remove();
+      root.querySelector(".zion-context-workspace")?.classList.remove("has-preview");
+      return;
+    }
     const existing = root.querySelector(".zion-context-preview-pane");
 
     if (!openFileTabs.size) {
@@ -680,6 +762,7 @@ function createContextPanel(container) {
       return;
     }
     if (tab.file?.kind === "text") {
+        if (tab.file.truncated) parent.appendChild(renderContextTruncatedPreviewNotice(tab.file));
       if (shouldShowMarkdownPreview(tab)) {
         createFilesMarkdownPreview(parent, String(tab.file.content || ""));
         return;
@@ -712,6 +795,15 @@ function createContextPanel(container) {
       return;
     }
     parent.appendChild(renderContextPreviewMessage("Binary preview is not supported yet"));
+  }
+
+  function renderContextTruncatedPreviewNotice(file) {
+    const notice = document.createElement("div");
+    notice.className = "zion-files-preview-truncated";
+    notice.textContent = t("files.previewTruncated", "Large file: showing the first {size} KB as read-only.", {
+      size: Math.max(1, Math.round(Number(file?.loadedBytes || 0) / 1024))
+    });
+    return notice;
   }
 
   function renderContextPreviewMessage(message) {
@@ -858,14 +950,151 @@ function createContextPanel(container) {
   }
 }
 
+function registerSessionContextResource(payload = {}) {
+  const item = normalizeSessionContextResource(payload);
+  if (!item) return false;
+  const sessionId = resolveContextResourceSessionId(payload);
+  if (!sessionId) return false;
+  const current = getSessionContextResources(sessionId);
+  const key = getSessionContextResourceKey(item);
+  const next = [
+    { ...item, addedAt: Date.now() },
+    ...current.filter((entry) => getSessionContextResourceKey(entry) !== key)
+  ].slice(0, MAX_SESSION_CONTEXT_RESOURCES);
+  saveSessionContextResources(sessionId, next);
+  return true;
+}
+
+function resolveContextResourceSessionId(payload = {}) {
+  const explicit = String(payload?.sessionId || "").trim();
+  if (explicit && !explicit.startsWith("comment:")) return explicit;
+  const panelId = String(payload?.panelId || "").trim();
+  if (panelId) {
+    try {
+      const panel = (window.zion?.panels?.list?.() || []).find((item) => item?.id === panelId);
+      const tabId = String(panel?.activeTabId || "").trim();
+      if (tabId && !tabId.startsWith("comment:")) return tabId;
+    } catch {}
+  }
+  return getCurrentSessionId() || "";
+}
+
+function normalizeSessionContextResource(payload = {}) {
+  const kindHint = String(payload?.kind || payload?.type || "").trim().toLowerCase();
+  const rawUrl = String(payload?.url || payload?.href || "").trim();
+  if (kindHint === "url" || /^https?:\/\//i.test(rawUrl)) {
+    const url = normalizeUrl(rawUrl);
+    if (!/^https?:\/\//i.test(url)) return null;
+    const title = String(payload?.title || "").trim();
+    return {
+      kind: "url",
+      url,
+      title,
+      label: String(payload?.label || title || hostFromUrl(url) || url).trim(),
+      source: String(payload?.source || "link").trim(),
+      addedAt: Number(payload?.addedAt) || 0
+    };
+  }
+  const path = stripLineSuffix(String(payload?.path || payload?.file || payload?.filename || payload?.label || "").trim());
+  if (!path) return null;
+  const kind = kindHint === "folder" || kindHint === "directory" ? "folder" : "file";
+  return {
+    kind,
+    path,
+    label: String(payload?.label || path).trim(),
+    sourceId: String(payload?.sourceId || "").trim() || "local",
+    source: String(payload?.source || "link").trim(),
+    addedAt: Number(payload?.addedAt) || 0
+  };
+}
+
+function normalizeSessionContextResources(value) {
+  const list = Array.isArray(value) ? value : [];
+  return list.map(normalizeSessionContextResource).filter(Boolean);
+}
+
+function getSessionContextResources(sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return [];
+  const stateKey = `sessions.contextResources.${sid}`;
+  try {
+    const live = window.zion?.state?.get?.(stateKey);
+    if (Array.isArray(live)) return normalizeSessionContextResources(live);
+  } catch {}
+  try {
+    const meta = window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", sid);
+    const resources = normalizeSessionContextResources(meta?.contextResources);
+    if (resources.length) {
+      try { window.zion?.state?.set?.(stateKey, resources); } catch {}
+    }
+    return resources;
+  } catch {
+    return [];
+  }
+}
+
+function saveSessionContextResources(sessionId, resources) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return false;
+  const next = normalizeSessionContextResources(resources).slice(0, MAX_SESSION_CONTEXT_RESOURCES);
+  const stateKey = `sessions.contextResources.${sid}`;
+  try { window.zion?.state?.set?.(stateKey, next); } catch {}
+  try {
+    window.zion?.commands?.executeCommand?.("zion.sessions.patchMeta", {
+      id: sid,
+      patch: { contextResources: next }
+    });
+  } catch {
+    try {
+      const meta = window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", sid);
+      if (meta && typeof meta === "object") {
+        window.zion?.state?.set?.(`sessions.meta.${sid}`, { ...meta, contextResources: next });
+      }
+    } catch {}
+  }
+  try { window.zion?.events?.emit?.("dev.tools.context/resourcesChanged", { sessionId: sid, resources: next }); } catch {}
+  return true;
+}
+
+function getSessionContextResourceKey(item) {
+  if (!item) return "";
+  if (item.kind === "url") return `url:${normalizeUrl(item.url || "")}`;
+  return `${item.kind === "folder" ? "folder" : "file"}:${String(item.sourceId || "local")}:${stripLineSuffix(String(item.path || "")).trim()}`;
+}
+
+function extractFilesFromSessionContextResources(resources) {
+  return normalizeSessionContextResources(resources)
+    .filter((item) => (item.kind === "file" || item.kind === "folder") && item.path)
+    .map((item) => ({
+      kind: item.kind,
+      path: item.path,
+      label: item.label || item.path,
+      source: item.source || "link",
+      sourceId: item.sourceId || "local"
+    }));
+}
+
+function extractUrlsFromSessionContextResources(resources, urlTitleCache = {}, titleHints = {}) {
+  return normalizeSessionContextResources(resources)
+    .filter((item) => item.kind === "url" && item.url)
+    .map((item) => makeUrlItem(item.url, urlTitleCache, item.title ? { ...titleHints, [item.url]: item.title } : titleHints));
+}
+
 function buildContextSnapshot(urlTitleCache = {}) {
   const sessionId = getCurrentSessionId();
   const editorText = getActiveEditorText();
   const tools = getCurrentTools(sessionId);
   const urlTitleHints = collectWebFetchTitleHints(editorText, tools);
   mergeUrlTitleHints(urlTitleCache, urlTitleHints);
-  const files = dedupeItems(extractFilesFromTools(tools), (item) => `${item.sourceId || ""}:${item.path || item.label}`);
-  const urls = extractWebFetchUrls(editorText, tools, urlTitleCache, urlTitleHints);
+  const contextResources = getSessionContextResources(sessionId);
+  const files = dedupeItems([
+    ...extractFilesFromSessionContextResources(contextResources),
+    ...extractFilesFromTools(tools)
+  ], (item) => `${item.sourceId || ""}:${item.path || item.label}`);
+  const urls = dedupeItems([
+    ...extractUrlsFromSessionContextResources(contextResources, urlTitleCache, urlTitleHints),
+    ...extractWebFetchUrls(editorText, tools, urlTitleCache, urlTitleHints)
+  ], (item) => item.url);
   const terminalSessions = Array.isArray(window.zion?.state?.get?.("terminal.sessions")) ? window.zion.state.get("terminal.sessions") : [];
   const activeTerminalId = window.zion?.state?.get?.("terminal.activeSessionId") || "";
   const includeTerminal = window.zion?.state?.get?.("chat.includeTerminalContext") !== false;
@@ -888,12 +1117,12 @@ function buildContextSnapshot(urlTitleCache = {}) {
     { label: t("context.terminalSessions", "Terminal Sessions"), value: `${t("context.count", "{count}", { count: terminalSessions.length })}${activeTerminalId ? ` · ${t("context.terminalActive", "active {id}", { id: shortId(activeTerminalId) })}` : ""}` },
     { label: t("context.toolArtifacts", "Tool Artifacts"), value: t("context.itemCount", "{count}", { count: tools.length }) }
   ];
-  return { sessionId, files, urls, basics, usage, tasks, activeTaskId, taskSummary, comments, commentSummary, agentTasks, agentSummary, memories, memorySummary, obsidian };
+  return { sessionId, files, urls, contextResources, basics, usage, tasks, activeTaskId, taskSummary, comments, commentSummary, agentTasks, agentSummary, memories, memorySummary, obsidian };
 }
 
 function getSnapshotRenderSignature(snapshot, expanded, changeState) {
   return stableStringify({
-    files: (snapshot.files || []).map((item) => [item.path || "", item.sourceId || "", item.source || ""]),
+    files: (snapshot.files || []).map((item) => [item.kind || "", item.path || "", item.sourceId || "", item.source || ""]),
     urls: (snapshot.urls || []).map((item) => [item.url || "", item.title || "", item.label || ""]),
     basics: (snapshot.basics || []).map((item) => [item.label || "", item.value || ""]),
     usage: compactUsageSignature(snapshot.usage),
@@ -1265,6 +1494,7 @@ function buildDeviceFileRoot(deviceKey, entries) {
     name: getFileDeviceLabel(deviceKey, entries),
     fullPath: commonPath,
     key: `device:${deviceKey}`,
+    sourceId: entries[0]?.sourceId || "",
     count: entries.length,
     meta: compactMiddle(commonPath || "workspace", 54),
     children: finalizeFileTreeChildren(root)
@@ -1290,6 +1520,7 @@ function buildSourceFileRoots(entries) {
       name: rootName,
       fullPath: commonPath,
       key: `folder:${commonPath}`,
+      sourceId: entries[0]?.sourceId || "",
       count: entries.length,
       meta: formatFileRootMeta(entries, commonPath),
       children: roots
@@ -1322,6 +1553,26 @@ function insertFileTreeEntry(root, parts, entry, commonParts) {
     const fullParts = [...commonParts, ...parts.slice(0, i + 1)];
     const fullPath = formatTreePath(fullParts, [entry]);
     if (isLeaf) {
+      if (entry.item?.kind === "folder") {
+        const key = `folder:${entry.sourceId}:${fullPath}`;
+        const existing = node.childrenMap.get(key);
+        if (existing?.kind === "folder") {
+          existing.item = entry.item;
+          existing.sourceId = entry.sourceId;
+        } else {
+          node.childrenMap.set(key, {
+            kind: "folder",
+            name,
+            fullPath,
+            key,
+            item: entry.item,
+            sourceId: entry.sourceId,
+            childrenMap: new Map(),
+            count: 0
+          });
+        }
+        continue;
+      }
       node.childrenMap.set(`file:${entry.index}:${fullPath}`, {
         kind: "file",
         name,
@@ -1333,7 +1584,7 @@ function insertFileTreeEntry(root, parts, entry, commonParts) {
     }
     const key = `folder:${entry.sourceId}:${fullPath}`;
     if (!node.childrenMap.has(key)) {
-      node.childrenMap.set(key, { kind: "folder", name, fullPath, key, childrenMap: new Map(), count: 0 });
+      node.childrenMap.set(key, { kind: "folder", name, fullPath, key, sourceId: entry.sourceId, childrenMap: new Map(), count: 0 });
     }
     node = node.childrenMap.get(key);
     node.count += 1;
@@ -1443,6 +1694,7 @@ function renderFileNode(node, depth, state) {
   if (node.kind === "file") return [renderFileTreeRow(node.item, node.key, node.name, depth, state)];
   if (state.defaultExpandFolders && !state.expanded.has(node.key)) state.expanded.add(node.key);
   const isExpanded = state.expanded.has(node.key) || state.defaultExpandFolders;
+  const folderItem = { path: node.fullPath, sourceId: node.sourceId || node.item?.sourceId || inferFileSource() };
   const rows = [renderTreeRow({
     key: node.key,
     depth,
@@ -1454,10 +1706,11 @@ function renderFileNode(node, depth, state) {
     selected: state.selectedKey === node.key,
     kind: "folder",
     onClick: () => state.onToggle(node.key),
-      onSelect: state.onSelect,
-      actionIcon: "codicon-folder-opened",
-      actionTitle: t("context.openInFolder", "Open in Folder"),
-      onAction: () => openFileInLocalFolder({ path: node.fullPath, sourceId: node.sourceId })
+    onSelect: state.onSelect,
+    onContextMenu: (event) => showContextFolderMenu(folderItem, event.clientX, event.clientY),
+    actionIcon: "codicon-folder-opened",
+    actionTitle: t("context.openInFolder", "Open in Folder"),
+    onAction: () => openFileInLocalFolder(folderItem)
   })];
   if (isExpanded) {
     for (const child of node.children) rows.push(...renderFileNode(child, depth + 1, state));
@@ -1482,8 +1735,8 @@ function renderFileTreeRow(item, keySuffix, label, depth, state) {
     onClick: () => state.onOpenFile?.(item),
     onSelect: state.onSelect,
     actionIcon: "codicon-folder-opened",
-      actionTitle: t("context.openInFolder", "Open in Folder"),
-      onAction: () => openFileInLocalFolder(item),
+    actionTitle: t("context.openInFolder", "Open in Folder"),
+    onAction: () => openFileInLocalFolder(item),
     secondaryActionIcon: "codicon-copy",
     secondaryActionTitle: t("context.copyPath", "Copy path"),
     onSecondaryAction: () => copyText(item.path || item.label || "")
@@ -1501,18 +1754,50 @@ function renderUrlTreeRow(item, index, state) {
     kind: "url",
     selected: state.selectedKey === key,
     onClick: () => {
-      try { window.open(item.url, "_blank", "noopener,noreferrer"); } catch {}
+      if (!openUrlInInspector(item.url)) {
+        try { window.open(item.url, "_blank", "noopener,noreferrer"); } catch {}
+      }
     },
     onSelect: state.onSelect,
-    actionIcon: "codicon-link-external",
-    actionTitle: t("context.openUrl", "Open webpage"),
+    actionIcon: "codicon-globe",
+    actionTitle: t("context.openUrl", "Preview webpage"),
     onAction: () => {
-      try { window.open(item.url, "_blank", "noopener,noreferrer"); } catch {}
+      if (!openUrlInInspector(item.url)) {
+        try { window.open(item.url, "_blank", "noopener,noreferrer"); } catch {}
+      }
     },
     secondaryActionIcon: "codicon-copy",
     secondaryActionTitle: t("context.copyUrl", "Copy link"),
     onSecondaryAction: () => copyText(item.url || "")
   });
+}
+
+function openUrlInInspector(value) {
+  const url = normalizeUrl(value);
+  if (!/^https?:\/\//i.test(url)) return false;
+  try {
+    const parsed = new URL(url);
+    if (typeof window.zion?.inspector?.open !== "function") return false;
+    window.zion.inspector.open({
+      id: `web:${stableContextHash(url)}`,
+      ownerId: CONTEXT_VIEW_ID,
+      title: parsed.host || url,
+      path: url,
+      displayPath: url,
+      url,
+      language: "web"
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stableContextHash(value) {
+  let hash = 0;
+  const text = String(value || "");
+  for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  return Math.abs(hash).toString(36);
 }
 
 function renderObsidianTagsRows(tags, state) {
@@ -2268,6 +2553,7 @@ function renderTreeRow({
   kind,
   onClick,
   onSelect,
+  onContextMenu,
   actionIcon,
   actionTitle,
   onAction,
@@ -2284,6 +2570,13 @@ function renderTreeRow({
   if (expanded != null) row.setAttribute("aria-expanded", expanded ? "true" : "false");
   row.setAttribute("aria-selected", selected ? "true" : "false");
   if (title || label) row.title = title || label;
+  if (onContextMenu) {
+    row.oncontextmenu = (event) => {
+      event.preventDefault();
+      onSelect?.(key || "");
+      onContextMenu(event);
+    };
+  }
 
   const main = document.createElement("button");
   main.className = "zion-context-tree-main";
@@ -2318,24 +2611,108 @@ function renderTreeRow({
   return row;
 }
 
-  function openFileInLocalFolder(item) {
+function showContextFolderMenu(item, x, y) {
   const path = item?.path || item?.label || "";
   if (!path) return;
-    const payload = {
-      path,
-      sourceId: item.sourceId || inferFileSource()
-    };
-    try { console.info("[context.openInFolder] click", { item, payload }); } catch {}
+  closeContextFolderMenu();
+  const popover = document.createElement("div");
+  popover.className = "zion-files-actions-popover zion-files-context-popover";
+  popover.appendChild(contextMenuItem(t("context.addFolderToFiles", "Add to Files Panel"), () => {
+    closeContextFolderMenu();
+    addFolderToFilesPanel(item);
+  }));
+  popover.appendChild(contextMenuItem(t("context.copyPath", "Copy path"), () => {
+    closeContextFolderMenu();
+    copyText(path);
+  }));
+  popover.oncontextmenu = (event) => event.preventDefault();
+  document.body.appendChild(popover);
+  contextFolderMenuEl = popover;
+  positionContextFolderMenu(popover, x, y);
+  requestAnimationFrame(() => {
+    if (contextFolderMenuEl !== popover) return;
+    window.addEventListener("pointerdown", handleContextFolderMenuPointerDown, { capture: true });
+    window.addEventListener("keydown", handleContextFolderMenuKeydown, { capture: true });
+  });
+}
+
+function contextMenuItem(label, action) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "zion-files-menu-item";
+  btn.textContent = label;
+  btn.onclick = (event) => {
+    event.stopPropagation();
+    action?.();
+  };
+  return btn;
+}
+
+function positionContextFolderMenu(popover, x, y) {
+  const rect = popover.getBoundingClientRect();
+  const margin = 6;
+  const left = Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin));
+  const top = Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin));
+  popover.style.left = `${Math.round(left)}px`;
+  popover.style.top = `${Math.round(top)}px`;
+}
+
+function closeContextFolderMenu() {
+  if (!contextFolderMenuEl) return;
+  try { contextFolderMenuEl.remove(); } catch {}
+  contextFolderMenuEl = null;
+  try { window.removeEventListener("pointerdown", handleContextFolderMenuPointerDown, { capture: true }); } catch {}
+  try { window.removeEventListener("keydown", handleContextFolderMenuKeydown, { capture: true }); } catch {}
+}
+
+function handleContextFolderMenuPointerDown(event) {
+  if (contextFolderMenuEl?.contains?.(event.target)) return;
+  closeContextFolderMenu();
+}
+
+function handleContextFolderMenuKeydown(event) {
+  if (event.key === "Escape") closeContextFolderMenu();
+}
+
+function addFolderToFilesPanel(item) {
+  const path = item?.path || item?.label || "";
+  if (!path) return;
+  const payload = {
+    path,
+    sourceId: item.sourceId || inferFileSource()
+  };
   try {
-      const ret = window.zion.commands?.executeCommand?.("fs.openInFolder", payload);
-      Promise.resolve(ret).then((result) => {
-        try { console.info("[context.openInFolder] result", result); } catch {}
-      }).catch((err) => {
-        try { console.error("[context.openInFolder] failed", err); } catch {}
+    const ret = window.zion.commands?.executeCommand?.("tools.files.addFolderSource", payload);
+    Promise.resolve(ret)
+      .then((result) => {
+        if (result) window.showToast?.(t("context.addedFolderToFiles", "Added folder to Files panel"));
+      })
+      .catch((err) => {
+        try { console.error("[context.addFolderToFiles] failed", err); } catch {}
       });
-    } catch (err) {
+  } catch (err) {
+    try { console.error("[context.addFolderToFiles] failed", err); } catch {}
+  }
+}
+
+function openFileInLocalFolder(item) {
+  const path = item?.path || item?.label || "";
+  if (!path) return;
+  const payload = {
+    path,
+    sourceId: item.sourceId || inferFileSource()
+  };
+  try { console.info("[context.openInFolder] click", { item, payload }); } catch {}
+  try {
+    const ret = window.zion.commands?.executeCommand?.("fs.openInFolder", payload);
+    Promise.resolve(ret).then((result) => {
+      try { console.info("[context.openInFolder] result", result); } catch {}
+    }).catch((err) => {
       try { console.error("[context.openInFolder] failed", err); } catch {}
-    }
+    });
+  } catch (err) {
+    try { console.error("[context.openInFolder] failed", err); } catch {}
+  }
 }
 
 function handleTreeRowKeydown(event, row, { key, onClick, onSelect }) {
@@ -2612,6 +2989,7 @@ function getContextRefreshSignature() {
   const sessionId = getCurrentSessionId() || "";
   const text = getActiveEditorText();
   const tools = getCurrentTools(sessionId);
+  const contextResources = getSessionContextResources(sessionId);
   const textTail = text.length > 6000 ? text.slice(-6000) : text;
   const toolSig = tools.map((tool) => [
     tool?.id || tool?.toolCallId || "",
@@ -2620,7 +2998,8 @@ function getContextRefreshSignature() {
     stableStringify(tool?.result),
     tool?.ok
   ].join(":")).join("|");
-  return `${sessionId}:${text.length}:${textTail}:${toolSig}`;
+  const resourceSig = contextResources.map((item) => getSessionContextResourceKey(item)).join("|");
+  return `${sessionId}:${text.length}:${textTail}:${toolSig}:${resourceSig}`;
 }
 
 function stableStringify(value) {

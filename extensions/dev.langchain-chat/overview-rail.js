@@ -98,6 +98,16 @@ export function findAssistantBlockRange(text, preferredHeadLine) {
   };
 }
 
+function findTrailingUserPromptLine(text, assistantRange) {
+  if (!assistantRange || typeof assistantRange.endLine !== "number") return null;
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
+  const targetLine = assistantRange.endLine + 1;
+  if (targetLine < lines.length && USER_HEAD_RE.test(lines[targetLine] || "")) {
+    return targetLine;
+  }
+  return null;
+}
+
 function lineToOffset(lineIndex, lineCount, railHeight, markerSize) {
   if (railHeight <= 0) return 0;
   const usableHeight = Math.max(0, railHeight - markerSize);
@@ -133,18 +143,58 @@ function clearHiddenState(el) {
   el.classList.remove("is-hidden");
 }
 
-function getUserHeadLines(doc) {
-  const lines = [];
-  if (!doc) return lines;
-  try {
-    for (let lineNo = 1; lineNo <= doc.lines; lineNo++) {
-      const line = doc.line(lineNo);
-      if (USER_HEAD_RE.test(doc.sliceString(line.from, line.to))) {
-        lines.push(lineNo - 1);
+function compactUserMessageText(value, maxLength = 96) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "空 user 消息";
+  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…` : text;
+}
+
+export function collectUserMessageItemsFromText(text) {
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
+  const items = [];
+  const addItem = (line, endLine, previewLines) => {
+    items.push({
+      line,
+      endLine,
+      index: items.length + 1,
+      preview: compactUserMessageText(previewLines.join(" "))
+    });
+  };
+  const firstRoleLine = lines.findIndex((line) => ROLE_HEAD_RE.test(line || ""));
+  const implicitEndLine = firstRoleLine === -1 ? lines.length - 1 : firstRoleLine - 1;
+  if (implicitEndLine >= 0) {
+    const previewLines = [];
+    let previewLength = 0;
+    for (let i = 0; i <= implicitEndLine; i++) {
+      const bodyLine = String(lines[i] || "").trim();
+      if (!bodyLine || previewLength >= 120) continue;
+      previewLines.push(bodyLine);
+      previewLength += bodyLine.length + 1;
+    }
+    if (previewLines.length) {
+      addItem(0, implicitEndLine, previewLines);
+    }
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (!USER_HEAD_RE.test(lines[i] || "")) continue;
+    let endLine = i;
+    const previewLines = [];
+    const firstLine = String(lines[i] || "").replace(USER_HEAD_RE, "").trim();
+    if (firstLine) previewLines.push(firstLine);
+    let previewLength = firstLine.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (ROLE_HEAD_RE.test(lines[j] || "")) break;
+      endLine = j;
+      const bodyLine = String(lines[j] || "").trim();
+      if (bodyLine && previewLength < 120) {
+        previewLines.push(bodyLine);
+        previewLength += bodyLine.length + 1;
       }
     }
-  } catch {}
-  return lines;
+    addItem(i, endLine, previewLines);
+    i = endLine;
+  }
+  return items;
 }
 
 function getUserRoleBlocks(view) {
@@ -165,7 +215,7 @@ function computeUserNavState(view) {
   const roleBlocks = getUserRoleBlocks(view);
   const userLines = roleBlocks
     ? roleBlocks.map((block) => block.startLine)
-    : getUserHeadLines(doc);
+    : collectUserMessageItemsFromText(doc.toString()).map((item) => item.line);
   if (!userLines.length) return { userLines, prevLine: null, nextLine: null };
 
   const cursorLine = Math.max(0, doc.lineAt(view.state.selection.main.head).number - 1);
@@ -230,20 +280,50 @@ function isLineVisible(view, lineIndex) {
   }
 }
 
-function jumpToLine(view, lineIndex) {
+export function jumpToLine(view, lineIndex) {
   if (!view || typeof lineIndex !== "number" || lineIndex < 0) return false;
   try {
     const doc = view.state.doc;
     const line = doc.line(Math.max(1, Math.min(doc.lines, lineIndex + 1)));
-    if (isLineVisible(view, lineIndex)) {
-      view.dispatch({ selection: { anchor: line.from } });
-    } else {
-      view.dispatch({
-        selection: { anchor: line.from },
-        effects: EditorView.scrollIntoView(line.from, { y: "center", yMargin: 48 })
-      });
+    const scrollDOM = view.scrollDOM;
+    const commentList = view.dom?.closest?.(".zion-comments-list");
+    const wasVisible = isLineVisible(view, lineIndex);
+    const outerScrollTop = Number(commentList?.scrollTop) || 0;
+    view.dispatch({ selection: { anchor: line.from } });
+    const block = view.lineBlockAt?.(line.from);
+    const maxScrollTop = Math.max(
+      0,
+      Number(scrollDOM?.scrollHeight || 0) - Number(scrollDOM?.clientHeight || 0)
+    );
+    const targetScrollTop = wasVisible
+      ? Number(scrollDOM?.scrollTop) || 0
+      : Math.max(
+        0,
+        Math.min(
+          maxScrollTop,
+          Number(block?.top || 0)
+            - Math.max(0, (Number(scrollDOM?.clientHeight || 0) - Number(block?.height || 0)) / 2)
+        )
+      );
+    if (scrollDOM) {
+      scrollDOM.__zionProgrammaticScrollUntil = Math.max(
+        Number(scrollDOM.__zionProgrammaticScrollUntil) || 0,
+        Date.now() + 240
+      );
+      scrollDOM.scrollTop = targetScrollTop;
     }
-    view.focus?.();
+    try {
+      view.contentDOM?.focus?.({ preventScroll: true });
+    } catch {
+      view.focus?.();
+    }
+    if (commentList) commentList.scrollTop = outerScrollTop;
+    try {
+      requestAnimationFrame(() => {
+        if (scrollDOM) scrollDOM.scrollTop = targetScrollTop;
+        if (commentList) commentList.scrollTop = outerScrollTop;
+      });
+    } catch {}
     try {
       window.dispatchEvent(new CustomEvent("zion:roles-nav-flash", {
         detail: { view, lineIndex }
@@ -254,6 +334,32 @@ function jumpToLine(view, lineIndex) {
   return false;
 }
 
+function isAltKeyEvent(event) {
+  return event?.key === "Alt" || event?.code === "AltLeft" || event?.code === "AltRight";
+}
+
+function getBottomSafeMargin(scrollDOM, baseMargin = 48) {
+  try {
+    const scrollRect = scrollDOM?.getBoundingClientRect?.();
+    if (!scrollRect) return baseMargin;
+    const selectors = ["#bottombar", "#statusbar"];
+    let overlap = 0;
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (!el) continue;
+      const style = window.getComputedStyle?.(el);
+      if (style?.display === "none" || style?.visibility === "hidden") continue;
+      const rect = el.getBoundingClientRect?.();
+      if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+      if (rect.right <= scrollRect.left || rect.left >= scrollRect.right) continue;
+      const bottomOverlap = Math.max(0, scrollRect.bottom - rect.top);
+      overlap = Math.max(overlap, Math.min(rect.height, bottomOverlap));
+    }
+    return baseMargin + Math.ceil(overlap) + (overlap > 0 ? 8 : 0);
+  } catch {}
+  return baseMargin;
+}
+
 function createNavButton(className, symbol, label, title) {
   const button = document.createElement("button");
   button.type = "button";
@@ -261,6 +367,29 @@ function createNavButton(className, symbol, label, title) {
   button.title = title;
   button.setAttribute("aria-label", title);
   button.innerHTML = `<span class="zion-chat-overview-nav-symbol" aria-hidden="true">${symbol}</span><span class="zion-chat-overview-nav-label">${label}</span>`;
+  return button;
+}
+
+function createUserHistoryItem(item, current, onSelect) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `zion-chat-overview-user-item${current ? " is-current" : ""}`;
+  button.title = `第 ${item.line + 1} 行：${item.preview}`;
+  button.setAttribute("aria-label", button.title);
+  button.dataset.line = String(item.line);
+  button.onmousedown = (event) => {
+    event.preventDefault();
+  };
+  button.onclick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect(item.line);
+  };
+
+  const text = document.createElement("span");
+  text.className = "zion-chat-overview-user-item-text";
+  text.textContent = item.preview;
+  button.appendChild(text);
   return button;
 }
 
@@ -286,10 +415,17 @@ export function createChatOverviewRail(editor) {
   navDock.setAttribute("aria-label", "聊天导航");
   const prevUserBtn = createNavButton("zion-chat-overview-nav-prev-user", "↑", "上问", "跳到上一个 user 行");
   const nextUserBtn = createNavButton("zion-chat-overview-nav-next-user", "↓", "下问", "跳到下一个 user 行");
-  const latestBtn = createNavButton("zion-chat-overview-nav-latest", "A", "最新", "回到最新回答并恢复自动跟随");
+  const latestBtn = createNavButton("zion-chat-overview-nav-latest", "新", "最新", "回到最新回答并恢复自动跟随");
   navDock.appendChild(prevUserBtn);
   navDock.appendChild(nextUserBtn);
   navDock.appendChild(latestBtn);
+  const userHistory = document.createElement("div");
+  userHistory.className = "zion-chat-overview-user-menu";
+  userHistory.setAttribute("aria-label", "历史 user 消息");
+  const userHistoryList = document.createElement("div");
+  userHistoryList.className = "zion-chat-overview-user-list";
+  userHistory.appendChild(userHistoryList);
+  navDock.appendChild(userHistory);
 
   view.dom.appendChild(rail);
   view.dom.appendChild(navDock);
@@ -299,10 +435,82 @@ export function createChatOverviewRail(editor) {
   const subscriptions = [];
   const scrollDOM = view.scrollDOM || null;
   let suppressScrollTracking = false;
+  let altTapStarted = false;
+  let altTapUsedAsModifier = false;
+  let lastAltTapAt = 0;
+  let userHistorySignature = "";
+  let userHistoryOpenTimer = 0;
+  let userHistoryPointerInside = false;
   const resizeObserver =
     typeof window.ResizeObserver === "function"
       ? new window.ResizeObserver(() => scheduleRender())
       : null;
+
+  const clearUserHistoryOpenTimer = () => {
+    if (!userHistoryOpenTimer) return;
+    try { window.clearTimeout(userHistoryOpenTimer); } catch {}
+    userHistoryOpenTimer = 0;
+  };
+
+  const closeUserHistory = () => {
+    clearUserHistoryOpenTimer();
+    navDock.classList.remove("is-user-history-open");
+  };
+
+  const openUserHistoryNow = () => {
+    clearUserHistoryOpenTimer();
+    if (!navDock.classList.contains("has-user-history")) return;
+    navDock.classList.add("is-user-history-open");
+  };
+
+  const scheduleUserHistoryOpen = () => {
+    clearUserHistoryOpenTimer();
+    if (!navDock.classList.contains("has-user-history")) return;
+    userHistoryOpenTimer = window.setTimeout(() => {
+      userHistoryOpenTimer = 0;
+      if (disposed || !navDock.classList.contains("has-user-history")) return;
+      navDock.classList.add("is-user-history-open");
+    }, 300);
+  };
+
+  const targetMatches = (target, selector) => {
+    try {
+      return !!target?.closest?.(selector);
+    } catch {}
+    return false;
+  };
+
+  navDock.addEventListener("mouseenter", () => {
+    userHistoryPointerInside = true;
+  });
+  navDock.addEventListener("mouseover", (event) => {
+    if (targetMatches(event.target, ".zion-chat-overview-nav-latest")) {
+      closeUserHistory();
+      return;
+    }
+    if (targetMatches(event.target, ".zion-chat-overview-nav-prev-user, .zion-chat-overview-nav-next-user, .zion-chat-overview-user-menu")) {
+      scheduleUserHistoryOpen();
+    }
+  });
+  navDock.addEventListener("mouseleave", () => {
+    userHistoryPointerInside = false;
+    closeUserHistory();
+  });
+  navDock.addEventListener("focusin", (event) => {
+    if (targetMatches(event.target, ".zion-chat-overview-nav-latest")) {
+      closeUserHistory();
+      return;
+    }
+    openUserHistoryNow();
+  });
+  navDock.addEventListener("focusout", (event) => {
+    const next = event.relatedTarget;
+    try {
+      if (next && navDock.contains(next)) return;
+    } catch {}
+    if (userHistoryPointerInside) return;
+    closeUserHistory();
+  });
 
   const revealLatestAnswer = (sessionId, forceFollow = false) => {
     if (!scrollDOM) return;
@@ -310,37 +518,32 @@ export function createChatOverviewRail(editor) {
     const preferredHeadLine = sessionId
       ? window.zion?.state?.get?.(`chat.answerHeadLine.${sessionId}`)
       : undefined;
-    const range = findAssistantBlockRange(view.state.doc.toString(), preferredHeadLine);
-    const margin = 24;
-    let nextScrollTop = null;
+    const docText = view.state.doc.toString();
+    const range = findAssistantBlockRange(docText, preferredHeadLine);
     if (range) {
       try {
-        const line = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, range.endLine + 1)));
+        const trailingUserLine = findTrailingUserPromptLine(docText, range);
+        const targetLine = trailingUserLine == null ? range.endLine : trailingUserLine;
+        const line = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, targetLine + 1)));
         const block = view.lineBlockAt(line.to);
-        const visibleTop = scrollDOM.scrollTop + margin;
-        const visibleBottom = scrollDOM.scrollTop + scrollDOM.clientHeight - margin;
-        if (block.bottom > visibleBottom) {
-          nextScrollTop = Math.max(0, block.bottom - scrollDOM.clientHeight + margin);
-        } else if (block.top < visibleTop) {
-          nextScrollTop = Math.max(0, block.top - margin);
-        }
+        const margin = getBottomSafeMargin(scrollDOM, trailingUserLine == null ? 48 : 72);
+        const maxScrollTop = Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight);
+        const nextScrollTop = Math.max(0, Math.min(maxScrollTop, block.bottom - scrollDOM.clientHeight + margin));
+        try {
+          if (sessionId) window.zion?.state?.set?.(`chat.followSuppressUntil.${sessionId}`, Date.now() + 120);
+        } catch {}
+        window.requestAnimationFrame(() => {
+          try {
+            suppressScrollTracking = true;
+            scrollDOM.scrollTop = nextScrollTop;
+          } catch {}
+          suppressScrollTracking = false;
+          scheduleRender();
+        });
+        return;
       } catch {}
     }
-    if (nextScrollTop == null) {
-      scheduleRender();
-      return;
-    }
-    try {
-      if (sessionId) window.zion?.state?.set?.(`chat.followSuppressUntil.${sessionId}`, Date.now() + 80);
-    } catch {}
-    window.requestAnimationFrame(() => {
-      try {
-        suppressScrollTracking = true;
-        scrollDOM.scrollTop = nextScrollTop;
-      } catch {}
-      suppressScrollTracking = false;
-      scheduleRender();
-    });
+    scheduleRender();
   };
 
   prevUserBtn.onclick = (e) => {
@@ -351,6 +554,7 @@ export function createChatOverviewRail(editor) {
     const sessionId = getEditorSessionId(editor);
     if (sessionId) setFollowLatest(sessionId, false);
     jumpToLine(view, nav.prevLine);
+    openUserHistoryNow();
     scheduleRender();
   };
 
@@ -362,15 +566,102 @@ export function createChatOverviewRail(editor) {
     const sessionId = getEditorSessionId(editor);
     if (sessionId) setFollowLatest(sessionId, false);
     jumpToLine(view, nav.nextLine);
+    openUserHistoryNow();
     scheduleRender();
   };
 
   latestBtn.onclick = (e) => {
     e.preventDefault();
     e.stopPropagation();
+    closeUserHistory();
     const sessionId = getEditorSessionId(editor);
     if (!sessionId) return;
     revealLatestAnswer(sessionId, true);
+  };
+
+  const revealLatestForActiveEditor = () => {
+    const sessionId = getEditorSessionId(editor);
+    if (!sessionId) return false;
+    revealLatestAnswer(sessionId, true);
+    return true;
+  };
+
+  const renderUserHistory = (items, cursorLine, sessionId) => {
+    const signature = [
+      sessionId || "",
+      cursorLine,
+      items.map((item) => `${item.line}:${item.endLine}:${item.preview}`).join("\u0000")
+    ].join("\u0001");
+    navDock.classList.toggle("has-user-history", items.length > 0);
+    if (!items.length) closeUserHistory();
+    if (signature === userHistorySignature) return;
+    userHistorySignature = signature;
+    userHistoryList.replaceChildren();
+    for (const item of items) {
+      const current = cursorLine >= item.line && cursorLine <= item.endLine;
+      userHistoryList.appendChild(createUserHistoryItem(item, current, (line) => {
+        if (sessionId) setFollowLatest(sessionId, false);
+        jumpToLine(view, line);
+        openUserHistoryNow();
+        scheduleRender();
+      }));
+    }
+    const currentItem = userHistoryList.querySelector(".zion-chat-overview-user-item.is-current");
+    if (currentItem) {
+      try {
+        const itemTop = Number(currentItem.offsetTop) || 0;
+        const itemBottom = itemTop + (Number(currentItem.offsetHeight) || 0);
+        const viewportTop = Number(userHistoryList.scrollTop) || 0;
+        const viewportBottom = viewportTop + (Number(userHistoryList.clientHeight) || 0);
+        if (itemTop < viewportTop) userHistoryList.scrollTop = itemTop;
+        else if (itemBottom > viewportBottom) {
+          userHistoryList.scrollTop = Math.max(0, itemBottom - userHistoryList.clientHeight);
+        }
+      } catch {}
+    }
+  };
+
+  const isThisEditorActive = () => {
+    try {
+      const active = document.activeElement;
+      return !!active && view.dom.contains(active);
+    } catch {}
+    return false;
+  };
+
+  const onKeyDown = (event) => {
+    if (disposed || !isThisEditorActive()) return;
+    if (isAltKeyEvent(event) && !event.repeat && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+      altTapStarted = true;
+      altTapUsedAsModifier = false;
+      return;
+    }
+    if (event.altKey) {
+      altTapUsedAsModifier = true;
+      lastAltTapAt = 0;
+    }
+  };
+
+  const onKeyUp = (event) => {
+    if (disposed || !isThisEditorActive()) return;
+    if (!isAltKeyEvent(event)) return;
+    const now = Date.now();
+    const isPlainAltTap = altTapStarted && !altTapUsedAsModifier && !event.metaKey && !event.ctrlKey && !event.shiftKey;
+    altTapStarted = false;
+    altTapUsedAsModifier = false;
+    if (!isPlainAltTap) {
+      lastAltTapAt = 0;
+      return;
+    }
+    if (lastAltTapAt && now - lastAltTapAt <= 360) {
+      lastAltTapAt = 0;
+      if (revealLatestForActiveEditor()) {
+        event.preventDefault();
+        try { event.stopPropagation(); } catch {}
+      }
+      return;
+    }
+    lastAltTapAt = now;
   };
 
   const render = () => {
@@ -388,6 +679,8 @@ export function createChatOverviewRail(editor) {
     const lineCount = Math.max(doc.lines, 1);
     const railHeight = Math.max(0, (scrollDOM?.clientHeight || view.dom.clientHeight || 0) - 4);
     rail.style.setProperty("--zion-chat-overview-rail-height", `${railHeight}px`);
+    navDock.style.setProperty("--zion-chat-overview-rail-height", `${railHeight}px`);
+    navDock.style.setProperty("--zion-chat-overview-panel-width", `${Math.max(0, view.dom.clientWidth || 0)}px`);
 
     const cursorLine = Math.max(0, doc.lineAt(view.state.selection.main.head).number - 1);
     const cursorTop = lineToOffset(cursorLine, lineCount, railHeight, 4);
@@ -404,6 +697,8 @@ export function createChatOverviewRail(editor) {
       : false;
     const followLatest = sessionId ? isFollowLatestEnabled(sessionId) : false;
     const userNav = computeUserNavState(view);
+    const userMessages = collectUserMessageItemsFromText(doc.toString());
+    renderUserHistory(userMessages, cursorLine, sessionId);
 
     assistantRangeEl.classList.toggle("is-streaming", isStreaming);
     navDock.classList.toggle("is-hidden", userNav.userLines.length === 0 && !range);
@@ -562,6 +857,17 @@ export function createChatOverviewRail(editor) {
     });
   } catch {}
 
+  try {
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    subscriptions.push({
+      dispose() {
+        window.removeEventListener("keydown", onKeyDown, true);
+        window.removeEventListener("keyup", onKeyUp, true);
+      }
+    });
+  } catch {}
+
   scheduleRender();
 
   return {
@@ -571,6 +877,7 @@ export function createChatOverviewRail(editor) {
       try {
         resizeObserver?.disconnect();
       } catch {}
+      closeUserHistory();
       for (const sub of subscriptions) {
         try {
           sub?.dispose?.();

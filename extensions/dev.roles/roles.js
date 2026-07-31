@@ -609,6 +609,55 @@ function rolesView(opts = {}) {
   );
 }
 
+export function applyRoleNavigationSelection(view, selection, pos) {
+  try {
+    const p = Math.max(0, Math.min(view.state.doc.length, pos));
+    const scrollDOM = view.scrollDOM;
+    const outerList = view.dom?.closest?.(".zion-comments-list") || null;
+    const outerScrollTop = Number(outerList?.scrollTop) || 0;
+    const block = view.lineBlockAt(p);
+    const viewportTop = Number(scrollDOM?.scrollTop) || 0;
+    const viewportBottom = viewportTop + (Number(scrollDOM?.clientHeight) || 0);
+    const visible = block.top >= viewportTop && block.bottom <= viewportBottom;
+    const targetTop = Math.max(0, Math.min(
+      block.top - Math.floor((scrollDOM.clientHeight || 0) * 0.2),
+      Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight)
+    ));
+    const restoreNestedScroll = () => {
+      try {
+        scrollDOM.scrollTo?.({ top: targetTop, behavior: "auto" });
+        scrollDOM.scrollTop = targetTop;
+        if (outerList) {
+          outerList.__zionProgrammaticScrollUntil = Math.max(
+            Number(outerList.__zionProgrammaticScrollUntil) || 0,
+            Date.now() + 180
+          );
+          outerList.scrollTop = outerScrollTop;
+        }
+      } catch {}
+    };
+
+    if (visible || outerList) {
+      view.dispatch({ selection });
+    } else {
+      view.dispatch({
+        selection,
+        effects: EditorView.scrollIntoView(p, { y: "center", yMargin: 48 })
+      });
+    }
+    restoreNestedScroll();
+    try {
+      requestAnimationFrame(() => {
+        restoreNestedScroll();
+        requestAnimationFrame(restoreNestedScroll);
+      });
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 可选参数：
  * - prefixes: string[] 额外角色前缀（与内置 + 环境来源合并）
@@ -617,44 +666,10 @@ function rolesView(opts = {}) {
 export function roles(opts = {}) {
   const prefixes = getEffectivePrefixes(opts);
 
-  const isPosVisible = (view, pos) => {
-    try {
-      const p = Math.max(0, Math.min(view.state.doc.length, pos));
-      const block = view.lineBlockAt(p);
-      const scrollDOM = view.scrollDOM;
-      const viewportTop = scrollDOM.scrollTop;
-      const viewportBottom = viewportTop + scrollDOM.clientHeight;
-      return block.top >= viewportTop && block.bottom <= viewportBottom;
-    } catch {
-      return false;
-    }
-  };
-
   const jumpToPos = (view, pos, flashLineIndex = null) => {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
     const selection = { anchor: p };
-    const forceScroll = () => {
-      try {
-        const scrollDOM = view.scrollDOM;
-        const block = view.lineBlockAt(p);
-        const targetTop = Math.max(0, Math.min(
-          block.top - Math.floor((scrollDOM.clientHeight || 0) * 0.2),
-          Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight)
-        ));
-        scrollDOM.scrollTo?.({ top: targetTop, behavior: "auto" });
-        scrollDOM.scrollTop = targetTop;
-      } catch {}
-    };
-    if (isPosVisible(view, p)) {
-      view.dispatch({ selection });
-    } else {
-      view.dispatch({
-        selection,
-        effects: EditorView.scrollIntoView(p, { y: "center", yMargin: 48 })
-      });
-    }
-    forceScroll();
-    try { requestAnimationFrame(forceScroll); } catch {}
+    applyRoleNavigationSelection(view, selection, p);
     if (typeof flashLineIndex === "number") flashRoleNavLine(view, flashLineIndex);
     return true;
   };
@@ -693,28 +708,7 @@ export function roles(opts = {}) {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
     const main = view.state.selection.main;
     const selection = { anchor: main.anchor, head: p };
-    const forceScroll = () => {
-      try {
-        const scrollDOM = view.scrollDOM;
-        const block = view.lineBlockAt(p);
-        const targetTop = Math.max(0, Math.min(
-          block.top - Math.floor((scrollDOM.clientHeight || 0) * 0.2),
-          Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight)
-        ));
-        scrollDOM.scrollTo?.({ top: targetTop, behavior: "auto" });
-        scrollDOM.scrollTop = targetTop;
-      } catch {}
-    };
-    if (isPosVisible(view, p)) {
-      view.dispatch({ selection });
-    } else {
-      view.dispatch({
-        selection,
-        effects: EditorView.scrollIntoView(p, { y: "center", yMargin: 48 })
-      });
-    }
-    forceScroll();
-    try { requestAnimationFrame(forceScroll); } catch {}
+    applyRoleNavigationSelection(view, selection, p);
     if (typeof flashLineIndex === "number") flashRoleNavLine(view, flashLineIndex);
     return true;
   };

@@ -40,6 +40,13 @@ export function createSessionsListRendererFactory(deps) {
     return `<span class="codicon codicon-${raw}" aria-hidden="true"${style}></span>`;
   }
 
+  function sessionIconName(sessionId) {
+    const sid = String(sessionId || "");
+    if (sid.startsWith("comment:")) return "comment-discussion";
+    if (sid.startsWith("agent-task:")) return "hubot";
+    return "";
+  }
+
   const COMMENTS_THREADS_KEY = "zion.comments.threads.v1";
   const AGENTS_TASKS_KEY = "zion.agents.tasks.v1";
   const SESSION_CHILDREN_COLLAPSED_KEY = "zion.sessions.relatedChildrenCollapsed.v1";
@@ -1021,7 +1028,7 @@ export function createSessionsListRendererFactory(deps) {
         row.style.borderRadius = "8px";
         row.style.transition = "background 120ms ease";
         row.style.position = "relative";
-        row.className = "zion-session-row";
+        row.className = "zion-session-row is-folder";
         row.style.whiteSpace = "nowrap";
         row.style.borderLeft = `${depth * 12}px solid transparent`;
         row.dataset.depth = String(depth);
@@ -1044,6 +1051,10 @@ export function createSessionsListRendererFactory(deps) {
         chevron.innerHTML = iconHtml(isFolderOpen(folder.id) ? "chevron-down" : "chevron-right", 14);
         chevron.style.opacity = "0.8";
 
+        const folderIcon = document.createElement("span");
+        folderIcon.className = "zion-session-icon zion-session-folder-icon";
+        folderIcon.innerHTML = iconHtml(isFolderOpen(folder.id) ? "folder-opened" : "folder", 13);
+
         const ttl = document.createElement("span");
         ttl.className = "zion-session-folder-name";
         ttl.textContent = folder.title || "Folder";
@@ -1058,6 +1069,7 @@ export function createSessionsListRendererFactory(deps) {
         if (isSelected(folder.id)) row.classList.add("is-selected");
 
         labelWrap.appendChild(chevron);
+        labelWrap.appendChild(folderIcon);
         labelWrap.appendChild(ttl);
 
         const btns = document.createElement("div");
@@ -1353,7 +1365,7 @@ export function createSessionsListRendererFactory(deps) {
               srow.style.transition = "background 120ms ease";
               srow.tabIndex = 0;
               srow.style.position = "relative";
-              srow.className = "zion-session-row";
+              srow.className = "zion-session-row is-session";
               srow.style.whiteSpace = "nowrap";
               srow.style.paddingLeft = `${10 + ((depth + 1) * 12)}px`;
               srow.dataset.depth = String(depth + 1);
@@ -1420,6 +1432,14 @@ export function createSessionsListRendererFactory(deps) {
 
               const meta = loadMeta(ch.id);
               const displayTitle = getSessionDisplayTitle(ch);
+
+              const sessionIconNameValue = sessionIconName(ch.id);
+              if (sessionIconNameValue) {
+                const sessionIcon = document.createElement("span");
+                sessionIcon.className = "zion-session-icon";
+                sessionIcon.innerHTML = iconHtml(sessionIconNameValue, 13);
+                titleLine.appendChild(sessionIcon);
+              }
 
               const ttl2 = document.createElement("span");
               ttl2.className = "zion-session-name";

@@ -37,7 +37,15 @@ export type MessageContributor = {
   id: string;
   order?: number; // default 50, smaller runs earlier
   stage?: "pre" | "post"; // default "pre"
-  contribute: (messages: any[], ctx: { editor: EditorProxy | null; state: any; events: any }) => any[] | Promise<any[]>;
+  contribute: (messages: any[], ctx: {
+    editor: EditorProxy | null;
+    state: any;
+    events: any;
+    sessionId?: string | null;
+    panelId?: string | null;
+    requestSource?: string | null;
+    runId?: string | null;
+  }) => any[] | Promise<any[]>;
 };
 
 export type Decorator = {
@@ -343,6 +351,54 @@ declare global {
         requestTemporaryWidth(ownerId: string, w: number): void;
         releaseTemporaryWidth(ownerId: string): void;
       };
+      inspector?: {
+        registerRenderer(renderer: {
+          id: string;
+          priority?: number;
+          canRender: (item: any) => boolean;
+          render: (
+            container: HTMLElement,
+            context: {
+              item: any;
+              update: (patch: Record<string, any>) => boolean;
+              close: () => void;
+              openInEditor: () => void;
+            }
+          ) => void | { dispose?: () => void };
+        }): Disposable;
+        open(item: {
+          id: string;
+          ownerId?: string;
+          title: string;
+          path?: string;
+          displayPath?: string;
+            url?: string;
+          language?: string;
+            file?: { kind?: "loading" | "error" | "text" | "image" | "pdf" | "binary"; content?: string; blob?: Blob; message?: string; size?: number; truncated?: boolean; loadedBytes?: number; previewContent?: string; loadFullContent?: () => Promise<string> };
+          editable?: boolean;
+          onSave?: (content: string) => void | Promise<void>;
+          actions?: Array<{ id: string; title: string; icon?: string; run: (item: any) => void | Promise<void> }>;
+          render?: (
+            container: HTMLElement,
+            context: {
+              item: any;
+              update: (patch: Record<string, any>) => boolean;
+              close: () => void;
+              openInEditor: () => void;
+            }
+          ) => void | { dispose?: () => void };
+        }): string;
+        update(id: string, patch: Record<string, any>): boolean;
+        close(id: string): void;
+        clearOwner(ownerId: string): void;
+        activate(id: string): void;
+        show(): void;
+        hide(): void;
+        isVisible(): boolean;
+        getItems(): any[];
+        getActiveItemId(): string | null;
+        setWidth(width: number): void;
+      };
       bottomPanel?: {
         registerView(opts: {
           id: string;
@@ -413,7 +469,7 @@ declare global {
         ensureAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         openSession(panelId: string, sessionId: string, opts?: { focus?: boolean; forceReload?: boolean }): boolean | Promise<boolean>;
         openTab?(panelId: string, tabId: string, opts?: { focus?: boolean }): boolean | Promise<boolean>;
-        openFileTab?(args: { panelId?: string; id?: string; title?: string; name?: string; path?: string; displayPath?: string; language?: string; meta?: any; file?: any; focus?: boolean }): boolean | Promise<boolean>;
+        openFileTab?(args: { panelId?: string; id?: string; ownerId?: string; target?: "editor" | "inspector"; title?: string; name?: string; path?: string; displayPath?: string; language?: string; meta?: any; file?: any; focus?: boolean }): boolean | string | Promise<boolean | string>;
         split(direction: "horizontal" | "vertical", panelId?: string): string | null;
         splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         focus(panelId: string): void;
@@ -467,6 +523,41 @@ declare global {
       };
       chat?: {
         run(opts?: { useSelection?: boolean; prompt?: string; sessionId?: string; panelId?: string; editor?: EditorProxy | null }): void;
+        execute(request: {
+          prompt: string;
+          executionMode: "local-only" | "service-backed";
+          sessionId?: string;
+          policy?: {
+            preset: "read-only" | "workspace-write" | "trusted-automation";
+            allowedTools?: string[];
+            fileRoots?: string[];
+            allowedCommandPrefixes?: string[];
+            allowedTerminalSessionIds?: string[];
+            allowedRecipients?: string[];
+            maxMailPerRun?: number;
+            maxToolCalls?: number;
+          };
+        }): {
+          runId: string;
+          completion: Promise<{
+            runId: string;
+            status: "completed" | "failed" | "aborted";
+            output?: string;
+            error?: string;
+            reason?: string;
+            usage?: { input_tokens: number; output_tokens: number };
+          }>;
+          abort(reason?: "timeout" | "user" | "superseded"): Promise<void>;
+          events: AsyncIterable<{
+            schemaVersion: 1;
+            eventId: string;
+            runId: string;
+            sequence: number;
+            type: string;
+            ts: number;
+            data: any;
+          }>;
+        };
         stop(sessionId?: string): void;
         retry(sessionId?: string): void;
         isStreaming(sessionId?: string): boolean;
@@ -500,7 +591,7 @@ declare global {
       // internal helper to refresh keymap after new bindings
       __applyKeymap?: () => void;
       // internal helpers (optional)
-      __runMessageContributors?: (messages: any[], stage?: "pre" | "post") => Promise<any[]>;
+      __runMessageContributors?: (messages: any[], stage?: "pre" | "post", ctx?: any) => Promise<any[]>;
     };
   }
 }

@@ -16,6 +16,7 @@ import {
   auxiliaryBarRuntime,
   bindWorkbenchCore,
   bottomPanelRuntime,
+  inspectorRuntime,
   responsiveRuntime,
   sideBarRuntime
 } from "../ui/workbench/runtime";
@@ -1513,13 +1514,17 @@ class Registry {
     return this.modelProviders.find(p => p.id === id) || null;
   }
 
-  async runMessageContributors(messages: any[], stage: "pre" | "post" = "pre"): Promise<any[]> {
+  async runMessageContributors(messages: any[], stage: "pre" | "post" = "pre", runCtx: any = {}): Promise<any[]> {
     const contribs = [...this.messageContribs]
       .filter(c => (c.stage ?? "pre") === stage)
       .sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
 
     const ctx = {
-      editor: ((window as any).zion?.window?.activeEditor ?? null) as IEditorProxy | null,
+      editor: (runCtx?.editor ?? (window as any).zion?.window?.activeEditor ?? null) as IEditorProxy | null,
+      sessionId: runCtx?.sessionId ?? null,
+      panelId: runCtx?.panelId ?? null,
+      requestSource: runCtx?.requestSource ?? null,
+      runId: runCtx?.runId ?? null,
       state: {
         get: <T,>(key: string) => this.state.get<T>(key),
         set: <T,>(key: string, v: T) => this.state.set<T>(key, v)
@@ -2354,6 +2359,20 @@ const chatUsageStore = createChatUsageStore();
       requestTemporaryWidth: (ownerId: string, w: number) => auxiliaryBarRuntime.requestTemporaryWidth(ownerId, w),
       releaseTemporaryWidth: (ownerId: string) => auxiliaryBarRuntime.releaseTemporaryWidth(ownerId)
     },
+    inspector: {
+      registerRenderer: (renderer: any) => inspectorRuntime.registerRenderer(renderer),
+      open: (item: any) => inspectorRuntime.open(item),
+      update: (id: string, patch: any) => inspectorRuntime.update(id, patch),
+      close: (id: string) => inspectorRuntime.close(id),
+      clearOwner: (ownerId: string) => inspectorRuntime.clearOwner(ownerId),
+      activate: (id: string) => inspectorRuntime.activate(id),
+      show: () => inspectorRuntime.show(),
+      hide: () => inspectorRuntime.hide(),
+      isVisible: () => inspectorRuntime.isVisible(),
+      getItems: () => inspectorRuntime.getItems(),
+      getActiveItemId: () => inspectorRuntime.getActiveItemId(),
+      setWidth: (width: number) => inspectorRuntime.setWidth(width)
+    },
     bottomPanel: {
       registerView: (opts: any) => bottomPanelRuntime.registerView(opts),
       activateView: (id: string) => bottomPanelRuntime.activateView(id),
@@ -2390,8 +2409,8 @@ const chatUsageStore = createChatUsageStore();
       activeEditor: null as any
     },
     __applyKeymap: () => (registry as any).applyKeymap(),
-    __runMessageContributors: (messages: any[], stage: "pre" | "post" = "pre") =>
-      (registry as any).runMessageContributors(messages, stage)
+    __runMessageContributors: (messages: any[], stage: "pre" | "post" = "pre", ctx?: any) =>
+      (registry as any).runMessageContributors(messages, stage, ctx)
   };
   (window as any).zion = api;
   try {

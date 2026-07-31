@@ -238,10 +238,169 @@ function createEditorId(panelId: string): string {
   return `${panelId || "editor"}:${nextEditorCoreSeq++}`;
 }
 
+type MouseResolvedPosition = {
+  pos: number;
+  bias: -1 | 1;
+};
+
+type VisualRowPosition = {
+  pos: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
+
+type VisualRow = {
+  top: number;
+  bottom: number;
+  center: number;
+  positions: VisualRowPosition[];
+};
+
+function normalizeRect(rect: { left?: number; right?: number; top?: number; bottom?: number; x?: number; y?: number; width?: number; height?: number } | null): VisualRowPosition | null {
+  if (!rect) return null;
+  const left = Number.isFinite(rect.left) ? rect.left! : rect.x;
+  const top = Number.isFinite(rect.top) ? rect.top! : rect.y;
+  const right = Number.isFinite(rect.right) ? rect.right! : (Number.isFinite(left) && Number.isFinite(rect.width) ? left! + rect.width! : left);
+  const bottom = Number.isFinite(rect.bottom) ? rect.bottom! : (Number.isFinite(top) && Number.isFinite(rect.height) ? top! + rect.height! : top);
+  if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) return null;
+  return { pos: 0, left: left!, right: right!, top: top!, bottom: bottom! };
+}
+
+function getEventLineStart(view: EditorView, event: MouseEvent, fallbackPos: number): number {
+  try {
+    const target = event.target instanceof Element ? event.target : null;
+    const lineEl = target?.closest(".cm-line");
+    if (lineEl && view.contentDOM.contains(lineEl)) {
+      return view.state.doc.lineAt(view.posAtDOM(lineEl, 0)).from;
+    }
+  } catch {}
+  return view.state.doc.lineAt(fallbackPos).from;
+}
+
+function getCandidateLineStarts(view: EditorView, event: MouseEvent, fallbackPos: number): number[] {
+  const starts = new Set<number>();
+  const add = (pos: number) => {
+    try {
+      const line = view.state.doc.lineAt(Math.max(0, Math.min(view.state.doc.length, pos)));
+      starts.add(line.from);
+      if (line.from > 0) starts.add(view.state.doc.lineAt(line.from - 1).from);
+      if (line.to < view.state.doc.length) starts.add(view.state.doc.lineAt(line.to + 1).from);
+    } catch {}
+  };
+  add(fallbackPos);
+  add(getEventLineStart(view, event, fallbackPos));
+  try {
+    const scrollerRect = view.scrollDOM.getBoundingClientRect();
+    for (const block of view.viewportLineBlocks) {
+      if (block.widget) continue;
+      const top = view.documentTop + block.top;
+      const bottom = view.documentTop + block.bottom;
+      if (bottom < scrollerRect.top - 120 || top > scrollerRect.bottom + 120) continue;
+      if (event.clientY >= top - 120 && event.clientY <= bottom + 120) add(block.from);
+    }
+  } catch {}
+  return [...starts];
+}
+
+function buildVisualRowsForLine(view: EditorView, lineFrom: number, lineTo: number): VisualRow[] {
+  const maxMeasuredLineLength = 2000;
+  if (lineTo - lineFrom > maxMeasuredLineLength) return [];
+  const rows: VisualRow[] = [];
+  for (let pos = lineFrom; pos <= lineTo; pos++) {
+    let rect: ReturnType<EditorView["coordsAtPos"]> | null = null;
+    try { rect = view.coordsAtPos(pos); } catch {}
+    const normalized = normalizeRect(rect);
+    if (!normalized) continue;
+    normalized.pos = pos;
+    const center = (normalized.top + normalized.bottom) / 2;
+    const rowTolerance = Math.max(6, Math.min(10, (normalized.bottom - normalized.top) * 0.6));
+    let row = rows.find(candidate => Math.abs(candidate.center - center) <= rowTolerance);
+    if (!row) {
+      row = { top: normalized.top, bottom: normalized.bottom, center, positions: [] };
+      rows.push(row);
+    }
+    row.top = Math.min(row.top, normalized.top);
+    row.bottom = Math.max(row.bottom, normalized.bottom);
+    row.center = (row.center * row.positions.length + center) / (row.positions.length + 1);
+    row.positions.push(normalized);
+  }
+  rows.sort((a, b) => a.center - b.center);
+  for (const row of rows) row.positions.sort((a, b) => a.left - b.left || a.pos - b.pos);
+  return rows;
+}
+
+function resolveWrappedLineMousePosition(view: EditorView, event: MouseEvent): MouseResolvedPosition | null {
+  const basePos = view.posAtCoords({ x: event.clientX, y: event.clientY }, false);
+  if (basePos == null) return null;
+  const candidateRows: VisualRow[] = [];
+  for (const lineFrom of getCandidateLineStarts(view, event, basePos)) {
+    const line = view.state.doc.lineAt(lineFrom);
+    candidateRows.push(...buildVisualRowsForLine(view, line.from, line.to));
+  }
+  if (!candidateRows.length) return null;
+
+  const targetRow = candidateRows.reduce((best, row) => {
+    const distance = event.clientY < row.top
+      ? row.top - event.clientY
+      : event.clientY > row.bottom
+        ? event.clientY - row.bottom
+        : 0;
+    const bestDistance = event.clientY < best.top
+      ? best.top - event.clientY
+      : event.clientY > best.bottom
+        ? event.clientY - best.bottom
+        : 0;
+    return distance < bestDistance || (distance === bestDistance && Math.abs(event.clientY - row.center) < Math.abs(event.clientY - best.center))
+      ? row
+      : best;
+  }, candidateRows[0]);
+
+  const nearest = targetRow.positions.reduce((best, candidate) => {
+    const candidateX = (candidate.left + candidate.right) / 2;
+    const bestX = (best.left + best.right) / 2;
+    return Math.abs(event.clientX - candidateX) < Math.abs(event.clientX - bestX) ? candidate : best;
+  }, targetRow.positions[0]);
+  const nearestX = (nearest.left + nearest.right) / 2;
+  return { pos: nearest.pos, bias: event.clientX >= nearestX ? 1 : -1 };
+}
+
+function wrappedLineMouseSelectionFix(): Extension {
+  return Prec.highest(EditorView.mouseSelectionStyle.of((view, event) => {
+    if (event.button !== 0 || event.detail !== 1) return null;
+    const start = resolveWrappedLineMousePosition(view, event);
+    if (!start) return null;
+    let startPos = start.pos;
+    const startBias = start.bias;
+    let startSelection = view.state.selection;
+    return {
+      update(update: ViewUpdate) {
+        if (!update.docChanged) return;
+        startPos = update.changes.mapPos(startPos);
+        startSelection = startSelection.map(update.changes);
+      },
+      get(curEvent: MouseEvent, extend: boolean, multiple: boolean) {
+        const cur = resolveWrappedLineMousePosition(view, curEvent)
+          ?? {
+            pos: view.posAtCoords({ x: curEvent.clientX, y: curEvent.clientY }, false) ?? startPos,
+            bias: startBias
+          };
+        const range = startPos === cur.pos
+          ? EditorSelection.cursor(cur.pos, cur.bias)
+          : EditorSelection.range(startPos, cur.pos);
+        if (extend) return EditorSelection.create([EditorSelection.range(startSelection.main.anchor, cur.pos)]);
+        if (multiple) return startSelection.addRange(range);
+        return EditorSelection.create([range]);
+      }
+    };
+  }));
+}
 
 export class EditorCore {
   public view: EditorView;
   private keymapComp = new Compartment();
+  private historyComp = new Compartment();
   private uiComp = new Compartment();
   private themeComp = new Compartment();
   private mdComp = new Compartment();
@@ -331,7 +490,7 @@ export class EditorCore {
           ]),
           scrollPastEnd(),
             modDSelectNext,
-          history(),
+          this.historyComp.of(history()),
           // markdown is put into its own compartment so code-language highlighting can
           // be enabled/disabled at runtime.
           this.mdComp.of(markdown({ codeLanguages: languages, extensions: [GFM] })),
@@ -362,7 +521,8 @@ export class EditorCore {
           ),
           // line wrap compartment
           this.lineWrapComp.of(CMEditorView.lineWrapping),
-            this.createFocusReturnGuardExtension()
+          wrappedLineMouseSelectionFix(),
+          this.createFocusReturnGuardExtension()
         ]
       }),
       parent
@@ -411,14 +571,22 @@ export class EditorCore {
 
   setValue(v: string, opts?: EditorSetValueOptions): void {
     const { state } = this.view;
-    const annotations = opts?.source === "session-load"
-      ? Transaction.userEvent.of("zion.sessionLoad")
+    const isSessionLoad = opts?.source === "session-load";
+    const annotations = isSessionLoad
+      ? [Transaction.userEvent.of("zion.sessionLoad"), Transaction.addToHistory.of(false)]
       : undefined;
     const tr = state.update({
       changes: { from: 0, to: state.doc.length, insert: v },
-      annotations
+      annotations,
+      effects: isSessionLoad ? this.historyComp.reconfigure([]) : undefined
     });
     this.view.dispatch(tr);
+    if (isSessionLoad) {
+      this.view.dispatch({
+        effects: this.historyComp.reconfigure(history()),
+        annotations: Transaction.addToHistory.of(false)
+      });
+    }
   }
 
   replaceSelection(text: string): void {

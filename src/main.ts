@@ -3271,7 +3271,11 @@ async function bootstrap() {
     getActivePanelId: () => panelManager.getActivePanelId(),
     getMaximizedPanelId: () => panelManager.getMaximizedPanelId(),
     isMaximized: (panelId?: string) => panelManager.isPanelMaximized(panelId),
-    list: () => panelManager.listPanels().map((panel) => ({ id: panel.id, activeTabId: panel.activeTabId })),
+    list: () => panelManager.listPanels().map((panel) => ({
+      id: panel.id,
+      activeTabId: panel.activeTabId,
+      tabs: panel.tabs.map((tab: any) => ({ id: tab.id, kind: tab.kind || "session" }))
+    })),
     findAtSide: (side: "left" | "right" | "up" | "down", panelId?: string) => panelManager.findPanelAtSide(panelId, side),
     ensureAtSide: (side: "left" | "right" | "up" | "down", panelId?: string) => {
       const existing = panelManager.findPanelAtSide(panelId, side);
@@ -3283,6 +3287,17 @@ async function bootstrap() {
       return openSessionInPanel(panelId, tabId, opts as any);
     },
     openFileTab: (args: any) => {
+      if (args?.target === "inspector") {
+        return (window.zion as any).inspector?.open?.({
+          id: String(args?.id || `file:${Date.now().toString(36)}`),
+          ownerId: String(args?.ownerId || "core"),
+          title: String(args?.title || args?.name || "File"),
+          path: args?.path,
+          displayPath: args?.displayPath,
+          language: args?.language,
+          file: args?.file
+        }) || "";
+      }
       const panelId = String(args?.panelId || panelManager.getActivePanelId() || "panel-0");
       return openFileTabInPanel(panelId, args);
     },
@@ -3625,6 +3640,21 @@ async function bootstrap() {
     else panel.tabs = [...panel.tabs, nextTab];
     return activateFileTab(panelId, tabId, { focus: args?.focus === true });
   };
+  try {
+    window.zion.events.on("ui/inspectorOpenInEditor", ({ item } = {}) => {
+      if (!item || item.file?.kind === "loading") return false;
+      const panelId = String(panelManager.getActivePanelId() || "panel-0");
+      return openFileTabInPanel(panelId, {
+        id: `file:inspector:${String(item.id || Date.now())}`,
+        title: item.title,
+        path: item.path,
+        displayPath: item.displayPath,
+        language: item.language,
+        file: item.file,
+        focus: true
+      });
+    });
+  } catch {}
   const registerEditorSlot = (panelId: string, sessionId: string, slotCore: EditorCore, proxy: any, hostEl?: HTMLElement, loaded = false) => {
     const panel = panelManager.getPanel(panelId);
     const slotHost = hostEl || createEditorSlotHost(panelId, sessionId);
@@ -3774,8 +3804,8 @@ async function bootstrap() {
     const hostEl = panel?.editorHostEl as (HTMLElement & { dataset: DOMStringMap }) | undefined;
     if (!hostEl || hostEl.dataset.sessionRevealBound === "true") return;
     hostEl.dataset.sessionRevealBound = "true";
-    hostEl.addEventListener("mousedown", () => requestPanelSessionReveal(panelId, "editor-mousedown"), true);
-    hostEl.addEventListener("focusin", () => requestPanelSessionReveal(panelId, "editor-focusin"), true);
+    hostEl.addEventListener("mousedown", () => syncPanelSessionToCurrent(panelId), true);
+    hostEl.addEventListener("focusin", () => syncPanelSessionToCurrent(panelId), true);
   };
   for (const panel of panelManager.listPanels()) bindPanelEditorReveal(panel.id);
   panelManager.on("panel/created", ({ panelId }) => bindPanelEditorReveal(panelId));
@@ -3878,6 +3908,13 @@ async function bootstrap() {
   });
   const schedulePanelWorkspacePersist = () => {
     try { savePanelWorkspaceSnapshot(buildPanelWorkspaceSnapshot()); } catch {}
+  };
+  const persistPanelWorkspaceNow = () => {
+    try { savePanelWorkspaceSnapshotNow(buildPanelWorkspaceSnapshot()); } catch {}
+  };
+  const reloadWindowPreservingWorkspace = () => {
+    persistPanelWorkspaceNow();
+    requestAnimationFrame(() => location.reload());
   };
   const attachPanelScrollPersistence = (panelId: string) => {
     try { panelScrollPersistDisposers.get(panelId)?.(); } catch {}
@@ -4294,7 +4331,7 @@ async function bootstrap() {
       try { (window as any).zion.settings.open(); } catch {}
     });
     (window as any).zion.commands.registerCommand("zion.reloadWindow", () => {
-      location.reload();
+      reloadWindowPreservingWorkspace();
     });
   } catch (e) {
     console.warn("[zion] failed to register settings commands", e);
@@ -4734,7 +4771,7 @@ async function bootstrap() {
   const EDITOR_APPEARANCE_DEFAULTS = {
     fontFamilyPreset: "system-sans" as EditorFontFamilyPreset,
     customFontFamily: "",
-    fontSize: 15,
+    fontSize: 13,
     lineHeight: 1.6,
     textColor: ""
   };
@@ -5221,7 +5258,7 @@ async function bootstrap() {
     // Add plugin management commands
     window.zion.commands.registerCommand("zion.showPlugins", () => openPluginsPanel(pluginManager));
     window.zion.commands.registerCommand("zion.reloadPlugins", () => {
-      location.reload();
+      reloadWindowPreservingWorkspace();
     });
 
     // 预安装内置插件
@@ -5291,103 +5328,103 @@ async function bootstrap() {
     window.zion.commands.registerCommand("auxiliaryBar.show", () => window.zion.auxiliaryBar?.show());
     window.zion.commands.registerCommand("auxiliaryBar.hide", () => window.zion.auxiliaryBar?.hide());
     window.zion.commands.registerCommand("auxiliaryBar.toggle", () => window.zion.auxiliaryBar?.toggle());
+    window.zion.commands.registerCommand("inspector.show", () => window.zion.inspector?.show());
+    window.zion.commands.registerCommand("inspector.hide", () => window.zion.inspector?.hide());
+    window.zion.commands.registerCommand("inspector.toggle", () => {
+      if (window.zion.inspector?.isVisible()) window.zion.inspector.hide();
+      else window.zion.inspector?.show();
+    });
   } catch {}
 
   try {
-    const focusFirstFocusable = (root: Element | null): boolean => {
-      if (!root) return false;
-      const candidates = Array.from(
-        root.querySelectorAll<HTMLElement>(
-          'textarea, input, select, button, [contenteditable="true"], [tabindex]:not([tabindex="-1"])'
-        )
-      );
-      for (const el of candidates) {
-        try {
-          const disabled = (el as any).disabled;
-          if (disabled) continue;
-          const r = el.getBoundingClientRect();
-          if (!r || r.width <= 0 || r.height <= 0) continue;
-          el.focus();
-          if (document.activeElement === el) return true;
-        } catch {}
-      }
-      try {
-        const h = root as HTMLElement;
-        if (!h.hasAttribute("tabindex")) h.setAttribute("tabindex", "-1");
-        h.focus();
-        return document.activeElement === h;
-      } catch {}
-      return false;
-    };
-
-    const focusWithRetry = (selector: string) => {
-      let tries = 0;
-      const tick = () => {
-        tries += 1;
-        const root = document.querySelector(selector);
-        if (focusFirstFocusable(root)) return;
-        if (tries < 12) requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    };
-
     try { document.getElementById("bottombar-layout-controls")?.remove(); } catch {}
     const layoutActions = [
       {
         id: "core.bottompanel.toggle",
         icon: "$(layout-panel)",
-        label: "Toggle Bottom Panel",
+        label: "切换底部面板",
         onClick: () => {
-          const st = window.zion.state;
-          const wasVisible = !!st?.get?.("ui.bottomPanel.visible");
           window.zion.commands?.executeCommand?.("bottomPanel.toggle");
-          if (!wasVisible) focusWithRetry(".zion-bottompanel");
+        }
+      },
+      {
+        id: "core.inspector.toggle",
+        icon: "$(preview)",
+        label: "切换查看区",
+        onClick: () => {
+          window.zion.commands?.executeCommand?.("inspector.toggle");
         }
       },
       {
         id: "core.auxbar.toggle",
         icon: "$(layout-sidebar-right)",
-        label: "Toggle Auxiliary Bar",
+        label: "切换辅助栏",
         onClick: () => {
-          const st = window.zion.state;
-          const wasVisible = !!st?.get?.("ui.auxiliaryBar.visible");
           window.zion.commands?.executeCommand?.("auxiliaryBar.toggle");
-          if (!wasVisible) focusWithRetry(".zion-auxbar");
         }
       }
     ];
-    const ensureEditorLayoutControls = () => {
-      const panels = panelManager.listPanels();
-      let target = panels[0] || null;
-      for (const panel of panels) {
-        const rect = panel.rootEl.getBoundingClientRect();
-        const targetRect = target?.rootEl.getBoundingClientRect();
-        if (!target || !targetRect || rect.right > targetRect.right + 1 || (Math.abs(rect.right - targetRect.right) <= 1 && rect.top < targetRect.top)) {
-          target = panel;
-        }
+    const syncEditorLayoutControlClearance = (
+      group: HTMLElement,
+      editorTarget: HTMLElement | null
+    ) => {
+      const tabBars = Array.from(
+        editorTarget?.querySelectorAll<HTMLElement>(".zion-editor-tabsbar") || []
+      );
+      for (const tabBar of tabBars) {
+        tabBar.classList.remove("is-layout-controls-overlapped");
       }
-      if (!target) return;
+      if (!editorTarget || group.parentElement !== editorTarget) return;
+      const groupRect = group.getBoundingClientRect();
+      if (groupRect.width <= 0 || groupRect.height <= 0) return;
+      for (const tabBar of tabBars) {
+        const rect = tabBar.getBoundingClientRect();
+        const overlaps = rect.right > groupRect.left
+          && rect.left < groupRect.right
+          && rect.bottom > groupRect.top
+          && rect.top < groupRect.bottom;
+        tabBar.classList.toggle("is-layout-controls-overlapped", overlaps);
+      }
+    };
+    const ensureEditorLayoutControls = () => {
       let group = document.getElementById("zion-editor-layout-controls");
       if (!group) {
         group = document.createElement("div");
         group.id = "zion-editor-layout-controls";
-        group.className = "zion-editor-layout-controls";
+        group.className = "zion-workbench-layout-controls";
       }
-      if (group.parentElement !== target.tabsBarEl) {
-        target.tabsBarEl.appendChild(group);
-      }
+      const auxVisible = !!window.zion.state.get("ui.auxiliaryBar.visible");
+      const inspectorVisible = !!window.zion.state.get("ui.inspector.visible");
+      const bottomVisible = !!window.zion.state.get("ui.bottomPanel.visible");
+      const editorTarget = document.querySelector<HTMLElement>(".zion-editor");
+      const placement = auxVisible ? "auxbar" : inspectorVisible ? "inspector" : "editor";
+      const target = auxVisible
+        ? document.querySelector<HTMLElement>(".zion-auxbar-actions")
+        : inspectorVisible
+          ? document.querySelector<HTMLElement>(".zion-inspector-tabs-viewport")
+          : editorTarget;
+      if (!target) return;
+      if (group.parentElement !== target) target.appendChild(group);
+      group.dataset.placement = placement;
       for (const action of layoutActions) {
         let btn = group.querySelector<HTMLButtonElement>(`button[data-zion-layout-id="${action.id}"]`);
         if (!btn) {
           btn = document.createElement("button");
           btn.type = "button";
-          btn.className = "zion-editor-header-action is-icon zion-editor-layout-button";
+          btn.className = "zion-workbench-layout-button";
           btn.setAttribute("data-zion-layout-id", action.id);
-          group.appendChild(btn);
         }
+        group.appendChild(btn);
         btn.title = action.label;
         btn.setAttribute("aria-label", action.label);
         btn.innerHTML = zionIconHtml(String(action.icon || "").replace(/^\$\(([^)]+)\)$/, "$1"));
+        btn.disabled = false;
+        const active = action.id === "core.bottompanel.toggle"
+          ? bottomVisible
+          : action.id === "core.auxbar.toggle"
+            ? auxVisible
+            : inspectorVisible;
+        btn.classList.toggle("is-active", active);
         btn.onpointerdown = (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -5403,12 +5440,28 @@ async function bootstrap() {
           scheduleEditorLayoutControls();
         };
       }
+      syncEditorLayoutControlClearance(group, editorTarget);
     };
     const scheduleEditorLayoutControls = () => requestAnimationFrame(() => ensureEditorLayoutControls());
     scheduleEditorLayoutControls();
+    let layoutControlsScrollFrame = 0;
+    document.querySelector(".zion-panels-root")?.addEventListener("scroll", () => {
+      if (layoutControlsScrollFrame) return;
+      layoutControlsScrollFrame = requestAnimationFrame(() => {
+        layoutControlsScrollFrame = 0;
+        const group = document.getElementById("zion-editor-layout-controls");
+        const editorTarget = document.querySelector<HTMLElement>(".zion-editor");
+        if (group instanceof HTMLElement) {
+          syncEditorLayoutControlClearance(group, editorTarget);
+        }
+      });
+    }, { passive: true });
     panelManager.on("panel/layoutChanged", scheduleEditorLayoutControls);
     panelManager.on("panel/closed", scheduleEditorLayoutControls);
     panelManager.on("panel/focusChanged", scheduleEditorLayoutControls);
+    window.zion.state.onDidChange("ui.auxiliaryBar.visible", scheduleEditorLayoutControls);
+    window.zion.state.onDidChange("ui.inspector.visible", scheduleEditorLayoutControls);
+    window.zion.state.onDidChange("ui.bottomPanel.visible", scheduleEditorLayoutControls);
     window.addEventListener("resize", scheduleEditorLayoutControls);
     (window.zion as any).editorHeaderMenu?.register?.({
       id: "core.bottompanel.toggle",
@@ -5416,10 +5469,7 @@ async function bootstrap() {
       section: "Layout",
       order: 20,
       onClick: () => {
-        const st = window.zion.state;
-        const wasVisible = !!st?.get?.("ui.bottomPanel.visible");
         window.zion.bottomPanel?.toggle();
-        if (!wasVisible) focusWithRetry(".zion-bottompanel");
       }
     });
     (window.zion as any).editorHeaderMenu?.register?.({
@@ -5428,17 +5478,14 @@ async function bootstrap() {
       section: "Layout",
       order: 30,
       onClick: () => {
-        const st = window.zion.state;
-        const wasVisible = !!st?.get?.("ui.auxiliaryBar.visible");
         window.zion.auxiliaryBar?.toggle();
-        if (!wasVisible) focusWithRetry(".zion-auxbar");
       }
     });
   } catch {}
 
   // Core commands
   window.zion.commands.registerCommand("zion.showPlugins", () => openPluginsPanel(pluginManager));
-  window.zion.commands.registerCommand("zion.reloadPlugins", () => location.reload());
+  window.zion.commands.registerCommand("zion.reloadPlugins", () => reloadWindowPreservingWorkspace());
 
   // Show extension load errors (if any)
   const extErr = (window as any).__ext_errors || 0;

@@ -814,6 +814,21 @@ function renderMemoryPanel(container) {
     if (!item?.id) return false;
     const tabId = `memory:${item.id}`;
     const nextTab = resolveMemoryItemTab(item);
+    if (window.zion?.inspector?.open) {
+      window.zion.inspector.open({
+        id: tabId,
+        ownerId: VIEW_ID,
+        title: nextTab.title,
+        path: nextTab.path,
+        displayPath: nextTab.displayPath,
+        language: nextTab.language,
+        file: { kind: "text", content: item.content || "" },
+        editable: true,
+        onSave: (content) => updateMemory(item.id, { content })
+      });
+      setActiveMemory(item.id, { silent: true });
+      return true;
+    }
     if (activeMemoryTabId === tabId && memoryDetailSignature(resolveEditorTab(editorCore.getActiveTab())) === memoryDetailSignature(nextTab)) return false;
     const hadPreview = openMemoryTabs.size > 0;
     if (!hadPreview) requestMemoryAuxWidth();

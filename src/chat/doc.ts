@@ -22,6 +22,7 @@ type AppendAssistantTokenOptions = {
   token: string;
   anchor?: AssistantAnchor | null;
   startLineHint?: number;
+  moveSelectionToAssistant?: boolean;
 };
 
 type FinalizeAssistantBlockOptions = {
@@ -340,7 +341,7 @@ export function appendAssistantToken(editor: EditorProxy, opts: AppendAssistantT
       const shouldPreserveUserSelection = userHasSelection || userSelectionGestureActive;
       view.dispatch({
         changes: { from, insert: opts.token },
-        ...(followLatest && !shouldPreserveUserSelection ? { selection: { anchor: nextHead } } : {})
+          ...(followLatest && opts.moveSelectionToAssistant !== false && !shouldPreserveUserSelection ? { selection: { anchor: nextHead } } : {})
       });
       return true;
     }

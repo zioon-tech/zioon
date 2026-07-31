@@ -208,56 +208,169 @@
 
 .zion-chat-overview-nav {
   position: absolute;
-  right: 12px;
-  bottom: 10px;
+  right: 10px;
+  top: 50%;
   display: inline-flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 2px;
   padding: 3px;
-  border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
-  color: color-mix(in srgb, var(--fg) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 34%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  color: color-mix(in srgb, var(--fg) 62%, transparent);
   pointer-events: auto;
   z-index: 101;
-  box-shadow: var(--elevation-2);
+  box-shadow:
+    0 5px 14px color-mix(in srgb, black 7%, transparent),
+    0 1px 0 color-mix(in srgb, white 12%, transparent) inset;
+  backdrop-filter: blur(10px);
   opacity: 0;
-  transform: translateX(4px);
-  transition: opacity 140ms ease, transform 140ms ease, border-color 140ms ease;
+  transform: translate(4px, -50%);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    border-color 140ms ease,
+    background-color 140ms ease;
 }
 
 .zion-comments-thread-editor .zion-chat-overview-nav {
   right: 10px;
-  bottom: 10px;
-  transform: translateX(0);
-}
-
-.cm-editor:has(.cm-vim-panel) .zion-chat-overview-nav {
-  bottom: 40px;
-}
-
-.zion-comments-thread-editor:has(.cm-vim-panel) .zion-chat-overview-nav {
-  bottom: 38px;
+  transform: translate(0, -50%);
 }
 
 .cm-editor:hover .zion-chat-overview-nav,
 .zion-chat-overview-nav:hover,
 .zion-chat-overview-nav:focus-within {
   opacity: 1;
-  transform: translateX(0);
-  border-color: color-mix(in srgb, var(--border) 68%, transparent);
+  transform: translate(0, -50%);
+  border-color: color-mix(in srgb, var(--border) 52%, transparent);
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
 }
 
 .zion-chat-overview-nav.is-hidden {
   display: none;
 }
 
+.zion-chat-overview-nav.has-user-history::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  right: 100%;
+  bottom: -8px;
+  width: 14px;
+}
+
+.zion-chat-overview-user-menu {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 8px);
+  display: flex;
+  width: clamp(168px, calc(var(--zion-chat-overview-panel-width, 360px) - 96px), 248px);
+  max-height: clamp(118px, calc(var(--zion-chat-overview-rail-height, 320px) * 0.62), 280px);
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 38%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 90%, var(--bg));
+  box-shadow:
+    0 12px 32px color-mix(in srgb, black 11%, transparent),
+    0 1px 0 color-mix(in srgb, white 12%, transparent) inset;
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(10px, -50%) scale(0.985);
+  transform-origin: center right;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.zion-chat-overview-nav.is-user-history-open .zion-chat-overview-user-menu {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(0, -50%) scale(1);
+  border-color: color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.zion-chat-overview-user-list {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--fg) 18%, transparent) transparent;
+}
+
+.zion-chat-overview-user-list::-webkit-scrollbar {
+  width: 7px;
+}
+
+.zion-chat-overview-user-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.zion-chat-overview-user-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 18%, transparent);
+  background-clip: content-box;
+}
+
+.zion-chat-overview-user-item {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  color: color-mix(in srgb, var(--fg) 80%, transparent);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background-color 110ms ease,
+    color 110ms ease,
+    box-shadow 110ms ease;
+}
+
+.zion-chat-overview-user-item:hover,
+.zion-chat-overview-user-item:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  outline: none;
+}
+
+.zion-chat-overview-user-item.is-current {
+  color: var(--fg);
+  background: var(--role-user-bg, color-mix(in srgb, var(--fg) 7%, transparent));
+  box-shadow: none;
+}
+
+.zion-chat-overview-user-item-text {
+  display: block;
+  overflow: hidden;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .zion-chat-overview-nav-btn {
-  width: 26px;
+  width: 24px;
   height: 24px;
   border: none;
-  border-radius: 6px;
+  border-radius: 999px;
   background: transparent;
   color: inherit;
   display: inline-flex;
@@ -275,8 +388,8 @@
 }
 
 .zion-chat-overview-nav-symbol {
-  width: 26px;
-  flex: 0 0 26px;
+  width: 24px;
+  flex: 0 0 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -290,7 +403,7 @@
 
 .zion-chat-overview-nav-btn:hover,
 .zion-chat-overview-nav-btn:focus-visible {
-  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
   color: var(--fg);
   outline: none;
 }
@@ -307,7 +420,7 @@
 }
 
 .zion-chat-overview-nav-btn.is-detached {
-  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--fg);
   box-shadow: none;
 }
@@ -371,4 +484,3 @@
   color: #cc3a3a;
   font-weight: 600;
 }
-

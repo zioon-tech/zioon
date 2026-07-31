@@ -64,6 +64,8 @@ type PaletteItem =
       contentSnippet?: string;
     };
 
+const RELOAD_COMMAND_IDS = new Set(["zion.reloadWindow", "zion.reloadPlugins"]);
+
 
 
 
@@ -542,6 +544,17 @@ function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?:
     }
     const hasTreeIds = treeSessionIds.size > 0;
 
+    const getSessionDisplayTitle = (entry: any) => {
+      const id = safeText(entry?.id || "");
+      if (!id) return "";
+      try {
+        const meta = (window as any).zion?.state?.get?.(`sessions.meta.${id}`);
+        const metaTitle = safeText(meta?.title || "").trim();
+        if (metaTitle) return metaTitle;
+      } catch {}
+      return safeText(entry?.title || entry?.id || "").trim();
+    };
+
     const computeSessionPath = (sessionId: string, sessionTitle: string): string => {
       if (!tree) return sessionTitle;
       const parts: string[] = [sessionTitle];
@@ -569,7 +582,7 @@ function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?:
     return raw
       .map((x: any) => {
         const id = safeText(x?.id || "");
-        const title = safeText(x?.title || x?.id || "");
+        const title = getSessionDisplayTitle(x);
         return {
           id,
           title,
@@ -1360,11 +1373,13 @@ export function initCommandPalette() {
         return;
       }
       if (await openSubmenu(meta.id)) return;
+      const isReloadCommand = RELOAD_COMMAND_IDS.has(meta.id);
+      if (isReloadCommand) closePalette({ restoreFocus: false });
       try {
         window.zion.commands.executeCommand(meta.id);
         pushRecent(`cmd:${meta.id}`);
       } catch {}
-      closePalette();
+      if (!isReloadCommand) closePalette();
       return;
     }
     try {
