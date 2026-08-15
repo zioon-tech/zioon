@@ -2951,7 +2951,6 @@ html, body {
   justify-content: flex-start;
   padding: 8px 10px;
   gap: 0;
-  box-sizing: border-box;
 }
 
 .zion-sidebar-header-leading {
@@ -5486,14 +5485,19 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
   border-right: 1px solid var(--surface-border-soft);
 }
 
-.zion-sidebar-header:not(.has-leading),
+.zion-sidebar-header,
 .zion-auxbar-header,
 .zion-bottompanel-header {
   box-sizing: border-box;
   min-height: 36px;
-  padding: 6px 10px 4px;
   background: var(--surface-panel);
   border-bottom: none;
+}
+
+.zion-sidebar-header:not(.has-leading),
+.zion-auxbar-header,
+.zion-bottompanel-header {
+  padding: 6px 10px 4px;
 }
 
 .zion-sidebar-title,

@@ -2607,7 +2607,6 @@ export function initWorkbench(host: HTMLElement): {
 
   const renderSideBar = () => {
     applyColumnWidths();
-    if (!sideBarRuntime.isVisible()) return;
     const views = sideBarRuntime.getViews();
     const activeViewId = sideBarRuntime.getActiveViewId();
     const nextId = activeViewId && sideBarRuntime.getView(activeViewId)
@@ -2615,9 +2614,10 @@ export function initWorkbench(host: HTMLElement): {
       : views[0]?.id ?? null;
     const nextView = nextId ? sideBarRuntime.getView(nextId) : null;
 
-    headerTitle.textContent = translatedTitle(nextView, "Side Bar");
     mountHeaderLeading(nextId);
+    if (!sideBarRuntime.isVisible()) return;
 
+    headerTitle.textContent = translatedTitle(nextView, "Side Bar");
     headerActions.innerHTML = "";
     if (nextView?.headerActions && Array.isArray(nextView.headerActions)) {
       for (const a of nextView.headerActions) {

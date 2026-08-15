@@ -198,6 +198,71 @@ describe("workbench sidebar chrome", () => {
     host.remove();
   });
 
+  it("disposes the leading header when the active view changes while hidden", async () => {
+    const host = document.createElement("div");
+    host.id = "app";
+    host.style.height = "600px";
+    document.body.appendChild(host);
+
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    const wb = initWorkbench(host);
+    let leadingContext = null;
+    let leadingDisposeCount = 0;
+    const sessions = sideBarRuntime.registerView({
+      id: "sessions.hidden-lifecycle",
+      pluginId: "dev.session-manager",
+      title: "Sessions",
+      headerLeading: {
+        render: (container, context) => {
+          leadingContext = context;
+          const label = document.createElement("span");
+          label.textContent = "All Tags";
+          container.appendChild(label);
+          return { dispose: () => { leadingDisposeCount += 1; } };
+        }
+      },
+      component: { render: () => {} }
+    });
+    const plugins = sideBarRuntime.registerView({
+      id: "plugins.hidden-lifecycle",
+      pluginId: "dev.plugins",
+      title: "Plugins",
+      component: { render: () => {} }
+    });
+
+    sideBarRuntime.show();
+    sideBarRuntime.activateView("sessions.hidden-lifecycle");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const header = document.querySelector(".zion-sidebar-header");
+    const leading = header.querySelector(".zion-sidebar-header-leading");
+    leadingContext.setVisible(true);
+    expect(header.classList.contains("has-leading")).toBe(true);
+    expect(leading.textContent).toBe("All Tags");
+    expect(leading.childElementCount).toBe(1);
+
+    sideBarRuntime.hide();
+    sideBarRuntime.activateView("plugins.hidden-lifecycle");
+
+    expect(leadingDisposeCount).toBe(1);
+    expect(leading.childElementCount).toBe(0);
+    expect(leading.textContent).toBe("");
+    expect(header.classList.contains("has-leading")).toBe(false);
+
+    sessions.dispose();
+    plugins.dispose();
+    wb.dispose();
+    host.remove();
+  });
+
   it("keeps the standard header when a leading renderer fails", async () => {
     const host = document.createElement("div");
     host.id = "app";
