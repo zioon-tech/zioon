@@ -7,6 +7,7 @@ import {
   reconcileCatalog,
   renameCatalogPath,
   reorderCatalogEntry,
+  setCatalogEntryPinned,
   sortEntries,
   tagPathMatches
 } from "../extensions/dev.session-manager/model/tag-catalog.js";
@@ -129,6 +130,26 @@ describe("reorderCatalogEntry", () => {
     ];
     const next = reorderCatalogEntry(entries, "p/x", "q/y");
     expect(next).toEqual(entries);
+  });
+});
+
+describe("pinned entries", () => {
+  it("sort before unpinned siblings regardless of order", () => {
+    const entries = [
+      { id: "tag:a", path: "a", order: 0, manual: true },
+      { id: "tag:b", path: "b", order: 1, manual: true, pinned: true },
+      { id: "tag:c", path: "c", order: 2, manual: true }
+    ];
+    expect(sortEntries(entries).map((e) => e.path)).toEqual(["b", "a", "c"]);
+    const tree = buildTagTree(entries, []);
+    expect(tree.rows.filter((r) => !r.path.includes("/")).map((r) => r.path)).toEqual(["b", "a", "c"]);
+  });
+  it("setCatalogEntryPinned toggles the flag", () => {
+    const entries = [{ id: "tag:a", path: "a", order: 0, manual: true }];
+    const pinned = setCatalogEntryPinned(entries, "a", true);
+    expect(pinned[0].pinned).toBe(true);
+    const unpinned = setCatalogEntryPinned(pinned, "a", false);
+    expect(unpinned[0].pinned).toBe(false);
   });
 });
 

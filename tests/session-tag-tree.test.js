@@ -8,10 +8,12 @@ function makeRows(entries, sessionTags) {
 }
 
 function makePanel(overrides = {}) {
-  const calls = { select: [], create: [], rename: [], delete: [], reorder: [] };
+  const calls = { select: [], create: [], rename: [], delete: [], reorder: [], reparent: [], pin: [] };
   const collapsed = new Set();
   const panel = createTagTreePanel({
-    t: (key, fallback, values) => String(fallback).replace("{count}", values?.count ?? ""),
+    t: (key, fallback, values) => String(fallback)
+      .replace("{count}", values?.count ?? "")
+      .replace("{children}", values?.children ?? ""),
     iconHtml: () => "<span></span>",
     isCollapsed: (path) => collapsed.has(path),
     setCollapsed: (path, value) => { if (value) collapsed.add(path); else collapsed.delete(path); },
@@ -20,9 +22,18 @@ function makePanel(overrides = {}) {
     onRename: async (from, to) => { calls.rename.push([from, to]); return true; },
     onDelete: async (path) => { calls.delete.push(path); return true; },
     onReorder: (path, ref, after) => { calls.reorder.push([path, ref, after]); },
+    onReparent: async (path, parent) => { calls.reparent.push([path, parent]); return true; },
+    onPin: (path) => { calls.pin.push(path); },
     ...overrides
   });
   return { panel, calls, collapsed };
+}
+
+function stubRect(el, top = 100, height = 30) {
+  el.getBoundingClientRect = () => ({
+    top, height, bottom: top + height, left: 0, right: 200, width: 200, x: 0, y: top,
+    toJSON: () => ({})
+  });
 }
 
 beforeEach(() => {
@@ -127,5 +138,108 @@ describe("tag tree panel", () => {
     document.body.appendChild(panel.el);
     const row = panel.el.querySelector('[data-path="pick"]');
     expect(row.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("dropping inside a row reparents the dragged tag and expands a collapsed target", () => {
+    const { panel, calls, collapsed } = makePanel();
+    const tree = makeRows([], [["s1", ["#alpha"]], ["s2", ["#target/kid"]]]);
+    collapsed.add("target");
+    panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
+    document.body.appendChild(panel.el);
+    const source = panel.el.querySelector('[data-path="alpha"]');
+    const target = panel.el.querySelector('[data-path="target"]');
+    stubRect(target);
+    source.dispatchEvent(new Event("dragstart", { bubbles: true }));
+    target.dispatchEvent(new MouseEvent("dragover", { clientY: 115, bubbles: true }));
+    expect(target.dataset.dropZone).toBe("inside");
+    target.dispatchEvent(new MouseEvent("drop", { clientY: 115, bubbles: true }));
+    expect(calls.reparent).toEqual([["alpha", "target"]]);
+    expect(collapsed.has("target")).toBe(false);
+  });
+
+  it("dropping onto a row inside the dragged subtree is rejected", () => {
+    const { panel, calls } = makePanel();
+    const tree = makeRows([], [["s1", ["#parent/child"]]]);
+    panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
+    document.body.appendChild(panel.el);
+    const parent = panel.el.querySelector('[data-path="parent"]');
+    const child = panel.el.querySelector('[data-path="parent/child"]');
+    stubRect(child);
+    parent.dispatchEvent(new Event("dragstart", { bubbles: true }));
+    child.dispatchEvent(new MouseEvent("dragover", { clientY: 115, bubbles: true }));
+    expect(child.dataset.dropZone).not.toBe("inside");
+    child.dispatchEvent(new MouseEvent("drop", { clientY: 115, bubbles: true }));
+    expect(calls.reparent).toEqual([]);
+    expect(calls.reorder).toEqual([]);
+  });
+
+  it("before/after drop zones still reorder within the same parent only", () => {
+    const { panel, calls } = makePanel();
+    const tree = makeRows([], [["s1", ["#a"]], ["s2", ["#b"]], ["s3", ["#p/x"]]]);
+    panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
+    document.body.appendChild(panel.el);
+    const a = panel.el.querySelector('[data-path="a"]');
+    const b = panel.el.querySelector('[data-path="b"]');
+    const px = panel.el.querySelector('[data-path="p/x"]');
+    stubRect(b, 100, 30);
+    stubRect(px, 200, 30);
+    a.dispatchEvent(new Event("dragstart", { bubbles: true }));
+    b.dispatchEvent(new MouseEvent("dragover", { clientY: 105, bubbles: true }));
+    expect(b.dataset.dropZone).toBe("before");
+    b.dispatchEvent(new MouseEvent("drop", { clientY: 105, bubbles: true }));
+    expect(calls.reorder).toEqual([["a", "b", false]]);
+    // cross-parent before-drop is rejected
+    a.dispatchEvent(new Event("dragstart", { bubbles: true }));
+    px.dispatchEvent(new MouseEvent("dragover", { clientY: 205, bubbles: true }));
+    expect(px.dataset.dropZone).not.toBe("before");
+    px.dispatchEvent(new MouseEvent("drop", { clientY: 205, bubbles: true }));
+    expect(calls.reorder).toHaveLength(1);
+  });
+
+  it("context menu pin item toggles through onPin", () => {
+    const { panel, calls } = makePanel();
+    const tree = makeRows([], [["s1", ["#alpha"]]]);
+    panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
+    document.body.appendChild(panel.el);
+    const row = panel.el.querySelector('[data-path="alpha"]');
+    const menuBtn = row.querySelector(".zion-sessions-tagtree-menu");
+    menuBtn.dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10, bubbles: true }));
+    const floating = document.body.querySelector(".zion-sessions-tagtree-context");
+    expect(floating).toBeTruthy();
+    const pinItem = Array.from(floating.querySelectorAll("div")).find((d) => d.textContent === "Pin");
+    pinItem.click();
+    expect(calls.pin).toEqual(["alpha"]);
+  });
+
+  it("pinned rows render a pin indicator", () => {
+    const { panel } = makePanel();
+    const entries = [{ id: "tag:work", path: "work", order: 0, manual: true, pinned: true }];
+    const tree = makeRows(entries, [["s1", ["#work"]]]);
+    panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
+    document.body.appendChild(panel.el);
+    expect(panel.el.querySelector('[data-path="work"] .zion-sessions-tagtree-pin')).toBeTruthy();
+  });
+
+  it("delete confirm distinguishes leaf and subtree", () => {
+    const { panel } = makePanel();
+    const tree = makeRows([], [["s1", ["#parent/child"]], ["s2", ["#lonely"]]]);
+    panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
+    document.body.appendChild(panel.el);
+    const openDelete = (path) => {
+      const row = panel.el.querySelector(`[data-path="${path}"]`);
+      const menuBtn = row.querySelector(".zion-sessions-tagtree-menu");
+      menuBtn.dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10, bubbles: true }));
+      const floating = document.body.querySelector(".zion-sessions-tagtree-context");
+      Array.from(floating.querySelectorAll("div")).find((d) => d.textContent === "Delete").click();
+      floating.remove();
+    };
+    openDelete("parent");
+    const confirm = panel.el.querySelector(".zion-sessions-tagtree-confirm");
+    expect(confirm.textContent).toContain("1 sub-tags");
+    const noBtn = confirm.querySelector("button:last-child");
+    noBtn.click();
+    openDelete("lonely");
+    const leafConfirm = panel.el.querySelector(".zion-sessions-tagtree-confirm");
+    expect(leafConfirm.textContent).not.toContain("sub-tags");
   });
 });

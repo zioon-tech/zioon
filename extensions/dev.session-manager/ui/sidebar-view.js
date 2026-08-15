@@ -3,9 +3,12 @@ import {
   addCatalogEntry,
   buildTagTree,
   deleteCatalogPaths,
+  normalizeTagPath,
   reconcileCatalog,
   renameCatalogPath,
-  reorderCatalogEntry
+  reorderCatalogEntry,
+  setCatalogEntryPinned,
+  tagPathSegments
 } from "../model/tag-catalog.js";
 import { rewriteDocTags } from "../features/tag-mutations.js";
 import { loadTagCatalog, saveTagCatalog } from "../storage/tag-catalog.js";
@@ -415,6 +418,26 @@ export function createSessionsSidebarViewManager(opts) {
     refreshIfOpen();
   }
 
+  function handleTagPin(path) {
+    const target = normalizeTagPath(path);
+    if (!target) return;
+    const current = catalogEntries.find((entry) => entry.path === target);
+    const pinned = !(current && current.pinned === true);
+    const promoted = addCatalogEntry(catalogEntries, target).entries;
+    catalogEntries = setCatalogEntryPinned(promoted, target, pinned);
+    persistCatalog();
+    refreshIfOpen();
+  }
+
+  async function handleTagReparent(path, newParentPath) {
+    const segments = tagPathSegments(path);
+    const name = segments[segments.length - 1];
+    if (!name) return true;
+    const target = [normalizeTagPath(newParentPath), name].filter(Boolean).join("/");
+    if (!target || target === path) return true;
+    return handleTagRename(path, target);
+  }
+
   function refreshIfOpen(opts = {}) {
     try {
       current?.render?.(opts);
@@ -604,7 +627,9 @@ export function createSessionsSidebarViewManager(opts) {
       onCreate: handleTagCreate,
       onRename: handleTagRename,
       onDelete: handleTagDelete,
-      onReorder: handleTagReorder
+      onReorder: handleTagReorder,
+      onReparent: handleTagReparent,
+      onPin: handleTagPin
     });
     tagColumn.appendChild(tagTreePanel.el);
 

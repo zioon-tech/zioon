@@ -23,6 +23,8 @@ export function createTagTreePanel(deps) {
   const onRename = deps.onRename || (async () => true);
   const onDelete = deps.onDelete || (async () => true);
   const onReorder = deps.onReorder || (() => {});
+  const onReparent = deps.onReparent || (async () => true);
+  const onPin = deps.onPin || (() => {});
   const isCollapsed = deps.isCollapsed || (() => false);
   const setCollapsed = deps.setCollapsed || (() => {});
   const dotColor = deps.dotColor || (() => "");
@@ -185,6 +187,36 @@ export function createTagTreePanel(deps) {
     }
   }
 
+  function dropZoneFor(event, element) {
+    const rect = element.getBoundingClientRect();
+    const relative = event.clientY - rect.top;
+    if (relative < rect.height / 3) return "before";
+    if (relative > (rect.height * 2) / 3) return "after";
+    return "inside";
+  }
+
+  function applyDropVisual(item, zone) {
+    clearDropVisual(item);
+    if (zone === "before") {
+      item.style.boxShadow = "inset 0 2px 0 0 var(--accent, var(--border))";
+    } else if (zone === "after") {
+      item.style.boxShadow = "inset 0 -2px 0 0 var(--accent, var(--border))";
+    } else {
+      item.style.background = "color-mix(in srgb, var(--accent, var(--border)) 20%, transparent)";
+    }
+    item.dataset.dropZone = zone;
+  }
+
+  function clearDropVisual(item) {
+    item.style.boxShadow = "";
+    item.dataset.dropZone = "";
+    if (item.getAttribute("aria-selected") === "true") {
+      item.style.background = "color-mix(in srgb, var(--accent, var(--border)) 26%, transparent)";
+    } else {
+      item.style.background = "transparent";
+    }
+  }
+
   function renderRow(row) {
     const item = document.createElement("div");
     item.className = "zion-sessions-tagtree-row";
@@ -257,6 +289,16 @@ export function createTagTreePanel(deps) {
     label.style.fontSize = "12px";
     item.appendChild(label);
 
+    if (row.pinned) {
+      const pin = document.createElement("span");
+      pin.className = "zion-sessions-tagtree-pin";
+      pin.innerHTML = iconHtml("pin", 10);
+      pin.title = t("tags.pinned", "Pinned");
+      pin.style.flex = "0 0 auto";
+      pin.style.opacity = "0.6";
+      item.appendChild(pin);
+    }
+
     if (!row.manual && !row.implicit) {
       const ephemeral = document.createElement("span");
       ephemeral.title = t("tags.scannedOnly", "Scanned from documents");
@@ -304,25 +346,42 @@ export function createTagTreePanel(deps) {
     item.draggable = true;
     item.ondragstart = (event) => {
       dragPath = row.path;
-      event.dataTransfer?.setData("text/plain", row.path);
-      event.dataTransfer && (event.dataTransfer.effectAllowed = "move");
+      try {
+        event.dataTransfer?.setData("text/plain", row.path);
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+      } catch {}
     };
-    item.ondragend = () => { dragPath = ""; };
+    item.ondragend = () => {
+      dragPath = "";
+      clearDropVisual(item);
+    };
     item.ondragover = (event) => {
       if (!dragPath || dragPath === row.path) return;
-      if (parentOfPath(dragPath) !== parentOfPath(row.path)) return;
+      const zone = dropZoneFor(event, item);
+      const sameParent = parentOf(row) === parentOfPath(dragPath);
+      const targetInsideDraggedSubtree = row.path.startsWith(`${dragPath}/`);
+      const allowed = zone === "inside" ? !targetInsideDraggedSubtree : sameParent;
+      if (!allowed) return;
       event.preventDefault();
-      item.style.outline = "1px dashed var(--border)";
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      applyDropVisual(item, zone);
     };
-    item.ondragleave = () => { item.style.outline = ""; };
+    item.ondragleave = () => { clearDropVisual(item); };
     item.ondrop = (event) => {
       event.preventDefault();
-      item.style.outline = "";
-      if (!dragPath || dragPath === row.path) return;
-      const rect = item.getBoundingClientRect();
-      const after = event.clientY > rect.top + rect.height / 2;
-      onReorder(dragPath, row.path, after);
+      const zone = dropZoneFor(event, item);
+      clearDropVisual(item);
+      const dragged = dragPath;
       dragPath = "";
+      if (!dragged || dragged === row.path) return;
+      if (zone === "inside") {
+        if (row.path.startsWith(`${dragged}/`)) return;
+        if (row.children?.length && isCollapsed(row.path)) setCollapsed(row.path, false);
+        onReparent(dragged, row.path);
+      } else {
+        if (parentOf(row) !== parentOfPath(dragged)) return;
+        onReorder(dragged, row.path, zone === "after");
+      }
     };
 
     item.onkeydown = (event) => rowKeydown(event, row);
@@ -415,6 +474,7 @@ export function createTagTreePanel(deps) {
     };
     mk(t("tags.addChild", "Add child tag"), () => startCreate(row.path));
     mk(t("tags.rename", "Rename"), () => startRename(row));
+    mk(row.pinned ? t("tags.unpin", "Unpin") : t("tags.pin", "Pin"), () => onPin(row.path));
     mk(t("tags.delete", "Delete"), () => {
       editMode = { kind: "delete", path: row.path };
       render();
@@ -506,7 +566,10 @@ export function createTagTreePanel(deps) {
     const text = document.createElement("span");
     text.style.flex = "1 1 auto";
     text.style.opacity = "0.8";
-    text.textContent = t("tags.deleteConfirm", "Delete {count} session refs?", { count: row.sessionCount || 0 });
+    const childCount = (state.rows || []).filter((r) => r.path.startsWith(`${row.path}/`)).length;
+    text.textContent = childCount === 0
+      ? t("tags.deleteConfirmLeaf", "Remove tag refs from {count} sessions?", { count: row.sessionCount || 0 })
+      : t("tags.deleteConfirmSubtree", "Delete {children} sub-tags and refs from {count} sessions?", { children: childCount, count: row.sessionCount || 0 });
     const yes = document.createElement("button");
     yes.type = "button";
     yes.textContent = t("tags.deleteYes", "Delete");

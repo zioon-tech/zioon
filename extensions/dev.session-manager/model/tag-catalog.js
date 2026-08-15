@@ -46,7 +46,8 @@ export function validateCatalogEntry(entry) {
     id,
     path,
     order,
-    manual: entry.manual !== false
+    manual: entry.manual !== false,
+    pinned: entry.pinned === true
   };
 }
 
@@ -81,9 +82,9 @@ export function reconcileCatalog(catalogEntries, scannedPaths) {
   const ephemeral = Array.from(scanned)
     .filter((path) => !byPath.has(path))
     .sort((a, b) => a.localeCompare(b));
-  let order = nextCatalogOrder(base);
+  let ephemeralOrder = nextCatalogOrder(base);
   for (const path of ephemeral) {
-    byPath.set(path, { id: `tag:${path}`, path, order: order++, manual: false });
+    byPath.set(path, { id: `tag:${path}`, path, order: ephemeralOrder++, manual: false, pinned: false });
   }
   // Scanned usage can also promote intermediate paths (e.g. "project" from
   // "project/zion") if they are not in the catalog yet.
@@ -91,10 +92,22 @@ export function reconcileCatalog(catalogEntries, scannedPaths) {
 }
 
 export function sortEntries(entries) {
-  return [...entries].sort((a, b) => {
-    if (a.order !== b.order) return a.order - b.order;
-    return a.path.localeCompare(b.path);
-  });
+  return [...entries].sort(compareEntries);
+}
+
+export function compareEntries(a, b) {
+  const aPinned = a.pinned === true;
+  const bPinned = b.pinned === true;
+  if (aPinned !== bPinned) return aPinned ? -1 : 1;
+  if (a.order !== b.order) return a.order - b.order;
+  return a.path.localeCompare(b.path);
+}
+
+export function setCatalogEntryPinned(entries, path, pinned) {
+  const target = normalizeTagPath(path);
+  if (!target) return [...entries];
+  const next = pinned !== false;
+  return entries.map((entry) => (entry.path === target ? { ...entry, pinned: next } : entry));
 }
 
 // Build a hierarchical tree with session counts.
@@ -127,6 +140,7 @@ export function buildTagTree(entries, sessionTags) {
       path,
       order: Number.MAX_SAFE_INTEGER / 2,
       manual: false,
+      pinned: false,
       implicit: true
     };
     const segments = tagPathSegments(path);
@@ -173,10 +187,7 @@ export function buildTagTree(entries, sessionTags) {
     }
   }
   const sortChildren = (node) => {
-    node.children.sort((a, b) => {
-      if (a.order !== b.order) return a.order - b.order;
-      return a.path.localeCompare(b.path);
-    });
+    node.children.sort(compareEntries);
     for (const child of node.children) sortChildren(child);
   };
   sortChildren(root);
