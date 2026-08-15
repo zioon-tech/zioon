@@ -53,7 +53,7 @@ describe("tag tree panel", () => {
     expect(rows.map((r) => r.dataset.path)).toEqual(["work", "work/front", "misc"]);
     const misc = rows.find((r) => r.dataset.path === "misc");
     expect(misc.querySelector(".zion-sessions-tagtree-count").textContent).toBe("2");
-    expect(rows.find((r) => r.dataset.path === "work/front").style.marginLeft).not.toBe("0px");
+    expect(rows.find((r) => r.dataset.path === "work/front").style.paddingLeft).not.toBe("0px");
   });
 
   it("clicking a row selects it and clicking again clears", () => {
@@ -127,7 +127,7 @@ describe("tag tree panel", () => {
     panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
     document.body.appendChild(panel.el);
     expect(panel.el.querySelector('[data-path="p/x"]')).toBeNull();
-    panel.el.querySelector('[data-path="p"] .zion-sessions-tagtree-chevron').click();
+    panel.el.querySelector('[data-path="p"] .zion-sessions-tagtree-toggle').click();
     expect(panel.el.querySelector('[data-path="p/x"]')).toBeTruthy();
   });
 
@@ -196,14 +196,13 @@ describe("tag tree panel", () => {
     expect(calls.reorder).toHaveLength(1);
   });
 
-  it("context menu pin item toggles through onPin", () => {
+  it("context menu opens on right-click and pin item toggles through onPin", () => {
     const { panel, calls } = makePanel();
     const tree = makeRows([], [["s1", ["#alpha"]]]);
     panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
     document.body.appendChild(panel.el);
     const row = panel.el.querySelector('[data-path="alpha"]');
-    const menuBtn = row.querySelector(".zion-sessions-tagtree-menu");
-    menuBtn.dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10, bubbles: true }));
+    row.dispatchEvent(new MouseEvent("contextmenu", { clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
     const floating = document.body.querySelector(".zion-sessions-tagtree-context");
     expect(floating).toBeTruthy();
     const pinItem = Array.from(floating.querySelectorAll("div")).find((d) => d.textContent === "Pin");
@@ -211,13 +210,14 @@ describe("tag tree panel", () => {
     expect(calls.pin).toEqual(["alpha"]);
   });
 
-  it("pinned rows render a pin indicator", () => {
+  it("pinned rows render without decorative pin icon (flowix style)", () => {
     const { panel } = makePanel();
     const entries = [{ id: "tag:work", path: "work", order: 0, manual: true, pinned: true }];
     const tree = makeRows(entries, [["s1", ["#work"]]]);
     panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
     document.body.appendChild(panel.el);
-    expect(panel.el.querySelector('[data-path="work"] .zion-sessions-tagtree-pin')).toBeTruthy();
+    expect(panel.el.querySelector('[data-path="work"]')).toBeTruthy();
+    expect(panel.el.querySelector('[data-path="work"] .zion-sessions-tagtree-pin')).toBeNull();
   });
 
   it("delete confirm distinguishes leaf and subtree", () => {
@@ -227,8 +227,7 @@ describe("tag tree panel", () => {
     document.body.appendChild(panel.el);
     const openDelete = (path) => {
       const row = panel.el.querySelector(`[data-path="${path}"]`);
-      const menuBtn = row.querySelector(".zion-sessions-tagtree-menu");
-      menuBtn.dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10, bubbles: true }));
+      row.dispatchEvent(new MouseEvent("contextmenu", { clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
       const floating = document.body.querySelector(".zion-sessions-tagtree-context");
       Array.from(floating.querySelectorAll("div")).find((d) => d.textContent === "Delete").click();
       floating.remove();

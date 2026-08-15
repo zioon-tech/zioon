@@ -78,6 +78,7 @@ const ICON_PATHS: IconPathMap = {
   search: '<circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/>',
   terminal: '<path d="m5 7 5 5-5 5"/><path d="M12 17h7"/>',
   keyboard: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M19 10h.01M7 14h.01M11 14h6"/>',
+  hash: '<path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/>',
   loader: '<path d="M12 3v3M12 18v3M4.9 4.9 7 7M17 17l2.1 2.1M3 12h3M18 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/>'
 };
 

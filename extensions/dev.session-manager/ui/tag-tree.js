@@ -3,9 +3,11 @@
 // reorder, keyboard). Pure data comes in via update(); mutations go out
 // through injected callbacks. The host owns catalog persistence.
 //
-// Visual layer lives in styles.css under .zion-sessions-tagtree-*; JS only
-// toggles state classes (is-selected, is-collapsed, is-drop-*, …). Dynamic
-// values (indent depth, per-tag dot color) stay inline on the element.
+// Visual language follows flowix's tag tree: one hash glyph per row (also
+// the collapse toggle, with a corner triangle when it has children), a bare
+// tabular count, plain rows, context menu on right-click. All styling lives
+// in styles.css under .zion-sessions-tagtree-*; JS only toggles state
+// classes. Per-row dynamic values (indent depth) stay inline.
 
 function parentOfPath(path) {
   const segments = String(path || "").split("/");
@@ -31,7 +33,6 @@ export function createTagTreePanel(deps) {
   const onPin = deps.onPin || (() => {});
   const isCollapsed = deps.isCollapsed || (() => false);
   const setCollapsed = deps.setCollapsed || (() => {});
-  const dotColor = deps.dotColor || (() => "");
 
   const el = document.createElement("div");
   el.className = "zion-sessions-tagtree";
@@ -117,7 +118,7 @@ export function createTagTreePanel(deps) {
   function render() {
     const rows = expandedRows();
     const key = [
-      rows.map((row) => `${row.path}:${row.sessionCount}:${row.manual ? 1 : 0}:${row.pinned ? 1 : 0}:${state.selection === row.path ? 1 : 0}`).join("\u0001"),
+      rows.map((row) => `${row.path}:${row.sessionCount}:${state.selection === row.path ? 1 : 0}`).join("\u0001"),
       searchText,
       editMode ? `${editMode.kind}:${editMode.path}` : ""
     ].join("\u0003");
@@ -132,7 +133,12 @@ export function createTagTreePanel(deps) {
       body.appendChild(createInputRow(editMode.parentPath));
     }
     if (!rows.length && !(editMode && editMode.kind === "create")) {
-      body.appendChild(createEmptyRow());
+      const empty = document.createElement("div");
+      empty.className = "zion-sessions-tagtree-empty";
+      empty.textContent = searchText
+        ? t("tags.noMatches", "No matching tags")
+        : t("tags.empty", "No tags yet");
+      body.appendChild(empty);
     }
     for (const row of rows) {
       body.appendChild(renderRow(row));
@@ -141,30 +147,6 @@ export function createTagTreePanel(deps) {
         if (editMode.kind === "delete") body.appendChild(createDeleteRow(row));
       }
     }
-  }
-
-  function createEmptyRow() {
-    const empty = document.createElement("div");
-    empty.className = "zion-sessions-tagtree-empty";
-    const icon = document.createElement("div");
-    icon.className = "zion-sessions-tagtree-empty-icon";
-    icon.innerHTML = iconHtml("tag", 22);
-    const text = document.createElement("div");
-    text.className = "zion-sessions-tagtree-empty-text";
-    text.textContent = searchText
-      ? t("tags.noMatches", "No matching tags")
-      : t("tags.empty", "No tags yet");
-    empty.appendChild(icon);
-    empty.appendChild(text);
-    if (!searchText) {
-      const add = document.createElement("button");
-      add.type = "button";
-      add.className = "zion-sessions-tagtree-empty-add";
-      add.textContent = t("tags.addTag", "New tag");
-      add.onclick = () => startCreate("");
-      empty.appendChild(add);
-    }
-    return empty;
   }
 
   function dropZoneFor(event, element) {
@@ -204,64 +186,32 @@ export function createTagTreePanel(deps) {
     item.tabIndex = -1;
     item.title = `#${row.path}`;
     // Indent stays inline: it is per-row dynamic data.
-    item.style.marginLeft = `${row.depth * 12}px`;
+    item.style.paddingLeft = `${4 + row.depth * 13}px`;
     if (state.selection === row.path) item.classList.add("is-selected");
 
+    // hash glyph — identity + collapse toggle in one control (flowix style)
     const hasChildren = !!(row.children && row.children.length);
-    const chevron = document.createElement("span");
-    chevron.className = `zion-sessions-tagtree-chevron${hasChildren ? "" : " is-empty"}${isCollapsed(row.path) ? " is-collapsed" : ""}`;
-    chevron.innerHTML = iconHtml("chevron-down", 12);
-    chevron.onmousedown = (event) => event.stopPropagation();
-    chevron.onclick = (event) => {
+    const toggle = document.createElement("span");
+    toggle.className = `zion-sessions-tagtree-toggle${hasChildren ? " has-children" : ""}`;
+    toggle.innerHTML = iconHtml("hash", 13);
+    toggle.onmousedown = (event) => event.stopPropagation();
+    toggle.onclick = (event) => {
       event.stopPropagation();
       if (!hasChildren) return;
       setCollapsed(row.path, !isCollapsed(row.path));
       render();
     };
-    item.appendChild(chevron);
-
-    const dot = document.createElement("span");
-    dot.className = "zion-sessions-tagtree-dot";
-    const color = dotColor(row.path);
-    if (color) dot.style.background = color;
-    item.appendChild(dot);
+    item.appendChild(toggle);
 
     const label = document.createElement("span");
     label.className = "zion-sessions-tagtree-label";
     label.textContent = row.label;
     item.appendChild(label);
 
-    if (row.pinned) {
-      const pin = document.createElement("span");
-      pin.className = "zion-sessions-tagtree-pin";
-      pin.innerHTML = iconHtml("pin", 10);
-      pin.title = t("tags.pinned", "Pinned");
-      item.appendChild(pin);
-    }
-
-    if (!row.manual && !row.implicit) {
-      const ephemeral = document.createElement("span");
-      ephemeral.className = "zion-sessions-tagtree-scanned";
-      ephemeral.title = t("tags.scannedOnly", "Scanned from documents");
-      item.appendChild(ephemeral);
-    }
-
     const count = document.createElement("span");
     count.className = "zion-sessions-tagtree-count";
     count.textContent = String(row.sessionCount || 0);
     item.appendChild(count);
-
-    const menu = document.createElement("button");
-    menu.type = "button";
-    menu.className = "zion-sessions-tagtree-menu";
-    menu.innerHTML = iconHtml("ellipsis", 13);
-    menu.title = t("tags.tagActions", "Tag actions");
-    menu.setAttribute("aria-label", t("tags.tagActions", "Tag actions"));
-    menu.onclick = (event) => {
-      event.stopPropagation();
-      openRowMenu(event, row, menu);
-    };
-    item.appendChild(menu);
 
     item.onclick = () => {
       const isSelected = item.getAttribute("aria-selected") === "true";
@@ -270,6 +220,10 @@ export function createTagTreePanel(deps) {
       applySelection(next);
     };
     item.ondblclick = () => startRename(row);
+    item.oncontextmenu = (event) => {
+      event.preventDefault();
+      openRowMenu(event, row);
+    };
     item.draggable = true;
     item.ondragstart = (event) => {
       dragPath = row.path;
@@ -367,7 +321,7 @@ export function createTagTreePanel(deps) {
     }
   }
 
-  function openRowMenu(event, row, anchor) {
+  function openRowMenu(event, row) {
     document.querySelector(".zion-sessions-tagtree-context")?.remove();
     const menu = document.createElement("div");
     menu.className = "zion-sessions-tagtree-context";
@@ -376,14 +330,7 @@ export function createTagTreePanel(deps) {
     const mk = (label, onClick, options = {}) => {
       const item = document.createElement("div");
       item.className = `zion-sessions-tagtree-context-item${options.danger ? " is-danger" : ""}`;
-      const icon = document.createElement("span");
-      icon.className = "zion-sessions-tagtree-context-icon";
-      icon.innerHTML = options.icon ? iconHtml(options.icon, 13) : "";
-      const text = document.createElement("span");
-      text.className = "zion-sessions-tagtree-context-label";
-      text.textContent = label;
-      item.appendChild(icon);
-      item.appendChild(text);
+      item.textContent = label;
       item.onclick = () => {
         menu.remove();
         onClick();
@@ -391,15 +338,15 @@ export function createTagTreePanel(deps) {
       menu.appendChild(item);
       return item;
     };
-    mk(t("tags.addChild", "Add child tag"), () => startCreate(row.path), { icon: "plus" });
-    mk(t("tags.rename", "Rename"), () => startRename(row), { icon: "pencil" });
-    mk(row.pinned ? t("tags.unpin", "Unpin") : t("tags.pin", "Pin"), () => onPin(row.path), { icon: "pin" });
+    mk(t("tags.addChild", "Add child tag"), () => startCreate(row.path));
+    mk(t("tags.rename", "Rename"), () => startRename(row));
+    mk(row.pinned ? t("tags.unpin", "Unpin") : t("tags.pin", "Pin"), () => onPin(row.path));
     mk(t("tags.delete", "Delete"), () => {
       editMode = { kind: "delete", path: row.path };
       render();
-    }, { icon: "trash", danger: true });
+    }, { danger: true });
     const close = (clickEvent) => {
-      if (menu.contains(clickEvent.target) || anchor.contains(clickEvent.target)) return;
+      if (menu.contains(clickEvent.target)) return;
       menu.remove();
       document.removeEventListener("mousedown", close);
     };
@@ -411,7 +358,7 @@ export function createTagTreePanel(deps) {
     const wrap = document.createElement("div");
     wrap.className = "zion-sessions-tagtree-edit";
     // Indent stays inline: derived from parent depth.
-    wrap.style.marginLeft = `${parentPath ? (parentPath.split("/").length + 1) * 12 : 0}px`;
+    wrap.style.marginLeft = `${parentPath ? (parentPath.split("/").length + 1) * 13 + 4 : 0}px`;
     if (parentPath) {
       const prefix = document.createElement("span");
       prefix.className = "zion-sessions-tagtree-edit-prefix";
@@ -469,7 +416,7 @@ export function createTagTreePanel(deps) {
     const wrap = document.createElement("div");
     wrap.className = "zion-sessions-tagtree-confirm";
     // Indent stays inline: derived from row depth.
-    wrap.style.marginLeft = `${(row.depth + 1) * 12}px`;
+    wrap.style.marginLeft = `${4 + (row.depth + 1) * 13}px`;
     const text = document.createElement("span");
     text.className = "zion-sessions-tagtree-confirm-text";
     const childCount = (state.rows || []).filter((r) => r.path.startsWith(`${row.path}/`)).length;
