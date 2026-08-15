@@ -1,4 +1,15 @@
 import { extractObsidianMetadata } from "../../shared/obsidian-metadata.js";
+import {
+  addCatalogEntry,
+  buildTagTree,
+  deleteCatalogPaths,
+  reconcileCatalog,
+  renameCatalogPath,
+  reorderCatalogEntry
+} from "../model/tag-catalog.js";
+import { rewriteDocTags } from "../features/tag-mutations.js";
+import { loadTagCatalog, saveTagCatalog } from "../storage/tag-catalog.js";
+import { createTagTreePanel } from "./tag-tree.js";
 
 export function createSessionsSidebarViewManager(opts) {
   const zion = opts?.zion || window.zion;
@@ -7,12 +18,35 @@ export function createSessionsSidebarViewManager(opts) {
   const getIndex = opts?.getIndex;
   const loadMeta = opts?.loadMeta;
   const loadDoc = opts?.loadDoc;
+  const getAllSessionDocs = opts?.getAllSessionDocs || (async () => []);
+  const writeSessionDoc = opts?.writeSessionDoc || (async () => {});
+  const catalogDbName = opts?.dbName || "zion.sessions.db";
   const LS_SELECTED_DAY = "zion.sessions.sidebar.selectedDay";
   const LS_SELECTED_RANGE_DAYS = "zion.sessions.sidebar.selectedRangeDays";
   const LS_DAY_PANEL_COLLAPSED = "zion.sessions.sidebar.dayPanelCollapsed";
   const LS_DAY_PANEL_END_DAY = "zion.sessions.sidebar.dayPanelEndDay";
   const LS_TAG_PANEL_COLLAPSED = "zion.sessions.sidebar.tagPanelCollapsed";
   const LS_TAG_NODE_COLLAPSED = "zion.sessions.sidebar.tagNodeCollapsed";
+  const LS_TAG_SPLIT = "zion.sessions.sidebar.tagSplit";
+  const LS_TAG_COLUMN_WIDTH = "zion.sessions.sidebar.tagColumnWidth";
+  const LS_PRE_SPLIT_WIDTH = "zion.sessions.sidebar.preSplitWidth";
+  const TAG_SPLIT_MIN = 140;
+  const TAG_SPLIT_MAX = 260;
+  const TAG_SPLIT_DEFAULT = 180;
+  const TAG_SPLIT_BODY_MIN = 380;
+  const TAG_SPLIT_SIDEBAR_TARGET = 440;
+
+  let tagSplitEnabled = (() => {
+    try { return localStorage.getItem(LS_TAG_SPLIT) === "1"; } catch { return false; }
+  })();
+  let tagColumnWidth = (() => {
+    try {
+      const value = Number(localStorage.getItem(LS_TAG_COLUMN_WIDTH) || "0");
+      return Number.isFinite(value) && value >= TAG_SPLIT_MIN && value <= TAG_SPLIT_MAX ? value : TAG_SPLIT_DEFAULT;
+    } catch { return TAG_SPLIT_DEFAULT; }
+  })();
+  let catalogEntries = [];
+  let catalogLoaded = false;
 
   function t(key, fallback, values) {
     const fullKey = `dev.session-manager.${key}`;
@@ -287,6 +321,100 @@ export function createSessionsSidebarViewManager(opts) {
     return { root, count: all.size };
   }
 
+  async function ensureCatalogLoaded() {
+    if (catalogLoaded) return;
+    catalogLoaded = true;
+    try {
+      catalogEntries = await loadTagCatalog(catalogDbName);
+    } catch {
+      catalogEntries = [];
+    }
+    refreshIfOpen();
+  }
+
+  async function persistCatalog() {
+    try {
+      catalogEntries = await saveTagCatalog(catalogDbName, catalogEntries);
+    } catch (error) {
+      try { console.warn("[session-manager] tag catalog persist failed", error); } catch {}
+    }
+  }
+
+  function getSessionTagMap() {
+    const sessions = getSessionIndex();
+    const map = [];
+    for (const session of sessions) {
+      const sid = String(session?.id || "");
+      if (!sid) continue;
+      map.push([sid, getSessionTags(sid)]);
+    }
+    return map;
+  }
+
+  function buildSplitTagTree() {
+    const sessionTags = getSessionTagMap();
+    const scanned = new Set();
+    for (const [, tags] of sessionTags) {
+      for (const tag of Array.isArray(tags) ? tags : []) {
+        const path = String(tag || "").replace(/^#/, "").trim();
+        if (path) scanned.add(path);
+      }
+    }
+    const merged = reconcileCatalog(catalogEntries, Array.from(scanned));
+    return buildTagTree(merged, sessionTags);
+  }
+
+  async function handleTagCreate(path) {
+    const { entries, added } = addCatalogEntry(catalogEntries, path);
+    if (!added) return true;
+    catalogEntries = entries;
+    await persistCatalog();
+    refreshIfOpen();
+    return true;
+  }
+
+  async function handleTagRename(fromPath, toPath) {
+    const docs = await getAllSessionDocs();
+    for (const doc of Array.isArray(docs) ? docs : []) {
+      const id = String(doc?.id || "");
+      if (!id) continue;
+      const { text, changed } = rewriteDocTags(String(doc?.text || ""), { renames: [{ from: fromPath, to: toPath }] });
+      if (changed) await writeSessionDoc(id, text);
+    }
+    const { entries } = renameCatalogPath(catalogEntries, fromPath, toPath);
+    catalogEntries = entries;
+    await persistCatalog();
+    if (selectedTag && (selectedTag === fromPath || selectedTag.startsWith(`${fromPath}/`))) {
+      selectedTag = String(toPath || "");
+    }
+    refreshIfOpen();
+    return true;
+  }
+
+  async function handleTagDelete(path) {
+    const docs = await getAllSessionDocs();
+    for (const doc of Array.isArray(docs) ? docs : []) {
+      const id = String(doc?.id || "");
+      if (!id) continue;
+      const { text, changed } = rewriteDocTags(String(doc?.text || ""), { removals: [path] });
+      if (changed) await writeSessionDoc(id, text);
+    }
+    const { entries } = deleteCatalogPaths(catalogEntries, [path]);
+    catalogEntries = entries;
+    await persistCatalog();
+    if (selectedTag && (selectedTag === path || selectedTag.startsWith(`${path}/`))) {
+      selectedTag = "";
+    }
+    refreshIfOpen();
+    return true;
+  }
+
+  function handleTagReorder(path, referencePath, after) {
+    catalogEntries = reorderCatalogEntry(catalogEntries, path, referencePath, { after });
+    persistCatalog();
+    refreshIfOpen();
+  }
+
   function refreshIfOpen(opts = {}) {
     try {
       current?.render?.(opts);
@@ -425,6 +553,158 @@ export function createSessionsSidebarViewManager(opts) {
     listWrap.style.padding = "6px 0 6px 8px";
     const list = document.createElement("div");
     listWrap.appendChild(list);
+
+    const disposables = [];
+    const disposablesCleanupFns = [];
+
+    const splitRow = document.createElement("div");
+    splitRow.className = "zion-sessions-split-row";
+    splitRow.style.display = "flex";
+    splitRow.style.flex = "1 1 auto";
+    splitRow.style.minHeight = "0";
+    splitRow.style.overflow = "hidden";
+
+    const tagColumn = document.createElement("div");
+    tagColumn.className = "zion-sessions-tag-column";
+    tagColumn.style.flex = `0 0 ${tagColumnWidth}px`;
+    tagColumn.style.width = `${tagColumnWidth}px`;
+    tagColumn.style.minWidth = `${TAG_SPLIT_MIN}px`;
+    tagColumn.style.maxWidth = `${TAG_SPLIT_MAX}px`;
+    tagColumn.style.overflow = "hidden";
+    tagColumn.style.display = "flex";
+    tagColumn.style.flexDirection = "column";
+    tagColumn.style.minHeight = "0";
+    tagColumn.style.borderRight = "1px solid color-mix(in srgb, var(--border) 72%, transparent)";
+
+    const splitDivider = document.createElement("div");
+    splitDivider.className = "zion-sessions-split-divider";
+    splitDivider.style.flex = "0 0 3px";
+    splitDivider.style.cursor = "col-resize";
+    splitDivider.style.marginLeft = "-2px";
+
+    const rightColumn = document.createElement("div");
+    rightColumn.className = "zion-sessions-right-column";
+    rightColumn.style.flex = "1 1 auto";
+    rightColumn.style.minWidth = "220px";
+    rightColumn.style.display = "flex";
+    rightColumn.style.flexDirection = "column";
+    rightColumn.style.minHeight = "0";
+    rightColumn.style.overflow = "hidden";
+
+    const tagTreePanel = createTagTreePanel({
+      t,
+      iconHtml,
+      dotColor: tagDotColor,
+      isCollapsed: isTagNodeCollapsed,
+      setCollapsed: setTagNodeCollapsed,
+      onSelect: (path) => {
+        selectedTag = String(path || "");
+        renderAll();
+      },
+      onCreate: handleTagCreate,
+      onRename: handleTagRename,
+      onDelete: handleTagDelete,
+      onReorder: handleTagReorder
+    });
+    tagColumn.appendChild(tagTreePanel.el);
+
+    let splitDragState = null;
+    splitDivider.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      splitDragState = { startX: event.clientX, startWidth: tagColumnWidth };
+    });
+    const onSplitDragMove = (event) => {
+      if (!splitDragState) return;
+      const delta = event.clientX - splitDragState.startX;
+      const next = Math.max(TAG_SPLIT_MIN, Math.min(TAG_SPLIT_MAX, splitDragState.startWidth + delta));
+      if (next !== tagColumnWidth) {
+        tagColumnWidth = next;
+        tagColumn.style.flex = `0 0 ${tagColumnWidth}px`;
+        tagColumn.style.width = `${tagColumnWidth}px`;
+      }
+    };
+    const onSplitDragEnd = () => {
+      if (!splitDragState) return;
+      splitDragState = null;
+      try { localStorage.setItem(LS_TAG_COLUMN_WIDTH, String(tagColumnWidth)); } catch {}
+    };
+    window.addEventListener("mousemove", onSplitDragMove);
+    window.addEventListener("mouseup", onSplitDragEnd);
+    disposablesCleanupFns.push(() => {
+      window.removeEventListener("mousemove", onSplitDragMove);
+      window.removeEventListener("mouseup", onSplitDragEnd);
+    });
+
+    let appliedSplitMode = null;
+    const applySplitLayout = () => {
+      const bodyWidth = container.clientWidth || 0;
+      const wantSplit = tagSplitEnabled && bodyWidth >= TAG_SPLIT_BODY_MIN;
+      const mode = wantSplit ? "split" : "stacked";
+      if (mode === appliedSplitMode) return;
+      appliedSplitMode = mode;
+      if (wantSplit) {
+        tagsHost.style.display = "none";
+        splitRow.appendChild(tagColumn);
+        splitRow.appendChild(splitDivider);
+        rightColumn.appendChild(listWrap);
+        rightColumn.appendChild(calendarHost);
+        splitRow.appendChild(rightColumn);
+        container.appendChild(splitRow);
+      } else {
+        if (splitRow.parentElement === container) container.removeChild(splitRow);
+        tagsHost.style.display = "";
+        container.appendChild(listWrap);
+        container.appendChild(tagsHost);
+        container.appendChild(calendarHost);
+      }
+    };
+
+    const setTagSplitEnabled = (next) => {
+      tagSplitEnabled = !!next;
+      try { localStorage.setItem(LS_TAG_SPLIT, tagSplitEnabled ? "1" : "0"); } catch {}
+      const sideBar = zion?.sideBar;
+      if (tagSplitEnabled) {
+        let current = Number(zion?.state?.get?.("ui.sideBar.width"));
+        if (!Number.isFinite(current)) current = 0;
+        if (current >= 240) {
+          try { localStorage.setItem(LS_PRE_SPLIT_WIDTH, String(current)); } catch {}
+        }
+        if (sideBar?.setWidth && current < TAG_SPLIT_SIDEBAR_TARGET) {
+          sideBar.setWidth(TAG_SPLIT_SIDEBAR_TARGET);
+        }
+      } else {
+        let restore = 0;
+        try { restore = Number(localStorage.getItem(LS_PRE_SPLIT_WIDTH) || "0"); } catch {}
+        if (sideBar?.setWidth && restore >= 240) sideBar.setWidth(restore);
+      }
+      appliedSplitMode = null;
+      applySplitLayout();
+      renderAll();
+    };
+
+    const splitResizeObserver = typeof window.ResizeObserver !== "undefined"
+      ? new window.ResizeObserver(() => {
+          applySplitLayout();
+          renderTagTreeIfSplit();
+        })
+      : null;
+    if (splitResizeObserver) {
+      splitResizeObserver.observe(container);
+      disposables.push({ dispose: () => splitResizeObserver.disconnect() });
+    }
+
+    const renderTagTreeIfSplit = () => {
+      if (appliedSplitMode !== "split") return;
+      try {
+        const tree = buildSplitTagTree();
+        tagTreePanel.update({
+          rows: tree.rows,
+          nodeCount: tree.nodeCount,
+          selection: selectedTag
+        });
+      } catch {}
+    };
+
     container.appendChild(listWrap);
     container.appendChild(tagsHost);
     container.appendChild(calendarHost);
@@ -477,7 +757,6 @@ export function createSessionsSidebarViewManager(opts) {
         refreshIfOpen();
       }
     });
-    const disposables = [];
     try { disposables.push(zion?.events?.on?.("chat/usageChanged", () => renderAll())); } catch {}
     try { disposables.push(zion?.state?.onDidChange?.("sessions.treeMem", () => renderAll())); } catch {}
     try {
@@ -1040,9 +1319,11 @@ export function createSessionsSidebarViewManager(opts) {
     const renderAll = (opts = {}) => {
       const preserveListScroll = opts?.preserveListScroll !== false;
       const listScrollTop = preserveListScroll ? Math.max(0, Number(listWrap.scrollTop) || 0) : null;
+      applySplitLayout();
       if (!opts?.listOnly) {
         captureTagsPanelScroll();
-        renderTagsPanel();
+        if (appliedSplitMode !== "split") renderTagsPanel();
+        renderTagTreeIfSplit();
         renderCalendar();
       }
       innerRender();
@@ -1145,6 +1426,11 @@ export function createSessionsSidebarViewManager(opts) {
         refreshMenuText();
         headerMenu.style.display = headerMenu.style.display === "none" ? "block" : "none";
       },
+      toggleTagSplit: () => {
+        setTagSplitEnabled(!tagSplitEnabled);
+        return tagSplitEnabled;
+      },
+      isTagSplitEnabled: () => !!tagSplitEnabled,
       dispose: () => {
         if (current === inst) current = null;
           try { innerRender?.dispose?.(); } catch {}
@@ -1152,13 +1438,16 @@ export function createSessionsSidebarViewManager(opts) {
           try { window.cancelAnimationFrame(heatmapResizeRaf); } catch {}
           heatmapResizeRaf = 0;
         }
+        for (const fn of disposablesCleanupFns) { try { fn(); } catch {} }
+        try { tagTreePanel.dispose?.(); } catch {}
         for (const d of disposables) { try { d?.dispose?.(); } catch {} }
         try { container.innerHTML = ""; } catch {}
       }
     };
     current = inst;
+    ensureCatalogLoaded();
     return inst;
   }
 
-  return { mountInto, refreshIfOpen, anchorToCurrentIfOpen, revealSessionIfOpen, toggleMenuIfOpen };
+  return { mountInto, refreshIfOpen, anchorToCurrentIfOpen, revealSessionIfOpen, toggleMenuIfOpen, toggleTagSplitIfOpen: () => current?.toggleTagSplit?.(), isTagSplitEnabled: () => !!current?.isTagSplitEnabled?.() };
 }

@@ -1144,7 +1144,21 @@ const __sidebarViewManager = createSessionsSidebarViewManager({
   openAncestors,
   getIndex,
   loadMeta,
-  loadDoc
+  loadDoc,
+  dbName: DB_NAME,
+  getAllSessionDocs: async () => {
+    try {
+      const docs = await idbGetAll(DB_NAME, "docs");
+      return (Array.isArray(docs) ? docs : [])
+        .map((rec) => ({ id: String(rec?.id || ""), text: String(rec?.text || "") }))
+        .filter((doc) => doc.id);
+    } catch {
+      return [];
+    }
+  },
+  writeSessionDoc: async (id, text) => {
+    await saveDoc(String(id || ""), String(text || ""));
+  }
 });
 
   function refreshSessionsSidebarViewIfOpen(opts) {
@@ -1383,7 +1397,15 @@ export async function activate(ctx) {
     return markSessionViewed(sessionId);
   };
   const dMarkSessionViewed = window.zion.commands.registerCommand("zion.sessions.markViewed", markSessionViewed);
+  const dToggleTagSplit = window.zion.commands.registerCommand("zion.sessions.toggleTagSplit", () => {
+    try {
+      return __sidebarViewManager.toggleTagSplitIfOpen?.();
+    } catch {
+      return undefined;
+    }
+  });
   ctx.subscriptions.push(dMarkSessionViewed);
+  ctx.subscriptions.push(dToggleTagSplit);
 
   // 初始化树/索引/会话
   ensureInitialTree();
@@ -1538,6 +1560,15 @@ export async function activate(ctx) {
           onClick: () => window.zion.commands.executeCommand("zion.sessions.new", {
             parentId: window.zion.state.get("sessions.selectedFolderId") || "root"
           })
+        },
+        {
+          id: "sessions.tagSplit",
+          title: t("ui.toggleTagSplit", "Toggle tag column"),
+          titleKey: "dev.session-manager.ui.toggleTagSplit",
+          ariaLabel: t("ui.toggleTagSplit", "Toggle tag column"),
+          ariaLabelKey: "dev.session-manager.ui.toggleTagSplit",
+          icon: "$(layout-sidebar-left)",
+          onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleTagSplit")
         },
         {
           id: "sessions.actions",
