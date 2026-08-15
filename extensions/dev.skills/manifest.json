@@ -1,7 +1,7 @@
 {
   "name": "dev.skills",
   "version": "2.1.0",
-  "description": "Agent Skills standard implementation - injects skill metadata into system prompt, model autonomously reads full content when needed",
+  "description": "Agent Skills standard implementation - injects skill metadata into chat context as user messages, model autonomously reads full content when needed",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {

@@ -169,3 +169,25 @@ export function findObsidianReferenceTarget(doc: Text, rawTarget: string): numbe
   const fuzzy = refs.find(ref => ref.label.toLowerCase() === lower);
   return fuzzy?.pos ?? null;
 }
+
+export function findBiographyEventReference(rawTarget: string): string | null {
+  const target = String(rawTarget || "")
+    .replace(/^\[\[/, "")
+    .replace(/\]\]$/, "")
+    .split("|")
+    .shift()
+    ?.trim() || "";
+  const match = target.match(/^memory:([^\s|]+)$/i);
+  return match?.[1] || null;
+}
+
+export function findBiographyEventReference(rawTarget: string): string | null {
+  const target = String(rawTarget || "")
+    .replace(/^\[\[/, "")
+    .replace(/\]\]$/, "")
+    .split("|")
+    .shift()
+    ?.trim() || "";
+  const match = target.match(/^memory:([^\s|]+)$/i);
+  return match?.[1] || null;
+}

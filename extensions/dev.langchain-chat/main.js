@@ -291,6 +291,17 @@ function buildTerminalSessionsContextXml(activeSessionId, sessions) {
   ].filter((line) => line !== "").join("\n");
 }
 
+function insertAfterLeadingSystem(messages, injectedMessage) {
+  const list = Array.isArray(messages) ? messages : [];
+  let insertAt = 0;
+  while (insertAt < list.length && list[insertAt]?.role === "system") insertAt += 1;
+  return [
+    ...list.slice(0, insertAt),
+    injectedMessage,
+    ...list.slice(insertAt)
+  ];
+}
+
 function findAssistantEndLineFromDoc(text, startLineHint = 0) {
   const lines = String(text || "").replace(/\r/g, "").split("\n");
   const roleHeadRe = /^\s*(system|user|assistant|tool)\s+/;
@@ -830,7 +841,7 @@ export async function activate(ctx) {
           ? window.zion.state.get("terminal.sessions")
           : [];
         const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
-        messages.unshift({ role: "system", content: buildTerminalSessionsContextXml(activeId, sessions) });
+        messages = insertAfterLeadingSystem(messages, { role: "user", content: buildTerminalSessionsContextXml(activeId, sessions) });
       }
     } catch {}
 
@@ -1156,7 +1167,7 @@ export async function activate(ctx) {
           }
         }
         const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
-        baseMessages.unshift({ role: "system", content: buildTerminalSessionsContextXml(activeId, sessions) });
+        baseMessages = insertAfterLeadingSystem(baseMessages, { role: "user", content: buildTerminalSessionsContextXml(activeId, sessions) });
       }
     } catch {}
 

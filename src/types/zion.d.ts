@@ -343,6 +343,29 @@ declare global {
         requestTemporaryWidth(ownerId: string, w: number): void;
         releaseTemporaryWidth(ownerId: string): void;
       };
+      inspector?: {
+        open(item: {
+          id: string;
+          ownerId?: string;
+          title: string;
+          path?: string;
+          displayPath?: string;
+          language?: string;
+          file?: { kind?: "loading" | "error" | "text" | "image" | "binary"; content?: string; blob?: Blob; message?: string; size?: number };
+          editable?: boolean;
+          onSave?: (content: string) => void | Promise<void>;
+        }): string;
+        update(id: string, patch: Record<string, any>): boolean;
+        close(id: string): void;
+        clearOwner(ownerId: string): void;
+        activate(id: string): void;
+        show(): void;
+        hide(): void;
+        isVisible(): boolean;
+        getItems(): any[];
+        getActiveItemId(): string | null;
+        setWidth(width: number): void;
+      };
       bottomPanel?: {
         registerView(opts: {
           id: string;

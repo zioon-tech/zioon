@@ -7,7 +7,7 @@ import {
   type ViewUpdate
 } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
-import { findObsidianReferenceTarget } from "./parser";
+import { findBiographyEventReference, findObsidianReferenceTarget } from "./parser";
 
 const WIKILINK_RE = /\[\[([^\]\n]{1,120})\]\]/g;
 const TAG_RE = /(^|[\s([{])#([\p{L}\p{N}_/-]+)(?=$|[\s)\]},.;:!?])/gu;
@@ -72,7 +72,14 @@ function buildDecorations(view: EditorView): DecorationSet {
       marks.push({
         from: line.from + wiki.index,
         to: line.from + wiki.index + wiki[0].length,
-        decoration: Decoration.mark({ class: "cm-obsidian-wikilink" })
+        decoration: Decoration.mark({
+          class: "cm-obsidian-wikilink",
+          attributes: {
+            title: /^memory:/i.test(wiki[1] || "")
+              ? "Cmd/Ctrl-click to open Biography event"
+              : undefined
+          }
+        })
       });
     }
 
@@ -132,6 +139,15 @@ const obsidianDecorations = ViewPlugin.fromClass(
         if (!link) return;
 
         const raw = link.textContent || "";
+        const biographyEventId = findBiographyEventReference(raw);
+        if (biographyEventId) {
+          event.preventDefault();
+          event.stopPropagation();
+          try {
+            window.zion?.commands?.executeCommand?.("identity.openBiographyEvent", biographyEventId);
+          } catch {}
+          return;
+        }
         const pos = findObsidianReferenceTarget(view.state.doc, raw);
         if (typeof pos !== "number") return;
 

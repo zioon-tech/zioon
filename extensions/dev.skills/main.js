@@ -204,6 +204,17 @@ function generateAvailableSkillsXML(catalog, enabledSet) {
   return `<available_skills>\n${skillXMLs}\n</available_skills>\n\nWhen you need detailed instructions for a skill, use the Read tool to access the file at the specified location.`;
 }
 
+function insertAfterLeadingSystem(messages, injectedMessage) {
+  const list = Array.isArray(messages) ? messages : [];
+  let insertAt = 0;
+  while (insertAt < list.length && list[insertAt]?.role === "system") insertAt += 1;
+  return [
+    ...list.slice(0, insertAt),
+    injectedMessage,
+    ...list.slice(insertAt)
+  ];
+}
+
 async function listDirEntries(base, dir) {
   try {
     const url = `${base}/files/entries?path=${encodeURIComponent(dir)}&max_depth=1`;
@@ -616,8 +627,8 @@ function registerMessageContributor() {
         const enabled = getEnabledSet();
         if (enabled.size === 0) return messages;
         const availableSkillsXML = generateAvailableSkillsXML(catalog, enabled);
-        const systemMessage = { role: "system", content: availableSkillsXML };
-        return [systemMessage, ...messages];
+        const injectedMessage = { role: "user", content: availableSkillsXML };
+        return insertAfterLeadingSystem(messages, injectedMessage);
       } catch {
         return messages;
       }

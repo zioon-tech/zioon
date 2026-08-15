@@ -1,4 +1,4 @@
-import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
+import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, inspectorRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -172,6 +172,7 @@ export function initWorkbench(host: HTMLElement): {
   const sideBarEl = el("div", "zion-sidebar");
   const editorEl = el("div", "zion-editor");
   const auxiliaryBarEl = el("div", "zion-auxbar");
+  const inspectorEl = el("aside", "zion-inspector");
   const bottomPanelEl = el("div", "zion-bottompanel");
   const overlayMaskEl = el("div", "zion-overlay-mask");
   const mobileBarEl = el("div", "zion-mobilebar");
@@ -193,6 +194,7 @@ export function initWorkbench(host: HTMLElement): {
   root.appendChild(sideBarEl);
   root.appendChild(editorEl);
   root.appendChild(auxiliaryBarEl);
+  root.appendChild(inspectorEl);
   root.appendChild(bottomPanelEl);
   root.appendChild(overlayMaskEl);
   root.appendChild(mobileBarEl);

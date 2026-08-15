@@ -1009,7 +1009,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     boxShadow: "none",
     display: "grid",
     gridTemplateRows: embedTabsInBottomHeader ? "1fr auto" : "auto 1fr auto",
-    padding: "0",
+    padding: rootId === "zion-terminal-enhanced-root-aux" ? "5px 0 0" : "0",
     boxSizing: "border-box",
     fontFamily: "var(--font-sans)"
   });

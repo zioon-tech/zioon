@@ -126,13 +126,13 @@ function escapeXml(value) {
     .replace(/'/g, "&apos;");
 }
 
-function insertAfterLeadingSystem(messages, systemMsg) {
+function insertAfterLeadingSystem(messages, injectedMessage) {
   const list = Array.isArray(messages) ? messages : [];
   let insertAt = 0;
   while (insertAt < list.length && list[insertAt]?.role === "system") insertAt += 1;
   return [
     ...list.slice(0, insertAt),
-    systemMsg,
+    injectedMessage,
     ...list.slice(insertAt)
   ];
 }
@@ -666,8 +666,8 @@ export async function activate(ctx) {
             if (includeRecentOutputs !== true) return messages;
           const outputs = window.zion?.state?.get("terminal.outputs") || [];
           if (!Array.isArray(outputs) || outputs.length === 0) return messages;
-          const systemMsg = { role: "system", content: buildRecentTerminalOutputsXml(outputs) };
-          return insertAfterLeadingSystem(messages, systemMsg);
+          const injectedMessage = { role: "user", content: buildRecentTerminalOutputsXml(outputs) };
+          return insertAfterLeadingSystem(messages, injectedMessage);
         } catch {
           return messages;
         }

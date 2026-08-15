@@ -255,6 +255,31 @@ function normalizeProviderUsage(raw, providerType) {
   };
 }
 
+function buildProviderError(json, providerType = "") {
+  try {
+    if (!json || typeof json !== "object") return "";
+    const nestedMessage = typeof json?.error?.message === "string" ? json.error.message.trim() : "";
+    const nestedType = typeof json?.error?.type === "string" ? json.error.type.trim() : "";
+    const directMessage = typeof json?.message === "string" ? json.message.trim() : "";
+    const directError = typeof json?.error === "string" ? json.error.trim() : "";
+    if (nestedMessage) return nestedType ? `${nestedType}: ${nestedMessage}` : nestedMessage;
+    if (directError) return directError;
+    if (directMessage && (json.type === "error" || json.status === "error" || json.error_code || json.code)) {
+      return directMessage;
+    }
+    if (providerType === "gemini") {
+      const blockReason = String(json?.promptFeedback?.blockReason || "").trim();
+      const blockReasonMessage = String(json?.promptFeedback?.blockReasonMessage || "").trim();
+      if (blockReason || blockReasonMessage) {
+        return `Gemini blocked: ${blockReasonMessage || blockReason}`;
+      }
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * 解析 Claude 流式响应
  * Claude SSE 格式:
@@ -291,6 +316,11 @@ function parseClaudeStreamLine(line, { toolCallsBuffer, emittedReasoningStart, o
   try {
     const json = JSON.parse(payload);
     const result = {};
+    const providerError = buildProviderError(json, "claude");
+    if (eventType === "error" || json.type === "error" || providerError) {
+      result.error = providerError || "Claude stream error";
+      return result;
+    }
 
     // 处理 content_block_start (thinking 开始)
     if (eventType === "content_block_start" || json.type === "content_block_start") {
@@ -372,6 +402,11 @@ function parseGeminiStreamLine(line, { toolCallsBuffer, reasoningBuf, onToken, o
   try {
     const json = JSON.parse(payload);
     const result = {};
+    const providerError = buildProviderError(json, "gemini");
+    if (providerError) {
+      result.error = providerError;
+      return result;
+    }
 
     // Gemini 流式响应结构
     // candidates[0].content.parts[]
@@ -826,71 +861,75 @@ export async function runStream({
             // OpenAI 解析器（默认）
             if (!s.startsWith("data:")) continue;
             const payload = s.slice(5).trim();
-            if (payload === "[DONE]") {
-              parseResult = { done: true };
-            } else {
-              try {
-                const json = JSON.parse(payload);
-              if (json?.usage) usage = normalizeProviderUsage(json.usage, providerType);
-                // 解析 tool_calls（delta）
-                const delta = json?.choices?.[0]?.delta;
-                const toolCalls = delta?.tool_calls;
-                if (toolCalls && Array.isArray(toolCalls)) {
-                  for (const tc of toolCalls) {
-                    const idx = tc.index ?? 0;
-                    while (toolCallsBuffer.length <= idx) toolCallsBuffer.push({ id: "", name: "", arguments: "" });
-                    const bufItem = toolCallsBuffer[idx];
+              if (payload === "[DONE]") {
+                parseResult = { done: true };
+              } else {
+                try {
+                  const json = JSON.parse(payload);
+                  const providerError = buildProviderError(json, providerType);
+                  if (providerError) {
+                    parseResult.error = providerError;
+                  }
+                  if (json?.usage) usage = normalizeProviderUsage(json.usage, providerType);
+                  // 解析 tool_calls（delta）
+                  const delta = json?.choices?.[0]?.delta;
+                  const toolCalls = delta?.tool_calls;
+                  if (toolCalls && Array.isArray(toolCalls)) {
+                    for (const tc of toolCalls) {
+                      const idx = tc.index ?? 0;
+                      while (toolCallsBuffer.length <= idx) toolCallsBuffer.push({ id: "", name: "", arguments: "" });
+                      const bufItem = toolCallsBuffer[idx];
 
-                    if (tc.id) bufItem.id = tc.id;
-                    const fn = tc.function || tc?.fn;
-                    if (fn?.name) bufItem.name = fn.name;
-                    if (fn?.arguments) bufItem.arguments += fn.arguments;
+                      if (tc.id) bufItem.id = tc.id;
+                      const fn = tc.function || tc?.fn;
+                      if (fn?.name) bufItem.name = fn.name;
+                      if (fn?.arguments) bufItem.arguments += fn.arguments;
 
-                    // 尝试完整解析
-                    if (bufItem.id && bufItem.name && bufItem.arguments) {
-                      try {
-                        const args = JSON.parse(bufItem.arguments);
-                        try { beforeControlEvent?.("toolCall"); } catch {}
-                        onToolCall && onToolCall({ id: bufItem.id, name: bufItem.name, args });
-                        // 清空该 buffer 位置，避免重复触发
-                        toolCallsBuffer[idx] = { id: "", name: "", arguments: "" };
-                      } catch {
-                        // 等待更多参数片段
+                      // 尝试完整解析
+                      if (bufItem.id && bufItem.name && bufItem.arguments) {
+                        try {
+                          const args = JSON.parse(bufItem.arguments);
+                          try { beforeControlEvent?.("toolCall"); } catch {}
+                          onToolCall && onToolCall({ id: bufItem.id, name: bufItem.name, args });
+                          // 清空该 buffer 位置，避免重复触发
+                          toolCallsBuffer[idx] = { id: "", name: "", arguments: "" };
+                        } catch {
+                          // 等待更多参数片段
+                        }
                       }
                     }
                   }
-                }
 
-                // 思考内容（reasoning） token
-                const rTk =
-                  delta?.reasoning_content ??
-                  (delta?.reasoning && typeof delta.reasoning === "object" ? delta.reasoning.content : undefined) ??
-                  delta?.thinking ??
-                  undefined;
-                if (rTk) {
-                  parseResult.thinkingToken = rTk;
-                }
+                  // 思考内容（reasoning） token
+                  const rTk =
+                    delta?.reasoning_content ??
+                    (delta?.reasoning && typeof delta.reasoning === "object" ? delta.reasoning.content : undefined) ??
+                    delta?.thinking ??
+                    undefined;
+                  if (rTk) {
+                    parseResult.thinkingToken = rTk;
+                  }
 
-                // 常规内容 token
-                const tk =
-                  delta?.content ??
-                  json?.choices?.[0]?.message?.content ??
-                  json?.message?.content ??
-                  json?.content ??
-                  "";
-                if (tk) {
-                  parseResult.contentToken = tk;
+                  // 常规内容 token
+                  const tk =
+                    delta?.content ??
+                    json?.choices?.[0]?.message?.content ??
+                    json?.message?.content ??
+                    json?.content ??
+                    "";
+                  if (tk) {
+                    parseResult.contentToken = tk;
+                  }
+                } catch {
+                  // 忽略无法解析的行
                 }
-              } catch {
-                // 忽略无法解析的行
               }
-            }
           }
 
           // 处理解析结果
-          if (parseResult.usage) usage = normalizeProviderUsage(parseResult.usage, providerType);
+            if (parseResult.usage) usage = normalizeProviderUsage(parseResult.usage, providerType);
 
-          if (parseResult.done) {
+            if (parseResult.done) {
             try {
               if (emittedReasoningStart) {
                 try { beforeControlEvent?.("reasoningEnd"); } catch {}
@@ -900,6 +939,10 @@ export async function runStream({
             onEnd();
             return { reasoning_content: reasoningBuf, usage };
           }
+
+            if (parseResult.error) {
+              throw new Error(parseResult.error);
+            }
 
           if (parseResult.thinkingStart) {
             emittedReasoningStart = true;
@@ -939,10 +982,12 @@ export async function runStream({
       } catch {}
       onEnd();
       return { reasoning_content: reasoningBuf, usage };
-    } else {
-      // 非流式：一次性返回
-      const j = await res.json().catch(() => ({}));
-      const usage = normalizeProviderUsage(j?.usage || j?.usageMetadata || j?.usage_metadata, providerType);
+      } else {
+        // 非流式：一次性返回
+        const j = await res.json().catch(() => ({}));
+        const providerError = buildProviderError(j, providerType);
+        if (providerError) throw new Error(providerError);
+        const usage = normalizeProviderUsage(j?.usage || j?.usageMetadata || j?.usage_metadata, providerType);
 
       let content = "";
       let reasoningContent = "";

@@ -97,7 +97,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 9px 11px 8px;
+  padding: 5px 11px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 

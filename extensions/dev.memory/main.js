@@ -1498,7 +1498,7 @@ function registerMessageContributor(disposables) {
       const query = extractLatestUserText(messages);
       const context = buildMemoryContext(query);
       if (!context.items.length) return messages;
-      return insertWorkingMemoryAfterLeadingSystem(messages, { role: "system", content: context.text });
+      return insertWorkingMemoryAfterLeadingSystem(messages, { role: "user", content: context.text });
     }
   });
   if (disp) disposables.push(disp);
