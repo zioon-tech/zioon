@@ -833,6 +833,8 @@ export function initWorkbench(host: HTMLElement): {
   let resizeObs: ResizeObserver | null = null;
   let mountedHeaderLeadingViewId: string | null = null;
   let mountedHeaderLeadingDisposable: { dispose?: () => void } | null = null;
+  let mountedHeaderLeadingGeneration: number | null = null;
+  let nextHeaderLeadingGeneration = 0;
 
   sideBarEl.style.position = "relative";
   const header = el("div", "zion-sidebar-header");
@@ -2520,12 +2522,14 @@ export function initWorkbench(host: HTMLElement): {
   };
 
   const unmountHeaderLeading = () => {
-    try {
-      mountedHeaderLeadingDisposable?.dispose?.();
-    } catch {}
+    const disposable = mountedHeaderLeadingDisposable;
     mountedHeaderLeadingDisposable = null;
     mountedHeaderLeadingViewId = null;
+    mountedHeaderLeadingGeneration = null;
     resetHeaderLeading();
+    try {
+      disposable?.dispose?.();
+    } catch {}
   };
 
   const mountHeaderLeading = (viewId: string | null) => {
@@ -2535,26 +2539,46 @@ export function initWorkbench(host: HTMLElement): {
     const view = sideBarRuntime.getView(viewId);
     if (!view?.headerLeading) return;
     mountedHeaderLeadingViewId = viewId;
-    const isCurrent = () => mountedHeaderLeadingViewId === viewId;
+    const generation = ++nextHeaderLeadingGeneration;
+    mountedHeaderLeadingGeneration = generation;
+    let requestedVisible = false;
+    let validWidth: number | null = null;
+    const isCurrent = () =>
+      mountedHeaderLeadingViewId === viewId
+      && mountedHeaderLeadingGeneration === generation;
+    const applyVisibility = () => {
+      if (!isCurrent()) return;
+      header.classList.toggle("has-leading", requestedVisible && validWidth !== null);
+    };
     try {
       const ret = view.headerLeading.render(headerLeading, {
         setVisible: (visible) => {
           if (!isCurrent()) return;
-          header.classList.toggle("has-leading", !!visible);
+          requestedVisible = !!visible;
+          applyVisibility();
         },
         setWidth: (px) => {
           if (!isCurrent()) return;
           const width = Number(px);
           if (!Number.isFinite(width) || width <= 0) {
-            header.style.removeProperty("--zion-sidebar-leading-width");
+            applyVisibility();
             return;
           }
-          header.style.setProperty("--zion-sidebar-leading-width", `${Math.round(width)}px`);
+          validWidth = Math.max(1, Math.round(width));
+          header.style.setProperty("--zion-sidebar-leading-width", `${validWidth}px`);
+          applyVisibility();
         }
       });
-      mountedHeaderLeadingDisposable = (ret as any) || null;
+      const disposable = (ret as any) || null;
+      if (!isCurrent()) {
+        try {
+          disposable?.dispose?.();
+        } catch {}
+        return;
+      }
+      mountedHeaderLeadingDisposable = disposable;
     } catch {
-      unmountHeaderLeading();
+      if (isCurrent()) unmountHeaderLeading();
     }
   };
 
