@@ -424,57 +424,8 @@ body.zion-sessions-no-transitions .zion-session-row * {
   scrollbar-gutter: stable;
 }
 
-.zion-sessions-tag-row {
-  min-height: 25px;
-  border-radius: 7px !important;
-  color: color-mix(in srgb, var(--fg) 68%, transparent) !important;
-  transition:
-    background var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.zion-sessions-tag-row:hover {
-  background: var(--surface-raised, var(--hover-bg)) !important;
-  color: var(--fg) !important;
-}
-
-.zion-sessions-tag-row.is-selected {
-  background: var(--active-bg) !important;
-  color: var(--accent) !important;
-  font-weight: 600;
-}
-
-.zion-sessions-tag-marker {
-  color: color-mix(in srgb, var(--fg) 36%, transparent) !important;
-}
-
-.zion-sessions-tag-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex: 0 0 7px;
-  opacity: 0.72;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--surface-panel, var(--panel)) 70%, transparent);
-  transition: opacity var(--transition-fast);
-}
-
-.zion-sessions-tag-row.is-selected .zion-sessions-tag-dot {
-  opacity: 1;
-}
-
-.zion-sessions-tag-label {
-  font-size: 12px !important;
-}
-
-.zion-sessions-tag-count {
-  font-size: 9px !important;
-  color: color-mix(in srgb, var(--fg) 42%, transparent) !important;
-  font-variant-numeric: tabular-nums;
-}
-
-.zion-sessions-tag-row.is-selected .zion-sessions-tag-count {
-  color: color-mix(in srgb, var(--accent) 72%, transparent) !important;
-}
+/* Tag rows (both the inline "Tags" section and the split tag column) share
+   the .zion-sessions-tagtree-* classes defined at the bottom of this file. */
 
 .zion-sessions-empty-note {
   color: color-mix(in srgb, var(--fg) 46%, transparent) !important;

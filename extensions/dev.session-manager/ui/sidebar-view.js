@@ -255,14 +255,6 @@ export function createSessionsSidebarViewManager(opts) {
     return `${s.length}:${h >>> 0}`;
   }
 
-  function tagDotColor(tag) {
-    const palette = ["#5b7ff5", "#34c759", "#f5a623", "#ff9500", "#ff375f", "#af52de", "#5ac8fa", "#ff5c5c"];
-    let h = 0;
-    const s = String(tag || "");
-    for (let i = 0; i < s.length; i += 1) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
-    return palette[Math.abs(h) % palette.length];
-  }
-
   function getSessionTags(sessionId) {
     const sid = String(sessionId || "");
     if (!sid || typeof loadDoc !== "function") return [];
@@ -617,7 +609,6 @@ export function createSessionsSidebarViewManager(opts) {
     const tagTreePanel = createTagTreePanel({
       t,
       iconHtml,
-      dotColor: tagDotColor,
       isCollapsed: isTagNodeCollapsed,
       setCollapsed: setTagNodeCollapsed,
       onSelect: (path) => {
@@ -888,33 +879,19 @@ export function createSessionsSidebarViewManager(opts) {
       const renderTagNode = (node, depth) => {
         const hasChildren = node.children.size > 0;
         const collapsed = hasChildren && isTagNodeCollapsed(node.tag);
-        const row = document.createElement("button");
-        row.className = "zion-sessions-tag-row";
+        const row = document.createElement("div");
+        row.className = "zion-sessions-tagtree-row";
         if (node.tag === selectedTag) row.classList.add("is-selected");
-        row.type = "button";
+        row.dataset.path = node.tag;
+        row.dataset.depth = String(depth);
+        row.setAttribute("role", "treeitem");
+        row.setAttribute("aria-selected", node.tag === selectedTag ? "true" : "false");
+        row.setAttribute("aria-level", String(depth + 1));
+        row.tabIndex = 0;
         row.title = t("tags.filterTitle", "Filter sessions by {tag}", { tag: node.tag });
         if (hasChildren) row.setAttribute("aria-expanded", collapsed ? "false" : "true");
-        row.style.width = "100%";
-        row.style.display = "flex";
-        row.style.alignItems = "center";
-        row.style.gap = "6px";
-        row.style.border = "0";
-        row.style.borderRadius = "7px";
-        row.style.padding = "3px 7px";
-        row.style.paddingLeft = `${7 + depth * 14}px`;
-        row.style.margin = "1px 0";
-        row.style.cursor = "pointer";
-        row.style.textAlign = "left";
-        row.style.color = node.tag === selectedTag ? "var(--accent)" : "var(--fg)";
-        row.style.background = node.tag === selectedTag
-          ? "color-mix(in srgb, var(--accent) 14%, transparent)"
-          : "transparent";
-        row.onmouseenter = () => {
-          if (node.tag !== selectedTag) row.style.background = "color-mix(in srgb, var(--fg) 5%, transparent)";
-        };
-        row.onmouseleave = () => {
-          if (node.tag !== selectedTag) row.style.background = "transparent";
-        };
+        // Indent stays inline: it is per-row dynamic data (same as split column).
+        row.style.paddingLeft = `${4 + depth * 13}px`;
         row.onclick = (ev) => {
           ev.stopPropagation();
           selectedTag = selectedTag === node.tag ? "" : node.tag;
@@ -930,44 +907,28 @@ export function createSessionsSidebarViewManager(opts) {
           setTagNodeCollapsed(node.tag, nextCollapsed);
           renderAll();
         };
-        const marker = document.createElement("span");
-        marker.className = "zion-sessions-tag-marker";
+        // hash glyph: identity + collapse toggle (flowix style, shared CSS with split column)
+        const toggle = document.createElement("span");
+        toggle.className = `zion-sessions-tagtree-toggle${hasChildren ? " has-children" : ""}`;
+        toggle.innerHTML = iconHtml("hash", 13);
         if (hasChildren) {
-          marker.innerHTML = iconHtml(collapsed ? "chevron-right" : "chevron-down", 10);
-          marker.title = collapsed
+          toggle.title = collapsed
             ? t("tags.expandNode", "Expand {tag}", { tag: node.tag })
             : t("tags.collapseNode", "Collapse {tag}", { tag: node.tag });
-          marker.setAttribute("aria-label", marker.title);
-          marker.onclick = (ev) => {
+          toggle.setAttribute("aria-label", toggle.title);
+          toggle.onclick = (ev) => {
             ev.stopPropagation();
             setTagNodeCollapsed(node.tag, !collapsed);
             renderAll();
           };
         }
-        marker.style.width = "10px";
-        marker.style.flex = "0 0 auto";
-        marker.style.fontSize = "10px";
-        marker.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
-        marker.style.cursor = hasChildren ? "pointer" : "default";
-        const dot = document.createElement("span");
-        dot.className = "zion-sessions-tag-dot";
-        dot.style.background = tagDotColor(node.tag || node.label);
         const label = document.createElement("span");
-        label.className = "zion-sessions-tag-label";
-        label.textContent = depth === 0 ? `#${node.label}` : node.label;
-        label.style.flex = "1 1 auto";
-        label.style.minWidth = "0";
-        label.style.overflow = "hidden";
-        label.style.textOverflow = "ellipsis";
-        label.style.whiteSpace = "nowrap";
-        label.style.fontSize = "11px";
+        label.className = "zion-sessions-tagtree-label";
+        label.textContent = node.label;
         const countEl = document.createElement("span");
-        countEl.className = "zion-sessions-tag-count";
+        countEl.className = "zion-sessions-tagtree-count";
         countEl.textContent = String(node.sessions.size);
-        countEl.style.flex = "0 0 auto";
-        countEl.style.fontSize = "10px";
-        countEl.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
-        row.append(marker, dot, label, countEl);
+        row.append(toggle, label, countEl);
         body.appendChild(row);
         if (!collapsed) {
           for (const child of node.children.values()) {
