@@ -1,3 +1,8 @@
+import {
+  getSessionRunIndicatorStatus,
+  markSessionRunViewed
+} from "../features/run-state.js";
+
 export function createSessionsListRendererFactory(deps) {
   const {
     loadTree,
@@ -238,18 +243,10 @@ export function createSessionsListRendererFactory(deps) {
     const markSessionViewed = (id) => {
       if (!id) return;
       try {
-        window.zion?.state?.update?.(`chat.runs.${id}`, (rs) => rs ? { ...rs, awaiting: false } : rs);
-      } catch {
-        try {
-          const key = `chat.runs.${id}`;
-          const rs = window.zion?.state?.get?.(key) || null;
-          if (rs) window.zion?.state?.set?.(key, { ...rs, awaiting: false });
-        } catch {}
-      }
-      try {
-        const rs = window.zion?.state?.get?.(`chat.runs.${id}`) || null;
-        window.zion?.state?.set?.("chat.streaming", !!rs?.streaming);
+        const handled = window.zion?.commands?.executeCommand?.("zion.sessions.markViewed", id);
+        if (handled !== undefined) return;
       } catch {}
+      markSessionRunViewed(window.zion, id);
     };
 
       const getRunStatus = (sessionId) => {
@@ -257,8 +254,7 @@ export function createSessionsListRendererFactory(deps) {
         if (!sid) return "";
         try {
           const rs = window.zion?.state?.get?.(`chat.runs.${sid}`) || null;
-          if (rs?.streaming) return "streaming";
-          if (rs?.awaiting) return "ready";
+          return getSessionRunIndicatorStatus(rs);
         } catch {}
         return "";
       };
@@ -266,6 +262,8 @@ export function createSessionsListRendererFactory(deps) {
       const runStatusTitle = (status) => {
         if (status === "streaming") return t("ui.modelGenerating", "Model generating…");
         if (status === "ready") return t("ui.answerReady", "Answer ready");
+        if (status === "error") return t("ui.answerFailed", "Answer failed");
+        if (status === "aborted") return t("ui.answerStopped", "Answer stopped");
         return "";
       };
 
@@ -277,7 +275,10 @@ export function createSessionsListRendererFactory(deps) {
         badge.className = `zion-session-status-badge${status ? ` ${status}` : " idle"}`;
         badge.hidden = !status;
         badge.textContent = "●";
-        badge.title = runStatusTitle(status);
+        const title = runStatusTitle(status);
+        badge.title = title;
+        if (title) badge.setAttribute("aria-label", title);
+        else badge.removeAttribute("aria-label");
       };
 
       const createStatusBadge = (sessionId, extraClass = "") => {
@@ -712,6 +713,7 @@ export function createSessionsListRendererFactory(deps) {
           } else {
             window.zion?.commands?.executeCommand?.("agents.revealTask", child.id, { focus: false });
           }
+          markSessionViewed(child.sessionId);
           render();
         };
         row.onkeydown = (ev) => {
@@ -1701,6 +1703,44 @@ export function createSessionsListRendererFactory(deps) {
         updateActiveCommentChildRows();
     };
 
+      const syncCurrentSession = (sessionId = getEffectiveCurrentSessionId()) => {
+        const currentId = String(sessionId || "");
+        let currentRow = null;
+        let activeCommentId = "";
+        try {
+          activeCommentId = String(window.zion?.state?.get?.("comments.activeThreadId") || "");
+        } catch {}
+        listEl.querySelectorAll(".zion-session-row[data-session-id]").forEach((row) => {
+          const sessionActive = !!currentId && row.dataset.sessionId === currentId;
+          const commentActive = row.classList.contains("is-comment")
+            && !!activeCommentId
+            && row.dataset.childId === activeCommentId;
+          row.classList.toggle("is-current", sessionActive || commentActive);
+          if (sessionActive) currentRow = row;
+        });
+        return currentRow;
+      };
+
+      const syncSessionIndex = (index) => {
+        const entries = new Map(
+          (Array.isArray(index) ? index : [])
+            .filter((entry) => entry?.id)
+            .map((entry) => [String(entry.id), entry])
+        );
+        listEl.querySelectorAll(".zion-session-row.is-session[data-session-id]").forEach((row) => {
+          const id = String(row.dataset.sessionId || "");
+          const entry = entries.get(id);
+          if (!entry) return;
+          const meta = loadMeta(id) || entry;
+          const title = String(meta?.title || entry?.title || id);
+          const titleEl = row.querySelector(".zion-session-name");
+          if (titleEl && titleEl.textContent !== title) titleEl.textContent = title;
+          row.title = `${t("ui.updated", "Updated")}: ${fmtTime(meta?.updatedAt || now())} · ${t("ui.chars", "{count} chars", { count: meta?.size || 0 })}`;
+        });
+      };
+
+      render.syncCurrentSession = syncCurrentSession;
+      render.syncSessionIndex = syncSessionIndex;
       render.dispose = () => {
         try { activeCommentDisposable?.dispose?.(); } catch {}
         try { window.removeEventListener("zion:comments-active-changed", updateActiveCommentChildRows); } catch {}

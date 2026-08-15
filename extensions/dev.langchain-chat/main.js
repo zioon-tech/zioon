@@ -6,9 +6,9 @@ import {
   shouldForceReasoningContentWithToolCalls
 } from "./reasoning-policy.js";
 import {
-  THINKING_EFFORT_OPTIONS,
   getThinkingEffortOptionLabel,
   getThinkingModeOptionLabel,
+  getSupportedThinkingEfforts,
   inferThinkingCapability,
   inferThinkingEffortCapability,
   normalizeThinkingEffort,
@@ -31,6 +31,7 @@ import {
 } from "../../src/chat/doc";
 import { createChatRuntime } from "../../src/chat/runtime";
 import { reconstructWidgetHistoryMessages } from "../../src/chat/widget-history";
+import { createToolCardId } from "../../src/chat/tool-card-id";
 import { createProgrammaticExecutor } from "./programmatic-runner.js";
 
 
@@ -100,10 +101,12 @@ const I18N_MESSAGES = {
     "modelSwitcher.thinkingEffort": "思考强度",
     "modelSwitcher.stream": "流式返回",
     "modelSwitcher.supportsImage": "支持图片",
+    "modelSwitcher.autoContinueOnColonMaxAttempts": "异常 Stop 续写次数",
+    "modelSwitcher.autoContinueOnColonMaxAttempts.description": "DeepSeek 异常 stop 时最多自动续写多少次，包括冒号中断和只有推理、没有正式输出；设为 0 可关闭。",
     "modelSwitcher.openaiCompatible": "OpenAI 兼容",
     "modelSwitcher.editableSuffix": "（可编辑参数）",
     "modelSwitcher.readonlySuffix": "（只读）",
-    "modelSwitcher.placeholder.modelId": "例如：deepseek-chat",
+    "modelSwitcher.placeholder.modelId": "例如：deepseek-v4-flash",
     "modelSwitcher.placeholder.label": "例如：My Model",
     "modelSwitcher.placeholder.baseUrl": "例如：https://api.openai.com/v1/chat/completions",
     "modelSwitcher.placeholder.modelOverride": "可选，例如：gpt-4o-mini",
@@ -191,10 +194,12 @@ const I18N_MESSAGES = {
     "modelSwitcher.thinkingEffort": "Thinking Effort",
     "modelSwitcher.stream": "Stream",
     "modelSwitcher.supportsImage": "Supports images",
+    "modelSwitcher.autoContinueOnColonMaxAttempts": "Abnormal-stop Continuations",
+    "modelSwitcher.autoContinueOnColonMaxAttempts.description": "Maximum automatic continuations after an abnormal DeepSeek stop, including trailing-colon and reasoning-only responses; set to 0 to disable.",
     "modelSwitcher.openaiCompatible": "OpenAI compatible",
     "modelSwitcher.editableSuffix": " (editable)",
     "modelSwitcher.readonlySuffix": " (read-only)",
-    "modelSwitcher.placeholder.modelId": "e.g. deepseek-chat",
+    "modelSwitcher.placeholder.modelId": "e.g. deepseek-v4-flash",
     "modelSwitcher.placeholder.label": "e.g. My Model",
     "modelSwitcher.placeholder.baseUrl": "e.g. https://api.openai.com/v1/chat/completions",
     "modelSwitcher.placeholder.modelOverride": "Optional, e.g. gpt-4o-mini",
@@ -320,6 +325,33 @@ function findAssistantEndLineFromDoc(text, startLineHint = 0) {
   return { assistantLine, endLine };
 }
 
+function findAssistantEndLineFromStateDoc(doc, startLineHint = 0) {
+  if (!doc?.lines || typeof doc.line !== "function") return null;
+  const roleHeadRe = /^\s*(system|user|assistant|tool)\s+/;
+  let assistantLine = -1;
+  for (let i = Math.max(0, startLineHint || 0); i < doc.lines; i++) {
+    if (/^\s*assistant\s+/.test(doc.line(i + 1).text || "")) {
+      assistantLine = i;
+      break;
+    }
+  }
+  if (assistantLine < 0) {
+    for (let i = doc.lines - 1; i >= 0; i--) {
+      if (/^\s*assistant\s+/.test(doc.line(i + 1).text || "")) {
+        assistantLine = i;
+        break;
+      }
+    }
+  }
+  if (assistantLine < 0) return null;
+  let endLine = assistantLine;
+  for (let i = assistantLine + 1; i < doc.lines; i++) {
+    if (roleHeadRe.test(doc.line(i + 1).text || "")) break;
+    endLine = i;
+  }
+  return { assistantLine, endLine };
+}
+
 function readChatBoolDefaultTrue(key) {
   try {
     return window.zion?.state?.get?.(key) !== false;
@@ -377,7 +409,7 @@ function ensureAssistantLatestVisible(editor, opts = {}) {
     const scrollDOM = view?.scrollDOM;
     const doc = view?.state?.doc;
     if (!view || !scrollDOM || !doc) return false;
-    const range = findAssistantEndLineFromDoc(doc.toString(), opts.startLineHint || 0);
+    const range = findAssistantEndLineFromStateDoc(doc, opts.startLineHint || 0);
     if (!range) {
       return false;
     }
@@ -403,31 +435,50 @@ function ensureAssistantLatestVisible(editor, opts = {}) {
   return false;
 }
 
+const assistantLatestVisibleJobs = new WeakMap();
+
 function scheduleAssistantLatestVisible(editor, opts = {}) {
-  const sessionId = opts.sessionId || null;
-  const traceId = opts.traceId || `assistant-follow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-  const shouldFollow = () => {
+  if (!editor || (typeof editor !== "object" && typeof editor !== "function")) return;
+  let job = assistantLatestVisibleJobs.get(editor);
+  if (!job) {
+    job = { rafId: 0, timerId: 0, opts };
+    assistantLatestVisibleJobs.set(editor, job);
+  } else {
+    job.opts = opts;
+  }
+
+  const run = (phase) => {
+    const latestOpts = job.opts || {};
+    const sessionId = latestOpts.sessionId || null;
+    let follow = true;
     try {
-      return !sessionId || window.zion?.state?.get?.(`chat.followLatest.${sessionId}`) !== false;
-    } catch {
-      return true;
+      follow = !sessionId || window.zion?.state?.get?.(`chat.followLatest.${sessionId}`) !== false;
+    } catch {}
+    if (follow) {
+      const traceId = latestOpts.traceId || `assistant-follow-${Date.now().toString(36)}`;
+      ensureAssistantLatestVisible(editor, { ...latestOpts, phase, traceId });
     }
   };
-  const run = (phase = "sync") => {
-    const follow = shouldFollow();
-    if (follow) ensureAssistantLatestVisible(editor, { ...opts, phase, traceId });
-  };
-  run("sync");
-  try {
-    requestAnimationFrame(() => {
-      run("raf1");
-      requestAnimationFrame(() => run("raf2"));
-    });
-  } catch {
-    setTimeout(() => run("timeout0"), 0);
+
+  if (!job.rafId) {
+    try {
+      job.rafId = requestAnimationFrame(() => {
+        job.rafId = 0;
+        run("raf");
+      });
+    } catch {
+      job.rafId = setTimeout(() => {
+        job.rafId = 0;
+        run("timeout0");
+      }, 0);
+    }
   }
-  try { setTimeout(() => run("timeout80"), 80); } catch {}
-  try { setTimeout(() => run("timeout180"), 180); } catch {}
+  if (job.timerId) clearTimeout(job.timerId);
+  job.timerId = setTimeout(() => {
+    job.timerId = 0;
+    run("trailing");
+    if (!job.rafId) assistantLatestVisibleJobs.delete(editor);
+  }, 100);
 }
 
 function findTrailingUserPromptLineFromDoc(text, startLineHint = 0) {
@@ -585,9 +636,9 @@ export async function activate(ctx) {
     }
   }
   function getResolvedModelSnapshot(source) {
-    const active = source || window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+    const active = source || window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-v4-flash" };
     const providerId = String(active?.providerId || "deepseek");
-    const modelId = String(active?.modelId || "deepseek-chat");
+    const modelId = String(active?.modelId || "deepseek-v4-flash");
     const catalog = window.zion?.state?.get?.("models.catalog") || [];
     const item = Array.isArray(catalog)
       ? catalog.find((m) => m.providerId === providerId && m.id === modelId)
@@ -625,7 +676,7 @@ export async function activate(ctx) {
         }
       }
 
-      window.zion.state.set("chat.activeModel", { providerId: "deepseek", modelId: "deepseek-chat", label: "DeepSeek Chat" });
+      window.zion.state.set("chat.activeModel", { providerId: "deepseek", modelId: "deepseek-v4-flash", label: "DeepSeek V4 Flash" });
     }
   }
   await refreshCatalog();
@@ -953,7 +1004,9 @@ export async function activate(ctx) {
   );
   // 简易工具执行器：支持外部注册与内置示例
   async function executeToolCall(call, sid) {
-    const isAborted = () => !!getRunState(sid)?.aborted;
+    const isAborted = () => call?.runId
+      ? !runtime.isRunActive(sid, call.runId)
+      : !!getRunState(sid)?.aborted;
 
     // 立刻检查全局中断标志
     if (isAborted()) {
@@ -966,6 +1019,8 @@ export async function activate(ctx) {
       try {
         const out = await handlers[call.name](call.args, {
           toolCallId: call.id,
+            cardId: call.cardId || null,
+            runId: call.runId || null,
           sessionId: sid,
           toolName: call.name
         });
@@ -1202,13 +1257,14 @@ export async function activate(ctx) {
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
 
     // 3. 插入 assistant 块（用于承载输出）
+    const runId = "run_" + Math.random().toString(36).slice(2);
     const { anchor, insertLine } = insertAssistantBlock(ed, {
       sessionId: sid,
+      assistantBlockId: runId,
       state: window.zion.state,
       cursor
     });
     // 4. 状态 & 事件
-    const runId = "run_" + Math.random().toString(36).slice(2);
     const contributorCtx = {
       editor: ed,
       sessionId: sid,
@@ -1217,12 +1273,13 @@ export async function activate(ctx) {
       runId
     };
     const runAnchorPayload = {
+      assistantBlockId: anchor?.assistantBlockId || runId,
       answerAnchorPos: typeof anchor?.anchorPos === "number" ? anchor.anchorPos : null,
       answerHeadLine: typeof anchor?.headLine === "number" ? anchor.headLine : null,
       insertLine
     };
     runtime.beginRun(sid, runId);
-    setRunState(sid, { aborted: false, model: runModel });
+    setRunState(sid, { aborted: false, model: runModel }, runId);
     try { window.zion?.state?.set?.(`chat.followLatest.${sid}`, runFollowLatest); } catch {}
     window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId, model: runModel, ...runAnchorPayload });
       if (autoScrollAssistant && typeof anchor?.headLine === "number") {
@@ -1233,29 +1290,58 @@ export async function activate(ctx) {
 
     // 工具调用收集（多步链式调用在每一步内局部收集）
     let aborted = false;
-    // 每会话中断标志
-    setRunState(sid, { aborted: false });
+    let failed = false;
+    const isThisRunActive = () => !aborted && !failed && runtime.isRunActive(sid, runId);
+      const reportRunError = (value) => {
+        if (!runtime.isCurrentRun(sid, runId)) return false;
+        const error = value instanceof Error
+          ? value
+          : new Error(String(value?.message || value || "大模型调用失败"));
+        try { tokenBuffer?.flush?.(); } catch {}
+        if (!runtime.markError(sid, error, runId)) return false;
+        failed = true;
+        window.zion.events.emit("chat/runError", { runId, error, sessionId: sid, panelId });
+        const message = `大模型调用失败: ${error.message}`;
+        try {
+          if (typeof window.zion?.notification?.show === "function") {
+            window.zion.notification.show(message, {
+              type: "error",
+              duration: 8000
+            });
+          } else {
+            window.showToast?.(message);
+          }
+        } catch (notifyError) {
+          console.error("[langchain-chat] failed to show error notification:", notifyError);
+        }
+        return true;
+      };
 
     // 通用 token 写入逻辑（写入同一个 assistant block，批量 flush 以降低刷新压力）
-    // TokenBuffer：30ms 批量写入，同一行追加，触底才自动滚动
+    // TokenBuffer：80ms 批量写入，同一行追加，触底才自动滚动
     const tokenBuffer = (() => {
       let acc = [];
       let timer = null;
-      const interval = 30; // ms
+      const interval = 80; // ms
 
       const flushImpl = () => {
         timer = null;
         if (acc.length === 0) return;
         const text = acc.join("");
         acc = [];
-        if (!getRunState(sid)?.streaming) {
+        if (!isThisRunActive()) {
           return;
         }
 
         const editorShowingSession = isEditorShowingSession(ed, sid);
         if (!editorShowingSession) {
           try {
-            window.zion.commands.executeCommand("zion.sessions.appendAssistantToken", { id: sid, token: text, runId });
+            window.zion.commands.executeCommand("zion.sessions.appendAssistantToken", {
+              id: sid,
+              token: text,
+              runId,
+              assistantBlockId: runAnchorPayload.assistantBlockId
+            });
             window.zion.events.emit("chat/token", { runId, token: text, sessionId: sid, panelId });
           } catch (e) {
             console.error("[langchain-chat] background append token error:", e);
@@ -1305,11 +1391,16 @@ export async function activate(ctx) {
     })();
 
     const appendToken = (tk) => {
+      if (!isThisRunActive()) return;
       tokenBuffer.push(tk);
     };
 
     // 在最终阶段追加换行并清理（先 flush 剩余缓冲）
-    const finalize = () => {
+    const finalizeCompleted = () => {
+      if (!isThisRunActive()) {
+        tokenBuffer.stop();
+        return false;
+      }
       try { tokenBuffer.flush(); } catch {}
         let autoInsert = typeof opts?.autoInsertUserPrompt === "boolean"
           ? opts.autoInsertUserPrompt
@@ -1356,14 +1447,19 @@ export async function activate(ctx) {
         } catch {}
       }
       tokenBuffer.stop();
-      runtime.markAwaiting(sid);
+      if (!runtime.markAwaiting(sid, runId)) return false;
       if (!skipSessionPersistence) window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
       window.zion.events.emit("chat/runFinished", { runId, sessionId: sid, panelId });
+      return true;
+    };
+
+    const stopRunLocally = () => {
+      tokenBuffer.stop();
     };
 
     // 单步调用（收集本步工具调用并执行，返回本步的调用与结果）
     const runStep = async (msgs) => {
-      if (aborted || getRunState(sid)?.aborted) return { calls: [], results: [] };
+      if (!isThisRunActive()) return { calls: [], results: [], aborted: true };
       const calls = [];
       const resultsById = new Map();
       const receivedResults = [];
@@ -1381,64 +1477,101 @@ export async function activate(ctx) {
           try { tokenBuffer.flush(); } catch {}
         },
         onToolCall: (tc) => {
-          if (aborted || getRunState(sid)?.aborted) return;
+          if (!isThisRunActive()) return;
           try { tokenBuffer.flush(); } catch {}
+          const cardId = createToolCardId(runId, tc.id);
           // 收集本步的 assistant tool_calls
           calls.push({ id: tc.id, name: tc.name, args: tc.args });
           // 执行工具并收集结果
-          window.zion.events.emit("chat/toolCall", { runId, toolCall: tc, sessionId: sid, panelId, ...runAnchorPayload });
-          const p = executeToolCall(tc, sid)
+          window.zion.events.emit("chat/toolCall", {
+            runId,
+            cardId,
+            toolCall: { ...tc, cardId },
+            sessionId: sid,
+            panelId,
+            ...runAnchorPayload
+          });
+          const p = executeToolCall({ ...tc, cardId, runId }, sid)
             .then(res => {
-              if (aborted || getRunState(sid)?.aborted) return;
+              if (!isThisRunActive()) return;
               const content = String(res || "");
               const item = { id: tc.id, content };
               resultsById.set(tc.id, item);
               receivedResults.push(item);
               const ok = inferToolOk(tc.name, res);
-              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: res, ok, sessionId: sid, panelId });
+              window.zion.events.emit("chat/toolResult", {
+                runId,
+                cardId,
+                toolCallId: tc.id,
+                result: res,
+                ok,
+                sessionId: sid,
+                panelId,
+                assistantBlockId: runAnchorPayload.assistantBlockId
+              });
             })
             .catch(err => {
-              if (aborted || getRunState(sid)?.aborted) return;
+              if (!isThisRunActive()) return;
               const msg = `Tool "${tc.name}" failed: ${err?.message || String(err)}`;
               const item = { id: tc.id, content: msg };
               resultsById.set(tc.id, item);
               receivedResults.push(item);
-              window.zion.events.emit("chat/toolResult", { runId, toolCallId: tc.id, result: msg, ok: false, sessionId: sid, panelId });
+              window.zion.events.emit("chat/toolResult", {
+                runId,
+                cardId,
+                toolCallId: tc.id,
+                result: msg,
+                ok: false,
+                sessionId: sid,
+                panelId,
+                assistantBlockId: runAnchorPayload.assistantBlockId
+              });
             });
           promises.push(p);
         },
         onInvalidToolCall: (tc) => {
-          if (aborted || getRunState(sid)?.aborted) return;
+          if (!isThisRunActive()) return;
           const id = String(tc?.id || "");
           const name = String(tc?.name || "tool");
           if (!id) return;
+          const cardId = createToolCardId(runId, id);
           const args = tc?.args && typeof tc.args === "object" ? tc.args : {};
           calls.push({ id, name, args });
           const msg = `Invalid tool call arguments for "${name}": ${tc?.error || "invalid arguments"}`;
           const item = { id, content: msg };
           resultsById.set(id, item);
           receivedResults.push(item);
-          window.zion.events.emit("chat/toolResult", { runId, toolCallId: id, result: msg, ok: false, sessionId: sid, panelId });
+          window.zion.events.emit("chat/toolCall", {
+            runId,
+            cardId,
+            toolCall: { id, cardId, name, args },
+            sessionId: sid,
+            panelId,
+            ...runAnchorPayload
+          });
+          window.zion.events.emit("chat/toolResult", {
+            runId,
+            cardId,
+            toolCallId: id,
+            result: msg,
+            ok: false,
+            sessionId: sid,
+            panelId,
+            assistantBlockId: runAnchorPayload.assistantBlockId
+          });
         },
         onEnd: () => { /* 中间步骤不清理，留到链式结束后统一 finalize */ },
         onError: (e) => {
-          if (e?.name === "AbortError") { aborted = true; runtime.markAborted(sid); return; }
-          window.zion.state.set("chat.error", e.message);
-          window.zion.events.emit("chat/runError", { runId, error: e, sessionId: sid, panelId });
-          // 显示错误通知
-          try {
-            window.zion.notification.show(`大模型回答出错: ${e?.message || String(e)}`, {
-              type: 'error',
-              duration: 6000
-            });
-          } catch (err) {
-            console.error('[langchain-chat] failed to show error notification:', err);
+          if (!runtime.isCurrentRun(sid, runId)) return;
+          if (e?.name === "AbortError") {
+            aborted = true;
+            runtime.markAborted(sid, runId);
+            return;
           }
-          aborted = true;
-          runtime.markError(sid, e);
+            reportRunError(e);
         },
         getController: (controller) => {
-          runtime.setController(sid, controller);
+          runtime.setController(sid, controller, runId);
         },
         runId,
         sessionId: sid,
@@ -1449,6 +1582,11 @@ export async function activate(ctx) {
       });
 
       stepReasoning = String(streamResult?.reasoning_content || "");
+      if (streamResult?.aborted) {
+        aborted = true;
+        runtime.markAborted(sid, runId);
+        return { calls: [], results: [], reasoning_content: stepReasoning, aborted: true };
+      }
       if (streamResult?.usage) {
         try {
           const prov = window.zion?.models?.getProvider?.(runModel?.providerId);
@@ -1491,7 +1629,9 @@ export async function activate(ctx) {
           results.push(item);
         }
       }
-      if (aborted || getRunState(sid)?.aborted) return { calls: [], results: [], reasoning_content: stepReasoning };
+      if (!isThisRunActive()) {
+        return { calls: [], results: [], reasoning_content: stepReasoning, aborted, failed };
+      }
       return { calls, results, reasoning_content: stepReasoning };
     };
 
@@ -1592,7 +1732,10 @@ export async function activate(ctx) {
         }
 
         const step = await runStep(msgs);
-        if (aborted || getRunState(sid)?.aborted) { finalize(); return; }
+        if (step?.aborted || aborted || failed || !runtime.isCurrentRun(sid, runId)) {
+          stopRunLocally();
+          return;
+        }
 
         // 若本步产生了工具调用与结果，则构造下一步消息继续
         if (step.calls.length > 0) {
@@ -1642,10 +1785,20 @@ export async function activate(ctx) {
       }
 
       // 全流程结束
-      finalize();
+      finalizeCompleted();
     } catch (e) {
       console.error("[langchain-chat] runStream outer error:", e);
-      finalize();
+      stopRunLocally();
+        const runState = getRunState(sid);
+        if (e?.name === "AbortError" || !runtime.isCurrentRun(sid, runId) || runState?.aborted) {
+        aborted = true;
+          if (runtime.isCurrentRun(sid, runId) && !runState?.error) {
+            runtime.markAborted(sid, runId);
+          }
+        return;
+      }
+        if (runState?.error) return;
+        reportRunError(e);
     }
   };
 
@@ -1898,18 +2051,33 @@ export async function activate(ctx) {
       }
     };
 
-    const buildThinkingRunMenuItems = () => ([
-      { command: "chat.setThinkingEffort.low", title: `${getActiveThinkingEffortSync() === "low" ? "✓ " : ""}思考强度：低`, when: "editorFocus" },
-      { command: "chat.setThinkingEffort.medium", title: `${getActiveThinkingEffortSync() === "medium" ? "✓ " : ""}思考强度：中`, when: "editorFocus" },
-      { command: "chat.setThinkingEffort.high", title: `${getActiveThinkingEffortSync() === "high" ? "✓ " : ""}思考强度：高`, when: "editorFocus" }
-    ]);
+    const buildThinkingRunMenuItems = () => {
+      const active = window.zion.state.get("chat.activeModel") || {};
+      const providerType =
+        active.providerId === "anthropic" ? "claude" :
+        active.providerId === "google" ? "gemini" :
+        "openai";
+      const values = getSupportedThinkingEfforts({
+        providerId: active.providerId,
+        providerType,
+        modelId: active.modelId,
+        modelName: active.modelId
+      }).filter((value) => value !== "auto");
+      const current = getActiveThinkingEffortSync();
+      return values.map((value) => ({
+        command: `chat.setThinkingEffort.${value}`,
+        title: `${current === value ? "✓ " : ""}思考强度：${getThinkingEffortOptionLabel(value)}`,
+        when: "editorFocus"
+      }));
+    };
 
     const rebuildContextMenu = () => {
       const active = window.zion.state.get("chat.activeModel");
       const defaultLabel = active?.label || active?.modelId || "unknown";
       const thinkingEffort = getActiveThinkingEffortSync();
       const thinkingText = thinkingEffort === "auto" ? "模型默认" : getThinkingEffortOptionLabel(thinkingEffort);
-      runChatMenuItem.title = `${t("cmd.run", "Run Chat")} (${defaultLabel} · 思考强度：${thinkingText})`;
+        runChatMenuItem.title = t("cmd.run", "Run Chat");
+        runChatMenuItem.subtitle = `${defaultLabel} · ${thinkingText}`;
       runChatMenuItem.submenu = buildThinkingRunMenuItems();
       selectModelMenuItem.submenu = buildModelMenuItems("models.setDefaultModel");
     };
@@ -1987,9 +2155,12 @@ export async function activate(ctx) {
     } catch {}
   };
   ctx.subscriptions.push(
+    window.zion.commands.registerCommand("chat.setThinkingEffort.minimal", () => setActiveThinkingEffort("minimal")),
     window.zion.commands.registerCommand("chat.setThinkingEffort.low", () => setActiveThinkingEffort("low")),
     window.zion.commands.registerCommand("chat.setThinkingEffort.medium", () => setActiveThinkingEffort("medium")),
-    window.zion.commands.registerCommand("chat.setThinkingEffort.high", () => setActiveThinkingEffort("high"))
+    window.zion.commands.registerCommand("chat.setThinkingEffort.high", () => setActiveThinkingEffort("high")),
+    window.zion.commands.registerCommand("chat.setThinkingEffort.xhigh", () => setActiveThinkingEffort("xhigh")),
+    window.zion.commands.registerCommand("chat.setThinkingEffort.max", () => setActiveThinkingEffort("max"))
   );
   const cycleActiveThinkingEffort = async () => {
     const active = window.zion.state.get("chat.activeModel");
@@ -1999,7 +2170,13 @@ export async function activate(ctx) {
       cfg = await window.zion.models.getProvider(active.providerId)?.resolve?.(active.modelId);
     } catch {}
     const current = normalizeThinkingEffort(cfg?.thinkingEffort);
-    const values = THINKING_EFFORT_OPTIONS.map((option) => option.value);
+    const values = getSupportedThinkingEfforts({
+      providerId: active.providerId,
+      providerType: cfg?.providerType,
+      modelId: active.modelId,
+      modelName: cfg?.modelName,
+      cfg
+    });
     const next = values[(Math.max(0, values.indexOf(current)) + 1) % values.length] || "auto";
     await saveActiveModelConfigPatch({
       thinkingEffort: next,
@@ -2071,7 +2248,7 @@ export async function activate(ctx) {
       t("status.tooltip.effortCapability", "Effort control: {value}", {
         value: supportsThinkingEffort ? t("status.tooltip.supported", "Supported") : t("status.tooltip.unconfirmed", "Unconfirmed")
       }),
-      t("status.tooltip.cycleThinking", "Click to cycle thinking effort: Auto -> Low -> Medium -> High.")
+      t("status.tooltip.cycleThinking", "Click to cycle the thinking effort levels supported by this model.")
     ].join("\n");
     return { modelText, thinkingText, modelTooltip: tooltipLines.join("\n"), thinkingTooltip };
   };

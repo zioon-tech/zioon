@@ -13,7 +13,7 @@ describe("programmatic chat runner", () => {
   it("filters mutating tools from local-only runs", () => {
     expect(isReadOnlyToolName("memory.search")).toBe(true);
     expect(isReadOnlyToolName("fs.write")).toBe(false);
-    expect(isReadOnlyToolName("fsWrite")).toBe(false);
+    expect(isReadOnlyToolName("write")).toBe(false);
     expect(isReadOnlyToolName("terminal_run")).toBe(false);
     expect(isReadOnlyToolCall({ name: "memoryManage", args: { action: "search" } })).toBe(true);
     expect(isReadOnlyToolCall({ name: "memoryManage", args: { action: "delete" } })).toBe(false);
@@ -34,39 +34,55 @@ describe("programmatic chat runner", () => {
   it("enforces scoped write, terminal and mail capabilities", () => {
     const tools = [
       { function: { name: "webSearch" } },
+      { function: { name: "write" } },
       { function: { name: "fsWrite" } },
+      { function: { name: "Bash" } },
       { function: { name: "terminalExecute" } }
     ];
     expect(filterToolsForPolicy(tools, {
       preset: "workspace-write",
-      allowedTools: ["fsWrite"],
+      allowedTools: ["write"],
       fileRoots: ["/workspace/project"]
-    }).map((tool) => tool.function.name)).toEqual(["webSearch", "fsWrite"]);
+    }).map((tool) => tool.function.name)).toEqual(["webSearch", "write"]);
     expect(authorizeToolCall(
-      { name: "fsWrite", args: { file_path: "/workspace/project/src/a.ts" } },
-      { preset: "workspace-write", allowedTools: ["fsWrite"], fileRoots: ["/workspace/project"] }
+      { name: "write", args: { path: "/workspace/project/src/a.ts" } },
+      { preset: "workspace-write", allowedTools: ["write"], fileRoots: ["/workspace/project"] }
     ).allowed).toBe(true);
     expect(authorizeToolCall(
-      { name: "fsWrite", args: { file_path: "/workspace/project/../secret.txt" } },
-      { preset: "workspace-write", allowedTools: ["fsWrite"], fileRoots: ["/workspace/project"] }
+      { name: "write", args: { path: "/workspace/project/../secret.txt" } },
+      { preset: "workspace-write", allowedTools: ["write"], fileRoots: ["/workspace/project"] }
     ).allowed).toBe(false);
+    expect(filterToolsForPolicy([{ function: { name: "write" } }], {
+      preset: "workspace-write",
+      allowedTools: ["fsWrite"],
+      fileRoots: ["/workspace/project"]
+    }).map((tool) => tool.function.name)).toEqual(["write"]);
 
     const trusted = {
       preset: "trusted-automation",
-      allowedTools: ["terminalExecute", "sendMail"],
+      allowedTools: ["Bash", "sendMail"],
       allowedCommandPrefixes: ["npm test"],
       allowedTerminalSessionIds: ["term-1"],
       allowedRecipients: ["team@example.com"],
       maxMailPerRun: 1
     };
+    expect(filterToolsForPolicy(tools, trusted).map((tool) => tool.function.name)).toEqual(["webSearch", "Bash"]);
     expect(authorizeToolCall(
-      { name: "terminalExecute", args: { command: "npm test -- --run", session_id: "term-1" } },
+      { name: "Bash", args: { command: "npm test -- --run", session_id: "term-1" } },
       trusted
     ).allowed).toBe(true);
     expect(authorizeToolCall(
-      { name: "terminalExecute", args: { command: "rm -rf /", session_id: "term-1" } },
+      { name: "Bash", args: { command: "rm -rf /", session_id: "term-1" } },
       trusted
     ).allowed).toBe(false);
+    expect(authorizeToolCall(
+      { name: "Bash", args: { command: "npm test", session_id: "term-1" } },
+      { preset: "trusted-automation", allowedTools: ["terminalExecute"], allowedCommandPrefixes: ["npm test"] }
+    ).allowed).toBe(true);
+    expect(authorizeToolCall(
+      { name: "Bash", args: { command: "python3 /workspace/project/task.py" } },
+      { preset: "trusted-automation", allowedTools: ["Bash"] }
+    ).allowed).toBe(true);
     expect(authorizeToolCall(
       { name: "sendMail", args: { to: ["outside@example.com"] } },
       trusted,

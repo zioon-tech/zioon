@@ -117,9 +117,9 @@ dev.tools
 | memoryManage read | runtime | read | 是 |
 | memoryManage write | runtime | state-write | 是 |
 | sessionList / sessionGet | runtime | read | 是 |
-| fsRead / fsTree | local-daemon | file-read | 是 |
-| fsWrite / fsEdit | local-daemon | file-write | 是 |
-| terminalExecute | local-daemon | process | 是 |
+| read / tree | local-daemon | file-read | 是 |
+| write / edit | local-daemon | file-write | 是 |
+| Bash | local-daemon | process | 是 |
 | sendMail | local-daemon | external-delivery | 是 |
 | todoWrite | runtime | state-write | 是 |
 | editor selection | browser | ephemeral-read | 否 |

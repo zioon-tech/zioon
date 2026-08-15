@@ -128,7 +128,7 @@ describe("schedulerManage tool", () => {
       ok: false,
       action: "create",
       code: "VALIDATION_FAILED",
-      error: expect.stringContaining("terminalExecute")
+      error: expect.stringContaining("Bash")
     });
     disposable.dispose();
     expect((state.get("chat.tools") || []).some((tool) => tool?.function?.name === "schedulerManage")).toBe(false);

@@ -21,6 +21,10 @@ import {
   sideBarRuntime
 } from "../ui/workbench/runtime";
 import { createChatUsageStore } from "../chat/usage";
+import {
+  assistantBlockHeaderText,
+  stripAssistantBlockIdComment
+} from "../chat/restore";
 import { createZionIcon, hasZionIcon, zionIconName } from "../ui/icons";
 
 type CommandMap = Map<string, CommandHandler>;
@@ -364,13 +368,21 @@ class Registry {
 
   detachEditor(panelId: string) {
     const proxy = this.editorProxies.get(panelId) || null;
-    const editorKey = proxy?.editorId || panelId;
+    const editorKeys = new Set<string>([panelId]);
+    for (const [editorKey, attachedProxy] of Array.from(this.editorProxiesByEditorId.entries())) {
+      if (attachedProxy?.panelId !== panelId) continue;
+      editorKeys.add(editorKey);
+      this.editorProxiesByEditorId.delete(editorKey);
+    }
     this.editorCores.delete(panelId);
     this.editorProxies.delete(panelId);
-    this.pasteAttached.delete(panelId);
-    this.contextMenuAttached.delete(panelId);
+    for (const editorKey of editorKeys) {
+      this.updateListenerAttached.delete(editorKey);
+      this.pasteAttached.delete(editorKey);
+      this.contextMenuAttached.delete(editorKey);
+    }
     for (const [key, disp] of Array.from(this.decoratorDisposables.entries())) {
-      if (!key.endsWith(`:${panelId}`) && !key.endsWith(`:${editorKey}`)) continue;
+      if (!Array.from(editorKeys).some((editorKey) => key.endsWith(`:${editorKey}`))) continue;
       try { disp?.dispose?.(); } catch {}
       this.decoratorDisposables.delete(key);
     }
@@ -453,6 +465,7 @@ class Registry {
       out.push({
         command: it.command,
         title: it.title,
+          subtitle: it.subtitle,
         when: it.when,
         submenu: hasKids ? kids : undefined,
         order: it.order,
@@ -478,7 +491,7 @@ class Registry {
 
   private buildContextMenuPanel(items: MenuItem[], closeMenu: () => void, menuId: string = "editor/context", ctx?: { panelId?: string | null; editor?: IEditorProxy | null; sessionId?: string | null }): HTMLDivElement {
     const menu = document.createElement("div");
-    menu.className = "zion-context-menu";
+      menu.className = "zion-context-menu zion-editor-context-menu";
     menu.setAttribute("role", "menu");
     menu.tabIndex = -1;
 
@@ -523,14 +536,26 @@ class Registry {
       btn.type = "button";
       btn.className = "zion-context-menu-item";
       const span = document.createElement("span");
-      span.textContent = it.title || it.command || "";
+        let title = it.title || it.command || "";
       // 支持动态标题
       if (typeof it.dynamicTitle === "function") {
         try {
           const dt = it.dynamicTitle();
-          if (dt !== null) span.textContent = dt;
+            if (dt !== null) title = dt;
         } catch {}
       }
+        span.className = "zion-context-menu-label";
+        const primary = document.createElement("span");
+        primary.className = "zion-context-menu-label-primary";
+        primary.textContent = title;
+        span.appendChild(primary);
+        if (it.subtitle) {
+          const secondary = document.createElement("span");
+          secondary.className = "zion-context-menu-label-secondary";
+          secondary.textContent = it.subtitle;
+          span.appendChild(secondary);
+        }
+        span.title = [title, it.subtitle].filter(Boolean).join(" · ");
       btn.appendChild(span);
       btn.setAttribute("role", "menuitem");
 
@@ -952,14 +977,26 @@ class Registry {
       btn.type = "button";
       btn.className = "zion-context-menu-item";
       const span = document.createElement("span");
-      span.textContent = it.title || it.command || "";
+        let title = it.title || it.command || "";
       // 支持动态标题
       if (typeof it.dynamicTitle === "function") {
         try {
           const dt = it.dynamicTitle();
-          if (dt !== null) span.textContent = dt;
+            if (dt !== null) title = dt;
         } catch {}
       }
+        span.className = "zion-context-menu-label";
+        const primary = document.createElement("span");
+        primary.className = "zion-context-menu-label-primary";
+        primary.textContent = title;
+        span.appendChild(primary);
+        if (it.subtitle) {
+          const secondary = document.createElement("span");
+          secondary.className = "zion-context-menu-label-secondary";
+          secondary.textContent = it.subtitle;
+          span.appendChild(secondary);
+        }
+        span.title = [title, it.subtitle].filter(Boolean).join(" · ");
       btn.appendChild(span);
       btn.setAttribute("role", "menuitem");
 
@@ -2081,7 +2118,8 @@ class Registry {
         const role = (match as any) as "user" | "assistant" | "system";
         curRole = role;
         // skip the "role " marker on the head line; content starts after it
-        const head = ln.slice(match.length + 1);
+        const rawHead = ln.slice(match.length + 1);
+        const head = role === "assistant" ? stripAssistantBlockIdComment(rawHead) : rawHead;
         buf.push(head);
       } else {
         buf.push(ln);
@@ -2146,17 +2184,22 @@ class Registry {
 
       const response = "Echo: " + prompt;
 
+      const runId = "run_" + Math.random().toString(36).slice(2);
       const state = view.state;
       const docLen = state.doc.length;
       const endsWithNL = docLen === 0 ? true : state.sliceDoc(docLen - 1, docLen) === "\n";
-      const head = (endsWithNL ? "" : "\n") + "assistant \n";
+      const head = (endsWithNL ? "" : "\n") + `${assistantBlockHeaderText(runId)}\n`;
       this.editorCore.view.dispatch({ changes: { from: docLen, to: docLen, insert: head } });
       let endPos = docLen + head.length;
 
-      const runId = "run_" + Math.random().toString(36).slice(2);
       this.state.set("chat.runId", runId);
       this.state.set("chat.error", null);
-      this.events.emit("chat/runStarted", { runId, model: this.activeModel, sessionId });
+      this.events.emit("chat/runStarted", {
+        runId,
+        assistantBlockId: runId,
+        model: this.activeModel,
+        sessionId
+      });
 
       const chunks: string[] = [];
       const chunkSize = 40;
@@ -2168,7 +2211,7 @@ class Registry {
       const timer = window.setInterval(() => {
         try {
           const run = this.currentRuns.get(sessionId);
-          if (!run) {
+          if (!run || run.id !== runId) {
             window.clearInterval(timer);
             return;
           }
@@ -2182,19 +2225,22 @@ class Registry {
             this.editorCore!.view.dispatch({ changes: { from: endPos, to: endPos, insert: "\n" } });
             window.clearInterval(run.timer);
             const finishedRunId = run.id;
-            this.currentRuns.delete(sessionId);
+            if (this.currentRuns.get(sessionId)?.id === runId) {
+              this.currentRuns.delete(sessionId);
+            }
             this.__syncGlobalStreaming();
-            this.events.emit("chat/runFinished", { runId: finishedRunId });
+            this.events.emit("chat/runFinished", { runId: finishedRunId, sessionId });
           }
         } catch (e) {
           const run = this.currentRuns.get(sessionId);
-          if (run) {
+          if (run?.id === runId) {
             try { window.clearInterval(run.timer); } catch {}
             this.currentRuns.delete(sessionId);
           }
           this.__syncGlobalStreaming();
+          if (run?.id !== runId) return;
           this.state.set("chat.error", (e as any)?.message || String(e));
-          this.events.emit("chat/runError", { runId, error: e });
+          this.events.emit("chat/runError", { runId, error: e, sessionId });
         }
       }, 40);
 
@@ -2288,7 +2334,8 @@ const chatUsageStore = createChatUsageStore();
       attachEditor: (core: EditorCore, panelId?: string) => (registry as any).attachEditor(core, panelId),
       detachEditor: (panelId: string) => (registry as any).detachEditor(panelId),
       listAttachedEditorCores: () => (registry as any).listAttachedEditorCores(),
-      getEditorForView: (view: EditorView) => (registry as any).getEditorProxyForView(view)
+      getEditorForView: (view: EditorView) =>
+        (registry as any).getEditorProxyForView(view) || inspectorRuntime.getTextEditorForView(view)
     },
     models: {
       registerProvider: (p: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }) =>
@@ -2361,6 +2408,7 @@ const chatUsageStore = createChatUsageStore();
     },
     inspector: {
       registerRenderer: (renderer: any) => inspectorRuntime.registerRenderer(renderer),
+      registerTextEditorDecorator: (decorator: any) => inspectorRuntime.registerTextEditorDecorator(decorator),
       open: (item: any) => inspectorRuntime.open(item),
       update: (id: string, patch: any) => inspectorRuntime.update(id, patch),
       close: (id: string) => inspectorRuntime.close(id),
@@ -2371,6 +2419,9 @@ const chatUsageStore = createChatUsageStore();
       isVisible: () => inspectorRuntime.isVisible(),
       getItems: () => inspectorRuntime.getItems(),
       getActiveItemId: () => inspectorRuntime.getActiveItemId(),
+      getTextEditor: (itemIdOrSessionId?: string) => inspectorRuntime.getTextEditor(itemIdOrSessionId),
+      getTextSource: (itemIdOrSessionId?: string) => inspectorRuntime.getTextSource(itemIdOrSessionId),
+      revealText: (itemId: string, options?: any) => inspectorRuntime.revealText(itemId, options),
       setWidth: (width: number) => inspectorRuntime.setWidth(width)
     },
     bottomPanel: {

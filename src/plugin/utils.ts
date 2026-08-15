@@ -352,6 +352,21 @@ export class PluginValidator {
           }
         }
       }
+
+      if (contributes.skills) {
+        if (!Array.isArray(contributes.skills)) {
+          errors.push('Skills contribution must be an array');
+        } else {
+          for (const skillPath of contributes.skills) {
+            const value = typeof skillPath === 'string' ? skillPath.trim() : '';
+            if (!value) {
+              errors.push('Skill contribution must be a non-empty relative path');
+            } else if (value.startsWith('/') || value.includes('..')) {
+              errors.push(`Skill contribution path must stay inside the plugin: ${value}`);
+            }
+          }
+        }
+      }
     }
 
     return {

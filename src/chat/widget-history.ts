@@ -14,6 +14,8 @@
 // The main editor and the comments extension share this logic so the two
 // context builders never drift apart.
 
+import { getAssistantBlockIdFromHeader, stripAssistantBlockIdComment } from "./restore";
+
 const THINKING_STUB_RE = /^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/i;
 const TOOL_STUB_RE = /^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/i;
 
@@ -37,7 +39,13 @@ export type WidgetHistoryOptions = {
   reasoningPlaceholder?: string;
 };
 
-type RoleRange = { role: string; from: number; to: number; hasContent: boolean };
+type RoleRange = {
+  role: string;
+  from: number;
+  to: number;
+  hasContent: boolean;
+  assistantBlockId?: string | null;
+};
 type Unit = { pos: number; kind: "tool" | "thinking"; data: any };
 
 // Recover each stub's character position from the doc text, so annotation
@@ -112,6 +120,7 @@ function buildRoleRanges(text: string): RoleRange[] {
   let startPos = 0;
   let currentRole = "user";
   let hasContent = false;
+  let assistantBlockId: string | null = null;
   for (const line of lines) {
     const trimmed = line.trim();
     if (THINKING_STUB_RE.test(trimmed) || TOOL_STUB_RE.test(trimmed)) {
@@ -120,22 +129,23 @@ function buildRoleRanges(text: string): RoleRange[] {
     }
     const m = line.match(/^(system|user|assistant)\s+(.*)$/);
     if (m) {
-      const body = m[2].trim();
+      const body = (m[1] === "assistant" ? stripAssistantBlockIdComment(m[2]) : m[2]).trim();
       if (THINKING_STUB_RE.test(body) || TOOL_STUB_RE.test(body)) {
         pos += line.length + 1;
         continue;
       }
-      if (pos > startPos) ranges.push({ role: currentRole, from: startPos, to: pos, hasContent });
+      if (pos > startPos) ranges.push({ role: currentRole, from: startPos, to: pos, hasContent, assistantBlockId });
       currentRole = m[1];
       startPos = pos;
-      hasContent = !!m[2].trim();
+      hasContent = !!body;
+      assistantBlockId = currentRole === "assistant" ? getAssistantBlockIdFromHeader(line) : null;
       pos += line.length + 1;
       continue;
     }
     hasContent = true;
     pos += line.length + 1;
   }
-  if (pos > startPos) ranges.push({ role: currentRole, from: startPos, to: pos, hasContent });
+  if (pos > startPos) ranges.push({ role: currentRole, from: startPos, to: pos, hasContent, assistantBlockId });
   return ranges;
 }
 
@@ -178,7 +188,7 @@ function buildAssistantTextSegments(text: string, range: RoleRange, units: Unit[
 
     if (roleMatch) {
       if (roleMatch[1] !== "assistant") continue;
-      const body = roleMatch[2];
+      const body = stripAssistantBlockIdComment(roleMatch[2]);
       if (body.trim()) textLines.push(body);
       continue;
     }
@@ -315,12 +325,19 @@ export function reconstructWidgetHistoryMessages(
     }
     return fallback;
   };
+  const findAssistantIndexForItem = (item: any): number => {
+    const assistantBlockId = String(item?.assistantBlockId || "").trim();
+    if (assistantBlockId) {
+      return assistantRanges.findIndex((range) => range.assistantBlockId === assistantBlockId);
+    }
+    return findAssistantIndexForPos(item.from);
+  };
 
   const groups = new Map<number, Unit[]>();
 
   if (includeToolHistory) {
     for (const it of itemsTools as any[]) {
-      const idx = findAssistantIndexForPos(it.from);
+      const idx = findAssistantIndexForItem(it);
       if (idx < 0) continue;
       const arr = groups.get(idx) || [];
       arr.push({ pos: it.from, kind: "tool", data: { id: it.id, name: it.name, args: it.args, result: String(it.result) } });
@@ -329,7 +346,7 @@ export function reconstructWidgetHistoryMessages(
   }
   if (includeThinkingHistory) {
     for (const it of itemsThinking as any[]) {
-      const idx = findAssistantIndexForPos(it.from);
+      const idx = findAssistantIndexForItem(it);
       if (idx < 0) continue;
       const arr = groups.get(idx) || [];
       arr.push({ pos: it.from, kind: "thinking", data: { content: String(it.text || "") } });

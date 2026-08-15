@@ -1,6 +1,7 @@
-import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, inspectorRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
+import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, getInspectorTextSessionId, inspectorRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
 import { createZionIcon, hasZionIcon, setZionIconOnly, zionIconName } from "../icons";
-import { createInspectorTextView, openInspectorSearch, renderInspectorMarkdown, setInspectorLineWrapping } from "./inspectorContent";
+import { applyInspectorMarkdownCommentRanges, createInspectorMarkdownPreviewView, createInspectorTextView, getInspectorMarkdownSelection, openInspectorSearch, renderInspectorMarkdown, setInspectorLineWrapping } from "./inspectorContent";
+import { createSelectionToolbarButton, createSelectionToolbarItemsContainer } from "../../editor/extensions/selection-toolbar";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -1280,6 +1281,8 @@ export function initWorkbench(host: HTMLElement): {
   let inspectorPendingSave: (() => Promise<void>) | null = null;
   let inspectorTextView: ReturnType<typeof createInspectorTextView> | null = null;
   let inspectorTextViewItemId = "";
+  let inspectorTextEditorDisposable: { dispose(): void } | null = null;
+  let inspectorMarkdownSelectionDisposable: { dispose(): void } | null = null;
   let inspectorCustomDispose: (() => void) | null = null;
   const inspectorMarkdownPreview = new Set<string>();
   const inspectorHtmlPreview = new Set<string>();
@@ -1291,6 +1294,7 @@ export function initWorkbench(host: HTMLElement): {
   let lastInspectorItem: ReturnType<typeof inspectorRuntime.getActiveItem> = null;
   let lastInspectorRenderer: ReturnType<typeof inspectorRuntime.getRenderer> = null;
   let lastInspectorItemsSignature = "";
+  let lastInspectorTextDecoratorVersion = -1;
   const disposeInspectorContent = () => {
     if (inspectorSaveTimer) {
       window.clearTimeout(inspectorSaveTimer);
@@ -1298,6 +1302,11 @@ export function initWorkbench(host: HTMLElement): {
       void inspectorPendingSave?.();
     }
     inspectorPendingSave = null;
+    try { inspectorTextEditorDisposable?.dispose?.(); } catch {}
+    inspectorTextEditorDisposable = null;
+    try { inspectorMarkdownSelectionDisposable?.dispose?.(); } catch {}
+    inspectorMarkdownSelectionDisposable = null;
+    inspectorContent.onscroll = null;
     if (inspectorTextView) {
       inspectorScrollTop.set(inspectorTextViewItemId, inspectorTextView.scrollDOM.scrollTop);
       inspectorTextView.destroy();
@@ -1396,17 +1405,137 @@ export function initWorkbench(host: HTMLElement): {
       child.remove();
     }
   };
+  const attachInspectorMarkdownSelection = (article: HTMLElement, item: any, content: string) => {
+    const toolbar = el("div", "zion-selection-toolbar zion-inspector-selection-toolbar");
+    const toolbarItems = createSelectionToolbarItemsContainer();
+    toolbar.appendChild(toolbarItems);
+    toolbar.style.position = "fixed";
+    toolbar.onmousedown = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    document.body.appendChild(toolbar);
+    let timer = 0;
+    let disposed = false;
+
+    const hide = () => {
+      toolbar.classList.remove("is-visible");
+      toolbarItems.replaceChildren();
+    };
+    const update = () => {
+      if (disposed || !article.isConnected) return hide();
+      const selection = getInspectorMarkdownSelection(article, content);
+      if (!selection) return hide();
+      const context: any = {
+        view: null,
+        sourceKind: "inspector",
+        inspectorItemId: item.id,
+          sourceSessionId: getInspectorTextSessionId(item),
+          sourcePath: item.path || item.displayPath || "",
+          sourceTitle: item.title,
+          sourceText: content,
+        selectionText: selection.selectionText,
+        from: selection.from,
+          to: selection.to
+      };
+      const items = ((window as any).zion?.editor?.selectionToolbar?.list?.() || []).filter((candidate: any) => {
+        try {
+          if (candidate.id !== "comments.create") return false;
+          return typeof candidate.when === "function" ? !!candidate.when(context) : true;
+        } catch {
+          return false;
+        }
+      });
+      if (!items.length) return hide();
+      toolbarItems.replaceChildren();
+      for (const candidate of items) {
+        const anchor = el("span");
+        anchor.style.display = "inline-flex";
+        anchor.style.position = "relative";
+        const itemContext = { ...context, anchorEl: anchor };
+        let node: HTMLElement | null = null;
+        if (typeof candidate.render === "function") {
+          try { node = candidate.render(itemContext); } catch { node = null; }
+        }
+        if (!node) {
+          node = createSelectionToolbarButton({
+            title: candidate.title || candidate.label || candidate.id,
+            label: candidate.label || "",
+            codicon: candidate.codicon,
+            onClick: () => {
+              try { candidate.run?.(itemContext); } catch {}
+              hide();
+            }
+          });
+        }
+        node.onmousedown = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        node.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          try { candidate.run?.({ ...itemContext, event }); } catch {}
+          hide();
+        };
+        anchor.appendChild(node);
+        toolbarItems.appendChild(anchor);
+      }
+      toolbar.classList.add("is-visible");
+      const toolbarRect = toolbar.getBoundingClientRect();
+      const margin = 8;
+      const left = Math.max(
+        margin,
+        Math.min(window.innerWidth - toolbarRect.width - margin, selection.rect.left + selection.rect.width / 2 - toolbarRect.width / 2)
+      );
+      const above = selection.rect.top - toolbarRect.height - margin;
+      const top = above >= margin ? above : selection.rect.bottom + margin;
+      toolbar.style.left = `${Math.round(left)}px`;
+      toolbar.style.top = `${Math.round(Math.max(margin, Math.min(window.innerHeight - toolbarRect.height - margin, top)))}px`;
+    };
+    const schedule = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = 0;
+        update();
+      }, 80);
+    };
+    const registryDisposable = (window as any).zion?.editor?.selectionToolbar?.onDidChange?.(schedule) || null;
+    document.addEventListener("selectionchange", schedule);
+    article.addEventListener("pointerup", schedule);
+    inspectorContent.addEventListener("scroll", hide, { passive: true });
+    return {
+      dispose() {
+        disposed = true;
+        if (timer) window.clearTimeout(timer);
+        try { registryDisposable?.dispose?.(); } catch {}
+        document.removeEventListener("selectionchange", schedule);
+        article.removeEventListener("pointerup", schedule);
+        inspectorContent.removeEventListener("scroll", hide);
+        toolbar.remove();
+      }
+    };
+  };
   const renderInspector = (force = false) => {
     const items = inspectorRuntime.getItems();
     const activeId = inspectorRuntime.getActiveItemId();
     const item = inspectorRuntime.getActiveItem() || items[0] || null;
     const renderer = item ? inspectorRuntime.getRenderer(item) : null;
     const itemsSignature = items.map((candidate) => candidate.id).join("\u0000");
+    const textDecoratorVersion = inspectorRuntime.getTextEditorDecoratorVersion();
     applyColumnWidths();
-    if (!force && item && item === lastInspectorItem && renderer === lastInspectorRenderer && itemsSignature === lastInspectorItemsSignature) return;
+    if (
+      !force
+      && item
+      && item === lastInspectorItem
+      && renderer === lastInspectorRenderer
+      && itemsSignature === lastInspectorItemsSignature
+      && textDecoratorVersion === lastInspectorTextDecoratorVersion
+    ) return;
     lastInspectorItem = item;
     lastInspectorRenderer = renderer;
     lastInspectorItemsSignature = itemsSignature;
+    lastInspectorTextDecoratorVersion = textDecoratorVersion;
     disposeInspectorContent();
     inspectorTabs.innerHTML = "";
     inspectorToolbarActions.innerHTML = "";
@@ -1800,20 +1929,140 @@ export function initWorkbench(host: HTMLElement): {
           return;
         }
       if (previewing) {
-        renderInspectorMarkdown(inspectorContent, content);
+        const article = renderInspectorMarkdown(inspectorContent, content);
+        const previewView = createInspectorMarkdownPreviewView(article, inspectorContent, content);
+        const previewEditor = {
+          panelId: "inspector",
+          editorId: `inspector-preview:${item.id}`,
+          sessionId: getInspectorTextSessionId(item),
+          sourceKind: "inspector",
+          sourceViewKind: "preview",
+          inspectorItemId: item.id,
+          sourcePath: item.path || item.displayPath || "",
+          sourceTitle: item.title,
+          getValue: () => content,
+          getSelection: () => {
+            const selection = previewView.state.selection.main;
+            return previewView.state.sliceDoc(selection.from, selection.to);
+          },
+          getView: () => previewView,
+          focus: () => previewView.focus()
+        };
+        inspectorTextEditorDisposable = inspectorRuntime.attachTextEditor(item.id, previewEditor);
+        const selectionDisposable = attachInspectorMarkdownSelection(article, item, content);
+        const syncCommentRanges = () => {
+          try {
+            const ranges = (window as any).zion?.commands?.executeCommand?.("comments.getSourceAnchors", {
+              sessionId: getInspectorTextSessionId(item),
+              sourceText: content
+            }) || [];
+            applyInspectorMarkdownCommentRanges(article, Array.isArray(ranges) ? ranges : [], (threadId) => {
+              try { (window as any).zion?.commands?.executeCommand?.("comments.activateThread", threadId); } catch {}
+            });
+          } catch {}
+        };
+        const onCommentsChanged = () => syncCommentRanges();
+        window.addEventListener("zion:comments-changed", onCommentsChanged);
+        window.addEventListener("zion:comments-active-changed", onCommentsChanged);
+        syncCommentRanges();
+        inspectorMarkdownSelectionDisposable = {
+          dispose() {
+            selectionDisposable.dispose();
+            window.removeEventListener("zion:comments-changed", onCommentsChanged);
+            window.removeEventListener("zion:comments-active-changed", onCommentsChanged);
+          }
+        };
+        try {
+          (window as any).zion?.events?.emit?.("ui/inspectorTextSourceActivated", {
+            itemId: item.id,
+            sessionId: getInspectorTextSessionId(item),
+            editor: previewEditor
+          });
+        } catch {}
         inspectorContent.scrollTop = inspectorScrollTop.get(item.id) || 0;
-        inspectorContent.onscroll = () => inspectorScrollTop.set(item.id, inspectorContent.scrollTop);
+        inspectorContent.onscroll = () => {
+          inspectorScrollTop.set(item.id, inspectorContent.scrollTop);
+          window.dispatchEvent(new CustomEvent("zion:comments-viewport-changed", {
+            detail: {
+              panelId: "inspector",
+              sessionId: previewEditor.sessionId
+            }
+          }));
+        };
         return;
       }
         const editorHost = el("div", `zion-inspector-editor-host${file.truncated ? " is-truncated" : ""}`);
       inspectorContent.appendChild(editorHost);
       inspectorTextViewItemId = item.id;
+      editorHost.dataset.inspectorItemId = item.id;
+      editorHost.dataset.inspectorSessionId = getInspectorTextSessionId(item);
+      let liveView: ReturnType<typeof createInspectorTextView> | null = null;
+      const inspectorEditor = {
+        panelId: "inspector",
+        editorId: `inspector:${item.id}`,
+        sessionId: getInspectorTextSessionId(item),
+        sourceKind: "inspector",
+        inspectorItemId: item.id,
+        sourcePath: item.path || item.displayPath || "",
+        sourceTitle: item.title,
+        getValue: () => liveView?.state.doc.toString() ?? content,
+        setValue: (value: string) => {
+          if (!liveView) return;
+          liveView.dispatch({ changes: { from: 0, to: liveView.state.doc.length, insert: String(value || "") } });
+        },
+        replaceSelection: (value: string) => {
+          if (!liveView) return;
+          const selection = liveView.state.selection.main;
+          liveView.dispatch({
+            changes: { from: selection.from, to: selection.to, insert: String(value || "") },
+            selection: { anchor: selection.from + String(value || "").length }
+          });
+        },
+        getSelection: () => {
+          const selection = liveView?.state.selection.main;
+          return liveView && selection ? liveView.state.sliceDoc(selection.from, selection.to) : "";
+        },
+        replaceRange: (value: string, from: { line: number; ch: number }, to = from) => {
+          if (!liveView) return;
+          const offsetAt = (position: { line: number; ch: number }) => {
+            const lineNumber = Math.max(1, Math.min(liveView!.state.doc.lines, Number(position?.line || 0) + 1));
+            const line = liveView!.state.doc.line(lineNumber);
+            return Math.max(line.from, Math.min(line.to, line.from + Math.max(0, Number(position?.ch || 0))));
+          };
+          liveView.dispatch({ changes: { from: offsetAt(from), to: offsetAt(to), insert: String(value || "") } });
+        },
+        getCursor: () => {
+          if (!liveView) return { line: 0, ch: 0 };
+          const position = liveView.state.selection.main.head;
+          const line = liveView.state.doc.lineAt(position);
+          return { line: line.number - 1, ch: position - line.from };
+        },
+        setCursor: (position: { line: number; ch: number }) => {
+          if (!liveView) return;
+          const lineNumber = Math.max(1, Math.min(liveView.state.doc.lines, Number(position?.line || 0) + 1));
+          const line = liveView.state.doc.line(lineNumber);
+          const anchor = Math.max(line.from, Math.min(line.to, line.from + Math.max(0, Number(position?.ch || 0))));
+          liveView.dispatch({ selection: { anchor }, scrollIntoView: true });
+        },
+        focus: () => liveView?.focus(),
+        addVisualExtension: () => {},
+        getView: () => liveView
+      };
       inspectorTextView = createInspectorTextView(editorHost, {
         content,
         filename: item.path || item.title,
         language: item.language,
           editable: item.editable && !file.truncated,
         lineWrapping: inspectorLineWrapping.get(item.id) ?? (String(item.language || "text").toLowerCase() === "text" || isMarkdown),
+        extensions: inspectorRuntime.getTextEditorExtensions(inspectorEditor, item),
+        selectionContext: (view) => ({
+          sourceKind: "inspector",
+          inspectorItemId: item.id,
+          sourceSessionId: inspectorEditor.sessionId,
+          sourcePath: inspectorEditor.sourcePath,
+          sourceTitle: inspectorEditor.sourceTitle,
+          sourceText: view.state.doc.toString()
+        }),
           onChange: item.editable && !file.truncated ? (nextContent) => {
           setInspectorStatus("已修改");
           if (inspectorSaveTimer) window.clearTimeout(inspectorSaveTimer);
@@ -1834,6 +2083,15 @@ export function initWorkbench(host: HTMLElement): {
           }, 300);
         } : undefined
       });
+      liveView = inspectorTextView;
+      inspectorTextEditorDisposable = inspectorRuntime.attachTextEditor(item.id, inspectorEditor);
+      try {
+        (window as any).zion?.events?.emit?.("ui/inspectorTextSourceActivated", {
+          itemId: item.id,
+          sessionId: inspectorEditor.sessionId,
+          editor: inspectorEditor
+        });
+      } catch {}
       const savedScrollTop = inspectorScrollTop.get(item.id) || 0;
       requestAnimationFrame(() => {
         if (inspectorTextViewItemId === item.id && inspectorTextView) {
@@ -1845,6 +2103,28 @@ export function initWorkbench(host: HTMLElement): {
     inspectorContent.classList.add("is-empty");
     renderInspectorState("file", "暂不支持预览", "这个文件类型可以在主编辑区或对应的外部应用中打开。");
   };
+
+  const dispInspectorTextReveal = inspectorRuntime.setTextRevealHandler((itemId, options = {}) => {
+    const item = inspectorRuntime.getItems().find((candidate) => candidate.id === itemId) || null;
+    if (!item || item.url || item.file?.kind !== "text") return null;
+    inspectorHtmlPreview.delete(item.id);
+    if (inspectorRuntime.getActiveItemId() !== item.id) {
+      inspectorRuntime.activate(item.id);
+    } else {
+      renderInspector(true);
+    }
+    const editor = inspectorRuntime.getTextEditor(item.id);
+    const view = editor?.getView?.();
+    if (view) {
+      const docLength = view.state.doc.length;
+      const from = Math.max(0, Math.min(docLength, Number(options.from) || 0));
+      const rawTo = Number(options.to);
+      const to = Math.max(from, Math.min(docLength, Number.isFinite(rawTo) ? rawTo : from));
+      view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true });
+      if (options.focus !== false) view.focus();
+    }
+    return editor;
+  });
 
   let inspectorDragging = false;
   let inspectorStartX = 0;
@@ -2466,6 +2746,9 @@ export function initWorkbench(host: HTMLElement): {
       } catch {}
       try {
         dispInspector.dispose();
+      } catch {}
+      try {
+        dispInspectorTextReveal.dispose();
       } catch {}
       try {
         dispB.dispose();

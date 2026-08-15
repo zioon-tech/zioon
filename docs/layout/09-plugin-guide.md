@@ -59,6 +59,54 @@ extensions/
 }
 ```
 
+### 贡献 Agent Skill
+
+插件可以通过 `contributes.skills` 显式声明供模型使用的 Skill 目录：
+
+```text
+extensions/my-awesome-plugin/
+├── manifest.json
+├── main.js
+└── skills/
+    └── project-search/
+        └── SKILL.md
+```
+
+```json
+{
+  "zion": {
+    "id": "my-awesome-plugin",
+    "contributes": {
+      "skills": [
+        "./skills/project-search"
+      ]
+    }
+  }
+}
+```
+
+每个目录必须包含符合 Agent Skills 规范的 `SKILL.md`：
+
+```markdown
+---
+name: "project-search"
+description: "Searches project records. Invoke when the user asks about prior project decisions or outcomes."
+---
+
+# Project Search
+
+Detailed instructions...
+```
+
+约束与生命周期：
+
+- 路径必须相对插件根目录，不能包含 `..` 或绝对路径。
+- Skill ID 自动命名为 `<pluginId>/<skillName>`，避免插件间重名。
+- 已启用插件的 Skill 会物化到 `~/.zion-next/skills/.plugins/<pluginId>/<skillName>/SKILL.md`，模型通过现有 Read 工具读取。
+- 插件禁用或卸载后，对应 Skill 自动从 catalog 移除并删除物化文件。
+- 插件热更新后会重新物化 Skill 内容。
+- 用户仍可在 Skills 面板中单独启用或禁用某个 Skill。
+
 ### 步骤 3: 编写 main.js
 
 ```javascript

@@ -50,13 +50,13 @@ function taskSchema() {
           allowedTools: {
             type: "array",
             items: { type: "string" },
-            description: "Explicit mutating tools to expose. Include terminalExecute when the task prompt asks to run shell/bash commands."
+            description: "Explicit mutating tools to expose. Use write and edit for file changes, and Bash when the task prompt asks to run shell commands."
           },
           fileRoots: { type: "array", items: { type: "string" } },
           allowedCommandPrefixes: {
             type: "array",
             items: { type: "string" },
-            description: "Allowed terminal command prefixes. Only valid when allowedTools includes terminalExecute."
+            description: "Optional Bash command prefixes. When omitted, agent tasks may run commands permitted by the local-tools sandbox; command tasks are restricted to their configured command."
           },
           allowedTerminalSessionIds: { type: "array", items: { type: "string" } },
           allowedRecipients: { type: "array", items: { type: "string" } },

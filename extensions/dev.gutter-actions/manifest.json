@@ -1,16 +1,36 @@
 {
   "name": "dev.gutter-actions",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.gutter-actions",
+  "description": "Provide contextual quick actions in the editor gutter.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.gutter-actions",
-    "name": "dev.gutter-actions",
-    "nameKey": "dev.plugins.pluginName.dev.gutter-actions",
-    "descriptionKey": "dev.plugins.pluginDescription.dev.gutter-actions",
+    "name": "Gutter Actions",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "行号栏操作",
+        "en-US": "Gutter Actions"
+      },
+      "description": {
+        "zh-CN": "在编辑器行号栏提供上下文快捷操作。",
+        "en-US": "Provide contextual quick actions in the editor gutter."
+      },
+      "icon": "list-selection",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "在编辑器行号栏提供上下文快捷操作。"
+        ],
+        "en-US": [
+          "Provide contextual quick actions in the editor gutter."
+        ]
+      }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.gutter-actions",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.gutter-actions",
     "contributes": {
       "commands": [
         {

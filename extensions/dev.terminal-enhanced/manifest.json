@@ -1,7 +1,7 @@
 {
   "name": "dev.terminal-enhanced",
   "version": "0.1.0",
-  "description": "AI-enhanced terminal with output visualization and smart assistance",
+  "description": "Provide an enhanced terminal panel, command history, and smart assistance.",
   "author": "Zion Next Team",
   "license": "MIT",
   "zion": {
@@ -9,6 +9,49 @@
     "name": "Terminal Enhanced",
     "version": "0.1.0",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "增强终端",
+        "en-US": "Terminal Enhanced"
+      },
+      "description": {
+        "zh-CN": "提供增强终端面板、命令历史和智能辅助。",
+        "en-US": "Provide an enhanced terminal panel, command history, and smart assistance."
+      },
+      "icon": "terminal",
+      "category": "integration",
+      "features": {
+        "zh-CN": [
+          "提供增强终端面板、命令历史和智能辅助。"
+        ],
+        "en-US": [
+          "Provide an enhanced terminal panel, command history, and smart assistance."
+        ]
+      },
+      "permissions": [
+        {
+          "id": "processes",
+          "label": {
+            "zh-CN": "终端进程",
+            "en-US": "Terminal processes"
+          },
+          "description": {
+            "zh-CN": "创建终端会话并执行用户命令。",
+            "en-US": "Create terminal sessions and execute user commands."
+          }
+        }
+      ],
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "打开终端",
+            "en-US": "Open Terminal"
+          },
+          "command": "terminal.openPanel",
+          "icon": "terminal"
+        }
+      ]
+    },
     "contributes": {
       "commands": [
         {

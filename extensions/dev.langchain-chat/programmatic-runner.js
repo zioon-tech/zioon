@@ -15,7 +15,12 @@ const SAFE_TOOL_NAMES = new Set([
   "memoryManage"
 ]);
 const SAFE_MEMORY_ACTIONS = new Set(["list", "tree", "read", "search", "build_context", "providers"]);
-const MUTATING_TOOL_NAMES = new Set(["fsWrite", "fsEdit", "terminalExecute", "sendMail", "todoWrite"]);
+const MUTATING_TOOL_NAMES = new Set(["write", "edit", "Bash", "sendMail", "todoWrite"]);
+const LEGACY_SCHEDULED_TOOL_ALIASES = new Map([
+  ["fsWrite", "write"],
+  ["fsEdit", "edit"],
+  ["terminalExecute", "Bash"]
+]);
 
 export function isReadOnlyToolName(name) {
   const normalized = String(name || "").trim();
@@ -32,7 +37,10 @@ export function normalizeCapabilityPolicy(input = {}) {
     : "read-only";
   return {
     preset,
-    allowedTools: Array.isArray(input?.allowedTools) ? input.allowedTools.map(String) : [],
+    // Keep saved tasks created before the local-tools migration runnable.
+    allowedTools: Array.isArray(input?.allowedTools)
+      ? [...new Set(input.allowedTools.map((name) => LEGACY_SCHEDULED_TOOL_ALIASES.get(String(name)) || String(name)))]
+      : [],
     fileRoots: Array.isArray(input?.fileRoots) ? input.fileRoots.map(String).filter(Boolean) : [],
     allowedCommandPrefixes: Array.isArray(input?.allowedCommandPrefixes) ? input.allowedCommandPrefixes.map(String).filter(Boolean) : [],
     allowedTerminalSessionIds: Array.isArray(input?.allowedTerminalSessionIds) ? input.allowedTerminalSessionIds.map(String).filter(Boolean) : [],
@@ -51,7 +59,7 @@ export function filterToolsForPolicy(tools, inputPolicy = {}) {
     const mutating = MUTATING_TOOL_NAMES.has(name) && explicitlyAllowed.has(name);
     if (!readOnly && !mutating) return [];
     if (mutating && policy.preset === "read-only") return [];
-    if (name === "terminalExecute" || name === "sendMail" || name === "todoWrite") {
+    if (name === "Bash" || name === "sendMail" || name === "todoWrite") {
       if (policy.preset !== "trusted-automation") return [];
     }
     if (name !== "memoryManage") return [tool];
@@ -100,16 +108,16 @@ export function authorizeToolCall(call, inputPolicy = {}, counters = {}) {
   if (isReadOnlyToolCall(call)) return { allowed: true };
   if (!policy.allowedTools.includes(name)) return { allowed: false, reason: "tool is not allowed by task policy" };
   if (policy.preset === "read-only") return { allowed: false, reason: "read-only policy" };
-  if (name === "fsWrite" || name === "fsEdit") {
+  if (name === "write" || name === "edit") {
     const path = args.file_path || args.path;
     return isPathWithinRoots(path, policy.fileRoots)
       ? { allowed: true }
       : { allowed: false, reason: "file path is outside allowed roots" };
   }
   if (policy.preset !== "trusted-automation") return { allowed: false, reason: "trusted automation is required" };
-  if (name === "terminalExecute") {
+  if (name === "Bash") {
     const command = String(args.command || "").trim();
-    const commandAllowed = policy.allowedCommandPrefixes.some((prefix) =>
+    const commandAllowed = policy.allowedCommandPrefixes.length === 0 || policy.allowedCommandPrefixes.some((prefix) =>
       command === prefix || command.startsWith(`${prefix} `)
     );
     if (!commandAllowed) return { allowed: false, reason: "terminal command is outside allowed prefixes" };

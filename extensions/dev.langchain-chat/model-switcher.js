@@ -8,6 +8,8 @@
  * - 行内操作：编辑/删除（仅 user.dynamic 可删除/保存）
  */
 import {
+  DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
+  MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
   THINKING_MODE_FIELDS,
   getThinkingEffortOptions,
   getThinkingEffortOptionLabel,
@@ -15,6 +17,7 @@ import {
   getThinkingModeLabel,
   getThinkingModeOptions,
   getThinkingModeOptionLabel,
+  normalizeAutoContinueOnColonMaxAttempts,
   normalizeThinkingEffort,
   normalizeThinkingMode
 } from "./model-config-fields.js";
@@ -744,7 +747,7 @@ export function installModelSwitcher() {
     editorWrap.appendChild(title);
 
     // 字段
-    const inpId = textInput(t("modelSwitcher.placeholder.modelId", "e.g. deepseek-chat"));
+    const inpId = textInput(t("modelSwitcher.placeholder.modelId", "e.g. deepseek-v4-flash"));
     const inpLabel = textInput(t("modelSwitcher.placeholder.label", "e.g. My Model"));
     const selProviderType = document.createElement("select");
     Object.assign(selProviderType.style, {
@@ -790,12 +793,23 @@ export function installModelSwitcher() {
       return el;
     };
     const selThinkingMode = createSelect(getThinkingModeOptions());
-    const selThinkingEffort = createSelect(getThinkingEffortOptions());
+    const selectedCfg = spec?.cfg || {};
+    const selThinkingEffort = createSelect(getThinkingEffortOptions(isNew ? null : {
+      providerId,
+      providerType: selectedCfg.providerType || selectedCfg.provider_type,
+      modelId: spec?.id,
+      modelName: selectedCfg.modelName || selectedCfg.model || spec?.id,
+      cfg: selectedCfg
+    }));
     const inpUrl = textInput(t("modelSwitcher.placeholder.baseUrl", "e.g. https://api.openai.com/v1/chat/completions"));
     const inpKey = textInput("API Key", "password");
     const inpModelName = textInput(t("modelSwitcher.placeholder.modelOverride", "Optional, e.g. gpt-4o-mini"));
     const inpTemp = numberInput("0.7");
     const inpMaxTok = numberInput("4096");
+    const inpAutoContinueOnColon = numberInput(String(DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS));
+    inpAutoContinueOnColon.min = "0";
+    inpAutoContinueOnColon.max = String(MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS);
+    inpAutoContinueOnColon.step = "1";
     const inpInputPrice = numberInput("0");
     const inpOutputPrice = numberInput("0");
     const { wrap: cbStreamWrap, cb: cbStream } = checkboxInput(t("modelSwitcher.stream", "Stream"));
@@ -816,6 +830,7 @@ export function installModelSwitcher() {
       inpModelName.value = "";
       inpTemp.value = "0";
       inpMaxTok.value = "";
+      inpAutoContinueOnColon.value = String(DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS);
       inpInputPrice.value = "";
       inpOutputPrice.value = "";
       cbStream.checked = true;
@@ -834,6 +849,9 @@ export function installModelSwitcher() {
       inpModelName.value = cfg.modelName || cfg.model || "";
       inpTemp.value = typeof cfg.temperature === "number" ? String(cfg.temperature) : "0";
       inpMaxTok.value = cfg.max_tokens != null ? String(cfg.max_tokens) : "";
+      inpAutoContinueOnColon.value = String(
+        normalizeAutoContinueOnColonMaxAttempts(cfg.autoContinueOnColonMaxAttempts)
+      );
       inpInputPrice.value = cfg.pricing?.inputPerMTok != null ? String(cfg.pricing.inputPerMTok) : "";
       inpOutputPrice.value = cfg.pricing?.outputPerMTok != null ? String(cfg.pricing.outputPerMTok) : "";
       cbStream.checked = cfg.stream !== false;
@@ -854,6 +872,7 @@ export function installModelSwitcher() {
         inpModelName.disabled = false;
         inpTemp.disabled = false;
         inpMaxTok.disabled = false;
+        inpAutoContinueOnColon.disabled = false;
         inpInputPrice.disabled = false;
         inpOutputPrice.disabled = false;
         selThinkingMode.disabled = false;
@@ -863,7 +882,7 @@ export function installModelSwitcher() {
         cbPreservedThinking.disabled = false;
         cbInterleavedThinking.disabled = false;
       } else if (readonly) {
-        [inpId, inpLabel, selProviderType, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok, inpInputPrice, inpOutputPrice, selThinkingMode, selThinkingEffort].forEach(el => el.disabled = true);
+        [inpId, inpLabel, selProviderType, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok, inpAutoContinueOnColon, inpInputPrice, inpOutputPrice, selThinkingMode, selThinkingEffort].forEach(el => el.disabled = true);
         [cbStream, cbImg, cbPreservedThinking, cbInterleavedThinking].forEach(el => el.disabled = true);
       }
     }
@@ -891,6 +910,17 @@ export function installModelSwitcher() {
     editorWrap.appendChild(fieldRow(t("modelSwitcher.modelOverride", "Model Override"), inpModelName));
     editorWrap.appendChild(fieldRow("Temperature", inpTemp));
     editorWrap.appendChild(fieldRow("Max Tokens", inpMaxTok));
+    if (isDeepseekProvider) {
+      const row = fieldRow(
+        t("modelSwitcher.autoContinueOnColonMaxAttempts", "Abnormal-stop Continuations"),
+        inpAutoContinueOnColon
+      );
+      row.title = t(
+        "modelSwitcher.autoContinueOnColonMaxAttempts.description",
+        "Maximum automatic continuations after an abnormal DeepSeek stop, including trailing-colon and reasoning-only responses; set to 0 to disable."
+      );
+      editorWrap.appendChild(row);
+    }
     editorWrap.appendChild(fieldRow("Input $/1M Tokens", inpInputPrice));
     editorWrap.appendChild(fieldRow("Output $/1M Tokens", inpOutputPrice));
     editorWrap.appendChild(fieldRow(t("modelSwitcher.thinkingMode", "Thinking Mode"), selThinkingMode));
@@ -952,6 +982,9 @@ export function installModelSwitcher() {
             modelName: inpModelName.value.trim() || undefined,
             temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
             max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
+            autoContinueOnColonMaxAttempts: normalizeAutoContinueOnColonMaxAttempts(
+              inpAutoContinueOnColon.value
+            ),
             pricing: {
               inputPerMTok: inpInputPrice.value === "" ? undefined : Number(inpInputPrice.value),
               outputPerMTok: inpOutputPrice.value === "" ? undefined : Number(inpOutputPrice.value),

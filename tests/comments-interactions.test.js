@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EditorState } from "@codemirror/state";
 import { EditorCore } from "../src/editor/EditorCore";
 import {
   canScrollCommentEditorInDirection,
@@ -7,7 +8,10 @@ import {
   handleCommentEditorBoundaryKeydown,
   insertCommentSummariesIntoMessages,
   isCommentPanelUserScrollActive,
+  mapStoredCommentAnchor,
   moveCommentEditorToBoundary,
+  resolveCommentSessionId,
+  resolveStoredRangeAnchor,
   runCommentEditorCommand,
   shouldDetachCommentTailFollow,
   shouldContainCommentEditorWheel
@@ -282,5 +286,57 @@ describe("comment editor interactions", () => {
       "assistant"
     ]);
     expect(result[3].content).toContain("评论总结：The tool result belongs to this comment.");
+  });
+
+  it("uses the scratch editor session instead of the active main panel session", () => {
+    const zion = {
+      panels: {
+        getActivePanelId: () => "panel-main",
+        list: () => [{ id: "panel-main", activeTabId: "main-session" }]
+      },
+      state: {
+        get: () => "main-session"
+      }
+    };
+
+    expect(resolveCommentSessionId({
+      panelId: "agents:task-1",
+      sessionId: "agent-task:task-1"
+    }, zion)).toBe("agent-task:task-1");
+  });
+
+  it("relocates a persisted range whose saved coordinates were polluted", () => {
+    const doc = "user intro\nassistant target quote\n";
+    const expectedFrom = doc.indexOf("target quote");
+
+    expect(resolveStoredRangeAnchor(doc, {
+      from: 5,
+      to: 10,
+      anchorText: "target quote"
+    })).toEqual({
+      from: expectedFrom,
+      to: expectedFrom + "target quote".length,
+      relocated: true
+    });
+  });
+
+  it("marks a range anchor as lost when its complete source text is deleted", () => {
+    const text = "before target after";
+    const before = EditorState.create({ doc: text });
+    const from = text.indexOf("target");
+    const transaction = before.update({
+      changes: { from, to: from + "target".length, insert: "" }
+    });
+
+    expect(mapStoredCommentAnchor({
+      from,
+      to: from + "target".length,
+      anchorKind: "range",
+      anchorText: "target"
+    }, transaction.changes, before.doc, transaction.state.doc)).toMatchObject({
+      from,
+      to: from,
+      anchorKind: "lost"
+    });
   });
 });

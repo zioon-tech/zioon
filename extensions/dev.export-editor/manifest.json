@@ -1,16 +1,36 @@
 {
   "name": "dev.export-editor",
   "version": "0.0.1",
-  "description": "Export current editor content to PNG or PDF.",
+  "description": "Export the current editor content to PNG or PDF.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.export-editor",
-    "name": "dev.export-editor",
-    "nameKey": "dev.plugins.pluginName.dev.export-editor",
-    "descriptionKey": "dev.plugins.pluginDescription.dev.export-editor",
+    "name": "Export Editor",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "导出编辑器",
+        "en-US": "Export Editor"
+      },
+      "description": {
+        "zh-CN": "把当前编辑器内容导出为 PNG 或 PDF。",
+        "en-US": "Export the current editor content to PNG or PDF."
+      },
+      "icon": "export",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "把当前编辑器内容导出为 PNG 或 PDF。"
+        ],
+        "en-US": [
+          "Export the current editor content to PNG or PDF."
+        ]
+      }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.export-editor",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.export-editor",
     "contributes": {
       "commands": [
         {

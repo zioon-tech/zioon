@@ -2,6 +2,8 @@ export function createSessionTreeModel(opts) {
   const dbName = opts?.dbName;
   const idbSetKV = opts?.idbSetKV;
   const warnStorageIssue = opts?.warnStorageIssue;
+  const onPersist = opts?.onPersist;
+  const onDelete = opts?.onDelete;
   const loadMeta = opts?.loadMeta;
   const genId = opts?.genId;
   const getLastActiveId = opts?.getLastActiveId;
@@ -43,6 +45,7 @@ export function createSessionTreeModel(opts) {
     (async () => {
       try {
         await idbSetKV(dbName, "tree", optimistic);
+        try { onPersist?.("tree"); } catch {}
       } catch (e) {
         try {
           if (getZion()?.state?.get("sessions.treeMem") === optimistic) {
@@ -103,6 +106,7 @@ export function createSessionTreeModel(opts) {
     (async () => {
       try {
         await idbSetKV(dbName, "index", optimistic);
+        try { onPersist?.("index"); } catch {}
       } catch (e) {
         try {
           if (getZion()?.state?.get("sessions.indexMem") === optimistic) {
@@ -245,6 +249,7 @@ export function createSessionTreeModel(opts) {
     };
     const ids = collectSessions(node);
     for (const sid of ids) {
+      try { void onDelete?.(sid); } catch {}
       try { if (docKey) localStorage.removeItem(docKey(sid)); } catch {}
       try { if (metaKey) localStorage.removeItem(metaKey(sid)); } catch {}
       try { getZion()?.state?.set(`sessions.doc.${sid}`, undefined); } catch {}

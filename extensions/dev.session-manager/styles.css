@@ -105,9 +105,11 @@ body.zion-sessions-no-transitions .zion-session-row * {
   background: transparent;
   /* 背景色由脚本动态设置为与行背景一致（并且为不透明的合成色） */
 }
-/* 状态颜色：回答中用 accent，小圆点完成用 ok 绿色 */
+/* 状态颜色：生成中、待查看、异常结束、已停止 */
 .zion-session-status-badge.streaming { color: var(--accent); }
 .zion-session-status-badge.ready { color: var(--ok); }
+.zion-session-status-badge.error { color: var(--danger, #ef4444); }
+.zion-session-status-badge.aborted { color: var(--warning, #d29922); }
 
 
 /* JS-injected: scrollbar behavior + current-row highlight */
@@ -288,6 +290,14 @@ body.zion-sessions-no-transitions .zion-session-row * {
 
 .zion-session-status-badge.ready {
   background: var(--ok) !important;
+}
+
+.zion-session-status-badge.error {
+  background: var(--danger, #ef4444) !important;
+}
+
+.zion-session-status-badge.aborted {
+  background: var(--warning, #d29922) !important;
 }
 
 .zion-session-title-line {

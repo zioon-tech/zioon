@@ -19,6 +19,7 @@ import { tags as cmTags } from "@lezer/highlight";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfmFromMarkdown } from "mdast-util-gfm";
 import { gfm } from "micromark-extension-gfm";
+import { selectionToolbarExtension } from "../../editor/extensions/selection-toolbar";
 
 export type InspectorTextViewOptions = {
   content: string;
@@ -26,6 +27,8 @@ export type InspectorTextViewOptions = {
   language?: string;
   editable?: boolean;
   lineWrapping?: boolean;
+  extensions?: Extension[];
+  selectionContext?: (view: EditorView) => Record<string, unknown>;
   onChange?: (content: string) => void;
 };
 
@@ -98,7 +101,12 @@ export function createInspectorTextView(parent: HTMLElement, options: InspectorT
   const dark = document.documentElement.getAttribute("data-theme") !== "light";
   const extensions: Extension[] = [
     EditorState.readOnly.of(!editable),
-    EditorView.editable.of(editable),
+    // Keep read-only previews focusable so CodeMirror owns and reports text selections.
+    EditorView.editable.of(true),
+    EditorView.contentAttributes.of({
+      "aria-readonly": editable ? "false" : "true",
+      spellcheck: "false"
+    }),
     lineNumbers(),
     foldGutter(),
     bracketMatching(),
@@ -130,6 +138,11 @@ export function createInspectorTextView(parent: HTMLElement, options: InspectorT
       ...defaultKeymap
     ])),
     syntaxHighlighting(inspectorHighlightStyle(dark), { fallback: true }),
+    selectionToolbarExtension({
+      showBuiltins: false,
+      itemFilter: (item) => item.id === "comments.create",
+      contextProvider: options.selectionContext
+    }),
     EditorView.theme({
       "&": { height: "100%", backgroundColor: "var(--editor-bg)", color: "var(--fg)" },
       "&.cm-focused": { outline: "none" },
@@ -227,7 +240,8 @@ export function createInspectorTextView(parent: HTMLElement, options: InspectorT
         boxShadow: "var(--elevation-panel)"
       }
     }),
-    ...initialLanguageExtensions(language, filename)
+    ...initialLanguageExtensions(language, filename),
+    ...(options.extensions || [])
   ];
   if (editable) {
     extensions.push(history());
@@ -393,14 +407,225 @@ function renderMarkdownNode(node: any): Node {
   }
 }
 
+function annotateInspectorMarkdownText(article: HTMLElement, content: string): void {
+  const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode instanceof Text && walker.currentNode.data) textNodes.push(walker.currentNode);
+  }
+  let cursor = 0;
+  for (const textNode of textNodes) {
+    const value = textNode.data;
+    let from = content.indexOf(value, cursor);
+    if (from < 0) from = content.indexOf(value);
+    if (from < 0) continue;
+    const span = document.createElement("span");
+    span.className = "zion-inspector-markdown-source-text";
+    span.dataset.sourceFrom = String(from);
+    span.dataset.sourceTo = String(from + value.length);
+    span.textContent = value;
+    textNode.replaceWith(span);
+    cursor = from + value.length;
+  }
+}
+
+function findMarkdownSourceLeaf(node: Node | null, offset: number, preferEnd: boolean): HTMLElement | null {
+  if (!node) return null;
+  const parent = node instanceof HTMLElement ? node : node.parentElement;
+  const direct = parent?.closest?.<HTMLElement>(".zion-inspector-markdown-source-text");
+  if (direct) return direct;
+  if (!(node instanceof Element)) return null;
+  const children = Array.from(node.childNodes);
+  const candidate = preferEnd
+    ? children[Math.max(0, Math.min(children.length - 1, offset - 1))]
+    : children[Math.max(0, Math.min(children.length - 1, offset))];
+  if (candidate instanceof HTMLElement && candidate.matches(".zion-inspector-markdown-source-text")) return candidate;
+  if (candidate instanceof Element) {
+    const leaves = candidate.querySelectorAll<HTMLElement>(".zion-inspector-markdown-source-text");
+    return preferEnd ? leaves[leaves.length - 1] || null : leaves[0] || null;
+  }
+  return null;
+}
+
+function markdownSourceOffset(node: Node, offset: number, preferEnd: boolean): number | null {
+  const leaf = findMarkdownSourceLeaf(node, offset, preferEnd);
+  if (!leaf) return null;
+  const from = Number(leaf.dataset.sourceFrom);
+  const to = Number(leaf.dataset.sourceTo);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+  if (node instanceof Text && node.parentElement === leaf) {
+    const localOffset = Math.max(0, Math.min(node.data.length, offset));
+    return Math.min(to, from + localOffset);
+  }
+  return preferEnd ? to : from;
+}
+
+export type InspectorMarkdownSelection = {
+  from: number;
+  to: number;
+  selectionText: string;
+  rect: DOMRect;
+};
+
+export function getInspectorMarkdownSelection(
+  article: HTMLElement,
+  content: string,
+  selection: Selection | null = document.getSelection()
+): InspectorMarkdownSelection | null {
+  if (!selection || selection.isCollapsed || selection.rangeCount < 1) return null;
+  const range = selection.getRangeAt(0);
+  if (!article.contains(range.startContainer) || !article.contains(range.endContainer)) return null;
+  const start = markdownSourceOffset(range.startContainer, range.startOffset, false);
+  const end = markdownSourceOffset(range.endContainer, range.endOffset, true);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const from = Math.max(0, Math.min(content.length, Math.min(start!, end!)));
+  const to = Math.max(from, Math.min(content.length, Math.max(start!, end!)));
+  const selectionText = content.slice(from, to);
+  if (to <= from || !selectionText.trim()) return null;
+  return { from, to, selectionText, rect: range.getBoundingClientRect() };
+}
+
+export type InspectorMarkdownCommentRange = {
+  id: string;
+  from: number;
+  to: number;
+  active?: boolean;
+};
+
+export function applyInspectorMarkdownCommentRanges(
+  article: HTMLElement,
+  ranges: InspectorMarkdownCommentRange[],
+  onActivate?: (id: string) => void
+): void {
+  const sourceSpans = Array.from(article.querySelectorAll<HTMLElement>(".zion-inspector-markdown-source-text"));
+  for (const span of sourceSpans) {
+    const sourceFrom = Number(span.dataset.sourceFrom);
+    const sourceTo = Number(span.dataset.sourceTo);
+    if (!Number.isFinite(sourceFrom) || !Number.isFinite(sourceTo) || sourceTo <= sourceFrom) continue;
+    const text = span.textContent || "";
+    const matching = ranges.filter((range) => range.to > sourceFrom && range.from < sourceTo);
+    if (!matching.length) {
+      span.classList.remove("zion-comment-range", "is-active");
+      span.removeAttribute("data-comment-id");
+      span.onclick = null;
+      continue;
+    }
+    const boundaries = new Set([sourceFrom, sourceTo]);
+    for (const range of matching) {
+      boundaries.add(Math.max(sourceFrom, Math.min(sourceTo, range.from)));
+      boundaries.add(Math.max(sourceFrom, Math.min(sourceTo, range.to)));
+    }
+    const points = Array.from(boundaries).sort((a, b) => a - b);
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const from = points[index];
+      const to = points[index + 1];
+      if (to <= from) continue;
+      const segment = document.createElement("span");
+      segment.className = "zion-inspector-markdown-source-text";
+      segment.dataset.sourceFrom = String(from);
+      segment.dataset.sourceTo = String(to);
+      segment.textContent = text.slice(from - sourceFrom, to - sourceFrom);
+      const comments = matching.filter((range) => range.to > from && range.from < to);
+      if (comments.length) {
+        const primary = comments.find((range) => range.active) || comments[0];
+        segment.classList.add("zion-comment-range");
+        if (comments.some((range) => range.active)) segment.classList.add("is-active");
+        segment.dataset.commentId = primary.id;
+        segment.title = "打开评论";
+        segment.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onActivate?.(primary.id);
+        };
+      }
+      fragment.appendChild(segment);
+    }
+    span.replaceWith(fragment);
+  }
+}
+
+export function createInspectorMarkdownPreviewView(
+  article: HTMLElement,
+  scroller: HTMLElement,
+  content: string
+): any {
+  let state = EditorState.create({ doc: String(content || "") });
+  const getSourceSpans = () =>
+    Array.from(article.querySelectorAll<HTMLElement>(".zion-inspector-markdown-source-text[data-source-from][data-source-to]"));
+  const getSpanAt = (position: number) => {
+    const spans = getSourceSpans();
+    const pos = Math.max(0, Math.min(state.doc.length, Number(position) || 0));
+    return spans.find((span) => Number(span.dataset.sourceFrom) <= pos && Number(span.dataset.sourceTo) >= pos)
+      || spans.find((span) => Number(span.dataset.sourceFrom) >= pos)
+      || spans[spans.length - 1]
+      || null;
+  };
+  const getBlockAt = (position: number) => {
+    const span = getSpanAt(position);
+    if (!span) return null;
+    const rect = span.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    const top = Number(rect.top) - Number(scrollerRect.top) + Number(scroller.scrollTop || 0);
+    const height = Math.max(1, Number(rect.height) || 1);
+    return { from: position, to: position, top, bottom: top + height, height };
+  };
+  const view = {
+    sourceViewKind: "preview",
+    dom: article,
+    contentDOM: article,
+    scrollDOM: scroller,
+    get state() {
+      return state;
+    },
+    get viewport() {
+      const spans = getSourceSpans();
+      if (!spans.length) return { from: 0, to: state.doc.length };
+      const scrollerRect = scroller.getBoundingClientRect();
+      const visible = spans.filter((span) => {
+        const rect = span.getBoundingClientRect();
+        return rect.bottom >= scrollerRect.top && rect.top <= scrollerRect.bottom;
+      });
+      const first = visible[0] || spans[0];
+      const last = visible[visible.length - 1] || spans[spans.length - 1];
+      return {
+        from: Math.max(0, Number(first.dataset.sourceFrom) || 0),
+        to: Math.max(0, Number(last.dataset.sourceTo) || state.doc.length)
+      };
+    },
+    lineBlockAt(position: number) {
+      return getBlockAt(position);
+    },
+    coordsAtPos(position: number) {
+      const span = getSpanAt(position);
+      return span?.getBoundingClientRect?.() || null;
+    },
+    dispatch(spec: any) {
+      try { state = state.update(spec).state; } catch {}
+      if (!spec?.scrollIntoView) return;
+      const block = getBlockAt(state.selection.main.head);
+      if (!block) return;
+      const targetTop = Math.max(0, block.top - Math.max(24, Math.floor((scroller.clientHeight || 0) * 0.22)));
+      if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top: targetTop, behavior: "auto" });
+      else scroller.scrollTop = targetTop;
+    },
+    focus() {
+      article.focus?.({ preventScroll: true });
+    }
+  };
+  return view;
+}
+
 export function renderInspectorMarkdown(parent: HTMLElement, content: string): HTMLElement {
   const article = document.createElement("article");
   article.className = "zion-inspector-markdown";
+  article.tabIndex = -1;
   const tree = fromMarkdown(String(content || ""), {
     extensions: [gfm()],
     mdastExtensions: [gfmFromMarkdown()]
   });
   article.appendChild(renderMarkdownNode(tree));
+  annotateInspectorMarkdownText(article, String(content || ""));
   article.addEventListener("click", (event) => {
     const anchor = (event.target as HTMLElement | null)?.closest?.("a");
     if (!anchor) return;

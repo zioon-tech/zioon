@@ -1,14 +1,34 @@
 {
   "name": "dev.search-replace",
   "version": "0.1.0",
-  "description": "Zion Next Plugin: dev.search-replace",
+  "description": "Provide editor search, replace, navigation, and select-all matches.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.search-replace",
-    "name": "dev.search-replace",
+    "name": "Search and Replace",
     "version": "0.1.0",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "搜索和替换",
+        "en-US": "Search and Replace"
+      },
+      "description": {
+        "zh-CN": "在编辑器中提供搜索、替换、跳转和全选匹配。",
+        "en-US": "Provide editor search, replace, navigation, and select-all matches."
+      },
+      "icon": "search",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "在编辑器中提供搜索、替换、跳转和全选匹配。"
+        ],
+        "en-US": [
+          "Provide editor search, replace, navigation, and select-all matches."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {

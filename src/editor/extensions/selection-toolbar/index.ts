@@ -17,6 +17,13 @@ type SelectionToolbarContext = {
   selectionText: string;
   from: number;
   to: number;
+  [key: string]: unknown;
+};
+
+type SelectionToolbarOptions = {
+  showBuiltins?: boolean;
+  itemFilter?: (item: SelectionToolbarItem) => boolean;
+  contextProvider?: (view: EditorView) => Record<string, unknown>;
 };
 
 function getSelectionToolbarRegistry(): {
@@ -134,7 +141,13 @@ function runSelectionAI(view: EditorView) {
   } catch {}
 }
 
-function mkBtn(opts: { title: string; onClick: () => void; label?: string; codicon?: string; kind?: "default" | "ai" }) {
+export function createSelectionToolbarButton(opts: {
+  title: string;
+  onClick: () => void;
+  label?: string;
+  codicon?: string;
+  kind?: "default" | "ai";
+}): HTMLButtonElement {
   const b = document.createElement("button");
   b.type = "button";
   b.className = `zion-selection-toolbar-btn${opts.kind === "ai" ? " is-ai" : ""}`;
@@ -153,6 +166,12 @@ function mkBtn(opts: { title: string; onClick: () => void; label?: string; codic
     opts.onClick();
   };
   return b;
+}
+
+export function createSelectionToolbarItemsContainer(): HTMLDivElement {
+  const wrap = document.createElement("div");
+  wrap.className = "zion-selection-toolbar-items";
+  return wrap;
 }
 
 function shouldShowToolbar(view: EditorView): boolean {
@@ -176,9 +195,10 @@ function shouldShowToolbar(view: EditorView): boolean {
 
 function getDomSelectionToolbarAnchor(view: EditorView): { left: number; right: number; top: number; bottom: number; from: number; to: number; selectionText: string } | null {
   try {
-    if (!(view.dom.contains(document.activeElement) || view.hasFocus)) return null;
     const r = (window as any).zion?.state?.get?.("selectionToolbar.domAnchorRect");
     if (!r || Date.now() - Number(r.ts || 0) > 1500) return null;
+    if (r.view && r.view !== view) return null;
+    if (!r.view && !(view.dom.contains(document.activeElement) || view.hasFocus)) return null;
     const left = Number(r.left);
     const right = Number(r.right);
     const top = Number(r.top);
@@ -194,9 +214,10 @@ function getDomSelectionToolbarAnchor(view: EditorView): { left: number; right: 
   }
 }
 
-export function selectionToolbarExtension(): Extension {
+export function selectionToolbarExtension(options: SelectionToolbarOptions = {}): Extension {
   exposeSelectionToolbarApi();
   const registry = getSelectionToolbarRegistry();
+  const showBuiltins = options.showBuiltins !== false;
   const plugin = ViewPlugin.fromClass(
     class {
       view: EditorView;
@@ -228,10 +249,7 @@ export function selectionToolbarExtension(): Extension {
         this.el = document.createElement("div");
         this.el.className = "zion-selection-toolbar";
 
-        this.buttonsWrap = document.createElement("div");
-        this.buttonsWrap.style.display = "inline-flex";
-        this.buttonsWrap.style.alignItems = "center";
-        this.buttonsWrap.style.gap = "6px";
+        this.buttonsWrap = createSelectionToolbarItemsContainer();
         this.el.appendChild(this.buttonsWrap);
         this.renderButtons();
         parent?.appendChild(this.el);
@@ -243,6 +261,7 @@ export function selectionToolbarExtension(): Extension {
         this.onPointerDown = (e: PointerEvent) => {
           if (e.button !== 0) return;
           try { (window as any).zion?.state?.set?.("editor.selectionGestureUntil", Date.now() + 5000); } catch {}
+          try { (window as any).zion?.state?.set?.("selectionToolbar.domAnchorRect", null); } catch {}
           this.pointerDown = true;
           this.pointerDownAt = { x: e.clientX, y: e.clientY };
           try { this.el.classList.remove("is-visible"); } catch {}
@@ -297,11 +316,13 @@ export function selectionToolbarExtension(): Extension {
 
       private buildCtx(): SelectionToolbarContext | null {
         try {
+            const extraContext = options.contextProvider?.(this.view) || {};
           const sel = this.view.state.selection.main;
           if (sel.empty) {
             const domAnchor = getDomSelectionToolbarAnchor(this.view);
             if (!domAnchor) return null;
             return {
+                ...extraContext,
               view: this.view,
               selectionText: domAnchor.selectionText,
               from: domAnchor.from,
@@ -309,7 +330,7 @@ export function selectionToolbarExtension(): Extension {
             };
           }
           const selectionText = this.view.state.sliceDoc(sel.from, sel.to);
-          return { view: this.view, selectionText, from: sel.from, to: sel.to };
+            return { ...extraContext, view: this.view, selectionText, from: sel.from, to: sel.to };
         } catch {
           return null;
         }
@@ -334,23 +355,26 @@ export function selectionToolbarExtension(): Extension {
         this.lastButtonsRenderKey = renderKey;
         wrap.innerHTML = "";
 
-        const ai = mkBtn({
-          title: "AI with selection",
-          onClick: () => runSelectionAI(this.view),
-          label: "AI"
-        });
-        const divider = document.createElement("span");
-        divider.className = "zion-selection-toolbar-divider";
-        const bold = mkBtn({ title: "Bold (⌘B)", onClick: () => toggleWrapMarker(this.view, "**"), codicon: "bold" });
-        const italic = mkBtn({ title: "Italic (⌘I)", onClick: () => toggleWrapMarker(this.view, "*"), codicon: "italic" });
-        const strike = mkBtn({ title: "Strikethrough (⇧⌘X)", onClick: () => toggleWrapMarker(this.view, "~~"), label: "S" });
-        strike.classList.add("is-strike");
+        if (showBuiltins) {
+          const ai = createSelectionToolbarButton({
+            title: "AI with selection",
+            onClick: () => runSelectionAI(this.view),
+            label: "AI"
+          });
+          const divider = document.createElement("span");
+          divider.className = "zion-selection-toolbar-divider";
+          const bold = createSelectionToolbarButton({ title: "Bold (⌘B)", onClick: () => toggleWrapMarker(this.view, "**"), codicon: "bold" });
+          const italic = createSelectionToolbarButton({ title: "Italic (⌘I)", onClick: () => toggleWrapMarker(this.view, "*"), codicon: "italic" });
+          const strike = createSelectionToolbarButton({ title: "Strikethrough (⇧⌘X)", onClick: () => toggleWrapMarker(this.view, "~~"), label: "S" });
+          strike.classList.add("is-strike");
 
-        wrap.append(ai, divider, bold, italic, strike);
+          wrap.append(ai, divider, bold, italic, strike);
+        }
 
         const effective = ctxBase
           ? extra.filter(it => {
               try {
+                if (options.itemFilter && !options.itemFilter(it)) return false;
                 return typeof it.when === "function" ? !!it.when(ctxBase) : true;
               } catch {
                 return false;
@@ -359,9 +383,11 @@ export function selectionToolbarExtension(): Extension {
           : [];
         if (!effective.length) return;
 
-        const divider2 = document.createElement("span");
-        divider2.className = "zion-selection-toolbar-divider";
-        wrap.appendChild(divider2);
+        if (showBuiltins) {
+          const divider2 = document.createElement("span");
+          divider2.className = "zion-selection-toolbar-divider";
+          wrap.appendChild(divider2);
+        }
 
         for (const it of effective) {
           const anchor = document.createElement("span");
@@ -378,7 +404,7 @@ export function selectionToolbarExtension(): Extension {
             }
           }
           if (!node) {
-            node = mkBtn({
+            node = createSelectionToolbarButton({
               title: it.title || it.label || it.id,
               label: it.label || "",
               codicon: it.codicon,
@@ -445,6 +471,11 @@ export function selectionToolbarExtension(): Extension {
         }
 
         this.renderButtons();
+        if (!this.buttonsWrap.childElementCount) {
+          this.el.classList.remove("is-visible");
+          this.el.style.visibility = "";
+          return;
+        }
 
         const parentRect = parent.getBoundingClientRect();
         const wasVisible = this.el.classList.contains("is-visible");
@@ -550,6 +581,7 @@ export function selectionToolbarExtension(): Extension {
     }
   );
 
+  if (!showBuiltins) return [plugin];
   return [
     plugin,
     keymap.of([

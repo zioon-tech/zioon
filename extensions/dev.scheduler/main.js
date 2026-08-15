@@ -1,5 +1,5 @@
 import { LocalSchedulerEngine } from "./engine.js";
-import { buildSchedulerTask, SchedulerController, validateSchedulerTask } from "./controller.js";
+import { ACTIVE_RUN_STATUSES, buildSchedulerTask, SchedulerController, validateSchedulerTask } from "./controller.js";
 import { describeSchedule, normalizeSchedule } from "./schedule.js";
 import { SchedulerServiceClient } from "./service-api.js";
 import { registerSchedulerTool } from "./scheduler-tools.js";
@@ -7,6 +7,7 @@ import { LocalSchedulerStore } from "./store.js";
 
 const VIEW_ID = "scheduler.tasks";
 const STATUS_ID = "dev.scheduler.status";
+const MAX_CONCURRENT_SERVICE_RUNS = 3;
 
 function id(prefix) {
   try {
@@ -35,18 +36,24 @@ function localDateTimeValue(timestamp) {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
-function runStatusLabel(status) {
+function runStatusLabel(status, run = null) {
   if (status === "success") return "成功";
   if (status === "running") return "运行中";
   if (status === "failed") return "失败";
   if (status === "aborted") return "已中止";
-  if (status === "pending") return "排队中";
+  if (status === "pending") {
+    const queuedAt = Number(run?.createdAt || run?.scheduledFor || run?.startedAt || 0);
+    return queuedAt > 0 && Date.now() - queuedAt > 5000 ? "等待执行" : "正在启动";
+  }
   if (status === "claimed") return "已领取";
   return status || "未知";
 }
 
-function taskState(task, engine) {
+function taskState(task, engine, activeRun = null) {
   if (engine?.isRunning?.(task.id)) return "running";
+  if (task.executionMode === "service-backed" && ACTIVE_RUN_STATUSES.has(activeRun?.status)) {
+    return activeRun.status;
+  }
   return task.enabled ? "enabled" : "paused";
 }
 
@@ -71,8 +78,18 @@ function taskListMeta(task, next) {
 
 export async function projectRunEventToSession(zion, sessionId, event) {
   if (!sessionId || !event) return;
-  const payload = { runId: event.runId, sessionId, panelId: null, requestSource: "scheduled-task" };
+  const payload = {
+    runId: event.runId,
+    assistantBlockId: event.runId,
+    sessionId,
+    panelId: null,
+    requestSource: "scheduled-task"
+  };
   if (event.type === "run.started") {
+    await zion.commands.executeCommand("zion.sessions.ensureAssistantBlock", {
+      id: sessionId,
+      assistantBlockId: event.runId
+    });
     zion.state?.set?.(`chat.runs.${sessionId}`, {
       runId: event.runId,
       streaming: true,
@@ -87,7 +104,8 @@ export async function projectRunEventToSession(zion, sessionId, event) {
     await zion.commands.executeCommand("zion.sessions.appendAssistantToken", {
       id: sessionId,
       token: String(event.data?.delta || ""),
-      runId: event.runId
+      runId: event.runId,
+      assistantBlockId: event.runId
     });
     zion.events.emit("chat/token", { ...payload, token: String(event.data?.delta || "") });
     return;
@@ -224,7 +242,10 @@ function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
   const schedule = normalizeSchedule(task?.schedule || { kind: "daily", time: "09:00" });
   const capability = task?.capability || { preset: "read-only", allowedTools: [] };
   const taskType = task?.taskType || "agent";
-  const checked = (name) => capability.allowedTools?.includes(name) ? "checked" : "";
+  const legacyToolName = { write: "fsWrite", edit: "fsEdit", Bash: "terminalExecute" };
+  const checked = (name) => capability.allowedTools?.includes(name) || capability.allowedTools?.includes(legacyToolName[name])
+    ? "checked"
+    : "";
   form.innerHTML = `
     <header class="scheduler-header">
       <button type="button" class="scheduler-icon-button" data-action="cancel" title="返回" aria-label="返回"><span class="codicon codicon-arrow-left" aria-hidden="true"></span></button>
@@ -281,14 +302,14 @@ function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
           </label>
           <fieldset class="scheduler-capabilities" data-field="capabilities">
             <legend>允许的变更工具</legend>
-            <label><input type="checkbox" name="allowedTools" value="fsWrite" ${checked("fsWrite")}>写文件</label>
-            <label><input type="checkbox" name="allowedTools" value="fsEdit" ${checked("fsEdit")}>编辑文件</label>
-            <label data-trusted><input type="checkbox" name="allowedTools" value="terminalExecute" ${checked("terminalExecute")}>终端命令</label>
+            <label><input type="checkbox" name="allowedTools" value="write" ${checked("write")}>写文件</label>
+            <label><input type="checkbox" name="allowedTools" value="edit" ${checked("edit")}>编辑文件</label>
+            <label data-trusted><input type="checkbox" name="allowedTools" value="Bash" ${checked("Bash")}>终端命令</label>
             <label data-trusted><input type="checkbox" name="allowedTools" value="sendMail" ${checked("sendMail")}>发送邮件</label>
             <label data-trusted><input type="checkbox" name="allowedTools" value="todoWrite" ${checked("todoWrite")}>更新任务清单</label>
           </fieldset>
           <label data-field="file-roots">允许写入的目录<textarea name="fileRoots" rows="2" placeholder="/path/to/workspace">${escapeHtml((capability.fileRoots || []).join("\n"))}</textarea></label>
-          <label data-field="terminal-policy">允许的命令前缀<textarea name="allowedCommandPrefixes" rows="2" placeholder="npm test&#10;git status">${escapeHtml((capability.allowedCommandPrefixes || []).join("\n"))}</textarea></label>
+          <label data-field="terminal-policy">允许的命令前缀（可选；留空允许 Bash 沙箱内的命令）<textarea name="allowedCommandPrefixes" rows="2" placeholder="例如：npm test&#10;python3 /path/to/script.py">${escapeHtml((capability.allowedCommandPrefixes || []).join("\n"))}</textarea></label>
           <label data-field="terminal-policy">允许的终端 Session ID<input name="allowedTerminalSessionIds" value="${escapeHtml((capability.allowedTerminalSessionIds || []).join(", "))}" placeholder="可留空，表示任意已有终端"></label>
           <div class="scheduler-grid" data-field="mail-policy">
             <label>允许的邮件收件人<textarea name="allowedRecipients" rows="2" placeholder="team@example.com">${escapeHtml((capability.allowedRecipients || []).join("\n"))}</textarea></label>
@@ -318,7 +339,7 @@ function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
     form.elements.command.required = currentTaskType === "command";
     if (currentTaskType === "command") {
       form.elements.preset.value = "trusted-automation";
-      const terminalTool = form.querySelector('input[name="allowedTools"][value="terminalExecute"]');
+      const terminalTool = form.querySelector('input[name="allowedTools"][value="Bash"]');
       if (terminalTool) terminalTool.checked = true;
     }
     form.querySelector('[data-field="time"]').hidden = kind === "interval" || kind === "once";
@@ -334,8 +355,8 @@ function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
     form.querySelector("[data-policy-description]").textContent = currentTaskType === "command"
       ? "按计划直接执行命令，并在运行记录中保存 stdout/stderr；需要 zion-local-tools 可用。"
       : executionMode === "service-backed"
-        ? "触发和待执行队列由 zion-local-tools 持久化；需要至少一个 Zion 页面在线领取并执行。"
-        : "浏览器需保持打开；错过的触发不会补跑。";
+          ? "命令前缀留空时，Bash 可执行本地工具沙箱允许的命令；填写前缀会进一步限制。触发和待执行队列由 zion-local-tools 持久化；需要至少一个 Zion 页面在线领取并执行。"
+          : "命令前缀留空时，Bash 可执行本地工具沙箱允许的命令；填写前缀会进一步限制。浏览器需保持打开；错过的触发不会补跑。";
   };
   form.elements.kind.addEventListener("change", updateFields);
   form.elements.taskType.addEventListener("change", updateFields);
@@ -355,17 +376,243 @@ function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
   return form;
 }
 
-function createPanel({ store, engine, refreshAll, saveTask, toggleTask, deleteTask, runTask }) {
+function createEmptyState(text, compact = false) {
+  const empty = document.createElement("div");
+  empty.className = `scheduler-empty${compact ? " scheduler-empty-compact" : ""}`;
+  empty.textContent = text;
+  return empty;
+}
+
+function createTaskRow() {
+  const row = document.createElement("article");
+  row.className = "scheduler-task-row";
+  row.innerHTML = `
+    <button type="button" class="scheduler-row-main" data-action="edit">
+      <span class="scheduler-status-dot" aria-hidden="true"></span>
+      <span class="scheduler-row-copy"><strong></strong><small></small></span>
+    </button>
+    <button type="button" class="scheduler-row-action" data-action="run"><span class="codicon codicon-play" aria-hidden="true"></span></button>
+  `;
+  return row;
+}
+
+function syncTaskRow(row, task, engine, activeRun = null) {
+  const state = taskState(task, engine, activeRun);
+  const next = task.enabled ? `下次 ${formatDate(task.nextRun)}` : "已暂停";
+  const statusText = ACTIVE_RUN_STATUSES.has(state) ? runStatusLabel(state, activeRun) : next;
+  row.dataset.state = state;
+  row.dataset.taskId = task.id;
+  const edit = row.querySelector('[data-action="edit"]');
+  const run = row.querySelector('[data-action="run"]');
+  const dot = row.querySelector(".scheduler-status-dot");
+  const title = row.querySelector(".scheduler-row-copy strong");
+  const meta = row.querySelector(".scheduler-row-copy small");
+  if (edit) edit.title = `编辑 ${task.title}`;
+  if (dot) dot.dataset.status = state;
+  if (title) title.textContent = task.title;
+  if (meta) meta.textContent = taskListMeta(task, statusText);
+  if (run) {
+    const isBusy = ACTIVE_RUN_STATUSES.has(state);
+    const busyLabel = `任务${runStatusLabel(state, activeRun)}`;
+    run.disabled = isBusy;
+    run.title = isBusy ? busyLabel : "立即运行";
+    run.setAttribute("aria-label", isBusy ? busyLabel : "立即运行");
+  }
+}
+
+function syncTaskList(list, tasks, engine, activeRuns) {
+  if (!tasks.length) {
+    list.replaceChildren(createEmptyState("还没有定时任务"));
+    return;
+  }
+
+  list.querySelectorAll(".scheduler-empty").forEach((node) => node.remove());
+  const existing = new Map([...list.querySelectorAll(".scheduler-task-row")].map((row) => [row.dataset.taskId, row]));
+  let nextNode = list.firstElementChild;
+  for (const task of tasks) {
+    let row = existing.get(task.id);
+    if (!row) row = createTaskRow();
+    existing.delete(task.id);
+    syncTaskRow(row, task, engine, activeRuns.get(task.id));
+    if (row !== nextNode) list.insertBefore(row, nextNode);
+    nextNode = row.nextElementSibling;
+  }
+  for (const row of existing.values()) row.remove();
+}
+
+function createRunRow() {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "scheduler-run-row";
+  row.innerHTML = `
+    <span class="scheduler-status-dot" aria-hidden="true"></span>
+    <span class="scheduler-row-copy"><strong></strong><small></small></span>
+    <span class="scheduler-run-status"></span>
+  `;
+  return row;
+}
+
+function syncRunRow(row, run) {
+  row.dataset.runId = run.id;
+  const status = run.status || "unknown";
+  const dot = row.querySelector(".scheduler-status-dot");
+  const title = row.querySelector(".scheduler-row-copy strong");
+  const time = row.querySelector(".scheduler-row-copy small");
+  const label = row.querySelector(".scheduler-run-status");
+  if (dot) dot.dataset.status = status;
+  if (title) title.textContent = run.taskTitle;
+  if (time) time.textContent = formatDate(run.startedAt);
+  if (label) {
+    label.dataset.status = status;
+    label.textContent = runStatusLabel(status, run);
+  }
+}
+
+function syncRunList(list, runs) {
+  if (!runs.length) {
+    list.replaceChildren(createEmptyState("暂无运行记录", true));
+    return;
+  }
+
+  list.querySelectorAll(".scheduler-empty").forEach((node) => node.remove());
+  const existing = new Map([...list.querySelectorAll(".scheduler-run-row")].map((row) => [row.dataset.runId, row]));
+  let nextNode = list.firstElementChild;
+  for (const run of runs) {
+    let row = existing.get(run.id);
+    if (!row) row = createRunRow();
+    existing.delete(run.id);
+    syncRunRow(row, run);
+    if (row !== nextNode) list.insertBefore(row, nextNode);
+    nextNode = row.nextElementSibling;
+  }
+  for (const row of existing.values()) row.remove();
+}
+
+function createSchedulerListRoot() {
+  const root = document.createElement("div");
+  root.className = "scheduler-panel";
+  root.innerHTML = `
+    <header class="scheduler-header">
+      <strong class="scheduler-header-title">定时任务</strong>
+      <span class="scheduler-header-note">Agent / 命令</span>
+      <button type="button" class="scheduler-icon-button" data-action="new" title="新建任务" aria-label="新建任务"><span class="codicon codicon-add" aria-hidden="true"></span></button>
+    </header>
+    <div class="scheduler-panel-body">
+      <div class="scheduler-task-list"></div>
+      <section class="scheduler-history">
+        <div class="scheduler-list-label"><span>最近运行</span><button type="button" class="scheduler-text-button" data-action="clear-runs" hidden>清空</button></div>
+        <div class="scheduler-run-list"></div>
+      </section>
+    </div>
+  `;
+  return root;
+}
+
+function syncSchedulerListRoot(root, store, engine) {
+  const tasks = store.listTasks();
+  const allRuns = store.listRuns();
+  const activeRuns = new Map();
+  for (const run of allRuns) {
+    if (ACTIVE_RUN_STATUSES.has(run.status) && !activeRuns.has(run.taskId)) {
+      activeRuns.set(run.taskId, run);
+    }
+  }
+  const runs = allRuns.slice(0, 20);
+  syncTaskList(root.querySelector(".scheduler-task-list"), tasks, engine, activeRuns);
+  syncRunList(root.querySelector(".scheduler-run-list"), runs);
+  const clearRuns = root.querySelector('[data-action="clear-runs"]');
+  if (clearRuns) clearRuns.hidden = !runs.length;
+}
+
+function createPanel({
+  store,
+  engine,
+  refreshAll,
+  refreshRuns,
+  loadRunDetails,
+  saveTask,
+  toggleTask,
+  deleteTask,
+  runTask,
+  cancelRun
+}) {
   return {
     render(container) {
       container.classList.add("scheduler-panel-host");
       let mode = "list";
       let editing = null;
       let selectedRun = null;
+      let disposed = false;
+
+      const requestRender = () => {
+        if (disposed) return;
+        if (mode === "edit") return;
+        render();
+      };
+
+      const handleListClick = (event) => {
+        const target = event.target?.closest?.("[data-action], .scheduler-run-row");
+        if (!target || !container.contains(target)) return;
+        const action = target.dataset.action || "";
+        if (action === "new") {
+          mode = "edit";
+          editing = null;
+          render();
+          return;
+        }
+        if (action === "clear-runs") {
+          store.clearRuns();
+          refreshAll();
+          return;
+        }
+        const taskRow = target.closest?.(".scheduler-task-row");
+        if (action === "edit" && taskRow) {
+          editing = store.getTask(taskRow.dataset.taskId);
+          mode = "edit";
+          render();
+          return;
+        }
+        if (action === "run" && taskRow) {
+          event.preventDefault();
+          event.stopPropagation();
+          const task = store.getTask(taskRow.dataset.taskId);
+          if (!task) return;
+          target.disabled = true;
+          target.title = "任务运行中";
+          target.setAttribute("aria-label", "任务运行中");
+          taskRow.dataset.state = "running";
+          taskRow.querySelector(".scheduler-status-dot")?.setAttribute("data-status", "running");
+          void Promise.resolve(runTask(task))
+            .then((result) => {
+              if (result?.queued) {
+                window.zion?.notification?.show?.("任务正在启动", { type: "info", duration: 1600 });
+              }
+              return result;
+            })
+            .catch((error) => {
+              window.zion?.notification?.show?.(error?.message || String(error), { type: "error" });
+            })
+            .finally(requestRender);
+          return;
+        }
+        const runRow = target.closest?.(".scheduler-run-row");
+        if (runRow) {
+          selectedRun = runRow.dataset.runId;
+          mode = "run";
+          render();
+          if (store.getRun(selectedRun)?.isSummary === true) {
+            void Promise.resolve(loadRunDetails?.(selectedRun))
+              .then(render)
+              .catch((error) => {
+                window.zion?.notification?.show?.(error?.message || String(error), { type: "error" });
+              });
+          }
+        }
+      };
 
       const render = () => {
-        container.replaceChildren();
         if (mode === "edit") {
+          container.replaceChildren();
           container.appendChild(createTaskEditor({
             task: editing,
             onCancel: () => { mode = "list"; editing = null; render(); },
@@ -407,92 +654,74 @@ function createPanel({ store, engine, refreshAll, saveTask, toggleTask, deleteTa
           const run = store.getRun(selectedRun);
           if (!run) { mode = "list"; render(); return; }
           const status = run.status || "unknown";
+          const loadingDetails = run.isSummary === true;
+          const detailTask = store.getTask(run.taskId);
+          const canCancel = ACTIVE_RUN_STATUSES.has(status)
+            && (
+              run.executionMode === "service-backed"
+              || detailTask?.executionMode === "service-backed"
+              || status !== "running"
+            );
           const detail = document.createElement("div");
           detail.className = "scheduler-run-detail";
           detail.innerHTML = `
             <header class="scheduler-header">
               <button type="button" class="scheduler-icon-button scheduler-back" title="返回" aria-label="返回"><span class="codicon codicon-arrow-left" aria-hidden="true"></span></button>
               <strong class="scheduler-header-title">运行记录</strong>
+                ${canCancel ? '<button type="button" class="scheduler-text-button danger" data-action="cancel-run">取消运行</button>' : ""}
               ${run.sessionId ? '<button type="button" class="scheduler-text-button" data-action="open-session">打开会话</button>' : ""}
             </header>
             <div class="scheduler-detail-body">
               <div class="scheduler-detail-title">
                 <span class="scheduler-status-dot" data-status="${escapeHtml(status)}"></span>
-                <span class="scheduler-row-copy"><strong>${escapeHtml(run.taskTitle)}</strong><small>${formatDate(run.startedAt)} · ${escapeHtml(runStatusLabel(status))}</small></span>
+                <span class="scheduler-row-copy"><strong>${escapeHtml(run.taskTitle)}</strong><small>${formatDate(run.startedAt)} · ${escapeHtml(runStatusLabel(status, run))}</small></span>
               </div>
               ${run.error ? `<div class="scheduler-error">${escapeHtml(run.error)}</div>` : ""}
               ${run.command ? `<section class="scheduler-detail-section"><div class="scheduler-list-label"><span>命令</span></div><pre>${escapeHtml(run.cwd ? `cd ${run.cwd}\n${run.command}` : run.command)}</pre></section>` : ""}
-              <section class="scheduler-detail-section"><div class="scheduler-list-label"><span>输出</span></div><pre>${escapeHtml(run.output || "暂无输出")}</pre></section>
+              <section class="scheduler-detail-section"><div class="scheduler-list-label"><span>输出</span></div><pre>${escapeHtml(loadingDetails ? "正在加载…" : run.output || "暂无输出")}</pre></section>
               <section class="scheduler-detail-section"><div class="scheduler-list-label"><span>事件</span></div><div class="scheduler-events">${(run.events || []).map((event) => `
                 <div><time>${new Date(event.ts).toLocaleTimeString()}</time><strong>${escapeHtml(event.type)}</strong><code>${escapeHtml(JSON.stringify(event.data || {}))}</code></div>
-              `).join("") || '<div class="scheduler-empty scheduler-empty-compact">暂无事件</div>'}</div></section>
+              `).join("") || `<div class="scheduler-empty scheduler-empty-compact">${loadingDetails ? "正在加载…" : "暂无事件"}</div>`}</div></section>
             </div>
           `;
           detail.querySelector(".scheduler-back").addEventListener("click", () => { mode = "list"; selectedRun = null; render(); });
-            detail.querySelector('[data-action="open-session"]')?.addEventListener("click", () => {
-              window.zion.commands.executeCommand("zion.sessions.switch", run.sessionId);
-            });
+          detail.querySelector('[data-action="open-session"]')?.addEventListener("click", () => {
+            window.zion.commands.executeCommand("zion.sessions.switch", run.sessionId);
+          });
+          detail.querySelector('[data-action="cancel-run"]')?.addEventListener("click", async (event) => {
+            if (typeof globalThis.confirm === "function" && !globalThis.confirm(`取消运行“${run.taskTitle || run.id}”？`)) return;
+            const button = event.currentTarget;
+            button.disabled = true;
+            try {
+              await cancelRun(run.id, "user");
+              window.zion?.notification?.show?.("运行已取消", { type: "info", duration: 1600 });
+              render();
+            } catch (error) {
+              button.disabled = false;
+              window.zion?.notification?.show?.(error?.message || String(error), { type: "error" });
+            }
+          });
+          container.replaceChildren();
           container.appendChild(detail);
           return;
         }
 
-        const tasks = store.listTasks();
-        const runs = store.listRuns().slice(0, 20);
-        const root = document.createElement("div");
-        root.className = "scheduler-panel";
-        root.innerHTML = `
-          <header class="scheduler-header">
-            <strong class="scheduler-header-title">定时任务</strong>
-            <span class="scheduler-header-note">Agent / 命令</span>
-            <button type="button" class="scheduler-icon-button" data-action="new" title="新建任务" aria-label="新建任务"><span class="codicon codicon-add" aria-hidden="true"></span></button>
-          </header>
-          <div class="scheduler-panel-body">
-            <div class="scheduler-task-list">${tasks.length ? tasks.map((task) => {
-              const state = taskState(task, engine);
-              const next = task.enabled ? `下次 ${formatDate(task.nextRun)}` : "已暂停";
-              return `
-                <article class="scheduler-task-row" data-state="${escapeHtml(state)}" data-task-id="${escapeHtml(task.id)}">
-                  <button type="button" class="scheduler-row-main" data-action="edit" title="编辑 ${escapeHtml(task.title)}">
-                    <span class="scheduler-status-dot" data-status="${escapeHtml(state)}"></span>
-                    <span class="scheduler-row-copy"><strong>${escapeHtml(task.title)}</strong><small>${escapeHtml(taskListMeta(task, next))}</small></span>
-                  </button>
-                  <button type="button" class="scheduler-row-action" data-action="run" title="${state === "running" ? "任务运行中" : "立即运行"}" aria-label="${state === "running" ? "任务运行中" : "立即运行"}" ${state === "running" ? "disabled" : ""}><span class="codicon codicon-play" aria-hidden="true"></span></button>
-                </article>`;
-            }).join("") : '<div class="scheduler-empty">还没有定时任务</div>'}</div>
-            <section class="scheduler-history">
-              <div class="scheduler-list-label"><span>最近运行</span>${runs.length ? '<button type="button" class="scheduler-text-button" data-action="clear-runs">清空</button>' : ""}</div>
-              <div class="scheduler-run-list">${runs.length ? runs.map((run) => `
-                <button type="button" class="scheduler-run-row" data-run-id="${escapeHtml(run.id)}">
-                  <span class="scheduler-status-dot" data-status="${escapeHtml(run.status)}"></span>
-                  <span class="scheduler-row-copy"><strong>${escapeHtml(run.taskTitle)}</strong><small>${formatDate(run.startedAt)}</small></span>
-                  <span class="scheduler-run-status" data-status="${escapeHtml(run.status)}">${escapeHtml(runStatusLabel(run.status))}</span>
-                </button>
-              `).join("") : '<div class="scheduler-empty scheduler-empty-compact">暂无运行记录</div>'}</div>
-            </section>
-          </div>
-        `;
-        root.querySelector('[data-action="new"]').addEventListener("click", () => { mode = "edit"; editing = null; render(); });
-        root.querySelector('[data-action="clear-runs"]')?.addEventListener("click", () => { store.clearRuns(); refreshAll(); });
-        root.querySelectorAll(".scheduler-task-row").forEach((row) => {
-          const taskId = row.dataset.taskId;
-          row.querySelector('[data-action="run"]').addEventListener("click", () => {
-            const task = store.getTask(taskId);
-            if (task) void runTask(task);
-          });
-          row.querySelector('[data-action="edit"]').addEventListener("click", () => {
-            editing = store.getTask(taskId);
-            mode = "edit";
-            render();
-          });
-        });
-        root.querySelectorAll(".scheduler-run-row").forEach((button) => {
-          button.addEventListener("click", () => { selectedRun = button.dataset.runId; mode = "run"; render(); });
-        });
-        container.appendChild(root);
+        let root = container.firstElementChild?.classList?.contains("scheduler-panel")
+          ? container.firstElementChild
+          : null;
+        if (!root) {
+          root = createSchedulerListRoot();
+          root.addEventListener("click", handleListClick);
+          container.replaceChildren(root);
+        }
+        syncSchedulerListRoot(root, store, engine);
     };
 
       render();
-      const disposable = window.zion.events.on("scheduler/changed", render);
+      const refreshRunHistory = () => Promise.resolve(refreshRuns?.()).catch(() => {});
+      void refreshRunHistory();
+      const runHistoryTimer = window.setInterval(() => void refreshRunHistory(), 30_000);
+      const disposable = window.zion.events.on("scheduler/changed", requestRender);
       const createDisposable = window.zion.events.on("scheduler/createRequested", () => {
         mode = "edit";
         editing = null;
@@ -500,6 +729,8 @@ function createPanel({ store, engine, refreshAll, saveTask, toggleTask, deleteTa
       });
       return {
         dispose: () => {
+          disposed = true;
+          window.clearInterval(runHistoryTimer);
           disposable.dispose();
           createDisposable.dispose();
           container.classList.remove("scheduler-panel-host");
@@ -529,7 +760,8 @@ export async function activate(ctx) {
   let leaderRelease = null;
   let leaderAbort = null;
   let servicePollTimer = null;
-  let serviceBusy = false;
+  let serviceClaiming = false;
+  const activeServiceRuns = new Set();
   let serviceOnline = false;
   let isLeader = false;
   let disposed = false;
@@ -540,7 +772,7 @@ export async function activate(ctx) {
   const updateStatus = () => {
     if (disposed) return;
     const enabled = store.listTasks().filter((task) => task.enabled).length;
-    const running = engine ? Array.from(engine.runningTasks || []).length : 0;
+    const running = (engine ? Array.from(engine.runningTasks || []).length : 0) + activeServiceRuns.size;
     statusDisposable?.dispose?.();
     statusDisposable = window.zion.statusBar.registerItem({
       id: STATUS_ID,
@@ -830,6 +1062,9 @@ export async function activate(ctx) {
     const toggleTask = (task) => controller.setEnabled(task.id, !task.enabled);
     const deleteTask = (task) => controller.deleteTask(task?.id);
     const refreshServiceTasks = () => controller.refreshServiceTasks();
+    const refreshServiceRuns = () => controller.refreshServiceRuns();
+    const loadRunDetails = (runId) => controller.getRunDetails(runId);
+    const cancelRun = (runId, reason = "user") => controller.cancelRun(runId, reason);
     const requestRun = async (task) => {
       const result = await controller.runNow(task.id);
       if (task.executionMode === "service-backed") void pollService();
@@ -837,18 +1072,27 @@ export async function activate(ctx) {
     };
 
     const pollService = async () => {
-        if (disposed || !isLeader || serviceBusy || !window.zion?.chat?.execute) return;
-      serviceBusy = true;
+      if (
+        disposed
+        || !isLeader
+        || serviceClaiming
+        || activeServiceRuns.size >= MAX_CONCURRENT_SERVICE_RUNS
+        || !window.zion?.chat?.execute
+      ) return;
+      serviceClaiming = true;
+      let claimedRun = null;
       try {
           const availableTools = (window.zion?.state?.get?.("chat.tools") || [])
             .map((tool) => String(tool?.function?.name || tool?.name || ""))
             .filter(Boolean);
-          if (service?.executeCommand && !availableTools.includes("terminalExecute")) {
-            availableTools.push("terminalExecute");
+          if (service?.executeCommand) {
+            if (!availableTools.includes("Bash")) availableTools.push("Bash");
+            if (!availableTools.includes("terminalExecute")) availableTools.push("terminalExecute");
           }
           const remoteRun = await service.claim(workerId, availableTools);
         serviceOnline = true;
         if (remoteRun) {
+          claimedRun = remoteRun;
           const snapshot = remoteRun.task || {};
           const existing = store.listTasks().find((task) =>
             task.remoteTaskId === remoteRun.taskId || task.id === snapshot.clientTaskId
@@ -859,15 +1103,24 @@ export async function activate(ctx) {
             executionMode: "service-backed",
             capability: snapshot.capability || { preset: "read-only" }
           };
-          await runTask(task, { runId: remoteRun.id });
-          await refreshServiceTasks();
+          activeServiceRuns.add(remoteRun.id);
+          updateStatus();
+          void (async () => {
+            await runTask(task, { runId: remoteRun.id });
+            await refreshServiceTasks();
+          })().finally(() => {
+            activeServiceRuns.delete(remoteRun.id);
+            updateStatus();
+            void pollService();
+          });
         }
       } catch {
         serviceOnline = false;
       } finally {
-        serviceBusy = false;
+        serviceClaiming = false;
         updateStatus();
       }
+      if (claimedRun && activeServiceRuns.size < MAX_CONCURRENT_SERVICE_RUNS) void pollService();
     };
 
   const startLeader = () => {
@@ -889,6 +1142,13 @@ export async function activate(ctx) {
     }
   };
   startLeader();
+    const onSchedulerStorage = (event) => {
+      if (!event.key || event.key.startsWith("zion.scheduler.local.")) {
+        emitChanged();
+        updateStatus();
+      }
+    };
+    window.addEventListener("storage", onSchedulerStorage);
     void refreshServiceTasks();
     servicePollTimer = window.setInterval(() => void pollService(), 3000);
     void pollService();
@@ -897,10 +1157,13 @@ export async function activate(ctx) {
       store,
       engine,
       refreshAll: () => { emitChanged(); updateStatus(); },
+      refreshRuns: refreshServiceRuns,
+      loadRunDetails,
       saveTask,
       toggleTask,
       deleteTask,
-      runTask: requestRun
+      runTask: requestRun,
+      cancelRun
     });
   const viewDisposable = window.zion.auxiliaryBar.registerView({
     id: VIEW_ID,
@@ -940,18 +1203,22 @@ export async function activate(ctx) {
     const task = store.getTask(String(taskId || ""));
     return task ? requestRun(task) : null;
   });
+  const cancel = window.zion.commands.registerCommand("scheduler.cancelRun", (runId, reason = "user") =>
+    cancelRun(String(runId || ""), reason)
+  );
   const schedulerTool = registerSchedulerTool({
     controller,
     openPanel: () => window.zion.commands.executeCommand("scheduler.openPanel")
   });
 
   updateStatus();
-  ctx.subscriptions.push(viewDisposable, activityDisposable, open, create, runNow, schedulerTool, {
+  ctx.subscriptions.push(viewDisposable, activityDisposable, open, create, runNow, cancel, schedulerTool, {
     dispose() {
         disposed = true;
       leaderRelease?.();
       leaderAbort?.abort?.();
-        if (servicePollTimer) window.clearInterval(servicePollTimer);
+      if (servicePollTimer) window.clearInterval(servicePollTimer);
+      window.removeEventListener("storage", onSchedulerStorage);
       engine.stop();
       statusDisposable?.dispose?.();
     }

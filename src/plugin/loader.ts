@@ -231,6 +231,22 @@ export class PluginLoader {
           }
         }
 
+        const skills = zion.contributes?.skills;
+        if (skills != null) {
+          if (!Array.isArray(skills)) {
+            errors.push('Skills contribution must be an array');
+          } else {
+            for (const skillPath of skills) {
+              const value = typeof skillPath === 'string' ? skillPath.trim() : '';
+              if (!value) {
+                errors.push('Skill contribution must be a non-empty relative path');
+              } else if (value.startsWith('/') || value.includes('..')) {
+                errors.push(`Skill contribution path must stay inside the plugin: ${value}`);
+              }
+            }
+          }
+        }
+
       } else {
         // 验证旧格式（已废弃）
         errors.push('Extension format is no longer supported. Please use manifest.json format.');

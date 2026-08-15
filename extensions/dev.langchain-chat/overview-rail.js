@@ -80,8 +80,11 @@ function resolveAssistantHeadLine(lines, preferredHeadLine) {
   return -1;
 }
 
-export function findAssistantBlockRange(text, preferredHeadLine) {
-  const lines = String(text || "").replace(/\r/g, "").split("\n");
+function getOverviewLines(text) {
+  return String(text || "").replace(/\r/g, "").split("\n");
+}
+
+function findAssistantBlockRangeFromLines(lines, preferredHeadLine) {
   const headLine = resolveAssistantHeadLine(lines, preferredHeadLine);
   if (headLine < 0) return null;
 
@@ -98,9 +101,12 @@ export function findAssistantBlockRange(text, preferredHeadLine) {
   };
 }
 
-function findTrailingUserPromptLine(text, assistantRange) {
+export function findAssistantBlockRange(text, preferredHeadLine) {
+  return findAssistantBlockRangeFromLines(getOverviewLines(text), preferredHeadLine);
+}
+
+function findTrailingUserPromptLine(lines, assistantRange) {
   if (!assistantRange || typeof assistantRange.endLine !== "number") return null;
-  const lines = String(text || "").replace(/\r/g, "").split("\n");
   const targetLine = assistantRange.endLine + 1;
   if (targetLine < lines.length && USER_HEAD_RE.test(lines[targetLine] || "")) {
     return targetLine;
@@ -149,8 +155,7 @@ function compactUserMessageText(value, maxLength = 96) {
   return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…` : text;
 }
 
-export function collectUserMessageItemsFromText(text) {
-  const lines = String(text || "").replace(/\r/g, "").split("\n");
+function collectUserMessageItemsFromLines(lines) {
   const items = [];
   const addItem = (line, endLine, previewLines) => {
     items.push({
@@ -197,6 +202,10 @@ export function collectUserMessageItemsFromText(text) {
   return items;
 }
 
+export function collectUserMessageItemsFromText(text) {
+  return collectUserMessageItemsFromLines(getOverviewLines(text));
+}
+
 function getUserRoleBlocks(view) {
   try {
     const blocks = window.zion?.roles?.getBlocks?.(view);
@@ -209,13 +218,13 @@ function getUserRoleBlocks(view) {
   return null;
 }
 
-function computeUserNavState(view) {
+function computeUserNavState(view, knownUserMessages = null) {
   const doc = view?.state?.doc;
   if (!view || !doc) return { userLines: [], prevLine: null, nextLine: null };
   const roleBlocks = getUserRoleBlocks(view);
   const userLines = roleBlocks
     ? roleBlocks.map((block) => block.startLine)
-    : collectUserMessageItemsFromText(doc.toString()).map((item) => item.line);
+    : (knownUserMessages || collectUserMessageItemsFromText(doc.toString())).map((item) => item.line);
   if (!userLines.length) return { userLines, prevLine: null, nextLine: null };
 
   const cursorLine = Math.max(0, doc.lineAt(view.state.selection.main.head).number - 1);
@@ -432,6 +441,7 @@ export function createChatOverviewRail(editor) {
 
   let disposed = false;
   let rafId = 0;
+  let renderTimer = 0;
   const subscriptions = [];
   const scrollDOM = view.scrollDOM || null;
   let suppressScrollTracking = false;
@@ -519,10 +529,11 @@ export function createChatOverviewRail(editor) {
       ? window.zion?.state?.get?.(`chat.answerHeadLine.${sessionId}`)
       : undefined;
     const docText = view.state.doc.toString();
-    const range = findAssistantBlockRange(docText, preferredHeadLine);
+    const lines = getOverviewLines(docText);
+    const range = findAssistantBlockRangeFromLines(lines, preferredHeadLine);
     if (range) {
       try {
-        const trailingUserLine = findTrailingUserPromptLine(docText, range);
+        const trailingUserLine = findTrailingUserPromptLine(lines, range);
         const targetLine = trailingUserLine == null ? range.endLine : trailingUserLine;
         const line = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, targetLine + 1)));
         const block = view.lineBlockAt(line.to);
@@ -691,13 +702,14 @@ export function createChatOverviewRail(editor) {
     const preferredHeadLine = sessionId
       ? window.zion?.state?.get?.(`chat.answerHeadLine.${sessionId}`)
       : undefined;
-    const range = findAssistantBlockRange(doc.toString(), preferredHeadLine);
+    const lines = getOverviewLines(doc.toString());
+    const range = findAssistantBlockRangeFromLines(lines, preferredHeadLine);
     const isStreaming = sessionId
       ? !!window.zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming
       : false;
     const followLatest = sessionId ? isFollowLatestEnabled(sessionId) : false;
-    const userNav = computeUserNavState(view);
-    const userMessages = collectUserMessageItemsFromText(doc.toString());
+    const userMessages = collectUserMessageItemsFromLines(lines);
+    const userNav = computeUserNavState(view, userMessages);
     renderUserHistory(userMessages, cursorLine, sessionId);
 
     assistantRangeEl.classList.toggle("is-streaming", isStreaming);
@@ -730,8 +742,19 @@ export function createChatOverviewRail(editor) {
     latestBtn.setAttribute("aria-label", latestBtn.title);
   };
 
-  function scheduleRender() {
+  function scheduleRender(delay = 0) {
     if (disposed) return;
+    if (renderTimer) {
+      window.clearTimeout(renderTimer);
+      renderTimer = 0;
+    }
+    if (delay > 0) {
+      renderTimer = window.setTimeout(() => {
+        renderTimer = 0;
+        scheduleRender();
+      }, delay);
+      return;
+    }
     if (rafId) window.cancelAnimationFrame(rafId);
     rafId = window.requestAnimationFrame(render);
   }
@@ -739,13 +762,14 @@ export function createChatOverviewRail(editor) {
   try {
     editor.addVisualExtension(
       EditorView.updateListener.of((update) => {
-        if (
-          update.docChanged ||
+        if (update.docChanged) {
+          scheduleRender(120);
+        } else if (
           update.selectionSet ||
           update.geometryChanged ||
           update.viewportChanged
         ) {
-          scheduleRender();
+          if (!renderTimer) scheduleRender();
         }
       })
     );
@@ -874,6 +898,7 @@ export function createChatOverviewRail(editor) {
     dispose() {
       disposed = true;
       if (rafId) window.cancelAnimationFrame(rafId);
+      if (renderTimer) window.clearTimeout(renderTimer);
       try {
         resizeObserver?.disconnect();
       } catch {}

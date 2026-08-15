@@ -517,6 +517,24 @@ export class HttpPluginInstaller {
       throw new Error('插件包缺少 manifest.json 或 package.json');
     }
 
+    const skillContents: Record<string, string> = {};
+    const contributedSkills = manifest?.zion?.contributes?.skills;
+    if (Array.isArray(contributedSkills)) {
+      for (const declaredPath of contributedSkills) {
+        const relativePath = String(declaredPath || '')
+          .trim()
+          .replace(/\\/g, '/')
+          .replace(/^\.\//, '')
+          .replace(/\/+$/, '');
+        const parts = relativePath.split('/').filter(Boolean);
+        if (!parts.length || parts.some((part) => part === '.' || part === '..')) continue;
+        const skillEntry = zip.file(`${parts.join('/')}/SKILL.md`);
+        if (!skillEntry) continue;
+        const content = await skillEntry.async('string');
+        if (content.length <= 256 * 1024) skillContents[parts.join('/')] = content;
+      }
+    }
+
     // 解析主入口
     const mainRel: string = manifest?.zion?.main || manifest?.main || 'dist/main.js';
     const normMainRel = String(mainRel).replace(/^\.\//, '');
@@ -557,7 +575,8 @@ export class HttpPluginInstaller {
       peerDependencies: manifest?.zion?.peerDependencies ? Object.keys(manifest.zion.peerDependencies) : [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      isLegacy: !manifest?.zion
+      isLegacy: !manifest?.zion,
+      skillContents: Object.keys(skillContents).length ? skillContents : undefined
     };
 
     return pluginInfo;

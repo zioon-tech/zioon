@@ -35,6 +35,7 @@ export type SessionRuntimeOptions = {
   getGlobalSessionId?(): string | null;
   focusPanel?(panelId: string): void;
   activatePanelTab(panelId: string, sessionId: string): void;
+  restorePanelSession?(panelId: string, sessionId: string): boolean | void;
   syncLegacyEditorTabsState?(panelId: string): void;
   switchSessionDocument?(args: { id: string; panelId: string; previousSessionId: string | null; skipPersistPrevious?: boolean }): unknown | Promise<unknown>;
   emit?(topic: string, payload?: any): void;
@@ -44,9 +45,14 @@ function debugSessionRuntime(_event: string, _payload?: any): void {
 }
 
 export class SessionRuntime implements Disposable {
+  private switchSeq = 0;
+  private readonly activeSwitches = new Map<string, number>();
+
   constructor(private readonly opts: SessionRuntimeOptions) {}
 
-  dispose(): void {}
+  dispose(): void {
+    this.activeSwitches.clear();
+  }
 
   getPanelSessionId(panelId: string | null | undefined): string | null {
     if (!panelId) return null;
@@ -123,6 +129,9 @@ export class SessionRuntime implements Disposable {
     });
     if (!exists) {
       panel.tabs = [...panel.tabs, { id: sessionId, title: sessionId, isDirty: false }];
+      try {
+        this.opts.emit?.("panel/tabsChanged", { panelId, sessionId });
+      } catch {}
     }
     if (openOpts.focus !== false) {
       try { this.opts.focusPanel?.(panelId); } catch {}
@@ -134,6 +143,8 @@ export class SessionRuntime implements Disposable {
     if (!sessionId) return false;
     const panel = this.opts.getPanel(panelId);
     if (!panel) return false;
+    const switchToken = ++this.switchSeq;
+    this.activeSwitches.set(panelId, switchToken);
     const previousSessionId = panel.activeTabId || null;
     debugSessionRuntime("switchPanelSession.start", {
       panelId,
@@ -194,13 +205,28 @@ export class SessionRuntime implements Disposable {
       editorId: (this.opts.getEditor(panelId) as any)?.editorId || null
     });
     if (documentSwitched === false) {
-      if (previousSessionId) {
-        try { this.opts.activatePanelTab(panelId, previousSessionId); } catch {}
-      } else {
-        try { panel.activeTabId = null; } catch {}
+      const isCurrentSwitch = this.activeSwitches.get(panelId) === switchToken;
+      if (isCurrentSwitch && this.opts.getPanel(panelId)?.activeTabId === sessionId) {
+        if (previousSessionId) {
+          let restored = false;
+          try {
+            restored = this.opts.restorePanelSession?.(panelId, previousSessionId) === true;
+          } catch {}
+          if (!restored) {
+            try { this.opts.activatePanelTab(panelId, previousSessionId); } catch {}
+          }
+        } else {
+          try { panel.activeTabId = null; } catch {}
+        }
+        try { this.opts.syncLegacyEditorTabsState?.(panelId); } catch {}
       }
-      try { this.opts.syncLegacyEditorTabsState?.(panelId); } catch {}
       return false;
+    }
+    if (this.activeSwitches.get(panelId) !== switchToken) {
+      return true;
+    }
+    if (this.opts.getPanel(panelId)?.activeTabId !== sessionId) {
+      return true;
     }
 
     try {
@@ -212,7 +238,15 @@ export class SessionRuntime implements Disposable {
     } catch {}
     if (switchOpts.focus !== false) {
       try { this.opts.focusPanel?.(panelId); } catch {}
-      try { this.opts.getEditor(panelId)?.focus?.(); } catch {}
+      const focusEditor = () => {
+        if (this.opts.getPanel(panelId)?.activeTabId !== sessionId) return;
+        try { this.opts.getEditor(panelId)?.focus?.(); } catch {}
+      };
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => setTimeout(focusEditor, 0));
+      } else {
+        focusEditor();
+      }
     }
 
     debugSessionRuntime("switchPanelSession.done", {

@@ -49,7 +49,10 @@ export class SessionDocumentRuntime {
 
     let text = "";
     try {
-      text = await this.opts.loadDocument(id);
+      const loaded = this.opts.loadDocument(id);
+      text = loaded && typeof (loaded as Promise<string>)?.then === "function"
+        ? await loaded
+        : String(loaded || "");
       if (!this.isCurrentSwitch(switchKey, switchToken, id, targetPanelId)) return false;
     } catch (e) {
       void e;
@@ -62,7 +65,11 @@ export class SessionDocumentRuntime {
     this.opts.setGlobalSessionId(id);
     const targetEditor = this.opts.getTargetEditor(targetPanelId);
     try { (targetEditor as any)?.setSessionId?.(id); } catch {}
-    targetEditor?.setValue(text, { source: "session-load" });
+    let currentText: string | undefined;
+    try { currentText = targetEditor?.getValue?.(); } catch {}
+    if (currentText !== text) {
+      targetEditor?.setValue(text, { source: "session-load" });
+    }
     this.opts.applyAnnotations(id, targetPanelId);
 
     if (!this.isCurrentSwitch(switchKey, switchToken, id, targetPanelId)) return false;

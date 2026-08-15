@@ -12,6 +12,7 @@ import { foldService } from "@codemirror/language";
 
 // 默认内置角色
 const BASE_ROLE_PREFIXES = ["user", "assistant", "system"];
+const ASSISTANT_BLOCK_ID_RE = /^assistant\s+(<!--\s*zion-assistant:id=[^>\s]+\s*-->)\s?/;
 
 /**
  * 从环境读取自定义角色前缀：
@@ -154,13 +155,46 @@ function buildRoleSpacerDecorations(state, prefixes) {
   return builder.finish();
 }
 
+function canMapRoleSpacers(tr, prefixes) {
+  let reusable = true;
+  tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+    if (!reusable) return;
+    if (/[\n\r]/.test(inserted.toString())) {
+      reusable = false;
+      return;
+    }
+
+    const oldFromLine = tr.startState.doc.lineAt(fromA);
+    const oldToLine = tr.startState.doc.lineAt(toA);
+    const newFromLine = tr.state.doc.lineAt(fromB);
+    const newToLine = tr.state.doc.lineAt(toB);
+    if (oldFromLine.number !== oldToLine.number || newFromLine.number !== newToLine.number) {
+      reusable = false;
+      return;
+    }
+
+    const oldRole = getRoleForLine(oldFromLine.text, prefixes);
+    const newRole = getRoleForLine(newFromLine.text, prefixes);
+    const oldOffset = fromA - oldFromLine.from;
+    const newOffset = fromB - newFromLine.from;
+    if (
+      (oldRole && oldOffset < oldRole.length + 1) ||
+      (newRole && newOffset < newRole.length + 1)
+    ) {
+      reusable = false;
+    }
+  });
+  return reusable;
+}
+
 function roleSpacerField(prefixes) {
   return StateField.define({
     create(state) {
       return buildRoleSpacerDecorations(state, prefixes);
     },
     update(value, tr) {
-      return tr.docChanged ? buildRoleSpacerDecorations(tr.state, prefixes) : value.map(tr.changes);
+      if (!tr.docChanged || canMapRoleSpacers(tr, prefixes)) return value.map(tr.changes);
+      return buildRoleSpacerDecorations(tr.state, prefixes);
     },
     provide: field => EditorView.decorations.from(field)
   });
@@ -275,6 +309,18 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex, flashLin
         line.from + tokenLen,
         Decoration.mark({ class: tokenClass(roleHere) + " cm-role-token-head" })
       );
+      if (roleHere === "assistant") {
+        const assistantIdMatch = text.match(ASSISTANT_BLOCK_ID_RE);
+        if (assistantIdMatch) {
+          const comment = assistantIdMatch[1];
+          const commentFrom = line.from + text.indexOf(comment);
+          builder.add(
+            commentFrom,
+            commentFrom + comment.length,
+            Decoration.replace({})
+          );
+        }
+      }
     }
 
     // 如果提供了 @role 正则，则在当前行内查找所有内联 @role 并标记（支持自定义前缀）
@@ -564,6 +610,27 @@ function rolesView(opts = {}) {
         this.flashLineIndex = null;
         this.flashSerial = 0;
         this.flashTimer = 0;
+        this.indexTimer = 0;
+        this.indexIdle = 0;
+        this.scheduleIndexRefresh = () => {
+          if (this.indexTimer) window.clearTimeout(this.indexTimer);
+          if (this.indexIdle && typeof window.cancelIdleCallback === "function") {
+            window.cancelIdleCallback(this.indexIdle);
+            this.indexIdle = 0;
+          }
+          this.indexTimer = window.setTimeout(() => {
+            this.indexTimer = 0;
+            const refresh = () => {
+              this.indexIdle = 0;
+              try { buildRolesIndexFromView(this.view, prefixes); } catch {}
+            };
+            if (typeof window.requestIdleCallback === "function") {
+              this.indexIdle = window.requestIdleCallback(refresh, { timeout: 400 });
+            } else {
+              refresh();
+            }
+          }, 120);
+        };
         this.onFlash = (event) => {
           const detail = event?.detail || {};
           if (detail.view !== this.view) return;
@@ -592,7 +659,7 @@ function rolesView(opts = {}) {
           this.decorations = buildDecorations(update.view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
         }
         if (update.docChanged) {
-          try { buildRolesIndexFromView(update.view, prefixes); } catch {}
+          this.scheduleIndexRefresh();
         }
       }
       destroy() {
@@ -600,6 +667,14 @@ function rolesView(opts = {}) {
         if (this.flashTimer) {
           try { window.clearTimeout(this.flashTimer); } catch {}
           this.flashTimer = 0;
+        }
+        if (this.indexTimer) {
+          try { window.clearTimeout(this.indexTimer); } catch {}
+          this.indexTimer = 0;
+        }
+        if (this.indexIdle && typeof window.cancelIdleCallback === "function") {
+          try { window.cancelIdleCallback(this.indexIdle); } catch {}
+          this.indexIdle = 0;
         }
       }
     },

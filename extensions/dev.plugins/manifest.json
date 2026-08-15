@@ -1,14 +1,72 @@
 {
   "name": "dev.plugins",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.plugins",
+  "description": "View, enable, disable, install, and develop Zion plugins.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.plugins",
-    "name": "dev.plugins",
+    "name": "Plugin Manager",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "插件管理器",
+        "en-US": "Plugin Manager"
+      },
+      "description": {
+        "zh-CN": "查看、启用、停用、安装和开发调试 Zion 插件。",
+        "en-US": "View, enable, disable, install, and develop Zion plugins."
+      },
+      "icon": "extensions",
+      "category": "system",
+      "features": {
+        "zh-CN": [
+          "管理插件启停和运行状态",
+          "检查插件能力、权限与错误",
+          "安装插件并启动本地开发会话"
+        ],
+        "en-US": [
+          "Manage plugin state and runtime health",
+          "Inspect capabilities, permissions, and errors",
+          "Install plugins and start local development sessions"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "plugin-management",
+          "label": {
+            "zh-CN": "插件管理",
+            "en-US": "Plugin management"
+          },
+          "description": {
+            "zh-CN": "安装、启用、停用和重新加载插件。",
+            "en-US": "Install, enable, disable, and reload plugins."
+          }
+        },
+        {
+          "id": "network",
+          "label": {
+            "zh-CN": "网络访问",
+            "en-US": "Network access"
+          },
+          "description": {
+            "zh-CN": "连接配置的插件服务与开发服务器。",
+            "en-US": "Connect to configured plugin services and development servers."
+          }
+        }
+      ],
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "显示插件",
+            "en-US": "Show Plugins"
+          },
+          "command": "zion.plugins.show",
+          "icon": "extensions"
+        }
+      ]
+    },
     "contributes": {
       "commands": [
         {
@@ -17,6 +75,9 @@
           "titleKey": "dev.plugins.cmd.show",
           "categoryKey": "dev.plugins.category.plugins"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "nameKey": "dev.plugins.pluginName.dev.plugins",

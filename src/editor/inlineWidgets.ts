@@ -1,10 +1,11 @@
-import { Facet, type EditorState, type Range } from "@codemirror/state";
+import { Facet, type EditorState, type Range, type Transaction } from "@codemirror/state";
 import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
 
 export type InlineWidgetDecorationSource = {
   id: string;
   priority?: number;
   buildDecorations: (state: EditorState) => readonly Range<Decoration>[];
+  requiresRebuild?: (transaction: Transaction) => boolean;
 };
 
 export const inlineWidgetSourceFacet = Facet.define<InlineWidgetDecorationSource, readonly InlineWidgetDecorationSource[]>({
@@ -42,8 +43,7 @@ function buildAnchorLineDecorations(state: EditorState): Range<Decoration>[] {
 
 function buildUnifiedInlineWidgetDecorations(state: EditorState): DecorationSet {
   const decorations: Range<Decoration>[] = buildAnchorLineDecorations(state);
-  const sources = [...state.facet(inlineWidgetSourceFacet)]
-    .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || a.id.localeCompare(b.id));
+  const sources = getSortedSources(state);
 
   for (const source of sources) {
     try {
@@ -56,6 +56,55 @@ function buildUnifiedInlineWidgetDecorations(state: EditorState): DecorationSet 
   return Decoration.set(decorations, true);
 }
 
+function getSortedSources(state: EditorState): InlineWidgetDecorationSource[] {
+  return [...state.facet(inlineWidgetSourceFacet)]
+    .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || a.id.localeCompare(b.id));
+}
+
+function lineRangeContainsAnchor(state: EditorState, from: number, to: number): boolean {
+  const doc = state.doc;
+  const safeFrom = Math.max(0, Math.min(doc.length, from));
+  const safeTo = Math.max(safeFrom, Math.min(doc.length, to));
+  const fromLine = doc.lineAt(safeFrom).number;
+  const toLine = doc.lineAt(safeTo).number;
+  for (let lineNo = fromLine; lineNo <= toLine; lineNo++) {
+    if (isInlineWidgetAnchorLine(doc.line(lineNo).text)) return true;
+  }
+  return false;
+}
+
+function changesTouchInlineWidgetAnchor(update: ViewUpdate): boolean {
+  let touchesAnchor = false;
+  update.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    if (touchesAnchor) return;
+    touchesAnchor =
+      lineRangeContainsAnchor(update.startState, fromA, toA) ||
+      lineRangeContainsAnchor(update.state, fromB, toB);
+  });
+  return touchesAnchor;
+}
+
+function sourcesChanged(update: ViewUpdate): boolean {
+  const before = getSortedSources(update.startState);
+  const after = getSortedSources(update.state);
+  return before.length !== after.length || before.some((source, index) => source !== after[index]);
+}
+
+function sourceRequiresRebuild(update: ViewUpdate): boolean {
+  const sources = getSortedSources(update.state);
+  return update.transactions.some((transaction) =>
+    sources.some((source) => {
+      try {
+        return source.requiresRebuild
+          ? source.requiresRebuild(transaction) === true
+          : transaction.effects.length > 0;
+      } catch {
+        return true;
+      }
+    })
+  );
+}
+
 const inlineWidgetDecorationsPlugin = ViewPlugin.fromClass(class {
   decorations: DecorationSet;
 
@@ -64,8 +113,12 @@ const inlineWidgetDecorationsPlugin = ViewPlugin.fromClass(class {
   }
 
   update(update: ViewUpdate) {
-    const hasEffects = update.transactions.some((tr) => tr.effects.length > 0);
-    if (!update.docChanged && !hasEffects) return;
+    const rebuildForSource = sourcesChanged(update) || sourceRequiresRebuild(update);
+    if (update.docChanged && !rebuildForSource && !changesTouchInlineWidgetAnchor(update)) {
+      this.decorations = this.decorations.map(update.changes);
+      return;
+    }
+    if (!update.docChanged && !rebuildForSource) return;
     this.decorations = buildUnifiedInlineWidgetDecorations(update.state);
   }
 }, {

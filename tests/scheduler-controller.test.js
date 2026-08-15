@@ -38,19 +38,38 @@ describe("scheduler controller", () => {
     expect(task.capability).toMatchObject({ preset: "read-only", allowedTools: [] });
     expect(validateSchedulerTask(task)).toBe("");
 
+    const migrated = mergeSchedulerTask(task, {
+      capability: {
+        preset: "trusted-automation",
+        allowedTools: ["fsWrite", "fsEdit", "terminalExecute"],
+        fileRoots: ["/workspace/project"],
+        allowedCommandPrefixes: ["npm test"]
+      }
+    }, NOW);
+    expect(migrated.capability.allowedTools).toEqual(["write", "edit", "Bash"]);
+    expect(validateSchedulerTask(migrated)).toBe("");
+
     const unsafe = mergeSchedulerTask(task, {
-      capability: { preset: "read-only", allowedTools: ["terminalExecute"] }
+      capability: { preset: "read-only", allowedTools: ["Bash"] }
     }, NOW);
     expect(validateSchedulerTask(unsafe)).toContain("只读权限");
 
     const trusted = mergeSchedulerTask(task, {
       capability: {
         preset: "trusted-automation",
-        allowedTools: ["terminalExecute"],
+        allowedTools: ["Bash"],
         allowedCommandPrefixes: ["npm test"]
       }
     }, NOW);
     expect(validateSchedulerTask(trusted)).toBe("");
+
+    const unrestrictedBash = mergeSchedulerTask(task, {
+      capability: {
+        preset: "trusted-automation",
+        allowedTools: ["Bash"]
+      }
+    }, NOW);
+    expect(validateSchedulerTask(unrestrictedBash)).toBe("");
 
     const recursive = mergeSchedulerTask(task, {
       capability: { preset: "trusted-automation", allowedTools: ["schedulerManage"] }
@@ -63,7 +82,7 @@ describe("scheduler controller", () => {
         allowedCommandPrefixes: ["bash"]
       }
     }, NOW);
-    expect(validateSchedulerTask(missingTerminalTool)).toContain("terminalExecute");
+    expect(validateSchedulerTask(missingTerminalTool)).toContain("Bash");
 
     const commandTask = buildSchedulerTask({
       taskType: "command",
@@ -76,7 +95,7 @@ describe("scheduler controller", () => {
       prompt: "",
       capability: {
         preset: "trusted-automation",
-        allowedTools: ["terminalExecute"],
+        allowedTools: ["Bash"],
         allowedCommandPrefixes: ["bash /tmp/parking_monitor.sh"]
       }
     });
@@ -196,7 +215,7 @@ describe("scheduler controller", () => {
       events: []
     });
     const runs = await controller.listRuns({ taskId: saved.id });
-    expect(service.listRuns).toHaveBeenCalledWith("remote-task");
+    expect(service.listRuns).toHaveBeenCalledWith("remote-task", { limit: 50 });
     expect(runs[0]).toMatchObject({ id: "remote-run", taskId: saved.id, output: "local output" });
 
     const paused = await controller.setEnabled(saved.id, false);
@@ -205,10 +224,157 @@ describe("scheduler controller", () => {
 
     await expect(controller.runNow(saved.id)).resolves.toMatchObject({
       queued: true,
-      run: { id: "remote-run", status: "pending" }
+      run: { id: "remote-run", taskId: saved.id, taskTitle: saved.title, status: "pending" }
     });
+    expect(store.getRun("remote-run")).toMatchObject({
+      taskId: saved.id,
+      taskTitle: saved.title,
+      status: "pending"
+    });
+    await expect(controller.runNow(saved.id)).rejects.toThrow("任务已在排队中");
+    expect(service.runNow).toHaveBeenCalledTimes(1);
+    await expect(controller.refreshServiceRuns()).resolves.toMatchObject({ online: true });
+    expect(store.getRun("remote-run")).toMatchObject({ taskId: saved.id, status: "success" });
+    await expect(controller.runNow(saved.id)).resolves.toMatchObject({
+      queued: true,
+      run: { id: "remote-run", taskId: saved.id, status: "pending" }
+    });
+    expect(service.runNow).toHaveBeenCalledTimes(2);
     await controller.deleteTask(saved.id);
     expect(service.deleteTask).toHaveBeenCalledWith(expect.objectContaining({ remoteTaskId: "remote-task" }));
     expect(onServiceStatus).toHaveBeenCalledWith(true);
   });
+
+  it("loads full service run details only for summary records", async () => {
+    const service = {
+      getRun: vi.fn(async () => ({
+        id: "remote-run",
+        taskId: "remote-task",
+        status: "success",
+        createdAt: NOW,
+        output: "full output",
+        events: [{ type: "run.finished", ts: NOW }]
+      }))
+    };
+    const { controller, store } = createController({ service });
+    store.saveTask({
+      id: "local-task",
+      remoteTaskId: "remote-task",
+      title: "Service task",
+      executionMode: "service-backed",
+      createdAt: NOW
+    });
+    store.saveRun({
+      id: "remote-run",
+      taskId: "local-task",
+      taskTitle: "Service task",
+      status: "success",
+      startedAt: NOW,
+      isSummary: true,
+      output: "",
+      events: []
+    });
+
+    await expect(controller.getRunDetails("remote-run")).resolves.toMatchObject({
+      id: "remote-run",
+      taskId: "local-task",
+      isSummary: false,
+      output: "full output",
+      events: [{ type: "run.finished", ts: NOW }]
+    });
+    expect(service.getRun).toHaveBeenCalledTimes(1);
+
+    await controller.getRunDetails("remote-run");
+    expect(service.getRun).toHaveBeenCalledTimes(1);
+  });
+
+    it("fails stale service-backed pending runs before enforcing overlap", async () => {
+      const service = {
+        cancel: vi.fn(async () => ({ ok: true })),
+        runNow: vi.fn(async () => ({
+          id: "remote-run-next",
+          taskId: "remote-task",
+          status: "pending",
+          startedAt: NOW
+        }))
+      };
+      const { controller, store } = createController({ service });
+      const task = buildSchedulerTask({
+        id: "task-service",
+        title: "Service task",
+        prompt: "Produce a report",
+        executionMode: "service-backed",
+        schedule: { kind: "daily", time: "09:00" },
+        timeoutSeconds: 60
+      }, null, NOW);
+      store.saveTask({ ...task, remoteTaskId: "remote-task" });
+      store.saveRun({
+        id: "run-stale",
+        taskId: task.id,
+        taskTitle: task.title,
+        executionMode: "service-backed",
+        status: "pending",
+        scheduledFor: NOW - 700_000,
+        startedAt: NOW - 700_000,
+        completedAt: null,
+        sessionId: null,
+        output: "",
+        events: []
+      });
+
+      await expect(controller.runNow(task.id)).resolves.toMatchObject({
+        queued: true,
+        run: { id: "remote-run-next", status: "pending" }
+      });
+      expect(store.getRun("run-stale")).toMatchObject({
+        status: "failed",
+        completedAt: NOW,
+        stale: true,
+        error: "运行在分配执行会话前超时，已自动清理"
+      });
+      expect(service.cancel).toHaveBeenCalledWith("run-stale", "timeout");
+      expect(service.runNow).toHaveBeenCalledTimes(1);
+    });
+
+    it("aborts active service-backed runs through the shared controller", async () => {
+      const service = {
+        cancel: vi.fn(async () => ({ ok: true })),
+        runNow: vi.fn(async () => ({ id: "run-next", taskId: "remote-task", status: "pending" }))
+      };
+      const { controller, store } = createController({ service });
+      const task = buildSchedulerTask({
+        id: "task-service",
+        title: "Service task",
+        prompt: "Produce a report",
+        executionMode: "service-backed",
+        schedule: { kind: "daily", time: "09:00" }
+      }, null, NOW);
+      store.saveTask({ ...task, remoteTaskId: "remote-task" });
+      store.saveRun({
+        id: "run-active",
+        taskId: task.id,
+        taskTitle: task.title,
+        executionMode: "service-backed",
+        status: "pending",
+        startedAt: NOW,
+        completedAt: null,
+        output: "",
+        events: []
+      });
+
+      await expect(controller.cancelRun("run-active")).resolves.toMatchObject({
+        id: "run-active",
+        status: "aborted",
+        completedAt: NOW,
+        error: "运行已取消"
+      });
+      expect(service.cancel).toHaveBeenCalledWith("run-active", "user");
+      expect(store.getTask(task.id).lastRun).toMatchObject({ id: "run-active", status: "aborted" });
+
+      await expect(controller.runNow(task.id)).resolves.toMatchObject({
+        queued: true,
+        run: { id: "run-next", status: "pending" }
+      });
+      expect(service.runNow).toHaveBeenCalledTimes(1);
+    });
 });

@@ -1,14 +1,61 @@
 {
   "name": "dev.session-manager",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.session-manager",
+  "description": "Manage session lists, folders, import/export, cloning, and switching.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.session-manager",
-    "name": "dev.session-manager",
+    "name": "Session Manager",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "会话管理器",
+        "en-US": "Session Manager"
+      },
+      "description": {
+        "zh-CN": "管理会话列表、文件夹、导入导出、克隆和切换。",
+        "en-US": "Manage session lists, folders, import/export, cloning, and switching."
+      },
+      "icon": "history",
+      "category": "workspace",
+      "features": {
+        "zh-CN": [
+          "组织和搜索会话",
+          "导入、导出和克隆会话",
+          "管理多面板中的活动会话"
+        ],
+        "en-US": [
+          "Organize and search sessions",
+          "Import, export, and clone sessions",
+          "Manage active sessions across panels"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "session-data",
+          "label": {
+            "zh-CN": "会话数据",
+            "en-US": "Session data"
+          },
+          "description": {
+            "zh-CN": "读取、创建和更新本地会话。",
+            "en-US": "Read, create, and update local sessions."
+          }
+        }
+      ],
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "显示会话",
+            "en-US": "Show Sessions"
+          },
+          "command": "zion.sessions.showPanel",
+          "icon": "history"
+        }
+      ]
+    },
     "contributes": {
       "commands": [
         {

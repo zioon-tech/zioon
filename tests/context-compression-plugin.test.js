@@ -14,7 +14,7 @@ describe('Context compression plugin', () => {
         'user Please summarize the following:',
         'A'.repeat(2000),
         '',
-        'assistant Sure. Here are the points:',
+        'assistant <!-- zion-assistant:id=run-compress --> Sure. Here are the points:',
         'B'.repeat(2000)
       ].join('\n')
     );
@@ -30,6 +30,7 @@ describe('Context compression plugin', () => {
 
     expect(typeof after).toBe('string');
     expect(after.length).toBeLessThanOrEqual(before.length);
+    expect(after).not.toContain('zion-assistant');
 
     for (const d of ctx.subscriptions) {
       try {
@@ -40,4 +41,3 @@ describe('Context compression plugin', () => {
     document.body.removeChild(host);
   });
 });
-

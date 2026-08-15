@@ -83,6 +83,7 @@ describe("session autosave plugin", () => {
 
     try {
       core.setValue("loaded session text", { source: "session-load" });
+      core.setValue("prefetched session text", { source: "session-seed" });
 
       expect(plugin.flush("session-a")).toBe(false);
       expect(saved).toEqual([]);

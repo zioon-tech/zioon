@@ -5,7 +5,7 @@ describe("chat widget history reconstruction", () => {
   it("keeps thinking and tool cards interleaved with assistant text", () => {
     const docText = [
       "user hi",
-      "assistant A",
+      "assistant <!-- zion-assistant:id=run-1 --> A",
       "思考 <!-- zion-thinking:id=thinking-1 -->",
       "B",
       "调用 read <!-- zion-tool:id=tool-1 -->",

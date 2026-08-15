@@ -6,6 +6,7 @@ import { registerChangesPanel } from "./changes-panel.js";
 import { registerFilesPanel } from "./files-panel.js";
 import { registerContextPanel } from "./context-panel.js";
 import { getCurrentSessionChangeState, getSessionChangeState } from "./session-change-state.js";
+import { createTerminalToolExecutionContext, resolveTerminalToolArgs, TERMINAL_AWARE_TOOL_NAMES } from "./terminal-tool-context.js";
 import { ToolsSettingsPage, buildToolRows } from "./ToolsSettingsPage.jsx";
 
 const I18N_NS = "dev.tools";
@@ -104,6 +105,7 @@ const I18N_MESSAGES = {
     "context.tasks": "任务",
     "context.comments": "评论",
     "context.agents": "Agents",
+      "context.biographyEvents": "经历事件",
     "context.tags": "标签",
     "context.links": "引用",
     "context.headings": "标题",
@@ -125,6 +127,7 @@ const I18N_MESSAGES = {
     "context.emptyTasks": "当前会话还没有 todo。",
     "context.emptyComments": "当前会话还没有评论。",
     "context.emptyAgents": "当前会话还没有 Agent Task。",
+      "context.emptyBiography": "当前会话还没有蒸馏出的经历事件。",
     "context.emptyTags": "当前会话还没有标签。",
     "context.emptyLinks": "当前会话还没有 wiki 引用。",
     "context.emptyHeadings": "当前会话还没有 Markdown 标题。",
@@ -142,6 +145,7 @@ const I18N_MESSAGES = {
     "context.copyInfo": "复制信息",
     "context.copyComment": "复制评论信息",
     "context.copyAgentTask": "复制 Agent Task 信息",
+      "context.copyBiography": "复制经历事件",
     "context.copyTask": "复制任务信息",
     "context.copyTodo": "复制 todo",
     "context.openingFiles": "正在打开文件面板并定位文件...",
@@ -150,6 +154,11 @@ const I18N_MESSAGES = {
     "context.run.ready": "可继续对话",
     "context.run.error": "出错",
     "context.run.aborted": "已停止",
+      "context.biographyProjects": "{count} 个项目",
+      "context.biographyKind.decision": "决策",
+      "context.biographyKind.milestone": "里程碑",
+      "context.biographyKind.outcome": "结果",
+      "context.biographyKind.lesson": "经验",
     "context.run.idle": "未运行",
     "context.usage.files": "{count} files",
     "context.usage.modelCalls": "{count} model calls",
@@ -281,6 +290,7 @@ const I18N_MESSAGES = {
     "context.tasks": "Tasks",
     "context.comments": "Comments",
     "context.agents": "Agents",
+      "context.biographyEvents": "Biography Events",
     "context.tags": "Tags",
     "context.links": "Links",
     "context.headings": "Headings",
@@ -302,6 +312,7 @@ const I18N_MESSAGES = {
     "context.emptyTasks": "No todos in the current session.",
     "context.emptyComments": "No comments in the current session.",
     "context.emptyAgents": "No agent tasks in the current session.",
+      "context.emptyBiography": "No biography events in the current session.",
     "context.emptyTags": "No tags in the current session.",
     "context.emptyLinks": "No wiki links in the current session.",
     "context.emptyHeadings": "No Markdown headings in the current session.",
@@ -319,6 +330,7 @@ const I18N_MESSAGES = {
     "context.copyInfo": "Copy info",
     "context.copyComment": "Copy comment info",
     "context.copyAgentTask": "Copy agent task info",
+      "context.copyBiography": "Copy biography event",
     "context.copyTask": "Copy task info",
     "context.copyTodo": "Copy todo",
     "context.openingFiles": "Opening Files and locating file...",
@@ -327,6 +339,11 @@ const I18N_MESSAGES = {
     "context.run.ready": "Ready to continue",
     "context.run.error": "Error",
     "context.run.aborted": "Stopped",
+      "context.biographyProjects": "{count} projects",
+      "context.biographyKind.decision": "decision",
+      "context.biographyKind.milestone": "milestone",
+      "context.biographyKind.outcome": "outcome",
+      "context.biographyKind.lesson": "lesson",
     "context.run.idle": "Not running",
     "context.usage.files": "{count} files",
     "context.usage.modelCalls": "{count} model calls",
@@ -2174,36 +2191,29 @@ function registerDefaultTools() {
  * 3. 集中管理：便于维护和扩展
  */
 function wrapHandlersWithTerminalContext(handlers) {
-  // 需要自动注入 session_id 的工具列表
-  const terminalAwareTools = [
-    'tree',      // 目录树
-    'read',      // 读取文件
-    'write',     // 写入文件
-    'edit',      // 编辑文件
-    'glob',      // 文件模式匹配
-    'grep',      // 内容搜索
-    'Bash'       // Shell 命令
-  ];
-  
-  for (const toolName of terminalAwareTools) {
+  for (const toolName of TERMINAL_AWARE_TOOL_NAMES) {
     if (handlers[toolName]) {
       const originalHandler = handlers[toolName];
       
-      // 创建包装后的处理器
       handlers[toolName] = async function(args, ...rest) {
         try {
-          // 如果用户没有显式传递 session_id，则自动从 terminal.activeSessionId 获取
-          // 注意：只在 args 不存在或为 undefined 时自动注入
-          // 如果用户显式传递了 null 或空字符串，则视为用户意图不使用 session
-          if (args && args.session_id === undefined) {
-            const activeSessionId = window.zion?.state?.get("terminal.activeSessionId");
-            if (activeSessionId) {
-              // 创建新的 args 对象，避免修改原参数
-              args = { ...args, session_id: activeSessionId };
-            }
+          args = resolveTerminalToolArgs(toolName, args, window.zion?.state?.get("terminal.activeSessionId"));
+          const executionContext = createTerminalToolExecutionContext(
+            args,
+            window.zion?.state?.get("terminal.sessions") || []
+          );
+          if (executionContext) {
+            const meta = rest[0] || {};
+            window.zion?.events?.emit?.("chat/toolArgsResolved", {
+              sessionId: meta.sessionId || null,
+              runId: meta.runId || null,
+              cardId: meta.cardId || null,
+              toolCallId: meta.toolCallId || null,
+              toolName,
+              args,
+              executionContext
+            });
           }
-          
-          // 调用原始处理器
           return originalHandler(args, ...rest);
         } catch (e) {
           console.error(`[dev.tools] Wrapped handler for ${toolName} failed:`, e);
@@ -2211,7 +2221,6 @@ function wrapHandlersWithTerminalContext(handlers) {
         }
       };
       
-      // 保持原始处理器的引用（便于调试）
       handlers[toolName].originalHandler = originalHandler;
     }
   }

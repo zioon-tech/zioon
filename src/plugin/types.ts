@@ -60,6 +60,27 @@ export interface PluginManifest {
     name: string;
     version: string;
     main: string;
+    presentation?: {
+      displayName?: string | Record<string, string>;
+      description?: string | Record<string, string>;
+      icon?: string;
+      category?: string;
+      features?: string[] | Record<string, string[]>;
+      permissions?: Array<{
+        id: string;
+        label: string | Record<string, string>;
+        description?: string | Record<string, string>;
+      }>;
+      dataLocations?: Array<{
+        label: string | Record<string, string>;
+        path: string;
+      }>;
+      entrypoints?: Array<{
+        title: string | Record<string, string>;
+        command: string;
+        icon?: string;
+      }>;
+    };
     contributes?: {
       commands?: Array<{
         id: string;
@@ -90,6 +111,7 @@ export interface PluginManifest {
         path: string;
       }>;
       styles?: string[];
+      skills?: string[];
       languages?: Array<{
         id: string;
         extensions: string[];
@@ -115,6 +137,7 @@ export interface ExtensionManifest {
   description?: string;
   author?: string;
   main?: string;
+  presentation?: PluginManifest['zion']['presentation'];
   commands?: Record<string, {
     title?: string;
     handler: (...args: any[]) => any;
@@ -167,6 +190,8 @@ export interface PluginInfo {
   isLegacy: boolean;
   /** 是否启用（UI/管理器用） */
   enabled?: boolean;
+  /** ZIP 插件中由 contributes.skills 声明的 SKILL.md 内容 */
+  skillContents?: Record<string, string>;
 }
 
 /**

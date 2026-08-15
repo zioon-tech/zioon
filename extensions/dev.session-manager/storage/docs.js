@@ -3,6 +3,7 @@ export function createSessionDocRepo(opts) {
   const idbGet = opts?.idbGet;
   const idbSet = opts?.idbSet;
   const warnStorageIssue = opts?.warnStorageIssue;
+  const onPersist = opts?.onPersist;
   const now = opts?.now;
   const getZion = () => {
     try {
@@ -42,6 +43,7 @@ export function createSessionDocRepo(opts) {
     (async () => {
       try {
         await idbSet(dbName, "docs", { id, text: nextText });
+        try { onPersist?.("doc", id); } catch {}
       } catch (e) {
         try {
           if (zion?.state?.get(`sessions.doc.${id}`) === nextText) {
@@ -70,6 +72,32 @@ export function createSessionDocRepo(opts) {
     }
   }
 
+    async function loadMetaAsync(id) {
+      const zion = getZion();
+      let mem = null;
+      try {
+        const value = zion?.state?.get(`sessions.meta.${id}`);
+        if (value && typeof value === "object") mem = value;
+      } catch {}
+      try {
+        const rec = await idbGet(dbName, "metas", id);
+        const stored = rec?.meta && typeof rec.meta === "object" ? rec.meta : null;
+        const base = stored || mem || { id, title: `Session ${id}`, createdAt: now(), updatedAt: now(), size: 0, hash: "", titleAuto: true };
+        const meta = { ...base, id };
+        if (stored && mem && typeof mem === "object") {
+          for (const [key, value] of Object.entries(mem)) {
+            if (!(key in meta)) meta[key] = value;
+          }
+        }
+        try { zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
+        return meta;
+      } catch (e) {
+        try { warnStorageIssue?.("loadMetaAsync", e); } catch {}
+        if (mem) return mem;
+        throw e;
+      }
+    }
+
   function loadMeta(id) {
     const zion = getZion();
     try {
@@ -96,6 +124,7 @@ export function createSessionDocRepo(opts) {
     (async () => {
       try {
         await idbSet(dbName, "metas", { id, meta });
+        try { onPersist?.("meta", id); } catch {}
       } catch (e) {
         try {
           if (zion?.state?.get(`sessions.meta.${id}`) === meta) {
@@ -107,5 +136,5 @@ export function createSessionDocRepo(opts) {
     })();
   }
 
-  return { docKey, metaKey, loadDoc, saveDoc, loadDocAsync, loadMeta, saveMeta };
+    return { docKey, metaKey, loadDoc, saveDoc, loadDocAsync, loadMeta, loadMetaAsync, saveMeta };
 }

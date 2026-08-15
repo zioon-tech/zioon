@@ -92,7 +92,9 @@ export class LocalSchedulerEngine {
   }
 
   async execute(task) {
-    if (this.runningTasks.has(task.id)) return null;
+    if (this.runningTasks.has(task.id)) {
+      return null;
+    }
     this.runningTasks.add(task.id);
     this.onChange?.();
     try {

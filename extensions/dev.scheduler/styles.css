@@ -188,6 +188,7 @@
   background: var(--success, #3fb950);
 }
 
+.scheduler-status-dot[data-status="pending"],
 .scheduler-status-dot[data-status="running"],
 .scheduler-status-dot[data-status="claimed"] {
   background: #75beff;
@@ -261,6 +262,20 @@
   color: var(--fg);
 }
 
+.scheduler-text-button.danger {
+  color: var(--error, #ef4444);
+}
+
+.scheduler-text-button.danger:hover {
+  background: color-mix(in srgb, var(--error, #ef4444) 10%, transparent);
+}
+
+.scheduler-text-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 .scheduler-run-row {
   width: 100%;
   min-height: 34px;
@@ -283,6 +298,7 @@
   color: var(--error, #ef4444);
 }
 
+.scheduler-run-status[data-status="pending"],
 .scheduler-run-status[data-status="running"],
 .scheduler-run-status[data-status="claimed"] {
   color: #75beff;

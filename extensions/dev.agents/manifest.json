@@ -1,16 +1,36 @@
 {
   "name": "dev.agents",
   "version": "0.0.1",
-  "description": "Anchored sub-agent tasks and delegated AI work items",
+  "description": "Manage anchored agent tasks and delegated AI work items.",
   "descriptionKey": "dev.agents.description",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.agents",
     "name": "Agents",
-    "nameKey": "dev.agents.title",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "智能体",
+        "en-US": "Agents"
+      },
+      "description": {
+        "zh-CN": "管理锚定式智能体任务和委派的 AI 工作项。",
+        "en-US": "Manage anchored agent tasks and delegated AI work items."
+      },
+      "icon": "hubot",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "管理锚定式智能体任务和委派的 AI 工作项。"
+        ],
+        "en-US": [
+          "Manage anchored agent tasks and delegated AI work items."
+        ]
+      }
+    },
+    "nameKey": "dev.agents.title",
     "contributes": {
       "commands": [
         {

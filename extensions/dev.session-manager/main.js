@@ -1,12 +1,16 @@
 import { registerSessionTools } from "./session-tools.js";
-import { openSessionsDB, idbGet, idbGetKV, idbSet, idbSetKV } from "./storage/idb.js";
+import { openSessionsDB, idbDel, idbGet, idbGetAll, idbGetKV, idbSet, idbSetKV } from "./storage/idb.js";
 import { createSessionDocRepo } from "./storage/docs.js";
+import { deleteRemoteSession, readRemoteSnapshot, writeRemoteSession, writeRemoteSnapshot, writeRemoteTree } from "./storage/remote.js";
 import { createSessionUrlModel } from "./model/url.js";
 import { createSessionTreeModel } from "./model/tree.js";
 import { createSessionUIStateModel } from "./model/ui-state.js";
 import { createAnnotationsLifecycle } from "./features/annotations-lifecycle.js";
-import { findAssistantBlockEndInText } from "./features/assistant-block.js";
 import { applyAnnotationsForSessionImpl } from "./features/annotations-apply.js";
+import {
+  createChatCardWriterLeases,
+  shouldPersistChatCardInBackground
+} from "./features/chat-card-writer.js";
 import { createPageTitleManager } from "./features/page-title.js";
 import { registerSessionAutoRenameCommand } from "./commands/auto-rename.js";
 import { registerSessionSidebarCommands } from "./commands/sidebar.js";
@@ -16,7 +20,13 @@ import { createSessionAutoSavePlugin } from "./editor/autosave-plugin.js";
 import { createSessionsSidebarViewManager } from "./ui/sidebar-view.js";
 import { createSessionsPanelManager } from "./ui/panel.js";
 import { createSessionsListRendererFactory } from "./ui/list-renderer.js";
-import { thinkingMarkerText, toolMarkerText } from "../../src/chat/restore";
+import { markSessionRunViewed } from "./features/run-state.js";
+import {
+  planAssistantMarkerInsertionById,
+  thinkingMarkerText,
+  toolMarkerText
+} from "../../src/chat/restore";
+import { resolveToolCardId } from "../../src/chat/tool-card-id";
 import { SessionDocumentRuntime } from "../../src/session/document-runtime";
 
 const I18N_NS = "dev.session-manager";
@@ -86,6 +96,10 @@ const I18N_MESSAGES = {
     "ui.agentTask": "子 Agent",
     "ui.expandChildren": "展开评论和子 Agent",
     "ui.collapseChildren": "折叠评论和子 Agent",
+    "ui.modelGenerating": "正在生成",
+    "ui.answerReady": "回答完成，待查看",
+    "ui.answerFailed": "会话异常结束，待查看",
+    "ui.answerStopped": "会话已停止，待查看",
     "dialog.newTitle": "新会话标题",
     "dialog.rename": "重命名会话",
     "dialog.deleteSelected": "删除所选项",
@@ -191,6 +205,10 @@ const I18N_MESSAGES = {
     "ui.agentTask": "Sub-agent",
     "ui.expandChildren": "Expand comments and sub-agents",
     "ui.collapseChildren": "Collapse comments and sub-agents",
+    "ui.modelGenerating": "Generating answer",
+    "ui.answerReady": "Answer ready to review",
+    "ui.answerFailed": "Answer failed; review needed",
+    "ui.answerStopped": "Answer stopped; review needed",
     "dialog.newTitle": "New session title",
     "dialog.rename": "Rename session",
     "dialog.deleteSelected": "Delete selected",
@@ -292,12 +310,168 @@ function warnStorageIssue(where, error) {
 
 /** ======== IndexedDB (sessions) ======== */
 const DB_NAME = "zion.sessions.db";
-const { docKey, metaKey, loadDoc, saveDoc, loadDocAsync, loadMeta, saveMeta } = createSessionDocRepo({
+let remoteSnapshotQueue = Promise.resolve();
+let remoteStorageOnline = false;
+let remoteSyncTimer = 0;
+let remoteRevision = null;
+
+function setRemoteStorageState(online, error = null) {
+  remoteStorageOnline = !!online;
+  try {
+    window.zion?.state?.set("sessions.remoteStorageOnline", remoteStorageOnline);
+    if (error) window.zion?.state?.set("sessions.remoteStorageError", String(error));
+  } catch {}
+}
+
+async function collectSessionSnapshot() {
+  const [docs, metas] = await Promise.all([
+    idbGetAll(DB_NAME, "docs"),
+    idbGetAll(DB_NAME, "metas")
+  ]);
+  return {
+    version: 1,
+    updatedAt: now(),
+    tree: window.zion?.state?.get("sessions.treeMem") || null,
+    index: window.zion?.state?.get("sessions.indexMem") || [],
+    docs: docs.filter((item) => item && item.id).map((item) => ({ id: item.id, text: String(item.text || "") })),
+    metas: metas.filter((item) => item && item.id).map((item) => ({ id: item.id, meta: item.meta || {} }))
+  };
+}
+
+function scheduleRemoteSnapshot(kind, id) {
+  try { localStorage.setItem("zion.sessions.remoteDirty", "1"); } catch {}
+  if (!remoteStorageOnline) return;
+  remoteSnapshotQueue = remoteSnapshotQueue
+    .catch(() => {})
+    .then(async () => {
+      if (!remoteStorageOnline) return;
+      try {
+        let result;
+        if (kind === "doc" || kind === "meta") {
+          const payload = {};
+          if (kind === "doc") payload.text = (await idbGet(DB_NAME, "docs", id))?.text || "";
+          if (kind === "meta") payload.meta = (await idbGet(DB_NAME, "metas", id))?.meta || null;
+          result = await writeRemoteSession(id, payload, remoteRevision);
+        } else if (kind === "tree" || kind === "index") {
+          result = await writeRemoteTree(
+            window.zion?.state?.get("sessions.treeMem"),
+            window.zion?.state?.get("sessions.indexMem") || [],
+            remoteRevision
+          );
+        } else {
+          result = await writeRemoteSnapshot(await collectSessionSnapshot(), remoteRevision);
+        }
+        if (result?.conflict) {
+          setRemoteStorageState(false, "Remote session snapshot changed in another client");
+          return;
+        }
+        remoteRevision = result?.revision || remoteRevision;
+        try { localStorage.removeItem("zion.sessions.remoteDirty"); } catch {}
+        setRemoteStorageState(true);
+      } catch (error) {
+        setRemoteStorageState(false, error);
+      }
+    });
+}
+
+function scheduleRemoteDelete(id) {
+  try { localStorage.setItem("zion.sessions.remoteDirty", "1"); } catch {}
+  if (!remoteStorageOnline) return;
+  remoteSnapshotQueue = remoteSnapshotQueue
+    .catch(() => {})
+    .then(async () => {
+      if (!remoteStorageOnline) return;
+      try {
+        const result = await deleteRemoteSession(id, remoteRevision);
+        if (result?.conflict) {
+          setRemoteStorageState(false, "Remote session changed in another client");
+          return;
+        }
+        remoteRevision = result?.revision || remoteRevision;
+        setRemoteStorageState(true);
+      } catch (error) {
+        setRemoteStorageState(false, error);
+      }
+    });
+}
+
+async function purgeSessionData(id) {
+  try { await idbDel(DB_NAME, "docs", id); } catch (e) { warnStorageIssue("deleteDoc", e); }
+  try { await idbDel(DB_NAME, "metas", id); } catch (e) { warnStorageIssue("deleteMeta", e); }
+  try { localStorage.removeItem(docKey(id)); } catch {}
+  try { localStorage.removeItem(metaKey(id)); } catch {}
+  try { window.zion?.state?.set(`sessions.doc.${id}`, undefined); } catch {}
+  try { window.zion?.state?.set(`sessions.meta.${id}`, undefined); } catch {}
+  scheduleRemoteDelete(id);
+}
+
+async function hydrateLocalCacheFromRemote(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return;
+  const tree = snapshot.tree && snapshot.tree.type === "folder" ? snapshot.tree : null;
+  const index = Array.isArray(snapshot.index) ? snapshot.index : [];
+  if (tree) {
+    await idbSetKV(DB_NAME, "tree", tree);
+    window.zion?.state?.set("sessions.treeMem", tree);
+  }
+  await idbSetKV(DB_NAME, "index", index);
+  window.zion?.state?.set("sessions.indexMem", index);
+  const remoteDocIds = new Set(Array.isArray(snapshot.docs) ? snapshot.docs.map((item) => item?.id).filter(Boolean) : []);
+  const remoteMetaIds = new Set(Array.isArray(snapshot.metas) ? snapshot.metas.map((item) => item?.id).filter(Boolean) : []);
+  for (const item of await idbGetAll(DB_NAME, "docs")) {
+    if (item?.id && !remoteDocIds.has(item.id)) await idbDel(DB_NAME, "docs", item.id);
+  }
+  for (const item of await idbGetAll(DB_NAME, "metas")) {
+    if (item?.id && !remoteMetaIds.has(item.id)) await idbDel(DB_NAME, "metas", item.id);
+  }
+  for (const item of Array.isArray(snapshot.docs) ? snapshot.docs : []) {
+    if (item?.id) await idbSet(DB_NAME, "docs", { id: item.id, text: String(item.text || "") });
+  }
+  for (const item of Array.isArray(snapshot.metas) ? snapshot.metas : []) {
+    if (item?.id) {
+      const meta = { ...(item.meta || {}), id: item.id };
+      await idbSet(DB_NAME, "metas", { id: item.id, meta });
+      window.zion?.state?.set(`sessions.meta.${item.id}`, meta);
+    }
+  }
+}
+
+async function syncRemoteStorage() {
+  try {
+    const snapshot = await readRemoteSnapshot();
+    let dirty = false;
+    try { dirty = localStorage.getItem("zion.sessions.remoteDirty") === "1"; } catch {}
+    remoteRevision = snapshot?.revision || null;
+    const remoteData = snapshot?.snapshot || snapshot;
+    if (dirty) {
+      const result = await writeRemoteSnapshot(await collectSessionSnapshot(), remoteRevision);
+      if (result?.conflict) {
+        setRemoteStorageState(false, "Remote session snapshot changed in another client");
+        return false;
+      }
+      remoteRevision = result?.revision || remoteRevision;
+      try { localStorage.removeItem("zion.sessions.remoteDirty"); } catch {}
+    } else if (remoteData && typeof remoteData === "object" && remoteData.tree) {
+      await hydrateLocalCacheFromRemote(remoteData);
+    } else {
+      const local = await collectSessionSnapshot();
+      const result = await writeRemoteSnapshot(local, remoteRevision);
+      remoteRevision = result?.revision || remoteRevision;
+    }
+    setRemoteStorageState(true);
+    return true;
+  } catch (error) {
+    setRemoteStorageState(false, error);
+    return false;
+  }
+}
+
+const { docKey, metaKey, loadDoc, saveDoc, loadDocAsync, loadMeta, loadMetaAsync, saveMeta } = createSessionDocRepo({
   dbName: DB_NAME,
   idbGet,
   idbSet,
   warnStorageIssue,
   now,
+  onPersist: scheduleRemoteSnapshot,
   applyAnnotationsForSession,
   getZion: () => window.zion
 });
@@ -416,6 +590,10 @@ async function initSessionsStorage() {
         tooltip: "Sessions migrated to IndexedDB"
       });
     }
+    await syncRemoteStorage();
+    if (!remoteSyncTimer) {
+      remoteSyncTimer = window.setInterval(() => { void syncRemoteStorage(); }, 30000);
+    }
     return { ok: true };
   } catch (e) {
     console.error("[sessions] initSessionsStorage error:", e);
@@ -498,7 +676,9 @@ const {
   metaKey,
   lsAutoKey: LS_AUTO,
   lsFolderOpenKey: LS_FOLDER_OPEN,
-  getZion: () => window.zion
+  getZion: () => window.zion,
+  onPersist: scheduleRemoteSnapshot,
+  onDelete: purgeSessionData
 });
 
 const {
@@ -515,7 +695,7 @@ const {
 
 const {
   getAnnotationsState,
-  persistCurrentAnnotations,
+  persistAnnotations,
   attachLifecyclePersistence,
   attachLifecycleRestore,
   attachAnnotationsAutoPersistence
@@ -713,12 +893,8 @@ function upsertIndexEntry(entry) {
 }
 
 /** 删除会话（树+索引+doc+meta） */
-function deleteSession(id) {
-  try { localStorage.removeItem(docKey(id)); } catch {}
-  try { localStorage.removeItem(metaKey(id)); } catch {}
-  // clear memory mirrors as well
-  try { window.zion?.state?.set(`sessions.doc.${id}`, undefined); } catch {}
-  try { window.zion?.state?.set(`sessions.meta.${id}`, undefined); } catch {}
+async function deleteSession(id) {
+  await purgeSessionData(id);
   removeNode(id);
   rebuildIndexFromTree();
   const last = getLastActiveId();
@@ -1174,6 +1350,41 @@ export async function activate(ctx) {
   }
   try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
 
+  const markSessionViewed = (sessionId) => markSessionRunViewed(window.zion, sessionId);
+  const isSessionCurrentlyVisible = (sessionId) => {
+    const sid = String(sessionId || "").trim();
+    if (!sid || document.visibilityState === "hidden") return false;
+    if (sid.startsWith("comment:")) {
+      try {
+        const panelVisible = window.zion?.state?.get?.("ui.auxiliaryBar.visible") === true;
+        const activeViewId = String(window.zion?.state?.get?.("ui.auxiliaryBar.activeViewId") || "");
+        const activeThreadId = String(window.zion?.state?.get?.("comments.activeThreadId") || "");
+        return panelVisible && activeViewId === "dev.comments.panel" && sid === `comment:${activeThreadId}`;
+      } catch {
+        return false;
+      }
+    }
+    try {
+      const panels = window.zion?.panels?.list?.() || [];
+      const activePanelId = String(window.zion?.panels?.getActivePanelId?.() || "");
+      const activePanel = activePanelId
+        ? panels.find((panel) => String(panel?.id || "") === activePanelId)
+        : null;
+      if (activePanel) return String(activePanel.activeTabId || "") === sid;
+    } catch {}
+    try {
+      return String(window.zion?.state?.get?.("sessions.currentId") || "") === sid;
+    } catch {
+      return false;
+    }
+  };
+  const markSessionViewedIfVisible = (sessionId) => {
+    if (!isSessionCurrentlyVisible(sessionId)) return false;
+    return markSessionViewed(sessionId);
+  };
+  const dMarkSessionViewed = window.zion.commands.registerCommand("zion.sessions.markViewed", markSessionViewed);
+  ctx.subscriptions.push(dMarkSessionViewed);
+
   // 初始化树/索引/会话
   ensureInitialTree();
   rebuildIndexFromTree();
@@ -1261,6 +1472,28 @@ export async function activate(ctx) {
     });
     const dispStreaming = window.zion.state.onDidChange("chat.streaming", () => updateTitle());
     ctx.subscriptions.push(dispCur, dispReveal, dispStreaming, { dispose() { try { dispRun?.dispose?.(); } catch {} } });
+  } catch {}
+
+  try {
+    let panelFocusViewedRaf = 0;
+    const dispPanelFocus = window.zion.events.on("panel/focusChanged", ({ panelId } = {}) => {
+      if (!panelId) return;
+      if (panelFocusViewedRaf) window.cancelAnimationFrame(panelFocusViewedRaf);
+      panelFocusViewedRaf = window.requestAnimationFrame(() => {
+        panelFocusViewedRaf = 0;
+        if (window.zion?.panels?.getActivePanelId?.() !== panelId) return;
+        const panel = window.zion?.panels?.list?.().find?.((item) => item?.id === panelId) || null;
+        markSessionViewed(panel?.activeTabId);
+      });
+    });
+    const dispSessionSwitch = window.zion.events.on("session/afterSwitch", ({ sessionId } = {}) => {
+      markSessionViewed(sessionId);
+    });
+    ctx.subscriptions.push(dispPanelFocus, dispSessionSwitch, {
+      dispose() {
+        if (panelFocusViewedRaf) window.cancelAnimationFrame(panelFocusViewedRaf);
+      }
+    });
   } catch {}
 
   try {
@@ -1454,11 +1687,6 @@ export async function activate(ctx) {
         window.zion.state.set("sessions.catalog", getIndex());
       }
       refreshStatusBar();
-      try {
-        if (!streaming) {
-          refreshSessionsSidebarViewIfOpen();
-        }
-      } catch {}
       try { maybeUpdateLocalAutoTitle(meta?.id); } catch {}
     }
   );
@@ -1495,7 +1723,7 @@ export async function activate(ctx) {
         }
         const cur = window.zion.state.get("sessions.currentId");
         if (cur && !seen.has(cur)) uniq.unshift(cur);
-        const max = 6;
+        const max = 12;
         const target = uniq.slice(0, max);
         for (const id of target) {
           try {
@@ -1708,7 +1936,7 @@ export async function activate(ctx) {
   // Delete
   const dDelete = window.zion.commands.registerCommand("zion.sessions.delete", async (id) => {
     const cur = window.zion.state.get("sessions.currentId");
-    deleteSession(id);
+    await deleteSession(id);
     const nextId = getLastActiveId() || getIndex()[0]?.id || null;
     window.zion.state.set("sessions.catalog", getIndex());
     await removeSessionFromPanels(id);
@@ -1846,16 +2074,21 @@ export async function activate(ctx) {
     getTargetEditor,
     persistPreviousSession: persistSessionPresentation,
     setLastActiveId,
-    loadDocument: loadDocAsync,
+    loadDocument: (id) => {
+      try {
+        const prefetched = window.zion.state.get(`sessions.doc.${id}`);
+        if (typeof prefetched === "string") return prefetched;
+      } catch {}
+      return loadDocAsync(id);
+    },
     applyAnnotations: applyAnnotationsForSession,
     restoreUiState: restoreSessionViewState,
     afterSwitch: (id) => {
       try { maybeUpdateLocalAutoTitle(id); } catch {}
-      try { window.zion.state.update(`chat.runs.${id}`, (rs) => ({ ...(rs || {}), awaiting: false })); } catch {}
+      markSessionViewed(id);
       const rs = window.zion.state.get(`chat.runs.${id}`);
       window.zion.state.set("chat.streaming", !!rs?.streaming);
       refreshStatusBar();
-      try { refreshSessionsSidebarViewIfOpen(); } catch {}
     }
   });
 
@@ -1924,6 +2157,7 @@ export async function activate(ctx) {
       loadDoc,
       loadDocAsync,
       loadMeta,
+        loadMetaAsync,
       saveDoc,
       saveMeta,
       now,
@@ -1939,7 +2173,10 @@ export async function activate(ctx) {
 
   // ===== Background annotations for non-active sessions (thinking/tool calls) =====
   // Persist markers and card content into session docs/meta so they can be restored when switching back.
-  const dispRunStarted = window.zion.events.on("chat/runStarted", ({ runId, sessionId }) => {
+  const writerLeases = createChatCardWriterLeases(window.zion);
+  const dispRunStarted = window.zion.events.on("chat/runStarted", (payload = {}) => {
+    const { runId, sessionId } = payload;
+    writerLeases.startRun(payload);
     try {
       // initialize per-run seq counter
       if (sessionId) {
@@ -1953,24 +2190,43 @@ export async function activate(ctx) {
   });
   const dispRunFinishedUI = window.zion.events.on("chat/runFinished", ({ sessionId }) => {
     try { maybeTriggerChatAutoRename(sessionId); } catch {}
+    markSessionViewedIfVisible(sessionId);
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
   const dispRunErrorUI = window.zion.events.on("chat/runError", ({ sessionId }) => {
+    markSessionViewedIfVisible(sessionId);
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
   const dispAbortedUI = window.zion.events.on("chat/aborted", ({ sessionId }) => {
+    markSessionViewedIfVisible(sessionId);
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
   ctx.subscriptions.push(dispRunStarted, dispRunFinishedUI, dispRunErrorUI, dispAbortedUI);
 
-  const dispReasoningStart = window.zion.events.on("chat/reasoningStart", async ({ runId, sessionId, silentReasoning, answerAnchorPos }) => {
+  const backgroundWriteQueues = new Map();
+  const enqueueBackgroundWrite = (key, payload, task) => {
+    const previous = backgroundWriteQueues.get(key) || Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(() => {
+        if (!writerLeases.isWriteValid(payload)) return;
+        return task(() => writerLeases.isWriteValid(payload));
+      })
+      .finally(() => {
+        if (backgroundWriteQueues.get(key) === next) backgroundWriteQueues.delete(key);
+      });
+    backgroundWriteQueues.set(key, next);
+    return next;
+  };
+
+  const dispReasoningStart = window.zion.events.on("chat/reasoningStart", async (payload = {}) => {
     try {
+      const { runId, sessionId, silentReasoning, assistantBlockId } = payload;
       if (silentReasoning) return;
-      const cur = window.zion.state.get("sessions.currentId");
-      if (!sessionId || sessionId === cur) return; // current session handled by plugin
+      if (!assistantBlockId || !writerLeases.claimRun(payload)) return;
 
       // seq for this run
       const key = `thinking.seq.${sessionId}.${runId}`;
@@ -1978,148 +2234,240 @@ export async function activate(ctx) {
       window.zion.state.set(key, seq);
       const thinkingId = `thinking:${runId}:${seq}`;
 
-      // Compute insertion position in background doc
-      const hint = typeof answerAnchorPos === "number" ? answerAnchorPos : window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
-      let start = 0;
-      let end = 0;
-      await window.zion.commands.executeCommand("zion.sessions.transformDoc", {
-        id: sessionId,
-        transform: (doc) => {
-          const pos = findAssistantBlockEndInText(doc, hint);
-          const prevChar = pos > 0 ? doc.slice(pos - 1, pos) : "";
-          const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-          const marker = thinkingMarkerText(thinkingId);
-          const text = `${prefix}${marker}\n\n`;
-          start = pos + prefix.length;
-          end = start + marker.length;
-          return doc.slice(0, pos) + text + doc.slice(pos);
+      await enqueueBackgroundWrite(`thinking:${sessionId}:${runId}`, payload, async (isWriteValid) => {
+        if (!isWriteValid()) return;
+        let start = 0;
+        let end = 0;
+        let inserted = false;
+        await window.zion.commands.executeCommand("zion.sessions.transformDoc", {
+          id: sessionId,
+          transform: (doc) => {
+            if (!isWriteValid()) return null;
+            const plan = planAssistantMarkerInsertionById({
+              docText: doc,
+              assistantBlockId,
+              markerText: thinkingMarkerText(thinkingId),
+              trailingNewlines: 2
+            });
+            if (!plan) return null;
+            start = plan.markerFrom;
+            end = plan.markerTo;
+            inserted = true;
+            return doc.slice(0, plan.replaceFrom) + plan.insertText + doc.slice(plan.replaceTo);
+          }
+        });
+        if (!isWriteValid()) return;
+        if (!inserted) {
+          try {
+            const previous = window.zion.commands.executeCommand("zion.chatCards.getPendingRestore", {
+              sessionId,
+              kind: "thinking"
+            }) || [];
+            const item = { id: thinkingId, runId, assistantBlockId, text: "", expanded: false };
+            const next = previous.filter((entry) => String(entry?.id || "") !== thinkingId);
+            window.zion.commands.executeCommand("zion.chatCards.setPendingRestore", {
+              sessionId,
+              kind: "thinking",
+              items: [...next, item]
+            });
+          } catch {}
+          return;
         }
-      });
 
-      // Merge into meta.annotations
-      const meta = loadMeta(sessionId);
-      const ann = meta.annotations || {};
-      const list = Array.isArray(ann.thinking) ? ann.thinking.slice() : [];
-      list.push({ id: thinkingId, text: "", expanded: false, from: start, to: end });
-      meta.annotations = { ...ann, thinking: list };
-      saveMeta(sessionId, meta);
+        const meta = loadMeta(sessionId);
+        const ann = meta.annotations || {};
+        const list = Array.isArray(ann.thinking) ? ann.thinking.slice() : [];
+        list.push({ id: thinkingId, text: "", expanded: false, from: start, to: end, runId, assistantBlockId });
+        meta.annotations = { ...ann, thinking: list };
+        saveMeta(sessionId, meta);
+      });
     } catch (e) {
       console.warn("[sessions] background reasoningStart error:", e);
     }
   });
   ctx.subscriptions.push(dispReasoningStart);
 
-  const dispReasoningToken = window.zion.events.on("chat/reasoningToken", ({ runId, sessionId, token, silentReasoning }) => {
+  const dispReasoningToken = window.zion.events.on("chat/reasoningToken", async (payload = {}) => {
     try {
+      const { runId, sessionId, token, silentReasoning } = payload;
       if (silentReasoning) return;
-      const cur = window.zion.state.get("sessions.currentId");
-      if (!sessionId || sessionId === cur) return;
+      if (!writerLeases.ownsRun(payload)) return;
       const key = `thinking.seq.${sessionId}.${runId}`;
       const seq = window.zion.state.get(key) || 1;
       const thinkingId = `thinking:${runId}:${seq}`;
-      const meta = loadMeta(sessionId);
-      const ann = meta.annotations || {};
-      const list = Array.isArray(ann.thinking) ? ann.thinking.slice() : [];
-      const i = list.findIndex(it => it.id === thinkingId);
-      if (i >= 0) {
-        list[i] = { ...list[i], text: (list[i].text || "") + String(token || "") };
-      }
-      meta.annotations = { ...ann, thinking: list };
-      saveMeta(sessionId, meta);
+      await enqueueBackgroundWrite(`thinking:${sessionId}:${runId}`, payload, (isWriteValid) => {
+        if (!isWriteValid()) return;
+        const meta = loadMeta(sessionId);
+        const ann = meta.annotations || {};
+        const list = Array.isArray(ann.thinking) ? ann.thinking.slice() : [];
+        const i = list.findIndex(it => it.id === thinkingId);
+        if (i >= 0) {
+          if (!isWriteValid()) return;
+          list[i] = { ...list[i], text: (list[i].text || "") + String(token || "") };
+          meta.annotations = { ...ann, thinking: list };
+          saveMeta(sessionId, meta);
+          return;
+        }
+        try {
+          const previous = window.zion.commands.executeCommand("zion.chatCards.getPendingRestore", {
+            sessionId,
+            kind: "thinking"
+          }) || [];
+          const next = previous.map((entry) =>
+            String(entry?.id || "") === thinkingId
+              ? { ...entry, text: (entry.text || "") + String(token || "") }
+              : entry
+          );
+          window.zion.commands.executeCommand("zion.chatCards.setPendingRestore", {
+            sessionId,
+            kind: "thinking",
+            items: next
+          });
+        } catch {}
+      });
     } catch (e) {
       console.warn("[sessions] background reasoningToken error:", e);
     }
   });
   ctx.subscriptions.push(dispReasoningToken);
 
-  const dispToolCall = window.zion.events.on("chat/toolCall", async ({ runId, sessionId, toolCall, answerAnchorPos }) => {
+  const dispToolCall = window.zion.events.on("chat/toolCall", async (payload = {}) => {
     try {
-      const cur = window.zion.state.get("sessions.currentId");
-      if (!sessionId || sessionId === cur) return;
+      const { runId, sessionId, toolCall, assistantBlockId } = payload;
       const name = toolCall?.name || "tool";
-      const toolId = String(toolCall?.id || "");
+      const toolCallId = String(toolCall?.id || "");
+      const cardId = resolveToolCardId(payload);
+      if (!toolCallId || !cardId) return;
+      if (!assistantBlockId || !writerLeases.claimCard(payload, cardId)) return;
 
-      const hint = typeof answerAnchorPos === "number" ? answerAnchorPos : window.zion.state.get(`chat.answerAnchorPos.${sessionId}`);
-      let start = 0;
-      let end = 0;
-      await window.zion.commands.executeCommand("zion.sessions.transformDoc", {
-        id: sessionId,
-        transform: (doc) => {
-          const pos = findAssistantBlockEndInText(doc, hint);
-          const prevChar = pos > 0 ? doc.slice(pos - 1, pos) : "";
-          const prefix = prevChar === "\n" || pos === 0 ? "" : "\n";
-          const marker = toolMarkerText(name, toolId);
-          const text = `${prefix}${marker}\n`;
-          start = pos + prefix.length;
-          end = start + marker.length;
-          return doc.slice(0, pos) + text + doc.slice(pos);
+      await enqueueBackgroundWrite(`tool:${sessionId}:${cardId}`, payload, async (isWriteValid) => {
+        if (!isWriteValid()) return;
+        let start = 0;
+        let end = 0;
+        let inserted = false;
+        await window.zion.commands.executeCommand("zion.sessions.transformDoc", {
+          id: sessionId,
+          transform: (doc) => {
+            if (!isWriteValid()) return null;
+            const plan = planAssistantMarkerInsertionById({
+              docText: doc,
+              assistantBlockId,
+              markerText: toolMarkerText(name, cardId),
+              trailingNewlines: 1
+            });
+            if (!plan) return null;
+            start = plan.markerFrom;
+            end = plan.markerTo;
+            inserted = true;
+            return doc.slice(0, plan.replaceFrom) + plan.insertText + doc.slice(plan.replaceTo);
+          }
+        });
+        if (!isWriteValid()) return;
+        const item = {
+          id: cardId,
+          toolCallId,
+          runId,
+          name,
+          args: toolCall.args,
+          result: null,
+          expanded: false,
+          assistantBlockId,
+          ...(inserted ? { from: start, to: end } : {})
+        };
+        if (!inserted) {
+          try {
+            const previous = window.zion.commands.executeCommand("zion.chatCards.getPendingRestore", {
+              sessionId,
+              kind: "tools"
+            }) || [];
+            const next = previous.filter((entry) => String(entry?.id || "") !== cardId);
+            window.zion.commands.executeCommand("zion.chatCards.setPendingRestore", {
+              sessionId,
+              kind: "tools",
+              items: [...next, item]
+            });
+          } catch {}
+          return;
         }
-      });
 
-      // Persist meta.annotations.tools
-      const meta = loadMeta(sessionId);
-      const ann = meta.annotations || {};
-      const list = Array.isArray(ann.tools) ? ann.tools.slice() : [];
-      list.push({ id: toolCall.id, name, args: toolCall.args, result: null, expanded: false, from: start, to: end });
-      meta.annotations = { ...ann, tools: list };
-      saveMeta(sessionId, meta);
+        const meta = loadMeta(sessionId);
+        const ann = meta.annotations || {};
+        const list = Array.isArray(ann.tools) ? ann.tools.slice() : [];
+        const existingIndex = list.findIndex((entry) => String(entry?.id || "") === cardId);
+        if (existingIndex >= 0) list[existingIndex] = { ...list[existingIndex], ...item };
+        else list.push(item);
+        meta.annotations = { ...ann, tools: list };
+        saveMeta(sessionId, meta);
+      });
     } catch (e) {
       console.warn("[sessions] background toolCall error:", e);
     }
   });
   ctx.subscriptions.push(dispToolCall);
 
-  const dispToolResult = window.zion.events.on("chat/toolResult", ({ sessionId, toolCallId, result }) => {
+  const dispToolResult = window.zion.events.on("chat/toolResult", async (payload = {}) => {
     try {
-      const cur = window.zion.state.get("sessions.currentId");
-      if (!sessionId || sessionId === cur) return;
-      const meta = loadMeta(sessionId);
-      const ann = meta.annotations || {};
-      const list = Array.isArray(ann.tools) ? ann.tools.slice() : [];
-      const i = list.findIndex(it => it.id === toolCallId);
-      if (i >= 0) {
-        list[i] = { ...list[i], result };
-      }
-      meta.annotations = { ...ann, tools: list };
-      saveMeta(sessionId, meta);
+      const { sessionId, result, ok } = payload;
+      const cardId = resolveToolCardId(payload);
+      if (!cardId) return;
+      if (!writerLeases.ownsCard(payload, cardId)) return;
+      await enqueueBackgroundWrite(`tool:${sessionId}:${cardId}`, payload, (isWriteValid) => {
+        if (!isWriteValid()) return;
+        const meta = loadMeta(sessionId);
+        const ann = meta.annotations || {};
+        const list = Array.isArray(ann.tools) ? ann.tools.slice() : [];
+        const i = list.findIndex(it => String(it?.id || "") === cardId);
+        if (i >= 0) {
+          if (!isWriteValid()) return;
+          list[i] = { ...list[i], result, ok };
+          meta.annotations = { ...ann, tools: list };
+          saveMeta(sessionId, meta);
+        } else {
+          try {
+            const previous = window.zion.commands.executeCommand("zion.chatCards.getPendingRestore", {
+              sessionId,
+              kind: "tools"
+            }) || [];
+            const next = previous.map((entry) =>
+              String(entry?.id || "") === cardId ? { ...entry, result, ok } : entry
+            );
+            window.zion.commands.executeCommand("zion.chatCards.setPendingRestore", {
+              sessionId,
+              kind: "tools",
+              items: next
+            });
+          } catch {}
+        }
+        writerLeases.releaseCard(payload, cardId);
+      });
     } catch (e) {
       console.warn("[sessions] background toolResult error:", e);
     }
   });
   ctx.subscriptions.push(dispToolResult);
 
-  // ===== Persist annotations for CURRENT session on chat lifecycle/events =====
-  const dispCurToolResult = window.zion.events.on("chat/toolResult", ({ sessionId }) => {
+  // Live editor plugins own their session annotations even when another panel is active.
+  const persistLiveAnnotations = (payload = {}) => {
     try {
-      const cur = window.zion.state.get("sessions.currentId");
-      if (!sessionId || sessionId === cur) persistCurrentAnnotations();
+      const cardId = resolveToolCardId(payload);
+      if (writerLeases.ownsRun(payload) || (cardId && writerLeases.ownsCard(payload, cardId))) return;
+      if (shouldPersistChatCardInBackground(window.zion, payload)) return;
+      const sessionId = payload?.sessionId || window.zion.state.get("sessions.currentId");
+      if (sessionId) persistAnnotations(sessionId, payload?.panelId || null);
     } catch {}
-  });
-  const dispCurReasoningEnd = window.zion.events.on("chat/reasoningEnd", ({ sessionId }) => {
-    try {
-      const cur = window.zion.state.get("sessions.currentId");
-      if (!sessionId || sessionId === cur) persistCurrentAnnotations();
-    } catch {}
-  });
-  const dispCurRunFinished = window.zion.events.on("chat/runFinished", ({ sessionId }) => {
-    try {
-      const cur = window.zion.state.get("sessions.currentId");
-      if (!sessionId || sessionId === cur) persistCurrentAnnotations();
-    } catch {}
-  });
-  const dispCurRunError = window.zion.events.on("chat/runError", ({ sessionId }) => {
-    try {
-      const cur = window.zion.state.get("sessions.currentId");
-      if (!sessionId || sessionId === cur) persistCurrentAnnotations();
-    } catch {}
-  });
-  const dispCurAborted = window.zion.events.on("chat/aborted", ({ sessionId }) => {
-    try {
-      const cur = window.zion.state.get("sessions.currentId");
-      if (!sessionId || sessionId === cur) persistCurrentAnnotations();
-    } catch {}
-  });
+  };
+  const dispCurToolResult = window.zion.events.on("chat/toolResult", persistLiveAnnotations);
+  const dispCurReasoningEnd = window.zion.events.on("chat/reasoningEnd", persistLiveAnnotations);
+  const dispCurRunFinished = window.zion.events.on("chat/runFinished", persistLiveAnnotations);
+  const dispCurRunError = window.zion.events.on("chat/runError", persistLiveAnnotations);
+  const dispCurAborted = window.zion.events.on("chat/aborted", persistLiveAnnotations);
   ctx.subscriptions.push(dispCurToolResult, dispCurReasoningEnd, dispCurRunFinished, dispCurRunError, dispCurAborted);
+
+  ctx.subscriptions.push(
+    window.zion.events.on("chat/runFinished", (payload = {}) => writerLeases.finishRun(payload)),
+    window.zion.events.on("chat/runError", (payload = {}) => writerLeases.cancelRun(payload)),
+    window.zion.events.on("chat/aborted", (payload = {}) => writerLeases.cancelRun(payload))
+  );
 
   // Clone
   const dClone = window.zion.commands.registerCommand("zion.sessions.clone", (id) => {
@@ -2317,7 +2665,7 @@ export async function activate(ctx) {
         }
       } else {
         if (cur === it.id) affectedCurrent = true;
-        deleteSession(it.id);
+        await deleteSession(it.id);
       }
     }
     clearSelection();

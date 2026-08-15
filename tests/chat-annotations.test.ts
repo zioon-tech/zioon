@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createChatAnnotationsApi } from "../src/chat/annotations";
+import { createToolCardId } from "../src/chat/tool-card-id";
 
 function createState(initial: Record<string, unknown> = {}) {
   const map = new Map<string, unknown>(Object.entries(initial));
@@ -234,6 +235,44 @@ describe("chat annotations api", () => {
     api.dispose();
   });
 
+  it("persists execution-resolved args on the run-scoped tool card", () => {
+    const state = createState();
+    const commands = createCommands();
+    const events = createEvents();
+    const api = createChatAnnotationsApi({ state, commands, events });
+    const cardId = createToolCardId("run-1", "call-read");
+
+    events.emit("chat/toolCall", {
+      sessionId: "s-resolved",
+      runId: "run-1",
+      cardId,
+      toolCall: { id: "call-read", cardId, name: "read", args: { path: "README.md" } }
+    });
+    events.emit("chat/toolArgsResolved", {
+      sessionId: "s-resolved",
+      runId: "run-1",
+      cardId,
+      toolCallId: "call-read",
+      toolName: "read",
+      args: { path: "README.md", session_id: "local-1" },
+      executionContext: {
+        sourceId: "terminal:local-1",
+        terminalSession: { id: "local-1", type: "local", cwd: "/workspace" }
+      }
+    });
+
+    expect(api.getSessionAnnotations("s-resolved").tools?.[0]).toMatchObject({
+      id: cardId,
+      toolCallId: "call-read",
+      args: { path: "README.md", session_id: "local-1" },
+      executionContext: {
+        sourceId: "terminal:local-1",
+        terminalSession: { id: "local-1", cwd: "/workspace" }
+      }
+    });
+    api.dispose();
+  });
+
   it("keeps tool card updates scoped to the event session", () => {
     const state = createState();
     const commands = createCommands();
@@ -310,6 +349,39 @@ describe("chat annotations api", () => {
     expect(api.getSessionAnnotations("session-b").thinking).toEqual([
       { id: "thinking:run-1:1", runId: "run-1", segmentKey: "run-1", text: "B", expanded: false }
     ]);
+    api.dispose();
+  });
+
+  it("ignores tool and reasoning events from a terminated run after a newer run starts", () => {
+    const state = createState({ "chat.thinkingVisible": true });
+    const commands = createCommands();
+    const events = createEvents();
+    const api = createChatAnnotationsApi({ state, commands, events });
+
+    events.emit("chat/runStarted", { sessionId: "session-1", runId: "run-old" });
+    events.emit("chat/aborted", { sessionId: "session-1", runId: "run-old" });
+    events.emit("chat/runStarted", { sessionId: "session-1", runId: "run-new" });
+    events.emit("chat/toolCall", {
+      sessionId: "session-1",
+      runId: "run-old",
+      assistantBlockId: "run-old",
+      toolCall: { id: "late-tool", name: "read", args: {} }
+    });
+    events.emit("chat/reasoningStart", {
+      sessionId: "session-1",
+      runId: "run-old",
+      assistantBlockId: "run-old"
+    });
+    events.emit("chat/reasoningToken", {
+      sessionId: "session-1",
+      runId: "run-old",
+      assistantBlockId: "run-old",
+      token: "late"
+    });
+
+    const annotations = api.getSessionAnnotations("session-1");
+    expect(annotations.tools ?? []).toEqual([]);
+    expect(annotations.thinking ?? []).toEqual([]);
     api.dispose();
   });
 });

@@ -19,6 +19,7 @@ import { TokenCounter } from './token-counter.js';
 import { KVCacheOptimizer } from './kv-cache-optimizer.js';
 import { CompressionSettingsPanel } from './ui/settings-panel.js';
 import { CompressionStatus } from './ui/compression-status.js';
+import { stripAssistantBlockIdComment } from '../../src/chat/restore.ts';
 
 const I18N_NS = 'dev.context-compression';
 const I18N_MESSAGES = {
@@ -1434,7 +1435,9 @@ function stripWidgetStubs(text) {
     // Strip leading role headers like "system|user|assistant <content>"
     const roleMatch = trimmed.match(/^(system|user|assistant)\s+(.*)$/);
     if (roleMatch) {
-      const body = roleMatch[2].trim();
+      const body = (roleMatch[1] === 'assistant'
+        ? stripAssistantBlockIdComment(roleMatch[2])
+        : roleMatch[2]).trim();
       if (body) out.push(body);
       continue;
     }
@@ -1470,7 +1473,9 @@ function parseMessages(content) {
         currentImages = [];
       }
       currentRole = roleMatch[1];
-      const contentPart = roleMatch[2];
+      const contentPart = currentRole === 'assistant'
+        ? stripAssistantBlockIdComment(roleMatch[2])
+        : roleMatch[2];
       if (contentPart.trim()) currentContent.push(contentPart);
     } else if (imageMatch) {
       const imageUrl = imageMatch[1];

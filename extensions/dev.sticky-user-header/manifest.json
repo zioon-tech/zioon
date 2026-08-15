@@ -1,7 +1,7 @@
 {
   "id": "dev.sticky-user-header",
   "name": "Sticky User Header",
-  "description": "滚动时将可视区域顶部对应的 user 消息置顶显示，帮助快速识别当前查看的是哪个问题的回答",
+  "description": "Keep the active user message header visible while scrolling.",
   "version": "1.0.0",
   "author": "Zion Team",
   "main": "main.js",
@@ -11,6 +11,26 @@
     "name": "Sticky User Header",
     "version": "1.0.0",
     "main": "main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "固定用户头部",
+        "en-US": "Sticky User Header"
+      },
+      "description": {
+        "zh-CN": "滚动时固定当前 user 消息标题。",
+        "en-US": "Keep the active user message header visible while scrolling."
+      },
+      "icon": "pin",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "滚动时固定当前 user 消息标题。"
+        ],
+        "en-US": [
+          "Keep the active user message header visible while scrolling."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {

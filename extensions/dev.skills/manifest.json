@@ -1,14 +1,61 @@
 {
   "name": "dev.skills",
   "version": "2.1.0",
-  "description": "Agent Skills standard implementation - injects skill metadata into system prompt, model autonomously reads full content when needed",
+  "description": "Scan and manage Agent Skills and inject skill metadata for the model.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.skills",
-    "name": "Skills v2.1",
+    "name": "Skills",
     "version": "2.1.0",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "技能",
+        "en-US": "Skills"
+      },
+      "description": {
+        "zh-CN": "扫描和管理 Agent Skills，并向模型注入技能元数据。",
+        "en-US": "Scan and manage Agent Skills and inject skill metadata for the model."
+      },
+      "icon": "sparkle",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "扫描标准 SKILL.md 目录",
+          "选择当前会话可用技能",
+          "向模型提供按需读取的技能索引"
+        ],
+        "en-US": [
+          "Scan standard SKILL.md directories",
+          "Select skills available to the current session",
+          "Provide the model with an on-demand skill index"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "local-files",
+          "label": {
+            "zh-CN": "本地文件",
+            "en-US": "Local files"
+          },
+          "description": {
+            "zh-CN": "读取用户配置的技能目录。",
+            "en-US": "Read user-configured skill directories."
+          }
+        }
+      ],
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "打开技能面板",
+            "en-US": "Open Skills"
+          },
+          "command": "skills.openPanel",
+          "icon": "sparkle"
+        }
+      ]
+    },
     "contributes": {
       "commands": [
         {

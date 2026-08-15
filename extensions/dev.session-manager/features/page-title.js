@@ -1,3 +1,5 @@
+import { getSessionRunIndicatorStatus } from "./run-state.js";
+
 export function createPageTitleManager(opts) {
   const zion = opts?.zion || window.zion;
   const defaultTitle = opts?.defaultTitle || "Zion Next (CM6) Playground";
@@ -77,10 +79,7 @@ export function createPageTitleManager(opts) {
   function syncFaviconForRunState(sessionId) {
     try {
       const rs = zion?.state?.get(`chat.runs.${sessionId}`) || null;
-      const streaming = !!rs?.streaming;
-      const awaiting = !!rs?.awaiting;
-      const aborted = !!rs?.aborted;
-      const key = streaming ? "streaming" : (awaiting ? "awaiting" : (aborted ? "aborted" : "idle"));
+        const key = getSessionRunIndicatorStatus(rs) || "idle";
       if (key === __favDotKey) return;
       __favDotKey = key;
       if (key === "idle") {
@@ -89,9 +88,15 @@ export function createPageTitleManager(opts) {
       }
       const accent = getCssVar("--accent", "#6272a4");
       const ok = getCssVar("--ok", "#50fa7b");
-      const theme = (document.documentElement.getAttribute("data-theme") || "").toLowerCase();
-      const abortedColor = theme === "light" ? "#dc2626" : "#ff5555";
-      const color = key === "streaming" ? accent : (key === "awaiting" ? ok : abortedColor);
+        const danger = getCssVar("--danger", "#ef4444");
+        const warning = getCssVar("--warning", "#d29922");
+        const color = key === "streaming"
+          ? accent
+          : key === "ready"
+            ? ok
+            : key === "error"
+              ? danger
+              : warning;
       setFaviconDot(color);
     } catch {}
   }
@@ -112,4 +117,3 @@ export function createPageTitleManager(opts) {
 
   return { updatePageTitle, syncFaviconForRunState, restoreFavicons };
 }
-

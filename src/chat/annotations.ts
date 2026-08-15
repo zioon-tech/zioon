@@ -1,4 +1,5 @@
 import { ChatCardRuntime, type ChatCardType } from "./card-runtime";
+import { resolveToolCardId } from "./tool-card-id";
 
 type Disposable = { dispose(): void };
 
@@ -32,6 +33,7 @@ type RestoreSessionOptions = {
   panelId?: string | null;
   annotations?: SessionAnnotations | null;
   clearFirst?: boolean;
+  defer?: boolean;
 };
 
 type CreateChatAnnotationsApiOptions = {
@@ -121,7 +123,24 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
   const disposables: Disposable[] = [];
   const reasoningSeq = new Map<string, number>();
   const activeThinkingByRun = new Map<string, string>();
+  const activeRunBySession = new Map<string, string>();
+  const terminatedRunKeys = new Set<string>();
   const reasoningRunKey = (sessionId: string, runId: string) => `${sessionId}:${runId}`;
+  const rememberTerminatedRun = (sessionId: string, runId: string) => {
+    const key = reasoningRunKey(sessionId, runId);
+    terminatedRunKeys.add(key);
+    while (terminatedRunKeys.size > 256) {
+      terminatedRunKeys.delete(terminatedRunKeys.values().next().value as string);
+    }
+  };
+  const acceptsRunPayload = (payload: any) => {
+    const sessionId = String(payload?.sessionId || "");
+    const runId = String(payload?.runId || "");
+    if (!sessionId || !runId) return true;
+    if (terminatedRunKeys.has(reasoningRunKey(sessionId, runId))) return false;
+    const activeRunId = activeRunBySession.get(sessionId);
+    return !activeRunId || activeRunId === runId;
+  };
   const reasoningSegmentKey = (runId: string, payload: any) =>
     String(payload?.reasoningSegmentId || (payload?.stepIndex != null ? `${runId}:step:${payload.stepIndex}` : runId));
   const reasoningActiveKey = (sessionId: string, segmentKey: string) => `${sessionId}:${segmentKey}`;
@@ -454,6 +473,12 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
       const sessionId = payload?.sessionId;
       const runId = payload?.runId;
       if (!sessionId || !runId) return;
+      const previousRunId = activeRunBySession.get(sessionId);
+      if (previousRunId && previousRunId !== runId) {
+        rememberTerminatedRun(sessionId, previousRunId);
+      }
+      activeRunBySession.set(sessionId, runId);
+      terminatedRunKeys.delete(reasoningRunKey(sessionId, runId));
       const key = reasoningRunKey(sessionId, runId);
       for (const existingKey of activeThinkingByRun.keys()) {
         if (existingKey.startsWith(`${sessionId}:`)) {
@@ -463,23 +488,53 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
       reasoningSeq.set(key, 0);
       debugLog("event.runStarted", { sessionId, runId, panelId: payload?.panelId });
     }));
+    const onRunTerminated = (payload: any) => {
+      const sessionId = String(payload?.sessionId || "");
+      const runId = String(payload?.runId || "");
+      if (!sessionId || !runId) return;
+      rememberTerminatedRun(sessionId, runId);
+      if (activeRunBySession.get(sessionId) === runId) activeRunBySession.delete(sessionId);
+    };
+    disposables.push(eventOn("chat/runFinished", onRunTerminated));
+    disposables.push(eventOn("chat/runError", onRunTerminated));
+    disposables.push(eventOn("chat/aborted", onRunTerminated));
     disposables.push(eventOn("chat/toolCall", (payload: any) => {
+      if (!acceptsRunPayload(payload)) return;
       const sessionId = payload?.sessionId;
       const tc = payload?.toolCall || payload;
-      if (!sessionId || !tc?.id) return;
-      upsertAnnotationItem(sessionId, "tools", {
-        id: String(tc.id),
+      const id = resolveToolCardId(payload);
+      if (!sessionId || !tc?.id || !id) return;
+      const item: Record<string, any> = {
+        id,
         name: tc.name || "tool",
         args: tc.args,
         result: null,
         ok: null,
-        expanded: false
+        expanded: false,
+        ...(payload?.assistantBlockId ? { assistantBlockId: payload.assistantBlockId } : {})
+      };
+      if (id !== String(tc.id)) {
+        item.toolCallId = String(tc.id);
+        item.runId = payload?.runId || null;
+      }
+      upsertAnnotationItem(sessionId, "tools", item);
+      debugLog("event.toolCall", { sessionId, panelId: payload?.panelId, id, toolCallId: tc.id, name: tc.name || "tool" });
+    }));
+    disposables.push(eventOn("chat/toolArgsResolved", (payload: any) => {
+      if (!acceptsRunPayload(payload)) return;
+      const sessionId = payload?.sessionId;
+      const id = resolveToolCardId(payload);
+      if (!sessionId || !id || !payload?.args || typeof payload.args !== "object") return;
+      updateAnnotationItem(sessionId, "tools", id, {
+        args: payload.args,
+        executionContext: payload?.executionContext || null
       });
-      debugLog("event.toolCall", { sessionId, panelId: payload?.panelId, id: tc.id, name: tc.name || "tool" });
+      debugLog("event.toolArgsResolved", { sessionId, id, name: payload?.toolName || "tool" });
     }));
     disposables.push(eventOn("chat/toolResult", (payload: any) => {
+      if (!acceptsRunPayload(payload)) return;
       const sessionId = payload?.sessionId;
-      const id = payload?.toolCallId || payload?.id;
+      const id = resolveToolCardId(payload);
       if (!sessionId || !id) return;
       updateAnnotationItem(sessionId, "tools", id, {
         result: payload?.result,
@@ -488,6 +543,7 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
       debugLog("event.toolResult", { sessionId, panelId: payload?.panelId, id, ok: payload?.ok });
     }));
     disposables.push(eventOn("chat/reasoningStart", (payload: any) => {
+      if (!acceptsRunPayload(payload)) return;
       if (payload?.silentReasoning) return;
       if (!opts.state.get("chat.thinkingVisible")) return;
       const sessionId = payload?.sessionId;
@@ -501,7 +557,8 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
         upsertAnnotationItem(sessionId, "thinking", {
           id: currentId,
           runId,
-          segmentKey
+          segmentKey,
+          ...(payload?.assistantBlockId ? { assistantBlockId: payload.assistantBlockId } : {})
         });
         debugLog("event.reasoningStart.reuse", { sessionId, panelId: payload?.panelId, runId, segmentKey, id: currentId });
         return;
@@ -515,11 +572,13 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
         runId,
         segmentKey,
         text: "",
-        expanded: false
+        expanded: false,
+        ...(payload?.assistantBlockId ? { assistantBlockId: payload.assistantBlockId } : {})
       });
       debugLog("event.reasoningStart", { sessionId, panelId: payload?.panelId, runId, segmentKey, id });
     }));
     disposables.push(eventOn("chat/reasoningToken", (payload: any) => {
+      if (!acceptsRunPayload(payload)) return;
       if (payload?.silentReasoning) return;
       if (!opts.state.get("chat.thinkingVisible")) return;
       const sessionId = payload?.sessionId;
@@ -542,15 +601,31 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
         const nextList = prevList.slice();
         if (idx >= 0) {
           const prevText = String(nextList[idx]?.text || "");
-          nextList[idx] = { ...nextList[idx], runId, segmentKey, text: prevText + token };
+          nextList[idx] = {
+            ...nextList[idx],
+            runId,
+            segmentKey,
+            ...(payload?.assistantBlockId
+              ? { assistantBlockId: payload.assistantBlockId }
+              : (nextList[idx]?.assistantBlockId ? { assistantBlockId: nextList[idx].assistantBlockId } : {})),
+            text: prevText + token
+          };
         } else {
-          nextList.push({ id, runId, segmentKey, text: token, expanded: false });
+          nextList.push({
+            id,
+            runId,
+            segmentKey,
+            text: token,
+            expanded: false,
+            ...(payload?.assistantBlockId ? { assistantBlockId: payload.assistantBlockId } : {})
+          });
         }
         return { ...prev, thinking: nextList };
       });
       debugLog("event.reasoningToken", { sessionId, panelId: payload?.panelId, runId, segmentKey, id, tokenLength: token.length });
     }));
     disposables.push(eventOn("chat/reasoningEnd", (payload: any) => {
+      if (!acceptsRunPayload(payload)) return;
       const sessionId = payload?.sessionId;
       const runId = payload?.runId || "run";
       if (!sessionId) return;

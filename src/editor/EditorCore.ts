@@ -30,6 +30,7 @@ import { selectionToolbarExtension } from "./extensions/selection-toolbar";
 import { getCM, vim, Vim } from "@replit/codemirror-vim";
 import { inlineWidgetDecorationsExtension } from "./inlineWidgets";
 import { obsidianSyntaxExtension } from "./extensions/obsidian";
+import { roleScopedFencedCode } from "./roleScopedMarkdown";
 
 function selectNextOccurrenceDown(view: EditorView): boolean {
   const { state } = view;
@@ -227,7 +228,13 @@ function getSelectionHighlightExtensions(enabled: boolean): Extension[] {
 export type CursorPos = { line: number; ch: number };
 
 export type EditorSetValueOptions = {
-  source?: "session-load";
+  source?: "session-load" | "session-seed";
+};
+
+export type EditorCoreOptions = {
+  lineNumbers?: boolean;
+  activeLineHighlight?: boolean;
+  folding?: boolean;
 };
 
 export type VimOperationalMode = "normal" | "insert" | "replace" | "visual";
@@ -438,9 +445,12 @@ export class EditorCore {
   private windowDisposers: Array<() => void> = [];
   private focusReturnScrollGuard: { until: number; scrollTop: number; scrollLeft: number; reason: string } | null = null;
 
-  constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0") {
+  constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0", options: EditorCoreOptions = {}) {
     this._panelId = panelId;
     this._editorId = createEditorId(panelId);
+    this.lineNumbersEnabled = options.lineNumbers ?? true;
+    this.activeLineHighlightEnabled = options.activeLineHighlight ?? true;
+    this.foldEnabled = options.folding ?? true;
     parent.setAttribute("data-panel-id", panelId);
     this.view = new EditorView({
       state: EditorState.create({
@@ -481,19 +491,13 @@ export class EditorCore {
           ),
           // features (line numbers, active line gutter/highlight, auto indent, folding) are placed
           // in a dedicated compartment so they can be toggled at runtime.
-          this.featuresComp.of([
-            lineNumbers(),
-            highlightActiveLineGutter(),
-            highlightActiveLine(),
-            indentOnInput(),
-            this.createFoldGutter()
-          ]),
+          this.featuresComp.of(this.buildFeaturesArray()),
           scrollPastEnd(),
             modDSelectNext,
           this.historyComp.of(history()),
           // markdown is put into its own compartment so code-language highlighting can
           // be enabled/disabled at runtime.
-          this.mdComp.of(markdown({ codeLanguages: languages, extensions: [GFM] })),
+          this.mdComp.of(markdown({ codeLanguages: languages, extensions: [roleScopedFencedCode, GFM] })),
           this.autocompletionComp.of(getAutocompletionExtension()),
           this.themeComp.of(oneDark),
           this.uiComp.of(this.buildWysiwygExtension()),
@@ -571,17 +575,20 @@ export class EditorCore {
 
   setValue(v: string, opts?: EditorSetValueOptions): void {
     const { state } = this.view;
-    const isSessionLoad = opts?.source === "session-load";
-    const annotations = isSessionLoad
-      ? [Transaction.userEvent.of("zion.sessionLoad"), Transaction.addToHistory.of(false)]
+    const isSessionReplace = opts?.source === "session-load" || opts?.source === "session-seed";
+    const annotations = isSessionReplace
+      ? [
+          Transaction.userEvent.of(opts?.source === "session-seed" ? "zion.sessionSeed" : "zion.sessionLoad"),
+          Transaction.addToHistory.of(false)
+        ]
       : undefined;
     const tr = state.update({
       changes: { from: 0, to: state.doc.length, insert: v },
       annotations,
-      effects: isSessionLoad ? this.historyComp.reconfigure([]) : undefined
+      effects: isSessionReplace ? this.historyComp.reconfigure([]) : undefined
     });
     this.view.dispatch(tr);
-    if (isSessionLoad) {
+    if (isSessionReplace) {
       this.view.dispatch({
         effects: this.historyComp.reconfigure(history()),
         annotations: Transaction.addToHistory.of(false)

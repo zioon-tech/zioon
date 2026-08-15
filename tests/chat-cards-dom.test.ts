@@ -3,6 +3,7 @@ import { EditorCore } from "../src/editor/EditorCore";
 import { attachEditor } from "../src/ext/registry";
 import { SessionSync } from "../src/panel/SessionSync";
 import { createChatAnnotationsApi } from "../src/chat/annotations";
+import { createToolCardId } from "../src/chat/tool-card-id";
 import { installToolCallCards } from "../extensions/dev.tools/tool-calls.js";
 import { installThinkingCards } from "../extensions/dev.thinking/thinking-cards.js";
 
@@ -146,18 +147,23 @@ describe("chat cards DOM lifecycle", () => {
   });
 
   it("mirrors live tool and thinking widgets to another panel showing the same session", async () => {
-    const h = createHarness({ "panel-a": "session-1", "panel-b": "session-1" }, "user hi\nassistant \n");
+    const assistantBlockId = "run-1";
+    const h = createHarness(
+      { "panel-a": "session-1", "panel-b": "session-1" },
+      `user hi\nassistant <!-- zion-assistant:id=${assistantBlockId} --> \n`
+    );
     try {
-      window.zion.events.emit("chat/runStarted", { sessionId: "session-1", panelId: "panel-a", runId: "run-1" });
+      window.zion.events.emit("chat/runStarted", { sessionId: "session-1", panelId: "panel-a", runId: "run-1", assistantBlockId });
       window.zion.events.emit("chat/toolCall", {
         sessionId: "session-1",
         panelId: "panel-a",
         runId: "run-1",
+        assistantBlockId,
         toolCall: { id: "tool-live", name: "read", args: { path: "live.txt" } }
       });
-      window.zion.events.emit("chat/reasoningStart", { sessionId: "session-1", panelId: "panel-a", runId: "run-1" });
-      window.zion.events.emit("chat/reasoningToken", { sessionId: "session-1", panelId: "panel-a", runId: "run-1", token: "thinking" });
-      window.zion.events.emit("chat/reasoningEnd", { sessionId: "session-1", panelId: "panel-a", runId: "run-1" });
+      window.zion.events.emit("chat/reasoningStart", { sessionId: "session-1", panelId: "panel-a", runId: "run-1", assistantBlockId });
+      window.zion.events.emit("chat/reasoningToken", { sessionId: "session-1", panelId: "panel-a", runId: "run-1", assistantBlockId, token: "thinking" });
+      window.zion.events.emit("chat/reasoningEnd", { sessionId: "session-1", panelId: "panel-a", runId: "run-1", assistantBlockId });
       await wait(380);
 
       expect(h.editors.get("panel-b")!.getValue()).toBe(h.editors.get("panel-a")!.getValue());
@@ -170,12 +176,173 @@ describe("chat cards DOM lifecycle", () => {
     }
   });
 
+  it("ignores late tool and reasoning events from an interrupted run after a new run starts", async () => {
+    const initial = [
+      "user old",
+      "assistant <!-- zion-assistant:id=run-old --> ",
+      "user new",
+      "assistant <!-- zion-assistant:id=run-new --> ",
+      ""
+    ].join("\n");
+    const h = createHarness({ "panel-a": "session-1" }, initial);
+    try {
+      window.zion.events.emit("chat/runStarted", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        runId: "run-old",
+        assistantBlockId: "run-old"
+      });
+      window.zion.events.emit("chat/aborted", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        runId: "run-old"
+      });
+      window.zion.events.emit("chat/runStarted", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        runId: "run-new",
+        assistantBlockId: "run-new"
+      });
+
+      window.zion.events.emit("chat/toolCall", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        runId: "run-old",
+        assistantBlockId: "run-old",
+        toolCall: { id: "late-tool", name: "read", args: { path: "old.txt" } }
+      });
+      window.zion.events.emit("chat/reasoningStart", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        runId: "run-old",
+        assistantBlockId: "run-old"
+      });
+      window.zion.events.emit("chat/reasoningToken", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        runId: "run-old",
+        assistantBlockId: "run-old",
+        token: "late reasoning"
+      });
+      await wait(100);
+
+      expect(h.editors.get("panel-a")!.getValue()).toBe(initial);
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline")).toHaveLength(0);
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline")).toHaveLength(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("keeps reused provider tool ids attached to their own assistant turns", async () => {
+    const initial = [
+      "user first",
+      "assistant <!-- zion-assistant:id=run-1 --> first answer",
+      "user second",
+      "assistant <!-- zion-assistant:id=run-2 --> second answer"
+    ].join("\n");
+    const h = createHarness({ "panel-a": "session-1" }, initial);
+    try {
+      const emitTool = (runId: string, result: string) => {
+        const toolCallId = "call-1";
+        const cardId = createToolCardId(runId, toolCallId);
+        window.zion.events.emit("chat/runStarted", {
+          sessionId: "session-1",
+          panelId: "panel-a",
+          runId,
+          assistantBlockId: runId
+        });
+        window.zion.events.emit("chat/toolCall", {
+          sessionId: "session-1",
+          panelId: "panel-a",
+          runId,
+          cardId,
+          assistantBlockId: runId,
+          toolCall: { id: toolCallId, cardId, name: "read", args: { path: `${runId}.txt` } }
+        });
+        window.zion.events.emit("chat/toolResult", {
+          sessionId: "session-1",
+          panelId: "panel-a",
+          runId,
+          cardId,
+          toolCallId,
+          result,
+          ok: true
+        });
+        window.zion.events.emit("chat/runFinished", { sessionId: "session-1", panelId: "panel-a", runId });
+        return cardId;
+      };
+
+      const firstCardId = emitTool("run-1", "first result");
+      const secondCardId = emitTool("run-2", "second result");
+      await wait(80);
+
+      const value = h.editors.get("panel-a")!.getValue();
+      const firstMarker = `调用 read <!-- zion-tool:id=${firstCardId} -->`;
+      const secondMarker = `调用 read <!-- zion-tool:id=${secondCardId} -->`;
+      expect(value.indexOf("run-1 --> first answer")).toBeLessThan(value.indexOf(firstMarker));
+      expect(value.indexOf(firstMarker)).toBeLessThan(value.indexOf("user second"));
+      expect(value.indexOf("run-2 --> second answer")).toBeLessThan(value.indexOf(secondMarker));
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(2);
+
+      const annotations = window.zion.commands.executeCommand("zion.chatCards.getSessionAnnotations", "session-1");
+      expect(annotations.tools).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: firstCardId, toolCallId: "call-1", result: "first result" }),
+        expect.objectContaining({ id: secondCardId, toolCallId: "call-1", result: "second result" })
+      ]));
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("keeps a tool on its parent assistant after the user clicks an older answer", async () => {
+    const initial = [
+      "user first",
+      "assistant <!-- zion-assistant:id=run-old --> old answer",
+      "user second",
+      "assistant <!-- zion-assistant:id=run-new --> new answer"
+    ].join("\n");
+    const h = createHarness({ "panel-a": "session-1" }, initial);
+    try {
+      const view = h.cores.get("panel-a")!.view;
+      const oldAnswerPos = initial.indexOf("old answer");
+      window.zion.events.emit("chat/runStarted", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        runId: "run-new",
+        assistantBlockId: "run-new"
+      });
+      view.dispatch({ selection: { anchor: oldAnswerPos } });
+      window.zion.events.emit("chat/toolCall", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        runId: "run-new",
+        assistantBlockId: "run-new",
+        toolCall: { id: "call-after-click", name: "read", args: { path: "new.txt" } }
+      });
+      await wait(80);
+
+      const value = h.editors.get("panel-a")!.getValue();
+      const marker = `调用 read <!-- zion-tool:id=${createToolCardId("run-new", "call-after-click")} -->`;
+      expect(value.indexOf(marker)).toBeGreaterThan(value.indexOf("run-new --> new answer"));
+      expect(value.indexOf(marker)).toBeGreaterThan(value.indexOf("user second"));
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("restores mirrored tool widgets after session-load text sync without marking them deleted", async () => {
-    const h = createHarness({ "panel-a": "session-1", "panel-b": "session-1" }, "user hi\nassistant \n");
+    const assistantBlockId = "run-tool-sync";
+    const h = createHarness(
+      { "panel-a": "session-1", "panel-b": "session-1" },
+      `user hi\nassistant <!-- zion-assistant:id=${assistantBlockId} --> \n`
+    );
     try {
       window.zion.events.emit("chat/toolCall", {
         sessionId: "session-1",
         panelId: "panel-a",
+        runId: assistantBlockId,
+        assistantBlockId,
         toolCall: { id: "tool-sync", name: "read", args: { path: "sync.txt" } }
       });
       await wait(120);
@@ -201,12 +368,16 @@ describe("chat cards DOM lifecycle", () => {
   });
 
   it("restores mirrored thinking widgets after session-load text sync without clearing annotations", async () => {
-    const h = createHarness({ "panel-a": "session-1", "panel-b": "session-1" }, "user hi\nassistant \n");
+    const assistantBlockId = "run-thinking-sync";
+    const h = createHarness(
+      { "panel-a": "session-1", "panel-b": "session-1" },
+      `user hi\nassistant <!-- zion-assistant:id=${assistantBlockId} --> \n`
+    );
     try {
-      window.zion.events.emit("chat/runStarted", { sessionId: "session-1", panelId: "panel-a", runId: "run-thinking-sync" });
-      window.zion.events.emit("chat/reasoningStart", { sessionId: "session-1", panelId: "panel-a", runId: "run-thinking-sync" });
-      window.zion.events.emit("chat/reasoningToken", { sessionId: "session-1", panelId: "panel-a", runId: "run-thinking-sync", token: "thinking" });
-      window.zion.events.emit("chat/reasoningEnd", { sessionId: "session-1", panelId: "panel-a", runId: "run-thinking-sync" });
+      window.zion.events.emit("chat/runStarted", { sessionId: "session-1", panelId: "panel-a", runId: assistantBlockId, assistantBlockId });
+      window.zion.events.emit("chat/reasoningStart", { sessionId: "session-1", panelId: "panel-a", runId: assistantBlockId, assistantBlockId });
+      window.zion.events.emit("chat/reasoningToken", { sessionId: "session-1", panelId: "panel-a", runId: assistantBlockId, assistantBlockId, token: "thinking" });
+      window.zion.events.emit("chat/reasoningEnd", { sessionId: "session-1", panelId: "panel-a", runId: assistantBlockId, assistantBlockId });
       await wait(160);
 
       expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(1);
@@ -308,12 +479,18 @@ describe("chat cards DOM lifecycle", () => {
   });
 
   it("does not sync text or annotations into panels showing a different session", async () => {
-    const h = createHarness({ "panel-a": "session-1", "panel-b": "session-2" }, "user hi\nassistant \n");
+    const assistantBlockId = "run-session-1";
+    const h = createHarness(
+      { "panel-a": "session-1", "panel-b": "session-2" },
+      `user hi\nassistant <!-- zion-assistant:id=${assistantBlockId} --> \n`
+    );
     try {
       const beforeB = h.editors.get("panel-b")!.getValue();
       window.zion.events.emit("chat/toolCall", {
         sessionId: "session-1",
         panelId: "panel-a",
+        runId: assistantBlockId,
+        assistantBlockId,
         toolCall: { id: "tool-session-1", name: "read", args: {} }
       });
       await wait(100);
@@ -327,16 +504,22 @@ describe("chat cards DOM lifecycle", () => {
   });
 
   it("does not attach widgets to an editor view without a bound session id", async () => {
-    const h = createHarness({ "panel-a": "session-1" }, "user hi\nassistant \n");
+    const assistantBlockId = "run-unbound";
+    const h = createHarness(
+      { "panel-a": "session-1" },
+      `user hi\nassistant <!-- zion-assistant:id=${assistantBlockId} --> \n`
+    );
     try {
       h.cores.get("panel-a")!.setSessionId(null);
       window.zion.events.emit("chat/toolCall", {
         sessionId: "session-1",
         panelId: "panel-a",
+        runId: assistantBlockId,
+        assistantBlockId,
         toolCall: { id: "tool-unbound", name: "read", args: {} }
       });
-      window.zion.events.emit("chat/reasoningStart", { sessionId: "session-1", panelId: "panel-a", runId: "run-unbound" });
-      window.zion.events.emit("chat/reasoningToken", { sessionId: "session-1", panelId: "panel-a", runId: "run-unbound", token: "thinking" });
+      window.zion.events.emit("chat/reasoningStart", { sessionId: "session-1", panelId: "panel-a", runId: assistantBlockId, assistantBlockId });
+      window.zion.events.emit("chat/reasoningToken", { sessionId: "session-1", panelId: "panel-a", runId: assistantBlockId, assistantBlockId, token: "thinking" });
       await wait(80);
 
       expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(0);
@@ -366,6 +549,98 @@ describe("chat cards DOM lifecycle", () => {
       expect(h.editors.get("panel-a")!.getValue()).toBe("");
       expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(0);
       expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline").length).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("keeps orphan card annotations pending instead of guessing a parent assistant", async () => {
+    const initial = [
+      "user hi",
+      "assistant <!-- zion-assistant:id=run-existing --> answer"
+    ].join("\n");
+    const h = createHarness({ "panel-a": "session-1" }, initial);
+    try {
+      window.zion.commands.executeCommand("zion.chatCards.setSessionAnnotations", {
+        sessionId: "session-1",
+        annotations: {
+          tools: [{
+            id: "orphan-tool",
+            name: "read",
+            args: { path: "missing.txt" },
+            assistantBlockId: "missing-run",
+            expanded: false
+          }]
+        }
+      });
+
+      window.zion.commands.executeCommand("zion.chatCards.restoreSession", {
+        sessionId: "session-1",
+        panelId: "panel-a"
+      });
+      await wait(80);
+
+      expect(h.editors.get("panel-a")!.getValue()).toBe(initial);
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline").length).toBe(0);
+      const pending = window.zion.commands.executeCommand("zion.chatCards.getPendingRestore", {
+        sessionId: "session-1",
+        kind: "tools"
+      });
+      expect(pending).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "orphan-tool", assistantBlockId: "missing-run" })
+      ]));
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("keeps markers moved under a different assistant hidden and pending", async () => {
+    const initial = [
+      "user old",
+      "assistant <!-- zion-assistant:id=run-old --> old answer",
+      "user new",
+      "assistant <!-- zion-assistant:id=run-new --> new answer",
+      "调用 read <!-- zion-tool:id=tool-moved -->",
+      "思考 <!-- zion-thinking:id=thinking:moved:1 -->",
+      ""
+    ].join("\n");
+    const h = createHarness({ "panel-a": "session-1" }, initial);
+    try {
+      window.zion.commands.executeCommand("zion.chatCards.setSessionAnnotations", {
+        sessionId: "session-1",
+        annotations: {
+          tools: [{
+            id: "tool-moved",
+            name: "read",
+            args: {},
+            assistantBlockId: "run-old"
+          }],
+          thinking: [{
+            id: "thinking:moved:1",
+            runId: "run-old",
+            text: "moved",
+            assistantBlockId: "run-old"
+          }]
+        }
+      });
+
+      window.zion.commands.executeCommand("zion.chatCards.restoreSession", {
+        sessionId: "session-1",
+        panelId: "panel-a"
+      });
+      await wait(100);
+
+      expect(h.editors.get("panel-a")!.getValue()).toBe(initial);
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline")).toHaveLength(0);
+      expect(h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline")).toHaveLength(0);
+      expect(window.zion.commands.executeCommand("zion.chatCards.getPendingRestore", {
+        sessionId: "session-1",
+        kind: "tools"
+      })).toEqual([expect.objectContaining({ id: "tool-moved", assistantBlockId: "run-old" })]);
+      expect(window.zion.commands.executeCommand("zion.chatCards.getPendingRestore", {
+        sessionId: "session-1",
+        kind: "thinking"
+      })).toEqual([expect.objectContaining({ id: "thinking:moved:1", assistantBlockId: "run-old" })]);
     } finally {
       h.dispose();
     }

@@ -126,6 +126,18 @@ export type InspectorRenderer = {
   render: NonNullable<InspectorItem["render"]>;
 };
 
+export type InspectorTextEditorDecorator = {
+  id: string;
+  priority?: number;
+  createExtension: (editor: any, item: InspectorItem) => any;
+};
+
+export function getInspectorTextSessionId(item: Pick<InspectorItem, "id" | "ownerId" | "path" | "displayPath">): string {
+  const owner = encodeURIComponent(String(item?.ownerId || "core"));
+  const source = encodeURIComponent(String(item?.path || item?.displayPath || item?.id || "untitled"));
+  return `inspector-file:${owner}:${source}`;
+}
+
 type StateLike = {
   get: <T = unknown>(key: string) => T | undefined;
   set: <T = unknown>(key: string, value: T) => void;
@@ -908,6 +920,10 @@ type InspectorWidthOptions = {
 class InspectorRuntime {
   private readonly items = new Map<string, InspectorItem>();
   private readonly renderers = new Map<string, InspectorRenderer>();
+  private readonly textEditorDecorators = new Map<string, InspectorTextEditorDecorator>();
+  private readonly textEditors = new Map<string, any>();
+  private textRevealHandler: ((itemId: string, options?: { from?: number; to?: number; focus?: boolean }) => any) | null = null;
+  private textEditorDecoratorVersion = 0;
   private readonly emitter = new ChangeEmitter();
 
   onDidChange(fn: () => void): Disposable {
@@ -929,6 +945,111 @@ class InspectorRuntime {
         this.emitter.emit();
       }
     };
+  }
+
+  registerTextEditorDecorator(decorator: InspectorTextEditorDecorator): Disposable {
+    const id = String(decorator?.id || "").trim();
+    if (!id || typeof decorator.createExtension !== "function") return { dispose() {} };
+    const registered = { ...decorator, id };
+    this.textEditorDecorators.set(id, registered);
+    this.textEditorDecoratorVersion += 1;
+    this.emitter.emit();
+    return {
+      dispose: () => {
+        if (this.textEditorDecorators.get(id) !== registered) return;
+        this.textEditorDecorators.delete(id);
+        this.textEditorDecoratorVersion += 1;
+        this.emitter.emit();
+      }
+    };
+  }
+
+  getTextEditorExtensions(editor: any, item: InspectorItem): any[] {
+    return Array.from(this.textEditorDecorators.values())
+      .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+      .flatMap((decorator) => {
+        try {
+          const extension = decorator.createExtension(editor, item);
+          return extension == null ? [] : [extension];
+        } catch {
+          return [];
+        }
+      });
+  }
+
+  getTextEditorDecoratorVersion(): number {
+    return this.textEditorDecoratorVersion;
+  }
+
+  attachTextEditor(itemId: string, editor: any): Disposable {
+    const id = String(itemId || "");
+    if (!id || !editor) return { dispose() {} };
+    this.textEditors.set(id, editor);
+    return {
+      dispose: () => {
+        if (this.textEditors.get(id) === editor) this.textEditors.delete(id);
+      }
+    };
+  }
+
+  getTextEditor(itemIdOrSessionId?: string): any | null {
+    const target = String(itemIdOrSessionId || "");
+    if (!target) {
+      const activeId = this.getActiveItemId();
+      return activeId ? this.textEditors.get(activeId) || null : null;
+    }
+    const direct = this.textEditors.get(target);
+    if (direct) return direct;
+    for (const editor of this.textEditors.values()) {
+      if (String(editor?.sessionId || "") === target) return editor;
+    }
+    return null;
+  }
+
+  getTextEditorForView(view: any): any | null {
+    if (!view) return null;
+    for (const editor of this.textEditors.values()) {
+      try {
+        if (editor?.getView?.() === view) return editor;
+      } catch {}
+    }
+    return null;
+  }
+
+  getTextSource(itemIdOrSessionId?: string): { item: InspectorItem; sessionId: string; content: string } | null {
+    const target = String(itemIdOrSessionId || "");
+    const item = target
+      ? this.items.get(target)
+        || this.getItems().find((candidate) => getInspectorTextSessionId(candidate) === target)
+        || null
+      : this.getActiveItem();
+    if (!item || item.url || item.file?.kind !== "text") return null;
+    return {
+      item,
+      sessionId: getInspectorTextSessionId(item),
+      content: String(item.file.content || "")
+    };
+  }
+
+  setTextRevealHandler(handler: ((itemId: string, options?: { from?: number; to?: number; focus?: boolean }) => any) | null): Disposable {
+    this.textRevealHandler = typeof handler === "function" ? handler : null;
+    return {
+      dispose: () => {
+        if (this.textRevealHandler === handler) this.textRevealHandler = null;
+      }
+    };
+  }
+
+  revealText(itemIdOrSessionId: string, options?: { from?: number; to?: number; focus?: boolean }): any {
+    try {
+      const target = String(itemIdOrSessionId || "");
+      const item = this.items.get(target)
+        || this.getItems().find((candidate) => getInspectorTextSessionId(candidate) === target)
+        || null;
+      return this.textRevealHandler?.(item?.id || target, options) || null;
+    } catch {
+      return null;
+    }
   }
 
   getRenderer(item: InspectorItem): InspectorRenderer | null {

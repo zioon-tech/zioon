@@ -3,10 +3,18 @@ import { computeNextRun, normalizeSchedule, validateSchedule } from "./schedule.
 const EXECUTION_MODES = new Set(["local-only", "service-backed"]);
 const TASK_TYPES = new Set(["agent", "command"]);
 const POLICY_PRESETS = new Set(["read-only", "workspace-write", "trusted-automation"]);
-const FILE_WRITE_TOOLS = new Set(["fsWrite", "fsEdit"]);
-const TRUSTED_TOOLS = new Set(["terminalExecute", "sendMail", "todoWrite"]);
+const FILE_WRITE_TOOLS = new Set(["write", "edit"]);
+const TRUSTED_TOOLS = new Set(["Bash", "sendMail", "todoWrite"]);
 const MUTATING_TOOLS = new Set([...FILE_WRITE_TOOLS, ...TRUSTED_TOOLS]);
+export const ACTIVE_RUN_STATUSES = new Set(["pending", "claimed", "running"]);
+const TERMINAL_RUN_STATUSES = new Set(["success", "failed", "aborted"]);
+const DEFAULT_STALE_RUN_TIMEOUT_MS = 10 * 60_000;
 const MAX_COMMAND_LENGTH = 4000;
+const LEGACY_TOOL_ALIASES = new Map([
+  ["fsWrite", "write"],
+  ["fsEdit", "edit"],
+  ["terminalExecute", "Bash"]
+]);
 
 function id(prefix) {
   try {
@@ -22,6 +30,10 @@ function list(value) {
     : [];
 }
 
+function normalizeAllowedTools(value) {
+  return list(value).map((name) => LEGACY_TOOL_ALIASES.get(name) || name);
+}
+
 function localTimeZone() {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
@@ -30,11 +42,41 @@ function localTimeZone() {
   }
 }
 
+function activeRunStatusText(status) {
+  if (status === "pending") return "已在排队中";
+  if (status === "claimed") return "已被领取";
+  return "正在运行";
+}
+
+function runActivityStartedAt(run) {
+  const value = Number(run?.startedAt || run?.scheduledFor || run?.createdAt || 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function staleRunTimeoutMs(run, task) {
+  const seconds = Number(run?.timeoutSeconds || task?.timeoutSeconds || 0);
+  const taskTimeoutMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
+  return Math.max(DEFAULT_STALE_RUN_TIMEOUT_MS, taskTimeoutMs);
+}
+
+export function isStaleActiveRun(run, task = null, now = Date.now()) {
+  if (!run || !ACTIVE_RUN_STATUSES.has(run.status) || TERMINAL_RUN_STATUSES.has(run.status)) return false;
+  const startedAt = runActivityStartedAt(run);
+  if (!startedAt) return false;
+  return Number(now) - startedAt > staleRunTimeoutMs(run, task);
+}
+
+function staleRunError(run) {
+  if (run?.sessionId) return "运行超过超时时间，已自动标记为失败";
+  if (run?.status === "pending") return "运行在分配执行会话前超时，已自动清理";
+  return "运行状态长时间未完成，已自动清理";
+}
+
 export function normalizeCapabilityPolicy(input = {}) {
   const preset = POLICY_PRESETS.has(input?.preset) ? input.preset : "read-only";
   return {
     preset,
-    allowedTools: list(input?.allowedTools),
+    allowedTools: [...new Set(normalizeAllowedTools(input?.allowedTools))],
     fileRoots: list(input?.fileRoots),
     allowedCommandPrefixes: list(input?.allowedCommandPrefixes),
     allowedTerminalSessionIds: list(input?.allowedTerminalSessionIds),
@@ -63,9 +105,9 @@ export function buildSchedulerTask(input = {}, existing = null, now = Date.now()
     taskCapability = normalizeCapabilityPolicy({
       ...capability,
       preset: "trusted-automation",
-      allowedTools: capability.allowedTools.includes("terminalExecute")
+      allowedTools: capability.allowedTools.includes("Bash")
         ? capability.allowedTools
-        : [...capability.allowedTools, "terminalExecute"],
+        : [...capability.allowedTools, "Bash"],
       allowedCommandPrefixes: capability.allowedCommandPrefixes.length
         ? capability.allowedCommandPrefixes
         : command ? [command] : []
@@ -134,8 +176,8 @@ export function validateSchedulerTask(task) {
   if (allowed.has("schedulerManage")) {
     return "定时任务不能调用 schedulerManage";
   }
-  if ((policy.allowedCommandPrefixes.length || policy.allowedTerminalSessionIds.length) && !allowed.has("terminalExecute")) {
-    return "配置了终端限制，但未允许 terminalExecute 工具";
+  if ((policy.allowedCommandPrefixes.length || policy.allowedTerminalSessionIds.length) && !allowed.has("Bash")) {
+    return "配置了终端限制，但未允许 Bash 工具";
   }
   if ((policy.allowedRecipients.length || policy.maxMailPerRun > 0) && !allowed.has("sendMail")) {
     return "配置了邮件限制，但未允许 sendMail 工具";
@@ -148,9 +190,6 @@ export function validateSchedulerTask(task) {
   }
   if ([...allowed].some((name) => TRUSTED_TOOLS.has(name)) && policy.preset !== "trusted-automation") {
     return "终端、邮件和任务清单需要受信自动化权限";
-  }
-  if (allowed.has("terminalExecute") && !policy.allowedCommandPrefixes.length) {
-    return "启用终端时必须配置允许的命令前缀";
   }
   if (taskType === "command" && !commandAllowedByPrefixes(String(task.command || "").trim(), policy.allowedCommandPrefixes)) {
     return "命令必须匹配允许的命令前缀";
@@ -192,6 +231,8 @@ function runFromRemote(remote, taskByRemoteId) {
     ...remote,
     taskId: localTask?.id || remote.taskId,
     taskTitle: localTask?.title || remote.task?.title || remote.taskId,
+    executionMode: "service-backed",
+    timeoutSeconds: remote.timeoutSeconds || localTask?.timeoutSeconds || null,
     startedAt: remote.startedAt || remote.createdAt || remote.scheduledFor || Date.now(),
     completedAt: remote.completedAt || null,
     output: remote.output || "",
@@ -209,6 +250,7 @@ export class SchedulerController {
     this.onServiceStatus = onServiceStatus;
     this.now = now;
     this.engine = null;
+    this.pendingRunRequests = new Set();
   }
 
   setEngine(engine) {
@@ -224,6 +266,7 @@ export class SchedulerController {
   }
 
   async listRuns({ taskId = "", limit = 50 } = {}) {
+    this.reconcileStaleRuns({ notify: false });
     const localTask = taskId ? this.getTask(taskId) : null;
     const localRuns = this.store.listRuns(taskId || null);
     let remoteRuns = [];
@@ -231,7 +274,9 @@ export class SchedulerController {
     if (this.service?.listRuns) {
       try {
         const remoteTaskId = localTask?.remoteTaskId || "";
-        const remote = await this.service.listRuns(remoteTaskId);
+        const remote = await this.service.listRuns(remoteTaskId, {
+          limit: Math.max(1, Math.min(100, Number(limit) || 50))
+        });
         const taskByRemoteId = new Map(
           this.listTasks()
             .filter((task) => task.remoteTaskId)
@@ -253,6 +298,34 @@ export class SchedulerController {
       .filter((run) => !taskId || String(run.taskId) === String(taskId))
       .sort((left, right) => Number(right.startedAt || 0) - Number(left.startedAt || 0))
       .slice(0, Math.max(1, Math.min(100, Number(limit) || 50)));
+  }
+
+  async getRunDetails(runId) {
+    const previous = this.store.getRun(String(runId || ""));
+    if (!previous || previous.isSummary !== true || !this.service?.getRun) return previous;
+    try {
+      const remote = await this.service.getRun(previous.id);
+      if (!remote?.id) throw new Error("运行详情不存在");
+      const taskByRemoteId = new Map(
+        this.listTasks()
+          .filter((task) => task.remoteTaskId)
+          .map((task) => [String(task.remoteTaskId), task])
+      );
+      const mapped = runFromRemote(remote, taskByRemoteId);
+      const saved = this.store.saveRun({
+        ...previous,
+        ...mapped,
+        isSummary: false,
+        output: mapped.output || previous.output || "",
+        events: mapped.events.length ? mapped.events : previous.events || []
+      });
+      this.onServiceStatus(true);
+      this._notify();
+      return saved;
+    } catch (error) {
+      this.onServiceStatus(false);
+      throw error;
+    }
   }
 
   async saveTask(task) {
@@ -326,13 +399,98 @@ export class SchedulerController {
     const task = this.getTask(taskId);
     if (!task) throw new Error("Task not found");
     if (task.executionMode === "service-backed") {
-      const run = await this._serviceCall(() => this.service.runNow(task));
-      this._notify();
-      return { queued: true, run };
+      const staleRuns = this._markStaleRuns({ taskId: task.id });
+      if (staleRuns.length) {
+        await this._reportTerminalRuns(staleRuns, "timeout");
+        this._notify();
+      }
+      const activeRun = this.store.listRuns(task.id).find((run) => ACTIVE_RUN_STATUSES.has(run.status));
+      if (this.pendingRunRequests.has(task.id) || activeRun) {
+        throw new Error(activeRun ? `任务${activeRunStatusText(activeRun.status)}` : "任务正在提交，请稍候");
+      }
+      this.pendingRunRequests.add(task.id);
+      try {
+        const remoteRun = await this._serviceCall(() => this.service.runNow(task));
+        const remoteTaskId = String(remoteRun?.taskId || task.remoteTaskId || task.id);
+        const run = runFromRemote(
+          { ...remoteRun, taskId: remoteTaskId },
+          new Map([[remoteTaskId, task]])
+        );
+        this.store.saveRun(run);
+        this._notify();
+        return { queued: true, run };
+      } finally {
+        this.pendingRunRequests.delete(task.id);
+      }
     }
     if (!this.engine) throw new Error("Scheduler engine is unavailable");
     const result = await this.engine.execute(task);
     return { queued: false, result };
+  }
+
+
+  async cancelRun(runId, reason = "user") {
+    const run = this.store.getRun(String(runId || ""));
+    if (!run) throw new Error("Run not found");
+    if (!ACTIVE_RUN_STATUSES.has(run.status)) return run;
+    const task = this.store.getTask(run.taskId);
+    const serviceBacked = run.executionMode === "service-backed" || task?.executionMode === "service-backed";
+    if (!serviceBacked && run.status === "running") {
+      throw new Error("当前运行仍在本地执行，暂不支持直接取消");
+    }
+    const completedAt = this.now();
+    const error = reason === "timeout" ? "运行超时，已取消" : "运行已取消";
+    const next = this.store.saveRun({
+      ...run,
+      status: "aborted",
+      completedAt,
+      error,
+      cancelReason: reason
+    });
+    this.updateTaskLastRun(next);
+    await this._reportTerminalRun(next, reason);
+    this._notify();
+    return next;
+  }
+
+  async refreshServiceRuns() {
+    const localStaleRuns = this._markStaleRuns();
+    if (!this.service?.listRuns) {
+      if (localStaleRuns.length) this._notify();
+      return { online: false, runs: [] };
+    }
+    try {
+      const remoteRuns = await this.service.listRuns("", { limit: 100 });
+      const taskByRemoteId = new Map(
+        this.listTasks()
+          .filter((task) => task.remoteTaskId)
+          .map((task) => [String(task.remoteTaskId), task])
+      );
+      for (const remoteRun of remoteRuns) {
+        const mapped = runFromRemote(remoteRun, taskByRemoteId);
+        const previous = this.store.getRun(mapped.id);
+        this.store.saveRun({
+          ...(previous || {}),
+          ...mapped,
+          isSummary: previous?.isSummary === false
+            || previous?.events?.length
+            || previous?.output
+            ? false
+            : mapped.isSummary,
+          output: mapped.output || previous?.output || "",
+          events: mapped.events.length ? mapped.events : previous?.events || []
+        });
+      }
+      const staleRuns = [...localStaleRuns, ...this._markStaleRuns()];
+      await this._reportTerminalRuns(staleRuns, "timeout");
+      this.onServiceStatus(true);
+      this._notify();
+      return { online: true, runs: remoteRuns };
+    } catch (error) {
+      if (localStaleRuns.length) this._notify();
+      this.onServiceStatus(false);
+      return { online: false, runs: [], error };
+    }
   }
 
   async refreshServiceTasks() {
@@ -376,6 +534,84 @@ export class SchedulerController {
       this.onChange();
     } catch (error) {
       console.warn("[scheduler] change notification failed", error);
+    }
+  }
+
+  reconcileStaleRuns({ taskId = "", notify = true } = {}) {
+    const staleRuns = this._markStaleRuns({ taskId });
+    if (staleRuns.length && notify) this._notify();
+    return staleRuns.length > 0;
+  }
+
+  _markStaleRuns({ taskId = "" } = {}) {
+    const now = this.now();
+    const staleRuns = [];
+    const tasks = new Map(this.store.listTasks().map((task) => [String(task.id), task]));
+    for (const run of this.store.listRuns(taskId || null)) {
+      const task = tasks.get(String(run.taskId || ""));
+      if (!isStaleActiveRun(run, task, now)) continue;
+      const next = this.store.saveRun({
+        ...run,
+        status: "failed",
+        completedAt: now,
+        error: run.error || staleRunError(run),
+        stale: true
+      });
+      this.updateTaskLastRun(next);
+      staleRuns.push(next);
+    }
+    return staleRuns;
+  }
+
+  updateTaskLastRun(run) {
+    const task = this.store.getTask(run?.taskId);
+    if (!task) return;
+    this.store.saveTask({
+      ...task,
+      lastRun: {
+        id: run.id,
+        status: run.status,
+        startedAt: run.startedAt || run.scheduledFor || run.createdAt || null,
+        completedAt: run.completedAt || null
+      },
+      updatedAt: this.now()
+    });
+  }
+
+  async _reportTerminalRuns(runs, reason) {
+    const byId = new Map();
+    for (const run of runs || []) {
+      if (run?.id) byId.set(String(run.id), run);
+    }
+    for (const run of byId.values()) {
+      await this._reportTerminalRun(run, reason);
+    }
+  }
+
+  async _reportTerminalRun(run, reason = "user") {
+    const task = this.store.getTask(run?.taskId);
+    const serviceBacked = run?.executionMode === "service-backed" || task?.executionMode === "service-backed";
+    if (!serviceBacked || !this.service || !run?.id) return;
+    if (this.service.cancel) {
+      try {
+        await this.service.cancel(run.id, reason);
+        return;
+      } catch {
+        // Fall through to the legacy completion endpoint below.
+      }
+    }
+    if (!this.service.complete) return;
+    try {
+      await this.service.complete(run.id, "local-cancel", {
+        status: run.status,
+        sessionId: run.sessionId || null,
+        chatRunId: run.chatRunId || null,
+        output: run.output || "",
+        error: run.error || null,
+        usage: run.usage || null
+      });
+    } catch {
+      // Local cleanup must remain available even when the scheduler service is unreachable.
     }
   }
 }

@@ -13,7 +13,7 @@ export interface EditorProxy {
   editorId?: string;
   sessionId?: string | null;
   getValue(): string;
-  setValue(v: string, opts?: { source?: "session-load" }): void;
+  setValue(v: string, opts?: { source?: "session-load" | "session-seed" }): void;
   replaceSelection(text: string): void;
   getSelection(): string;
   replaceRange(text: string, from: { line: number; ch: number }, to?: { line: number; ch: number }): void;
@@ -89,6 +89,7 @@ export type MemoryProvider = {
 export type MenuItem = {
   command?: string;
   title?: string;
+  subtitle?: string;
   when?: "editorFocus" | "hasSelection";
   submenu?: MenuItem[];
   order?: number; // 默认 50，越小越靠前
@@ -99,10 +100,17 @@ export type MenuItem = {
 };
 
 export type SelectionToolbarContext = {
-  view: any;
+  view: any | null;
   selectionText: string;
   from: number;
   to: number;
+  sourceKind?: "editor" | "inspector" | string;
+  inspectorItemId?: string;
+  sourceSessionId?: string;
+  sourcePath?: string;
+  sourceTitle?: string;
+  sourceText?: string;
+  getEditor?: () => EditorProxy | null;
 };
 
 export type SelectionToolbarItem = {
@@ -366,6 +374,11 @@ declare global {
             }
           ) => void | { dispose?: () => void };
         }): Disposable;
+        registerTextEditorDecorator(decorator: {
+          id: string;
+          priority?: number;
+          createExtension: (editor: EditorProxy, item: any) => any;
+        }): Disposable;
         open(item: {
           id: string;
           ownerId?: string;
@@ -397,6 +410,9 @@ declare global {
         isVisible(): boolean;
         getItems(): any[];
         getActiveItemId(): string | null;
+        getTextEditor(itemIdOrSessionId?: string): EditorProxy | null;
+        getTextSource(itemIdOrSessionId?: string): { item: any; sessionId: string; content: string } | null;
+        revealText(itemId: string, options?: { from?: number; to?: number; focus?: boolean }): EditorProxy | null;
         setWidth(width: number): void;
       };
       bottomPanel?: {
@@ -469,7 +485,24 @@ declare global {
         ensureAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         openSession(panelId: string, sessionId: string, opts?: { focus?: boolean; forceReload?: boolean }): boolean | Promise<boolean>;
         openTab?(panelId: string, tabId: string, opts?: { focus?: boolean }): boolean | Promise<boolean>;
-        openFileTab?(args: { panelId?: string; id?: string; ownerId?: string; target?: "editor" | "inspector"; title?: string; name?: string; path?: string; displayPath?: string; language?: string; meta?: any; file?: any; focus?: boolean }): boolean | string | Promise<boolean | string>;
+        openFileTab?(args: {
+          panelId?: string;
+          id?: string;
+          ownerId?: string;
+          target?: "editor" | "inspector";
+          title?: string;
+          name?: string;
+          path?: string;
+          displayPath?: string;
+          language?: string;
+          meta?: any;
+          file?: any;
+          focus?: boolean;
+          render?: (
+            container: HTMLElement,
+            context: { meta: any }
+          ) => void | { dispose?: () => void };
+        }): boolean | string | Promise<boolean | string>;
         split(direction: "horizontal" | "vertical", panelId?: string): string | null;
         splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
         focus(panelId: string): void;

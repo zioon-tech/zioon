@@ -1,14 +1,34 @@
 {
   "name": "dev.editor-config",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.editor-config",
+  "description": "Configure editor appearance, width, line numbers, wrapping, and syntax highlighting.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.editor-config",
-    "name": "dev.editor-config",
+    "name": "Editor Config",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "编辑器配置",
+        "en-US": "Editor Config"
+      },
+      "description": {
+        "zh-CN": "配置编辑器外观、宽度、行号、折行和语法高亮。",
+        "en-US": "Configure editor appearance, width, line numbers, wrapping, and syntax highlighting."
+      },
+      "icon": "settings-gear",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "配置编辑器外观、宽度、行号、折行和语法高亮。"
+        ],
+        "en-US": [
+          "Configure editor appearance, width, line numbers, wrapping, and syntax highlighting."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {

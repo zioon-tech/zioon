@@ -12,6 +12,7 @@ import { notificationManager } from "./notification/manager";
 import { initWorkbench } from "./ui/workbench/workbench";
 import { initCommandPalette } from "./ui/workbench/commandPalette";
 import { installZionIcons, zionIconHtml } from "./ui/icons";
+import { reconcileKeyedElements } from "./ui/keyed-elements";
 import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
@@ -2184,6 +2185,9 @@ function mountPanelSessionTabsBar(
   opts?: { onTabRemovedFromPanel?: (panelId: string, tabId: string) => void }
 ) {
   try {
+    const lifecycleController = new AbortController();
+    const lifecycleSignal = lifecycleController.signal;
+    const lifecycleDisposables: Disposable[] = [];
     let newBtn = containerEl.querySelector<HTMLButtonElement>("button[data-zion-panel-tabs-new-session-button='1']");
     let dropdownBtn = containerEl.querySelector<HTMLButtonElement>("button[data-zion-panel-tabs-dropdown-button='1']");
     let viewport = containerEl.querySelector<HTMLElement>("[data-zion-panel-session-tabs-viewport='1']");
@@ -2213,6 +2217,8 @@ function mountPanelSessionTabsBar(
       root.className = "zion-editor-session-tabs";
       root.setAttribute("data-zion-panel-session-tabs", "1");
     }
+    root.setAttribute("role", "tablist");
+    root.setAttribute("aria-label", "当前面板标签页");
     if (!viewport) {
       viewport = document.createElement("div");
       viewport.className = "zion-panel-session-tabs-viewport";
@@ -2376,6 +2382,7 @@ function mountPanelSessionTabsBar(
         default: return "";
       }
     };
+    let scheduleRender: () => void = () => {};
     const syncWatchers = () => {
       const panel = panelManager.getPanel(panelId);
       const sessionTabIds = new Set((panel?.tabs || []).filter((tab: any) => !isFileTab(tab)).map((tab) => tab.id));
@@ -2399,14 +2406,14 @@ function mountPanelSessionTabsBar(
               window.zion.state.onDidChange<any>(`sessions.meta.${id}`, (nv, ov) => {
                 const nt = String(nv?.title || "").trim();
                 const ot = String(ov?.title || "").trim();
-                if (nt !== ot) render();
+                if (nt !== ot) scheduleRender();
               })
             );
           } catch {}
         }
         if (!runDisposables.has(id)) {
           try {
-            runDisposables.set(id, window.zion.state.onDidChange(`chat.runs.${id}`, () => render()));
+            runDisposables.set(id, window.zion.state.onDidChange(`chat.runs.${id}`, scheduleRender));
           } catch {}
         }
       }
@@ -2517,6 +2524,14 @@ function mountPanelSessionTabsBar(
     let lastTabClickSessionId: string | null = null;
     let ignoreClickActivatedTabId: string | null = null;
     let ignoreClickActivatedAt = 0;
+    type PanelTabElementEntry = {
+      element: HTMLElement;
+      status: HTMLSpanElement;
+      title: HTMLSpanElement;
+      close: HTMLButtonElement;
+    };
+    const tabElements = new Map<string, PanelTabElementEntry>();
+    const prefetchedTabIds = new Set<string>();
     const updateViewportScrollState = () => {
       try {
         if (!viewport || !root) return;
@@ -2735,6 +2750,15 @@ function mountPanelSessionTabsBar(
 
       focusAndActivatePanelTab(targetPanelId, tabId, { focus: true, forceReload: true });
     };
+    const finishPanelTabDrag = () => {
+      lastDragEndAt = Date.now();
+      panelTabDragState = null;
+      try {
+        document.querySelectorAll(".zion-editor-session-tab.is-dragging").forEach((node) => {
+          node.classList.remove("is-dragging");
+        });
+      } catch {}
+    };
     const performPanelDrop = (
       drag: PanelTabDragState,
       targetPanelId: string,
@@ -2742,14 +2766,18 @@ function mountPanelSessionTabsBar(
       targetTabId: string | null = null,
       position: "before" | "after" = "after"
     ) => {
-      if (side === "center") {
-        moveTabBetweenPanels(drag.sourcePanelId, drag.tabId, targetPanelId, targetTabId, position);
-        return;
+      try {
+        if (side === "center") {
+          moveTabBetweenPanels(drag.sourcePanelId, drag.tabId, targetPanelId, targetTabId, position);
+          return;
+        }
+        const created = panelManager.splitPanelAt(targetPanelId, side, { seedFromSource: false });
+        const createdPanelId = created?.id || null;
+        if (!createdPanelId) return;
+        moveTabBetweenPanels(drag.sourcePanelId, drag.tabId, createdPanelId, null, "after");
+      } finally {
+        finishPanelTabDrag();
       }
-      const created = panelManager.splitPanelAt(targetPanelId, side, { seedFromSource: false });
-      const createdPanelId = created?.id || null;
-      if (!createdPanelId) return;
-      moveTabBetweenPanels(drag.sourcePanelId, drag.tabId, createdPanelId, null, "after");
     };
 
     const panelRootEl = panelManager.getPanel(panelId)?.rootEl || null;
@@ -2792,13 +2820,169 @@ function mountPanelSessionTabsBar(
       };
     }
 
+    const getEventTabElement = (target: EventTarget | null): HTMLElement | null => {
+      const tabEl = (target as HTMLElement | null)?.closest?.<HTMLElement>(".zion-editor-session-tab") || null;
+      return tabEl && root?.contains(tabEl) ? tabEl : null;
+    };
+    const getEventTabId = (target: EventTarget | null) => getEventTabElement(target)?.dataset.sessionId || "";
+    root.onpointerover = (e) => {
+      const tabEl = getEventTabElement(e.target);
+      const tabId = tabEl?.dataset.sessionId || "";
+      if (!tabEl || !tabId || prefetchedTabIds.has(tabId)) return;
+      const related = e.relatedTarget as Node | null;
+      if (related && tabEl.contains(related)) return;
+      const tab = panelManager.getPanel(panelId)?.tabs.find((item) => item.id === tabId);
+      if (!tab || isFileTab(tab)) return;
+      prefetchedTabIds.add(tabId);
+      try {
+        if (typeof window.zion.state.get<string>(`sessions.doc.${tabId}`) === "string") return;
+        void Promise.resolve(
+          window.zion.commands.executeCommand("zion.sessions.getDocAsync", tabId)
+        ).catch(() => {});
+      } catch {}
+    };
+    root.onmousedown = (e) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.("button")) return;
+      const tabId = getEventTabId(target);
+      if (!tabId || e.button !== 0 || panelTabDragState || Date.now() - lastDragEndAt < 150) return;
+      if (panelManager.getActivePanelId?.() === panelId) return;
+      try { e.stopPropagation(); } catch {}
+      ignoreClickActivatedTabId = tabId;
+      ignoreClickActivatedAt = Date.now();
+      focusAndActivatePanelTab(panelId, tabId);
+    };
+    root.onclick = (e) => {
+      const target = e.target as HTMLElement | null;
+      const tabId = getEventTabId(target);
+      if (!tabId) return;
+      if (target?.closest?.(".zion-editor-session-tab-close")) {
+        try {
+          e.preventDefault();
+          e.stopPropagation();
+        } catch {}
+        closeTabInPanel(panelId, tabId);
+        return;
+      }
+      if (panelTabDragState || Date.now() - lastDragEndAt < 150) return;
+      if (ignoreClickActivatedTabId === tabId && Date.now() - ignoreClickActivatedAt < 500) {
+        ignoreClickActivatedTabId = null;
+        return;
+      }
+      const now = Date.now();
+      const isManualDoubleClick = lastTabClickSessionId === tabId && now - lastTabClickAt <= 320;
+      lastTabClickSessionId = tabId;
+      lastTabClickAt = now;
+      if (isManualDoubleClick) {
+        try { panelManager.focusPanel(panelId); } catch {}
+        try { panelManager.togglePanelMaximized(panelId); } catch {}
+        return;
+      }
+      focusAndActivatePanelTab(panelId, tabId);
+    };
+    root.ondblclick = (e) => {
+      if (!getEventTabElement(e.target)) return;
+      try {
+        e.preventDefault();
+        e.stopPropagation();
+      } catch {}
+    };
+    root.onauxclick = (e) => {
+      if (e.button !== 1) return;
+      const tabId = getEventTabId(e.target);
+      if (!tabId) return;
+      try {
+        e.preventDefault();
+        e.stopPropagation();
+      } catch {}
+      closeTabInPanel(panelId, tabId);
+    };
+    root.oncontextmenu = (e) => {
+      const tabId = getEventTabId(e.target);
+      if (!tabId) return;
+      try {
+        e.preventDefault();
+        e.stopPropagation();
+      } catch {}
+      const panel = panelManager.getPanel(panelId);
+      showDropdownMenu({ highlightIndex: panel?.tabs.findIndex((item) => item.id === tabId) ?? 0 });
+    };
+    root.onkeydown = (e) => {
+      const ev = e as KeyboardEvent;
+      const target = ev.target as HTMLElement | null;
+      if (target?.closest?.(".zion-editor-session-tab-close")) return;
+      const tabId = getEventTabId(ev.target);
+      if (!tabId) return;
+      const panel = panelManager.getPanel(panelId);
+      const tabIndex = panel?.tabs.findIndex((tab) => tab.id === tabId) ?? -1;
+      if (
+        panel
+        && tabIndex >= 0
+        && (ev.key === "ArrowLeft" || ev.key === "ArrowRight" || ev.key === "Home" || ev.key === "End")
+      ) {
+        try { ev.preventDefault(); } catch {}
+        const nextIndex = ev.key === "Home"
+          ? 0
+          : ev.key === "End"
+            ? panel.tabs.length - 1
+            : (tabIndex + (ev.key === "ArrowRight" ? 1 : -1) + panel.tabs.length) % panel.tabs.length;
+        const nextId = panel.tabs[nextIndex]?.id || "";
+        if (!nextId) return;
+        try { tabElements.get(nextId)?.element.focus({ preventScroll: true }); } catch {}
+        focusAndActivatePanelTab(panelId, nextId);
+      } else if (ev.key === "Enter" || ev.key === " ") {
+        try { ev.preventDefault(); } catch {}
+        focusAndActivatePanelTab(panelId, tabId);
+      } else if (ev.key === "Backspace" || ev.key === "Delete") {
+        try { ev.preventDefault(); } catch {}
+        closeTabInPanel(panelId, tabId);
+      }
+    };
+    root.ondragstart = (e) => {
+      const ev = e as DragEvent;
+      const target = ev.target as HTMLElement | null;
+      if (target?.closest?.("button")) {
+        try { ev.preventDefault(); } catch {}
+        return;
+      }
+      const tabEl = getEventTabElement(target);
+      const tabId = tabEl?.dataset.sessionId || "";
+      if (!tabEl || !tabId) return;
+      panelTabDragState = { sourcePanelId: panelId, tabId };
+      try {
+        tabEl.classList.add("is-dragging");
+        ev.dataTransfer?.setData(PANEL_TAB_DND_MIME, JSON.stringify(panelTabDragState));
+        ev.dataTransfer?.setData("text/plain", tabId);
+        if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+      } catch {}
+    };
+    root.ondragend = (e) => {
+      try { getEventTabElement(e.target)?.classList.remove("is-dragging"); } catch {}
+      finishPanelTabDrag();
+      clearDropIndicators();
+    };
     root.ondragover = (e) => {
       const ev = e as DragEvent;
       const drag = readDragState(ev);
       if (!drag) return;
-      const targetTabEl = (ev.target as HTMLElement | null)?.closest?.(".zion-editor-session-tab");
-      if (targetTabEl) {
+      const targetTabEl = getEventTabElement(ev.target);
+      const targetTabId = targetTabEl?.dataset.sessionId || "";
+      if (targetTabEl && targetTabId) {
+        if (drag.sourcePanelId === panelId && drag.tabId === targetTabId) return;
+        try {
+          ev.preventDefault();
+          if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+        } catch {}
         root!.classList.remove("is-drop-target");
+        const rect = targetTabEl.getBoundingClientRect();
+        const pos: "before" | "after" = ev.clientX < rect.left + rect.width / 2 ? "before" : "after";
+        if (dropTargetId !== targetTabId || dropPosition !== pos) {
+          clearDropIndicators();
+          dropTargetId = targetTabId;
+          dropPosition = pos;
+          targetTabEl.classList.toggle("is-drop-before", pos === "before");
+          targetTabEl.classList.toggle("is-drop-after", pos === "after");
+        }
         return;
       }
       try {
@@ -2815,16 +2999,16 @@ function mountPanelSessionTabsBar(
     };
     root.ondrop = (e) => {
       const ev = e as DragEvent;
-      const targetTabEl = (ev.target as HTMLElement | null)?.closest?.(".zion-editor-session-tab");
-      if (targetTabEl) return;
+      const targetTabId = getEventTabId(ev.target);
       try {
         ev.preventDefault();
         ev.stopPropagation();
       } catch {}
       const drag = readDragState(ev);
+      const pos = dropPosition || "after";
       clearDropIndicators();
       if (!drag) return;
-      performPanelDrop(drag, panelId, "center");
+      performPanelDrop(drag, panelId, "center", targetTabId || null, pos);
     };
     try {
       if (viewport && !viewport.dataset.zionPanelTabsWheelBound) {
@@ -2851,7 +3035,7 @@ function mountPanelSessionTabsBar(
               } catch {}
             }
           },
-          { passive: false } as any
+          { passive: false, signal: lifecycleSignal }
         );
         const jumpToScrollbarPoint = (clientX: number) => {
           if (!viewport || !root || !scrollbarThumb) return;
@@ -2891,18 +3075,18 @@ function mountPanelSessionTabsBar(
           dragStartX = ev.clientX;
           dragStartScrollLeft = tabStripScrollLeft;
           try { document.body.classList.add("is-dragging-panel-tabs-scrollbar"); } catch {}
-        });
-        window.addEventListener("pointermove", (e) => moveScrollbarDrag(e as PointerEvent));
-        window.addEventListener("pointerup", endScrollbarDrag);
-        window.addEventListener("pointercancel", endScrollbarDrag);
+        }, { signal: lifecycleSignal });
+        window.addEventListener("pointermove", (e) => moveScrollbarDrag(e as PointerEvent), { signal: lifecycleSignal });
+        window.addEventListener("pointerup", endScrollbarDrag, { signal: lifecycleSignal });
+        window.addEventListener("pointercancel", endScrollbarDrag, { signal: lifecycleSignal });
       }
     } catch {}
     try {
       if (!containerEl.dataset.zionPanelTabsDropdownBound) {
         containerEl.dataset.zionPanelTabsDropdownBound = "1";
-        window.addEventListener("resize", hideDropdownMenu);
-        window.addEventListener("resize", updateTabDensity);
-        window.addEventListener("resize", updateViewportScrollState);
+        window.addEventListener("resize", hideDropdownMenu, { signal: lifecycleSignal });
+        window.addEventListener("resize", updateTabDensity, { signal: lifecycleSignal });
+        window.addEventListener("resize", updateViewportScrollState, { signal: lifecycleSignal });
         window.addEventListener(
           "scroll",
           (e) => {
@@ -2912,7 +3096,7 @@ function mountPanelSessionTabsBar(
             if (t?.closest?.(".cm-scroller, .cm-editor, .zion-editor-host, .zion-panel")) return;
             hideDropdownMenu();
           },
-          true
+          { capture: true, signal: lifecycleSignal }
         );
         window.addEventListener("keydown", (e) => {
           const ev = e as KeyboardEvent;
@@ -2982,13 +3166,13 @@ function mountPanelSessionTabsBar(
             } catch {}
             activateHighlightedDropdownItem();
           }
-        }, true);
+        }, { capture: true, signal: lifecycleSignal });
         window.addEventListener("mousedown", (e) => {
           const t = e.target as any;
           if (dropdownBtn && (dropdownBtn === t || dropdownBtn.contains(t))) return;
           if (dropdownMenu && (dropdownMenu === t || dropdownMenu.contains(t))) return;
           hideDropdownMenu();
-        });
+        }, { signal: lifecycleSignal });
       }
     } catch {}
     try {
@@ -3006,168 +3190,88 @@ function mountPanelSessionTabsBar(
     const render = (opts?: { revealActiveTab?: boolean }) => {
       const panel = panelManager.getPanel(panelId);
       if (!panel || !root) return;
+      if (renderFrame) {
+        cancelAnimationFrame(renderFrame);
+        renderFrame = 0;
+      }
       const shouldRevealActiveTab = !!opts?.revealActiveTab;
+      const focusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const focusedTabEl = focusedElement && root.contains(focusedElement)
+        ? focusedElement.closest<HTMLElement>(".zion-editor-session-tab")
+        : null;
+      const focusedTabId = focusedTabEl?.dataset.sessionId || "";
+      const focusedCloseButton = !!focusedElement?.closest?.(".zion-editor-session-tab-close");
       syncWatchers();
-      root.innerHTML = "";
       if (dropdownBtn) {
         dropdownBtn.style.display = panel.tabs.length > 0 ? "" : "none";
         dropdownBtn.title = `查看当前面板标签页 (${panel.tabs.length}) · Option+Tab`;
       }
-      for (const tab of panel.tabs) {
-        const tabEl = document.createElement("div");
-        tabEl.className = "zion-editor-session-tab";
-        if (tab.id === panel.activeTabId) tabEl.classList.add("is-active");
-        if (isFileTab(tab)) tabEl.classList.add("is-file-tab");
-        tabEl.setAttribute("role", "tab");
-        tabEl.setAttribute("tabindex", "0");
-        tabEl.setAttribute("data-session-id", tab.id);
-        tabEl.setAttribute("draggable", "true");
+      reconcileKeyedElements({
+        container: root,
+        items: panel.tabs,
+        entries: tabElements,
+        getKey: (tab) => tab.id,
+        create: (_tab, key) => {
+          const element = document.createElement("div");
+          element.className = "zion-editor-session-tab";
+          element.setAttribute("role", "tab");
+          element.setAttribute("tabindex", "0");
+          element.setAttribute("data-session-id", key);
+          element.setAttribute("draggable", "true");
 
-        const titleEl = document.createElement("span");
-        titleEl.className = "zion-editor-session-tab-title";
-        const status = getTabStatus(tab);
-        const statusText = getTabStatusText(tab);
-        titleEl.textContent = getTitle(tab);
-        titleEl.title = statusText ? `${getTitle(tab)} · ${statusText}` : getTitle(tab);
+          const status = document.createElement("span");
+          status.className = "zion-editor-session-tab-status";
+          status.setAttribute("aria-hidden", "true");
 
-        const statusEl = document.createElement("span");
-        statusEl.className = "zion-editor-session-tab-status";
-        statusEl.setAttribute("aria-hidden", "true");
-        statusEl.style.display = status ? "inline-block" : "none";
-        if (statusText) statusEl.title = statusText;
+          const title = document.createElement("span");
+          title.className = "zion-editor-session-tab-title";
 
-        tabEl.classList.toggle("is-streaming", status === "streaming");
-        tabEl.classList.toggle("is-awaiting", status === "awaiting");
-        tabEl.classList.toggle("is-failed", status === "failed");
-        tabEl.classList.toggle("is-aborted", status === "aborted");
+          const close = document.createElement("button");
+          close.type = "button";
+          close.className = "zion-editor-session-tab-close";
+          close.setAttribute("draggable", "false");
+          close.setAttribute("aria-label", "关闭标签页");
+          close.title = "关闭";
+          close.innerHTML = zionIconHtml("x");
 
-        const closeBtn = document.createElement("button");
-        closeBtn.type = "button";
-        closeBtn.className = "zion-editor-session-tab-close";
-        closeBtn.setAttribute("draggable", "false");
-        closeBtn.setAttribute("aria-label", "关闭标签页");
-        closeBtn.title = "关闭";
-        closeBtn.innerHTML = zionIconHtml("x");
-        closeBtn.onclick = (e) => {
-          try {
-            e.stopPropagation();
-            e.preventDefault();
-          } catch {}
-          closeTabInPanel(panelId, tab.id);
-        };
-        closeBtn.ondragstart = (e) => {
-          try {
-            e.preventDefault();
-            e.stopPropagation();
-          } catch {}
-          return false;
-        };
-
-        tabEl.onmousedown = (e) => {
-          if (e.button !== 0 || panelTabDragState || Date.now() - lastDragEndAt < 150) return;
-          if (panelManager.getActivePanelId?.() === panelId) return;
-          try { e.stopPropagation(); } catch {}
-          ignoreClickActivatedTabId = tab.id;
-          ignoreClickActivatedAt = Date.now();
-          focusAndActivatePanelTab(panelId, tab.id);
-        };
-        tabEl.onclick = () => {
-          if (panelTabDragState || Date.now() - lastDragEndAt < 150) return;
-          if (ignoreClickActivatedTabId === tab.id && Date.now() - ignoreClickActivatedAt < 500) {
-            ignoreClickActivatedTabId = null;
-            return;
-          }
-          const now = Date.now();
-          const isManualDoubleClick = lastTabClickSessionId === tab.id && now - lastTabClickAt <= 320;
-          lastTabClickSessionId = tab.id;
-          lastTabClickAt = now;
-          if (isManualDoubleClick) {
-            try { panelManager.focusPanel(panelId); } catch {}
-            try { panelManager.togglePanelMaximized(panelId); } catch {}
-            return;
-          }
-          focusAndActivatePanelTab(panelId, tab.id);
-        };
-        tabEl.ondblclick = (e) => {
-          try {
-            e.preventDefault();
-            e.stopPropagation();
-          } catch {}
-          if (panelTabDragState || Date.now() - lastDragEndAt < 150) return;
-        };
-        tabEl.onauxclick = (e) => {
-          if (e.button === 1) {
-            try {
-              e.preventDefault();
-              e.stopPropagation();
-            } catch {}
-            closeTabInPanel(panelId, tab.id);
-          }
-        };
-        tabEl.oncontextmenu = (e) => {
-          try {
-            e.preventDefault();
-            e.stopPropagation();
-          } catch {}
-          showDropdownMenu({ highlightIndex: panel.tabs.findIndex((item) => item.id === tab.id) });
-        };
-        tabEl.ondragstart = (e) => {
-          const ev = e as DragEvent;
-          panelTabDragState = { sourcePanelId: panelId, tabId: tab.id };
-          try {
-            tabEl.classList.add("is-dragging");
-            ev.dataTransfer?.setData(PANEL_TAB_DND_MIME, JSON.stringify(panelTabDragState));
-            ev.dataTransfer?.setData("text/plain", tab.id);
-            if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
-          } catch {}
-        };
-        tabEl.ondragend = () => {
-          lastDragEndAt = Date.now();
-          panelTabDragState = null;
-          try { tabEl.classList.remove("is-dragging"); } catch {}
-          clearDropIndicators();
-        };
-        tabEl.ondragover = (e) => {
-          const ev = e as DragEvent;
-          const drag = readDragState(ev);
-          if (!drag || (drag.sourcePanelId === panelId && drag.tabId === tab.id)) return;
-          try {
-            ev.preventDefault();
-            if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-          } catch {}
-          root.classList.remove("is-drop-target");
-          const rect = tabEl.getBoundingClientRect();
-          const pos: "before" | "after" = ev.clientX < rect.left + rect.width / 2 ? "before" : "after";
-          if (dropTargetId !== tab.id || dropPosition !== pos) {
-            clearDropIndicators();
-            dropTargetId = tab.id;
-            dropPosition = pos;
-            tabEl.classList.toggle("is-drop-before", pos === "before");
-            tabEl.classList.toggle("is-drop-after", pos === "after");
-          }
-        };
-        tabEl.ondragleave = (e) => {
-          const next = e.relatedTarget as Node | null;
-          if (next && tabEl.contains(next)) return;
-          if (dropTargetId === tab.id) clearDropIndicators();
-        };
-        tabEl.ondrop = (e) => {
-          const ev = e as DragEvent;
-          try {
-            ev.preventDefault();
-            ev.stopPropagation();
-          } catch {}
-          const drag = readDragState(ev);
-          const pos = dropPosition || "after";
-          clearDropIndicators();
-          if (!drag) return;
-          performPanelDrop(drag, panelId, "center", tab.id, pos);
-        };
-
-        tabEl.appendChild(statusEl);
-        tabEl.appendChild(titleEl);
-        tabEl.appendChild(closeBtn);
-        root.appendChild(tabEl);
+          element.append(status, title, close);
+          return { element, status, title, close };
+        },
+        update: (entry, tab, key) => {
+          const active = key === panel.activeTabId;
+          const fileTab = isFileTab(tab);
+          const status = getTabStatus(tab);
+          const statusText = getTabStatusText(tab);
+          const title = getTitle(tab);
+          entry.element.classList.toggle("is-active", active);
+          entry.element.classList.toggle("is-file-tab", fileTab);
+          entry.element.classList.toggle("is-streaming", status === "streaming");
+          entry.element.classList.toggle("is-awaiting", status === "awaiting");
+          entry.element.classList.toggle("is-failed", status === "failed");
+          entry.element.classList.toggle("is-aborted", status === "aborted");
+          entry.element.setAttribute("aria-selected", active ? "true" : "false");
+          entry.element.tabIndex = active || (!panel.activeTabId && panel.tabs[0]?.id === key) ? 0 : -1;
+          entry.close.tabIndex = active ? 0 : -1;
+          entry.element.dataset.tabKind = fileTab ? "file" : "session";
+          entry.element.title = statusText ? `${title} · ${statusText}` : title;
+          if (entry.title.textContent !== title) entry.title.textContent = title;
+          entry.title.title = entry.element.title;
+          entry.status.style.display = status ? "inline-block" : "none";
+          if (statusText) entry.status.title = statusText;
+          else entry.status.removeAttribute("title");
+        }
+      });
+      const liveTabIds = new Set(panel.tabs.map((tab) => tab.id));
+      for (const id of Array.from(prefetchedTabIds)) {
+        if (!liveTabIds.has(id)) prefetchedTabIds.delete(id);
+      }
+      if (focusedTabId && focusedElement && document.activeElement !== focusedElement) {
+        const entry = tabElements.get(focusedTabId);
+        const activeEntry = panel.activeTabId ? tabElements.get(panel.activeTabId) : null;
+        const focusTarget = entry
+          ? (focusedCloseButton ? entry.close : entry.element)
+          : activeEntry?.element;
+        try { focusTarget?.focus({ preventScroll: true }); } catch {}
       }
       updateTabDensity();
       requestAnimationFrame(() => {
@@ -3197,22 +3301,94 @@ function mountPanelSessionTabsBar(
       });
     };
 
+    let renderFrame = 0;
+    scheduleRender = () => {
+      if (renderFrame) return;
+      renderFrame = requestAnimationFrame(() => {
+        renderFrame = 0;
+        render();
+      });
+    };
+
+    const syncActiveTabState = (revealActiveTab = false) => {
+      const panel = panelManager.getPanel(panelId);
+      if (!panel || !root) return;
+      for (const [tabId, entry] of tabElements) {
+        const active = tabId === panel.activeTabId;
+        entry.element.classList.toggle("is-active", active);
+        entry.element.setAttribute("aria-selected", active ? "true" : "false");
+        entry.element.tabIndex = active || (!panel.activeTabId && panel.tabs[0]?.id === tabId) ? 0 : -1;
+        entry.close.tabIndex = active ? 0 : -1;
+      }
+      if (isDropdownOpen()) showDropdownMenu({ preserveHighlight: true });
+      if (!revealActiveTab) return;
+      requestAnimationFrame(() => {
+        updateViewportScrollState();
+        const activeTabEl = panel.activeTabId ? tabElements.get(panel.activeTabId)?.element : null;
+        if (!viewport || !activeTabEl) return;
+        const tabLeft = activeTabEl.offsetLeft;
+        const tabRight = tabLeft + activeTabEl.offsetWidth;
+        const viewLeft = tabStripScrollLeft;
+        const viewRight = viewLeft + viewport.clientWidth;
+        if (tabLeft < viewLeft) setTabStripScrollLeft(tabLeft);
+        else if (tabRight > viewRight) setTabStripScrollLeft(tabRight - viewport.clientWidth);
+      });
+    };
+
     render({ revealActiveTab: true });
     try {
-      window.zion.events.on("panel/tabActivated", (payload: any) => {
+      lifecycleDisposables.push(window.zion.events.on("panel/tabActivated", (payload: any) => {
+        if (payload?.panelId === panelId) syncActiveTabState(true);
+      }));
+      lifecycleDisposables.push(window.zion.events.on("panel/tabsChanged", (payload: any) => {
         if (payload?.panelId === panelId) render({ revealActiveTab: true });
-      });
-      window.zion.events.on("panel/tabsChanged", (payload: any) => {
-        if (payload?.panelId === panelId) render({ revealActiveTab: true });
-      });
-      window.zion.events.on("panel/layoutChanged", (payload: any) => {
+      }));
+      lifecycleDisposables.push(window.zion.events.on("panel/layoutChanged", (payload: any) => {
         if (payload?.activePanelId === panelId) render({ revealActiveTab: true });
-      });
-      window.zion.state.onDidChange("sessions.catalog", render);
-      window.zion.state.onDidChange("sessions.currentId", () => {
-        if (window.zion?.panels?.getActivePanelId?.() === panelId) render();
-      });
+      }));
+      lifecycleDisposables.push(window.zion.state.onDidChange("sessions.catalog", scheduleRender));
+      lifecycleDisposables.push(window.zion.state.onDidChange("sessions.currentId", () => {
+        if (window.zion?.panels?.getActivePanelId?.() === panelId) syncActiveTabState();
+      }));
     } catch {}
+    let disposed = false;
+    const disposeTabsBar = () => {
+      if (disposed) return;
+      disposed = true;
+      lifecycleController.abort();
+      if (renderFrame) cancelAnimationFrame(renderFrame);
+      try { (containerEl as any).__zionPanelTabsResizeObserver?.disconnect?.(); } catch {}
+      for (const disposable of metaDisposables.values()) {
+        try { disposable.dispose(); } catch {}
+      }
+      for (const disposable of runDisposables.values()) {
+        try { disposable.dispose(); } catch {}
+      }
+      metaDisposables.clear();
+      runDisposables.clear();
+      for (const disposable of lifecycleDisposables.splice(0)) {
+        try { disposable.dispose(); } catch {}
+      }
+      try { dropdownMenu?.remove(); } catch {}
+      dropdownMenu = null;
+      tabElements.clear();
+      prefetchedTabIds.clear();
+      root!.onclick = null;
+      root!.onmousedown = null;
+      root!.onpointerover = null;
+      root!.onkeydown = null;
+      root!.onauxclick = null;
+      root!.oncontextmenu = null;
+      root!.ondblclick = null;
+      root!.ondragstart = null;
+      root!.ondragend = null;
+      root!.ondragover = null;
+      root!.ondragleave = null;
+      root!.ondrop = null;
+    };
+    lifecycleDisposables.push(panelManager.on("panel/closed", ({ panelId: closedPanelId }) => {
+      if (closedPanelId === panelId) disposeTabsBar();
+    }));
   } catch {}
 }
 
@@ -3351,39 +3527,8 @@ async function bootstrap() {
     getActivePanelId: () => panelManager.getActivePanelId()
   });
   (window.zion as any).chatCards = chatAnnotations;
-  let activateCachedEditorSlot: (panelId: string, sessionId: string) => boolean = () => false;
+  let activateCachedEditorSlot: (panelId: string, sessionId: string, reuseAttachedProxy?: boolean) => boolean = () => false;
   let ensureEditorSlotForSession: (panelId: string, sessionId: string, seedText?: string) => any = () => null;
-  const debugPanelSlots = (_event: string, _payload?: any) => {
-  };
-  const debugPanelSlotSummary = (panelId: string) => {
-    try {
-      const panel = panelManager.getPanel(panelId);
-      const slots = panelEditorSlots.get(panelId);
-      return {
-        panelId,
-        activeTabId: panel?.activeTabId || null,
-        panelEditorId: (panelManager.getEditor(panelId) as any)?.editorId || null,
-        panelEditorSessionId: (panelManager.getEditor(panelId) as any)?.sessionId || null,
-        slots: [...(slots?.values?.() || [])].map((slot: any) => ({
-          sessionId: slot.sessionId,
-          editorId: slot.proxy?.editorId || null,
-          proxySessionId: slot.proxy?.sessionId || null,
-          coreSessionId: slot.core?.getSessionId?.() || null,
-          loaded: !!slot.loaded,
-          display: slot.hostEl?.style?.display || "",
-          connected: !!slot.core?.view?.dom?.isConnected,
-          docLength: slot.core?.view?.state?.doc?.length || 0,
-          inlineDom: slot.core?.view?.dom?.querySelectorAll?.(".zion-tool-call-inline")?.length || 0,
-          thinkingDom: slot.core?.view?.dom?.querySelectorAll?.(".zion-thinking-inline")?.length || 0,
-          cardDom: slot.core?.view?.dom?.querySelectorAll?.(".zion-tool-call-card,.zion-thinking-card")?.length || 0,
-          plainThinkingCount: String(slot.core?.view?.state?.doc?.toString?.() || "").split(/\n/).filter((line) => line.trim() === "思考").length,
-          idThinkingCount: (String(slot.core?.view?.state?.doc?.toString?.() || "").match(/思考\s*<!--\s*zion-thinking:id=/g) || []).length
-        }))
-      };
-    } catch {
-      return { panelId, error: true };
-    }
-  };
   const sessionRuntime = new SessionRuntime({
     getActivePanelId: () => panelManager.getActivePanelId(),
     getPanel: (panelId: string) => panelManager.getPanel(panelId) as any,
@@ -3393,15 +3538,9 @@ async function bootstrap() {
     getGlobalSessionId: () => window.zion.state.get<string>("sessions.currentId") || null,
     focusPanel: (panelId: string) => panelManager.focusPanel(panelId),
     activatePanelTab: (panelId: string, sessionId: string) => panelManager.activateTab(panelId, sessionId),
+      restorePanelSession: (panelId: string, sessionId: string) => activateCachedEditorSlot(panelId, sessionId),
     syncLegacyEditorTabsState: (panelId: string) => syncLegacyEditorTabsState(panelId),
     switchSessionDocument: ({ id, panelId, previousSessionId, skipPersistPrevious }) => {
-      debugPanelSlots("switchSessionDocument.start", {
-        id,
-        panelId,
-        previousSessionId,
-        skipPersistPrevious: !!skipPersistPrevious,
-        summary: panelId ? debugPanelSlotSummary(panelId) : null
-      });
       if (!skipPersistPrevious && previousSessionId) {
         try { window.zion.commands.executeCommand("zion.sessions.flushPendingSave", previousSessionId); } catch {}
       }
@@ -3411,41 +3550,50 @@ async function bootstrap() {
         if (currentSessionId !== id) {
           try { window.zion.state.set("sessions.currentId", id); } catch {}
         }
-        debugPanelSlots("switchSessionDocument.cachedSlot", {
+        return true;
+      }
+      const runDocumentSwitch = () => {
+        if (panelId) {
+          let seedText = "";
+          try {
+            const prefetched = window.zion.state.get<string>(`sessions.doc.${id}`);
+            if (typeof prefetched === "string") seedText = prefetched;
+          } catch {}
+          ensureEditorSlotForSession(panelId, id, seedText);
+        }
+        const result = window.zion.commands.executeCommand("zion.sessions.switch", {
           id,
           panelId,
           previousSessionId,
-          previousGlobalSessionId: currentSessionId,
-          summary: debugPanelSlotSummary(panelId)
+          skipPersistPrevious: panelId ? true : skipPersistPrevious,
+          __fromPanelRuntime: true
         });
-        return true;
-      }
-      if (panelId) ensureEditorSlotForSession(panelId, id);
-      const result = window.zion.commands.executeCommand("zion.sessions.switch", {
-        id,
-        panelId,
-        previousSessionId,
-        skipPersistPrevious: panelId ? true : skipPersistPrevious,
-        __fromPanelRuntime: true
-      });
-      if (panelId) {
+        if (!panelId) return result;
         return Promise.resolve(result).then((ok) => {
           const slot = panelEditorSlots.get(panelId)?.get(id) || null;
           if (slot && ok !== false) slot.loaded = true;
-          if (ok === false && previousSessionId) {
-            try { activateCachedEditorSlot(panelId, previousSessionId); } catch {}
-          }
-          debugPanelSlots("switchSessionDocument.commandResult", {
-            id,
-            panelId,
-            ok,
-            loaded: !!slot?.loaded,
-            summary: debugPanelSlotSummary(panelId)
-          });
           return ok;
         });
+      };
+      if (panelId && !cachedSlot && typeof requestAnimationFrame === "function") {
+        const panel = panelManager.getPanel(panelId);
+        try { panel?.editorHostEl?.setAttribute("aria-busy", "true"); } catch {}
+        return new Promise((resolve) => {
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              if (panelManager.getPanel(panelId)?.activeTabId !== id) {
+                try { panel?.editorHostEl?.removeAttribute("aria-busy"); } catch {}
+                resolve(true);
+                return;
+              }
+              Promise.resolve(runDocumentSwitch()).then(resolve).finally(() => {
+                try { panel?.editorHostEl?.removeAttribute("aria-busy"); } catch {}
+              });
+            }, 0);
+          });
+        });
       }
-      return result;
+      return runDocumentSwitch();
     },
     emit: (topic, payload) => {
       try { window.zion.events.emit(topic, payload); } catch {}
@@ -3493,6 +3641,7 @@ async function bootstrap() {
     hostEl: HTMLElement;
     objectUrl?: string;
     codeView?: EditorView;
+    customDispose?: () => void;
   };
   const panelEditorSlots = new Map<string, Map<string, EditorSlot>>();
   const panelFileSlots = new Map<string, Map<string, FilePanelSlot>>();
@@ -3532,15 +3681,11 @@ async function bootstrap() {
     for (const slot of getPanelFileSlots(panelId).values()) {
       slot.hostEl.style.display = "none";
     }
-    debugPanelSlots("slot.showOnly", {
-      panelId,
-      sessionId,
-      summary: debugPanelSlotSummary(panelId)
-    });
   };
   const disposeFileSlot = (panelId: string, tabId: string) => {
     const slot = panelFileSlots.get(panelId)?.get(tabId) || null;
     if (!slot) return;
+    try { slot.customDispose?.(); } catch {}
     try { slot.codeView?.destroy(); } catch {}
     try { if (slot.objectUrl) URL.revokeObjectURL(slot.objectUrl); } catch {}
     try { slot.hostEl.remove(); } catch {}
@@ -3559,7 +3704,13 @@ async function bootstrap() {
     panelCores.delete(panelId);
     try { setActiveEditorPanel(panelId); } catch {}
   };
-  const renderFileSlotContent = (hostEl: HTMLElement, file: any, meta: any, existingUrl?: string) => {
+  const renderFileSlotContent = (
+    hostEl: HTMLElement,
+    file: any,
+    meta: any,
+    existingUrl?: string,
+    customRender?: (container: HTMLElement, context: { meta: any }) => void | { dispose?: () => void }
+  ) => {
     try { if (existingUrl) URL.revokeObjectURL(existingUrl); } catch {}
     hostEl.innerHTML = "";
     const wrap = document.createElement("div");
@@ -3567,7 +3718,15 @@ async function bootstrap() {
 
     let objectUrl = "";
     let codeView: EditorView | undefined;
-    if (file?.kind === "image" && file.blob instanceof Blob) {
+    let customDispose: (() => void) | undefined;
+    if (typeof customRender === "function") {
+      wrap.classList.add("is-custom");
+      const customHost = document.createElement("div");
+      customHost.className = "zion-file-tab-custom-host";
+      wrap.appendChild(customHost);
+      const result = customRender(customHost, { meta });
+      customDispose = result?.dispose;
+    } else if (file?.kind === "image" && file.blob instanceof Blob) {
       objectUrl = URL.createObjectURL(file.blob);
       const stage = document.createElement("div");
       stage.className = "zion-file-tab-image-stage";
@@ -3589,7 +3748,7 @@ async function bootstrap() {
       wrap.appendChild(empty);
     }
     hostEl.appendChild(wrap);
-    return { objectUrl, codeView };
+    return { objectUrl, codeView, customDispose };
   };
   const activateFileTab = (panelId: string, tabId: string, opts?: { focus?: boolean }) => {
     const panel = panelManager.getPanel(panelId);
@@ -3628,11 +3787,20 @@ async function bootstrap() {
       slot = { panelId, tabId, hostEl };
       getPanelFileSlots(panelId).set(tabId, slot);
     }
+    try { slot.customDispose?.(); } catch {}
     try { slot.codeView?.destroy(); } catch {}
     slot.codeView = undefined;
-    const rendered = renderFileSlotContent(slot.hostEl, args?.file || { kind: "binary" }, meta, slot.objectUrl);
+    slot.customDispose = undefined;
+    const rendered = renderFileSlotContent(
+      slot.hostEl,
+      args?.file || { kind: "binary" },
+      meta,
+      slot.objectUrl,
+      args?.render
+    );
     slot.objectUrl = rendered.objectUrl;
     slot.codeView = rendered.codeView;
+    slot.customDispose = rendered.customDispose;
     try { window.zion.state.set(`files.openTabs.${tabId}`, meta); } catch {}
     const existingIndex = panel.tabs.findIndex((tab) => tab.id === tabId);
     const nextTab = { id: tabId, title, isDirty: false, kind: "file" as const, meta };
@@ -3670,13 +3838,6 @@ async function bootstrap() {
     try { proxy?.setSessionId?.(sessionId); } catch {}
     const slot: EditorSlot = { panelId, sessionId, core: slotCore, proxy, hostEl: slotHost, loaded };
     getPanelSlots(panelId).set(sessionId, slot);
-    debugPanelSlots("slot.register", {
-      panelId,
-      sessionId,
-      editorId: proxy?.editorId || null,
-      loaded,
-      summary: debugPanelSlotSummary(panelId)
-    });
     return slot;
   };
   if (initialSessionId) {
@@ -3688,36 +3849,27 @@ async function bootstrap() {
     registerEditorSlot("panel-0", initialSessionId, core, initialProxy, initialHost, true);
     showOnlyEditorSlot("panel-0", initialSessionId);
   }
-  activateCachedEditorSlot = (panelId: string, sessionId: string) => {
+  activateCachedEditorSlot = (panelId: string, sessionId: string, reuseAttachedProxy = false) => {
     const slot = panelEditorSlots.get(panelId)?.get(sessionId) || null;
     if (!slot) {
       return false;
     }
-    const proxy = attachEditor(slot.core, panelId);
+    const proxy = reuseAttachedProxy ? slot.proxy : attachEditor(slot.core, panelId);
     try { proxy?.setSessionId?.(sessionId); } catch {}
     slot.proxy = proxy;
     panelManager.setPanelEditor(panelId, proxy);
     panelCores.set(panelId, slot.core);
     showOnlyEditorSlot(panelId, sessionId);
-    try { panelManager.activateTab(panelId, sessionId); } catch {}
+    if (panelManager.getPanel(panelId)?.activeTabId !== sessionId) {
+      try { panelManager.activateTab(panelId, sessionId); } catch {}
+    }
     try { setActiveEditorPanel(panelId); } catch {}
-    debugPanelSlots("slot.activateCached", {
-      panelId,
-      sessionId,
-      editorId: proxy?.editorId || null,
-      summary: debugPanelSlotSummary(panelId)
-    });
     return true;
   };
   ensureEditorSlotForSession = (panelId: string, sessionId: string, seedText = "") => {
     const existing = panelEditorSlots.get(panelId)?.get(sessionId) || null;
     if (existing) {
       activateCachedEditorSlot(panelId, sessionId);
-      debugPanelSlots("slot.ensureExisting", {
-        panelId,
-        sessionId,
-        summary: debugPanelSlotSummary(panelId)
-      });
       return existing;
     }
     const panel = panelManager.getPanel(panelId);
@@ -3730,17 +3882,11 @@ async function bootstrap() {
     }
     const hostEl = createEditorSlotHost(panelId, sessionId);
     panel.editorHostEl.appendChild(hostEl);
-    const slotCore = new EditorCore(hostEl, seedText, panelId);
-    try { applyEditorPreferences(slotCore); } catch {}
+    const slotCore = new EditorCore(hostEl, "", panelId);
     const proxy = attachEditor(slotCore, panelId);
     const slot = registerEditorSlot(panelId, sessionId, slotCore, proxy, hostEl, false);
-    activateCachedEditorSlot(panelId, sessionId);
-    debugPanelSlots("slot.ensureNew", {
-      panelId,
-      sessionId,
-      seedLength: seedText.length,
-      summary: debugPanelSlotSummary(panelId)
-    });
+    if (seedText) slotCore.setValue(seedText, { source: "session-seed" });
+    activateCachedEditorSlot(panelId, sessionId, true);
     return slot;
   };
   const disposeEditorSlotForSession = (panelId: string, sessionId: string) => {
@@ -4098,6 +4244,7 @@ async function bootstrap() {
       const exists = panel.tabs.some((tab) => tab.id === sessionId);
       if (!exists) {
         panel.tabs = [...panel.tabs, { id: sessionId, title: sessionId, isDirty: false }];
+          try { window.zion.events.emit("panel/tabsChanged", { panelId: activePanelId, sessionId }); } catch {}
       }
       panelManager.activateTab(activePanelId, sessionId);
       syncLegacyEditorTabsState(activePanelId);
@@ -4107,12 +4254,6 @@ async function bootstrap() {
   panelManager.on("panel/created", ({ panelId, sourcePanelId, seedFromSource }) => {
     const panel = panelManager.getPanel(panelId);
     if (!panel) return;
-    debugPanelSlots("panel.created", {
-      panelId,
-      sourcePanelId,
-      seedFromSource,
-      sourceSummary: sourcePanelId ? debugPanelSlotSummary(sourcePanelId) : null
-    });
     try {
       panel.editorHostEl.innerHTML = "";
     } catch {}
@@ -4154,20 +4295,10 @@ async function bootstrap() {
       }
       if (!restoringPanelWorkspace) {
         try {
-          debugPanelSlots("panel.created.restoreSession.before", {
-            panelId,
-            activeSessionId,
-            summary: debugPanelSlotSummary(panelId)
-          });
           window.zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
             sessionId: activeSessionId,
             panelId,
             clearFirst: false
-          });
-          debugPanelSlots("panel.created.restoreSession.after", {
-            panelId,
-            activeSessionId,
-            summary: debugPanelSlotSummary(panelId)
           });
         } catch {}
       }
@@ -6410,7 +6541,8 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
     for (const pluginInfo of builtinPlugins) {
       try {
         console.log(`[PluginManager] 同步内置插件信息: ${pluginInfo.id}`);
-        await pluginManager.updateFromInfo(pluginInfo, { enabled: true });
+        const enabled = pluginManager.getEnabledPreference(pluginInfo.id) ?? true;
+        await pluginManager.updateFromInfo(pluginInfo, { enabled });
       } catch (error) {
         console.error(`[PluginManager] 安装内置插件失败 ${pluginInfo.id}:`, error);
       }

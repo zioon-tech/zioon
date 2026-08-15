@@ -65,9 +65,19 @@ export class SchedulerServiceClient {
     return request(`/scheduler/tasks/${encodeURIComponent(task.remoteTaskId)}/run`, { method: "POST" });
   }
 
-  async listRuns(taskId = "") {
-    const query = taskId ? `?task_id=${encodeURIComponent(taskId)}` : "";
-    return (await request(`/scheduler/runs${query}`))?.runs || [];
+  async listRuns(taskId = "", { limit = 50, offset = 0, includeDetails = false } = {}) {
+    const query = new window.URLSearchParams({
+      limit: String(Math.max(1, Math.min(200, Number(limit) || 50))),
+      offset: String(Math.max(0, Number(offset) || 0)),
+      include_details: includeDetails ? "true" : "false"
+    });
+    if (taskId) query.set("task_id", taskId);
+    return (await request(`/scheduler/runs?${query.toString()}`))?.runs || [];
+  }
+
+  async getRun(runId) {
+    const run = await request(`/scheduler/runs/${encodeURIComponent(runId)}`);
+    return run ? { ...run, isSummary: false } : null;
   }
 
   async claim(workerId, availableTools = []) {
@@ -81,6 +91,13 @@ export class SchedulerServiceClient {
     return request(`/scheduler/runs/${encodeURIComponent(runId)}/events`, {
       method: "POST",
       body: JSON.stringify({ workerId, event })
+    });
+  }
+
+  async cancel(runId, reason = "user") {
+    return request(`/scheduler/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason })
     });
   }
 

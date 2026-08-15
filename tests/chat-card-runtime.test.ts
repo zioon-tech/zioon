@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChatCardRuntime } from "../src/chat/card-runtime";
 
 function createEvents() {
@@ -91,6 +91,73 @@ describe("ChatCardRuntime", () => {
       { topic: "toolcards/snapshot", payload: { panelId: "panel-a", sessionId: "session-1" } },
       { topic: "thinking/snapshot", payload: { panelId: "panel-a", sessionId: "session-1" } }
     ]);
+  });
+
+  it("defers card restoration until after the session text can paint", () => {
+    vi.useFakeTimers();
+    const animationFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 1;
+    });
+    try {
+      const events = createEvents();
+      const runtime = new ChatCardRuntime({
+        events,
+        getAnnotations: () => ({ tools: [{ id: "tool-1" }] }),
+        setPendingRestore: (_sessionId, _kind, items) => items || null
+      });
+      runtime.registerType({
+        kind: "tools",
+        annotationKey: "tools",
+        restoreEvent: "toolcards/restore",
+        clearEvent: "toolcards/clear"
+      });
+
+      runtime.restoreSession({ sessionId: "session-1", defer: true });
+
+      expect(events.emitted.map((entry) => entry.topic)).toEqual(["toolcards/clear"]);
+      vi.runAllTimers();
+      expect(events.emitted.map((entry) => entry.topic)).toEqual([
+        "toolcards/clear",
+        "toolcards/restore"
+      ]);
+    } finally {
+      animationFrame.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a stale deferred restoration when the panel switches again", () => {
+    vi.useFakeTimers();
+    const animationFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 1;
+    });
+    try {
+      const events = createEvents();
+      const runtime = new ChatCardRuntime({
+        events,
+        getAnnotations: (sessionId) => ({ tools: [{ id: `tool-${sessionId}` }] }),
+        setPendingRestore: (_sessionId, _kind, items) => items || null
+      });
+      runtime.registerType({
+        kind: "tools",
+        annotationKey: "tools",
+        restoreEvent: "toolcards/restore",
+        clearEvent: "toolcards/clear"
+      });
+
+      runtime.restoreSession({ sessionId: "session-1", panelId: "panel-a", defer: true });
+      runtime.restoreSession({ sessionId: "session-2", panelId: "panel-a", defer: true });
+      vi.runAllTimers();
+
+      const restores = events.emitted.filter((entry) => entry.topic === "toolcards/restore");
+      expect(restores).toHaveLength(1);
+      expect(restores[0].payload.sessionId).toBe("session-2");
+    } finally {
+      animationFrame.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("snapshots previous session from core session lifecycle events", () => {

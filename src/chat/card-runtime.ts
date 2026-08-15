@@ -25,6 +25,7 @@ export type RestoreChatCardsOptions = {
   panelId?: string | null;
   annotations?: Record<string, any> | null;
   clearFirst?: boolean;
+  defer?: boolean;
 };
 
 export type SnapshotChatCardsOptions = {
@@ -71,6 +72,7 @@ export class CardTypeRegistry {
 
 export class ChatCardRuntime {
   readonly registry = new CardTypeRegistry();
+  private readonly deferredRestoreVersions = new Map<string, number>();
 
   constructor(private readonly opts: ChatCardRuntimeOptions) {}
 
@@ -108,6 +110,9 @@ export class ChatCardRuntime {
     const sessionId = restoreOpts?.sessionId;
     if (!sessionId) return { annotations: null, restored: {} as Record<string, any[]> };
     const panelId = restoreOpts?.panelId ?? null;
+    const deferKey = String(panelId || "global");
+    const deferVersion = (this.deferredRestoreVersions.get(deferKey) || 0) + 1;
+    this.deferredRestoreVersions.set(deferKey, deferVersion);
     const annotations = restoreOpts?.annotations || this.opts.getAnnotations(sessionId) || {};
     const restored: Record<string, any[]> = {};
     const types = this.registry.list();
@@ -128,7 +133,7 @@ export class ChatCardRuntime {
       restored: Object.fromEntries(Object.entries(restored).map(([key, items]) => [key, Array.isArray(items) ? items.length : 0]))
     });
 
-    for (const type of types) {
+    const emitRestore = (type: ChatCardType) => {
       const items = restored[type.kind] || [];
       if (items.length) {
         debugChatCardRuntime("restoreSession.emit", {
@@ -141,6 +146,29 @@ export class ChatCardRuntime {
         });
         try { this.opts.events.emit(type.restoreEvent, { items, panelId, sessionId }); } catch {}
       }
+    };
+    if (restoreOpts?.defer && typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          const restoreNext = (index: number) => {
+            if (index >= types.length || this.deferredRestoreVersions.get(deferKey) !== deferVersion) return;
+            const run = () => {
+              if (this.deferredRestoreVersions.get(deferKey) !== deferVersion) return;
+              emitRestore(types[index]);
+              restoreNext(index + 1);
+            };
+            const requestIdle = (globalThis as any).requestIdleCallback;
+            if (typeof requestIdle === "function") {
+              requestIdle(run, { timeout: 1200 });
+            } else {
+              setTimeout(run, 0);
+            }
+          };
+          restoreNext(0);
+        }, 500);
+      });
+    } else {
+      for (const type of types) emitRestore(type);
     }
 
     return { annotations, restored };

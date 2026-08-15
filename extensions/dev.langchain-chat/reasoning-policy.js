@@ -31,10 +31,15 @@ export function isLikelyReasoningModelId(modelIdOrName) {
 export function isClaudeThinkingModel(modelIdOrName) {
   const s = String(modelIdOrName || "").toLowerCase();
   if (!s) return false;
-  // Claude 3.5 Sonnet 和 3 Opus 支持 thinking
-  if (s.includes("claude-3-5-sonnet")) return true;
-  if (s.includes("claude-3-opus")) return true;
-  return false;
+  return (
+    s.includes("claude-3-7-sonnet") ||
+    s.includes("claude-opus-4") ||
+    s.includes("claude-sonnet-4") ||
+    s.includes("claude-sonnet-5") ||
+    s.includes("claude-haiku-4-5") ||
+    s.includes("claude-fable-5") ||
+    s.includes("claude-mythos")
+  );
 }
 
 /**
@@ -44,9 +49,7 @@ export function isClaudeThinkingModel(modelIdOrName) {
 export function isGeminiThinkingModel(modelIdOrName) {
   const s = String(modelIdOrName || "").toLowerCase();
   if (!s) return false;
-  // Gemini 2.0 Flash Thinking
-  if (s.includes("thinking")) return true;
-  return false;
+  return s.includes("thinking") || s.includes("gemini-2.5") || /^gemini-3(?:[.-]|$)/.test(s);
 }
 
 export function resolveToolCallsReasoningContentMode({ cfg, stateMode }) {
@@ -66,6 +69,9 @@ export function shouldForceReasoningContentWithToolCalls({ mode, modelId, modelN
   const provider = String(providerId || providerType || cfg?.providerId || cfg?.providerType || "").toLowerCase();
   const name = String(modelName || modelId || cfg?.modelName || cfg?.id || "").toLowerCase();
   const thinkingMode = String(cfg?.thinkingMode || cfg?.thinking_mode || "").toLowerCase();
+  if (provider.includes("claude") || provider.includes("anthropic") || provider.includes("gemini") || provider.includes("google")) {
+    return false;
+  }
   if ((provider.includes("deepseek") || name.includes("deepseek")) && thinkingMode !== "off" && thinkingMode !== "disabled") {
     return true;
   }

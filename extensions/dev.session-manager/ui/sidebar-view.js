@@ -480,7 +480,11 @@ export function createSessionsSidebarViewManager(opts) {
     const disposables = [];
     try { disposables.push(zion?.events?.on?.("chat/usageChanged", () => renderAll())); } catch {}
     try { disposables.push(zion?.state?.onDidChange?.("sessions.treeMem", () => renderAll())); } catch {}
-    try { disposables.push(zion?.state?.onDidChange?.("sessions.indexMem", () => renderAll())); } catch {}
+    try {
+      disposables.push(zion?.state?.onDidChange?.("sessions.indexMem", (index) => {
+        innerRender?.syncSessionIndex?.(index);
+      }));
+    } catch {}
       try { disposables.push(zion?.state?.onDidChange?.("sessions.metaReady", () => renderAll())); } catch {}
 
     const captureTagsPanelScroll = () => {
@@ -1073,6 +1077,14 @@ export function createSessionsSidebarViewManager(opts) {
       try {
         const cid = zion?.state?.get("sessions.currentId");
         if (!cid) return;
+        const mountedRow = innerRender?.syncCurrentSession?.(cid);
+        if (mountedRow && listWrap) {
+          if (!isRowFullyVisible(mountedRow)) mountedRow.scrollIntoView({ block: "center" });
+          const prev = mountedRow.style.background;
+          mountedRow.style.background = "var(--border)";
+          setTimeout(() => { mountedRow.style.background = prev; }, 600);
+          return;
+        }
         try { openAncestors?.(cid); } catch {}
         renderAll({ preserveListScroll: false });
         try {
@@ -1097,6 +1109,16 @@ export function createSessionsSidebarViewManager(opts) {
       const clearSearch = !!opt.clearSearch;
       const flash = opt.flash !== false;
       const block = opt.block || "nearest";
+      const mountedRow = innerRender?.syncCurrentSession?.(sid);
+      if (mountedRow && listWrap) {
+        if (!isRowFullyVisible(mountedRow)) mountedRow.scrollIntoView({ block });
+        if (flash) {
+          const prev = mountedRow.style.background;
+          mountedRow.style.background = "var(--border)";
+          setTimeout(() => { mountedRow.style.background = prev; }, 450);
+        }
+        return;
+      }
       try { if (openParents) openAncestors?.(sid); } catch {}
       void clearSearch;
       renderAll({ preserveListScroll: false });

@@ -1,4 +1,5 @@
 import type { Text } from "@codemirror/state";
+import { stripAssistantBlockIdComment } from "../../../chat/restore";
 
 export type ObsidianReferenceKind = "heading" | "block" | "message";
 
@@ -79,7 +80,8 @@ export function getObsidianReferences(doc: Text): ObsidianReference[] {
 
     const role = ROLE_RE.exec(line.text);
     if (role) {
-      const label = truncateLabel(`${role[1]}: ${role[2]}`);
+      const body = role[1] === "assistant" ? stripAssistantBlockIdComment(role[2]) : role[2];
+      const label = truncateLabel(`${role[1]}: ${body}`);
       const key = `message:${label}`;
       if (label.length > role[1].length + 3 && !seen.has(key)) {
         seen.add(key);
@@ -168,4 +170,15 @@ export function findObsidianReferenceTarget(doc: Text, rawTarget: string): numbe
   const lower = target.toLowerCase();
   const fuzzy = refs.find(ref => ref.label.toLowerCase() === lower);
   return fuzzy?.pos ?? null;
+}
+
+export function findBiographyEventReference(rawTarget: string): string | null {
+  const target = String(rawTarget || "")
+    .replace(/^\[\[/, "")
+    .replace(/\]\]$/, "")
+    .split("|")
+    .shift()
+    ?.trim() || "";
+  const match = target.match(/^memory:([^\s|]+)$/i);
+  return match?.[1] || null;
 }

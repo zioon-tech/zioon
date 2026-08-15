@@ -42,7 +42,9 @@ export function createSessionAutoSavePlugin(opts) {
     try {
       return !!update?.transactions?.some?.((tr) => {
         const userEvent = tr?.annotation?.(Transaction.userEvent);
-        return userEvent === "zion.sessionLoad" || userEvent === "zion.cardRestore";
+        return userEvent === "zion.sessionLoad"
+          || userEvent === "zion.sessionSeed"
+          || userEvent === "zion.cardRestore";
       });
     } catch {
       return false;
@@ -60,9 +62,7 @@ export function createSessionAutoSavePlugin(opts) {
     const text = doc.toString();
     const meta = loadMeta(id);
     const newHash = hashString(text);
-    if (newHash === (meta.hash || "")) {
-      return false;
-    }
+    if (newHash === (meta.hash || "")) return false;
     saveDoc(id, text);
     const rs = zion?.state?.get(`chat.runs.${id}`) || null;
     if (rs && rs.streaming) {

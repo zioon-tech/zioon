@@ -1,0 +1,111 @@
+{
+  "name": "dev.identity",
+  "version": "0.1.0",
+  "description": "Maintain agent identity, user profile, and distilled biography context.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.identity",
+    "name": "Identity",
+    "version": "0.1.0",
+    "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "身份与自传",
+        "en-US": "Identity"
+      },
+      "description": {
+        "zh-CN": "维护 Agent 身份、用户画像和蒸馏后的经历上下文。",
+        "en-US": "Maintain agent identity, user profile, and distilled biography context."
+      },
+      "icon": "account",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "维护 Agent 身份与用户画像",
+          "从会话蒸馏经历事件",
+          "向模型注入可引用的自传摘要"
+        ],
+        "en-US": [
+          "Maintain agent identity and user profile",
+          "Distill biography events from sessions",
+          "Inject a citable biography digest into model context"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "local-files",
+          "label": {
+            "zh-CN": "本地文件",
+            "en-US": "Local files"
+          },
+          "description": {
+            "zh-CN": "读写身份、用户画像和自传记忆文件。",
+            "en-US": "Read and write identity, profile, and biography memory files."
+          }
+        },
+        {
+          "id": "model-context",
+          "label": {
+            "zh-CN": "模型上下文",
+            "en-US": "Model context"
+          },
+          "description": {
+            "zh-CN": "在系统上下文中注入身份与经历摘要。",
+            "en-US": "Inject identity and biography summaries into system context."
+          }
+        }
+      ],
+      "dataLocations": [
+        {
+          "label": {
+            "zh-CN": "身份与自传",
+            "en-US": "Identity and biography"
+          },
+          "path": "~/.zion-next/memory"
+        }
+      ],
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "打开 Biography",
+            "en-US": "Open Biography"
+          },
+          "command": "identity.openBiography",
+          "icon": "book"
+        }
+      ]
+    },
+    "contributes": {
+      "commands": [
+        {
+          "id": "identity.initialize",
+          "title": "Initialize Identity Profile",
+          "category": "Identity"
+        },
+        {
+          "id": "identity.openBiography",
+          "title": "Open Biography",
+          "category": "Identity"
+        },
+        {
+          "id": "identity.refreshContext",
+          "title": "Refresh Identity Context",
+          "category": "Identity"
+        }
+      ],
+      "styles": [
+        "./styles.css"
+      ],
+      "skills": [
+        "./skills/biography-memory"
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

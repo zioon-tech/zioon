@@ -15,6 +15,8 @@ type SessionSyncOptions = {
   getEditor: (panelId: string) => EditorProxy | null;
 };
 
+const SESSION_SYNC_USER_EVENT = "zion.sessionSync";
+
 export class SessionSync {
   private syncingPanels = new Set<string>();
   private disp: Disposable | null = null;
@@ -24,7 +26,7 @@ export class SessionSync {
     this.opts = opts;
     this.disp = opts.events.on("editor.change", (payload) => {
       if (isIgnoredChange(payload?.update)) return;
-      this.syncFromPanel(payload?.panelId || null, payload?.view || null);
+      this.syncFromPanel(payload?.panelId || null, payload?.view || null, payload?.update || null);
     });
   }
 
@@ -34,29 +36,38 @@ export class SessionSync {
     this.syncingPanels.clear();
   }
 
-  syncFromPanel(sourcePanelId: string | null, sourceView: any = null): void {
+  syncFromPanel(sourcePanelId: string | null, sourceView: any = null, sourceUpdate: any = null): void {
     if (!sourcePanelId) {
       sourcePanelId = this.opts.getActivePanelId();
     }
     if (!sourcePanelId || this.syncingPanels.has(sourcePanelId)) return;
 
-    const sourcePanel = this.opts.listPanels().find((panel) => panel.id === sourcePanelId);
+    const panels = this.opts.listPanels();
+    const sourcePanel = panels.find((panel) => panel.id === sourcePanelId);
     const sourceViewSessionId = getViewSessionId(sourceView);
     const sourceSessionId = sourceViewSessionId || sourcePanel?.activeTabId || null;
     if (!sourceSessionId) return;
 
     const sourceEditor = this.opts.getEditor(sourcePanelId);
     if (!sourceEditor && !sourceView) return;
-    const nextText = sourceView
-      ? String(sourceView.state?.doc?.toString?.() || "")
-      : String(sourceEditor?.getValue?.() || "");
+    const sourceDoc = sourceUpdate?.state?.doc || sourceView?.state?.doc || null;
+    const sourceStartDoc = sourceUpdate?.startState?.doc || null;
+    const sourceChanges = sourceUpdate?.changes || null;
+    let nextText: string | null = null;
+    const readNextText = () => {
+      if (nextText == null) {
+        nextText = sourceDoc
+          ? String(sourceDoc.toString?.() || "")
+          : String(sourceEditor?.getValue?.() || "");
+      }
+      return nextText;
+    };
 
-    for (const panel of this.opts.listPanels()) {
+    for (const panel of panels) {
       if (panel.id === sourcePanelId) continue;
       if (panel.activeTabId !== sourceSessionId) continue;
       const targetEditor = this.opts.getEditor(panel.id);
       if (!targetEditor) continue;
-      const targetText = String(targetEditor.getValue?.() || "");
       const targetView = targetEditor.getView?.();
       const targetViewSessionId = getViewSessionId(targetView);
       if (targetViewSessionId && targetViewSessionId !== sourceSessionId) {
@@ -64,19 +75,33 @@ export class SessionSync {
         // Skipping avoids copying text across session-bound views during tab transitions.
         continue;
       }
-      if (targetText === nextText) continue;
 
       try {
         this.syncingPanels.add(panel.id);
-        const view = targetEditor.getView?.();
-        if (view) {
-          const currentText = String(view.state.doc?.toString?.() || "");
-          const change = buildTextChange(currentText, nextText);
-          view.dispatch({
-            changes: change
+        if (
+          targetView &&
+          sourceChanges &&
+          sourceStartDoc &&
+          docsEqual(targetView.state?.doc, sourceStartDoc)
+        ) {
+          targetView.dispatch({
+            changes: sourceChanges,
+            annotations: Transaction.userEvent.of(SESSION_SYNC_USER_EVENT)
+          });
+          continue;
+        }
+
+        const targetText = String(targetEditor.getValue?.() || "");
+        const resolvedNextText = readNextText();
+        if (targetText === resolvedNextText) continue;
+        if (targetView) {
+          const change = buildTextChange(targetText, resolvedNextText);
+          targetView.dispatch({
+            changes: change,
+            annotations: Transaction.userEvent.of(SESSION_SYNC_USER_EVENT)
           });
         } else {
-          targetEditor.setValue(nextText);
+          targetEditor.setValue(resolvedNextText);
         }
       } catch {
       } finally {
@@ -84,6 +109,17 @@ export class SessionSync {
       }
     }
   }
+}
+
+function docsEqual(left: any, right: any): boolean {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  try {
+    if (typeof left.eq === "function") return left.eq(right);
+    if (typeof right.eq === "function") return right.eq(left);
+  } catch {}
+  return false;
 }
 
 function getViewSessionId(view: any): string | null {
@@ -98,7 +134,9 @@ function isIgnoredChange(update: any): boolean {
   try {
     return !!update?.transactions?.some?.((tr: any) => {
       const userEvent = tr?.annotation?.(Transaction.userEvent);
-      return userEvent === "zion.sessionLoad" || userEvent === "zion.cardRestore";
+        return userEvent === "zion.sessionLoad"
+          || userEvent === "zion.cardRestore"
+          || userEvent === SESSION_SYNC_USER_EVENT;
     });
   } catch {
     return false;

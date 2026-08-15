@@ -3456,8 +3456,8 @@ body.is-dragging-panel-tabs-scrollbar {
 }
 
 .zion-editor-session-tab {
-  flex: 1 1 var(--zion-session-tab-basis);
-  min-width: var(--zion-session-tab-min);
+  flex: 0 1 auto;
+  min-width: 48px;
   max-width: var(--zion-session-tab-max);
   display: inline-flex;
   align-items: center;
@@ -3687,7 +3687,7 @@ body.is-dragging-panel-tabs-scrollbar {
 .zion-editor-session-tab.is-active {
   align-self: flex-end;
   height: 32px;
-  min-width: var(--zion-session-tab-active-min);
+  min-width: 48px;
   opacity: 1;
   background: var(--editor-tab-active-bg);
   color: var(--fg);
@@ -3747,7 +3747,7 @@ body.is-dragging-panel-tabs-scrollbar {
   min-width: 0;
   max-width: none;
   overflow: hidden;
-  text-overflow: clip;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: inherit;
   line-height: 1;
@@ -3801,6 +3801,15 @@ body.is-dragging-panel-tabs-scrollbar {
 }
 .zion-editor-session-tabs[data-density="crowded"] .zion-editor-session-tab:not(.is-active) {
   gap: 4px;
+}
+
+.zion-editor-session-tabs:is([data-density="compact"], [data-density="crowded"]) .zion-editor-session-tab {
+  flex: 1 1 var(--zion-session-tab-basis);
+  min-width: var(--zion-session-tab-min);
+}
+
+.zion-editor-session-tabs:is([data-density="compact"], [data-density="crowded"]) .zion-editor-session-tab.is-active {
+  min-width: var(--zion-session-tab-active-min);
 }
 .zion-editor-session-tab-close:hover {
   opacity: 1;
@@ -3958,6 +3967,12 @@ body.is-dragging-panel-tabs-scrollbar {
   background: var(--bg);
   color: var(--fg);
 }
+.zion-file-tab-custom-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
 .zion-file-tab-code-host {
   flex: 1 1 auto;
   min-height: 0;
@@ -4102,7 +4117,7 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
   padding-right: 0 !important;
 }
 .zion-editor-slot .cm-editor .cm-md-quote {
-  padding: 8px 12px !important;
+  padding: 2px 12px 2px 14px !important;
 }
 .zion-editor-slot .cm-editor .cm-line.cm-md-codeblock {
   padding: 2px 14px !important;
@@ -4187,6 +4202,17 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
   line-height: inherit;
   vertical-align: baseline;
   opacity: 0;
+}
+
+.cm-z-hide-quote-marker {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--fg);
+  display: inline-block;
+  width: 0;
+  font-size: 0;
+  line-height: 0;
+  overflow: hidden;
 }
 
 /* fully hide replaced content (occupies no space) */
@@ -4448,13 +4474,51 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
 
 .cm-md-quote {
   display: block;
-  border-left: 3px solid var(--md-quote-border);
-  padding: 8px 12px !important;
-  border-radius: 6px;
+  position: relative;
+  border-left: 0;
+  padding: 2px 12px 2px 14px !important;
+  border-radius: 0;
   background: var(--md-quote-bg);
   color: color-mix(in srgb, var(--fg) 82%, transparent);
   -webkit-text-fill-color: color-mix(in srgb, var(--fg) 82%, transparent);
   font-style: normal;
+}
+.cm-md-quote::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: color-mix(in srgb, var(--md-quote-border) 72%, transparent);
+  pointer-events: none;
+}
+.cm-editor .cm-line.cm-md-quote-single,
+.cm-editor .cm-line.cm-md-quote-start {
+  padding-top: 8px !important;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+}
+.cm-editor .cm-line.cm-md-quote-single,
+.cm-editor .cm-line.cm-md-quote-end {
+  padding-bottom: 8px !important;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+.cm-md-quote-single::before {
+  top: 7px;
+  bottom: 7px;
+  border-radius: 999px;
+}
+.cm-md-quote-start::before {
+  top: 7px;
+  border-top-left-radius: 999px;
+  border-top-right-radius: 999px;
+}
+.cm-md-quote-end::before {
+  bottom: 7px;
+  border-bottom-left-radius: 999px;
+  border-bottom-right-radius: 999px;
 }
 .cm-md-quote * {
   color: inherit !important;
@@ -4483,6 +4547,18 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.cm-line.cm-md-list-line:not(.cm-md-quote) {
+  padding-left: var(--cm-md-list-content-indent, 20px) !important;
+  text-indent: calc(-1 * var(--cm-md-list-marker-width, 20px));
+}
+
+.cm-line.cm-md-list-line:not(.cm-md-quote) .cm-md-ul-bullet,
+.cm-line.cm-md-list-line:not(.cm-md-quote) .cm-md-ol-num {
+  width: var(--cm-md-list-marker-width, 20px);
+  min-width: var(--cm-md-list-marker-width, 20px);
+  text-indent: 0;
 }
 
 .cm-md-ul-bullet {
