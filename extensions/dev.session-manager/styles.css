@@ -915,3 +915,36 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-split-filterclear:hover {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
+
+/* ===== Split cohesion: tinted tag column + quiet divider ===== */
+/* The tag column is distinguished by a subtle background tint rather than
+   a hard border; the divider line stays invisible until interacted with. */
+.zion-sessions-tag-column {
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+.zion-sessions-split-divider::before {
+  background: transparent;
+}
+
+/* Column-header icon buttons (add / close in tag column; open-split in the
+   inline tags header) share one quiet style. */
+.zion-sessions-tagtree-collapse,
+.zion-sessions-tags-splitbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 46%, transparent);
+  cursor: pointer;
+  border-radius: var(--radius-sm, 4px);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.zion-sessions-tagtree-collapse:hover,
+.zion-sessions-tags-splitbtn:hover {
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg);
+}

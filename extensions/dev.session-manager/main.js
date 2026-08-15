@@ -138,7 +138,9 @@ const I18N_MESSAGES = {
     "tags.clearTitle": "清除标签筛选",
     "tags.expandNode": "展开 {tag}",
     "tags.collapseNode": "折叠 {tag}",
-    "tags.filterTitle": "按 {tag} 筛选会话"
+    "tags.filterTitle": "按 {tag} 筛选会话",
+    "tags.openSplit": "以侧栏分栏显示标签",
+    "tags.closeSplit": "关闭标签分栏"
   },
   "en-US": {
     "category.sessions": "Sessions",
@@ -247,7 +249,9 @@ const I18N_MESSAGES = {
     "tags.clearTitle": "Clear tag filter",
     "tags.expandNode": "Expand {tag}",
     "tags.collapseNode": "Collapse {tag}",
-    "tags.filterTitle": "Filter sessions by {tag}"
+    "tags.filterTitle": "Filter sessions by {tag}",
+    "tags.openSplit": "Show tags as side column",
+    "tags.closeSplit": "Close tag column"
   }
 };
 
@@ -1560,15 +1564,6 @@ export async function activate(ctx) {
           onClick: () => window.zion.commands.executeCommand("zion.sessions.new", {
             parentId: window.zion.state.get("sessions.selectedFolderId") || "root"
           })
-        },
-        {
-          id: "sessions.tagSplit",
-          title: t("ui.toggleTagSplit", "Toggle tag column"),
-          titleKey: "dev.session-manager.ui.toggleTagSplit",
-          ariaLabel: t("ui.toggleTagSplit", "Toggle tag column"),
-          ariaLabelKey: "dev.session-manager.ui.toggleTagSplit",
-          icon: "$(layout-sidebar-left)",
-          onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleTagSplit")
         },
         {
           id: "sessions.actions",

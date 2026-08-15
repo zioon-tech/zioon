@@ -33,6 +33,7 @@ export function createTagTreePanel(deps) {
   const onPin = deps.onPin || (() => {});
   const isCollapsed = deps.isCollapsed || (() => false);
   const setCollapsed = deps.setCollapsed || (() => {});
+  const onCollapseSplit = deps.onCollapseSplit || (() => {});
 
   const el = document.createElement("div");
   el.className = "zion-sessions-tagtree";
@@ -64,6 +65,20 @@ export function createTagTreePanel(deps) {
   header.appendChild(title);
   header.appendChild(countBadge);
   header.appendChild(addBtn);
+
+  // Close-the-split control lives here: the layout toggle belongs to the
+  // column it controls, keeping the host sidebar header to +/⋯ only.
+  const collapseBtn = document.createElement("button");
+  collapseBtn.type = "button";
+  collapseBtn.className = "zion-sessions-tagtree-collapse";
+  collapseBtn.title = t("tags.closeSplit", "Close tag column");
+  collapseBtn.setAttribute("aria-label", t("tags.closeSplit", "Close tag column"));
+  collapseBtn.innerHTML = iconHtml("x", 12);
+  collapseBtn.onclick = (event) => {
+    event.stopPropagation();
+    onCollapseSplit();
+  };
+  header.appendChild(collapseBtn);
 
   const searchWrap = document.createElement("div");
   searchWrap.className = "zion-sessions-tagtree-searchwrap";

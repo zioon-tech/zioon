@@ -642,6 +642,7 @@ export function createSessionsSidebarViewManager(opts) {
       iconHtml,
       isCollapsed: isTagNodeCollapsed,
       setCollapsed: setTagNodeCollapsed,
+      onCollapseSplit: () => setTagSplitEnabled(false),
       onSelect: (path) => {
         selectedTag = String(path || "");
         renderAll();
@@ -901,6 +902,19 @@ export function createSessionsSidebarViewManager(opts) {
         };
         header.appendChild(clear);
       }
+
+      // Open-the-split control (paired with the column's own close button).
+      const openSplitBtn = document.createElement("button");
+      openSplitBtn.type = "button";
+      openSplitBtn.className = "zion-sessions-tags-splitbtn";
+      openSplitBtn.title = t("tags.openSplit", "Show tags as side column");
+      openSplitBtn.setAttribute("aria-label", t("tags.openSplit", "Show tags as side column"));
+      openSplitBtn.innerHTML = iconHtml("columns-2", 12);
+      openSplitBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        setTagSplitEnabled(true);
+      };
+      header.appendChild(openSplitBtn);
 
       tagsHost.appendChild(header);
       if (tagPanelCollapsed) return;

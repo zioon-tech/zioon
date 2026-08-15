@@ -191,4 +191,24 @@ describe("sessions sidebar tag split layout", () => {
     expect(container.querySelector(".zion-sessions-split-filterbar.is-active")).toBeNull();
     expect(container.querySelector('.zion-sessions-tagtree-row[aria-selected="true"]')).toBeNull();
   });
+
+  it("split toggle lives in the column headers, not the host header", () => {
+    // split mode: the tag column's own close button collapses back to inline
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const { container } = mountAt(500);
+    container.querySelector(".zion-sessions-tagtree-collapse").click();
+    expect(container.querySelector(".zion-sessions-split-row")).toBeNull();
+    expect(localStorage.getItem("zion.sessions.sidebar.tagSplit")).toBe("0");
+    // inline tags section is back and offers the open-split button
+    const inline = container.querySelector(".zion-sessions-tags-panel");
+    expect(inline.style.display).not.toBe("none");
+    expect(inline.querySelector(".zion-sessions-tags-splitbtn")).toBeTruthy();
+
+    // stacked mode: inline tags header's open button turns split back on
+    inline.querySelector(".zion-sessions-tags-splitbtn").click();
+    expect(container.querySelector(".zion-sessions-split-row")).toBeTruthy();
+    expect(localStorage.getItem("zion.sessions.sidebar.tagSplit")).toBe("1");
+    // inline section is hidden again (kept in DOM, display:none)
+    expect(inline.style.display).toBe("none");
+  });
 });
