@@ -132,4 +132,39 @@ describe("sessions sidebar tag split layout", () => {
     container.querySelector('[data-path="alpha"]').click();
     expect(container.querySelector('.zion-sessions-tagtree-row[aria-selected="true"]')).toBeNull();
   });
+
+  it("selecting a tag in split mode produces a list filter that matches # prefixed session tags", () => {
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const captured = [];
+    const zion = makeZion([]);
+    const manager = createSessionsSidebarViewManager({
+      zion,
+      createSessionsListRenderer: (deps) => {
+        captured.push(deps);
+        const render = () => {};
+        render.dispose = () => {};
+        render.syncSessionIndex = () => {};
+        return render;
+      },
+      getIndex: () => [{ id: "s1" }, { id: "s2" }],
+      loadMeta: (id) => ({ id, title: id, updatedAt: Date.now() }),
+      loadDoc: (id) => (id === "s1" ? "hello #alpha world" : "notes #beta/one"),
+      dbName: "zion.sessions.db.tagfilter.test"
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    Object.defineProperty(container, "clientWidth", { value: 500, configurable: true });
+    manager.mountInto(container);
+
+    container.querySelector('[data-path="alpha"]').click();
+    const alphaFilter = captured.at(-1).getSessionFilter();
+    expect(alphaFilter).toBeTypeOf("function");
+    expect(alphaFilter({ id: "s1" })).toBe(true);   // "#alpha" → matches alpha
+    expect(alphaFilter({ id: "s2" })).toBe(false);  // "#beta/one" → no match
+
+    container.querySelector('[data-path="beta"]').click();
+    const betaFilter = captured.at(-1).getSessionFilter();
+    expect(betaFilter({ id: "s1" })).toBe(false);   // not tagged beta
+    expect(betaFilter({ id: "s2" })).toBe(true);    // "#beta/one" is a descendant of beta
+  });
 });

@@ -269,9 +269,12 @@ export function createSessionsSidebarViewManager(opts) {
   }
 
   function tagMatchesFilter(tags, filter) {
-    const selected = String(filter || "").trim();
+    const selected = String(filter || "").trim().replace(/^#/, "");
     if (!selected) return true;
-    return (Array.isArray(tags) ? tags : []).some((tag) => tag === selected || tag.startsWith(`${selected}/`));
+    return (Array.isArray(tags) ? tags : []).some((tag) => {
+      const clean = String(tag || "").trim().replace(/^#/, "");
+      return clean === selected || clean.startsWith(`${selected}/`);
+    });
   }
 
   function buildTagTreeForSessionIds(sessionIds) {
