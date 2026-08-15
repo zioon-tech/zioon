@@ -18,6 +18,18 @@ export type SideBarViewComponent = {
   render: (container: HTMLElement) => { dispose?: () => void } | void;
 };
 
+export type SideBarHeaderLeadingContext = {
+  setVisible(visible: boolean): void;
+  setWidth(px: number): void;
+};
+
+export type SideBarHeaderLeading = {
+  render: (
+    container: HTMLElement,
+    context: SideBarHeaderLeadingContext
+  ) => { dispose?: () => void } | void;
+};
+
 export type SideBarView = {
   id: string;
   pluginId: string;
@@ -27,6 +39,7 @@ export type SideBarView = {
   order?: number;
   when?: string;
   canClose?: boolean;
+  headerLeading?: SideBarHeaderLeading;
   headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; text?: string; textKey?: string; active?: boolean | (() => boolean); onClick: () => void }>;
   component: SideBarViewComponent;
   onActivate?: () => void | Promise<void>;

@@ -310,6 +310,15 @@ declare global {
           order?: number;
           when?: string;
           canClose?: boolean;
+          headerLeading?: {
+            render: (
+              container: HTMLElement,
+              context: {
+                setVisible(visible: boolean): void;
+                setWidth(px: number): void;
+              }
+            ) => { dispose?: () => void } | void;
+          };
           headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; text?: string; textKey?: string; active?: boolean | (() => boolean); onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;

@@ -2947,10 +2947,42 @@ html, body {
 
 .zion-sidebar-header {
   display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  gap: 0;
+  box-sizing: border-box;
+}
+
+.zion-sidebar-header-leading {
+  display: none;
+  min-width: 0;
+}
+
+.zion-sidebar-header-main {
+  display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px;
   gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.zion-sidebar-header.has-leading {
+  padding: 0;
+}
+
+.zion-sidebar-header.has-leading .zion-sidebar-header-leading {
+  display: flex;
+  flex: 0 0 var(--zion-sidebar-leading-width);
+  width: var(--zion-sidebar-leading-width);
+  min-width: 0;
+  box-sizing: border-box;
+  border-right: 1px solid var(--surface-border-soft, var(--border));
+}
+
+.zion-sidebar-header.has-leading .zion-sidebar-header-main {
+  padding: 6px 10px 4px;
   box-sizing: border-box;
 }
 
@@ -5454,7 +5486,7 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
   border-right: 1px solid var(--surface-border-soft);
 }
 
-.zion-sidebar-header,
+.zion-sidebar-header:not(.has-leading),
 .zion-auxbar-header,
 .zion-bottompanel-header {
   box-sizing: border-box;

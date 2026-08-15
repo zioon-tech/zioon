@@ -831,9 +831,13 @@ export function initWorkbench(host: HTMLElement): {
   let mountedViewId: string | null = null;
   let mountedDisposable: { dispose?: () => void } | null = null;
   let resizeObs: ResizeObserver | null = null;
+  let mountedHeaderLeadingViewId: string | null = null;
+  let mountedHeaderLeadingDisposable: { dispose?: () => void } | null = null;
 
   sideBarEl.style.position = "relative";
   const header = el("div", "zion-sidebar-header");
+  const headerLeading = el("div", "zion-sidebar-header-leading");
+  const headerMain = el("div", "zion-sidebar-header-main");
   const headerTitle = el("div", "zion-sidebar-title");
   const headerActions = el("div", "zion-sidebar-actions");
   const hideBtn = el("button", "zion-sidebar-action");
@@ -843,8 +847,8 @@ export function initWorkbench(host: HTMLElement): {
   setCodiconOnly(hideBtn, "close");
   hideBtn.onclick = () => sideBarRuntime.hide();
   headerActions.appendChild(hideBtn);
-  header.appendChild(headerTitle);
-  header.appendChild(headerActions);
+  headerMain.append(headerTitle, headerActions);
+  header.append(headerLeading, headerMain);
 
   const tabs = el("div", "zion-sidebar-tabs");
   const content = el("div", "zion-sidebar-content");
@@ -2509,6 +2513,51 @@ export function initWorkbench(host: HTMLElement): {
     };
   };
 
+  const resetHeaderLeading = () => {
+    header.classList.remove("has-leading");
+    header.style.removeProperty("--zion-sidebar-leading-width");
+    headerLeading.replaceChildren();
+  };
+
+  const unmountHeaderLeading = () => {
+    try {
+      mountedHeaderLeadingDisposable?.dispose?.();
+    } catch {}
+    mountedHeaderLeadingDisposable = null;
+    mountedHeaderLeadingViewId = null;
+    resetHeaderLeading();
+  };
+
+  const mountHeaderLeading = (viewId: string | null) => {
+    if (mountedHeaderLeadingViewId === viewId) return;
+    unmountHeaderLeading();
+    if (!viewId) return;
+    const view = sideBarRuntime.getView(viewId);
+    if (!view?.headerLeading) return;
+    mountedHeaderLeadingViewId = viewId;
+    const isCurrent = () => mountedHeaderLeadingViewId === viewId;
+    try {
+      const ret = view.headerLeading.render(headerLeading, {
+        setVisible: (visible) => {
+          if (!isCurrent()) return;
+          header.classList.toggle("has-leading", !!visible);
+        },
+        setWidth: (px) => {
+          if (!isCurrent()) return;
+          const width = Number(px);
+          if (!Number.isFinite(width) || width <= 0) {
+            header.style.removeProperty("--zion-sidebar-leading-width");
+            return;
+          }
+          header.style.setProperty("--zion-sidebar-leading-width", `${Math.round(width)}px`);
+        }
+      });
+      mountedHeaderLeadingDisposable = (ret as any) || null;
+    } catch {
+      unmountHeaderLeading();
+    }
+  };
+
   const unmountView = async (viewId: string | null) => {
     if (!viewId) return;
     const prev = sideBarRuntime.getView(viewId);
@@ -2561,13 +2610,17 @@ export function initWorkbench(host: HTMLElement): {
     if (!sideBarRuntime.isVisible()) return;
     const views = sideBarRuntime.getViews();
     const activeViewId = sideBarRuntime.getActiveViewId();
-    const activeView = activeViewId ? sideBarRuntime.getView(activeViewId) : null;
+    const nextId = activeViewId && sideBarRuntime.getView(activeViewId)
+      ? activeViewId
+      : views[0]?.id ?? null;
+    const nextView = nextId ? sideBarRuntime.getView(nextId) : null;
 
-    headerTitle.textContent = translatedTitle(activeView, "Side Bar");
+    headerTitle.textContent = translatedTitle(nextView, "Side Bar");
+    mountHeaderLeading(nextId);
 
     headerActions.innerHTML = "";
-    if (activeView?.headerActions && Array.isArray(activeView.headerActions)) {
-      for (const a of activeView.headerActions) {
+    if (nextView?.headerActions && Array.isArray(nextView.headerActions)) {
+      for (const a of nextView.headerActions) {
         const btn = el("button", "zion-sidebar-action");
         btn.type = "button";
         const title = translatedTitle(a);
@@ -2611,7 +2664,6 @@ export function initWorkbench(host: HTMLElement): {
       }
     }
 
-    const nextId = activeViewId && sideBarRuntime.getView(activeViewId) ? activeViewId : views[0]?.id ?? null;
     if (nextId !== activeViewId && nextId) {
       sideBarRuntime.activateView(nextId);
     }
@@ -2765,6 +2817,7 @@ export function initWorkbench(host: HTMLElement): {
         document.removeEventListener("click", closeInspectorToolbarMenuOnOutsideClick);
       } catch {}
       try {
+        unmountHeaderLeading();
         void unmountView(mountedViewId);
       } catch {}
       try {
