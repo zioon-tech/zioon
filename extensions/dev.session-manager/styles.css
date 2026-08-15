@@ -571,16 +571,19 @@ body.zion-sessions-no-transitions .zion-session-row * {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 8px 4px 8px;
+  padding: 6px 8px 4px 8px;
 }
+/* Same scale as .zion-sessions-section-title (12px/600, normal case) so the
+   column header reads as part of the sidebar, not a foreign widget. */
 .zion-sessions-tagtree-title {
   flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--fg) 55%, transparent);
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
 }
 .zion-sessions-tagtree-add {
   display: inline-flex;
@@ -843,4 +846,72 @@ body.zion-sessions-no-transitions .zion-session-row * {
 }
 .zion-sessions-tagtree-context-item.is-danger:hover {
   background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
+}
+
+/* ===== Split layout: single divider + active filter chip ===== */
+/* One vertical separator for the whole split (tag column has no own border). */
+.zion-sessions-split-divider {
+  position: relative;
+  flex: 0 0 7px;
+  cursor: col-resize;
+  z-index: 5;
+}
+.zion-sessions-split-divider::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+.zion-sessions-split-divider:hover::before,
+.zion-sessions-split-divider.is-dragging::before {
+  background: color-mix(in srgb, var(--accent) 65%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* Right-column filter chip: mirrors the tag selection driving the list. */
+.zion-sessions-split-filterbar {
+  display: none;
+  flex: 0 0 auto;
+  padding: 6px 8px 0 8px;
+}
+.zion-sessions-split-filterbar.is-active {
+  display: flex;
+}
+.zion-sessions-split-filterchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  height: 20px;
+  padding: 0 3px 0 8px;
+  border-radius: var(--radius-pill, 999px);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+}
+.zion-sessions-split-filterlabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zion-sessions-split-filterclear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.zion-sessions-split-filterclear:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }

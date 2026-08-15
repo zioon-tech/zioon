@@ -592,13 +592,12 @@ export function createSessionsSidebarViewManager(opts) {
     tagColumn.style.display = "flex";
     tagColumn.style.flexDirection = "column";
     tagColumn.style.minHeight = "0";
-    tagColumn.style.borderRight = "1px solid color-mix(in srgb, var(--border) 72%, transparent)";
+    // No own border: the split divider owns the single vertical separator.
 
+    // Drag handle + separator in one element (7px hit area, 1px center line
+    // rendered in CSS; line turns accent on hover/drag).
     const splitDivider = document.createElement("div");
     splitDivider.className = "zion-sessions-split-divider";
-    splitDivider.style.flex = "0 0 3px";
-    splitDivider.style.cursor = "col-resize";
-    splitDivider.style.marginLeft = "-2px";
 
     const rightColumn = document.createElement("div");
     rightColumn.className = "zion-sessions-right-column";
@@ -608,6 +607,35 @@ export function createSessionsSidebarViewManager(opts) {
     rightColumn.style.flexDirection = "column";
     rightColumn.style.minHeight = "0";
     rightColumn.style.overflow = "hidden";
+
+    // Active tag filter chip — mirrors the left column's selection so the
+    // two columns read as one unit (select left, see it driving the right).
+    const splitFilterBar = document.createElement("div");
+    splitFilterBar.className = "zion-sessions-split-filterbar";
+    const updateSplitFilterBar = () => {
+      splitFilterBar.innerHTML = "";
+      const active = appliedSplitMode === "split" && !!selectedTag;
+      splitFilterBar.classList.toggle("is-active", active);
+      if (!active) return;
+      const chip = document.createElement("span");
+      chip.className = "zion-sessions-split-filterchip";
+      const label = document.createElement("span");
+      label.className = "zion-sessions-split-filterlabel";
+      label.textContent = `#${selectedTag}`;
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "zion-sessions-split-filterclear";
+      clear.title = t("tags.clearTitle", "Clear tag filter");
+      clear.setAttribute("aria-label", t("tags.clearTitle", "Clear tag filter"));
+      clear.innerHTML = iconHtml("x", 10);
+      clear.onclick = (ev) => {
+        ev.stopPropagation();
+        selectedTag = "";
+        renderAll();
+      };
+      chip.append(label, clear);
+      splitFilterBar.appendChild(chip);
+    };
 
     const tagTreePanel = createTagTreePanel({
       t,
@@ -631,6 +659,7 @@ export function createSessionsSidebarViewManager(opts) {
     splitDivider.addEventListener("mousedown", (event) => {
       event.preventDefault();
       splitDragState = { startX: event.clientX, startWidth: tagColumnWidth };
+      splitDivider.classList.add("is-dragging");
     });
     const onSplitDragMove = (event) => {
       if (!splitDragState) return;
@@ -645,6 +674,7 @@ export function createSessionsSidebarViewManager(opts) {
     const onSplitDragEnd = () => {
       if (!splitDragState) return;
       splitDragState = null;
+      splitDivider.classList.remove("is-dragging");
       try { localStorage.setItem(LS_TAG_COLUMN_WIDTH, String(tagColumnWidth)); } catch {}
     };
     window.addEventListener("mousemove", onSplitDragMove);
@@ -665,6 +695,7 @@ export function createSessionsSidebarViewManager(opts) {
         tagsHost.style.display = "none";
         splitRow.appendChild(tagColumn);
         splitRow.appendChild(splitDivider);
+        rightColumn.appendChild(splitFilterBar);
         rightColumn.appendChild(listWrap);
         rightColumn.appendChild(calendarHost);
         splitRow.appendChild(rightColumn);
@@ -1313,6 +1344,7 @@ export function createSessionsSidebarViewManager(opts) {
         captureTagsPanelScroll();
         if (appliedSplitMode !== "split") renderTagsPanel();
         renderTagTreeIfSplit();
+        updateSplitFilterBar();
         renderCalendar();
       }
       innerRender();

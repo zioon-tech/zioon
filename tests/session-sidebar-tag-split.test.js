@@ -167,4 +167,28 @@ describe("sessions sidebar tag split layout", () => {
     expect(betaFilter({ id: "s1" })).toBe(false);   // not tagged beta
     expect(betaFilter({ id: "s2" })).toBe(true);    // "#beta/one" is a descendant of beta
   });
+
+  it("split mode uses a single divider line and shows a clearable filter chip", () => {
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const { container } = mountAt(500);
+
+    // tag column owns no border; the divider is the only separator
+    const tagColumn = container.querySelector(".zion-sessions-tag-column");
+    expect(tagColumn.style.borderRight).toBe("");
+    expect(container.querySelector(".zion-sessions-split-divider")).toBeTruthy();
+
+    // no chip when nothing is selected
+    expect(container.querySelector(".zion-sessions-split-filterbar.is-active")).toBeNull();
+
+    // selecting a tag shows the chip with the selected path
+    container.querySelector('[data-path="alpha"]').click();
+    const chip = container.querySelector(".zion-sessions-split-filterchip");
+    expect(chip).toBeTruthy();
+    expect(chip.textContent).toContain("#alpha");
+
+    // clearing via the chip resets selection
+    container.querySelector(".zion-sessions-split-filterclear").click();
+    expect(container.querySelector(".zion-sessions-split-filterbar.is-active")).toBeNull();
+    expect(container.querySelector('.zion-sessions-tagtree-row[aria-selected="true"]')).toBeNull();
+  });
 });
