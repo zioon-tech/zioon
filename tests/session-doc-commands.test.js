@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { registerSessionDocCommands, appendAssistantTokenToDoc } from "../extensions/dev.session-manager/commands/doc-apis.js";
+import {
+  appendAssistantTokenToDoc,
+  ensureAssistantBlockInDoc,
+  registerSessionDocCommands
+} from "../extensions/dev.session-manager/commands/doc-apis.js";
 import { findAssistantBlockEndInText } from "../extensions/dev.session-manager/features/assistant-block.js";
 
 function createCommands() {
@@ -19,6 +23,19 @@ describe("session doc commands", () => {
   it("appends assistant tokens into the active assistant block", () => {
     expect(appendAssistantTokenToDoc("user hi", "hello")).toBe("user hi\nassistant hello");
     expect(appendAssistantTokenToDoc("user hi\nassistant hello", " world")).toBe("user hi\nassistant hello world");
+  });
+
+  it("ensures and appends to the requested assistant block id", () => {
+    let doc = "user old\nassistant <!-- zion-assistant:id=run-old --> old";
+    doc = ensureAssistantBlockInDoc(doc, "run-new");
+    doc = appendAssistantTokenToDoc(doc, "new", "run-new");
+
+    expect(doc).toBe([
+      "user old",
+      "assistant <!-- zion-assistant:id=run-old --> old",
+      "assistant <!-- zion-assistant:id=run-new --> new"
+    ].join("\n"));
+    expect(appendAssistantTokenToDoc(doc, "bad", "missing-run")).toBe(doc);
   });
 
   it("serializes background token and marker writes per session", async () => {

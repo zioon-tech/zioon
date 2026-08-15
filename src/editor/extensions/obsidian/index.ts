@@ -7,6 +7,7 @@ import {
   type ViewUpdate
 } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
+import { syntaxTree } from "@codemirror/language";
 import { findBiographyEventReference, findObsidianReferenceTarget } from "./parser";
 
 const WIKILINK_RE = /\[\[([^\]\n]{1,120})\]\]/g;
@@ -32,9 +33,20 @@ function isInsideInlineCode(text: string, pos: number): boolean {
   return inCode;
 }
 
+function isInsideFencedCode(view: EditorView, pos: number): boolean {
+  try {
+    let node: any = syntaxTree(view.state).resolveInner(pos, 1);
+    while (node) {
+      const name = node.name || node.type?.name;
+      if (name === "FencedCode" || name === "CodeBlock") return true;
+      node = node.parent;
+    }
+  } catch {}
+  return false;
+}
+
 function buildDecorations(view: EditorView): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
-  const maxVisibleLine = view.state.doc.lineAt(view.visibleRanges[view.visibleRanges.length - 1]?.to ?? 0).number;
   const visibleLines = new Set<number>();
 
   for (const range of view.visibleRanges) {
@@ -43,13 +55,9 @@ function buildDecorations(view: EditorView): DecorationSet {
     for (let lineNo = fromLine; lineNo <= toLine; lineNo++) visibleLines.add(lineNo);
   }
 
-  let inFence = false;
-  for (let lineNo = 1; lineNo <= maxVisibleLine; lineNo++) {
+  for (const lineNo of [...visibleLines].sort((a, b) => a - b)) {
     const line = view.state.doc.line(lineNo);
-    const wasInFence = inFence;
-      const isFence = isFenceLine(line.text);
-      if (isFence) inFence = !inFence;
-      if (!visibleLines.has(lineNo) || wasInFence || isFence) continue;
+    if (isFenceLine(line.text) || isInsideFencedCode(view, line.from)) continue;
 
     const marks: Array<{ from: number; to: number; decoration: Decoration }> = [];
 
@@ -74,11 +82,9 @@ function buildDecorations(view: EditorView): DecorationSet {
         to: line.from + wiki.index + wiki[0].length,
         decoration: Decoration.mark({
           class: "cm-obsidian-wikilink",
-          attributes: {
-            title: /^memory:/i.test(wiki[1] || "")
-              ? "Cmd/Ctrl-click to open Biography event"
-              : undefined
-          }
+          attributes: /^memory:/i.test(wiki[1] || "")
+            ? { title: "Cmd/Ctrl-click to open Biography event" }
+            : undefined
         })
       });
     }
@@ -87,7 +93,7 @@ function buildDecorations(view: EditorView): DecorationSet {
     let tag: RegExpExecArray | null;
     while ((tag = TAG_RE.exec(line.text)) !== null) {
       const start = line.from + tag.index + tag[1].length;
-        if (isInsideInlineCode(line.text, tag.index + tag[1].length)) continue;
+      if (isInsideInlineCode(line.text, tag.index + tag[1].length)) continue;
       marks.push({
         from: start,
         to: start + tag[0].length - tag[1].length,
@@ -124,7 +130,7 @@ const obsidianDecorations = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate) {
-      if (update.docChanged || update.viewportChanged || update.selectionSet) {
+      if (update.docChanged || update.viewportChanged) {
         this.decorations = buildDecorations(update.view);
       }
     }

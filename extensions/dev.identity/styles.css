@@ -1,0 +1,1486 @@
+.zion-biography-view {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--fg);
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-biography-view * {
+  box-sizing: border-box;
+}
+
+.zion-biography-header {
+  flex: 0 0 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+}
+
+.zion-biography-heading {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.zion-biography-heading strong {
+  color: color-mix(in srgb, var(--fg) 86%, transparent);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.zion-biography-heading span {
+  color: color-mix(in srgb, var(--fg) 46%, transparent);
+  font-size: 10px;
+}
+
+.zion-biography-refresh {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  cursor: pointer;
+}
+
+.zion-biography-refresh:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+.zion-biography-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 8px 18px;
+}
+
+.zion-biography-state {
+  min-height: 160px;
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  padding: 24px;
+  color: color-mix(in srgb, var(--fg) 52%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.zion-biography-state strong {
+  color: color-mix(in srgb, var(--fg) 76%, transparent);
+}
+
+.zion-biography-state.is-error {
+  color: var(--error-fg, #ef4444);
+}
+
+.zion-biography-date {
+  margin: 0 0 14px;
+}
+
+.zion-biography-date > h3 {
+  margin: 0;
+  padding: 4px 5px 7px;
+  color: color-mix(in srgb, var(--fg) 78%, transparent);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.zion-biography-session {
+  margin-bottom: 7px;
+  overflow: hidden;
+  border: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  border-radius: 8px;
+  background: var(--surface-raised, color-mix(in srgb, var(--panel) 96%, var(--bg)));
+}
+
+.zion-biography-session-header {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 22%, transparent));
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.zion-biography-session-header time {
+  color: color-mix(in srgb, var(--fg) 42%, transparent);
+  font: 10px/1.3 var(--font-mono, monospace);
+  font-weight: 400;
+}
+
+.zion-biography-event {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 7px;
+  padding: 7px 8px;
+}
+
+.zion-biography-event + .zion-biography-event {
+  border-top: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 18%, transparent));
+}
+
+.zion-biography-event > time {
+  padding-top: 2px;
+  color: color-mix(in srgb, var(--fg) 40%, transparent);
+  font: 10px/1.4 var(--font-mono, monospace);
+}
+
+.zion-biography-event-content {
+  min-width: 0;
+}
+
+.zion-biography-event-summary {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 5px;
+  color: color-mix(in srgb, var(--fg) 82%, transparent);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.zion-biography-kind,
+.zion-biography-project,
+.zion-biography-topic,
+.zion-biography-confirmed {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--accent) 88%, var(--fg));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-size: 9px;
+  line-height: 16px;
+}
+
+.zion-biography-project {
+  color: color-mix(in srgb, #f59e0b 86%, var(--fg));
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+}
+
+.zion-biography-topic {
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.zion-biography-kind.is-lesson {
+  color: color-mix(in srgb, #a78bfa 88%, var(--fg));
+  background: color-mix(in srgb, #a78bfa 12%, transparent);
+}
+
+.zion-biography-kind.is-milestone {
+  color: color-mix(in srgb, #22c55e 82%, var(--fg));
+  background: color-mix(in srgb, #22c55e 12%, transparent);
+}
+
+.zion-biography-kind.is-outcome {
+  color: color-mix(in srgb, #38bdf8 84%, var(--fg));
+  background: color-mix(in srgb, #38bdf8 12%, transparent);
+}
+
+.zion-biography-confirmed {
+  color: color-mix(in srgb, #22c55e 82%, var(--fg));
+  background: color-mix(in srgb, #22c55e 12%, transparent);
+}
+
+.zion-biography-event-source {
+  margin-top: 3px;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--fg) 34%, transparent);
+  font: 9px/1.4 var(--font-mono, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Biography stream v2 */
+
+.zion-biography-view {
+  --biography-border: var(--surface-border-soft, color-mix(in srgb, var(--border) 26%, transparent));
+  --biography-muted: color-mix(in srgb, var(--fg) 48%, transparent);
+  --biography-subtle: color-mix(in srgb, var(--fg) 7%, transparent);
+  --biography-canvas: var(--surface-panel, var(--panel));
+  --biography-session-bg: color-mix(in srgb, var(--surface-raised, var(--panel)) 42%, var(--surface-panel, var(--panel)));
+  --biography-card-bg: color-mix(in srgb, var(--surface-raised, var(--panel)) 95%, var(--bg));
+  --biography-card-hover: color-mix(in srgb, var(--accent) 4%, var(--surface-raised, var(--panel)));
+  --biography-session-shadow: none;
+  --biography-accent-wash: color-mix(in srgb, var(--accent) 2.5%, transparent);
+}
+
+.zion-biography-header {
+  flex-basis: 42px;
+  padding: 0 8px 0 12px;
+  background: color-mix(in srgb, var(--surface-panel, var(--panel)) 97%, var(--bg));
+}
+
+.zion-biography-heading {
+  align-items: center;
+}
+
+.zion-biography-heading strong {
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.zion-biography-heading span {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--biography-subtle);
+  font-size: 9px;
+}
+
+.zion-biography-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.zion-biography-header-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.zion-biography-icon-button {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  cursor: pointer;
+}
+
+.zion-biography-icon-button:hover,
+.zion-biography-icon-button.is-active {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+.zion-biography-icon-button.is-active {
+  color: var(--accent);
+}
+
+.zion-biography-icon-button small {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 13px;
+  height: 13px;
+  display: grid;
+  place-items: center;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--button-primary-fg, #fff);
+  font: 700 8px/1 var(--font-sans);
+}
+
+.zion-biography-controls {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 9px 10px;
+  border-bottom: 1px solid var(--biography-border);
+  background: color-mix(in srgb, var(--surface-panel, var(--panel)) 98%, var(--bg));
+}
+
+.zion-biography-search-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.zion-biography-search-row .zion-biography-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.zion-biography-search-row > .zion-biography-icon-button {
+  flex: 0 0 28px;
+}
+
+.zion-biography-section-tabs {
+  flex: 0 0 auto;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 5px 9px 0;
+  border-bottom: 1px solid var(--biography-border);
+  background: color-mix(in srgb, var(--surface-panel, var(--panel)) 98%, var(--bg));
+  scrollbar-width: none;
+}
+
+.zion-biography-section-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.zion-biography-section-tab {
+  flex: 0 0 auto;
+  height: 31px;
+  min-height: 31px;
+  padding: 0 9px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 48%, transparent);
+  font: 550 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.zion-biography-section-tab:hover {
+  color: var(--fg);
+}
+
+.zion-biography-section-tab.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.zion-biography-overview,
+.zion-biography-project-grid,
+.zion-biography-document-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.zion-biography-section-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 2px 1px;
+}
+
+.zion-biography-section-intro strong {
+  color: color-mix(in srgb, var(--fg) 82%, transparent);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.zion-biography-section-intro span {
+  color: var(--biography-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.zion-biography-overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.zion-biography-overview-metric {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 9px;
+  border: 1px solid var(--biography-border);
+  border-radius: 8px;
+  background: var(--biography-card-bg);
+}
+
+.zion-biography-overview-metric strong {
+  overflow: hidden;
+  color: var(--fg);
+  font: 650 15px/1.1 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-biography-overview-metric span,
+.zion-biography-project-card > span {
+  color: var(--biography-muted);
+  font-size: 9px;
+}
+
+.zion-biography-overview-section {
+  padding: 11px;
+  border: 1px solid var(--biography-border);
+  border-radius: 9px;
+  background: var(--biography-card-bg);
+}
+
+.zion-biography-overview-section h3 {
+  margin: 0 0 8px;
+  color: color-mix(in srgb, var(--fg) 68%, transparent);
+  font-size: 10px;
+}
+
+.zion-biography-overview-event {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 0;
+  border: 0;
+  border-top: 1px solid var(--biography-border);
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.zion-biography-overview-event:first-of-type {
+  border-top: 0;
+}
+
+.zion-biography-overview-event span {
+  color: var(--biography-muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.zion-biography-overview-event-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 1px;
+}
+
+.zion-biography-overview-event .zion-biography-overview-tag {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 5px;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--accent) 88%, var(--fg));
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  font-size: 9px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-biography-overview-event .zion-biography-overview-tag.is-project {
+  color: color-mix(in srgb, #f59e0b 86%, var(--fg));
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+}
+
+.zion-biography-overview-event .zion-biography-overview-tag.is-topic {
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.zion-biography-overview-event strong {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.zion-biography-overview-event:hover strong {
+  color: var(--accent);
+}
+
+.zion-biography-overview-empty {
+  display: block;
+  color: var(--biography-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.zion-biography-project-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px;
+  border: 1px solid var(--biography-border);
+  border-radius: 9px;
+  background: var(--biography-card-bg);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.zion-biography-project-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--biography-border));
+  background: var(--biography-card-hover);
+}
+
+.zion-biography-project-card strong {
+  font-size: 12px;
+}
+
+.zion-biography-project-card-tags {
+  color: color-mix(in srgb, var(--accent) 72%, var(--fg));
+  font-size: 9px;
+}
+
+.zion-biography-project-card p {
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--fg) 66%, transparent);
+  font-size: 10px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-biography-document-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--biography-border);
+  border-radius: 9px;
+  background: var(--biography-card-bg);
+}
+
+.zion-biography-document-card > strong {
+  font-size: 12px;
+}
+
+.zion-biography-document-card > span {
+  overflow: hidden;
+  color: var(--biography-muted);
+  font: 9px/1.3 var(--font-mono, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-biography-document-card > p {
+  margin: -2px 0 0;
+  color: color-mix(in srgb, var(--fg) 68%, transparent);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.zion-biography-document-card pre {
+  max-height: 150px;
+  margin: 1px 0 0;
+  overflow: auto;
+  padding: 9px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-raised, var(--panel)) 60%, var(--surface-panel, var(--panel)));
+  color: color-mix(in srgb, var(--fg) 74%, transparent);
+  font: 10px/1.55 var(--font-mono, monospace);
+  white-space: pre-wrap;
+}
+
+.zion-biography-document-open {
+  align-self: flex-start;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--biography-border));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font: 550 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.zion-biography-document-open:hover {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.zion-biography-document {
+  min-width: 0;
+  padding: 18px;
+}
+
+.zion-biography-document > strong {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.zion-biography-document pre {
+  max-width: 100%;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 11px/1.65 var(--font-mono, monospace);
+}
+
+.zion-biography-search {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 36%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 76%, var(--surface-panel, var(--panel)));
+  color: var(--biography-muted);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.zion-biography-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 68%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 11%, transparent);
+}
+
+.zion-biography-search .codicon {
+  flex: 0 0 auto;
+  font-size: 13px;
+}
+
+.zion-biography-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font: 11px/1.4 var(--font-sans);
+}
+
+.zion-biography-search input::placeholder {
+  color: color-mix(in srgb, var(--fg) 36%, transparent);
+}
+
+.zion-biography-range,
+.zion-biography-facet-chips {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.zion-biography-range {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.zion-biography-range::-webkit-scrollbar {
+  display: none;
+}
+
+.zion-biography-chip {
+  min-width: 0;
+  height: 23px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  font: 500 10px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.zion-biography-chip:hover {
+  border-color: color-mix(in srgb, var(--fg) 24%, transparent);
+  background: var(--biography-subtle);
+  color: color-mix(in srgb, var(--fg) 82%, transparent);
+}
+
+.zion-biography-chip.is-active {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  color: color-mix(in srgb, var(--accent) 82%, var(--fg));
+}
+
+.zion-biography-chip small {
+  color: color-mix(in srgb, currentColor 62%, transparent);
+  font: 600 9px/1 var(--font-mono, monospace);
+}
+
+.zion-biography-chip.is-range {
+  flex: 1 0 auto;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: var(--biography-subtle);
+}
+
+.zion-biography-chip.is-range.is-active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.zion-biography-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.zion-biography-facet {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.zion-biography-facet-header {
+  min-height: 17px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.zion-biography-facet-header strong {
+  color: color-mix(in srgb, var(--fg) 48%, transparent);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.zion-biography-facet-header button,
+.zion-biography-clear {
+  border: 0;
+  background: transparent;
+  color: var(--biography-muted);
+  font: 10px/1.2 var(--font-sans);
+  cursor: pointer;
+}
+
+.zion-biography-facet-header button:hover,
+.zion-biography-clear:hover {
+  color: var(--accent);
+}
+
+.zion-biography-clear {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 1px;
+}
+
+.zion-biography-body {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 0 9px 24px;
+  background:
+    linear-gradient(180deg, var(--biography-accent-wash), transparent 100px),
+    var(--biography-canvas);
+}
+
+.zion-biography-body:not(.is-timeline) {
+  overflow: auto;
+}
+
+.zion-biography-load-more {
+  width: 100%;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 4px 0 8px;
+  padding: 0 12px;
+  border: 1px solid var(--biography-border);
+  border-radius: 8px;
+  background: var(--biography-card-bg);
+  color: color-mix(in srgb, var(--fg) 61%, transparent);
+  font: 550 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.zion-biography-load-more:hover {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--biography-border));
+  background: var(--biography-card-hover);
+  color: var(--accent);
+}
+
+.zion-biography-load-more:disabled {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.zion-biography-load-more-error {
+  display: block;
+  margin: -2px 2px 8px;
+  color: var(--error, #d14);
+  font-size: 9px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.zion-biography-state {
+  gap: 7px;
+}
+
+.zion-biography-empty-action {
+  justify-self: center;
+  margin-top: 5px;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font: 11px var(--font-sans);
+  cursor: pointer;
+}
+
+.zion-biography-date {
+  margin: 0 0 5px;
+}
+
+.zion-biography-date-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 3px 6px;
+  background: color-mix(in srgb, var(--biography-canvas) 94%, transparent);
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+}
+
+.zion-biography-date-header h3 {
+  margin: 0;
+  color: color-mix(in srgb, var(--fg) 73%, transparent);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.zion-biography-date-header > span {
+  color: color-mix(in srgb, var(--fg) 35%, transparent);
+  font-size: 9px;
+}
+
+.zion-biography-session {
+  margin: 0 0 10px;
+  overflow: hidden;
+  border: 1px solid var(--biography-border);
+  border-radius: 10px;
+  background: var(--biography-card-bg);
+  box-shadow: var(--biography-session-shadow);
+}
+
+.zion-biography-session-header {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  padding: 8px 9px 7px;
+  border: 0;
+  border-bottom: 1px solid var(--biography-border);
+  background: var(--biography-session-bg);
+  color: inherit;
+  font: inherit;
+}
+
+.zion-biography-session-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+  font-size: 10px;
+  font-weight: 620;
+}
+
+.zion-biography-session-identity .codicon {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--accent) 68%, var(--fg));
+  font-size: 11px;
+}
+
+.zion-biography-session-identity code {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+  font: 9px/1.3 var(--font-mono, monospace);
+  font-weight: 450;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-biography-session-count {
+  align-self: center;
+  color: color-mix(in srgb, var(--fg) 38%, transparent);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.zion-biography-session-context {
+  min-width: 0;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: color-mix(in srgb, var(--fg) 39%, transparent);
+  font-size: 9px;
+}
+
+.zion-biography-session-context time {
+  flex: 0 0 auto;
+  color: inherit;
+  font: 9px/1.3 var(--font-mono, monospace);
+}
+
+.zion-biography-session-separator {
+  opacity: 0.55;
+}
+
+.zion-biography-session-labels {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-biography-session-events {
+  background: var(--biography-card-bg);
+}
+
+.zion-biography-event {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 10px 24px 10px 7px;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.zion-biography-event + .zion-biography-event {
+  border-top: 1px solid color-mix(in srgb, var(--fg) 7%, transparent);
+}
+
+.zion-biography-event:hover {
+  background: var(--biography-card-hover);
+}
+
+.zion-biography-event:focus-visible {
+  background: var(--biography-card-hover);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
+.zion-biography-event-rail {
+  position: relative;
+  min-height: 100%;
+  padding: 3px 7px 0 0;
+  border-right: 1px solid color-mix(in srgb, var(--border) 22%, transparent);
+  color: color-mix(in srgb, var(--fg) 38%, transparent);
+  font: 9px/1.3 var(--font-mono, monospace);
+  text-align: right;
+}
+
+.zion-biography-event-rail::after {
+  position: absolute;
+  top: 6px;
+  right: -4px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--biography-card-bg);
+  border-radius: 50%;
+  background: var(--accent);
+  content: "";
+}
+
+.zion-biography-event-rail.is-lesson::after {
+  background: #a78bfa;
+}
+
+.zion-biography-event-rail.is-milestone::after {
+  background: #22c55e;
+}
+
+.zion-biography-event-rail.is-outcome::after {
+  background: #38bdf8;
+}
+
+.zion-biography-event-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.zion-biography-event-meta,
+.zion-biography-detail-labels {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.zion-biography-event-meta .zion-biography-chip {
+  height: 18px;
+  padding: 0 6px;
+  border: 0;
+  font-size: 9px;
+}
+
+.zion-biography-kind,
+.zion-biography-project,
+.zion-biography-topic,
+.zion-biography-confirmed {
+  min-width: 0;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 999px;
+  font: 600 9px/1 var(--font-sans);
+  line-height: 1;
+}
+
+.zion-biography-kind {
+  color: color-mix(in srgb, var(--accent) 88%, var(--fg));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.zion-biography-project {
+  color: color-mix(in srgb, #f59e0b 86%, var(--fg));
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+}
+
+.zion-biography-topic {
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.zion-biography-event-summary {
+  display: block;
+  color: color-mix(in srgb, var(--fg) 87%, transparent);
+  font-size: 11px;
+  font-weight: 520;
+  line-height: 1.55;
+}
+
+.zion-biography-event-chevron {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  color: color-mix(in srgb, var(--fg) 34%, transparent);
+  font-size: 11px;
+  opacity: 0;
+  transform: translate(-2px, -50%);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.zion-biography-event:hover .zion-biography-event-chevron,
+.zion-biography-event:focus-visible .zion-biography-event-chevron {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+
+:root[data-theme="light"] .zion-biography-view {
+  --biography-border: color-mix(in srgb, var(--fg) 10%, transparent);
+  --biography-subtle: color-mix(in srgb, var(--fg) 5%, transparent);
+  --biography-canvas: color-mix(in srgb, var(--bg) 32%, var(--surface-panel, var(--panel)));
+  --biography-session-bg: color-mix(in srgb, var(--fg) 2.2%, var(--surface-panel, var(--panel)));
+  --biography-card-bg: var(--surface-panel, var(--panel));
+  --biography-card-hover: color-mix(in srgb, var(--accent) 3.5%, var(--surface-panel, var(--panel)));
+  --biography-session-shadow: 0 1px 2px color-mix(in srgb, var(--fg) 5%, transparent);
+  --biography-accent-wash: transparent;
+}
+
+:root[data-theme="light"] .zion-biography-session {
+  border-color: color-mix(in srgb, var(--fg) 9%, transparent);
+}
+
+@media (max-width: 360px) {
+  .zion-biography-section-tabs {
+    padding-inline: 5px;
+  }
+
+  .zion-biography-section-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-inline: 5px;
+  }
+
+  .zion-biography-overview-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Inspector event detail */
+
+.zion-biography-detail {
+  width: 100%;
+  max-width: 720px;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: clamp(18px, 4cqw, 28px) clamp(14px, 4cqw, 28px) 52px;
+  color: var(--fg);
+}
+
+.zion-biography-detail *,
+.zion-biography-detail *::before,
+.zion-biography-detail *::after {
+  box-sizing: border-box;
+}
+
+.zion-biography-detail-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.zion-biography-detail-eyebrow time {
+  color: color-mix(in srgb, var(--fg) 44%, transparent);
+  font-size: 10px;
+}
+
+.zion-biography-detail-title {
+  max-width: 640px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: color-mix(in srgb, var(--fg) 92%, transparent);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.zion-biography-detail-labels {
+  margin-top: 15px;
+}
+
+.zion-biography-detail-confidence {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 22px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 15%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  color: color-mix(in srgb, var(--fg) 67%, transparent);
+}
+
+.zion-biography-detail-confidence.is-confirmed {
+  border-color: color-mix(in srgb, #22c55e 18%, transparent);
+  background: color-mix(in srgb, #22c55e 6%, transparent);
+}
+
+.zion-biography-detail-confidence > .codicon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.zion-biography-detail-confidence.is-confirmed > .codicon {
+  color: #22c55e;
+}
+
+.zion-biography-detail-confidence > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.zion-biography-detail-confidence strong {
+  color: color-mix(in srgb, var(--fg) 84%, transparent);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.zion-biography-detail-confidence span {
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.zion-biography-detail-section {
+  margin-top: 24px;
+}
+
+.zion-biography-detail-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.zion-biography-detail-section-heading strong {
+  color: color-mix(in srgb, var(--fg) 69%, transparent);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.zion-biography-detail-section-heading span {
+  color: color-mix(in srgb, var(--fg) 39%, transparent);
+  font-size: 9px;
+}
+
+.zion-biography-detail-source {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--biography-border, var(--surface-border-soft));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-raised, var(--panel)) 54%, var(--surface-panel, var(--panel)));
+}
+
+.zion-biography-detail-source > .codicon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: color-mix(in srgb, var(--accent) 76%, var(--fg));
+  font-size: 15px;
+}
+
+.zion-biography-detail-source > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.zion-biography-detail-source strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: color-mix(in srgb, var(--fg) 86%, transparent);
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.45;
+}
+
+.zion-biography-detail-source span {
+  color: color-mix(in srgb, var(--fg) 46%, transparent);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.zion-biography-detail-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.zion-biography-detail-action {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--biography-border, var(--surface-border-soft));
+  border-radius: 7px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+  font: 550 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.zion-biography-detail-action:hover {
+  border-color: color-mix(in srgb, var(--fg) 20%, transparent);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg);
+}
+
+.zion-biography-detail-action.is-primary {
+  border-color: color-mix(in srgb, var(--accent) 74%, var(--border));
+  background: var(--accent);
+  color: var(--button-primary-fg, #fff);
+}
+
+.zion-biography-detail-action.is-primary:hover {
+  border-color: color-mix(in srgb, var(--accent) 82%, var(--fg));
+  background: color-mix(in srgb, var(--accent) 88%, var(--fg));
+  color: var(--button-primary-fg, #fff);
+}
+
+.zion-biography-detail-related {
+  overflow: hidden;
+  border: 1px solid var(--biography-border, var(--surface-border-soft));
+  border-radius: 9px;
+}
+
+.zion-biography-detail-related-item {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 10px 30px 10px 11px;
+  border: 0;
+  background: var(--surface-panel, var(--panel));
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.zion-biography-detail-related-item + .zion-biography-detail-related-item {
+  border-top: 1px solid var(--biography-border, var(--surface-border-soft));
+}
+
+.zion-biography-detail-related-item:hover {
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface-panel, var(--panel)));
+}
+
+.zion-biography-detail-related-item > span:first-child {
+  color: color-mix(in srgb, var(--fg) 41%, transparent);
+  font-size: 9px;
+}
+
+.zion-biography-detail-related-item strong {
+  color: color-mix(in srgb, var(--fg) 79%, transparent);
+  font-size: 10px;
+  font-weight: 540;
+  line-height: 1.45;
+}
+
+.zion-biography-detail-related-item > .codicon {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: color-mix(in srgb, var(--fg) 32%, transparent);
+  font-size: 11px;
+  transform: translateY(-50%);
+}
+
+.zion-biography-detail-technical {
+  margin-top: 24px;
+  border-top: 1px solid var(--biography-border, var(--surface-border-soft));
+}
+
+.zion-biography-detail-technical > summary {
+  padding: 11px 1px;
+  color: color-mix(in srgb, var(--fg) 46%, transparent);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.zion-biography-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--biography-border, var(--surface-border-soft));
+  border-radius: 9px;
+  background: var(--biography-border, var(--surface-border-soft));
+}
+
+.zion-biography-detail-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 12px;
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-biography-detail-field > span:first-child {
+  color: color-mix(in srgb, var(--fg) 42%, transparent);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.zion-biography-detail-field > span:last-child,
+.zion-biography-detail-field code {
+  overflow-wrap: anywhere;
+  color: color-mix(in srgb, var(--fg) 78%, transparent);
+  font-size: 11px;
+}
+
+.zion-biography-detail-field code {
+  font-family: var(--font-mono, monospace);
+}
+
+.zion-biography-detail-technical pre {
+  margin: 10px 0 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--biography-border, var(--surface-border-soft));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-raised, var(--panel)) 54%, var(--surface-panel, var(--panel)));
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+  font: 10px/1.55 var(--font-mono, monospace);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@container (max-width: 420px) {
+  .zion-biography-detail {
+    padding: 16px 14px 40px;
+  }
+
+  .zion-biography-detail-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .zion-biography-detail-confidence,
+  .zion-biography-detail-source {
+    padding: 9px;
+  }
+
+  .zion-biography-detail-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .zion-biography-detail-action {
+    width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .zion-biography-overview-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .zion-biography-controls {
+    padding-inline: 7px;
+  }
+
+  .zion-biography-body {
+    padding-inline: 7px;
+  }
+
+  .zion-biography-event {
+    grid-template-columns: 37px minmax(0, 1fr);
+    padding-right: 22px;
+  }
+
+  .zion-biography-detail {
+    padding: 20px 16px 36px;
+  }
+
+  .zion-biography-detail-meta {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,14 +1,34 @@
 {
   "name": "dev.roles",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.roles",
+  "description": "Configure message role prefixes and highlight content by role.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.roles",
-    "name": "dev.roles",
+    "name": "Roles",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "角色",
+        "en-US": "Roles"
+      },
+      "description": {
+        "zh-CN": "配置消息角色前缀并高亮不同角色的内容块。",
+        "en-US": "Configure message role prefixes and highlight content by role."
+      },
+      "icon": "person",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "配置消息角色前缀并高亮不同角色的内容块。"
+        ],
+        "en-US": [
+          "Configure message role prefixes and highlight content by role."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {

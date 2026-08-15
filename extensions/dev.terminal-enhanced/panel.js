@@ -350,9 +350,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   cursor: not-allowed;
 }
 
-.zte-tab-nav-btn svg {
-  width: 12px;
-  height: 12px;
+.zte-tab-nav-btn .codicon {
+  font-size: 12px;
+  line-height: 1;
 }
 
 /* 标签页下拉菜单 */
@@ -478,15 +478,15 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   white-space: nowrap;
   transition: all 120ms ease;
 }
-.zte-icon-btn svg {
-  width: 14px;
-  height: 14px;
+.zte-icon-btn .codicon {
+  font-size: 14px;
+  line-height: 1;
   opacity: 0.75;
 }
 .zte-icon-btn:hover {
   background: var(--border);
 }
-.zte-icon-btn:hover svg {
+.zte-icon-btn:hover .codicon {
   opacity: 1;
 }
 .zte-icon-btn:active { transform: translateY(1px); }
@@ -580,6 +580,129 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   color: var(--fg);
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* ========================================
+   Visual System V2 Sample - Terminal Enhanced
+   ======================================== */
+
+.zte-panel {
+  background: var(--surface-panel, var(--panel));
+  color: var(--fg);
+}
+
+.zte-topbar {
+  min-height: 36px;
+  background: var(--surface-panel, var(--panel));
+  border-bottom: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+}
+
+.zte-tab {
+  min-height: 26px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.zte-tab:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+.zte-tab.is-active {
+  background: var(--surface-panel, var(--panel));
+  border-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  color: var(--fg);
+  box-shadow: var(--elevation-soft, 0 1px 2px rgba(24,31,44,0.04));
+}
+
+.zte-tab.is-active::before {
+  display: none;
+}
+
+.zte-topbar.is-bottom-header {
+  background: transparent;
+  border-bottom: 0;
+}
+
+.zte-topbar.is-bottom-header .zte-tab {
+  height: 24px;
+  min-height: 24px;
+  border-radius: 8px;
+  color: var(--icon-muted, color-mix(in srgb, var(--fg) 62%, transparent));
+}
+
+.zte-topbar.is-bottom-header .zte-tab:hover {
+  background: var(--surface-raised, var(--hover-bg));
+  color: var(--icon-hover, var(--fg));
+}
+
+.zte-topbar.is-bottom-header .zte-tab.is-active {
+  background: var(--surface-panel, var(--panel));
+  color: var(--fg);
+  box-shadow: var(--elevation-soft, 0 1px 2px rgba(24,31,44,0.04));
+}
+
+:root[data-theme="light"] .zte-topbar.is-bottom-header .zte-tab.is-active {
+  background: #fff;
+}
+
+.zte-icon-btn,
+.zte-tab-nav-btn,
+.zte-find-toggle,
+.zte-tab-activate {
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--fg) 64%, transparent);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.zte-icon-btn:hover,
+.zte-tab-nav-btn:hover,
+.zte-find-toggle:hover,
+.zte-tab-activate:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+.zte-tabs-menu,
+.zte-menu,
+.zte-suggest-box {
+  border: 1px solid var(--surface-border, color-mix(in srgb, var(--border) 46%, transparent));
+  border-radius: 10px;
+  background: var(--surface-overlay, var(--panel));
+  box-shadow: var(--elevation-overlay, 0 18px 56px rgba(0,0,0,0.18));
+}
+
+.zte-tabs-menu-item,
+.zte-menu-item,
+.zte-palette-row {
+  border-radius: 8px;
+}
+
+.zte-tabs-menu-item:hover,
+.zte-menu-item:hover,
+.zte-palette-row:hover {
+  background: var(--hover-bg);
+}
+
+.zte-tabs-menu-item.is-active {
+  background: var(--active-bg);
+  color: var(--accent);
+}
+
+.zte-toast,
+.zte-link-tooltip {
+  border-color: var(--surface-border, color-mix(in srgb, var(--border) 46%, transparent));
+  border-radius: 10px;
+  background: var(--surface-overlay, var(--panel));
+  box-shadow: var(--elevation-panel, 0 8px 28px rgba(0,0,0,0.10));
 }
 `;
     document.head.appendChild(style);
@@ -1039,16 +1162,24 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const actions = document.createElement("div");
   actions.className = "zte-actions";
 
-  // SVG 图标定义
+  const iconHtml = (name) => {
+    try {
+      const html = window.zionIcons?.htmlFromCodicon?.(name);
+      if (html) return html;
+    } catch {}
+    const raw = String(name || "").replace(/^codicon-/, "");
+    return `<span class="codicon codicon-${raw}" aria-hidden="true"></span>`;
+  };
+
   const ICONS = {
-    plus: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10"/></svg>`,
-    trash: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1M6 7v6M10 7v6"/></svg>`,
-    dockBottom: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 2.5h11v11h-11z"/><path d="M2.5 10.5h11"/></svg>`,
-    dockRight: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 2.5h11v11h-11z"/><path d="M10.5 2.5v11"/></svg>`,
-    x: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>`,
-    chevronLeft: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 3L5 8l5 5"/></svg>`,
-    chevronRight: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3l5 5-5 5"/></svg>`,
-    chevronDown: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg>`
+    plus: iconHtml("add"),
+    trash: iconHtml("trash"),
+    dockBottom: iconHtml("layout-panel"),
+    dockRight: iconHtml("layout-sidebar-right"),
+    x: iconHtml("close"),
+    chevronLeft: iconHtml("chevron-left"),
+    chevronRight: iconHtml("chevron-right"),
+    chevronDown: iconHtml("chevron-down")
   };
 
   // 创建标签页导航按钮（左/右滚动）

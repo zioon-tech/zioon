@@ -150,7 +150,17 @@ export class PluginManager extends EventEmitter {
           if (!dirName) continue;
 
           const pluginInfo = await this.loader.loadPlugin(pluginPath);
-          this.plugins.set(pluginInfo.id, pluginInfo);
+          const existing = this.plugins.get(pluginInfo.id);
+          const enabledPreference = this.getEnabledPreference(pluginInfo.id);
+          this.plugins.set(pluginInfo.id, {
+            ...existing,
+            ...pluginInfo,
+            enabled: enabledPreference ?? existing?.enabled ?? false,
+            state: existing?.state ?? pluginInfo.state,
+            error: existing?.error,
+            createdAt: existing?.createdAt ?? pluginInfo.createdAt,
+            updatedAt: Date.now()
+          });
           this.log('info', `发现插件: ${pluginInfo.id}`);
         } catch (error) {
           this.log('warn', `加载插件失败: ${manifestPath}`, error);
@@ -927,12 +937,13 @@ export class PluginManager extends EventEmitter {
             createdAt: rec.createdAt ?? Date.now(),
             updatedAt: Date.now(),
             isLegacy: !!rec.isLegacy,
-            enabled: rec.enabled === true
+            enabled: rec.enabled === true,
+            skillContents: rec.skillContents && typeof rec.skillContents === 'object' ? rec.skillContents : undefined
           };
           this.plugins.set(info.id, info);
 
-          // 合并启用状态（以已保存集合为准，若不存在则使用记录值）
-          const enabled = this.enabledPlugins.has(info.id) || info.enabled === true;
+          // 显式保存的偏好优先，避免旧安装记录把已禁用插件重新启用。
+          const enabled = this.getEnabledPreference(info.id) ?? info.enabled === true;
           info.enabled = enabled;
           if (enabled) {
             this.enabledPlugins.add(info.id);
@@ -969,7 +980,8 @@ export class PluginManager extends EventEmitter {
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
         isLegacy: p.isLegacy,
-        enabled: !!p.enabled
+        enabled: !!p.enabled,
+        skillContents: p.skillContents
       }));
       localStorage.setItem('zion.installedPlugins', JSON.stringify(arr));
     } catch (e) {
@@ -989,6 +1001,15 @@ export class PluginManager extends EventEmitter {
    */
   get(pluginId: string): PluginInfo | null {
     return this.plugins.get(pluginId) || null;
+  }
+
+  /**
+   * 获取用户保存的启用偏好。未选择过时返回 undefined。
+   */
+  getEnabledPreference(pluginId: string): boolean | undefined {
+    if (this.disabledPlugins.has(pluginId)) return false;
+    if (this.enabledPlugins.has(pluginId)) return true;
+    return undefined;
   }
 
   /**

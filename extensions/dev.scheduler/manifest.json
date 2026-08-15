@@ -1,0 +1,72 @@
+{
+  "name": "dev.scheduler",
+  "version": "0.1.0",
+  "description": "Create local scheduled agent tasks and inspect run history.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.scheduler",
+    "name": "Scheduled Tasks",
+    "version": "0.1.0",
+    "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "定时任务",
+        "en-US": "Scheduled Tasks"
+      },
+      "description": {
+        "zh-CN": "创建本地定时 Agent 任务并查看运行历史。",
+        "en-US": "Create local scheduled agent tasks and inspect run history."
+      },
+      "icon": "calendar",
+      "category": "productivity",
+      "features": {
+        "zh-CN": [
+          "创建本地定时 Agent 任务并查看运行历史。"
+        ],
+        "en-US": [
+          "Create local scheduled agent tasks and inspect run history."
+        ]
+      },
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "打开定时任务",
+            "en-US": "Open Scheduled Tasks"
+          },
+          "command": "scheduler.openPanel",
+          "icon": "calendar"
+        }
+      ]
+    },
+    "contributes": {
+      "commands": [
+        {
+          "id": "scheduler.openPanel",
+          "title": "Open Scheduled Tasks"
+        },
+        {
+          "id": "scheduler.create",
+          "title": "Create Scheduled Task"
+        },
+        {
+          "id": "scheduler.runNow",
+          "title": "Run Scheduled Task Now"
+        },
+        {
+          "id": "scheduler.cancelRun",
+          "title": "Cancel Scheduled Task Run"
+        }
+      ],
+      "styles": [
+        "./styles.css"
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

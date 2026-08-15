@@ -15,7 +15,7 @@
   min-height: 22px;
   padding: 2px 7px 2px 5px;
   box-sizing: border-box;
-  border-radius: 5px;
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
   background: color-mix(in srgb, var(--panel) 72%, transparent);
   color: var(--fg);
@@ -163,37 +163,46 @@
 .zion-tool-call-inline .zion-tool-call-inline-toggle:hover {
   background: var(--border);
 }
-.zion-tool-call-inline .zion-tool-call-inline-toggle svg {
-  width: 12px;
-  height: 12px;
+.zion-tool-call-inline .zion-tool-call-inline-toggle .codicon {
+  font-size: 12px;
+  line-height: 1;
   display: block;
   pointer-events: none;
 }
 .zion-tool-open-file-button {
   flex: 0 0 auto;
-  width: 17px;
-  height: 17px;
-  min-width: 17px;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 4px;
+  border-radius: 5px;
   padding: 0;
   background: transparent;
-  color: var(--muted-fg, rgba(127,127,127,0.82));
+  color: var(--fg-muted, var(--muted-fg, rgba(127,127,127,0.82)));
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
-  opacity: 0.82;
+  opacity: 0.72;
 }
+
+.zion-tool-open-file-button .zion-icon,
+.zion-tool-open-file-button .zion-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.zion-tool-open-file-button .codicon {
+  font-size: 12px;
+  line-height: 1;
+}
+
 .zion-tool-open-file-button:hover {
-  background: rgba(255,255,255,0.06);
+  background: var(--hover-bg);
   color: var(--fg);
   opacity: 1;
-}
-:root[data-theme="light"] .zion-tool-open-file-button:hover {
-  background: rgba(0,0,0,0.05);
 }
 
 /* 展开卡片：普通工具和文件变更工具保持同一套卡片节奏 */
@@ -204,14 +213,14 @@
   width: min(100%, 760px);
   max-width: 100%;
   border: 1px solid color-mix(in srgb, var(--border) 56%, transparent);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--panel) 92%, var(--bg));
   color: var(--fg);
   box-shadow: none;
   max-height: none;
   overflow: visible;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
 }
 .zion-tool-call-card:not(.is-artifact) > div:not(.zion-tool-call-card-header) {
   padding: 2px 10px 10px;
@@ -247,7 +256,7 @@
 }
 .zion-tool-call-action {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--fg);
   cursor: pointer;
@@ -257,10 +266,7 @@
   white-space: nowrap;
 }
 .zion-tool-call-action:hover {
-  background: rgba(255,255,255,0.06);
-}
-:root[data-theme="light"] .zion-tool-call-action:hover {
-  background: rgba(0,0,0,0.04);
+  background: var(--hover-bg);
 }
 .zion-tool-call-action--changes {
   color: var(--accent);
@@ -293,12 +299,8 @@
 }
 .zion-tool-card-actions-trigger:hover,
 .zion-tool-card-actions-menu[open] .zion-tool-card-actions-trigger {
-  background: rgba(255,255,255,0.06);
+  background: var(--hover-bg);
   color: var(--fg);
-}
-:root[data-theme="light"] .zion-tool-card-actions-trigger:hover,
-:root[data-theme="light"] .zion-tool-card-actions-menu[open] .zion-tool-card-actions-trigger {
-  background: rgba(0,0,0,0.05);
 }
 .zion-tool-card-actions-popover {
   position: absolute;
@@ -308,9 +310,9 @@
   min-width: 126px;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel);
-  box-shadow: 0 10px 28px rgba(0,0,0,0.24);
+  box-shadow: var(--elevation-2);
 }
 .zion-tool-card-menu-item {
   width: 100%;
@@ -328,10 +330,7 @@
   white-space: nowrap;
 }
 .zion-tool-card-menu-item:hover {
-  background: rgba(255,255,255,0.06);
-}
-:root[data-theme="light"] .zion-tool-card-menu-item:hover {
-  background: rgba(0,0,0,0.05);
+  background: var(--hover-bg);
 }
 .zion-tool-card-menu-item.is-primary {
   color: #3fb950;
@@ -459,11 +458,8 @@
   white-space: nowrap;
 }
 .zion-tool-artifact-preview-action:hover {
-  background: rgba(255,255,255,0.06);
+  background: var(--hover-bg);
   color: var(--fg);
-}
-:root[data-theme="light"] .zion-tool-artifact-preview-action:hover {
-  background: rgba(0,0,0,0.05);
 }
 .zion-tool-artifact-preview-action.is-primary {
   color: #3fb950;
@@ -532,7 +528,7 @@
   grid-template-columns: var(--tool-read-gutter, 46px) minmax(0, 1fr);
   min-width: 100%;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.5;
 }
 .zion-tool-read-gutter,
@@ -667,7 +663,7 @@
   grid-template-columns: var(--tool-old-gutter, 22px) var(--tool-new-gutter, 22px) 14px minmax(0, 1fr);
   min-width: max-content;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.48;
 }
 .zion-tool-artifact-diff-row.is-add {
@@ -797,16 +793,12 @@
 }
 .zion-changes-icon-button:hover,
 .zion-changes-action:hover {
-  background: rgba(255,255,255,0.06);
+  background: var(--hover-bg);
 }
 .zion-changes-icon-button.is-active {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
   color: var(--fg);
-}
-:root[data-theme="light"] .zion-changes-icon-button:hover,
-:root[data-theme="light"] .zion-changes-action:hover {
-  background: rgba(0,0,0,0.04);
 }
 .zion-changes-scroll {
   flex: 1 1 auto;
@@ -873,10 +865,7 @@
   background: color-mix(in srgb, var(--bg) 72%, var(--panel));
 }
 .zion-changes-section-header:hover {
-  background: rgba(255,255,255,0.045);
-}
-:root[data-theme="light"] .zion-changes-section-header:hover {
-  background: rgba(0,0,0,0.035);
+  background: var(--hover-bg);
 }
 .zion-changes-section-left,
 .zion-changes-section-right {
@@ -1017,10 +1006,7 @@
   margin: 0 0 6px;
 }
 .zion-changes-file:hover {
-  background: rgba(255,255,255,0.045);
-}
-:root[data-theme="light"] .zion-changes-file:hover {
-  background: rgba(0,0,0,0.035);
+  background: var(--hover-bg);
 }
 .zion-changes-file.is-active {
   border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
@@ -1149,9 +1135,9 @@
   min-width: 116px;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel);
-  box-shadow: 0 10px 28px rgba(0,0,0,0.24);
+  box-shadow: var(--elevation-2);
 }
 .zion-changes-menu-item {
   width: 100%;
@@ -1168,10 +1154,7 @@
   padding: 0 7px;
 }
 .zion-changes-menu-item:hover {
-  background: rgba(255,255,255,0.06);
-}
-:root[data-theme="light"] .zion-changes-menu-item:hover {
-  background: rgba(0,0,0,0.05);
+  background: var(--hover-bg);
 }
 .zion-changes-menu-item.is-primary {
   color: #3fb950;
@@ -1306,13 +1289,7 @@
 .zion-context-tree-row.is-active .zion-context-tree-main,
 .zion-context-tree-main:focus-visible,
 .zion-context-icon-button:hover {
-  background: color-mix(in srgb, var(--fg) 7%, transparent);
-}
-:root[data-theme="light"] .zion-context-tree-main:hover,
-:root[data-theme="light"] .zion-context-tree-row.is-active .zion-context-tree-main,
-:root[data-theme="light"] .zion-context-tree-main:focus-visible,
-:root[data-theme="light"] .zion-context-icon-button:hover {
-  background: rgba(0,0,0,0.045);
+  background: var(--hover-bg);
 }
 .zion-context-tree-row.is-active .zion-context-tree-main {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -1635,15 +1612,12 @@
   pointer-events: auto;
 }
 .zion-context-icon-button:hover {
-  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  background: var(--hover-bg);
   color: var(--fg);
   opacity: 1;
 }
 :root[data-theme="light"] .zion-context-icon-button {
   background: transparent;
-}
-:root[data-theme="light"] .zion-context-icon-button:hover {
-  background: rgba(0,0,0,0.045);
 }
 
 /* ===== Tool Files Panel (dev.tools) ===== */
@@ -1881,8 +1855,18 @@
   min-height: 0;
   overflow: hidden;
   display: flex;
+  flex-direction: column;
   background: var(--files-preview-bg);
   padding: 0;
+}
+.zion-files-preview-truncated {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  color: color-mix(in srgb, var(--warning, #d97706) 78%, var(--fg));
+  border-bottom: 1px solid color-mix(in srgb, var(--warning, #d97706) 22%, var(--border));
+  background: color-mix(in srgb, var(--warning, #d97706) 8%, var(--files-preview-bg));
+  font-size: 11px;
+  line-height: 1.45;
 }
 .zion-files-preview-code-host {
   flex: 1 1 auto;
@@ -2051,6 +2035,24 @@
   object-fit: contain;
   box-shadow: 0 8px 28px rgba(0,0,0,0.22);
 }
+.zion-files-preview-pdf-stage {
+  display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: #525659;
+}
+.zion-files-preview-pdf-frame {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: #525659;
+}
 .zion-files-preview-empty {
   flex: 1 1 auto;
   display: flex;
@@ -2098,7 +2100,7 @@
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--files-muted-fg);
   padding: 0 7px;
-  font-size: 10.5px;
+  font-size: 11px;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -2295,9 +2297,9 @@
   min-width: 180px;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--radius-md);
   background: var(--panel);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.36);
+  box-shadow: var(--elevation-2);
 }
 .zion-files-context-popover {
   position: fixed;
@@ -2365,6 +2367,18 @@
   padding: 0 8px 0 calc(35px + var(--depth, 0) * 12px);
   color: var(--files-muted-fg);
   font-size: 11px;
+}
+.zion-files-load-more {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+.zion-files-load-more:disabled {
+  color: var(--files-muted-fg);
+  cursor: default;
 }
 .zion-files-empty {
   min-height: 180px;
@@ -2554,4 +2568,713 @@
   color: var(--muted-fg, rgba(127,127,127,0.9));
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* ========================================
+   Visual System V2 Sample - Context Panel
+   CSS-only pass aligned with docs/architecture/UI-VISUAL-SYSTEM-V2.md.
+   ======================================== */
+
+.zion-context-panel,
+.zion-context-workspace {
+  background: var(--surface-panel, var(--panel));
+  color: var(--fg);
+}
+
+.zion-context-scroll {
+  background: var(--surface-panel, var(--panel));
+  padding-top: 0;
+}
+
+.zion-context-tree {
+  padding: 0 0 24px;
+}
+
+.zion-files-panel,
+.zion-files-workspace,
+.zion-files-explorer,
+.zion-files-scroll,
+.zion-files-preview-pane,
+.zion-files-preview-content {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-files-source-bar {
+  border-bottom-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-files-source-select {
+  border-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  background: var(--surface-panel, var(--panel));
+  color: color-mix(in srgb, var(--fg) 82%, transparent);
+}
+
+.zion-files-source-select:hover,
+:root[data-theme="light"] .zion-files-source-select:hover,
+.zion-files-source-select:focus {
+  border-color: var(--surface-border, color-mix(in srgb, var(--border) 46%, transparent));
+  background: var(--surface-panel, var(--panel));
+  color: var(--fg);
+}
+
+.zion-context-tree-row {
+  min-height: 22px;
+  gap: 0;
+}
+
+.zion-context-tree-row.is-group {
+  margin-top: 2px;
+  color: color-mix(in srgb, var(--fg) 86%, transparent);
+  font-weight: 600;
+}
+
+.zion-context-tree > .zion-context-tree-row.is-group:first-child {
+  margin-top: 0;
+}
+
+.zion-context-tree-main {
+  height: 22px;
+  min-height: 22px;
+  gap: 5px;
+  border-radius: 0;
+  padding: 0 4px 0 calc(8px + var(--depth, 0) * 12px);
+  color: inherit;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.zion-context-tree-row.is-usage .zion-context-tree-main {
+  height: 22px;
+}
+
+.zion-context-tree-main:hover,
+.zion-context-icon-button:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+.zion-context-tree-row.is-active .zion-context-tree-main {
+  background: var(--active-bg);
+  color: var(--fg);
+}
+
+.zion-context-tree-chevron {
+  flex-basis: 13px;
+  width: 13px;
+  color: color-mix(in srgb, var(--fg) 48%, transparent);
+  font-size: 13px;
+  opacity: 0.78;
+}
+
+.zion-context-tree-icon {
+  flex-basis: 14px;
+  width: 14px;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  font-size: 14px;
+  opacity: 0.82;
+}
+
+.zion-context-tree-row.is-folder .zion-context-tree-icon,
+.zion-context-tree-row.is-usage .zion-context-tree-icon {
+  color: color-mix(in srgb, var(--accent) 70%, var(--fg));
+}
+
+.zion-context-tree-row.is-file .zion-context-tree-icon.codicon-markdown,
+.zion-context-tree-row.is-file .zion-context-tree-icon.codicon-json,
+.zion-context-tree-row.is-file .zion-context-tree-icon.codicon-settings,
+.zion-context-tree-row.is-file .zion-context-tree-icon.codicon-file-code,
+.zion-context-tree-row.is-file .zion-context-tree-icon.codicon-file-media {
+  color: color-mix(in srgb, var(--fg) 64%, var(--accent));
+}
+
+.zion-context-tree-label {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--fg) 88%, transparent);
+}
+
+.zion-context-tree-row.is-group .zion-context-tree-label {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.zion-context-tree-meta,
+.zion-context-comment-meta,
+.zion-files-context-meta-label {
+  color: color-mix(in srgb, var(--fg) 52%, transparent);
+}
+
+.zion-context-icon-button,
+.zion-files-actions-trigger,
+.zion-tool-open-file-button {
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.zion-context-icon-button {
+  right: 4px;
+  width: 18px;
+  height: 22px;
+}
+
+.zion-context-tree-row > .zion-context-icon-button:nth-last-child(2) {
+  right: 24px;
+}
+
+.zion-context-icon-button:hover,
+.zion-files-actions-trigger:hover,
+.zion-files-actions-menu[open] .zion-files-actions-trigger,
+.zion-tool-open-file-button:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+  opacity: 1;
+}
+
+.zion-files-actions-popover,
+.zion-files-context-popover {
+  border: 1px solid var(--surface-border, color-mix(in srgb, var(--border) 46%, transparent));
+  border-radius: 10px;
+  background: var(--surface-overlay, var(--panel));
+  box-shadow: var(--elevation-overlay, var(--elevation-2));
+}
+
+.zion-files-menu-item {
+  height: 28px;
+  border-radius: 7px;
+  color: color-mix(in srgb, var(--fg) 88%, transparent);
+}
+
+.zion-files-menu-item:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+/* ========================================
+   Visual System V2 Sample - Tool Call Widgets
+   ======================================== */
+
+.zion-tool-call-inline {
+  min-height: 24px;
+  padding: 2px 8px 2px 5px;
+  border-radius: 8px;
+  border-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 32%, transparent));
+  background: var(--surface-raised, color-mix(in srgb, var(--panel) 90%, var(--bg)));
+}
+
+.zion-tool-call-inline:hover {
+  border-color: var(--surface-border, color-mix(in srgb, var(--border) 46%, transparent));
+  background: color-mix(in srgb, var(--panel) 96%, var(--bg));
+}
+
+.zion-tool-call-inline .zion-tool-call-inline-toggle {
+  border-radius: 7px;
+}
+
+.zion-tool-call-inline .zion-tool-call-inline-toggle:hover {
+  background: var(--hover-bg);
+}
+
+.zion-tool-call-card {
+  border-radius: 10px;
+  border-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 32%, transparent));
+  background: var(--surface-raised, color-mix(in srgb, var(--panel) 94%, var(--bg)));
+}
+
+.zion-tool-call-card-header {
+  border-bottom-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 32%, transparent));
+}
+
+/* Panel conversation content alignment */
+.zion-editor-slot > .cm-editor .zion-tool-call-inline {
+  min-height: 22px;
+  margin: 1px 0;
+  padding: 1px 7px 1px 4px;
+  border: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-panel-soft, var(--panel)) 58%, transparent);
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+  font: 11px/1.35 var(--font-sans);
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-inline:hover {
+  border-color: var(--surface-border, color-mix(in srgb, var(--border) 42%, transparent));
+  background: var(--surface-raised, var(--hover-bg));
+  color: var(--fg);
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--fg) 54%, transparent);
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle .codicon {
+  font-size: 11px;
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-inline .zion-tool-call-inline-text,
+.zion-editor-slot > .cm-editor .zion-tool-call-inline .zion-tool-call-inline-summary {
+  font-size: 11px;
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-inline .zion-tool-call-inline-stats,
+.zion-editor-slot > .cm-editor .zion-tool-call-action-status,
+.zion-editor-slot > .cm-editor .zion-tool-call-inline-env {
+  font-size: 9px;
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-card,
+.zion-editor-slot > .cm-editor .zion-tool-artifact-preview,
+.zion-editor-slot > .cm-editor .zion-tool-terminal,
+.zion-editor-slot > .cm-editor .zion-tool-tree {
+  width: min(100%, 760px);
+  margin: 6px 0 12px;
+  border: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 30%, transparent));
+  border-radius: 10px;
+  background: var(--surface-panel, var(--panel));
+  box-shadow: none;
+  color: color-mix(in srgb, var(--fg) 84%, transparent);
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-card:hover,
+.zion-editor-slot > .cm-editor .zion-tool-artifact-preview:hover,
+.zion-editor-slot > .cm-editor .zion-tool-terminal:hover,
+.zion-editor-slot > .cm-editor .zion-tool-tree:hover {
+  border-color: var(--surface-border, color-mix(in srgb, var(--border) 46%, transparent));
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-card-header,
+.zion-editor-slot > .cm-editor .zion-tool-artifact-preview-header,
+.zion-editor-slot > .cm-editor .zion-tool-terminal-header,
+.zion-editor-slot > .cm-editor .zion-tool-tree-header {
+  min-height: 30px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 30%, transparent));
+  background: color-mix(in srgb, var(--surface-panel-soft, var(--panel)) 60%, transparent);
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-artifact-preview-name,
+.zion-editor-slot > .cm-editor .zion-tool-terminal-title,
+.zion-editor-slot > .cm-editor .zion-tool-tree-title {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-artifact-preview-dir,
+.zion-editor-slot > .cm-editor .zion-tool-artifact-preview-scope,
+.zion-editor-slot > .cm-editor .zion-tool-terminal-meta,
+.zion-editor-slot > .cm-editor .zion-tool-tree-meta {
+  font-size: 9px;
+  color: color-mix(in srgb, var(--fg) 48%, transparent);
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-terminal-body,
+.zion-editor-slot > .cm-editor .zion-tool-tree-body,
+.zion-editor-slot > .cm-editor .zion-tool-artifact-diff {
+  background: color-mix(in srgb, var(--surface-panel-soft, var(--panel)) 60%, transparent);
+  font-size: 11px;
+  line-height: 1.62;
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-action,
+.zion-editor-slot > .cm-editor .zion-tool-artifact-preview-action,
+.zion-editor-slot > .cm-editor .zion-tool-card-actions-trigger {
+  border-radius: 6px;
+  border-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+}
+
+.zion-editor-slot > .cm-editor .zion-tool-call-action:hover,
+.zion-editor-slot > .cm-editor .zion-tool-artifact-preview-action:hover,
+.zion-editor-slot > .cm-editor .zion-tool-card-actions-trigger:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+/* Final panel conversation widget pass.
+   Loaded after src/styles.css, so keep real widget styling here. */
+.zion-panel .cm-editor .zion-tool-call-inline {
+  min-height: 22px !important;
+  margin: 2px 0 !important;
+  padding: 1px 7px 1px 4px !important;
+  gap: 5px !important;
+  border: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent)) !important;
+  border-radius: 7px !important;
+  background: color-mix(in srgb, var(--surface-panel-soft, var(--panel)) 58%, transparent) !important;
+  color: color-mix(in srgb, var(--fg) 72%, transparent) !important;
+  font: 11px/1.35 var(--font-sans) !important;
+  box-shadow: none !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline:hover {
+  border-color: var(--surface-border, color-mix(in srgb, var(--border) 42%, transparent)) !important;
+  background: var(--surface-raised, var(--hover-bg)) !important;
+  color: var(--fg) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle {
+  width: 16px !important;
+  height: 16px !important;
+  border-radius: 5px !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle .codicon {
+  font-size: 11px !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-text,
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-summary {
+  font-size: 11px !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-stats,
+.zion-panel .cm-editor .zion-tool-call-action-status,
+.zion-panel .cm-editor .zion-tool-call-inline-env {
+  font-size: 9px !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card,
+.zion-panel .cm-editor .zion-tool-artifact-preview,
+.zion-panel .cm-editor .zion-tool-terminal,
+.zion-panel .cm-editor .zion-tool-tree {
+  width: min(100%, 760px) !important;
+  margin: 8px 0 14px !important;
+  border: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 30%, transparent)) !important;
+  border-radius: 10px !important;
+  background: var(--surface-panel, var(--panel)) !important;
+  color: color-mix(in srgb, var(--fg) 84%, transparent) !important;
+  box-shadow: none !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card-header,
+.zion-panel .cm-editor .zion-tool-artifact-preview-header,
+.zion-panel .cm-editor .zion-tool-terminal-header,
+.zion-panel .cm-editor .zion-tool-tree-header {
+  min-height: 30px !important;
+  padding: 5px 8px !important;
+  border-bottom: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 30%, transparent)) !important;
+  background: color-mix(in srgb, var(--surface-panel-soft, var(--panel)) 60%, transparent) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-terminal-body,
+.zion-panel .cm-editor .zion-tool-tree-body,
+.zion-panel .cm-editor .zion-tool-artifact-diff {
+  background: color-mix(in srgb, var(--surface-panel-soft, var(--panel)) 60%, transparent) !important;
+  font-size: 11px !important;
+  line-height: 1.62 !important;
+}
+
+/* Demo-matched tool widgets inside conversation panels. */
+.zion-panel .cm-editor .zion-tool-call-inline {
+  min-height: 21px !important;
+  margin: 0 !important;
+  padding: 1px 7px 1px 5px !important;
+  gap: 4px !important;
+  border: 1px solid var(--border-faint, var(--surface-border-soft)) !important;
+  border-radius: var(--radius-sm, 8px) !important;
+  background: transparent !important;
+  color: var(--fg-muted) !important;
+  font: 11px/1.35 var(--font-sans) !important;
+  vertical-align: 1px !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline:hover {
+  border-color: var(--border-soft, var(--surface-border)) !important;
+  background: var(--surface-raised, var(--surface-3)) !important;
+  color: var(--fg-secondary, var(--fg)) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle {
+  width: 15px !important;
+  height: 15px !important;
+  border-radius: 5px !important;
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  color: var(--fg-muted) !important;
+  opacity: 0.72 !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle:hover {
+  background: var(--hover-bg) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle .codicon {
+  font-size: 11px !important;
+  line-height: 1 !important;
+  display: block !important;
+  color: inherit !important;
+  pointer-events: none !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-text {
+  color: inherit !important;
+  font-size: 11px !important;
+  font-weight: 400 !important;
+  opacity: 1 !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-summary {
+  color: var(--fg-muted) !important;
+  font-size: 11px !important;
+  opacity: 0.86 !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-inline .zion-tool-call-inline-stats,
+.zion-panel .cm-editor .zion-tool-call-action-status,
+.zion-panel .cm-editor .zion-tool-call-inline-env {
+  color: var(--fg-faint, color-mix(in srgb, var(--fg) 42%, transparent)) !important;
+  font: 9px/1.2 var(--font-mono) !important;
+  opacity: 0.78 !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card,
+.zion-panel .cm-editor .zion-tool-artifact-preview,
+.zion-panel .cm-editor .zion-tool-terminal,
+.zion-panel .cm-editor .zion-tool-tree {
+  width: min(100%, 720px) !important;
+  margin: 4px 0 10px !important;
+  overflow: hidden !important;
+  border: 1px solid var(--border-faint, var(--surface-border-soft)) !important;
+  border-radius: var(--radius-sm, 8px) !important;
+  background: transparent !important;
+  color: var(--fg-muted) !important;
+  box-shadow: none !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card:hover,
+.zion-panel .cm-editor .zion-tool-artifact-preview:hover,
+.zion-panel .cm-editor .zion-tool-terminal:hover,
+.zion-panel .cm-editor .zion-tool-tree:hover {
+  border-color: var(--border-soft, var(--surface-border)) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card.is-artifact {
+  width: min(100%, 720px) !important;
+  margin: 4px 0 10px !important;
+  overflow: visible !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card.is-artifact:hover {
+  border-color: transparent !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card.is-artifact > .zion-tool-artifact-preview,
+.zion-panel .cm-editor .zion-tool-call-card.is-artifact > .zion-tool-terminal,
+.zion-panel .cm-editor .zion-tool-call-card.is-artifact > .zion-tool-tree {
+  margin: 0 !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card-header,
+.zion-panel .cm-editor .zion-tool-artifact-preview-header,
+.zion-panel .cm-editor .zion-tool-terminal-header,
+.zion-panel .cm-editor .zion-tool-tree-header {
+  min-height: 27px !important;
+  margin-bottom: 0 !important;
+  padding: 4px 8px !important;
+  border-bottom: 1px solid var(--border-faint, var(--surface-border-soft)) !important;
+  background: color-mix(in srgb, var(--surface-panel-soft, var(--surface-raised)) 50%, transparent) !important;
+  color: var(--fg-muted) !important;
+  font: 11px/1 var(--font-sans) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card:not(.is-artifact) > div:not(.zion-tool-call-card-header) {
+  padding: 8px 10px !important;
+  border-top: 0 !important;
+  color: var(--fg-muted) !important;
+  font: 12px/1.65 var(--font-mono) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-card *,
+.zion-panel .cm-editor .zion-tool-artifact-preview *,
+.zion-panel .cm-editor .zion-tool-terminal *,
+.zion-panel .cm-editor .zion-tool-tree * {
+  color: inherit;
+}
+
+.zion-panel .cm-editor .zion-tool-artifact-preview-name,
+.zion-panel .cm-editor .zion-tool-terminal-title,
+.zion-panel .cm-editor .zion-tool-tree-title {
+  color: var(--fg-muted) !important;
+  font: 11px/1 var(--font-sans) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-artifact-preview-dir,
+.zion-panel .cm-editor .zion-tool-artifact-preview-scope,
+.zion-panel .cm-editor .zion-tool-artifact-preview-stats,
+.zion-panel .cm-editor .zion-tool-meta-pill,
+.zion-panel .cm-editor .zion-tool-terminal-meta,
+.zion-panel .cm-editor .zion-tool-tree-meta {
+  color: var(--fg-muted) !important;
+  font: 9px/1 var(--font-mono) !important;
+  opacity: 0.85 !important;
+}
+
+.zion-panel .cm-editor .zion-tool-terminal-body,
+.zion-panel .cm-editor .zion-tool-tree-body,
+.zion-panel .cm-editor .zion-tool-artifact-diff {
+  padding: 6px 10px 8px !important;
+  border-top: 1px solid var(--border-faint, var(--surface-border-soft)) !important;
+  background: transparent !important;
+  color: var(--fg-muted) !important;
+  font: 12px/1.65 var(--font-mono) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-terminal-command,
+.zion-panel .cm-editor .zion-tool-terminal-output,
+.zion-panel .cm-editor .zion-tool-tree-body,
+.zion-panel .cm-editor .zion-tool-artifact-text,
+.zion-panel .cm-editor .zion-tool-artifact-sign,
+.zion-panel .cm-editor .zion-tool-artifact-gutter {
+  color: var(--fg-muted) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-terminal-prompt {
+  color: var(--fg-muted) !important;
+  opacity: 0.72 !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-status {
+  background: color-mix(in srgb, var(--fg-muted) 48%, transparent) !important;
+  opacity: 0.72 !important;
+}
+
+.zion-panel .cm-editor .zion-tool-call-status[data-status="error"] {
+  background: color-mix(in srgb, #f85149 46%, transparent) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-artifact-gutter {
+  background: color-mix(in srgb, var(--fg) 4%, transparent) !important;
+}
+
+.zion-panel .cm-editor .zion-tool-artifact-diff-row.is-add,
+.zion-panel .cm-editor .zion-tool-artifact-diff-row.is-remove,
+.zion-panel .cm-editor .zion-tool-artifact-diff-row.is-meta {
+  background: transparent !important;
+}
+
+/* Shared conversation widgets in main, comments, and agents editors. */
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline {
+  min-height: 21px !important;
+  margin: 0 !important;
+  padding: 1px 7px 1px 5px !important;
+  gap: 4px !important;
+  border: 1px solid var(--border-faint, var(--surface-border-soft)) !important;
+  border-radius: var(--radius-sm, 8px) !important;
+  background: transparent !important;
+  color: var(--fg-muted) !important;
+  font: 11px/1.35 var(--font-sans) !important;
+  vertical-align: 1px !important;
+  box-shadow: none !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline:hover {
+  border-color: var(--border-soft, var(--surface-border)) !important;
+  background: var(--surface-raised, var(--surface-3)) !important;
+  color: var(--fg-secondary, var(--fg)) !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle {
+  width: 15px !important;
+  height: 15px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--fg-muted) !important;
+  opacity: 0.72 !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle:hover {
+  background: var(--hover-bg) !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline .zion-tool-call-inline-toggle .codicon {
+  display: block !important;
+  color: inherit !important;
+  font-size: 11px !important;
+  line-height: 1 !important;
+  pointer-events: none !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline .zion-tool-call-inline-text,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline .zion-tool-call-inline-summary {
+  color: inherit !important;
+  font-size: 11px !important;
+  font-weight: 400 !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline .zion-tool-call-inline-summary {
+  opacity: 0.86 !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline .zion-tool-call-inline-stats,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-action-status,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-inline-env {
+  color: var(--fg-faint, color-mix(in srgb, var(--fg) 42%, transparent)) !important;
+  font: 9px/1.2 var(--font-mono) !important;
+  opacity: 0.78 !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-card,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-artifact-preview,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-terminal,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-tree {
+  width: min(100%, 720px) !important;
+  margin: 4px 0 10px !important;
+  overflow: hidden !important;
+  border: 1px solid var(--border-faint, var(--surface-border-soft)) !important;
+  border-radius: var(--radius-sm, 8px) !important;
+  background: transparent !important;
+  color: var(--fg-muted) !important;
+  box-shadow: none !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-card.is-artifact {
+  width: min(100%, 720px) !important;
+  margin: 4px 0 10px !important;
+  overflow: visible !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-card.is-artifact > .zion-tool-artifact-preview,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-card.is-artifact > .zion-tool-terminal,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-card.is-artifact > .zion-tool-tree {
+  margin: 0 !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-call-card-header,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-artifact-preview-header,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-terminal-header,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-tree-header {
+  min-height: 27px !important;
+  margin-bottom: 0 !important;
+  padding: 4px 8px !important;
+  border-bottom: 1px solid var(--border-faint, var(--surface-border-soft)) !important;
+  background: color-mix(in srgb, var(--surface-panel-soft, var(--surface-raised)) 50%, transparent) !important;
+  color: var(--fg-muted) !important;
+  font: 11px/1 var(--font-sans) !important;
+}
+
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-terminal-body,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-tree-body,
+:is(.zion-panel, .zion-comments-panel, .zion-agents-panel) .cm-editor .zion-tool-artifact-diff {
+  padding: 6px 10px 8px !important;
+  border-top: 1px solid var(--border-faint, var(--surface-border-soft)) !important;
+  background: transparent !important;
+  color: var(--fg-muted) !important;
+  font: 12px/1.65 var(--font-mono) !important;
 }

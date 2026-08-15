@@ -13,12 +13,29 @@ export type RestoreItem = {
 };
 
 const ROLE_HEADER_RE = /^(system|user|assistant|tool)\s+/;
+const ASSISTANT_ID_COMMENT_RE = /^\s*assistant\s+<!--\s*zion-assistant:id=([^>\s]+)\s*-->/;
+const LEADING_ASSISTANT_ID_COMMENT_RE = /^\s*<!--\s*zion-assistant:id=[^>\s]+\s*-->\s*/;
 const CARD_ID_COMMENT_RE = /\s*<!--\s*zion-(?:thinking|tool):id=[^>\s]+\s*-->\s*$/;
 const CARD_MARKER_RE = /^(?:思考(?:\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->)?|调用 [^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?)$/;
 const CARD_MARKER_TAIL_RE = /(?:^|\n)(?:思考(?:\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->)?|调用 [^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?)\n+$/;
 
 export function sanitizeCardMarkerId(id: string | null | undefined): string {
   return String(id || "").replace(/-->/g, "").replace(/[\r\n\t ]+/g, "_").trim();
+}
+
+export function assistantBlockHeaderText(id: string | null | undefined): string {
+  const safeId = sanitizeCardMarkerId(id);
+  return safeId ? `assistant <!-- zion-assistant:id=${safeId} --> ` : "assistant ";
+}
+
+export function getAssistantBlockIdFromHeader(text: string): string | null {
+  const line = String(text || "");
+  const match = line.match(ASSISTANT_ID_COMMENT_RE);
+  return match?.[1] ? String(match[1]) : null;
+}
+
+export function stripAssistantBlockIdComment(text: string): string {
+  return String(text || "").replace(LEADING_ASSISTANT_ID_COMMENT_RE, "");
 }
 
 export function thinkingMarkerText(id: string | null | undefined): string {
@@ -73,6 +90,61 @@ function findAssistantHeadIndexFromLine(lines: string[], hintLine?: number | nul
   return -1;
 }
 
+function findAssistantHeadIndexById(lines: string[], assistantBlockId: string | null | undefined): number {
+  const expectedId = sanitizeCardMarkerId(assistantBlockId);
+  if (!expectedId) return -1;
+  let foundIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (getAssistantBlockIdFromHeader(lines[i]) !== expectedId) continue;
+    if (foundIndex >= 0) return -1;
+    foundIndex = i;
+  }
+  return foundIndex;
+}
+
+function findAssistantBlockEndOffsetFromHead(lines: string[], headIdx: number): number | null {
+  if (headIdx < 0 || headIdx >= lines.length) return null;
+  let endIdx = headIdx;
+  for (let i = headIdx + 1; i < lines.length; i++) {
+    if (ROLE_HEADER_RE.test(lines[i])) break;
+    endIdx = i;
+  }
+  return lineEndOffset(lines, endIdx);
+}
+
+export function findAssistantBlockEndOffsetById(
+  docText: string,
+  assistantBlockId: string | null | undefined
+): number | null {
+  const text = String(docText || "").replace(/\r/g, "");
+  const lines = splitLines(text);
+  return findAssistantBlockEndOffsetFromHead(lines, findAssistantHeadIndexById(lines, assistantBlockId));
+}
+
+export function findAssistantBlockIdAtOffset(
+  docText: string,
+  offset: number | null | undefined
+): string | null {
+  const text = String(docText || "").replace(/\r/g, "");
+  const lines = splitLines(text);
+  if (!lines.length) return null;
+  const lineIndex = findLineIndexAtPos(lines, Number(offset || 0));
+  for (let i = lineIndex; i >= 0; i--) {
+    const match = lines[i].match(ROLE_HEADER_RE);
+    if (!match) continue;
+    if (match[1] !== "assistant") return null;
+    const id = getAssistantBlockIdFromHeader(lines[i]);
+    if (!id) return null;
+    let occurrences = 0;
+    for (const line of lines) {
+      if (getAssistantBlockIdFromHeader(line) === id) occurrences += 1;
+      if (occurrences > 1) return null;
+    }
+    return id;
+  }
+  return null;
+}
+
 export function findAssistantBlockEndOffset(docText: string, hintPos?: number | null): number {
   const text = String(docText || "").replace(/\r/g, "");
   const lines = splitLines(text);
@@ -96,41 +168,28 @@ export function findAssistantBlockEndOffset(docText: string, hintPos?: number | 
     }
   }
   if (headIdx < 0) return text.length;
-  let endIdx = headIdx;
-  for (let i = headIdx + 1; i < lines.length; i++) {
-    if (ROLE_HEADER_RE.test(lines[i])) break;
-    endIdx = i;
-  }
-  return lineEndOffset(lines, endIdx);
+  return findAssistantBlockEndOffsetFromHead(lines, headIdx) ?? text.length;
 }
 
 export function findAssistantBlockEndOffsetByLine(docText: string, hintLine?: number | null, fallbackHintPos?: number | null): number {
   const text = String(docText || "").replace(/\r/g, "");
   const lines = splitLines(text);
   if (!lines.length) return 0;
-  let headIdx = findAssistantHeadIndexFromLine(lines, hintLine);
+  const headIdx = findAssistantHeadIndexFromLine(lines, hintLine);
   if (headIdx < 0) return findAssistantBlockEndOffset(text, fallbackHintPos);
-  let endIdx = headIdx;
-  for (let i = headIdx + 1; i < lines.length; i++) {
-    if (ROLE_HEADER_RE.test(lines[i])) break;
-    endIdx = i;
-  }
-  return lineEndOffset(lines, endIdx);
+  return findAssistantBlockEndOffsetFromHead(lines, headIdx) ?? text.length;
 }
 
-export function planAssistantMarkerInsertion(args: {
+function buildAssistantMarkerInsertionPlan(args: {
   docText: string;
   markerText: string;
-  hintPos?: number | null;
-  hintLine?: number | null;
+  insertPos: number;
   trailingNewlines?: number;
 }) {
-  const docText = String(args?.docText || "").replace(/\r/g, "");
-  const markerText = String(args?.markerText || "");
-  const trailingNewlines = Math.max(0, Number(args?.trailingNewlines ?? 1));
-  const insertPos = typeof args?.hintLine === "number" && Number.isFinite(args.hintLine)
-    ? findAssistantBlockEndOffsetByLine(docText, args.hintLine, args?.hintPos)
-    : findAssistantBlockEndOffset(docText, args?.hintPos);
+  const docText = String(args.docText || "").replace(/\r/g, "");
+  const markerText = String(args.markerText || "");
+  const trailingNewlines = Math.max(0, Number(args.trailingNewlines ?? 1));
+  const insertPos = Math.max(0, Math.min(docText.length, args.insertPos));
   let replaceFrom = insertPos;
   let replaceTo = insertPos;
   let prefix = "";
@@ -161,6 +220,42 @@ export function planAssistantMarkerInsertion(args: {
     markerFrom,
     markerTo
   };
+}
+
+export function planAssistantMarkerInsertion(args: {
+  docText: string;
+  markerText: string;
+  hintPos?: number | null;
+  hintLine?: number | null;
+  trailingNewlines?: number;
+}) {
+  const docText = String(args?.docText || "").replace(/\r/g, "");
+  const insertPos = typeof args?.hintLine === "number" && Number.isFinite(args.hintLine)
+    ? findAssistantBlockEndOffsetByLine(docText, args.hintLine, args?.hintPos)
+    : findAssistantBlockEndOffset(docText, args?.hintPos);
+  return buildAssistantMarkerInsertionPlan({
+    docText,
+    markerText: args?.markerText,
+    insertPos,
+    trailingNewlines: args?.trailingNewlines
+  });
+}
+
+export function planAssistantMarkerInsertionById(args: {
+  docText: string;
+  assistantBlockId: string | null | undefined;
+  markerText: string;
+  trailingNewlines?: number;
+}) {
+  const docText = String(args?.docText || "").replace(/\r/g, "");
+  const insertPos = findAssistantBlockEndOffsetById(docText, args?.assistantBlockId);
+  if (insertPos == null) return null;
+  return buildAssistantMarkerInsertionPlan({
+    docText,
+    markerText: args?.markerText,
+    insertPos,
+    trailingNewlines: args?.trailingNewlines
+  });
 }
 
 export function buildRegexAnchors<T extends RestoreAnchor = RestoreAnchor>(
@@ -196,7 +291,8 @@ export function mergeItemsFromAnchors<T extends RestoreItem, A extends RestoreAn
   const synthesized: T[] = [];
   for (const anchor of Array.isArray(args.anchors) ? args.anchors : []) {
     const next = args.createItem(anchor);
-    const id = String(next?.id || "");
+    if (next == null) continue;
+    const id = String(next.id || "");
     if (!id || known.has(id) || deleted.has(id)) continue;
     items.push(next);
     known.add(id);
@@ -208,6 +304,7 @@ export function mergeItemsFromAnchors<T extends RestoreItem, A extends RestoreAn
 export function reconcileMountedItems<T extends RestoreItem, M = any>(args: {
   items: T[];
   existingItems?: Map<string, M> | null;
+  canUseMounted?: (item: T, mounted: M) => boolean;
   onMounted: (item: T, mounted: M) => void;
 }): Set<string> {
   const processedIds = new Set<string>();
@@ -218,6 +315,7 @@ export function reconcileMountedItems<T extends RestoreItem, M = any>(args: {
     if (!id) continue;
     const mounted = existingItems.get(id);
     if (!mounted) continue;
+    if (args.canUseMounted && !args.canUseMounted(item, mounted)) continue;
     processedIds.add(id);
     args.onMounted(item, mounted);
   }

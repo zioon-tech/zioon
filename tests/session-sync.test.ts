@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SessionSync } from "../src/panel/SessionSync";
 
 function createEvents() {
@@ -76,6 +76,75 @@ describe("SessionSync", () => {
 
     expect(editors.get("panel-b")!.getValue()).toBe("after");
     expect(editors.get("panel-c")!.getValue()).toBe("other");
+    sync.dispose();
+  });
+
+  it("forwards the CodeMirror change set without serializing aligned split views", () => {
+    const events = createEvents();
+    const startDoc = { length: 6 };
+    const nextDoc = {
+      length: 7,
+      toString: vi.fn(() => "before!")
+    };
+    const changes = { length: 6, marker: "incremental-change" };
+    const sourceView = {
+      dom: {
+        getAttribute: (name: string) => name === "data-session-id" ? "session-1" : null
+      },
+      state: { doc: nextDoc }
+    };
+    const targetDoc = {
+      length: 6,
+      eq: vi.fn((other) => other === startDoc),
+      toString: vi.fn(() => "before")
+    };
+    const dispatch = vi.fn();
+    const targetGetValue = vi.fn(() => "before");
+    const editors = new Map<string, any>([
+      ["panel-a", {
+        getValue: vi.fn(() => "before!"),
+        getView: () => sourceView
+      }],
+      ["panel-b", {
+        getValue: targetGetValue,
+        getView: () => ({
+          dom: {
+            getAttribute: (name: string) => name === "data-session-id" ? "session-1" : null
+          },
+          state: { doc: targetDoc },
+          dispatch
+        })
+      }]
+    ]);
+    const panels = [
+      { id: "panel-a", activeTabId: "session-1" },
+      { id: "panel-b", activeTabId: "session-1" }
+    ];
+    const sync = new SessionSync({
+      events,
+      getActivePanelId: () => "panel-a",
+      listPanels: () => panels,
+      getEditor: (panelId) => editors.get(panelId) || null
+    });
+
+    events.emit("editor.change", {
+      panelId: "panel-a",
+      view: sourceView,
+      update: {
+        state: { doc: nextDoc },
+        startState: { doc: startDoc },
+        changes,
+        transactions: []
+      }
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      changes,
+      annotations: expect.objectContaining({ value: "zion.sessionSync" })
+    });
+    expect(nextDoc.toString).not.toHaveBeenCalled();
+    expect(targetDoc.toString).not.toHaveBeenCalled();
+    expect(targetGetValue).not.toHaveBeenCalled();
     sync.dispose();
   });
 
@@ -157,6 +226,34 @@ describe("SessionSync", () => {
       panelId: "panel-a",
       update: {
         transactions: [{ annotation: () => "zion.cardRestore" }]
+      }
+    });
+
+    expect(editors.get("panel-b")!.getValue()).toBe("existing peer text");
+    sync.dispose();
+  });
+
+  it("does not propagate session-sync mirror transactions again", () => {
+    const events = createEvents();
+    const editors = new Map([
+      ["panel-a", createEditor("mirrored text")],
+      ["panel-b", createEditor("existing peer text")]
+    ]);
+    const panels = [
+      { id: "panel-a", activeTabId: "session-1" },
+      { id: "panel-b", activeTabId: "session-1" }
+    ];
+    const sync = new SessionSync({
+      events,
+      getActivePanelId: () => "panel-a",
+      listPanels: () => panels,
+      getEditor: (panelId) => editors.get(panelId) as any
+    });
+
+    events.emit("editor.change", {
+      panelId: "panel-a",
+      update: {
+        transactions: [{ annotation: () => "zion.sessionSync" }]
       }
     });
 

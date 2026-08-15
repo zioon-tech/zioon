@@ -67,7 +67,64 @@ describe("SessionRuntime", () => {
     expect(switched).toEqual([
       { id: "session-b", panelId: "panel-a", previousSessionId: "session-a", skipPersistPrevious: undefined }
     ]);
-    expect(emitted.map((entry) => entry.topic)).toEqual(["session/beforeSwitch", "session/afterSwitch"]);
+    expect(emitted.map((entry) => entry.topic)).toEqual([
+      "panel/tabsChanged",
+      "session/beforeSwitch",
+      "session/afterSwitch"
+    ]);
+    expect(emitted[0]?.payload).toEqual({ panelId: "panel-a", sessionId: "session-b" });
+  });
+
+  it("does not let stale rapid switches roll back the latest repeated target", async () => {
+    const panels = new Map([
+      ["panel-a", {
+        id: "panel-a",
+        activeTabId: "session-root",
+        tabs: [{ id: "session-root" }],
+        editor: { panelId: "panel-a" } as any
+      }]
+    ]);
+    const pending: Array<{ id: string; resolve: (ok: boolean) => void }> = [];
+    const emitted: string[] = [];
+    const runtime = new SessionRuntime({
+      getActivePanelId: () => "panel-a",
+      getPanel: (panelId) => panels.get(panelId) || null,
+      listPanels: () => Array.from(panels.values()),
+      getEditor: (panelId) => panels.get(panelId)?.editor || null,
+      activatePanelTab: (panelId, sessionId) => {
+        const panel = panels.get(panelId);
+        if (panel) panel.activeTabId = sessionId;
+      },
+      switchSessionDocument: ({ id }) => new Promise<boolean>((resolve) => {
+        pending.push({ id, resolve });
+      }),
+      emit: (topic) => emitted.push(topic)
+    });
+
+    const first = runtime.openPanelSession("panel-a", "session-a");
+    const second = runtime.openPanelSession("panel-a", "session-b");
+    const latest = runtime.openPanelSession("panel-a", "session-a");
+
+    expect(pending.map((item) => item.id)).toEqual(["session-a", "session-b", "session-a"]);
+    expect(panels.get("panel-a")?.tabs.map((tab) => tab.id)).toEqual([
+      "session-root",
+      "session-a",
+      "session-b"
+    ]);
+
+    pending[0].resolve(false);
+    await expect(first).resolves.toBe(false);
+    expect(panels.get("panel-a")?.activeTabId).toBe("session-a");
+
+    pending[1].resolve(false);
+    await expect(second).resolves.toBe(false);
+    expect(panels.get("panel-a")?.activeTabId).toBe("session-a");
+
+    pending[2].resolve(true);
+    await expect(latest).resolves.toBe(true);
+    expect(panels.get("panel-a")?.activeTabId).toBe("session-a");
+    expect(emitted.filter((topic) => topic === "panel/tabsChanged")).toHaveLength(2);
+    expect(emitted.filter((topic) => topic === "session/afterSwitch")).toHaveLength(1);
   });
 
   it("keeps a newly created session bound to the target panel before chat runs", async () => {
@@ -169,11 +226,12 @@ describe("SessionRuntime", () => {
     expect(order).toEqual(["session/beforeSwitch", "document:start", "document:done", "session/afterSwitch"]);
   });
 
-  it("rolls back the active tab when document switching fails", async () => {
+  it("restores the previous tab and editor slot when the latest document switch fails", async () => {
     const panels = new Map([
       ["panel-a", { id: "panel-a", activeTabId: "session-a", tabs: [{ id: "session-a" }, { id: "session-b" }], editor: { panelId: "panel-a" } as any }]
     ]);
     const emitted: string[] = [];
+    const restored: string[] = [];
     const runtime = new SessionRuntime({
       getActivePanelId: () => "panel-a",
       getPanel: (panelId) => panels.get(panelId) || null,
@@ -183,6 +241,12 @@ describe("SessionRuntime", () => {
         const panel = panels.get(panelId);
         if (panel) panel.activeTabId = sessionId;
       },
+      restorePanelSession: (panelId, sessionId) => {
+        restored.push(sessionId);
+        const panel = panels.get(panelId);
+        if (panel) panel.activeTabId = sessionId;
+        return true;
+      },
       syncLegacyEditorTabsState: () => {},
       switchSessionDocument: () => false,
       emit: (topic) => emitted.push(topic)
@@ -191,6 +255,7 @@ describe("SessionRuntime", () => {
     await expect(runtime.switchPanelSession("panel-a", "session-b")).resolves.toBe(false);
 
     expect(panels.get("panel-a")?.activeTabId).toBe("session-a");
+    expect(restored).toEqual(["session-a"]);
     expect(emitted).toEqual(["session/beforeSwitch"]);
   });
 

@@ -1,14 +1,34 @@
 {
   "name": "dev.paste-image",
   "version": "0.0.1",
-  "description": "Handle pasted images and insert as markdown images (data URL or remote src).",
+  "description": "Handle clipboard images and insert them as Markdown images.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.paste-image",
-    "name": "dev.paste-image",
+    "name": "Paste Image",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "粘贴图片",
+        "en-US": "Paste Image"
+      },
+      "description": {
+        "zh-CN": "处理剪贴板图片并插入为 Markdown 图片。",
+        "en-US": "Handle clipboard images and insert them as Markdown images."
+      },
+      "icon": "file-media",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "处理剪贴板图片并插入为 Markdown 图片。"
+        ],
+        "en-US": [
+          "Handle clipboard images and insert them as Markdown images."
+        ]
+      }
+    },
     "contributes": {
       "commands": [],
       "keybindings": []

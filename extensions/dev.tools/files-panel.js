@@ -18,6 +18,9 @@ const LS_SORT = "zion.devTools.files.sort";
 const LS_SOURCE = "zion.devTools.files.source";
 const LS_TREE_CACHE_PREFIX = "zion.devTools.files.treeCache.";
 const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
+const MAX_IMAGE_PREVIEW_BYTES = 20 * 1024 * 1024;
+const MAX_PDF_PREVIEW_BYTES = 20 * 1024 * 1024;
+const MAX_HTML_PREVIEW_BYTES = 10 * 1024 * 1024;
 const TERMINAL_READ_CHUNK_BYTES = 12 * 1024;
 const SORT_OPTIONS = ["name", "modified", "size"];
 const PREFETCH_MAX_DIRS_PER_BATCH = 8;
@@ -25,9 +28,33 @@ const PREFETCH_MAX_CONCURRENCY = 2;
 const PREFETCH_DEPTH = 1;
 const TREE_CACHE_MAX_DIRS = 120;
 const PREVIEW_AUX_WIDTH = 760;
+const TERMINAL_LIST_PAGE_SIZE = 120;
+const terminalHomeCache = new Map();
 
 let pendingRevealCommandPayload = null;
 const TREE_CACHE_MAX_CHILDREN_PER_DIR = 400;
+
+function createPanelIcon(codiconName, className) {
+  const span = document.createElement("span");
+  span.className = className || "";
+  span.setAttribute("aria-hidden", "true");
+  const name = String(codiconName || "").replace(/^codicon-/, "");
+  if (!name) return span;
+  try {
+    const icon = window.zionIcons?.createFromCodicon?.(name);
+    if (icon) {
+      span.appendChild(icon);
+      return span;
+    }
+  } catch {}
+  span.className = `${className || ""} codicon codicon-${name}`.trim();
+  return span;
+}
+
+function setPanelIcon(target, codiconName) {
+  target.textContent = "";
+  target.appendChild(createPanelIcon(codiconName, ""));
+}
 
 const IGNORE_NAMES = new Set([
   ".git",
@@ -57,6 +84,21 @@ export function registerFilesPanel(ctx) {
     await window.zion.commands?.executeCommand?.("fs.addFolder");
   });
   disposables.push(addFolderCommand);
+
+  const addFolderSourceCommand = window.zion.commands.registerCommand("tools.files.addFolderSource", async (payload = {}) => {
+    const path = typeof payload === "string" ? payload : payload?.path;
+    const sourceId = typeof payload === "object" ? payload?.sourceId : "";
+    const rawPath = normalizeRevealPath(path);
+    if (!rawPath) return false;
+    try { window.zion.auxiliaryBar?.setWidth?.(Math.max(360, window.zion.state?.get?.("ui.auxiliaryBar.width") || 0)); } catch {}
+    try { window.zion.auxiliaryBar?.activateView?.(FILES_VIEW_ID); } catch {}
+    const resolved = await ensureDirectorySourceForPath(rawPath, sourceId);
+    if (!resolved) return false;
+    saveSourceId(resolved);
+    try { window.zion.events?.emit?.("dev.tools.files/sourceChanged", { sourceId: resolved }); } catch {}
+    return resolved;
+  });
+  disposables.push(addFolderSourceCommand);
 
   const openFilesPickerCommand = window.zion.commands.registerCommand("tools.files.open", () => {
     try { window.zion.commands?.executeCommand?.("commandPalette.openFilesPicker"); } catch {}
@@ -93,7 +135,7 @@ export function registerFilesPanel(ctx) {
     pluginId: "dev.tools",
     title: "Files",
     titleKey: "dev.tools.files.title",
-    icon: "◇",
+    icon: "$(folder)",
     order: 10,
     keepWhenActive: true,
     component: {
@@ -121,12 +163,15 @@ function createFilesPanel(container) {
 
   const expanded = loadExpanded();
   const dirCache = new Map();
+  const dirPageState = new Map();
   const loadingKeys = new Set();
+  const loadingMoreKeys = new Set();
   const loadingRenderTimers = new Map();
   const prefetchingKeys = new Set();
   const prefetchPromises = new Map();
   const prefetchQueue = [];
   const failedKeys = new Map();
+  const pageFailedKeys = new Map();
   const editorCore = getEditorCore(FILES_VIEW_ID);
   const openFileTabs = editorCore.tabs;
   const disposables = [];
@@ -247,6 +292,9 @@ function createFilesPanel(container) {
       prefetchQueue.length = 0;
       prefetchingKeys.clear();
       prefetchPromises.clear();
+      dirPageState.clear();
+      loadingMoreKeys.clear();
+      pageFailedKeys.clear();
       disposePreviewResources();
       for (const d of disposables.splice(0)) {
         try { d?.dispose?.(); } catch {}
@@ -264,7 +312,10 @@ function createFilesPanel(container) {
     if (!opts.preserveSource) saveSourceId(sourceId);
     if (!opts.keepCache && !background) {
       dirCache.clear();
+      dirPageState.clear();
       failedKeys.clear();
+      pageFailedKeys.clear();
+      loadingMoreKeys.clear();
       resetPrefetch();
     }
     if (!background) scheduleRender();
@@ -318,6 +369,9 @@ function createFilesPanel(container) {
     if (!snapshot?.roots?.length) return false;
     roots = snapshot.roots.map(markCachedNode).filter(Boolean);
     dirCache.clear();
+      dirPageState.clear();
+      pageFailedKeys.clear();
+      loadingMoreKeys.clear();
     for (const [key, children] of Object.entries(snapshot.dirs || {})) {
       if (!Array.isArray(children)) continue;
       dirCache.set(key, children.map(markCachedNode).filter(Boolean));
@@ -354,12 +408,19 @@ function createFilesPanel(container) {
       if (!node || node.kind !== "directory" || seen.has(node.key)) continue;
       seen.add(node.key);
       try {
-        const children = (await provider.listChildren(node)).filter(Boolean);
+        const hadMore = hasMoreDirectoryChildren(node);
+        const page = await loadDirectoryChildren(node, provider, {
+          offset: 0,
+          limit: getDirectoryReloadLimit(node)
+        });
+        const children = page.children;
         const changed = !sameNodeList(dirCache.get(node.key), children);
         dirCache.set(node.key, children);
+        updateDirectoryPageState(node, page);
+        const pageStateChanged = hadMore !== hasMoreDirectoryChildren(node);
         failedKeys.delete(node.key);
         saveTreeCacheSoon();
-        if (changed) {
+        if (changed || pageStateChanged) {
           if (findRowByKey(node.key)) insertDirectoryChildren(node);
           else scheduleRender();
         }
@@ -376,6 +437,7 @@ function createFilesPanel(container) {
   function render() {
     const previousScrollTop = root.querySelector(".zion-files-scroll")?.scrollTop || 0;
     saveActivePreviewScrollState();
+    const hasLocalPreview = openFileTabs.size > 0 && !window.zion?.inspector?.open;
 
     const body = document.createElement("div");
     body.className = "zion-files-scroll";
@@ -383,7 +445,7 @@ function createFilesPanel(container) {
       const existingWorkspace = root.querySelector(".zion-files-workspace");
       const existingExplorer = existingWorkspace?.querySelector(".zion-files-explorer");
       const existingPreview = existingWorkspace?.querySelector(".zion-files-preview-pane");
-      if (existingWorkspace && existingExplorer && existingPreview && openFileTabs.size) {
+      if (existingWorkspace && existingExplorer && existingPreview && hasLocalPreview) {
 
         existingWorkspace.classList.add("has-preview");
         existingExplorer.style.flexBasis = `${explorerWidth}px`;
@@ -391,16 +453,16 @@ function createFilesPanel(container) {
         return;
       }
       const workspace = document.createElement("div");
-      workspace.className = `zion-files-workspace${openFileTabs.size ? " has-preview" : ""}`;
+      workspace.className = `zion-files-workspace${hasLocalPreview ? " has-preview" : ""}`;
       const explorer = document.createElement("div");
       explorer.className = "zion-files-explorer";
-      if (openFileTabs.size) explorer.style.flexBasis = `${explorerWidth}px`;
+      if (hasLocalPreview) explorer.style.flexBasis = `${explorerWidth}px`;
       explorer.appendChild(renderSourceBar());
       explorer.appendChild(body);
       workspace.appendChild(explorer);
 
       disposePreviewResources();
-      if (openFileTabs.size) {
+      if (hasLocalPreview) {
         workspace.appendChild(renderResizeHandle(workspace, explorer));
         workspace.appendChild(renderPreviewPane());
       }
@@ -484,15 +546,11 @@ function createFilesPanel(container) {
         event.preventDefault();
         closeFileTab(tab.id);
       };
-      const icon = document.createElement("span");
-      icon.className = `zion-files-preview-tab-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
-      icon.setAttribute("aria-hidden", "true");
+      const icon = createPanelIcon(tab.kind === "memory" ? "database" : iconForFile(tab.title), "zion-files-preview-tab-icon");
       const label = document.createElement("span");
       label.className = "zion-files-preview-tab-label";
       label.textContent = tab.title;
-      const close = document.createElement("span");
-      close.className = "zion-files-preview-tab-close codicon codicon-close";
-      close.setAttribute("aria-hidden", "true");
+      const close = createPanelIcon("close", "zion-files-preview-tab-close");
       close.title = t("files.close", "Close");
       close.onclick = (event) => {
         event.preventDefault();
@@ -563,9 +621,7 @@ function createFilesPanel(container) {
     tab = resolveEditorTab(tab);
     const header = document.createElement("div");
     header.className = "zion-files-preview-header";
-    const icon = document.createElement("span");
-    icon.className = `zion-files-preview-header-icon codicon ${tab.kind === "memory" ? "codicon-database" : iconForFile(tab.title)}`;
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createPanelIcon(tab.kind === "memory" ? "database" : iconForFile(tab.title), "zion-files-preview-header-icon");
     const title = renderBreadcrumb(tab.displayPath || tab.path || tab.title);
     const meta = document.createElement("div");
     meta.className = "zion-files-preview-meta";
@@ -586,9 +642,7 @@ function createFilesPanel(container) {
     button.type = "button";
     button.className = `zion-files-preview-mode-button${shouldShowMarkdownPreview(tab) ? " is-active" : ""}`;
     button.title = shouldShowMarkdownPreview(tab) ? t("files.disableMarkdownPreview", "Disable Markdown preview") : t("files.previewMarkdown", "Preview Markdown");
-    const icon = document.createElement("span");
-    icon.className = "codicon codicon-eye";
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createPanelIcon("eye", "");
     button.appendChild(icon);
     button.onclick = () => {
       saveActivePreviewScrollState(tab.id);
@@ -622,15 +676,34 @@ function createFilesPanel(container) {
   }
 
   function renderBreadcrumbSeparator() {
-    const sep = document.createElement("span");
-    sep.className = "zion-files-preview-breadcrumb-separator codicon codicon-chevron-right";
-    sep.setAttribute("aria-hidden", "true");
+    const sep = createPanelIcon("chevron-right", "zion-files-preview-breadcrumb-separator");
     return sep;
   }
 
   function renderPreviewOnly() {
+    const tab = openFileTabs.get(activeFileTabId) || openFileTabs.values().next().value;
+    if (window.zion?.inspector?.open) {
+      releasePreviewAuxWidth();
+      if (tab) {
+        window.zion.inspector.open({
+          id: `files:${tab.id}`,
+          ownerId: FILES_VIEW_ID,
+          title: tab.title,
+          path: tab.path,
+          displayPath: tab.displayPath,
+          language: tab.language,
+          file: tab.file
+        });
+      } else {
+        window.zion.inspector.clearOwner?.(FILES_VIEW_ID);
+      }
+      disposePreviewResources();
+      root.querySelector(".zion-files-preview-pane")?.remove();
+      root.querySelector(".zion-files-split-resizer")?.remove();
+      root.querySelector(".zion-files-workspace")?.classList.remove("has-preview");
+      return;
+    }
     const existing = root.querySelector(".zion-files-preview-pane");
-    const tab = openFileTabs.get(activeFileTabId);
 
     if (!existing) {
       showPreviewPaneIncremental();
@@ -803,7 +876,20 @@ function createFilesPanel(container) {
       parent.appendChild(stage);
       return;
     }
+    if (tab.file?.kind === "pdf" && tab.file.blob instanceof Blob) {
+      previewObjectUrl = URL.createObjectURL(tab.file.blob);
+      const stage = document.createElement("div");
+      stage.className = "zion-files-preview-pdf-stage";
+      const frame = document.createElement("iframe");
+      frame.className = "zion-files-preview-pdf-frame";
+      frame.src = previewObjectUrl;
+      frame.title = tab.title || "PDF preview";
+      stage.appendChild(frame);
+      parent.appendChild(stage);
+      return;
+    }
     if (tab.file?.kind === "text") {
+        if (tab.file.truncated) parent.appendChild(renderTruncatedPreviewNotice(tab.file));
       if (shouldShowMarkdownPreview(tab)) {
         createFilesMarkdownPreview(parent, String(tab.file.content || ""));
         return;
@@ -841,6 +927,15 @@ function createFilesPanel(container) {
     parent.appendChild(empty);
   }
 
+    function renderTruncatedPreviewNotice(file) {
+      const notice = document.createElement("div");
+      notice.className = "zion-files-preview-truncated";
+      notice.textContent = t("files.previewTruncated", "Large file: showing the first {size} KB as read-only.", {
+        size: Math.max(1, Math.round(Number(file?.loadedBytes || 0) / 1024))
+      });
+      return notice;
+    }
+
   function renderPreviewMessage(message) {
     const el = document.createElement("div");
     el.className = "zion-files-preview-empty";
@@ -858,6 +953,7 @@ function createFilesPanel(container) {
     if (openFileTabs.size) renderPreviewOnly();
     else {
       releasePreviewAuxWidth();
+      window.zion?.inspector?.clearOwner?.(FILES_VIEW_ID);
       scheduleRender();
     }
   }
@@ -932,9 +1028,7 @@ function createFilesPanel(container) {
     if (revealStatus) {
       const status = document.createElement("div");
       status.className = "zion-files-reveal-status";
-      const spinner = document.createElement("span");
-      spinner.className = "zion-files-reveal-spinner codicon codicon-loading";
-      spinner.setAttribute("aria-hidden", "true");
+      const spinner = createPanelIcon("loading", "zion-files-reveal-spinner");
       const text = document.createElement("span");
       text.textContent = revealStatus;
       status.appendChild(spinner);
@@ -973,13 +1067,9 @@ function createFilesPanel(container) {
       if (node.kind === "directory") toggleDirectory(node);
     };
 
-    const chevron = document.createElement("span");
-    chevron.className = `zion-files-chevron${isDirectory ? ` codicon ${isExpanded ? "codicon-chevron-down" : "codicon-chevron-right"}` : ""}`;
-    chevron.setAttribute("aria-hidden", "true");
+    const chevron = createPanelIcon(isDirectory ? (isExpanded ? "chevron-down" : "chevron-right") : "", "zion-files-chevron");
 
-    const icon = document.createElement("span");
-    icon.className = `zion-files-icon codicon ${isDirectory ? (isExpanded ? "codicon-folder-opened" : "codicon-folder") : iconForFile(node.name)}`;
-    icon.setAttribute("aria-hidden", "true");
+    const icon = createPanelIcon(isDirectory ? (isExpanded ? "folder-opened" : "folder") : iconForFile(node.name), "zion-files-icon");
 
     const label = document.createElement("span");
     label.className = "zion-files-name";
@@ -1032,7 +1122,8 @@ function createFilesPanel(container) {
           return;
         }
         const children = dirCache.get(node.key) || [];
-        if (children.length === 0 && dirCache.has(node.key)) {
+        const hasMore = hasMoreDirectoryChildren(node);
+        if (children.length === 0 && dirCache.has(node.key) && !hasMore && !loadingMoreKeys.has(node.key)) {
           const empty = document.createElement("div");
           empty.className = "zion-files-message-row";
           empty.dataset.depth = String(depth + 1);
@@ -1041,7 +1132,7 @@ function createFilesPanel(container) {
           empty.textContent = t("files.emptyFolder", "Empty folder");
           parent.appendChild(empty);
         } else {
-          for (const child of sortNodes(children, sortBy)) renderNode(parent, child, depth + 1);
+          renderDirectoryChildren(parent, node, depth + 1);
         }
       }
     }
@@ -1054,7 +1145,8 @@ function createFilesPanel(container) {
       details.onkeydown = (event) => event.stopPropagation();
 
       const summary = document.createElement("summary");
-      summary.className = "zion-files-actions-trigger codicon codicon-ellipsis";
+      summary.className = "zion-files-actions-trigger";
+      setPanelIcon(summary, "ellipsis");
       summary.title = t("files.moreActions", "More actions");
       summary.setAttribute("aria-label", t("files.moreActions", "More actions"));
       details.appendChild(summary);
@@ -1210,16 +1302,20 @@ function createFilesPanel(container) {
     if (node.kind !== "directory" || dirCache.has(node.key) || loadingKeys.has(node.key)) return;
     loadingKeys.add(node.key);
     failedKeys.delete(node.key);
+    pageFailedKeys.delete(node.key);
     scheduleLoadingRender(node, !!opts.incremental);
     try {
       const provider = getProvider(node.sourceId || sourceId);
-      const children = await loadDirectoryChildren(node, provider);
-      dirCache.set(node.key, children.filter(Boolean));
+      const page = await loadDirectoryChildren(node, provider);
+      const children = page.children;
+      dirCache.set(node.key, children);
+      updateDirectoryPageState(node, page);
       saveTreeCacheSoon();
       scheduleDirectoryPrefetch(children, PREFETCH_DEPTH);
     } catch (e) {
       failedKeys.set(node.key, e?.message || String(e || ""));
       dirCache.set(node.key, []);
+      dirPageState.delete(node.key);
     } finally {
       clearLoadingRender(node.key);
       loadingKeys.delete(node.key);
@@ -1232,14 +1328,22 @@ function createFilesPanel(container) {
     if (node.kind !== "directory" || loadingKeys.has(node.key)) return;
     loadingKeys.add(node.key);
     failedKeys.delete(node.key);
+    pageFailedKeys.delete(node.key);
     try {
       const provider = getProvider(node.sourceId || sourceId);
-      const children = (await loadDirectoryChildren(node, provider)).filter(Boolean);
+      const hadMore = hasMoreDirectoryChildren(node);
+      const page = await loadDirectoryChildren(node, provider, {
+        offset: 0,
+        limit: getDirectoryReloadLimit(node)
+      });
+      const children = page.children;
       const changed = !sameNodeList(dirCache.get(node.key), children);
       dirCache.set(node.key, children);
+      updateDirectoryPageState(node, page);
+      const pageStateChanged = hadMore !== hasMoreDirectoryChildren(node);
       saveTreeCacheSoon();
       scheduleDirectoryPrefetch(children, PREFETCH_DEPTH);
-      if (expanded.has(node.key) && changed) {
+      if (expanded.has(node.key) && (changed || pageStateChanged)) {
         if (findRowByKey(node.key)) insertDirectoryChildren(node);
         else scheduleRender();
       }
@@ -1304,14 +1408,11 @@ function createFilesPanel(container) {
     row.setAttribute("aria-expanded", isExpanded ? "true" : "false");
     const chevron = row.querySelector(".zion-files-chevron");
     if (chevron) {
-      chevron.classList.add("codicon");
-      chevron.classList.toggle("codicon-chevron-right", !isExpanded);
-      chevron.classList.toggle("codicon-chevron-down", isExpanded);
+      setPanelIcon(chevron, isExpanded ? "chevron-down" : "chevron-right");
     }
     const icon = row.querySelector(".zion-files-icon");
     if (icon) {
-      icon.classList.toggle("codicon-folder", !isExpanded);
-      icon.classList.toggle("codicon-folder-opened", isExpanded);
+      setPanelIcon(icon, isExpanded ? "folder-opened" : "folder");
     }
   }
 
@@ -1351,10 +1452,11 @@ function createFilesPanel(container) {
       fragment.appendChild(renderMessageRow(node, error));
     } else {
       const children = dirCache.get(node.key) || [];
-      if (children.length === 0 && dirCache.has(node.key)) {
+      const hasMore = hasMoreDirectoryChildren(node);
+      if (children.length === 0 && dirCache.has(node.key) && !hasMore && !loadingMoreKeys.has(node.key)) {
         fragment.appendChild(renderMessageRow(node, t("files.emptyFolder", "Empty folder")));
       } else {
-        for (const child of sortNodes(children, sortBy)) renderNode(fragment, child, rowDepth(row) + 1);
+        renderDirectoryChildren(fragment, node, rowDepth(row) + 1);
       }
     }
     row.after(fragment);
@@ -1372,10 +1474,138 @@ function createFilesPanel(container) {
     return row;
   }
 
-  async function loadDirectoryChildren(node, provider = getProvider(node.sourceId || sourceId)) {
-    const prefetchPromise = prefetchPromises.get(node.key);
-    if (prefetchPromise) return await prefetchPromise;
-    return await provider.listChildren(node);
+  function renderDirectoryChildren(parent, node, depth) {
+    const children = dirCache.get(node.key) || [];
+    for (const child of sortNodes(children, sortBy)) renderNode(parent, child, depth);
+    const pageError = pageFailedKeys.get(node.key);
+    if (pageError) parent.appendChild(renderMessageRowAtDepth(node, pageError, depth));
+    if (hasMoreDirectoryChildren(node) || loadingMoreKeys.has(node.key)) {
+      parent.appendChild(renderLoadMoreRow(node, depth));
+    }
+  }
+
+  function renderMessageRowAtDepth(parentNode, text, depth) {
+    const row = document.createElement("div");
+    row.className = "zion-files-message-row";
+    row.dataset.depth = String(depth);
+    row.dataset.parentKey = parentNode.key;
+    row.style.setProperty("--depth", String(depth));
+    row.textContent = text;
+    return row;
+  }
+
+  function renderLoadMoreRow(parentNode, depth) {
+    const row = document.createElement("div");
+    row.className = "zion-files-message-row zion-files-load-more-row";
+    row.dataset.depth = String(depth);
+    row.dataset.parentKey = parentNode.key;
+    row.style.setProperty("--depth", String(depth));
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "zion-files-load-more";
+    const loading = loadingMoreKeys.has(parentNode.key);
+    button.disabled = loading;
+    button.textContent = loading ? t("files.loadingMore", "Loading more...") : t("files.loadMore", "Load more");
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      loadMoreDirectoryChildren(parentNode);
+    };
+    row.appendChild(button);
+    return row;
+  }
+
+  async function loadDirectoryChildren(node, provider = getProvider(node.sourceId || sourceId), opts = {}) {
+    const offset = Number(opts?.offset || 0);
+    const prefetchPromise = offset > 0 ? null : prefetchPromises.get(node.key);
+    const result = prefetchPromise ? await prefetchPromise : await provider.listChildren(node, opts);
+    return normalizeDirectoryListResult(result);
+  }
+
+  function normalizeDirectoryListResult(result) {
+    if (Array.isArray(result)) {
+      const children = result.filter(Boolean);
+      return { children, hasMore: false, nextOffset: children.length };
+    }
+    const children = (Array.isArray(result?.children) ? result.children : []).filter(Boolean);
+    const nextOffset = Number(result?.nextOffset);
+    return {
+      children,
+      hasMore: result?.hasMore === true,
+      nextOffset: Number.isFinite(nextOffset) ? nextOffset : children.length
+    };
+  }
+
+  function updateDirectoryPageState(node, page) {
+    if (!node?.key) return;
+    if (page?.hasMore === true) {
+      const nextOffset = Number(page.nextOffset);
+      dirPageState.set(node.key, {
+        hasMore: true,
+        nextOffset: Number.isFinite(nextOffset) ? nextOffset : (dirCache.get(node.key) || []).length
+      });
+    } else {
+      dirPageState.delete(node.key);
+    }
+    pageFailedKeys.delete(node.key);
+  }
+
+  function hasMoreDirectoryChildren(node) {
+    return dirPageState.get(node?.key || "")?.hasMore === true;
+  }
+
+  function getDirectoryReloadLimit(node) {
+    return Math.max(TERMINAL_LIST_PAGE_SIZE, (dirCache.get(node?.key || "") || []).length);
+  }
+
+  async function loadMoreDirectoryChildren(node, opts = {}) {
+    if (!node?.key || !hasMoreDirectoryChildren(node) || loadingMoreKeys.has(node.key) || loadingKeys.has(node.key)) return false;
+    const renderAfter = opts.render !== false;
+    const state = dirPageState.get(node.key) || {};
+    const offset = Number.isFinite(Number(state.nextOffset)) ? Number(state.nextOffset) : (dirCache.get(node.key) || []).length;
+    loadingMoreKeys.add(node.key);
+    pageFailedKeys.delete(node.key);
+    if (renderAfter && expanded.has(node.key)) insertDirectoryChildren(node);
+    try {
+      const provider = getProvider(node.sourceId || sourceId);
+      const page = await loadDirectoryChildren(node, provider, {
+        offset,
+        limit: TERMINAL_LIST_PAGE_SIZE
+      });
+      const current = dirCache.get(node.key) || [];
+      const merged = mergeDirectoryChildren(current, page.children);
+      dirCache.set(node.key, merged);
+      updateDirectoryPageState(node, page);
+      saveTreeCacheSoon();
+      scheduleDirectoryPrefetch(page.children, PREFETCH_DEPTH);
+      return page.children.length > 0 || page.hasMore === true;
+    } catch (e) {
+      pageFailedKeys.set(node.key, e?.message || String(e || ""));
+      return false;
+    } finally {
+      loadingMoreKeys.delete(node.key);
+      if (renderAfter && expanded.has(node.key)) insertDirectoryChildren(node);
+    }
+  }
+
+  function mergeDirectoryChildren(current, incoming) {
+    const out = [];
+    const indexByKey = new Map();
+    for (const item of Array.isArray(current) ? current : []) {
+      if (!item?.key || indexByKey.has(item.key)) continue;
+      indexByKey.set(item.key, out.length);
+      out.push(item);
+    }
+    for (const item of Array.isArray(incoming) ? incoming : []) {
+      if (!item?.key) continue;
+      const index = indexByKey.get(item.key);
+      if (Number.isInteger(index)) out[index] = item;
+      else {
+        indexByKey.set(item.key, out.length);
+        out.push(item);
+    }
+    }
+    return out;
   }
 
   function resetPrefetch() {
@@ -1389,7 +1619,7 @@ function createFilesPanel(container) {
   }
 
   function scheduleDirectoryPrefetch(nodes, depth) {
-    if (disposed || depth <= 0 || !sourceId.startsWith("terminal:")) return;
+      if (disposed || depth <= 0 || sourceId.startsWith("terminal:")) return;
     const generation = prefetchSeq;
     const dirs = (Array.isArray(nodes) ? nodes : [])
       .filter((node) => shouldPrefetchDirectory(node))
@@ -1438,12 +1668,14 @@ function createFilesPanel(container) {
   async function runPrefetchTask(task) {
     const { node, depth, generation } = task;
     const provider = getProvider(node.sourceId || sourceId);
-    const promise = provider.listChildren(node);
+    const promise = provider.listChildren(node, { offset: 0, limit: TERMINAL_LIST_PAGE_SIZE });
     prefetchPromises.set(node.key, promise);
     try {
-      const children = (await promise).filter(Boolean);
+      const page = normalizeDirectoryListResult(await promise);
+      const children = page.children;
       if (disposed || generation !== prefetchSeq || dirCache.has(node.key)) return;
       dirCache.set(node.key, children);
+      updateDirectoryPageState(node, page);
       if (depth > 1) scheduleDirectoryPrefetch(children, depth - 1);
     } catch {
       // Background prefetch is opportunistic; surface errors only when the user expands.
@@ -1457,7 +1689,10 @@ function createFilesPanel(container) {
     try { details.open = false; } catch {}
     if (node.kind !== "directory") return;
     dirCache.delete(node.key);
+      dirPageState.delete(node.key);
     failedKeys.delete(node.key);
+      pageFailedKeys.delete(node.key);
+      loadingMoreKeys.delete(node.key);
     expanded.add(node.key);
     saveExpanded(expanded);
     updateDirectoryRowState(node, true);
@@ -1504,10 +1739,10 @@ function createFilesPanel(container) {
     const hadPreview = !!root.querySelector(".zion-files-preview-pane") || openFileTabs.size > 0;
 
     saveActivePreviewScrollState();
-    if (!hadPreview) requestPreviewAuxWidth();
+    if (!hadPreview && !window.zion?.inspector?.open) requestPreviewAuxWidth();
     runWithoutEditorCoreRender(() => editorCore.openTab(baseTab));
     activeFileTabId = editorCore.getActiveTabId();
-    if (hadPreview) renderPreviewOnly();
+    if (window.zion?.inspector?.open || hadPreview) renderPreviewOnly();
     else showPreviewPaneIncremental();
 
     try {
@@ -1599,7 +1834,7 @@ function createFilesPanel(container) {
     if (!a || !b || a.kind !== b.kind) return false;
     if (a.kind === "text" || a.kind === "memory-text") return String(a.content || "") === String(b.content || "");
     if (a.kind === "binary") return Number(a.size || 0) === Number(b.size || 0);
-    if (a.kind === "image") return Number(a.blob?.size || 0) === Number(b.blob?.size || 0);
+    if (a.kind === "image" || a.kind === "pdf") return Number(a.blob?.size || 0) === Number(b.blob?.size || 0);
     return JSON.stringify(a) === JSON.stringify(b);
   }
 
@@ -1641,7 +1876,8 @@ function createFilesPanel(container) {
       requestAnimationFrame(() => scrollRevealedNode(node.key));
       if (reveal.open && node.kind === "file") openFile(node);
       return;
-    }    revealStatus = "";
+    }
+    revealStatus = "";
     window.showToast?.(t("files.revealNotFound", "File not found in current explorer source"));
     scheduleRender();
   }
@@ -1653,10 +1889,17 @@ function createFilesPanel(container) {
     expanded.add(node.key);
     saveExpanded(expanded);
     await ensureDirectoryLoaded(node, { incremental: false });
-    const children = sortNodes(dirCache.get(node.key) || [], sortBy);
-    for (const child of children) {
-      const found = await findNodeForReveal(child, target);
-      if (found) return found;
+    let guard = 0;
+    while (!disposed && guard < 200) {
+      const children = sortNodes(dirCache.get(node.key) || [], sortBy);
+      for (const child of children) {
+        const found = await findNodeForReveal(child, target);
+        if (found) return found;
+      }
+      if (!hasMoreDirectoryChildren(node)) break;
+      guard += 1;
+      const loaded = await loadMoreDirectoryChildren(node, { render: false });
+      if (!loaded) break;
     }
     return null;
   }
@@ -1774,10 +2017,27 @@ function createLocalProvider() {
       const ok = await ensurePermission(node.handle, "read");
       if (!ok) throw new Error(t("files.permissionDenied", "Permission denied"));
       const file = await node.handle.getFile();
-      if (isImageFile(file, node.name)) return { kind: "image", blob: file };
+        if (isImageFile(file, node.name)) {
+          if (file.size > MAX_IMAGE_PREVIEW_BYTES) throw new Error(t("files.tooLarge", "File is too large to preview"));
+          return { kind: "image", blob: file };
+        }
+        if (isPdfFile(file, node.name)) {
+          if (file.size > MAX_PDF_PREVIEW_BYTES) throw new Error(t("files.tooLarge", "File is too large to preview"));
+          return { kind: "pdf", blob: file, size: file.size };
+        }
       if (!isTextLikeFile(file, node.name)) return { kind: "binary", size: file.size };
-      if (file.size > MAX_TEXT_PREVIEW_BYTES) throw new Error(t("files.tooLarge", "File is too large to preview"));
-      return { kind: "text", content: await file.text(), size: file.size };
+        const truncated = file.size > MAX_TEXT_PREVIEW_BYTES;
+        const preview = truncated ? file.slice(0, MAX_TEXT_PREVIEW_BYTES) : file;
+        return {
+          kind: "text",
+          content: await preview.text(),
+          size: file.size,
+          truncated,
+          loadedBytes: preview.size,
+          loadFullContent: truncated && isHtmlFileName(node.name) && file.size <= MAX_HTML_PREVIEW_BYTES
+            ? async () => await file.text()
+            : undefined
+        };
     },
     async downloadFile(node) {
       if (!node?.handle) throw new Error(t("files.handleUnavailable", "File handle unavailable"));
@@ -1824,12 +2084,23 @@ function createTerminalProvider(sourceId) {
         modified: null
       }];
     },
-    async listChildren(node) {
-      const data = await runTerminalJson(sessionId, buildTerminalListCommand(node.path));
+    async listChildren(node, opts = {}) {
+      const offset = Math.max(0, Number(opts?.offset || 0));
+      const limit = Math.max(1, Math.min(1000, Number(opts?.limit || TERMINAL_LIST_PAGE_SIZE)));
+      const data = await runTerminalJson(sessionId, buildTerminalListCommand(node.path, offset, limit));
       const entries = Array.isArray(data?.entries) ? data.entries : [];
-      return entries
-        .filter((entry) => entry && !shouldIgnoreName(entry.name))
-        .map((entry) => normalizeTerminalNode(sourceId, sessionId, entry));
+      const children = entries
+        .filter((entry) => {
+          const name = Array.isArray(entry) ? entry[0] : entry?.name;
+          return entry && !shouldIgnoreName(name);
+        })
+        .map((entry) => normalizeTerminalNode(sourceId, sessionId, entry, node.path));
+      const nextOffset = Number(data?.nextOffset);
+      return {
+        children,
+        hasMore: data?.hasMore === true,
+        nextOffset: Number.isFinite(nextOffset) ? nextOffset : offset + entries.length
+      };
     },
     async readFile(node) {
       return await readTerminalFileChunked(sessionId, node.path);
@@ -1906,20 +2177,34 @@ async function normalizeChildNode(parent, name, handle) {
   return base;
 }
 
-function normalizeTerminalNode(sourceId, sessionId, entry) {
-  const path = String(entry.path || "");
+function normalizeTerminalNode(sourceId, sessionId, entry, parentPath = "") {
+  const compact = Array.isArray(entry);
+  const name = compact ? String(entry[0] || "") : String(entry.name || "");
+  const kind = compact
+    ? (entry[1] === "d" || entry[1] === "directory" ? "directory" : "file")
+    : (entry.kind === "directory" ? "directory" : "file");
+  const path = compact ? joinTerminalPath(parentPath, name) : String(entry.path || "");
+  const size = compact ? Number(entry[2]) : entry.size;
+  const modified = compact ? Number(entry[3]) : entry.modified;
   return {
     key: terminalNodeKey(sessionId, path),
     sourceId,
     provider: "terminal",
     sessionId,
-    kind: entry.kind === "directory" ? "directory" : "file",
-    name: String(entry.name || path.split("/").filter(Boolean).pop() || path || "untitled"),
+    kind,
+    name: name || path.split("/").filter(Boolean).pop() || path || "untitled",
     path,
     displayPath: path,
-    size: typeof entry.size === "number" ? entry.size : null,
-    modified: typeof entry.modified === "number" ? entry.modified : null
+    size: Number.isFinite(size) ? size : null,
+    modified: Number.isFinite(modified) ? modified : null
   };
+}
+
+function joinTerminalPath(parentPath, name) {
+  const base = String(parentPath || "").replace(/\/+$/, "");
+  const leaf = String(name || "").replace(/^\/+/, "");
+  if (!base || base === "/") return `/${leaf}`;
+  return leaf ? `${base}/${leaf}` : base;
 }
 
 function buildDisplayPath(rootPath, segments) {
@@ -2099,13 +2384,7 @@ export async function ensureRevealSourceForPath(path, sourceHint = "") {
   const fallback = resolveSourceId(sourceHint || inferSourceFromPath(rawPath));
   if (!rawPath || !isTerminalPath(rawPath)) return fallback;
 
-  let sessions = getTerminalSessions();
-  if (!sessions.length) {
-    try {
-      const refreshed = await window.zion.commands?.executeCommand?.("terminal.refreshSessions");
-      if (Array.isArray(refreshed)) sessions = refreshed;
-    } catch {}
-  }
+  const sessions = await getTerminalSessionsFresh();
   const hintSession = getTerminalSessionFromSource(sourceHint || fallback, sessions);
   const matched = findBestTerminalSessionForPath(rawPath, sessions, hintSession);
   if (matched?.id) {    return `terminal:${matched.id}`;
@@ -2116,9 +2395,114 @@ export async function ensureRevealSourceForPath(path, sourceHint = "") {
   }  return fallback;
 }
 
+export async function ensureDirectorySourceForPath(path, sourceHint = "") {
+  const rawPath = normalizeRevealPath(path);
+  const fallback = resolveSourceId(sourceHint || inferSourceFromPath(rawPath));
+  if (!rawPath || !isTerminalPath(rawPath)) return fallback;
+  const sessions = await getTerminalSessionsFresh();
+  const hintSession = getTerminalSessionFromSource(sourceHint || fallback, sessions);
+  const exact = findExactTerminalSessionForPath(rawPath, sessions, hintSession);
+  if (exact?.id) return `terminal:${exact.id}`;
+  const created = await createTerminalProjectForDirectory(rawPath, hintSession);
+  if (created?.id) return `terminal:${created.id}`;
+  return "";
+}
+
+export async function detectPathKindForContext(path, sourceHint = "") {
+  const rawPath = normalizeRevealPath(path);
+  if (!rawPath) return { kind: "unknown", sourceId: resolveSourceId(sourceHint || "local") };
+  if (!isTerminalPath(rawPath)) return { kind: "unknown", sourceId: resolveSourceId(sourceHint || "local") };
+  const fallback = resolveSourceId(sourceHint || inferSourceFromPath(rawPath));
+  const sessions = await getTerminalSessionsFresh();
+  const session = selectTerminalSessionForPathKind(rawPath, sessions, sourceHint, fallback);
+  const fallbackSourceId = isLikelyLocalMachinePath(rawPath) ? "local" : fallback;
+  if (!session?.id) return { kind: rawPath.endsWith("/") ? "directory" : "unknown", sourceId: fallbackSourceId };
+  const sessionId = String(session.id);
+  const marker = "__ZION_PATH_KIND__";
+  const command = `p=${shellQuote(rawPath)}; case "$p" in "~") p="$HOME" ;; "~/"*) p="$HOME/\${p#??}" ;; esac; if [ -d "$p" ]; then printf '${marker}:directory\n'; elif [ -f "$p" ]; then printf '${marker}:file\n'; elif [ -e "$p" ]; then printf '${marker}:other\n'; else printf '${marker}:missing\n'; fi`;
+  try {
+    const rec = await window.zion.commands?.executeCommand?.("terminal.executeCommand", {
+      session_id: sessionId,
+      command,
+      timeout: 8000,
+      silent: true
+    });
+    const output = getTerminalOutput(rec);
+    const match = String(output || "").match(/__ZION_PATH_KIND__:(directory|file|other|missing)/);
+    return {
+      kind: match?.[1] || "unknown",
+      sourceId: `terminal:${sessionId}`
+    };
+  } catch {
+    return { kind: "unknown", sourceId: `terminal:${sessionId}` };
+  }
+}
+
+function selectTerminalSessionForPathKind(path, sessions = getTerminalSessions(), sourceHint = "", fallback = "terminal:active") {
+  const candidates = getUsableTerminalSessionsForPath(path, sessions);
+  const hintSession = getTerminalSessionFromSource(sourceHint || fallback, candidates);
+  const activeSession = getTerminalSessionFromSource("terminal:active", candidates);
+  const localSessions = candidates.filter(isLocalTerminalSession);
+  if (isLikelyLocalMachinePath(path)) {
+    const localHint = isLocalTerminalSession(hintSession) ? hintSession : null;
+    return findBestTerminalSessionForPath(path, localSessions, localHint)
+      || localHint
+      || (isLocalTerminalSession(activeSession) ? activeSession : null)
+      || localSessions[0]
+      || null;
+  }
+  return findBestTerminalSessionForPath(path, candidates, hintSession)
+    || hintSession
+    || activeSession
+    || localSessions[0]
+    || null;
+}
+
+function isLikelyLocalMachinePath(path) {
+  const raw = normalizeRevealPath(path);
+  return isLiteralTildePath(raw) || /^\/(?:Users|Volumes|Applications|Library|System|private|tmp|var|opt)(?:\/|$)/.test(raw);
+}
+
+function isRemoteTerminalSession(session) {
+  if (!session?.id) return false;
+  const type = String(session?.type || "local").trim().toLowerCase();
+  const host = String(session?.ssh_host || session?.host || session?.hostname || session?.remote_host || "").trim();
+  return type === "ssh" || !!host;
+}
+
+function isLocalTerminalSession(session) {
+  return !!session?.id && !isRemoteTerminalSession(session);
+}
+
 function isTerminalPath(path) {
   const raw = String(path || "").trim();
   return raw.startsWith("/") || raw.startsWith("~/");
+}
+
+function isLiteralTildePath(path) {
+  const raw = String(path || "").trim();
+  return raw === "~" || raw.startsWith("~/");
+}
+
+function hasLiteralTildeCwd(session) {
+  return isLiteralTildePath(normalizeRevealPath(session?.cwd || session?.initial_cwd || ""));
+}
+
+function getUsableTerminalSessionsForPath(path, sessions = getTerminalSessions()) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  if (!isLiteralTildePath(normalizeRevealPath(path))) return list;
+  return list.filter((session) => !hasLiteralTildeCwd(session));
+}
+
+async function getTerminalSessionsFresh() {
+  let sessions = getTerminalSessions();
+  if (!sessions.length) {
+    try {
+      const refreshed = await window.zion.commands?.executeCommand?.("terminal.refreshSessions");
+      if (Array.isArray(refreshed)) sessions = refreshed;
+    } catch {}
+  }
+  return Array.isArray(sessions) ? sessions : [];
 }
 
 function getTerminalSessionFromSource(sourceId, sessions = getTerminalSessions()) {
@@ -2132,9 +2516,17 @@ function getTerminalSessionFromSource(sourceId, sessions = getTerminalSessions()
 
 function findBestTerminalSessionForPath(path, sessions = getTerminalSessions(), hintSession = null) {
   const normalizedPath = normalizeRevealPath(path);
-  const candidates = Array.isArray(sessions) ? sessions : [];
+  const candidates = getUsableTerminalSessionsForPath(normalizedPath, sessions);
   const sameDevice = hintSession ? candidates.filter((session) => isSameTerminalDevice(session, hintSession)) : candidates;
   return pickBestSessionByCwd(normalizedPath, sameDevice) || (!hintSession ? null : pickBestSessionByCwd(normalizedPath, candidates));
+}
+
+function findExactTerminalSessionForPath(path, sessions = getTerminalSessions(), hintSession = null) {
+  const normalizedPath = normalizeRevealPath(path);
+  const candidates = hintSession
+    ? getUsableTerminalSessionsForPath(normalizedPath, sessions).filter((session) => isSameTerminalDevice(session, hintSession))
+    : getUsableTerminalSessionsForPath(normalizedPath, sessions);
+  return candidates.find((session) => normalizeRevealPath(session?.cwd || session?.initial_cwd || "") === normalizedPath) || null;
 }
 
 function pickBestSessionByCwd(path, sessions) {
@@ -2176,9 +2568,23 @@ async function createTerminalProjectForPath(path, hintSession = null) {
   }
 }
 
+async function createTerminalProjectForDirectory(path, hintSession = null) {
+  const initial_cwd = normalizeRevealPath(path);
+  if (!initial_cwd) return null;
+  const payload = buildTerminalCreatePayload(initial_cwd, hintSession);
+  try {
+    const created = await window.zion.commands?.executeCommand?.("terminal.createSession", payload);
+    if (created && typeof created === "object" && created.id) return created;
+    return findExactTerminalSessionForPath(initial_cwd, getTerminalSessions(), hintSession);
+  } catch (e) {
+    try { window.showToast?.(`Failed to create Files project: ${e?.message || String(e)}`); } catch {}
+    return null;
+  }
+}
+
 function buildTerminalCreatePayload(initial_cwd, hintSession = null) {
   const type = String(hintSession?.type || "local").trim() || "local";
-  const payload = { type, initial_cwd };
+  const payload = isLiteralTildePath(initial_cwd) ? { type } : { type, initial_cwd };
   if (type === "ssh") {
     const ssh_host = String(hintSession?.ssh_host || hintSession?.host || "").trim();
     const ssh_user = String(hintSession?.ssh_user || hintSession?.user || "").trim();
@@ -2321,7 +2727,8 @@ async function getTerminalCwd(sessionId, session) {
     const rec = await window.zion.commands?.executeCommand?.("terminal.executeCommand", {
       session_id: sessionId,
       command: "pwd",
-      timeout: 8000
+      timeout: 8000,
+      silent: true
     });
     const output = getTerminalOutput(rec).trim().split(/\r?\n/).pop();
     return String(output || "").trim();
@@ -2335,14 +2742,27 @@ async function runTerminalJson(sessionId, command) {
   const rec = await window.zion.commands?.executeCommand?.("terminal.executeCommand", {
     session_id: sessionId,
     command,
-    timeout: 30000
+    timeout: 30000,
+    silent: true
   });
   if (typeof rec === "string") throw new Error(rec);
   const output = getTerminalOutput(rec);
   const parsed = parseJsonFromOutput(output);
-  if (!parsed) throw new Error(output || t("files.terminalJsonFailed", "Terminal command did not return JSON"));
+  if (!parsed) throw new Error(formatTerminalJsonError(output, rec));
   if (parsed.ok === false) throw new Error(parsed.error || t("files.terminalCommandFailed", "Terminal command failed"));
   return parsed;
+}
+
+function formatTerminalJsonError(output, rec) {
+  if (rec?.truncated === true) {
+    return t("files.terminalOutputTruncated", "Terminal output was truncated while listing this folder.");
+  }
+  const text = String(output || "").trim();
+  if (!text) return t("files.terminalJsonFailed", "Terminal command did not return JSON");
+  if (text.includes('"entries"') || text.includes('\\"entries\\"')) {
+    return t("files.terminalJsonFailed", "Terminal command did not return JSON");
+  }
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 }
 
 function getTerminalOutput(rec) {
@@ -2356,11 +2776,22 @@ function getTerminalOutput(rec) {
 function parseJsonFromOutput(output) {
   const text = String(output || "").trim();
   if (!text) return null;
-  try { return JSON.parse(text); } catch {}
+  const parseCandidate = (candidate, depth = 0) => {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (typeof parsed === "string" && depth < 2) return parseCandidate(parsed.trim(), depth + 1);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+  const parsed = parseCandidate(text);
+  if (parsed) return parsed;
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start >= 0 && end > start) {
-    try { return JSON.parse(text.slice(start, end + 1)); } catch {}
+    const sliced = parseCandidate(text.slice(start, end + 1));
+    if (sliced) return sliced;
   }
   return null;
 }
@@ -2368,13 +2799,15 @@ function parseJsonFromOutput(output) {
 async function readTerminalFileChunked(sessionId, path) {
   const meta = await runTerminalJson(sessionId, buildTerminalStatCommand(path, MAX_TEXT_PREVIEW_BYTES));
   if (!meta?.ok) throw new Error(meta?.error || t("files.openFailed", "Failed to open file"));
-  if (meta.tooLarge) throw new Error(t("files.tooLarge", "File is too large to preview"));
   if (meta.binary) return { kind: "binary", size: meta.size };
 
   const size = Number(meta.size || 0);
+  if (meta.image && size > MAX_IMAGE_PREVIEW_BYTES) throw new Error(t("files.tooLarge", "File is too large to preview"));
+  if (meta.pdf && size > MAX_PDF_PREVIEW_BYTES) throw new Error(t("files.tooLarge", "File is too large to preview"));
+  const previewSize = meta.image || meta.pdf ? size : Math.min(size, MAX_TEXT_PREVIEW_BYTES);
   const chunks = [];
-  for (let offset = 0; offset < size; offset += TERMINAL_READ_CHUNK_BYTES) {
-    const part = await runTerminalJson(sessionId, buildTerminalReadChunkCommand(path, offset, TERMINAL_READ_CHUNK_BYTES));
+  for (let offset = 0; offset < previewSize; offset += TERMINAL_READ_CHUNK_BYTES) {
+    const part = await runTerminalJson(sessionId, buildTerminalReadChunkCommand(path, offset, Math.min(TERMINAL_READ_CHUNK_BYTES, previewSize - offset)));
     if (!part?.ok || typeof part.base64 !== "string") {
       throw new Error(part?.error || t("files.openFailed", "Failed to open file"));
     }
@@ -2388,12 +2821,72 @@ async function readTerminalFileChunked(sessionId, path) {
       size
     };
   }
+  if (meta.pdf) {
+    return {
+      kind: "pdf",
+      blob: base64ChunksToBlob(chunks, "application/pdf"),
+      size
+    };
+  }
 
   return {
     kind: "text",
     content: base64ChunksToText(chunks),
-    size
+    size,
+    truncated: previewSize < size,
+    loadedBytes: previewSize,
+    loadFullContent: previewSize < size && isHtmlFileName(path) && size <= MAX_HTML_PREVIEW_BYTES
+      ? async () => await readTerminalFullText(sessionId, path)
+      : undefined
   };
+}
+
+async function readTerminalFullText(sessionId, path) {
+  const base = getLocalToolsBaseUrl().replace(/\/$/, "");
+  const resolvedPath = await resolveTerminalHomePath(sessionId, path);
+  let url = `${base}/files/read?path=${encodeURIComponent(resolvedPath)}`;
+  if (sessionId) url += `&session_id=${encodeURIComponent(String(sessionId))}`;
+  const res = await fetch(url, { method: "GET" });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || data?.error) {
+    throw new Error(String(data?.error || `HTTP ${res.status}`));
+  }
+  if (typeof data?.content !== "string") throw new Error(t("files.openFailed", "Failed to open file"));
+  return data.content;
+}
+
+async function resolveTerminalHomePath(sessionId, path) {
+  const raw = String(path || "").trim();
+  if (raw !== "~" && !raw.startsWith("~/")) return raw;
+  let home = terminalHomeCache.get(sessionId);
+  if (!home) {
+    const marker = "__ZION_HOME__:";
+    const rec = await window.zion.commands?.executeCommand?.("terminal.executeCommand", {
+      session_id: sessionId,
+      command: `printf '${marker}%s\\n' "$HOME"`,
+      timeout: 8000,
+      silent: true
+    });
+    const match = String(getTerminalOutput(rec) || "").match(/__ZION_HOME__:(.+)/);
+    home = String(match?.[1] || "").trim().replace(/\/+$/, "");
+    if (!home) throw new Error(t("files.openFailed", "Failed to open file"));
+    terminalHomeCache.set(sessionId, home);
+  }
+  return raw === "~" ? home : `${home}/${raw.slice(2)}`;
+}
+
+function getLocalToolsBaseUrl() {
+  const stateValue = window.zion?.state?.get?.("localTools.baseUrl");
+  if (typeof stateValue === "string" && stateValue.trim()) return stateValue.trim();
+  try {
+    const stored = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
+    if (stored) return stored.trim();
+  } catch {}
+  return "http://127.0.0.1:8765";
+}
+
+function isHtmlFileName(value) {
+  return /\.(?:html?|xhtml)$/i.test(String(value || ""));
 }
 
 function terminalNodeKey(sessionId, path) {
@@ -2416,42 +2909,51 @@ function isNodeWithinRootKey(key, root) {
   return false;
 }
 
-function buildTerminalListCommand(path) {
+function buildTerminalListCommand(path, offset = 0, limit = TERMINAL_LIST_PAGE_SIZE) {
   const script = `
 import json, os, sys
-p = sys.argv[1]
+p = os.path.expanduser(sys.argv[1])
+offset = max(0, int(sys.argv[2]))
+limit = max(1, int(sys.argv[3]))
 try:
     entries = []
+    seen = 0
+    emitted = 0
+    has_more = False
     with os.scandir(p) as it:
         for e in it:
+            if seen < offset:
+                seen += 1
+                continue
+            if emitted >= limit:
+                has_more = True
+                break
+            seen += 1
             try:
                 st = e.stat(follow_symlinks=False)
-                entries.append({
-                    "name": e.name,
-                    "path": os.path.join(p, e.name),
-                    "kind": "directory" if e.is_dir(follow_symlinks=False) else "file",
-                    "size": int(st.st_size),
-                    "modified": int(st.st_mtime * 1000)
-                })
+                entries.append([
+                    e.name,
+                    "d" if e.is_dir(follow_symlinks=False) else "f",
+                    int(st.st_size),
+                    int(st.st_mtime * 1000)
+                ])
+                emitted += 1
             except Exception:
                 pass
-    print(json.dumps({"ok": True, "entries": entries}, ensure_ascii=False))
+    print(json.dumps({"ok": True, "entries": entries, "hasMore": has_more, "nextOffset": seen}, ensure_ascii=False, separators=(",", ":")))
 except Exception as exc:
-    print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+    print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, separators=(",", ":")))
 `;
-  return `python3 -c ${shellQuote(script)} ${shellQuote(path || ".")}`;
+  return `python3 -c ${shellQuote(script)} ${shellQuote(path || ".")} ${shellQuote(String(Math.max(0, Number(offset || 0))))} ${shellQuote(String(Math.max(1, Number(limit || TERMINAL_LIST_PAGE_SIZE))))}`;
 }
 
 function buildTerminalStatCommand(path, limit) {
   const script = `
 import json, mimetypes, os, sys
-p = sys.argv[1]
+p = os.path.expanduser(sys.argv[1])
 limit = int(sys.argv[2])
 try:
     size = os.path.getsize(p)
-    if size > limit:
-        print(json.dumps({"ok": True, "tooLarge": True, "size": size}))
-        raise SystemExit
     with open(p, "rb") as f:
         head = f.read(4096)
     mime = mimetypes.guess_type(p)[0] or ""
@@ -2459,10 +2961,14 @@ try:
     if mime.startswith("image/") or ext in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]:
         print(json.dumps({"ok": True, "image": True, "mime": mime or "application/octet-stream", "size": size}))
         raise SystemExit
+    if mime == "application/pdf" or ext == ".pdf":
+        print(json.dumps({"ok": True, "pdf": True, "mime": "application/pdf", "size": size}))
+        raise SystemExit
     if b"\\0" in head:
         print(json.dumps({"ok": True, "binary": True, "size": size}))
         raise SystemExit
-    print(json.dumps({"ok": True, "text": True, "mime": mime or "text/plain", "size": size}, ensure_ascii=False))
+    result_payload = {"ok": True, "text": True, "mime": mime or "text/plain", "size": size, "truncated": size > limit}
+    print(json.dumps(result_payload, ensure_ascii=False))
 except Exception as exc:
     print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
 `;
@@ -2471,8 +2977,8 @@ except Exception as exc:
 
 function buildTerminalReadChunkCommand(path, offset, length) {
   const script = `
-import base64, json, sys
-p = sys.argv[1]
+import base64, json, os, sys
+p = os.path.expanduser(sys.argv[1])
 offset = int(sys.argv[2])
 length = int(sys.argv[3])
 try:
@@ -2489,7 +2995,7 @@ except Exception as exc:
 function buildTerminalDownloadCommand(path, limit) {
   const script = `
 import base64, json, mimetypes, os, sys
-p = sys.argv[1]
+p = os.path.expanduser(sys.argv[1])
 limit = int(sys.argv[2])
 try:
     size = os.path.getsize(p)
@@ -3258,6 +3764,10 @@ function isImageFile(file, name) {
   const type = String(file?.type || "");
   if (type.startsWith("image/")) return true;
   return ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(extensionOf(name));
+}
+
+function isPdfFile(file, name) {
+  return String(file?.type || "").toLowerCase() === "application/pdf" || extensionOf(name) === "pdf";
 }
 
 function isTextLikeFile(file, name) {

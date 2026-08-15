@@ -1,7 +1,7 @@
 {
   "name": "dev.autocompletion",
   "version": "0.0.1",
-  "description": "Editor autocompletion extension",
+  "description": "Provide context-aware completions in the editor.",
   "main": "./main.js",
   "author": "Zion",
   "license": "MIT",
@@ -10,6 +10,26 @@
     "name": "Autocompletion",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "自动补全",
+        "en-US": "Autocompletion"
+      },
+      "description": {
+        "zh-CN": "在编辑器中提供上下文相关的输入补全。",
+        "en-US": "Provide context-aware completions in the editor."
+      },
+      "icon": "sparkle",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "在编辑器中提供上下文相关的输入补全。"
+        ],
+        "en-US": [
+          "Provide context-aware completions in the editor."
+        ]
+      }
+    },
     "dependencies": {},
     "contributes": {
       "commands": [

@@ -612,12 +612,15 @@ const scrollbarMarkersPlugin = ViewPlugin.fromClass(class {
     // Append to editor dom so it sits on top of scroller or inside the wrapper
     view.dom.appendChild(this.container);
     this.rafId = 0;
+    this.updateTimer = 0;
     this.tooltip = null;
     this.updateMarkers();
   }
 
   update(update) {
-    if (update.docChanged || update.geometryChanged || update.viewportChanged) {
+    if (update.docChanged) {
+      this.scheduleUpdateMarkers();
+    } else if ((update.geometryChanged || update.viewportChanged) && !this.updateTimer) {
       this.updateMarkers();
     }
   }
@@ -626,6 +629,7 @@ const scrollbarMarkersPlugin = ViewPlugin.fromClass(class {
     this.container.remove();
     this.hideTooltip();
     if (this.rafId) window.cancelAnimationFrame(this.rafId);
+    if (this.updateTimer) window.clearTimeout(this.updateTimer);
   }
 
   hideTooltip() {
@@ -670,7 +674,19 @@ const scrollbarMarkersPlugin = ViewPlugin.fromClass(class {
     setTimeout(() => document.addEventListener("click", onClick), 0);
   }
 
+  scheduleUpdateMarkers() {
+    if (this.updateTimer) window.clearTimeout(this.updateTimer);
+    this.updateTimer = window.setTimeout(() => {
+      this.updateTimer = 0;
+      this.updateMarkers();
+    }, 120);
+  }
+
   updateMarkers() {
+    if (this.updateTimer) {
+      window.clearTimeout(this.updateTimer);
+      this.updateTimer = 0;
+    }
     if (this.rafId) window.cancelAnimationFrame(this.rafId);
     this.rafId = window.requestAnimationFrame(() => {
       if (!this.view.dom.contains(this.container)) {

@@ -30,6 +30,7 @@ import { selectionToolbarExtension } from "./extensions/selection-toolbar";
 import { getCM, vim, Vim } from "@replit/codemirror-vim";
 import { inlineWidgetDecorationsExtension } from "./inlineWidgets";
 import { obsidianSyntaxExtension } from "./extensions/obsidian";
+import { roleScopedFencedCode } from "./roleScopedMarkdown";
 
 function selectNextOccurrenceDown(view: EditorView): boolean {
   const { state } = view;
@@ -227,7 +228,13 @@ function getSelectionHighlightExtensions(enabled: boolean): Extension[] {
 export type CursorPos = { line: number; ch: number };
 
 export type EditorSetValueOptions = {
-  source?: "session-load";
+  source?: "session-load" | "session-seed";
+};
+
+export type EditorCoreOptions = {
+  lineNumbers?: boolean;
+  activeLineHighlight?: boolean;
+  folding?: boolean;
 };
 
 export type VimOperationalMode = "normal" | "insert" | "replace" | "visual";
@@ -238,10 +245,169 @@ function createEditorId(panelId: string): string {
   return `${panelId || "editor"}:${nextEditorCoreSeq++}`;
 }
 
+type MouseResolvedPosition = {
+  pos: number;
+  bias: -1 | 1;
+};
+
+type VisualRowPosition = {
+  pos: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
+
+type VisualRow = {
+  top: number;
+  bottom: number;
+  center: number;
+  positions: VisualRowPosition[];
+};
+
+function normalizeRect(rect: { left?: number; right?: number; top?: number; bottom?: number; x?: number; y?: number; width?: number; height?: number } | null): VisualRowPosition | null {
+  if (!rect) return null;
+  const left = Number.isFinite(rect.left) ? rect.left! : rect.x;
+  const top = Number.isFinite(rect.top) ? rect.top! : rect.y;
+  const right = Number.isFinite(rect.right) ? rect.right! : (Number.isFinite(left) && Number.isFinite(rect.width) ? left! + rect.width! : left);
+  const bottom = Number.isFinite(rect.bottom) ? rect.bottom! : (Number.isFinite(top) && Number.isFinite(rect.height) ? top! + rect.height! : top);
+  if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) return null;
+  return { pos: 0, left: left!, right: right!, top: top!, bottom: bottom! };
+}
+
+function getEventLineStart(view: EditorView, event: MouseEvent, fallbackPos: number): number {
+  try {
+    const target = event.target instanceof Element ? event.target : null;
+    const lineEl = target?.closest(".cm-line");
+    if (lineEl && view.contentDOM.contains(lineEl)) {
+      return view.state.doc.lineAt(view.posAtDOM(lineEl, 0)).from;
+    }
+  } catch {}
+  return view.state.doc.lineAt(fallbackPos).from;
+}
+
+function getCandidateLineStarts(view: EditorView, event: MouseEvent, fallbackPos: number): number[] {
+  const starts = new Set<number>();
+  const add = (pos: number) => {
+    try {
+      const line = view.state.doc.lineAt(Math.max(0, Math.min(view.state.doc.length, pos)));
+      starts.add(line.from);
+      if (line.from > 0) starts.add(view.state.doc.lineAt(line.from - 1).from);
+      if (line.to < view.state.doc.length) starts.add(view.state.doc.lineAt(line.to + 1).from);
+    } catch {}
+  };
+  add(fallbackPos);
+  add(getEventLineStart(view, event, fallbackPos));
+  try {
+    const scrollerRect = view.scrollDOM.getBoundingClientRect();
+    for (const block of view.viewportLineBlocks) {
+      if (block.widget) continue;
+      const top = view.documentTop + block.top;
+      const bottom = view.documentTop + block.bottom;
+      if (bottom < scrollerRect.top - 120 || top > scrollerRect.bottom + 120) continue;
+      if (event.clientY >= top - 120 && event.clientY <= bottom + 120) add(block.from);
+    }
+  } catch {}
+  return [...starts];
+}
+
+function buildVisualRowsForLine(view: EditorView, lineFrom: number, lineTo: number): VisualRow[] {
+  const maxMeasuredLineLength = 2000;
+  if (lineTo - lineFrom > maxMeasuredLineLength) return [];
+  const rows: VisualRow[] = [];
+  for (let pos = lineFrom; pos <= lineTo; pos++) {
+    let rect: ReturnType<EditorView["coordsAtPos"]> | null = null;
+    try { rect = view.coordsAtPos(pos); } catch {}
+    const normalized = normalizeRect(rect);
+    if (!normalized) continue;
+    normalized.pos = pos;
+    const center = (normalized.top + normalized.bottom) / 2;
+    const rowTolerance = Math.max(6, Math.min(10, (normalized.bottom - normalized.top) * 0.6));
+    let row = rows.find(candidate => Math.abs(candidate.center - center) <= rowTolerance);
+    if (!row) {
+      row = { top: normalized.top, bottom: normalized.bottom, center, positions: [] };
+      rows.push(row);
+    }
+    row.top = Math.min(row.top, normalized.top);
+    row.bottom = Math.max(row.bottom, normalized.bottom);
+    row.center = (row.center * row.positions.length + center) / (row.positions.length + 1);
+    row.positions.push(normalized);
+  }
+  rows.sort((a, b) => a.center - b.center);
+  for (const row of rows) row.positions.sort((a, b) => a.left - b.left || a.pos - b.pos);
+  return rows;
+}
+
+function resolveWrappedLineMousePosition(view: EditorView, event: MouseEvent): MouseResolvedPosition | null {
+  const basePos = view.posAtCoords({ x: event.clientX, y: event.clientY }, false);
+  if (basePos == null) return null;
+  const candidateRows: VisualRow[] = [];
+  for (const lineFrom of getCandidateLineStarts(view, event, basePos)) {
+    const line = view.state.doc.lineAt(lineFrom);
+    candidateRows.push(...buildVisualRowsForLine(view, line.from, line.to));
+  }
+  if (!candidateRows.length) return null;
+
+  const targetRow = candidateRows.reduce((best, row) => {
+    const distance = event.clientY < row.top
+      ? row.top - event.clientY
+      : event.clientY > row.bottom
+        ? event.clientY - row.bottom
+        : 0;
+    const bestDistance = event.clientY < best.top
+      ? best.top - event.clientY
+      : event.clientY > best.bottom
+        ? event.clientY - best.bottom
+        : 0;
+    return distance < bestDistance || (distance === bestDistance && Math.abs(event.clientY - row.center) < Math.abs(event.clientY - best.center))
+      ? row
+      : best;
+  }, candidateRows[0]);
+
+  const nearest = targetRow.positions.reduce((best, candidate) => {
+    const candidateX = (candidate.left + candidate.right) / 2;
+    const bestX = (best.left + best.right) / 2;
+    return Math.abs(event.clientX - candidateX) < Math.abs(event.clientX - bestX) ? candidate : best;
+  }, targetRow.positions[0]);
+  const nearestX = (nearest.left + nearest.right) / 2;
+  return { pos: nearest.pos, bias: event.clientX >= nearestX ? 1 : -1 };
+}
+
+function wrappedLineMouseSelectionFix(): Extension {
+  return Prec.highest(EditorView.mouseSelectionStyle.of((view, event) => {
+    if (event.button !== 0 || event.detail !== 1) return null;
+    const start = resolveWrappedLineMousePosition(view, event);
+    if (!start) return null;
+    let startPos = start.pos;
+    const startBias = start.bias;
+    let startSelection = view.state.selection;
+    return {
+      update(update: ViewUpdate) {
+        if (!update.docChanged) return;
+        startPos = update.changes.mapPos(startPos);
+        startSelection = startSelection.map(update.changes);
+      },
+      get(curEvent: MouseEvent, extend: boolean, multiple: boolean) {
+        const cur = resolveWrappedLineMousePosition(view, curEvent)
+          ?? {
+            pos: view.posAtCoords({ x: curEvent.clientX, y: curEvent.clientY }, false) ?? startPos,
+            bias: startBias
+          };
+        const range = startPos === cur.pos
+          ? EditorSelection.cursor(cur.pos, cur.bias)
+          : EditorSelection.range(startPos, cur.pos);
+        if (extend) return EditorSelection.create([EditorSelection.range(startSelection.main.anchor, cur.pos)]);
+        if (multiple) return startSelection.addRange(range);
+        return EditorSelection.create([range]);
+      }
+    };
+  }));
+}
 
 export class EditorCore {
   public view: EditorView;
   private keymapComp = new Compartment();
+  private historyComp = new Compartment();
   private uiComp = new Compartment();
   private themeComp = new Compartment();
   private mdComp = new Compartment();
@@ -250,12 +416,13 @@ export class EditorCore {
   private autocompletionComp = new Compartment();
   private externalComp = new Compartment();
   private externalExtensions: Extension[] = [];
-  private minimapEnabled = true;
+  private minimapEnabled = false;
   private minimapComp = new Compartment();
   private selectionHighlightEnabled = true;
   private selectionHighlightComp = new Compartment();
   private vimModeEnabled = false;
   private vimComp = new Compartment();
+  private themeMode: "light" | "dark" = "dark";
   private vimOperationalMode: VimOperationalMode = "normal";
   private vimOperationalModeListeners = new Set<(mode: VimOperationalMode) => void>();
   private vimModeChangeTarget: any = null;
@@ -278,9 +445,12 @@ export class EditorCore {
   private windowDisposers: Array<() => void> = [];
   private focusReturnScrollGuard: { until: number; scrollTop: number; scrollLeft: number; reason: string } | null = null;
 
-  constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0") {
+  constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0", options: EditorCoreOptions = {}) {
     this._panelId = panelId;
     this._editorId = createEditorId(panelId);
+    this.lineNumbersEnabled = options.lineNumbers ?? true;
+    this.activeLineHighlightEnabled = options.activeLineHighlight ?? true;
+    this.foldEnabled = options.folding ?? true;
     parent.setAttribute("data-panel-id", panelId);
     this.view = new EditorView({
       state: EditorState.create({
@@ -321,19 +491,13 @@ export class EditorCore {
           ),
           // features (line numbers, active line gutter/highlight, auto indent, folding) are placed
           // in a dedicated compartment so they can be toggled at runtime.
-          this.featuresComp.of([
-            lineNumbers(),
-            highlightActiveLineGutter(),
-            highlightActiveLine(),
-            indentOnInput(),
-            this.createFoldGutter()
-          ]),
+          this.featuresComp.of(this.buildFeaturesArray()),
           scrollPastEnd(),
             modDSelectNext,
-          history(),
+          this.historyComp.of(history()),
           // markdown is put into its own compartment so code-language highlighting can
           // be enabled/disabled at runtime.
-          this.mdComp.of(markdown({ codeLanguages: languages, extensions: [GFM] })),
+          this.mdComp.of(markdown({ codeLanguages: languages, extensions: [roleScopedFencedCode, GFM] })),
           this.autocompletionComp.of(getAutocompletionExtension()),
           this.themeComp.of(oneDark),
           this.uiComp.of(this.buildWysiwygExtension()),
@@ -361,7 +525,8 @@ export class EditorCore {
           ),
           // line wrap compartment
           this.lineWrapComp.of(CMEditorView.lineWrapping),
-            this.createFocusReturnGuardExtension()
+          wrappedLineMouseSelectionFix(),
+          this.createFocusReturnGuardExtension()
         ]
       }),
       parent
@@ -410,14 +575,25 @@ export class EditorCore {
 
   setValue(v: string, opts?: EditorSetValueOptions): void {
     const { state } = this.view;
-    const annotations = opts?.source === "session-load"
-      ? Transaction.userEvent.of("zion.sessionLoad")
+    const isSessionReplace = opts?.source === "session-load" || opts?.source === "session-seed";
+    const annotations = isSessionReplace
+      ? [
+          Transaction.userEvent.of(opts?.source === "session-seed" ? "zion.sessionSeed" : "zion.sessionLoad"),
+          Transaction.addToHistory.of(false)
+        ]
       : undefined;
     const tr = state.update({
       changes: { from: 0, to: state.doc.length, insert: v },
-      annotations
+      annotations,
+      effects: isSessionReplace ? this.historyComp.reconfigure([]) : undefined
     });
     this.view.dispatch(tr);
+    if (isSessionReplace) {
+      this.view.dispatch({
+        effects: this.historyComp.reconfigure(history()),
+        annotations: Transaction.addToHistory.of(false)
+      });
+    }
   }
 
   replaceSelection(text: string): void {
@@ -483,6 +659,7 @@ export class EditorCore {
 
   // Enable/disable WYSIWYG live preview dynamically
   setWysiwygEnabled(enabled: boolean): void {
+    if (this.wysiwygEnabled === !!enabled) return;
     this.wysiwygEnabled = !!enabled;
     this.view.dispatch({
       effects: this.uiComp.reconfigure(this.buildWysiwygExtension())
@@ -490,6 +667,7 @@ export class EditorCore {
   }
 
   setWysiwygKeepActiveLineRendered(enabled: boolean): void {
+    if (this.wysiwygKeepActiveLineRendered === !!enabled) return;
     this.wysiwygKeepActiveLineRendered = !!enabled;
     this.view.dispatch({
       effects: this.uiComp.reconfigure(this.buildWysiwygExtension())
@@ -563,6 +741,8 @@ export class EditorCore {
 
   // Theme switcher (light/dark)
   setTheme(theme: "light" | "dark"): void {
+    if (this.themeMode === theme) return;
+    this.themeMode = theme;
     this.view.dispatch({
       effects: this.themeComp.reconfigure(
         theme === "dark"
@@ -612,6 +792,7 @@ export class EditorCore {
   }
 
   setLineNumbersEnabled(enabled: boolean): void {
+    if (this.lineNumbersEnabled === !!enabled) return;
     this.lineNumbersEnabled = !!enabled;
     this.view.dispatch({
       effects: this.featuresComp.reconfigure(this.buildFeaturesArray())
@@ -619,6 +800,7 @@ export class EditorCore {
   }
 
   setActiveLineHighlightEnabled(enabled: boolean): void {
+    if (this.activeLineHighlightEnabled === !!enabled) return;
     this.activeLineHighlightEnabled = !!enabled;
     this.view.dispatch({
       effects: this.featuresComp.reconfigure(this.buildFeaturesArray())
@@ -626,6 +808,7 @@ export class EditorCore {
   }
 
   setAutoIndentEnabled(enabled: boolean): void {
+    if (this.autoIndentEnabled === !!enabled) return;
     this.autoIndentEnabled = !!enabled;
     this.view.dispatch({
       effects: this.featuresComp.reconfigure(this.buildFeaturesArray())
@@ -633,6 +816,7 @@ export class EditorCore {
   }
 
   setFoldingEnabled(enabled: boolean): void {
+    if (this.foldEnabled === !!enabled) return;
     this.foldEnabled = !!enabled;
     this.view.dispatch({
       effects: this.featuresComp.reconfigure(this.buildFeaturesArray())
@@ -640,6 +824,7 @@ export class EditorCore {
   }
 
   setSyntaxHighlightEnabled(enabled: boolean): void {
+    if (this.syntaxHighlightEnabled === !!enabled) return;
     this.syntaxHighlightEnabled = !!enabled;
     // Reconfigure markdown compartment: with or without language-data
     this.view.dispatch({
@@ -652,6 +837,7 @@ export class EditorCore {
   }
 
   setLineWrapEnabled(enabled: boolean): void {
+    if (this.lineWrapEnabled === !!enabled) return;
     this.lineWrapEnabled = !!enabled;
     this.view.dispatch({
       effects: this.lineWrapComp.reconfigure(
@@ -672,6 +858,7 @@ export class EditorCore {
   
 
   setMinimapEnabled(enabled: boolean): void {
+    if (this.minimapEnabled === !!enabled) return;
     this.minimapEnabled = !!enabled;
     this.view.dispatch({
       effects: this.minimapComp.reconfigure(
@@ -749,6 +936,7 @@ export class EditorCore {
   }
 
   setSelectionHighlightEnabled(enabled: boolean): void {
+    if (this.selectionHighlightEnabled === !!enabled) return;
     this.selectionHighlightEnabled = !!enabled;
     this.view.dispatch({
       effects: this.selectionHighlightComp.reconfigure(
@@ -758,6 +946,7 @@ export class EditorCore {
   }
 
   setVimModeEnabled(enabled: boolean): void {
+    if (this.vimModeEnabled === !!enabled) return;
     this.vimModeEnabled = !!enabled;
     this.view.dispatch({
       effects: this.vimComp.reconfigure(

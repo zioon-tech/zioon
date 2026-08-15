@@ -1,5 +1,12 @@
+import type { Text } from "@codemirror/state";
 import type { EditorProxy } from "../types/zion";
 import type { AssistantAnchor, ChatDocFinalizeResult, ChatDocInsertResult, ChatMessage, ChatMessagePart } from "./types";
+import {
+  assistantBlockHeaderText,
+  getAssistantBlockIdFromHeader,
+  sanitizeCardMarkerId,
+  stripAssistantBlockIdComment
+} from "./restore";
 
 const ASSISTANT_ROLE_RE = /^\s*assistant\s+/;
 const ANY_ROLE_RE = /^\s*(system|user|assistant|tool)\s+/;
@@ -14,6 +21,7 @@ type StateLike = {
 
 type InsertAssistantBlockOptions = {
   sessionId: string;
+  assistantBlockId: string;
   state?: StateLike;
   cursor?: { line: number; ch: number };
 };
@@ -22,6 +30,7 @@ type AppendAssistantTokenOptions = {
   token: string;
   anchor?: AssistantAnchor | null;
   startLineHint?: number;
+  moveSelectionToAssistant?: boolean;
 };
 
 type FinalizeAssistantBlockOptions = {
@@ -36,7 +45,14 @@ type EnsureTrailingUserPromptOptions = {
   autoInsertUserPrompt?: boolean;
 };
 
-function findAssistantHeadLine(lines: string[], startLineHint = 0): number {
+function findAssistantHeadLine(lines: string[], startLineHint = 0, assistantBlockId?: string | null): number {
+  const expectedId = sanitizeCardMarkerId(assistantBlockId);
+  if (expectedId) {
+    for (let i = 0; i < lines.length; i++) {
+      if (getAssistantBlockIdFromHeader(lines[i]) === expectedId) return i;
+    }
+    return -1;
+  }
   for (let i = Math.max(0, startLineHint); i < lines.length; i++) {
     if (ASSISTANT_ROLE_RE.test(lines[i])) return i;
   }
@@ -51,6 +67,46 @@ function findAssistantBlockEndLine(lines: string[], assistantLine: number): numb
   let endLine = assistantLine;
   for (let i = assistantLine + 1; i < lines.length; i++) {
     if (ANY_ROLE_RE.test(lines[i])) break;
+    endLine = i;
+  }
+  return endLine;
+}
+
+function findAssistantHeadLineInDoc(
+  doc: Text,
+  startLineHint = 0,
+  assistantBlockId?: string | null
+): number {
+  const expectedId = sanitizeCardMarkerId(assistantBlockId);
+  const hintedLine = Math.max(0, Math.min(doc.lines - 1, startLineHint));
+  const matches = (lineIndex: number): boolean => {
+    const text = doc.line(lineIndex + 1).text;
+    return expectedId
+      ? getAssistantBlockIdFromHeader(text) === expectedId
+      : ASSISTANT_ROLE_RE.test(text);
+  };
+
+  if (matches(hintedLine)) return hintedLine;
+  if (expectedId) {
+    for (let i = 0; i < doc.lines; i++) {
+      if (i !== hintedLine && matches(i)) return i;
+    }
+    return -1;
+  }
+  for (let i = hintedLine + 1; i < doc.lines; i++) {
+    if (matches(i)) return i;
+  }
+  for (let i = 0; i < hintedLine; i++) {
+    if (matches(i)) return i;
+  }
+  return -1;
+}
+
+function findAssistantBlockEndLineInDoc(doc: Text, assistantLine: number): number {
+  if (assistantLine < 0) return -1;
+  let endLine = assistantLine;
+  for (let i = assistantLine + 1; i < doc.lines; i++) {
+    if (ANY_ROLE_RE.test(doc.line(i + 1).text)) break;
     endLine = i;
   }
   return endLine;
@@ -210,9 +266,12 @@ export function parseMessages(content: string): ChatMessage[] {
     if (TOOL_WIDGET_STUB_RE.test(trimmed)) continue;
 
     if (roleMatch) {
-      const body = roleMatch[2].trim();
-        if (/^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/i.test(body)) continue;
-        if (/^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/i.test(body)) continue;
+      const contentPart = roleMatch[1] === "assistant"
+        ? stripAssistantBlockIdComment(roleMatch[2])
+        : roleMatch[2];
+      const body = contentPart.trim();
+      if (/^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/i.test(body)) continue;
+      if (/^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/i.test(body)) continue;
       if (currentContent.length > 0 || currentImages.length > 0) {
         messages.push({
           role: currentRole,
@@ -222,7 +281,6 @@ export function parseMessages(content: string): ChatMessage[] {
         currentImages = [];
       }
       currentRole = roleMatch[1];
-      const contentPart = roleMatch[2];
       if (contentPart.trim()) currentContent.push(contentPart);
       continue;
     }
@@ -246,6 +304,9 @@ export function parseMessages(content: string): ChatMessage[] {
 }
 
 export function insertAssistantBlock(editor: EditorProxy, opts: InsertAssistantBlockOptions): ChatDocInsertResult {
+  const assistantBlockId = sanitizeCardMarkerId(opts.assistantBlockId);
+  if (!assistantBlockId) return { anchor: null, insertLine: (opts.cursor || editor.getCursor()).line + 1 };
+  const assistantHeader = assistantBlockHeaderText(assistantBlockId);
   const cursor = opts.cursor || editor.getCursor();
   const fullDoc = editor.getValue();
   const lines = fullDoc.split("\n");
@@ -261,7 +322,7 @@ export function insertAssistantBlock(editor: EditorProxy, opts: InsertAssistantB
       targetLine = Math.max(0, lines.length - 1);
     }
     expectedHeadLine = targetLine;
-    editor.replaceRange("assistant ", { line: targetLine, ch: 0 });
+    editor.replaceRange(assistantHeader, { line: targetLine, ch: 0 });
   } else {
     let hasContentBelow = false;
     for (let k = insertLine; k < lines.length; k++) {
@@ -274,15 +335,15 @@ export function insertAssistantBlock(editor: EditorProxy, opts: InsertAssistantB
 
     const currentLineLength = lines[cursor.line].length;
     if (hasContentBelow) {
-      editor.replaceRange("\nassistant \n\nuser ", { line: cursor.line, ch: currentLineLength });
+      editor.replaceRange(`\n${assistantHeader}\n\nuser `, { line: cursor.line, ch: currentLineLength });
     } else {
-      editor.replaceRange("\nassistant ", { line: cursor.line, ch: currentLineLength });
+      editor.replaceRange(`\n${assistantHeader}`, { line: cursor.line, ch: currentLineLength });
     }
   }
 
   const docAfter = editor.getValue();
   const afterLines = docAfter.split("\n");
-  const headLine = findAssistantHeadLine(afterLines, expectedHeadLine);
+  const headLine = findAssistantHeadLine(afterLines, expectedHeadLine, assistantBlockId);
   if (headLine < 0) {
     return { anchor: null, insertLine };
   }
@@ -292,11 +353,13 @@ export function insertAssistantBlock(editor: EditorProxy, opts: InsertAssistantB
   try {
     opts.state?.set(`chat.answerHeadLine.${opts.sessionId}`, headLine);
     opts.state?.set(`chat.answerAnchorPos.${opts.sessionId}`, anchorPos);
+    opts.state?.set(`chat.assistantBlockId.${opts.sessionId}`, assistantBlockId);
   } catch {}
 
   return {
     anchor: {
       sessionId: opts.sessionId,
+      assistantBlockId,
       headLine,
       anchorPos
     },
@@ -305,26 +368,24 @@ export function insertAssistantBlock(editor: EditorProxy, opts: InsertAssistantB
 }
 
 export function appendAssistantToken(editor: EditorProxy, opts: AppendAssistantTokenOptions): boolean {
-  const currentDoc = editor.getValue();
-  const currentLines = currentDoc.split("\n");
-  const assistantLine = findAssistantHeadLine(
-    currentLines,
-    typeof opts.anchor?.headLine === "number"
-      ? opts.anchor.headLine
-      : Math.max(0, (opts.startLineHint ?? 0) - 1)
-  );
-  if (assistantLine === -1) return false;
-
-  const endLine = findAssistantBlockEndLine(currentLines, assistantLine);
-  if (endLine === -1) return false;
-
-  const lastLineText = currentLines[endLine] || "";
   try {
     const view = editor.getView?.();
     const doc = view?.state?.doc;
     if (view && doc) {
-      const line = doc.line(Math.max(1, Math.min(doc.lines, endLine + 1)));
-      const from = line.from + Math.min(line.length, lastLineText.length);
+      const assistantLine = findAssistantHeadLineInDoc(
+        doc,
+        typeof opts.anchor?.headLine === "number"
+          ? opts.anchor.headLine
+          : Math.max(0, (opts.startLineHint ?? 0) - 1),
+        opts.anchor?.assistantBlockId
+      );
+      if (assistantLine === -1) return false;
+      const endLine = findAssistantBlockEndLineInDoc(doc, assistantLine);
+      if (endLine === -1) return false;
+
+      const headLine = doc.line(assistantLine + 1);
+      const line = doc.line(endLine + 1);
+      const from = line.to;
       const nextHead = from + opts.token.length;
       let followLatest = true;
       try {
@@ -337,14 +398,36 @@ export function appendAssistantToken(editor: EditorProxy, opts: AppendAssistantT
         const selectionGestureUntil = Number((window as any).zion?.state?.get?.("editor.selectionGestureUntil") || 0);
         userSelectionGestureActive = selectionGestureUntil > Date.now();
       } catch {}
-      const shouldPreserveUserSelection = userHasSelection || userSelectionGestureActive;
+      const selectionAtAppendPoint = !userHasSelection && view.state.selection.main.head === from;
+      const shouldPreserveUserSelection = userHasSelection || userSelectionGestureActive || !selectionAtAppendPoint;
+      if (opts.anchor) {
+        opts.anchor.headLine = assistantLine;
+        opts.anchor.anchorPos = headLine.from;
+      }
       view.dispatch({
         changes: { from, insert: opts.token },
-        ...(followLatest && !shouldPreserveUserSelection ? { selection: { anchor: nextHead } } : {})
+          ...(followLatest && opts.moveSelectionToAssistant !== false && !shouldPreserveUserSelection
+            ? { selection: { anchor: nextHead } }
+            : {})
       });
       return true;
     }
   } catch {}
+
+  const currentDoc = editor.getValue();
+  const currentLines = currentDoc.split("\n");
+  const assistantLine = findAssistantHeadLine(
+    currentLines,
+    typeof opts.anchor?.headLine === "number"
+      ? opts.anchor.headLine
+      : Math.max(0, (opts.startLineHint ?? 0) - 1),
+    opts.anchor?.assistantBlockId
+  );
+  if (assistantLine === -1) return false;
+
+  const endLine = findAssistantBlockEndLine(currentLines, assistantLine);
+  if (endLine === -1) return false;
+  const lastLineText = currentLines[endLine] || "";
   editor.replaceRange(opts.token, { line: endLine, ch: lastLineText.length });
   return true;
 }
@@ -356,7 +439,8 @@ export function finalizeAssistantBlock(editor: EditorProxy, opts: FinalizeAssist
     currentLines,
     typeof opts.anchor?.headLine === "number"
       ? opts.anchor.headLine
-      : Math.max(0, (opts.startLineHint ?? 0) - 1)
+      : Math.max(0, (opts.startLineHint ?? 0) - 1),
+    opts.anchor?.assistantBlockId
   );
   if (assistantLine === -1) return { ok: false, userLine: null };
 
@@ -378,7 +462,8 @@ export function finalizeAssistantBlock(editor: EditorProxy, opts: FinalizeAssist
     linesNow,
     typeof opts.anchor?.headLine === "number"
       ? opts.anchor.headLine
-      : Math.max(0, (opts.startLineHint ?? 0) - 1)
+      : Math.max(0, (opts.startLineHint ?? 0) - 1),
+    opts.anchor?.assistantBlockId
   );
   if (newAssistantLine === -1) return { ok: true, userLine: null };
 

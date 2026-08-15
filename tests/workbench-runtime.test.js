@@ -4,6 +4,7 @@ import {
   auxiliaryBarRuntime,
   bindWorkbenchCore,
   bottomPanelRuntime,
+  inspectorRuntime,
   responsiveRuntime,
   sideBarRuntime
 } from "../src/ui/workbench/runtime";
@@ -48,6 +49,60 @@ function createState() {
 }
 
 describe("workbench runtime", () => {
+  it("keeps PDF blobs available to the inspector renderer", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+    const blob = new Blob(["%PDF-1.7"], { type: "application/pdf" });
+
+    inspectorRuntime.open({
+      id: "pdf-preview",
+      ownerId: "test",
+      title: "sample.pdf",
+      path: "/tmp/sample.pdf",
+      file: { kind: "pdf", blob, size: blob.size }
+    });
+
+    expect(inspectorRuntime.getActiveItem()?.file).toMatchObject({
+      kind: "pdf",
+      blob,
+      size: blob.size
+    });
+    inspectorRuntime.close("pdf-preview");
+  });
+
+  it("can update inspector width without emitting a full inspector change", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    let changes = 0;
+    const disp = inspectorRuntime.onDidChange(() => {
+      changes += 1;
+    });
+
+    inspectorRuntime.setWidth(620, { emit: false });
+
+    expect(state.get("ui.inspector.width")).toBe(620);
+    expect(state.get("ui.inspector.visible")).toBe(true);
+    expect(changes).toBe(0);
+
+    inspectorRuntime.setWidth(640);
+    expect(changes).toBe(1);
+
+    disp.dispose();
+  });
+
   it("activityBar.activateItem should show sidebar and activate mapped view", () => {
     const state = createState();
     bindWorkbenchCore({
@@ -75,7 +130,7 @@ describe("workbench runtime", () => {
     activityBarRuntime.activateItem("sessions.activity");
 
     expect(state.get("ui.activityBar.activeItemId")).toBe("sessions.activity");
-    expect(state.get("ui.sideBar.visible")).toBe(true);
+    expect(sideBarRuntime.isVisible()).toBe(true);
     expect(state.get("ui.sideBar.activeViewId")).toBe("sessions.list");
 
     dispItem.dispose();
@@ -107,7 +162,7 @@ describe("workbench runtime", () => {
     });
 
     activityBarRuntime.activateItem("sessions.activity");
-    expect(state.get("ui.sideBar.visible")).toBe(true);
+    expect(sideBarRuntime.isVisible()).toBe(true);
 
     activityBarRuntime.activateItem("sessions.activity");
     expect(state.get("ui.sideBar.visible")).toBe(false);

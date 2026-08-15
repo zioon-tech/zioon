@@ -12,6 +12,7 @@ export function createSessionsSidebarViewManager(opts) {
   const LS_DAY_PANEL_COLLAPSED = "zion.sessions.sidebar.dayPanelCollapsed";
   const LS_DAY_PANEL_END_DAY = "zion.sessions.sidebar.dayPanelEndDay";
   const LS_TAG_PANEL_COLLAPSED = "zion.sessions.sidebar.tagPanelCollapsed";
+  const LS_TAG_NODE_COLLAPSED = "zion.sessions.sidebar.tagNodeCollapsed";
 
   function t(key, fallback, values) {
     const fullKey = `dev.session-manager.${key}`;
@@ -26,11 +27,42 @@ export function createSessionsSidebarViewManager(opts) {
     return interpolate(fallback);
   }
 
+  function iconHtml(name, size) {
+    try {
+      const html = window.zionIcons?.htmlFromCodicon?.(name, "", size);
+      if (html) return html;
+    } catch {}
+    const raw = String(name || "").replace(/^codicon-/, "");
+    const style = typeof size === "number" ? ` style="font-size:${size}px;"` : "";
+    return `<span class="codicon codicon-${raw}" aria-hidden="true"${style}></span>`;
+  }
+
   let current = null;
   let revealRaf = 0;
   let heatmapTooltip = null;
   let selectedTag = "";
   const sessionTagsCache = new Map();
+  const collapsedTagNodes = (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_TAG_NODE_COLLAPSED) || "[]");
+      return new Set(Array.isArray(raw) ? raw.map((tag) => String(tag || "").trim()).filter(Boolean) : []);
+    } catch {
+      return new Set();
+    }
+  })();
+
+  function isTagNodeCollapsed(tag) {
+    const key = String(tag || "").trim();
+    return key ? collapsedTagNodes.has(key) : false;
+  }
+
+  function setTagNodeCollapsed(tag, collapsed) {
+    const key = String(tag || "").trim();
+    if (!key) return;
+    if (collapsed) collapsedTagNodes.add(key);
+    else collapsedTagNodes.delete(key);
+    try { localStorage.setItem(LS_TAG_NODE_COLLAPSED, JSON.stringify(Array.from(collapsedTagNodes))); } catch {}
+  }
 
   function hideHeatmapTooltip() {
     try {
@@ -83,6 +115,12 @@ export function createSessionsSidebarViewManager(opts) {
     return `${y}-${m}-${day}`;
   }
 
+  function dateFromDayKey(day) {
+    const match = String(day || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return new Date();
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  }
+
   function formatCompactNumber(value) {
     const n = Number(value || 0);
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
@@ -100,15 +138,42 @@ export function createSessionsSidebarViewManager(opts) {
     return days.has(dayKey(meta.updatedAt || 0)) || days.has(dayKey(meta.createdAt || 0));
   }
 
+  function dayFromTimestamp(value) {
+    const ts = Number(value || 0);
+    if (!Number.isFinite(ts) || ts <= 0) return "";
+    return dayKey(ts);
+  }
+
+  function sessionActivityDays(session, meta) {
+    const days = new Set();
+    const updated = dayFromTimestamp(session?.updatedAt) || dayFromTimestamp(meta?.updatedAt);
+    const created = dayFromTimestamp(session?.createdAt) || dayFromTimestamp(meta?.createdAt);
+    if (updated) days.add(updated);
+    if (created) days.add(created);
+    if (!days.size && session?.id) days.add(dayKey());
+    return days;
+  }
+
   function shiftDay(day, delta) {
-    const d = new Date(`${day || dayKey()}T00:00:00`);
+    const d = dateFromDayKey(day || dayKey());
     d.setDate(d.getDate() + Number(delta || 0));
     return dayKey(d.getTime());
   }
 
+  function startOfWeek(day) {
+    const d = dateFromDayKey(day || dayKey());
+    const offset = (d.getDay() + 6) % 7; // Monday-first week columns.
+    d.setDate(d.getDate() - offset);
+    return dayKey(d.getTime());
+  }
+
+  function endOfWeek(day) {
+    return shiftDay(startOfWeek(day), 6);
+  }
+
   function recentDays(count, endDay = dayKey()) {
     const n = Math.max(1, Number(count || 1));
-    const endDate = new Date(`${endDay || dayKey()}T00:00:00`);
+    const endDate = dateFromDayKey(endDay || dayKey());
     const days = [];
     for (let i = n - 1; i >= 0; i--) {
       const d = new Date(endDate);
@@ -116,6 +181,23 @@ export function createSessionsSidebarViewManager(opts) {
       days.push(dayKey(d.getTime()));
     }
     return days;
+  }
+
+  function shortDayLabel(day) {
+    const value = String(day || "");
+    return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value.slice(5) : value;
+  }
+
+  const HEATMAP_CELL_SIZE = 10;
+  const HEATMAP_CELL_GAP = 3;
+  const HEATMAP_PADDING_X = 16;
+  const HEATMAP_MIN_WEEKS = 5;
+  const HEATMAP_MAX_WEEKS = 26;
+
+  function heatmapWeeksForWidth(width) {
+    const usable = Math.max(0, Number(width || 0) - HEATMAP_PADDING_X);
+    const columns = Math.floor((usable + HEATMAP_CELL_GAP) / (HEATMAP_CELL_SIZE + HEATMAP_CELL_GAP));
+    return Math.max(HEATMAP_MIN_WEEKS, Math.min(HEATMAP_MAX_WEEKS, columns || HEATMAP_MIN_WEEKS));
   }
 
   function getUsageRecords() {
@@ -134,6 +216,14 @@ export function createSessionsSidebarViewManager(opts) {
       h = Math.imul(h, 16777619);
     }
     return `${s.length}:${h >>> 0}`;
+  }
+
+  function tagDotColor(tag) {
+    const palette = ["#5b7ff5", "#34c759", "#f5a623", "#ff9500", "#ff375f", "#af52de", "#5ac8fa", "#ff5c5c"];
+    let h = 0;
+    const s = String(tag || "");
+    for (let i = 0; i < s.length; i += 1) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
+    return palette[Math.abs(h) % palette.length];
   }
 
   function getSessionTags(sessionId) {
@@ -197,9 +287,9 @@ export function createSessionsSidebarViewManager(opts) {
     return { root, count: all.size };
   }
 
-  function refreshIfOpen() {
+  function refreshIfOpen(opts = {}) {
     try {
-      current?.render?.();
+      current?.render?.(opts);
     } catch {}
   }
 
@@ -305,9 +395,13 @@ export function createSessionsSidebarViewManager(opts) {
     let tagPanelCollapsed = (() => {
       try { return localStorage.getItem(LS_TAG_PANEL_COLLAPSED) === "1"; } catch { return false; }
     })();
+    let tagPanelScrollTop = 0;
+    let renderedTagsKey = "";
     let windowEndDay = (() => {
       try { return localStorage.getItem(LS_DAY_PANEL_END_DAY) || dayKey(); } catch { return dayKey(); }
     })();
+    let renderedHeatmapWeeks = 0;
+    let heatmapResizeRaf = 0;
 
     const tagsHost = document.createElement("div");
     tagsHost.className = "zion-sessions-tags-panel";
@@ -327,6 +421,7 @@ export function createSessionsSidebarViewManager(opts) {
     listWrap.className = "zion-sessions-list";
     listWrap.style.flex = "1 1 auto";
     listWrap.style.overflow = "auto";
+    listWrap.style.overflowAnchor = "none";
     listWrap.style.padding = "6px 0 6px 8px";
     const list = document.createElement("div");
     listWrap.appendChild(list);
@@ -385,19 +480,43 @@ export function createSessionsSidebarViewManager(opts) {
     const disposables = [];
     try { disposables.push(zion?.events?.on?.("chat/usageChanged", () => renderAll())); } catch {}
     try { disposables.push(zion?.state?.onDidChange?.("sessions.treeMem", () => renderAll())); } catch {}
-    try { disposables.push(zion?.state?.onDidChange?.("sessions.indexMem", () => renderAll())); } catch {}
+    try {
+      disposables.push(zion?.state?.onDidChange?.("sessions.indexMem", (index) => {
+        innerRender?.syncSessionIndex?.(index);
+      }));
+    } catch {}
+      try { disposables.push(zion?.state?.onDidChange?.("sessions.metaReady", () => renderAll())); } catch {}
+
+    const captureTagsPanelScroll = () => {
+      try {
+        const body = tagsHost.querySelector(".zion-sessions-tags-body");
+        tagPanelScrollTop = Math.max(0, Number(body?.scrollTop) || 0);
+      } catch {}
+    };
 
     const renderTagsPanel = () => {
-      tagsHost.innerHTML = "";
       const sessions = getSessionIndex();
+      const tagSignature = sessions
+        .map((session) => {
+          const sid = String(session?.id || "");
+          return `${sid}:${getSessionTags(sid).join("\u0001")}`;
+        })
+        .join("\u0002");
+      const collapsedSignature = Array.from(collapsedTagNodes).sort().join("\u0001");
+      const nextTagsKey = `${tagSignature}\u0003${selectedTag}\u0003${tagPanelCollapsed ? "1" : "0"}\u0003${collapsedSignature}`;
+      if (nextTagsKey === renderedTagsKey && tagsHost.childElementCount) return;
+      renderedTagsKey = nextTagsKey;
+      tagsHost.innerHTML = "";
       const tagTree = buildTagTreeForSessionIds(sessions.map((session) => String(session.id || "")).filter(Boolean));
       const header = document.createElement("div");
+      header.className = "zion-sessions-section-header zion-sessions-tags-header";
       header.style.display = "flex";
       header.style.alignItems = "center";
       header.style.justifyContent = "space-between";
       header.style.gap = "8px";
 
       const leftHead = document.createElement("button");
+      leftHead.className = "zion-sessions-section-title";
       leftHead.type = "button";
       leftHead.style.display = "inline-flex";
       leftHead.style.alignItems = "center";
@@ -411,7 +530,7 @@ export function createSessionsSidebarViewManager(opts) {
       leftHead.style.cursor = "pointer";
       leftHead.title = tagPanelCollapsed ? t("tags.expand", "Expand tags") : t("tags.collapse", "Collapse tags");
       const chevron = document.createElement("span");
-      chevron.textContent = tagPanelCollapsed ? "▸" : "▾";
+      chevron.innerHTML = iconHtml(tagPanelCollapsed ? "chevron-right" : "chevron-down", 12);
       chevron.style.fontSize = "12px";
       const title = document.createElement("span");
       title.textContent = t("tags.title", "Tags");
@@ -435,6 +554,7 @@ export function createSessionsSidebarViewManager(opts) {
 
       if (selectedTag) {
         const clear = document.createElement("button");
+        clear.className = "zion-sessions-clear-filter";
         clear.type = "button";
         clear.textContent = t("tags.clear", "Clear");
         clear.title = t("tags.clearTitle", "Clear tag filter");
@@ -457,13 +577,19 @@ export function createSessionsSidebarViewManager(opts) {
       if (tagPanelCollapsed) return;
 
       const body = document.createElement("div");
+      body.className = "zion-sessions-tags-body";
       body.style.marginTop = "7px";
       body.style.maxHeight = "148px";
       body.style.overflowY = "auto";
       const renderTagNode = (node, depth) => {
+        const hasChildren = node.children.size > 0;
+        const collapsed = hasChildren && isTagNodeCollapsed(node.tag);
         const row = document.createElement("button");
+        row.className = "zion-sessions-tag-row";
+        if (node.tag === selectedTag) row.classList.add("is-selected");
         row.type = "button";
         row.title = t("tags.filterTitle", "Filter sessions by {tag}", { tag: node.tag });
+        if (hasChildren) row.setAttribute("aria-expanded", collapsed ? "false" : "true");
         row.style.width = "100%";
         row.style.display = "flex";
         row.style.alignItems = "center";
@@ -490,13 +616,40 @@ export function createSessionsSidebarViewManager(opts) {
           selectedTag = selectedTag === node.tag ? "" : node.tag;
           renderAll();
         };
+        row.onkeydown = (ev) => {
+          if (!hasChildren) return;
+          if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          const nextCollapsed = ev.key === "ArrowLeft";
+          if (nextCollapsed === collapsed) return;
+          setTagNodeCollapsed(node.tag, nextCollapsed);
+          renderAll();
+        };
         const marker = document.createElement("span");
-        marker.textContent = node.children.size ? "▾" : "";
+        marker.className = "zion-sessions-tag-marker";
+        if (hasChildren) {
+          marker.innerHTML = iconHtml(collapsed ? "chevron-right" : "chevron-down", 10);
+          marker.title = collapsed
+            ? t("tags.expandNode", "Expand {tag}", { tag: node.tag })
+            : t("tags.collapseNode", "Collapse {tag}", { tag: node.tag });
+          marker.setAttribute("aria-label", marker.title);
+          marker.onclick = (ev) => {
+            ev.stopPropagation();
+            setTagNodeCollapsed(node.tag, !collapsed);
+            renderAll();
+          };
+        }
         marker.style.width = "10px";
         marker.style.flex = "0 0 auto";
         marker.style.fontSize = "10px";
         marker.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
+        marker.style.cursor = hasChildren ? "pointer" : "default";
+        const dot = document.createElement("span");
+        dot.className = "zion-sessions-tag-dot";
+        dot.style.background = tagDotColor(node.tag || node.label);
         const label = document.createElement("span");
+        label.className = "zion-sessions-tag-label";
         label.textContent = depth === 0 ? `#${node.label}` : node.label;
         label.style.flex = "1 1 auto";
         label.style.minWidth = "0";
@@ -505,20 +658,24 @@ export function createSessionsSidebarViewManager(opts) {
         label.style.whiteSpace = "nowrap";
         label.style.fontSize = "11px";
         const countEl = document.createElement("span");
+        countEl.className = "zion-sessions-tag-count";
         countEl.textContent = String(node.sessions.size);
         countEl.style.flex = "0 0 auto";
         countEl.style.fontSize = "10px";
         countEl.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
-        row.append(marker, label, countEl);
+        row.append(marker, dot, label, countEl);
         body.appendChild(row);
-        for (const child of node.children.values()) {
-          renderTagNode(child, depth + 1);
+        if (!collapsed) {
+          for (const child of node.children.values()) {
+            renderTagNode(child, depth + 1);
+          }
         }
       };
       if (tagTree.count) {
         for (const node of tagTree.root.children.values()) renderTagNode(node, 0);
       } else {
         const empty = document.createElement("span");
+        empty.className = "zion-sessions-empty-note";
         empty.textContent = t("tags.empty", "No tags yet");
         empty.style.fontSize = "10px";
         empty.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
@@ -526,6 +683,7 @@ export function createSessionsSidebarViewManager(opts) {
         body.appendChild(empty);
       }
       tagsHost.appendChild(body);
+      try { body.scrollTop = Math.max(0, tagPanelScrollTop); } catch {}
     };
 
     const renderCalendar = () => {
@@ -536,11 +694,15 @@ export function createSessionsSidebarViewManager(opts) {
       const days = [];
       const todayKey = dayKey();
       if (windowEndDay > todayKey) windowEndDay = todayKey;
-      const endDate = new Date(`${windowEndDay || todayKey}T00:00:00`);
-      for (let i = 34; i >= 0; i--) {
-        const d = new Date(endDate);
-        d.setDate(endDate.getDate() - i);
-        days.push(dayKey(d.getTime()));
+      const heatmapWidth = calendarHost.getBoundingClientRect?.().width || calendarHost.clientWidth || container.clientWidth || 0;
+      const heatmapWeeks = heatmapWeeksForWidth(heatmapWidth);
+      renderedHeatmapWeeks = heatmapWeeks;
+      const visibleDayCount = heatmapWeeks * 7;
+      const endWeekStart = startOfWeek(windowEndDay || todayKey);
+      const startDay = shiftDay(endWeekStart, -(heatmapWeeks - 1) * 7);
+      const endDay = endWeekStart === startOfWeek(todayKey) ? todayKey : endOfWeek(windowEndDay || todayKey);
+      for (let day = startDay; day <= endDay; day = shiftDay(day, 1)) {
+        days.push(day);
       }
       const rangeLabel = `${days[0]?.slice(5) || ""}..${days[days.length - 1]?.slice(5) || ""}`;
       const statsByDay = new Map();
@@ -555,8 +717,8 @@ export function createSessionsSidebarViewManager(opts) {
         models: new Map()
       });
       for (const session of sessions) {
-        const meta = typeof loadMeta === "function" ? loadMeta(session.id) : session;
-        const touched = new Set([dayKey(meta?.createdAt || 0), dayKey(meta?.updatedAt || 0)]);
+        const meta = typeof loadMeta === "function" ? loadMeta(session.id) : null;
+        const touched = sessionActivityDays(session, meta);
         for (const day of touched) {
           const stat = statsByDay.get(day);
           if (stat && session.id) stat.sessionIds.add(String(session.id));
@@ -627,7 +789,10 @@ export function createSessionsSidebarViewManager(opts) {
           models: new Map()
         }) : allSummary;
       })();
-      const maxTokens = Math.max(1, ...Array.from(statsByDay.values()).map(s => Number(s.tokens || 0)));
+      const maxActivity = Math.max(1, ...Array.from(statsByDay.values()).map((s) => {
+        const tokens = Number(s.tokens || 0);
+        return tokens > 0 ? tokens : Number(s.sessionIds?.size || 0);
+      }));
       const selectedRangeSet = selectedRangeDays ? new Set(recentDays(selectedRangeDays)) : null;
       const setDateFilter = (day, rangeDays = 0) => {
         selectedDay = day || "";
@@ -644,11 +809,13 @@ export function createSessionsSidebarViewManager(opts) {
       };
 
       const header = document.createElement("div");
+      header.className = "zion-sessions-section-header zion-sessions-heatmap-header";
       header.style.display = "flex";
       header.style.alignItems = "center";
       header.style.justifyContent = "space-between";
       header.style.gap = "8px";
       const leftHead = document.createElement("div");
+      leftHead.className = "zion-sessions-section-title";
       leftHead.style.display = "inline-flex";
       leftHead.style.alignItems = "center";
       leftHead.style.gap = "4px";
@@ -657,7 +824,8 @@ export function createSessionsSidebarViewManager(opts) {
       leftHead.style.cursor = "pointer";
       leftHead.title = calendarCollapsed ? t("heatmap.expand", "Expand heatmap") : t("heatmap.collapse", "Collapse heatmap");
       const collapseBtn = document.createElement("button");
-      collapseBtn.textContent = calendarCollapsed ? "▸" : "▾";
+      collapseBtn.className = "zion-sessions-section-toggle";
+      collapseBtn.innerHTML = iconHtml(calendarCollapsed ? "chevron-right" : "chevron-down", 12);
       collapseBtn.title = calendarCollapsed ? t("heatmap.expand", "Expand heatmap") : t("heatmap.collapse", "Collapse heatmap");
       collapseBtn.style.border = "0";
       collapseBtn.style.background = "transparent";
@@ -679,7 +847,8 @@ export function createSessionsSidebarViewManager(opts) {
         toggleCollapsed();
       };
       const title = document.createElement("div");
-      title.textContent = t("heatmap.activity", "Activity");
+      title.className = "zion-sessions-section-title-text";
+      title.textContent = t("heatmap.activity", "活动");
       title.style.fontSize = "11px";
       title.style.fontWeight = "500";
       title.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
@@ -689,12 +858,14 @@ export function createSessionsSidebarViewManager(opts) {
       title.style.whiteSpace = "nowrap";
       leftHead.append(collapseBtn, title);
       const controls = document.createElement("div");
+      controls.className = "zion-sessions-heatmap-controls";
       controls.style.display = "inline-flex";
       controls.style.alignItems = "center";
       controls.style.gap = "4px";
-      const navBtn = (text, titleText, onClick) => {
+      const navBtn = (iconName, titleText, onClick) => {
         const btn = document.createElement("button");
-        btn.textContent = text;
+        btn.className = "zion-sessions-heatmap-nav";
+        btn.innerHTML = iconHtml(iconName, 12);
         btn.title = titleText;
         btn.style.border = "0";
         btn.style.background = "transparent";
@@ -708,19 +879,20 @@ export function createSessionsSidebarViewManager(opts) {
         };
         return btn;
       };
-      const prevBtn = navBtn("‹", t("heatmap.previous35Days", "View earlier 35 days"), () => {
-        windowEndDay = shiftDay(windowEndDay, -35);
+      const prevBtn = navBtn("chevron-left", t("heatmap.previousDays", "查看更早日期"), () => {
+        windowEndDay = shiftDay(windowEndDay, -visibleDayCount);
         try { localStorage.setItem(LS_DAY_PANEL_END_DAY, windowEndDay); } catch {}
         renderAll();
       });
-      const nextBtn = navBtn("›", t("heatmap.next35Days", "View next 35 days"), () => {
-        windowEndDay = shiftDay(windowEndDay, 35);
+      const nextBtn = navBtn("chevron-right", t("heatmap.nextDays", "查看之后日期"), () => {
+        windowEndDay = shiftDay(windowEndDay, visibleDayCount);
         if (windowEndDay > todayKey) windowEndDay = todayKey;
         try { localStorage.setItem(LS_DAY_PANEL_END_DAY, windowEndDay); } catch {}
         renderAll();
       });
       const rangeSelect = document.createElement("select");
-      rangeSelect.title = t("heatmap.filterRange", "Filter sessions by date range");
+      rangeSelect.className = "zion-sessions-heatmap-range";
+      rangeSelect.title = t("heatmap.filterRange", "按日期范围筛选会话");
       rangeSelect.style.minWidth = "88px";
       rangeSelect.style.maxWidth = "120px";
       rangeSelect.style.border = "0";
@@ -731,20 +903,24 @@ export function createSessionsSidebarViewManager(opts) {
       rangeSelect.style.padding = "2px 6px";
       rangeSelect.style.outline = "none";
       rangeSelect.style.cursor = "pointer";
-      const addRangeOption = (value, label) => {
+      const addRangeOption = (value, label, titleText) => {
         const option = document.createElement("option");
         option.value = value;
         option.textContent = label;
+        if (titleText) option.title = titleText;
         rangeSelect.appendChild(option);
       };
-      addRangeOption("all", t("heatmap.all", "All"));
-      addRangeOption("today", t("heatmap.today", "Today"));
-      addRangeOption("1", t("heatmap.last1Day", "1d"));
-      addRangeOption("3", t("heatmap.last3Days", "3d"));
-      addRangeOption("7", t("heatmap.last7Days", "7d"));
-      addRangeOption("14", t("heatmap.last14Days", "14d"));
-      addRangeOption("30", t("heatmap.last30Days", "30d"));
-      if (selectedDay && selectedDay !== todayKey && !selectedRangeDays) addRangeOption("day", selectedDay);
+      addRangeOption("all", t("heatmap.all", "全部"));
+      addRangeOption("today", t("heatmap.today", "今天"));
+      addRangeOption("1", t("heatmap.last1Day", "1 天"));
+      addRangeOption("3", t("heatmap.last3Days", "3 天"));
+      addRangeOption("7", t("heatmap.last7Days", "7 天"));
+      addRangeOption("14", t("heatmap.last14Days", "14 天"));
+      addRangeOption("30", t("heatmap.last30Days", "30 天"));
+      if (selectedDay && selectedDay !== todayKey && !selectedRangeDays) {
+        addRangeOption("day", shortDayLabel(selectedDay), selectedDay);
+        rangeSelect.title = selectedDay;
+      }
       rangeSelect.value = selectedRangeDays ? String(selectedRangeDays) : selectedDay === todayKey ? "today" : selectedDay ? "day" : "all";
       rangeSelect.onchange = (ev) => {
         ev.stopPropagation();
@@ -760,17 +936,23 @@ export function createSessionsSidebarViewManager(opts) {
       if (calendarCollapsed) return;
 
       const grid = document.createElement("div");
+      grid.className = "zion-sessions-heatmap-grid";
       grid.style.display = "grid";
-      grid.style.gridTemplateColumns = "repeat(7, 1fr)";
-      grid.style.gap = "3px";
+      grid.style.setProperty("--zion-heatmap-weeks", String(heatmapWeeks));
       grid.style.marginTop = "8px";
       for (const day of days) {
         const stat = statsByDay.get(day);
         const btn = document.createElement("button");
-        const intensity = Math.min(1, Number(stat?.tokens || 0) / maxTokens);
+        const tokens = Number(stat?.tokens || 0);
+        const sessionCount = Number(stat?.sessionIds?.size || 0);
+        const activityValue = tokens > 0 ? tokens : sessionCount;
+        const intensity = activityValue > 0 ? Math.max(0.38, Math.min(1, activityValue / maxActivity)) : 0;
         const isSelectedDay = day === selectedDay;
         const isInSelectedRange = !!selectedRangeSet?.has(day);
         const isSelected = isSelectedDay || isInSelectedRange;
+        btn.className = "zion-sessions-heatmap-day";
+        if (isSelected) btn.classList.add("is-selected");
+        if (selectedRangeSet && !isInSelectedRange) btn.classList.add("is-dimmed");
         const tooltipText = t("heatmap.dayTitleNoCost", "{day} · {sessions} sessions · {tokens} tok", {
           day,
           sessions: stat?.sessionIds?.size || 0,
@@ -778,14 +960,13 @@ export function createSessionsSidebarViewManager(opts) {
         });
         btn.title = tooltipText;
         btn.setAttribute("aria-label", tooltipText);
-        btn.style.height = "14px";
         btn.style.border = "0";
-        btn.style.borderRadius = "3px";
         btn.style.cursor = "pointer";
         btn.style.padding = "0";
         const baseBg = intensity > 0
-          ? `color-mix(in srgb, var(--accent) ${Math.round(12 + intensity * 42)}%, var(--panel))`
+          ? `color-mix(in srgb, var(--accent) ${Math.round(18 + intensity * 58)}%, var(--panel))`
           : "var(--sessions-heatmap-empty, color-mix(in srgb, var(--fg) 7%, transparent))";
+        btn.style.setProperty("--zion-heatmap-day-bg", baseBg);
         btn.style.background = isSelected
           ? `linear-gradient(color-mix(in srgb, var(--accent) ${isSelectedDay ? 18 : 10}%, transparent), color-mix(in srgb, var(--accent) ${isSelectedDay ? 18 : 10}%, transparent)), ${baseBg}`
           : baseBg;
@@ -809,14 +990,17 @@ export function createSessionsSidebarViewManager(opts) {
       calendarHost.appendChild(grid);
 
       const summary = document.createElement("div");
+      summary.className = "zion-sessions-heatmap-stats";
       summary.style.display = "grid";
       summary.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
       summary.style.gap = "6px";
       summary.style.marginTop = "8px";
       const metric = (label, value) => {
         const box = document.createElement("div");
+        box.className = "zion-sessions-heatmap-stat";
         box.style.minWidth = "0";
         const v = document.createElement("div");
+        v.className = "zion-sessions-heatmap-stat-value";
         v.textContent = value;
         v.style.fontSize = "12px";
         v.style.fontWeight = "600";
@@ -824,6 +1008,7 @@ export function createSessionsSidebarViewManager(opts) {
         v.style.textOverflow = "ellipsis";
         v.style.whiteSpace = "nowrap";
         const l = document.createElement("div");
+        l.className = "zion-sessions-heatmap-stat-label";
         l.textContent = label;
         l.style.fontSize = "10px";
         l.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
@@ -839,6 +1024,7 @@ export function createSessionsSidebarViewManager(opts) {
 
       const topModels = Array.from(selected?.models?.values?.() || []).sort((a, b) => b.tokens - a.tokens).slice(0, 2);
       const models = document.createElement("div");
+      models.className = "zion-sessions-heatmap-models";
       models.style.marginTop = "7px";
       models.style.fontSize = "10px";
       models.style.color = "var(--files-muted-fg, var(--muted-fg, var(--fg)))";
@@ -851,11 +1037,38 @@ export function createSessionsSidebarViewManager(opts) {
       calendarHost.appendChild(models);
     };
 
-    const renderAll = () => {
-      renderTagsPanel();
-      renderCalendar();
+    const renderAll = (opts = {}) => {
+      const preserveListScroll = opts?.preserveListScroll !== false;
+      const listScrollTop = preserveListScroll ? Math.max(0, Number(listWrap.scrollTop) || 0) : null;
+      if (!opts?.listOnly) {
+        captureTagsPanelScroll();
+        renderTagsPanel();
+        renderCalendar();
+      }
       innerRender();
+      if (preserveListScroll && listScrollTop != null) {
+        try { listWrap.scrollTop = listScrollTop; } catch {}
+        requestAnimationFrame(() => {
+          try { listWrap.scrollTop = listScrollTop; } catch {}
+        });
+      }
     };
+
+    if (typeof window.ResizeObserver !== "undefined") {
+      const heatmapResizeObserver = new window.ResizeObserver(() => {
+        if (calendarCollapsed) return;
+        const width = calendarHost.getBoundingClientRect?.().width || calendarHost.clientWidth || container.clientWidth || 0;
+        const nextWeeks = heatmapWeeksForWidth(width);
+        if (!renderedHeatmapWeeks || nextWeeks === renderedHeatmapWeeks) return;
+        if (heatmapResizeRaf) window.cancelAnimationFrame(heatmapResizeRaf);
+        heatmapResizeRaf = window.requestAnimationFrame(() => {
+          heatmapResizeRaf = 0;
+          renderCalendar();
+        });
+      });
+      heatmapResizeObserver.observe(calendarHost);
+      disposables.push({ dispose: () => heatmapResizeObserver.disconnect() });
+    }
 
     renderAll();
     try { listWrap.scrollTop = prevScroll; } catch {}
@@ -864,8 +1077,16 @@ export function createSessionsSidebarViewManager(opts) {
       try {
         const cid = zion?.state?.get("sessions.currentId");
         if (!cid) return;
+        const mountedRow = innerRender?.syncCurrentSession?.(cid);
+        if (mountedRow && listWrap) {
+          if (!isRowFullyVisible(mountedRow)) mountedRow.scrollIntoView({ block: "center" });
+          const prev = mountedRow.style.background;
+          mountedRow.style.background = "var(--border)";
+          setTimeout(() => { mountedRow.style.background = prev; }, 600);
+          return;
+        }
         try { openAncestors?.(cid); } catch {}
-        renderAll();
+        renderAll({ preserveListScroll: false });
         try {
           const row = container.querySelector(".zion-session-row.is-current");
           if (row && listWrap) {
@@ -888,9 +1109,19 @@ export function createSessionsSidebarViewManager(opts) {
       const clearSearch = !!opt.clearSearch;
       const flash = opt.flash !== false;
       const block = opt.block || "nearest";
+      const mountedRow = innerRender?.syncCurrentSession?.(sid);
+      if (mountedRow && listWrap) {
+        if (!isRowFullyVisible(mountedRow)) mountedRow.scrollIntoView({ block });
+        if (flash) {
+          const prev = mountedRow.style.background;
+          mountedRow.style.background = "var(--border)";
+          setTimeout(() => { mountedRow.style.background = prev; }, 450);
+        }
+        return;
+      }
       try { if (openParents) openAncestors?.(sid); } catch {}
       void clearSearch;
-      renderAll();
+      renderAll({ preserveListScroll: false });
       try {
         const row = Array.from(container.querySelectorAll("[data-session-id]")).find(el => el.dataset?.sessionId === sid) || container.querySelector(".zion-session-row.is-current");
         if (row && listWrap) {
@@ -916,6 +1147,11 @@ export function createSessionsSidebarViewManager(opts) {
       },
       dispose: () => {
         if (current === inst) current = null;
+          try { innerRender?.dispose?.(); } catch {}
+        if (heatmapResizeRaf) {
+          try { window.cancelAnimationFrame(heatmapResizeRaf); } catch {}
+          heatmapResizeRaf = 0;
+        }
         for (const d of disposables) { try { d?.dispose?.(); } catch {} }
         try { container.innerHTML = ""; } catch {}
       }

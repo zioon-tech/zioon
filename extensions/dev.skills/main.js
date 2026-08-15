@@ -1,3 +1,5 @@
+import { materializePluginSkills } from "./plugin-skills.js";
+
 const DEFAULT_CONFIG = {
   maxActiveSkills: 3,
   tokenBudget: 30000,
@@ -109,6 +111,8 @@ function saveSnapshotSoon() {
           tokenBudget: state.get("skills.tokenBudget") || DEFAULT_CONFIG.tokenBudget,
           config: state.get("skills.config") || DEFAULT_CONFIG,
           dependencyGraph: state.get("skills.dependencyGraph") || {},
+          pluginMaterialized: state.get("skills.pluginMaterialized") || [],
+          pluginLastSync: state.get("skills.pluginLastSync") || 0,
           lastScan: state.get("skills.lastScan") || 0
         };
         localStorage.setItem(SKILLS_SNAPSHOT_STORAGE_KEY, JSON.stringify(snap));
@@ -144,6 +148,8 @@ function restoreFromSnapshotIfNeeded() {
     if (typeof snap.tokenBudget === "number") state.set("skills.tokenBudget", snap.tokenBudget);
     if (snap.config && typeof snap.config === "object") state.set("skills.config", snap.config);
     if (snap.dependencyGraph && typeof snap.dependencyGraph === "object") state.set("skills.dependencyGraph", snap.dependencyGraph);
+    if (Array.isArray(snap.pluginMaterialized)) state.set("skills.pluginMaterialized", snap.pluginMaterialized);
+    if (typeof snap.pluginLastSync === "number") state.set("skills.pluginLastSync", snap.pluginLastSync);
     if (typeof snap.lastScan === "number") state.set("skills.lastScan", snap.lastScan);
   } catch {}
 }
@@ -160,6 +166,8 @@ function ensureDefaults() {
   if (!state.get("skills.tokenBudget")) state.set("skills.tokenBudget", DEFAULT_CONFIG.tokenBudget);
   if (!state.get("skills.config")) state.set("skills.config", DEFAULT_CONFIG);
   if (!state.get("skills.dependencyGraph")) state.set("skills.dependencyGraph", {});
+  if (!state.get("skills.pluginMaterialized")) state.set("skills.pluginMaterialized", []);
+  if (!state.get("skills.pluginLastSync")) state.set("skills.pluginLastSync", 0);
   if (!state.get("skills.lastScan")) state.set("skills.lastScan", 0);
 }
 
@@ -167,6 +175,75 @@ function getLocalToolsBase() {
   const state = getState();
   const raw = (state && state.get("localTools.baseUrl")) || "http://127.0.0.1:8765";
   return String(raw || "http://127.0.0.1:8765").replace(/\/$/, "");
+}
+
+let pluginSkillsRootPromise = null;
+
+function inferHomeDirectory(session) {
+  const explicit = String(session?.home || session?.home_dir || session?.homeDirectory || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (explicit) return explicit;
+  const cwd = String(session?.cwd || session?.initial_cwd || "").trim().replace(/\\/g, "/");
+  const unixMatch = cwd.match(/^(\/Users\/[^/]+|\/home\/[^/]+|\/root)(?:\/|$)/);
+  if (unixMatch) return unixMatch[1];
+  const windowsMatch = cwd.match(/^([A-Za-z]:\/Users\/[^/]+)(?:\/|$)/i);
+  return windowsMatch ? windowsMatch[1] : "";
+}
+
+function pickLocalHome(sessions, activeSessionId = "") {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const local = list.filter((session) => String(session?.type || "local").toLowerCase() !== "ssh");
+  const active = local.find((session) => String(session?.id || "") === String(activeSessionId || ""));
+  return inferHomeDirectory(active) || local.map(inferHomeDirectory).find(Boolean) || "";
+}
+
+async function resolvePluginSkillsRoot() {
+  if (pluginSkillsRootPromise) return pluginSkillsRootPromise;
+  pluginSkillsRootPromise = (async () => {
+    const state = getState();
+    const configured = String(state?.get("skills.pluginRootPath") || "").trim();
+    if (configured && configured !== "~" && !configured.startsWith("~/")) {
+      return configured.replace(/\/+$/, "");
+    }
+    const activeSessionId = state?.get("terminal.activeSessionId") || "";
+    let home = pickLocalHome(state?.get("terminal.sessions"), activeSessionId);
+    if (!home) {
+      const response = await fetch(`${getLocalToolsBase()}/sessions`, { method: "GET" });
+      const data = await response.json().catch(() => null);
+      if (response.ok) home = pickLocalHome(data?.sessions, activeSessionId);
+    }
+    if (!home) throw new Error("Unable to resolve local home directory for plugin skills");
+    const suffix = configured.startsWith("~/") ? configured.slice(2) : ".zion-next/skills/.plugins";
+    return `${home.replace(/\/+$/, "")}/${suffix.replace(/^\/+/, "")}`;
+  })();
+  try {
+    return await pluginSkillsRootPromise;
+  } catch (error) {
+    pluginSkillsRootPromise = null;
+    throw error;
+  }
+}
+
+async function syncPluginSkills() {
+  const state = getState();
+  const manager = window.zion?.plugins;
+  if (!state || !manager || typeof manager.getEnabledPlugins !== "function") {
+    return Array.isArray(state?.get("skills.pluginMaterialized")) ? state.get("skills.pluginMaterialized") : [];
+  }
+  const previous = Array.isArray(state.get("skills.pluginMaterialized"))
+    ? state.get("skills.pluginMaterialized")
+    : [];
+  const root = await resolvePluginSkillsRoot();
+  const materialized = await materializePluginSkills({
+    base: getLocalToolsBase(),
+    root,
+    previous,
+    plugins: manager.getEnabledPlugins()
+  });
+  state.set("skills.pluginMaterialized", materialized);
+  state.set("skills.pluginLastSync", Date.now());
+  return materialized;
 }
 
 function getEnabledSet() {
@@ -303,6 +380,9 @@ function parseSkillFrontMatter(text) {
       if (!kv) return;
       const key = kv[1].trim();
       let val = kv[2].trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
       const arr = val.match(/^\[(.*)\]$/);
       if (arr) {
         meta[key] = arr[1].split(",").map((s) => s.trim()).filter(Boolean);
@@ -339,6 +419,31 @@ async function isLocalToolsHealthy(base) {
   }
 }
 
+async function buildPluginSkillCatalog(entries, base) {
+  const catalog = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!entry?.id || !entry?.file || !entry?.path) continue;
+    const headText = await readFile(base, entry.file, { headOnly: true });
+    if (!headText) continue;
+    const meta = parseSkillFrontMatter(headText);
+    catalog.push({
+      id: entry.id,
+      name: meta.name || entry.skillName || entry.id,
+      description: meta.description || "",
+      category: meta.category || "",
+      tags: meta.tags || [],
+      difficulty: meta.difficulty || "",
+      allowedTools: meta.allowedTools || [],
+      dependencies: meta.dependencies || [],
+      path: entry.path,
+      file: entry.file,
+      source: "plugin",
+      pluginId: entry.pluginId
+    });
+  }
+  return catalog;
+}
+
 async function scanAllSkills() {
   const state = getState();
   if (!state) return [];
@@ -352,7 +457,17 @@ async function scanAllSkills() {
     // (common during sleep/wake).
     return prevCatalog;
   }
-  const catalog = [];
+  let pluginEntries = [];
+  try {
+    pluginEntries = await syncPluginSkills();
+  } catch (error) {
+    console.warn("[skills] plugin skill sync failed", error);
+    pluginEntries = Array.isArray(state.get("skills.pluginMaterialized"))
+      ? state.get("skills.pluginMaterialized")
+      : [];
+  }
+  const pluginCatalog = await buildPluginSkillCatalog(pluginEntries, base);
+  let userCatalog = [];
 
   for (const dir of Array.isArray(paths) ? paths : []) {
     try {
@@ -369,7 +484,7 @@ async function scanAllSkills() {
         const id = skillDir.split("/").filter(Boolean).pop();
         if (!id) continue;
 
-        catalog.push({
+        userCatalog.push({
           id,
           name: meta.name || id,
           description: meta.description || "",
@@ -388,10 +503,15 @@ async function scanAllSkills() {
   // If the service is healthy but nothing was found, allow wiping only when no paths are configured.
   // This avoids "everything disappeared" when the directory mapping temporarily fails.
   const pathList = Array.isArray(paths) ? paths : [];
-  const shouldKeepPrevious = pathList.length > 0 && catalog.length === 0 && prevCatalog.length > 0;
-  if (shouldKeepPrevious) {
-    return prevCatalog;
+  const previousUserCatalog = prevCatalog.filter((skill) => skill?.source !== "plugin");
+  if (pathList.length > 0 && userCatalog.length === 0 && previousUserCatalog.length > 0) {
+    userCatalog = previousUserCatalog;
   }
+  const catalogById = new Map();
+  for (const skill of [...userCatalog, ...pluginCatalog]) {
+    if (skill?.id) catalogById.set(skill.id, skill);
+  }
+  const catalog = Array.from(catalogById.values());
 
   state.set("skills.catalog", catalog);
   state.set("skills.lastScan", Date.now());
@@ -400,6 +520,13 @@ async function scanAllSkills() {
   const enabled = state.get("skills.enabled") || [];
   if (!Array.isArray(enabled) || enabled.length === 0) {
     state.set("skills.enabled", catalog.map((s) => s.id));
+  } else {
+    const previousIds = new Set(prevCatalog.map((skill) => skill?.id).filter(Boolean));
+    const nextEnabled = new Set(enabled);
+    for (const skill of pluginCatalog) {
+      if (!previousIds.has(skill.id)) nextEnabled.add(skill.id);
+    }
+    if (nextEnabled.size !== enabled.length) state.set("skills.enabled", Array.from(nextEnabled));
   }
 
   return catalog;
@@ -407,6 +534,8 @@ async function scanAllSkills() {
 
 async function getCatalogOrScan() {
   const catalog = getCatalog();
+  const state = getState();
+  if (window.zion?.plugins && !state?.get("skills.pluginLastSync")) return await scanAllSkills();
   if (catalog.length > 0) return catalog;
   return await scanAllSkills();
 }
@@ -436,6 +565,8 @@ function skillSummary(skill, enabledSet) {
     difficulty: skill.difficulty || "",
     allowedTools: Array.isArray(skill.allowedTools) ? skill.allowedTools : [],
     dependencies: Array.isArray(skill.dependencies) ? skill.dependencies : [],
+    source: skill.source || "directory",
+    pluginId: skill.pluginId || "",
     path: skill.path || "",
     file: skill.file || ""
   };
@@ -1268,6 +1399,8 @@ function registerStateListeners() {
       "skills.tokenBudget",
       "skills.config",
       "skills.dependencyGraph",
+      "skills.pluginMaterialized",
+      "skills.pluginLastSync",
       "skills.lastScan"
     ];
     for (const k of keysToPersist) {
@@ -1275,6 +1408,51 @@ function registerStateListeners() {
     }
   } catch {}
   return disposers;
+}
+
+function registerPluginSkillListeners() {
+  let disposed = false;
+  let manager = null;
+  let retryTimer = 0;
+  let scanTimer = 0;
+  const events = ["installed", "uninstalled", "enabled", "disabled", "updated", "hotReloaded"];
+
+  const scheduleScan = () => {
+    if (disposed) return;
+    if (scanTimer) clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = 0;
+      void scanAllSkills()
+        .then(() => updateStatusBar())
+        .catch((error) => console.warn("[skills] plugin skill rescan failed", error));
+    }, 80);
+  };
+
+  const bind = () => {
+    if (disposed) return;
+    const candidate = window.zion?.plugins;
+    if (!candidate || typeof candidate.on !== "function" || typeof candidate.off !== "function") {
+      retryTimer = setTimeout(bind, 100);
+      return;
+    }
+    manager = candidate;
+    for (const event of events) manager.on(event, scheduleScan);
+    scheduleScan();
+  };
+
+  bind();
+  return {
+    dispose() {
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      if (scanTimer) clearTimeout(scanTimer);
+      if (manager) {
+        for (const event of events) {
+          try { manager.off(event, scheduleScan); } catch {}
+        }
+      }
+    }
+  };
 }
 
 export async function activate(ctx) {
@@ -1290,10 +1468,12 @@ export async function activate(ctx) {
   registerSkillManagerTool();
   const contributor = registerMessageContributor();
   const listeners = registerStateListeners();
+  const pluginSkillListeners = registerPluginSkillListeners();
 
   try { ctx.subscriptions.push(...commands); } catch {}
   try { ctx.subscriptions.push(contributor); } catch {}
   try { ctx.subscriptions.push(...listeners); } catch {}
+  try { ctx.subscriptions.push(pluginSkillListeners); } catch {}
 
   // Register skills settings into core Settings Panel
   try {

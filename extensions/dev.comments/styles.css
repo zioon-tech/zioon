@@ -16,13 +16,26 @@
     0 0 0 1px color-mix(in srgb, #d9a300 18%, transparent);
 }
 
+.zion-comment-rail-host {
+  position: relative;
+}
+
+.zion-comment-rail {
+  position: absolute;
+  top: 0;
+  right: 14px;
+  bottom: 0;
+  width: 22px;
+  z-index: 8;
+  pointer-events: none;
+}
+
 .zion-comment-anchor {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   position: absolute;
-  top: 50%;
-  right: 4px;
+  right: 1px;
   transform: translateY(-50%);
   z-index: 4;
   min-width: 15px;
@@ -34,13 +47,14 @@
   background: color-mix(in srgb, #f5c542 15%, var(--editor-bg));
   color: color-mix(in srgb, #c28a00 86%, var(--fg));
   box-shadow: none;
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
   vertical-align: middle;
   opacity: 0.78;
   transition: opacity 120ms ease, background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+  pointer-events: auto;
 }
 
 .zion-comment-anchor:not([data-count])::before {
@@ -87,6 +101,8 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  --zion-comments-comment-border: color-mix(in srgb, #d9a300 72%, transparent);
+  --zion-comments-comment-border-strong: color-mix(in srgb, #d9a300 96%, var(--fg));
   background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 96%, var(--bg)) 0%, var(--panel) 100%);
   color: var(--fg);
 }
@@ -207,29 +223,6 @@
   box-shadow: 0 8px 24px color-mix(in srgb, #000 12%, transparent);
 }
 
-.zion-comments-row.is-located {
-  animation: zion-comments-located-pulse 1300ms ease-out;
-}
-
-@keyframes zion-comments-located-pulse {
-  0% {
-    background: color-mix(in srgb, var(--panel) 78%, #f5c542);
-    box-shadow:
-      0 0 0 2px color-mix(in srgb, #f5c542 58%, transparent),
-      0 12px 28px color-mix(in srgb, #000 16%, transparent);
-  }
-  45% {
-    background: color-mix(in srgb, var(--panel) 88%, #f5c542);
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, #f5c542 36%, transparent),
-      0 10px 24px color-mix(in srgb, #000 13%, transparent);
-  }
-  100% {
-    background: color-mix(in srgb, var(--panel) 96%, #f5c542);
-    box-shadow: 0 8px 24px color-mix(in srgb, #000 12%, transparent);
-  }
-}
-
 .zion-comments-row.is-resolved {
   opacity: 0.58;
 }
@@ -260,7 +253,7 @@
   border-radius: 999px;
   background: color-mix(in srgb, var(--fg) 7%, transparent);
   color: color-mix(in srgb, var(--fg) 58%, transparent);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -367,7 +360,7 @@
 .zion-comments-quote-label {
   flex: 0 0 auto;
   color: color-mix(in srgb, var(--fg) 54%, transparent);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .zion-comments-quote-text {
@@ -376,7 +369,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: color-mix(in srgb, var(--fg) 72%, transparent);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .zion-comments-editor-frame {
@@ -408,8 +401,8 @@
 }
 
 .zion-comments-row.is-expanded .zion-comments-editor-header {
-  position: sticky;
-  top: 0;
+  position: relative;
+  top: auto;
   z-index: 6;
   border-radius: 8px 8px 0 0;
   background: color-mix(in srgb, var(--editor-bg, var(--bg)) 94%, var(--panel));
@@ -443,14 +436,14 @@
 
 .zion-comments-thread-editor {
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--editor-content-font-size);
 }
 
 .zion-comments-thread-editor .cm-scroller {
   background: transparent;
   font-family: var(--editor-content-font-family, var(--font-sans)) !important;
-  font-size: 14px !important;
-  line-height: 1.62 !important;
+  font-size: var(--editor-content-font-size) !important;
+  line-height: var(--editor-content-line-height) !important;
 }
 
 .zion-comments-row:not(.is-expanded) .zion-comments-thread-editor .cm-scroller {
@@ -475,8 +468,8 @@
   padding: 8px 8px 12px;
   padding-bottom: 12px !important;
   font-family: var(--editor-content-font-family, var(--font-sans)) !important;
-  font-size: 14px !important;
-  line-height: 1.62 !important;
+  font-size: var(--editor-content-font-size) !important;
+  line-height: var(--editor-content-line-height) !important;
 }
 
 .zion-comments-thread-editor .cm-line {
@@ -519,23 +512,13 @@
 
 .zion-comments-action:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.10);
+  background: var(--hover-bg);
+  border-color: color-mix(in srgb, var(--fg) 10%, transparent);
 }
 
-.zion-comments-action svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.zion-comments-action.primary svg {
-  fill: currentColor;
-  stroke: none;
+.zion-comments-action .codicon {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .zion-comments-action.primary {
@@ -544,8 +527,8 @@
 }
 
 .zion-comments-action.primary:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.10);
+  background: var(--hover-bg);
+  border-color: color-mix(in srgb, var(--fg) 10%, transparent);
 }
 
 .zion-comments-action.muted {
@@ -562,12 +545,6 @@
   border-color: rgba(239, 68, 68, 0.35);
 }
 
-:root[data-theme="light"] .zion-comments-action:hover,
-:root[data-theme="light"] .zion-comments-action.primary:hover {
-  background: rgba(0, 0, 0, 0.04);
-  border-color: rgba(0, 0, 0, 0.08);
-}
-
 :root[data-theme="light"] .zion-comments-action.danger {
   color: #dc2626;
 }
@@ -577,6 +554,528 @@
   border-color: rgba(239, 68, 68, 0.28);
 }
 
+/* Workbench-style comments panel, matched to docs/architecture/ui-harmony-proposal.html. */
+.zion-comments-panel {
+  --zion-comments-surface-1: var(--surface-1, var(--panel));
+  --zion-comments-surface-2: var(--surface-2, color-mix(in srgb, var(--panel) 90%, var(--bg)));
+  --zion-comments-surface-3: var(--surface-3, var(--hover-bg));
+  --zion-comments-fg-secondary: var(--fg-secondary, color-mix(in srgb, var(--fg) 74%, transparent));
+  --zion-comments-fg-muted: var(--fg-muted, color-mix(in srgb, var(--fg) 56%, transparent));
+  --zion-comments-fg-faint: var(--fg-faint, color-mix(in srgb, var(--fg) 38%, transparent));
+  --zion-comments-border-soft: var(--border-soft, color-mix(in srgb, var(--border) 72%, transparent));
+  --zion-comments-border-faint: var(--border-faint, color-mix(in srgb, var(--border) 36%, transparent));
+  --zion-comments-accent-soft: var(--accent-soft, color-mix(in srgb, var(--accent) 13%, transparent));
+  --zion-comments-accent-medium: var(--accent-medium, color-mix(in srgb, var(--accent) 22%, transparent));
+  --zion-comments-ok: var(--ok, #3fb950);
+  --zion-comments-ok-soft: var(--ok-soft, color-mix(in srgb, #3fb950 13%, transparent));
+  --zion-comments-warn: var(--warn, #cc8a2e);
+  --zion-comments-warn-soft: var(--warn-soft, color-mix(in srgb, #cc8a2e 14%, transparent));
+  --zion-comments-danger: var(--danger, #ef4444);
+  --zion-comments-danger-soft: var(--danger-soft, rgba(239, 68, 68, 0.14));
+  background: var(--zion-comments-surface-1);
+}
+
+.zion-comments-header {
+  position: relative;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--zion-comments-border-soft);
+  background: var(--zion-comments-surface-1);
+  z-index: 8;
+}
+
+.zion-comments-header-left,
+.zion-comments-header-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.zion-comments-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 4px;
+  border-radius: 999px;
+  background: var(--zion-comments-surface-3);
+  color: var(--zion-comments-fg-secondary);
+  font: 600 10px/1 var(--font-sans);
+}
+
+.zion-comments-count.is-open {
+  background: var(--zion-comments-accent-soft);
+  color: var(--accent);
+}
+
+.zion-comments-hdr-btn {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--zion-comments-fg-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.zion-comments-hdr-btn:hover {
+  color: var(--fg);
+  background: var(--zion-comments-surface-3);
+}
+
+.zion-comments-hdr-btn:disabled {
+  color: var(--zion-comments-fg-faint);
+  opacity: 0.42;
+  cursor: default;
+}
+
+.zion-comments-hdr-btn:disabled:hover {
+  background: transparent;
+  color: var(--zion-comments-fg-faint);
+}
+
+.zion-comments-hdr-btn.is-active {
+  color: var(--accent);
+  background: var(--zion-comments-accent-soft);
+}
+
+.zion-comments-hdr-btn .codicon {
+  font-size: 14px;
+}
+
+.zion-comments-filter {
+  position: absolute;
+  top: 100%;
+  left: 8px;
+  right: 8px;
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--zion-comments-border-faint);
+  background: var(--zion-comments-surface-1);
+  box-shadow: 0 8px 16px color-mix(in srgb, #000 8%, transparent);
+  z-index: 12;
+}
+
+.zion-comments-filter.is-visible {
+  display: flex;
+}
+
+.zion-comments-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--zion-comments-border-faint);
+  background: transparent;
+  color: var(--zion-comments-fg-muted);
+  font: 500 11px/1 var(--font-sans);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+  white-space: nowrap;
+}
+
+.zion-comments-filter-chip:hover {
+  background: var(--zion-comments-surface-3);
+  color: var(--zion-comments-fg-secondary);
+}
+
+.zion-comments-filter-chip.is-active {
+  background: var(--zion-comments-accent-soft);
+  border-color: var(--zion-comments-accent-medium);
+  color: var(--accent);
+}
+
+.zion-comments-popover {
+  position: absolute;
+  top: 34px;
+  right: 8px;
+  z-index: 30;
+  width: min(280px, calc(100vw - 32px));
+  max-height: 360px;
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  border: 1px solid var(--zion-comments-border-soft);
+  border-radius: 8px;
+  background: var(--surface-overlay, color-mix(in srgb, var(--panel) 94%, transparent));
+  box-shadow: var(--shadow-md, 0 8px 28px rgba(0, 0, 0, 0.18));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.zion-comments-popover.is-visible {
+  display: flex;
+}
+
+.zion-comments-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px 4px;
+  color: var(--zion-comments-fg-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.zion-comments-popover-item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.zion-comments-popover-item:hover {
+  background: var(--zion-comments-surface-3);
+}
+
+.zion-comments-popover-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: var(--zion-comments-fg-muted);
+}
+
+.zion-comments-popover-dot.is-streaming {
+  background: var(--accent);
+}
+
+.zion-comments-popover-dot.is-ready,
+.zion-comments-popover-dot.is-resolved {
+  background: var(--zion-comments-ok);
+}
+
+.zion-comments-popover-dot.is-lost,
+.zion-comments-popover-dot.is-aborted {
+  background: var(--zion-comments-warn);
+}
+
+.zion-comments-popover-dot.is-error {
+  background: var(--zion-comments-danger);
+}
+
+.zion-comments-popover-item-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.zion-comments-popover-item-title {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-comments-popover-item-meta,
+.zion-comments-popover-empty {
+  color: var(--zion-comments-fg-faint);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.zion-comments-popover-empty {
+  padding: 10px;
+}
+
+.zion-comments-list {
+  gap: 0;
+  padding: 0;
+}
+
+.zion-comments-row {
+  padding: 12px 10px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--zion-comments-border-faint);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  transition: border-color 160ms ease, opacity 160ms ease, background 160ms ease;
+}
+
+.zion-comments-row:hover,
+.zion-comments-row.is-active,
+.zion-comments-row.is-orphan,
+.zion-comments-row.is-orphan.is-active {
+  background: transparent;
+  box-shadow: none;
+}
+
+.zion-comments-row.is-active {
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+
+.zion-comments-row.is-resolved {
+  opacity: 0.5;
+}
+
+.zion-comments-row.is-resolved.is-active {
+  opacity: 0.78;
+}
+
+.zion-comments-detail,
+.zion-comments-row.is-expanded .zion-comments-detail {
+  padding: 0;
+  overflow: visible;
+}
+
+.zion-comments-editor-frame,
+.zion-comments-row.is-expanded .zion-comments-editor-frame {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.zion-comments-editor-header,
+.zion-comments-row.is-expanded .zion-comments-editor-header {
+  position: relative;
+  top: auto;
+  z-index: 1;
+  min-height: 0;
+  padding: 0 0 6px;
+  border-bottom: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--zion-comments-fg-muted);
+}
+
+.zion-comments-quote {
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  transition: background 120ms ease;
+}
+
+.zion-comments-quote:hover {
+  background: color-mix(in srgb, var(--zion-comments-surface-3) 52%, transparent);
+}
+
+.zion-comments-quote.is-orphan,
+.zion-comments-quote.is-orphan:hover {
+  background: transparent;
+}
+
+.zion-comments-quote-toggle {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--zion-comments-fg-faint);
+}
+
+.zion-comments-quote-toggle .codicon {
+  font-size: 12px;
+  transition: transform 160ms ease;
+}
+
+.zion-comments-row.is-expanded .zion-comments-quote-toggle .codicon {
+  transform: rotate(90deg);
+}
+
+.zion-comments-quote-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  color: var(--zion-comments-fg-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.zion-comments-quote-text {
+  color: var(--zion-comments-fg-faint);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.zion-comments-row.is-orphan .zion-comments-quote-text,
+.zion-comments-quote.is-orphan .zion-comments-quote-label {
+  color: var(--zion-comments-warn);
+}
+
+.zion-comments-state-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--zion-comments-surface-3);
+  color: var(--zion-comments-fg-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.zion-comments-state-badge.is-resolved {
+  background: var(--zion-comments-ok-soft);
+  color: var(--zion-comments-ok);
+}
+
+.zion-comments-state-badge.is-lost {
+  background: var(--zion-comments-warn-soft);
+  color: var(--zion-comments-warn);
+}
+
+.zion-comments-state-badge.is-moved {
+  background: var(--zion-comments-accent-soft);
+  color: var(--accent);
+}
+
+.zion-comments-session-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.zion-comments-session-dot.is-idle,
+.zion-comments-session-dot.is-ready {
+  display: none;
+}
+
+.zion-comments-session-dot.is-streaming {
+  display: inline-flex;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--zion-comments-accent-soft);
+  animation: zion-comments-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.zion-comments-session-dot.is-error,
+.zion-comments-session-dot.is-aborted {
+  display: inline-flex;
+}
+
+@keyframes zion-comments-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.zion-comments-actions {
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.zion-comments-row.is-active .zion-comments-actions,
+.zion-comments-row.is-expanded .zion-comments-actions,
+.zion-comments-row:hover .zion-comments-actions,
+.zion-comments-row:focus-within .zion-comments-actions {
+  opacity: 1;
+}
+
+.zion-comments-action {
+  width: 26px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--zion-comments-fg-muted);
+  opacity: 1;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.zion-comments-action:hover {
+  background: var(--zion-comments-surface-3);
+  color: var(--fg);
+}
+
+.zion-comments-action.primary {
+  color: var(--zion-comments-fg-muted);
+}
+
+.zion-comments-action.primary:hover {
+  background: var(--zion-comments-surface-3);
+  color: var(--fg);
+  border-color: transparent;
+}
+
+.zion-comments-action.danger {
+  color: var(--zion-comments-danger);
+}
+
+.zion-comments-action.danger:hover {
+  background: var(--zion-comments-danger-soft);
+  border-color: transparent;
+}
+
+.zion-comments-editor {
+  min-height: 0;
+  padding: 4px 6px 2px;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.62;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor-frame {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  transition: none;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor,
+.zion-comments-row.is-expanded .zion-comments-editor .cm-editor {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.zion-comments-row.is-expanded .zion-comments-thread-editor .cm-scroller {
+  overflow: auto !important;
+  overscroll-behavior: contain;
+}
+
+.zion-comments-row:not(.is-expanded) .zion-comments-editor {
+  min-height: 84px;
+}
+
+.zion-comments-thread-editor {
+  font-size: var(--editor-content-font-size);
+}
+
+.zion-comments-thread-editor .cm-scroller,
+.zion-comments-thread-editor .cm-content,
+.zion-comments-thread-editor .cm-line:not(.cm-md-codeblock) {
+  font-family: var(--editor-content-font-family, var(--font-sans)) !important;
+  font-size: var(--editor-content-font-size) !important;
+  line-height: var(--editor-content-line-height) !important;
+}
+
 .zion-selection-toolbar {
   position: absolute;
   z-index: 1000;
@@ -584,23 +1083,36 @@
   align-items: center;
   gap: 6px;
   padding: 6px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel) 88%, transparent);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.22);
+  box-shadow: var(--elevation-2);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   user-select: none;
   white-space: nowrap;
-  pointer-events: auto;
+  pointer-events: none;
 }
 .zion-selection-toolbar.is-visible {
   display: inline-flex;
 }
+.zion-selection-toolbar-items {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.zion-selection-toolbar button,
+.zion-selection-toolbar a,
+.zion-selection-toolbar input,
+.zion-selection-toolbar select,
+.zion-selection-toolbar textarea,
+.zion-selection-toolbar [role="button"] {
+  pointer-events: auto;
+}
 .zion-selection-toolbar-btn {
   width: 28px;
   height: 28px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--fg);
@@ -612,12 +1124,8 @@
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
 }
 .zion-selection-toolbar-btn:hover {
-  background: rgba(98,114,164,0.16);
-  border-color: rgba(98,114,164,0.22);
-}
-:root[data-theme="light"] .zion-selection-toolbar-btn:hover {
-  background: rgba(59,130,246,0.12);
-  border-color: rgba(59,130,246,0.18);
+  background: var(--hover-bg);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .zion-selection-toolbar-btn:active {
   transform: translateY(1px);
@@ -632,8 +1140,8 @@
   font-weight: 600;
 }
 .zion-selection-toolbar-btn.is-ai:hover {
-  background: rgba(98,114,164,0.16);
-  border-color: rgba(98,114,164,0.22);
+  background: var(--hover-bg);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .zion-selection-toolbar-divider {
   width: 1px;
@@ -647,8 +1155,8 @@
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-2);
   padding: 4px;
   min-width: 140px;
   max-width: 320px;
@@ -681,15 +1189,9 @@
 /* hover / focus visual that is subtle and works for light/dark */
 .zion-gutter-menu-item:hover:not(.disabled),
 .zion-gutter-menu-item:focus:not(.disabled) {
-  background: rgba(248,248,242,0.04);
+  background: var(--hover-bg);
   outline: none;
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
-}
-
-/* light theme tweak for hover */
-:root[data-theme="light"] .zion-gutter-menu-item:hover:not(.disabled),
-:root[data-theme="light"] .zion-gutter-menu-item:focus:not(.disabled) {
-  background: rgba(0,0,0,0.04);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 4%, transparent);
 }
 
 .zion-gutter-menu-item.disabled {
@@ -708,8 +1210,8 @@
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.30);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-2);
   padding: 4px;
   min-width: 120px;
   max-width: 220px;
@@ -854,7 +1356,9 @@
 }
 
 .zion-context-menu-row.has-submenu .zion-context-menu-item::after {
-  content: "›";
+  content: "\eab6";
+  font-family: "codicon";
+  font-size: 14px;
   position: absolute;
   right: 8px;
   top: 50%;
@@ -868,13 +1372,8 @@
 
 .zion-context-menu-item:hover,
 .zion-context-menu-item:focus {
-  background: rgba(248,248,242,0.04);
+  background: var(--hover-bg);
   outline: none;
-}
-
-:root[data-theme="light"] .zion-context-menu-item:hover,
-:root[data-theme="light"] .zion-context-menu-item:focus {
-  background: rgba(0,0,0,0.04);
 }
 
 .zion-context-submenu {
@@ -884,6 +1383,54 @@
   overflow-y: auto;
   /* 确保二级菜单有不透明背景 */
   background: var(--panel);
+}
+
+/* Keep editor context menus compact while allowing labels to use the full
+   panel width instead of the nested 200px/180px item limits. */
+.zion-context-menu.zion-editor-context-menu {
+  width: max-content;
+  min-width: min(180px, calc(100vw - 16px));
+  max-width: min(220px, calc(100vw - 16px));
+}
+
+.zion-editor-context-menu .zion-context-menu-row {
+  min-width: 100%;
+}
+
+.zion-editor-context-menu .zion-context-menu-item,
+.zion-editor-context-menu.zion-context-submenu .zion-context-menu-item {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.zion-editor-context-menu .zion-context-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-editor-context-menu .zion-context-menu-label-primary,
+.zion-editor-context-menu .zion-context-menu-label-secondary {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-editor-context-menu .zion-context-menu-label-secondary {
+  color: color-mix(in srgb, var(--fg) 56%, transparent);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.15;
 }
 
 /* 二级菜单中的拖拽状态 - 确保清晰可见 */
@@ -941,4 +1488,687 @@
 /* Ensure each gutter cell can position its children precisely if needed */
 .cm-gutter.zion-gutter-left .cm-gutterElement {
   position: relative;
+}
+
+/* ========================================
+   Visual System V2 Sample - Comments Panel
+   ======================================== */
+
+.zion-comments-panel {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-header {
+  min-height: 32px;
+  padding: 4px 8px;
+  border-bottom-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-title {
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.zion-comments-subtitle,
+.zion-comments-stats {
+  color: color-mix(in srgb, var(--fg) 52%, transparent);
+}
+
+.zion-comments-list {
+  gap: 6px;
+  padding: 8px;
+}
+
+.zion-comments-row {
+  border: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  border-radius: 10px;
+  background: var(--surface-raised, color-mix(in srgb, var(--panel) 94%, var(--bg)));
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.zion-comments-row:hover {
+  background: color-mix(in srgb, var(--panel) 97%, var(--bg));
+  border-color: var(--surface-border, color-mix(in srgb, var(--border) 46%, transparent));
+}
+
+.zion-comments-row.is-active {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 26%, transparent);
+  box-shadow: none;
+}
+
+.zion-comments-state-badge {
+  border-radius: var(--radius-pill);
+  border-color: transparent;
+  background: var(--active-bg);
+  color: color-mix(in srgb, var(--accent) 86%, var(--fg));
+}
+
+/* Final auxbar surface pass. */
+.zion-comments-panel,
+.zion-comments-body,
+.zion-comments-list {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-editor-frame,
+.zion-comments-editor,
+.zion-comments-thread-editor,
+.zion-comments-thread-editor .cm-editor,
+.zion-comments-thread-editor .cm-scroller {
+  background: transparent !important;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor-header {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-row {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-row:hover {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-comments-row.is-active,
+.zion-comments-row.is-active:hover,
+.zion-comments-row.is-resolved.is-active,
+.zion-comments-row.is-resolved.is-active:hover,
+.zion-comments-row.is-orphan.is-active,
+.zion-comments-row.is-orphan.is-active:hover {
+  background: var(--surface-panel, var(--panel));
+}
+
+/* Final workbench comments pass. Keep this last so the proposal style wins. */
+.zion-comments-panel,
+.zion-comments-body,
+.zion-comments-list {
+  background: var(--zion-comments-surface-1, var(--surface-panel, var(--panel)));
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.zion-comments-panel {
+  --zion-comments-content-max-width: 480px;
+  align-items: flex-start;
+}
+
+.zion-comments-body {
+  width: min(100%, var(--zion-comments-content-max-width));
+}
+
+.zion-comments-header {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 8px 6px;
+  border-bottom: 1px solid var(--zion-comments-border-soft, color-mix(in srgb, var(--border) 72%, transparent));
+  background: var(--zion-comments-surface-1, var(--surface-panel, var(--panel)));
+}
+
+.zion-comments-list {
+  gap: 8px;
+  padding: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-anchor: none;
+}
+
+.zion-comments-row,
+.zion-comments-row:hover,
+.zion-comments-row.is-orphan,
+.zion-comments-row.is-orphan:hover,
+.zion-comments-row.is-active,
+.zion-comments-row.is-active:hover,
+.zion-comments-row.is-resolved.is-active,
+.zion-comments-row.is-resolved.is-active:hover,
+.zion-comments-row.is-orphan.is-active,
+.zion-comments-row.is-orphan.is-active:hover {
+  border: 1px solid var(--zion-comments-border-faint, color-mix(in srgb, var(--border) 34%, transparent));
+  border-radius: 10px;
+  background: var(--zion-comments-surface-2, color-mix(in srgb, var(--panel) 94%, var(--bg)));
+  box-shadow: none;
+}
+
+.zion-comments-row {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-top: 0;
+  padding: 8px 8px 7px;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  overflow-anchor: none;
+  transition:
+    opacity 120ms ease,
+    border-color 120ms ease,
+    box-shadow 140ms ease;
+}
+
+.zion-comments-row.is-expanded {
+  overflow: hidden;
+}
+
+.zion-comments-row:first-child {
+  margin-top: 0;
+}
+
+.zion-comments-row.is-active,
+.zion-comments-row.is-active:hover,
+.zion-comments-row.is-resolved.is-active,
+.zion-comments-row.is-resolved.is-active:hover,
+.zion-comments-row.is-orphan.is-active,
+.zion-comments-row.is-orphan.is-active:hover {
+  border-color: var(--zion-comments-border-faint, color-mix(in srgb, var(--border) 34%, transparent));
+  border-left-color: var(--zion-comments-comment-border-strong);
+  background: var(--zion-comments-surface-2, color-mix(in srgb, var(--panel) 94%, var(--bg)));
+  box-shadow: 0 4px 14px color-mix(in srgb, #000 16%, transparent);
+}
+
+.zion-comments-editor-frame,
+.zion-comments-editor,
+.zion-comments-row.is-expanded .zion-comments-editor-frame,
+.zion-comments-row.is-expanded .zion-comments-editor-header {
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none;
+  overflow-anchor: none;
+}
+
+.zion-comments-editor-header,
+.zion-comments-row.is-expanded .zion-comments-editor-header {
+  position: relative;
+  top: auto;
+  min-height: 0;
+  padding: 0 0 6px;
+  border-bottom: 0;
+  gap: 4px;
+  min-width: 0;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor-header {
+  position: relative;
+  top: auto;
+  z-index: 3;
+  margin: 0 -6px;
+  padding: 2px 6px 6px;
+  background: var(--zion-comments-surface-1, var(--surface-panel, var(--panel))) !important;
+}
+
+.zion-comments-row:not(.is-expanded) .zion-comments-editor-header {
+  margin: 0 -6px 2px;
+  padding: 2px 6px 4px;
+}
+
+.zion-comments-row:not(.is-expanded).is-active .zion-comments-editor-header,
+.zion-comments-row.is-expanded.is-active .zion-comments-editor-header {
+  background: transparent !important;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor-header::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 0;
+  height: 1px;
+  background: var(--zion-comments-border-faint, color-mix(in srgb, var(--border) 28%, transparent));
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.zion-comments-row.is-expanded.is-active .zion-comments-editor-header::after {
+  display: none;
+}
+
+.zion-comments-actions {
+  opacity: 0;
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid var(--zion-comments-border-faint, color-mix(in srgb, var(--border) 34%, transparent));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--zion-comments-surface-1, var(--surface-panel, var(--panel))) 88%, transparent);
+  box-shadow: none;
+  transition:
+    opacity 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease;
+}
+
+.zion-comments-row.is-active .zion-comments-actions,
+.zion-comments-row.is-expanded .zion-comments-actions {
+  opacity: 1;
+}
+
+.zion-comments-row.is-active .zion-comments-actions {
+  border-color: var(--zion-comments-border-soft, color-mix(in srgb, var(--border) 50%, transparent));
+  background: color-mix(in srgb, var(--zion-comments-surface-1, var(--surface-panel, var(--panel))) 94%, var(--bg));
+}
+
+.zion-comments-actions .zion-comments-action {
+  width: 19px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.zion-comments-actions .zion-comments-action .codicon,
+.zion-comments-actions .zion-comments-action .zion-icon,
+.zion-comments-actions .zion-comments-action > svg,
+.zion-comments-actions .zion-comments-action > * {
+  font-size: 11px;
+}
+
+.zion-comments-actions .zion-comments-action:hover,
+.zion-comments-actions .zion-comments-action.primary:hover {
+  background: var(--zion-comments-surface-3, var(--hover-bg));
+}
+
+.zion-comments-detail,
+.zion-comments-editor-frame,
+.zion-comments-editor-header,
+.zion-comments-quote,
+.zion-comments-editor,
+.zion-comments-thread-editor,
+.zion-comments-thread-editor .cm-editor,
+.zion-comments-thread-editor .cm-scroller {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.zion-comments-quote {
+  padding: 2px 3px;
+  gap: 4px;
+}
+
+.zion-comments-quote-label {
+  display: none !important;
+}
+
+.zion-comments-quote-toggle {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--zion-comments-fg-faint, color-mix(in srgb, var(--fg) 38%, transparent));
+  cursor: pointer;
+}
+
+.zion-comments-quote-toggle:hover {
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+
+.zion-comments-quote-toggle .codicon,
+.zion-comments-quote-toggle .zion-icon,
+.zion-comments-quote-toggle > svg,
+.zion-comments-quote-toggle > * {
+  font-size: 12px;
+  transition: transform 160ms ease, color 120ms ease;
+  transform-origin: center;
+}
+
+.zion-comments-quote:hover .zion-comments-quote-toggle {
+  color: var(--zion-comments-fg-secondary, color-mix(in srgb, var(--fg) 74%, transparent));
+}
+
+.zion-comments-row.is-expanded .zion-comments-quote-toggle .codicon,
+.zion-comments-row.is-expanded .zion-comments-quote-toggle .zion-icon,
+.zion-comments-row.is-expanded .zion-comments-quote-toggle > svg,
+.zion-comments-row.is-expanded .zion-comments-quote-toggle > * {
+  transform: rotate(90deg);
+}
+
+.zion-comments-quote-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zion-comments-summary {
+  margin: 3px 2px 0;
+  padding: 5px 7px 6px;
+  border-radius: 7px;
+  background: var(--zion-comments-surface-2, color-mix(in srgb, var(--fg) 3.5%, transparent));
+  color: var(--zion-comments-fg-secondary, color-mix(in srgb, var(--fg) 76%, transparent));
+  font-size: 12px;
+  line-height: 1.45;
+  display: block;
+  overflow: visible;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.zion-comments-summary.is-empty {
+  color: var(--zion-comments-fg-faint, color-mix(in srgb, var(--fg) 42%, transparent));
+  font-style: italic;
+  background: transparent;
+  padding: 3px 1px;
+}
+
+.zion-comments-summary-heading {
+  margin: 8px 0 3px;
+  color: var(--zion-comments-fg, var(--fg));
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.zion-comments-summary-heading:first-child {
+  margin-top: 0;
+}
+
+.zion-comments-summary-heading.is-level-1,
+.zion-comments-summary-heading.is-level-2 {
+  font-size: 12px;
+}
+
+.zion-comments-summary-paragraph + .zion-comments-summary-paragraph {
+  margin-top: 4px;
+}
+
+.zion-comments-summary-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.zion-comments-summary-list li + li {
+  margin-top: 2px;
+}
+
+.zion-comments-summary code {
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  font-size: 0.92em;
+}
+
+.zion-comments-summary a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.zion-comments-summary a:hover {
+  text-decoration: underline;
+}
+
+.zion-comments-summary-meta {
+  margin: 3px 7px 0;
+  color: var(--zion-comments-fg-faint, color-mix(in srgb, var(--fg) 42%, transparent));
+  font-size: 10.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zion-comments-summary-meta.is-updating {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: color-mix(in srgb, var(--accent) 72%, var(--zion-comments-fg-faint, var(--fg)));
+}
+
+.zion-comments-summary-spinner {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border: 1.5px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: zion-comments-summary-spin 720ms linear infinite;
+}
+
+@keyframes zion-comments-summary-spin {
+  to { transform: rotate(360deg); }
+}
+
+.zion-comments-editor {
+  padding: 2px 3px 1px;
+}
+
+.zion-comments-row:not(.is-expanded) .zion-comments-editor {
+  min-height: 0;
+  padding: 0;
+  cursor: default;
+}
+
+.zion-comments-row:not(.is-expanded) .zion-comments-editor-frame {
+  height: auto;
+  min-height: 0;
+  background: transparent;
+}
+
+.zion-comments-row.is-expanded .zion-comments-editor {
+  display: block;
+  max-height: min(52vh, 520px);
+  overflow: hidden;
+}
+
+.zion-comments-row.is-expanded .zion-comments-detail,
+.zion-comments-row.is-expanded .zion-comments-editor-frame {
+  overflow: hidden;
+}
+
+.zion-comments-row.is-expanded .zion-comments-thread-editor,
+.zion-comments-row.is-expanded .zion-comments-thread-editor .cm-editor,
+.zion-comments-row.is-expanded .zion-comments-thread-editor .cm-scroller {
+  max-height: min(52vh, 520px);
+}
+
+.zion-comments-row.is-expanded .zion-comments-thread-editor .cm-scroller {
+  overflow: auto !important;
+  overscroll-behavior: contain;
+}
+
+.zion-comments-row:not(.is-expanded) .zion-comments-thread-editor .cm-scroller {
+  overflow: hidden !important;
+}
+
+.zion-comments-thread-editor .cm-scroller {
+  overflow-x: hidden !important;
+}
+
+.zion-comments-thread-editor .cm-content {
+  padding: 4px 3px 6px !important;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Compact status strip for the comments header and history popover. */
+.zion-comments-header {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.zion-comments-header-left,
+.zion-comments-header-right {
+  min-height: 22px;
+}
+
+.zion-comments-header-right {
+  margin-left: auto;
+}
+
+.zion-comments-stats {
+  order: 3;
+  width: 100%;
+  justify-content: flex-start;
+  gap: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--zion-comments-border-faint);
+}
+
+.zion-comments-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--zion-comments-fg-muted);
+  font: 500 10px/1.2 var(--font-sans);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.zion-comments-stat strong {
+  color: var(--zion-comments-fg-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.zion-comments-stat:hover:not(:disabled) {
+  border-color: var(--zion-comments-border-faint);
+  background: var(--zion-comments-surface-3);
+  color: var(--fg);
+}
+
+.zion-comments-stat.is-active {
+  border-color: var(--zion-comments-accent-medium);
+  background: var(--zion-comments-accent-soft);
+  color: var(--accent);
+}
+
+.zion-comments-stat.is-active strong,
+.zion-comments-stat.is-streaming strong {
+  color: currentColor;
+}
+
+.zion-comments-stat.is-streaming {
+  color: var(--accent);
+}
+
+.zion-comments-stat:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.zion-comments-popover {
+  top: 66px;
+  width: min(320px, calc(100vw - 32px));
+  max-height: min(440px, calc(100vh - 96px));
+  gap: 0;
+  padding: 5px;
+}
+
+.zion-comments-popover-head {
+  padding: 7px 8px 6px;
+}
+
+.zion-comments-popover-head > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.zion-comments-popover-head strong {
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.zion-comments-popover-head > div > span {
+  overflow: hidden;
+  color: var(--zion-comments-fg-faint);
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-comments-popover-total {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--zion-comments-surface-3);
+  color: var(--zion-comments-fg-secondary);
+  font-size: 10px;
+}
+
+.zion-comments-popover-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.zion-comments-popover-item {
+  align-items: center;
+  min-height: 42px;
+  padding: 7px 7px 7px 8px;
+}
+
+.zion-comments-popover-item.is-streaming {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.zion-comments-popover-item.is-streaming:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--zion-comments-surface-3));
+}
+
+.zion-comments-popover-item-jump {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--zion-comments-fg-faint);
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.zion-comments-popover-item:hover .zion-comments-popover-item-jump,
+.zion-comments-popover-item:focus-visible .zion-comments-popover-item-jump {
+  color: var(--zion-comments-fg-secondary);
+  opacity: 1;
+}
+
+.zion-comments-popover-item-jump .codicon {
+  font-size: 12px;
+}
+
+.zion-comments-hdr-btn:focus-visible,
+.zion-comments-stat:focus-visible,
+.zion-comments-filter-chip:focus-visible,
+.zion-comments-popover-item:focus-visible,
+.zion-comments-quote-toggle:focus-visible,
+.zion-comments-action:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #75beff) 62%, transparent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zion-comments-panel *,
+  .zion-comments-panel *::before,
+  .zion-comments-panel *::after,
+  .zion-comment-range,
+  .zion-comment-anchor {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

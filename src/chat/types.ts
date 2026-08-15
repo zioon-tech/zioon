@@ -21,6 +21,7 @@ export interface ChatMessage {
 
 export interface AssistantAnchor {
   sessionId: string;
+  assistantBlockId: string;
   headLine: number;
   anchorPos: number;
 }

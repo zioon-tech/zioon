@@ -1,12 +1,30 @@
-export function appendAssistantTokenToDoc(doc, token) {
-  const lines = String(doc || "").split("\n");
+import {
+  assistantBlockHeaderText,
+  findAssistantBlockEndOffsetById
+} from "../../../src/chat/restore";
+
+export function ensureAssistantBlockInDoc(doc, assistantBlockId) {
+  const src = String(doc || "");
+  if (!assistantBlockId || findAssistantBlockEndOffsetById(src, assistantBlockId) != null) return src;
+  const prefix = src.length === 0 || src.endsWith("\n") ? "" : "\n";
+  return `${src}${prefix}${assistantBlockHeaderText(assistantBlockId)}`;
+}
+
+export function appendAssistantTokenToDoc(doc, token, assistantBlockId = null) {
+  const src = String(doc || "");
+  if (assistantBlockId) {
+    const insertPos = findAssistantBlockEndOffsetById(src, assistantBlockId);
+    if (insertPos == null) return src;
+    return `${src.slice(0, insertPos)}${String(token)}${src.slice(insertPos)}`;
+  }
+  const lines = src.split("\n");
   let assistantLine = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
     if (/^\s*assistant\s+/.test(lines[i])) { assistantLine = i; break; }
   }
   if (assistantLine === -1) {
-    const head = (String(doc || "").endsWith("\n") || String(doc || "").length === 0) ? "assistant " : "\nassistant ";
-    return String(doc || "") + head + String(token);
+      const head = (src.endsWith("\n") || src.length === 0) ? "assistant " : "\nassistant ";
+      return src + head + String(token);
   }
   let endLine = assistantLine;
   for (let i = assistantLine + 1; i < lines.length; i++) {
@@ -52,6 +70,7 @@ function dispatchMinimalDocUpdate(editor, nextText) {
 export function registerSessionDocCommands(opts) {
   const zion = opts?.zion || window.zion;
   const loadDoc = opts?.loadDoc;
+  const loadMetaAsync = opts?.loadMetaAsync;
   const loadMeta = opts?.loadMeta;
   const saveDoc = opts?.saveDoc;
   const saveMeta = opts?.saveMeta;
@@ -133,6 +152,21 @@ export function registerSessionDocCommands(opts) {
     if (!id) return null;
     return loadMeta(id);
   });
+    const dGetMetaAsync = zion.commands.registerCommand("zion.sessions.getMetaAsync", async (id) => {
+      if (!id) return null;
+      if (typeof loadMetaAsync === "function") return loadMetaAsync(id);
+      return loadMeta(id);
+    });
+  const dPatchMeta = zion.commands.registerCommand("zion.sessions.patchMeta", ({ id, patch, updater } = {}) => {
+    if (!id) return null;
+    const current = { ...(loadMeta(id) || {}), id };
+    const candidate = typeof updater === "function" ? updater(current) : { ...current, ...(patch || {}) };
+    if (!candidate || typeof candidate !== "object") return null;
+    const next = { ...candidate, id };
+    saveMeta(id, next);
+    try { zion.state.set(`sessions.meta.${id}`, next); } catch {}
+    return next;
+  });
   const dSetDoc = zion.commands.registerCommand("zion.sessions.setDoc", ({ id, text }) => {
     if (!id) return false;
     return enqueueDocWrite(id, () => applyDocText(id, text));
@@ -146,11 +180,19 @@ export function registerSessionDocCommands(opts) {
       return applyDocText(id, String(next));
     });
   });
-  const dAppendToken = zion.commands.registerCommand("zion.sessions.appendAssistantToken", ({ id, token }) => {
+    const dEnsureAssistant = zion.commands.registerCommand("zion.sessions.ensureAssistantBlock", ({ id, assistantBlockId }) => {
+      if (!id || !assistantBlockId) return false;
+      return enqueueDocWrite(id, () => {
+        const doc = loadDoc(id);
+        const next = ensureAssistantBlockInDoc(doc, assistantBlockId);
+        return applyDocText(id, next);
+      });
+    });
+    const dAppendToken = zion.commands.registerCommand("zion.sessions.appendAssistantToken", ({ id, token, assistantBlockId }) => {
     if (!id || token == null) return false;
     return enqueueDocWrite(id, () => {
       const doc = loadDoc(id);
-      const next = appendAssistantTokenToDoc(doc, token);
+        const next = appendAssistantTokenToDoc(doc, token, assistantBlockId);
       return applyDocText(id, next);
     });
   });
@@ -167,5 +209,5 @@ export function registerSessionDocCommands(opts) {
     return true;
   });
 
-  return [dGetDoc, dGetDocAsync, dGetMeta, dSetDoc, dTransformDoc, dAppendToken, dBumpUpdated];
+      return [dGetDoc, dGetDocAsync, dGetMeta, dGetMetaAsync, dPatchMeta, dSetDoc, dTransformDoc, dEnsureAssistant, dAppendToken, dBumpUpdated];
 }

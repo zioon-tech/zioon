@@ -15,10 +15,12 @@ export const geminiProvider = {
       console.warn("[gemini-provider] Failed to read config from localStorage", e);
     }
     return [
-      { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-      { id: "gemini-2.0-flash-thinking-exp-01-21", label: "Gemini 2.0 Flash Thinking" },
-      { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
-      { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash" }
+      { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+      { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+      { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
+      { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+      { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" }
     ];
   },
   async resolve(modelId) {
@@ -39,25 +41,30 @@ export const geminiProvider = {
       console.warn("[gemini-provider] Failed to read config from localStorage", e);
     }
 
+    const common = {
+      id: modelId,
+      url: "https://generativelanguage.googleapis.com/v1beta/models",
+      modelName: modelId,
+      providerId: "google",
+      providerType: "gemini",
+      temperature: config.temperature,
+      max_tokens: config.max_tokens ?? 32768,
+      pricing: config.pricing,
+      stream: config.stream !== false,
+      supportsImage: config.supportsImage !== false,
+      supportsThinking: config.supportsThinking ?? true,
+      supportsThinkingEffort: config.supportsThinkingEffort ?? true,
+      thinkingMode: config.thinkingMode || "auto",
+      thinkingEffort: config.thinkingEffort || "auto",
+      preservedThinking: !!config.preservedThinking,
+      interleavedThinking: !!config.interleavedThinking
+    };
+
     // 如果没有配置 API key，返回一个提示性的配置
     if (!apiKey) {
       return {
-        id: modelId,
-        url: "https://generativelanguage.googleapis.com/v1beta/models",
+        ...common,
         key: "",
-        modelName: modelId,
-        providerType: "gemini",
-        temperature: config.temperature ?? 0.9,
-        max_tokens: config.max_tokens ?? 8192,
-        pricing: config.pricing,
-        stream: config.stream !== false,
-        supportsImage: true,
-        supportsThinking: config.supportsThinking,
-        supportsThinkingEffort: config.supportsThinkingEffort,
-        thinkingMode: config.thinkingMode || "auto",
-        thinkingEffort: config.thinkingEffort || "auto",
-        preservedThinking: !!config.preservedThinking,
-        interleavedThinking: !!config.interleavedThinking,
         _requiresConfig: true,
         _configHint: "请使用 modelsManage 工具配置 Gemini API key，或设置 localStorage 键 'zion.gemini.apiKey'"
       };
@@ -65,22 +72,8 @@ export const geminiProvider = {
 
     // Return Gemini-specific fields
     return {
-      id: modelId,
-      url: "https://generativelanguage.googleapis.com/v1beta/models",
-      key: apiKey,
-      modelName: modelId,
-      providerType: "gemini",
-      temperature: config.temperature ?? 0.9,
-      max_tokens: config.max_tokens ?? 8192,
-      pricing: config.pricing,
-      stream: config.stream !== false,
-      supportsImage: true,
-      supportsThinking: config.supportsThinking,
-      supportsThinkingEffort: config.supportsThinkingEffort,
-      thinkingMode: config.thinkingMode || "auto",
-      thinkingEffort: config.thinkingEffort || "auto",
-      preservedThinking: !!config.preservedThinking,
-      interleavedThinking: !!config.interleavedThinking
+      ...common,
+      key: apiKey
     };
   }
 };

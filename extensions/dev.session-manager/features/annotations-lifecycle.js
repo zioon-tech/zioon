@@ -27,17 +27,24 @@ export function createAnnotationsLifecycle(opts) {
     } catch {}
   }
 
-  function persistCurrentAnnotations() {
+  function persistAnnotations(id, panelId = null) {
     try {
-      const id = getZion()?.state?.get("sessions.currentId");
       if (!id) return;
-      snapshotSessionAnnotations(id);
+      snapshotSessionAnnotations(id, panelId);
       const meta = loadMeta(id);
       const ann = getAnnotationsState(id) || meta.annotations;
       if (ann) {
         meta.annotations = ann;
         saveMeta(id, meta);
       }
+    } catch (e) {
+      console.warn("[sessions] persistAnnotations error:", e);
+    }
+  }
+
+  function persistCurrentAnnotations() {
+    try {
+      persistAnnotations(getZion()?.state?.get("sessions.currentId"));
     } catch (e) {
       console.warn("[sessions] persistCurrentAnnotations error:", e);
     }
@@ -284,6 +291,7 @@ export function createAnnotationsLifecycle(opts) {
 
   return {
     getAnnotationsState,
+    persistAnnotations,
     persistCurrentAnnotations,
     attachLifecyclePersistence,
     attachLifecycleRestore,

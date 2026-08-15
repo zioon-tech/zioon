@@ -1,5 +1,5 @@
-import { Prec, RangeSetBuilder } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, keymap, gutter, GutterMarker } from "@codemirror/view";
+import { Prec, RangeSetBuilder, StateField } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin, keymap, gutter, GutterMarker, WidgetType } from "@codemirror/view";
 import { foldService } from "@codemirror/language";
 
 /**
@@ -12,6 +12,7 @@ import { foldService } from "@codemirror/language";
 
 // 默认内置角色
 const BASE_ROLE_PREFIXES = ["user", "assistant", "system"];
+const ASSISTANT_BLOCK_ID_RE = /^assistant\s+(<!--\s*zion-assistant:id=[^>\s]+\s*-->)\s?/;
 
 /**
  * 从环境读取自定义角色前缀：
@@ -97,7 +98,7 @@ function getRoleForLine(text, prefixes) {
 /** @param {string} role */
 function tokenClass(role) {
   // 根据 TOC 插件中的颜色方案返回对应的类名
-  // user: '#4caf50' (绿色), assistant: '#2196f3' (蓝色), system: '#9e9e9e' (灰色)
+  // Colors are provided by CSS role tokens so assistant follows the active theme.
   if (role === 'assistant') return "cm-role-token-assistant";
   if (role === 'system') return "cm-role-token-system";
   return "cm-role-token-user"; // 默认为 user
@@ -110,6 +111,94 @@ function blockClass(role) {
 }
 
 const ROLES_NAV_FLASH_EVENT = "zion:roles-nav-flash";
+
+class RoleBoundarySpacerWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = "zion-role-boundary-spacer";
+    el.setAttribute("aria-hidden", "true");
+    return el;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+}
+
+const roleBoundarySpacerWidget = new RoleBoundarySpacerWidget();
+
+function buildRoleSpacerDecorations(state, prefixes) {
+  const doc = state.doc;
+  const builder = new RangeSetBuilder();
+  let pos = 1;
+  while (pos <= doc.length) {
+    const line = doc.lineAt(pos);
+    const text = doc.sliceString(line.from, line.to);
+    const roleHere = getRoleForLine(text, prefixes);
+    if (roleHere && line.number !== 1) {
+      builder.add(
+        line.from,
+        line.from,
+        Decoration.widget({
+          widget: roleBoundarySpacerWidget,
+          block: true,
+          side: -1
+        })
+      );
+    }
+    pos = line.to + 1;
+  }
+  return builder.finish();
+}
+
+function canMapRoleSpacers(tr, prefixes) {
+  let reusable = true;
+  tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+    if (!reusable) return;
+    if (/[\n\r]/.test(inserted.toString())) {
+      reusable = false;
+      return;
+    }
+
+    const oldFromLine = tr.startState.doc.lineAt(fromA);
+    const oldToLine = tr.startState.doc.lineAt(toA);
+    const newFromLine = tr.state.doc.lineAt(fromB);
+    const newToLine = tr.state.doc.lineAt(toB);
+    if (oldFromLine.number !== oldToLine.number || newFromLine.number !== newToLine.number) {
+      reusable = false;
+      return;
+    }
+
+    const oldRole = getRoleForLine(oldFromLine.text, prefixes);
+    const newRole = getRoleForLine(newFromLine.text, prefixes);
+    const oldOffset = fromA - oldFromLine.from;
+    const newOffset = fromB - newFromLine.from;
+    if (
+      (oldRole && oldOffset < oldRole.length + 1) ||
+      (newRole && newOffset < newRole.length + 1)
+    ) {
+      reusable = false;
+    }
+  });
+  return reusable;
+}
+
+function roleSpacerField(prefixes) {
+  return StateField.define({
+    create(state) {
+      return buildRoleSpacerDecorations(state, prefixes);
+    },
+    update(value, tr) {
+      if (!tr.docChanged || canMapRoleSpacers(tr, prefixes)) return value.map(tr.changes);
+      return buildRoleSpacerDecorations(tr.state, prefixes);
+    },
+    provide: field => EditorView.decorations.from(field)
+  });
+}
 
 function flashRoleNavLine(view, lineIndex) {
   if (!view || typeof lineIndex !== "number" || lineIndex < 0) return;
@@ -207,7 +296,7 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex, flashLin
       if (line.number - 1 === flashLineIndex) {
         lineClasses.push(`cm-role-nav-flash cm-role-nav-flash-${flashSerial % 2 ? "b" : "a"}`);
       }
-      if (lineClasses.length) {
+        if (lineClasses.length) {
         builder.add(line.from, line.from, Decoration.line({ class: lineClasses.join(" ") }));
     }
 
@@ -220,6 +309,18 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex, flashLin
         line.from + tokenLen,
         Decoration.mark({ class: tokenClass(roleHere) + " cm-role-token-head" })
       );
+      if (roleHere === "assistant") {
+        const assistantIdMatch = text.match(ASSISTANT_BLOCK_ID_RE);
+        if (assistantIdMatch) {
+          const comment = assistantIdMatch[1];
+          const commentFrom = line.from + text.indexOf(comment);
+          builder.add(
+            commentFrom,
+            commentFrom + comment.length,
+            Decoration.replace({})
+          );
+        }
+      }
     }
 
     // 如果提供了 @role 正则，则在当前行内查找所有内联 @role 并标记（支持自定义前缀）
@@ -509,6 +610,27 @@ function rolesView(opts = {}) {
         this.flashLineIndex = null;
         this.flashSerial = 0;
         this.flashTimer = 0;
+        this.indexTimer = 0;
+        this.indexIdle = 0;
+        this.scheduleIndexRefresh = () => {
+          if (this.indexTimer) window.clearTimeout(this.indexTimer);
+          if (this.indexIdle && typeof window.cancelIdleCallback === "function") {
+            window.cancelIdleCallback(this.indexIdle);
+            this.indexIdle = 0;
+          }
+          this.indexTimer = window.setTimeout(() => {
+            this.indexTimer = 0;
+            const refresh = () => {
+              this.indexIdle = 0;
+              try { buildRolesIndexFromView(this.view, prefixes); } catch {}
+            };
+            if (typeof window.requestIdleCallback === "function") {
+              this.indexIdle = window.requestIdleCallback(refresh, { timeout: 400 });
+            } else {
+              refresh();
+            }
+          }, 120);
+        };
         this.onFlash = (event) => {
           const detail = event?.detail || {};
           if (detail.view !== this.view) return;
@@ -537,7 +659,7 @@ function rolesView(opts = {}) {
           this.decorations = buildDecorations(update.view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
         }
         if (update.docChanged) {
-          try { buildRolesIndexFromView(update.view, prefixes); } catch {}
+          this.scheduleIndexRefresh();
         }
       }
       destroy() {
@@ -546,12 +668,69 @@ function rolesView(opts = {}) {
           try { window.clearTimeout(this.flashTimer); } catch {}
           this.flashTimer = 0;
         }
+        if (this.indexTimer) {
+          try { window.clearTimeout(this.indexTimer); } catch {}
+          this.indexTimer = 0;
+        }
+        if (this.indexIdle && typeof window.cancelIdleCallback === "function") {
+          try { window.cancelIdleCallback(this.indexIdle); } catch {}
+          this.indexIdle = 0;
+        }
       }
     },
     {
       decorations: v => v.decorations
     }
   );
+}
+
+export function applyRoleNavigationSelection(view, selection, pos) {
+  try {
+    const p = Math.max(0, Math.min(view.state.doc.length, pos));
+    const scrollDOM = view.scrollDOM;
+    const outerList = view.dom?.closest?.(".zion-comments-list") || null;
+    const outerScrollTop = Number(outerList?.scrollTop) || 0;
+    const block = view.lineBlockAt(p);
+    const viewportTop = Number(scrollDOM?.scrollTop) || 0;
+    const viewportBottom = viewportTop + (Number(scrollDOM?.clientHeight) || 0);
+    const visible = block.top >= viewportTop && block.bottom <= viewportBottom;
+    const targetTop = Math.max(0, Math.min(
+      block.top - Math.floor((scrollDOM.clientHeight || 0) * 0.2),
+      Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight)
+    ));
+    const restoreNestedScroll = () => {
+      try {
+        scrollDOM.scrollTo?.({ top: targetTop, behavior: "auto" });
+        scrollDOM.scrollTop = targetTop;
+        if (outerList) {
+          outerList.__zionProgrammaticScrollUntil = Math.max(
+            Number(outerList.__zionProgrammaticScrollUntil) || 0,
+            Date.now() + 180
+          );
+          outerList.scrollTop = outerScrollTop;
+        }
+      } catch {}
+    };
+
+    if (visible || outerList) {
+      view.dispatch({ selection });
+    } else {
+      view.dispatch({
+        selection,
+        effects: EditorView.scrollIntoView(p, { y: "center", yMargin: 48 })
+      });
+    }
+    restoreNestedScroll();
+    try {
+      requestAnimationFrame(() => {
+        restoreNestedScroll();
+        requestAnimationFrame(restoreNestedScroll);
+      });
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -562,44 +741,10 @@ function rolesView(opts = {}) {
 export function roles(opts = {}) {
   const prefixes = getEffectivePrefixes(opts);
 
-  const isPosVisible = (view, pos) => {
-    try {
-      const p = Math.max(0, Math.min(view.state.doc.length, pos));
-      const block = view.lineBlockAt(p);
-      const scrollDOM = view.scrollDOM;
-      const viewportTop = scrollDOM.scrollTop;
-      const viewportBottom = viewportTop + scrollDOM.clientHeight;
-      return block.top >= viewportTop && block.bottom <= viewportBottom;
-    } catch {
-      return false;
-    }
-  };
-
   const jumpToPos = (view, pos, flashLineIndex = null) => {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
     const selection = { anchor: p };
-    const forceScroll = () => {
-      try {
-        const scrollDOM = view.scrollDOM;
-        const block = view.lineBlockAt(p);
-        const targetTop = Math.max(0, Math.min(
-          block.top - Math.floor((scrollDOM.clientHeight || 0) * 0.2),
-          Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight)
-        ));
-        scrollDOM.scrollTo?.({ top: targetTop, behavior: "auto" });
-        scrollDOM.scrollTop = targetTop;
-      } catch {}
-    };
-    if (isPosVisible(view, p)) {
-      view.dispatch({ selection });
-    } else {
-      view.dispatch({
-        selection,
-        effects: EditorView.scrollIntoView(p, { y: "center", yMargin: 48 })
-      });
-    }
-    forceScroll();
-    try { requestAnimationFrame(forceScroll); } catch {}
+    applyRoleNavigationSelection(view, selection, p);
     if (typeof flashLineIndex === "number") flashRoleNavLine(view, flashLineIndex);
     return true;
   };
@@ -638,28 +783,7 @@ export function roles(opts = {}) {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
     const main = view.state.selection.main;
     const selection = { anchor: main.anchor, head: p };
-    const forceScroll = () => {
-      try {
-        const scrollDOM = view.scrollDOM;
-        const block = view.lineBlockAt(p);
-        const targetTop = Math.max(0, Math.min(
-          block.top - Math.floor((scrollDOM.clientHeight || 0) * 0.2),
-          Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight)
-        ));
-        scrollDOM.scrollTo?.({ top: targetTop, behavior: "auto" });
-        scrollDOM.scrollTop = targetTop;
-      } catch {}
-    };
-    if (isPosVisible(view, p)) {
-      view.dispatch({ selection });
-    } else {
-      view.dispatch({
-        selection,
-        effects: EditorView.scrollIntoView(p, { y: "center", yMargin: 48 })
-      });
-    }
-    forceScroll();
-    try { requestAnimationFrame(forceScroll); } catch {}
+    applyRoleNavigationSelection(view, selection, p);
     if (typeof flashLineIndex === "number") flashRoleNavLine(view, flashLineIndex);
     return true;
   };
@@ -787,5 +911,5 @@ export function roles(opts = {}) {
     }
   });
 
-  return [rolesView(opts), rolesRailGutter(prefixes, getHighlightBlockRoles(opts)), navKeymap, foldExt];
+    return [roleSpacerField(prefixes), rolesView(opts), rolesRailGutter(prefixes, getHighlightBlockRoles(opts)), navKeymap, foldExt];
 }

@@ -1,16 +1,36 @@
 {
   "name": "dev.search-replace-plus",
   "version": "0.0.2",
-  "description": "Zion Next Plugin: dev.search-replace-plus",
+  "description": "Add batch accept, revert, and diff workflows to search and replace.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.search-replace-plus",
-    "name": "dev.search-replace-plus",
-    "nameKey": "dev.plugins.pluginName.dev.search-replace-plus",
-    "descriptionKey": "dev.plugins.pluginDescription.dev.search-replace-plus",
+    "name": "Search/Replace Plus",
     "version": "0.0.2",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "搜索替换增强",
+        "en-US": "Search/Replace Plus"
+      },
+      "description": {
+        "zh-CN": "提供批量接受、回滚和 diff 等增强搜索替换操作。",
+        "en-US": "Add batch accept, revert, and diff workflows to search and replace."
+      },
+      "icon": "replace-all",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "提供批量接受、回滚和 diff 等增强搜索替换操作。"
+        ],
+        "en-US": [
+          "Add batch accept, revert, and diff workflows to search and replace."
+        ]
+      }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.search-replace-plus",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.search-replace-plus",
     "contributes": {
       "commands": [
         {

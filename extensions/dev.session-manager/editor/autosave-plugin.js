@@ -16,6 +16,7 @@ export function createSessionAutoSavePlugin(opts) {
   const zion = opts?.zion || window.zion;
 
   const buckets = new Map();
+  const autosaveQuietDelayMs = 700;
 
   const getBucketKey = (view) => {
     try {
@@ -41,7 +42,9 @@ export function createSessionAutoSavePlugin(opts) {
     try {
       return !!update?.transactions?.some?.((tr) => {
         const userEvent = tr?.annotation?.(Transaction.userEvent);
-        return userEvent === "zion.sessionLoad" || userEvent === "zion.cardRestore";
+        return userEvent === "zion.sessionLoad"
+          || userEvent === "zion.sessionSeed"
+          || userEvent === "zion.cardRestore";
       });
     } catch {
       return false;
@@ -59,9 +62,7 @@ export function createSessionAutoSavePlugin(opts) {
     const text = doc.toString();
     const meta = loadMeta(id);
     const newHash = hashString(text);
-    if (newHash === (meta.hash || "")) {
-      return false;
-    }
+    if (newHash === (meta.hash || "")) return false;
     saveDoc(id, text);
     const rs = zion?.state?.get(`chat.runs.${id}`) || null;
     if (rs && rs.streaming) {
@@ -83,7 +84,6 @@ export function createSessionAutoSavePlugin(opts) {
       if (ann) meta.annotations = ann;
     } catch {}
     saveMeta(id, meta);
-    rebuildIndexFromTree();
     upsertIndexEntry({ id, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
     try { postSaved(id, meta.updatedAt, meta.hash); } catch {}
     try { onSaved(meta); } catch {}
@@ -103,11 +103,15 @@ export function createSessionAutoSavePlugin(opts) {
       bucket.pendingView = null;
       commit(id, doc);
     };
-    if (idle) {
-      bucket.timer = requestIdleCallback(fn, { timeout: 1200 });
-    } else {
-      bucket.timer = setTimeout(fn, 600);
-    }
+    const scheduleIdleCommit = () => {
+      bucket.timer = 0;
+      if (idle) {
+        bucket.timer = requestIdleCallback(fn, { timeout: 1200 });
+      } else {
+        bucket.timer = setTimeout(fn, 0);
+      }
+    };
+    bucket.timer = setTimeout(scheduleIdleCommit, autosaveQuietDelayMs);
   };
 
   const flush = (idOverride) => {

@@ -1,6 +1,13 @@
 # Zion Agent Platform 架构演进路线图
 
-> 状态：讨论中 | 最后更新：2025年1月
+> 状态：已被后续方案取代 | 最后更新：2026-07-26
+>
+> 本文保留为历史讨论。其“前端 TypeScript Runtime + 后端 Python Runtime 独立实现”的方向
+> 不再推荐，因为会导致 Web、Desktop、CLI 和 Cloud 行为分叉。当前决策来源：
+>
+> - [AGENT-RUNTIME-BOUNDARY-STRATEGY.md](./AGENT-RUNTIME-BOUNDARY-STRATEGY.md)
+> - [MULTI-SURFACE-AGENT-PLATFORM.md](./MULTI-SURFACE-AGENT-PLATFORM.md)
+> - [ADR-0001-MODULAR-MONOLITH-AGENT-RUNTIME.md](./ADR-0001-MODULAR-MONOLITH-AGENT-RUNTIME.md)
 
 ## 背景与动机
 

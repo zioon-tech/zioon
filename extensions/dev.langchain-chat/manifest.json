@@ -1,14 +1,34 @@
 {
   "name": "dev.langchain-chat",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.langchain-chat",
+  "description": "Provide chat run, stop, retry, and model configuration capabilities.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.langchain-chat",
-    "name": "dev.langchain-chat",
+    "name": "Chat",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "聊天",
+        "en-US": "Chat"
+      },
+      "description": {
+        "zh-CN": "提供聊天运行、停止、重试和模型配置能力。",
+        "en-US": "Provide chat run, stop, retry, and model configuration capabilities."
+      },
+      "icon": "comment-discussion",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "提供聊天运行、停止、重试和模型配置能力。"
+        ],
+        "en-US": [
+          "Provide chat run, stop, retry, and model configuration capabilities."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {

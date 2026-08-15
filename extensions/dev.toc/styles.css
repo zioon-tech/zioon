@@ -33,8 +33,8 @@
   background: var(--ext-toc-bg, var(--panel));
   color: var(--ext-toc-fg, var(--fg));
   border: 1px solid var(--ext-toc-border, var(--border));
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-3);
   font-family: var(--font-sans);
 }
 #zion-toc-panel button {
@@ -243,7 +243,7 @@
   #statusbar { gap: 4px; }
   .status-item {
     padding: 2px 4px;
-    font-size: 10.5px;
+    font-size: 11px;
     border-color: transparent; /* 极窄时弱化边框，降低噪声 */
   }
 }
@@ -416,4 +416,65 @@
 @keyframes toc-pulse {
   0%, 100% { transform: scale(1); opacity: 0.6; box-shadow: 0 0 0 0 color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 36%, transparent); }
   50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 0%, transparent); }
+}
+
+/* ========================================
+   Visual System V2 Sample - TOC
+   Soft rows and quiet toolbar buttons, no left item indicator.
+   ======================================== */
+
+.zion-toc-sidepanel {
+  background: var(--surface-panel, var(--ext-toc-bg, var(--bg)));
+}
+
+.zion-toc-sidepanel .zion-toc-list,
+#zion-toc-panel .zion-toc-list {
+  padding: 6px;
+}
+
+.zion-toc-sidepanel .toc-row,
+#zion-toc-panel .toc-row {
+  min-height: 28px;
+  padding: 3px 7px;
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--fg) 76%, transparent);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.zion-toc-sidepanel .toc-row:hover,
+#zion-toc-panel .toc-row:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+.zion-toc-sidepanel .toc-row.is-active,
+#zion-toc-panel .toc-row.is-active {
+  background: var(--active-bg);
+  color: var(--accent);
+}
+
+.zion-toc-sidepanel button,
+#zion-toc-panel button {
+  min-width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 62%, transparent);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.zion-toc-sidepanel button:hover,
+#zion-toc-panel button:hover {
+  background: var(--hover-bg) !important;
+  color: var(--fg);
+  border-color: transparent;
 }

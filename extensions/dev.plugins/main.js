@@ -1,3 +1,10 @@
+import {
+  createPluginDetailModel,
+  getPluginPresentation,
+  getPluginStatus,
+  renderPluginEditor
+} from "./plugin-details.js";
+
 const DEFAULT_BASE_URL = "http://127.0.0.1:8765";
 
 const I18N_NS = "dev.plugins";
@@ -239,6 +246,14 @@ function getManifestMeta(plugin) {
   return { manifest, zion };
 }
 
+function getCurrentLocale() {
+  try {
+    return window.zion?.i18n?.getLocale?.() || "zh-CN";
+  } catch {
+    return "zh-CN";
+  }
+}
+
 function prettifyPluginId(id) {
   return String(id || "")
     .replace(/^dev\./, "")
@@ -253,6 +268,9 @@ function getPluginDisplayName(plugin) {
   const id = String(plugin?.id || "");
   const { manifest, zion } = getManifestMeta(plugin);
   const rawName = String(zion.displayName || zion.name || manifest.displayName || plugin?.name || id || "").trim();
+  if (zion.presentation?.displayName || manifest.presentation?.displayName) {
+    return getPluginPresentation(plugin, { locale: getCurrentLocale() }).name;
+  }
   const key = zion.displayNameKey || zion.nameKey || manifest.displayNameKey || manifest.nameKey;
   if (key) return translateFullKey(key, rawName || prettifyPluginId(id));
   const builtin = t(`pluginName.${id}`, "");
@@ -265,6 +283,9 @@ function getPluginDescription(plugin) {
   const id = String(plugin?.id || "");
   const { manifest, zion } = getManifestMeta(plugin);
   const raw = String(plugin?.description || manifest.description || "").trim();
+  if (zion.presentation?.description || manifest.presentation?.description) {
+    return getPluginPresentation(plugin, { locale: getCurrentLocale() }).description;
+  }
   const key = zion.descriptionKey || manifest.descriptionKey;
   if (key) return translateFullKey(key, raw);
   const builtin = t(`pluginDescription.${id}`, "");
@@ -303,177 +324,32 @@ function mountPluginsSidebarViewInto(container) {
   const pluginManager = window.zion && window.zion.plugins;
   const pluginInstaller = window.zion && window.zion.pluginInstaller;
 
-  const root = h(
-    "div",
-    {
-      style: {
-        padding: "12px",
-        display: "flex",
-        flexDirection: "column",
-        gap: "12px",
-        boxSizing: "border-box",
-        width: "100%"
-      }
-    }
-  );
+  const root = h("div", { className: "zion-plugin-manager" });
+  const statsText = h("div", { className: "zion-plugin-manager-summary" });
+  root.appendChild(statsText);
 
-  const header = h(
-    "div",
-    {
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "stretch",
-        gap: "8px"
-      }
-    }
-  );
-
-  const heading = h(
-    "div",
-    {
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        gap: "4px"
-      }
-    }
-  );
-
-  const title = h(
-    "div",
-    {
-      style: {
-        fontSize: "15px",
-        fontWeight: "600",
-        letterSpacing: "0.01em"
-      }
-    },
-    t("ui.plugins", "插件")
-  );
-
-  const statsText = h("div", {
-    style: {
-      fontSize: "11px",
-      lineHeight: "1.5",
-      opacity: "0.62"
-    }
-  });
-
-  heading.appendChild(title);
-  heading.appendChild(statsText);
-
-  const actionsRow = h(
-    "div",
-    {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: "8px",
-        flexWrap: "wrap"
-      }
-    }
-  );
-
-  const actionButtons = h(
-    "div",
-    {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        flexWrap: "wrap"
-      }
-    }
-  );
-
-  const refreshBtn = h(
-    "button",
-    {
-      style: {
-        height: "28px",
-        padding: "0 10px",
-        borderRadius: "8px",
-        border: "1px solid var(--border)",
-        background: "transparent",
-        color: "var(--fg)",
-        cursor: "pointer",
-        fontSize: "12px"
-      }
-    },
-    t("ui.refresh", "刷新")
-  );
-
-  const reloadAllBtn = h("button", {
-    style: {
-      height: "28px",
-      padding: "0 10px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      cursor: "pointer",
-      fontSize: "12px"
-    }
-  }, t("ui.reloadAll", "重新加载"));
-
-  actionButtons.appendChild(refreshBtn);
-  actionButtons.appendChild(reloadAllBtn);
-  actionsRow.appendChild(actionButtons);
-
-  header.appendChild(heading);
-  header.appendChild(actionsRow);
-  root.appendChild(header);
-
-  const searchRow = h("div", {
-    style: {
-      display: "flex",
-      gap: "8px",
-      alignItems: "center"
-    }
-  });
+  const searchRow = h("div", { className: "zion-plugin-manager-search" });
 
   const searchInput = h("input", {
     type: "text",
-    placeholder: t("ui.search", "Search plugins"),
-    style: {
-      width: "100%",
-      height: "28px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      padding: "0 10px",
-      outline: "none",
-      boxSizing: "border-box",
-      fontSize: "12px"
-    }
+    placeholder: t("ui.search", "Search plugins")
   });
-
-  searchRow.appendChild(searchInput);
+  const filterButton = h("button", {
+    className: "zion-plugin-manager-filter",
+    type: "button",
+    title: "筛选插件",
+    "aria-label": "筛选插件"
+  }, h("span", { className: "codicon codicon-filter" }));
+  searchRow.append(searchInput, filterButton);
   root.appendChild(searchRow);
 
-  const message = h("div", {
-    style: {
-      display: "none",
-      fontSize: "11px",
-      lineHeight: "1.45",
-      padding: "8px 10px",
-      borderRadius: "8px",
-      border: "1px solid color-mix(in srgb, var(--border) 36%, transparent)",
-      background: "color-mix(in srgb, var(--panel) 82%, transparent)"
-    }
-  });
+  const filterMenu = h("div", { className: "zion-plugin-manager-filter-menu" });
+  root.appendChild(filterMenu);
+
+  const message = h("div", { className: "zion-plugin-manager-message" });
   root.appendChild(message);
 
-  const list = h("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: "0"
-    }
-  });
+  const list = h("div", { className: "zion-plugin-manager-list" });
   root.appendChild(list);
 
   const toolsPanel = h("details", {
@@ -753,34 +629,17 @@ function mountPluginsSidebarViewInto(container) {
   function showMessage(text, tone = "info") {
     const value = String(text || "").trim();
     if (!value) {
-      message.style.display = "none";
+      message.className = "zion-plugin-manager-message";
       message.textContent = "";
       return;
     }
-    message.style.display = "block";
+    message.className = `zion-plugin-manager-message is-visible${tone === "error" ? " is-error" : ""}`;
     message.textContent = value;
-    message.style.color = tone === "error" ? "#f2a7a7" : "var(--fg)";
-    message.style.background = tone === "error"
-      ? "rgba(190, 70, 70, 0.12)"
-      : "color-mix(in srgb, var(--panel) 82%, transparent)";
   }
 
   function renderEmpty(text) {
     list.innerHTML = "";
-    list.appendChild(
-      h(
-        "div",
-        {
-          style: {
-            fontSize: "12px",
-            lineHeight: "1.5",
-            opacity: "0.72",
-            padding: "8px 0"
-          }
-        },
-        text
-      )
-    );
+    list.appendChild(h("div", { className: "zion-plugin-manager-empty" }, text));
   }
 
   function renderStats() {
@@ -792,6 +651,147 @@ function mountPluginsSidebarViewInto(container) {
     statsText.textContent = t("ui.stats", "共 {total} 个插件，已启用 {enabled} 个，活跃 {active} 个，异常 {errors} 个。", s);
   }
 
+  let selectedPluginId = "";
+  let activeFilter = "all";
+
+  const getPluginById = (pluginId) => {
+    if (!pluginManager || typeof pluginManager.list !== "function") return null;
+    return pluginManager.list().find((candidate) => String(candidate?.id || "") === String(pluginId || "")) || null;
+  };
+
+  const isDevelopmentPlugin = (plugin) => {
+    try {
+      const sessions = window.zion?.state?.get?.("plugins.devSessions") || {};
+      if (Object.values(sessions).some((session) => session?.pluginId === plugin?.id)) return true;
+      const saved = JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}");
+      return !!saved?.[plugin?.id];
+    } catch {
+      return false;
+    }
+  };
+
+  const matchesFilter = (plugin) => {
+    if (activeFilter === "enabled") return !!plugin?.enabled;
+    if (activeFilter === "disabled") return !plugin?.enabled;
+    if (activeFilter === "error") return plugin?.state === "error" || !!plugin?.error;
+    if (activeFilter === "builtin") {
+      const path = String(plugin?.path || "");
+      return path.includes("/extensions/") || path.startsWith("internal:");
+    }
+    if (activeFilter === "development") return isDevelopmentPlugin(plugin);
+    return true;
+  };
+
+  const filterOptions = [
+    ["all", "全部", "All"],
+    ["enabled", "启用", "Enabled"],
+    ["disabled", "停用", "Disabled"],
+    ["error", "异常", "Errors"],
+    ["builtin", "内置", "Built in"],
+    ["development", "开发中", "Development"]
+  ];
+
+  const renderFilterMenu = () => {
+    const locale = getCurrentLocale();
+    filterMenu.innerHTML = "";
+    for (const [id, zhLabel, enLabel] of filterOptions) {
+      const option = h("button", {
+        className: `zion-plugin-manager-filter-option${activeFilter === id ? " is-active" : ""}`,
+        type: "button"
+      }, locale === "en-US" ? enLabel : zhLabel);
+      option.onclick = () => {
+        activeFilter = id;
+        filterButton.classList.toggle("is-active", activeFilter !== "all");
+        renderFilterMenu();
+        renderList();
+      };
+      filterMenu.appendChild(option);
+    }
+  };
+
+  const runPluginCommand = async (command) => {
+    if (!command) return;
+    try {
+      await Promise.resolve(window.zion?.commands?.executeCommand?.(command));
+    } catch (error) {
+      showMessage(error?.message || String(error), "error");
+    }
+  };
+
+  const refreshOpenDetails = (pluginId) => {
+    const latest = getPluginById(pluginId);
+    if (!latest) return;
+    const tabId = `file:plugin-detail:${pluginId}`;
+    const isOpen = window.zion?.panels?.list?.().some((panel) =>
+      panel?.tabs?.some?.((tab) => String(tab?.id || "") === tabId)
+    );
+    if (isOpen) openPluginEditor(latest, false);
+  };
+
+  const togglePlugin = async (plugin, enabled) => {
+    if (!pluginManager) return;
+    try {
+      if (enabled) await pluginManager.enable(String(plugin.id));
+      else await pluginManager.disable(String(plugin.id));
+      showMessage(enabled ? t("msg.enabled", "插件已启用。") : t("msg.disabled", "插件已停用。"));
+      doRefresh();
+      refreshOpenDetails(String(plugin.id));
+    } catch (error) {
+      showMessage(t("msg.toggleFailed", "切换插件失败：{message}", {
+        message: error?.message || "未知错误"
+      }), "error");
+      throw error;
+    }
+  };
+
+  const reloadPlugin = async (plugin) => {
+    try {
+      if (typeof pluginManager?.hotReloadFromInfo === "function") {
+        await pluginManager.hotReloadFromInfo(plugin, { enabled: !!plugin.enabled });
+      } else {
+        await Promise.resolve(window.zion?.commands?.executeCommand?.("zion.reloadPlugins"));
+      }
+      doRefresh();
+      refreshOpenDetails(String(plugin.id));
+    } catch (error) {
+      showMessage(error?.message || String(error), "error");
+    }
+  };
+
+  const createDetailModel = (plugin) => createPluginDetailModel(plugin, {
+    locale: getCurrentLocale(),
+    fallbackName: getPluginDisplayName(plugin),
+    fallbackDescription: getPluginDescription(plugin),
+    runCommand: runPluginCommand,
+    onToggle: (enabled) => togglePlugin(plugin, enabled),
+    onReload: () => reloadPlugin(plugin)
+  });
+
+  function openPluginEditor(plugin, focus = true) {
+    if (!plugin || typeof window.zion?.panels?.openFileTab !== "function") return false;
+    const presentation = getPluginPresentation(plugin, {
+      locale: getCurrentLocale(),
+      fallbackName: getPluginDisplayName(plugin),
+      fallbackDescription: getPluginDescription(plugin)
+    });
+    const result = window.zion.panels.openFileTab({
+      id: `file:plugin-detail:${plugin.id}`,
+      ownerId: "plugins.manager",
+      title: presentation.name,
+      path: String(plugin.id),
+      displayPath: `plugin://${plugin.id}`,
+      language: "plugin",
+      meta: { pluginId: plugin.id, icon: presentation.icon },
+      focus,
+      render: (host) => renderPluginEditor(host, createDetailModel(getPluginById(plugin.id) || plugin))
+    });
+    if (focus && result !== false) {
+      selectedPluginId = String(plugin.id);
+      renderList();
+    }
+    return result;
+  }
+
   function renderList() {
     if (!pluginManager || typeof pluginManager.list !== "function") {
       renderEmpty(t("ui.systemUnavailable", "Plugin system not available"));
@@ -799,15 +799,20 @@ function mountPluginsSidebarViewInto(container) {
     }
 
     const q = (searchInput.value || "").trim().toLowerCase();
-    const plugins = pluginManager.list();
-    const filtered = q
-      ? plugins.filter((p) => {
-          const id = String(p?.id || "").toLowerCase();
-          const name = getPluginDisplayName(p).toLowerCase();
-          const desc = getPluginDescription(p).toLowerCase();
-          return id.includes(q) || name.includes(q) || desc.includes(q);
-        })
-      : plugins;
+    const filtered = pluginManager.list()
+      .filter(matchesFilter)
+      .filter((plugin) => {
+        if (!q) return true;
+        const id = String(plugin?.id || "").toLowerCase();
+        const name = getPluginDisplayName(plugin).toLowerCase();
+        const desc = getPluginDescription(plugin).toLowerCase();
+        return id.includes(q) || name.includes(q) || desc.includes(q);
+      })
+      .sort((a, b) => {
+        const aError = a?.state === "error" || a?.error ? 0 : 1;
+        const bError = b?.state === "error" || b?.error ? 0 : 1;
+        return aError - bError || getPluginDisplayName(a).localeCompare(getPluginDisplayName(b), getCurrentLocale());
+      });
 
     list.innerHTML = "";
 
@@ -817,164 +822,69 @@ function mountPluginsSidebarViewInto(container) {
     }
 
     for (const plugin of filtered) {
-      const row = h("div", {
-        style: {
-          display: "flex",
-          gap: "12px",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "12px 0",
-          borderBottom: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
-          boxSizing: "border-box"
-        }
+      const presentation = getPluginPresentation(plugin, {
+        locale: getCurrentLocale(),
+        fallbackName: getPluginDisplayName(plugin),
+        fallbackDescription: getPluginDescription(plugin)
       });
+      const status = getPluginStatus(plugin, getCurrentLocale());
+      const row = h("div", {
+        className: `zion-plugin-manager-row${selectedPluginId === plugin.id ? " is-selected" : ""}`,
+        role: "button",
+        tabindex: "0",
+        "aria-label": presentation.name
+      });
+      row.onclick = () => openPluginEditor(plugin, true);
+      row.onkeydown = (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        openPluginEditor(plugin, true);
+      };
 
-      const left = h("div", { style: { flex: "1 1 auto", minWidth: "0" } });
-      const displayName = getPluginDisplayName(plugin);
-      const displayDescription = getPluginDescription(plugin);
-      const title = h("div", {
-        style: {
-          fontSize: "12px",
-          fontWeight: "600",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap"
-        }
-      }, displayName);
-      const meta = h("div", {
-        style: {
-          fontSize: "10px",
-          opacity: "0.48",
-          fontFamily: "var(--font-mono)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap"
-        }
-      }, `${String(plugin?.id || "")} v${String(plugin?.version || "")}`);
-
-      left.appendChild(title);
-      left.appendChild(meta);
-
-      if (displayDescription) {
-        left.appendChild(
-          h(
-            "div",
-            {
-              style: {
-                fontSize: "11px",
-                lineHeight: "1.5",
-                opacity: "0.62",
-                marginTop: "4px",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                display: "-webkit-box",
-                WebkitLineClamp: "2",
-                WebkitBoxOrient: "vertical"
-              }
-            },
-            displayDescription
-          )
-        );
-      }
-
-      if (plugin?.error?.message) {
-        left.appendChild(
-          h(
-            "div",
-            {
-              style: {
-                fontSize: "11px",
-                color: "var(--error)",
-                marginTop: "4px",
-                wordBreak: "break-word"
-              }
-            },
-            String(plugin.error.message)
-          )
-        );
-      }
-
-      try {
-        const sessionsState = (window.zion && window.zion.state && window.zion.state.get("plugins.devSessions")) || {};
-        let devInfo = null;
-        for (const k in sessionsState) {
-          const s = sessionsState[k];
-          if (s && s.pluginId === plugin.id) {
-            devInfo = s;
-            break;
-          }
-        }
-        if (!devInfo) {
-          try {
-            const saved = JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}");
-            if (saved && saved[plugin.id]) devInfo = saved[plugin.id];
-          } catch {}
-        }
-        if (devInfo && (devInfo.dir || devInfo.baseUrl)) {
-          const devLine = h("div", {
-            style: {
-              fontSize: "11px",
-              opacity: "0.52",
-              fontFamily: "var(--font-mono)",
-              marginTop: "4px",
-              wordBreak: "break-word"
-            }
-          }, devInfo.dir ? `dev: ${String(devInfo.dir)}${devInfo.baseUrl ? ` (${String(devInfo.baseUrl)})` : ""}` : `dev:${String(devInfo.baseUrl)}`);
-          left.appendChild(devLine);
-        }
-      } catch {}
-
-      const right = h("div", { style: { display: "flex", gap: "10px", alignItems: "center", flex: "0 0 auto" } });
-
-      const dot = h("div", {
-        style: {
-          width: "8px",
-          height: "8px",
-          borderRadius: "50%",
-          background:
-            plugin?.state === "error"
-              ? "#f85149"
-              : plugin?.state === "active"
-                ? "#2ea043"
-                : plugin?.enabled
-                  ? "#d29922"
-                  : "#6e7681",
-          marginTop: "0"
-        }
+      const icon = h("span", { className: "zion-plugin-manager-row-icon" },
+        h("span", { className: `codicon codicon-${presentation.icon}` })
+      );
+      const copy = h("div", { className: "zion-plugin-manager-row-copy" },
+        h("div", { className: "zion-plugin-manager-row-title" }, presentation.name),
+        h("div", { className: "zion-plugin-manager-row-meta" }, `${plugin.id} · v${plugin.version || "0.0.0"}`),
+        h("div", { className: "zion-plugin-manager-row-description" },
+          plugin?.error?.message || presentation.description || status.label
+        )
+      );
+      const controls = h("div", { className: "zion-plugin-manager-row-controls" });
+      const dot = h("span", {
+        className: `zion-plugin-manager-row-status is-${status.tone}`,
+        title: status.label
       });
 
       const toggle = h("input", { type: "checkbox" });
       toggle.checked = !!plugin?.enabled;
-      toggle.onchange = async () => {
-        if (!pluginManager) return;
+      toggle.setAttribute("aria-label", `${presentation.name}: ${status.label}`);
+      toggle.onclick = (event) => event.stopPropagation();
+      toggle.onchange = async (event) => {
+        event.stopPropagation();
         const next = !!toggle.checked;
+        toggle.disabled = true;
         try {
-          if (next) {
-            await pluginManager.enable(String(plugin.id));
-          } else {
-            await pluginManager.disable(String(plugin.id));
-          }
-          showMessage(next ? t("msg.enabled", "插件已启用。") : t("msg.disabled", "插件已停用。"));
-        } catch (e) {
+          await togglePlugin(plugin, next);
+        } catch {
           toggle.checked = !next;
-          showMessage(t("msg.toggleFailed", "切换插件失败：{message}", { message: e?.message || "未知错误" }), "error");
         } finally {
-          try {
-            renderStats();
-            renderList();
-          } catch {}
+          toggle.disabled = false;
         }
       };
 
-      right.appendChild(dot);
-      right.appendChild(toggle);
-
-      row.appendChild(left);
-      row.appendChild(right);
-
+      controls.append(dot, toggle);
+      row.append(icon, copy, controls);
       list.appendChild(row);
     }
   }
+
+  filterButton.onclick = () => {
+    filterMenu.classList.toggle("is-open");
+    filterButton.classList.toggle("is-active", activeFilter !== "all" || filterMenu.classList.contains("is-open"));
+  };
+  renderFilterMenu();
 
   const doRefresh = () => {
     renderStats();
@@ -1299,14 +1209,6 @@ function mountPluginsSidebarViewInto(container) {
     devStopBtn.style.opacity = "0.6";
   };
 
-  refreshBtn.onclick = doRefresh;
-  reloadAllBtn.onclick = () => {
-    try {
-      window.zion.commands.executeCommand("zion.reloadPlugins");
-    } catch {
-      location.reload();
-    }
-  };
   searchInput.addEventListener("input", () => {
     try {
       renderList();
@@ -1314,10 +1216,10 @@ function mountPluginsSidebarViewInto(container) {
   });
 
   function refreshI18n() {
-    title.textContent = t("ui.plugins", "插件");
-    refreshBtn.textContent = t("ui.refresh", "刷新");
-    reloadAllBtn.textContent = t("ui.reloadAll", "重新加载");
     searchInput.placeholder = t("ui.search", "Search plugins");
+    filterButton.title = getCurrentLocale() === "en-US" ? "Filter plugins" : "筛选插件";
+    filterButton.setAttribute("aria-label", filterButton.title);
+    renderFilterMenu();
     toolsSummary.textContent = t("ui.advancedTools", "高级工具");
     serviceTitle.textContent = t("ui.installPlugins", "安装插件");
     serviceDesc.textContent = t("ui.installDesc", "支持配置服务地址、搜索可安装插件，或直接拖拽 ZIP 包安装。");
@@ -1414,7 +1316,7 @@ export async function activate(ctx) {
       pluginId: "dev.plugins",
       title: "Plugins",
       titleKey: "dev.plugins.ui.plugins",
-      icon: "🧩",
+      icon: "$(extensions)",
       order: 20,
       location: "sidebar",
       headerActions: [
@@ -1424,7 +1326,7 @@ export async function activate(ctx) {
           titleKey: "dev.plugins.ui.reload",
           ariaLabel: "Reload plugins",
           ariaLabelKey: "dev.plugins.ui.reload",
-          icon: "↻",
+          icon: "$(loading)",
           onClick: () => {
             try {
               window.zion.commands.executeCommand("zion.reloadPlugins");

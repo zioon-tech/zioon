@@ -15,9 +15,11 @@ export const claudeProvider = {
       console.warn("[claude-provider] Failed to read config from localStorage", e);
     }
     return [
-      { id: "claude-3-5-sonnet-20241022", label: "Claude 3.5 Sonnet" },
-      { id: "claude-3-opus-20240229", label: "Claude 3 Opus" },
-      { id: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku" }
+      { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+      { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
+      { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+      { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" }
     ];
   },
   async resolve(modelId) {
@@ -38,26 +40,31 @@ export const claudeProvider = {
       console.warn("[claude-provider] Failed to read config from localStorage", e);
     }
 
+    const common = {
+      id: modelId,
+      url: "https://api.anthropic.com/v1/messages",
+      modelName: modelId,
+      providerId: "anthropic",
+      providerType: "claude",
+      anthropicVersion: "2023-06-01",
+      temperature: config.temperature,
+      max_tokens: config.max_tokens ?? 64000,
+      pricing: config.pricing,
+      stream: config.stream !== false,
+      supportsImage: config.supportsImage !== false,
+      supportsThinking: config.supportsThinking ?? true,
+      supportsThinkingEffort: config.supportsThinkingEffort ?? true,
+      thinkingMode: config.thinkingMode || "auto",
+      thinkingEffort: config.thinkingEffort || "auto",
+      preservedThinking: !!config.preservedThinking,
+      interleavedThinking: !!config.interleavedThinking
+    };
+
     // 如果没有配置 API key，返回一个提示性的配置
     if (!apiKey) {
       return {
-        id: modelId,
-        url: "https://api.anthropic.com/v1/messages",
+        ...common,
         key: "",
-        modelName: modelId,
-        providerType: "claude",
-        anthropicVersion: "2023-06-01",
-        temperature: config.temperature ?? 1.0,
-        max_tokens: config.max_tokens ?? 4096,
-        pricing: config.pricing,
-        stream: config.stream !== false,
-        supportsImage: true,
-        supportsThinking: config.supportsThinking,
-        supportsThinkingEffort: config.supportsThinkingEffort,
-        thinkingMode: config.thinkingMode || "auto",
-        thinkingEffort: config.thinkingEffort || "auto",
-        preservedThinking: !!config.preservedThinking,
-        interleavedThinking: !!config.interleavedThinking,
         _requiresConfig: true,
         _configHint: "请使用 modelsManage 工具配置 Claude API key，或设置 localStorage 键 'zion.claude.apiKey'"
       };
@@ -65,23 +72,8 @@ export const claudeProvider = {
 
     // Return Claude-specific fields
     return {
-      id: modelId,
-      url: "https://api.anthropic.com/v1/messages",
-      key: apiKey,
-      modelName: modelId,
-      providerType: "claude",
-      anthropicVersion: "2023-06-01",
-      temperature: config.temperature ?? 1.0,
-      max_tokens: config.max_tokens ?? 4096,
-      pricing: config.pricing,
-      stream: config.stream !== false,
-      supportsImage: true,
-      supportsThinking: config.supportsThinking,
-      supportsThinkingEffort: config.supportsThinkingEffort,
-      thinkingMode: config.thinkingMode || "auto",
-      thinkingEffort: config.thinkingEffort || "auto",
-      preservedThinking: !!config.preservedThinking,
-      interleavedThinking: !!config.interleavedThinking
+      ...common,
+      key: apiKey
     };
   }
 };

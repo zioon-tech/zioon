@@ -31,6 +31,21 @@ function isEscapedAt(text: string, index: number): boolean {
   return slashCount % 2 === 1;
 }
 
+function isValidInlineMathCandidate(source: string, start: number, end: number): boolean {
+  const expr = source.slice(start + 1, end - 1);
+  if (!expr.trim()) return false;
+
+  const afterOpen = source[start + 1] || "";
+  const beforeClose = source[end - 2] || "";
+  if (/\s/.test(afterOpen) || /\s/.test(beforeClose)) return false;
+
+  // Treat "$1800", "$1800刀", and "$1,800.50" as currency in prose,
+  // not the start of inline math.
+  if (/^\d+(?:[.,]\d+)*(?:\b|$)/.test(expr)) return false;
+
+  return true;
+}
+
 /* Helper: Check if line contains tool call or thinking markers (skip WYSIWYG processing) */
 const isToolOrThinkingLine = (lineText: string): boolean => {
   return /^\s*调用\s+[^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/.test(lineText)
@@ -93,6 +108,11 @@ type TablePreviewRange = {
   sourceLines: TableSourceLine[];
 };
 
+type TableVisibleSourceMap = {
+  text: string;
+  offsets: number[];
+};
+
 function getMarkdownTableCellSourceRange(lineText: string, lineFrom: number, cellIndex: number): TableCellSourceRange | null {
   let start = 0;
   let end = lineText.length;
@@ -131,6 +151,100 @@ function getMarkdownTableCellSourceRange(lineText: string, lineFrom: number, cel
     }
   }
   return null;
+}
+
+function buildTableCellVisibleSourceMap(source: string): TableVisibleSourceMap {
+  const offsets: number[] = [0];
+  let text = "";
+
+  const appendVisibleSegment = (visibleFrom: number, visibleTo: number, fullFrom = visibleFrom, fullTo = visibleTo) => {
+    if (visibleTo <= visibleFrom) return;
+    offsets[offsets.length - 1] = fullFrom;
+    for (let i = visibleFrom; i < visibleTo; i++) {
+      text += source[i] || "";
+      offsets.push(i === visibleTo - 1 ? fullTo : i + 1);
+    }
+  };
+
+  const appendEscapedChar = (slashIndex: number) => {
+    offsets[offsets.length - 1] = slashIndex;
+    text += source[slashIndex + 1] || "";
+    offsets.push(slashIndex + 2);
+  };
+
+  let i = 0;
+  while (i < source.length) {
+    const rest = source.slice(i);
+    if (rest.startsWith("<br>") || rest.startsWith("<br/>") || rest.startsWith("<br />")) {
+      const len = rest.startsWith("<br />") ? 6 : rest.startsWith("<br/>") ? 5 : 4;
+      offsets[offsets.length - 1] = i;
+      text += "\n";
+      offsets.push(i + len);
+      i += len;
+      continue;
+    }
+    if (source[i] === "\\" && i + 1 < source.length) {
+      appendEscapedChar(i);
+      i += 2;
+      continue;
+    }
+    if (rest.startsWith("`")) {
+      const close = source.indexOf("`", i + 1);
+      if (close > i + 1) {
+        appendVisibleSegment(i + 1, close, i, close + 1);
+        i = close + 1;
+        continue;
+      }
+    }
+    if (rest.startsWith("**")) {
+      const close = source.indexOf("**", i + 2);
+      if (close > i + 2) {
+        appendVisibleSegment(i + 2, close, i, close + 2);
+        i = close + 2;
+        continue;
+      }
+    }
+    if (rest.startsWith("~~")) {
+      const close = source.indexOf("~~", i + 2);
+      if (close > i + 2) {
+        appendVisibleSegment(i + 2, close, i, close + 2);
+        i = close + 2;
+        continue;
+      }
+    }
+    if (rest.startsWith("_")) {
+      const close = source.indexOf("_", i + 1);
+      const before = i > 0 ? source[i - 1] : "";
+      const after = close >= 0 && close + 1 < source.length ? source[close + 1] : "";
+      const isWordChar = (ch: string) => /[A-Za-z0-9_]/.test(ch);
+      if (close > i + 1 && !isWordChar(before) && !isWordChar(after)) {
+        appendVisibleSegment(i + 1, close, i, close + 1);
+        i = close + 1;
+        continue;
+      }
+    }
+    if (rest.startsWith("[")) {
+      const labelEnd = source.indexOf("]", i + 1);
+      if (labelEnd > i + 1 && source[labelEnd + 1] === "(") {
+        const urlEnd = source.indexOf(")", labelEnd + 2);
+        if (urlEnd > labelEnd + 2) {
+          appendVisibleSegment(i + 1, labelEnd, i, urlEnd + 1);
+          i = urlEnd + 1;
+          continue;
+        }
+      }
+    }
+    appendVisibleSegment(i, i + 1);
+    i++;
+  }
+
+  return { text, offsets };
+}
+
+function mapTableCellVisibleOffsetToSource(source: string, visibleOffset: number): number {
+  const map = buildTableCellVisibleSourceMap(source);
+  const index = Math.max(0, Math.min(map.offsets.length - 1, Math.round(visibleOffset)));
+  return map.offsets[index] ?? 0;
 }
 
 function isMarkdownTableSeparatorRow(s: string): boolean {
@@ -306,6 +420,45 @@ function appendTableInlineMarkdownWithComments(
 
 type AddDecoration = (from: number, to: number, dec: Decoration) => void;
 
+const MARKDOWN_LIST_INDENT_PX = 20;
+
+function countIndentColumns(text: string): number {
+  let col = 0;
+  for (const ch of text) {
+    if (ch === "\t") {
+      col += 4 - (col % 4);
+    } else if (ch === " ") {
+      col++;
+    }
+  }
+  return col;
+}
+
+function getListDepthFromSyntaxNode(node: any, indentText: string): number {
+  try {
+    let listCount = 0;
+    let parent = node?.node?.parent || null;
+    while (parent) {
+      const name = parent.name || parent.type?.name;
+      if (name === "BulletList" || name === "OrderedList") listCount++;
+      parent = parent.parent || null;
+    }
+    if (listCount > 0) return Math.max(0, listCount - 1);
+  } catch {}
+
+  const cols = countIndentColumns(indentText);
+  if (cols <= 0) return 0;
+  // Common markdown renderers turn both 2-space and 4-space child list
+  // indentation into a full visual nesting step.
+  return Math.max(1, Math.ceil(cols / 4));
+}
+
+function getListMarkerWidthPx(markerText: string): number {
+  const markerChars = markerText.trim().length;
+  if (!markerChars || !/^\d/.test(markerText.trim())) return MARKDOWN_LIST_INDENT_PX;
+  return Math.max(MARKDOWN_LIST_INDENT_PX, Math.min(56, MARKDOWN_LIST_INDENT_PX + Math.max(0, markerChars - 2) * 8));
+}
+
 const wysiwygKeepActiveLineRenderedFacet = Facet.define<boolean, boolean>({
   combine(values) {
     return values.length ? values[values.length - 1] !== false : true;
@@ -340,6 +493,7 @@ function addNestedInlineDecorations(add: AddDecoration, contentStart: number, co
     }
     if (m[9]) {
       const expr = m[10] || "";
+      if (!isValidInlineMathCandidate(content, m.index, m.index + m[0].length)) continue;
       add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
       add(start, start, Decoration.widget({ widget: new MathWidget(expr, false), side: 1 }));
     }
@@ -434,6 +588,70 @@ function collectRoleScopedFenceBlocks(doc: EditorView["state"]["doc"]): RoleFenc
   }
   return blocks;
 }
+
+function canMapRoleFenceBlocks(blocks: RoleFenceBlock[], tr: Transaction): boolean {
+  let reusable = true;
+  tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+    if (!reusable) return;
+    if (/[`\n\r]/.test(inserted.toString())) {
+      reusable = false;
+      return;
+    }
+
+    const oldFromLine = tr.startState.doc.lineAt(fromA);
+    const oldToLine = tr.startState.doc.lineAt(toA);
+    const newFromLine = tr.state.doc.lineAt(fromB);
+    const newToLine = tr.state.doc.lineAt(toB);
+    if (oldFromLine.number !== oldToLine.number || newFromLine.number !== newToLine.number) {
+      reusable = false;
+      return;
+    }
+
+    const oldRolePrefix = ROLE_HEAD_RE.exec(oldFromLine.text)?.[0] || "";
+    const newRolePrefix = ROLE_HEAD_RE.exec(newFromLine.text)?.[0] || "";
+    const oldOffset = fromA - oldFromLine.from;
+    const newOffset = fromB - newFromLine.from;
+    if (
+      (oldRolePrefix && oldOffset < oldRolePrefix.length) ||
+      (newRolePrefix && newOffset < newRolePrefix.length)
+    ) {
+      reusable = false;
+      return;
+    }
+
+    for (const block of blocks) {
+      if (
+        oldFromLine.number === block.startLine ||
+        (block.hasClosingFence && oldFromLine.number === block.endLine)
+      ) {
+        reusable = false;
+        return;
+      }
+    }
+  });
+  return reusable;
+}
+
+function mapRoleFenceBlock(block: RoleFenceBlock, tr: Transaction): RoleFenceBlock {
+  return {
+    ...block,
+    from: tr.changes.mapPos(block.from, 1),
+    to: tr.changes.mapPos(block.to, block.hasClosingFence ? -1 : 1)
+  };
+}
+
+const roleFenceBlocksField = StateField.define<RoleFenceBlock[]>({
+  create(state) {
+    return collectRoleScopedFenceBlocks(state.doc);
+  },
+  update(value, tr) {
+    if (!tr.docChanged) return value;
+    if (canMapRoleFenceBlocks(value, tr)) {
+      return value.map((block) => mapRoleFenceBlock(block, tr));
+    }
+    return collectRoleScopedFenceBlocks(tr.state.doc);
+  }
+});
 
 type RoleLineRange = {
   startLine: number;
@@ -544,11 +762,13 @@ function collectMarkdownTableRanges(
 
 type SourceRange = { from: number; to: number };
 
-function collectStateBlockMathRanges(state: EditorState): SourceRange[] {
+function collectStateBlockMathRanges(state: EditorState, from = 0, to = state.doc.length): SourceRange[] {
   const ranges: SourceRange[] = [];
   try {
     const tree = syntaxTree(state) as any;
     tree.iterate({
+      from,
+      to,
       enter: (node: any) => {
         const name = node.name || node.type?.name;
         if (name === "BlockMath") {
@@ -591,7 +811,7 @@ const tableRawEditEffect = StateEffect.define<number>();
 
 function buildTableBlockState(state: EditorState): TableBlockState {
   const doc = state.doc;
-  const roleFenceBlocks = collectRoleScopedFenceBlocks(doc);
+  const roleFenceBlocks = state.field(roleFenceBlocksField, false) || collectRoleScopedFenceBlocks(doc);
   const blockMathRanges = collectStateBlockMathRanges(state);
   const ranges = collectMarkdownTableRanges(doc, (pos) => isStateInsideFencedCode(roleFenceBlocks, blockMathRanges, pos));
   return buildTableBlockStateFromRanges(state, ranges);
@@ -952,8 +1172,8 @@ class HeadingWidget extends WidgetType {
   toDOM() {
     const span = document.createElement("span");
     span.className = "cm-md-heading";
-    const sizes: Record<number, string> = { 1: "1.6em", 2: "1.4em", 3: "1.25em", 4: "1.15em", 5: "1.05em", 6: "1em" };
-    span.style.fontSize = sizes[this.level] ?? "1em";
+    const lvl = Math.min(6, Math.max(1, this.level));
+    span.style.fontSize = `var(--md-h${lvl}-size, 1em)`;
     // Use inner text only; inline parsing left to fallback renderer if needed
     span.textContent = this.text;
     return span;
@@ -1019,6 +1239,7 @@ class MathWidget extends WidgetType {
  */
 class TableWidget extends WidgetType {
   constructor(
+    private view: EditorView,
     private headers: string[],
     private aligns: Array<"left" | "center" | "right">,
     private rows: string[][],
@@ -1059,11 +1280,100 @@ class TableWidget extends WidgetType {
   private renderReadOnlyCell(cell: HTMLTableCellElement, value: string, sourceRange: TableCellSourceRange | null) {
     const content = document.createElement("span");
     content.className = "cm-md-table-cell-content";
+    if (sourceRange) {
+      content.dataset.sourceFrom = String(sourceRange.from);
+      content.dataset.sourceTo = String(sourceRange.to);
+      content.dataset.sourceText = value;
+    }
     const cellComments = sourceRange
       ? this.commentRanges.filter((item) => item.to > sourceRange.from && item.from < sourceRange.to)
       : [];
     appendTableInlineMarkdownWithComments(content, value, sourceRange, cellComments);
     cell.appendChild(content);
+  }
+
+  private getSelectionOffsetWithinCell(cell: HTMLElement, node: Node, offset: number): number | null {
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(cell);
+      range.setEnd(node, offset);
+      const result = range.toString().length;
+      range.detach?.();
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  private getSelectedCellContent(node: Node | null, wrap: HTMLElement): HTMLElement | null {
+    const el = node instanceof HTMLElement ? node : node?.parentElement;
+    const content = el?.closest?.(".cm-md-table-cell-content[data-source-from]") as HTMLElement | null;
+    return content && wrap.contains(content) ? content : null;
+  }
+
+  private clearSelectionToolbarDomAnchor() {
+    try {
+      (window as any).zion?.state?.set?.("selectionToolbar.domAnchorRect", null);
+      window.dispatchEvent(new Event("selectionToolbar.domAnchorChanged"));
+    } catch {}
+  }
+
+  private updateSelectionToolbarDomAnchor(wrap: HTMLElement) {
+    try {
+      const selection = window.getSelection?.();
+      if (!selection || selection.isCollapsed || selection.rangeCount <= 0) {
+        this.clearSelectionToolbarDomAnchor();
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      const startCell = this.getSelectedCellContent(range.startContainer, wrap);
+      const endCell = this.getSelectedCellContent(range.endContainer, wrap);
+      if (!startCell || !endCell) {
+        this.clearSelectionToolbarDomAnchor();
+        return;
+      }
+
+      const startOffset = this.getSelectionOffsetWithinCell(startCell, range.startContainer, range.startOffset);
+      const endOffset = this.getSelectionOffsetWithinCell(endCell, range.endContainer, range.endOffset);
+      if (startOffset == null || endOffset == null) {
+        this.clearSelectionToolbarDomAnchor();
+        return;
+      }
+
+      const startSource = String(startCell.dataset.sourceText || "");
+      const endSource = String(endCell.dataset.sourceText || "");
+      const startFrom = Number(startCell.dataset.sourceFrom);
+      const endFrom = Number(endCell.dataset.sourceFrom);
+      if (!Number.isFinite(startFrom) || !Number.isFinite(endFrom)) {
+        this.clearSelectionToolbarDomAnchor();
+        return;
+      }
+
+      let from = startFrom + mapTableCellVisibleOffsetToSource(startSource, startOffset);
+      let to = endFrom + mapTableCellVisibleOffsetToSource(endSource, endOffset);
+      if (to < from) [from, to] = [to, from];
+      const selectionText = selection.toString();
+      const rect = range.getBoundingClientRect();
+      if (to <= from || !selectionText.trim() || rect.width <= 0 || rect.height <= 0) {
+        this.clearSelectionToolbarDomAnchor();
+        return;
+      }
+
+      (window as any).zion?.state?.set?.("selectionToolbar.domAnchorRect", {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        from,
+        to,
+        selectionText,
+        view: this.view,
+        ts: Date.now()
+      });
+      window.dispatchEvent(new Event("selectionToolbar.domAnchorChanged"));
+    } catch {
+      this.clearSelectionToolbarDomAnchor();
+    }
   }
 
   toDOM() {
@@ -1074,10 +1384,14 @@ class TableWidget extends WidgetType {
     const keepEventInTable = (e: Event) => {
       if (!(e.target instanceof HTMLElement)) return;
       if (e.target.closest(".cm-md-table-btn")) return;
+      if (e.type === "pointerdown" || e.type === "mousedown") this.clearSelectionToolbarDomAnchor();
       e.stopPropagation();
     };
     wrap.addEventListener("pointerdown", keepEventInTable);
     wrap.addEventListener("mousedown", keepEventInTable);
+    wrap.addEventListener("pointerup", () => {
+      window.setTimeout(() => this.updateSelectionToolbarDomAnchor(wrap), 0);
+    });
     wrap.addEventListener("click", keepEventInTable);
 
     const toolbar = document.createElement("div");
@@ -1194,6 +1508,7 @@ class TableBlockWidget extends WidgetType {
     const range = this.range;
     const comments = getTableCommentRanges(view, range.from, range.to);
     const table = new TableWidget(
+      view,
       range.headers,
       range.aligns,
       range.rows,
@@ -1483,7 +1798,8 @@ class DiagramWidget extends WidgetType {
 function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDiagrams: Set<number>, rawTables: Set<number>) {
   const doc = view.state.doc;
   const tree = syntaxTree(view.state) as any;
-  const roleFenceBlocks = collectRoleScopedFenceBlocks(doc);
+  const roleFenceBlocks = view.state.field(roleFenceBlocksField, false) || collectRoleScopedFenceBlocks(doc);
+  const blockMathRanges = collectStateBlockMathRanges(view.state, view.viewport.from, view.viewport.to);
 
   // Collect then sort to respect RangeSetBuilder ordering
   const pending: { from: number; to: number; dec: Decoration }[] = [];
@@ -1510,18 +1826,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
     for (const block of roleFenceBlocks) {
       if (pos >= block.from && pos <= block.to) return true;
     }
-    let insideMath = false;
-    try {
-      tree.iterate({
-        enter: (node: any) => {
-          const name = node.name || node.type?.name;
-          if (name === "BlockMath" && pos >= node.from && pos < node.to) {
-            insideMath = true;
-          }
-        }
-      });
-    } catch {}
-    return insideMath;
+    return blockMathRanges.some((range) => pos >= range.from && pos < range.to);
   };
 
   // Track lines processed by fallback scanners to avoid overlap/conflicts
@@ -1535,6 +1840,8 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
   // 1) Block-level via syntax tree (only for nodes within viewport)
   try {
     tree.iterate({
+      from: view.viewport.from,
+      to: view.viewport.to,
       enter: (node: any) => {
         const name = node.name || node.type?.name;
         const from = node.from, to = node.to;
@@ -1583,12 +1890,30 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           const lnNum = doc.lineAt(node.from).number;
           const isActive = activeLines.has(lnNum);
           if (!isActive) {
-            const txt = doc.sliceString(node.from, node.to).trim();
+            const markerText = doc.sliceString(node.from, node.to).trim();
             const line = doc.lineAt(node.to);
+            let replaceFrom = node.from;
+            while (replaceFrom > line.from && /[ \t]/.test(doc.sliceString(replaceFrom - 1, replaceFrom))) {
+              replaceFrom--;
+            }
             let replaceTo = node.to;
             while (replaceTo < line.to && /\s/.test(doc.sliceString(replaceTo, replaceTo + 1))) replaceTo++;
+            const indentText = doc.sliceString(replaceFrom, node.from);
+            const depth = getListDepthFromSyntaxNode(node, indentText);
+            const markerWidth = getListMarkerWidthPx(markerText);
+            const contentIndent = (depth * MARKDOWN_LIST_INDENT_PX) + markerWidth;
             add(
-              node.from,
+              line.from,
+              line.from,
+              Decoration.line({
+                class: "cm-md-list-line",
+                attributes: {
+                  style: `--cm-md-list-content-indent: ${contentIndent}px; --cm-md-list-marker-width: ${markerWidth}px;`
+                }
+              })
+            );
+            add(
+              replaceFrom,
               replaceTo,
               Decoration.replace({
                 widget: new (class extends WidgetType {
@@ -1601,7 +1926,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
                     return s;
                   }
                   ignoreEvent() { return true; }
-                })(txt),
+                })(markerText),
                 side: 1
               })
             );
@@ -1644,23 +1969,30 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           }
 
           // Apply a line decoration to every line so the visual background is contiguous.
-          // For non-active lines hide the leading marker with a marker-preserving class.
+          // For rendered lines collapse the source marker and let quote padding own alignment.
           for (let ln = startLn; ln <= endLn; ln++) {
             const l = doc.line(ln);
             const txt = doc.sliceString(l.from, l.to);
             const prefixMatch = /^\s*>+\s*/.exec(txt);
             const markerLen = prefixMatch ? prefixMatch[0].length : 0;
 
-            // Always apply line-level decoration for contiguous background
-            add(l.from, l.from, Decoration.line({ class: "cm-md-quote" }));
+            const positionClass = startLn === endLn
+              ? "cm-md-quote-single"
+              : ln === startLn
+                ? "cm-md-quote-start"
+                : ln === endLn
+                  ? "cm-md-quote-end"
+                  : "cm-md-quote-middle";
+
+            // Always apply line-level decoration for contiguous background.
+            add(l.from, l.from, Decoration.line({ class: `cm-md-quote ${positionClass}` }));
 
             if (anyActive && activeLines.has(ln)) {
               // Keep marker visible on active line(s) so user can edit quote prefix normally.
               // Content is already visually styled by the line decoration.
             } else {
-              // Hide marker but preserve layout using a dedicated class that doesn't collapse line height.
               if (markerLen > 0) {
-                add(l.from, l.from + markerLen, Decoration.mark({ class: "cm-z-hide-marker" }));
+                add(l.from, l.from + markerLen, Decoration.mark({ class: "cm-z-hide-quote-marker" }));
               }
             }
           }
@@ -1868,6 +2200,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       // inline math ($...$)
       if (m[13]) {
         const expr = m[14] || "";
+        if (!isValidInlineMathCandidate(lineText, start - line.from, end - line.from)) continue;
         if (isActive) {
           // active line: keep raw markdown (no widget to avoid duplication)
         } else {
@@ -2047,6 +2380,55 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
     builder.add(it.from, it.to, it.dec);
   }
   return builder.finish();
+}
+
+export function canMapWysiwygDecorations(update: ViewUpdate): boolean {
+  if (!update.docChanged) return false;
+  const oldHeadLine = update.startState.doc.lineAt(update.startState.selection.main.head).number;
+  const newHeadLine = update.state.doc.lineAt(update.state.selection.main.head).number;
+  if (oldHeadLine !== newHeadLine) return false;
+
+  let safe = true;
+  update.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+    if (!safe) return;
+    const insertedText = inserted.toString();
+    const deletedText = update.startState.doc.sliceString(fromA, toA);
+    if (insertedText.length + deletedText.length > 64 || /[\n\r]/.test(insertedText + deletedText)) {
+      safe = false;
+      return;
+    }
+
+    const oldFromLine = update.startState.doc.lineAt(fromA);
+    const oldToLine = update.startState.doc.lineAt(toA);
+    const newFromLine = update.state.doc.lineAt(fromB);
+    const newToLine = update.state.doc.lineAt(toB);
+    if (oldFromLine.number !== oldToLine.number || newFromLine.number !== newToLine.number) {
+      safe = false;
+      return;
+    }
+
+    const oldRolePrefix = ROLE_HEAD_RE.exec(oldFromLine.text)?.[0] || "";
+    const newRolePrefix = ROLE_HEAD_RE.exec(newFromLine.text)?.[0] || "";
+    if (
+      (oldRolePrefix && fromA - oldFromLine.from < oldRolePrefix.length) ||
+      (newRolePrefix && fromB - newFromLine.from < newRolePrefix.length)
+    ) {
+      safe = false;
+      return;
+    }
+
+    const oldText = oldFromLine.text;
+    const newText = newFromLine.text;
+    if (
+      /[\\`*_~[\]()!#$|>]/.test(oldText) ||
+      /[\\`*_~[\]()!#$|>]/.test(newText) ||
+      /^\s*(?:[-+]|(?:\d+[.)]))\s/.test(oldText) ||
+      /^\s*(?:[-+]|(?:\d+[.)]))\s/.test(newText)
+    ) {
+      safe = false;
+    }
+  });
+  return safe;
 }
 
 /* ViewPlugin: incremental rebuilds */
@@ -2234,6 +2616,10 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
     }
 
     if (needRebuild || selectionOnly || collapsed) {
+      if (update.docChanged && !refresh && !collapsed && canMapWysiwygDecorations(update)) {
+        this.decorations = this.decorations.map(update.changes);
+        return;
+      }
       const activeLines = getSourceRevealLines(update.view);
       try {
         this.decorations = buildDecorations(update.view, activeLines, this.expandedDiagrams, this.rawTables);
@@ -2275,8 +2661,6 @@ function hasUnfinishedInlineMarkdown(lineText: string): boolean {
   const withoutEscaped = lineText.replace(/\\./g, "");
   const ticks = (withoutEscaped.match(/`/g) || []).length;
   if (ticks % 2 === 1) return true;
-  const dollars = (withoutEscaped.match(/\$/g) || []).length;
-  if (dollars % 2 === 1) return true;
   if (/!?\[[^\]]*$/.test(withoutEscaped)) return true;
   if (/!?\[[^\]]+\]\([^)]*$/.test(withoutEscaped)) return true;
   const boldDelimiters = (withoutEscaped.match(/\*\*/g) || []).length;
@@ -2365,6 +2749,7 @@ function getTableBlockRangeAtPos(view: EditorView, startPos: number): { from: nu
 export function wysiwyg(options: { keepActiveLineRendered?: boolean } = {}): Extension {
   return [
     wysiwygKeepActiveLineRenderedFacet.of(options.keepActiveLineRendered !== false),
+    roleFenceBlocksField,
     tableBlockDecorationsField,
     wysiwygPlugin
   ];

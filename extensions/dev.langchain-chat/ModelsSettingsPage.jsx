@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
+  MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
   THINKING_MODE_FIELDS,
   getThinkingEffortOptions,
   getThinkingModeLabel,
   getThinkingModeOptions,
   inferThinkingCapability,
   inferThinkingEffortCapability,
+  normalizeAutoContinueOnColonMaxAttempts,
   normalizeThinkingEffort,
   normalizeThinkingMode
 } from "./model-config-fields.js";
@@ -32,20 +35,43 @@ const BUILTIN_PROVIDER_META = {
       "thinkingMode",
       "thinkingEffort",
       "preservedThinking",
-      "interleavedThinking"
+      "interleavedThinking",
+      "autoContinueOnColonMaxAttempts"
     ]
   },
   anthropic: {
     title: "Claude",
     apiKeyKey: "zion.claude.apiKey",
     configKey: "zion.claude.config",
-    fields: ["temperature", "max_tokens", "stream"]
+    fields: [
+      "temperature",
+      "max_tokens",
+      "stream",
+      "supportsImage",
+      "supportsThinking",
+      "supportsThinkingEffort",
+      "thinkingMode",
+      "thinkingEffort",
+      "preservedThinking",
+      "interleavedThinking"
+    ]
   },
   google: {
     title: "Gemini",
     apiKeyKey: "zion.gemini.apiKey",
     configKey: "zion.gemini.config",
-    fields: ["temperature", "max_tokens", "stream"]
+    fields: [
+      "temperature",
+      "max_tokens",
+      "stream",
+      "supportsImage",
+      "supportsThinking",
+      "supportsThinkingEffort",
+      "thinkingMode",
+      "thinkingEffort",
+      "preservedThinking",
+      "interleavedThinking"
+    ]
   }
 };
 
@@ -87,13 +113,17 @@ function loadProviderDraft(providerId) {
     temperature: cfg.temperature ?? "",
     max_tokens: cfg.max_tokens ?? "",
     stream: cfg.stream !== false,
-    supportsImage: !!cfg.supportsImage,
+    supportsImage: cfg.supportsImage ?? providerId !== "deepseek",
     supportsThinking: cfg.supportsThinking,
     supportsThinkingEffort: cfg.supportsThinkingEffort,
     thinkingMode: normalizeThinkingMode(cfg.thinkingMode),
     thinkingEffort: normalizeThinkingEffort(cfg.thinkingEffort),
-    preservedThinking: !!cfg.preservedThinking,
-    interleavedThinking: !!cfg.interleavedThinking
+    preservedThinking: cfg.preservedThinking ?? providerId === "deepseek",
+    interleavedThinking: cfg.interleavedThinking ?? providerId === "deepseek",
+    autoContinueOnColonMaxAttempts:
+      providerId === "deepseek"
+        ? normalizeAutoContinueOnColonMaxAttempts(cfg.autoContinueOnColonMaxAttempts)
+        : DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS
   };
 }
 
@@ -113,6 +143,11 @@ function saveProviderDraft(providerId, draft) {
     if (field === "thinkingEffort") next.thinkingEffort = normalizeThinkingEffort(draft.thinkingEffort);
     if (field === "preservedThinking") next.preservedThinking = !!draft.preservedThinking;
     if (field === "interleavedThinking") next.interleavedThinking = !!draft.interleavedThinking;
+    if (field === "autoContinueOnColonMaxAttempts") {
+      next.autoContinueOnColonMaxAttempts = normalizeAutoContinueOnColonMaxAttempts(
+        draft.autoContinueOnColonMaxAttempts
+      );
+    }
     if (field === "temperature" && draft.temperature !== "") next.temperature = Number(draft.temperature);
     if (field === "max_tokens" && draft.max_tokens !== "") next.max_tokens = Number(draft.max_tokens);
     if (field === "label" && String(draft.label || "").trim()) next.label = String(draft.label).trim();
@@ -271,6 +306,9 @@ function PreferenceStatusCard({ title, rows }) {
 function ThinkingConfigFields({ draft, onChange, modelInfo }) {
   const capability = inferThinkingCapability({ cfg: draft, ...modelInfo });
   const supportsEffort = inferThinkingEffortCapability({ cfg: draft, ...modelInfo });
+  const effortOptions = getThinkingEffortOptions({ cfg: draft, ...modelInfo });
+  const normalizedEffort = normalizeThinkingEffort(draft.thinkingEffort);
+  const selectedEffort = effortOptions.some((option) => option.value === normalizedEffort) ? normalizedEffort : "auto";
   const hint =
     capability === "supported"
       ? supportsEffort
@@ -295,11 +333,11 @@ function ThinkingConfigFields({ draft, onChange, modelInfo }) {
       <label className="lc-models-field">
         <span>{tt("思考强度", "Thinking Effort")}</span>
         <select
-          value={normalizeThinkingEffort(draft.thinkingEffort)}
+          value={selectedEffort}
           onChange={(e) => onChange("thinkingEffort", e.target.value)}
           title={supportsEffort ? tt("当前模型可能支持思考强度。", "This model may support thinking effort.") : tt("未确认当前模型支持强度设置；如服务商兼容，可手动选择。", "Effort support is not confirmed; choose manually if your provider supports it.")}
         >
-          {getThinkingEffortOptions().map((option) => (
+          {effortOptions.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
             </option>
@@ -314,10 +352,12 @@ function ThinkingConfigFields({ draft, onChange, modelInfo }) {
   );
 }
 
-function ProviderConfigEditor({ providerId, draft, onChange, onSave, saving }) {
+function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, saving }) {
   const meta = BUILTIN_PROVIDER_META[providerId];
   if (!meta || !draft) return null;
-  const showAdvanced = providerId === "deepseek";
+  const showAdvanced = true;
+  const providerType = providerId === "anthropic" ? "claude" : providerId === "google" ? "gemini" : "openai";
+  const effectiveModelName = providerId === "deepseek" ? draft.modelName || modelId : modelId;
 
   return (
     <div className="lc-models-detail-stack">
@@ -351,7 +391,7 @@ function ProviderConfigEditor({ providerId, draft, onChange, onSave, saving }) {
               <input
                 type="text"
                 value={draft.modelName}
-                placeholder={tt("例如：deepseek-chat", "e.g. deepseek-chat")}
+                placeholder={tt("例如：deepseek-v4-flash", "e.g. deepseek-v4-flash")}
                 onChange={(e) => onChange(providerId, "modelName", e.target.value)}
               />
             </label>
@@ -381,15 +421,34 @@ function ProviderConfigEditor({ providerId, draft, onChange, onSave, saving }) {
             <input
               type="number"
               value={draft.max_tokens}
-              placeholder="4096"
+              placeholder={providerId === "anthropic" ? "64000" : "32768"}
               onChange={(e) => onChange(providerId, "max_tokens", e.target.value)}
             />
           </label>
+          {providerId === "deepseek" ? (
+            <label
+              className="lc-models-field"
+              title={tt(
+                "DeepSeek 异常 stop 时最多自动续写多少次，包括冒号中断和只有推理、没有正式输出；设为 0 可关闭。",
+                "Maximum automatic continuations after an abnormal DeepSeek stop, including trailing-colon and reasoning-only responses; set to 0 to disable."
+              )}
+            >
+              <span>{tt("异常 Stop 续写次数", "Abnormal-stop Continuations")}</span>
+              <input
+                type="number"
+                min="0"
+                max={MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS}
+                step="1"
+                value={draft.autoContinueOnColonMaxAttempts}
+                onChange={(e) => onChange(providerId, "autoContinueOnColonMaxAttempts", e.target.value)}
+              />
+            </label>
+          ) : null}
           {showAdvanced ? (
             <ThinkingConfigFields
               draft={draft}
               onChange={(field, value) => onChange(providerId, field, value)}
-              modelInfo={{ providerId, providerType: providerId === "deepseek" ? "openai" : providerId, modelName: draft.modelName }}
+              modelInfo={{ providerId, providerType, modelId, modelName: effectiveModelName }}
             />
           ) : null}
         </div>
@@ -941,6 +1000,7 @@ export function ModelsSettingsPage() {
 
               <ProviderConfigEditor
                 providerId={selectedProviderId}
+                modelId={selectedBuiltIn.id}
                 draft={providerDrafts[selectedProviderId]}
                 onChange={setProviderField}
                 onSave={handleSaveProvider}

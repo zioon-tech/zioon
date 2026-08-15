@@ -2,6 +2,8 @@ export function createSessionTreeModel(opts) {
   const dbName = opts?.dbName;
   const idbSetKV = opts?.idbSetKV;
   const warnStorageIssue = opts?.warnStorageIssue;
+  const onPersist = opts?.onPersist;
+  const onDelete = opts?.onDelete;
   const loadMeta = opts?.loadMeta;
   const genId = opts?.genId;
   const getLastActiveId = opts?.getLastActiveId;
@@ -18,7 +20,7 @@ export function createSessionTreeModel(opts) {
   const lsFolderOpenKey = opts?.lsFolderOpenKey;
   const cloneValue = (value) => {
     try {
-      if (typeof structuredClone === "function") return structuredClone(value);
+      if (typeof globalThis.structuredClone === "function") return globalThis.structuredClone(value);
     } catch {}
     try {
       return JSON.parse(JSON.stringify(value));
@@ -43,6 +45,7 @@ export function createSessionTreeModel(opts) {
     (async () => {
       try {
         await idbSetKV(dbName, "tree", optimistic);
+        try { onPersist?.("tree"); } catch {}
       } catch (e) {
         try {
           if (getZion()?.state?.get("sessions.treeMem") === optimistic) {
@@ -68,9 +71,10 @@ export function createSessionTreeModel(opts) {
       if (!node) return;
       if (node.type === "session") {
         const meta = loadMeta(node.id);
+        const title = String(meta?.title || node.title || node.id || "").trim() || node.id;
         out.push({
           id: node.id,
-          title: node.title ?? meta?.title ?? node.id,
+          title,
           updatedAt: meta?.updatedAt ?? 0,
           size: meta?.size ?? 0,
           hash: meta?.hash ?? "",
@@ -102,6 +106,7 @@ export function createSessionTreeModel(opts) {
     (async () => {
       try {
         await idbSetKV(dbName, "index", optimistic);
+        try { onPersist?.("index"); } catch {}
       } catch (e) {
         try {
           if (getZion()?.state?.get("sessions.indexMem") === optimistic) {
@@ -244,6 +249,7 @@ export function createSessionTreeModel(opts) {
     };
     const ids = collectSessions(node);
     for (const sid of ids) {
+      try { void onDelete?.(sid); } catch {}
       try { if (docKey) localStorage.removeItem(docKey(sid)); } catch {}
       try { if (metaKey) localStorage.removeItem(metaKey(sid)); } catch {}
       try { getZion()?.state?.set(`sessions.doc.${sid}`, undefined); } catch {}

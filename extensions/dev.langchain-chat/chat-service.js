@@ -5,8 +5,20 @@ import {
   resolveToolCallsReasoningContentMode,
   shouldForceReasoningContentWithToolCalls
 } from "./reasoning-policy.js";
-import { normalizeThinkingEffort, normalizeThinkingMode } from "./model-config-fields.js";
+import {
+  DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
+  isClaudeAdaptiveThinkingModel,
+  isClaudeManualThinkingModel,
+  isDeepSeekThinkingConfig,
+  isLikelyThinkingModelId,
+  getSupportedThinkingEfforts,
+  normalizeAutoContinueOnColonMaxAttempts,
+  normalizeThinkingEffort,
+  normalizeThinkingMode,
+  usesGeminiThinkingLevel
+} from "./model-config-fields.js";
 import { proxyLLMRequest } from "./llm-proxy.ts";
+import { repairToolCallMessageOrder } from "../../src/chat/message-order.ts";
 
 /**
  * 消息格式转换函数 - 将标准消息格式转换为特定 provider 所需的格式
@@ -80,27 +92,98 @@ function transformToolsForProvider(tools, providerType) {
 /**
  * 为特定 provider 构建完整的请求体
  */
-function buildProviderRequestBody(cfg, formattedMessages, tools, providerType) {
+export function buildProviderRequestBody(cfg, formattedMessages, tools, providerType, providerId = "") {
   const thinkingMode = normalizeThinkingMode(cfg.thinkingMode);
-  const thinkingEffort = normalizeThinkingEffort(cfg.thinkingEffort);
-  const wantsThinking = thinkingMode === "on" || thinkingEffort !== "auto";
-  const effortBudget = { low: 1024, medium: 4096, high: 8192 }[thinkingEffort];
+  const modelName = String(cfg.modelName || cfg.id || "");
+  const thinkingInfo = { providerId, providerType, modelName, cfg };
+  const requestedThinkingEffort = normalizeThinkingEffort(cfg.thinkingEffort);
+  const supportedThinkingEfforts = getSupportedThinkingEfforts(thinkingInfo);
+  const thinkingEffort = supportedThinkingEfforts.includes(requestedThinkingEffort)
+    ? requestedThinkingEffort
+    : requestedThinkingEffort === "minimal" && supportedThinkingEfforts.includes("low")
+      ? "low"
+      : (requestedThinkingEffort === "xhigh" || requestedThinkingEffort === "max") && supportedThinkingEfforts.includes("max")
+        ? "max"
+        : supportedThinkingEfforts.includes("high")
+          ? "high"
+          : "auto";
+  const wantsThinking = thinkingMode !== "off" && (thinkingMode === "on" || thinkingEffort !== "auto");
+  const isDeepSeek = isDeepSeekThinkingConfig(thinkingInfo);
+  const systemText = formattedMessages
+    .filter((message) => message?.role === "system")
+    .map((message) => {
+      if (typeof message.content === "string") return message.content;
+      if (!Array.isArray(message.content)) return "";
+      return message.content
+        .map((part) => typeof part?.text === "string" ? part.text : "")
+        .filter(Boolean)
+        .join("\n");
+    })
+    .filter(Boolean)
+    .join("\n\n");
   const base = {
     model: cfg.modelName,
     messages: formattedMessages,
-    stream: cfg.stream !== false,
-    temperature: typeof cfg.temperature === "number" ? cfg.temperature : 0
+    stream: cfg.stream !== false
   };
+  if (typeof cfg.temperature === "number" && Number.isFinite(cfg.temperature)) {
+    base.temperature = cfg.temperature;
+  }
+
+  if (isDeepSeek) {
+    if (typeof cfg.max_tokens === "number" && Number.isFinite(cfg.max_tokens)) {
+      base.max_tokens = cfg.max_tokens;
+    }
+    if (base.stream) {
+      base.stream_options = { include_usage: true };
+    }
+    if (thinkingMode === "off") {
+      base.thinking = { type: "disabled" };
+    } else if (wantsThinking) {
+      base.thinking = { type: "enabled" };
+      delete base.temperature;
+    }
+    if (thinkingMode !== "off" && thinkingEffort !== "auto") {
+      base.reasoning_effort = thinkingEffort === "max" || thinkingEffort === "xhigh" ? "max" : "high";
+    }
+    if (tools && tools.length > 0) {
+      base.tools = tools;
+      base.tool_choice = "auto";
+    }
+    return base;
+  }
 
   if (providerType === "claude") {
-    // Claude 必需 max_tokens
-    base.max_tokens = cfg.max_tokens || 4096;
+    const claudeMessages = formattedMessages.filter((message) => message?.role !== "system");
+    base.messages = claudeMessages;
+    if (systemText) base.system = systemText;
+    base.max_tokens = Math.max(2048, cfg.max_tokens || 16384);
     // Claude 不支持 tool_choice
     if (tools && tools.length > 0) {
       base.tools = transformToolsForProvider(tools, "claude");
     }
-    if (wantsThinking) {
-      base.thinking = { type: "enabled", budget_tokens: effortBudget || 4096 };
+    if (thinkingMode === "off") {
+      base.thinking = { type: "disabled" };
+    } else if (wantsThinking && isClaudeAdaptiveThinkingModel(modelName)) {
+      base.thinking = { type: "adaptive", display: "summarized" };
+      if (thinkingEffort !== "auto") {
+        base.output_config = {
+          effort: thinkingEffort === "minimal" ? "low" : thinkingEffort
+        };
+      }
+      delete base.temperature;
+    } else if (wantsThinking && (isClaudeManualThinkingModel(modelName) || cfg.supportsThinking === true)) {
+      const targetBudget = {
+        minimal: 1024,
+        low: 4096,
+        medium: 8192,
+        high: 16384,
+        xhigh: 32768,
+        max: 65536
+      }[thinkingEffort === "auto" ? "high" : thinkingEffort] || 16384;
+      const budgetTokens = Math.max(1024, Math.min(targetBudget, base.max_tokens - 1024));
+      base.thinking = { type: "enabled", budget_tokens: budgetTokens };
+      delete base.temperature;
     }
     return base;
   }
@@ -110,29 +193,69 @@ function buildProviderRequestBody(cfg, formattedMessages, tools, providerType) {
     const contents = transformMessagesForProvider(formattedMessages, "gemini", cfg);
     const geminiBody = {
       contents,
-      generationConfig: {
-        temperature: base.temperature,
-        maxOutputTokens: cfg.max_tokens || 8192
-      }
+      generationConfig: {}
     };
-    if (thinkingMode === "off") {
-      geminiBody.generationConfig.thinkingConfig = { thinkingBudget: 0 };
-    } else if (wantsThinking) {
-      geminiBody.generationConfig.thinkingConfig = { thinkingBudget: effortBudget || -1 };
+    if (systemText) {
+      geminiBody.systemInstruction = { parts: [{ text: systemText }] };
+    }
+    if (typeof cfg.temperature === "number" && Number.isFinite(cfg.temperature)) {
+      geminiBody.generationConfig.temperature = cfg.temperature;
+    }
+    if (typeof cfg.max_tokens === "number" && Number.isFinite(cfg.max_tokens)) {
+      geminiBody.generationConfig.maxOutputTokens = cfg.max_tokens;
+    }
+    if (usesGeminiThinkingLevel(modelName)) {
+      const level =
+        thinkingMode === "off"
+          ? (modelName.includes("flash") && !modelName.includes("pro") ? "minimal" : "low")
+          : thinkingEffort === "auto"
+            ? null
+            : thinkingEffort === "minimal"
+              ? "minimal"
+              : thinkingEffort === "max" || thinkingEffort === "xhigh"
+                ? "high"
+                : thinkingEffort;
+      if (thinkingMode === "off" || wantsThinking) {
+        geminiBody.generationConfig.thinkingConfig = {
+          includeThoughts: thinkingMode !== "off",
+          ...(level ? { thinkingLevel: level.toUpperCase() } : {})
+        };
+      }
+    } else if (thinkingMode === "off" || wantsThinking) {
+      const isGeminiPro = modelName.toLowerCase().includes("pro");
+      const budget = {
+        minimal: 512,
+        low: 1024,
+        medium: 8192,
+        high: 24576,
+        xhigh: 32768,
+        max: 32768
+      }[thinkingEffort];
+      geminiBody.generationConfig.thinkingConfig = {
+        thinkingBudget: thinkingMode === "off" ? (isGeminiPro ? 128 : 0) : budget || -1,
+        includeThoughts: thinkingMode !== "off"
+      };
     }
     if (tools && tools.length > 0) {
-      geminiBody.generationConfig.tools = transformToolsForProvider(tools, "gemini");
+      geminiBody.tools = transformToolsForProvider(tools, "gemini");
     }
     return geminiBody;
   }
 
   // OpenAI 格式
-  base.max_tokens = cfg.max_tokens;
+  const isOfficialOpenAIReasoningModel =
+    String(cfg.url || "").toLowerCase().includes("api.openai.com") &&
+    isLikelyThinkingModelId(modelName);
+  if (typeof cfg.max_tokens === "number" && Number.isFinite(cfg.max_tokens)) {
+    if (isOfficialOpenAIReasoningModel) base.max_completion_tokens = cfg.max_tokens;
+    else base.max_tokens = cfg.max_tokens;
+  }
   if (base.stream) {
     base.stream_options = { include_usage: true };
   }
-  if (wantsThinking && thinkingEffort !== "auto") {
+  if (thinkingMode !== "off" && thinkingEffort !== "auto") {
     base.reasoning_effort = thinkingEffort;
+    if (isOfficialOpenAIReasoningModel) delete base.temperature;
   }
   if (tools && tools.length > 0) {
     base.tools = tools;
@@ -169,13 +292,16 @@ function getProviderHeaders(cfg, providerType) {
 /**
  * 构建特定 provider 的请求 URL
  */
-function buildProviderURL(cfg, providerType) {
+export function buildProviderURL(cfg, providerType) {
   if (providerType === "gemini") {
-    // Gemini: https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
-    const base = cfg.url || "https://generativelanguage.googleapis.com/v1beta/models";
+    const base = String(cfg.url || "https://generativelanguage.googleapis.com/v1beta/models").replace(/\/+$/, "");
     const model = cfg.modelName;
-    const key = cfg.key ? `?key=${cfg.key}` : "";
-    return `${base}/${model}:generateContent${key}`;
+    const method = cfg.stream !== false ? "streamGenerateContent" : "generateContent";
+    const params = [];
+    if (cfg.stream !== false) params.push("alt=sse");
+    if (cfg.key) params.push(`key=${encodeURIComponent(cfg.key)}`);
+    const query = params.join("&");
+    return `${base}/${model}:${method}${query ? `?${query}` : ""}`;
   }
 
   // OpenAI/Claude 使用原来的 URL
@@ -255,29 +381,80 @@ function normalizeProviderUsage(raw, providerType) {
   };
 }
 
-function buildProviderError(json, providerType = "") {
-  try {
-    if (!json || typeof json !== "object") return "";
-    const nestedMessage = typeof json?.error?.message === "string" ? json.error.message.trim() : "";
-    const nestedType = typeof json?.error?.type === "string" ? json.error.type.trim() : "";
-    const directMessage = typeof json?.message === "string" ? json.message.trim() : "";
-    const directError = typeof json?.error === "string" ? json.error.trim() : "";
-    if (nestedMessage) return nestedType ? `${nestedType}: ${nestedMessage}` : nestedMessage;
-    if (directError) return directError;
-    if (directMessage && (json.type === "error" || json.status === "error" || json.error_code || json.code)) {
-      return directMessage;
-    }
-    if (providerType === "gemini") {
-      const blockReason = String(json?.promptFeedback?.blockReason || "").trim();
-      const blockReasonMessage = String(json?.promptFeedback?.blockReasonMessage || "").trim();
-      if (blockReason || blockReasonMessage) {
-        return `Gemini blocked: ${blockReasonMessage || blockReason}`;
-      }
-    }
-    return "";
-  } catch {
-    return "";
+const DEEPSEEK_COLON_CONTINUATION_PROMPT =
+  "上一条回答在冒号后意外中断。请从冒号后直接继续回答，不要重复已经输出的内容，也不要解释中断原因。";
+const DEEPSEEK_REASONING_ONLY_CONTINUATION_PROMPT =
+  "上一轮只返回了推理内容，没有给出正式回答或工具调用。请继续完成当前任务：直接输出正式内容；如果需要工具，请正常发起工具调用。不要复述推理过程，也不要解释中断原因。";
+
+function isDeepSeekModel(active, cfg) {
+  return [
+    active?.providerId,
+    active?.modelId,
+    cfg?.providerId,
+    cfg?.modelName,
+    cfg?.id
+  ].some((value) => String(value || "").toLowerCase().includes("deepseek"));
+}
+
+export function getDeepSeekAutoContinuationReason({
+  active,
+  cfg,
+  finishReason,
+  content,
+  reasoningContent,
+  hasToolCalls = false,
+  attempt = 0,
+  maxAttempts = DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS
+}) {
+  const limit = normalizeAutoContinueOnColonMaxAttempts(maxAttempts);
+  if (attempt >= limit || hasToolCalls || finishReason !== "stop") return null;
+  if (!isDeepSeekModel(active, cfg)) return null;
+  const finalContent = String(content || "").trimEnd();
+  if (/[:：]$/.test(finalContent)) return "colon-stop";
+  if (!finalContent && String(reasoningContent || "").trim()) return "reasoning-only-stop";
+  return null;
+}
+
+export function shouldAutoContinueDeepSeek(options) {
+  return !!getDeepSeekAutoContinuationReason(options);
+}
+
+export function buildDeepSeekContinuationMessages(messages, content, reason = "colon-stop") {
+  const next = [...(Array.isArray(messages) ? messages : [])];
+  if (String(content || "").trim()) {
+    next.push({ role: "assistant", content: String(content) });
   }
+  next.push({
+    role: "user",
+    content:
+      reason === "reasoning-only-stop"
+        ? DEEPSEEK_REASONING_ONLY_CONTINUATION_PROMPT
+        : DEEPSEEK_COLON_CONTINUATION_PROMPT
+  });
+  return next;
+}
+
+function mergeProviderUsage(first, second) {
+  if (!first) return second || null;
+  if (!second) return first;
+  const merged = {};
+  for (const key of ["input", "output", "total", "cacheRead", "cacheWrite", "reasoning"]) {
+    const firstValue = Number(first?.[key]);
+    const secondValue = Number(second?.[key]);
+    if (Number.isFinite(firstValue) || Number.isFinite(secondValue)) {
+      merged[key] =
+        (Number.isFinite(firstValue) ? firstValue : 0) +
+        (Number.isFinite(secondValue) ? secondValue : 0);
+    }
+  }
+  return merged;
+}
+
+function joinReasoningContent(first, second) {
+  return [first, second]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**
@@ -316,11 +493,6 @@ function parseClaudeStreamLine(line, { toolCallsBuffer, emittedReasoningStart, o
   try {
     const json = JSON.parse(payload);
     const result = {};
-    const providerError = buildProviderError(json, "claude");
-    if (eventType === "error" || json.type === "error" || providerError) {
-      result.error = providerError || "Claude stream error";
-      return result;
-    }
 
     // 处理 content_block_start (thinking 开始)
     if (eventType === "content_block_start" || json.type === "content_block_start") {
@@ -402,11 +574,6 @@ function parseGeminiStreamLine(line, { toolCallsBuffer, reasoningBuf, onToken, o
   try {
     const json = JSON.parse(payload);
     const result = {};
-    const providerError = buildProviderError(json, "gemini");
-    if (providerError) {
-      result.error = providerError;
-      return result;
-    }
 
     // Gemini 流式响应结构
     // candidates[0].content.parts[]
@@ -414,9 +581,12 @@ function parseGeminiStreamLine(line, { toolCallsBuffer, reasoningBuf, onToken, o
     for (const candidate of candidates) {
       const parts = candidate?.content?.parts || [];
       for (const part of parts) {
-        // 文本内容
         if (part.text) {
-          result.contentToken = part.text;
+          if (part.thought === true) {
+            result.thinkingToken = `${result.thinkingToken || ""}${part.text}`;
+          } else {
+            result.contentToken = `${result.contentToken || ""}${part.text}`;
+          }
         }
 
         // 函数调用
@@ -429,9 +599,9 @@ function parseGeminiStreamLine(line, { toolCallsBuffer, reasoningBuf, onToken, o
         }
       }
 
-      // 思考内容 (如果模型支持)
+      // 兼容旧版 Gemini groundingMetadata 思考字段。
       if (candidate?.groundingMetadata?.thought) {
-        result.thinkingToken = candidate.groundingMetadata.thought;
+        result.thinkingToken = `${result.thinkingToken || ""}${candidate.groundingMetadata.thought}`;
       }
     }
 
@@ -447,45 +617,205 @@ function parseGeminiStreamLine(line, { toolCallsBuffer, reasoningBuf, onToken, o
 }
 
 /**
- * 判断是否为速率限制错误
- */
-function isRateLimitError(status, text) {
-  if (status !== 429) return false;
-  const lowerText = String(text).toLowerCase();
-  const keywords = [
-    'rate limit',
-    'too many requests',
-    '频率过高',
-    '并发',
-    '余额',
-    'concurrent',
-    'frequency',
-    'quota',
-    'rpm limit',
-    '流量限制',
-    '调用次数',
-    '使用上限',
-    'quota exceeded',
-    '请降低'
-  ];
-  return keywords.some(keyword => lowerText.includes(keyword));
-}
-
-/**
- * 带自动重试的 fetch（针对速率限制）
+ * 带自动重试的 fetch（针对网络错误、限流与服务端瞬时错误）
  * @param {string} url - 请求 URL
  * @param {RequestInit} options - fetch 选项
- * @param {number} maxRetries - 最大重试次数
+ * @param {number} maxRetries - 首次请求失败后的最大重试次数
  * @param {number} baseDelay - 基础延迟（毫秒）
  * @returns {Promise<Response>}
  */
-async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
-  let lastError;
-  let retryCount = 0;
+function createAbortError() {
+  const error = new Error("Request aborted");
+  error.name = "AbortError";
+  return error;
+}
 
-  for (let i = 0; i < maxRetries; i++) {
+function getErrorMessage(error, fallback = "未知错误") {
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (error?.message) return String(error.message);
+  if (error && typeof error === "object") {
     try {
-      // 使用 LLM 代理（智能降级）
+      const text = JSON.stringify(error);
+      if (text && text !== "{}") return text;
+    } catch {}
+  }
+  return fallback;
+}
+
+function parseRetryAfterMs(response) {
+  try {
+    const raw = response?.headers?.get?.("retry-after");
+    if (!raw) return null;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const at = Date.parse(raw);
+    if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  } catch {}
+  return null;
+}
+
+function createHttpError(response, text) {
+  const status = Number(response?.status || 0);
+  const detail = String(text || "").trim();
+  const error = new Error(
+    `HTTP ${status || "请求失败"}${detail ? `: ${detail.slice(0, 512)}` : ""}`
+  );
+  error.httpStatus = status || null;
+  error.responseText = detail;
+  error.retryAfterMs = parseRetryAfterMs(response);
+  error.retryable =
+    status === 408 ||
+    status === 409 ||
+    status === 425 ||
+    status === 429 ||
+    status >= 500;
+  if (
+    status === 400 &&
+    detail.toLowerCase().includes("reasoning_content") &&
+    ["missing", "passed back", "pass back"].some((part) => detail.toLowerCase().includes(part))
+  ) {
+    error.code = "missing_reasoning_content";
+    error.retryable = false;
+  }
+  return error;
+}
+
+function isPermanentRequestFingerprint(fingerprint) {
+  return /invalid[_ -]?(api[_ -]?key|access[_ -]?token|request|parameter|model)|authentication|unauthorized|forbidden|permission|insufficient[_ -]?quota|context[_ -]?(length|window)|maximum context|content policy|not found|unsupported|malformed|validation/.test(
+    String(fingerprint || "").toLowerCase()
+  );
+}
+
+function createProviderStreamError(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const rawError = payload.error ?? (payload.type === "error" ? payload : null);
+  if (rawError == null) {
+    // Gemini 可能以 200 返回 promptFeedback.blockReason（无 error 字段）
+    const promptFeedback = payload.promptFeedback;
+    if (promptFeedback && typeof promptFeedback === "object") {
+      const blockReason = String(promptFeedback.blockReason || "").trim();
+      const blockReasonMessage = String(promptFeedback.blockReasonMessage || "").trim();
+      if (blockReason || blockReasonMessage) {
+        const error = new Error(`Gemini blocked: ${blockReasonMessage || blockReason}`);
+        error.code = "gemini_prompt_blocked";
+        error.retryable = false;
+        return error;
+      }
+    }
+    return null;
+  }
+
+  const detail = typeof rawError === "object" && rawError
+    ? rawError
+    : { message: rawError };
+  const message = getErrorMessage(
+    detail,
+    getErrorMessage(payload, "大模型流式响应返回错误")
+  );
+  const error = new Error(message);
+  const status = Number(
+    detail.status ??
+    detail.status_code ??
+    detail.http_status ??
+    payload.status ??
+    payload.status_code ??
+    0
+  );
+  const code = String(detail.code ?? payload.code ?? "stream_error");
+  const fingerprint = [
+    code,
+    detail.type,
+    payload.type,
+    message
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+
+  error.code = code;
+  error.httpStatus = status || null;
+  if (status) {
+    error.retryable =
+      status === 408 ||
+      status === 409 ||
+      status === 425 ||
+      status === 429 ||
+      status >= 500;
+  } else if (isPermanentRequestFingerprint(fingerprint)) {
+    error.retryable = false;
+  } else if (/rate[_ -]?limit|too many requests|overloaded|timeout|timed out|connection|network|temporar|unavailable|reset|eof/.test(fingerprint)) {
+    error.retryable = true;
+  } else {
+    // zion-local-tools cannot preserve the upstream status after StreamingResponse
+    // has started. Unknown in-stream proxy failures are treated as transient.
+    error.retryable = true;
+  }
+  return error;
+}
+
+function extractProviderStreamError(line) {
+  const match = String(line || "").match(/^data:\s*(.*)$/);
+  if (!match) return null;
+  const payload = match[1].trim();
+  if (!payload || payload === "[DONE]") return null;
+  try {
+    return createProviderStreamError(JSON.parse(payload));
+  } catch {
+    return null;
+  }
+}
+
+function isRetryableRequestError(error) {
+  if (!error || error.name === "AbortError") return false;
+  if (typeof error.retryable === "boolean") return error.retryable;
+  const status = Number(error.httpStatus || error.status || 0);
+  if (status) {
+    return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+  }
+  const fingerprint = `${error.code || ""} ${getErrorMessage(error, "")}`.toLowerCase();
+  if (isPermanentRequestFingerprint(fingerprint) || fingerprint.includes("missing_reasoning_content")) {
+    return false;
+  }
+  return true;
+}
+
+function getRetryDelay(error, retryNumber, baseDelay) {
+  const retryAfterMs = Number(error?.retryAfterMs);
+  if (Number.isFinite(retryAfterMs) && retryAfterMs >= 0) return retryAfterMs;
+  const base = Math.max(0, Number(baseDelay) || 0);
+  return base * Math.pow(2, Math.max(0, retryNumber - 1));
+}
+
+function notifyRequestRetry(error, retryNumber, maxRetries, delay) {
+  const seconds = Math.max(0, delay) / 1000;
+  const delayText = Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
+  const message = `请求失败，${delayText} 秒后自动重试 (${retryNumber}/${maxRetries}): ${getErrorMessage(error)}`;
+  try {
+    window.zion?.notification?.show?.(message, {
+      type: "warning",
+      duration: Math.max(3000, Math.min(8000, delay + 1500))
+    });
+  } catch {}
+  console.warn(`[LLM] ${message}`);
+}
+
+function waitForRetryDelay(delay, signal) {
+  if (signal?.aborted) return Promise.reject(createAbortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }, delay);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+      reject(createAbortError());
+    };
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
+}
+
+async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (options.signal?.aborted) throw createAbortError();
+    try {
       const response = await proxyLLMRequest({
         url,
         method: options.method || "POST",
@@ -494,78 +824,102 @@ async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
         signal: options.signal
       });
 
-      // 如果响应成功，直接返回
       if (response.ok) {
-        if (retryCount > 0) {
-          console.log(`[RateLimit] 重试成功，第 ${retryCount} 次重试后恢复正常`);
+        if (attempt > 0) {
+          console.log(`[LLM] 请求在第 ${attempt} 次重试后恢复`);
         }
         return response;
       }
 
-      // 检查是否为速率限制错误
       const text = await response.text().catch(() => "");
-      if (response.status === 429 && isRateLimitError(429, text)) {
-        retryCount++;
-        // 指数退避：2s, 4s, 8s
-        const delay = baseDelay * Math.pow(2, i);
-
-        // 显示警告通知
-        try {
-          window.zion.notification.show(
-            `⚠️ 请求速率过高，正在等待 ${delay/1000} 秒后重试 (${retryCount}/${maxRetries})...`,
-            {
-              type: 'warning',
-              duration: 3000
-            }
-          );
-        } catch {}
-
-        console.warn(`[RateLimit] 检测到速率限制，第 ${retryCount} 次重试，等待 ${delay}ms...`);
-        console.warn(`[RateLimit] 错误信息: ${text.slice(0, 200)}`);
-
-        // 等待后继续重试
-        await new Promise(resolve => setTimeout(resolve, delay));
-        lastError = new Error(`请求速率过高: ${text.slice(0, 100)}`);
-        continue;
-      }
-
-      // 非 429 错误，直接抛出
-      if (response.status === 400) {
-        const lowerText = String(text).toLowerCase();
-        if (lowerText.includes("reasoning_content") && (lowerText.includes("missing") || lowerText.includes("passed back") || lowerText.includes("pass back"))) {
-          const err = new Error(`HTTP ${response.status}: ${text.slice(0, 256)}`);
-          err.code = "missing_reasoning_content";
-          err.httpStatus = 400;
-          err.responseText = text;
-          throw err;
-        }
-      }
-      throw new Error(`HTTP ${response.status}: ${text.slice(0, 256)}`);
-
+      throw createHttpError(response, text);
     } catch (error) {
-      // 如果是最后一次循环，抛出错误
-      if (i === maxRetries - 1) {
-        // 显示错误通知
-        try {
-          window.zion.notification.show(
-            `❌ 请求失败（已重试 ${maxRetries} 次）: ${error.message}`,
-            {
-              type: 'error',
-              duration: 6000
-            }
-          );
-        } catch {}
+      if (error?.name === "AbortError" || options.signal?.aborted) {
+        throw error?.name === "AbortError" ? error : createAbortError();
+      }
+      const retryable = isRetryableRequestError(error);
+      if (!retryable || attempt >= maxRetries) {
+        if (retryable && error && typeof error === "object") {
+          error.retriesExhausted = true;
+        }
         throw error;
       }
-
-      // 记录错误并继续
-      lastError = error;
-      console.error(`[RateLimit] 请求失败，准备重试:`, error.message);
+      const retryNumber = attempt + 1;
+      const delay = getRetryDelay(error, retryNumber, baseDelay);
+      notifyRequestRetry(error, retryNumber, maxRetries, delay);
+      await waitForRetryDelay(delay, options.signal);
     }
   }
+  throw new Error("请求失败，已达到最大重试次数");
+}
 
-  // 理论上不会执行到这里
-  throw lastError || new Error('请求失败，已达到最大重试次数');
+function findToolDefinition(tools, name) {
+  if (!Array.isArray(tools) || !name) return null;
+  return tools.find((tool) => String(tool?.function?.name || tool?.name || "") === String(name)) || null;
+}
+
+function validateToolCallArgs(name, args, tools) {
+  const def = findToolDefinition(tools, name);
+  const params = def?.function?.parameters || def?.parameters || null;
+  const required = Array.isArray(params?.required) ? params.required.map(String).filter(Boolean) : [];
+  if (!required.length) return "";
+  for (const key of required) {
+    const value = args?.[key];
+    if (value == null) return `missing required argument "${key}"`;
+    if (typeof value === "string" && !value.trim()) return `missing required argument "${key}"`;
+  }
+  return "";
+}
+
+export function emitCompletedOpenAIToolCallBuffer(bufItem, callbacks = {}) {
+  if (!bufItem?.id || !bufItem?.name) return false;
+  let args;
+  try {
+    const raw = String(bufItem.arguments || "").trim();
+    args = raw ? JSON.parse(raw) : {};
+  } catch {
+    return false;
+  }
+  const validationError = validateToolCallArgs(bufItem.name, args, callbacks.tools);
+  if (validationError) {
+    callbacks.onInvalidToolCall?.({ id: bufItem.id, name: bufItem.name, args, error: validationError });
+    bufItem.id = "";
+    bufItem.name = "";
+    bufItem.arguments = "";
+    return true;
+  }
+  try { callbacks.beforeControlEvent?.("toolCall"); } catch {}
+  callbacks.onToolCall?.({ id: bufItem.id, name: bufItem.name, args });
+  bufItem.id = "";
+  bufItem.name = "";
+  bufItem.arguments = "";
+  return true;
+}
+
+export function ingestOpenAIToolCallDeltas(toolCallsBuffer, toolCalls, callbacks = {}) {
+  if (!Array.isArray(toolCalls)) return 0;
+  let emitted = 0;
+  for (const tc of toolCalls) {
+    const idx = tc.index ?? 0;
+    while (toolCallsBuffer.length <= idx) toolCallsBuffer.push({ id: "", name: "", arguments: "" });
+    const bufItem = toolCallsBuffer[idx];
+
+    if (tc.id) bufItem.id = tc.id;
+    const fn = tc.function || tc?.fn;
+    if (fn?.name) bufItem.name = fn.name;
+    if (fn?.arguments) bufItem.arguments += fn.arguments;
+
+  }
+  return emitted;
+}
+
+export function flushCompletedOpenAIToolCalls(toolCallsBuffer, callbacks = {}) {
+  if (!Array.isArray(toolCallsBuffer)) return 0;
+  let emitted = 0;
+  for (const bufItem of toolCallsBuffer) {
+    if (emitCompletedOpenAIToolCallBuffer(bufItem, callbacks)) emitted += 1;
+  }
+  return emitted;
 }
 
 /**
@@ -584,21 +938,36 @@ export async function runStream({
   onError,
   getController,
   onToolCall,
+  onInvalidToolCall,
   beforeControlEvent,
   runId,
   sessionId,
   panelId,
+  assistantBlockId,
   answerAnchorPos,
   answerHeadLine,
   requestSource,
   stepIndex,
   silentReasoning = false,
-  activeModel = null
+  activeModel = null,
+  _deepSeekAutoContinuationAttempt = 0,
+  _streamRetryAttempt = 0,
+  _retryBaseDelay = 2000
 }) {
-  // 读取当前激活的模型（默认 deepseek:deepseek-chat）
-  const active = activeModel || window.zion.state.get("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-chat" };
+  // 读取当前激活的模型（默认 DeepSeek V4 Flash）
+  const active = activeModel || window.zion.state.get("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-v4-flash" };
   const reasoningSegmentId = stepIndex != null ? `${runId}:step:${stepIndex}` : runId;
-  const controlEventBase = { runId, reasoningSegmentId, stepIndex, sessionId, panelId, answerAnchorPos, answerHeadLine, silentReasoning };
+  const controlEventBase = {
+    runId,
+    reasoningSegmentId,
+    stepIndex,
+    sessionId,
+    panelId,
+    assistantBlockId,
+    answerAnchorPos,
+    answerHeadLine,
+    silentReasoning
+  };
   const provider = window.zion.models.getProvider(active.providerId);
   if (!provider) throw new Error(`Provider not found: ${active.providerId}`);
   let cfg = await provider.resolve(active.modelId);
@@ -622,7 +991,66 @@ export async function runStream({
   if (getController) getController(controller);
 
   let reasoningBuf = "";
+  let hasResponseProgress = false;
+  const maybeAutoContinueDeepSeek = async ({ content, finishReason, hasToolCalls, usage }) => {
+    const continuationReason = getDeepSeekAutoContinuationReason({
+      active,
+      cfg,
+      finishReason,
+      content,
+      reasoningContent: reasoningBuf,
+      hasToolCalls,
+      attempt: _deepSeekAutoContinuationAttempt,
+      maxAttempts: cfg.autoContinueOnColonMaxAttempts
+    });
+    if (!continuationReason) return null;
+
+    const nextAttempt = _deepSeekAutoContinuationAttempt + 1;
+    try {
+      window.zion?.events?.emit?.("chat/deepSeekAutoContinue", {
+        ...controlEventBase,
+        attempt: nextAttempt,
+        finishReason,
+        reason: continuationReason
+      });
+    } catch {}
+
+    const continued = await runStream({
+      messages: buildDeepSeekContinuationMessages(messages, content, continuationReason),
+      tools,
+      onToken,
+      onEnd,
+      onError,
+      getController,
+      onToolCall,
+      onInvalidToolCall,
+      beforeControlEvent,
+      runId,
+      sessionId,
+      panelId,
+      assistantBlockId,
+      answerAnchorPos,
+      answerHeadLine,
+      requestSource,
+      stepIndex,
+      silentReasoning,
+      activeModel: active,
+      _deepSeekAutoContinuationAttempt: nextAttempt,
+      _retryBaseDelay
+    });
+
+    return {
+      ...continued,
+      reasoning_content: joinReasoningContent(reasoningBuf, continued?.reasoning_content),
+      usage: mergeProviderUsage(usage, continued?.usage),
+      deepSeekAutoContinued: true
+    };
+  };
+
   try {
+    if (controller.signal.aborted) {
+      return { reasoning_content: reasoningBuf, aborted: true };
+    }
     // 获取 provider 类型
     const providerType = cfg.providerType || "openai";
 
@@ -647,7 +1075,8 @@ export async function runStream({
     let forcedOnce = false;
     const doFetch = async () => {
       // 先构建标准消息格式
-      const patched = patchMessagesForReasoningContentToolCalls(messages, { force: !! (baseForceReasoning || forcedOnce) });
+      const orderedMessages = repairToolCallMessageOrder(messages);
+      const patched = patchMessagesForReasoningContentToolCalls(orderedMessages, { force: !! (baseForceReasoning || forcedOnce) });
 
       const formattedMessages = await Promise.all(patched.map(async (m) => {
         const useArray = !!cfg.supportsImage;
@@ -748,7 +1177,7 @@ export async function runStream({
       }));
 
       // 根据 provider 类型构建请求体
-      const body = buildProviderRequestBody(cfg, formattedMessages, tools, providerType);
+      const body = buildProviderRequestBody(cfg, formattedMessages, tools, providerType, active.providerId);
       const headers = getProviderHeaders(cfg, providerType);
       try {
         const payloadMsgs = Array.isArray(body?.messages) ? body.messages : (Array.isArray(body?.contents) ? body.contents : []);
@@ -772,6 +1201,7 @@ export async function runStream({
           url: redactRequestUrl(url),
           stream: cfg.stream !== false,
           retryWithReasoningContent: !!forcedOnce,
+          deepSeekAutoContinuationAttempt: _deepSeekAutoContinuationAttempt,
           messageCount: formattedMessages.length,
           toolCount: tools ? (Array.isArray(tools) ? tools.length : Object.keys(tools || {}).length) : 0,
           debugSummary: summarizeDebugPayloadMessages(payloadMsgs),
@@ -797,7 +1227,7 @@ export async function runStream({
           signal: controller.signal
         },
         3,
-        2000
+          _retryBaseDelay
       );
     };
     let res;
@@ -822,19 +1252,39 @@ export async function runStream({
       const toolCallsBuffer = [];
       // reasoning/think 流式起止标志
       let emittedReasoningStart = false;
+      let contentBuf = "";
+      let finishReason = "";
+      let sawToolCalls = false;
+        let sawCompletionSignal = false;
 
       while (true) {
+        if (controller.signal.aborted) {
+          try { await reader.cancel(); } catch {}
+          return { reasoning_content: reasoningBuf, usage, aborted: true };
+        }
         const { value, done } = await reader.read();
         if (done) break;
-        if (controller.signal.aborted) break;
+        if (controller.signal.aborted) {
+          try { await reader.cancel(); } catch {}
+          return { reasoning_content: reasoningBuf, usage, aborted: true };
+        }
 
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
         buf = lines.pop() || "";
 
         for (const line of lines) {
+          if (controller.signal.aborted) {
+            try { await reader.cancel(); } catch {}
+            return { reasoning_content: reasoningBuf, usage, aborted: true };
+          }
           const s = line.trim();
           if (!s) continue;
+            const providerStreamError = extractProviderStreamError(s);
+            if (providerStreamError) {
+              try { await reader.cancel(); } catch {}
+              throw providerStreamError;
+            }
 
           let parseResult = {};
 
@@ -861,88 +1311,77 @@ export async function runStream({
             // OpenAI 解析器（默认）
             if (!s.startsWith("data:")) continue;
             const payload = s.slice(5).trim();
-              if (payload === "[DONE]") {
-                parseResult = { done: true };
-              } else {
-                try {
-                  const json = JSON.parse(payload);
-                  const providerError = buildProviderError(json, providerType);
-                  if (providerError) {
-                    parseResult.error = providerError;
-                  }
+            if (payload === "[DONE]") {
+                sawCompletionSignal = true;
+                if (sawToolCalls) hasResponseProgress = true;
+              flushCompletedOpenAIToolCalls(toolCallsBuffer, { beforeControlEvent, onToolCall, onInvalidToolCall, tools });
+              parseResult = { done: true };
+            } else {
+              try {
+                const json = JSON.parse(payload);
                   if (json?.usage) usage = normalizeProviderUsage(json.usage, providerType);
-                  // 解析 tool_calls（delta）
-                  const delta = json?.choices?.[0]?.delta;
-                  const toolCalls = delta?.tool_calls;
-                  if (toolCalls && Array.isArray(toolCalls)) {
-                    for (const tc of toolCalls) {
-                      const idx = tc.index ?? 0;
-                      while (toolCallsBuffer.length <= idx) toolCallsBuffer.push({ id: "", name: "", arguments: "" });
-                      const bufItem = toolCallsBuffer[idx];
-
-                      if (tc.id) bufItem.id = tc.id;
-                      const fn = tc.function || tc?.fn;
-                      if (fn?.name) bufItem.name = fn.name;
-                      if (fn?.arguments) bufItem.arguments += fn.arguments;
-
-                      // 尝试完整解析
-                      if (bufItem.id && bufItem.name && bufItem.arguments) {
-                        try {
-                          const args = JSON.parse(bufItem.arguments);
-                          try { beforeControlEvent?.("toolCall"); } catch {}
-                          onToolCall && onToolCall({ id: bufItem.id, name: bufItem.name, args });
-                          // 清空该 buffer 位置，避免重复触发
-                          toolCallsBuffer[idx] = { id: "", name: "", arguments: "" };
-                        } catch {
-                          // 等待更多参数片段
-                        }
-                      }
-                    }
+                // 解析 tool_calls（delta）
+                const delta = json?.choices?.[0]?.delta;
+                const toolCalls = delta?.tool_calls;
+                if (Array.isArray(toolCalls) && toolCalls.length > 0) sawToolCalls = true;
+                ingestOpenAIToolCallDeltas(toolCallsBuffer, toolCalls);
+                const nextFinishReason = json?.choices?.[0]?.finish_reason;
+                  if (nextFinishReason) {
+                    finishReason = String(nextFinishReason);
+                    sawCompletionSignal = true;
                   }
-
-                  // 思考内容（reasoning） token
-                  const rTk =
-                    delta?.reasoning_content ??
-                    (delta?.reasoning && typeof delta.reasoning === "object" ? delta.reasoning.content : undefined) ??
-                    delta?.thinking ??
-                    undefined;
-                  if (rTk) {
-                    parseResult.thinkingToken = rTk;
-                  }
-
-                  // 常规内容 token
-                  const tk =
-                    delta?.content ??
-                    json?.choices?.[0]?.message?.content ??
-                    json?.message?.content ??
-                    json?.content ??
-                    "";
-                  if (tk) {
-                    parseResult.contentToken = tk;
-                  }
-                } catch {
-                  // 忽略无法解析的行
+                if (nextFinishReason === "tool_calls") {
+                    hasResponseProgress = true;
+                  flushCompletedOpenAIToolCalls(toolCallsBuffer, { beforeControlEvent, onToolCall, onInvalidToolCall, tools });
                 }
+
+                // 思考内容（reasoning） token
+                const rTk =
+                  delta?.reasoning_content ??
+                  (delta?.reasoning && typeof delta.reasoning === "object" ? delta.reasoning.content : undefined) ??
+                  delta?.thinking ??
+                  undefined;
+                if (rTk) {
+                  parseResult.thinkingToken = rTk;
+                }
+
+                // 常规内容 token
+                const tk =
+                  delta?.content ??
+                  json?.choices?.[0]?.message?.content ??
+                  json?.message?.content ??
+                  json?.content ??
+                  "";
+                if (tk) {
+                  parseResult.contentToken = tk;
+                }
+              } catch {
+                // 忽略无法解析的行
               }
+            }
           }
 
           // 处理解析结果
-            if (parseResult.usage) usage = normalizeProviderUsage(parseResult.usage, providerType);
+          if (parseResult.usage) usage = normalizeProviderUsage(parseResult.usage, providerType);
 
-            if (parseResult.done) {
+          if (parseResult.done) {
+              sawCompletionSignal = true;
             try {
               if (emittedReasoningStart) {
                 try { beforeControlEvent?.("reasoningEnd"); } catch {}
                 window.zion?.events?.emit("chat/reasoningEnd", controlEventBase);
               }
             } catch {}
+            const continued = await maybeAutoContinueDeepSeek({
+              content: contentBuf,
+              finishReason,
+              hasToolCalls: sawToolCalls,
+              usage
+            });
+            if (continued) return continued;
             onEnd();
             return { reasoning_content: reasoningBuf, usage };
           }
-
-            if (parseResult.error) {
-              throw new Error(parseResult.error);
-            }
 
           if (parseResult.thinkingStart) {
             emittedReasoningStart = true;
@@ -951,6 +1390,7 @@ export async function runStream({
           }
 
           if (parseResult.thinkingToken) {
+              hasResponseProgress = true;
             if (!emittedReasoningStart) {
               emittedReasoningStart = true;
               try { beforeControlEvent?.("reasoningStart"); } catch {}
@@ -962,10 +1402,13 @@ export async function runStream({
           }
 
           if (parseResult.contentToken) {
+              hasResponseProgress = true;
+            contentBuf += String(parseResult.contentToken);
             onToken(parseResult.contentToken);
           }
 
           if (parseResult.functionCall) {
+              hasResponseProgress = true;
             const fc = parseResult.functionCall;
             // 生成一个唯一的 id
             const id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -974,23 +1417,75 @@ export async function runStream({
           }
         }
       }
+      if (controller.signal.aborted) {
+        return { reasoning_content: reasoningBuf, usage, aborted: true };
+      }
+        buf += decoder.decode();
+        const trailingLine = buf.trim();
+        const trailingError = extractProviderStreamError(trailingLine);
+        if (trailingError) throw trailingError;
+        if (trailingLine === "data: [DONE]") {
+          sawCompletionSignal = true;
+        } else if (trailingLine.startsWith("data:")) {
+          try {
+            const trailingPayload = JSON.parse(trailingLine.slice(5).trim());
+            if (
+              trailingPayload?.choices?.[0]?.finish_reason ||
+              trailingPayload?.candidates?.[0]?.finishReason ||
+              trailingPayload?.delta?.stop_reason
+            ) {
+              sawCompletionSignal = true;
+            }
+          } catch {}
+        }
+        if (!sawCompletionSignal) {
+          const error = new Error(
+            hasResponseProgress
+              ? "大模型响应流意外中断，已保留已收到的内容"
+              : "大模型响应流在返回任何内容前中断"
+          );
+          error.code = "incomplete_stream";
+          error.retryable = !hasResponseProgress;
+          throw error;
+        }
+        if (sawToolCalls) hasResponseProgress = true;
+      flushCompletedOpenAIToolCalls(toolCallsBuffer, { beforeControlEvent, onToolCall, onInvalidToolCall, tools });
       try {
         if (emittedReasoningStart) {
           try { beforeControlEvent?.("reasoningEnd"); } catch {}
           window.zion?.events?.emit("chat/reasoningEnd", controlEventBase);
         }
       } catch {}
+      const continued = await maybeAutoContinueDeepSeek({
+        content: contentBuf,
+        finishReason,
+        hasToolCalls: sawToolCalls,
+        usage
+      });
+      if (continued) return continued;
       onEnd();
       return { reasoning_content: reasoningBuf, usage };
-      } else {
-        // 非流式：一次性返回
-        const j = await res.json().catch(() => ({}));
-        const providerError = buildProviderError(j, providerType);
-        if (providerError) throw new Error(providerError);
-        const usage = normalizeProviderUsage(j?.usage || j?.usageMetadata || j?.usage_metadata, providerType);
+    } else {
+      // 非流式：一次性返回
+        let j;
+        try {
+          j = await res.json();
+        } catch (parseError) {
+          const error = new Error(`大模型响应不是有效 JSON: ${getErrorMessage(parseError)}`);
+          error.code = "invalid_response_json";
+          error.retryable = true;
+          throw error;
+        }
+      if (controller.signal.aborted) {
+        return { reasoning_content: reasoningBuf, aborted: true };
+      }
+        const providerResponseError = createProviderStreamError(j);
+        if (providerResponseError) throw providerResponseError;
+      const usage = normalizeProviderUsage(j?.usage || j?.usageMetadata || j?.usage_metadata, providerType);
 
       let content = "";
       let reasoningContent = "";
+        let hasToolCalls = false;
 
       if (providerType === "claude") {
         // Claude 响应格式: { content: [{ type: "text", text: "..." }, { type: "thinking", thinking: "..." }] }
@@ -1008,6 +1503,8 @@ export async function runStream({
         for (const tc of toolUses) {
           try {
             const args = typeof tc.input === "string" ? JSON.parse(tc.input) : (tc.input || {});
+              hasToolCalls = true;
+              hasResponseProgress = true;
             try { beforeControlEvent?.("toolCall"); } catch {}
             onToolCall && onToolCall({ id: tc.id, name: tc.name, args });
           } catch {
@@ -1021,12 +1518,15 @@ export async function runStream({
           const parts = candidate?.content?.parts || [];
           for (const part of parts) {
             if (part.text) {
-              content += part.text;
+              if (part.thought === true) reasoningContent += part.text;
+              else content += part.text;
             }
             if (part.functionCall) {
               const fc = part.functionCall;
               const args = fc.args || {};
               const id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+                hasToolCalls = true;
+                hasResponseProgress = true;
               try { beforeControlEvent?.("toolCall"); } catch {}
               onToolCall && onToolCall({ id, name: fc.name, args });
             }
@@ -1042,6 +1542,8 @@ export async function runStream({
               const args = typeof tc?.function?.arguments === "string"
                 ? JSON.parse(tc.function.arguments)
                 : (tc?.function?.arguments || {});
+                hasToolCalls = true;
+                hasResponseProgress = true;
               try { beforeControlEvent?.("toolCall"); } catch {}
               onToolCall && onToolCall({
                 id: tc.id,
@@ -1070,7 +1572,15 @@ export async function runStream({
           "";
       }
 
+        if (!content && !reasoningContent && !hasToolCalls) {
+          const error = new Error("大模型返回了空响应");
+          error.code = "empty_response";
+          error.retryable = true;
+          throw error;
+        }
+
       if (reasoningContent) {
+          hasResponseProgress = true;
         reasoningBuf += String(reasoningContent);
         try {
           try { beforeControlEvent?.("reasoningStart"); } catch {}
@@ -1083,17 +1593,68 @@ export async function runStream({
       }
 
       if (content) {
+          hasResponseProgress = true;
         onToken(content);
       }
+      const continued = await maybeAutoContinueDeepSeek({
+        content: String(content || ""),
+        finishReason: String(j?.choices?.[0]?.finish_reason || ""),
+        hasToolCalls: Array.isArray(j?.choices?.[0]?.message?.tool_calls) && j.choices[0].message.tool_calls.length > 0,
+        usage
+      });
+      if (continued) return continued;
       onEnd();
       return { reasoning_content: reasoningBuf, usage };
     }
   } catch (e) {
-    if (e.name === "AbortError") {
+    if (e?.name === "AbortError" || controller.signal.aborted) {
       console.log("[langchain-chat] request aborted");
-      return { reasoning_content: reasoningBuf };
+      return { reasoning_content: reasoningBuf, aborted: true };
     }
-    onError(e);
-    return { reasoning_content: reasoningBuf };
+      const maxStreamRetries = 3;
+      const shouldRetryStream =
+        !hasResponseProgress &&
+        !e?.retriesExhausted &&
+        isRetryableRequestError(e) &&
+        _streamRetryAttempt < maxStreamRetries;
+      if (shouldRetryStream) {
+        const retryNumber = _streamRetryAttempt + 1;
+        const delay = getRetryDelay(e, retryNumber, _retryBaseDelay);
+        notifyRequestRetry(e, retryNumber, maxStreamRetries, delay);
+        try {
+          await waitForRetryDelay(delay, controller.signal);
+        } catch (waitError) {
+          if (waitError?.name === "AbortError" || controller.signal.aborted) {
+            return { reasoning_content: reasoningBuf, aborted: true };
+          }
+          throw waitError;
+        }
+        return runStream({
+          messages,
+          tools,
+          onToken,
+          onEnd,
+          onError,
+          getController,
+          onToolCall,
+          onInvalidToolCall,
+          beforeControlEvent,
+          runId,
+          sessionId,
+          panelId,
+          assistantBlockId,
+          answerAnchorPos,
+          answerHeadLine,
+          requestSource,
+          stepIndex,
+          silentReasoning,
+          activeModel: active,
+          _deepSeekAutoContinuationAttempt,
+          _streamRetryAttempt: retryNumber,
+          _retryBaseDelay
+        });
+      }
+      onError?.(e);
+      return { reasoning_content: reasoningBuf, error: e };
   }
 }

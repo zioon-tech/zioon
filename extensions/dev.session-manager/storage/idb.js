@@ -104,6 +104,15 @@ export async function idbGet(dbName, store, key) {
   }));
 }
 
+export async function idbGetAll(dbName, store) {
+  return runTx(dbName, (db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).getAll();
+    req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+    req.onerror = () => reject(req.error);
+  }));
+}
+
 export async function idbSet(dbName, store, record) {
   return runTx(dbName, (db) => new Promise((resolve, reject) => {
     let settled = false;

@@ -12,7 +12,8 @@ export function applyAnnotationsForSessionImpl(args) {
       sessionId: id,
       panelId: targetPanelId || zion?.panelManager?.getActivePanelId?.() || null,
       annotations: ann,
-      clearFirst: false
+      clearFirst: false,
+      defer: true
     });
   } catch (e) {
     console.error("[sessions] apply annotations error:", e);

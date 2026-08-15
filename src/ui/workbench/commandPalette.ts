@@ -64,6 +64,8 @@ type PaletteItem =
       contentSnippet?: string;
     };
 
+const RELOAD_COMMAND_IDS = new Set(["zion.reloadWindow", "zion.reloadPlugins"]);
+
 
 
 
@@ -345,7 +347,7 @@ function injectStyles() {
   style.textContent = `
 .zion-cmdk-mask{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.38);display:none;align-items:flex-start;justify-content:center;padding-top:12vh}
 :root[data-theme="light"] .zion-cmdk-mask{background:rgba(0,0,0,.18)}
-.zion-cmdk-panel{width:min(680px,calc(100vw - 24px));max-height:min(520px,calc(100vh - 24px));background:var(--panel,var(--bg,#1e1e1e));border:1px solid var(--border,#3c3c3c);border-radius:10px;box-shadow:0 18px 70px rgba(0,0,0,.45);overflow:hidden;font-family:var(--font-sans,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif);font-size:12px;display:flex;flex-direction:column}
+.zion-cmdk-panel{width:min(680px,calc(100vw - 24px));max-height:min(520px,calc(100vh - 24px));background:var(--panel,var(--bg,#1e1e1e));border:1px solid var(--border,#3c3c3c);border-radius:var(--radius-lg,8px);box-shadow:var(--elevation-3,0 8px 24px rgba(0,0,0,0.32));overflow:hidden;font-family:var(--font-sans,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif);font-size:12px;display:flex;flex-direction:column}
 .zion-cmdk-header{display:flex;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--border,#3c3c3c)}
 .zion-cmdk-input{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--fg,#cccccc);font-size:13px}
 .zion-cmdk-hint{flex:0 0 auto;opacity:.65;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:11px;white-space:nowrap}
@@ -356,10 +358,9 @@ function injectStyles() {
 .zion-cmdk-list::-webkit-scrollbar-track{background:transparent}
 .zion-cmdk-list::-webkit-scrollbar-thumb{background:transparent;border-radius:6px;border:2px solid transparent;background-clip:content-box;transition:background .15s ease}
 .zion-cmdk-list:hover::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb,var(--border,#44475a));background-clip:content-box}
-.zion-cmdk-item{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;cursor:pointer;color:var(--fg,#cccccc);transition:background-color .1s ease}
+.zion-cmdk-item{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:var(--radius-md,6px);cursor:pointer;color:var(--fg,#cccccc);transition:background-color .1s ease}
 .zion-cmdk-item.has-path{align-items:flex-start}
-.zion-cmdk-item:hover{background:rgba(98,114,164,.10)}
-:root[data-theme="light"] .zion-cmdk-item:hover{background:rgba(59,130,246,.10)}
+.zion-cmdk-item:hover{background:var(--hover-bg,rgba(98,114,164,.10))}
 .zion-cmdk-item.is-active{background:var(--role-user-bg,rgba(98,114,164,.18))}
 .zion-cmdk-main{flex:1;min-width:0}
 .zion-cmdk-title{font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -543,6 +544,17 @@ function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?:
     }
     const hasTreeIds = treeSessionIds.size > 0;
 
+    const getSessionDisplayTitle = (entry: any) => {
+      const id = safeText(entry?.id || "");
+      if (!id) return "";
+      try {
+        const meta = (window as any).zion?.state?.get?.(`sessions.meta.${id}`);
+        const metaTitle = safeText(meta?.title || "").trim();
+        if (metaTitle) return metaTitle;
+      } catch {}
+      return safeText(entry?.title || entry?.id || "").trim();
+    };
+
     const computeSessionPath = (sessionId: string, sessionTitle: string): string => {
       if (!tree) return sessionTitle;
       const parts: string[] = [sessionTitle];
@@ -570,7 +582,7 @@ function loadSessionsFromState(): Array<{ id: string; title: string; updatedAt?:
     return raw
       .map((x: any) => {
         const id = safeText(x?.id || "");
-        const title = safeText(x?.title || x?.id || "");
+        const title = getSessionDisplayTitle(x);
         return {
           id,
           title,
@@ -1361,11 +1373,13 @@ export function initCommandPalette() {
         return;
       }
       if (await openSubmenu(meta.id)) return;
+      const isReloadCommand = RELOAD_COMMAND_IDS.has(meta.id);
+      if (isReloadCommand) closePalette({ restoreFocus: false });
       try {
         window.zion.commands.executeCommand(meta.id);
         pushRecent(`cmd:${meta.id}`);
       } catch {}
-      closePalette();
+      if (!isReloadCommand) closePalette();
       return;
     }
     try {

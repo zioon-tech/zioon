@@ -14,9 +14,9 @@
 .zion-agents-row-icon { flex: 0 0 auto; width: 16px; color: color-mix(in srgb, var(--fg) 50%, transparent); font-size: 14px; line-height: 1; }
 .zion-agents-row.is-active .zion-agents-row-icon { color: color-mix(in srgb, var(--fg) 74%, transparent); }
 .zion-agents-row-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 0; }
-.zion-agents-row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 68%, transparent); font-size: 12.5px; line-height: 1.38; font-weight: 450; }
+.zion-agents-row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 68%, transparent); font-size: 13px; line-height: 1.38; font-weight: 450; }
 .zion-agents-row.is-active .zion-agents-row-title { color: color-mix(in srgb, var(--fg) 92%, transparent); font-weight: 620; }
-.zion-agents-row-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; color: color-mix(in srgb, var(--fg) 42%, transparent); font-size: 10.5px; line-height: 1; white-space: nowrap; }
+.zion-agents-row-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; color: color-mix(in srgb, var(--fg) 42%, transparent); font-size: 11px; line-height: 1; white-space: nowrap; }
 .zion-agents-row.is-active .zion-agents-row-meta { color: color-mix(in srgb, var(--fg) 54%, transparent); }
 .zion-agents-session-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 999px; background: color-mix(in srgb, var(--fg) 28%, transparent); }
 .zion-agents-session-dot.is-running { background: #75beff; box-shadow: 0 0 0 3px color-mix(in srgb, #75beff 16%, transparent); }
@@ -30,30 +30,28 @@
 .zion-agents-quote:hover { color: var(--fg); }
 .zion-agents-quote.is-scratch { cursor: default; opacity: 0.86; }
 .zion-agents-quote.is-scratch:hover { color: inherit; }
-.zion-agents-quote-label { flex: 0 0 auto; color: color-mix(in srgb, var(--fg) 54%, transparent); font-size: 10.5px; }
-.zion-agents-quote-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 72%, transparent); font-size: 11.5px; }
+.zion-agents-quote-label { flex: 0 0 auto; color: color-mix(in srgb, var(--fg) 54%, transparent); font-size: 11px; }
+.zion-agents-quote-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--fg) 72%, transparent); font-size: 12px; }
 .zion-agents-actions { flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 2px; padding: 0; }
 .zion-agents-action { width: 26px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg); opacity: 0.7; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
-.zion-agents-action:hover { opacity: 1; background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.10); }
-.zion-agents-action svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.zion-agents-action.primary svg { fill: currentColor; stroke: none; }
+.zion-agents-action:hover { opacity: 1; background: var(--hover-bg); border-color: color-mix(in srgb, var(--fg) 10%, transparent); }
+.zion-agents-action .codicon { font-size: 14px; line-height: 1; }
 .zion-agents-action.primary { background: transparent; color: var(--fg); }
 .zion-agents-action.danger { color: #ef4444; }
 .zion-agents-action.danger:hover { background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.35); }
-:root[data-theme="light"] .zion-agents-action:hover, :root[data-theme="light"] .zion-agents-action.primary:hover { background: rgba(0, 0, 0, 0.04); border-color: rgba(0, 0, 0, 0.08); }
 :root[data-theme="light"] .zion-agents-action.danger { color: #dc2626; }
 :root[data-theme="light"] .zion-agents-action.danger:hover { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.28); }
 .zion-agents-editor-host { flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .zion-agents-editor-host .cm-editor { height: 100%; background: transparent; }
-.zion-agents-editor-host .cm-scroller { background: transparent; font-family: var(--editor-content-font-family, var(--font-sans)) !important; font-size: 14px !important; line-height: 1.62 !important; }
-.zion-agents-editor-host .cm-content { padding: 6px 2px 12px; font-family: var(--editor-content-font-family, var(--font-sans)) !important; font-size: 14px !important; line-height: 1.62 !important; }
-.zion-agents-editor-host .cm-line { font-family: var(--editor-content-font-family, var(--font-sans)) !important; font-size: inherit !important; line-height: inherit !important; }
+.zion-agents-editor-host .cm-scroller { background: transparent; font-family: var(--editor-content-font-family, var(--font-sans)) !important; font-size: var(--editor-content-font-size) !important; line-height: var(--editor-content-line-height) !important; }
+.zion-agents-editor-host .cm-content { padding: 6px 2px 12px; font-family: var(--editor-content-font-family, var(--font-sans)) !important; font-size: var(--editor-content-font-size) !important; line-height: var(--editor-content-line-height) !important; }
+.zion-agents-editor-host .cm-line:not(.cm-md-codeblock) { font-family: var(--editor-content-font-family, var(--font-sans)) !important; font-size: inherit !important; line-height: inherit !important; }
 .zion-agents-editor-host .cm-gutters { display: none; }
 .zion-agents-more { flex: 0 0 auto; margin: 4px 0 0; color: color-mix(in srgb, var(--fg) 58%, transparent); font-size: 11px; }
 .zion-agents-more > summary { cursor: pointer; padding: 4px 2px 6px; border-top: 1px solid color-mix(in srgb, var(--border) 54%, transparent); }
 .zion-agents-more-content { display: grid; gap: 6px; padding-bottom: 8px; }
 .zion-agents-card { border: 1px solid color-mix(in srgb, var(--border) 68%, transparent); border-radius: 6px; background: transparent; padding: 5px 0 6px; }
-.zion-agents-card > summary { cursor: pointer; color: color-mix(in srgb, var(--fg) 58%, transparent); font-size: 10.5px; font-weight: 650; padding: 0 8px; list-style-position: inside; }
+.zion-agents-card > summary { cursor: pointer; color: color-mix(in srgb, var(--fg) 58%, transparent); font-size: 11px; font-weight: 650; padding: 0 8px; list-style-position: inside; }
 .zion-agents-policy { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px 8px 0; }
 .zion-agents-policy-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: 999px; background: transparent; padding: 2px 6px; font-size: 10px; color: color-mix(in srgb, var(--fg) 52%, transparent); }
 .zion-agents-policy-chip b { color: color-mix(in srgb, var(--fg) 72%, transparent); font-weight: 650; }
@@ -62,5 +60,107 @@
 .zion-agents-result, .zion-agents-transcript { font-size: 11px; }
 .zion-agents-result summary, .zion-agents-transcript summary { color: color-mix(in srgb, var(--fg) 72%, transparent); }
 .zion-agents-result-section { display: grid; gap: 3px; margin: 8px 8px 0; color: color-mix(in srgb, var(--fg) 58%, transparent); line-height: 1.45; white-space: pre-wrap; }
-.zion-agents-result-section b { color: color-mix(in srgb, var(--fg) 76%, transparent); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; }
+.zion-agents-result-section b { color: color-mix(in srgb, var(--fg) 76%, transparent); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
 .zion-agents-event { padding: 5px 8px; border-top: 1px solid color-mix(in srgb, var(--border) 54%, transparent); color: color-mix(in srgb, var(--fg) 52%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ========================================
+   Visual System V2 Sample - Agents Panel
+   ======================================== */
+
+.zion-agents-panel {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-agents-header {
+  min-height: 34px;
+  padding: 5px 8px 6px;
+  border-bottom-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-agents-editor-header {
+  min-height: 38px;
+  padding: 6px 10px;
+  border-bottom-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-agents-stats {
+  color: color-mix(in srgb, var(--fg) 54%, transparent);
+}
+
+.zion-agents-list {
+  padding: 8px;
+  border-bottom-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+}
+
+.zion-agents-row {
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.zion-agents-row:hover {
+  background: var(--hover-bg);
+}
+
+.zion-agents-row.is-active {
+  background: var(--active-bg);
+}
+
+.zion-agents-row.is-active .zion-agents-row-title,
+.zion-agents-row.is-active .zion-agents-row-icon {
+  color: var(--accent);
+}
+
+.zion-agents-action {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--fg) 64%, transparent);
+  opacity: 1;
+}
+
+.zion-agents-action:hover {
+  background: var(--hover-bg);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+.zion-agents-card {
+  border-color: var(--surface-border-soft, color-mix(in srgb, var(--border) 28%, transparent));
+  border-radius: 10px;
+  background: var(--surface-raised, color-mix(in srgb, var(--panel) 94%, var(--bg)));
+}
+
+.zion-agents-policy-chip {
+  border-color: transparent;
+  background: var(--active-bg);
+  color: color-mix(in srgb, var(--accent) 82%, var(--fg));
+}
+
+/* Final auxbar surface pass. */
+.zion-agent-anchor {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-panel, var(--panel)));
+}
+
+.zion-agents-panel,
+.zion-agents-shell,
+.zion-agents-body,
+.zion-agents-detail,
+.zion-agents-editor-frame,
+.zion-agents-editor-host {
+  background: var(--surface-panel, var(--panel));
+}
+
+.zion-agents-editor-host .cm-editor,
+.zion-agents-editor-host .cm-scroller {
+  background: transparent !important;
+}
+
+.zion-agents-list {
+  background: var(--surface-panel, var(--panel));
+}

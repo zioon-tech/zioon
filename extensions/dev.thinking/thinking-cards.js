@@ -3,8 +3,9 @@ import { StateField, StateEffect, Transaction } from "@codemirror/state";
 import {
   buildRegexAnchors,
   filterDeletedItems,
+  findAssistantBlockIdAtOffset,
   mergeItemsFromAnchors,
-  planAssistantMarkerInsertion,
+  planAssistantMarkerInsertionById,
   reconcileExactAnchors,
   reconcileNearestAnchors,
   stripCardMarkerIdComment,
@@ -34,7 +35,7 @@ const updateText = StateEffect.define();    // { id, text, replace? }
 const removeItem = StateEffect.define();    // { id }
 const clearAll = StateEffect.define();
 const inlineWidgetLineClass = "zion-inline-widget-row";
-const THINKING_ANCHOR_RE = /思考\s*<!--\s*zion-thinking:id=([^>\s]+)\s*-->/g;
+const THINKING_ANCHOR_RE = /^思考(?:\s*<!--\s*zion-thinking:id=([^>\s]+)\s*-->)?$/gm;
 
 function parseThinkingAnchorText(text) {
   const raw = String(text || "").trim();
@@ -47,11 +48,18 @@ function parseThinkingAnchorText(text) {
 }
 
 function buildThinkingAnchors(docString) {
-  return buildRegexAnchors(docString, THINKING_ANCHOR_RE, (match) => ({
+  const text = String(docString || "");
+  return buildRegexAnchors(text, THINKING_ANCHOR_RE, (match) => ({
     from: match.index,
     to: match.index + match[0].length,
-    markerId: match[1] ? String(match[1]) : null
+    markerId: match[1] ? String(match[1]) : null,
+    assistantBlockId: findAssistantBlockIdAtOffset(text, match.index)
   }));
+}
+
+function hasMatchingAssistantParent(item, anchor) {
+  const expected = String(item?.assistantBlockId || "");
+  return !expected || String(anchor?.assistantBlockId || "") === expected;
 }
 
 function isThinkingAnchorForItem(anchorText, id) {
@@ -61,10 +69,10 @@ function isThinkingAnchorForItem(anchorText, id) {
   return !parsed.id || !expectedId || parsed.id === expectedId;
 }
 
-function migrateLegacyThinkingAnchors(view, items) {
+function migrateLegacyThinkingAnchors(view, items, knownAnchors = null) {
   const list = Array.isArray(items) ? items : [];
   if (!list.length) return false;
-  const allAnchors = buildThinkingAnchors(view.state.doc.toString());
+  const allAnchors = Array.isArray(knownAnchors) ? knownAnchors : buildThinkingAnchors(view.state.doc.toString());
   const anchors = allAnchors.filter((anchor) => !anchor.markerId);
   if (!anchors.length) return false;
   const used = new Set();
@@ -96,17 +104,20 @@ function migrateLegacyThinkingAnchors(view, items) {
   return true;
 }
 
-function mergeThinkingItemsFromAnchors(view, items, deletedIds) {
+function mergeThinkingItemsFromAnchors(view, items, deletedIds, knownAnchors = null) {
   return mergeItemsFromAnchors({
     items,
     deletedIds,
-    anchors: buildThinkingAnchors(view.state.doc.toString()).filter((anchor) => anchor.markerId),
+    anchors: Array.isArray(knownAnchors)
+      ? knownAnchors
+      : buildThinkingAnchors(view.state.doc.toString()).filter((anchor) => anchor.markerId),
     createItem: (anchor) => ({
       id: String(anchor.markerId || ""),
       text: "",
       expanded: false,
       from: anchor.from,
-      to: anchor.to
+      to: anchor.to,
+      assistantBlockId: anchor.assistantBlockId || null
     })
   }).items;
 }
@@ -148,10 +159,11 @@ function mergeThinkingItemsFromAnchors(view, items, deletedIds) {
     return false;
   }
 
-function repairDuplicateThinkingAnchorIds(view, items, deletedIds) {
+function repairDuplicateThinkingAnchorIds(view, items, deletedIds, knownAnchors = null) {
   const sourceItems = Array.isArray(items) ? items.slice() : [];
   const deleted = new Set(Array.from(deletedIds || []).map((id) => String(id)));
-  const anchors = buildThinkingAnchors(view.state.doc.toString()).filter((anchor) => anchor.markerId);
+  const anchors = (Array.isArray(knownAnchors) ? knownAnchors : buildThinkingAnchors(view.state.doc.toString()))
+    .filter((anchor) => anchor.markerId);
   if (anchors.length < 2) return { items: sourceItems, repaired: 0 };
 
   const seen = new Map();
@@ -220,6 +232,25 @@ function clearPendingRestore(sessionId, kind) {
   } catch {}
 }
 
+function setPendingRestore(sessionId, kind, items) {
+  try {
+    const previous = window?.zion?.commands?.executeCommand?.("zion.chatCards.getPendingRestore", {
+      sessionId,
+      kind
+    }) || [];
+    const nextById = new Map(previous.map((item) => [String(item?.id || ""), item]).filter(([id]) => !!id));
+    for (const item of Array.isArray(items) ? items : []) {
+      const id = String(item?.id || "");
+      if (id) nextById.set(id, { ...(nextById.get(id) || {}), ...item });
+    }
+    window?.zion?.commands?.executeCommand?.("zion.chatCards.setPendingRestore", {
+      sessionId,
+      kind,
+      items: [...nextById.values()]
+    });
+  } catch {}
+}
+
 function getViewSessionId(view) {
   try {
     return view?.dom?.getAttribute?.("data-session-id") || null;
@@ -228,21 +259,13 @@ function getViewSessionId(view) {
   }
 }
 
+function isCommentPanelId(panelId) {
+  return String(panelId || "").startsWith("comments:");
+}
+
 function debugChatCards(event, payload) {
   void event;
   void payload;
-}
-
-function getRunAssistantAnchorHint(payload, sessionId) {
-  if (typeof payload?.answerAnchorPos === "number") return payload.answerAnchorPos;
-  return (sessionId ? window.zion?.state?.get(`chat.answerAnchorPos.${sessionId}`) : undefined)
-    ?? window.zion?.state?.get("chat.answerAnchorPos");
-}
-
-function getRunAssistantHeadLineHint(payload, sessionId) {
-  if (typeof payload?.answerHeadLine === "number") return payload.answerHeadLine;
-  return (sessionId ? window.zion?.state?.get(`chat.answerHeadLine.${sessionId}`) : undefined)
-    ?? window.zion?.state?.get("chat.answerHeadLine");
 }
 
 // #endregion
@@ -311,6 +334,11 @@ class ThinkingCardWidget extends WidgetType {
     wrap.className = "zion-thinking-card";
     wrap.setAttribute("data-thinking-card-id", String(this.id).replace(/:card$/, ""));
 
+      const header = document.createElement("div");
+      header.className = "zion-thinking-card-header";
+      header.innerHTML = `<span class="codicon codicon-chevron-down" aria-hidden="true"></span><span>${t("ui.thinking", "思考")}</span>`;
+      wrap.appendChild(header);
+
     const body = document.createElement("pre");
     body.className = "zion-thinking-card-body";
     body.textContent = fmt(this.text, 5000);
@@ -340,9 +368,7 @@ class ThinkingInlineWidget extends WidgetType {
     btn.type = "button";
     btn.title = t("ui.toggleContent", "展开/收起思考内容");
     btn.setAttribute("aria-label", t("ui.toggleContent", "展开/收起思考内容"));
-    btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-  <path d="M4.646 6.646a.5.5 0 0 1 .708 0L8 9.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z"></path>
-</svg>`;
+    btn.innerHTML = `<span class="codicon codicon-chevron-down" aria-hidden="true"></span>`;
     span.appendChild(btn);
 
     const txt = document.createElement("span");
@@ -387,9 +413,13 @@ function buildThinkingDecorations(state, field) {
       decorations.push(Decoration.line({ class: inlineWidgetLineClass }).range(line.from));
     }
 
+    const it = items?.get?.(id);
+    if (!it || !hasMatchingAssistantParent(it, anchor)) {
+      decorations.push(Decoration.replace({}).range(anchor.from, anchor.to));
+      continue;
+    }
     decorations.push(Decoration.replace({ widget: new ThinkingInlineWidget(id) }).range(anchor.from, anchor.to));
 
-    const it = items?.get?.(id);
     if (it?.expanded) {
       decorations.push(Decoration.widget({ widget: new ThinkingCardWidget(id, it.text), side: 1 }).range(anchor.to));
     }
@@ -428,8 +458,17 @@ const thinkingField = StateField.define({
         continue;
       }
       if (e.is(addInline)) {
-        const { from, to, id, sessionId, runId, segmentKey } = e.value;
-        items.set(id, { from, to, expanded: false, text: "", sessionId: sessionId || null, runId: runId || null, segmentKey: segmentKey || null });
+        const { from, to, id, sessionId, runId, segmentKey, assistantBlockId } = e.value;
+        items.set(id, {
+          from,
+          to,
+          expanded: false,
+          text: "",
+          sessionId: sessionId || null,
+          runId: runId || null,
+          segmentKey: segmentKey || null,
+          assistantBlockId: assistantBlockId || null
+        });
       }
       if (e.is(toggleInline)) {
         const id = e.value?.id;
@@ -486,7 +525,8 @@ const thinkingField = StateField.define({
       if (toRemove.length) {
         const isSessionLoad = (() => {
           try {
-            return tr?.annotation?.(Transaction.userEvent) === "zion.sessionLoad";
+            const userEvent = tr?.annotation?.(Transaction.userEvent);
+            return userEvent === "zion.sessionLoad" || userEvent === "zion.sessionSeed";
           } catch {
             return false;
           }
@@ -521,9 +561,34 @@ const thinkingField = StateField.define({
   provide: f => inlineWidgetSourceFacet.of({
     id: "thinking",
     priority: 20,
-    buildDecorations: (state) => buildThinkingDecorations(state, f)
+    buildDecorations: (state) => buildThinkingDecorations(state, f),
+    requiresRebuild: (tr) => tr.effects.some((effect) =>
+      effect.is(clearAll) ||
+      effect.is(addInline) ||
+      effect.is(toggleInline) ||
+      effect.is(updateText) ||
+      effect.is(removeItem)
+    )
   })
 });
+
+function updateContainsThinkingAnchor(update) {
+  if (!update?.docChanged || !update?.changes) return false;
+  let found = false;
+  const doc = update.state.doc;
+  update.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+    if (found) return;
+    const startLine = doc.lineAt(Math.max(0, Math.min(doc.length, fromB))).number;
+    const endLine = doc.lineAt(Math.max(0, Math.min(doc.length, toB))).number;
+    for (let lineNo = startLine; lineNo <= endLine; lineNo++) {
+      if (parseThinkingAnchorText(doc.line(lineNo).text)?.id) {
+        found = true;
+        return;
+      }
+    }
+  });
+  return found;
+}
 
 export function installThinkingCards() {
   const plugin = ViewPlugin.fromClass(class {
@@ -535,10 +600,14 @@ export function installThinkingCards() {
       this.currentId = null;
       this.currentRunId = "";
       this.currentSegmentKey = "";
+      this.assistantBlockId = "";
       this.buffer = "";
       this.timer = null;
       this.selRaf = 0;
+      this.restoreCheckTimer = 0;
+      this.snapshotTimer = 0;
       this.reasoningSeq = new Map();
+      this.terminatedRunIds = new Set();
 
       try { this.panelId = this.view.dom.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null; } catch { this.panelId = null; }
       try {
@@ -550,6 +619,9 @@ export function installThinkingCards() {
       this.disps.push(window.zion.events.on("chat/reasoningStart", this.onReasoningStart));
       this.disps.push(window.zion.events.on("chat/reasoningToken", this.onReasoningToken));
       this.disps.push(window.zion.events.on("chat/reasoningEnd", this.onReasoningEnd));
+      this.disps.push(window.zion.events.on("chat/runFinished", this.onRunTerminated));
+      this.disps.push(window.zion.events.on("chat/runError", this.onRunTerminated));
+      this.disps.push(window.zion.events.on("chat/aborted", this.onRunTerminated));
       this.disps.push(window.zion.events.on("thinking/remove", this.onRemove));
       this.disps.push(window.zion.events.on("thinking/restore", this.onRestore));
       this.disps.push(window.zion.events.on("thinking/clear", this.onClear));
@@ -567,7 +639,12 @@ export function installThinkingCards() {
             const anchors = buildThinkingAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
             const deletedIds = reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], anchors);
           const repair = repairDuplicateThinkingAnchorIds(this.view, rawList, deletedIds);
-          const list = mergeThinkingItemsFromAnchors(this.view, repair.items, deletedIds);
+          const list = mergeThinkingItemsFromAnchors(
+            this.view,
+            repair.items,
+            deletedIds,
+            repair.repaired > 0 ? null : anchors
+          );
           debugChatCards("plugin.initialRestoreCheck", {
             panelId: this.panelId,
             sessionId: sid,
@@ -636,7 +713,12 @@ export function installThinkingCards() {
           const anchors = buildThinkingAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
           const deletedIds = reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], anchors);
         const repair = repairDuplicateThinkingAnchorIds(this.view, rawList, deletedIds);
-        const list = mergeThinkingItemsFromAnchors(this.view, repair.items, deletedIds);
+        const list = mergeThinkingItemsFromAnchors(
+          this.view,
+          repair.items,
+          deletedIds,
+          repair.repaired > 0 ? null : anchors
+        );
         let mountedIds = [];
         try {
           const fieldVal = this.view.state.field(thinkingField);
@@ -665,23 +747,57 @@ export function installThinkingCards() {
         console.error("[thinking] checkAndRestoreWidgets error:", e);
       }
     };
+    scheduleRestoreCheck = (delay = 40) => {
+      if (this.restoreCheckTimer > 0) window.clearTimeout(this.restoreCheckTimer);
+      if (delay <= 0) {
+        this.restoreCheckTimer = -1;
+        Promise.resolve().then(() => {
+          if (this.restoreCheckTimer !== -1) return;
+          this.restoreCheckTimer = 0;
+          this.checkAndRestoreWidgets();
+        });
+        return;
+      }
+      this.restoreCheckTimer = window.setTimeout(() => {
+        this.restoreCheckTimer = 0;
+        this.checkAndRestoreWidgets();
+      }, delay);
+    };
+    scheduleSnapshot = () => {
+      if (this.snapshotTimer) window.clearTimeout(this.snapshotTimer);
+      this.snapshotTimer = window.setTimeout(() => {
+        this.snapshotTimer = 0;
+        this.snapshot();
+      }, 120);
+    };
 
     update(update) {
       if (this.suspendSnapshot) return;
-      const isSessionLoad = (() => {
+      const sessionLoadEvent = (() => {
         try {
-          return !!update.transactions?.some?.((tr) => tr?.annotation?.(Transaction.userEvent) === "zion.sessionLoad");
+          return update.transactions
+            ?.map?.((tr) => tr?.annotation?.(Transaction.userEvent))
+            ?.find?.((event) => event === "zion.sessionLoad" || event === "zion.sessionSeed") || "";
         } catch {
-          return false;
+          return "";
         }
       })();
-      if (isSessionLoad) {
-        setTimeout(() => this.checkAndRestoreWidgets(), 0);
+      const isSessionReplace = !!sessionLoadEvent;
+      if (sessionLoadEvent === "zion.sessionLoad") {
+        this.scheduleRestoreCheck(0);
       } else {
-          if (update.docChanged) {
-            setTimeout(() => this.checkAndRestoreWidgets(), 0);
+          if (!isSessionReplace && update.docChanged && updateContainsThinkingAnchor(update)) {
+            this.scheduleRestoreCheck();
           }
-        this.snapshot();
+        if (update.docChanged || update.transactions.some((tr) => tr.effects.some((effect) =>
+          effect.is(clearAll) ||
+          effect.is(addInline) ||
+          effect.is(toggleInline) ||
+          effect.is(updateText) ||
+          effect.is(removeItem)
+        ))) {
+          this.scheduleSnapshot();
+        }
       }
       if (update.selectionSet || update.docChanged || update.viewportChanged) {
         this.syncSelectionHighlight();
@@ -731,7 +847,8 @@ export function installThinkingCards() {
             from: it.from,
             to: it.to,
             runId: this.currentId === key ? this.currentRunId : it.runId,
-            segmentKey: this.currentId === key ? this.currentSegmentKey : it.segmentKey
+            segmentKey: this.currentId === key ? this.currentSegmentKey : it.segmentKey,
+            assistantBlockId: it.assistantBlockId || null
           });
         });
         updateSessionAnnotations(id, (prev) => {
@@ -896,7 +1013,17 @@ export function installThinkingCards() {
         const hasRange = typeof it.from === "number" && typeof it.to === "number";
         const validRange = hasRange && it.from >= 0 && it.from < it.to && it.to <= docLen;
         if (!validRange) return false;
-        this.view.dispatch({ effects: [addInline.of({ from: it.from, to: it.to, id, sessionId: sid, runId: it.runId, segmentKey: it.segmentKey })] });
+        this.view.dispatch({
+          effects: [addInline.of({
+            from: it.from,
+            to: it.to,
+            id,
+            sessionId: sid,
+            runId: it.runId,
+            segmentKey: it.segmentKey,
+            assistantBlockId: it.assistantBlockId || null
+          })]
+        });
         if (it.text) this.view.dispatch({ effects: [updateText.of({ id, text: it.text, replace: true })] });
         if (it.expanded) this.view.dispatch({ effects: [toggleInline.of({ id })] });
         return true;
@@ -909,6 +1036,12 @@ export function installThinkingCards() {
       if (payload?.sessionId && visibleSessionId && payload.sessionId !== visibleSessionId) return;
       if (!payload?.sessionId && payload?.panelId && payload.panelId !== this.panelId) return;
       if (payload?.sessionId) this.sessionId = payload.sessionId;
+      const nextRunId = String(payload?.runId || "");
+      if (this.currentRunId && nextRunId && this.currentRunId !== nextRunId) {
+        this.terminatedRunIds.add(this.currentRunId);
+      }
+      if (nextRunId) this.terminatedRunIds.delete(nextRunId);
+      this.assistantBlockId = String(payload?.assistantBlockId || "");
       try {
         const sid = this.sessionId;
         const runId = payload?.runId;
@@ -916,35 +1049,48 @@ export function installThinkingCards() {
       } catch {}
       // 新一轮运行，清空缓冲（保留历史思考行）
       this.currentId = null;
-      this.currentRunId = "";
+      this.currentRunId = nextRunId;
       this.currentSegmentKey = "";
       this.buffer = "";
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     };
-    ensureAssistantHead() {
-      const docBefore = this.view.state.doc;
-      const allText = docBefore.toString().replace(/\r/g, "");
-      const lines = allText.split("\n");
-      let hasAssistant = false;
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const m = lines[i].match(/^(system|user|assistant|tool)\s+/);
-        if (m && m[1] === "assistant") { hasAssistant = true; break; }
+    acceptsRunEvent = (payload) => {
+      const runId = String(payload?.runId || "");
+      if (!runId) return true;
+      if (this.terminatedRunIds.has(runId)) return false;
+      return !this.currentRunId || runId === this.currentRunId;
+    };
+    onRunTerminated = (payload) => {
+      if (!this.shouldHandleScopedPayload(payload)) return;
+      const runId = String(payload?.runId || "");
+      if (runId) {
+        this.terminatedRunIds.add(runId);
+        while (this.terminatedRunIds.size > 32) {
+          this.terminatedRunIds.delete(this.terminatedRunIds.values().next().value);
+        }
       }
-      if (!hasAssistant) {
-        const lastChar = docBefore.length > 0 ? docBefore.sliceString(docBefore.length - 1, docBefore.length) : "";
-        const prefixH = lastChar === "\n" || docBefore.length === 0 ? "" : "\n";
-        const header = `${prefixH}assistant \n`;
-        this.view.dispatch({ changes: { from: docBefore.length, insert: header } });
-      }
-    }
+      if (runId && this.currentRunId && runId !== this.currentRunId) return;
+      if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+      this.currentId = null;
+      this.currentRunId = "";
+      this.currentSegmentKey = "";
+      this.assistantBlockId = "";
+      this.buffer = "";
+    };
     onReasoningStart = (payload) => {
       if (payload?.silentReasoning) return;
       const visible = !!window.zion.state.get("chat.thinkingVisible");
       if (!visible) return;
       if (!this.shouldHandleScopedPayload(payload)) return;
+      if (!this.acceptsRunEvent(payload)) return;
       this.suspendSnapshot = false;
 
       const runId = payload?.runId || Math.random().toString(36).slice(2);
+      const assistantBlockId = String(
+        payload?.assistantBlockId
+        || (runId === this.currentRunId ? this.assistantBlockId : "")
+      );
+      if (!assistantBlockId) return;
       const segmentKey = this.getSegmentKey(runId, payload);
       if (payload?.sessionId) this.sessionId = payload.sessionId;
       const sid = this.sessionId;
@@ -970,22 +1116,37 @@ export function installThinkingCards() {
       this.currentId = id;
       this.currentRunId = runId;
       this.currentSegmentKey = segmentKey;
+      this.assistantBlockId = assistantBlockId;
 
-      this.ensureAssistantHead();
-
-      const hint = getRunAssistantAnchorHint(payload, sid);
-      const hintLine = getRunAssistantHeadLineHint(payload, sid);
-      const plan = planAssistantMarkerInsertion({
+      const plan = planAssistantMarkerInsertionById({
         docText: this.view.state.doc.toString(),
+        assistantBlockId,
         markerText: thinkingMarkerText(id),
-        hintPos: typeof hint === "number" ? hint : null,
-        hintLine: typeof hintLine === "number" ? hintLine : null,
         trailingNewlines: 2
       });
+      if (!plan) {
+        setPendingRestore(sid, "thinking", [{
+          id,
+          runId,
+          segmentKey,
+          assistantBlockId,
+          text: "",
+          expanded: false
+        }]);
+        return;
+      }
 
       this.view.dispatch({
         changes: { from: plan.replaceFrom ?? plan.insertPos, to: plan.replaceTo ?? plan.insertPos, insert: plan.insertText },
-        effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id, sessionId: sid, runId, segmentKey })]
+        effects: [addInline.of({
+          from: plan.markerFrom,
+          to: plan.markerTo,
+          id,
+          sessionId: sid,
+          runId,
+          segmentKey,
+          assistantBlockId
+        })]
       });
       scheduleRevealThinkingContent(this.view, { id, pos: plan.markerTo });
       this.snapshot();
@@ -995,6 +1156,7 @@ export function installThinkingCards() {
       const visible = !!window.zion.state.get("chat.thinkingVisible");
       if (!visible) return;
       if (!this.shouldHandleScopedPayload(payload)) return;
+      if (!this.acceptsRunEvent(payload)) return;
       if (!this.isPrimaryWriterPayload(payload)) {
         try { this.checkAndRestoreWidgets(); } catch {}
         return;
@@ -1017,6 +1179,7 @@ export function installThinkingCards() {
           this.currentId = id;
           this.currentRunId = runId;
           this.currentSegmentKey = segmentKey;
+          this.assistantBlockId = String(payload?.assistantBlockId || this.assistantBlockId || "");
           this.ensureInlineForThinkingId(sid, id);
         }
       }
@@ -1036,6 +1199,7 @@ export function installThinkingCards() {
     onReasoningEnd = (payload) => {
       if (payload?.silentReasoning) return;
       if (!this.shouldHandleScopedPayload(payload)) return;
+      if (!this.acceptsRunEvent(payload)) return;
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       this.flush();
     };
@@ -1071,6 +1235,9 @@ export function installThinkingCards() {
         this.suspendSnapshot = true;
         try { this.view.dispatch({ effects: [clearAll.of({})] }); } catch {}
         this.currentId = null;
+        this.currentRunId = "";
+        this.currentSegmentKey = "";
+        this.assistantBlockId = "";
         this.buffer = "";
         this.reasoningSeq.clear();
         if (this.timer) { clearTimeout(this.timer); this.timer = null; }
@@ -1095,30 +1262,39 @@ export function installThinkingCards() {
       debugChatCards("restore.start", { panelId: this.panelId, sessionId: restoreSessionId, count: list.length, docLength: this.view.state.doc.length });
 
       this.suspendSnapshot = false;
-      if (!String(this.view.state.doc.toString() || "").trim()) {
+      let docString = this.view.state.doc.toString();
+      if (!docString.trim()) {
         return;
       }
+      let anchors = buildThinkingAnchors(docString);
+      let markerAnchors = anchors.filter((anchor) => anchor.markerId);
 
       let deletedIds = [];
       try {
         const sid = restoreSessionId;
         const ann = sid ? getSessionAnnotations(sid) : {};
-          const anchorsForRevive = buildThinkingAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
-          deletedIds = reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], anchorsForRevive);
+          deletedIds = reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], markerAnchors);
       } catch {}
-      const repair = repairDuplicateThinkingAnchorIds(this.view, list, deletedIds);
-      const mergedList = mergeThinkingItemsFromAnchors(this.view, repair.items, deletedIds);
+      const repair = repairDuplicateThinkingAnchorIds(this.view, list, deletedIds, markerAnchors);
+      if (repair.repaired > 0) {
+        docString = this.view.state.doc.toString();
+        anchors = buildThinkingAnchors(docString);
+        markerAnchors = anchors.filter((anchor) => anchor.markerId);
+      }
+      const mergedList = mergeThinkingItemsFromAnchors(this.view, repair.items, deletedIds, markerAnchors);
       const activeStreamingId = this.currentId && (this.buffer || this.timer) ? String(this.currentId) : "";
       const itemsToProcess = filterDeletedItems(mergedList, deletedIds).filter((it) => String(it?.id || "") !== activeStreamingId);
-      migrateLegacyThinkingAnchors(this.view, itemsToProcess);
+      if (migrateLegacyThinkingAnchors(this.view, itemsToProcess, anchors)) {
+        docString = this.view.state.doc.toString();
+        anchors = buildThinkingAnchors(docString);
+      }
 
       const doc = this.view.state.doc;
       const docLen = doc.length;
-      const docString = doc.toString();
-      const anchors = buildThinkingAnchors(docString);
       const batchedEffects = [];
       const batchedToggles = [];
       const processedIds = new Set();
+      let skippedFallback = false;
 
       // Phase 1: 精确位置匹配
       reconcileExactAnchors({
@@ -1130,10 +1306,11 @@ export function installThinkingCards() {
           if (it.from < 0 || it.to > docLen || it.from >= it.to) return false;
           if (anchor.from !== it.from || anchor.to !== it.to) return false;
           if (anchor.markerId && anchor.markerId !== String(it.id || "")) return false;
+          if (!hasMatchingAssistantParent(it, anchor)) return false;
           return isThinkingAnchorForItem(doc.sliceString(it.from, it.to), it.id);
         },
         onMatch: (it, anchor) => {
-          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey }));
+          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey, assistantBlockId: it.assistantBlockId || null }));
           if (it?.text) batchedEffects.push(updateText.of({ id: it.id, text: it.text, replace: true }));
           if (it.expanded) batchedToggles.push(it.id);
         }
@@ -1144,9 +1321,11 @@ export function installThinkingCards() {
         items: itemsToProcess,
         processedIds,
         anchors,
-        canUseAnchor: (it, anchor) => !anchor.markerId || anchor.markerId === String(it.id || ""),
+        canUseAnchor: (it, anchor) =>
+          (!anchor.markerId || anchor.markerId === String(it.id || ""))
+          && hasMatchingAssistantParent(it, anchor),
         onMatch: (it, anchor) => {
-          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey }));
+          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey, assistantBlockId: it.assistantBlockId || null }));
           if (it?.text) batchedEffects.push(updateText.of({ id: it.id, text: it.text, replace: true }));
           if (it.expanded) batchedToggles.push(it.id);
           it.from = anchor.from;
@@ -1176,17 +1355,38 @@ export function installThinkingCards() {
       // Phase 3: 兜底
       for (const it of itemsToProcess) {
         if (processedIds.has(it.id)) continue;
+        const sameIdAnchor = anchors.find((anchor) => String(anchor.markerId || "") === String(it.id || ""));
+        if (sameIdAnchor && !hasMatchingAssistantParent(it, sameIdAnchor)) {
+          skippedFallback = true;
+          setPendingRestore(restoreSessionId, "thinking", [it]);
+          continue;
+        }
+        if (isCommentPanelId(this.panelId)) {
+          skippedFallback = true;
+          debugChatCards("restore.skipFallbackInComments", {
+            panelId: this.panelId,
+            sessionId: restoreSessionId,
+            id: it.id
+          });
+          continue;
+        }
 
-        const plan = planAssistantMarkerInsertion({
+        const plan = planAssistantMarkerInsertionById({
           docText: this.view.state.doc.toString(),
+          assistantBlockId: it.assistantBlockId,
           markerText: thinkingMarkerText(it.id),
           trailingNewlines: 2
         });
+        if (!plan) {
+          skippedFallback = true;
+          setPendingRestore(restoreSessionId, "thinking", [it]);
+          continue;
+        }
 
         this.view.dispatch({
           changes: { from: plan.replaceFrom ?? plan.insertPos, to: plan.replaceTo ?? plan.insertPos, insert: plan.insertText },
           annotations: Transaction.userEvent.of("zion.cardRestore"),
-          effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey })]
+          effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey, assistantBlockId: it.assistantBlockId || null })]
         });
         scheduleRevealThinkingContent(this.view, { id: it.id, pos: plan.markerTo });
         
@@ -1203,17 +1403,21 @@ export function installThinkingCards() {
       }
 
       try {
-        if (restoreSessionId) clearPendingRestore(restoreSessionId, "thinking");
+        if (restoreSessionId && processedIds.size >= itemsToProcess.length) {
+          clearPendingRestore(restoreSessionId, "thinking");
+        }
       } catch {}
-
-      this.snapshot();
-      debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
+      if (!skippedFallback) this.snapshot();
     };
     destroy() {
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       try { this.reasoningSeq.clear(); } catch {}
       for (const d of this.disps) { try { d?.dispose?.(); } catch {} }
       try { if (this.selRaf) window.cancelAnimationFrame(this.selRaf); } catch {}
+      try { if (this.restoreCheckTimer) window.clearTimeout(this.restoreCheckTimer); } catch {}
+      try { if (this.snapshotTimer) window.clearTimeout(this.snapshotTimer); } catch {}
+      this.restoreCheckTimer = 0;
+      this.snapshotTimer = 0;
     }
   });
 
@@ -1256,11 +1460,12 @@ function ensureThinkingItemFromDoc(view, id) {
   const sid = getViewSessionId(view);
   let text = "";
   let expanded = false;
+  let stored = null;
   try {
     const ann = sid ? getSessionAnnotations(sid) : {};
       reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], [anchor]);
     const list = Array.isArray(ann.thinking) ? ann.thinking : [];
-    const stored = list.find((x) => String(x?.id || "") === wantId);
+    stored = list.find((x) => String(x?.id || "") === wantId) || null;
     if (stored) {
       text = typeof stored.text === "string" ? stored.text : "";
       expanded = !!stored.expanded;
@@ -1268,7 +1473,13 @@ function ensureThinkingItemFromDoc(view, id) {
   } catch {}
 
   try {
-    const effects = [addInline.of({ from: anchor.from, to: anchor.to, id: wantId, sessionId: sid })];
+    const effects = [addInline.of({
+      from: anchor.from,
+      to: anchor.to,
+      id: wantId,
+      sessionId: sid,
+      assistantBlockId: stored?.assistantBlockId || null
+    })];
     if (text) effects.push(updateText.of({ id: wantId, text, replace: true }));
     view.dispatch({ effects });
     // The pill click toggles afterwards; align stored expanded state so the first

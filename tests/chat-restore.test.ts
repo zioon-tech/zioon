@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  assistantBlockHeaderText,
   buildRegexAnchors,
   filterDeletedItems,
   findAssistantBlockEndOffset,
+  findAssistantBlockEndOffsetById,
+  findAssistantBlockIdAtOffset,
   planAssistantMarkerInsertion,
+  planAssistantMarkerInsertionById,
   reconcileExactAnchors,
   reconcileMountedItems,
   reconcileNearestAnchors
@@ -135,6 +139,62 @@ describe("chat restore helpers", () => {
       ""
     ].join("\n"));
     expect(plan.insertPos).toBe(docText.length);
+  });
+
+  it("plans insertion by assistant id and ignores stale position context", () => {
+    const docText = [
+      "user old",
+      `${assistantBlockHeaderText("run-old")}old answer`,
+      "user new",
+      `${assistantBlockHeaderText("run-new")}new answer`
+    ].join("\n");
+
+    const oldEnd = findAssistantBlockEndOffsetById(docText, "run-old");
+    const plan = planAssistantMarkerInsertionById({
+      docText,
+      assistantBlockId: "run-new",
+      markerText: "调用 read <!-- zion-tool:id=card-1 -->",
+      trailingNewlines: 1
+    });
+
+    expect(oldEnd).not.toBeNull();
+    expect(plan).not.toBeNull();
+    expect(plan?.insertPos).toBe(docText.length);
+    expect(plan?.insertPos).not.toBe(oldEnd);
+  });
+
+  it("refuses to guess an assistant block when its id is absent", () => {
+    const docText = [
+      "user old",
+      `${assistantBlockHeaderText("run-old")}old answer`,
+      "user new",
+      `${assistantBlockHeaderText("run-new")}new answer`
+    ].join("\n");
+
+    expect(planAssistantMarkerInsertionById({
+      docText,
+      assistantBlockId: "missing-run",
+      markerText: "调用 read",
+      trailingNewlines: 1
+    })).toBeNull();
+  });
+
+  it("rejects ambiguous assistant ids instead of choosing the first duplicate", () => {
+    const docText = [
+      "user first",
+      `${assistantBlockHeaderText("run-duplicate")}first answer`,
+      "user second",
+      `${assistantBlockHeaderText("run-duplicate")}second answer`
+    ].join("\n");
+
+    expect(findAssistantBlockEndOffsetById(docText, "run-duplicate")).toBeNull();
+    expect(findAssistantBlockIdAtOffset(docText, docText.indexOf("second answer"))).toBeNull();
+    expect(planAssistantMarkerInsertionById({
+      docText,
+      assistantBlockId: "run-duplicate",
+      markerText: "调用 read",
+      trailingNewlines: 1
+    })).toBeNull();
   });
 
   it("collapses blank lines between consecutive card markers to one newline", () => {

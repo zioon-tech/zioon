@@ -3,6 +3,8 @@
  * - Registers a single aggregated tool "modelsManage" to list/get/add/update/delete/set_active/import/export models.
  * - Writable provider: user.dynamic (stored in localStorage), other providers are read-only.
  */
+import { normalizeAutoContinueOnColonMaxAttempts } from "./model-config-fields.js";
+
 export function registerModelsTools() {
   try {
     /* ===== Local storage + dynamic provider ===== */
@@ -98,8 +100,22 @@ export function registerModelsTools() {
               temperature: { type: "number", description: "采样温度" },
               max_tokens: { type: "number", description: "最大输出 tokens" },
               supportsImage: { type: "boolean", description: "是否支持图片输入" },
+              supportsThinking: { type: "boolean", description: "模型是否支持思考" },
+              supportsThinkingEffort: { type: "boolean", description: "模型是否支持思考强度控制" },
+              thinkingMode: { type: "string", enum: ["auto", "off", "on"], description: "思考模式" },
+              thinkingEffort: {
+                type: "string",
+                enum: ["auto", "minimal", "low", "medium", "high", "xhigh", "max"],
+                description: "思考强度；实际可用档位取决于模型"
+              },
               preservedThinking: { type: "boolean", description: "是否支持回传/保留思考（将思考作为 reasoning_content 输入给模型）" },
               interleavedThinking: { type: "boolean", description: "是否支持交错思考（thinking 与 tool_calls 交错输出/处理）" },
+              autoContinueOnColonMaxAttempts: {
+                type: "integer",
+                minimum: 0,
+                maximum: 20,
+                description: "DeepSeek 异常 stop（冒号中断或只有推理、没有正式输出）时的最大自动续写次数；0 表示关闭，默认 3"
+              },
               model: { type: "string", description: "后端自定义 model 字段（如 siliconflow）" },
               provider_type: { type: "string", enum: ["openai", "claude", "gemini"], description: "模型提供者类型 (openai/claude/gemini)" },
               anthropicVersion: { type: "string", description: "Claude API 版本 (默认 2023-06-01)" },
@@ -187,6 +203,28 @@ export function registerModelsTools() {
 
         if (action === "add" || action === "update") {
           const pid = providerId || DYN_PROVIDER_ID;
+          const updateBuiltinProviderConfig = (storageKey, { allowLabel = false, allowModel = false } = {}) => {
+            const configStr = localStorage.getItem(storageKey) || "{}";
+            const config = JSON.parse(configStr);
+            if (args?.temperature != null) config.temperature = Number(args.temperature);
+            if (args?.max_tokens != null) config.max_tokens = Number(args.max_tokens);
+            if (args?.stream != null) config.stream = !!args.stream;
+            if (args?.supportsImage != null) config.supportsImage = !!args.supportsImage;
+            if (args?.supportsThinking != null) config.supportsThinking = !!args.supportsThinking;
+            if (args?.supportsThinkingEffort != null) config.supportsThinkingEffort = !!args.supportsThinkingEffort;
+            if (args?.thinkingMode != null) config.thinkingMode = String(args.thinkingMode);
+            if (args?.thinkingEffort != null) config.thinkingEffort = String(args.thinkingEffort);
+            if (args?.preservedThinking != null) config.preservedThinking = !!args.preservedThinking;
+            if (args?.interleavedThinking != null) config.interleavedThinking = !!args.interleavedThinking;
+            if (args?.autoContinueOnColonMaxAttempts != null) {
+              config.autoContinueOnColonMaxAttempts = normalizeAutoContinueOnColonMaxAttempts(
+                args.autoContinueOnColonMaxAttempts
+              );
+            }
+            if (allowLabel && args?.label != null) config.label = String(args.label);
+            if (allowModel && args?.model != null) config.modelName = String(args.model);
+            localStorage.setItem(storageKey, JSON.stringify(config));
+          };
 
           // 特殊处理：配置预定义 provider 的 API key
           if (pid === "anthropic") {
@@ -194,14 +232,7 @@ export function registerModelsTools() {
             if (args?.key) {
               localStorage.setItem("zion.claude.apiKey", String(args.key));
             }
-            // 可选：更新其他配置
-            if (args?.temperature != null || args?.max_tokens != null) {
-              const configStr = localStorage.getItem("zion.claude.config") || "{}";
-              const config = JSON.parse(configStr);
-              if (args?.temperature != null) config.temperature = Number(args.temperature);
-              if (args?.max_tokens != null) config.max_tokens = Number(args.max_tokens);
-              localStorage.setItem("zion.claude.config", JSON.stringify(config));
-            }
+            updateBuiltinProviderConfig("zion.claude.config");
             await refresh();
             return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "Claude API key configured" } }, null, 2);
           }
@@ -211,14 +242,7 @@ export function registerModelsTools() {
             if (args?.key) {
               localStorage.setItem("zion.gemini.apiKey", String(args.key));
             }
-            // 可选：更新其他配置
-            if (args?.temperature != null || args?.max_tokens != null) {
-              const configStr = localStorage.getItem("zion.gemini.config") || "{}";
-              const config = JSON.parse(configStr);
-              if (args?.temperature != null) config.temperature = Number(args.temperature);
-              if (args?.max_tokens != null) config.max_tokens = Number(args.max_tokens);
-              localStorage.setItem("zion.gemini.config", JSON.stringify(config));
-            }
+            updateBuiltinProviderConfig("zion.gemini.config");
             await refresh();
             return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "Gemini API key configured" } }, null, 2);
           }
@@ -228,15 +252,7 @@ export function registerModelsTools() {
             if (args?.key) {
               localStorage.setItem("zion.deepseek.apiKey", String(args.key));
             }
-            // 可选：更新其他配置
-            if (args?.temperature != null || args?.max_tokens != null || args?.label != null) {
-              const configStr = localStorage.getItem("zion.deepseek.config") || "{}";
-              const config = JSON.parse(configStr);
-              if (args?.temperature != null) config.temperature = Number(args.temperature);
-              if (args?.max_tokens != null) config.max_tokens = Number(args.max_tokens);
-              if (args?.label != null) config.label = String(args.label);
-              localStorage.setItem("zion.deepseek.config", JSON.stringify(config));
-            }
+            updateBuiltinProviderConfig("zion.deepseek.config", { allowLabel: true, allowModel: true });
             await refresh();
             return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "DeepSeek API key configured" } }, null, 2);
           }
@@ -252,8 +268,16 @@ export function registerModelsTools() {
             temperature: args?.temperature != null ? Number(args.temperature) : undefined,
             max_tokens: args?.max_tokens != null ? Number(args.max_tokens) : undefined,
             supportsImage: args?.supportsImage != null ? !!args.supportsImage : undefined,
+            supportsThinking: args?.supportsThinking != null ? !!args.supportsThinking : undefined,
+            supportsThinkingEffort: args?.supportsThinkingEffort != null ? !!args.supportsThinkingEffort : undefined,
+            thinkingMode: args?.thinkingMode != null ? String(args.thinkingMode) : undefined,
+            thinkingEffort: args?.thinkingEffort != null ? String(args.thinkingEffort) : undefined,
             preservedThinking: args?.preservedThinking != null ? !!args.preservedThinking : undefined,
             interleavedThinking: args?.interleavedThinking != null ? !!args.interleavedThinking : undefined,
+            autoContinueOnColonMaxAttempts:
+              args?.autoContinueOnColonMaxAttempts != null
+                ? normalizeAutoContinueOnColonMaxAttempts(args.autoContinueOnColonMaxAttempts)
+                : undefined,
             model: args?.model != null ? String(args.model) : undefined,
             providerType: args?.provider_type != null ? String(args.provider_type) : undefined,
             anthropicVersion: args?.anthropicVersion != null ? String(args.anthropicVersion) : undefined

@@ -145,6 +145,27 @@ function buildIndexForView(view, prefixes) {
   }
 }
 
+function mapIndexThroughChanges(index, changes) {
+  if (!index?.blocks?.length) return index;
+  return {
+    ...index,
+    blocks: index.blocks.map((block) => ({
+      ...block,
+      from: changes.mapPos(block.from, 1),
+      startPos: changes.mapPos(block.startPos, 1),
+      endPos: changes.mapPos(block.endPos, -1)
+    }))
+  };
+}
+
+function isLargeDocumentChange(update) {
+  let changed = 0;
+  update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    changed += (toA - fromA) + inserted.length;
+  });
+  return changed > 512;
+}
+
 function findLastIndexLE(blocks, pos) {
   let lo = 0;
   let hi = blocks.length - 1;
@@ -199,6 +220,7 @@ this.view = view;
           this.widthModeSub = window?.zion?.state?.onDidChange?.("ui.editorWidthMode", () => this.scheduleSync());
         } catch {}
         this.syncRaf = null;
+        this.indexTimer = 0;
 
         const root = view.dom;
         this.root = root;
@@ -251,7 +273,12 @@ this.view = view;
       update(update) {
         this.view = update.view;
         if (update.docChanged) {
-          this.index = buildIndexForView(update.view, this.prefixes);
+          if (isLargeDocumentChange(update)) {
+            this.index = buildIndexForView(update.view, this.prefixes);
+          } else {
+            this.index = mapIndexThroughChanges(this.index, update.changes);
+            this.scheduleIndexRefresh();
+          }
         }
         // viewportChanged is not enough for precise sticky behavior, relying on scroll event
         if (update.docChanged || update.viewportChanged) {
@@ -261,6 +288,15 @@ this.view = view;
 
       onScroll() {
         this.scheduleSync();
+      }
+
+      scheduleIndexRefresh() {
+        if (this.indexTimer) window.clearTimeout(this.indexTimer);
+        this.indexTimer = window.setTimeout(() => {
+          this.indexTimer = 0;
+          this.index = buildIndexForView(this.view, this.prefixes);
+          this.scheduleSync();
+        }, 120);
       }
 
       scheduleSync() {
@@ -470,6 +506,7 @@ this.view = view;
           if (this.resizeHandler) window.removeEventListener("resize", this.resizeHandler);
           try { this.widthModeSub?.dispose?.(); } catch {}
           if (this.syncRaf) window.cancelAnimationFrame(this.syncRaf);
+          if (this.indexTimer) window.clearTimeout(this.indexTimer);
           if (this.view?.scrollDOM && this.scrollHandler) {
             this.view.scrollDOM.removeEventListener("scroll", this.scrollHandler);
           }

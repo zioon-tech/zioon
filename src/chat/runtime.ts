@@ -37,11 +37,22 @@ export type ChatRunState = {
 };
 
 export function createChatRuntime(opts: CreateChatRuntimeOptions) {
-  const runControllers = new Map<string, AbortLike>();
+  const runControllers = new Map<string, { runId: string | null; controller: AbortLike }>();
 
   const getRunState = (sid: string | undefined): ChatRunState | null => {
     if (!sid) return null;
     return opts.state.get<ChatRunState>(`chat.runs.${sid}`) || null;
+  };
+
+  const isCurrentRun = (sid: string | undefined, runId: string | null | undefined) => {
+    if (!sid || !runId) return false;
+    return String(getRunState(sid)?.runId || "") === String(runId);
+  };
+
+  const isRunActive = (sid: string | undefined, runId: string | null | undefined) => {
+    if (!isCurrentRun(sid, runId)) return false;
+    const state = getRunState(sid);
+    return !!state?.streaming && !state?.aborted && !state?.error;
   };
 
   const syncGlobalStreamingForActiveSession = () => {
@@ -51,68 +62,118 @@ export function createChatRuntime(opts: CreateChatRuntimeOptions) {
     return streaming;
   };
 
-  const setRunState = (sid: string | undefined, patch: ChatRunState) => {
+  const setRunState = (
+    sid: string | undefined,
+    patch: ChatRunState,
+    expectedRunId?: string | null
+  ) => {
     if (!sid) return null;
     const cur = getRunState(sid) || {};
+    if (expectedRunId && String(cur.runId || "") !== String(expectedRunId)) return null;
     opts.state.set(`chat.runs.${sid}`, { ...cur, ...patch });
     syncGlobalStreamingForActiveSession();
     return opts.state.get(`chat.runs.${sid}`) || null;
   };
 
-  const clearController = (sid: string | undefined) => {
-    if (!sid) return;
+  const clearController = (sid: string | undefined, expectedRunId?: string | null) => {
+    if (!sid) return false;
+    const entry = runControllers.get(sid);
+    if (!entry) return false;
+    if (expectedRunId && entry.runId !== String(expectedRunId)) return false;
     runControllers.delete(sid);
+    return true;
   };
 
-  const setController = (sid: string | undefined, controller: AbortLike | null | undefined) => {
-    if (!sid || !controller) return;
-    if (getRunState(sid)?.aborted) {
+  const setController = (
+    sid: string | undefined,
+    controller: AbortLike | null | undefined,
+    runId?: string | null
+  ) => {
+    if (!sid || !controller) return false;
+    const state = getRunState(sid);
+    const ownerRunId = String(runId || state?.runId || "");
+    if (!ownerRunId || !isCurrentRun(sid, ownerRunId) || state?.aborted || !state?.streaming) {
       try { controller.abort?.(); } catch {}
-      return;
+      return false;
     }
-    runControllers.set(sid, controller);
+    runControllers.set(sid, { runId: ownerRunId, controller });
+    return true;
   };
 
   const getController = (sid: string | undefined) => {
     if (!sid) return null;
-    return runControllers.get(sid) || null;
+    return runControllers.get(sid)?.controller || null;
   };
 
   const beginRun = (sid: string | undefined, runId: string) => {
     if (!sid) return;
+    const previous = runControllers.get(sid);
+    if (previous && previous.runId !== String(runId)) {
+      try { previous.controller.abort?.(); } catch {}
+    }
     opts.state.set("chat.runId", runId);
     opts.state.set("chat.error", null);
     clearController(sid);
     setRunState(sid, { runId, streaming: true, aborted: false, awaiting: false, error: false });
   };
 
-  const markAwaiting = (sid: string | undefined) => {
-    if (!sid) return;
-    setRunState(sid, { streaming: false, awaiting: true, error: false });
-    clearController(sid);
+  const markAwaiting = (sid: string | undefined, runId?: string | null) => {
+    if (!sid) return false;
+    const expectedRunId = runId || getRunState(sid)?.runId || null;
+    if (!expectedRunId || !isCurrentRun(sid, expectedRunId)) return false;
+    setRunState(sid, { streaming: false, awaiting: true, error: false }, expectedRunId);
+    clearController(sid, expectedRunId);
+    return true;
   };
 
-  const markAborted = (sid: string | undefined) => {
-    if (!sid) return;
-    setRunState(sid, { aborted: true, streaming: false, error: false });
-    clearController(sid);
+  const markAborted = (sid: string | undefined, runId?: string | null) => {
+    if (!sid) return false;
+    const expectedRunId = runId || getRunState(sid)?.runId || null;
+    if (!expectedRunId || !isCurrentRun(sid, expectedRunId)) return false;
+    const current = getRunState(sid);
+    if (current?.aborted && !current.streaming) {
+      clearController(sid, expectedRunId);
+      return true;
+    }
+    setRunState(
+      sid,
+      { aborted: true, streaming: false, awaiting: true, error: false },
+      expectedRunId
+    );
+    clearController(sid, expectedRunId);
+    opts.events.emit("chat/aborted", { runId: expectedRunId, sessionId: sid });
+    return true;
   };
 
-  const markError = (sid: string | undefined, error: any) => {
-    if (!sid) return;
+  const markError = (sid: string | undefined, error: any, runId?: string | null) => {
+    if (!sid) return false;
+    const expectedRunId = runId || getRunState(sid)?.runId || null;
+    if (!expectedRunId || !isCurrentRun(sid, expectedRunId)) return false;
     try { opts.state.set("chat.error", error?.message); } catch {}
-    setRunState(sid, { aborted: false, streaming: false, awaiting: false, error: true });
-    clearController(sid);
+    setRunState(
+      sid,
+      { aborted: false, streaming: false, awaiting: true, error: true },
+      expectedRunId
+    );
+    clearController(sid, expectedRunId);
+    return true;
   };
 
   const stopSession = (sid = opts.getSessionId()) => {
     if (!sid) return null;
     const rs = getRunState(sid);
-    setRunState(sid, { streaming: false, aborted: true, error: false });
-    const controller = getController(sid);
-    try { controller?.abort?.(); } catch {}
-    clearController(sid);
-    opts.events.emit("chat/aborted", { runId: rs?.runId, sessionId: sid });
+    const runId = rs?.runId ? String(rs.runId) : null;
+    const entry = runControllers.get(sid);
+    if (!runId || entry?.runId === runId) {
+      try { entry?.controller?.abort?.(); } catch {}
+    }
+    if (runId) {
+      markAborted(sid, runId);
+    } else {
+      setRunState(sid, { streaming: false, aborted: true, awaiting: true, error: false });
+      clearController(sid);
+      opts.events.emit("chat/aborted", { runId: null, sessionId: sid });
+    }
     return rs || null;
   };
 
@@ -124,6 +185,8 @@ export function createChatRuntime(opts: CreateChatRuntimeOptions) {
 
   return {
     getRunState,
+    isCurrentRun,
+    isRunActive,
     setRunState,
     beginRun,
     markAwaiting,
@@ -136,8 +199,8 @@ export function createChatRuntime(opts: CreateChatRuntimeOptions) {
     syncGlobalStreamingForActiveSession,
     dispose() {
       try { sessionSub?.dispose?.(); } catch {}
-      for (const c of runControllers.values()) {
-        try { c?.abort?.(); } catch {}
+      for (const entry of runControllers.values()) {
+        try { entry.controller?.abort?.(); } catch {}
       }
       runControllers.clear();
     }

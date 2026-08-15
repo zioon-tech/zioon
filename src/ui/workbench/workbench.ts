@@ -1,9 +1,124 @@
-import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, inspectorRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
+import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, getInspectorTextSessionId, inspectorRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
+import { createZionIcon, hasZionIcon, setZionIconOnly, zionIconName } from "../icons";
+import { applyInspectorMarkdownCommentRanges, createInspectorMarkdownPreviewView, createInspectorTextView, getInspectorMarkdownSelection, openInspectorSearch, renderInspectorMarkdown, setInspectorLineWrapping } from "./inspectorContent";
+import { createSelectionToolbarButton, createSelectionToolbarItemsContainer } from "../../editor/extensions/selection-toolbar";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) node.className = className;
   return node;
+}
+
+function attachInlineTabsScrollbar(viewport: HTMLElement, scroller: HTMLElement) {
+  const track = el("div", "zion-inline-tabs-scrollbar");
+  const thumb = el("div", "zion-inline-tabs-scrollbar-thumb");
+  track.appendChild(thumb);
+  viewport.appendChild(track);
+
+  const sync = () => {
+    try {
+      const scrollerWidth = scroller.clientWidth || 0;
+      const scrollWidth = scroller.scrollWidth || 0;
+      const maxScrollLeft = Math.max(0, scrollWidth - scrollerWidth);
+      const canScroll = maxScrollLeft > 1;
+      const scrollLeft = canScroll
+        ? Math.max(0, Math.min(maxScrollLeft, scroller.scrollLeft || 0))
+        : 0;
+      viewport.dataset.scrollable = canScroll ? "1" : "0";
+      viewport.dataset.canScrollLeft = canScroll && scrollLeft > 1 ? "1" : "0";
+      viewport.dataset.canScrollRight = canScroll && scrollLeft < maxScrollLeft - 1 ? "1" : "0";
+      const thumbWidth = canScroll && scrollWidth > 0 && scrollerWidth > 0
+        ? Math.max(24, Math.min(scrollerWidth, (scrollerWidth / scrollWidth) * scrollerWidth))
+        : 0;
+      const thumbLeft = canScroll && scrollerWidth > thumbWidth
+        ? (scrollLeft / maxScrollLeft) * (scrollerWidth - thumbWidth)
+        : 0;
+      thumb.style.width = `${Math.max(0, thumbWidth)}px`;
+      thumb.style.transform = `translateX(${Math.max(0, thumbLeft)}px)`;
+    } catch {}
+  };
+
+  const setScrollLeft = (next: number) => {
+    try {
+      const maxScrollLeft = Math.max(0, (scroller.scrollWidth || 0) - (scroller.clientWidth || 0));
+      scroller.scrollLeft = Math.max(0, Math.min(maxScrollLeft, next));
+      sync();
+    } catch {}
+  };
+
+  const jumpToPoint = (clientX: number) => {
+    try {
+      const maxScrollLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+      if (maxScrollLeft <= 1) return;
+      const rect = viewport.getBoundingClientRect();
+      const thumbWidth = thumb.getBoundingClientRect().width || 24;
+      const maxThumbLeft = Math.max(1, rect.width - thumbWidth);
+      const nextThumbLeft = Math.max(0, Math.min(maxThumbLeft, clientX - rect.left - thumbWidth / 2));
+      setScrollLeft((nextThumbLeft / maxThumbLeft) * maxScrollLeft);
+    } catch {}
+  };
+
+  let isDragging = false;
+  let dragStartX = 0;
+  let dragStartScrollLeft = 0;
+  const onPointerMove = (event: PointerEvent) => {
+    if (!isDragging) return;
+    try {
+      const maxScrollLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+      if (maxScrollLeft <= 1) return;
+      const trackWidth = viewport.getBoundingClientRect().width || 0;
+      const thumbWidth = thumb.getBoundingClientRect().width || 24;
+      const maxThumbLeft = Math.max(1, trackWidth - thumbWidth);
+      setScrollLeft(dragStartScrollLeft + ((event.clientX - dragStartX) / maxThumbLeft) * maxScrollLeft);
+    } catch {}
+  };
+  const endDrag = () => {
+    isDragging = false;
+    try { document.body.classList.remove("is-dragging-inline-tabs-scrollbar"); } catch {}
+  };
+  scroller.addEventListener(
+    "wheel",
+    (event) => {
+      try {
+        if (scroller.scrollWidth <= scroller.clientWidth + 1) return;
+        const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+        if (!delta) return;
+        const prev = scroller.scrollLeft;
+        scroller.scrollLeft = prev + delta;
+        if (Math.abs(scroller.scrollLeft - prev) > 0.5) {
+          sync();
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      } catch {}
+    },
+    { passive: false }
+  );
+  track.addEventListener("pointerdown", (event) => {
+    try {
+      event.preventDefault();
+      event.stopPropagation();
+    } catch {}
+    jumpToPoint(event.clientX);
+    if (scroller.scrollWidth <= scroller.clientWidth + 1) return;
+    isDragging = true;
+    dragStartX = event.clientX;
+    dragStartScrollLeft = scroller.scrollLeft || 0;
+    try { document.body.classList.add("is-dragging-inline-tabs-scrollbar"); } catch {}
+  });
+  scroller.addEventListener("scroll", sync, { passive: true });
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", endDrag);
+  window.addEventListener("pointercancel", endDrag);
+  window.addEventListener("resize", sync);
+  let resizeObserver: ResizeObserver | null = null;
+  try {
+    resizeObserver = new ResizeObserver(sync);
+    resizeObserver.observe(viewport);
+    resizeObserver.observe(scroller);
+  } catch {}
+  requestAnimationFrame(sync);
+  return { sync, resizeObserver };
 }
 
 function safeText(text: string) {
@@ -27,13 +142,9 @@ function translatedTooltip(item: { tooltip?: string; tooltipKey?: string } | nul
   return tr(item?.tooltipKey, safeText(item?.tooltip || fallback));
 }
 
-/** 在元素上设置纯 codicon（无文字标签） */
+/** 在元素上设置纯 ZionIcon（无文字标签） */
 function setCodiconOnly(el: HTMLElement, iconName: string) {
-  el.textContent = "";
-  const span = document.createElement("span");
-  span.className = `codicon codicon-${iconName}`;
-  span.setAttribute("aria-hidden", "true");
-  el.appendChild(span);
+  setZionIconOnly(el, zionIconName(iconName));
 }
 
 function appendIconAndLabel(target: HTMLElement, icon: string, label: string) {
@@ -41,10 +152,9 @@ function appendIconAndLabel(target: HTMLElement, icon: string, label: string) {
   target.textContent = "";
   const codiconMatch = value.match(/^\$\(([^)]+)\)$/);
   if (codiconMatch) {
-    const span = document.createElement("span");
-    span.className = `codicon codicon-${codiconMatch[1]}`;
-    span.setAttribute("aria-hidden", "true");
-    target.appendChild(span);
+    target.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+  } else if (hasZionIcon(value)) {
+    target.appendChild(createZionIcon(zionIconName(value)));
   } else if (value) {
     const span = document.createElement("span");
     span.className = "zion-workbench-text-icon";
@@ -161,6 +271,38 @@ function findScrollableTarget(start: EventTarget | null, root: HTMLElement, axis
   return null;
 }
 
+function getElementClientWidth(el: HTMLElement | null): number {
+  if (!el) return 0;
+  try {
+    const width = el.clientWidth || el.getBoundingClientRect().width || 0;
+    return typeof width === "number" && Number.isFinite(width) ? Math.max(0, width) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function keepHorizontalScrollerRightEdgeAnchored(
+  scroller: HTMLElement | null,
+  previousClientWidth: number,
+  edgeDelta?: number
+): void {
+  if (!scroller || !scroller.classList.contains("is-horizontal-scroll")) return;
+  const beforeWidth = typeof previousClientWidth === "number" && Number.isFinite(previousClientWidth)
+    ? Math.max(0, previousClientWidth)
+    : 0;
+  const afterWidth = getElementClientWidth(scroller);
+  const delta = typeof edgeDelta === "number" && Number.isFinite(edgeDelta)
+    ? edgeDelta
+    : beforeWidth - afterWidth;
+  if (beforeWidth <= 0 || afterWidth <= 0 || Math.abs(delta) <= 0.5) return;
+  const maxScrollLeft = Math.max(0, (scroller.scrollWidth || 0) - afterWidth);
+  if (maxScrollLeft <= 1) return;
+  const currentLeft = scroller.scrollLeft || 0;
+  const nextLeft = Math.max(0, Math.min(maxScrollLeft, currentLeft + delta));
+  if (Math.abs(nextLeft - currentLeft) <= 0.5) return;
+  scroller.scrollLeft = nextLeft;
+}
+
 export function initWorkbench(host: HTMLElement): {
   editorHost: HTMLElement;
   editorHeaderPathEl: HTMLElement;
@@ -172,9 +314,13 @@ export function initWorkbench(host: HTMLElement): {
   const sideBarEl = el("div", "zion-sidebar");
   const editorEl = el("div", "zion-editor");
   const auxiliaryBarEl = el("div", "zion-auxbar");
+  auxiliaryBarEl.setAttribute("role", "complementary");
+  auxiliaryBarEl.setAttribute("aria-label", "辅助栏");
   const inspectorEl = el("aside", "zion-inspector");
+  inspectorEl.setAttribute("aria-label", "内容查看区");
   const bottomPanelEl = el("div", "zion-bottompanel");
   const overlayMaskEl = el("div", "zion-overlay-mask");
+    const resizeDragShieldEl = el("div", "zion-resize-drag-shield");
   const mobileBarEl = el("div", "zion-mobilebar");
   const mobileBarListEl = el("div", "zion-mobilebar-list");
   const mobileBarActionsEl = el("div", "zion-mobilebar-actions");
@@ -193,19 +339,81 @@ export function initWorkbench(host: HTMLElement): {
   root.appendChild(activityBarEl);
   root.appendChild(sideBarEl);
   root.appendChild(editorEl);
-  root.appendChild(auxiliaryBarEl);
   root.appendChild(inspectorEl);
+  root.appendChild(auxiliaryBarEl);
   root.appendChild(bottomPanelEl);
   root.appendChild(overlayMaskEl);
+    root.appendChild(resizeDragShieldEl);
   root.appendChild(mobileBarEl);
 
   host.appendChild(root);
 
+    // Individual panels retain their own minimum width and scroll when needed.
+    // This is only the smallest usable viewport for the entire editor region.
+    const EDITOR_MIN_WIDTH = 320;
+    const SIDEBAR_RESTORE_GAP = 72;
+    let sidebarAutoCollapsedForWidePanels = false;
+    let wideningSidePanelByDrag = false;
+    let sidePanelResizeActive = false;
+    let adjustingSidebarForWidePanels = false;
+    const setResizeDragShield = (active: boolean, cursor = "col-resize") => {
+      resizeDragShieldEl.classList.toggle("is-active", active);
+      resizeDragShieldEl.style.cursor = active ? cursor : "";
+    };
   const scrollTimers = new Map<HTMLElement, number>();
+  let lastUserScrollIntentAt = 0;
+  const markUserScrollIntent = () => {
+    try { lastUserScrollIntentAt = performance.now(); } catch { lastUserScrollIntentAt = Date.now(); }
+  };
+  const getScrollableElementFromTarget = (target: EventTarget | null) => {
+    let node = target instanceof HTMLElement ? target : null;
+    while (node && node !== root) {
+      try {
+        const cs = getComputedStyle(node);
+        const canScrollY = /(auto|scroll|overlay)/.test(cs.overflowY) && node.scrollHeight > node.clientHeight + 1;
+        const canScrollX = /(auto|scroll|overlay)/.test(cs.overflowX) && node.scrollWidth > node.clientWidth + 1;
+        if (canScrollY || canScrollX) return node;
+      } catch {}
+      node = node.parentElement;
+    }
+    return null;
+  };
+  const onPointerDownCapture = (e: PointerEvent) => {
+    const el0 = getScrollableElementFromTarget(e.target);
+    if (!el0) return;
+    try {
+      const rect = el0.getBoundingClientRect();
+      const gutter = 14;
+      const onVerticalScrollbar = el0.scrollHeight > el0.clientHeight + 1
+        && e.clientX >= rect.right - gutter
+        && e.clientX <= rect.right + 1;
+      const onHorizontalScrollbar = el0.scrollWidth > el0.clientWidth + 1
+        && e.clientY >= rect.bottom - gutter
+        && e.clientY <= rect.bottom + 1;
+      if (onVerticalScrollbar || onHorizontalScrollbar) markUserScrollIntent();
+    } catch {}
+  };
+  const onKeyDownCapture = (e: KeyboardEvent) => {
+    if (e.defaultPrevented) return;
+    if ([
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "PageUp",
+      "PageDown",
+      "Home",
+      "End",
+      " ",
+    ].includes(e.key)) markUserScrollIntent();
+  };
   const onScrollCapture = (e: Event) => {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
     try {
+      const now = performance.now();
+      const isUserScroll = now - lastUserScrollIntentAt < 500 || t.classList.contains("zion-scroll-active");
+      if (!isUserScroll) return;
       t.classList.add("zion-scroll-active");
       const prev = scrollTimers.get(t);
       if (prev) window.clearTimeout(prev);
@@ -215,6 +423,10 @@ export function initWorkbench(host: HTMLElement): {
       scrollTimers.set(t, tid);
     } catch {}
   };
+  root.addEventListener("wheel", markUserScrollIntent, true);
+  root.addEventListener("touchmove", markUserScrollIntent, true);
+  root.addEventListener("pointerdown", onPointerDownCapture, true);
+  root.addEventListener("keydown", onKeyDownCapture, true);
   root.addEventListener("scroll", onScrollCapture, true);
 
   const updateOverlayMask = () => {
@@ -222,10 +434,12 @@ export function initWorkbench(host: HTMLElement): {
     const isCompactOverlay = isMobile || responsiveRuntime.getCurrentMode() === "medium";
     const hasSide = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0;
     const hasAux = auxiliaryBarRuntime.isVisible() && auxiliaryBarRuntime.getViews().length > 0;
+    const hasInspector = inspectorRuntime.isVisible();
     const hasBottom = bottomPanelRuntime.isVisible() && bottomPanelRuntime.getViews().length > 0;
     const hasOverlay =
       (isMobile && hasSide) ||
       (isCompactOverlay && hasAux) ||
+      (isCompactOverlay && hasInspector) ||
       (isCompactOverlay && hasBottom);
     overlayMaskEl.style.display = hasOverlay ? "block" : "none";
   };
@@ -237,6 +451,9 @@ export function initWorkbench(host: HTMLElement): {
     } catch {}
     try {
       auxiliaryBarRuntime.hide();
+    } catch {}
+    try {
+      inspectorRuntime.hide();
     } catch {}
     try {
       bottomPanelRuntime.hide();
@@ -268,27 +485,167 @@ export function initWorkbench(host: HTMLElement): {
     updateOverlayMask();
   };
 
+  const getMediumOverlayMetrics = () => {
+    const rootWidth = Math.max(0, root.getBoundingClientRect().width);
+    const activityWidth = activityBarRuntime.isVisible() ? 48 : 0;
+    const sidebarWidth = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0
+      ? sideBarRuntime.getWidth()
+      : 0;
+    const editorWidth = Math.max(0, rootWidth - activityWidth - sidebarWidth);
+    const requestedAuxWidth = auxiliaryBarRuntime.getWidth();
+    const auxWidth = Math.max(
+      200,
+      Math.min(300, requestedAuxWidth, Math.round(editorWidth * 0.34))
+    );
+    const requestedInspectorWidth = inspectorRuntime.getWidth();
+    const inspectorPreferredWidth = Math.max(
+      260,
+      Math.min(520, requestedInspectorWidth, Math.round(editorWidth * 0.52))
+    );
+    const hasAuxiliaryBar = auxiliaryBarRuntime.isVisible()
+      && auxiliaryBarRuntime.getViews().length > 0;
+    const inspectorMaxWidth = hasAuxiliaryBar
+      ? Math.max(180, editorWidth - auxWidth)
+      : Math.max(260, Math.round(editorWidth * 0.72));
+    return {
+      auxWidth,
+      inspectorWidth: Math.min(inspectorPreferredWidth, inspectorMaxWidth)
+    };
+  };
+
+  const getDesktopPanelMetrics = (xVisible: boolean, inspectorVisible: boolean) => {
+    const rootWidth = Math.max(0, root.getBoundingClientRect().width);
+    const activityWidth = activityBarRuntime.isVisible() ? 48 : 0;
+    const sidebarWidth = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0
+      ? sideBarRuntime.getWidth()
+      : 0;
+    const editorWidth = Math.max(0, rootWidth - activityWidth - sidebarWidth);
+      const panelBudget = Math.max(0, editorWidth - EDITOR_MIN_WIDTH);
+    const requestedAuxWidth = auxiliaryBarRuntime.getWidth();
+    const requestedInspectorWidth = inspectorRuntime.getWidth();
+      let auxWidth = xVisible ? requestedAuxWidth : 0;
+      let inspectorWidth = inspectorVisible ? requestedInspectorWidth : 0;
+    if (xVisible && inspectorVisible && auxWidth + inspectorWidth > panelBudget) {
+      // Keep the main editor wide enough for one complete panel first. When
+      // space is tight, Inspector yields before Auxiliary bar; Auxiliary bar
+      // only shrinks once Inspector would become unusably narrow.
+      const inspectorFloor = Math.min(280, panelBudget);
+      if (panelBudget - auxWidth >= inspectorFloor) {
+        inspectorWidth = Math.max(0, panelBudget - auxWidth);
+      } else {
+        auxWidth = Math.max(0, Math.min(auxWidth, panelBudget - inspectorFloor));
+        inspectorWidth = Math.max(0, panelBudget - auxWidth);
+      }
+    } else if (xVisible && auxWidth > panelBudget) {
+      auxWidth = Math.max(0, panelBudget);
+    } else if (inspectorVisible && inspectorWidth > panelBudget) {
+      inspectorWidth = Math.max(0, panelBudget);
+    }
+    return { auxWidth, inspectorWidth };
+  };
+
   const applyColumnWidths = () => {
     const isMobile = responsiveRuntime.getCurrentDeviceType() === "mobile";
     const isCompactOverlay = isMobile || responsiveRuntime.getCurrentMode() === "medium";
     const aVisible = activityBarRuntime.isVisible();
     const sVisible = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0;
     const xVisible = auxiliaryBarRuntime.isVisible() && auxiliaryBarRuntime.getViews().length > 0;
+    const inspectorVisible = inspectorRuntime.isVisible();
     const w = sideBarRuntime.getWidth();
     const xw = auxiliaryBarRuntime.getWidth();
+    const inspectorWidth = inspectorRuntime.getWidth();
+      const requestedSidePanelWidth = (xVisible ? xw : 0) + (inspectorVisible ? inspectorWidth : 0);
+      const sidebarBudget = Math.max(
+        0,
+        root.getBoundingClientRect().width - (aVisible ? 48 : 0) - w - EDITOR_MIN_WIDTH
+      );
+
+      if (!isMobile && !isCompactOverlay && sVisible && wideningSidePanelByDrag
+        && requestedSidePanelWidth > sidebarBudget) {
+        sidebarAutoCollapsedForWidePanels = true;
+        adjustingSidebarForWidePanels = true;
+        try {
+          sideBarRuntime.hide();
+        } finally {
+          adjustingSidebarForWidePanels = false;
+        }
+        return;
+      }
+
+      if (!isMobile && !isCompactOverlay && sidebarAutoCollapsedForWidePanels && !sVisible
+        && !sidePanelResizeActive
+        && requestedSidePanelWidth <= Math.max(0, sidebarBudget - SIDEBAR_RESTORE_GAP)) {
+        sidebarAutoCollapsedForWidePanels = false;
+        adjustingSidebarForWidePanels = true;
+        try {
+          sideBarRuntime.show();
+        } finally {
+          adjustingSidebarForWidePanels = false;
+        }
+        return;
+      }
+
+    const mediumOverlay = !isMobile && isCompactOverlay
+      ? getMediumOverlayMetrics()
+      : null;
+    const desktopPanels = !isCompactOverlay
+      ? getDesktopPanelMetrics(xVisible, inspectorVisible)
+      : null;
     if (isMobile) {
       root.style.setProperty("--activitybar-w", "0px");
       root.style.setProperty("--sidebar-w", "0px");
       root.style.setProperty("--auxbar-w", "0px");
+      root.style.setProperty("--inspector-w", "0px");
+      root.style.setProperty("--sidebar-editor-gap", "0px");
+      root.style.setProperty("--editor-auxbar-gap", "0px");
+      root.style.setProperty("--editor-inspector-gap", "0px");
+      root.style.setProperty("--inspector-auxbar-gap", "0px");
+      root.style.setProperty("--auxbar-leading-gap", "0px");
       root.style.setProperty("--sidebar-overlay-w", `${w}px`);
-      root.style.setProperty("--auxbar-overlay-w", `${xw}px`);
+      root.style.setProperty(
+        "--auxbar-overlay-w",
+        `${Math.min(Math.max(240, Math.round(root.getBoundingClientRect().width * 0.86)), 380)}px`
+      );
+      root.style.setProperty("--auxbar-overlay-offset", "0px");
       activityBarEl.style.visibility = "hidden";
       activityBarEl.style.pointerEvents = "none";
     } else {
       root.style.setProperty("--activitybar-w", aVisible ? "48px" : "0px");
       root.style.setProperty("--sidebar-w", sVisible ? `${w}px` : "0px");
-      root.style.setProperty("--auxbar-w", !isCompactOverlay && xVisible ? `${xw}px` : "0px");
-      root.style.setProperty("--auxbar-overlay-w", `${xw}px`);
+      root.style.setProperty(
+        "--auxbar-w",
+        !isCompactOverlay && xVisible ? `${desktopPanels?.auxWidth ?? xw}px` : "0px"
+      );
+      root.style.setProperty(
+        "--inspector-w",
+        !isCompactOverlay && inspectorVisible
+          ? `${desktopPanels?.inspectorWidth ?? inspectorWidth}px`
+          : "0px"
+      );
+        root.style.setProperty("--sidebar-editor-gap", "0px");
+      root.style.setProperty("--editor-auxbar-gap", "0px");
+      root.style.setProperty(
+        "--editor-inspector-gap",
+        !isCompactOverlay && inspectorVisible
+          ? "var(--panel-split-gap-size, 6px)"
+          : "0px"
+      );
+      root.style.setProperty("--inspector-auxbar-gap", "0px");
+      root.style.setProperty(
+          "--auxbar-leading-gap",
+          "0px"
+      );
+      root.style.setProperty("--auxbar-overlay-w", `${mediumOverlay?.auxWidth ?? xw}px`);
+      root.style.setProperty(
+        "--inspector-overlay-w",
+        `${mediumOverlay?.inspectorWidth ?? inspectorWidth}px`
+      );
+      root.style.setProperty(
+        "--auxbar-overlay-offset",
+        isCompactOverlay && xVisible
+          ? `${mediumOverlay?.auxWidth ?? xw}px`
+          : "0px"
+      );
       activityBarEl.style.visibility = aVisible ? "visible" : "hidden";
       activityBarEl.style.pointerEvents = aVisible ? "auto" : "none";
     }
@@ -296,6 +653,20 @@ export function initWorkbench(host: HTMLElement): {
     sideBarEl.style.pointerEvents = sVisible ? "auto" : "none";
     auxiliaryBarEl.style.visibility = xVisible ? "visible" : "hidden";
     auxiliaryBarEl.style.pointerEvents = xVisible ? "auto" : "none";
+    inspectorEl.style.visibility = inspectorVisible ? "visible" : "hidden";
+    inspectorEl.style.pointerEvents = inspectorVisible ? "auto" : "none";
+      root.classList.toggle(
+        "has-inspector-adjacent-auxbar",
+        !isCompactOverlay && xVisible && inspectorVisible
+      );
+    auxiliaryBarEl.style.borderLeft = isCompactOverlay && xVisible && !inspectorVisible
+      ? "1px solid var(--surface-border-soft, var(--border-subtle))"
+      : "";
+    inspectorEl.style.borderRight = inspectorVisible
+      ? (xVisible
+        ? "1px solid color-mix(in srgb, var(--surface-border-soft, var(--border-subtle)) 62%, transparent)"
+        : "1px solid var(--surface-border-soft, var(--border-subtle))")
+      : "";
     updateOverlayMask();
   };
 
@@ -327,11 +698,10 @@ export function initWorkbench(host: HTMLElement): {
   const getOverlayAuxWidthPx = (isMobile: boolean) => {
     const requested = auxiliaryBarRuntime.getWidth();
     try {
+      if (!isMobile) return getMediumOverlayMetrics().auxWidth;
       const rect = root.getBoundingClientRect();
-      const maxAllowed = isMobile
-        ? Math.round(rect.width * 0.92)
-        : Math.round(Math.min(420, rect.width * 0.7));
-      return Math.max(240, Math.min(maxAllowed, Math.round(requested)));
+      const maxAllowed = Math.round(rect.width * 0.92);
+      return Math.min(380, Math.max(240, Math.min(maxAllowed, Math.round(requested))));
     } catch {
       return Math.max(240, Math.round(requested));
     }
@@ -374,9 +744,9 @@ export function initWorkbench(host: HTMLElement): {
       btn.textContent = "";
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        const span = document.createElement("span");
-        span.className = `codicon codicon-${codiconMatch[1]}`;
-        btn.appendChild(span);
+        btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+      } else if (hasZionIcon(icon)) {
+        btn.appendChild(createZionIcon(zionIconName(icon)));
       } else {
         btn.textContent = safeText(icon);
       }
@@ -417,9 +787,9 @@ export function initWorkbench(host: HTMLElement): {
       btn.textContent = "";
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        const span = document.createElement("span");
-        span.className = `codicon codicon-${codiconMatch[1]}`;
-        btn.appendChild(span);
+        btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+      } else if (hasZionIcon(icon)) {
+        btn.appendChild(createZionIcon(zionIconName(icon)));
       } else {
         btn.textContent = safeText(icon);
       }
@@ -435,9 +805,7 @@ export function initWorkbench(host: HTMLElement): {
     settingsBtn.type = "button";
     settingsBtn.title = "设置";
     settingsBtn.setAttribute("aria-label", "设置");
-    const settingsIcon = document.createElement("span");
-    settingsIcon.className = "codicon codicon-gear";
-    settingsBtn.appendChild(settingsIcon);
+    settingsBtn.appendChild(createZionIcon("settings"));
     settingsBtn.onclick = () => {
       try {
         (window as any).zion?.settings?.open?.();
@@ -506,7 +874,7 @@ export function initWorkbench(host: HTMLElement): {
             target.scrollLeft += dx !== 0 ? dx : dy;
           } else {
             target.scrollTop += we.deltaY;
-          }
+        }
         } catch {}
         we.preventDefault();
         we.stopPropagation();
@@ -517,40 +885,21 @@ export function initWorkbench(host: HTMLElement): {
 
   preventScrollChain(activityBarEl, activityBarEl);
   preventScrollChain(sideBarEl, content);
+  preventScrollChain(inspectorEl, inspectorEl);
   preventScrollChain(auxiliaryBarEl, auxiliaryBarEl);
   preventScrollChain(bottomPanelEl, bottomPanelEl);
 
   auxiliaryBarEl.style.position = "relative";
   const auxHeader = el("div", "zion-auxbar-header");
   const auxHeadLeft = el("div", "zion-auxbar-headleft");
+  const auxTabsViewport = el("div", "zion-inline-tabs-scrollbar-viewport zion-auxbar-tabs-viewport");
   const auxTabs = el("div", "zion-auxbar-tabs");
-  auxTabs.addEventListener(
-    "wheel",
-    (event) => {
-      if (auxTabs.scrollWidth <= auxTabs.clientWidth + 1) return;
-      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-      if (!delta) return;
-      const prev = auxTabs.scrollLeft;
-      auxTabs.scrollLeft = prev + delta;
-      if (Math.abs(auxTabs.scrollLeft - prev) > 0.5) event.preventDefault();
-    },
-    { passive: false }
-  );
+  auxTabsViewport.appendChild(auxTabs);
+  const auxTabsScrollbar = attachInlineTabsScrollbar(auxTabsViewport, auxTabs);
   const auxTitle = el("div", "zion-auxbar-title");
   const auxActions = el("div", "zion-auxbar-actions");
-  const auxHideBtn = el("button", "zion-auxbar-action") as HTMLButtonElement;
-  auxHideBtn.type = "button";
-  auxHideBtn.title = "Hide Auxiliary Bar";
-  auxHideBtn.setAttribute("aria-label", "Hide Auxiliary Bar");
-  setCodiconOnly(auxHideBtn, "close");
-  auxHideBtn.onclick = () => {
-    try {
-      auxiliaryBarRuntime.hide();
-    } catch {}
-  };
-  auxActions.appendChild(auxHideBtn);
   auxHeadLeft.appendChild(auxTitle);
-  auxHeadLeft.appendChild(auxTabs);
+  auxHeadLeft.appendChild(auxTabsViewport);
   auxHeader.appendChild(auxHeadLeft);
   auxHeader.appendChild(auxActions);
   const auxContent = el("div", "zion-auxbar-content");
@@ -563,41 +912,67 @@ export function initWorkbench(host: HTMLElement): {
   auxiliaryBarEl.appendChild(auxResizer);
 
   let auxMountedViewId: string | null = null;
-  let auxTransientContainer: HTMLElement | null = null;
-  let auxTransientDisposable: { dispose?: () => void } | null = null;
-  let auxTransientResizeObs: ResizeObserver | null = null;
+  let auxMountGeneration = 0;
+  const auxTransientRecords = new Set<{
+    viewId: string;
+    container: HTMLElement;
+    disposable: { dispose?: () => void } | null;
+    obs: ResizeObserver | null;
+  }>();
   const auxKeepContainers = new Map<
     string,
     { container: HTMLElement; disposable: { dispose?: () => void } | null; obs: ResizeObserver | null }
   >();
 
-  const auxUnmountView = async (viewId: string | null) => {
+  const removeAuxTransientRecord = (rec: {
+    viewId: string;
+    container: HTMLElement;
+    disposable: { dispose?: () => void } | null;
+    obs: ResizeObserver | null;
+  }) => {
+    auxTransientRecords.delete(rec);
+    try {
+      rec.disposable?.dispose?.();
+    } catch {}
+    try {
+      rec.obs?.disconnect();
+    } catch {}
+    try {
+      rec.container.remove();
+    } catch {}
+  };
+
+  const removeAuxTransientRecordsForView = (viewId: string | null) => {
+    if (!viewId) return;
+    for (const rec of Array.from(auxTransientRecords)) {
+      if (rec.viewId === viewId) removeAuxTransientRecord(rec);
+    }
+  };
+
+  const removeAuxTransientRecordsExcept = (...viewIds: Array<string | null>) => {
+    const keep = new Set(viewIds.filter(Boolean) as string[]);
+    for (const rec of Array.from(auxTransientRecords)) {
+      if (!keep.has(rec.viewId)) removeAuxTransientRecord(rec);
+    }
+  };
+
+  const auxUnmountView = async (viewId: string | null, generation = auxMountGeneration) => {
     if (!viewId) return;
     const prev = auxiliaryBarRuntime.getView(viewId);
     try {
       await prev?.onDeactivate?.();
     } catch {}
+    if (generation !== auxMountGeneration) return;
     const keep = !!prev?.keepWhenActive;
     if (keep) {
       const rec = auxKeepContainers.get(viewId);
       if (rec?.container) rec.container.style.display = "none";
       return;
     }
-    try {
-      auxTransientDisposable?.dispose?.();
-    } catch {}
-    auxTransientDisposable = null;
-    try {
-      auxTransientResizeObs?.disconnect();
-    } catch {}
-    auxTransientResizeObs = null;
-    try {
-      auxTransientContainer?.remove();
-    } catch {}
-    auxTransientContainer = null;
+    removeAuxTransientRecordsForView(viewId);
   };
 
-  const auxMountView = async (viewId: string | null, container: HTMLElement) => {
+  const auxMountView = async (viewId: string | null, container: HTMLElement, generation = auxMountGeneration) => {
     if (!viewId) {
       return;
     }
@@ -605,13 +980,16 @@ export function initWorkbench(host: HTMLElement): {
     if (!view) {
       return;
     }
+    if (generation !== auxMountGeneration || auxMountedViewId !== viewId) return;
     const keep = !!view.keepWhenActive;
     if (keep) {
       const existing = auxKeepContainers.get(viewId);
       if (existing) {
         existing.container.style.display = "block";
         try {
-          await view.onActivate?.();
+          if (generation === auxMountGeneration && auxMountedViewId === viewId) {
+            await view.onActivate?.();
+          }
         } catch {}
         return;
       }
@@ -619,6 +997,8 @@ export function initWorkbench(host: HTMLElement): {
       c.style.height = "100%";
       c.style.width = "100%";
       c.style.minHeight = "0";
+      c.dataset.viewId = viewId;
+      c.dataset.viewKind = "keep";
       container.appendChild(c);
       let disp: any = null;
       try {
@@ -638,34 +1018,50 @@ export function initWorkbench(host: HTMLElement): {
       } catch {}
       auxKeepContainers.set(viewId, { container: c, disposable: disp, obs });
       try {
-        await view.onActivate?.();
+        if (generation === auxMountGeneration && auxMountedViewId === viewId) {
+          await view.onActivate?.();
+        }
       } catch {}
       return;
     }
 
+    removeAuxTransientRecordsForView(viewId);
     const c = el("div", "zion-auxbar-view");
     c.style.height = "100%";
     c.style.width = "100%";
     c.style.minHeight = "0";
+    c.dataset.viewId = viewId;
+    c.dataset.viewKind = "transient";
     container.appendChild(c);
-    auxTransientContainer = c;
+    const rec = { viewId, container: c, disposable: null as { dispose?: () => void } | null, obs: null as ResizeObserver | null };
+    auxTransientRecords.add(rec);
     try {
       const ret = view.component.render(c);
-      auxTransientDisposable = (ret as any) || null;
+      rec.disposable = (ret as any) || null;
     } catch {
       c.innerHTML = "";
     }
+    if (generation !== auxMountGeneration || auxMountedViewId !== viewId) {
+      removeAuxTransientRecord(rec);
+      return;
+    }
     try {
-      await view.onActivate?.();
+      if (generation === auxMountGeneration && auxMountedViewId === viewId) {
+        await view.onActivate?.();
+      }
     } catch {}
+    if (generation !== auxMountGeneration || auxMountedViewId !== viewId) {
+      removeAuxTransientRecord(rec);
+      return;
+    }
     try {
-      auxTransientResizeObs = new ResizeObserver(() => {
+      rec.obs = new ResizeObserver(() => {
         try {
           const r = c.getBoundingClientRect();
           view.onResize?.({ width: r.width, height: r.height });
         } catch {}
       });
-      auxTransientResizeObs.observe(c);
+      rec.obs.observe(c);
     } catch {}
   };
 
@@ -689,6 +1085,9 @@ export function initWorkbench(host: HTMLElement): {
           rec.container.remove();
         } catch {}
         auxKeepContainers.delete(id);
+      }
+      for (const rec of Array.from(auxTransientRecords)) {
+        if (!alive.has(rec.viewId)) removeAuxTransientRecord(rec);
       }
     } catch {}
     const visible = auxiliaryBarRuntime.isVisible() && views.length > 0;
@@ -714,12 +1113,18 @@ export function initWorkbench(host: HTMLElement): {
       auxiliaryBarEl.style.boxShadow = "";
     }
     if (!visible) {
-      void auxUnmountView(auxMountedViewId);
+      const previousId = auxMountedViewId;
+      const generation = ++auxMountGeneration;
       auxMountedViewId = null;
       auxTabs.innerHTML = "";
+      auxTabsScrollbar.sync();
       try {
         for (const rec of auxKeepContainers.values()) rec.container.style.display = "none";
       } catch {}
+      void (async () => {
+        await auxUnmountView(previousId, generation);
+        if (generation === auxMountGeneration) removeAuxTransientRecordsExcept(null);
+      })();
       return;
     }
 
@@ -749,9 +1154,11 @@ export function initWorkbench(host: HTMLElement): {
       if (activeTab) {
         requestAnimationFrame(() => {
           try { activeTab.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch {}
+          auxTabsScrollbar.sync();
         });
       }
     }
+    requestAnimationFrame(auxTabsScrollbar.sync);
 
     const nextId = activeViewId && auxiliaryBarRuntime.getView(activeViewId) ? activeViewId : views[0]?.id ?? null;
     if (nextId !== activeViewId && nextId) {
@@ -769,13 +1176,18 @@ export function initWorkbench(host: HTMLElement): {
     }
 
     if (auxMountedViewId !== nextId) {
+      const previousId = auxMountedViewId;
+      const generation = ++auxMountGeneration;
+      auxMountedViewId = nextId;
+      removeAuxTransientRecordsExcept(previousId, nextId);
       void (async () => {
-        await auxUnmountView(auxMountedViewId);
-        auxMountedViewId = nextId;
+        await auxUnmountView(previousId, generation);
+        if (generation !== auxMountGeneration || auxMountedViewId !== nextId) return;
+        removeAuxTransientRecordsExcept(nextId);
         for (const [id, rec] of auxKeepContainers.entries()) {
           if (id !== nextId) rec.container.style.display = "none";
         }
-        await auxMountView(auxMountedViewId, auxContent);
+        await auxMountView(nextId, auxContent, generation);
       })();
     }
 
@@ -786,32 +1198,989 @@ export function initWorkbench(host: HTMLElement): {
     const onMove = (e: MouseEvent) => {
       if (!dragging) return;
       const dx = startX - e.clientX;
-      auxiliaryBarRuntime.setWidth(startW + dx);
+      const nextWidth = startW + dx;
+      wideningSidePanelByDrag = nextWidth > startW + 1;
+      auxiliaryBarRuntime.setWidth(nextWidth);
     };
     const onUp = () => {
       if (!dragging) return;
       dragging = false;
+      sidePanelResizeActive = false;
+      wideningSidePanelByDrag = false;
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
+        setResizeDragShield(false);
       auxResizer.classList.remove("is-dragging");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       try {
         localStorage.setItem("zion.ui.auxBarWidth", String(auxiliaryBarRuntime.getWidth()));
       } catch {}
+      applyColumnWidths();
     };
 
     auxResizer.onmousedown = (e) => {
       e.preventDefault();
       dragging = true;
+      sidePanelResizeActive = true;
       startX = e.clientX;
       startW = auxiliaryBarRuntime.getWidth();
       document.body.style.userSelect = "none";
       document.body.style.cursor = "col-resize";
+      setResizeDragShield(true);
       auxResizer.classList.add("is-dragging");
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     };
+  };
+
+  const inspectorIdentity = el("div", "zion-inspector-identity");
+  const inspectorFileIcon = el("span", "zion-inspector-file-icon");
+  const inspectorTitleGroup = el("div", "zion-inspector-title-group");
+  const inspectorTitle = el("div", "zion-inspector-title");
+  inspectorTitle.textContent = "查看";
+  const inspectorMeta = el("div", "zion-inspector-meta");
+  inspectorTitleGroup.appendChild(inspectorTitle);
+  inspectorTitleGroup.appendChild(inspectorMeta);
+  inspectorIdentity.appendChild(inspectorFileIcon);
+  inspectorIdentity.appendChild(inspectorTitleGroup);
+  const inspectorTabsViewport = el("div", "zion-inline-tabs-scrollbar-viewport zion-inspector-tabs-viewport");
+  const inspectorTabs = el("div", "zion-inspector-tabs");
+  inspectorTabs.setAttribute("role", "tablist");
+  inspectorTabs.setAttribute("aria-label", "查看中的内容");
+  inspectorTabsViewport.appendChild(inspectorTabs);
+  const inspectorTabsScrollbar = attachInlineTabsScrollbar(inspectorTabsViewport, inspectorTabs);
+  const inspectorToolbar = el("div", "zion-inspector-toolbar");
+  const inspectorToolbarPath = el("div", "zion-inspector-toolbar-path");
+  const inspectorToolbarActions = el("div", "zion-inspector-toolbar-actions");
+  const inspectorToolbarMenuButton = el("button", "zion-inspector-toolbar-action zion-inspector-toolbar-menu-button") as HTMLButtonElement;
+  inspectorToolbarMenuButton.type = "button";
+  inspectorToolbarMenuButton.title = "更多操作";
+  inspectorToolbarMenuButton.setAttribute("aria-label", "更多操作");
+  inspectorToolbarMenuButton.setAttribute("aria-haspopup", "menu");
+  inspectorToolbarMenuButton.setAttribute("aria-expanded", "false");
+  setCodiconOnly(inspectorToolbarMenuButton, "settings");
+  const inspectorToolbarMenu = el("div", "zion-inspector-toolbar-menu");
+  inspectorToolbarMenu.setAttribute("role", "menu");
+  inspectorToolbar.appendChild(inspectorToolbarPath);
+  inspectorToolbar.appendChild(inspectorToolbarActions);
+  inspectorToolbar.appendChild(inspectorToolbarMenuButton);
+  inspectorToolbar.appendChild(inspectorToolbarMenu);
+  const inspectorContent = el("div", "zion-inspector-content");
+  const inspectorStatusBar = el("div", "zion-inspector-statusbar");
+  inspectorStatusBar.appendChild(inspectorIdentity);
+  const inspectorResizer = el("div", "zion-inspector-resizer");
+  inspectorEl.appendChild(inspectorResizer);
+  inspectorEl.appendChild(inspectorTabsViewport);
+  inspectorEl.appendChild(inspectorToolbar);
+  inspectorEl.appendChild(inspectorContent);
+  inspectorEl.appendChild(inspectorStatusBar);
+
+  let inspectorObjectUrl = "";
+  let inspectorSaveTimer = 0;
+  let inspectorPendingSave: (() => Promise<void>) | null = null;
+  let inspectorTextView: ReturnType<typeof createInspectorTextView> | null = null;
+  let inspectorTextViewItemId = "";
+  let inspectorTextEditorDisposable: { dispose(): void } | null = null;
+  let inspectorMarkdownSelectionDisposable: { dispose(): void } | null = null;
+  let inspectorCustomDispose: (() => void) | null = null;
+  const inspectorMarkdownPreview = new Set<string>();
+  const inspectorHtmlPreview = new Set<string>();
+  const inspectorScrollTop = new Map<string, number>();
+  const inspectorImageScale = new Map<string, number>();
+  const inspectorLineWrapping = new Map<string, boolean>();
+  const inspectorBrowserHistory = new Map<string, { entries: string[]; index: number }>();
+  const inspectorBrowserStages = new Map<string, { url: string; stage: HTMLElement; iframe: HTMLIFrameElement }>();
+  let lastInspectorItem: ReturnType<typeof inspectorRuntime.getActiveItem> = null;
+  let lastInspectorRenderer: ReturnType<typeof inspectorRuntime.getRenderer> = null;
+  let lastInspectorItemsSignature = "";
+  let lastInspectorTextDecoratorVersion = -1;
+  const disposeInspectorContent = () => {
+    if (inspectorSaveTimer) {
+      window.clearTimeout(inspectorSaveTimer);
+      inspectorSaveTimer = 0;
+      void inspectorPendingSave?.();
+    }
+    inspectorPendingSave = null;
+    try { inspectorTextEditorDisposable?.dispose?.(); } catch {}
+    inspectorTextEditorDisposable = null;
+    try { inspectorMarkdownSelectionDisposable?.dispose?.(); } catch {}
+    inspectorMarkdownSelectionDisposable = null;
+    inspectorContent.onscroll = null;
+    if (inspectorTextView) {
+      inspectorScrollTop.set(inspectorTextViewItemId, inspectorTextView.scrollDOM.scrollTop);
+      inspectorTextView.destroy();
+      inspectorTextView = null;
+      inspectorTextViewItemId = "";
+    }
+    try { inspectorCustomDispose?.(); } catch {}
+    inspectorCustomDispose = null;
+    if (inspectorObjectUrl) {
+      try { URL.revokeObjectURL(inspectorObjectUrl); } catch {}
+      inspectorObjectUrl = "";
+    }
+  };
+  const getInspectorFileIcon = (item: any) => {
+    if (item?.url) return "globe";
+    if (item?.file?.kind === "image") return "image";
+    if (item?.file?.kind === "pdf") return "file-pdf";
+    if (item?.editable) return "pencil";
+    if (item?.language === "markdown" || /\.md(?:own)?$|\.markdown$/i.test(item?.path || item?.title || "")) return "note";
+    if (item?.language && item.language !== "text") return "file-code";
+    return "file-text";
+  };
+  const createInspectorAction = (icon: string, title: string, onClick: () => void, active = false) => {
+    const button = el("button", `zion-inspector-toolbar-action${active ? " is-active" : ""}`) as HTMLButtonElement;
+    button.type = "button";
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    setCodiconOnly(button, icon);
+    button.onclick = onClick;
+    return button;
+  };
+  const createInspectorMenuAction = (icon: string, title: string, onClick: () => void, active = false) => {
+    const button = el("button", `zion-inspector-toolbar-menu-item${active ? " is-active" : ""}`) as HTMLButtonElement;
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    const glyph = el("span", "zion-inspector-toolbar-menu-icon");
+    setCodiconOnly(glyph, icon);
+    const label = el("span", "zion-inspector-toolbar-menu-label");
+    label.textContent = title;
+    button.appendChild(glyph);
+    button.appendChild(label);
+    button.onclick = () => {
+      inspectorToolbar.classList.remove("is-menu-open");
+      inspectorToolbarMenuButton.setAttribute("aria-expanded", "false");
+      onClick();
+    };
+    return button;
+  };
+  const updateInspectorToolbarMenuState = () => {
+    const hasMenuItems = inspectorToolbarMenu.children.length > 0;
+    inspectorToolbarMenuButton.hidden = !hasMenuItems;
+    if (!hasMenuItems) {
+      inspectorToolbar.classList.remove("is-menu-open");
+      inspectorToolbarMenuButton.setAttribute("aria-expanded", "false");
+    }
+  };
+  inspectorToolbarMenuButton.onclick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextOpen = !inspectorToolbar.classList.contains("is-menu-open");
+    inspectorToolbar.classList.toggle("is-menu-open", nextOpen);
+    inspectorToolbarMenuButton.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+  };
+  const closeInspectorToolbarMenuOnOutsideClick = (event: MouseEvent) => {
+    if (!inspectorToolbar.classList.contains("is-menu-open")) return;
+    if (event.target instanceof Node && inspectorToolbar.contains(event.target)) return;
+    inspectorToolbar.classList.remove("is-menu-open");
+    inspectorToolbarMenuButton.setAttribute("aria-expanded", "false");
+  };
+  document.addEventListener("click", closeInspectorToolbarMenuOnOutsideClick);
+  const renderInspectorState = (icon: string, title: string, message: string) => {
+    const state = el("div", "zion-inspector-state");
+    const glyph = el("span", "zion-inspector-state-icon");
+    setCodiconOnly(glyph, icon);
+    const heading = el("strong", "zion-inspector-state-title");
+    heading.textContent = title;
+    const detail = el("span", "zion-inspector-state-detail");
+    detail.textContent = message;
+    state.appendChild(glyph);
+    state.appendChild(heading);
+    state.appendChild(detail);
+    inspectorContent.appendChild(state);
+  };
+  const resetInspectorContent = (items: any[]) => {
+    const activeIds = new Set(items.map((candidate) => candidate.id));
+    for (const [id, cached] of Array.from(inspectorBrowserStages.entries())) {
+      if (!activeIds.has(id)) {
+        cached.stage.remove();
+        inspectorBrowserStages.delete(id);
+        continue;
+      }
+      cached.stage.hidden = true;
+    }
+    for (const child of Array.from(inspectorContent.children)) {
+      if (child instanceof HTMLElement && child.classList.contains("zion-inspector-browser-stage")) continue;
+      child.remove();
+    }
+  };
+  const attachInspectorMarkdownSelection = (article: HTMLElement, item: any, content: string) => {
+    const toolbar = el("div", "zion-selection-toolbar zion-inspector-selection-toolbar");
+    const toolbarItems = createSelectionToolbarItemsContainer();
+    toolbar.appendChild(toolbarItems);
+    toolbar.style.position = "fixed";
+    toolbar.onmousedown = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    document.body.appendChild(toolbar);
+    let timer = 0;
+    let disposed = false;
+
+    const hide = () => {
+      toolbar.classList.remove("is-visible");
+      toolbarItems.replaceChildren();
+    };
+    const update = () => {
+      if (disposed || !article.isConnected) return hide();
+      const selection = getInspectorMarkdownSelection(article, content);
+      if (!selection) return hide();
+      const context: any = {
+        view: null,
+        sourceKind: "inspector",
+        inspectorItemId: item.id,
+          sourceSessionId: getInspectorTextSessionId(item),
+          sourcePath: item.path || item.displayPath || "",
+          sourceTitle: item.title,
+          sourceText: content,
+        selectionText: selection.selectionText,
+        from: selection.from,
+          to: selection.to
+      };
+      const items = ((window as any).zion?.editor?.selectionToolbar?.list?.() || []).filter((candidate: any) => {
+        try {
+          if (candidate.id !== "comments.create") return false;
+          return typeof candidate.when === "function" ? !!candidate.when(context) : true;
+        } catch {
+          return false;
+        }
+      });
+      if (!items.length) return hide();
+      toolbarItems.replaceChildren();
+      for (const candidate of items) {
+        const anchor = el("span");
+        anchor.style.display = "inline-flex";
+        anchor.style.position = "relative";
+        const itemContext = { ...context, anchorEl: anchor };
+        let node: HTMLElement | null = null;
+        if (typeof candidate.render === "function") {
+          try { node = candidate.render(itemContext); } catch { node = null; }
+        }
+        if (!node) {
+          node = createSelectionToolbarButton({
+            title: candidate.title || candidate.label || candidate.id,
+            label: candidate.label || "",
+            codicon: candidate.codicon,
+            onClick: () => {
+              try { candidate.run?.(itemContext); } catch {}
+              hide();
+            }
+          });
+        }
+        node.onmousedown = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        node.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          try { candidate.run?.({ ...itemContext, event }); } catch {}
+          hide();
+        };
+        anchor.appendChild(node);
+        toolbarItems.appendChild(anchor);
+      }
+      toolbar.classList.add("is-visible");
+      const toolbarRect = toolbar.getBoundingClientRect();
+      const margin = 8;
+      const left = Math.max(
+        margin,
+        Math.min(window.innerWidth - toolbarRect.width - margin, selection.rect.left + selection.rect.width / 2 - toolbarRect.width / 2)
+      );
+      const above = selection.rect.top - toolbarRect.height - margin;
+      const top = above >= margin ? above : selection.rect.bottom + margin;
+      toolbar.style.left = `${Math.round(left)}px`;
+      toolbar.style.top = `${Math.round(Math.max(margin, Math.min(window.innerHeight - toolbarRect.height - margin, top)))}px`;
+    };
+    const schedule = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = 0;
+        update();
+      }, 80);
+    };
+    const registryDisposable = (window as any).zion?.editor?.selectionToolbar?.onDidChange?.(schedule) || null;
+    document.addEventListener("selectionchange", schedule);
+    article.addEventListener("pointerup", schedule);
+    inspectorContent.addEventListener("scroll", hide, { passive: true });
+    return {
+      dispose() {
+        disposed = true;
+        if (timer) window.clearTimeout(timer);
+        try { registryDisposable?.dispose?.(); } catch {}
+        document.removeEventListener("selectionchange", schedule);
+        article.removeEventListener("pointerup", schedule);
+        inspectorContent.removeEventListener("scroll", hide);
+        toolbar.remove();
+      }
+    };
+  };
+  const renderInspector = (force = false) => {
+    const items = inspectorRuntime.getItems();
+    const activeId = inspectorRuntime.getActiveItemId();
+    const item = inspectorRuntime.getActiveItem() || items[0] || null;
+    const renderer = item ? inspectorRuntime.getRenderer(item) : null;
+    const itemsSignature = items.map((candidate) => candidate.id).join("\u0000");
+    const textDecoratorVersion = inspectorRuntime.getTextEditorDecoratorVersion();
+    applyColumnWidths();
+    if (
+      !force
+      && item
+      && item === lastInspectorItem
+      && renderer === lastInspectorRenderer
+      && itemsSignature === lastInspectorItemsSignature
+      && textDecoratorVersion === lastInspectorTextDecoratorVersion
+    ) return;
+    lastInspectorItem = item;
+    lastInspectorRenderer = renderer;
+    lastInspectorItemsSignature = itemsSignature;
+    lastInspectorTextDecoratorVersion = textDecoratorVersion;
+    disposeInspectorContent();
+    inspectorTabs.innerHTML = "";
+    inspectorToolbarActions.innerHTML = "";
+    inspectorToolbarMenu.innerHTML = "";
+    updateInspectorToolbarMenuState();
+    resetInspectorContent(items);
+    inspectorContent.classList.remove("is-empty", "is-browser", "is-html-preview");
+    inspectorToolbarPath.classList.remove("is-browser-address");
+    if (!item) {
+      inspectorTitle.textContent = "查看";
+      inspectorTitle.title = "";
+      inspectorMeta.textContent = "";
+      inspectorToolbarPath.replaceChildren();
+      inspectorToolbarPath.textContent = "";
+      inspectorToolbarPath.title = "";
+      inspectorFileIcon.textContent = "";
+      inspectorContent.classList.add("is-empty");
+      renderInspectorState("panel-inspector", "暂无打开内容", "从文件链接、网页地址或预览操作打开内容后会显示在这里。");
+      inspectorTabsScrollbar.sync();
+      return;
+    }
+    if (item.id !== activeId) inspectorRuntime.activate(item.id);
+    inspectorTitle.textContent = item.title;
+    inspectorTitle.title = item.title;
+    const inspectorMetaParts = [
+        item.url ? "网页预览" : item.editable ? "可编辑" : "只读",
+      item.language && item.language !== "text" ? item.language.toUpperCase() : "",
+        typeof item.file?.size === "number" ? `${Math.max(0, Math.round(item.file.size / 1024)) || 1} KB` : "",
+        item.file?.truncated ? `仅预览前 ${Math.max(1, Math.round(Number(item.file.loadedBytes || 0) / 1024))} KB` : ""
+    ].filter(Boolean);
+    const setInspectorStatus = (status = "") => {
+      inspectorMeta.textContent = [...inspectorMetaParts, status].filter(Boolean).join(" · ");
+      inspectorStatusBar.dataset.saveState = status === "保存失败"
+        ? "error"
+        : status === "保存中"
+          ? "saving"
+          : status === "已修改"
+            ? "dirty"
+            : status === "已保存"
+              ? "saved"
+              : "";
+    };
+    setInspectorStatus();
+      inspectorToolbarPath.replaceChildren();
+      inspectorToolbarPath.textContent = item.url || item.displayPath || item.path || item.title;
+      inspectorToolbarPath.title = inspectorToolbarPath.textContent;
+    inspectorFileIcon.textContent = "";
+    setCodiconOnly(inspectorFileIcon, getInspectorFileIcon(item));
+    for (const action of item.actions || []) {
+      inspectorToolbarMenu.appendChild(createInspectorMenuAction(action.icon || "play", action.title, () => {
+        void Promise.resolve(action.run(item)).catch(() => {});
+      }));
+    }
+    updateInspectorToolbarMenuState();
+    for (const tab of items) {
+      const button = el("button", `zion-inspector-tab${tab.id === item.id ? " is-active" : ""}`) as HTMLButtonElement;
+      button.type = "button";
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", tab.id === item.id ? "true" : "false");
+      button.tabIndex = tab.id === item.id ? 0 : -1;
+      button.title = tab.displayPath || tab.path || tab.title;
+      const tabIcon = el("span", "zion-inspector-tab-icon");
+      setCodiconOnly(tabIcon, getInspectorFileIcon(tab));
+      const label = el("span", "zion-inspector-tab-label");
+      label.textContent = tab.title;
+      const close = el("span", "zion-inspector-tab-close");
+      setCodiconOnly(close, "close");
+      close.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        inspectorRuntime.close(tab.id);
+      };
+      button.onclick = () => inspectorRuntime.activate(tab.id);
+      button.onauxclick = (event) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        inspectorRuntime.close(tab.id);
+      };
+      button.onkeydown = (event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        const index = items.findIndex((candidate) => candidate.id === tab.id);
+        const delta = event.key === "ArrowRight" ? 1 : -1;
+        const next = items[(index + delta + items.length) % items.length];
+        if (!next) return;
+        inspectorRuntime.activate(next.id);
+        requestAnimationFrame(() => {
+          Array.from(inspectorTabs.querySelectorAll<HTMLButtonElement>(".zion-inspector-tab"))
+            .find((candidate) => candidate.dataset.inspectorItemId === next.id)?.focus();
+        });
+      };
+      button.dataset.inspectorItemId = tab.id;
+      button.appendChild(tabIcon);
+      button.appendChild(label);
+      button.appendChild(close);
+      inspectorTabs.appendChild(button);
+    }
+    requestAnimationFrame(inspectorTabsScrollbar.sync);
+    const file = item.file || { kind: "binary" as const };
+    if (item.url) {
+      const normalizeBrowserUrl = (value: string) => {
+        const raw = String(value || "").trim();
+        if (!raw) return "";
+        const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`;
+        try {
+          const parsed = new URL(candidate);
+          return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : "";
+        } catch {
+          return "";
+        }
+      };
+      const currentUrl = normalizeBrowserUrl(item.url);
+      if (!currentUrl) {
+        inspectorContent.classList.add("is-empty");
+        renderInspectorState("warning-triangle", "无法打开网页", "Inspector 网页预览仅支持 HTTP 和 HTTPS 地址。");
+        return;
+      }
+      let history = inspectorBrowserHistory.get(item.id);
+      if (!history) {
+        history = { entries: [currentUrl], index: 0 };
+        inspectorBrowserHistory.set(item.id, history);
+      } else if (history.entries[history.index] !== currentUrl) {
+        history.entries = history.entries.slice(0, history.index + 1);
+        history.entries.push(currentUrl);
+        history.index = history.entries.length - 1;
+      }
+      const navigate = (url: string, mode: "push" | "history" = "push") => {
+        const normalized = normalizeBrowserUrl(url);
+        if (!normalized) return;
+        if (mode === "push") {
+          history!.entries = history!.entries.slice(0, history!.index + 1);
+          if (history!.entries[history!.entries.length - 1] !== normalized) history!.entries.push(normalized);
+          history!.index = history!.entries.length - 1;
+        }
+        inspectorRuntime.update(item.id, {
+          url: normalized,
+          path: normalized,
+          displayPath: normalized,
+          title: (() => {
+            try { return new URL(normalized).host || normalized; } catch { return normalized; }
+          })()
+        });
+      };
+      const address = document.createElement("input");
+      address.className = "zion-inspector-browser-address";
+      address.type = "text";
+      address.value = currentUrl;
+      address.spellcheck = false;
+      address.setAttribute("aria-label", "网页地址");
+      address.onkeydown = (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        navigate(address.value);
+      };
+      inspectorToolbarPath.replaceChildren(address);
+      inspectorToolbarPath.title = currentUrl;
+      inspectorToolbarPath.classList.add("is-browser-address");
+      const back = createInspectorAction("arrow-left", "后退", () => {
+        if (history!.index <= 0) return;
+        history!.index -= 1;
+        navigate(history!.entries[history!.index], "history");
+      });
+      const forward = createInspectorAction("arrow-right", "前进", () => {
+        if (history!.index >= history!.entries.length - 1) return;
+        history!.index += 1;
+        navigate(history!.entries[history!.index], "history");
+      });
+      if (history.index > 0) inspectorToolbarActions.appendChild(back);
+      if (history.index < history.entries.length - 1) inspectorToolbarActions.appendChild(forward);
+      inspectorContent.classList.add("is-browser");
+      let browserStage = inspectorBrowserStages.get(item.id);
+      if (browserStage && browserStage.url !== currentUrl) {
+        browserStage.stage.remove();
+        inspectorBrowserStages.delete(item.id);
+        browserStage = undefined;
+      }
+      if (!browserStage) {
+        const stage = el("div", "zion-inspector-browser-stage");
+        const frameWrap = el("div", "zion-inspector-browser-frame-wrap");
+        const iframe = document.createElement("iframe");
+        iframe.className = "zion-inspector-browser-frame";
+        iframe.src = currentUrl;
+        iframe.title = item.title || currentUrl;
+        iframe.referrerPolicy = "no-referrer";
+        iframe.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads allow-same-origin");
+        iframe.setAttribute("allow", "clipboard-read; clipboard-write; fullscreen");
+        frameWrap.appendChild(iframe);
+        stage.appendChild(frameWrap);
+        browserStage = { url: currentUrl, stage, iframe };
+        inspectorBrowserStages.set(item.id, browserStage);
+        inspectorContent.appendChild(stage);
+      } else if (browserStage.stage.parentElement !== inspectorContent) {
+        inspectorContent.appendChild(browserStage.stage);
+      }
+      browserStage.iframe.title = item.title || currentUrl;
+      browserStage.stage.hidden = false;
+      inspectorToolbarActions.appendChild(createInspectorAction("refresh", "刷新", () => {
+        const cached = inspectorBrowserStages.get(item.id);
+        if (!cached) {
+          renderInspector(true);
+          return;
+        }
+        cached.iframe.src = "about:blank";
+        requestAnimationFrame(() => {
+          cached.iframe.src = cached.url;
+        });
+      }));
+      inspectorToolbarActions.appendChild(createInspectorAction("external-link", "在外部浏览器打开", () => {
+        try { window.open(currentUrl, "_blank", "noopener,noreferrer"); } catch {}
+      }));
+      setInspectorStatus("受浏览器嵌入策略限制");
+      return;
+    }
+    if (file.kind === "loading") {
+      inspectorContent.classList.add("is-empty");
+      renderInspectorState("loader", "正在打开文件", "内容准备好后会自动显示在这里。");
+      return;
+    }
+    if (file.kind === "error") {
+      inspectorContent.classList.add("is-empty");
+      renderInspectorState("warning-triangle", "无法打开内容", file.message || "请检查文件是否仍然存在，或稍后重试。");
+      return;
+    }
+    inspectorContent.classList.remove("is-empty");
+    const customRender = item.render || renderer?.render;
+    if (typeof customRender === "function") {
+      try {
+        const result = customRender(inspectorContent, {
+          item,
+          update: (patch) => inspectorRuntime.update(item.id, patch),
+          close: () => inspectorRuntime.close(item.id),
+          openInEditor: () => {
+            try { (window as any).zion?.events?.emit?.("ui/inspectorOpenInEditor", { item }); } catch {}
+          }
+        });
+        inspectorCustomDispose = result?.dispose || null;
+      } catch (error) {
+        inspectorContent.classList.add("is-empty");
+        renderInspectorState("error", "内容渲染失败", error instanceof Error ? error.message : "自定义查看器发生错误。");
+      }
+      return;
+    }
+    if (file.kind === "pdf" && file.blob instanceof Blob) {
+      inspectorObjectUrl = URL.createObjectURL(file.blob);
+      const stage = el("div", "zion-inspector-pdf-stage");
+      const frame = document.createElement("iframe");
+      frame.className = "zion-inspector-pdf-frame";
+      frame.src = inspectorObjectUrl;
+      frame.title = item.title || "PDF preview";
+      stage.appendChild(frame);
+      inspectorContent.appendChild(stage);
+      setInspectorStatus("PDF 预览");
+      return;
+    }
+    if (file.kind === "image" && file.blob instanceof Blob) {
+      inspectorObjectUrl = URL.createObjectURL(file.blob);
+      const stage = el("div", "zion-inspector-image-stage");
+      const canvas = el("div", "zion-inspector-image-canvas");
+      const image = document.createElement("img");
+      image.src = inspectorObjectUrl;
+      image.alt = item.title;
+      let fittedWidth = 0;
+      let fittedHeight = 0;
+      const updateImageMeta = (scale: number) => {
+        const dimensions = image.naturalWidth > 0 ? `${image.naturalWidth} × ${image.naturalHeight} · ` : "";
+        inspectorMeta.textContent = `${dimensions}${Math.round(scale * 100)}%`;
+      };
+      const applyImageScale = (nextScale: number) => {
+        const scale = Math.max(0.1, Math.min(16, Math.round(nextScale * 100) / 100));
+        inspectorImageScale.set(item.id, scale);
+        if (fittedWidth > 0 && fittedHeight > 0) {
+          const width = Math.round(fittedWidth * scale);
+          const height = Math.round(fittedHeight * scale);
+          image.style.width = `${width}px`;
+          image.style.height = `${height}px`;
+          image.style.maxWidth = "none";
+          canvas.style.width = `${Math.max(stage.clientWidth - 48, width)}px`;
+          canvas.style.height = `${Math.max(stage.clientHeight - 48, height)}px`;
+        }
+        updateImageMeta(scale);
+      };
+      inspectorToolbarActions.appendChild(createInspectorAction("screen-normal", "适应窗口", () => applyImageScale(1)));
+      inspectorToolbarMenu.appendChild(createInspectorMenuAction("zoom-out", "缩小", () => applyImageScale((inspectorImageScale.get(item.id) || 1) - 0.25)));
+      inspectorToolbarMenu.appendChild(createInspectorMenuAction("symbol-ruler", "原始尺寸", () => {
+        applyImageScale(fittedWidth > 0 ? image.naturalWidth / fittedWidth : 1);
+      }));
+      inspectorToolbarMenu.appendChild(createInspectorMenuAction("zoom-in", "放大", () => applyImageScale((inspectorImageScale.get(item.id) || 1) + 0.25)));
+      updateInspectorToolbarMenuState();
+      image.onload = () => {
+        fittedWidth = image.clientWidth;
+        fittedHeight = image.clientHeight;
+        applyImageScale(inspectorImageScale.get(item.id) || 1);
+      };
+      stage.onwheel = (event) => {
+        if (!event.metaKey && !event.ctrlKey) return;
+        event.preventDefault();
+        applyImageScale((inspectorImageScale.get(item.id) || 1) + (event.deltaY < 0 ? 0.1 : -0.1));
+      };
+      canvas.appendChild(image);
+      stage.appendChild(canvas);
+      inspectorContent.appendChild(stage);
+      applyImageScale(inspectorImageScale.get(item.id) || 1);
+      return;
+    }
+    if (file.kind === "text") {
+      const content = String(file.content || "");
+      const isMarkdown = item.language === "markdown" || /\.md(?:own)?$|\.markdown$/i.test(item.path || item.title);
+        const isHtml = item.language === "html" || /\.(?:html?|xhtml)$/i.test(item.path || item.title);
+      const previewing = isMarkdown && !inspectorMarkdownPreview.has(item.id);
+        const previewingHtml = isHtml && inspectorHtmlPreview.has(item.id);
+        if (file.truncated && !previewingHtml) {
+          const notice = el("div", "zion-inspector-truncated-notice");
+          notice.textContent = `文件较大，仅展示前 ${Math.max(1, Math.round(Number(file.loadedBytes || content.length) / 1024))} KB；预览为只读，避免误覆盖完整文件。`;
+          inspectorContent.appendChild(notice);
+        }
+      if (isMarkdown) {
+        inspectorToolbarActions.appendChild(createInspectorAction("eye", previewing ? "查看 Markdown 源码" : "阅读 Markdown", () => {
+          if (previewing) inspectorMarkdownPreview.add(item.id);
+          else inspectorMarkdownPreview.delete(item.id);
+          renderInspector(true);
+        }, previewing));
+      }
+      if (isHtml) {
+        inspectorToolbarActions.appendChild(createInspectorAction(
+          previewingHtml ? "file-code" : "browser",
+          previewingHtml ? "查看 HTML 源码" : "预览 HTML",
+          () => {
+            if (previewingHtml) {
+              inspectorHtmlPreview.delete(item.id);
+              renderInspector(true);
+              return;
+            }
+            if (!file.truncated || file.previewContent) {
+              inspectorHtmlPreview.add(item.id);
+              renderInspector(true);
+              return;
+            }
+            if (typeof file.loadFullContent !== "function") {
+              setInspectorStatus("文件过大，无法完整预览");
+              return;
+            }
+            setInspectorStatus("正在加载完整 HTML");
+            void file.loadFullContent()
+              .then((previewContent) => {
+                inspectorHtmlPreview.add(item.id);
+                inspectorRuntime.update(item.id, {
+                  file: { ...file, previewContent }
+                });
+              })
+              .catch((error) => {
+                setInspectorStatus("HTML 预览加载失败");
+                try { (window as any).showToast?.(error?.message || String(error || "HTML 预览加载失败")); } catch {}
+              });
+          },
+          previewingHtml
+        ));
+      }
+      inspectorToolbarMenu.appendChild(createInspectorMenuAction("copy", "复制内容", () => {
+        const write = navigator.clipboard?.writeText?.(content);
+        void (write || Promise.resolve()).catch(() => {});
+      }));
+        if (!previewing && !previewingHtml) {
+        inspectorToolbarActions.appendChild(createInspectorAction("search", "在内容中查找", () => {
+          openInspectorSearch(inspectorTextView);
+        }));
+        const language = String(item.language || "text").toLowerCase();
+        let wrapping = inspectorLineWrapping.get(item.id) ?? (language === "text" || language === "markdown");
+        const wrapAction = createInspectorMenuAction("word-wrap", wrapping ? "关闭自动换行" : "开启自动换行", () => {
+          wrapping = !wrapping;
+          inspectorLineWrapping.set(item.id, wrapping);
+          setInspectorLineWrapping(inspectorTextView, wrapping);
+          wrapAction.classList.toggle("is-active", wrapping);
+          const label = wrapAction.querySelector(".zion-inspector-toolbar-menu-label");
+          if (label) label.textContent = wrapping ? "关闭自动换行" : "开启自动换行";
+        }, wrapping);
+        inspectorToolbarMenu.appendChild(wrapAction);
+      }
+      updateInspectorToolbarMenuState();
+        if (previewingHtml) {
+          inspectorContent.classList.add("is-html-preview");
+          const stage = el("div", "zion-inspector-html-preview");
+          const iframe = document.createElement("iframe");
+          iframe.className = "zion-inspector-html-preview-frame";
+          iframe.title = item.title || "HTML preview";
+          iframe.referrerPolicy = "no-referrer";
+          iframe.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads");
+          iframe.srcdoc = String(file.previewContent || content);
+          stage.appendChild(iframe);
+          inspectorContent.appendChild(stage);
+          setInspectorStatus("沙箱 HTML 预览");
+          return;
+        }
+      if (previewing) {
+        const article = renderInspectorMarkdown(inspectorContent, content);
+        const previewView = createInspectorMarkdownPreviewView(article, inspectorContent, content);
+        const previewEditor = {
+          panelId: "inspector",
+          editorId: `inspector-preview:${item.id}`,
+          sessionId: getInspectorTextSessionId(item),
+          sourceKind: "inspector",
+          sourceViewKind: "preview",
+          inspectorItemId: item.id,
+          sourcePath: item.path || item.displayPath || "",
+          sourceTitle: item.title,
+          getValue: () => content,
+          getSelection: () => {
+            const selection = previewView.state.selection.main;
+            return previewView.state.sliceDoc(selection.from, selection.to);
+          },
+          getView: () => previewView,
+          focus: () => previewView.focus()
+        };
+        inspectorTextEditorDisposable = inspectorRuntime.attachTextEditor(item.id, previewEditor);
+        const selectionDisposable = attachInspectorMarkdownSelection(article, item, content);
+        const syncCommentRanges = () => {
+          try {
+            const ranges = (window as any).zion?.commands?.executeCommand?.("comments.getSourceAnchors", {
+              sessionId: getInspectorTextSessionId(item),
+              sourceText: content
+            }) || [];
+            applyInspectorMarkdownCommentRanges(article, Array.isArray(ranges) ? ranges : [], (threadId) => {
+              try { (window as any).zion?.commands?.executeCommand?.("comments.activateThread", threadId); } catch {}
+            });
+          } catch {}
+        };
+        const onCommentsChanged = () => syncCommentRanges();
+        window.addEventListener("zion:comments-changed", onCommentsChanged);
+        window.addEventListener("zion:comments-active-changed", onCommentsChanged);
+        syncCommentRanges();
+        inspectorMarkdownSelectionDisposable = {
+          dispose() {
+            selectionDisposable.dispose();
+            window.removeEventListener("zion:comments-changed", onCommentsChanged);
+            window.removeEventListener("zion:comments-active-changed", onCommentsChanged);
+          }
+        };
+        try {
+          (window as any).zion?.events?.emit?.("ui/inspectorTextSourceActivated", {
+            itemId: item.id,
+            sessionId: getInspectorTextSessionId(item),
+            editor: previewEditor
+          });
+        } catch {}
+        inspectorContent.scrollTop = inspectorScrollTop.get(item.id) || 0;
+        inspectorContent.onscroll = () => {
+          inspectorScrollTop.set(item.id, inspectorContent.scrollTop);
+          window.dispatchEvent(new CustomEvent("zion:comments-viewport-changed", {
+            detail: {
+              panelId: "inspector",
+              sessionId: previewEditor.sessionId
+            }
+          }));
+        };
+        return;
+      }
+        const editorHost = el("div", `zion-inspector-editor-host${file.truncated ? " is-truncated" : ""}`);
+      inspectorContent.appendChild(editorHost);
+      inspectorTextViewItemId = item.id;
+      editorHost.dataset.inspectorItemId = item.id;
+      editorHost.dataset.inspectorSessionId = getInspectorTextSessionId(item);
+      let liveView: ReturnType<typeof createInspectorTextView> | null = null;
+      const inspectorEditor = {
+        panelId: "inspector",
+        editorId: `inspector:${item.id}`,
+        sessionId: getInspectorTextSessionId(item),
+        sourceKind: "inspector",
+        inspectorItemId: item.id,
+        sourcePath: item.path || item.displayPath || "",
+        sourceTitle: item.title,
+        getValue: () => liveView?.state.doc.toString() ?? content,
+        setValue: (value: string) => {
+          if (!liveView) return;
+          liveView.dispatch({ changes: { from: 0, to: liveView.state.doc.length, insert: String(value || "") } });
+        },
+        replaceSelection: (value: string) => {
+          if (!liveView) return;
+          const selection = liveView.state.selection.main;
+          liveView.dispatch({
+            changes: { from: selection.from, to: selection.to, insert: String(value || "") },
+            selection: { anchor: selection.from + String(value || "").length }
+          });
+        },
+        getSelection: () => {
+          const selection = liveView?.state.selection.main;
+          return liveView && selection ? liveView.state.sliceDoc(selection.from, selection.to) : "";
+        },
+        replaceRange: (value: string, from: { line: number; ch: number }, to = from) => {
+          if (!liveView) return;
+          const offsetAt = (position: { line: number; ch: number }) => {
+            const lineNumber = Math.max(1, Math.min(liveView!.state.doc.lines, Number(position?.line || 0) + 1));
+            const line = liveView!.state.doc.line(lineNumber);
+            return Math.max(line.from, Math.min(line.to, line.from + Math.max(0, Number(position?.ch || 0))));
+          };
+          liveView.dispatch({ changes: { from: offsetAt(from), to: offsetAt(to), insert: String(value || "") } });
+        },
+        getCursor: () => {
+          if (!liveView) return { line: 0, ch: 0 };
+          const position = liveView.state.selection.main.head;
+          const line = liveView.state.doc.lineAt(position);
+          return { line: line.number - 1, ch: position - line.from };
+        },
+        setCursor: (position: { line: number; ch: number }) => {
+          if (!liveView) return;
+          const lineNumber = Math.max(1, Math.min(liveView.state.doc.lines, Number(position?.line || 0) + 1));
+          const line = liveView.state.doc.line(lineNumber);
+          const anchor = Math.max(line.from, Math.min(line.to, line.from + Math.max(0, Number(position?.ch || 0))));
+          liveView.dispatch({ selection: { anchor }, scrollIntoView: true });
+        },
+        focus: () => liveView?.focus(),
+        addVisualExtension: () => {},
+        getView: () => liveView
+      };
+      inspectorTextView = createInspectorTextView(editorHost, {
+        content,
+        filename: item.path || item.title,
+        language: item.language,
+          editable: item.editable && !file.truncated,
+        lineWrapping: inspectorLineWrapping.get(item.id) ?? (String(item.language || "text").toLowerCase() === "text" || isMarkdown),
+        extensions: inspectorRuntime.getTextEditorExtensions(inspectorEditor, item),
+        selectionContext: (view) => ({
+          sourceKind: "inspector",
+          inspectorItemId: item.id,
+          sourceSessionId: inspectorEditor.sessionId,
+          sourcePath: inspectorEditor.sourcePath,
+          sourceTitle: inspectorEditor.sourceTitle,
+          sourceText: view.state.doc.toString()
+        }),
+          onChange: item.editable && !file.truncated ? (nextContent) => {
+          setInspectorStatus("已修改");
+          if (inspectorSaveTimer) window.clearTimeout(inspectorSaveTimer);
+          inspectorPendingSave = async () => {
+            if (inspectorRuntime.getActiveItemId() === item.id) setInspectorStatus("保存中");
+            try {
+              await item.onSave?.(nextContent);
+              if (inspectorRuntime.getActiveItemId() === item.id) setInspectorStatus("已保存");
+            } catch {
+              if (inspectorRuntime.getActiveItemId() === item.id) setInspectorStatus("保存失败");
+            }
+          };
+          inspectorSaveTimer = window.setTimeout(() => {
+            inspectorSaveTimer = 0;
+            const save = inspectorPendingSave;
+            inspectorPendingSave = null;
+            void save?.();
+          }, 300);
+        } : undefined
+      });
+      liveView = inspectorTextView;
+      inspectorTextEditorDisposable = inspectorRuntime.attachTextEditor(item.id, inspectorEditor);
+      try {
+        (window as any).zion?.events?.emit?.("ui/inspectorTextSourceActivated", {
+          itemId: item.id,
+          sessionId: inspectorEditor.sessionId,
+          editor: inspectorEditor
+        });
+      } catch {}
+      const savedScrollTop = inspectorScrollTop.get(item.id) || 0;
+      requestAnimationFrame(() => {
+        if (inspectorTextViewItemId === item.id && inspectorTextView) {
+          inspectorTextView.scrollDOM.scrollTop = savedScrollTop;
+        }
+      });
+      return;
+    }
+    inspectorContent.classList.add("is-empty");
+    renderInspectorState("file", "暂不支持预览", "这个文件类型可以在主编辑区或对应的外部应用中打开。");
+  };
+
+  const dispInspectorTextReveal = inspectorRuntime.setTextRevealHandler((itemId, options = {}) => {
+    const item = inspectorRuntime.getItems().find((candidate) => candidate.id === itemId) || null;
+    if (!item || item.url || item.file?.kind !== "text") return null;
+    inspectorHtmlPreview.delete(item.id);
+    if (inspectorRuntime.getActiveItemId() !== item.id) {
+      inspectorRuntime.activate(item.id);
+    } else {
+      renderInspector(true);
+    }
+    const editor = inspectorRuntime.getTextEditor(item.id);
+    const view = editor?.getView?.();
+    if (view) {
+      const docLength = view.state.doc.length;
+      const from = Math.max(0, Math.min(docLength, Number(options.from) || 0));
+      const rawTo = Number(options.to);
+      const to = Math.max(from, Math.min(docLength, Number.isFinite(rawTo) ? rawTo : from));
+      view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true });
+      if (options.focus !== false) view.focus();
+    }
+    return editor;
+  });
+
+  let inspectorDragging = false;
+  let inspectorStartX = 0;
+  let inspectorStartWidth = inspectorRuntime.getWidth();
+  const stopInspectorResize = () => {
+    inspectorDragging = false;
+    sidePanelResizeActive = false;
+    wideningSidePanelByDrag = false;
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+      setResizeDragShield(false);
+    inspectorResizer.classList.remove("is-dragging");
+    window.removeEventListener("mousemove", onInspectorResize);
+    window.removeEventListener("mouseup", stopInspectorResize);
+    applyColumnWidths();
+  };
+  const onInspectorResize = (event: MouseEvent) => {
+    if (!inspectorDragging) return;
+    event.preventDefault();
+    const panelsScroller = editorEl.querySelector<HTMLElement>(".zion-panels-root");
+    const previousPanelsWidth = getElementClientWidth(panelsScroller);
+    const previousInspectorWidth = getElementClientWidth(inspectorEl);
+    const nextWidth = inspectorStartWidth - (event.clientX - inspectorStartX);
+    wideningSidePanelByDrag = nextWidth > inspectorStartWidth + 1;
+    inspectorRuntime.setWidth(nextWidth, { emit: false });
+    applyColumnWidths();
+    keepHorizontalScrollerRightEdgeAnchored(
+      panelsScroller,
+      previousPanelsWidth,
+      getElementClientWidth(inspectorEl) - previousInspectorWidth
+    );
+  };
+  inspectorResizer.onmousedown = (event) => {
+    event.preventDefault();
+    inspectorDragging = true;
+    sidePanelResizeActive = true;
+    inspectorStartX = event.clientX;
+    inspectorStartWidth = inspectorRuntime.getWidth();
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+      setResizeDragShield(true);
+    inspectorResizer.classList.add("is-dragging");
+    window.addEventListener("mousemove", onInspectorResize);
+    window.addEventListener("mouseup", stopInspectorResize);
+  };
+  inspectorEl.onkeydown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      inspectorRuntime.hide();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w") {
+      event.preventDefault();
+      const activeId = inspectorRuntime.getActiveItemId();
+      if (activeId) inspectorRuntime.close(activeId);
+    }
   };
 
   bottomPanelEl.style.position = "relative";
@@ -829,18 +2198,7 @@ export function initWorkbench(host: HTMLElement): {
       else bottomPanelRuntime.maximize();
     } catch {}
   };
-  const bottomHideBtn = el("button", "zion-bottompanel-action") as HTMLButtonElement;
-  bottomHideBtn.type = "button";
-  bottomHideBtn.title = "Hide Panel";
-  bottomHideBtn.setAttribute("aria-label", "Hide Panel");
-  setCodiconOnly(bottomHideBtn, "close");
-  bottomHideBtn.onclick = () => {
-    try {
-      bottomPanelRuntime.hide();
-    } catch {}
-  };
   bottomActions.appendChild(bottomMaxBtn);
-  bottomActions.appendChild(bottomHideBtn);
   bottomHeader.appendChild(bottomTabs);
   bottomHeader.appendChild(bottomActions);
 
@@ -1027,10 +2385,9 @@ export function initWorkbench(host: HTMLElement): {
       const icon = String(v.icon || "").trim();
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        const span = document.createElement("span");
-        span.className = `codicon codicon-${codiconMatch[1]}`;
-        span.setAttribute("aria-hidden", "true");
-        tab.appendChild(span);
+        tab.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+      } else if (hasZionIcon(icon)) {
+        tab.appendChild(createZionIcon(zionIconName(icon)));
       } else if (icon) {
         const span = document.createElement("span");
         span.textContent = safeText(icon);
@@ -1055,9 +2412,10 @@ export function initWorkbench(host: HTMLElement): {
       btn.title = title;
       btn.setAttribute("aria-label", tr((action as any).ariaLabelKey, safeText(action.ariaLabel || title)));
       btn.textContent = "";
+      const actionAny = action as any;
       const actionActive = (() => {
         try {
-          return typeof action.active === "function" ? !!action.active() : !!action.active;
+          return typeof actionAny.active === "function" ? !!actionAny.active() : !!actionAny.active;
         } catch {
           return false;
         }
@@ -1067,10 +2425,9 @@ export function initWorkbench(host: HTMLElement): {
       const text = tr((action as any).textKey, String((action as any).text || "").trim()).trim();
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        const span = document.createElement("span");
-        span.className = `codicon codicon-${codiconMatch[1]}`;
-        span.setAttribute("aria-hidden", "true");
-        btn.appendChild(span);
+        btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+      } else if (hasZionIcon(icon)) {
+        btn.appendChild(createZionIcon(zionIconName(icon)));
       } else if (icon) {
         btn.textContent = safeText(icon || title);
       }
@@ -1129,6 +2486,7 @@ export function initWorkbench(host: HTMLElement): {
       dragging = false;
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
+        setResizeDragShield(false);
       bottomResizer.classList.remove("is-dragging");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
@@ -1144,6 +2502,7 @@ export function initWorkbench(host: HTMLElement): {
       startH = bottomPanelRuntime.getHeight();
       document.body.style.userSelect = "none";
       document.body.style.cursor = "row-resize";
+      setResizeDragShield(true, "row-resize");
       bottomResizer.classList.add("is-dragging");
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
@@ -1219,10 +2578,9 @@ export function initWorkbench(host: HTMLElement): {
         btn.textContent = "";
         const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
         if (codiconMatch) {
-          const span = document.createElement("span");
-          span.className = `codicon codicon-${codiconMatch[1]}`;
-          span.setAttribute("aria-hidden", "true");
-          btn.appendChild(span);
+          btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+        } else if (hasZionIcon(icon)) {
+          btn.appendChild(createZionIcon(zionIconName(icon)));
         } else {
           btn.textContent = safeText(icon);
         }
@@ -1291,6 +2649,7 @@ export function initWorkbench(host: HTMLElement): {
       dragging = false;
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
+        setResizeDragShield(false);
       resizer.classList.remove("is-dragging");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
@@ -1306,6 +2665,7 @@ export function initWorkbench(host: HTMLElement): {
       startW = sideBarRuntime.getWidth();
       document.body.style.userSelect = "none";
       document.body.style.cursor = "col-resize";
+      setResizeDragShield(true);
       resizer.classList.add("is-dragging");
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
@@ -1334,8 +2694,14 @@ export function initWorkbench(host: HTMLElement): {
   } catch {}
 
   const dispA = activityBarRuntime.onDidChange(() => renderActivityBar());
-  const dispS = sideBarRuntime.onDidChange(() => renderSideBar());
+    const dispS = sideBarRuntime.onDidChange(() => {
+      if (!adjustingSidebarForWidePanels && sidebarAutoCollapsedForWidePanels && sideBarRuntime.isVisible()) {
+        sidebarAutoCollapsedForWidePanels = false;
+      }
+      renderSideBar();
+    });
   const dispX = auxiliaryBarRuntime.onDidChange(() => renderAuxiliaryBar());
+  const dispInspector = inspectorRuntime.onDidChange(() => renderInspector());
   const dispB = bottomPanelRuntime.onDidChange(() => renderBottomPanel());
   let dispI18n: { dispose?: () => void } | null = null;
   try {
@@ -1343,12 +2709,15 @@ export function initWorkbench(host: HTMLElement): {
       renderActivityBar();
       renderSideBar();
       renderAuxiliaryBar();
+      renderInspector();
       renderBottomPanel();
       renderMobileBar();
     }) || null;
   } catch {}
   const onResize = () => {
+    applyColumnWidths();
     renderMobileBar();
+    renderInspector();
     renderBottomPanel();
   };
   window.addEventListener("resize", onResize);
@@ -1356,6 +2725,7 @@ export function initWorkbench(host: HTMLElement): {
   renderActivityBar();
   renderSideBar();
   renderAuxiliaryBar();
+  renderInspector();
   renderBottomPanel();
   renderMobileBar();
 
@@ -1364,6 +2734,7 @@ export function initWorkbench(host: HTMLElement): {
     editorHeaderPathEl,
     editorTabsBarEl,
     dispose: () => {
+        setResizeDragShield(false);
       try {
         dispA.dispose();
       } catch {}
@@ -1374,6 +2745,12 @@ export function initWorkbench(host: HTMLElement): {
         dispX.dispose();
       } catch {}
       try {
+        dispInspector.dispose();
+      } catch {}
+      try {
+        dispInspectorTextReveal.dispose();
+      } catch {}
+      try {
         dispB.dispose();
       } catch {}
       try {
@@ -1381,6 +2758,11 @@ export function initWorkbench(host: HTMLElement): {
       } catch {}
       try {
         window.removeEventListener("resize", onResize);
+      } catch {}
+      try {
+        disposeInspectorContent();
+        stopInspectorResize();
+        document.removeEventListener("click", closeInspectorToolbarMenuOnOutsideClick);
       } catch {}
       try {
         void unmountView(mountedViewId);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SessionDocumentRuntime } from "../src/session/document-runtime";
 
 describe("SessionDocumentRuntime", () => {
@@ -83,6 +83,45 @@ describe("SessionDocumentRuntime", () => {
     });
 
     expect(calls).toEqual(["setGlobal:session-b"]);
+  });
+
+  it("does not replace an editor document that already matches the loaded text", async () => {
+    const setValue = vi.fn();
+    const runtime = new SessionDocumentRuntime({
+      getGlobalSessionId: () => "session-a",
+      setGlobalSessionId: () => {},
+      getTargetEditor: () => ({
+        getValue: () => "prefetched text",
+        setValue
+      }) as any,
+      persistPreviousSession: () => {},
+      setLastActiveId: () => {},
+      loadDocument: () => "prefetched text",
+      applyAnnotations: () => {}
+    });
+
+    await expect(runtime.switchSession({ id: "session-b" })).resolves.toBe(true);
+    expect(setValue).not.toHaveBeenCalled();
+  });
+
+  it("applies a prefetched synchronous document without yielding the switch task", async () => {
+    const calls: string[] = [];
+    const runtime = new SessionDocumentRuntime({
+      getGlobalSessionId: () => "session-a",
+      setGlobalSessionId: () => {},
+      getTargetEditor: () => ({
+        getValue: () => "",
+        setValue: (text: string) => calls.push(text)
+      }) as any,
+      persistPreviousSession: () => {},
+      setLastActiveId: () => {},
+      loadDocument: () => "prefetched text",
+      applyAnnotations: () => calls.push("annotations")
+    });
+
+    const switching = runtime.switchSession({ id: "session-b" });
+    expect(calls).toEqual(["prefetched text", "annotations"]);
+    await expect(switching).resolves.toBe(true);
   });
 
   it("drops stale document loads when a newer switch targets the same panel", async () => {
