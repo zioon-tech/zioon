@@ -872,14 +872,31 @@ body.zion-sessions-no-transitions .zion-session-row * {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
-/* Right-column filter chip: mirrors the tag selection driving the list. */
-.zion-sessions-split-filterbar {
-  display: none;
-  flex: 0 0 auto;
-  padding: 6px 8px 0 8px;
-}
-.zion-sessions-split-filterbar.is-active {
+/* Right-column header: mirrors the tag column header so both columns start
+   at the same height. No "会话" title here — the host sidebar header above
+   already names the view; this row carries count + active filter chip. */
+.zion-sessions-list-header {
   display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 6px 8px 4px 8px;
+}
+.zion-sessions-list-header-count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--fg) 42%, transparent);
+}
+.zion-sessions-list-header-count.is-filtering {
+  color: var(--accent);
+}
+.zion-sessions-list-header-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .zion-sessions-split-filterchip {
   display: inline-flex;
@@ -918,33 +935,22 @@ body.zion-sessions-no-transitions .zion-session-row * {
 
 /* ===== Split cohesion: tinted tag column + quiet divider ===== */
 /* The tag column is distinguished by a subtle background tint rather than
-   a hard border; the divider line stays invisible until interacted with. */
+   a hard border; the divider line stays invisible until interacted with.
+   The tint is opaque (panel-based) so a lifted split row can sit on the
+   host header line without the "会话" title bleeding through. */
 .zion-sessions-tag-column {
-  background: color-mix(in srgb, var(--fg) 3%, transparent);
+  background: color-mix(in srgb, var(--panel) 97%, var(--fg) 3%);
 }
 .zion-sessions-split-divider::before {
   background: transparent;
 }
+/* Lifted mode: the split row starts at the host header line so the tag
+   column header shares one top line with the host "会话" header. */
+.zion-sessions-split-row.is-lifted {
+  z-index: 5;
+  position: relative;
+}
+.zion-sessions-split-row.is-lifted .zion-sessions-tagtree-header {
+  padding-top: 8px;
+}
 
-/* Column-header icon buttons (add / close in tag column; open-split in the
-   inline tags header) share one quiet style. */
-.zion-sessions-tagtree-collapse,
-.zion-sessions-tags-splitbtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  border: 0;
-  background: transparent;
-  color: color-mix(in srgb, var(--fg) 46%, transparent);
-  cursor: pointer;
-  border-radius: var(--radius-sm, 4px);
-  transition: background var(--transition-fast), color var(--transition-fast);
-}
-.zion-sessions-tagtree-collapse:hover,
-.zion-sessions-tags-splitbtn:hover {
-  background: color-mix(in srgb, var(--fg) 7%, transparent);
-  color: var(--fg);
-}

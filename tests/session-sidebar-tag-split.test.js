@@ -168,7 +168,7 @@ describe("sessions sidebar tag split layout", () => {
     expect(betaFilter({ id: "s2" })).toBe(true);    // "#beta/one" is a descendant of beta
   });
 
-  it("split mode uses a single divider line and shows a clearable filter chip", () => {
+  it("split mode uses a single divider line, a session count header, and a clearable filter chip", () => {
     localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
     const { container } = mountAt(500);
 
@@ -177,38 +177,60 @@ describe("sessions sidebar tag split layout", () => {
     expect(tagColumn.style.borderRight).toBe("");
     expect(container.querySelector(".zion-sessions-split-divider")).toBeTruthy();
 
-    // no chip when nothing is selected
-    expect(container.querySelector(".zion-sessions-split-filterbar.is-active")).toBeNull();
+    // right column header row exists for height alignment, shows total count,
+    // and does NOT repeat the host header's "Sessions" title
+    const listHeader = container.querySelector(".zion-sessions-list-header");
+    expect(listHeader).toBeTruthy();
+    expect(listHeader.querySelector(".zion-sessions-list-header-title")).toBeNull();
+    expect(listHeader.querySelector(".zion-sessions-list-header-count").textContent).toBe("2");
 
-    // selecting a tag shows the chip with the selected path
+    // no chip when nothing is selected
+    expect(listHeader.querySelector(".zion-sessions-split-filterchip")).toBeNull();
+
+    // selecting a tag shows matched/total count + chip
     container.querySelector('[data-path="alpha"]').click();
-    const chip = container.querySelector(".zion-sessions-split-filterchip");
+    expect(listHeader.querySelector(".zion-sessions-list-header-count").textContent).toBe("1/2");
+    const chip = listHeader.querySelector(".zion-sessions-split-filterchip");
     expect(chip).toBeTruthy();
     expect(chip.textContent).toContain("#alpha");
 
     // clearing via the chip resets selection
-    container.querySelector(".zion-sessions-split-filterclear").click();
-    expect(container.querySelector(".zion-sessions-split-filterbar.is-active")).toBeNull();
+    listHeader.querySelector(".zion-sessions-split-filterclear").click();
+    expect(listHeader.querySelector(".zion-sessions-split-filterchip")).toBeNull();
+    expect(listHeader.querySelector(".zion-sessions-list-header-count").textContent).toBe("2");
     expect(container.querySelector('.zion-sessions-tagtree-row[aria-selected="true"]')).toBeNull();
   });
 
-  it("split toggle lives in the column headers, not the host header", () => {
-    // split mode: the tag column's own close button collapses back to inline
-    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
-    const { container } = mountAt(500);
-    container.querySelector(".zion-sessions-tagtree-collapse").click();
-    expect(container.querySelector(".zion-sessions-split-row")).toBeNull();
-    expect(localStorage.getItem("zion.sessions.sidebar.tagSplit")).toBe("0");
-    // inline tags section is back and offers the open-split button
-    const inline = container.querySelector(".zion-sessions-tags-panel");
-    expect(inline.style.display).not.toBe("none");
-    expect(inline.querySelector(".zion-sessions-tags-splitbtn")).toBeTruthy();
+  it("lifts the split row onto the host header line when the host structure allows it", () => {
+    // Build a host-like structure: .zion-sidebar > .zion-sidebar-header + content
+    const host = document.createElement("div");
+    host.className = "zion-sidebar";
+    const header = document.createElement("div");
+    header.className = "zion-sidebar-header";
+    Object.defineProperty(header, "offsetHeight", { value: 40, configurable: true });
+    const content = document.createElement("div");
+    content.className = "zion-sidebar-content";
+    host.append(header, content);
+    document.body.appendChild(host);
 
-    // stacked mode: inline tags header's open button turns split back on
-    inline.querySelector(".zion-sessions-tags-splitbtn").click();
-    expect(container.querySelector(".zion-sessions-split-row")).toBeTruthy();
-    expect(localStorage.getItem("zion.sessions.sidebar.tagSplit")).toBe("1");
-    // inline section is hidden again (kept in DOM, display:none)
-    expect(inline.style.display).toBe("none");
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const widthCalls = [];
+    const { manager } = makeManager(widthCalls);
+    const container = document.createElement("div");
+    content.appendChild(container);
+    Object.defineProperty(container, "clientWidth", { value: 500, configurable: true });
+    manager.mountInto(container);
+
+    const splitRow = container.querySelector(".zion-sessions-split-row");
+    expect(splitRow.style.marginTop).toBe("-40px");
+    expect(splitRow.classList.contains("is-lifted")).toBe(true);
+
+    // tabs (or any extra sibling before content) disables the lift safely
+    const tabs = document.createElement("div");
+    tabs.className = "zion-sidebar-tabs";
+    Object.defineProperty(tabs, "offsetHeight", { value: 30, configurable: true });
+    host.insertBefore(tabs, content);
+    const splitRow2 = container.querySelector(".zion-sessions-split-row");
+    expect(splitRow2.style.marginTop).toBe("-40px"); // stays until next relayout
   });
 });

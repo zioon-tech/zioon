@@ -608,15 +608,32 @@ export function createSessionsSidebarViewManager(opts) {
     rightColumn.style.minHeight = "0";
     rightColumn.style.overflow = "hidden";
 
-    // Active tag filter chip — mirrors the left column's selection so the
-    // two columns read as one unit (select left, see it driving the right).
-    const splitFilterBar = document.createElement("div");
-    splitFilterBar.className = "zion-sessions-split-filterbar";
-    const updateSplitFilterBar = () => {
-      splitFilterBar.innerHTML = "";
-      const active = appliedSplitMode === "split" && !!selectedTag;
-      splitFilterBar.classList.toggle("is-active", active);
-      if (!active) return;
+    // Right-column header — same geometry as the tag column header so both
+    // columns start at one height. It carries no "会话" title: the host
+    // sidebar header above (会话 + ⧉ + ⋯) already names this column. It shows
+    // the live count (n, or filtered/total) and the active filter chip.
+    const listHeader = document.createElement("div");
+    listHeader.className = "zion-sessions-list-header";
+    const listHeaderCount = document.createElement("span");
+    listHeaderCount.className = "zion-sessions-list-header-count";
+    const listHeaderChips = document.createElement("span");
+    listHeaderChips.className = "zion-sessions-list-header-chips";
+    listHeader.append(listHeaderCount, listHeaderChips);
+    const updateListHeader = () => {
+      const sessions = getSessionIndex();
+      const total = sessions.length;
+      const filtering = appliedSplitMode === "split" && !!selectedTag;
+      let matched = total;
+      if (filtering) {
+        matched = sessions.filter((session) => {
+          const sid = String(session?.id || "");
+          return sid && tagMatchesFilter(getSessionTags(sid), selectedTag);
+        }).length;
+      }
+      listHeaderCount.textContent = filtering ? `${matched}/${total}` : String(total);
+      listHeaderCount.classList.toggle("is-filtering", filtering);
+      listHeaderChips.innerHTML = "";
+      if (!filtering) return;
       const chip = document.createElement("span");
       chip.className = "zion-sessions-split-filterchip";
       const label = document.createElement("span");
@@ -634,7 +651,7 @@ export function createSessionsSidebarViewManager(opts) {
         renderAll();
       };
       chip.append(label, clear);
-      splitFilterBar.appendChild(chip);
+      listHeaderChips.appendChild(chip);
     };
 
     const tagTreePanel = createTagTreePanel({
@@ -642,7 +659,6 @@ export function createSessionsSidebarViewManager(opts) {
       iconHtml,
       isCollapsed: isTagNodeCollapsed,
       setCollapsed: setTagNodeCollapsed,
-      onCollapseSplit: () => setTagSplitEnabled(false),
       onSelect: (path) => {
         selectedTag = String(path || "");
         renderAll();
@@ -686,6 +702,30 @@ export function createSessionsSidebarViewManager(opts) {
     });
 
     let appliedSplitMode = null;
+
+    // Lift the split row up so the tag column header ("全部标签") shares the
+    // top line with the host sidebar header ("会话"). Only when the content
+    // area's preceding sibling is exactly the host header (no tabs etc.) —
+    // anything else that must stay visible disables the lift.
+    const measureHostHeaderLift = () => {
+      try {
+        const content = container.parentElement;
+        const host = content?.parentElement;
+        if (!content || !host) return 0;
+        const before = [];
+        for (const child of host.children) {
+          if (child === content) break;
+          before.push(child);
+        }
+        if (before.length !== 1) return 0;
+        const headerEl = before[0];
+        if (!String(headerEl.className || "").includes("sidebar-header")) return 0;
+        return headerEl.offsetHeight || 0;
+      } catch {
+        return 0;
+      }
+    };
+
     const applySplitLayout = () => {
       const bodyWidth = container.clientWidth || 0;
       const wantSplit = tagSplitEnabled && bodyWidth >= TAG_SPLIT_BODY_MIN;
@@ -694,14 +734,19 @@ export function createSessionsSidebarViewManager(opts) {
       appliedSplitMode = mode;
       if (wantSplit) {
         tagsHost.style.display = "none";
+        const lift = measureHostHeaderLift();
+        splitRow.classList.toggle("is-lifted", lift > 0);
+        splitRow.style.marginTop = lift > 0 ? `-${lift}px` : "";
         splitRow.appendChild(tagColumn);
         splitRow.appendChild(splitDivider);
-        rightColumn.appendChild(splitFilterBar);
+        rightColumn.appendChild(listHeader);
         rightColumn.appendChild(listWrap);
         rightColumn.appendChild(calendarHost);
         splitRow.appendChild(rightColumn);
         container.appendChild(splitRow);
       } else {
+        splitRow.classList.remove("is-lifted");
+        splitRow.style.marginTop = "";
         if (splitRow.parentElement === container) container.removeChild(splitRow);
         tagsHost.style.display = "";
         container.appendChild(listWrap);
@@ -902,19 +947,6 @@ export function createSessionsSidebarViewManager(opts) {
         };
         header.appendChild(clear);
       }
-
-      // Open-the-split control (paired with the column's own close button).
-      const openSplitBtn = document.createElement("button");
-      openSplitBtn.type = "button";
-      openSplitBtn.className = "zion-sessions-tags-splitbtn";
-      openSplitBtn.title = t("tags.openSplit", "Show tags as side column");
-      openSplitBtn.setAttribute("aria-label", t("tags.openSplit", "Show tags as side column"));
-      openSplitBtn.innerHTML = iconHtml("columns-2", 12);
-      openSplitBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        setTagSplitEnabled(true);
-      };
-      header.appendChild(openSplitBtn);
 
       tagsHost.appendChild(header);
       if (tagPanelCollapsed) return;
@@ -1358,7 +1390,7 @@ export function createSessionsSidebarViewManager(opts) {
         captureTagsPanelScroll();
         if (appliedSplitMode !== "split") renderTagsPanel();
         renderTagTreeIfSplit();
-        updateSplitFilterBar();
+        updateListHeader();
         renderCalendar();
       }
       innerRender();

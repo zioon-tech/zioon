@@ -56,6 +56,7 @@ const I18N_MESSAGES = {
     "ui.createNew": "新建会话",
     "ui.newFolder": "新建文件夹",
     "ui.actions": "操作",
+    "ui.toggleTagSplit": "切换标签分栏",
     "ui.import": "导入会话",
     "ui.exportAll": "导出全部会话",
     "ui.exportSelected": "导出所选项",
@@ -138,9 +139,7 @@ const I18N_MESSAGES = {
     "tags.clearTitle": "清除标签筛选",
     "tags.expandNode": "展开 {tag}",
     "tags.collapseNode": "折叠 {tag}",
-    "tags.filterTitle": "按 {tag} 筛选会话",
-    "tags.openSplit": "以侧栏分栏显示标签",
-    "tags.closeSplit": "关闭标签分栏"
+    "tags.filterTitle": "按 {tag} 筛选会话"
   },
   "en-US": {
     "category.sessions": "Sessions",
@@ -249,9 +248,7 @@ const I18N_MESSAGES = {
     "tags.clearTitle": "Clear tag filter",
     "tags.expandNode": "Expand {tag}",
     "tags.collapseNode": "Collapse {tag}",
-    "tags.filterTitle": "Filter sessions by {tag}",
-    "tags.openSplit": "Show tags as side column",
-    "tags.closeSplit": "Close tag column"
+    "tags.filterTitle": "Filter sessions by {tag}"
   }
 };
 
@@ -1554,6 +1551,15 @@ export async function activate(ctx) {
       order: 10,
       location: "sidebar",
       headerActions: [
+        {
+          id: "sessions.tagSplit",
+          title: t("ui.toggleTagSplit", "Toggle tag column"),
+          titleKey: "dev.session-manager.ui.toggleTagSplit",
+          ariaLabel: t("ui.toggleTagSplit", "Toggle tag column"),
+          ariaLabelKey: "dev.session-manager.ui.toggleTagSplit",
+          icon: "$(columns-2)",
+          onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleTagSplit")
+        },
         {
           id: "sessions.new",
           title: t("ui.createNew", "Create new session"),
