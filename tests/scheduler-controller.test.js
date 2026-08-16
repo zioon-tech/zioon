@@ -38,6 +38,17 @@ describe("scheduler controller", () => {
     expect(task.capability).toMatchObject({ preset: "read-only", allowedTools: [] });
     expect(validateSchedulerTask(task)).toBe("");
 
+    const tagged = buildSchedulerTask({
+      title: "Tagged summary",
+      prompt: "Summarize project updates",
+      sessionTag: "定时任务",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW);
+    expect(mergeSchedulerTask(tagged, { title: "Tagged summary v2" }, NOW)).toMatchObject({
+      title: "Tagged summary v2",
+      sessionTag: "定时任务"
+    });
+
     const migrated = mergeSchedulerTask(task, {
       capability: {
         preset: "trusted-automation",

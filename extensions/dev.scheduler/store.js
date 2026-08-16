@@ -1,5 +1,6 @@
 const TASKS_KEY = "zion.scheduler.local.tasks.v1";
 const RUNS_KEY = "zion.scheduler.local.runs.v1";
+const SESSION_ARCHIVE_KEY = "zion.scheduler.local.sessionArchive.v1";
 const MAX_RUNS = 100;
 const MAX_EVENTS_PER_RUN = 200;
 const MAX_OUTPUT_CHARS = 100_000;
@@ -42,6 +43,21 @@ export class LocalSchedulerStore {
 
   deleteTask(id) {
     write(TASKS_KEY, this.listTasks().filter((task) => task.id !== id));
+  }
+
+  getSessionArchiveState() {
+    const value = read(SESSION_ARCHIVE_KEY, {});
+    return {
+      folderId: String(value?.folderId || "") || null,
+      folderLocale: String(value?.folderLocale || ""),
+      migrationVersion: Math.max(0, Number(value?.migrationVersion) || 0)
+    };
+  }
+
+  saveSessionArchiveState(patch = {}) {
+    const next = { ...this.getSessionArchiveState(), ...(patch || {}) };
+    write(SESSION_ARCHIVE_KEY, next);
+    return next;
   }
 
   listRuns(taskId = null) {

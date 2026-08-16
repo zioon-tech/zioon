@@ -114,6 +114,9 @@ export function buildSchedulerTask(input = {}, existing = null, now = Date.now()
     });
   }
   const enabled = typeof input?.enabled === "boolean" ? input.enabled : existing?.enabled ?? true;
+  const sessionTag = String(input?.sessionTag ?? existing?.sessionTag ?? "")
+    .replace(/^#/, "")
+    .trim();
 
   return {
     ...(existing || {}),
@@ -123,6 +126,7 @@ export function buildSchedulerTask(input = {}, existing = null, now = Date.now()
     executionMode,
     title: String(input?.title ?? existing?.title ?? "").trim(),
     prompt: String(input?.prompt ?? existing?.prompt ?? "").trim(),
+    sessionTag,
     command,
     cwd: String(input?.cwd ?? existing?.cwd ?? "").trim(),
     note: String(input?.note ?? existing?.note ?? "").trim(),
