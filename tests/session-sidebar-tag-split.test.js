@@ -73,9 +73,11 @@ describe("sessions sidebar tag split layout", () => {
     expect(container.querySelector(".zion-sessions-split-row")).toBeTruthy();
     const right = container.querySelector(".zion-sessions-right-column");
     expect(right.querySelector(".zion-sessions-list")).toBeTruthy();
-    expect(right.querySelector(".zion-sessions-day-panel")).toBeTruthy();
+    expect(right.querySelector(".zion-sessions-day-panel")).toBeNull();
     expect(container.querySelector(".zion-sessions-tags-panel").style.display).toBe("none");
-    expect(container.querySelector(".zion-sessions-tag-column")).toBeTruthy();
+    const tagColumn = container.querySelector(".zion-sessions-tag-column");
+    expect(tagColumn).toBeTruthy();
+    expect(tagColumn.querySelector(".zion-sessions-day-panel")).toBeTruthy();
   });
 
   it("falls back to stacked layout under 380px even when enabled", () => {
@@ -99,6 +101,7 @@ describe("sessions sidebar tag split layout", () => {
     inst.toggleTagSplit();
     expect(localStorage.getItem("zion.sessions.sidebar.tagSplit")).toBe("0");
     expect(container.querySelector(".zion-sessions-split-row")).toBeNull();
+    expect(container.querySelector(".zion-sessions-day-panel").parentElement).toBe(container);
     expect(widthCalls).toEqual([440, 300]);
   });
 

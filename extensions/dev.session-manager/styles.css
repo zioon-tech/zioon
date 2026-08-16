@@ -573,9 +573,11 @@ body.zion-sessions-no-transitions .zion-session-row * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 650;
+  opacity: 0.92;
+  letter-spacing: 0;
 }
 .zion-sessions-header-count {
   flex: 0 0 auto;
@@ -606,28 +608,46 @@ body.zion-sessions-no-transitions .zion-session-row * {
   align-items: center;
   gap: 6px;
   padding: 6px 8px 4px;
+  background: color-mix(in srgb, var(--panel) 97%, var(--fg) 3%);
 }
 
 .zion-sessions-tagtree-searchwrap {
+  position: relative;
+  display: flex;
+  align-items: center;
   padding: 6px 8px;
+}
+.zion-sessions-tagtree-searchicon {
+  position: absolute;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--fg) 36%, transparent);
+  pointer-events: none;
 }
 .zion-sessions-tagtree-search {
   width: 100%;
   box-sizing: border-box;
-  height: 22px;
-  padding: 0 6px;
+  height: 24px;
+  padding: 0 7px 0 24px;
   font-size: 11px;
   color: var(--fg);
-  background: transparent;
-  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: color-mix(in srgb, var(--panel) 94%, var(--fg) 6%);
+  border: 1px solid var(--surface-border-soft, color-mix(in srgb, var(--border) 36%, transparent));
   border-radius: var(--radius-sm, 4px);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 .zion-sessions-tagtree-search::placeholder {
-  color: color-mix(in srgb, var(--fg) 38%, transparent);
+  color: color-mix(in srgb, var(--fg) 40%, transparent);
 }
 .zion-sessions-tagtree-search:focus {
   outline: none;
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--panel);
+  border-color: color-mix(in srgb, var(--accent) 52%, transparent);
+}
+.zion-sessions-tagtree-searchwrap:focus-within .zion-sessions-tagtree-searchicon {
+  color: var(--accent);
 }
 
 .zion-sessions-tagtree-body {
@@ -938,4 +958,12 @@ body.zion-sessions-no-transitions .zion-session-row * {
 /* ===== Split cohesion: tinted tag column + continuous divider ===== */
 .zion-sessions-tag-column {
   background: color-mix(in srgb, var(--panel) 97%, var(--fg) 3%);
+}
+.zion-sessions-tag-column > .zion-sessions-tagtree {
+  flex: 1 1 auto;
+  height: auto;
+}
+.zion-sessions-day-panel.is-in-tag-column {
+  flex: 0 0 auto;
+  margin-bottom: 8px !important;
 }

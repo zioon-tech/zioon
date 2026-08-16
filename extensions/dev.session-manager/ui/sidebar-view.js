@@ -741,15 +741,17 @@ export function createSessionsSidebarViewManager(opts) {
       appliedSplitMode = mode;
       if (wantSplit) {
         tagsHost.style.display = "none";
+        calendarHost.classList.add("is-in-tag-column");
         splitRow.appendChild(tagColumn);
+        tagColumn.appendChild(calendarHost);
         splitRow.appendChild(splitDivider);
         rightColumn.appendChild(listHeader);
         rightColumn.appendChild(listWrap);
-        rightColumn.appendChild(calendarHost);
         splitRow.appendChild(rightColumn);
         container.appendChild(splitRow);
       } else {
         if (splitRow.parentElement === container) container.removeChild(splitRow);
+        calendarHost.classList.remove("is-in-tag-column");
         tagsHost.style.display = "";
         container.appendChild(listWrap);
         container.appendChild(tagsHost);

@@ -54,6 +54,10 @@ export function createTagTreePanel(deps) {
     searchText = String(search.value || "").trim().toLowerCase();
     render();
   };
+  const searchIcon = document.createElement("span");
+  searchIcon.className = "zion-sessions-tagtree-searchicon";
+  searchIcon.innerHTML = iconHtml("search", 12);
+  searchWrap.appendChild(searchIcon);
   searchWrap.appendChild(search);
 
   const body = document.createElement("div");
