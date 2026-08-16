@@ -78,12 +78,29 @@ describe("buildTagTree", () => {
     expect(project).toEqual(expect.objectContaining({
       automatic: true,
       readOnly: true,
+      documentBacked: false,
       sourceLabels: ["Biography"]
     }));
     expect(zion).toEqual(expect.objectContaining({
       automatic: true,
       readOnly: true,
       sourceLabels: ["Biography"]
+    }));
+  });
+  it("tracks document-backed rows independently from derived sources", () => {
+    const entries = reconcileCatalog([], ["project/zion"]);
+    const tree = buildTagTree(entries, [
+      ["s1", ["project/zion"]],
+      ["s2", [{
+        path: "project/zion",
+        sourceId: "biography",
+        sourceLabel: "Biography",
+        readOnly: true
+      }]]
+    ]);
+    expect(tree.rows.find((row) => row.path === "project/zion")).toEqual(expect.objectContaining({
+      automatic: true,
+      documentBacked: true
     }));
   });
 });

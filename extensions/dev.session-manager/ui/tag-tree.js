@@ -31,6 +31,8 @@ export function createTagTreePanel(deps) {
   const onReorder = deps.onReorder || (() => {});
   const onReparent = deps.onReparent || (async () => true);
   const onPin = deps.onPin || (() => {});
+  const getIgnoreImpact = deps.getIgnoreImpact || (() => ({ sessionCount: 0, tagCount: 0 }));
+  const onIgnoreSubtree = deps.onIgnoreSubtree || (async () => true);
   const isCollapsed = deps.isCollapsed || (() => false);
   const setCollapsed = deps.setCollapsed || (() => {});
 
@@ -105,6 +107,7 @@ export function createTagTreePanel(deps) {
         state.selection === row.path ? 1 : 0,
         row.automatic ? 1 : 0,
         row.readOnly ? 1 : 0,
+        row.documentBacked ? 1 : 0,
         (row.sourceLabels || []).join(",")
       ].join(":")).join("\u0001"),
       searchText,
@@ -131,6 +134,7 @@ export function createTagTreePanel(deps) {
       if (editMode && editMode.path === row.path) {
         if (editMode.kind === "rename") body.appendChild(createInputRow(parentOf(row), row.label));
         if (editMode.kind === "delete") body.appendChild(createDeleteRow(row));
+        if (editMode.kind === "ignore") body.appendChild(createIgnoreRow(row, editMode.impact));
       }
     }
   }
@@ -362,6 +366,14 @@ export function createTagTreePanel(deps) {
         render();
       }, { danger: true });
     }
+    if (row.documentBacked) {
+      mk(t("tags.ignoreMatches", "Ignore in matching sessions"), () => {
+        const impact = getIgnoreImpact(row.path) || {};
+        if (!Number(impact.sessionCount || 0)) return;
+        editMode = { kind: "ignore", path: row.path, impact };
+        render();
+      });
+    }
     const close = (clickEvent) => {
       if (menu.contains(clickEvent.target)) return;
       menu.remove();
@@ -460,6 +472,41 @@ export function createTagTreePanel(deps) {
     wrap.appendChild(text);
     wrap.appendChild(yes);
     wrap.appendChild(no);
+    return wrap;
+  }
+
+  function createIgnoreRow(row, impact = {}) {
+    const wrap = document.createElement("div");
+    wrap.className = "zion-sessions-tagtree-confirm is-ignore";
+    wrap.style.marginLeft = `${4 + (row.depth + 1) * 13}px`;
+    const text = document.createElement("span");
+    text.className = "zion-sessions-tagtree-confirm-text";
+    text.textContent = t(
+      "tags.ignoreConfirmSubtree",
+      "Ignore {tags} tags, including descendants, in {sessions} sessions?",
+      {
+        tags: Number(impact.tagCount || 0),
+        sessions: Number(impact.sessionCount || 0)
+      }
+    );
+    const yes = document.createElement("button");
+    yes.type = "button";
+    yes.className = "zion-sessions-tagtree-confirm-yes";
+    yes.textContent = t("tags.ignoreYes", "Ignore");
+    yes.onclick = async () => {
+      await onIgnoreSubtree(row.path, impact);
+      editMode = null;
+      render();
+    };
+    const no = document.createElement("button");
+    no.type = "button";
+    no.className = "zion-sessions-tagtree-confirm-no";
+    no.textContent = t("common.cancel", "Cancel");
+    no.onclick = () => {
+      editMode = null;
+      render();
+    };
+    wrap.append(text, yes, no);
     return wrap;
   }
 

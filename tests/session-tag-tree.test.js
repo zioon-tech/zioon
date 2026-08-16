@@ -10,12 +10,14 @@ function makeRows(entries, sessionTags) {
 }
 
 function makePanel(overrides = {}) {
-  const calls = { select: [], create: [], rename: [], delete: [], reorder: [], reparent: [], pin: [] };
+  const calls = { select: [], create: [], rename: [], delete: [], reorder: [], reparent: [], pin: [], ignore: [] };
   const collapsed = new Set();
   const panel = createTagTreePanel({
     t: (key, fallback, values) => String(fallback)
       .replace("{count}", values?.count ?? "")
       .replace("{children}", values?.children ?? "")
+      .replace("{sessions}", values?.sessions ?? "")
+      .replace("{tags}", values?.tags ?? "")
       .replace("{source}", values?.source ?? ""),
     iconHtml: () => "<span></span>",
     isCollapsed: (path) => collapsed.has(path),
@@ -27,6 +29,8 @@ function makePanel(overrides = {}) {
     onReorder: (path, ref, after) => { calls.reorder.push([path, ref, after]); },
     onReparent: async (path, parent) => { calls.reparent.push([path, parent]); return true; },
     onPin: (path) => { calls.pin.push(path); },
+    getIgnoreImpact: () => ({ sessionCount: 2, tagCount: 3 }),
+    onIgnoreSubtree: async (path) => { calls.ignore.push(path); return true; },
     ...overrides
   });
   return { panel, calls, collapsed };
@@ -265,8 +269,49 @@ describe("tag tree panel", () => {
       delete: [],
       reorder: [],
       reparent: [],
-      pin: []
+      pin: [],
+      ignore: []
     });
+  });
+
+  it("confirms document-backed subtree exclusion with affected counts", async () => {
+    const { panel, calls } = makePanel();
+    const tree = makeRows([], [
+      ["s1", ["#project", "#project/zion"]],
+      ["s2", ["#project/ui"]]
+    ]);
+    panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
+    document.body.appendChild(panel.el);
+    const row = panel.el.querySelector('[data-path="project"]');
+    row.dispatchEvent(new MouseEvent("contextmenu", {
+      clientX: 10,
+      clientY: 10,
+      bubbles: true,
+      cancelable: true
+    }));
+    const menu = document.body.querySelector(".zion-sessions-tagtree-context");
+    Array.from(menu.querySelectorAll("div"))
+      .find((item) => item.textContent === "Ignore in matching sessions")
+      .click();
+
+    const confirm = panel.el.querySelector(".zion-sessions-tagtree-confirm.is-ignore");
+    expect(confirm.textContent).toContain("2 sessions");
+    expect(confirm.textContent).toContain("3 tags");
+    expect(confirm.textContent).toContain("descendants");
+    confirm.querySelector(".zion-sessions-tagtree-confirm-no").click();
+    expect(calls.ignore).toEqual([]);
+
+    row.dispatchEvent(new MouseEvent("contextmenu", {
+      clientX: 10,
+      clientY: 10,
+      bubbles: true,
+      cancelable: true
+    }));
+    Array.from(document.body.querySelectorAll(".zion-sessions-tagtree-context-item"))
+      .find((item) => item.textContent === "Ignore in matching sessions")
+      .click();
+    panel.el.querySelector(".zion-sessions-tagtree-confirm-yes").click();
+    await vi.waitFor(() => expect(calls.ignore).toEqual(["project"]));
   });
 
   it("delete confirm distinguishes leaf and subtree", () => {

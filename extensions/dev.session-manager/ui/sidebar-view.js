@@ -439,6 +439,42 @@ export function createSessionsSidebarViewManager(opts) {
     return true;
   }
 
+  function handleTagIgnoreImpact(path) {
+    try {
+      return zion?.commands?.executeCommand?.("zion.sessions.getTagExclusionImpact", { path }) || {
+        sessionCount: 0,
+        tagCount: 0
+      };
+    } catch {
+      return { sessionCount: 0, tagCount: 0 };
+    }
+  }
+
+  async function handleTagIgnoreSubtree(path) {
+    try {
+      const result = await Promise.resolve(
+        zion?.commands?.executeCommand?.("zion.sessions.excludeTagSubtreeBulk", { path })
+      );
+      if (!result?.ok) return false;
+      if (selectedTag && (selectedTag === path || selectedTag.startsWith(`${path}/`))) {
+        selectedTag = "";
+      }
+      refreshIfOpen();
+      try {
+        zion?.notification?.show?.(
+          t("tags.ignoreDone", "Ignored {tags} tags in {sessions} sessions", {
+            tags: result.tagCount || 0,
+            sessions: result.sessionCount || 0
+          }),
+          { type: "info", duration: 2500 }
+        );
+      } catch {}
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function handleTagReorder(path, referencePath, after) {
     catalogEntries = reorderCatalogEntry(catalogEntries, path, referencePath, { after });
     persistCatalog();
@@ -721,7 +757,9 @@ export function createSessionsSidebarViewManager(opts) {
       onDelete: handleTagDelete,
       onReorder: handleTagReorder,
       onReparent: handleTagReparent,
-      onPin: handleTagPin
+      onPin: handleTagPin,
+      getIgnoreImpact: handleTagIgnoreImpact,
+      onIgnoreSubtree: handleTagIgnoreSubtree
     });
     tagColumn.appendChild(tagTreePanel.el);
 

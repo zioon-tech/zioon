@@ -846,6 +846,12 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-tagtree-confirm-yes:hover {
   background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
 }
+.zion-sessions-tagtree-confirm.is-ignore .zion-sessions-tagtree-confirm-yes {
+  color: var(--accent);
+}
+.zion-sessions-tagtree-confirm.is-ignore .zion-sessions-tagtree-confirm-yes:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
 .zion-sessions-tagtree-confirm-no {
   border: 0;
   color: color-mix(in srgb, var(--fg) 70%, transparent);

@@ -216,6 +216,7 @@ export function buildTagTree(entries, sessionTags) {
     const sources = Array.from(node._sources?.values?.() || []);
     const automaticSources = sources.filter((source) => source.id !== "document");
     node.sources = sources;
+    node.documentBacked = sources.some((source) => source.id === "document");
     node.automatic = automaticSources.length > 0;
     node.readOnly = automaticSources.some((source) => source.readOnly);
     node.sourceLabels = Array.from(new Set(automaticSources.map((source) => source.label).filter(Boolean)));
