@@ -6,6 +6,50 @@ function normalizeSessionTag(value) {
   return String(value || "").replace(/^#/, "").trim();
 }
 
+function localTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+export function archiveDateForTimestamp(timestamp, timeZone, fallbackTimeZone = localTimeZone()) {
+  const value = Number(timestamp);
+  const date = new Date(Number.isFinite(value) ? value : Date.now());
+  const zones = [...new Set([timeZone, fallbackTimeZone, "UTC"].filter(Boolean).map(String))];
+  for (const zone of zones) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).formatToParts(date);
+      const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+      const year = String(values.year || "").padStart(4, "0");
+      const month = String(values.month || "").padStart(2, "0");
+      const day = String(values.day || "").padStart(2, "0");
+      if (year && month && day) {
+        return {
+          year,
+          month,
+          day,
+          key: `${year}/${month}/${day}`,
+          segments: [year, month, day]
+        };
+      }
+    } catch {}
+  }
+  return {
+    year: "1970",
+    month: "01",
+    day: "01",
+    key: "1970/01/01",
+    segments: ["1970", "01", "01"]
+  };
+}
+
 export function sessionTagForLocale(locale) {
   return String(locale || "") === "zh-CN" ? "定时任务" : "scheduled_tasks";
 }
@@ -37,6 +81,26 @@ export function insertScheduledSessionTag(text, sessionTag) {
   return lines.join("\n");
 }
 
+export function scheduledSessionTagForDate(baseTag, archiveDate) {
+  const base = normalizeSessionTag(baseTag);
+  const segments = Array.isArray(archiveDate?.segments) ? archiveDate.segments.map(String) : [];
+  return [base, ...segments].filter(Boolean).join("/");
+}
+
+export function rewriteScheduledSessionTag(text, baseTag, archiveDate) {
+  const source = String(text || "");
+  const base = normalizeSessionTag(baseTag);
+  const nextTag = scheduledSessionTagForDate(base, archiveDate);
+  if (!base || !nextTag) return source;
+  const nextLabel = `#${nextTag}`;
+  const escapedBase = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const generatedPattern = new RegExp(`^#${escapedBase}(?:$|/\\d{4}/\\d{2}/\\d{2}$)`);
+  const generated = extractObsidianMetadata(source).tags.find((tag) => generatedPattern.test(tag.label));
+  if (!generated) return insertScheduledSessionTag(source, nextTag);
+  if (generated.label === nextLabel) return source;
+  return `${source.slice(0, generated.pos)}${nextLabel}${source.slice(generated.pos + generated.label.length)}`;
+}
+
 function findTreeNode(root, id) {
   if (!root || !id) return null;
   if (String(root.id || "") === String(id)) return root;
@@ -45,6 +109,12 @@ function findTreeNode(root, id) {
     if (found) return found;
   }
   return null;
+}
+
+function findDirectFolder(parent, title) {
+  return (parent?.children || []).find((node) => (
+    node?.type === "folder" && String(node.title || "") === String(title)
+  )) || null;
 }
 
 function archiveFolderTitle(locale) {
@@ -73,6 +143,46 @@ export async function ensureScheduledSessionFolder({ zion, store, locale } = {})
       folderLocale: String(locale || "")
     });
     return String(folderId);
+  } catch {
+    return null;
+  }
+}
+
+export async function ensureScheduledSessionDateFolder({
+  zion,
+  store,
+  locale,
+  archiveDate,
+  ensureFolder = ensureScheduledSessionFolder
+} = {}) {
+  try {
+    const rootId = await ensureFolder({ zion, store, locale });
+    if (!rootId || !Array.isArray(archiveDate?.segments) || !archiveDate.segments.length) return null;
+    const tree = await zion?.commands?.executeCommand?.("zion.sessions.getTreeSnapshot");
+    let parent = findTreeNode(tree, rootId);
+    if (parent?.type !== "folder") return null;
+
+    for (const rawSegment of archiveDate.segments) {
+      const segment = String(rawSegment || "").trim();
+      if (!segment) return null;
+      const existing = findDirectFolder(parent, segment);
+      if (existing) {
+        parent = existing;
+        continue;
+      }
+      const folderId = await zion?.commands?.executeCommand?.(
+        "zion.sessions.createFolder",
+        { parentId: parent.id, title: segment }
+      );
+      if (!folderId) return null;
+      parent = {
+        id: String(folderId),
+        type: "folder",
+        title: segment,
+        children: []
+      };
+    }
+    return String(parent.id);
   } catch {
     return null;
   }

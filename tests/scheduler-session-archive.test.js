@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  archiveDateForTimestamp,
   buildScheduledSessionContent,
+  ensureScheduledSessionDateFolder,
   ensureScheduledSessionFolder,
   insertScheduledSessionTag,
   migrateScheduledSessions,
+  rewriteScheduledSessionTag,
+  scheduledSessionTagForDate,
   sessionTagForLocale,
   withSessionTag
 } from "../extensions/dev.scheduler/session-archive.js";
@@ -15,16 +19,39 @@ function createArchiveFixture({
   metas = {},
   docs = {},
   createFolderId = "folder-created",
+  createFolderIds = [],
   moveResult = true
 } = {}) {
   const moveCalls = [];
   const createCalls = [];
+  let createIndex = 0;
   let currentMoveResult = moveResult;
+  const findNode = (node, id) => {
+    if (!node) return null;
+    if (node.id === id) return node;
+    for (const child of node.children || []) {
+      const found = findNode(child, id);
+      if (found) return found;
+    }
+    return null;
+  };
   const executeCommand = vi.fn(async (name, payload) => {
     if (name === "zion.sessions.getTreeSnapshot") return structuredClone(tree);
     if (name === "zion.sessions.createFolder") {
       createCalls.push(payload);
-      return createFolderId;
+      const folderId = createFolderIds[createIndex] || (createIndex === 0 ? createFolderId : `folder-created-${createIndex}`);
+      createIndex += 1;
+      const parent = findNode(tree, payload.parentId);
+      if (parent?.type === "folder" && folderId) {
+        parent.children = parent.children || [];
+        parent.children.unshift({
+          id: folderId,
+          type: "folder",
+          title: payload.title,
+          children: []
+        });
+      }
+      return folderId;
     }
     if (name === "zion.sessions.getMeta") return metas[payload] || null;
     if (name === "zion.sessions.transformDoc") {
@@ -92,6 +119,48 @@ describe("scheduled session archive helpers", () => {
     )).toBe(
       "user `#定时任务` #定时任务/日报\n\n#定时任务\nassistant Reply"
     );
+  });
+
+  it("resolves the archive date in the task time zone", () => {
+    const timestamp = Date.UTC(2026, 7, 16, 0, 30);
+
+    expect(archiveDateForTimestamp(timestamp, "Asia/Shanghai")).toMatchObject({
+      year: "2026",
+      month: "08",
+      day: "16",
+      key: "2026/08/16",
+      segments: ["2026", "08", "16"]
+    });
+    expect(archiveDateForTimestamp(timestamp, "America/Los_Angeles").key).toBe("2026/08/15");
+    expect(archiveDateForTimestamp(timestamp, "Invalid/Zone", "UTC").key).toBe("2026/08/16");
+  });
+
+  it("rewrites only generated scheduled tags to the dated path", () => {
+    const archiveDate = {
+      year: "2026",
+      month: "08",
+      day: "16",
+      key: "2026/08/16",
+      segments: ["2026", "08", "16"]
+    };
+
+    expect(scheduledSessionTagForDate("定时任务", archiveDate)).toBe("定时任务/2026/08/16");
+    expect(rewriteScheduledSessionTag(
+      "user Prompt\n\n#定时任务\nassistant Done",
+      "定时任务",
+      archiveDate
+    )).toContain("#定时任务/2026/08/16");
+    expect(rewriteScheduledSessionTag(
+      "user #定时任务/2026/08/15 #定时任务/日报\nassistant Done",
+      "定时任务",
+      archiveDate
+    )).toContain("#定时任务/2026/08/16 #定时任务/日报");
+    const rewritten = rewriteScheduledSessionTag(
+      "user Prompt\nassistant Done",
+      "定时任务",
+      archiveDate
+    );
+    expect(rewriteScheduledSessionTag(rewritten, "定时任务", archiveDate)).toBe(rewritten);
   });
 
   it("persists Scheduler-owned archive state", () => {
@@ -179,6 +248,46 @@ describe("scheduled session archive helpers", () => {
     })).resolves.toBe("folder-replacement");
     expect(fixture.createCalls).toEqual([{ parentId: "root", title: "定时任务" }]);
     expect(store.getSessionArchiveState().folderId).toBe("folder-replacement");
+  });
+
+  it("creates and reuses the YYYY/MM/DD folder path", async () => {
+    const tree = {
+      id: "root",
+      type: "folder",
+      children: [{
+        id: "folder-root",
+        type: "folder",
+        title: "定时任务",
+        children: []
+      }]
+    };
+    const fixture = createArchiveFixture({
+      tree,
+      createFolderIds: ["folder-2026", "folder-08", "folder-16"]
+    });
+    const store = new LocalSchedulerStore();
+    store.saveSessionArchiveState({ folderId: "folder-root", folderLocale: "zh-CN" });
+    const archiveDate = archiveDateForTimestamp(Date.UTC(2026, 7, 16), "UTC");
+
+    await expect(ensureScheduledSessionDateFolder({
+      zion: fixture.zion,
+      store,
+      locale: "zh-CN",
+      archiveDate
+    })).resolves.toBe("folder-16");
+    expect(fixture.createCalls).toEqual([
+      { parentId: "folder-root", title: "2026" },
+      { parentId: "folder-2026", title: "08" },
+      { parentId: "folder-08", title: "16" }
+    ]);
+
+    await expect(ensureScheduledSessionDateFolder({
+      zion: fixture.zion,
+      store,
+      locale: "zh-CN",
+      archiveDate
+    })).resolves.toBe("folder-16");
+    expect(fixture.createCalls).toHaveLength(3);
   });
 
   it("migrates scheduled sessions with task tags and an orphan fallback", async () => {
