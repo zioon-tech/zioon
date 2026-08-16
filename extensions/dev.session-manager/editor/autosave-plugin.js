@@ -1,5 +1,6 @@
 import { ViewPlugin } from "@codemirror/view";
 import { Transaction } from "@codemirror/state";
+import { extractLastUserMessagePreview } from "../../shared/session-preview.js";
 
 export function createSessionAutoSavePlugin(opts) {
   const getCurrentId = opts?.getCurrentId;
@@ -64,6 +65,7 @@ export function createSessionAutoSavePlugin(opts) {
     const newHash = hashString(text);
     if (newHash === (meta.hash || "")) return false;
     saveDoc(id, text);
+    meta.lastUserPreview = extractLastUserMessagePreview(text);
     const rs = zion?.state?.get(`chat.runs.${id}`) || null;
     if (rs && rs.streaming) {
       meta.size = text.length;

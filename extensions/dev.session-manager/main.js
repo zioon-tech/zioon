@@ -65,6 +65,7 @@ const I18N_MESSAGES = {
     "ui.createNew": "新建会话",
     "ui.newFolder": "新建文件夹",
     "ui.actions": "操作",
+    "ui.toggleViewMode": "切换列表/卡片视图",
     "ui.toggleTagSplit": "切换标签分栏",
     "ui.import": "导入会话",
     "ui.exportAll": "导出全部会话",
@@ -79,6 +80,10 @@ const I18N_MESSAGES = {
     "ui.selectedCount": "已选择 {count} 项",
     "ui.updated": "更新于",
     "ui.chars": "{count} 字符",
+    "ui.justNow": "刚刚",
+    "ui.minutesAgo": "{count} 分钟前",
+    "ui.hoursAgo": "{count} 小时前",
+    "ui.daysAgo": "{count} 天前",
     "ui.noSessionsYet": "暂无会话。",
     "ui.cancel": "取消",
     "ui.delete": "删除",
@@ -193,6 +198,8 @@ const I18N_MESSAGES = {
     "ui.createNew": "Create new session",
     "ui.newFolder": "New Folder",
     "ui.actions": "Actions",
+    "ui.toggleViewMode": "Toggle list/card view",
+    "ui.toggleTagSplit": "Toggle tag column",
     "ui.import": "Import Sessions",
     "ui.exportAll": "Export All Sessions",
     "ui.exportSelected": "Export Selected",
@@ -206,6 +213,10 @@ const I18N_MESSAGES = {
     "ui.selectedCount": "{count} Selected",
     "ui.updated": "Updated",
     "ui.chars": "{count} chars",
+    "ui.justNow": "Just now",
+    "ui.minutesAgo": "{count} min ago",
+    "ui.hoursAgo": "{count} hr ago",
+    "ui.daysAgo": "{count} days ago",
     "ui.noSessionsYet": "No sessions yet.",
     "ui.cancel": "Cancel",
     "ui.delete": "Delete",
@@ -1572,6 +1583,13 @@ export async function activate(ctx) {
     return markSessionViewed(sessionId);
   };
   const dMarkSessionViewed = window.zion.commands.registerCommand("zion.sessions.markViewed", markSessionViewed);
+  const dToggleViewMode = window.zion.commands.registerCommand("zion.sessions.toggleViewMode", () => {
+    try {
+      return __sidebarViewManager.toggleSessionViewModeIfOpen?.();
+    } catch {
+      return undefined;
+    }
+  });
   const dToggleTagSplit = window.zion.commands.registerCommand("zion.sessions.toggleTagSplit", () => {
     try {
       return __sidebarViewManager.toggleTagSplitIfOpen?.();
@@ -1587,6 +1605,7 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(
     dMarkSessionViewed,
+    dToggleViewMode,
     dToggleTagSplit,
     dTagExclusions
   );
@@ -1740,6 +1759,15 @@ export async function activate(ctx) {
         })
       },
       headerActions: [
+        {
+          id: "sessions.viewMode",
+          title: t("ui.toggleViewMode", "Toggle list/card view"),
+          titleKey: "dev.session-manager.ui.toggleViewMode",
+          ariaLabel: t("ui.toggleViewMode", "Toggle list/card view"),
+          ariaLabelKey: "dev.session-manager.ui.toggleViewMode",
+          icon: "$(layout-grid)",
+          onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleViewMode")
+        },
         {
           id: "sessions.tagSplit",
           title: t("ui.toggleTagSplit", "Toggle tag column"),

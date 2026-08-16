@@ -35,6 +35,7 @@ export function createSessionsSidebarViewManager(opts) {
   const LS_TAG_NODE_COLLAPSED = "zion.sessions.sidebar.tagNodeCollapsed";
   const LS_AUTO_TAG_ROOTS_INITIALIZED = "zion.sessions.sidebar.autoTagRootsInitialized";
   const LS_TAG_SPLIT = "zion.sessions.sidebar.tagSplit";
+  const LS_VIEW_MODE = "zion.sessions.sidebar.viewMode";
   const LS_TAG_COLUMN_WIDTH = "zion.sessions.sidebar.tagColumnWidth";
   const LS_PRE_SPLIT_WIDTH = "zion.sessions.sidebar.preSplitWidth";
   const TAG_SPLIT_MIN = 140;
@@ -45,6 +46,9 @@ export function createSessionsSidebarViewManager(opts) {
 
   let tagSplitEnabled = (() => {
     try { return localStorage.getItem(LS_TAG_SPLIT) === "1"; } catch { return false; }
+  })();
+  let sessionViewMode = (() => {
+    try { return localStorage.getItem(LS_VIEW_MODE) === "card" ? "card" : "list"; } catch { return "list"; }
   })();
   let tagSplitWidthActive = false;
   let tagColumnWidth = (() => {
@@ -925,6 +929,8 @@ export function createSessionsSidebarViewManager(opts) {
       listEl: list,
       hostElement: container,
       viewId: "sidebar",
+      getViewMode: () => sessionViewMode,
+      getSessionTagRecords,
       getQuery: () => "",
       getSort: () => "updated",
       getSessionFilter: () => {
@@ -1593,6 +1599,10 @@ export function createSessionsSidebarViewManager(opts) {
 
     const inst = {
       render: renderAll,
+      setViewMode: (mode) => {
+        listWrap.classList.toggle("is-card-view", mode === "card");
+        renderAll();
+      },
       anchorToCurrent,
       revealSession,
       toggleMenu: () => {
@@ -1630,6 +1640,13 @@ export function createSessionsSidebarViewManager(opts) {
     anchorToCurrentIfOpen,
     revealSessionIfOpen,
     toggleMenuIfOpen,
+    toggleSessionViewModeIfOpen: () => {
+      sessionViewMode = sessionViewMode === "card" ? "list" : "card";
+      try { localStorage.setItem(LS_VIEW_MODE, sessionViewMode); } catch {}
+      try { current?.setViewMode?.(sessionViewMode); } catch {}
+      return sessionViewMode;
+    },
+    getSessionViewMode: () => sessionViewMode,
     toggleTagSplitIfOpen: () => current?.toggleTagSplit?.(),
     isTagSplitEnabled: () => !!current?.isTagSplitEnabled?.(),
     activateTagSplitWidthIfEnabled: () => {

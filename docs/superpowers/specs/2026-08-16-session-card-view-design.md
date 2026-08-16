@@ -19,7 +19,7 @@ preserving the existing list view and all current tree interactions.
 Each session card shows:
 
 - one-line title;
-- up to two lines from the most recent user message;
+- up to two lines from the most recent non-empty user message;
 - up to two session tags, including Biography tags with their automatic-source
   marker;
 - a compact relative update time.
@@ -30,10 +30,12 @@ continuous list, 5px card radius, restrained borders, and no nested cards.
 ## Data Flow
 
 The Sidebar must not read every session document. On each normal autosave, the
-session manager extracts a compact preview of the most recent user message and
-stores it in the existing session metadata as `lastUserPreview`. Card rendering
-reads metadata, the persistent tag index, and `sessions.derivedTags`, all of
-which are already memory-backed when the Sidebar is open.
+session manager extracts a compact preview of the most recent non-empty user
+message, skipping the trailing empty user block commonly left by the editor,
+and stores it in the existing session metadata as `lastUserPreview`. Card
+rendering reads metadata, the persistent tag index, and
+`sessions.derivedTags`, all of which are already memory-backed when the Sidebar
+is open.
 
 Existing sessions without `lastUserPreview` show no summary until they are next
 edited and saved. No startup migration or full-document scan is added.

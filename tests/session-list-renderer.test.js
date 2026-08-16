@@ -61,6 +61,75 @@ describe("sessions list renderer", () => {
     expect(listEl.children).toHaveLength(1);
   });
 
+  it("renders balanced card details while preserving list mode", () => {
+    let viewMode = "card";
+    const listWrap = document.createElement("div");
+    listWrap.className = "zion-sessions-list";
+    const listEl = document.createElement("div");
+    listWrap.appendChild(listEl);
+    document.body.appendChild(listWrap);
+    const tree = {
+      id: "root",
+      type: "folder",
+      title: "Root",
+      children: [{ id: "session-1", type: "session", title: "Fallback title" }]
+    };
+    const meta = {
+      id: "session-1",
+      title: "Card title",
+      lastUserPreview: "This is the latest user message preview.",
+      updatedAt: Date.now() - 5 * 60 * 1000,
+      size: 42
+    };
+    const createRenderer = createSessionsListRendererFactory({
+      loadTree: () => tree,
+      ensureInitialTree: () => tree,
+      loadMeta: () => meta,
+      truncate: (value) => value,
+      setSmallDragImage: () => {},
+      fmtTime: (value) => String(value),
+      now: () => Date.now(),
+      getSelection: () => [],
+      setSelection: () => {},
+      clearSelection: () => {},
+      isSelected: () => false,
+      toggleSelection: () => {},
+      getLastSelectedId: () => null,
+      setLastSelectedId: () => {},
+      isFolderOpen: () => true,
+      setFolderOpen: () => {},
+      moveNode: () => false
+    });
+    const render = createRenderer({
+      listEl,
+      hostElement: listWrap,
+      getQuery: () => "",
+      getSort: () => "updated",
+      getViewMode: () => viewMode,
+      getSessionTagRecords: () => [
+        { path: "project/zion", sourceId: "biography", sourceLabel: "Biography", readOnly: true },
+        { path: "topic/ui", sourceId: "document", sourceLabel: "Session", readOnly: false },
+        { path: "third/hidden", sourceId: "document", sourceLabel: "Session", readOnly: false }
+      ]
+    });
+
+    render();
+    const card = listEl.querySelector('[data-session-id="session-1"]');
+    expect(listWrap.classList.contains("is-card-view")).toBe(true);
+    expect(card.querySelector(".zion-session-card-preview").textContent).toBe(meta.lastUserPreview);
+    expect(Array.from(card.querySelectorAll(".zion-session-card-tag")).map((tag) => tag.textContent)).toEqual([
+      "#project/zion",
+      "#topic/ui"
+    ]);
+    expect(card.querySelector(".zion-session-card-tag.is-automatic")).toBeTruthy();
+    expect(card.querySelector(".zion-session-card-time").textContent).toContain("5");
+
+    viewMode = "list";
+    render();
+    expect(listWrap.classList.contains("is-card-view")).toBe(false);
+    expect(listEl.querySelector(".zion-session-card-preview")).toBeNull();
+  });
+
   it("does not open the session root menu from the tag column", () => {
     const listEl = document.createElement("div");
     const hostElement = document.createElement("div");

@@ -32,7 +32,10 @@ export function createSessionsListRendererFactory(deps) {
       const translated = window.zion?.i18n?.t?.(fullKey, values);
       if (translated && translated !== fullKey) return translated;
     } catch {}
-    return fallback;
+    return String(fallback || "").replace(/\{(\w+)\}/g, (match, name) => {
+      const value = values?.[name];
+      return value === undefined || value === null ? match : String(value);
+    });
   }
 
   function iconHtml(name, size) {
@@ -70,6 +73,37 @@ export function createSessionsListRendererFactory(deps) {
     const text = String(value || "").replace(/\s+/g, " ").trim();
     if (!text) return "";
     return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
+  }
+
+  function formatSessionCardTime(timestamp) {
+    const value = Number(timestamp || 0);
+    if (!Number.isFinite(value) || value <= 0) return "";
+    const current = typeof now === "function" ? Number(now()) : Date.now();
+    const elapsed = Math.max(0, current - value);
+    const minute = 60 * 1000;
+    const hour = 60 * minute;
+    const day = 24 * hour;
+    if (elapsed < minute) return t("ui.justNow", "Just now");
+    if (elapsed < hour) {
+      return t("ui.minutesAgo", "{count} min ago", {
+        count: Math.max(1, Math.floor(elapsed / minute))
+      });
+    }
+    if (elapsed < day) {
+      return t("ui.hoursAgo", "{count} hr ago", {
+        count: Math.max(1, Math.floor(elapsed / hour))
+      });
+    }
+    if (elapsed < 7 * day) {
+      return t("ui.daysAgo", "{count} days ago", {
+        count: Math.max(1, Math.floor(elapsed / day))
+      });
+    }
+    try {
+      return new Date(value).toLocaleDateString();
+    } catch {
+      return "";
+    }
   }
 
   function getThreadSessionId(thread) {
@@ -163,7 +197,18 @@ export function createSessionsListRendererFactory(deps) {
     return map;
   }
 
-  return function createSessionsListRenderer({ listEl, hostElement, getQuery, getSort, getSessionFilter, onSwitchSession, onAfterChange, viewId = null }) {
+  return function createSessionsListRenderer({
+    listEl,
+    hostElement,
+    getQuery,
+    getSort,
+    getSessionFilter,
+    getViewMode,
+    getSessionTagRecords,
+    onSwitchSession,
+    onAfterChange,
+    viewId = null
+  }) {
     const getEffectiveCurrentSessionId = () => {
       try {
         const panelId = window.zion?.panelManager?.getActivePanelId?.() || window.zion?.panels?.getActivePanelId?.() || null;
@@ -201,6 +246,42 @@ export function createSessionsListRendererFactory(deps) {
     const PENDING_INLINE_EDIT_KEY = "sessions.pendingInlineEdit";
     let pendingEdit = null; // { id, type: "session"|"folder", isNew?: boolean }
     let pendingConfirm = null; // { id, type: "session"|"folder" }
+
+    const getCardTags = (sessionId) => {
+      const byPath = new Map();
+      let records = [];
+      try {
+        records = typeof getSessionTagRecords === "function"
+          ? (getSessionTagRecords(sessionId) || [])
+          : [];
+      } catch {}
+      for (const record of records) {
+        const path = String(record?.path || "").replace(/^#/, "").trim();
+        if (!path) continue;
+        const automatic = String(record?.sourceId || "") !== "document";
+        const existing = byPath.get(path);
+        if (!existing) {
+          byPath.set(path, {
+            path,
+            automatic,
+            sourceLabel: String(record?.sourceLabel || "").trim()
+          });
+        } else if (!automatic) {
+          existing.automatic = false;
+        }
+      }
+      return Array.from(byPath.values()).slice(0, 2);
+    };
+
+    const syncCardMetadata = (row, meta) => {
+      const preview = row?.querySelector?.(".zion-session-card-preview");
+      if (preview) {
+        preview.textContent = String(meta?.lastUserPreview || "");
+        preview.hidden = !preview.textContent;
+      }
+      const time = row?.querySelector?.(".zion-session-card-time");
+      if (time) time.textContent = formatSessionCardTime(meta?.updatedAt);
+    };
 
     const takePendingEdit = (id, type) => {
       if (pendingEdit && pendingEdit.id === id && pendingEdit.type === type) {
@@ -502,6 +583,9 @@ export function createSessionsListRendererFactory(deps) {
     const render = () => {
       // prevent flicker
       document.body.classList.add("zion-sessions-no-transitions");
+      const cardView = getViewMode?.() === "card";
+      listEl.classList.toggle("is-card-view", cardView);
+      listEl.closest(".zion-sessions-list")?.classList.toggle("is-card-view", cardView);
 
       try {
         document.querySelectorAll(".session-row-menu[data-zion-session-menu-portal='1']").forEach((menu) => menu.remove());
@@ -1369,6 +1453,7 @@ export function createSessionsListRendererFactory(deps) {
               srow.tabIndex = 0;
               srow.style.position = "relative";
               srow.className = "zion-session-row is-session";
+              if (cardView) srow.classList.add("is-card-layout");
               srow.style.whiteSpace = "nowrap";
               srow.style.paddingLeft = `${10 + ((depth + 1) * 12)}px`;
               srow.dataset.depth = String(depth + 1);
@@ -1457,6 +1542,37 @@ export function createSessionsListRendererFactory(deps) {
               srow.title = `${t("ui.updated", "Updated")}: ${fmtTime(meta?.updatedAt || now())} · ${t("ui.chars", "{count} chars", { count: meta?.size || 0 })}`;
 
               labelWrap2.append(titleLine);
+              if (cardView) {
+                const previewText = String(meta?.lastUserPreview || "").trim();
+                if (previewText) {
+                  const preview = document.createElement("div");
+                  preview.className = "zion-session-card-preview";
+                  preview.textContent = previewText;
+                  labelWrap2.appendChild(preview);
+                }
+
+                const tags = getCardTags(ch.id);
+                const updated = formatSessionCardTime(meta?.updatedAt);
+                if (tags.length || updated) {
+                  const cardMeta = document.createElement("div");
+                  cardMeta.className = "zion-session-card-meta";
+                  const tagsWrap = document.createElement("div");
+                  tagsWrap.className = "zion-session-card-tags";
+                  for (const tag of tags) {
+                    const tagEl = document.createElement("span");
+                    tagEl.className = "zion-session-card-tag";
+                    if (tag.automatic) tagEl.classList.add("is-automatic");
+                    tagEl.textContent = `#${tag.path}`;
+                    if (tag.sourceLabel) tagEl.title = tag.sourceLabel;
+                    tagsWrap.appendChild(tagEl);
+                  }
+                  const time = document.createElement("span");
+                  time.className = "zion-session-card-time";
+                  time.textContent = updated;
+                  cardMeta.append(tagsWrap, time);
+                  labelWrap2.appendChild(cardMeta);
+                }
+              }
 
               const rightWrap = document.createElement("div");
               rightWrap.style.display = "flex";
@@ -1737,6 +1853,7 @@ export function createSessionsListRendererFactory(deps) {
           const titleEl = row.querySelector(".zion-session-name");
           if (titleEl && titleEl.textContent !== title) titleEl.textContent = title;
           row.title = `${t("ui.updated", "Updated")}: ${fmtTime(meta?.updatedAt || now())} · ${t("ui.chars", "{count} chars", { count: meta?.size || 0 })}`;
+          syncCardMetadata(row, meta);
         });
       };
 

@@ -306,6 +306,107 @@ body.zion-sessions-no-transitions .zion-session-row * {
   min-width: 0;
 }
 
+.zion-sessions-list.is-card-view {
+  padding: 2px 5px 12px !important;
+}
+
+.zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout {
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding-top: 7px !important;
+  padding-right: 8px !important;
+  padding-bottom: 7px !important;
+  border: none !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent) !important;
+  border-radius: 2px !important;
+  background: transparent;
+  align-items: flex-start !important;
+  white-space: normal !important;
+}
+
+.zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout:hover {
+  background: var(--surface-raised, var(--hover-bg));
+}
+
+.zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout.is-current,
+.zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout.is-selected {
+  background: var(--sessions-current-bg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout > div:first-of-type {
+  padding-right: 0 !important;
+}
+
+.zion-session-card-preview {
+  display: -webkit-box;
+  margin-top: 2px;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--fg) 54%, transparent);
+  font-size: 11px;
+  line-height: 15px;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.zion-session-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.zion-session-card-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.zion-session-card-tag {
+  display: block;
+  max-width: 112px;
+  padding: 1px 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  font-size: 10px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-session-card-tag.is-automatic::before {
+  content: "✦ ";
+  color: color-mix(in srgb, var(--accent) 62%, var(--fg));
+}
+
+.zion-session-card-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: color-mix(in srgb, var(--fg) 42%, transparent);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout .zion-session-more-btn {
+  opacity: 0;
+}
+
+.zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout > div:last-child {
+  top: 6px !important;
+  transform: none !important;
+}
+
+.zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout .zion-session-name {
+  color: color-mix(in srgb, var(--fg) 90%, transparent);
+  font-weight: 600;
+}
+
 .zion-session-icon {
   width: 16px;
   flex: 0 0 16px;

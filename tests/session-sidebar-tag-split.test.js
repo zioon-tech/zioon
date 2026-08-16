@@ -78,6 +78,20 @@ beforeEach(() => {
 });
 
 describe("sessions sidebar tag split layout", () => {
+  it("persists list and card view modes", () => {
+    const { manager, container } = mountAt(500);
+    expect(manager.getSessionViewMode()).toBe("list");
+    expect(container.querySelector(".zion-sessions-list").classList.contains("is-card-view")).toBe(false);
+
+    expect(manager.toggleSessionViewModeIfOpen()).toBe("card");
+    expect(localStorage.getItem("zion.sessions.sidebar.viewMode")).toBe("card");
+    expect(container.querySelector(".zion-sessions-list").classList.contains("is-card-view")).toBe(true);
+
+    expect(manager.toggleSessionViewModeIfOpen()).toBe("list");
+    expect(localStorage.getItem("zion.sessions.sidebar.viewMode")).toBe("list");
+    expect(container.querySelector(".zion-sessions-list").classList.contains("is-card-view")).toBe(false);
+  });
+
   it("renders two columns when enabled and body is wide enough", () => {
     localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
     const { container } = mountAt(500);

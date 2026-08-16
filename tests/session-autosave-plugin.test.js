@@ -127,4 +127,50 @@ describe("session autosave plugin", () => {
       document.body.innerHTML = "";
     }
   });
+
+  it("stores the latest user message preview in metadata", () => {
+    const metas = new Map();
+    const host = document.createElement("div");
+    host.dataset.panelId = "panel-a";
+    document.body.appendChild(host);
+    const plugin = createSessionAutoSavePlugin({
+      zion: { state: { get: () => null } },
+      getCurrentId: () => "session-a",
+      loadMeta: (id) => metas.get(id) || {
+        id,
+        title: id,
+        createdAt: 1,
+        updatedAt: 1,
+        size: 0,
+        hash: ""
+      },
+      saveDoc: () => {},
+      saveMeta: (id, meta) => metas.set(id, meta),
+      hashString: (text) => `hash:${text}`,
+      now: () => 2,
+      getAnnotationsState: () => null,
+      rebuildIndexFromTree: () => {},
+      upsertIndexEntry: () => {},
+      postSaved: () => {},
+      onSaved: () => {}
+    });
+    const core = new EditorCore(host, "", "panel-a");
+    core.addExternalExtension(plugin.extension);
+
+    try {
+      core.setValue([
+        "user first question",
+        "assistant first answer",
+        "user latest question",
+        "with more detail"
+      ].join("\n"));
+      expect(plugin.flush("session-a")).toBe(true);
+      expect(metas.get("session-a").lastUserPreview).toBe(
+        "latest question with more detail"
+      );
+    } finally {
+      core.view.destroy();
+      document.body.innerHTML = "";
+    }
+  });
 });

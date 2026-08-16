@@ -8,6 +8,11 @@ describe("sessions tag split header", () => {
     expect(zionIconName("message-circle-plus")).toBe("message-circle-plus");
   });
 
+  it("registers the card view toggle icon", () => {
+    expect(hasZionIcon("layout-grid")).toBe(true);
+    expect(zionIconName("layout-grid")).toBe("layout-grid");
+  });
+
   it("renders snapshots, delegates add, and detaches", () => {
     const add = vi.fn();
     let sink = null;

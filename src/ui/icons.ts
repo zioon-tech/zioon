@@ -18,6 +18,7 @@ const ICON_PATHS: IconPathMap = {
   "fold-vertical": '<path d="M6 4h12"/><path d="M6 20h12"/><path d="m8 9 4 4 4-4"/><path d="m8 15 4-4 4 4"/>',
   "unfold-vertical": '<path d="M6 4h12"/><path d="M6 20h12"/><path d="m8 13 4-4 4 4"/><path d="m8 11 4 4 4-4"/>',
   "list-tree": '<path d="M6 5h12"/><path d="M10 12h8"/><path d="M10 19h8"/><path d="M6 5v14"/><path d="M6 12h2M6 19h2"/>',
+  "layout-grid": '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   "columns-2": '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M12 5v14"/>',
   "panel-bottom": '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 14h16"/>',
   "panel-right": '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M14 5v14"/>',
