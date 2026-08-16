@@ -373,7 +373,7 @@ describe("scheduled session archive helpers", () => {
       { id: "scheduled-1", targetFolderId: "folder-16" },
       { id: "scheduled-orphan", targetFolderId: "folder-16" }
     ]);
-    expect(store.getSessionArchiveState().migrationVersion).toBe(2);
+    expect(store.getSessionArchiveState().migrationVersion).toBe(3);
   });
 
   it("retries an interrupted migration without duplicating tags", async () => {
@@ -425,7 +425,28 @@ describe("scheduled session archive helpers", () => {
     })).resolves.toBe(true);
     expect(docs["scheduled-1"].match(/#定时任务\/2026\/08\/16/g)).toHaveLength(1);
     expect(store.getTask("task-1").sessionTag).toBe("定时任务");
+    expect(store.getSessionArchiveState().migrationVersion).toBe(3);
+  });
+
+  it("waits for the Session Manager catalog before completing migration", async () => {
+    const fixture = createArchiveFixture({
+      tree: {
+        id: "root",
+        type: "folder",
+        children: [{ id: "existing-session", type: "session", title: "Existing" }]
+      },
+      catalog: []
+    });
+    const store = new LocalSchedulerStore();
+    store.saveSessionArchiveState({ migrationVersion: 2 });
+
+    await expect(migrateScheduledSessions({
+      zion: fixture.zion,
+      store,
+      locale: "zh-CN"
+    })).resolves.toBe(false);
     expect(store.getSessionArchiveState().migrationVersion).toBe(2);
+    expect(fixture.executeCommand).not.toHaveBeenCalled();
   });
 
   it("does not scan sessions after migration has completed", async () => {
@@ -433,7 +454,7 @@ describe("scheduled session archive helpers", () => {
       tree: { id: "root", type: "folder", children: [] }
     });
     const store = new LocalSchedulerStore();
-    store.saveSessionArchiveState({ migrationVersion: 2 });
+    store.saveSessionArchiveState({ migrationVersion: 3 });
 
     await expect(migrateScheduledSessions({
       zion: fixture.zion,

@@ -1,6 +1,7 @@
 import { extractObsidianMetadata } from "../shared/obsidian-metadata.js";
 
-export const SESSION_ARCHIVE_MIGRATION_VERSION = 2;
+// Version 3 repairs version 2 being committed before Session Manager hydrated its catalog.
+export const SESSION_ARCHIVE_MIGRATION_VERSION = 3;
 
 function normalizeSessionTag(value) {
   return String(value || "").replace(/^#/, "").trim();
@@ -206,6 +207,9 @@ export async function migrateScheduledSessions({
     return true;
   }
 
+  const catalog = zion?.state?.get?.("sessions.catalog");
+  if (!Array.isArray(catalog) || catalog.length === 0) return false;
+
   const folderId = await ensureFolder({ zion, store, locale });
   if (!folderId) return false;
   const initialTree = await zion?.commands?.executeCommand?.("zion.sessions.getTreeSnapshot");
@@ -216,9 +220,6 @@ export async function migrateScheduledSessions({
     if ((task?.taskType || "agent") === "command" || normalizeSessionTag(task?.sessionTag)) continue;
     store.saveTask(withSessionTag(task, locale));
   }
-
-  const catalog = zion?.state?.get?.("sessions.catalog");
-  if (!Array.isArray(catalog)) return false;
 
   try {
     for (const entry of catalog) {
