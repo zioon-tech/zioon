@@ -3,6 +3,7 @@ import {
   buildBiographyDigest,
   buildBiographyFacets,
   buildBiographyProjects,
+  buildBiographySessionTagSource,
   buildIdentityContext,
   extractLatestExchange,
   extractBiographyCitations,
@@ -12,6 +13,10 @@ import {
   parseBiographyEventsJsonl,
   parseDistillationResult
 } from "./identity-core.js";
+import {
+  publishSessionDerivedTagSource,
+  removeSessionDerivedTagSource
+} from "../shared/session-derived-tags.js";
 
 const MEMORY_ROOT_DISPLAY = "~/.zion-next/memory";
 const BIOGRAPHY_VIEW_ID = "dev.identity.biography";
@@ -251,6 +256,13 @@ async function recordBiographyCitations(assistantText, payload) {
 async function loadBiographyEvents() {
   const paths = await getProfilePaths();
   return parseBiographyEventsJsonl(await readLocalFileIfExists(paths.events));
+}
+
+function publishBiographySessionTags(events) {
+  return publishSessionDerivedTagSource(
+    window.zion,
+    buildBiographySessionTagSource(events)
+  );
 }
 
 function mergeBiographyEvents(...batches) {
@@ -683,6 +695,8 @@ async function updateBiography(distilled, payload) {
   if (written) {
       const allEvents = await loadBiographyEvents();
       await writeLocalFile(paths.digest, buildBiographyDigest(allEvents));
+      void writeBiographyEventsCache(paths.events, allEvents, true);
+      publishBiographySessionTags(allEvents);
     try {
       window.zion?.events?.emit?.("identity/biographyChanged", {
         ids: result.appended,
@@ -1960,6 +1974,22 @@ export async function activate(ctx) {
   let disposed = false;
   let biographyQueue = Promise.resolve();
 
+  void (async () => {
+    try {
+      const paths = await getProfilePaths();
+      const cached = await readBiographyEventsCache(paths.events);
+      if (disposed) return;
+      if (cached?.events) publishBiographySessionTags(cached.events);
+      if (cached?.complete) return;
+      const events = await loadBiographyEvents();
+      if (disposed) return;
+      publishBiographySessionTags(events);
+      void writeBiographyEventsCache(paths.events, events, true);
+    } catch (error) {
+      console.warn("[dev.identity] biography tag projection unavailable", error);
+    }
+  })();
+
   const contributor = window.zion?.messages?.registerContributor?.({
     id: "dev.identity.context",
     order: 85,
@@ -2117,6 +2147,7 @@ export async function activate(ctx) {
   const disposable = {
     dispose() {
       disposed = true;
+      removeSessionDerivedTagSource(window.zion, "biography");
       for (const item of disposables.splice(0)) {
         try { item?.dispose?.(); } catch {}
       }

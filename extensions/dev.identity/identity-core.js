@@ -355,6 +355,37 @@ export function buildBiographyFacets(events) {
   };
 }
 
+export function buildBiographySessionTagSource(events) {
+  const bySession = new Map();
+  for (const event of normalizeBiographyEvents(events)) {
+    const sessionId = String(event.sessionId || "").trim();
+    if (!sessionId) continue;
+    let tags = bySession.get(sessionId);
+    if (!tags) {
+      tags = new Map();
+      bySession.set(sessionId, tags);
+    }
+    if (event.project) {
+      const path = `project/${event.project}`;
+      if (!tags.has(path)) tags.set(path, { path, kind: "project" });
+    }
+    for (const topic of event.topics || []) {
+      const path = `topic/${topic}`;
+      if (!tags.has(path)) tags.set(path, { path, kind: "topic" });
+    }
+  }
+  const sessions = {};
+  for (const [sessionId, tags] of bySession) {
+    if (tags.size) sessions[sessionId] = Array.from(tags.values());
+  }
+  return {
+    id: "biography",
+    label: "Biography",
+    readOnly: true,
+    sessions
+  };
+}
+
 export function buildBiographyProjects(events) {
   const projects = new Map();
   for (const event of normalizeBiographyEvents(events)) {
