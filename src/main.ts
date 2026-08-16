@@ -654,7 +654,7 @@ function mountEditorHeaderNewSessionButton(pathEl: HTMLElement) {
 
     // 使用与 session-manager 插件一致的按钮样式
     btn.className = "zion-editor-header-action is-icon zion-editor-new-session-button";
-    btn.innerHTML = zionIconHtml("plus");
+    btn.innerHTML = zionIconHtml("message-circle-plus");
     btn.title = "新增会话（同级）";
     btn.setAttribute("aria-label", "新增会话（同级）");
     btn.setAttribute("data-zion-editor-new-session-button", "1");
@@ -886,7 +886,7 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
       newBtn = document.createElement("button");
       newBtn.type = "button";
       newBtn.className = "zion-editor-header-action is-icon zion-editor-tabs-new-session-button";
-      newBtn.innerHTML = zionIconHtml("plus");
+      newBtn.innerHTML = zionIconHtml("message-circle-plus");
       newBtn.title = "新增会话（同级）";
       newBtn.setAttribute("aria-label", "新增会话（同级）");
       newBtn.setAttribute("data-zion-editor-tabs-new-session-button", "1");
@@ -2198,7 +2198,7 @@ function mountPanelSessionTabsBar(
       newBtn = document.createElement("button");
       newBtn.type = "button";
       newBtn.className = "zion-editor-header-action is-icon zion-editor-tabs-new-session-button";
-      newBtn.innerHTML = zionIconHtml("plus");
+      newBtn.innerHTML = zionIconHtml("message-circle-plus");
       newBtn.title = "新增会话";
       newBtn.setAttribute("aria-label", "新增会话");
       newBtn.setAttribute("data-zion-panel-tabs-new-session-button", "1");

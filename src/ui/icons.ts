@@ -67,6 +67,7 @@ const ICON_PATHS: IconPathMap = {
   database: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
   bot: '<rect x="6" y="8" width="12" height="10" rx="3"/><path d="M12 4v4"/><path d="M9 13h.01M15 13h.01"/><path d="M10 18v2h4v-2"/>',
   "messages-square": '<path d="M21 14a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/>',
+  "message-circle-plus": '<path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/><path d="M8 12h8M12 8v8"/>',
   tag: '<path d="M20 12 12 20 4 12V4h8l8 8Z"/><path d="M8 8h.01"/>',
   heading: '<path d="M6 5v14M18 5v14M6 12h12"/><path d="M14 19h5"/>',
   "check-circle": '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',

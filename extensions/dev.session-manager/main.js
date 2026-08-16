@@ -1733,7 +1733,6 @@ export async function activate(ctx) {
       icon: "$(history)",
       order: 10,
       location: "sidebar",
-      showHideAction: false,
       headerLeading: {
         render: (container, context) => renderSessionsTagHeader(container, context, {
           manager: __sidebarViewManager,
@@ -1747,19 +1746,8 @@ export async function activate(ctx) {
           titleKey: "dev.session-manager.ui.toggleTagSplit",
           ariaLabel: t("ui.toggleTagSplit", "Toggle tag column"),
           ariaLabelKey: "dev.session-manager.ui.toggleTagSplit",
-          icon: "$(list-tree)",
+          icon: "$(tag)",
           onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleTagSplit")
-        },
-        {
-          id: "sessions.new",
-          title: t("ui.createNew", "Create new session"),
-          titleKey: "dev.session-manager.ui.createNew",
-          ariaLabel: t("ui.createNew", "Create new session"),
-          ariaLabelKey: "dev.session-manager.ui.createNew",
-          icon: "$(add)",
-          onClick: () => window.zion.commands.executeCommand("zion.sessions.new", {
-            parentId: window.zion.state.get("sessions.selectedFolderId") || "root"
-          })
         }
       ],
       component: {

@@ -2,157 +2,67 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Render the sessions Sidebar actions as `tag`, `message-square-plus`, and the shared `columns-2` hide action in that order.
+**Goal:** Keep only semantic tag and hide actions in the sessions Sidebar, and move the new-session affordance to the editor tab bar using Lucide's `message-circle-plus`.
 
-**Architecture:** Workbench remains the single owner of the always-present hide action. Remove the unused hide-action opt-out, add the new conversation icon to the shared icon registry, and select semantic icons in the sessions view registration.
+**Architecture:** Workbench continues to append its shared `columns-2` hide action. The sessions view contributes only its `tag` toggle. The shared icon registry stores the selected Lucide path, and each editor tab-bar renderer uses it for the existing new-session command.
 
 **Tech Stack:** TypeScript, JavaScript ES modules, Zion icon registry, Zion Workbench, Vitest, jsdom
 
 ---
 
-### Task 1: Keep the shared hide action on every Sidebar
+### Task 1: Finalize sessions Sidebar actions
 
 **Files:**
-- Modify: `tests/workbench-sidebar-chrome.test.js`
-- Modify: `src/ui/workbench/runtime.ts`
-- Modify: `src/types/zion.d.ts`
-- Modify: `src/ui/workbench/workbench.ts`
+- Modify: `extensions/dev.session-manager/main.js`
 
-- [ ] **Step 1: Update the Workbench test**
+- [ ] Remove `showHideAction: false`.
+- [ ] Change `sessions.tagSplit` to `icon: "$(tag)"`.
+- [ ] Delete the `sessions.new` header action.
 
-Keep the existing shared-action test:
-
-```js
-it("uses the columns icon for the shared hide action", async () => {
-  const host = document.createElement("div");
-  host.id = "app";
-  host.style.height = "600px";
-  document.body.appendChild(host);
-  const state = createState();
-  bindWorkbenchCore({
-    state,
-    events: {
-      emit: () => {},
-      on: () => ({ dispose() {} })
-    }
-  });
-  const wb = initWorkbench(host);
-  const view = sideBarRuntime.registerView({
-    id: "plugins.hide-action",
-    pluginId: "dev.plugins",
-    title: "Plugins",
-    component: { render: () => {} }
-  });
-
-  sideBarRuntime.show();
-  sideBarRuntime.activateView("plugins.hide-action");
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  const hide = document.querySelector('[aria-label="Hide Side Bar"]');
-  const usesColumnsIcon = !!hide?.querySelector('[data-zion-icon="columns-2"]');
-  hide.click();
-  const hiddenAfterClick = !sideBarRuntime.isVisible();
-
-  view.dispose();
-  wb.dispose();
-  host.remove();
-
-  expect(usesColumnsIcon).toBe(true);
-  expect(hiddenAfterClick).toBe(true);
-});
-```
-
-Delete the `showHideAction: false` opt-out test.
-
-- [ ] **Step 2: Remove the unused opt-out contract**
-
-Delete this property from both Sidebar view type declarations:
-
-```ts
-showHideAction?: boolean;
-```
-
-In Workbench, always append the shared button:
-
-```ts
-headerActions.appendChild(hideBtn);
-```
-
-- [ ] **Step 3: Run the Workbench tests**
-
-```bash
-npm test -- --run tests/workbench-sidebar-chrome.test.js
-```
-
-Expected: all tests pass.
-
-### Task 2: Add semantic session action icons
+### Task 2: Move the semantic new-session icon to editor tabs
 
 **Files:**
 - Modify: `src/ui/icons.ts`
-- Modify: `extensions/dev.session-manager/main.js`
+- Modify: `src/main.ts`
 - Test: `tests/session-sidebar-header.test.js`
 
-- [ ] **Step 1: Add a failing icon registry test**
-
-Extend `tests/session-sidebar-header.test.js`:
-
-```js
-import { hasZionIcon, zionIconName } from "../src/ui/icons";
-
-it("registers the new-session icon", () => {
-  expect(hasZionIcon("message-square-plus")).toBe(true);
-  expect(zionIconName("message-square-plus")).toBe("message-square-plus");
-});
-```
-
-- [ ] **Step 2: Run the icon test and verify failure**
-
-```bash
-npm test -- --run tests/session-sidebar-header.test.js
-```
-
-Expected: `hasZionIcon("message-square-plus")` is false.
-
-- [ ] **Step 3: Register the new icon**
-
-Add the Lucide-style icon path in `src/ui/icons.ts`:
+- [ ] Register Lucide's `message-circle-plus` SVG paths:
 
 ```ts
-"message-square-plus": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4Z"/><path d="M12 7v6M9 10h6"/>',
+"message-circle-plus": '<path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/><path d="M8 12h8M12 8v8"/>',
 ```
 
-- [ ] **Step 4: Configure the sessions actions**
+- [ ] Replace `zionIconHtml("plus")` on all editor new-session buttons with:
 
-In `extensions/dev.session-manager/main.js`:
+```ts
+zionIconHtml("message-circle-plus")
+```
+
+- [ ] Verify the icon registry:
 
 ```js
-icon: "$(tag)",
+expect(hasZionIcon("message-circle-plus")).toBe(true);
+expect(zionIconName("message-circle-plus")).toBe("message-circle-plus");
 ```
 
-for `sessions.tagSplit`, and:
+### Task 3: Verify and commit
 
-```js
-icon: "$(message-square-plus)",
-```
-
-for `sessions.new`. Delete `showHideAction: false` so Workbench appends the
-shared `columns-2` action at the far right.
-
-- [ ] **Step 5: Run verification**
+- [ ] Run focused tests:
 
 ```bash
-npm test -- --run tests/workbench-sidebar-chrome.test.js tests/session-sidebar-header.test.js tests/session-sidebar-tag-split.test.js
-npx eslint src/ui/icons.ts src/ui/workbench/workbench.ts src/ui/workbench/runtime.ts extensions/dev.session-manager/main.js tests/workbench-sidebar-chrome.test.js tests/session-sidebar-header.test.js
+npm test -- --run tests/session-sidebar-header.test.js tests/workbench-sidebar-chrome.test.js tests/session-sidebar-tag-split.test.js
+```
+
+- [ ] Run ESLint and build:
+
+```bash
+npx eslint src/main.ts src/ui/icons.ts extensions/dev.session-manager/main.js tests/session-sidebar-header.test.js
 npm run build
 ```
 
-Expected: tests, ESLint, and build pass. Restore generated `dist/index.html`
-hashes, then verify the three icon names and order in the browser.
-
-- [ ] **Step 6: Commit**
+- [ ] Browser-check the final icon order and commit:
 
 ```bash
-git add src/ui/icons.ts src/ui/workbench/workbench.ts src/ui/workbench/runtime.ts src/types/zion.d.ts extensions/dev.session-manager/main.js tests/workbench-sidebar-chrome.test.js tests/session-sidebar-header.test.js
-git commit -m "fix(sessions): refine sidebar action icons"
+git add docs/superpowers/specs/2026-08-16-sidebar-header-actions-design.md docs/superpowers/plans/2026-08-16-sidebar-header-actions.md extensions/dev.session-manager/main.js src/main.ts src/ui/icons.ts tests/session-sidebar-header.test.js
+git commit -m "fix(sessions): move new session icon to editor tabs"
 ```

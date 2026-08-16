@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderSessionsTagHeader } from "../extensions/dev.session-manager/ui/sidebar-header.js";
+import { hasZionIcon, zionIconName } from "../src/ui/icons";
 
 describe("sessions tag split header", () => {
+  it("registers the selected new-session icon", () => {
+    expect(hasZionIcon("message-circle-plus")).toBe(true);
+    expect(zionIconName("message-circle-plus")).toBe("message-circle-plus");
+  });
+
   it("renders snapshots, delegates add, and detaches", () => {
     const add = vi.fn();
     let sink = null;
