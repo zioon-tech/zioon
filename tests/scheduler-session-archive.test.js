@@ -306,13 +306,17 @@ describe("scheduled session archive helpers", () => {
         id: "folder-manual",
         type: "folder",
         title: "Manual",
-        children: [{ id: "scheduled-outside", type: "session", title: "Moved task" }]
+        children: [
+          { id: "scheduled-outside", type: "session", title: "Moved task" },
+          { id: "scheduled-legacy", type: "session", title: "定时任务 · Legacy task · 2026/8/16" }
+        ]
       }]
     };
     const docs = {
       "scheduled-1": "user English task\n\n#scheduled_tasks\nassistant Done\nuser ",
       "scheduled-orphan": "user Orphan task\nassistant Done\nuser ",
       "scheduled-outside": "user Moved task\n\n#定时任务\nassistant Done\nuser ",
+      "scheduled-legacy": "user Legacy task\nassistant Done\nuser ",
       "normal-1": "user Normal\nassistant Done\nuser "
     };
     const fixture = createArchiveFixture({
@@ -321,6 +325,7 @@ describe("scheduled session archive helpers", () => {
         { id: "scheduled-1" },
         { id: "scheduled-orphan" },
         { id: "scheduled-outside" },
+        { id: "scheduled-legacy", title: "定时任务 · Legacy task · 2026/8/16" },
         { id: "normal-1" }
       ],
       metas: {
@@ -338,6 +343,9 @@ describe("scheduled session archive helpers", () => {
           source: "scheduled-task",
           scheduledTaskId: "missing",
           createdAt: Date.UTC(2026, 7, 16, 2, 30)
+        },
+        "scheduled-legacy": {
+          createdAt: Date.UTC(2026, 7, 16, 3, 30)
         },
         "normal-1": { source: "chat" }
       },
@@ -386,6 +394,11 @@ describe("scheduled session archive helpers", () => {
       id: "scheduled-outside",
       targetFolderId: "folder-16"
     });
+    expect(fixture.moveCalls).toContainEqual({
+      id: "scheduled-legacy",
+      targetFolderId: "folder-16"
+    });
+    expect(docs["scheduled-legacy"]).toContain("#定时任务/2026/08/16");
   });
 
   it("retries an interrupted migration without duplicating tags", async () => {
