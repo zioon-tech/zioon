@@ -239,7 +239,10 @@ export async function migrateScheduledSessions({
       if (!sessionId) continue;
       const meta = await zion?.commands?.executeCommand?.("zion.sessions.getMeta", sessionId);
       if (meta === undefined) return false;
-      const isLegacyScheduledSession = force && /^定时任务\s*·/.test(String(entry?.title || ""));
+      const treeTitle = findTreeNode(initialTree, sessionId)?.title;
+      const isLegacyScheduledSession = force && /^定时任务\s*·/.test(
+        String(treeTitle || meta?.title || entry?.title || "")
+      );
       if (meta?.source !== "scheduled-task" && !isLegacyScheduledSession) continue;
 
       const task = store?.getTask?.(String(meta.scheduledTaskId || ""));

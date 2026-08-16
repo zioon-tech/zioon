@@ -325,7 +325,7 @@ describe("scheduled session archive helpers", () => {
         { id: "scheduled-1" },
         { id: "scheduled-orphan" },
         { id: "scheduled-outside" },
-        { id: "scheduled-legacy", title: "定时任务 · Legacy task · 2026/8/16" },
+        { id: "scheduled-legacy", title: "Session scheduled-legacy" },
         { id: "normal-1" }
       ],
       metas: {
