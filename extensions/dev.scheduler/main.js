@@ -824,6 +824,7 @@ export async function activate(ctx) {
         store,
         locale: currentLocale(),
         force,
+        moveOutsideArchive: force,
         ensureFolder: resolveArchiveFolder,
         ensureDateFolder: ({ archiveDate }) => resolveArchiveDateFolder(archiveDate)
       }).finally(() => {

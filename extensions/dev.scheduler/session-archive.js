@@ -206,6 +206,7 @@ export async function migrateScheduledSessions({
   store,
   locale,
   force = false,
+  moveOutsideArchive = false,
   now = () => Date.now(),
   ensureFolder = ensureScheduledSessionFolder,
   ensureDateFolder = ensureScheduledSessionDateFolder
@@ -255,7 +256,11 @@ export async function migrateScheduledSessions({
       });
       if (transformed !== true) return false;
 
-      if (previousVersion < 1 || isTreeDescendant(initialTree, folderId, sessionId)) {
+      if (
+        moveOutsideArchive
+        || previousVersion < 1
+        || isTreeDescendant(initialTree, folderId, sessionId)
+      ) {
         const targetFolderId = await ensureDateFolder({
           zion,
           store,

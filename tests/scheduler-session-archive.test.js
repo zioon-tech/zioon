@@ -374,6 +374,18 @@ describe("scheduled session archive helpers", () => {
       { id: "scheduled-orphan", targetFolderId: "folder-16" }
     ]);
     expect(store.getSessionArchiveState().migrationVersion).toBe(4);
+
+    await expect(migrateScheduledSessions({
+      zion: fixture.zion,
+      store,
+      locale: "zh-CN",
+      force: true,
+      moveOutsideArchive: true
+    })).resolves.toBe(true);
+    expect(fixture.moveCalls).toContainEqual({
+      id: "scheduled-outside",
+      targetFolderId: "folder-16"
+    });
   });
 
   it("retries an interrupted migration without duplicating tags", async () => {
