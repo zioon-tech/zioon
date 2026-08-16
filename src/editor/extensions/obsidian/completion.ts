@@ -10,7 +10,76 @@ type TagOption = {
   apply: string;
 };
 
+type DerivedTagOption = {
+  label: string;
+  detail: string;
+};
+
 const sessionTagCache = new Map<string, { signature: string; tags: string[] }>();
+const EMPTY_DERIVED_REGISTRY = Symbol("empty-derived-registry");
+let derivedTagRegistryRef: unknown = EMPTY_DERIVED_REGISTRY;
+let derivedTagOptionsCache: DerivedTagOption[] = [];
+
+function normalizeDerivedTagLabel(rawPath: unknown): string {
+  const segments = String(rawPath || "")
+    .replace(/^#/, "")
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!segments.length) return "";
+  const path = segments.join("/");
+  return path.length <= 200 ? `#${path}` : "";
+}
+
+function getGlobalDerivedTags(): DerivedTagOption[] {
+  const registry = (() => {
+    try {
+      return (window as any)?.zion?.state?.get?.("sessions.derivedTags");
+    } catch {
+      return undefined;
+    }
+  })();
+
+  if (registry === derivedTagRegistryRef) return derivedTagOptionsCache;
+  derivedTagRegistryRef = registry;
+
+  if (!registry || typeof registry !== "object" || Array.isArray(registry)) {
+    derivedTagOptionsCache = [];
+    return derivedTagOptionsCache;
+  }
+
+  const seen = new Set<string>();
+  const options: DerivedTagOption[] = [];
+  for (const rawSource of Object.values(registry as Record<string, any>)) {
+    if (!rawSource || typeof rawSource !== "object") continue;
+    const sourceLabel = String(
+      rawSource.label || rawSource.id || "Derived"
+    ).trim() || "Derived";
+    const sessions = rawSource.sessions;
+    if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) {
+      continue;
+    }
+
+    for (const rawTags of Object.values(sessions)) {
+      if (!Array.isArray(rawTags)) continue;
+      for (const rawTag of rawTags) {
+        const rawPath = typeof rawTag === "string" ? rawTag : rawTag?.path;
+        const label = normalizeDerivedTagLabel(rawPath);
+        if (!label || seen.has(label)) continue;
+        seen.add(label);
+        options.push({
+          label,
+          detail: `${sourceLabel} 自动标签`
+        });
+      }
+    }
+  }
+
+  derivedTagOptionsCache = options.sort((a, b) => (
+    a.label.localeCompare(b.label)
+  ));
+  return derivedTagOptionsCache;
+}
 
 function isFenceLine(lineText: string): boolean {
   return /^\s*`{3,}/.test(lineText) || /^\s*~{3,}/.test(lineText);
@@ -198,6 +267,20 @@ export function completeObsidianTags(context: CompletionContext): CompletionResu
       apply: label
     });
     if (options.length >= 50) break;
+  }
+  for (const derived of getGlobalDerivedTags()) {
+    if (options.length >= 50) break;
+    if (seen.has(derived.label)) continue;
+    if (query && !derived.label.slice(1).toLowerCase().startsWith(query)) {
+      continue;
+    }
+    seen.add(derived.label);
+    options.push({
+      label: derived.label,
+      detail: derived.detail,
+      type: "keyword",
+      apply: derived.label
+    });
   }
 
   if (!options.length && !context.explicit) return null;
