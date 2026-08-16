@@ -78,6 +78,21 @@ beforeEach(() => {
 });
 
 describe("sessions sidebar tag split layout", () => {
+  it("reports and toggles the persisted tag split state before mounting", () => {
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const manager = createSessionsSidebarViewManager({
+      zion: makeZion([]),
+      createSessionsListRenderer: () => () => {},
+      getIndex: () => [],
+      loadMeta: () => ({})
+    });
+
+    expect(manager.isTagSplitEnabled()).toBe(true);
+    expect(manager.toggleTagSplitIfOpen()).toBe(false);
+    expect(manager.isTagSplitEnabled()).toBe(false);
+    expect(localStorage.getItem("zion.sessions.sidebar.tagSplit")).toBe("0");
+  });
+
   it("defaults the activity filter to all sessions", () => {
     const { container } = mountAt(500);
     expect(container.querySelector(".zion-sessions-heatmap-range").value).toBe("all");
@@ -133,6 +148,21 @@ describe("sessions sidebar tag split layout", () => {
     expect(container.querySelector(".zion-sessions-split-row")).toBeNull();
     expect(container.querySelector(".zion-sessions-day-panel").parentElement).toBe(container);
     expect(widthCalls).toEqual([440, 300]);
+  });
+
+  it("commits the toggle state before sidebar width changes rebuild header actions", () => {
+    const { manager, zion, inst } = mountAt(500);
+    const statesDuringWidthChange = [];
+    const setWidth = zion.sideBar.setWidth;
+    zion.sideBar.setWidth = (width) => {
+      statesDuringWidthChange.push(manager.isTagSplitEnabled());
+      setWidth(width);
+    };
+
+    inst.toggleTagSplit();
+    inst.toggleTagSplit();
+
+    expect(statesDuringWidthChange).toEqual([true, false]);
   });
 
   it("restores normal width on deactivation and reapplies split width on activation", () => {

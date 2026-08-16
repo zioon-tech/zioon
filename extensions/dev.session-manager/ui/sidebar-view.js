@@ -148,6 +148,12 @@ export function createSessionsSidebarViewManager(opts) {
     return true;
   }
 
+  function persistTagSplitEnabled(enabled) {
+    tagSplitEnabled = !!enabled;
+    try { localStorage.setItem(LS_TAG_SPLIT, tagSplitEnabled ? "1" : "0"); } catch {}
+    return tagSplitEnabled;
+  }
+
   function setTagNodeCollapsed(tag, collapsed) {
     const key = String(tag || "").trim();
     if (!key) return;
@@ -871,14 +877,12 @@ export function createSessionsSidebarViewManager(opts) {
 
     const setTagSplitEnabled = (next) => {
       const enabled = !!next;
+      persistTagSplitEnabled(enabled);
       if (enabled) {
-        tagSplitEnabled = true;
         activateTagSplitWidthIfEnabled();
       } else {
         deactivateTagSplitWidthIfEnabled();
-        tagSplitEnabled = false;
       }
-      try { localStorage.setItem(LS_TAG_SPLIT, tagSplitEnabled ? "1" : "0"); } catch {}
       appliedSplitMode = null;
       applySplitLayout();
       renderAll();
@@ -1648,8 +1652,11 @@ export function createSessionsSidebarViewManager(opts) {
       return sessionViewMode;
     },
     getSessionViewMode: () => sessionViewMode,
-    toggleTagSplitIfOpen: () => current?.toggleTagSplit?.(),
-    isTagSplitEnabled: () => !!current?.isTagSplitEnabled?.(),
+    toggleTagSplitIfOpen: () => {
+      if (current?.toggleTagSplit) return current.toggleTagSplit();
+      return persistTagSplitEnabled(!tagSplitEnabled);
+    },
+    isTagSplitEnabled: () => !!tagSplitEnabled,
     activateTagSplitWidthIfEnabled: () => {
       const changed = activateTagSplitWidthIfEnabled();
       if (changed) {
