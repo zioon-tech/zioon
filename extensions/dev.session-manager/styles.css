@@ -332,6 +332,12 @@ body.zion-sessions-no-transitions .zion-session-row * {
   background: var(--sessions-current-bg);
 }
 
+.zion-sessions-list.is-card-view .zion-session-child-row {
+  margin: 0 !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent) !important;
+  border-radius: 2px !important;
+}
+
 .zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout > div:first-of-type {
   padding-right: 0 !important;
 }
