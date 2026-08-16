@@ -1314,8 +1314,13 @@
 .zion-context-tree-row.is-todo .zion-context-tree-chevron,
 .zion-context-tree-row.is-memory .zion-context-tree-chevron,
 .zion-context-tree-row.is-basic .zion-context-tree-chevron,
+.zion-context-tree-row.is-tag .zion-context-tree-chevron,
+.zion-context-tree-row.is-tag-ignored .zion-context-tree-chevron,
 .zion-context-tree-row.is-empty .zion-context-tree-chevron {
   visibility: hidden;
+}
+.zion-context-tree-row.is-tag-ignored {
+  color: color-mix(in srgb, var(--fg) 62%, transparent);
 }
 .zion-context-tree-icon {
   flex: 0 0 16px;

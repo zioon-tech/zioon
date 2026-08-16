@@ -1,4 +1,8 @@
 import { extractObsidianMetadata } from "../../shared/obsidian-metadata.js";
+import {
+  isSessionTagPathExcluded,
+  normalizeSessionTagExclusions
+} from "../../shared/session-tag-exclusions.js";
 import { normalizeTagPath } from "./tag-catalog.js";
 
 export const SESSION_TAG_INDEX_VERSION = 1;
@@ -20,19 +24,7 @@ function normalizeTags(rawTags) {
 }
 
 export function normalizeTagExclusions(rawExclusions) {
-  const seen = new Set();
-  const exclusions = [];
-  for (const raw of Array.isArray(rawExclusions) ? rawExclusions : []) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-    const path = normalizeTagPath(raw.path);
-    if (!path) continue;
-    const subtree = raw.subtree === true;
-    const key = `${path}\u0000${subtree ? "1" : "0"}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    exclusions.push({ path, subtree });
-  }
-  return exclusions;
+  return normalizeSessionTagExclusions(rawExclusions);
 }
 
 export function validateSessionTagIndex(raw) {
@@ -81,11 +73,7 @@ export function getSessionTagExclusions(index, sessionId) {
 }
 
 export function isSessionTagExcluded(tagPath, exclusions) {
-  const path = normalizeTagPath(tagPath);
-  if (!path) return false;
-  return normalizeTagExclusions(exclusions).some((rule) => (
-    path === rule.path || (rule.subtree && path.startsWith(`${rule.path}/`))
-  ));
+  return isSessionTagPathExcluded(tagPath, exclusions);
 }
 
 export function updateSessionTagIndex(index, sessionId, text, hash = "") {

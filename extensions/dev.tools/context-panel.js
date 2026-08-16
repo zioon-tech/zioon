@@ -4,6 +4,7 @@ import { createFilesCodeEditor, createFilesCodeViewer, createFilesMarkdownPrevie
 import { formatCompactChangeCount, formatChangeSummary, getCurrentSessionChangeState, normalizeChangePath } from "./session-change-state.js";
 import { getContextFileResourceKey, getContextResourceDeviceKey, isKnownFileToolFailure, mergeContextFileResources } from "./context-file-resources.js";
 import { extractObsidianMetadata, findObsidianTargetPosition } from "../shared/obsidian-metadata.js";
+import { partitionSessionExtractedTags } from "../shared/session-tag-exclusions.js";
 
 export const CONTEXT_VIEW_ID = "dev.tools.context";
 
@@ -43,7 +44,7 @@ function t(key, fallback, values) {
     const translated = window.zion?.i18n?.t?.(fullKey, values);
     if (translated && translated !== fullKey) return translated;
   } catch {}
-  return fallback;
+  return String(fallback || "").replace(/\{(\w+)\}/g, (_, key) => String(values?.[key] ?? `{${key}}`));
 }
 
 export function registerContextPanel(ctx) {
@@ -199,6 +200,7 @@ function createContextPanel(container) {
     } catch {}
   };
   watchState("sessions.currentId");
+  watchState("sessions.tagIndex");
   watchState("comments.activeThreadId");
   watchState("terminal.sessions");
   watchState("terminal.activeSessionId");
@@ -1205,7 +1207,17 @@ function buildContextSnapshot(urlTitleCache = {}, options = {}) {
   const biographySummary = buildBiographyContextSummary(biographyEvents);
   const memories = getMemoryItems();
   const memorySummary = buildMemorySummary(memories);
-  const obsidian = extractObsidianMetadata(editorText);
+  const extractedObsidian = extractObsidianMetadata(editorText);
+  const tagExtractionState = getSessionTagExtractionState(sessionId);
+  const tagPartition = partitionSessionExtractedTags(
+    extractedObsidian.tags,
+    tagExtractionState.exclusions
+  );
+  const obsidian = {
+    ...extractedObsidian,
+    tags: tagPartition.visible,
+    ignoredTagRules: tagPartition.ignoredRules
+  };
   const basics = [
     { label: t("context.session", "Session"), value: sessionId ? shortId(sessionId) : t("context.noSession", "No open session") },
     { label: t("context.terminalContext", "Terminal Context"), value: includeTerminal ? t("context.terminalInjected", "Injected into chat") : t("context.terminalNotInjected", "Not injected into chat") },
@@ -1213,6 +1225,27 @@ function buildContextSnapshot(urlTitleCache = {}, options = {}) {
     { label: t("context.toolArtifacts", "Tool Artifacts"), value: t("context.itemCount", "{count}", { count: tools.length }) }
   ];
   return { sessionId, files, urls, contextResources, basics, usage, tasks, activeTaskId, taskSummary, comments, commentSummary, agentTasks, agentSummary, biographyEvents, biographySummary, memories, memorySummary, obsidian };
+}
+
+function getSessionTagExtractionState(sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return { sessionId: "", exclusions: [] };
+  try {
+    const result = window.zion?.commands?.executeCommand?.(
+      "zion.sessions.getTagExtractionState",
+      { sessionId: sid }
+    );
+    if (result && typeof result === "object" && !("then" in result)) return result;
+  } catch {}
+  try {
+    const entry = window.zion?.state?.get?.("sessions.tagIndex")?.sessions?.[sid];
+    return {
+      sessionId: sid,
+      exclusions: Array.isArray(entry?.exclusions) ? entry.exclusions : []
+    };
+  } catch {
+    return { sessionId: sid, exclusions: [] };
+  }
 }
 
 function getSnapshotRenderSignature(snapshot, expanded, changeState) {
@@ -1311,7 +1344,7 @@ function renderResourceTree(snapshot, state) {
     label: t("context.tags", "Tags"),
     count: snapshot.obsidian?.tags?.length || 0,
     empty: t("context.emptyTags", "No tags in the current session."),
-    children: renderObsidianTagsRows(snapshot.obsidian?.tags || [], state),
+    children: renderObsidianTagSection(snapshot, state),
     state
   }));
   tree.appendChild(renderGroup({
@@ -1437,6 +1470,11 @@ function compactObsidianSignature(obsidian) {
   if (!obsidian) return "";
   return stableStringify({
     tags: (obsidian.tags || []).map((item) => [item.label, item.line, item.pos]),
+    ignoredTagRules: (obsidian.ignoredTagRules || []).map((item) => [
+      item.path,
+      item.subtree,
+      item.matchCount
+    ]),
     wikiLinks: (obsidian.wikiLinks || []).map((item) => [item.target, item.label, item.line, item.pos]),
     headings: (obsidian.headings || []).map((item) => [item.label, item.level, item.line, item.pos]),
     anchors: (obsidian.anchors || []).map((item) => [item.label, item.line, item.pos])
@@ -1919,7 +1957,26 @@ function stableContextHash(value) {
   return Math.abs(hash).toString(36);
 }
 
-function renderObsidianTagsRows(tags, state) {
+function renderObsidianTagSection(snapshot, state) {
+  const sessionId = String(snapshot?.sessionId || "").trim();
+  const rows = renderObsidianTagsRows(snapshot?.obsidian?.tags || [], state, sessionId);
+  const ignoredRules = snapshot?.obsidian?.ignoredTagRules || [];
+  if (ignoredRules.length) {
+    rows.push(renderGroup({
+      key: "tags:ignored",
+      depth: 1,
+      icon: "codicon-eye-closed",
+      label: t("context.ignoredTags", "Ignored"),
+      count: ignoredRules.length,
+      empty: "",
+      children: renderIgnoredTagRows(ignoredRules, state, sessionId),
+      state
+    }));
+  }
+  return rows;
+}
+
+function renderObsidianTagsRows(tags, state, sessionId) {
   return (Array.isArray(tags) ? tags : []).slice(0, 80).map((item, index) => {
     const key = `tag:${item.label || index}`;
     return renderTreeRow({
@@ -1933,11 +1990,81 @@ function renderObsidianTagsRows(tags, state) {
       selected: state.selectedKey === key,
       onClick: () => jumpToEditorPosition(item.pos),
       onSelect: state.onSelect,
-      secondaryActionIcon: "codicon-copy",
-      secondaryActionTitle: t("context.copyInfo", "Copy info"),
-      onSecondaryAction: () => copyText(item.label || "")
+      secondaryActionIcon: "codicon-eye-closed",
+      secondaryActionTitle: t("context.ignoreTag", "Ignore tag in this session"),
+      onSecondaryAction: () => runContextTagExclusionCommand(
+        "zion.sessions.excludeTag",
+        {
+          sessionId,
+          path: item.label,
+          subtree: false
+        },
+        t("context.tagIgnored", "Ignored #{tag} in this session", { tag: item.label })
+      )
     });
   });
+}
+
+function renderIgnoredTagRows(rules, state, sessionId) {
+  return (Array.isArray(rules) ? rules : []).slice(0, 80).map((rule, index) => {
+    const key = `tag:ignored:${rule.path || index}:${rule.subtree ? "subtree" : "exact"}`;
+    const label = `#${rule.path}${rule.subtree ? "/…" : ""}`;
+    return renderTreeRow({
+      key,
+      depth: 2,
+      icon: "codicon-eye-closed",
+      label,
+      meta: rule.matchCount ? String(rule.matchCount) : "",
+      title: rule.subtree
+        ? t("context.ignoredTagSubtree", "Ignored tag subtree #{tag}", { tag: rule.path })
+        : t("context.ignoredTagExact", "Ignored tag #{tag}", { tag: rule.path }),
+      kind: "tag-ignored",
+      selected: state.selectedKey === key,
+      onSelect: state.onSelect,
+      actionIcon: "codicon-eye",
+      actionTitle: t("context.restoreTag", "Restore tag extraction"),
+      onAction: () => runContextTagExclusionCommand(
+        "zion.sessions.restoreTag",
+        {
+          sessionId,
+          path: rule.path,
+          subtree: rule.subtree === true
+        },
+        t("context.tagRestored", "Restored #{tag}", { tag: rule.path })
+      )
+    });
+  });
+}
+
+function runContextTagExclusionCommand(command, payload, successMessage) {
+  try {
+    const result = window.zion?.commands?.executeCommand?.(command, payload);
+    Promise.resolve(result)
+      .then((value) => {
+        if (!value?.ok) throw new Error("Tag exclusion command failed");
+        try {
+          window.zion?.notification?.show?.(successMessage, {
+            type: "info",
+            duration: 2200
+          });
+        } catch {}
+      })
+      .catch(() => {
+        try {
+          window.zion?.notification?.show?.(
+            t("context.tagActionFailed", "Could not update tag extraction"),
+            { type: "error", duration: 3000 }
+          );
+        } catch {}
+      });
+  } catch {
+    try {
+      window.zion?.notification?.show?.(
+        t("context.tagActionFailed", "Could not update tag extraction"),
+        { type: "error", duration: 3000 }
+      );
+    } catch {}
+  }
 }
 
 function renderObsidianWikiLinkRows(links, state) {
