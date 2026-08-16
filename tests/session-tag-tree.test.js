@@ -78,12 +78,13 @@ describe("tag tree panel", () => {
     expect(paths).toEqual(["deep", "deep/nested", "deep/nested/target"]);
   });
 
-  it("create flow commits through onCreate with parent prefix", async () => {
+  it("renders without a duplicate header and exposes root creation", async () => {
     const { panel, calls } = makePanel();
     const tree = makeRows([{ id: "tag:work", path: "work", order: 0, manual: true }], []);
     panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
     document.body.appendChild(panel.el);
-    panel.el.querySelector(".zion-sessions-tagtree-add").click();
+    expect(panel.el.querySelector(".zion-sessions-tagtree-header")).toBeNull();
+    panel.startCreateRoot();
     const input = panel.el.querySelector(".zion-sessions-tagtree-edit input");
     expect(input).toBeTruthy();
     input.value = "fresh";

@@ -75,6 +75,12 @@ export function createSessionsSidebarViewManager(opts) {
   }
 
   let current = null;
+  let tagSplitHeaderSink = null;
+  let tagSplitHeaderSnapshot = {
+    visible: false,
+    width: tagColumnWidth,
+    nodeCount: 0
+  };
   let revealRaf = 0;
   let heatmapTooltip = null;
   let selectedTag = "";
@@ -463,6 +469,25 @@ export function createSessionsSidebarViewManager(opts) {
     } catch {}
   }
 
+  function publishTagSplitHeader(patch = {}) {
+    tagSplitHeaderSnapshot = { ...tagSplitHeaderSnapshot, ...patch };
+    try { tagSplitHeaderSink?.({ ...tagSplitHeaderSnapshot }); } catch {}
+  }
+
+  function attachTagSplitHeader(sink) {
+    tagSplitHeaderSink = typeof sink === "function" ? sink : null;
+    const attached = tagSplitHeaderSink;
+    publishTagSplitHeader();
+    try { current?.render?.(); } catch {}
+    return {
+      dispose() {
+        if (tagSplitHeaderSink !== attached) return;
+        tagSplitHeaderSink = null;
+        try { current?.render?.(); } catch {}
+      }
+    };
+  }
+
   function mountInto(container) {
     container.innerHTML = "";
     container.style.display = "flex";
@@ -581,6 +606,7 @@ export function createSessionsSidebarViewManager(opts) {
     splitRow.style.flex = "1 1 auto";
     splitRow.style.minHeight = "0";
     splitRow.style.overflow = "hidden";
+    splitRow.style.position = "relative";
 
     const tagColumn = document.createElement("div");
     tagColumn.className = "zion-sessions-tag-column";
@@ -598,6 +624,7 @@ export function createSessionsSidebarViewManager(opts) {
     // rendered in CSS; line turns accent on hover/drag).
     const splitDivider = document.createElement("div");
     splitDivider.className = "zion-sessions-split-divider";
+    splitDivider.style.left = `${tagColumnWidth - 3}px`;
 
     const rightColumn = document.createElement("div");
     rightColumn.className = "zion-sessions-right-column";
@@ -686,6 +713,8 @@ export function createSessionsSidebarViewManager(opts) {
         tagColumnWidth = next;
         tagColumn.style.flex = `0 0 ${tagColumnWidth}px`;
         tagColumn.style.width = `${tagColumnWidth}px`;
+        splitDivider.style.left = `${tagColumnWidth - 3}px`;
+        publishTagSplitHeader({ width: tagColumnWidth });
       }
     };
     const onSplitDragEnd = () => {
@@ -703,40 +732,15 @@ export function createSessionsSidebarViewManager(opts) {
 
     let appliedSplitMode = null;
 
-    // Lift the split row up so the tag column header ("全部标签") shares the
-    // top line with the host sidebar header ("会话"). Only when the content
-    // area's preceding sibling is exactly the host header (no tabs etc.) —
-    // anything else that must stay visible disables the lift.
-    const measureHostHeaderLift = () => {
-      try {
-        const content = container.parentElement;
-        const host = content?.parentElement;
-        if (!content || !host) return 0;
-        const before = [];
-        for (const child of host.children) {
-          if (child === content) break;
-          before.push(child);
-        }
-        if (before.length !== 1) return 0;
-        const headerEl = before[0];
-        if (!String(headerEl.className || "").includes("sidebar-header")) return 0;
-        return headerEl.offsetHeight || 0;
-      } catch {
-        return 0;
-      }
-    };
-
     const applySplitLayout = () => {
       const bodyWidth = container.clientWidth || 0;
-      const wantSplit = tagSplitEnabled && bodyWidth >= TAG_SPLIT_BODY_MIN;
+      const wantSplit = !!tagSplitHeaderSink && tagSplitEnabled && bodyWidth >= TAG_SPLIT_BODY_MIN;
       const mode = wantSplit ? "split" : "stacked";
+      publishTagSplitHeader({ visible: wantSplit, width: tagColumnWidth });
       if (mode === appliedSplitMode) return;
       appliedSplitMode = mode;
       if (wantSplit) {
         tagsHost.style.display = "none";
-        const lift = measureHostHeaderLift();
-        splitRow.classList.toggle("is-lifted", lift > 0);
-        splitRow.style.marginTop = lift > 0 ? `-${lift}px` : "";
         splitRow.appendChild(tagColumn);
         splitRow.appendChild(splitDivider);
         rightColumn.appendChild(listHeader);
@@ -745,8 +749,6 @@ export function createSessionsSidebarViewManager(opts) {
         splitRow.appendChild(rightColumn);
         container.appendChild(splitRow);
       } else {
-        splitRow.classList.remove("is-lifted");
-        splitRow.style.marginTop = "";
         if (splitRow.parentElement === container) container.removeChild(splitRow);
         tagsHost.style.display = "";
         container.appendChild(listWrap);
@@ -798,6 +800,7 @@ export function createSessionsSidebarViewManager(opts) {
           nodeCount: tree.nodeCount,
           selection: selectedTag
         });
+        publishTagSplitHeader({ nodeCount: tree.nodeCount, width: tagColumnWidth });
       } catch {}
     };
 
@@ -1498,9 +1501,11 @@ export function createSessionsSidebarViewManager(opts) {
         return tagSplitEnabled;
       },
       isTagSplitEnabled: () => !!tagSplitEnabled,
+      createRootTag: () => tagTreePanel.startCreateRoot(),
       dispose: () => {
         if (current === inst) current = null;
-          try { innerRender?.dispose?.(); } catch {}
+        publishTagSplitHeader({ visible: false });
+        try { innerRender?.dispose?.(); } catch {}
         if (heatmapResizeRaf) {
           try { window.cancelAnimationFrame(heatmapResizeRaf); } catch {}
           heatmapResizeRaf = 0;
@@ -1516,5 +1521,15 @@ export function createSessionsSidebarViewManager(opts) {
     return inst;
   }
 
-  return { mountInto, refreshIfOpen, anchorToCurrentIfOpen, revealSessionIfOpen, toggleMenuIfOpen, toggleTagSplitIfOpen: () => current?.toggleTagSplit?.(), isTagSplitEnabled: () => !!current?.isTagSplitEnabled?.() };
+  return {
+    mountInto,
+    refreshIfOpen,
+    anchorToCurrentIfOpen,
+    revealSessionIfOpen,
+    toggleMenuIfOpen,
+    toggleTagSplitIfOpen: () => current?.toggleTagSplit?.(),
+    isTagSplitEnabled: () => !!current?.isTagSplitEnabled?.(),
+    attachTagSplitHeader,
+    createRootTagIfOpen: () => current?.createRootTag?.()
+  };
 }

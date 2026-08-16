@@ -17,6 +17,7 @@ import { registerSessionSidebarCommands } from "./commands/sidebar.js";
 import { registerSessionFlushCommand } from "./commands/flush.js";
 import { registerSessionDocCommands } from "./commands/doc-apis.js";
 import { createSessionAutoSavePlugin } from "./editor/autosave-plugin.js";
+import { renderSessionsTagHeader } from "./ui/sidebar-header.js";
 import { createSessionsSidebarViewManager } from "./ui/sidebar-view.js";
 import { createSessionsPanelManager } from "./ui/panel.js";
 import { createSessionsListRendererFactory } from "./ui/list-renderer.js";
@@ -132,6 +133,7 @@ const I18N_MESSAGES = {
     "heatmap.cost": "费用",
     "heatmap.noModelUsage": "当天没有模型消耗",
     "tags.title": "全部标签",
+    "tags.addTag": "新建标签",
     "tags.expand": "展开标签",
     "tags.collapse": "折叠标签",
     "tags.empty": "暂无标签",
@@ -241,6 +243,7 @@ const I18N_MESSAGES = {
     "heatmap.cost": "cost",
     "heatmap.noModelUsage": "No model usage on this day",
     "tags.title": "All Tags",
+    "tags.addTag": "New tag",
     "tags.expand": "Expand tags",
     "tags.collapse": "Collapse tags",
     "tags.empty": "No tags yet",
@@ -1550,6 +1553,12 @@ export async function activate(ctx) {
       icon: "$(history)",
       order: 10,
       location: "sidebar",
+      headerLeading: {
+        render: (container, context) => renderSessionsTagHeader(container, context, {
+          manager: __sidebarViewManager,
+          t
+        })
+      },
       headerActions: [
         {
           id: "sessions.tagSplit",

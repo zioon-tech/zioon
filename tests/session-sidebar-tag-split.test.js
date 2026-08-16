@@ -39,14 +39,26 @@ function makeManager(widthCalls) {
   return { manager, zion };
 }
 
-function mountAt(width) {
+function mountAt(width, { attachHeader = true } = {}) {
   const widthCalls = [];
   const { manager } = makeManager(widthCalls);
+  const headerSnapshots = [];
+  const headerDisposable = attachHeader
+    ? manager.attachTagSplitHeader((snapshot) => headerSnapshots.push({ ...snapshot }))
+    : null;
   const container = document.createElement("div");
   document.body.appendChild(container);
   Object.defineProperty(container, "clientWidth", { value: width, configurable: true });
   const inst = manager.mountInto(container);
-  return { manager, inst, container, widthCalls, setWidth: (w) => Object.defineProperty(container, "clientWidth", { value: w, configurable: true }) };
+  return {
+    manager,
+    inst,
+    container,
+    widthCalls,
+    headerSnapshots,
+    headerDisposable,
+    setWidth: (w) => Object.defineProperty(container, "clientWidth", { value: w, configurable: true })
+  };
 }
 
 beforeEach(() => {
@@ -68,10 +80,11 @@ describe("sessions sidebar tag split layout", () => {
 
   it("falls back to stacked layout under 380px even when enabled", () => {
     localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
-    const { container } = mountAt(320);
+    const { container, headerSnapshots } = mountAt(320);
     expect(container.querySelector(".zion-sessions-split-row")).toBeNull();
     expect(container.querySelector(".zion-sessions-list")).toBeTruthy();
     expect(container.querySelector(".zion-sessions-tags-panel").style.display).not.toBe("none");
+    expect(headerSnapshots.at(-1).visible).toBe(false);
   });
 
   it("toggle enables split, auto-widens sidebar, and disables restoring width", () => {
@@ -108,6 +121,7 @@ describe("sessions sidebar tag split layout", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     Object.defineProperty(container, "clientWidth", { value: 600, configurable: true });
+    manager.attachTagSplitHeader(() => {});
     const inst = manager.mountInto(container);
     inst.toggleTagSplit();
     expect(widthCalls).toEqual([]);
@@ -154,6 +168,7 @@ describe("sessions sidebar tag split layout", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     Object.defineProperty(container, "clientWidth", { value: 500, configurable: true });
+    manager.attachTagSplitHeader(() => {});
     manager.mountInto(container);
 
     container.querySelector('[data-path="alpha"]').click();
@@ -201,36 +216,40 @@ describe("sessions sidebar tag split layout", () => {
     expect(container.querySelector('.zion-sessions-tagtree-row[aria-selected="true"]')).toBeNull();
   });
 
-  it("lifts the split row onto the host header line when the host structure allows it", () => {
-    // Build a host-like structure: .zion-sidebar > .zion-sidebar-header + content
-    const host = document.createElement("div");
-    host.className = "zion-sidebar";
-    const header = document.createElement("div");
-    header.className = "zion-sidebar-header";
-    Object.defineProperty(header, "offsetHeight", { value: 40, configurable: true });
-    const content = document.createElement("div");
-    content.className = "zion-sidebar-content";
-    host.append(header, content);
-    document.body.appendChild(host);
-
+  it("publishes the tag header snapshot without overlaying the host header", () => {
     localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
-    const widthCalls = [];
-    const { manager } = makeManager(widthCalls);
-    const container = document.createElement("div");
-    content.appendChild(container);
-    Object.defineProperty(container, "clientWidth", { value: 500, configurable: true });
-    manager.mountInto(container);
-
+    const { container, headerSnapshots } = mountAt(500);
+    expect(headerSnapshots.at(-1)).toMatchObject({ visible: true, width: 180, nodeCount: 3 });
     const splitRow = container.querySelector(".zion-sessions-split-row");
-    expect(splitRow.style.marginTop).toBe("-40px");
-    expect(splitRow.classList.contains("is-lifted")).toBe(true);
+    expect(splitRow.style.marginTop).toBe("");
+    expect(splitRow.classList.contains("is-lifted")).toBe(false);
+    expect(container.querySelector(".zion-sessions-tagtree-header")).toBeNull();
+  });
 
-    // tabs (or any extra sibling before content) disables the lift safely
-    const tabs = document.createElement("div");
-    tabs.className = "zion-sidebar-tabs";
-    Object.defineProperty(tabs, "offsetHeight", { value: 30, configurable: true });
-    host.insertBefore(tabs, content);
-    const splitRow2 = container.querySelector(".zion-sessions-split-row");
-    expect(splitRow2.style.marginTop).toBe("-40px"); // stays until next relayout
+  it("falls back to stacked content when the header bridge is absent", () => {
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const { container } = mountAt(500, { attachHeader: false });
+    expect(container.querySelector(".zion-sessions-split-row")).toBeNull();
+    expect(container.querySelector(".zion-sessions-tags-panel").style.display).not.toBe("none");
+  });
+
+  it("keeps header and content divider widths synchronized while dragging", () => {
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const { container, headerSnapshots } = mountAt(500);
+    const divider = container.querySelector(".zion-sessions-split-divider");
+    divider.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, bubbles: true }));
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 120, bubbles: true }));
+    expect(headerSnapshots.at(-1).width).toBe(200);
+    expect(container.querySelector(".zion-sessions-tag-column").style.width).toBe("200px");
+    expect(divider.style.left).toBe("197px");
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    expect(localStorage.getItem("zion.sessions.sidebar.tagColumnWidth")).toBe("200");
+  });
+
+  it("delegates root creation from the header to the mounted tree", () => {
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const { manager, container } = mountAt(500);
+    manager.createRootTagIfOpen();
+    expect(container.querySelector(".zion-sessions-tagtree-edit input")).toBeTruthy();
   });
 });

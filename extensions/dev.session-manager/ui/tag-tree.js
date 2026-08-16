@@ -43,28 +43,6 @@ export function createTagTreePanel(deps) {
   let renderedKey = "";
   let dragPath = "";
 
-  // --- header + search ---
-  const header = document.createElement("div");
-  header.className = "zion-sessions-tagtree-header";
-  const title = document.createElement("span");
-  title.className = "zion-sessions-tagtree-title";
-  title.textContent = t("tags.title", "Tags");
-  const countBadge = document.createElement("span");
-  countBadge.className = "zion-sessions-tagtree-count";
-  const addBtn = document.createElement("button");
-  addBtn.type = "button";
-  addBtn.className = "zion-sessions-tagtree-add";
-  addBtn.title = t("tags.addTag", "New tag");
-  addBtn.setAttribute("aria-label", t("tags.addTag", "New tag"));
-  addBtn.innerHTML = iconHtml("plus", 14);
-  addBtn.onclick = (event) => {
-    event.stopPropagation();
-    startCreate("");
-  };
-  header.appendChild(title);
-  header.appendChild(countBadge);
-  header.appendChild(addBtn);
-
   const searchWrap = document.createElement("div");
   searchWrap.className = "zion-sessions-tagtree-searchwrap";
   const search = document.createElement("input");
@@ -82,7 +60,6 @@ export function createTagTreePanel(deps) {
   body.className = "zion-sessions-tagtree-body";
   body.tabIndex = 0;
 
-  el.appendChild(header);
   el.appendChild(searchWrap);
   el.appendChild(body);
 
@@ -123,11 +100,9 @@ export function createTagTreePanel(deps) {
       editMode ? `${editMode.kind}:${editMode.path}` : ""
     ].join("\u0003");
     if (key === renderedKey && body.childElementCount) {
-      countBadge.textContent = String(state.nodeCount || 0);
       return;
     }
     renderedKey = key;
-    countBadge.textContent = String(state.nodeCount || 0);
     body.innerHTML = "";
     if (editMode && editMode.kind === "create") {
       body.appendChild(createInputRow(editMode.parentPath));
@@ -479,6 +454,9 @@ export function createTagTreePanel(deps) {
       render();
     },
     setSelection: applySelection,
+    startCreateRoot() {
+      startCreate("");
+    },
     focus() {
       search.focus();
     },

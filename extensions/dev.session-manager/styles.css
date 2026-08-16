@@ -567,31 +567,30 @@ body.zion-sessions-no-transitions .zion-session-row * {
   overflow: hidden;
 }
 
-.zion-sessions-tagtree-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px 4px 8px;
-}
-/* Same scale as .zion-sessions-section-title (12px/600, normal case) so the
-   column header reads as part of the sidebar, not a foreign widget. */
-.zion-sessions-tagtree-title {
+.zion-sessions-header-title {
   flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.01em;
   color: color-mix(in srgb, var(--fg) 58%, transparent);
 }
-.zion-sessions-tagtree-add {
+.zion-sessions-header-count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--fg) 42%, transparent);
+}
+.zion-sessions-header-add {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 20px;
   height: 20px;
-  flex: 0 0 auto;
+  flex: 0 0 20px;
+  padding: 0;
   border: 0;
   background: transparent;
   color: color-mix(in srgb, var(--fg) 48%, transparent);
@@ -599,13 +598,18 @@ body.zion-sessions-no-transitions .zion-session-row * {
   border-radius: var(--radius-sm, 4px);
   transition: background var(--transition-fast), color var(--transition-fast);
 }
-.zion-sessions-tagtree-add:hover {
+.zion-sessions-header-add:hover {
   background: var(--hover-bg);
   color: var(--fg);
 }
+.zion-sidebar-header-leading.zion-sessions-header-leading {
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 4px;
+}
 
 .zion-sessions-tagtree-searchwrap {
-  padding: 0 8px 6px 8px;
+  padding: 6px 8px;
 }
 .zion-sessions-tagtree-search {
   width: 100%;
@@ -722,7 +726,7 @@ body.zion-sessions-no-transitions .zion-session-row * {
   color: var(--fg);
 }
 
-/* bare tabular count (also used in the header) */
+/* bare tabular count */
 .zion-sessions-tagtree-count {
   flex: 0 0 auto;
   font-size: 10px;
@@ -732,10 +736,6 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-tagtree-row.is-selected .zion-sessions-tagtree-count {
   color: color-mix(in srgb, var(--fg) 64%, transparent);
 }
-.zion-sessions-tagtree-header .zion-sessions-tagtree-count {
-  font-size: 10px;
-}
-
 /* drag feedback: thin accent line before/after, tinted row inside */
 .zion-sessions-tagtree-row.is-drop-before {
   box-shadow: inset 0 2px 0 0 var(--accent);
@@ -851,8 +851,10 @@ body.zion-sessions-no-transitions .zion-session-row * {
 /* ===== Split layout: single divider + active filter chip ===== */
 /* One vertical separator for the whole split (tag column has no own border). */
 .zion-sessions-split-divider {
-  position: relative;
-  flex: 0 0 7px;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
   cursor: col-resize;
   z-index: 5;
 }
@@ -860,10 +862,10 @@ body.zion-sessions-no-transitions .zion-session-row * {
   content: "";
   position: absolute;
   left: 3px;
-  top: 6px;
-  bottom: 6px;
+  top: 0;
+  bottom: 0;
   width: 1px;
-  background: color-mix(in srgb, var(--border) 55%, transparent);
+  background: var(--surface-border-soft, color-mix(in srgb, var(--border) 55%, transparent));
   transition: background var(--transition-fast), box-shadow var(--transition-fast);
 }
 .zion-sessions-split-divider:hover::before,
@@ -933,24 +935,7 @@ body.zion-sessions-no-transitions .zion-session-row * {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
-/* ===== Split cohesion: tinted tag column + quiet divider ===== */
-/* The tag column is distinguished by a subtle background tint rather than
-   a hard border; the divider line stays invisible until interacted with.
-   The tint is opaque (panel-based) so a lifted split row can sit on the
-   host header line without the "会话" title bleeding through. */
+/* ===== Split cohesion: tinted tag column + continuous divider ===== */
 .zion-sessions-tag-column {
   background: color-mix(in srgb, var(--panel) 97%, var(--fg) 3%);
 }
-.zion-sessions-split-divider::before {
-  background: transparent;
-}
-/* Lifted mode: the split row starts at the host header line so the tag
-   column header shares one top line with the host "会话" header. */
-.zion-sessions-split-row.is-lifted {
-  z-index: 5;
-  position: relative;
-}
-.zion-sessions-split-row.is-lifted .zion-sessions-tagtree-header {
-  padding-top: 8px;
-}
-
