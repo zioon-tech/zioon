@@ -3,10 +3,11 @@ import { createSessionsSidebarViewManager } from "../extensions/dev.session-mana
 
 function makeZion(widthCalls) {
   let width = 300;
+  const values = new Map();
   return {
     state: {
-      get: (key) => (key === "ui.sideBar.width" ? width : undefined),
-      set: vi.fn(),
+      get: (key) => (key === "ui.sideBar.width" ? width : values.get(key)),
+      set: vi.fn((key, value) => values.set(key, value)),
       onDidChange: () => ({ dispose: () => {} })
     },
     sideBar: {
@@ -23,6 +24,13 @@ function makeZion(widthCalls) {
 
 function makeManager(widthCalls) {
   const zion = makeZion(widthCalls);
+  zion.state.set("sessions.tagIndex", {
+    version: 1,
+    sessions: {
+      s1: { hash: "1", tags: ["alpha"] },
+      s2: { hash: "2", tags: ["beta/one"] }
+    }
+  });
   const manager = createSessionsSidebarViewManager({
     zion,
     createSessionsListRenderer: () => {
@@ -33,7 +41,9 @@ function makeManager(widthCalls) {
     },
     getIndex: () => [{ id: "s1" }, { id: "s2" }],
     loadMeta: (id) => ({ id, title: id, updatedAt: Date.now() }),
-    loadDoc: (id) => (id === "s1" ? "hello #alpha world" : "notes #beta/one"),
+    loadDoc: vi.fn(() => {
+      throw new Error("sidebar should not scan session documents");
+    }),
     dbName: "zion.sessions.db.test"
   });
   return { manager, zion };
@@ -139,6 +149,53 @@ describe("sessions sidebar tag split layout", () => {
     expect(rows.map((r) => r.dataset.path).sort()).toEqual(["alpha", "beta", "beta/one"]);
   });
 
+  it("merges Biography tags as read-only rows and filters their sessions", () => {
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const captured = [];
+    const zion = makeZion([]);
+    zion.state.set("sessions.tagIndex", {
+      version: 1,
+      sessions: {
+        s1: { hash: "1", tags: ["alpha"] },
+        s2: { hash: "2", tags: [] }
+      }
+    });
+    zion.state.set("sessions.derivedTags", {
+      biography: {
+        id: "biography",
+        label: "Biography",
+        readOnly: true,
+        sessions: {
+          s2: [{ path: "project/zion", kind: "project" }]
+        }
+      }
+    });
+    const manager = createSessionsSidebarViewManager({
+      zion,
+      createSessionsListRenderer: (deps) => {
+        captured.push(deps);
+        const render = () => {};
+        render.dispose = () => {};
+        render.syncSessionIndex = () => {};
+        return render;
+      },
+      getIndex: () => [{ id: "s1" }, { id: "s2" }],
+      loadMeta: (id) => ({ id, title: id, updatedAt: Date.now() })
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    Object.defineProperty(container, "clientWidth", { value: 500, configurable: true });
+    manager.attachTagSplitHeader(() => {});
+    manager.mountInto(container);
+
+    const row = container.querySelector('[data-path="project/zion"]');
+    expect(row.querySelector(".zion-sessions-tagtree-source")).toBeTruthy();
+    row.click();
+    const filter = captured.at(-1).getSessionFilter();
+    expect(filter({ id: "s1" })).toBe(false);
+    expect(filter({ id: "s2" })).toBe(true);
+  });
+
   it("clicking a tree row filters via selection callbacks", () => {
     localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
     const { container } = mountAt(500);
@@ -154,6 +211,13 @@ describe("sessions sidebar tag split layout", () => {
     localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
     const captured = [];
     const zion = makeZion([]);
+    zion.state.set("sessions.tagIndex", {
+      version: 1,
+      sessions: {
+        s1: { hash: "1", tags: ["alpha"] },
+        s2: { hash: "2", tags: ["beta/one"] }
+      }
+    });
     const manager = createSessionsSidebarViewManager({
       zion,
       createSessionsListRenderer: (deps) => {
@@ -165,7 +229,6 @@ describe("sessions sidebar tag split layout", () => {
       },
       getIndex: () => [{ id: "s1" }, { id: "s2" }],
       loadMeta: (id) => ({ id, title: id, updatedAt: Date.now() }),
-      loadDoc: (id) => (id === "s1" ? "hello #alpha world" : "notes #beta/one"),
       dbName: "zion.sessions.db.tagfilter.test"
     });
     const container = document.createElement("div");

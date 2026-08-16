@@ -3,7 +3,9 @@ import { createTagTreePanel } from "../extensions/dev.session-manager/ui/tag-tre
 import { buildTagTree, reconcileCatalog } from "../extensions/dev.session-manager/model/tag-catalog.js";
 
 function makeRows(entries, sessionTags) {
-  const scanned = (sessionTags || []).flatMap(([, tags]) => (tags || []).map((tag) => String(tag).replace(/^#/, "")));
+  const scanned = (sessionTags || []).flatMap(([, tags]) => (tags || []).map((tag) => (
+    String(typeof tag === "string" ? tag : tag?.path || "").replace(/^#/, "")
+  )));
   return buildTagTree(reconcileCatalog(entries, scanned), sessionTags);
 }
 
@@ -13,7 +15,8 @@ function makePanel(overrides = {}) {
   const panel = createTagTreePanel({
     t: (key, fallback, values) => String(fallback)
       .replace("{count}", values?.count ?? "")
-      .replace("{children}", values?.children ?? ""),
+      .replace("{children}", values?.children ?? "")
+      .replace("{source}", values?.source ?? ""),
     iconHtml: () => "<span></span>",
     isCollapsed: (path) => collapsed.has(path),
     setCollapsed: (path, value) => { if (value) collapsed.add(path); else collapsed.delete(path); },
@@ -224,6 +227,46 @@ describe("tag tree panel", () => {
     document.body.appendChild(panel.el);
     expect(panel.el.querySelector('[data-path="work"]')).toBeTruthy();
     expect(panel.el.querySelector('[data-path="work"] .zion-sessions-tagtree-pin')).toBeNull();
+  });
+
+  it("marks derived tags as automatic and blocks mutation controls", () => {
+    const { panel, calls } = makePanel();
+    const tree = makeRows([], [["s1", [{
+      path: "topic/ui",
+      sourceId: "biography",
+      sourceLabel: "Biography",
+      readOnly: true
+    }]]]);
+    panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
+    document.body.appendChild(panel.el);
+    const row = panel.el.querySelector('[data-path="topic/ui"]');
+    expect(row.querySelector(".zion-sessions-tagtree-source")).toBeTruthy();
+    expect(row.draggable).toBe(false);
+
+    row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(panel.el.querySelector(".zion-sessions-tagtree-edit")).toBeNull();
+    row.dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true }));
+    expect(panel.el.querySelector(".zion-sessions-tagtree-edit")).toBeNull();
+
+    row.dispatchEvent(new MouseEvent("contextmenu", {
+      clientX: 10,
+      clientY: 10,
+      bubbles: true,
+      cancelable: true
+    }));
+    const menu = document.body.querySelector(".zion-sessions-tagtree-context");
+    expect(menu.textContent).toContain("Biography");
+    expect(menu.textContent).not.toContain("Rename");
+    expect(menu.textContent).not.toContain("Delete");
+    expect(calls).toEqual({
+      select: [],
+      create: [],
+      rename: [],
+      delete: [],
+      reorder: [],
+      reparent: [],
+      pin: []
+    });
   });
 
   it("delete confirm distinguishes leaf and subtree", () => {

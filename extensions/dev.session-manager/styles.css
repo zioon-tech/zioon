@@ -745,6 +745,24 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-tagtree-row.is-selected .zion-sessions-tagtree-label {
   color: var(--fg);
 }
+.zion-sessions-tagtree-source {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 18px;
+  flex: 0 0 14px;
+  color: color-mix(in srgb, var(--accent) 72%, var(--fg));
+  opacity: 0.82;
+}
+.zion-sessions-tagtree-source svg {
+  width: 11px;
+  height: 11px;
+}
+.zion-sessions-tagtree-row:hover .zion-sessions-tagtree-source,
+.zion-sessions-tagtree-row.is-selected .zion-sessions-tagtree-source {
+  opacity: 1;
+}
 
 /* bare tabular count */
 .zion-sessions-tagtree-count {
@@ -860,6 +878,14 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-tagtree-context-item:hover {
   background: var(--hover-bg);
   color: var(--fg);
+}
+.zion-sessions-tagtree-context-item.is-disabled {
+  cursor: default;
+  color: color-mix(in srgb, var(--fg) 48%, transparent);
+}
+.zion-sessions-tagtree-context-item.is-disabled:hover {
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 48%, transparent);
 }
 .zion-sessions-tagtree-context-item.is-danger {
   color: var(--danger, #ef4444);

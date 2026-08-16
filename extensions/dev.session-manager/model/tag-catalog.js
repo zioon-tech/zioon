@@ -111,7 +111,8 @@ export function setCatalogEntryPinned(entries, path, pinned) {
 }
 
 // Build a hierarchical tree with session counts.
-// sessionTags: iterable of [sessionId, string[] of tag paths (with or without #)]
+// sessionTags: iterable of [sessionId, tags]. A tag can be a path string or
+// { path, sourceId, sourceLabel, readOnly }.
 export function buildTagTree(entries, sessionTags) {
   const list = sortEntries(entries);
   const byPath = new Map(list.map((entry) => [entry.path, { ...entry }]));
@@ -163,28 +164,62 @@ export function buildTagTree(entries, sessionTags) {
     });
     if (!parent.children.includes(node)) parent.children.push(node);
   }
+  const normalizeSessionTag = (raw) => {
+    const input = typeof raw === "string" ? { path: raw } : raw;
+    if (!input || typeof input !== "object") return null;
+    const path = normalizeTagPath(input.path);
+    if (!path) return null;
+    return {
+      path,
+      sourceId: String(input.sourceId || "document"),
+      sourceLabel: String(input.sourceLabel || (input.sourceId ? input.sourceId : "Session")),
+      readOnly: input.readOnly === true
+    };
+  };
+  const addSource = (node, tag) => {
+    if (!node._sources) node._sources = new Map();
+    const previous = node._sources.get(tag.sourceId);
+    node._sources.set(tag.sourceId, previous
+      ? { ...previous, readOnly: previous.readOnly && tag.readOnly }
+      : {
+          id: tag.sourceId,
+          label: tag.sourceLabel,
+          readOnly: tag.readOnly
+        });
+  };
   // Count sessions per node (a session counts toward a node when any of its
-  // tags equals the node path or is a descendant of it).
+  // tags equals the node path or is a descendant of it) and propagate source
+  // metadata to the same ancestors.
   const countingNodes = nodes.size;
   for (const [sessionId, tags] of sessionTags || []) {
     const sid = String(sessionId || "");
     if (!sid) continue;
-    const paths = (Array.isArray(tags) ? tags : [])
-      .map((tag) => normalizeTagPath(tag))
+    const normalizedTags = (Array.isArray(tags) ? tags : [])
+      .map(normalizeSessionTag)
       .filter(Boolean);
-    if (!paths.length) continue;
+    if (!normalizedTags.length) continue;
     const counted = new Set();
-    for (const path of paths) {
-      const segments = tagPathSegments(path);
+    for (const tag of normalizedTags) {
+      const segments = tagPathSegments(tag.path);
       for (let depth = 1; depth <= segments.length; depth += 1) {
         const ancestorPath = segments.slice(0, depth).join("/");
+        const node = nodes.get(ancestorPath);
+        if (node) addSource(node, tag);
         if (!counted.has(ancestorPath)) {
           counted.add(ancestorPath);
-          const node = nodes.get(ancestorPath);
           if (node) node.sessionCount += 1;
         }
       }
     }
+  }
+  for (const node of nodes.values()) {
+    const sources = Array.from(node._sources?.values?.() || []);
+    const automaticSources = sources.filter((source) => source.id !== "document");
+    node.sources = sources;
+    node.automatic = automaticSources.length > 0;
+    node.readOnly = automaticSources.some((source) => source.readOnly);
+    node.sourceLabels = Array.from(new Set(automaticSources.map((source) => source.label).filter(Boolean)));
+    delete node._sources;
   }
   const sortChildren = (node) => {
     node.children.sort(compareEntries);

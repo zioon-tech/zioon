@@ -63,6 +63,29 @@ describe("buildTagTree", () => {
     const labels = tree.rows.filter((r) => r.path.startsWith("work/")).map((r) => r.label);
     expect(labels).toEqual(["b", "a"]);
   });
+  it("propagates derived source metadata to ancestors", () => {
+    const entries = reconcileCatalog([], ["project/zion"]);
+    const tree = buildTagTree(entries, [
+      ["s1", [{
+        path: "project/zion",
+        sourceId: "biography",
+        sourceLabel: "Biography",
+        readOnly: true
+      }]]
+    ]);
+    const project = tree.rows.find((row) => row.path === "project");
+    const zion = tree.rows.find((row) => row.path === "project/zion");
+    expect(project).toEqual(expect.objectContaining({
+      automatic: true,
+      readOnly: true,
+      sourceLabels: ["Biography"]
+    }));
+    expect(zion).toEqual(expect.objectContaining({
+      automatic: true,
+      readOnly: true,
+      sourceLabels: ["Biography"]
+    }));
+  });
 });
 
 describe("addCatalogEntry", () => {

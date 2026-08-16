@@ -84,14 +84,18 @@ export function collectSessionDerivedTags(registry, sessionId) {
   if (!sid || !registry || typeof registry !== "object") return [];
   const out = [];
   for (const rawSource of Object.values(registry)) {
-    const source = normalizeSessionDerivedTagSource(rawSource);
-    if (!source) continue;
-    for (const tag of source.sessions[sid] || []) {
+    if (!rawSource || typeof rawSource !== "object") continue;
+    const sourceId = String(rawSource.id || "").trim();
+    if (!sourceId) continue;
+    const sourceLabel = String(rawSource.label || sourceId).trim() || sourceId;
+    for (const rawTag of rawSource.sessions?.[sid] || []) {
+      const tag = normalizeTag(rawTag);
+      if (!tag) continue;
       out.push({
         ...tag,
-        sourceId: source.id,
-        sourceLabel: source.label,
-        readOnly: source.readOnly
+        sourceId,
+        sourceLabel,
+        readOnly: rawSource.readOnly !== false
       });
     }
   }

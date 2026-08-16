@@ -146,6 +146,8 @@ const I18N_MESSAGES = {
     "tags.pin": "置顶",
     "tags.unpin": "取消置顶",
     "tags.delete": "删除",
+    "tags.automatic": "自动",
+    "tags.automaticSource": "自动标签 · {source}",
     "tags.tagName": "标签名称",
     "tags.noMatches": "未找到匹配标签",
     "tags.deleteYes": "删除",
@@ -267,6 +269,8 @@ const I18N_MESSAGES = {
     "tags.pin": "Pin",
     "tags.unpin": "Unpin",
     "tags.delete": "Delete",
+    "tags.automatic": "Automatic",
+    "tags.automaticSource": "Automatic tag · {source}",
     "tags.tagName": "Tag name",
     "tags.noMatches": "No matching tags",
     "tags.deleteYes": "Delete",
@@ -604,18 +608,14 @@ async function initSessionsStorage() {
       const idx = await idbGetKV(DB_NAME, "index");
       if (Array.isArray(idx)) {
         try { window.zion?.state?.set("sessions.indexMem", idx); } catch {}
-          const metadataEntries = await Promise.all(idx
-            .map((entry) => String(entry?.id || "").trim())
-            .filter(Boolean)
-            .map(async (id) => {
-              try {
-                const rec = await idbGet(DB_NAME, "metas", id);
-                return [id, rec?.meta || null];
-              } catch {
-                return [id, null];
-              }
-            }));
-          for (const [id, meta] of metadataEntries) {
+          const indexedIds = new Set(
+            idx.map((entry) => String(entry?.id || "").trim()).filter(Boolean)
+          );
+          const metadataEntries = await idbGetAll(DB_NAME, "metas");
+          for (const record of metadataEntries) {
+            const id = String(record?.id || "").trim();
+            const meta = record?.meta;
+            if (!indexedIds.has(id)) continue;
             if (meta && typeof meta === "object") {
               try { window.zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
             }
@@ -694,7 +694,9 @@ async function initSessionsStorage() {
         tooltip: "Sessions migrated to IndexedDB"
       });
     }
-    await syncRemoteStorage();
+    void syncRemoteStorage().then(() => {
+      scheduleSessionTagIndexBackfill();
+    });
     if (!remoteSyncTimer) {
       remoteSyncTimer = window.setInterval(() => { void syncRemoteStorage(); }, 30000);
     }
@@ -1303,7 +1305,6 @@ const __sidebarViewManager = createSessionsSidebarViewManager({
   openAncestors,
   getIndex,
   loadMeta,
-  loadDoc,
   dbName: DB_NAME,
   getAllSessionDocs: async () => {
     try {

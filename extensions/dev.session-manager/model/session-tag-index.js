@@ -44,7 +44,9 @@ export function extractSessionTagPaths(text) {
 export function getIndexedSessionTags(index, sessionId) {
   const id = String(sessionId || "").trim();
   if (!id) return [];
-  return validateSessionTagIndex(index).sessions[id]?.tags || [];
+  const entry = index?.sessions?.[id];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+  return normalizeTags(entry.tags);
 }
 
 export function updateSessionTagIndex(index, sessionId, text, hash = "") {

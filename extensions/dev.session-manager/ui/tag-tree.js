@@ -99,7 +99,14 @@ export function createTagTreePanel(deps) {
   function render() {
     const rows = expandedRows();
     const key = [
-      rows.map((row) => `${row.path}:${row.sessionCount}:${state.selection === row.path ? 1 : 0}`).join("\u0001"),
+      rows.map((row) => [
+        row.path,
+        row.sessionCount,
+        state.selection === row.path ? 1 : 0,
+        row.automatic ? 1 : 0,
+        row.readOnly ? 1 : 0,
+        (row.sourceLabels || []).join(",")
+      ].join(":")).join("\u0001"),
       searchText,
       editMode ? `${editMode.kind}:${editMode.path}` : ""
     ].join("\u0003");
@@ -167,6 +174,7 @@ export function createTagTreePanel(deps) {
     // Indent stays inline: it is per-row dynamic data.
     item.style.paddingLeft = `${4 + row.depth * 13}px`;
     if (state.selection === row.path) item.classList.add("is-selected");
+    if (row.automatic) item.classList.add("is-automatic");
 
     // hash glyph — identity + collapse toggle in one control (flowix style)
     const hasChildren = !!(row.children && row.children.length);
@@ -187,6 +195,17 @@ export function createTagTreePanel(deps) {
     label.textContent = row.label;
     item.appendChild(label);
 
+    if (row.automatic) {
+      const source = document.createElement("span");
+      const sourceLabels = (row.sourceLabels || []).join(", ") || t("tags.automatic", "Automatic");
+      source.className = "zion-sessions-tagtree-source";
+      source.innerHTML = iconHtml("sparkle", 11);
+      source.title = t("tags.automaticSource", "Automatic tag · {source}", { source: sourceLabels });
+      source.setAttribute("aria-label", source.title);
+      item.appendChild(source);
+      item.title = `${item.title} · ${source.title}`;
+    }
+
     const count = document.createElement("span");
     count.className = "zion-sessions-tagtree-count";
     count.textContent = String(row.sessionCount || 0);
@@ -198,14 +217,20 @@ export function createTagTreePanel(deps) {
       onSelect(next);
       applySelection(next);
     };
-    item.ondblclick = () => startRename(row);
+    item.ondblclick = () => {
+      if (!row.readOnly) startRename(row);
+    };
     item.oncontextmenu = (event) => {
       event.preventDefault();
       event.stopPropagation();
       openRowMenu(event, row);
     };
-    item.draggable = true;
+    item.draggable = !row.readOnly;
     item.ondragstart = (event) => {
+      if (row.readOnly) {
+        event.preventDefault();
+        return;
+      }
       dragPath = row.path;
       try {
         event.dataTransfer?.setData("text/plain", row.path);
@@ -217,7 +242,7 @@ export function createTagTreePanel(deps) {
       clearDropVisual(item);
     };
     item.ondragover = (event) => {
-      if (!dragPath || dragPath === row.path) return;
+      if (row.readOnly || !dragPath || dragPath === row.path) return;
       const zone = dropZoneFor(event, item);
       const sameParent = parentOf(row) === parentOfPath(dragPath);
       const targetInsideDraggedSubtree = row.path.startsWith(`${dragPath}/`);
@@ -293,7 +318,7 @@ export function createTagTreePanel(deps) {
       }
       case "F2": {
         event.preventDefault();
-        startRename(row);
+        if (!row.readOnly) startRename(row);
         break;
       }
       default:
@@ -309,22 +334,34 @@ export function createTagTreePanel(deps) {
     menu.style.top = `${event.clientY}px`;
     const mk = (label, onClick, options = {}) => {
       const item = document.createElement("div");
-      item.className = `zion-sessions-tagtree-context-item${options.danger ? " is-danger" : ""}`;
+      item.className = [
+        "zion-sessions-tagtree-context-item",
+        options.danger ? "is-danger" : "",
+        options.disabled ? "is-disabled" : ""
+      ].filter(Boolean).join(" ");
       item.textContent = label;
       item.onclick = () => {
+        if (options.disabled) return;
         menu.remove();
         onClick();
       };
       menu.appendChild(item);
       return item;
     };
-    mk(t("tags.addChild", "Add child tag"), () => startCreate(row.path));
-    mk(t("tags.rename", "Rename"), () => startRename(row));
-    mk(row.pinned ? t("tags.unpin", "Unpin") : t("tags.pin", "Pin"), () => onPin(row.path));
-    mk(t("tags.delete", "Delete"), () => {
-      editMode = { kind: "delete", path: row.path };
-      render();
-    }, { danger: true });
+    if (row.readOnly) {
+      const sourceLabels = (row.sourceLabels || []).join(", ") || t("tags.automatic", "Automatic");
+      mk(t("tags.automaticSource", "Automatic tag · {source}", { source: sourceLabels }), () => {}, {
+        disabled: true
+      });
+    } else {
+      mk(t("tags.addChild", "Add child tag"), () => startCreate(row.path));
+      mk(t("tags.rename", "Rename"), () => startRename(row));
+      mk(row.pinned ? t("tags.unpin", "Unpin") : t("tags.pin", "Pin"), () => onPin(row.path));
+      mk(t("tags.delete", "Delete"), () => {
+        editMode = { kind: "delete", path: row.path };
+        render();
+      }, { danger: true });
+    }
     const close = (clickEvent) => {
       if (menu.contains(clickEvent.target)) return;
       menu.remove();
@@ -432,6 +469,7 @@ export function createTagTreePanel(deps) {
   }
 
   function startRename(row) {
+    if (row?.readOnly) return;
     editMode = { kind: "rename", path: row.path };
     render();
   }

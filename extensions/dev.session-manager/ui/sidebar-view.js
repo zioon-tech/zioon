@@ -1,4 +1,7 @@
-import { extractObsidianMetadata } from "../../shared/obsidian-metadata.js";
+import {
+  SESSION_DERIVED_TAGS_STATE_KEY,
+  collectSessionDerivedTags
+} from "../../shared/session-derived-tags.js";
 import {
   addCatalogEntry,
   buildTagTree,
@@ -10,6 +13,7 @@ import {
   setCatalogEntryPinned,
   tagPathSegments
 } from "../model/tag-catalog.js";
+import { getIndexedSessionTags } from "../model/session-tag-index.js";
 import { rewriteDocTags } from "../features/tag-mutations.js";
 import { loadTagCatalog, saveTagCatalog } from "../storage/tag-catalog.js";
 import { createTagTreePanel } from "./tag-tree.js";
@@ -20,7 +24,6 @@ export function createSessionsSidebarViewManager(opts) {
   const openAncestors = opts?.openAncestors;
   const getIndex = opts?.getIndex;
   const loadMeta = opts?.loadMeta;
-  const loadDoc = opts?.loadDoc;
   const getAllSessionDocs = opts?.getAllSessionDocs || (async () => []);
   const writeSessionDoc = opts?.writeSessionDoc || (async () => {});
   const catalogDbName = opts?.dbName || "zion.sessions.db";
@@ -84,7 +87,6 @@ export function createSessionsSidebarViewManager(opts) {
   let revealRaf = 0;
   let heatmapTooltip = null;
   let selectedTag = "";
-  const sessionTagsCache = new Map();
   const collapsedTagNodes = (() => {
     try {
       const raw = JSON.parse(localStorage.getItem(LS_TAG_NODE_COLLAPSED) || "[]");
@@ -251,27 +253,31 @@ export function createSessionsSidebarViewManager(opts) {
     try { return typeof getIndex === "function" ? (getIndex() || []) : []; } catch { return []; }
   }
 
-  function hashText(text) {
-    let h = 2166136261;
-    const s = String(text || "");
-    for (let i = 0; i < s.length; i += 1) {
-      h ^= s.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    return `${s.length}:${h >>> 0}`;
+  function getSessionTagRecords(sessionId) {
+    const sid = String(sessionId || "");
+    if (!sid) return [];
+    let documentIndex = null;
+    let derivedRegistry = null;
+    try {
+      documentIndex = zion?.state?.get?.("sessions.tagIndex");
+      derivedRegistry = zion?.state?.get?.(SESSION_DERIVED_TAGS_STATE_KEY);
+    } catch {}
+    const documentTags = getIndexedSessionTags(documentIndex, sid).map((path) => ({
+      path,
+      sourceId: "document",
+      sourceLabel: "Session",
+      readOnly: false
+    }));
+    return [
+      ...documentTags,
+      ...collectSessionDerivedTags(derivedRegistry, sid)
+    ];
   }
 
   function getSessionTags(sessionId) {
-    const sid = String(sessionId || "");
-    if (!sid || typeof loadDoc !== "function") return [];
-    let text = "";
-    try { text = String(loadDoc(sid) || ""); } catch { return []; }
-    const cached = sessionTagsCache.get(sid);
-    const signature = hashText(text);
-    if (cached?.signature === signature) return cached.tags || [];
-    const tags = extractObsidianMetadata(text).tags.map((tag) => tag.label).filter(Boolean);
-    sessionTagsCache.set(sid, { signature, tags });
-    return tags;
+    return Array.from(new Set(
+      getSessionTagRecords(sessionId).map((tag) => tag.path).filter(Boolean)
+    ));
   }
 
   function tagMatchesFilter(tags, filter) {
@@ -350,7 +356,7 @@ export function createSessionsSidebarViewManager(opts) {
     for (const session of sessions) {
       const sid = String(session?.id || "");
       if (!sid) continue;
-      map.push([sid, getSessionTags(sid)]);
+      map.push([sid, getSessionTagRecords(sid)]);
     }
     return map;
   }
@@ -360,7 +366,7 @@ export function createSessionsSidebarViewManager(opts) {
     const scanned = new Set();
     for (const [, tags] of sessionTags) {
       for (const tag of Array.isArray(tags) ? tags : []) {
-        const path = String(tag || "").replace(/^#/, "").trim();
+        const path = String(typeof tag === "string" ? tag : tag?.path || "").replace(/^#/, "").trim();
         if (path) scanned.add(path);
       }
     }
@@ -860,6 +866,8 @@ export function createSessionsSidebarViewManager(opts) {
     });
     try { disposables.push(zion?.events?.on?.("chat/usageChanged", () => renderAll())); } catch {}
     try { disposables.push(zion?.state?.onDidChange?.("sessions.treeMem", () => renderAll())); } catch {}
+    try { disposables.push(zion?.state?.onDidChange?.("sessions.tagIndex", () => renderAll())); } catch {}
+    try { disposables.push(zion?.state?.onDidChange?.(SESSION_DERIVED_TAGS_STATE_KEY, () => renderAll())); } catch {}
     try {
       disposables.push(zion?.state?.onDidChange?.("sessions.indexMem", (index) => {
         innerRender?.syncSessionIndex?.(index);

@@ -567,6 +567,7 @@ describe("identity extension", () => {
       runId: "run-1"
     }];
     let distillationMessages = [];
+    const stateValues = new Map();
     window.zion = {
       messages: {
         registerContributor: vi.fn(() => ({ dispose: vi.fn() }))
@@ -593,8 +594,9 @@ describe("identity extension", () => {
         get: vi.fn((key) => {
           if (key === "localTools.baseUrl") return "http://127.0.0.1:9999";
           if (key === "terminal.sessions") return [{ id: "term-1", type: "local", cwd: "/Users/test/project" }];
-          return null;
-        })
+          return stateValues.get(key) ?? null;
+        }),
+        set: vi.fn((key, value) => stateValues.set(key, value))
       },
       llm: {
         runStream: vi.fn(async ({ messages, onToken, onEnd }) => {
@@ -660,6 +662,12 @@ describe("identity extension", () => {
     expect(writes[1].body.path).toBe("/Users/test/.zion-next/memory/biography/digest.md");
       expect(writes[1].body.content).toContain("[project/memory-panel]");
     expect(writes[1].body.content).toContain("完成身份注入和自动自传记录");
+    expect(stateValues.get("sessions.derivedTags").biography.sessions["session-1"]).toEqual(
+      expect.arrayContaining([
+        { path: "project/memory-panel", kind: "project" },
+        { path: "topic/agent-identity", kind: "topic" }
+      ])
+    );
     disposable.dispose();
   });
 });
