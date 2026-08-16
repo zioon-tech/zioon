@@ -151,7 +151,7 @@ The initial document is:
 user <task prompt>
 
 #<fixed session tag>
-assistant 
+assistant
 ```
 
 The tag is part of the persisted session document and is therefore editable. It is not added to the prompt passed to `zion.chat.execute`, so it does not change model behavior.
