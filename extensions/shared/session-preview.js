@@ -1,5 +1,5 @@
 const ROLE_HEAD_RE = /^\s*(system|user|assistant|tool)(?:\s+|$)/;
-const USER_HEAD_RE = /^\s*user(?:\s+|$)/;
+const TAGS_ONLY_RE = /^(?:#[^\s#]+)(?:\s+#[^\s#]+)*$/;
 
 function compactPreview(value, maxLength) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
@@ -9,30 +9,37 @@ function compactPreview(value, maxLength) {
   return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
 }
 
-export function extractLastUserMessagePreview(text, maxLength = 180) {
+export function extractDocumentLeadPreview(text, maxLength = 180) {
   const lines = String(text || "").split(/\r?\n/);
-  const previews = [];
-  const firstRoleLine = lines.findIndex((line) => ROLE_HEAD_RE.test(line || ""));
-
-  if (firstRoleLine !== 0) {
-    const implicitLines = lines.slice(0, firstRoleLine < 0 ? lines.length : firstRoleLine);
-    const implicitPreview = compactPreview(implicitLines.join(" "), maxLength);
-    if (implicitPreview) previews.push(implicitPreview);
-  }
+  const previewLines = [];
+  let activeRole = null;
+  let started = false;
 
   for (let index = 0; index < lines.length; index += 1) {
-    if (!USER_HEAD_RE.test(lines[index] || "")) continue;
-    const block = [String(lines[index] || "").replace(USER_HEAD_RE, "")];
-    let end = index;
-    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-      if (ROLE_HEAD_RE.test(lines[cursor] || "")) break;
-      block.push(lines[cursor]);
-      end = cursor;
+    const rawLine = String(lines[index] || "");
+    const roleMatch = rawLine.match(ROLE_HEAD_RE);
+    if (roleMatch) {
+      if (started) break;
+      activeRole = roleMatch[1];
+      if (activeRole !== "user") continue;
+      const head = rawLine.slice(roleMatch[0].length).trim();
+      if (head && !TAGS_ONLY_RE.test(head)) {
+        previewLines.push(head);
+        started = true;
+      }
+      continue;
     }
-    const preview = compactPreview(block.join(" "), maxLength);
-    if (preview) previews.push(preview);
-    index = end;
+    if (activeRole && activeRole !== "user") continue;
+
+    const line = rawLine.trim();
+    if (!line) {
+      if (started) break;
+      continue;
+    }
+    if (TAGS_ONLY_RE.test(line)) continue;
+    previewLines.push(line);
+    started = true;
   }
 
-  return previews.at(-1) || "";
+  return compactPreview(previewLines.join(" "), maxLength);
 }

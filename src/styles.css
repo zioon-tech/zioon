@@ -5589,6 +5589,7 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
 }
 
 .zion-sidebar-tab.is-active,
+.zion-sidebar-action.is-active,
 .zion-auxbar-tab.is-active,
 .zion-bottompanel-tab.is-active,
 .zion-bottompanel-action.is-active {

@@ -276,7 +276,7 @@ export function createSessionsListRendererFactory(deps) {
     const syncCardMetadata = (row, meta) => {
       const preview = row?.querySelector?.(".zion-session-card-preview");
       if (preview) {
-        preview.textContent = String(meta?.lastUserPreview || "");
+        preview.textContent = String(meta?.documentPreview || "");
         preview.hidden = !preview.textContent;
       }
       const time = row?.querySelector?.(".zion-session-card-time");
@@ -1543,7 +1543,7 @@ export function createSessionsListRendererFactory(deps) {
 
               labelWrap2.append(titleLine);
               if (cardView) {
-                const previewText = String(meta?.lastUserPreview || "").trim();
+                const previewText = String(meta?.documentPreview || "").trim();
                 if (previewText) {
                   const preview = document.createElement("div");
                   preview.className = "zion-session-card-preview";

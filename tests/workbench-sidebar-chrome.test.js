@@ -41,6 +41,55 @@ function createState() {
 }
 
 describe("workbench sidebar chrome", () => {
+  it("reflects active Sidebar header actions before and after click", async () => {
+    const host = document.createElement("div");
+    host.id = "app";
+    host.style.height = "600px";
+    document.body.appendChild(host);
+
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    let active = false;
+    const wb = initWorkbench(host);
+    const view = sideBarRuntime.registerView({
+      id: "sessions.active-action",
+      pluginId: "dev.session-manager",
+      title: "Sessions",
+      headerActions: [{
+        id: "sessions.mode",
+        title: "Toggle mode",
+        icon: "$(layout-grid)",
+        active: () => active,
+        onClick: () => {
+          active = !active;
+        }
+      }],
+      component: { render: () => {} }
+    });
+    sideBarRuntime.show();
+    sideBarRuntime.activateView("sessions.active-action");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const action = document.querySelector('[aria-label="Toggle mode"]');
+    expect(action.classList.contains("is-active")).toBe(false);
+    expect(action.getAttribute("aria-pressed")).toBe("false");
+
+    action.click();
+    expect(action.classList.contains("is-active")).toBe(true);
+    expect(action.getAttribute("aria-pressed")).toBe("true");
+
+    view.dispose();
+    wb.dispose();
+    host.remove();
+  });
+
   it("uses the columns icon for the shared hide action", async () => {
     const host = document.createElement("div");
     host.id = "app";

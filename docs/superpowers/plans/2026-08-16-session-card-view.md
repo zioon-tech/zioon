@@ -4,13 +4,13 @@
 
 **Goal:** Add a persistent balanced-density card mode to the sessions Sidebar without scanning session documents during Sidebar rendering.
 
-**Architecture:** A shared pure helper extracts the latest user preview during autosave and stores it in session metadata. The Sidebar view manager owns the persisted list/card mode and passes card data callbacks into the existing list renderer, which preserves all current interaction handlers.
+**Architecture:** A shared pure helper extracts the first meaningful document block during autosave and stores it in session metadata, with idle background backfill for existing sessions. The Sidebar view manager owns the persisted list/card mode and passes card data callbacks into the existing list renderer, while Workbench renders stateful header actions consistently.
 
 **Tech Stack:** JavaScript ES modules, Zion StateBus, IndexedDB-backed session metadata, Vitest, jsdom, CSS
 
 ---
 
-### Task 1: Persist the latest user preview
+### Task 1: Persist the document lead preview
 
 **Files:**
 - Create: `extensions/shared/session-preview.js`
@@ -18,11 +18,11 @@
 - Test: `tests/session-preview.test.js`
 - Test: `tests/session-autosave-plugin.test.js`
 
-- [ ] Write tests covering implicit user text, multiple role blocks, whitespace
-  compaction, and the latest explicit user block.
-- [ ] Implement `extractLastUserMessagePreview(text, maxLength)` with the same
-  role-head rules used by the chat overview rail.
-- [ ] Set `meta.lastUserPreview` before every metadata save in autosave commit.
+- [ ] Write tests covering implicit user text, leading tag-only lines, role
+  blocks, and whitespace compaction.
+- [ ] Implement `extractDocumentLeadPreview(text, maxLength)`.
+- [ ] Set `meta.documentPreview` before every metadata save in autosave commit.
+- [ ] Backfill missing previews in an idle task after storage synchronization.
 - [ ] Run:
 
 ```bash
@@ -44,6 +44,8 @@ npm test -- --run tests/session-preview.test.js tests/session-autosave-plugin.te
   `getSessionViewMode()` from the Sidebar view manager.
 - [ ] Register a `zion.sessions.toggleViewMode` command and a
   `layout-grid` header action before `sessions.tagSplit`.
+- [ ] Mark both mode and tag actions active through `headerAction.active`, and
+  teach Workbench to update `is-active` and `aria-pressed` after clicks.
 - [ ] Pass `getViewMode` and `getSessionTagRecords` to the list renderer.
 - [ ] Run:
 

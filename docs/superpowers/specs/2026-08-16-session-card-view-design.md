@@ -10,6 +10,8 @@ preserving the existing list view and all current tree interactions.
 - The default remains list view.
 - A `layout-grid` action in the sessions Sidebar header toggles list/card view.
   It appears before the tag-column action and the shared `columns-2` action.
+- The card/list and tag-column actions use the shared active-action treatment
+  and `aria-pressed`, so their enabled state is visible without opening a menu.
 - The selected mode persists in local storage.
 - Folder rows, nesting, drag and drop, multi-selection, context menus, related
   children, and filtering keep their existing behavior.
@@ -19,30 +21,31 @@ preserving the existing list view and all current tree interactions.
 Each session card shows:
 
 - one-line title;
-- up to two lines from the most recent non-empty user message;
+- up to two lines from the document's first meaningful content block;
 - up to two session tags, including Biography tags with their automatic-source
   marker;
 - a compact relative update time.
 
 The visual treatment follows Zion's dense Workbench style: a single-column
-continuous list, 5px card radius, restrained borders, and no nested cards.
+continuous list with low-radius rows, continuous separators, transparent
+default backgrounds, and no nested cards.
 
 ## Data Flow
 
 The Sidebar must not read every session document. On each normal autosave, the
-session manager extracts a compact preview of the most recent non-empty user
-message, skipping the trailing empty user block commonly left by the editor,
-and stores it in the existing session metadata as `lastUserPreview`. Card
-rendering reads metadata, the persistent tag index, and
-`sessions.derivedTags`, all of which are already memory-backed when the Sidebar
-is open.
+session manager extracts the first meaningful document block, skips leading
+tag-only lines, and stores it in existing session metadata as
+`documentPreview`. Card rendering reads metadata, the persistent tag index,
+and `sessions.derivedTags`, all of which are already memory-backed when the
+Sidebar is open.
 
-Existing sessions without `lastUserPreview` show no summary until they are next
-edited and saved. No startup migration or full-document scan is added.
+Existing sessions without `documentPreview` are backfilled once in an idle
+background task after storage synchronization. Sidebar mounting never waits
+for that task.
 
 ## Verification
 
-Tests cover last-user extraction, autosave metadata updates, mode persistence,
-header toggle wiring, card content, tags, and list-mode compatibility. Browser
-verification covers toggling both directions and the card layout with and
-without the tag column.
+Tests cover document-lead extraction, autosave metadata updates, mode
+persistence, active header actions, card content, tags, and list-mode
+compatibility. Browser verification covers both active states, toggling both
+directions, and the card layout with and without the tag column.

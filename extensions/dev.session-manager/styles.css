@@ -43,8 +43,7 @@
   background: var(--sessions-selected-bg);
 }
 .zion-session-row:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline: none;
 }
 
 /* 禁用会话行过渡效果，防止闪烁 */
@@ -260,7 +259,7 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-session-row:focus,
 .zion-session-row:focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
+  box-shadow: none;
 }
 
 .zion-session-status-badge {
@@ -331,7 +330,6 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout.is-current,
 .zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout.is-selected {
   background: var(--sessions-current-bg);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout > div:first-of-type {

@@ -128,7 +128,7 @@ describe("session autosave plugin", () => {
     }
   });
 
-  it("stores the latest user message preview in metadata", () => {
+  it("stores the document lead preview in metadata", () => {
     const metas = new Map();
     const host = document.createElement("div");
     host.dataset.panelId = "panel-a";
@@ -165,9 +165,8 @@ describe("session autosave plugin", () => {
         "with more detail"
       ].join("\n"));
       expect(plugin.flush("session-a")).toBe(true);
-      expect(metas.get("session-a").lastUserPreview).toBe(
-        "latest question with more detail"
-      );
+      expect(metas.get("session-a").documentPreview).toBe("first question");
+      expect(metas.get("session-a").documentPreviewVersion).toBe(1);
     } finally {
       core.view.destroy();
       document.body.innerHTML = "";

@@ -2661,10 +2661,27 @@ export function initWorkbench(host: HTMLElement): {
         } else {
           btn.textContent = safeText(icon);
         }
-        btn.onclick = () => {
+        const syncActive = () => {
+          if (a.active === undefined) {
+            btn.classList.remove("is-active");
+            btn.removeAttribute("aria-pressed");
+            return;
+          }
+          let active = false;
           try {
-            a.onClick();
+            active = typeof a.active === "function" ? !!a.active() : !!a.active;
           } catch {}
+          btn.classList.toggle("is-active", active);
+          btn.setAttribute("aria-pressed", String(active));
+        };
+        syncActive();
+        btn.onclick = () => {
+          let result: void | Promise<void> = undefined;
+          try {
+            result = a.onClick() as void | Promise<void>;
+          } catch {}
+          syncActive();
+          void Promise.resolve(result).then(syncActive, syncActive);
         };
         headerActions.appendChild(btn);
       }

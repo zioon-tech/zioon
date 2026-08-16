@@ -1,44 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { extractLastUserMessagePreview } from "../extensions/shared/session-preview.js";
+import { extractDocumentLeadPreview } from "../extensions/shared/session-preview.js";
 
 describe("session preview", () => {
-  it("uses the latest explicit user block", () => {
-    expect(extractLastUserMessagePreview([
+  it("uses the first explicit user block", () => {
+    expect(extractDocumentLeadPreview([
+      "system system instructions",
       "user first question",
       "assistant first answer",
       "user latest question",
       "with a second line",
       "assistant latest answer"
-    ].join("\n"))).toBe("latest question with a second line");
+    ].join("\n"))).toBe("first question");
   });
 
-  it("skips a trailing empty user block", () => {
-    expect(extractLastUserMessagePreview([
-      "user meaningful question",
-      "assistant completed answer",
-      "user   ",
+  it("skips leading tag-only lines", () => {
+    expect(extractDocumentLeadPreview([
+      "#project/zion #topic/ui",
       "",
-      "  "
-    ].join("\n"))).toBe("meaningful question");
+      "Please review the sidebar.",
+      "Keep the layout dense.",
+      "",
+      "assistant Done."
+    ].join("\n"))).toBe("Please review the sidebar. Keep the layout dense.");
   });
 
   it("uses implicit opening content as a user message", () => {
-    expect(extractLastUserMessagePreview([
-      "#project/zion",
-      "",
+    expect(extractDocumentLeadPreview([
       "Please review the sidebar.",
       "assistant Done."
-    ].join("\n"))).toBe("#project/zion Please review the sidebar.");
+    ].join("\n"))).toBe("Please review the sidebar.");
   });
 
   it("compacts whitespace and truncates long previews", () => {
-    expect(extractLastUserMessagePreview(
-      "user   one\n\n  two   three",
+    expect(extractDocumentLeadPreview(
+      "user   one   two   three",
       12
     )).toBe("one two thr…");
   });
 
   it("returns an empty string when no user content exists", () => {
-    expect(extractLastUserMessagePreview("assistant answer only")).toBe("");
+    expect(extractDocumentLeadPreview("assistant answer only")).toBe("");
   });
 });

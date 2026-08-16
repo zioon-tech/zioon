@@ -77,7 +77,7 @@ describe("sessions list renderer", () => {
     const meta = {
       id: "session-1",
       title: "Card title",
-      lastUserPreview: "This is the latest user message preview.",
+      documentPreview: "This is the document lead preview.",
       updatedAt: Date.now() - 5 * 60 * 1000,
       size: 42
     };
@@ -116,7 +116,7 @@ describe("sessions list renderer", () => {
     render();
     const card = listEl.querySelector('[data-session-id="session-1"]');
     expect(listWrap.classList.contains("is-card-view")).toBe(true);
-    expect(card.querySelector(".zion-session-card-preview").textContent).toBe(meta.lastUserPreview);
+    expect(card.querySelector(".zion-session-card-preview").textContent).toBe(meta.documentPreview);
     expect(Array.from(card.querySelectorAll(".zion-session-card-tag")).map((tag) => tag.textContent)).toEqual([
       "#project/zion",
       "#topic/ui"

@@ -29,6 +29,7 @@ import { renderSessionsTagHeader } from "./ui/sidebar-header.js";
 import { createSessionsSidebarViewManager } from "./ui/sidebar-view.js";
 import { createSessionsPanelManager } from "./ui/panel.js";
 import { createSessionsListRendererFactory } from "./ui/list-renderer.js";
+import { extractDocumentLeadPreview } from "../shared/session-preview.js";
 import { markSessionRunViewed } from "./features/run-state.js";
 import {
   planAssistantMarkerInsertionById,
@@ -375,6 +376,7 @@ let sessionTagIndex = createSessionTagIndex();
 let sessionTagIndexReady = false;
 let sessionTagIndexTimer = 0;
 let sessionTagIndexBackfillHandle = 0;
+let sessionPreviewBackfillHandle = 0;
 let sessionTagIndexPersistQueue = Promise.resolve();
 const pendingSessionTagDocs = new Map();
 
@@ -721,6 +723,7 @@ async function initSessionsStorage() {
     }
     void syncRemoteStorage().then(() => {
       scheduleSessionTagIndexBackfill();
+      scheduleSessionDocumentPreviewBackfill();
     });
     if (!remoteSyncTimer) {
       remoteSyncTimer = window.setInterval(() => { void syncRemoteStorage(); }, 30000);
@@ -920,6 +923,51 @@ function scheduleSessionTagIndexBackfill() {
     sessionTagIndexBackfillHandle = requestIdleCallback(run, { timeout: 1600 });
   } else {
     sessionTagIndexBackfillHandle = window.setTimeout(run, 500);
+  }
+}
+
+async function backfillSessionDocumentPreviews() {
+  sessionPreviewBackfillHandle = 0;
+  const activeIds = new Set(
+    getIndex().map((entry) => String(entry?.id || "").trim()).filter(Boolean)
+  );
+  const missing = new Set();
+  for (const id of activeIds) {
+    if (Number(loadMeta(id)?.documentPreviewVersion || 0) < 1) missing.add(id);
+  }
+  if (!missing.size) return false;
+
+  const docs = await idbGetAll(DB_NAME, "docs");
+  const docsById = new Map(
+    docs.map((record) => [
+      String(record?.id || "").trim(),
+      String(record?.text || "")
+    ])
+  );
+  for (const id of missing) {
+    const meta = loadMeta(id);
+    saveMeta(id, {
+      ...meta,
+      id,
+      documentPreview: extractDocumentLeadPreview(docsById.get(id) || ""),
+      documentPreviewVersion: 1
+    });
+  }
+  try { refreshSessionsSidebarViewIfOpen({ listOnly: true }); } catch {}
+  return true;
+}
+
+function scheduleSessionDocumentPreviewBackfill() {
+  if (sessionPreviewBackfillHandle) return;
+  const run = () => {
+    void backfillSessionDocumentPreviews().catch((error) => {
+      try { console.warn("[sessions] document preview backfill failed", error); } catch {}
+    });
+  };
+  if (typeof requestIdleCallback === "function") {
+    sessionPreviewBackfillHandle = requestIdleCallback(run, { timeout: 1800 });
+  } else {
+    sessionPreviewBackfillHandle = window.setTimeout(run, 700);
   }
 }
 
@@ -1766,6 +1814,7 @@ export async function activate(ctx) {
           ariaLabel: t("ui.toggleViewMode", "Toggle list/card view"),
           ariaLabelKey: "dev.session-manager.ui.toggleViewMode",
           icon: "$(layout-grid)",
+          active: () => __sidebarViewManager.getSessionViewMode?.() === "card",
           onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleViewMode")
         },
         {
@@ -1775,6 +1824,7 @@ export async function activate(ctx) {
           ariaLabel: t("ui.toggleTagSplit", "Toggle tag column"),
           ariaLabelKey: "dev.session-manager.ui.toggleTagSplit",
           icon: "$(tag)",
+          active: () => !!__sidebarViewManager.isTagSplitEnabled?.(),
           onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleTagSplit")
         }
       ],
