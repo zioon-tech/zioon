@@ -3,6 +3,13 @@ import {
   markSessionRunViewed
 } from "../features/run-state.js";
 
+function collectSessionNodes(root, result = []) {
+  if (!root) return result;
+  if (root.type === "session") result.push(root);
+  for (const child of root.children || []) collectSessionNodes(child, result);
+  return result;
+}
+
 export function createSessionsListRendererFactory(deps) {
   const {
     loadTree,
@@ -203,6 +210,7 @@ export function createSessionsListRendererFactory(deps) {
     getQuery,
     getSort,
     getSessionFilter,
+    getFlatSessionResults,
     getViewMode,
     getSessionTagRecords,
     onSwitchSession,
@@ -605,7 +613,11 @@ export function createSessionsListRendererFactory(deps) {
         }
       };
 
-      const tree = loadTree() || ensureInitialTree();
+      const sourceTree = loadTree() || ensureInitialTree();
+      const flatSessionResults = !!getFlatSessionResults?.();
+      const tree = flatSessionResults && sourceTree
+        ? { ...sourceTree, children: collectSessionNodes(sourceTree) }
+        : sourceTree;
         const relatedChildren = getRelatedSessionChildren();
         const collapsedSessionChildren = readCollapsedSessionChildren();
         const visibleOrder = [];
@@ -1815,6 +1827,15 @@ export function createSessionsListRendererFactory(deps) {
       }
       try { setFolderOpen(root.id || "root", true); } catch {}
       renderFolder(root, -1);
+        if (flatSessionResults && visibleOrder.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "zion-sessions-filter-empty";
+          empty.textContent = t("ui.noMatchingSessions", "No matching sessions.");
+          empty.style.opacity = "0.8";
+          empty.style.fontSize = "12px";
+          empty.style.padding = "8px 4px";
+          listEl.appendChild(empty);
+        }
         syncStatusSubscriptions(visibleStatusSessionIds);
         updateVisibleStatusBadges();
         updateActiveCommentChildRows();

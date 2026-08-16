@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createSessionsListRendererFactory } from "../extensions/dev.session-manager/ui/list-renderer.js";
 
 describe("sessions list renderer", () => {
@@ -128,6 +128,69 @@ describe("sessions list renderer", () => {
     render();
     expect(listWrap.classList.contains("is-card-view")).toBe(false);
     expect(listEl.querySelector(".zion-session-card-preview")).toBeNull();
+  });
+
+  it("renders filtered sessions flat without opening their folders", () => {
+    let flat = true;
+    let matchId = "nested-match";
+    const listEl = document.createElement("div");
+    const tree = {
+      id: "root",
+      type: "folder",
+      title: "Root",
+      children: [{
+        id: "folder-a",
+        type: "folder",
+        title: "A",
+        children: [
+          { id: "nested-match", type: "session", title: "Match" },
+          { id: "other", type: "session", title: "Other" }
+        ]
+      }]
+    };
+    const setFolderOpen = vi.fn();
+    const createRenderer = createSessionsListRendererFactory({
+      loadTree: () => tree,
+      ensureInitialTree: () => tree,
+      loadMeta: (id) => ({ id, title: id, updatedAt: id === "nested-match" ? 2 : 1 }),
+      truncate: (value) => value,
+      setSmallDragImage: () => {},
+      fmtTime: (value) => String(value),
+      now: () => 3,
+      getSelection: () => [],
+      setSelection: () => {},
+      clearSelection: () => {},
+      isSelected: () => false,
+      toggleSelection: () => {},
+      getLastSelectedId: () => null,
+      setLastSelectedId: () => {},
+      isFolderOpen: () => false,
+      setFolderOpen,
+      moveNode: () => false
+    });
+    const render = createRenderer({
+      listEl,
+      hostElement: document.createElement("div"),
+      getQuery: () => "",
+      getSort: () => "updated",
+      getSessionFilter: () => (node) => node.id === matchId,
+      getFlatSessionResults: () => flat
+    });
+
+    render();
+    expect(listEl.querySelector('[data-session-id="nested-match"]')).toBeTruthy();
+    expect(listEl.querySelector('[data-session-id="other"]')).toBeNull();
+    expect(listEl.querySelector('.zion-session-row.is-folder:not([aria-hidden="true"])')).toBeNull();
+    expect(setFolderOpen).not.toHaveBeenCalledWith("folder-a", true);
+
+    matchId = "missing";
+    render();
+    expect(listEl.textContent).toContain("No matching sessions.");
+
+    flat = false;
+    render();
+    expect(listEl.querySelector(".zion-session-row.is-folder")).toBeTruthy();
+    expect(listEl.querySelector('[data-session-id="nested-match"]')).toBeNull();
   });
 
   it("does not open the session root menu from the tag column", () => {

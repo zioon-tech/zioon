@@ -186,6 +186,46 @@ describe("sessions sidebar tag split layout", () => {
     expect(rows.map((r) => r.dataset.path).sort()).toEqual(["alpha", "beta", "beta/one"]);
   });
 
+  it("enables flat session results while a tag filter is active", () => {
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const captured = [];
+    const zion = makeZion([]);
+    zion.state.set("sessions.tagIndex", {
+      version: 1,
+      sessions: { s1: { hash: "1", tags: ["alpha"] } }
+    });
+    const manager = createSessionsSidebarViewManager({
+      zion,
+      createSessionsListRenderer: (options) => {
+        captured.push(options);
+        const render = () => {};
+        render.dispose = () => {};
+        render.syncSessionIndex = () => {};
+        return render;
+      },
+      getIndex: () => [{ id: "s1" }],
+      loadMeta: () => ({ id: "s1", title: "Session", updatedAt: 1 }),
+      loadDoc: () => ""
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    Object.defineProperty(container, "clientWidth", { value: 500, configurable: true });
+    manager.attachTagSplitHeader(() => {});
+    manager.mountInto(container);
+
+    expect(captured.at(-1).getFlatSessionResults()).toBe(false);
+    zion.state.set.mockClear();
+    container.querySelector('[data-path="alpha"]').click();
+    expect(captured.at(-1).getFlatSessionResults()).toBe(true);
+    expect(zion.state.set).not.toHaveBeenCalledWith(
+      "sessions.selectedFolderId",
+      expect.anything()
+    );
+
+    container.querySelector('[data-path="alpha"]').click();
+    expect(captured.at(-1).getFlatSessionResults()).toBe(false);
+  });
+
   it("merges Biography tags as read-only rows and filters their sessions", () => {
     localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
     const captured = [];

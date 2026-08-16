@@ -930,6 +930,7 @@ export function createSessionsSidebarViewManager(opts) {
       hostElement: container,
       viewId: "sidebar",
       getViewMode: () => sessionViewMode,
+      getFlatSessionResults: () => Boolean(selectedTag),
       getSessionTagRecords,
       getQuery: () => "",
       getSort: () => "updated",

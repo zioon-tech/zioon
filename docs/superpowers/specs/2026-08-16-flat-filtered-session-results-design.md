@@ -2,13 +2,13 @@
 
 ## Context
 
-The Session sidebar currently applies tag and activity-date filters only to session nodes. The list renderer preserves the folder tree and folder expansion state, so a matching session remains invisible when any ancestor folder is collapsed.
+The Session sidebar currently applies tag filters only to session nodes. The list renderer preserves the folder tree and folder expansion state, so a matching session remains invisible when any ancestor folder is collapsed.
 
 Scheduled sessions expose the duplication clearly: selecting `#定时任务/2026/08/16` still requires expanding `定时任务/2026/08/16` in the adjacent session list.
 
 ## Goals
 
-- Show matching sessions immediately when a tag or activity-date filter is active.
+- Show matching sessions immediately when a tag filter is active.
 - Remove redundant folder navigation while filtering.
 - Preserve the user's folder expansion and selected-folder state.
 - Keep existing row/card interactions, sorting, selection, dragging, menus, and related child items.
@@ -23,12 +23,7 @@ Scheduled sessions expose the duplication clearly: selecting `#定时任务/2026
 
 ## Selected Interaction
 
-When any sidebar session filter is active:
-
-- Tag filter: `selectedTag` is non-empty.
-- Activity filter: `selectedDay` or `selectedRangeDays` is active.
-
-The right session column switches to a flat result mode:
+When `selectedTag` is non-empty, the right session column switches to a flat result mode.
 
 1. Folder rows are hidden.
 2. Every matching session is collected recursively from the full tree.
@@ -37,7 +32,9 @@ The right session column switches to a flat result mode:
 5. Related comments and agent children continue to render below their parent session.
 6. The existing header count and filter chip remain visible.
 
-Clearing all filters returns to the normal folder tree. Because flat mode never changes folder-open state or `sessions.selectedFolderId`, the prior tree view returns exactly as the user left it.
+Clearing the tag filter returns to the normal folder tree. Because flat mode never changes folder-open state or `sessions.selectedFolderId`, the prior tree view returns exactly as the user left it.
+
+Activity-date filtering alone continues to use the folder tree. If a date filter and tag filter are active together, the tag filter enables flat mode and both predicates still apply.
 
 ## Alternatives Rejected
 
@@ -61,7 +58,7 @@ The renderer remains unaware of tags and activity filters. `sidebar-view.js` sup
 
 ```js
 getFlatSessionResults: () => Boolean(
-  selectedTag || selectedDay || selectedRangeDays
+  selectedTag
 )
 ```
 
@@ -92,7 +89,7 @@ The filter chip remains available so the user can clear the filter.
 - Dropping is unchanged; no folder drop targets exist while filtering.
 - Context menus, delete, rename, export, and status badges are unchanged.
 - Card/list mode changes only presentation, not filtering.
-- Clearing one of multiple active filters stays in flat mode until all filters are cleared.
+- Clearing the tag filter restores folder mode even when an activity-date filter remains active.
 
 ## Testing
 
@@ -106,7 +103,7 @@ Add focused list-renderer tests for:
 - Clearing the filter restores the existing folder expansion state.
 - Row and card modes both render matching sessions.
 
-Add sidebar wiring coverage asserting that tag and activity filters enable flat mode without updating `sessions.selectedFolderId`.
+Add sidebar wiring coverage asserting that tag filters enable flat mode, while activity-date filters preserve folder mode without updating `sessions.selectedFolderId`.
 
 ## Acceptance Criteria
 

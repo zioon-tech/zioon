@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Render tag- and date-filtered sidebar sessions as a flat result list without changing the persistent folder tree or selected folder.
+**Goal:** Render tag-filtered sidebar sessions as a flat result list without changing the persistent folder tree or selected folder.
 
-**Architecture:** Add a generic `getFlatSessionResults` option to the shared list renderer. When enabled, project the loaded tree into a shallow root containing every recursive session node, then reuse the existing filter, sort, row/card, selection, menu, and drag rendering paths. The sidebar enables the option whenever a tag or activity-date filter is active.
+**Architecture:** Add a generic `getFlatSessionResults` option to the shared list renderer. When enabled, project the loaded tree into a shallow root containing every recursive session node, then reuse the existing filter, sort, row/card, selection, menu, and drag rendering paths. The sidebar enables the option only while a tag filter is active; date filters keep the folder tree.
 
 **Tech Stack:** JavaScript ES modules, DOM APIs, Vitest with jsdom.
 
@@ -138,7 +138,7 @@ Pass this option when creating the renderer:
 
 ```js
 getFlatSessionResults: () => Boolean(
-  selectedTag || selectedDay || selectedRangeDays
+  selectedTag
 ),
 ```
 
