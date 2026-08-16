@@ -3,9 +3,12 @@ import { ACTIVE_RUN_STATUSES, buildSchedulerTask, SchedulerController, validateS
 import { describeSchedule, normalizeSchedule } from "./schedule.js";
 import { SchedulerServiceClient } from "./service-api.js";
 import {
+  archiveDateForTimestamp,
   buildScheduledSessionContent,
+  ensureScheduledSessionDateFolder,
   ensureScheduledSessionFolder,
   migrateScheduledSessions,
+  scheduledSessionTagForDate,
   sessionTagForLocale,
   withSessionTag
 } from "./session-archive.js";
@@ -784,6 +787,7 @@ export async function activate(ctx) {
   let isLeader = false;
   let disposed = false;
   let archiveFolderPromise = null;
+  let archivePathQueue = Promise.resolve();
   let migrationPromise = null;
   let migrationDisposable = null;
 
@@ -799,6 +803,19 @@ export async function activate(ctx) {
     }
     return archiveFolderPromise;
   };
+  const resolveArchiveDateFolder = (archiveDate) => {
+    const pending = archivePathQueue
+      .catch(() => {})
+      .then(() => ensureScheduledSessionDateFolder({
+        zion: window.zion,
+        store,
+        locale: currentLocale(),
+        archiveDate,
+        ensureFolder: resolveArchiveFolder
+      }));
+    archivePathQueue = pending.then(() => undefined, () => undefined);
+    return pending;
+  };
   const requestSessionMigration = () => {
     if (disposed) return Promise.resolve(false);
     if (!migrationPromise) {
@@ -806,7 +823,8 @@ export async function activate(ctx) {
         zion: window.zion,
         store,
         locale: currentLocale(),
-        ensureFolder: resolveArchiveFolder
+        ensureFolder: resolveArchiveFolder,
+        ensureDateFolder: ({ archiveDate }) => resolveArchiveDateFolder(archiveDate)
       }).finally(() => {
         migrationPromise = null;
       });
@@ -957,6 +975,11 @@ export async function activate(ctx) {
     if (taggedTask.sessionTag !== task.sessionTag) store.saveTask(taggedTask);
     task = taggedTask;
     const startedAt = Date.now();
+    const archiveTimestamp = Number(remoteContext?.scheduledFor || startedAt);
+    const archiveDate = archiveDateForTimestamp(
+      archiveTimestamp,
+      task.schedule?.timeZone
+    );
     const run = {
       id: remoteContext?.runId || id("localrun"),
       chatRunId: null,
@@ -977,11 +1000,12 @@ export async function activate(ctx) {
 
     let timeout = null;
     try {
-      const folderId = await resolveArchiveFolder();
-      if (!folderId) throw new Error("无法准备定时任务会话文件夹");
+      const folderId = await resolveArchiveDateFolder(archiveDate);
+      if (!folderId) throw new Error("无法准备定时任务日期文件夹");
+      const datedTag = scheduledSessionTagForDate(task.sessionTag, archiveDate);
       const sessionId = await window.zion.commands.executeCommand("zion.sessions.new", {
           title: `定时任务 · ${task.title} · ${new Date(startedAt).toLocaleString()}`,
-          content: buildScheduledSessionContent(task.prompt, task.sessionTag),
+          content: buildScheduledSessionContent(task.prompt, datedTag),
           parentId: folderId,
           open: false,
           meta: {
@@ -1167,7 +1191,10 @@ export async function activate(ctx) {
           activeServiceRuns.add(remoteRun.id);
           updateStatus();
           void (async () => {
-            await runTask(task, { runId: remoteRun.id });
+            await runTask(task, {
+              runId: remoteRun.id,
+              scheduledFor: remoteRun.scheduledFor
+            });
             await refreshServiceTasks();
           })().finally(() => {
             activeServiceRuns.delete(remoteRun.id);

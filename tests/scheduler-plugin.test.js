@@ -4,6 +4,7 @@ import {
   finalizeScheduledSession,
   projectRunEventToSession
 } from "../extensions/dev.scheduler/main.js";
+import { archiveDateForTimestamp } from "../extensions/dev.scheduler/session-archive.js";
 import { LocalSchedulerStore } from "../extensions/dev.scheduler/store.js";
 
 function disposable(fn = () => {}) {
@@ -35,7 +36,7 @@ describe("scheduler plugin", () => {
         children: []
       }]
     })));
-    externalCommands.set("zion.sessions.createFolder", vi.fn(async () => "folder-scheduled"));
+    externalCommands.set("zion.sessions.createFolder", vi.fn(async ({ title }) => `folder-${title}`));
     window.zion = {
       commands: {
         registerCommand: (name, handler) => {
@@ -419,11 +420,12 @@ describe("scheduler plugin", () => {
 
     await activate({ subscriptions });
     await commands.get("scheduler.runNow")("task-1");
+    const archiveDate = archiveDateForTimestamp(Date.now());
 
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
-      parentId: "folder-scheduled",
+      parentId: `folder-${archiveDate.day}`,
       open: false,
-      content: "user Summarize\n\n#定时任务\nassistant ",
+      content: `user Summarize\n\n#定时任务/${archiveDate.key}\nassistant `,
       meta: expect.objectContaining({ source: "scheduled-task", scheduledTaskId: "task-1" })
     }));
     expect(window.zion.chat.execute).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-1" }));
@@ -458,7 +460,7 @@ describe("scheduler plugin", () => {
     expect(store.listRuns()[0]).toMatchObject({
       taskId: "task-no-folder",
       status: "failed",
-      error: "无法准备定时任务会话文件夹"
+      error: "无法准备定时任务日期文件夹"
     });
   });
 

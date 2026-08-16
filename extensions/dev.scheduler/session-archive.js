@@ -1,6 +1,6 @@
 import { extractObsidianMetadata } from "../shared/obsidian-metadata.js";
 
-export const SESSION_ARCHIVE_MIGRATION_VERSION = 1;
+export const SESSION_ARCHIVE_MIGRATION_VERSION = 2;
 
 function normalizeSessionTag(value) {
   return String(value || "").replace(/^#/, "").trim();
@@ -111,6 +111,11 @@ function findTreeNode(root, id) {
   return null;
 }
 
+function isTreeDescendant(root, ancestorId, nodeId) {
+  const ancestor = findTreeNode(root, ancestorId);
+  return Boolean(findTreeNode(ancestor, nodeId));
+}
+
 function findDirectFolder(parent, title) {
   return (parent?.children || []).find((node) => (
     node?.type === "folder" && String(node.title || "") === String(title)
@@ -192,7 +197,9 @@ export async function migrateScheduledSessions({
   zion,
   store,
   locale,
-  ensureFolder = ensureScheduledSessionFolder
+  now = () => Date.now(),
+  ensureFolder = ensureScheduledSessionFolder,
+  ensureDateFolder = ensureScheduledSessionDateFolder
 } = {}) {
   const archiveState = store?.getSessionArchiveState?.() || {};
   if (Number(archiveState.migrationVersion || 0) >= SESSION_ARCHIVE_MIGRATION_VERSION) {
@@ -201,6 +208,9 @@ export async function migrateScheduledSessions({
 
   const folderId = await ensureFolder({ zion, store, locale });
   if (!folderId) return false;
+  const initialTree = await zion?.commands?.executeCommand?.("zion.sessions.getTreeSnapshot");
+  if (!initialTree) return false;
+  const migrationStartedAt = Number(now()) || Date.now();
 
   for (const task of store?.listTasks?.() || []) {
     if ((task?.taskType || "agent") === "command" || normalizeSessionTag(task?.sessionTag)) continue;
@@ -220,17 +230,34 @@ export async function migrateScheduledSessions({
 
       const task = store?.getTask?.(String(meta.scheduledTaskId || ""));
       const sessionTag = normalizeSessionTag(task?.sessionTag) || sessionTagForLocale(locale);
+      const timestamp = Number(
+        meta.createdAt
+        || meta.scheduledRunCompletedAt
+        || meta.updatedAt
+        || migrationStartedAt
+      );
+      const archiveDate = archiveDateForTimestamp(timestamp, task?.schedule?.timeZone);
       const transformed = await zion?.commands?.executeCommand?.("zion.sessions.transformDoc", {
         id: sessionId,
-        transform: (text) => insertScheduledSessionTag(text, sessionTag)
+        transform: (text) => rewriteScheduledSessionTag(text, sessionTag, archiveDate)
       });
       if (transformed !== true) return false;
 
-      const moved = await zion?.commands?.executeCommand?.("zion.sessions.moveNode", {
-        id: sessionId,
-        targetFolderId: folderId
-      });
-      if (moved !== true) return false;
+      if (isTreeDescendant(initialTree, folderId, sessionId)) {
+        const targetFolderId = await ensureDateFolder({
+          zion,
+          store,
+          locale,
+          archiveDate,
+          ensureFolder
+        });
+        if (!targetFolderId) return false;
+        const moved = await zion?.commands?.executeCommand?.("zion.sessions.moveNode", {
+          id: sessionId,
+          targetFolderId
+        });
+        if (moved !== true) return false;
+      }
     }
   } catch {
     return false;

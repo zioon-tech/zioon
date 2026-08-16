@@ -291,10 +291,28 @@ describe("scheduled session archive helpers", () => {
   });
 
   it("migrates scheduled sessions with task tags and an orphan fallback", async () => {
-    const tree = { id: "root", type: "folder", children: [] };
+    const tree = {
+      id: "root",
+      type: "folder",
+      children: [{
+        id: "folder-root",
+        type: "folder",
+        title: "定时任务",
+        children: [
+          { id: "scheduled-1", type: "session", title: "English task" },
+          { id: "scheduled-orphan", type: "session", title: "Orphan task" }
+        ]
+      }, {
+        id: "folder-manual",
+        type: "folder",
+        title: "Manual",
+        children: [{ id: "scheduled-outside", type: "session", title: "Moved task" }]
+      }]
+    };
     const docs = {
-      "scheduled-1": "user English task\nassistant Done\nuser ",
+      "scheduled-1": "user English task\n\n#scheduled_tasks\nassistant Done\nuser ",
       "scheduled-orphan": "user Orphan task\nassistant Done\nuser ",
+      "scheduled-outside": "user Moved task\n\n#定时任务\nassistant Done\nuser ",
       "normal-1": "user Normal\nassistant Done\nuser "
     };
     const fixture = createArchiveFixture({
@@ -302,21 +320,42 @@ describe("scheduled session archive helpers", () => {
       catalog: [
         { id: "scheduled-1" },
         { id: "scheduled-orphan" },
+        { id: "scheduled-outside" },
         { id: "normal-1" }
       ],
       metas: {
-        "scheduled-1": { source: "scheduled-task", scheduledTaskId: "task-1" },
-        "scheduled-orphan": { source: "scheduled-task", scheduledTaskId: "missing" },
+        "scheduled-1": {
+          source: "scheduled-task",
+          scheduledTaskId: "task-1",
+          createdAt: Date.UTC(2026, 7, 16, 0, 30)
+        },
+        "scheduled-orphan": {
+          source: "scheduled-task",
+          scheduledTaskId: "missing",
+          createdAt: Date.UTC(2026, 7, 16, 1, 30)
+        },
+        "scheduled-outside": {
+          source: "scheduled-task",
+          scheduledTaskId: "missing",
+          createdAt: Date.UTC(2026, 7, 16, 2, 30)
+        },
         "normal-1": { source: "chat" }
       },
-      docs
+      docs,
+      createFolderIds: ["folder-2026", "folder-08", "folder-16"]
     });
     const store = new LocalSchedulerStore();
+    store.saveSessionArchiveState({
+      folderId: "folder-root",
+      folderLocale: "zh-CN",
+      migrationVersion: 1
+    });
     store.saveTask({
       id: "task-1",
       taskType: "agent",
       title: "English task",
       sessionTag: "scheduled_tasks",
+      schedule: { timeZone: "UTC" },
       createdAt: 1
     });
 
@@ -326,28 +365,48 @@ describe("scheduled session archive helpers", () => {
       locale: "zh-CN"
     })).resolves.toBe(true);
 
-    expect(docs["scheduled-1"]).toContain("\n#scheduled_tasks\nassistant");
-    expect(docs["scheduled-orphan"]).toContain("\n#定时任务\nassistant");
+    expect(docs["scheduled-1"]).toContain("\n#scheduled_tasks/2026/08/16\nassistant");
+    expect(docs["scheduled-orphan"]).toContain("\n#定时任务/2026/08/16\nassistant");
+    expect(docs["scheduled-outside"]).toContain("\n#定时任务/2026/08/16\nassistant");
     expect(docs["normal-1"]).not.toContain("#");
     expect(fixture.moveCalls).toEqual([
-      { id: "scheduled-1", targetFolderId: "folder-created" },
-      { id: "scheduled-orphan", targetFolderId: "folder-created" }
+      { id: "scheduled-1", targetFolderId: "folder-16" },
+      { id: "scheduled-orphan", targetFolderId: "folder-16" }
     ]);
-    expect(store.getSessionArchiveState().migrationVersion).toBe(1);
+    expect(store.getSessionArchiveState().migrationVersion).toBe(2);
   });
 
   it("retries an interrupted migration without duplicating tags", async () => {
     const docs = { "scheduled-1": "user Prompt\nassistant Done\nuser " };
     const fixture = createArchiveFixture({
-      tree: { id: "root", type: "folder", children: [] },
+      tree: {
+        id: "root",
+        type: "folder",
+        children: [{
+          id: "folder-root",
+          type: "folder",
+          title: "定时任务",
+          children: [{ id: "scheduled-1", type: "session", title: "Task" }]
+        }]
+      },
       catalog: [{ id: "scheduled-1" }],
       metas: {
-        "scheduled-1": { source: "scheduled-task", scheduledTaskId: "task-1" }
+        "scheduled-1": {
+          source: "scheduled-task",
+          scheduledTaskId: "task-1",
+          createdAt: Date.UTC(2026, 7, 16)
+        }
       },
       docs,
+      createFolderIds: ["folder-2026", "folder-08", "folder-16"],
       moveResult: false
     });
     const store = new LocalSchedulerStore();
+    store.saveSessionArchiveState({
+      folderId: "folder-root",
+      folderLocale: "zh-CN",
+      migrationVersion: 1
+    });
     store.saveTask({ id: "task-1", taskType: "agent", title: "Task", createdAt: 1 });
 
     await expect(migrateScheduledSessions({
@@ -355,8 +414,8 @@ describe("scheduled session archive helpers", () => {
       store,
       locale: "zh-CN"
     })).resolves.toBe(false);
-    expect(store.getSessionArchiveState().migrationVersion).toBe(0);
-    expect(docs["scheduled-1"].match(/#定时任务/g)).toHaveLength(1);
+    expect(store.getSessionArchiveState().migrationVersion).toBe(1);
+    expect(docs["scheduled-1"].match(/#定时任务\/2026\/08\/16/g)).toHaveLength(1);
 
     fixture.setMoveResult(true);
     await expect(migrateScheduledSessions({
@@ -364,8 +423,9 @@ describe("scheduled session archive helpers", () => {
       store,
       locale: "en-US"
     })).resolves.toBe(true);
-    expect(docs["scheduled-1"].match(/#定时任务/g)).toHaveLength(1);
+    expect(docs["scheduled-1"].match(/#定时任务\/2026\/08\/16/g)).toHaveLength(1);
     expect(store.getTask("task-1").sessionTag).toBe("定时任务");
+    expect(store.getSessionArchiveState().migrationVersion).toBe(2);
   });
 
   it("does not scan sessions after migration has completed", async () => {
@@ -373,7 +433,7 @@ describe("scheduled session archive helpers", () => {
       tree: { id: "root", type: "folder", children: [] }
     });
     const store = new LocalSchedulerStore();
-    store.saveSessionArchiveState({ migrationVersion: 1 });
+    store.saveSessionArchiveState({ migrationVersion: 2 });
 
     await expect(migrateScheduledSessions({
       zion: fixture.zion,
