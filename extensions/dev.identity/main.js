@@ -1980,7 +1980,6 @@ export async function activate(ctx) {
       const cached = await readBiographyEventsCache(paths.events);
       if (disposed) return;
       if (cached?.events) publishBiographySessionTags(cached.events);
-      if (cached?.complete) return;
       const events = await loadBiographyEvents();
       if (disposed) return;
       publishBiographySessionTags(events);

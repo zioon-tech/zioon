@@ -199,7 +199,7 @@ export function createTagTreePanel(deps) {
       const source = document.createElement("span");
       const sourceLabels = (row.sourceLabels || []).join(", ") || t("tags.automatic", "Automatic");
       source.className = "zion-sessions-tagtree-source";
-      source.innerHTML = iconHtml("sparkle", 11);
+      source.innerHTML = iconHtml("sparkles", 11);
       source.title = t("tags.automaticSource", "Automatic tag · {source}", { source: sourceLabels });
       source.setAttribute("aria-label", source.title);
       item.appendChild(source);
