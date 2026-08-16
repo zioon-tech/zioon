@@ -1,7 +1,14 @@
 import { registerSessionTools } from "./session-tools.js";
 import { openSessionsDB, idbDel, idbGet, idbGetAll, idbGetKV, idbSet, idbSetKV } from "./storage/idb.js";
 import { createSessionDocRepo } from "./storage/docs.js";
+import { loadSessionTagIndex, saveSessionTagIndex } from "./storage/session-tag-index.js";
 import { deleteRemoteSession, readRemoteSnapshot, writeRemoteSession, writeRemoteSnapshot, writeRemoteTree } from "./storage/remote.js";
+import {
+  createSessionTagIndex,
+  removeSessionTagIndexEntry,
+  updateSessionTagIndex,
+  validateSessionTagIndex
+} from "./model/session-tag-index.js";
 import { createSessionUrlModel } from "./model/url.js";
 import { createSessionTreeModel } from "./model/tree.js";
 import { createSessionUIStateModel } from "./model/ui-state.js";
@@ -340,6 +347,57 @@ let remoteSnapshotQueue = Promise.resolve();
 let remoteStorageOnline = false;
 let remoteSyncTimer = 0;
 let remoteRevision = null;
+let sessionTagIndex = createSessionTagIndex();
+let sessionTagIndexReady = false;
+let sessionTagIndexTimer = 0;
+let sessionTagIndexBackfillHandle = 0;
+let sessionTagIndexPersistQueue = Promise.resolve();
+const pendingSessionTagDocs = new Map();
+
+function publishSessionTagIndex(next) {
+  sessionTagIndex = validateSessionTagIndex(next);
+  try { window.zion?.state?.set("sessions.tagIndex", sessionTagIndex); } catch {}
+  return sessionTagIndex;
+}
+
+function persistCurrentSessionTagIndex() {
+  const snapshot = sessionTagIndex;
+  sessionTagIndexPersistQueue = sessionTagIndexPersistQueue
+    .catch(() => {})
+    .then(() => saveSessionTagIndex(DB_NAME, snapshot))
+    .catch((error) => {
+      try { console.warn("[sessions] tag index persist failed", error); } catch {}
+    });
+}
+
+function flushPendingSessionTagDocs() {
+  sessionTagIndexTimer = 0;
+  if (!sessionTagIndexReady || !pendingSessionTagDocs.size) return;
+  let next = sessionTagIndex;
+  for (const [id, text] of pendingSessionTagDocs) {
+    next = updateSessionTagIndex(next, id, text, hashString(text));
+  }
+  pendingSessionTagDocs.clear();
+  publishSessionTagIndex(next);
+  persistCurrentSessionTagIndex();
+}
+
+function scheduleSessionTagIndexUpdate(id, text) {
+  const sessionId = String(id || "").trim();
+  if (!sessionTagIndexReady || !sessionId) return;
+  pendingSessionTagDocs.set(sessionId, String(text || ""));
+  if (sessionTagIndexTimer) window.clearTimeout(sessionTagIndexTimer);
+  sessionTagIndexTimer = window.setTimeout(flushPendingSessionTagDocs, 300);
+}
+
+function removeIndexedSessionTags(id) {
+  const sessionId = String(id || "");
+  pendingSessionTagDocs.delete(sessionId);
+  if (!Object.prototype.hasOwnProperty.call(sessionTagIndex.sessions || {}, sessionId)) return;
+  const next = removeSessionTagIndexEntry(sessionTagIndex, id);
+  publishSessionTagIndex(next);
+  persistCurrentSessionTagIndex();
+}
 
 function setRemoteStorageState(online, error = null) {
   remoteStorageOnline = !!online;
@@ -428,6 +486,7 @@ async function purgeSessionData(id) {
   try { localStorage.removeItem(metaKey(id)); } catch {}
   try { window.zion?.state?.set(`sessions.doc.${id}`, undefined); } catch {}
   try { window.zion?.state?.set(`sessions.meta.${id}`, undefined); } catch {}
+  removeIndexedSessionTags(id);
   scheduleRemoteDelete(id);
 }
 
@@ -491,7 +550,16 @@ async function syncRemoteStorage() {
   }
 }
 
-const { docKey, metaKey, loadDoc, saveDoc, loadDocAsync, loadMeta, loadMetaAsync, saveMeta } = createSessionDocRepo({
+const {
+  docKey,
+  metaKey,
+  loadDoc,
+  saveDoc: persistSessionDoc,
+  loadDocAsync,
+  loadMeta,
+  loadMetaAsync,
+  saveMeta
+} = createSessionDocRepo({
   dbName: DB_NAME,
   idbGet,
   idbSet,
@@ -502,10 +570,20 @@ const { docKey, metaKey, loadDoc, saveDoc, loadDocAsync, loadMeta, loadMetaAsync
   getZion: () => window.zion
 });
 
+function saveDoc(id, text) {
+  const value = String(text || "");
+  const result = persistSessionDoc(id, value);
+  scheduleSessionTagIndexUpdate(id, value);
+  return result;
+}
+
 /** preload tree/index into memory and migrate legacy localStorage once */
 async function initSessionsStorage() {
   try {
     await openSessionsDB(DB_NAME);
+    sessionTagIndex = await loadSessionTagIndex(DB_NAME);
+    sessionTagIndexReady = true;
+    publishSessionTagIndex(sessionTagIndex);
     // preload KV: tree/index
     let treeFromIDB = null;
     try {
@@ -761,6 +839,61 @@ function hashString(str) {
   }
   // 转无符号并十六进制
   return (h >>> 0).toString(16);
+}
+
+async function backfillSessionTagIndex() {
+  sessionTagIndexBackfillHandle = 0;
+  if (!sessionTagIndexReady) return false;
+  const sessions = getIndex();
+  const activeIds = new Set(
+    sessions.map((entry) => String(entry?.id || "").trim()).filter(Boolean)
+  );
+  const staleIds = [];
+  for (const id of activeIds) {
+    const indexed = sessionTagIndex.sessions?.[id];
+    const metaHash = String(loadMeta(id)?.hash || "");
+    if (!indexed || (metaHash && indexed.hash !== metaHash)) staleIds.push(id);
+  }
+  const hasOrphans = Object.keys(sessionTagIndex.sessions || {})
+    .some((id) => !activeIds.has(id));
+  if (!staleIds.length && !hasOrphans) return false;
+
+  let next = sessionTagIndex;
+  if (staleIds.length) {
+    const stale = new Set(staleIds);
+    const docs = await idbGetAll(DB_NAME, "docs");
+    for (const record of docs) {
+      const id = String(record?.id || "").trim();
+      if (!stale.has(id)) continue;
+      const text = String(record?.text || "");
+      const metaHash = String(loadMeta(id)?.hash || "");
+      next = updateSessionTagIndex(next, id, text, metaHash || hashString(text));
+      stale.delete(id);
+    }
+    for (const id of stale) {
+      next = updateSessionTagIndex(next, id, "", String(loadMeta(id)?.hash || ""));
+    }
+  }
+  for (const id of Object.keys(next.sessions || {})) {
+    if (!activeIds.has(id)) next = removeSessionTagIndexEntry(next, id);
+  }
+  publishSessionTagIndex(next);
+  persistCurrentSessionTagIndex();
+  return true;
+}
+
+function scheduleSessionTagIndexBackfill() {
+  if (sessionTagIndexBackfillHandle) return;
+  const run = () => {
+    void backfillSessionTagIndex().catch((error) => {
+      try { console.warn("[sessions] tag index backfill failed", error); } catch {}
+    });
+  };
+  if (typeof requestIdleCallback === "function") {
+    sessionTagIndexBackfillHandle = requestIdleCallback(run, { timeout: 1600 });
+  } else {
+    sessionTagIndexBackfillHandle = window.setTimeout(run, 500);
+  }
 }
 
 /** 生成新会话 id（短随机） */
@@ -1389,6 +1522,7 @@ export async function activate(ctx) {
     return;
   }
   try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
+  scheduleSessionTagIndexBackfill();
 
   const markSessionViewed = (sessionId) => markSessionRunViewed(window.zion, sessionId);
   const isSessionCurrentlyVisible = (sessionId) => {
