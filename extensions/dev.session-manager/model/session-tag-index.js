@@ -19,6 +19,22 @@ function normalizeTags(rawTags) {
   return tags;
 }
 
+export function normalizeTagExclusions(rawExclusions) {
+  const seen = new Set();
+  const exclusions = [];
+  for (const raw of Array.isArray(rawExclusions) ? rawExclusions : []) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const path = normalizeTagPath(raw.path);
+    if (!path) continue;
+    const subtree = raw.subtree === true;
+    const key = `${path}\u0000${subtree ? "1" : "0"}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    exclusions.push({ path, subtree });
+  }
+  return exclusions;
+}
+
 export function validateSessionTagIndex(raw) {
   const sessions = {};
   const input = raw && typeof raw === "object" && !Array.isArray(raw)
@@ -29,7 +45,8 @@ export function validateSessionTagIndex(raw) {
     if (!sessionId || !rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) continue;
     sessions[sessionId] = {
       hash: String(rawEntry.hash || ""),
-      tags: normalizeTags(rawEntry.tags)
+      tags: normalizeTags(rawEntry.tags),
+      exclusions: normalizeTagExclusions(rawEntry.exclusions)
     };
   }
   return { version: SESSION_TAG_INDEX_VERSION, sessions };
@@ -42,11 +59,33 @@ export function extractSessionTagPaths(text) {
 }
 
 export function getIndexedSessionTags(index, sessionId) {
+  const tags = getRawIndexedSessionTags(index, sessionId);
+  const exclusions = getSessionTagExclusions(index, sessionId);
+  return tags.filter((tag) => !isSessionTagExcluded(tag, exclusions));
+}
+
+export function getRawIndexedSessionTags(index, sessionId) {
   const id = String(sessionId || "").trim();
   if (!id) return [];
   const entry = index?.sessions?.[id];
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
   return normalizeTags(entry.tags);
+}
+
+export function getSessionTagExclusions(index, sessionId) {
+  const id = String(sessionId || "").trim();
+  if (!id) return [];
+  const entry = index?.sessions?.[id];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+  return normalizeTagExclusions(entry.exclusions);
+}
+
+export function isSessionTagExcluded(tagPath, exclusions) {
+  const path = normalizeTagPath(tagPath);
+  if (!path) return false;
+  return normalizeTagExclusions(exclusions).some((rule) => (
+    path === rule.path || (rule.subtree && path.startsWith(`${rule.path}/`))
+  ));
 }
 
 export function updateSessionTagIndex(index, sessionId, text, hash = "") {
@@ -59,10 +98,109 @@ export function updateSessionTagIndex(index, sessionId, text, hash = "") {
       ...current.sessions,
       [id]: {
         hash: String(hash || ""),
-        tags: extractSessionTagPaths(text)
+        tags: extractSessionTagPaths(text),
+        exclusions: current.sessions[id]?.exclusions || []
       }
     }
   };
+}
+
+export function excludeSessionTags(index, sessionId, path, options = {}) {
+  const id = String(sessionId || "").trim();
+  const normalizedPath = normalizeTagPath(path);
+  const current = validateSessionTagIndex(index);
+  if (!id || !normalizedPath || !current.sessions[id]) return current;
+  const subtree = options.subtree === true;
+  let exclusions = current.sessions[id].exclusions || [];
+  const alreadyCovered = exclusions.some((rule) => (
+    normalizedPath === rule.path
+    || (rule.subtree && normalizedPath.startsWith(`${rule.path}/`))
+  ));
+  if (alreadyCovered && (!subtree || exclusions.some((rule) => rule.subtree && rule.path === normalizedPath))) {
+    return current;
+  }
+  if (subtree) {
+    exclusions = exclusions.filter((rule) => (
+      rule.path !== normalizedPath && !rule.path.startsWith(`${normalizedPath}/`)
+    ));
+  }
+  exclusions = normalizeTagExclusions([...exclusions, { path: normalizedPath, subtree }]);
+  return {
+    ...current,
+    sessions: {
+      ...current.sessions,
+      [id]: {
+        ...current.sessions[id],
+        exclusions
+      }
+    }
+  };
+}
+
+export function restoreSessionTagExclusion(index, sessionId, path, options = {}) {
+  const id = String(sessionId || "").trim();
+  const normalizedPath = normalizeTagPath(path);
+  const current = validateSessionTagIndex(index);
+  if (!id || !normalizedPath || !current.sessions[id]) return current;
+  const subtree = options.subtree === true;
+  const exclusions = (current.sessions[id].exclusions || []).filter((rule) => (
+    rule.path !== normalizedPath || rule.subtree !== subtree
+  ));
+  return {
+    ...current,
+    sessions: {
+      ...current.sessions,
+      [id]: {
+        ...current.sessions[id],
+        exclusions
+      }
+    }
+  };
+}
+
+export function buildSessionTagExtractionState(index, sessionId) {
+  const id = String(sessionId || "").trim();
+  const rawTags = getRawIndexedSessionTags(index, id);
+  const exclusions = getSessionTagExclusions(index, id);
+  return {
+    sessionId: id,
+    rawTags,
+    visibleTags: rawTags.filter((tag) => !isSessionTagExcluded(tag, exclusions)),
+    ignoredTags: rawTags.filter((tag) => isSessionTagExcluded(tag, exclusions)),
+    exclusions
+  };
+}
+
+export function calculateTagSubtreeExclusionImpact(index, path) {
+  const normalizedPath = normalizeTagPath(path);
+  const sessionIds = [];
+  let tagCount = 0;
+  if (normalizedPath) {
+    const current = validateSessionTagIndex(index);
+    for (const sessionId of Object.keys(current.sessions)) {
+      const matches = getIndexedSessionTags(current, sessionId).filter((tag) => (
+        tag === normalizedPath || tag.startsWith(`${normalizedPath}/`)
+      ));
+      if (!matches.length) continue;
+      sessionIds.push(sessionId);
+      tagCount += matches.length;
+    }
+  }
+  return {
+    path: normalizedPath,
+    sessionIds,
+    sessionCount: sessionIds.length,
+    tagCount
+  };
+}
+
+export function applyTagSubtreeExclusionBulk(index, path) {
+  const impact = calculateTagSubtreeExclusionImpact(index, path);
+  let next = validateSessionTagIndex(index);
+  for (const sessionId of impact.sessionIds) {
+    next = excludeSessionTags(next, sessionId, impact.path, { subtree: true });
+  }
+  return { index: next, impact };
 }
 
 export function removeSessionTagIndexEntry(index, sessionId) {

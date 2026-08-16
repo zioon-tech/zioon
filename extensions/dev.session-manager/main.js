@@ -23,6 +23,7 @@ import { registerSessionAutoRenameCommand } from "./commands/auto-rename.js";
 import { registerSessionSidebarCommands } from "./commands/sidebar.js";
 import { registerSessionFlushCommand } from "./commands/flush.js";
 import { registerSessionDocCommands } from "./commands/doc-apis.js";
+import { registerSessionTagExclusionCommands } from "./commands/tag-exclusions.js";
 import { createSessionAutoSavePlugin } from "./editor/autosave-plugin.js";
 import { renderSessionsTagHeader } from "./ui/sidebar-header.js";
 import { createSessionsSidebarViewManager } from "./ui/sidebar-view.js";
@@ -374,6 +375,13 @@ function persistCurrentSessionTagIndex() {
     });
 }
 
+function commitSessionTagIndex(next) {
+  publishSessionTagIndex(next);
+  persistCurrentSessionTagIndex();
+  try { refreshSessionsSidebarViewIfOpen(); } catch {}
+  return sessionTagIndex;
+}
+
 function flushPendingSessionTagDocs() {
   sessionTagIndexTimer = 0;
   if (!sessionTagIndexReady || !pendingSessionTagDocs.size) return;
@@ -382,8 +390,7 @@ function flushPendingSessionTagDocs() {
     next = updateSessionTagIndex(next, id, text, hashString(text));
   }
   pendingSessionTagDocs.clear();
-  publishSessionTagIndex(next);
-  persistCurrentSessionTagIndex();
+  commitSessionTagIndex(next);
 }
 
 function scheduleSessionTagIndexUpdate(id, text) {
@@ -399,8 +406,7 @@ function removeIndexedSessionTags(id) {
   pendingSessionTagDocs.delete(sessionId);
   if (!Object.prototype.hasOwnProperty.call(sessionTagIndex.sessions || {}, sessionId)) return;
   const next = removeSessionTagIndexEntry(sessionTagIndex, id);
-  publishSessionTagIndex(next);
-  persistCurrentSessionTagIndex();
+  commitSessionTagIndex(next);
 }
 
 function setRemoteStorageState(online, error = null) {
@@ -1565,8 +1571,17 @@ export async function activate(ctx) {
       return undefined;
     }
   });
-  ctx.subscriptions.push(dMarkSessionViewed);
-  ctx.subscriptions.push(dToggleTagSplit);
+  const dTagExclusions = registerSessionTagExclusionCommands({
+    zion: window.zion,
+    getIndex: () => sessionTagIndex,
+    commitIndex: commitSessionTagIndex,
+    getCurrentSessionId: () => window.zion?.state?.get?.("sessions.currentId")
+  });
+  ctx.subscriptions.push(
+    dMarkSessionViewed,
+    dToggleTagSplit,
+    dTagExclusions
+  );
 
   // 初始化树/索引/会话
   ensureInitialTree();
