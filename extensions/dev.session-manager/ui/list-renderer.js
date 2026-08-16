@@ -741,6 +741,7 @@ export function createSessionsListRendererFactory(deps) {
       const shouldUseRootContextMenu = (ev) => {
         const target = ev?.target;
         if (!target?.closest) return true;
+        if (target.closest(".zion-sessions-tag-column")) return false;
         if (target.closest(".zion-session-row")) return false;
         if (target.closest(".session-row-menu")) return false;
         if (target.closest("button,input,select,textarea,a")) return false;

@@ -201,11 +201,16 @@ describe("tag tree panel", () => {
     const { panel, calls } = makePanel();
     const tree = makeRows([], [["s1", ["#alpha"]]]);
     panel.update({ rows: tree.rows, nodeCount: tree.nodeCount, selection: "" });
-    document.body.appendChild(panel.el);
+    const bubbled = vi.fn();
+    const host = document.createElement("div");
+    host.addEventListener("contextmenu", bubbled);
+    host.appendChild(panel.el);
+    document.body.appendChild(host);
     const row = panel.el.querySelector('[data-path="alpha"]');
     row.dispatchEvent(new MouseEvent("contextmenu", { clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
     const floating = document.body.querySelector(".zion-sessions-tagtree-context");
     expect(floating).toBeTruthy();
+    expect(bubbled).not.toHaveBeenCalled();
     const pinItem = Array.from(floating.querySelectorAll("div")).find((d) => d.textContent === "Pin");
     pinItem.click();
     expect(calls.pin).toEqual(["alpha"]);

@@ -60,4 +60,38 @@ describe("sessions list renderer", () => {
     expect(row.title).toContain("Updated: 2");
     expect(listEl.children).toHaveLength(1);
   });
+
+  it("does not open the session root menu from the tag column", () => {
+    const listEl = document.createElement("div");
+    const hostElement = document.createElement("div");
+    const tagColumn = document.createElement("div");
+    tagColumn.className = "zion-sessions-tag-column";
+    hostElement.append(listEl, tagColumn);
+    document.body.appendChild(hostElement);
+
+    const createRenderer = createSessionsListRendererFactory({
+      loadTree: () => ({ id: "root", children: [] }),
+      ensureInitialTree: () => ({ id: "root", children: [] }),
+      getSelection: () => [],
+      clearSelection: () => {},
+      setLastSelectedId: () => {},
+      setFolderOpen: () => {}
+    });
+    const render = createRenderer({
+      listEl,
+      hostElement,
+      getQuery: () => "",
+      getSort: () => "updated"
+    });
+    render();
+
+    const rootMenu = listEl.querySelector(".session-row-menu");
+    tagColumn.dispatchEvent(new MouseEvent("contextmenu", {
+      clientX: 10,
+      clientY: 10,
+      bubbles: true,
+      cancelable: true
+    }));
+    expect(rootMenu.style.display).toBe("none");
+  });
 });

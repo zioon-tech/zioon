@@ -24,7 +24,7 @@ describe("sessions tag split header", () => {
       t: (_key, fallback) => fallback
     });
 
-    expect(container.querySelector(".zion-sessions-header-title").textContent).toBe("All Tags");
+    expect(container.querySelector(".zion-sessions-header-title").textContent).toBe("Tags");
     expect(context.setVisible).toHaveBeenLastCalledWith(false);
     expect(context.setWidth).toHaveBeenLastCalledWith(180);
 

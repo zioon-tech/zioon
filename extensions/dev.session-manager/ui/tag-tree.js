@@ -201,6 +201,7 @@ export function createTagTreePanel(deps) {
     item.ondblclick = () => startRename(row);
     item.oncontextmenu = (event) => {
       event.preventDefault();
+      event.stopPropagation();
       openRowMenu(event, row);
     };
     item.draggable = true;

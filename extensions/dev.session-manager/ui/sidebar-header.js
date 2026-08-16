@@ -21,7 +21,7 @@ export function renderSessionsTagHeader(container, context, deps) {
   add.innerHTML = iconHtml("add");
 
   const refreshText = () => {
-    title.textContent = t("tags.title", "All Tags");
+    title.textContent = t("tags.title", "Tags");
     const label = t("tags.addTag", "New tag");
     add.title = label;
     add.setAttribute("aria-label", label);
