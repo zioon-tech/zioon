@@ -205,13 +205,14 @@ export async function migrateScheduledSessions({
   zion,
   store,
   locale,
+  force = false,
   now = () => Date.now(),
   ensureFolder = ensureScheduledSessionFolder,
   ensureDateFolder = ensureScheduledSessionDateFolder
 } = {}) {
   const archiveState = store?.getSessionArchiveState?.() || {};
   const previousVersion = Number(archiveState.migrationVersion || 0);
-  if (previousVersion >= SESSION_ARCHIVE_MIGRATION_VERSION) {
+  if (!force && previousVersion >= SESSION_ARCHIVE_MIGRATION_VERSION) {
     return true;
   }
 

@@ -816,13 +816,14 @@ export async function activate(ctx) {
     archivePathQueue = pending.then(() => undefined, () => undefined);
     return pending;
   };
-  const requestSessionMigration = () => {
+  const requestSessionMigration = (force = false) => {
     if (disposed) return Promise.resolve(false);
     if (!migrationPromise) {
       migrationPromise = migrateScheduledSessions({
         zion: window.zion,
         store,
         locale: currentLocale(),
+        force,
         ensureFolder: resolveArchiveFolder,
         ensureDateFolder: ({ archiveDate }) => resolveArchiveDateFolder(archiveDate)
       }).finally(() => {
@@ -1294,6 +1295,10 @@ export async function activate(ctx) {
   const cancel = window.zion.commands.registerCommand("scheduler.cancelRun", (runId, reason = "user") =>
     cancelRun(String(runId || ""), reason)
   );
+  const repairSessionArchive = window.zion.commands.registerCommand(
+    "scheduler.repairSessionArchive",
+    () => requestSessionMigration(true)
+  );
   const schedulerTool = registerSchedulerTool({
     controller,
     openPanel: () => window.zion.commands.executeCommand("scheduler.openPanel"),
@@ -1301,7 +1306,7 @@ export async function activate(ctx) {
   });
 
   updateStatus();
-  ctx.subscriptions.push(viewDisposable, activityDisposable, open, create, runNow, cancel, schedulerTool, {
+  ctx.subscriptions.push(viewDisposable, activityDisposable, open, create, runNow, cancel, repairSessionArchive, schedulerTool, {
     dispose() {
         disposed = true;
       leaderRelease?.();
