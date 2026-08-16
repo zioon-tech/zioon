@@ -48,6 +48,7 @@ describe("scheduler service client", () => {
         allowedCommandPrefixes: ["npm test"]
       }
     });
+    expect(JSON.parse(options.body)).not.toHaveProperty("sessionTag");
   });
 
   it("retrieves service-backed runs with an optional task filter", async () => {

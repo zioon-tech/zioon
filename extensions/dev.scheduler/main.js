@@ -2,12 +2,27 @@ import { LocalSchedulerEngine } from "./engine.js";
 import { ACTIVE_RUN_STATUSES, buildSchedulerTask, SchedulerController, validateSchedulerTask } from "./controller.js";
 import { describeSchedule, normalizeSchedule } from "./schedule.js";
 import { SchedulerServiceClient } from "./service-api.js";
+import {
+  buildScheduledSessionContent,
+  ensureScheduledSessionFolder,
+  migrateScheduledSessions,
+  sessionTagForLocale,
+  withSessionTag
+} from "./session-archive.js";
 import { registerSchedulerTool } from "./scheduler-tools.js";
 import { LocalSchedulerStore } from "./store.js";
 
 const VIEW_ID = "scheduler.tasks";
 const STATUS_ID = "dev.scheduler.status";
 const MAX_CONCURRENT_SERVICE_RUNS = 3;
+
+function currentLocale() {
+  return String(
+    window.zion?.i18n?.getLocale?.()
+    || window.zion?.state?.get?.("ui.locale")
+    || "zh-CN"
+  );
+}
 
 function id(prefix) {
   try {
@@ -212,6 +227,9 @@ function taskFromForm(form, existing = null) {
     executionMode: String(data.get("executionMode") || "local-only"),
     title: String(data.get("title") || "").trim(),
     prompt: String(data.get("prompt") || "").trim(),
+    sessionTag: taskType === "command"
+      ? ""
+      : (existing?.sessionTag || sessionTagForLocale(currentLocale())),
     command,
     cwd: String(data.get("cwd") || "").trim(),
     note: String(data.get("note") || "").trim(),
@@ -765,6 +783,36 @@ export async function activate(ctx) {
   let serviceOnline = false;
   let isLeader = false;
   let disposed = false;
+  let archiveFolderPromise = null;
+  let migrationPromise = null;
+  let migrationDisposable = null;
+
+  const resolveArchiveFolder = () => {
+    if (!archiveFolderPromise) {
+      archiveFolderPromise = ensureScheduledSessionFolder({
+        zion: window.zion,
+        store,
+        locale: currentLocale()
+      }).finally(() => {
+        archiveFolderPromise = null;
+      });
+    }
+    return archiveFolderPromise;
+  };
+  const requestSessionMigration = () => {
+    if (disposed) return Promise.resolve(false);
+    if (!migrationPromise) {
+      migrationPromise = migrateScheduledSessions({
+        zion: window.zion,
+        store,
+        locale: currentLocale(),
+        ensureFolder: resolveArchiveFolder
+      }).finally(() => {
+        migrationPromise = null;
+      });
+    }
+    return migrationPromise;
+  };
 
   const emitChanged = () => {
     if (!disposed) window.zion?.events?.emit?.("scheduler/changed");
@@ -905,6 +953,9 @@ export async function activate(ctx) {
   const runTask = async (task, remoteContext = null) => {
     if (isCommandTask(task)) return runCommandTask(task, remoteContext);
     if (!window.zion?.chat?.execute) throw new Error("Chat runtime 尚未就绪");
+    const taggedTask = withSessionTag(task, currentLocale());
+    if (taggedTask.sessionTag !== task.sessionTag) store.saveTask(taggedTask);
+    task = taggedTask;
     const startedAt = Date.now();
     const run = {
       id: remoteContext?.runId || id("localrun"),
@@ -926,9 +977,12 @@ export async function activate(ctx) {
 
     let timeout = null;
     try {
+      const folderId = await resolveArchiveFolder();
+      if (!folderId) throw new Error("无法准备定时任务会话文件夹");
       const sessionId = await window.zion.commands.executeCommand("zion.sessions.new", {
           title: `定时任务 · ${task.title} · ${new Date(startedAt).toLocaleString()}`,
-          content: `user ${task.prompt}\nassistant `,
+          content: buildScheduledSessionContent(task.prompt, task.sessionTag),
+          parentId: folderId,
           open: false,
           meta: {
             source: "scheduled-task",
@@ -1058,7 +1112,9 @@ export async function activate(ctx) {
     });
     controller.setEngine(engine);
 
-    const saveTask = (task) => controller.saveTask(task);
+    const saveTask = (task) => controller.saveTask(
+      isCommandTask(task) ? task : withSessionTag(task, currentLocale())
+    );
     const toggleTask = (task) => controller.setEnabled(task.id, !task.enabled);
     const deleteTask = (task) => controller.deleteTask(task?.id);
     const refreshServiceTasks = () => controller.refreshServiceTasks();
@@ -1070,6 +1126,11 @@ export async function activate(ctx) {
       if (task.executionMode === "service-backed") void pollService();
       return result;
     };
+    void requestSessionMigration();
+    migrationDisposable = window.zion?.state?.onDidChange?.(
+      "sessions.catalog",
+      () => { void requestSessionMigration(); }
+    ) || null;
 
     const pollService = async () => {
       if (
@@ -1208,7 +1269,8 @@ export async function activate(ctx) {
   );
   const schedulerTool = registerSchedulerTool({
     controller,
-    openPanel: () => window.zion.commands.executeCommand("scheduler.openPanel")
+    openPanel: () => window.zion.commands.executeCommand("scheduler.openPanel"),
+    getSessionTag: () => sessionTagForLocale(currentLocale())
   });
 
   updateStatus();
@@ -1219,6 +1281,7 @@ export async function activate(ctx) {
       leaderAbort?.abort?.();
       if (servicePollTimer) window.clearInterval(servicePollTimer);
       window.removeEventListener("storage", onSchedulerStorage);
+      migrationDisposable?.dispose?.();
       engine.stop();
       statusDisposable?.dispose?.();
     }

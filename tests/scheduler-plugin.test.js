@@ -24,6 +24,18 @@ describe("scheduler plugin", () => {
     views = [];
     eventHandlers = new Map();
     externalCommands = new Map();
+    externalCommands.set("zion.sessions.getTreeSnapshot", vi.fn(async () => ({
+      id: "root",
+      type: "folder",
+      title: "Sessions",
+      children: [{
+        id: "folder-scheduled",
+        type: "folder",
+        title: "定时任务",
+        children: []
+      }]
+    })));
+    externalCommands.set("zion.sessions.createFolder", vi.fn(async () => "folder-scheduled"));
     window.zion = {
       commands: {
         registerCommand: (name, handler) => {
@@ -167,6 +179,30 @@ describe("scheduler plugin", () => {
 
     expect(window.zion.notification.show).not.toHaveBeenCalled();
     expect(container.querySelector(".scheduler-editor")).toBeFalsy();
+    mounted.dispose();
+  });
+
+  it("fixes a new agent task tag from the panel creation locale", async () => {
+    window.zion.i18n = { getLocale: () => "en-US" };
+    window.zion.notification = { show: vi.fn() };
+
+    await activate({ subscriptions });
+    const container = document.createElement("div");
+    const mounted = views[0].component.render(container);
+    commands.get("scheduler.create")();
+    const form = container.querySelector(".scheduler-editor");
+    form.elements.title.value = "Daily report";
+    form.elements.prompt.value = "Summarize the project";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => {
+      expect(new LocalSchedulerStore().listTasks()).toEqual([
+        expect.objectContaining({
+          title: "Daily report",
+          sessionTag: "scheduled_tasks"
+        })
+      ]);
+    });
     mounted.dispose();
   });
 
@@ -385,8 +421,9 @@ describe("scheduler plugin", () => {
     await commands.get("scheduler.runNow")("task-1");
 
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+      parentId: "folder-scheduled",
       open: false,
-      content: "user Summarize\nassistant ",
+      content: "user Summarize\n\n#定时任务\nassistant ",
       meta: expect.objectContaining({ source: "scheduled-task", scheduledTaskId: "task-1" })
     }));
     expect(window.zion.chat.execute).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-1" }));
@@ -395,6 +432,33 @@ describe("scheduler plugin", () => {
       sessionId: "session-1",
       status: "success",
       output: "summary"
+    });
+  });
+
+  it("does not create a scheduled session at root when the archive folder is unavailable", async () => {
+    const createSession = vi.fn(async () => "session-1");
+    externalCommands.set("zion.sessions.getTreeSnapshot", vi.fn(async () => null));
+    externalCommands.set("zion.sessions.new", createSession);
+    window.zion.state = { set: vi.fn(), get: vi.fn(), onDidChange: vi.fn(() => disposable()) };
+    const store = new LocalSchedulerStore();
+    store.saveTask({
+      id: "task-no-folder",
+      title: "Daily summary",
+      prompt: "Summarize",
+      enabled: false,
+      schedule: { kind: "daily", time: "09:00" },
+      timeoutSeconds: 60,
+      createdAt: 1
+    });
+
+    await activate({ subscriptions });
+    await commands.get("scheduler.runNow")("task-no-folder");
+
+    expect(createSession).not.toHaveBeenCalled();
+    expect(store.listRuns()[0]).toMatchObject({
+      taskId: "task-no-folder",
+      status: "failed",
+      error: "无法准备定时任务会话文件夹"
     });
   });
 

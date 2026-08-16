@@ -1,11 +1,58 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildScheduledSessionContent,
+  ensureScheduledSessionFolder,
   insertScheduledSessionTag,
+  migrateScheduledSessions,
   sessionTagForLocale,
   withSessionTag
 } from "../extensions/dev.scheduler/session-archive.js";
 import { LocalSchedulerStore } from "../extensions/dev.scheduler/store.js";
+
+function createArchiveFixture({
+  tree,
+  catalog = [],
+  metas = {},
+  docs = {},
+  createFolderId = "folder-created",
+  moveResult = true
+} = {}) {
+  const moveCalls = [];
+  const createCalls = [];
+  let currentMoveResult = moveResult;
+  const executeCommand = vi.fn(async (name, payload) => {
+    if (name === "zion.sessions.getTreeSnapshot") return structuredClone(tree);
+    if (name === "zion.sessions.createFolder") {
+      createCalls.push(payload);
+      return createFolderId;
+    }
+    if (name === "zion.sessions.getMeta") return metas[payload] || null;
+    if (name === "zion.sessions.transformDoc") {
+      if (!Object.prototype.hasOwnProperty.call(docs, payload.id)) return false;
+      docs[payload.id] = payload.transform(docs[payload.id]);
+      return true;
+    }
+    if (name === "zion.sessions.moveNode") {
+      moveCalls.push(payload);
+      return currentMoveResult;
+    }
+    return undefined;
+  });
+  const zion = {
+    commands: { executeCommand },
+    state: { get: (key) => key === "sessions.catalog" ? catalog : undefined }
+  };
+  return {
+    zion,
+    docs,
+    moveCalls,
+    createCalls,
+    executeCommand,
+    setMoveResult(value) {
+      currentMoveResult = value;
+    }
+  };
+}
 
 describe("scheduled session archive helpers", () => {
   beforeEach(() => localStorage.clear());
@@ -66,5 +113,164 @@ describe("scheduled session archive helpers", () => {
       folderLocale: "zh-CN",
       migrationVersion: 1
     });
+  });
+
+  it("adopts a matching root folder and later resolves it by stable id", async () => {
+    const tree = {
+      id: "root",
+      type: "folder",
+      children: [{
+        id: "folder-existing",
+        type: "folder",
+        title: "定时任务",
+        children: []
+      }, {
+        id: "folder-parent",
+        type: "folder",
+        title: "Archive",
+        children: [{
+          id: "folder-moved",
+          type: "folder",
+          title: "Renamed",
+          children: []
+        }]
+      }]
+    };
+    const fixture = createArchiveFixture({ tree });
+    const store = new LocalSchedulerStore();
+
+    await expect(ensureScheduledSessionFolder({
+      zion: fixture.zion,
+      store,
+      locale: "zh-CN"
+    })).resolves.toBe("folder-existing");
+    expect(fixture.createCalls).toEqual([]);
+
+    store.saveSessionArchiveState({ folderId: "folder-moved" });
+    await expect(ensureScheduledSessionFolder({
+      zion: fixture.zion,
+      store,
+      locale: "en-US"
+    })).resolves.toBe("folder-moved");
+    expect(fixture.createCalls).toEqual([]);
+  });
+
+  it("creates a replacement when a stored archive folder was deleted", async () => {
+    const fixture = createArchiveFixture({
+      tree: {
+        id: "root",
+        type: "folder",
+        children: [{
+          id: "folder-same-title",
+          type: "folder",
+          title: "定时任务",
+          children: []
+        }]
+      },
+      createFolderId: "folder-replacement"
+    });
+    const store = new LocalSchedulerStore();
+    store.saveSessionArchiveState({ folderId: "folder-deleted", folderLocale: "zh-CN" });
+
+    await expect(ensureScheduledSessionFolder({
+      zion: fixture.zion,
+      store,
+      locale: "zh-CN"
+    })).resolves.toBe("folder-replacement");
+    expect(fixture.createCalls).toEqual([{ parentId: "root", title: "定时任务" }]);
+    expect(store.getSessionArchiveState().folderId).toBe("folder-replacement");
+  });
+
+  it("migrates scheduled sessions with task tags and an orphan fallback", async () => {
+    const tree = { id: "root", type: "folder", children: [] };
+    const docs = {
+      "scheduled-1": "user English task\nassistant Done\nuser ",
+      "scheduled-orphan": "user Orphan task\nassistant Done\nuser ",
+      "normal-1": "user Normal\nassistant Done\nuser "
+    };
+    const fixture = createArchiveFixture({
+      tree,
+      catalog: [
+        { id: "scheduled-1" },
+        { id: "scheduled-orphan" },
+        { id: "normal-1" }
+      ],
+      metas: {
+        "scheduled-1": { source: "scheduled-task", scheduledTaskId: "task-1" },
+        "scheduled-orphan": { source: "scheduled-task", scheduledTaskId: "missing" },
+        "normal-1": { source: "chat" }
+      },
+      docs
+    });
+    const store = new LocalSchedulerStore();
+    store.saveTask({
+      id: "task-1",
+      taskType: "agent",
+      title: "English task",
+      sessionTag: "scheduled_tasks",
+      createdAt: 1
+    });
+
+    await expect(migrateScheduledSessions({
+      zion: fixture.zion,
+      store,
+      locale: "zh-CN"
+    })).resolves.toBe(true);
+
+    expect(docs["scheduled-1"]).toContain("\n#scheduled_tasks\nassistant");
+    expect(docs["scheduled-orphan"]).toContain("\n#定时任务\nassistant");
+    expect(docs["normal-1"]).not.toContain("#");
+    expect(fixture.moveCalls).toEqual([
+      { id: "scheduled-1", targetFolderId: "folder-created" },
+      { id: "scheduled-orphan", targetFolderId: "folder-created" }
+    ]);
+    expect(store.getSessionArchiveState().migrationVersion).toBe(1);
+  });
+
+  it("retries an interrupted migration without duplicating tags", async () => {
+    const docs = { "scheduled-1": "user Prompt\nassistant Done\nuser " };
+    const fixture = createArchiveFixture({
+      tree: { id: "root", type: "folder", children: [] },
+      catalog: [{ id: "scheduled-1" }],
+      metas: {
+        "scheduled-1": { source: "scheduled-task", scheduledTaskId: "task-1" }
+      },
+      docs,
+      moveResult: false
+    });
+    const store = new LocalSchedulerStore();
+    store.saveTask({ id: "task-1", taskType: "agent", title: "Task", createdAt: 1 });
+
+    await expect(migrateScheduledSessions({
+      zion: fixture.zion,
+      store,
+      locale: "zh-CN"
+    })).resolves.toBe(false);
+    expect(store.getSessionArchiveState().migrationVersion).toBe(0);
+    expect(docs["scheduled-1"].match(/#定时任务/g)).toHaveLength(1);
+
+    fixture.setMoveResult(true);
+    await expect(migrateScheduledSessions({
+      zion: fixture.zion,
+      store,
+      locale: "en-US"
+    })).resolves.toBe(true);
+    expect(docs["scheduled-1"].match(/#定时任务/g)).toHaveLength(1);
+    expect(store.getTask("task-1").sessionTag).toBe("定时任务");
+  });
+
+  it("does not scan sessions after migration has completed", async () => {
+    const fixture = createArchiveFixture({
+      tree: { id: "root", type: "folder", children: [] }
+    });
+    const store = new LocalSchedulerStore();
+    store.saveSessionArchiveState({ migrationVersion: 1 });
+
+    await expect(migrateScheduledSessions({
+      zion: fixture.zion,
+      store,
+      locale: "zh-CN"
+    })).resolves.toBe(true);
+    expect(fixture.executeCommand).not.toHaveBeenCalled();
   });
 });

@@ -43,7 +43,11 @@ describe("schedulerManage tool", () => {
     });
     controller.setEngine(engine);
     const openPanel = vi.fn();
-    const disposable = registerSchedulerTool({ controller, openPanel });
+    const disposable = registerSchedulerTool({
+      controller,
+      openPanel,
+      getSessionTag: () => "scheduled_tasks"
+    });
     const tools = state.get("chat.tools");
     const handler = state.get("chat.toolHandlers").schedulerManage;
 
@@ -63,6 +67,7 @@ describe("schedulerManage tool", () => {
     const taskId = created.created.id;
     expect(created).toMatchObject({ ok: true });
     expect(created.created).toMatchObject({ title: "Daily report", executionMode: "local-only", enabled: true });
+    expect(controller.getTask(taskId).sessionTag).toBe("scheduled_tasks");
 
     const listed = JSON.parse(await handler({ action: "list" }));
     expect(listed.tasks).toEqual([expect.objectContaining({ id: taskId, title: "Daily report" })]);
@@ -93,6 +98,7 @@ describe("schedulerManage tool", () => {
       patch: { title: "Weekday report", schedule: { kind: "weekdays", time: "10:00" } }
     }));
     expect(updated.updated).toMatchObject({ title: "Weekday report", schedule: expect.objectContaining({ kind: "weekdays", time: "10:00" }) });
+    expect(controller.getTask(taskId).sessionTag).toBe("scheduled_tasks");
 
     const paused = JSON.parse(await handler({ action: "set_enabled", task_id: taskId, enabled: false }));
     expect(paused.updated).toMatchObject({ enabled: false, nextRun: null });

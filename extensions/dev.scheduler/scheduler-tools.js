@@ -190,7 +190,7 @@ function failure(action, error, details = {}) {
   return JSON.stringify(payload, null, 2);
 }
 
-export function registerSchedulerTool({ controller, openPanel }) {
+export function registerSchedulerTool({ controller, openPanel, getSessionTag = () => "" }) {
   const existing = window.zion?.state?.get("chat.tools") || [];
   window.zion?.state?.set("chat.tools", [
     ...existing.filter((item) => item?.function?.name !== TOOL_NAME),
@@ -222,7 +222,13 @@ export function registerSchedulerTool({ controller, openPanel }) {
         return ok({ runs: runs.map(runSummary) });
       }
       if (action === "create") {
-        const task = buildSchedulerTask(args.task || {});
+        const input = args.task || {};
+        const task = buildSchedulerTask({
+          ...input,
+          sessionTag: (input.taskType || "agent") === "command"
+            ? ""
+            : String(getSessionTag() || "")
+        });
         const error = validateSchedulerTask(task);
         if (error) return failure(action, error, { code: "VALIDATION_FAILED" });
         const saved = await controller.saveTask(task);
