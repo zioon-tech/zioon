@@ -316,7 +316,6 @@ body.zion-sessions-no-transitions .zion-session-row * {
   padding-right: 8px !important;
   padding-bottom: 7px !important;
   border: none !important;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent) !important;
   border-radius: 2px !important;
   background: transparent;
   align-items: flex-start !important;
@@ -334,8 +333,15 @@ body.zion-sessions-no-transitions .zion-session-row * {
 
 .zion-sessions-list.is-card-view .zion-session-child-row {
   margin: 0 !important;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent) !important;
+  border: none !important;
   border-radius: 2px !important;
+}
+
+.zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout
+  + .zion-session-row.is-session.is-card-layout,
+.zion-sessions-list.is-card-view .zion-session-child-row
+  + .zion-session-row.is-session.is-card-layout {
+  border-top: 1px solid color-mix(in srgb, var(--border) 62%, transparent) !important;
 }
 
 .zion-sessions-list.is-card-view .zion-session-row.is-session.is-card-layout > div:first-of-type {
