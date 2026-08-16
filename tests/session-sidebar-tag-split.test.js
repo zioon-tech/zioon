@@ -188,6 +188,10 @@ describe("sessions sidebar tag split layout", () => {
     manager.attachTagSplitHeader(() => {});
     manager.mountInto(container);
 
+    const root = container.querySelector('[data-path="project"]');
+    expect(root.querySelector(".zion-sessions-tagtree-source")).toBeTruthy();
+    expect(container.querySelector('[data-path="project/zion"]')).toBeNull();
+    root.querySelector(".zion-sessions-tagtree-toggle").click();
     const row = container.querySelector('[data-path="project/zion"]');
     expect(row.querySelector(".zion-sessions-tagtree-source")).toBeTruthy();
     row.click();

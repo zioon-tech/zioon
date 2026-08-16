@@ -33,6 +33,7 @@ export function createSessionsSidebarViewManager(opts) {
   const LS_DAY_PANEL_END_DAY = "zion.sessions.sidebar.dayPanelEndDay";
   const LS_TAG_PANEL_COLLAPSED = "zion.sessions.sidebar.tagPanelCollapsed";
   const LS_TAG_NODE_COLLAPSED = "zion.sessions.sidebar.tagNodeCollapsed";
+  const LS_AUTO_TAG_ROOTS_INITIALIZED = "zion.sessions.sidebar.autoTagRootsInitialized";
   const LS_TAG_SPLIT = "zion.sessions.sidebar.tagSplit";
   const LS_TAG_COLUMN_WIDTH = "zion.sessions.sidebar.tagColumnWidth";
   const LS_PRE_SPLIT_WIDTH = "zion.sessions.sidebar.preSplitWidth";
@@ -107,6 +108,25 @@ export function createSessionsSidebarViewManager(opts) {
     if (collapsed) collapsedTagNodes.add(key);
     else collapsedTagNodes.delete(key);
     try { localStorage.setItem(LS_TAG_NODE_COLLAPSED, JSON.stringify(Array.from(collapsedTagNodes))); } catch {}
+  }
+
+  function initializeAutomaticTagRoots(tree) {
+    try {
+      if (localStorage.getItem(LS_AUTO_TAG_ROOTS_INITIALIZED) === "1") return;
+    } catch {}
+    const roots = (tree?.rows || []).filter((row) => (
+      row.depth === 0
+      && row.automatic
+      && row.readOnly
+      && Array.isArray(row.children)
+      && row.children.length > 0
+    ));
+    if (!roots.length) return;
+    for (const row of roots) collapsedTagNodes.add(row.path);
+    try {
+      localStorage.setItem(LS_TAG_NODE_COLLAPSED, JSON.stringify(Array.from(collapsedTagNodes)));
+      localStorage.setItem(LS_AUTO_TAG_ROOTS_INITIALIZED, "1");
+    } catch {}
   }
 
   function hideHeatmapTooltip() {
@@ -803,6 +823,7 @@ export function createSessionsSidebarViewManager(opts) {
       if (appliedSplitMode !== "split") return;
       try {
         const tree = buildSplitTagTree();
+        initializeAutomaticTagRoots(tree);
         tagTreePanel.update({
           rows: tree.rows,
           nodeCount: tree.nodeCount,
