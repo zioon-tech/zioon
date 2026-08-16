@@ -39,6 +39,7 @@ export type SideBarView = {
   order?: number;
   when?: string;
   canClose?: boolean;
+  showHideAction?: boolean;
   headerLeading?: SideBarHeaderLeading;
   headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; text?: string; textKey?: string; active?: boolean | (() => boolean); onClick: () => void }>;
   component: SideBarViewComponent;

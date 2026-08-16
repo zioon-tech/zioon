@@ -1733,6 +1733,7 @@ export async function activate(ctx) {
       icon: "$(history)",
       order: 10,
       location: "sidebar",
+      showHideAction: false,
       headerLeading: {
         render: (container, context) => renderSessionsTagHeader(container, context, {
           manager: __sidebarViewManager,
@@ -1746,7 +1747,7 @@ export async function activate(ctx) {
           titleKey: "dev.session-manager.ui.toggleTagSplit",
           ariaLabel: t("ui.toggleTagSplit", "Toggle tag column"),
           ariaLabelKey: "dev.session-manager.ui.toggleTagSplit",
-          icon: "$(columns-2)",
+          icon: "$(list-tree)",
           onClick: () => window.zion.commands.executeCommand("zion.sessions.toggleTagSplit")
         },
         {
@@ -1759,19 +1760,6 @@ export async function activate(ctx) {
           onClick: () => window.zion.commands.executeCommand("zion.sessions.new", {
             parentId: window.zion.state.get("sessions.selectedFolderId") || "root"
           })
-        },
-        {
-          id: "sessions.actions",
-          title: t("ui.actions", "Actions"),
-          titleKey: "dev.session-manager.ui.actions",
-          ariaLabel: t("ui.actions", "Actions"),
-          ariaLabelKey: "dev.session-manager.ui.actions",
-          icon: "$(ellipsis)",
-          onClick: () => {
-            try {
-              __sidebarViewManager.toggleMenuIfOpen();
-            } catch {}
-          }
         }
       ],
       component: {

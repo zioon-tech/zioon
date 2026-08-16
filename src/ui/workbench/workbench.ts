@@ -846,7 +846,7 @@ export function initWorkbench(host: HTMLElement): {
   hideBtn.type = "button";
   hideBtn.title = "Hide Side Bar";
   hideBtn.setAttribute("aria-label", "Hide Side Bar");
-  setCodiconOnly(hideBtn, "close");
+  setCodiconOnly(hideBtn, "columns-2");
   hideBtn.onclick = () => sideBarRuntime.hide();
   headerActions.appendChild(hideBtn);
   headerMain.append(headerTitle, headerActions);
@@ -2669,7 +2669,9 @@ export function initWorkbench(host: HTMLElement): {
         headerActions.appendChild(btn);
       }
     }
-    headerActions.appendChild(hideBtn);
+    if (nextView?.showHideAction !== false) {
+      headerActions.appendChild(hideBtn);
+    }
 
     tabs.style.display = sideBarRuntime.getShowTabs() && views.length > 1 ? "flex" : "none";
 

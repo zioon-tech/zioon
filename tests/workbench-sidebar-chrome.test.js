@@ -41,6 +41,81 @@ function createState() {
 }
 
 describe("workbench sidebar chrome", () => {
+  it("uses the columns icon for the shared hide action", async () => {
+    const host = document.createElement("div");
+    host.id = "app";
+    host.style.height = "600px";
+    document.body.appendChild(host);
+
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    const wb = initWorkbench(host);
+    const view = sideBarRuntime.registerView({
+      id: "plugins.hide-action",
+      pluginId: "dev.plugins",
+      title: "Plugins",
+      component: { render: () => {} }
+    });
+    sideBarRuntime.show();
+    sideBarRuntime.activateView("plugins.hide-action");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const hide = document.querySelector('[aria-label="Hide Side Bar"]');
+    const usesColumnsIcon = !!hide?.querySelector('[data-zion-icon="columns-2"]');
+    hide.click();
+    const hiddenAfterClick = !sideBarRuntime.isVisible();
+
+    view.dispose();
+    wb.dispose();
+    host.remove();
+
+    expect(usesColumnsIcon).toBe(true);
+    expect(hiddenAfterClick).toBe(true);
+  });
+
+  it("allows a Sidebar view to omit the shared hide action", async () => {
+    const host = document.createElement("div");
+    host.id = "app";
+    host.style.height = "600px";
+    document.body.appendChild(host);
+
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    const wb = initWorkbench(host);
+    const view = sideBarRuntime.registerView({
+      id: "sessions.no-hide-action",
+      pluginId: "dev.session-manager",
+      title: "Sessions",
+      showHideAction: false,
+      component: { render: () => {} }
+    });
+    sideBarRuntime.show();
+    sideBarRuntime.activateView("sessions.no-hide-action");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const hasHideAction = !!document.querySelector('[aria-label="Hide Side Bar"]');
+
+    view.dispose();
+    wb.dispose();
+    host.remove();
+
+    expect(hasHideAction).toBe(false);
+  });
+
   it("hides tabs by default", async () => {
     const host = document.createElement("div");
     host.id = "app";

@@ -310,6 +310,7 @@ declare global {
           order?: number;
           when?: string;
           canClose?: boolean;
+          showHideAction?: boolean;
           headerLeading?: {
             render: (
               container: HTMLElement,
