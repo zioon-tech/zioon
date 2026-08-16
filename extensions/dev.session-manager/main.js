@@ -24,6 +24,7 @@ import { registerSessionSidebarCommands } from "./commands/sidebar.js";
 import { registerSessionFlushCommand } from "./commands/flush.js";
 import { registerSessionDocCommands } from "./commands/doc-apis.js";
 import { registerSessionTagExclusionCommands } from "./commands/tag-exclusions.js";
+import { registerSessionTreeCommands } from "./commands/tree-apis.js";
 import { createSessionAutoSavePlugin } from "./editor/autosave-plugin.js";
 import { renderSessionsTagHeader } from "./ui/sidebar-header.js";
 import { createSessionsSidebarViewManager } from "./ui/sidebar-view.js";
@@ -1597,6 +1598,14 @@ export async function activate(ctx) {
   }
   try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
   scheduleSessionTagIndexBackfill();
+  ctx.subscriptions.push(registerSessionTreeCommands({
+    zion: window.zion,
+    loadTree,
+    insertFolder,
+    moveNode,
+    getIndex,
+    refreshSessionsSidebarViewIfOpen
+  }));
 
   const markSessionViewed = (sessionId) => markSessionRunViewed(window.zion, sessionId);
   const isSessionCurrentlyVisible = (sessionId) => {
