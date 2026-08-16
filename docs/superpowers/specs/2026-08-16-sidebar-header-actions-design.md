@@ -6,27 +6,27 @@ Reduce Sidebar header chrome and make each icon match its action.
 
 ## Behavior
 
-- Workbench keeps a shared hide-Sidebar action for views that use the default
-  chrome, but changes its icon from `x` to `columns-2`.
-- Sidebar views can opt out of the shared hide action through
-  `showHideAction: false`; the default remains enabled.
-- The sessions view opts out of the shared hide action.
+- Workbench keeps a shared hide-Sidebar action for every Sidebar and uses the
+  `columns-2` icon instead of `x`.
 - The sessions view removes its three-dot actions menu.
-- The sessions view keeps its new-session action.
-- The sessions tag-column toggle changes from `columns-2` to `list-tree`.
+- The sessions tag-column toggle uses the existing `tag` icon.
+- The sessions new-session action uses a new `message-square-plus` icon.
+- The sessions action order is `tag`, `message-square-plus`, then the shared
+  `columns-2` button at the far right.
 
 The shared hide action keeps its current click behavior, tooltip, and accessible
 name. No plugin implements a duplicate hide action.
 
 ## Architecture
 
-Add the optional `showHideAction` property to the Sidebar view contract in the
-runtime and public Zion type declarations. Workbench conditionally appends its
-shared hide button based on the active view. The sessions plugin configures the
-property and trims its own header actions.
+Workbench remains the single owner of the hide action and always appends it
+after plugin-provided actions. The unused `showHideAction` opt-out is removed
+from the runtime and public Zion type declarations. The shared icon registry
+adds `message-square-plus`, and the sessions plugin only selects icon names for
+its two actions.
 
 ## Verification
 
-Tests cover the default shared hide action, its `columns-2` icon, session-style
-opt-out, and the reduced sessions header action configuration. Browser
-verification checks sessions and another plugin Sidebar.
+Tests cover the shared hide action and its `columns-2` icon. Icon tests cover
+`message-square-plus`. Browser verification checks that sessions renders
+`tag`, `message-square-plus`, and `columns-2` in that order.
