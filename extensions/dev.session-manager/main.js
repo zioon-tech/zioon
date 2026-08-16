@@ -1759,7 +1759,9 @@ export async function activate(ctx) {
             }
           };
         }
-      }
+      },
+      onActivate: () => __sidebarViewManager.activateTagSplitWidthIfEnabled?.(),
+      onDeactivate: () => __sidebarViewManager.deactivateTagSplitWidthIfEnabled?.()
     });
     ctx.subscriptions.push(dispItem, dispView);
     ctx.subscriptions.push(window.zion.events.on("i18n/changed", () => {

@@ -46,6 +46,7 @@ export function createSessionsSidebarViewManager(opts) {
   let tagSplitEnabled = (() => {
     try { return localStorage.getItem(LS_TAG_SPLIT) === "1"; } catch { return false; }
   })();
+  let tagSplitWidthActive = false;
   let tagColumnWidth = (() => {
     try {
       const value = Number(localStorage.getItem(LS_TAG_COLUMN_WIDTH) || "0");
@@ -100,6 +101,47 @@ export function createSessionsSidebarViewManager(opts) {
   function isTagNodeCollapsed(tag) {
     const key = String(tag || "").trim();
     return key ? collapsedTagNodes.has(key) : false;
+  }
+
+  function getCurrentSidebarWidth() {
+    const width = Number(zion?.state?.get?.("ui.sideBar.width"));
+    return Number.isFinite(width) ? width : 0;
+  }
+
+  function readPreSplitWidth() {
+    try {
+      const width = Number(localStorage.getItem(LS_PRE_SPLIT_WIDTH) || "0");
+      return Number.isFinite(width) && width >= 180 ? width : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function activateTagSplitWidthIfEnabled() {
+    if (!tagSplitEnabled || tagSplitWidthActive) return false;
+    const currentWidth = getCurrentSidebarWidth();
+    if (currentWidth >= 180) {
+      try { localStorage.setItem(LS_PRE_SPLIT_WIDTH, String(currentWidth)); } catch {}
+    }
+    tagSplitWidthActive = true;
+    if (zion?.sideBar?.setWidth && currentWidth < TAG_SPLIT_SIDEBAR_TARGET) {
+      zion.sideBar.setWidth(TAG_SPLIT_SIDEBAR_TARGET);
+    }
+    return true;
+  }
+
+  function deactivateTagSplitWidthIfEnabled() {
+    if (!tagSplitWidthActive) return false;
+    tagSplitWidthActive = false;
+    const restoreWidth = readPreSplitWidth();
+    if (
+      zion?.sideBar?.setWidth
+      && restoreWidth
+      && restoreWidth !== getCurrentSidebarWidth()
+    ) {
+      zion.sideBar.setWidth(restoreWidth);
+    }
+    return true;
   }
 
   function setTagNodeCollapsed(tag, collapsed) {
@@ -824,23 +866,15 @@ export function createSessionsSidebarViewManager(opts) {
     };
 
     const setTagSplitEnabled = (next) => {
-      tagSplitEnabled = !!next;
-      try { localStorage.setItem(LS_TAG_SPLIT, tagSplitEnabled ? "1" : "0"); } catch {}
-      const sideBar = zion?.sideBar;
-      if (tagSplitEnabled) {
-        let current = Number(zion?.state?.get?.("ui.sideBar.width"));
-        if (!Number.isFinite(current)) current = 0;
-        if (current >= 240) {
-          try { localStorage.setItem(LS_PRE_SPLIT_WIDTH, String(current)); } catch {}
-        }
-        if (sideBar?.setWidth && current < TAG_SPLIT_SIDEBAR_TARGET) {
-          sideBar.setWidth(TAG_SPLIT_SIDEBAR_TARGET);
-        }
+      const enabled = !!next;
+      if (enabled) {
+        tagSplitEnabled = true;
+        activateTagSplitWidthIfEnabled();
       } else {
-        let restore = 0;
-        try { restore = Number(localStorage.getItem(LS_PRE_SPLIT_WIDTH) || "0"); } catch {}
-        if (sideBar?.setWidth && restore >= 240) sideBar.setWidth(restore);
+        deactivateTagSplitWidthIfEnabled();
+        tagSplitEnabled = false;
       }
+      try { localStorage.setItem(LS_TAG_SPLIT, tagSplitEnabled ? "1" : "0"); } catch {}
       appliedSplitMode = null;
       applySplitLayout();
       renderAll();
@@ -1598,6 +1632,20 @@ export function createSessionsSidebarViewManager(opts) {
     toggleMenuIfOpen,
     toggleTagSplitIfOpen: () => current?.toggleTagSplit?.(),
     isTagSplitEnabled: () => !!current?.isTagSplitEnabled?.(),
+    activateTagSplitWidthIfEnabled: () => {
+      const changed = activateTagSplitWidthIfEnabled();
+      if (changed) {
+        try { current?.render?.(); } catch {}
+      }
+      return changed;
+    },
+    deactivateTagSplitWidthIfEnabled: () => {
+      const changed = deactivateTagSplitWidthIfEnabled();
+      if (changed) {
+        try { current?.render?.(); } catch {}
+      }
+      return changed;
+    },
     attachTagSplitHeader,
     createRootTagIfOpen: () => current?.createRootTag?.()
   };

@@ -51,7 +51,7 @@ function makeManager(widthCalls) {
 
 function mountAt(width, { attachHeader = true } = {}) {
   const widthCalls = [];
-  const { manager } = makeManager(widthCalls);
+  const { manager, zion } = makeManager(widthCalls);
   const headerSnapshots = [];
   const headerDisposable = attachHeader
     ? manager.attachTagSplitHeader((snapshot) => headerSnapshots.push({ ...snapshot }))
@@ -62,6 +62,7 @@ function mountAt(width, { attachHeader = true } = {}) {
   const inst = manager.mountInto(container);
   return {
     manager,
+    zion,
     inst,
     container,
     widthCalls,
@@ -113,6 +114,28 @@ describe("sessions sidebar tag split layout", () => {
     expect(container.querySelector(".zion-sessions-split-row")).toBeNull();
     expect(container.querySelector(".zion-sessions-day-panel").parentElement).toBe(container);
     expect(widthCalls).toEqual([440, 300]);
+  });
+
+  it("restores normal width on deactivation and reapplies split width on activation", () => {
+    localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
+    const { manager, zion, widthCalls } = mountAt(500);
+
+    manager.activateTagSplitWidthIfEnabled();
+    expect(widthCalls).toEqual([440]);
+    expect(localStorage.getItem("zion.sessions.sidebar.preSplitWidth")).toBe("300");
+
+    manager.deactivateTagSplitWidthIfEnabled();
+    expect(widthCalls).toEqual([440, 300]);
+
+    zion.sideBar.setWidth(320);
+    widthCalls.length = 0;
+
+    manager.activateTagSplitWidthIfEnabled();
+    expect(widthCalls).toEqual([440]);
+    expect(localStorage.getItem("zion.sessions.sidebar.preSplitWidth")).toBe("320");
+
+    manager.deactivateTagSplitWidthIfEnabled();
+    expect(widthCalls).toEqual([440, 320]);
   });
 
   it("keeps manual width when already wide enough", () => {
