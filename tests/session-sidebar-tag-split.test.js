@@ -78,6 +78,11 @@ beforeEach(() => {
 });
 
 describe("sessions sidebar tag split layout", () => {
+  it("defaults the activity filter to all sessions", () => {
+    const { container } = mountAt(500);
+    expect(container.querySelector(".zion-sessions-heatmap-range").value).toBe("all");
+  });
+
   it("persists list and card view modes", () => {
     const { manager, container } = mountAt(500);
     expect(manager.getSessionViewMode()).toBe("list");

@@ -660,7 +660,7 @@ export function createSessionsSidebarViewManager(opts) {
     container.addEventListener("click", () => { headerMenu.style.display = "none"; });
 
     let selectedDay = (() => {
-      try { return localStorage.getItem(LS_SELECTED_DAY) || dayKey(); } catch { return dayKey(); }
+      try { return localStorage.getItem(LS_SELECTED_DAY) || ""; } catch { return ""; }
     })();
     let selectedRangeDays = (() => {
       try {
