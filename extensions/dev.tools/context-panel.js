@@ -1979,6 +1979,7 @@ function renderObsidianTagSection(snapshot, state) {
 function renderObsidianTagsRows(tags, state, sessionId) {
   return (Array.isArray(tags) ? tags : []).slice(0, 80).map((item, index) => {
     const key = `tag:${item.label || index}`;
+    const tagPath = String(item.label || "").replace(/^#/, "");
     return renderTreeRow({
       key,
       depth: 1,
@@ -1996,10 +1997,10 @@ function renderObsidianTagsRows(tags, state, sessionId) {
         "zion.sessions.excludeTag",
         {
           sessionId,
-          path: item.label,
+          path: tagPath,
           subtree: false
         },
-        t("context.tagIgnored", "Ignored #{tag} in this session", { tag: item.label })
+        t("context.tagIgnored", "Ignored #{tag} in this session", { tag: tagPath })
       )
     });
   });

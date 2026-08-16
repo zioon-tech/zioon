@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { partitionSessionExtractedTags } from "../extensions/shared/session-tag-exclusions.js";
+import {
+  normalizeSessionTagExclusionPath,
+  partitionSessionExtractedTags
+} from "../extensions/shared/session-tag-exclusions.js";
 
 describe("Context Panel tag exclusions", () => {
   const tags = [
@@ -8,6 +11,10 @@ describe("Context Panel tag exclusions", () => {
     { label: "projector", line: 3 },
     { label: "topic/ui", line: 4 }
   ];
+
+  it("normalizes the displayed hash prefix before command payloads", () => {
+    expect(normalizeSessionTagExclusionPath("#project/zion")).toBe("project/zion");
+  });
 
   it("partitions live extracted tags with exact and subtree rules", () => {
     const result = partitionSessionExtractedTags(tags, [
