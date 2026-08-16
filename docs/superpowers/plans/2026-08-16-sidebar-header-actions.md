@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Simplify Sidebar header actions, use the two-column icon for the shared hide action, and give the sessions tag-tree toggle an unambiguous icon.
+**Goal:** Render the sessions Sidebar actions as `tag`, `message-square-plus`, and the shared `columns-2` hide action in that order.
 
-**Architecture:** Add an opt-out flag to the shared Sidebar view contract and let Workbench remain the single owner of the hide action. Configure the sessions view to opt out, remove its three-dot action, and use `list-tree` for the tag-column toggle.
+**Architecture:** Workbench remains the single owner of the always-present hide action. Remove the unused hide-action opt-out, add the new conversation icon to the shared icon registry, and select semantic icons in the sessions view registration.
 
-**Tech Stack:** TypeScript, JavaScript ES modules, Zion Workbench runtime, Vitest, jsdom
+**Tech Stack:** TypeScript, JavaScript ES modules, Zion icon registry, Zion Workbench, Vitest, jsdom
 
 ---
 
-### Task 1: Make the shared Sidebar hide action configurable
+### Task 1: Keep the shared hide action on every Sidebar
 
 **Files:**
 - Modify: `tests/workbench-sidebar-chrome.test.js`
@@ -18,9 +18,9 @@
 - Modify: `src/types/zion.d.ts`
 - Modify: `src/ui/workbench/workbench.ts`
 
-- [ ] **Step 1: Add failing Workbench tests**
+- [ ] **Step 1: Update the Workbench test**
 
-Append tests that register a default view and an opt-out view:
+Keep the existing shared-action test:
 
 ```js
 it("uses the columns icon for the shared hide action", async () => {
@@ -49,85 +49,36 @@ it("uses the columns icon for the shared hide action", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   const hide = document.querySelector('[aria-label="Hide Side Bar"]');
-  expect(hide?.querySelector('[data-zion-icon="columns-2"]')).toBeTruthy();
+  const usesColumnsIcon = !!hide?.querySelector('[data-zion-icon="columns-2"]');
   hide.click();
-  expect(sideBarRuntime.isVisible()).toBe(false);
+  const hiddenAfterClick = !sideBarRuntime.isVisible();
 
   view.dispose();
   wb.dispose();
   host.remove();
-});
 
-it("allows a Sidebar view to omit the shared hide action", async () => {
-  const host = document.createElement("div");
-  host.id = "app";
-  host.style.height = "600px";
-  document.body.appendChild(host);
-  const state = createState();
-  bindWorkbenchCore({
-    state,
-    events: {
-      emit: () => {},
-      on: () => ({ dispose() {} })
-    }
-  });
-  const wb = initWorkbench(host);
-  const view = sideBarRuntime.registerView({
-    id: "sessions.no-hide-action",
-    pluginId: "dev.session-manager",
-    title: "Sessions",
-    showHideAction: false,
-    component: { render: () => {} }
-  });
-
-  sideBarRuntime.show();
-  sideBarRuntime.activateView("sessions.no-hide-action");
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  expect(document.querySelector('[aria-label="Hide Side Bar"]')).toBeNull();
-
-  view.dispose();
-  wb.dispose();
-  host.remove();
+  expect(usesColumnsIcon).toBe(true);
+  expect(hiddenAfterClick).toBe(true);
 });
 ```
 
-- [ ] **Step 2: Run the tests and verify failure**
+Delete the `showHideAction: false` opt-out test.
 
-```bash
-npm test -- --run tests/workbench-sidebar-chrome.test.js
-```
+- [ ] **Step 2: Remove the unused opt-out contract**
 
-Expected: the icon assertion fails with `x`, and the opt-out assertion fails
-because the contract is not implemented.
-
-- [ ] **Step 3: Extend the Sidebar view contract**
-
-Add the same optional property to `SideBarView` in
-`src/ui/workbench/runtime.ts` and the public `sideBar.registerView` declaration
-in `src/types/zion.d.ts`:
+Delete this property from both Sidebar view type declarations:
 
 ```ts
 showHideAction?: boolean;
 ```
 
-- [ ] **Step 4: Update the shared Workbench action**
-
-In `src/ui/workbench/workbench.ts`, create the shared button with:
+In Workbench, always append the shared button:
 
 ```ts
-setCodiconOnly(hideBtn, "columns-2");
+headerActions.appendChild(hideBtn);
 ```
 
-Append it only when the active view has not opted out:
-
-```ts
-if (nextView?.showHideAction !== false) {
-  headerActions.appendChild(hideBtn);
-}
-```
-
-- [ ] **Step 5: Run the Workbench tests**
+- [ ] **Step 3: Run the Workbench tests**
 
 ```bash
 npm test -- --run tests/workbench-sidebar-chrome.test.js
@@ -135,50 +86,73 @@ npm test -- --run tests/workbench-sidebar-chrome.test.js
 
 Expected: all tests pass.
 
-### Task 2: Reduce sessions Sidebar actions
+### Task 2: Add semantic session action icons
 
 **Files:**
+- Modify: `src/ui/icons.ts`
 - Modify: `extensions/dev.session-manager/main.js`
+- Test: `tests/session-sidebar-header.test.js`
 
-- [ ] **Step 1: Configure the sessions header**
+- [ ] **Step 1: Add a failing icon registry test**
 
-Add the opt-out flag to the `sessions.list` view:
-
-```js
-showHideAction: false,
-```
-
-Change the tag split action icon:
+Extend `tests/session-sidebar-header.test.js`:
 
 ```js
-icon: "$(list-tree)",
+import { hasZionIcon, zionIconName } from "../src/ui/icons";
+
+it("registers the new-session icon", () => {
+  expect(hasZionIcon("message-square-plus")).toBe(true);
+  expect(zionIconName("message-square-plus")).toBe("message-square-plus");
+});
 ```
 
-Delete the entire `sessions.actions` header action. Keep
-`sessions.tagSplit` and `sessions.new` unchanged otherwise.
+- [ ] **Step 2: Run the icon test and verify failure**
 
-- [ ] **Step 2: Run adjacent tests and lint**
+```bash
+npm test -- --run tests/session-sidebar-header.test.js
+```
+
+Expected: `hasZionIcon("message-square-plus")` is false.
+
+- [ ] **Step 3: Register the new icon**
+
+Add the Lucide-style icon path in `src/ui/icons.ts`:
+
+```ts
+"message-square-plus": '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4Z"/><path d="M12 7v6M9 10h6"/>',
+```
+
+- [ ] **Step 4: Configure the sessions actions**
+
+In `extensions/dev.session-manager/main.js`:
+
+```js
+icon: "$(tag)",
+```
+
+for `sessions.tagSplit`, and:
+
+```js
+icon: "$(message-square-plus)",
+```
+
+for `sessions.new`. Delete `showHideAction: false` so Workbench appends the
+shared `columns-2` action at the far right.
+
+- [ ] **Step 5: Run verification**
 
 ```bash
 npm test -- --run tests/workbench-sidebar-chrome.test.js tests/session-sidebar-header.test.js tests/session-sidebar-tag-split.test.js
-npx eslint src/ui/workbench/workbench.ts src/ui/workbench/runtime.ts extensions/dev.session-manager/main.js tests/workbench-sidebar-chrome.test.js
-```
-
-Expected: all tests and ESLint pass.
-
-- [ ] **Step 3: Build and verify in the browser**
-
-```bash
+npx eslint src/ui/icons.ts src/ui/workbench/workbench.ts src/ui/workbench/runtime.ts extensions/dev.session-manager/main.js tests/workbench-sidebar-chrome.test.js tests/session-sidebar-header.test.js
 npm run build
 ```
 
-Expected: Vite build succeeds. Restore generated `dist/index.html` hashes.
-In the browser, verify the sessions header contains only tag-tree and add
-actions, while another plugin Sidebar shows the `columns-2` hide action.
+Expected: tests, ESLint, and build pass. Restore generated `dist/index.html`
+hashes, then verify the three icon names and order in the browser.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/ui/workbench/workbench.ts src/ui/workbench/runtime.ts src/types/zion.d.ts extensions/dev.session-manager/main.js tests/workbench-sidebar-chrome.test.js
-git commit -m "refactor(workbench): simplify sidebar header actions"
+git add src/ui/icons.ts src/ui/workbench/workbench.ts src/ui/workbench/runtime.ts src/types/zion.d.ts extensions/dev.session-manager/main.js tests/workbench-sidebar-chrome.test.js tests/session-sidebar-header.test.js
+git commit -m "fix(sessions): refine sidebar action icons"
 ```
