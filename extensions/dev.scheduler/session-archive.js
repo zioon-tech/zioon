@@ -1,7 +1,7 @@
 import { extractObsidianMetadata } from "../shared/obsidian-metadata.js";
 
-// Version 3 repairs version 2 being committed before Session Manager hydrated its catalog.
-export const SESSION_ARCHIVE_MIGRATION_VERSION = 3;
+// Version 4 waits for the full Session Manager catalog before committing migration.
+export const SESSION_ARCHIVE_MIGRATION_VERSION = 4;
 
 function normalizeSessionTag(value) {
   return String(value || "").replace(/^#/, "").trim();
@@ -117,6 +117,13 @@ function isTreeDescendant(root, ancestorId, nodeId) {
   return Boolean(findTreeNode(ancestor, nodeId));
 }
 
+function collectTreeSessionIds(root, result = []) {
+  if (!root) return result;
+  if (root.type === "session" && root.id) result.push(String(root.id));
+  for (const child of root.children || []) collectTreeSessionIds(child, result);
+  return result;
+}
+
 function findDirectFolder(parent, title) {
   return (parent?.children || []).find((node) => (
     node?.type === "folder" && String(node.title || "") === String(title)
@@ -203,17 +210,20 @@ export async function migrateScheduledSessions({
   ensureDateFolder = ensureScheduledSessionDateFolder
 } = {}) {
   const archiveState = store?.getSessionArchiveState?.() || {};
-  if (Number(archiveState.migrationVersion || 0) >= SESSION_ARCHIVE_MIGRATION_VERSION) {
+  const previousVersion = Number(archiveState.migrationVersion || 0);
+  if (previousVersion >= SESSION_ARCHIVE_MIGRATION_VERSION) {
     return true;
   }
 
   const catalog = zion?.state?.get?.("sessions.catalog");
   if (!Array.isArray(catalog) || catalog.length === 0) return false;
+  const initialTree = await zion?.commands?.executeCommand?.("zion.sessions.getTreeSnapshot");
+  if (!initialTree) return false;
+  const catalogIds = new Set(catalog.map((entry) => String(entry?.id || "")).filter(Boolean));
+  if (collectTreeSessionIds(initialTree).some((id) => !catalogIds.has(id))) return false;
 
   const folderId = await ensureFolder({ zion, store, locale });
   if (!folderId) return false;
-  const initialTree = await zion?.commands?.executeCommand?.("zion.sessions.getTreeSnapshot");
-  if (!initialTree) return false;
   const migrationStartedAt = Number(now()) || Date.now();
 
   for (const task of store?.listTasks?.() || []) {
@@ -244,7 +254,7 @@ export async function migrateScheduledSessions({
       });
       if (transformed !== true) return false;
 
-      if (isTreeDescendant(initialTree, folderId, sessionId)) {
+      if (previousVersion < 1 || isTreeDescendant(initialTree, folderId, sessionId)) {
         const targetFolderId = await ensureDateFolder({
           zion,
           store,
