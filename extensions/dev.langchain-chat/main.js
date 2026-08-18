@@ -22,6 +22,7 @@ import { installModelSwitcher } from "./model-switcher.js";
 import { registerModelsTools } from "./models-tools.js";
 import { createChatOverviewRail } from "./overview-rail.js";
 import { ModelsSettingsPage } from "./ModelsSettingsPage.jsx";
+import { buildTerminalSessionsContextXml } from "./terminal-context.js";
 import {
   appendAssistantToken as appendAssistantTokenToEditor,
   ensureTrailingUserPromptInDocText,
@@ -231,71 +232,6 @@ function t(key, fallback, values) {
     if (translated && translated !== `${I18N_NS}.${key}`) return translated;
   } catch {}
   return fallback;
-}
-
-function escapeXml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function buildTerminalSessionsContextXml(activeSessionId, sessions) {
-  const list = Array.isArray(sessions) ? sessions : [];
-  const active = list.find((session) => String(session?.id || "").trim() === String(activeSessionId || "").trim()) || null;
-  const body = list.map((session) => {
-    const id = String(session?.id || "").trim();
-    const attrs = [
-      `id="${escapeXml(id)}"`,
-      id && String(activeSessionId || "") === id ? "active=\"true\"" : "",
-      session?.type ? `type="${escapeXml(session.type)}"` : "",
-      session?.status ? `status="${escapeXml(session.status)}"` : "",
-      session?.exit_code != null ? `exit_code="${escapeXml(session.exit_code)}"` : "",
-      session?.pid != null ? `pid="${escapeXml(session.pid)}"` : ""
-    ].filter(Boolean).join(" ");
-    return [
-      `    <session ${attrs}>`,
-      session?.name ? `      <name>${escapeXml(session.name)}</name>` : "",
-      session?.cwd ? `      <cwd>${escapeXml(session.cwd)}</cwd>` : "",
-      session?.command ? `      <command>${escapeXml(session.command)}</command>` : "",
-      session?.created_at ? `      <created_at>${escapeXml(session.created_at)}</created_at>` : "",
-      session?.updated_at ? `      <updated_at>${escapeXml(session.updated_at)}</updated_at>` : "",
-      "    </session>"
-    ].filter(Boolean).join("\n");
-  }).join("\n");
-  const activeBlock = active
-    ? [
-        "  <active_session>",
-        `    <id>${escapeXml(active.id || "")}</id>`,
-        active?.type ? `    <type>${escapeXml(active.type)}</type>` : "",
-        active?.name ? `    <name>${escapeXml(active.name)}</name>` : "",
-        active?.status ? `    <status>${escapeXml(active.status)}</status>` : "",
-        active?.cwd ? `    <cwd>${escapeXml(active.cwd)}</cwd>` : "",
-        active?.initial_cwd ? `    <initial_cwd>${escapeXml(active.initial_cwd)}</initial_cwd>` : "",
-        active?.ssh_host ? `    <ssh_host>${escapeXml(active.ssh_host)}</ssh_host>` : "",
-        active?.ssh_user ? `    <ssh_user>${escapeXml(active.ssh_user)}</ssh_user>` : "",
-        active?.ssh_port != null ? `    <ssh_port>${escapeXml(active.ssh_port)}</ssh_port>` : "",
-        "  </active_session>"
-      ].filter(Boolean).join("\n")
-    : "  <active_session></active_session>";
-  return [
-    "<terminal_context>",
-    "  <instructions>",
-    "    This is the current terminal session inventory.",
-    "    Use it to understand available shells, active session, working directories, and session state.",
-    "    When choosing a tool session_id for Bash, read, write, edit, grep, glob, or tree, prefer the session whose id, type, cwd, and SSH fields match the user's intended target.",
-    "    Do not assume the current active session is always the correct one when multiple sessions exist.",
-    "    Do not assume command output unless it appears in recent terminal output context or the conversation.",
-    "  </instructions>",
-    `  <active_session_id>${escapeXml(activeSessionId || "")}</active_session_id>`,
-    activeBlock,
-    `  <sessions count="${list.length}">`,
-    body,
-    "  </sessions>",
-    "</terminal_context>"
-  ].filter((line) => line !== "").join("\n");
 }
 
 function insertAfterLeadingSystem(messages, injectedMessage) {
@@ -1191,7 +1127,7 @@ export async function activate(ctx) {
     const contentBeforeCursor = lines.slice(0, cursorLine + 1).join("\n");
 
     // 解析角色块
-    const baseMessages = parseMessages(contentBeforeCursor);
+    let baseMessages = parseMessages(contentBeforeCursor);
     let contextMessages = Array.isArray(opts?.contextMessages) ? opts.contextMessages : [];
     if (!contextMessages.length && (String(panelId || "").startsWith("comments:") || String(sid || "").startsWith("comment:"))) {
       try {
