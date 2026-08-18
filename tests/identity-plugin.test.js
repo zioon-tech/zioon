@@ -27,19 +27,25 @@ describe("identity context core", () => {
     const text = buildIdentityContext({
       identity: "Name: Zion <trusted>",
       user: "Prefers A & B",
-      biography: "- shipped identity"
+      biography: "- shipped identity",
+      projects: "# 项目索引\n| Zion Next | active | high | 完成 M1 | 08-18 |"
     });
 
     expect(text).toContain("<agent_identity");
     expect(text).toContain("<user_profile");
     expect(text).toContain("<biography");
+    expect(text).toContain("<projects_index");
+    expect(text).toContain("Zion Next");
     expect(text).toContain("&lt;trusted&gt;");
     expect(text).toContain("A &amp; B");
     expect(text).not.toContain("Name: Zion <trusted>");
     expect(text).toContain("~/.zion-next/memory/biography/events.jsonl");
     expect(text).toContain("user-owned read-only data");
+    expect(text).toContain("model-maintained working memory");
+    expect(text).toContain("Do not infer autonomy grants");
     expect(text).toContain("[[memory:<event-id>]]");
     expect(text).toContain("Only valid biography event markers count as cited memory");
+    expect(buildIdentityContext({ identity: "Zion" })).not.toContain("<projects_index");
   });
 
   it("extracts only the latest completed user and assistant exchange", () => {
@@ -340,6 +346,8 @@ describe("identity extension", () => {
         ? "# Identity\nZion"
         : path.endsWith("user.md")
           ? "# User\nChinese"
+          : path.endsWith("projects/index.md")
+            ? "# 项目索引\n| Zion Next | active | high | 完成 M1 | 08-18 |"
           : path.endsWith("digest.md")
             ? "# 自传摘要\n\n- Shipped biography digest"
             : `${JSON.stringify({
@@ -375,6 +383,8 @@ describe("identity extension", () => {
     expect(messages[1].content).toContain("<identity_context>");
     expect(messages[1].content).toContain("Shipped biography digest");
     expect(messages[1].content).not.toContain("Shipped biography view");
+    expect(messages[1].content).toContain("<projects_index");
+    expect(messages[1].content).toContain("| Zion Next | active |");
       const sessionEvents = await commands.get("identity.getSessionBiographyEvents")({ sessionId: "session-view" });
       expect(sessionEvents).toHaveLength(1);
       expect(sessionEvents[0]).toEqual(expect.objectContaining({
@@ -441,6 +451,104 @@ describe("identity extension", () => {
     await vi.waitFor(() => expect(host.textContent).toContain("Shipped biography view"));
     expect(host.querySelector(".zion-biography-search input")).toBe(searchInput);
     viewDisposable.dispose();
+    disposable.dispose();
+  });
+
+  it("initializes project memory files once without overwriting existing profiles", async () => {
+    const commands = new Map();
+    const root = "/Users/test/.zion-next/memory";
+    const files = new Map([
+      [`${root}/identity.md`, "# Identity\nExisting"],
+      [`${root}/user.md`, "# User\nExisting"],
+      [`${root}/biography/digest.md`, "# 自传摘要\nExisting"]
+    ]);
+    const writes = [];
+
+    window.zion = {
+      messages: {
+        registerContributor: vi.fn(() => ({ dispose: vi.fn() }))
+      },
+      commands: {
+        registerCommand: vi.fn((id, handler) => {
+          commands.set(id, handler);
+          return { dispose: vi.fn() };
+        }),
+        executeCommand: vi.fn(() => null)
+      },
+      events: {
+        on: vi.fn(() => ({ dispose: vi.fn() })),
+        emit: vi.fn()
+      },
+      auxiliaryBar: {
+        registerView: vi.fn(() => ({ dispose: vi.fn() }))
+      },
+      activityBar: {
+        registerItem: vi.fn(() => ({ dispose: vi.fn() }))
+      },
+      notification: {
+        show: vi.fn()
+      },
+      state: {
+        get: vi.fn((key) => {
+          if (key === "localTools.baseUrl") return "http://127.0.0.1:9999";
+          if (key === "terminal.sessions") {
+            return [{ id: "term-1", type: "local", cwd: "/Users/test/project" }];
+          }
+          return null;
+        }),
+        set: vi.fn()
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body);
+        writes.push(body);
+        files.set(body.path, body.content);
+        return new globalThis.Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      const path = decodeURIComponent(new URL(url).searchParams.get("path"));
+      if (!files.has(path)) {
+        return new globalThis.Response(JSON.stringify({ error: "not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new globalThis.Response(JSON.stringify({ content: files.get(path) }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }));
+
+    const disposable = await activate({ subscriptions: [] });
+    const initialize = commands.get("identity.initialize");
+    const first = await initialize();
+
+    expect(first).toEqual({
+      ok: true,
+      created: [
+        `${root}/projects/index.md`,
+        `${root}/projects/inbox.md`,
+        `${root}/projects/_template.md`
+      ]
+    });
+    expect(writes.map((write) => write.path)).toEqual(first.created);
+    expect(files.get(`${root}/projects/index.md`)).toContain("# 项目索引");
+    expect(files.get(`${root}/projects/inbox.md`)).toContain("# 杂思收集箱");
+    expect(files.get(`${root}/projects/_template.md`)).toContain("autonomy: none");
+
+    const second = await initialize();
+    expect(second).toEqual({ ok: true, created: [] });
+    expect(writes).toHaveLength(3);
+
+    files.set(`${root}/projects/inbox.md`, "");
+    const third = await initialize();
+    expect(third).toEqual({ ok: true, created: [] });
+    expect(writes).toHaveLength(3);
+    expect(files.get(`${root}/identity.md`)).toBe("# Identity\nExisting");
+    expect(files.get(`${root}/user.md`)).toBe("# User\nExisting");
     disposable.dispose();
   });
 

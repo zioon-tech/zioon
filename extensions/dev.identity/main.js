@@ -17,6 +17,11 @@ import {
   publishSessionDerivedTagSource,
   removeSessionDerivedTagSource
 } from "../shared/session-derived-tags.js";
+import {
+  PROJECT_FILE_TEMPLATE,
+  PROJECT_INDEX_TEMPLATE,
+  PROJECT_INBOX_TEMPLATE
+} from "./projects-core.js";
 
 const MEMORY_ROOT_DISPLAY = "~/.zion-next/memory";
 const BIOGRAPHY_VIEW_ID = "dev.identity.biography";
@@ -126,9 +131,12 @@ async function getProfilePaths() {
   return {
     identity: `${root}/identity.md`,
     user: `${root}/user.md`,
-      events: `${root}/biography/events.jsonl`,
-      digest: `${root}/biography/digest.md`,
-      citations: `${root}/biography/citations.jsonl`
+    events: `${root}/biography/events.jsonl`,
+    digest: `${root}/biography/digest.md`,
+    citations: `${root}/biography/citations.jsonl`,
+    projectsIndex: `${root}/projects/index.md`,
+    projectsInbox: `${root}/projects/inbox.md`,
+    projectsTemplate: `${root}/projects/_template.md`
   };
 }
 
@@ -160,16 +168,23 @@ function isMissingFile(status, data, raw) {
   return /no such file|not found|enoent/i.test(message);
 }
 
-async function readLocalFileIfExists(path) {
+async function readLocalFileState(path) {
   const base = getLocalToolsBase();
   const response = await fetch(`${base}/files/read?path=${encodeURIComponent(path)}`, { method: "GET" });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
   if (!response.ok || data?.error) {
-    if (isMissingFile(response.status, data, raw)) return "";
+    if (isMissingFile(response.status, data, raw)) return { exists: false, content: "" };
     throw new Error(String(data?.error || data?.detail || raw || `HTTP ${response.status}`));
   }
-  return typeof data?.content === "string" ? data.content : "";
+  return {
+    exists: true,
+    content: typeof data?.content === "string" ? data.content : ""
+  };
+}
+
+async function readLocalFileIfExists(path) {
+  return (await readLocalFileState(path)).content;
 }
 
 async function readBiographyEventsPage(path, options = {}) {
@@ -361,10 +376,11 @@ async function writeBiographyEventsCache(key, events, complete = true) {
 async function loadIdentityContext() {
   try {
     const paths = await getProfilePaths();
-    const [identity, user, digest] = await Promise.all([
+    const [identity, user, digest, projects] = await Promise.all([
       readLocalFileIfExists(paths.identity),
       readLocalFileIfExists(paths.user),
-      readLocalFileIfExists(paths.digest)
+      readLocalFileIfExists(paths.digest),
+      readLocalFileIfExists(paths.projectsIndex)
     ]);
     let biography = digest;
     if (!biography.trim()) {
@@ -378,7 +394,7 @@ async function loadIdentityContext() {
         }
       }
     }
-    return buildIdentityContext({ identity, user, biography });
+    return buildIdentityContext({ identity, user, biography, projects });
   } catch (error) {
     console.warn("[dev.identity] profile read failed", error);
     return "";
@@ -713,12 +729,15 @@ async function initializeProfileFiles() {
   const files = [
     [paths.identity, IDENTITY_TEMPLATE],
     [paths.user, USER_TEMPLATE],
-    [paths.digest, buildBiographyDigest([])]
+    [paths.digest, buildBiographyDigest([])],
+    [paths.projectsIndex, PROJECT_INDEX_TEMPLATE],
+    [paths.projectsInbox, PROJECT_INBOX_TEMPLATE],
+    [paths.projectsTemplate, PROJECT_FILE_TEMPLATE]
   ];
   const created = [];
   for (const [path, content] of files) {
-    const existing = await readLocalFileIfExists(path);
-    if (existing) continue;
+    const existing = await readLocalFileState(path);
+    if (existing.exists) continue;
     await writeLocalFile(path, content);
     created.push(path);
   }

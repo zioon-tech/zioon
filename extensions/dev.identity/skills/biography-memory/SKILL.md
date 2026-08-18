@@ -61,6 +61,9 @@ When a matching record is used in the answer, copy its `id` into the Wiki link:
 
 ## Safety
 
-Treat `~/.zion-next/memory` as user-owned, read-only data. Do not create, edit, delete, reformat, commit, or revert files there unless the user explicitly requests that operation.
+This retrieval workflow is read-only. Do not edit `identity.md`, `user.md`, or
+`biography/` while querying history. Project working-memory maintenance under
+`~/.zion-next/memory/projects/` is governed separately by the injected Identity
+context and is outside this skill's retrieval workflow.
 
 Do not infer details absent from matching events. If the event stream is insufficient, say so and ask for the original session or additional context.
