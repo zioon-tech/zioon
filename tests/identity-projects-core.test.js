@@ -49,14 +49,21 @@ describe("identity project memory core", () => {
     expect(template).not.toContain("created: not-a-date");
   });
 
-  it("builds an escaped bounded project context", () => {
+  it("builds escaped bounded project index and inbox context", () => {
     const context = buildProjectContext(
       `# Index\n${"A < B & C ".repeat(20)}`,
-      { maxChars: 80 }
+      {
+        inbox: `# Inbox\n${"Idea < draft & review ".repeat(20)}`,
+        maxChars: 80,
+        inboxMaxChars: 70
+      }
     );
 
     expect(context.fragment).toContain(
       '<projects_index source="~/.zion-next/memory/projects/index.md">'
+    );
+    expect(context.fragment).toContain(
+      '<projects_inbox source="~/.zion-next/memory/projects/inbox.md">'
     );
     expect(context.fragment).toContain("&lt;");
     expect(context.fragment).toContain("&amp;");
@@ -65,6 +72,8 @@ describe("identity project memory core", () => {
     expect(context.instructions.join("\n")).toContain("model-maintained working memory");
     expect(context.instructions.join("\n")).toContain("read its project.md");
     expect(context.instructions.join("\n")).toContain("projects/index.md");
+    expect(context.instructions.join("\n")).toContain("create projects/{canonical-slug}/project.md");
+    expect(context.instructions.join("\n")).toContain("remove its inbox entry");
     expect(context.instructions.join("\n")).toContain("Do not infer autonomy grants");
   });
 
@@ -77,9 +86,12 @@ describe("identity project memory core", () => {
     expect(content).not.toContain("\uFFFD");
   });
 
-  it("returns no block or instructions for an empty index", () => {
-    expect(buildProjectContext("")).toEqual({ fragment: "", instructions: [] });
-    expect(buildProjectContext(" \n ")).toEqual({ fragment: "", instructions: [] });
+  it("keeps project maintenance instructions when project files are empty", () => {
+    const context = buildProjectContext("", { inbox: "" });
+
+    expect(context.fragment).toBe("");
+    expect(context.instructions.join("\n")).toContain("model-maintained working memory");
+    expect(context.instructions.join("\n")).toContain("create projects/{canonical-slug}/project.md");
   });
 
   it("parses linked and legacy project rows", () => {

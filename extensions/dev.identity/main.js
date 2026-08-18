@@ -31,8 +31,10 @@ const BIOGRAPHY_CACHE_DB = "zion.identity-cache";
 const BIOGRAPHY_CACHE_STORE = "biography-events";
 const BIOGRAPHY_CACHE_VERSION = 1;
 const BIOGRAPHY_RENDER_PAGE_SIZE = 80;
-const IDENTITY_SNAPSHOT_VERSION = 1;
+const IDENTITY_SNAPSHOT_VERSION = 2;
 let memoryRootPromise = null;
+let profileScaffoldReady = false;
+let profileScaffoldPromise = null;
 const identitySnapshotPromises = new Map();
 
 const IDENTITY_TEMPLATE = `---
@@ -410,12 +412,14 @@ async function writeBiographyEventsCache(key, events, complete = true) {
 
 async function loadIdentityContext() {
   try {
+    await ensureProfileFilesInitialized();
     const paths = await getProfilePaths();
-    const [identity, user, digest, projects] = await Promise.all([
+    const [identity, user, digest, projects, projectsInbox] = await Promise.all([
       readLocalFileIfExists(paths.identity),
       readLocalFileIfExists(paths.user),
       readLocalFileIfExists(paths.digest),
-      readLocalFileIfExists(paths.projectsIndex)
+      readLocalFileIfExists(paths.projectsIndex),
+      readLocalFileIfExists(paths.projectsInbox)
     ]);
     let biography = digest;
     if (!biography.trim()) {
@@ -429,7 +433,13 @@ async function loadIdentityContext() {
         }
       }
     }
-    return buildIdentityContext({ identity, user, biography, projects });
+    return buildIdentityContext({
+      identity,
+      user,
+      biography,
+      projects,
+      projectsInbox
+    });
   } catch (error) {
     console.warn("[dev.identity] profile read failed", error);
     return "";
@@ -769,14 +779,24 @@ async function initializeProfileFiles() {
     [paths.projectsInbox, PROJECT_INBOX_TEMPLATE],
     [paths.projectsTemplate, PROJECT_FILE_TEMPLATE]
   ];
-  const created = [];
-  for (const [path, content] of files) {
-    const existing = await readLocalFileState(path);
-    if (existing.exists) continue;
-    await writeLocalFile(path, content);
-    created.push(path);
-  }
-  return created;
+  const states = await Promise.all(files.map(([path]) => readLocalFileState(path)));
+  const missing = files.filter((_, index) => !states[index].exists);
+  await Promise.all(missing.map(([path, content]) => writeLocalFile(path, content)));
+  return missing.map(([path]) => path);
+}
+
+async function ensureProfileFilesInitialized(options = {}) {
+  if (!options.force && profileScaffoldReady) return [];
+  if (profileScaffoldPromise) return profileScaffoldPromise;
+  profileScaffoldPromise = initializeProfileFiles()
+    .then((created) => {
+      profileScaffoldReady = true;
+      return created;
+    })
+    .finally(() => {
+      profileScaffoldPromise = null;
+    });
+  return profileScaffoldPromise;
 }
 
 function openBiographyPanel() {
@@ -2218,6 +2238,13 @@ export async function activate(ctx) {
   let disposed = false;
   let biographyQueue = Promise.resolve();
 
+  profileScaffoldReady = false;
+  try {
+    await ensureProfileFilesInitialized({ force: true });
+  } catch (error) {
+    console.warn("[dev.identity] profile scaffold initialization unavailable", error);
+  }
+
   void (async () => {
     try {
       const paths = await getProfilePaths();
@@ -2247,7 +2274,7 @@ export async function activate(ctx) {
 
   const initializeCommand = window.zion?.commands?.registerCommand?.("identity.initialize", async () => {
     try {
-      const created = await initializeProfileFiles();
+      const created = await ensureProfileFilesInitialized({ force: true });
       const message = created.length
         ? `已创建 ${created.length} 个身份档案文件`
         : "身份档案文件已存在";

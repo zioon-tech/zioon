@@ -28,14 +28,17 @@ describe("identity context core", () => {
       identity: "Name: Zion <trusted>",
       user: "Prefers A & B",
       biography: "- shipped identity",
-      projects: "# 项目索引\n| Zion Next | active | high | 完成 M1 | 08-18 |"
+      projects: "# 项目索引\n| Zion Next | active | high | 完成 M1 | 08-18 |",
+      projectsInbox: "# 杂思收集箱\n- 评估 M2"
     });
 
     expect(text).toContain("<agent_identity");
     expect(text).toContain("<user_profile");
     expect(text).toContain("<biography");
     expect(text).toContain("<projects_index");
+    expect(text).toContain("<projects_inbox");
     expect(text).toContain("Zion Next");
+    expect(text).toContain("评估 M2");
     expect(text).toContain("&lt;trusted&gt;");
     expect(text).toContain("A &amp; B");
     expect(text).not.toContain("Name: Zion <trusted>");
@@ -45,7 +48,10 @@ describe("identity context core", () => {
     expect(text).toContain("Do not infer autonomy grants");
     expect(text).toContain("[[memory:<event-id>]]");
     expect(text).toContain("Only valid biography event markers count as cited memory");
-    expect(buildIdentityContext({ identity: "Zion" })).not.toContain("<projects_index");
+    const emptyProjects = buildIdentityContext({ identity: "Zion" });
+    expect(emptyProjects).not.toContain("<projects_index");
+    expect(emptyProjects).toContain("model-maintained working memory");
+    expect(emptyProjects).toContain("create projects/{canonical-slug}/project.md");
   });
 
   it("extracts only the latest completed user and assistant exchange", () => {
@@ -403,7 +409,9 @@ describe("identity extension", () => {
     expect(messages[1].content).toContain("Shipped biography digest");
     expect(messages[1].content).not.toContain("Shipped biography view");
     expect(messages[1].content).toContain("<projects_index");
+    expect(messages[1].content).toContain("<projects_inbox");
     expect(messages[1].content).toContain("| [Zion Next](./zion-next/project.md) | active |");
+    expect(messages[1].content).toContain("评估 M2");
       const sessionEvents = await commands.get("identity.getSessionBiographyEvents")({ sessionId: "session-view" });
       expect(sessionEvents).toHaveLength(1);
       expect(sessionEvents[0]).toEqual(expect.objectContaining({
@@ -489,7 +497,7 @@ describe("identity extension", () => {
     disposable.dispose();
   });
 
-  it("initializes project memory files once without overwriting existing profiles", async () => {
+  it("automatically initializes project memory files without overwriting existing profiles", async () => {
     const commands = new Map();
     const root = "/Users/test/.zion-next/memory";
     const files = new Map([
@@ -559,17 +567,15 @@ describe("identity extension", () => {
 
     const disposable = await activate({ subscriptions: [] });
     const initialize = commands.get("identity.initialize");
-    const first = await initialize();
+    const expectedCreated = [
+      `${root}/projects/index.md`,
+      `${root}/projects/inbox.md`,
+      `${root}/projects/_template.md`
+    ];
+    expect(writes.map((write) => write.path)).toEqual(expectedCreated);
 
-    expect(first).toEqual({
-      ok: true,
-      created: [
-        `${root}/projects/index.md`,
-        `${root}/projects/inbox.md`,
-        `${root}/projects/_template.md`
-      ]
-    });
-    expect(writes.map((write) => write.path)).toEqual(first.created);
+    const first = await initialize();
+    expect(first).toEqual({ ok: true, created: [] });
     expect(files.get(`${root}/projects/index.md`)).toContain("# 项目索引");
     expect(files.get(`${root}/projects/inbox.md`)).toContain("# 杂思收集箱");
     expect(files.get(`${root}/projects/_template.md`)).toContain("autonomy: none");
@@ -657,9 +663,19 @@ describe("identity extension", () => {
         });
       }));
 
+      metaStore.set("session-cache", {
+        id: "session-cache",
+        title: "Cached Session",
+        identitySnapshot: {
+          version: 1,
+          content: "<identity_context>legacy snapshot</identity_context>"
+        }
+      });
       const disposable = await activate({ subscriptions: [] });
       const first = await contributor.contribute([{ role: "user", content: "hello" }], { sessionId: "session-cache" });
       expect(first[0].content).toContain("Digest A");
+      expect(first[0].content).not.toContain("legacy snapshot");
+      expect(metaStore.get("session-cache").identitySnapshot.version).toBe(2);
       expect(metaStore.get("session-cache").identitySnapshot.content).toContain("Digest A");
       const readsAfterFirst = fileReads;
       expect(readsAfterFirst).toBeGreaterThanOrEqual(3);
@@ -675,7 +691,7 @@ describe("identity extension", () => {
       const restored = await contributor.contribute([{ role: "user", content: "after reload" }], { sessionId: "session-cache" });
       expect(restored[0].content).toContain("Digest A");
       expect(restored[0].content).not.toContain("Digest B");
-      expect(fileReads).toBeLessThanOrEqual(readsAfterFirst + 1);
+      expect(fileReads).toBeLessThanOrEqual(readsAfterFirst + 6);
 
       const refreshed = await commands.get("identity.refreshContext")({ sessionId: "session-cache" });
       expect(refreshed).toEqual(expect.objectContaining({ ok: true, sessionId: "session-cache" }));
@@ -782,6 +798,7 @@ describe("identity extension", () => {
     }));
 
     const disposable = await activate({ subscriptions: [] });
+    writes.length = 0;
     onRunFinished({ sessionId: "session-1", runId: "run-1", panelId: "panel-1" });
 
     await vi.waitFor(() => expect(writes).toHaveLength(2));

@@ -4,7 +4,8 @@ const DEFAULT_CONTEXT_LIMITS = {
   identity: 700,
   user: 700,
   biography: 2600,
-  projects: 1600
+  projects: 1600,
+  projectsInbox: 800
 };
 
 const EVENT_KINDS = new Set(["decision", "milestone", "outcome", "lesson"]);
@@ -80,7 +81,9 @@ export function buildIdentityContext(files = {}, options = {}) {
   const user = clipCharacters(files.user, limits.user);
   const biography = clipCharacters(files.biography, limits.biography);
   const projectContext = buildProjectContext(files.projects, {
-    maxChars: limits.projects
+    inbox: files.projectsInbox,
+    maxChars: limits.projects,
+    inboxMaxChars: limits.projectsInbox
   });
 
   if (identity) {

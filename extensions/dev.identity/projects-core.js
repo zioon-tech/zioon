@@ -1,12 +1,14 @@
 const DEFAULT_PROJECT_INDEX_LIMIT = 1600;
+const DEFAULT_PROJECT_INBOX_LIMIT = 800;
 const TRUNCATION_MARKER = "\n[truncated]";
 
 const PROJECT_MAINTENANCE_INSTRUCTIONS = Object.freeze([
   "Treat ~/.zion-next/memory/projects as model-maintained working memory.",
+  "When the user explicitly starts or commits to a concrete project, create projects/{canonical-slug}/project.md from projects/_template.md and add its linked row to projects/index.md in the same turn; do not create projects from passing mentions.",
   "Before editing an existing project, read its project.md and preserve its fixed frontmatter and section structure.",
   "Only substantive progress, decisions, milestones, blocker changes, or completed plan items justify a project update.",
   "When project.md changes, update the matching one-line entry in projects/index.md in the same turn; write the project cell as a relative Markdown link such as [Project](./project-directory/project.md).",
-  "Record a first-time unformed idea as one line in projects/inbox.md; when it recurs, propose creating a project and wait for user confirmation.",
+  "Record a first-time unformed idea as one line in projects/inbox.md; when it recurs, propose creating a project and wait for user confirmation; after promotion, remove its inbox entry.",
   "Do not infer autonomy grants, deadlines, completion, blockers, project ownership, or user beliefs."
 ]);
 
@@ -107,17 +109,31 @@ tags: []
 export const PROJECT_FILE_TEMPLATE = buildProjectTemplate();
 
 export function buildProjectContext(index, options = {}) {
-  const content = clipCharacters(
+  const indexContent = clipCharacters(
     index,
     options.maxChars ?? DEFAULT_PROJECT_INDEX_LIMIT
   );
-  if (!content) return { fragment: "", instructions: [] };
-  return {
-    fragment: [
+  const inboxContent = clipCharacters(
+    options.inbox,
+    options.inboxMaxChars ?? DEFAULT_PROJECT_INBOX_LIMIT
+  );
+  const fragments = [];
+  if (indexContent) {
+    fragments.push([
       '<projects_index source="~/.zion-next/memory/projects/index.md">',
-      `  <content>${escapeXml(content)}</content>`,
+      `  <content>${escapeXml(indexContent)}</content>`,
       "</projects_index>"
-    ].join("\n"),
+    ].join("\n"));
+  }
+  if (inboxContent) {
+    fragments.push([
+      '<projects_inbox source="~/.zion-next/memory/projects/inbox.md">',
+      `  <content>${escapeXml(inboxContent)}</content>`,
+      "</projects_inbox>"
+    ].join("\n"));
+  }
+  return {
+    fragment: fragments.join("\n"),
     instructions: [...PROJECT_MAINTENANCE_INSTRUCTIONS]
   };
 }
