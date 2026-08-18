@@ -20,7 +20,9 @@ import {
 import {
   PROJECT_FILE_TEMPLATE,
   PROJECT_INDEX_TEMPLATE,
-  PROJECT_INBOX_TEMPLATE
+  PROJECT_INBOX_TEMPLATE,
+  parseProjectIndex,
+  resolveProjectIndexRows
 } from "./projects-core.js";
 
 const MEMORY_ROOT_DISPLAY = "~/.zion-next/memory";
@@ -185,6 +187,39 @@ async function readLocalFileState(path) {
 
 async function readLocalFileIfExists(path) {
   return (await readLocalFileState(path)).content;
+}
+
+async function readLocalDirectoryEntries(path) {
+  const base = getLocalToolsBase();
+  const response = await fetch(
+    `${base}/files/entries?path=${encodeURIComponent(path)}&max_depth=1`,
+    { method: "GET" }
+  );
+  const raw = await response.text().catch(() => "");
+  const data = parseResponseBody(raw);
+  if (!response.ok || data?.error) {
+    if (isMissingFile(response.status, data, raw)) return [];
+    throw new Error(String(data?.error || data?.detail || raw || `HTTP ${response.status}`));
+  }
+  const results = data?.results ?? data;
+  if (Array.isArray(results)) {
+    return results
+      .map((entry) => {
+        const entryPath = String(entry?.path || entry?.full_path || entry || "").trim();
+        const type = String(entry?.type || entry?.kind || "").toLowerCase();
+        return entryPath ? { path: entryPath.replace(/\/$/, ""), type: type || "file" } : null;
+      })
+      .filter(Boolean);
+  }
+  if (typeof results !== "string") return [];
+  return results
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[\s│├└─]+/, "").trim())
+    .filter(Boolean)
+    .map((entryPath) => ({
+      path: entryPath.replace(/\/$/, ""),
+      type: entryPath.endsWith("/") ? "dir" : "file"
+    }));
 }
 
 async function readBiographyEventsPage(path, options = {}) {
@@ -1112,6 +1147,11 @@ function renderBiographyView(container) {
   let profileLoading = false;
   let profileError = "";
   let profileLoadPromise = null;
+  let workingProjects = null;
+  let workingProjectsLoading = false;
+  let workingProjectsError = "";
+  let workingProjectsPromise = null;
+  const openingProjectPaths = new Set();
   let citationRecords = [];
   let citationLoading = false;
   let citationLoadPromise = null;
@@ -1147,6 +1187,74 @@ function renderBiographyView(container) {
       if (!disposed) render();
     });
     return profileLoadPromise;
+  };
+
+  const loadWorkingProjects = async (options = {}) => {
+    if (options.refresh) {
+      workingProjects = null;
+      workingProjectsError = "";
+    }
+    if (workingProjects) return workingProjects;
+    if (workingProjectsPromise) return workingProjectsPromise;
+    workingProjectsLoading = true;
+    workingProjectsError = "";
+    workingProjectsPromise = (async () => {
+      const paths = profilePaths || await getProfilePaths();
+      profilePaths = paths;
+      const projectsRoot = paths.projectsIndex.replace(/\/index\.md$/, "");
+      const index = await readLocalFileIfExists(paths.projectsIndex);
+      let entries = [];
+      try {
+        entries = await readLocalDirectoryEntries(projectsRoot);
+      } catch {}
+      const rows = resolveProjectIndexRows(parseProjectIndex(index), entries, projectsRoot);
+      workingProjects = { index, rows, paths, projectsRoot };
+      return workingProjects;
+    })().catch((loadError) => {
+      workingProjectsError = loadError?.message || String(loadError);
+      throw loadError;
+    }).finally(() => {
+      workingProjectsLoading = false;
+      workingProjectsPromise = null;
+      if (!disposed) render();
+    });
+    return workingProjectsPromise;
+  };
+
+  const showWorkingProjectError = (message) => {
+    window.zion?.notification?.show?.(message, { type: "error", duration: 3200 });
+  };
+
+  const openWorkingProjectDocument = async (kind, title, path, knownContent = null) => {
+    if (!path) return false;
+    try {
+      let content = knownContent;
+      if (content === null) {
+        const file = await readLocalFileState(path);
+        if (!file.exists) throw new Error("文件不存在");
+        content = file.content;
+      }
+      return openBiographyDocumentInspector(kind, title, path, content);
+    } catch (openError) {
+      showWorkingProjectError(`读取 ${title} 失败：${openError?.message || String(openError)}`);
+      return false;
+    }
+  };
+
+  const openWorkingProject = async (project) => {
+    if (!project?.path || openingProjectPaths.has(project.path)) return false;
+    openingProjectPaths.add(project.path);
+    render();
+    try {
+      return await openWorkingProjectDocument(
+        `working-project:${project.path}`,
+        project.name,
+        project.path
+      );
+    } finally {
+      openingProjectPaths.delete(project.path);
+      if (!disposed) render();
+    }
   };
 
   const loadCitationRecords = async () => {
@@ -1422,7 +1530,8 @@ function renderBiographyView(container) {
     for (const [value, label] of [
       ["overview", "概览"],
       ["timeline", "动态"],
-      ["projects", "项目"],
+      ["working-projects", "工作项目"],
+      ["projects", "经历项目"],
       ["digest", "摘要"],
       ["profile", "档案"]
     ]) {
@@ -1440,6 +1549,7 @@ function renderBiographyView(container) {
           await ensureAllEventsLoaded();
         }
         if (value === "overview") void loadCitationRecords();
+        if (value === "working-projects") void loadWorkingProjects().catch(() => {});
         if (value === "digest" || value === "profile") void loadProfileFiles();
         render();
       };
@@ -1659,6 +1769,121 @@ function renderBiographyView(container) {
       }
       overview.append(overviewIntro, metrics, recent, cited);
       body.appendChild(overview);
+    } else if (activeSection === "working-projects") {
+      const workingView = document.createElement("div");
+      workingView.className = "zion-biography-working-projects";
+      const workingHeader = document.createElement("div");
+      workingHeader.className = "zion-biography-working-header";
+      const workingIntro = document.createElement("div");
+      workingIntro.className = "zion-biography-section-intro";
+      const workingTitle = document.createElement("strong");
+      workingTitle.textContent = "当前工作状态";
+      const workingHint = document.createElement("span");
+      workingHint.textContent = "来自 projects/index.md；点击项目可在 Inspector 中查看项目档案。";
+      workingIntro.append(workingTitle, workingHint);
+      const workingRefresh = document.createElement("button");
+      workingRefresh.type = "button";
+      workingRefresh.className = "zion-biography-icon-button";
+      workingRefresh.title = "刷新工作项目";
+      workingRefresh.setAttribute("aria-label", "刷新工作项目");
+      workingRefresh.disabled = workingProjectsLoading;
+      workingRefresh.innerHTML = `<span class="codicon codicon-${workingProjectsLoading ? "loading codicon-modifier-spin" : "refresh"}" aria-hidden="true"></span>`;
+      workingRefresh.onclick = () => {
+        void loadWorkingProjects({ refresh: true }).catch(() => {});
+      };
+      workingHeader.append(workingIntro, workingRefresh);
+      workingView.appendChild(workingHeader);
+
+      if (workingProjectsLoading && !workingProjects) {
+        const state = document.createElement("div");
+        state.className = "zion-biography-state";
+        state.textContent = "正在读取工作项目…";
+        workingView.appendChild(state);
+      } else if (workingProjectsError) {
+        const state = document.createElement("div");
+        state.className = "zion-biography-state is-error";
+        state.textContent = `读取工作项目失败：${workingProjectsError}`;
+        workingView.appendChild(state);
+      } else if (workingProjects) {
+        const projectList = document.createElement("div");
+        projectList.className = "zion-biography-working-list";
+        if (!workingProjects.rows.length) {
+          const state = document.createElement("div");
+          state.className = "zion-biography-state";
+          state.textContent = "还没有工作项目";
+          projectList.appendChild(state);
+        }
+        for (const project of workingProjects.rows) {
+          const card = document.createElement(project.path ? "button" : "article");
+          if (project.path) card.type = "button";
+          card.className = `zion-biography-working-project${project.path ? "" : " is-unresolved"}`;
+          const cardHeader = document.createElement("div");
+          cardHeader.className = "zion-biography-working-project-header";
+          const heading = document.createElement("strong");
+          heading.textContent = project.name;
+          const badges = document.createElement("div");
+          badges.className = "zion-biography-working-project-badges";
+          const status = document.createElement("span");
+          const normalizedStatus = project.status.toLowerCase().replace(/[^a-z-]/g, "");
+          status.className = `zion-biography-working-status${normalizedStatus ? ` is-${normalizedStatus}` : ""}`;
+          status.textContent = project.status || "未设置";
+          badges.appendChild(status);
+          if (project.priority) {
+            const priority = document.createElement("span");
+            priority.className = "zion-biography-working-priority";
+            priority.textContent = project.priority;
+            badges.appendChild(priority);
+          }
+          cardHeader.append(heading, badges);
+          const nextStep = document.createElement("p");
+          nextStep.className = "zion-biography-working-next";
+          nextStep.textContent = project.nextStep || "暂无下一步";
+          const footer = document.createElement("div");
+          footer.className = "zion-biography-working-project-footer";
+          const updated = document.createElement("span");
+          updated.textContent = project.updated ? `更新 ${project.updated}` : "未记录更新时间";
+          footer.appendChild(updated);
+          if (!project.path) {
+            const unresolved = document.createElement("span");
+            unresolved.textContent = "未定位项目档案";
+            footer.appendChild(unresolved);
+          } else {
+            const opening = openingProjectPaths.has(project.path);
+            card.disabled = opening;
+            const chevron = document.createElement("span");
+            chevron.className = `codicon codicon-${opening ? "loading codicon-modifier-spin" : "chevron-right"}`;
+            chevron.setAttribute("aria-hidden", "true");
+            footer.appendChild(chevron);
+            card.onclick = () => {
+              void openWorkingProject(project);
+            };
+          }
+          card.append(cardHeader, nextStep, footer);
+          projectList.appendChild(card);
+        }
+        workingView.appendChild(projectList);
+
+        const documentActions = document.createElement("div");
+        documentActions.className = "zion-biography-working-documents";
+        for (const [titleText, path, content, kind, icon] of [
+          ["项目索引", workingProjects.paths.projectsIndex, workingProjects.index, "working-index", "list-tree"],
+          ["杂思收集箱", workingProjects.paths.projectsInbox, null, "working-inbox", "inbox"]
+        ]) {
+          const action = document.createElement("button");
+          action.type = "button";
+          action.className = "zion-biography-working-document-action";
+          action.innerHTML = `<span class="codicon codicon-${icon}" aria-hidden="true"></span>`;
+          const label = document.createElement("span");
+          label.textContent = titleText;
+          action.appendChild(label);
+          action.onclick = () => {
+            void openWorkingProjectDocument(kind, titleText, path, content);
+          };
+          documentActions.appendChild(action);
+        }
+        workingView.appendChild(documentActions);
+      }
+      body.appendChild(workingView);
     } else if (activeSection === "projects") {
       const projects = buildBiographyProjects(events);
       const projectGrid = document.createElement("div");

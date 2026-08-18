@@ -4,7 +4,9 @@ import {
   PROJECT_INDEX_TEMPLATE,
   PROJECT_INBOX_TEMPLATE,
   buildProjectContext,
-  buildProjectTemplate
+  buildProjectTemplate,
+  parseProjectIndex,
+  resolveProjectIndexRows
 } from "../extensions/dev.identity/projects-core.js";
 
 describe("identity project memory core", () => {
@@ -78,5 +80,85 @@ describe("identity project memory core", () => {
   it("returns no block or instructions for an empty index", () => {
     expect(buildProjectContext("")).toEqual({ fragment: "", instructions: [] });
     expect(buildProjectContext(" \n ")).toEqual({ fragment: "", instructions: [] });
+  });
+
+  it("parses linked and legacy project rows", () => {
+    const rows = parseProjectIndex(`| 项目 | 状态 | 优先级 | 下一步 | 更新 |
+|---|---|---|---|---|
+| [Zion Next](./zion-next/project.md) | active | high | Ship \\| verify | 2026-08-19 |
+| Legacy | waiting | medium | 等待反馈 | 2026-08-18 |`);
+
+    expect(rows).toEqual([
+      {
+        name: "Zion Next",
+        status: "active",
+        priority: "high",
+        nextStep: "Ship | verify",
+        updated: "2026-08-19",
+        relativePath: "zion-next/project.md"
+      },
+      {
+        name: "Legacy",
+        status: "waiting",
+        priority: "medium",
+        nextStep: "等待反馈",
+        updated: "2026-08-18",
+        relativePath: ""
+      }
+    ]);
+  });
+
+  it("rejects unsafe project links", () => {
+    const rows = parseProjectIndex(`| 项目 | 状态 | 优先级 | 下一步 | 更新 |
+|---|---|---|---|---|
+| [Parent](../secret/project.md) | active | | | |
+| [Absolute](/tmp/project.md) | active | | | |
+| [Wrong](./safe/readme.md) | active | | | |
+| [Safe](./safe/project.md) | active | | | |`);
+
+    expect(rows.map((row) => row.relativePath)).toEqual([
+      "",
+      "",
+      "",
+      "safe/project.md"
+    ]);
+  });
+
+  it("resolves one unambiguous legacy directory", () => {
+    const rows = [
+      {
+        name: "Legacy Project",
+        status: "active",
+        priority: "",
+        nextStep: "",
+        updated: "",
+        relativePath: ""
+      },
+      {
+        name: "Duplicate Project",
+        status: "waiting",
+        priority: "",
+        nextStep: "",
+        updated: "",
+        relativePath: ""
+      }
+    ];
+    const resolved = resolveProjectIndexRows(rows, [
+      { path: "/memory/projects/legacy-project", type: "dir" },
+      { path: "/memory/projects/duplicate_project", type: "dir" },
+      { path: "/memory/projects/duplicate-project", type: "dir" },
+      { path: "/memory/projects/index.md", type: "file" }
+    ], "/memory/projects");
+
+    expect(resolved[0].path).toBe("/memory/projects/legacy-project/project.md");
+    expect(resolved[1].path).toBe("");
+  });
+
+  it("caps parsed indexes at 200 rows", () => {
+    const rows = Array.from({ length: 220 }, (_, index) => (
+      `| Project ${index} | active | medium | Next ${index} | 2026-08-19 |`
+    )).join("\n");
+
+    expect(parseProjectIndex(rows)).toHaveLength(200);
   });
 });

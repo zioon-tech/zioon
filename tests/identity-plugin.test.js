@@ -341,13 +341,32 @@ describe("identity extension", () => {
       }
     };
     vi.stubGlobal("fetch", vi.fn(async (url) => {
-      const path = decodeURIComponent(new URL(url).searchParams.get("path"));
+      const requestUrl = new URL(url);
+      if (requestUrl.pathname.endsWith("/files/entries")) {
+        return new globalThis.Response(JSON.stringify({
+          path: "/Users/test/.zion-next/memory/projects",
+          results: [
+            {
+              path: "/Users/test/.zion-next/memory/projects/zion-next",
+              type: "dir"
+            }
+          ]
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      const path = decodeURIComponent(requestUrl.searchParams.get("path"));
       const content = path.endsWith("identity.md")
         ? "# Identity\nZion"
         : path.endsWith("user.md")
           ? "# User\nChinese"
           : path.endsWith("projects/index.md")
-            ? "# 项目索引\n| Zion Next | active | high | 完成 M1 | 08-18 |"
+            ? "# 项目索引\n| 项目 | 状态 | 优先级 | 下一步 | 更新 |\n|---|---|---|---|---|\n| [Zion Next](./zion-next/project.md) | active | high | 完成 M1 | 2026-08-19 |"
+          : path.endsWith("projects/inbox.md")
+            ? "# 杂思收集箱\n\n- 评估 M2"
+          : path.endsWith("zion-next/project.md")
+            ? "# Zion Next\n\n## 当前状态\n\nM1 已完成"
           : path.endsWith("digest.md")
             ? "# 自传摘要\n\n- Shipped biography digest"
             : `${JSON.stringify({
@@ -384,7 +403,7 @@ describe("identity extension", () => {
     expect(messages[1].content).toContain("Shipped biography digest");
     expect(messages[1].content).not.toContain("Shipped biography view");
     expect(messages[1].content).toContain("<projects_index");
-    expect(messages[1].content).toContain("| Zion Next | active |");
+    expect(messages[1].content).toContain("| [Zion Next](./zion-next/project.md) | active |");
       const sessionEvents = await commands.get("identity.getSessionBiographyEvents")({ sessionId: "session-view" });
       expect(sessionEvents).toHaveLength(1);
       expect(sessionEvents[0]).toEqual(expect.objectContaining({
@@ -428,7 +447,23 @@ describe("identity extension", () => {
       .find((button) => button.textContent === label);
     biographyTab("概览")?.click();
     expect(host.textContent).toContain("最近动态");
-    biographyTab("项目")?.click();
+    biographyTab("工作项目")?.click();
+    await vi.waitFor(() => expect(host.textContent).toContain("完成 M1"));
+    const workingProject = host.querySelector(".zion-biography-working-project");
+    expect(workingProject?.textContent).toContain("Zion Next");
+    expect(workingProject?.textContent).toContain("active");
+    expect(workingProject?.textContent).toContain("high");
+    workingProject?.click();
+    await vi.waitFor(() => expect(inspectorItem?.title).toBe("Zion Next"));
+    expect(inspectorItem.path).toBe("/Users/test/.zion-next/memory/projects/zion-next/project.md");
+    expect(inspectorItem.file?.content).toContain("M1 已完成");
+    const documentActions = Array.from(host.querySelectorAll(".zion-biography-working-document-action"));
+    documentActions.find((button) => button.textContent.includes("项目索引"))?.click();
+    expect(inspectorItem?.title).toBe("项目索引");
+    documentActions.find((button) => button.textContent.includes("杂思收集箱"))?.click();
+    await vi.waitFor(() => expect(inspectorItem?.title).toBe("杂思收集箱"));
+    expect(inspectorItem.file?.content).toContain("评估 M2");
+    biographyTab("经历项目")?.click();
     expect(host.textContent).toContain("memory-panel");
     biographyTab("摘要")?.click();
     await vi.waitFor(() => expect(host.textContent).toContain("Shipped biography digest"));

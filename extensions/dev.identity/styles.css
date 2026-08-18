@@ -543,6 +543,177 @@
   white-space: nowrap;
 }
 
+.zion-biography-working-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.zion-biography-working-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px;
+}
+
+.zion-biography-working-header .zion-biography-section-intro {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+}
+
+.zion-biography-working-header .zion-biography-icon-button {
+  flex: 0 0 28px;
+}
+
+.zion-biography-working-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.zion-biography-working-project {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--biography-border);
+  border-radius: 8px;
+  background: var(--biography-card-bg);
+  color: var(--fg);
+  text-align: left;
+}
+
+button.zion-biography-working-project {
+  cursor: pointer;
+}
+
+button.zion-biography-working-project:hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--biography-border));
+  background: var(--biography-card-hover);
+}
+
+button.zion-biography-working-project:disabled {
+  cursor: progress;
+  opacity: 0.72;
+}
+
+.zion-biography-working-project.is-unresolved {
+  border-style: dashed;
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+}
+
+.zion-biography-working-project-header,
+.zion-biography-working-project-footer,
+.zion-biography-working-project-badges {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.zion-biography-working-project-header {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.zion-biography-working-project-header > strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-biography-working-project-badges {
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.zion-biography-working-status,
+.zion-biography-working-priority {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: color-mix(in srgb, var(--fg) 62%, transparent);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.zion-biography-working-status.is-active {
+  background: color-mix(in srgb, #22c55e 12%, transparent);
+  color: color-mix(in srgb, #22c55e 82%, var(--fg));
+}
+
+.zion-biography-working-status.is-waiting {
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  color: color-mix(in srgb, #f59e0b 86%, var(--fg));
+}
+
+.zion-biography-working-status.is-done {
+  background: color-mix(in srgb, #38bdf8 12%, transparent);
+  color: color-mix(in srgb, #38bdf8 84%, var(--fg));
+}
+
+.zion-biography-working-status.is-archived {
+  color: color-mix(in srgb, var(--fg) 46%, transparent);
+}
+
+.zion-biography-working-next {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--fg) 76%, transparent);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.zion-biography-working-project-footer {
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--biography-muted);
+  font-size: 9px;
+}
+
+.zion-biography-working-project-footer .codicon {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+.zion-biography-working-documents {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px;
+}
+
+.zion-biography-working-document-action {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--biography-border);
+  border-radius: 6px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 66%, transparent);
+  font: 550 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.zion-biography-working-document-action:hover {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--biography-border));
+  background: var(--biography-subtle);
+  color: var(--accent);
+}
+
 .zion-biography-document-card {
   display: flex;
   flex-direction: column;
@@ -1120,8 +1291,8 @@
   }
 
   .zion-biography-section-tab {
-    flex: 1 1 0;
-    min-width: 0;
+    flex: 0 0 auto;
+    min-width: max-content;
     padding-inline: 5px;
   }
 
