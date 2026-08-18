@@ -54,8 +54,10 @@ describe("identity project memory core", () => {
       `# Index\n${"A < B & C ".repeat(20)}`,
       {
         inbox: `# Inbox\n${"Idea < draft & review ".repeat(20)}`,
+        template: PROJECT_FILE_TEMPLATE,
         maxChars: 80,
-        inboxMaxChars: 70
+        inboxMaxChars: 70,
+        templateMaxChars: 2000
       }
     );
 
@@ -65,6 +67,11 @@ describe("identity project memory core", () => {
     expect(context.fragment).toContain(
       '<projects_inbox source="~/.zion-next/memory/projects/inbox.md">'
     );
+    expect(context.fragment).toContain(
+      '<project_template source="~/.zion-next/memory/projects/_template.md">'
+    );
+    expect(context.fragment).toContain("## 当前状态");
+    expect(context.fragment).toContain("## 经验教训");
     expect(context.fragment).toContain("&lt;");
     expect(context.fragment).toContain("&amp;");
     expect(context.fragment).toContain("[truncated]");
@@ -73,6 +80,8 @@ describe("identity project memory core", () => {
     expect(context.instructions.join("\n")).toContain("read its project.md");
     expect(context.instructions.join("\n")).toContain("projects/index.md");
     expect(context.instructions.join("\n")).toContain("create projects/{canonical-slug}/project.md");
+    expect(context.instructions.join("\n")).toContain("eight fixed sections");
+    expect(context.instructions.join("\n")).toContain("project.md is its front door");
     expect(context.instructions.join("\n")).toContain("remove its inbox entry");
     expect(context.instructions.join("\n")).toContain("Do not infer autonomy grants");
   });

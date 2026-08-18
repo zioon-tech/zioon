@@ -31,7 +31,7 @@ const BIOGRAPHY_CACHE_DB = "zion.identity-cache";
 const BIOGRAPHY_CACHE_STORE = "biography-events";
 const BIOGRAPHY_CACHE_VERSION = 1;
 const BIOGRAPHY_RENDER_PAGE_SIZE = 80;
-const IDENTITY_SNAPSHOT_VERSION = 2;
+const IDENTITY_SNAPSHOT_VERSION = 3;
 let memoryRootPromise = null;
 let profileScaffoldReady = false;
 let profileScaffoldPromise = null;
@@ -414,12 +414,13 @@ async function loadIdentityContext() {
   try {
     await ensureProfileFilesInitialized();
     const paths = await getProfilePaths();
-    const [identity, user, digest, projects, projectsInbox] = await Promise.all([
+    const [identity, user, digest, projects, projectsInbox, projectsTemplate] = await Promise.all([
       readLocalFileIfExists(paths.identity),
       readLocalFileIfExists(paths.user),
       readLocalFileIfExists(paths.digest),
       readLocalFileIfExists(paths.projectsIndex),
-      readLocalFileIfExists(paths.projectsInbox)
+      readLocalFileIfExists(paths.projectsInbox),
+      readLocalFileIfExists(paths.projectsTemplate)
     ]);
     let biography = digest;
     if (!biography.trim()) {
@@ -438,7 +439,8 @@ async function loadIdentityContext() {
       user,
       biography,
       projects,
-      projectsInbox
+      projectsInbox,
+      projectsTemplate
     });
   } catch (error) {
     console.warn("[dev.identity] profile read failed", error);

@@ -29,7 +29,8 @@ describe("identity context core", () => {
       user: "Prefers A & B",
       biography: "- shipped identity",
       projects: "# 项目索引\n| Zion Next | active | high | 完成 M1 | 08-18 |",
-      projectsInbox: "# 杂思收集箱\n- 评估 M2"
+      projectsInbox: "# 杂思收集箱\n- 评估 M2",
+      projectsTemplate: "---\nproject: project-name\n---\n\n# project-name\n\n## 目标\n\n## 当前状态"
     });
 
     expect(text).toContain("<agent_identity");
@@ -37,6 +38,7 @@ describe("identity context core", () => {
     expect(text).toContain("<biography");
     expect(text).toContain("<projects_index");
     expect(text).toContain("<projects_inbox");
+    expect(text).toContain("<project_template");
     expect(text).toContain("Zion Next");
     expect(text).toContain("评估 M2");
     expect(text).toContain("&lt;trusted&gt;");
@@ -52,6 +54,7 @@ describe("identity context core", () => {
     expect(emptyProjects).not.toContain("<projects_index");
     expect(emptyProjects).toContain("model-maintained working memory");
     expect(emptyProjects).toContain("create projects/{canonical-slug}/project.md");
+    expect(emptyProjects).toContain("eight fixed sections");
   });
 
   it("extracts only the latest completed user and assistant exchange", () => {
@@ -410,6 +413,7 @@ describe("identity extension", () => {
     expect(messages[1].content).not.toContain("Shipped biography view");
     expect(messages[1].content).toContain("<projects_index");
     expect(messages[1].content).toContain("<projects_inbox");
+    expect(messages[1].content).toContain("<project_template");
     expect(messages[1].content).toContain("| [Zion Next](./zion-next/project.md) | active |");
     expect(messages[1].content).toContain("评估 M2");
       const sessionEvents = await commands.get("identity.getSessionBiographyEvents")({ sessionId: "session-view" });
@@ -675,7 +679,7 @@ describe("identity extension", () => {
       const first = await contributor.contribute([{ role: "user", content: "hello" }], { sessionId: "session-cache" });
       expect(first[0].content).toContain("Digest A");
       expect(first[0].content).not.toContain("legacy snapshot");
-      expect(metaStore.get("session-cache").identitySnapshot.version).toBe(2);
+      expect(metaStore.get("session-cache").identitySnapshot.version).toBe(3);
       expect(metaStore.get("session-cache").identitySnapshot.content).toContain("Digest A");
       const readsAfterFirst = fileReads;
       expect(readsAfterFirst).toBeGreaterThanOrEqual(3);
