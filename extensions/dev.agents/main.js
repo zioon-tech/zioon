@@ -1,11 +1,21 @@
 import { Prec } from "@codemirror/state";
 import { Decoration, ViewPlugin, WidgetType, keymap } from "@codemirror/view";
 import { EditorCore } from "../../src/editor/EditorCore.ts";
+import {
+  finalizeProgrammaticSession,
+  projectRunEventToSession
+} from "../dev.langchain-chat/programmatic-session.js";
+import {
+  buildProgrammaticTaskBody,
+  programmaticCompletionState,
+  programmaticEventLogEntry
+} from "./programmatic-task-core.js";
 
 const VIEW_ID = "dev.agents.panel";
 const STORAGE_KEY = "zion.agents.tasks.v1";
 const ACTIVE_KEY = "agents.activeTaskId";
 const CHANGED_EVENT = "agents/changed";
+const TASK_BODY_EVENT = "zion:agent-task-body";
 const I18N_NS = "dev.agents";
 
 const I18N_MESSAGES = {
@@ -254,6 +264,10 @@ function uid(prefix = "agent") {
 
 function readTasks() {
   try {
+    const current = window.zion?.state?.get?.("agents.tasks");
+    if (Array.isArray(current)) return current.filter(Boolean);
+  } catch {}
+  try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
@@ -263,11 +277,12 @@ function readTasks() {
 }
 
 function writeTasks(list, opts = {}) {
+  const next = Array.isArray(list) ? list : [];
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.isArray(list) ? list : []));
+    window.zion?.state?.set?.("agents.tasks", next);
   } catch {}
   try {
-    window.zion?.state?.set?.("agents.tasks", Array.isArray(list) ? list : []);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {}
   if (!opts.silent) emitChanged();
 }
@@ -275,6 +290,14 @@ function writeTasks(list, opts = {}) {
 function emitChanged() {
   try { window.zion?.events?.emit?.(CHANGED_EVENT, {}); } catch {}
   try { window.dispatchEvent(new CustomEvent("zion:agents-changed")); } catch {}
+}
+
+function publishTaskBody(taskId, body) {
+  try {
+    window.dispatchEvent(new CustomEvent(TASK_BODY_EVENT, {
+      detail: { taskId, body }
+    }));
+  } catch {}
 }
 
 function patchTask(id, patch, opts = {}) {
@@ -372,6 +395,22 @@ function appendTaskEvent(taskId, type, data = {}, opts = {}) {
   const events = Array.isArray(task.events) ? task.events.slice(-80) : [];
   events.push(createRunEvent(type, data));
   return patchTask(taskId, { events }, opts);
+}
+
+function mergeTaskEvents(taskId, incoming) {
+  const current = readTasks().find((item) => item?.id === taskId);
+  const merged = new Map();
+  for (const event of [
+    ...(Array.isArray(current?.events) ? current.events : []),
+    ...(Array.isArray(incoming) ? incoming : [])
+  ]) {
+    if (!event) continue;
+    const key = String(event.id || `${event.type}:${event.ts}:${event.message || ""}`);
+    merged.set(key, event);
+  }
+  return Array.from(merged.values())
+    .sort((left, right) => Number(left?.ts || 0) - Number(right?.ts || 0))
+    .slice(-80);
 }
 
 function parseContractSections(text) {
@@ -870,18 +909,40 @@ const root = document.createElement("div");
       if (task.status === "running") stopTask(task);
       else runTask(task, taskEditorHandle);
     }, task.status === "running" ? "danger" : "primary", task.status === "running" ? t("task.stop", "Stop") : t("task.run", "Run")));
-    actions.appendChild(iconAction("external", () => promoteTask(task, taskEditorHandle), "", t("task.promote", "Promote")));
+    actions.appendChild(iconAction(
+      "external",
+      () => {
+        if (task.linkedSessionId) {
+          void window.zion?.commands?.executeCommand?.(
+            "zion.sessions.switch",
+            task.linkedSessionId
+          );
+          return;
+        }
+        void promoteTask(task, taskEditorHandle);
+      },
+      "",
+      task.linkedSessionId ? "打开完整运行会话" : t("task.promote", "Promote")
+    ));
     actions.appendChild(iconAction("trash", () => deleteTask(task.id), "danger", t("task.delete", "Delete")));
 
     const policy = renderExecutionPolicy(task);
     const result = renderStructuredResult(task);
     const log = renderTranscript(task);
+    if (task.error) {
+      const errorBanner = document.createElement("div");
+      errorBanner.className = "zion-agents-error";
+      errorBanner.setAttribute("role", "alert");
+      errorBanner.textContent = task.error;
+      editorFrame.appendChild(errorBanner);
+    }
     const editorHost = document.createElement("div");
     editorHost.className = "zion-agents-editor-host";
     editorFrame.appendChild(editorHost);
     detail.appendChild(editorFrame);
     const more = document.createElement("details");
     more.className = "zion-agents-more";
+    more.open = task.status === "running" || task.status === "error";
     const moreSummary = document.createElement("summary");
     moreSummary.textContent = t("task.more", "Details");
     more.appendChild(moreSummary);
@@ -998,6 +1059,7 @@ function renderTranscript(task) {
   if (!events.length) return null;
   const box = document.createElement("details");
   box.className = "zion-agents-card zion-agents-transcript";
+  box.open = task?.status === "running" || task?.status === "error";
   const summary = document.createElement("summary");
   summary.textContent = `${t("task.transcript", "Run Log")} (${events.length})`;
   box.appendChild(summary);
@@ -1056,6 +1118,18 @@ function createTaskEditor(container, task) {
   try { proxy?.setSessionId?.(sessionId); } catch {}
   try { core.addExternalExtension(Prec.highest(keymap.of([{ key: "Mod-Enter", run: () => { runTask(task, handle); return true; } }]))); } catch {}
   let saveTimer = 0;
+  const onTaskBody = (event) => {
+    if (String(event?.detail?.taskId || "") !== task.id) return;
+    const body = String(event?.detail?.body || "");
+    if (core.view.state.doc.toString() === body) return;
+    const selection = core.view.state.selection.main;
+    const nextAnchor = Math.min(body.length, selection.anchor);
+    core.view.dispatch({
+      changes: { from: 0, to: core.view.state.doc.length, insert: body },
+      selection: { anchor: nextAnchor }
+    });
+  };
+  window.addEventListener(TASK_BODY_EVENT, onTaskBody);
   try {
     core.addExternalExtension(EditorViewUpdateListener((text) => {
       if (saveTimer) clearTimeout(saveTimer);
@@ -1070,6 +1144,7 @@ function createTaskEditor(container, task) {
     sessionId,
     dispose() {
       if (saveTimer) clearTimeout(saveTimer);
+      window.removeEventListener(TASK_BODY_EVENT, onTaskBody);
       try { patchTask(task.id, { body: core.view.state.doc.toString(), taskSessionId: sessionId }, { silent: true }); } catch {}
       try { window.zion?.editor?.detachEditor?.(panelId); } catch {}
       try { core.destroy?.(); } catch {}
@@ -1224,27 +1299,94 @@ async function maybeGenerateScratchTaskTitle(task, transcript) {
 async function runProgrammaticTask(task) {
   if (!task || activeRuns.has(task.id)) return null;
   if (!window.zion?.chat?.execute) throw new Error("Chat runtime is unavailable");
-  const sessionId = getTaskSessionId(task);
+  const prompt = String(task.prompt || task.anchorText || "").trim();
   const runId = uid("run");
   const startedAt = now();
+  let linkedSessionId = "";
+  let sessionError = "";
+  try {
+    linkedSessionId = String(
+      await window.zion?.commands?.executeCommand?.("zion.sessions.new", {
+        title: task.title || `Agent Task: ${task.id}`,
+        content: `user ${prompt}\n`,
+        open: false,
+        meta: {
+          source: "agent-task",
+          agentTaskId: task.id,
+          agentId: task.agentId || "",
+          projectAutomation: task.automation || null
+        }
+      }) || ""
+    );
+  } catch (error) {
+    sessionError = error?.message || String(error);
+  }
+  const sessionId = linkedSessionId || `agent-task:${task.id}`;
+  let traceEvents = mergeTaskEvents(task.id, [
+    createRunEvent("runner.start", {
+      runId,
+      runner: "programmatic",
+      message: task.executionPolicy?.preset || "read-only"
+    }),
+    ...(sessionError ? [createRunEvent("runner.session", {
+      runId,
+      message: `Session unavailable: ${sessionError}`
+    })] : [])
+  ]);
   patchTask(task.id, {
     status: "running",
     startedAt,
     activeRunId: runId,
     taskSessionId: sessionId,
+    linkedSessionId,
+    body: buildProgrammaticTaskBody(prompt, ""),
     result: null,
     error: "",
     runCount: Number(task.runCount || 0) + 1,
-    events: [createRunEvent("runner.start", {
-      runId,
-      runner: "programmatic",
-      message: task.executionPolicy?.preset || "read-only"
-    })]
+    events: traceEvents
   });
   let timeout = null;
+  let flushTimer = null;
+  let execution = null;
+  let streamedOutput = "";
+  const flushLiveState = (notify = false) => {
+    if (flushTimer) window.clearTimeout(flushTimer);
+    flushTimer = null;
+    const body = buildProgrammaticTaskBody(prompt, streamedOutput);
+    traceEvents = mergeTaskEvents(task.id, traceEvents);
+    patchTask(task.id, {
+      body,
+      events: traceEvents,
+      taskSessionId: sessionId,
+      linkedSessionId
+    }, { silent: true });
+    publishTaskBody(task.id, body);
+    if (notify) emitChanged();
+  };
+  const scheduleLiveFlush = () => {
+    if (flushTimer) return;
+    flushTimer = window.setTimeout(() => flushLiveState(false), 200);
+  };
+  const recordProgrammaticEvent = (event) => {
+    const entry = programmaticEventLogEntry(event);
+    if (!entry) return;
+    traceEvents = mergeTaskEvents(task.id, [...traceEvents, entry]);
+  };
+  const projectEvent = async (event) => {
+    if (!linkedSessionId) return;
+    await projectRunEventToSession(
+      window.zion,
+      linkedSessionId,
+      event,
+      {
+        requestSource: "agent-task",
+        defaultError: "自动推进失败"
+      }
+    );
+  };
   try {
-    const execution = window.zion.chat.execute({
-      prompt: String(task.prompt || task.anchorText || "").trim(),
+    execution = window.zion.chat.execute({
+      prompt,
       executionMode: "local-only",
       sessionId,
       policy: task.executionPolicy
@@ -1257,32 +1399,97 @@ async function runProgrammaticTask(task) {
     });
     const timeoutMs = Math.max(1, Number(task.timeoutMinutes || 10)) * 60_000;
     timeout = window.setTimeout(() => void execution.abort("timeout"), timeoutMs);
+    const consuming = (async () => {
+      if (!execution.events?.[Symbol.asyncIterator]) return;
+      for await (const event of execution.events) {
+        if (event.type === "message.delta") {
+          streamedOutput += String(event.data?.delta || "");
+        }
+        recordProgrammaticEvent(event);
+        await projectEvent(event);
+        if (event.type === "message.delta") scheduleLiveFlush();
+        else flushLiveState(true);
+      }
+    })();
     const completion = await execution.completion;
-    const succeeded = completion?.status === "completed";
-    const output = String(completion?.output || "").trim();
+    await consuming;
+    streamedOutput = String(completion?.output ?? streamedOutput);
+    flushLiveState(false);
+    const terminal = programmaticCompletionState(completion);
+    const completedAt = now();
+    const body = buildProgrammaticTaskBody(prompt, streamedOutput);
     patchTask(task.id, {
-      status: succeeded ? "done" : completion?.status === "aborted" ? "aborted" : "error",
-      completedAt: now(),
+      status: terminal.status,
+      completedAt,
       activeRunId: "",
-      body: `user ${task.prompt || ""}\n\nassistant ${output}`,
+      body,
+      events: mergeTaskEvents(task.id, traceEvents),
       result: {
-        workResult: output,
+        workResult: streamedOutput,
         status: completion?.status || "failed",
         usage: completion?.usage || null
       },
-      error: succeeded ? "" : String(completion?.error || completion?.reason || "Automatic run failed")
+      error: terminal.error
     });
+    publishTaskBody(task.id, body);
+    if (linkedSessionId) {
+      await finalizeProgrammaticSession(window.zion, linkedSessionId, {
+        agentTaskId: task.id,
+        agentTaskStatus: terminal.status,
+        agentTaskCompletedAt: completedAt,
+        agentTaskError: terminal.error || null
+      });
+    }
     return completion;
   } catch (error) {
+    const errorMessage = error?.message || String(error);
+    const failedEvent = {
+      schemaVersion: 1,
+      eventId: uid("evt"),
+      runId: execution?.runId || runId,
+      sequence: 0,
+      type: "run.failed",
+      ts: now(),
+      data: { error: errorMessage }
+    };
+    recordProgrammaticEvent(failedEvent);
+    try { await projectEvent(failedEvent); } catch {}
+    flushLiveState(false);
+    const completedAt = now();
+    const body = buildProgrammaticTaskBody(prompt, streamedOutput);
     patchTask(task.id, {
       status: "error",
-      completedAt: now(),
+      completedAt,
       activeRunId: "",
-      error: error?.message || String(error)
+      body,
+      events: mergeTaskEvents(task.id, traceEvents),
+      result: {
+        workResult: streamedOutput,
+        status: "failed",
+        usage: null
+      },
+      error: errorMessage
     });
-    throw error;
+    publishTaskBody(task.id, body);
+    if (linkedSessionId) {
+      try {
+        await finalizeProgrammaticSession(window.zion, linkedSessionId, {
+          agentTaskId: task.id,
+          agentTaskStatus: "error",
+          agentTaskCompletedAt: completedAt,
+          agentTaskError: errorMessage
+        });
+      } catch {}
+    }
+    return {
+      runId: execution?.runId || runId,
+      status: "failed",
+      error: errorMessage,
+      output: streamedOutput
+    };
   } finally {
     if (timeout) window.clearTimeout(timeout);
+    if (flushTimer) window.clearTimeout(flushTimer);
     activeRuns.delete(task.id);
     emitChanged();
   }
@@ -1679,7 +1886,15 @@ async function runTaskHeadless(taskId) {
   try {
     if (task.executionPolicy) {
       await runTask(task, null);
-      const next = readTasks().find((item) => item?.id === taskId);
+      let next = readTasks().find((item) => item?.id === taskId);
+      if (next?.status === "running" && !activeRuns.has(taskId)) {
+        next = patchTask(taskId, {
+          status: "error",
+          activeRunId: "",
+          completedAt: now(),
+          error: next.error || "自动推进异常结束"
+        });
+      }
       return {
         ok: next?.status === "done",
         task: next ? {

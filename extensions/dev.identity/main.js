@@ -867,7 +867,21 @@ async function appendProjectAttention(paths, project, reason, detail = "") {
   });
   const [marker] = entry.split("\n");
   const current = await readLocalFileIfExists(paths.projectsAttention);
-  if (current.includes(`${marker}\n- [ ]`)) return false;
+  const markerStart = current.indexOf(marker);
+  if (markerStart >= 0) {
+    const bulletStart = current.indexOf("\n", markerStart);
+    const blockEnd = bulletStart < 0
+      ? current.length
+      : (current.indexOf("\n", bulletStart + 1) < 0
+          ? current.length
+          : current.indexOf("\n", bulletStart + 1));
+    if (current.slice(markerStart, blockEnd).trim() === entry.trim()) return false;
+    await writeLocalFile(
+      paths.projectsAttention,
+      `${current.slice(0, markerStart)}${entry}${current.slice(blockEnd)}`
+    );
+    return true;
+  }
   const base = current.trim() || PROJECT_ATTENTION_TEMPLATE.trim();
   await writeLocalFile(paths.projectsAttention, `${base}\n\n${entry}\n`);
   return true;
@@ -919,6 +933,14 @@ async function runProjectCoordinator(options = {}) {
         agents?.isRunning?.(policy.activeTaskId) === true
       );
       if (!patch) continue;
+      if (policy.activeTaskId) {
+        agents?.updateTask?.(policy.activeTaskId, {
+          status: patch.lastStatus === "success" ? "done" : "error",
+          activeRunId: "",
+          completedAt: Date.now(),
+          error: patch.lastError
+        });
+      }
       automation = updateProjectPolicy(automation, key, patch);
       reconciledProjects.push({ projectKey: key, status: patch.lastStatus });
     }
@@ -1022,11 +1044,15 @@ async function runProjectCoordinator(options = {}) {
     }
     const completedAt = Date.now();
     const succeeded = result?.ok === true;
+    const failedTask = result?.task || agents?.getTask?.(task.id);
+    const runError = String(
+      failedTask?.error || result?.error || "自动推进失败"
+    ).trim();
     automation = updateProjectPolicy(readProjectAutomation(), project.key, {
       activeTaskId: "",
       lastCompletedAt: completedAt,
       lastStatus: succeeded ? "success" : "failed",
-      lastError: succeeded ? "" : result?.task?.error || result?.error || "自动推进失败",
+      lastError: succeeded ? "" : runError,
       failureCount: succeeded ? 0 : project.policy.failureCount + 1,
       nextEligibleAt: completedAt + project.policy.cadenceMinutes * 60_000
     });
@@ -1036,7 +1062,7 @@ async function runProjectCoordinator(options = {}) {
         paths,
         project,
         "run-failed",
-        result?.task?.error || result?.error || ""
+        runError
       );
     }
     window.zion?.events?.emit?.("identity/projectAutomationChanged", {

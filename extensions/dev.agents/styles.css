@@ -41,6 +41,7 @@
 .zion-agents-action.danger:hover { background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.35); }
 :root[data-theme="light"] .zion-agents-action.danger { color: #dc2626; }
 :root[data-theme="light"] .zion-agents-action.danger:hover { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.28); }
+.zion-agents-error { flex: 0 0 auto; padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, #ef4444 34%, transparent); background: color-mix(in srgb, #ef4444 9%, transparent); color: color-mix(in srgb, #ef4444 78%, var(--fg)); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .zion-agents-editor-host { flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .zion-agents-editor-host .cm-editor { height: 100%; background: transparent; }
 .zion-agents-editor-host .cm-scroller { background: transparent; font-family: var(--editor-content-font-family, var(--font-sans)) !important; font-size: var(--editor-content-font-size) !important; line-height: var(--editor-content-line-height) !important; }

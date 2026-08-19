@@ -354,7 +354,9 @@ describe("identity extension", () => {
           ok: true,
           task: { id: taskId, status: "done", result: { workResult: "research complete" } }
         })),
-        getTask: vi.fn(() => null)
+        getTask: vi.fn(() => null),
+        isRunning: vi.fn(() => false),
+        updateTask: vi.fn()
       },
       state: {
         get: vi.fn((key) => {
@@ -400,7 +402,7 @@ describe("identity extension", () => {
           : path.endsWith("projects/inbox.md")
             ? "# 杂思收集箱\n\n- 评估 M2"
           : path.endsWith("projects/attention.md")
-            ? "# 待处理事项\n\n- [ ] 批准执行"
+            ? "# 待处理事项\n\n- [ ] 批准执行\n\n<!-- automation:zion-next:run-failed -->\n- [ ] 2026-08-19T01:00:00.000Z · **Zion Next** · 自动推进运行失败"
           : path.endsWith("projects/.automation.json")
             ? automationContent
           : path.endsWith("zion-next/project.md")
@@ -563,6 +565,86 @@ describe("identity extension", () => {
     expect(JSON.parse(
       localStorage.getItem("plugin.dev.identity.global.projectAutomation.v1")
     ).projects["zion-next"].enabled).toBe(false);
+    const staleTaskId = "project-auto-zion-next-stale";
+    window.zion.agents.getTask.mockReturnValue({
+      id: staleTaskId,
+      status: "running",
+      error: ""
+    });
+    const staleAutomation = JSON.parse(
+      localStorage.getItem("plugin.dev.identity.global.projectAutomation.v1")
+    );
+    staleAutomation.projects["zion-next"] = {
+      ...staleAutomation.projects["zion-next"],
+      enabled: false,
+      activeTaskId: staleTaskId,
+      lastStatus: "running",
+      cadenceMinutes: 15
+    };
+    localStorage.setItem(
+      "plugin.dev.identity.global.projectAutomation.v1",
+      JSON.stringify(staleAutomation)
+    );
+    eventHandlers.get("scheduler/heartbeat")?.({});
+    await vi.waitFor(() => {
+      expect(window.zion.agents.updateTask).toHaveBeenCalledWith(
+        staleTaskId,
+        expect.objectContaining({
+          status: "error",
+          activeRunId: "",
+          error: "自动推进因应用或插件重启中断"
+        })
+      );
+    });
+    expect(JSON.parse(
+      localStorage.getItem("plugin.dev.identity.global.projectAutomation.v1")
+    ).projects["zion-next"]).toEqual(expect.objectContaining({
+      activeTaskId: "",
+      lastStatus: "failed",
+      lastError: "自动推进因应用或插件重启中断"
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    window.zion.agents.getTask.mockReturnValue(null);
+    window.zion.agents.runTaskHeadless.mockResolvedValueOnce({
+      ok: false,
+      task: {
+        id: "project-auto-zion-next-failed",
+        status: "error",
+        error: "provider unavailable"
+      }
+    });
+    const failedAutomation = JSON.parse(
+      localStorage.getItem("plugin.dev.identity.global.projectAutomation.v1")
+    );
+    failedAutomation.projects["zion-next"] = {
+      ...failedAutomation.projects["zion-next"],
+      enabled: true,
+      activeTaskId: "",
+      lastStatus: "idle"
+    };
+    localStorage.setItem(
+      "plugin.dev.identity.global.projectAutomation.v1",
+      JSON.stringify(failedAutomation)
+    );
+    eventHandlers.get("identity/projectAutomationRunRequested")?.({
+      projectKey: "zion-next"
+    });
+    await vi.waitFor(() => {
+      expect(window.zion.agents.runTaskHeadless).toHaveBeenCalledTimes(2);
+    });
+    await vi.waitFor(() => {
+      expect(JSON.parse(
+        localStorage.getItem("plugin.dev.identity.global.projectAutomation.v1")
+      ).projects["zion-next"].lastError).toBe("provider unavailable");
+    });
+    const attentionWrite = fileWrites.findLast((write) => (
+      write.path.endsWith("projects/attention.md")
+    ));
+    expect(attentionWrite?.content).toContain("provider unavailable");
+    expect(attentionWrite?.content.match(
+      /<!-- automation:zion-next:run-failed -->/g
+    )).toHaveLength(1);
     workingProject?.click();
     await vi.waitFor(() => expect(inspectorItem?.title).toBe("Zion Next"));
     expect(inspectorItem.path).toBe("/Users/test/.zion-next/memory/projects/zion-next/project.md");

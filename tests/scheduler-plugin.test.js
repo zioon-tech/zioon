@@ -349,7 +349,12 @@ describe("scheduler plugin", () => {
     };
     const base = { runId: "run-1" };
 
-    await projectRunEventToSession(zion, "session-1", { ...base, type: "run.started", data: {} });
+    await projectRunEventToSession(
+      zion,
+      "session-1",
+      { ...base, type: "run.started", data: {} },
+      { requestSource: "agent-task" }
+    );
     await projectRunEventToSession(zion, "session-1", { ...base, type: "message.delta", data: { delta: "hello" } });
     await projectRunEventToSession(zion, "session-1", {
       ...base,
@@ -380,6 +385,7 @@ describe("scheduler plugin", () => {
       "chat/toolResult",
       "chat/runFinished"
     ]);
+    expect(emitted[0].payload).toMatchObject({ requestSource: "agent-task" });
     expect(emitted.find((event) => event.topic === "chat/toolCall")?.payload).toMatchObject({
       assistantBlockId: "run-1"
     });
