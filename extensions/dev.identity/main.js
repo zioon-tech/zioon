@@ -21,9 +21,22 @@ import {
   PROJECT_FILE_TEMPLATE,
   PROJECT_INDEX_TEMPLATE,
   PROJECT_INBOX_TEMPLATE,
+  PROJECT_ATTENTION_TEMPLATE,
   parseProjectIndex,
   resolveProjectIndexRows
 } from "./projects-core.js";
+import {
+  addAutomationRequest,
+  buildAttentionEntry,
+  buildAutomationTaskPrompt,
+  inspectProjectReadiness,
+  normalizeAutomationDocument,
+  normalizeProjectPolicy,
+  reconcileProjectRun,
+  resolveAutomationRequest,
+  selectAutomationCandidate,
+  updateProjectPolicy
+} from "./project-automation-core.js";
 
 const MEMORY_ROOT_DISPLAY = "~/.zion-next/memory";
 const BIOGRAPHY_VIEW_ID = "dev.identity.biography";
@@ -32,9 +45,13 @@ const BIOGRAPHY_CACHE_STORE = "biography-events";
 const BIOGRAPHY_CACHE_VERSION = 1;
 const BIOGRAPHY_RENDER_PAGE_SIZE = 80;
 const IDENTITY_SNAPSHOT_VERSION = 3;
+const PROJECT_AUTOMATION_STORAGE_KEY = "projectAutomation.v1";
 let memoryRootPromise = null;
 let profileScaffoldReady = false;
 let profileScaffoldPromise = null;
+let projectCoordinatorPromise = null;
+let projectAutomationMemoryState = normalizeAutomationDocument();
+let projectAutomationStore = null;
 const identitySnapshotPromises = new Map();
 
 const IDENTITY_TEMPLATE = `---
@@ -140,6 +157,7 @@ async function getProfilePaths() {
     citations: `${root}/biography/citations.jsonl`,
     projectsIndex: `${root}/projects/index.md`,
     projectsInbox: `${root}/projects/inbox.md`,
+    projectsAttention: `${root}/projects/attention.md`,
     projectsTemplate: `${root}/projects/_template.md`
   };
 }
@@ -414,13 +432,20 @@ async function loadIdentityContext() {
   try {
     await ensureProfileFilesInitialized();
     const paths = await getProfilePaths();
-    const [identity, user, digest, projects, projectsInbox, projectsTemplate] = await Promise.all([
+    const [
+      identity,
+      user,
+      digest,
+      projects,
+      projectsInbox,
+      projectsAttention
+    ] = await Promise.all([
       readLocalFileIfExists(paths.identity),
       readLocalFileIfExists(paths.user),
       readLocalFileIfExists(paths.digest),
       readLocalFileIfExists(paths.projectsIndex),
       readLocalFileIfExists(paths.projectsInbox),
-      readLocalFileIfExists(paths.projectsTemplate)
+      readLocalFileIfExists(paths.projectsAttention)
     ]);
     let biography = digest;
     if (!biography.trim()) {
@@ -440,7 +465,7 @@ async function loadIdentityContext() {
       biography,
       projects,
       projectsInbox,
-      projectsTemplate
+      projectsAttention
     });
   } catch (error) {
     console.warn("[dev.identity] profile read failed", error);
@@ -779,6 +804,7 @@ async function initializeProfileFiles() {
     [paths.digest, buildBiographyDigest([])],
     [paths.projectsIndex, PROJECT_INDEX_TEMPLATE],
     [paths.projectsInbox, PROJECT_INBOX_TEMPLATE],
+    [paths.projectsAttention, PROJECT_ATTENTION_TEMPLATE],
     [paths.projectsTemplate, PROJECT_FILE_TEMPLATE]
   ];
   const states = await Promise.all(files.map(([path]) => readLocalFileState(path)));
@@ -799,6 +825,458 @@ async function ensureProfileFilesInitialized(options = {}) {
       profileScaffoldPromise = null;
     });
   return profileScaffoldPromise;
+}
+
+function projectAutomationKey(project, projectsRoot) {
+  const linked = String(project?.relativePath || "").replace(/\/project\.md$/, "");
+  if (linked) return linked;
+  const root = String(projectsRoot || "").replace(/\/$/, "");
+  const path = String(project?.path || "");
+  if (path.startsWith(`${root}/`) && path.endsWith("/project.md")) {
+    return path.slice(root.length + 1, -"/project.md".length);
+  }
+  return "";
+}
+
+function readProjectAutomation() {
+  try {
+    const stored = projectAutomationStore?.get?.(PROJECT_AUTOMATION_STORAGE_KEY);
+    if (stored) projectAutomationMemoryState = normalizeAutomationDocument(stored);
+  } catch {
+    // Fall back to the in-memory copy when browser storage is unavailable.
+  }
+  return normalizeAutomationDocument(projectAutomationMemoryState);
+}
+
+function writeProjectAutomation(document) {
+  const normalized = normalizeAutomationDocument(document);
+  projectAutomationMemoryState = normalized;
+  try {
+    void projectAutomationStore?.update?.(PROJECT_AUTOMATION_STORAGE_KEY, normalized);
+  } catch {}
+  return normalized;
+}
+
+async function appendProjectAttention(paths, project, reason, detail = "") {
+  const entry = buildAttentionEntry({
+    projectKey: project.key,
+    projectName: project.name,
+    reason,
+    detail,
+    at: new Date().toISOString()
+  });
+  const [marker] = entry.split("\n");
+  const current = await readLocalFileIfExists(paths.projectsAttention);
+  if (current.includes(`${marker}\n- [ ]`)) return false;
+  const base = current.trim() || PROJECT_ATTENTION_TEMPLATE.trim();
+  await writeLocalFile(paths.projectsAttention, `${base}\n\n${entry}\n`);
+  return true;
+}
+
+function projectExecutionPolicy(project, policy, paths) {
+  const fileRoots = [
+    project.path,
+    paths.projectsIndex,
+    ...(policy.mode === "execute" ? policy.fileRoots : [])
+  ].filter(Boolean);
+  const trusted = policy.mode === "execute" && policy.allowedCommandPrefixes.length > 0;
+  return {
+    preset: trusted ? "trusted-automation" : "workspace-write",
+    allowedTools: ["write", "edit", ...(trusted ? ["Bash"] : [])],
+    fileRoots,
+    allowedCommandPrefixes: trusted ? policy.allowedCommandPrefixes : [],
+    maxToolCalls: policy.maxToolCalls
+  };
+}
+
+function projectCoordinatorRows(index, entries, projectsRoot) {
+  return resolveProjectIndexRows(parseProjectIndex(index), entries, projectsRoot)
+    .map((project) => ({
+      ...project,
+      key: projectAutomationKey(project, projectsRoot)
+    }))
+    .filter((project) => project.key && project.path);
+}
+
+async function runProjectCoordinator(options = {}) {
+  if (projectCoordinatorPromise) return projectCoordinatorPromise;
+  projectCoordinatorPromise = (async () => {
+    await ensureProfileFilesInitialized();
+    const paths = await getProfilePaths();
+    const projectsRoot = paths.projectsIndex.replace(/\/index\.md$/, "");
+    const [index, entries] = await Promise.all([
+      readLocalFileIfExists(paths.projectsIndex),
+      readLocalDirectoryEntries(projectsRoot).catch(() => [])
+    ]);
+    let automation = readProjectAutomation();
+    const reconciledProjects = [];
+    const agents = window.zion?.agents;
+    for (const [key, policy] of Object.entries(automation.projects)) {
+      const task = agents?.getTask?.(policy.activeTaskId);
+      const patch = reconcileProjectRun(
+        policy,
+        task,
+        agents?.isRunning?.(policy.activeTaskId) === true
+      );
+      if (!patch) continue;
+      automation = updateProjectPolicy(automation, key, patch);
+      reconciledProjects.push({ projectKey: key, status: patch.lastStatus });
+    }
+    if (reconciledProjects.length) {
+      automation = writeProjectAutomation(automation);
+      for (const project of reconciledProjects) {
+        window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+          ...project,
+          recovered: true
+        });
+      }
+    }
+
+    const projects = projectCoordinatorRows(index, entries, projectsRoot);
+    const project = selectAutomationCandidate(projects, automation, Date.now(), {
+      projectKey: options.projectKey
+    });
+    if (!project) return { status: "idle" };
+
+    const projectFile = await readLocalFileState(project.path);
+    if (!projectFile.exists) {
+      await appendProjectAttention(paths, project, "project-missing");
+      automation = updateProjectPolicy(automation, project.key, {
+        lastStatus: "attention",
+        nextEligibleAt: Date.now() + project.policy.cadenceMinutes * 60_000
+      });
+      writeProjectAutomation(automation);
+      return { status: "attention", projectKey: project.key, reason: "project-missing" };
+    }
+
+    const readiness = inspectProjectReadiness(projectFile.content, project.policy);
+    if (readiness.kind === "none") return { status: "idle", projectKey: project.key };
+    if (readiness.kind === "attention") {
+      await appendProjectAttention(paths, project, readiness.reason);
+      automation = updateProjectPolicy(automation, project.key, {
+        lastStatus: "attention",
+        lastPhase: "",
+        nextEligibleAt: Date.now() + project.policy.cadenceMinutes * 60_000
+      });
+      writeProjectAutomation(automation);
+      window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+        projectKey: project.key,
+        status: "attention"
+      });
+      return { status: "attention", projectKey: project.key, reason: readiness.reason };
+    }
+
+    if (!agents?.createTask || !agents?.runTaskHeadless) {
+      await appendProjectAttention(paths, project, "agents-unavailable");
+      return { status: "failed", projectKey: project.key, error: "Agents runtime is unavailable" };
+    }
+    const prompt = buildAutomationTaskPrompt({
+      project,
+      projectPath: project.path,
+      indexPath: paths.projectsIndex,
+      attentionPath: paths.projectsAttention,
+      phase: readiness.phase,
+      nextStep: readiness.nextStep
+    });
+    const task = agents.createTask({
+      id: `project-auto-${project.key.replace(/[^a-zA-Z0-9_-]+/g, "-")}-${Date.now().toString(36)}`,
+      sessionId: `agent-project:${project.key}`,
+      agentId: readiness.phase === "research"
+        ? "researcher"
+        : readiness.phase === "planning"
+          ? "planner"
+          : "implementer",
+      title: `自动推进 · ${project.name} · ${readiness.phase}`,
+      prompt,
+      body: `user ${prompt}`,
+      anchorText: projectFile.content,
+      quote: project.path,
+      status: "idle",
+      automation: {
+        projectKey: project.key,
+        phase: readiness.phase
+      },
+      executionPolicy: projectExecutionPolicy(project, project.policy, paths),
+      timeoutMinutes: project.policy.timeoutMinutes,
+      background: true
+    });
+    automation = updateProjectPolicy(automation, project.key, {
+      activeTaskId: task.id,
+      lastRunAt: Date.now(),
+      lastStatus: "running",
+      lastPhase: readiness.phase,
+      lastError: ""
+    });
+    writeProjectAutomation(automation);
+    window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+      projectKey: project.key,
+      status: "running",
+      taskId: task.id
+    });
+
+    let result;
+    try {
+      result = await agents.runTaskHeadless(task.id);
+    } catch (error) {
+      result = { ok: false, error: error?.message || String(error) };
+    }
+    const completedAt = Date.now();
+    const succeeded = result?.ok === true;
+    automation = updateProjectPolicy(readProjectAutomation(), project.key, {
+      activeTaskId: "",
+      lastCompletedAt: completedAt,
+      lastStatus: succeeded ? "success" : "failed",
+      lastError: succeeded ? "" : result?.task?.error || result?.error || "自动推进失败",
+      failureCount: succeeded ? 0 : project.policy.failureCount + 1,
+      nextEligibleAt: completedAt + project.policy.cadenceMinutes * 60_000
+    });
+    writeProjectAutomation(automation);
+    if (!succeeded) {
+      await appendProjectAttention(
+        paths,
+        project,
+        "run-failed",
+        result?.task?.error || result?.error || ""
+      );
+    }
+    window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+      projectKey: project.key,
+      status: succeeded ? "success" : "failed",
+      taskId: task.id
+    });
+    return {
+      status: succeeded ? "success" : "failed",
+      projectKey: project.key,
+      taskId: task.id
+    };
+  })().finally(() => {
+    projectCoordinatorPromise = null;
+  });
+  return projectCoordinatorPromise;
+}
+
+async function loadProjectAutomationCatalog() {
+  const paths = await getProfilePaths();
+  const projectsRoot = paths.projectsIndex.replace(/\/index\.md$/, "");
+  const [index, entries] = await Promise.all([
+    readLocalFileIfExists(paths.projectsIndex),
+    readLocalDirectoryEntries(projectsRoot).catch(() => [])
+  ]);
+  return projectCoordinatorRows(index, entries, projectsRoot);
+}
+
+function normalizeProjectLookup(value) {
+  return String(value || "")
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[/\\]+project\.md$/, "")
+    .replace(/[\s_.:/\\-]+/g, "");
+}
+
+function resolveProjectAutomationTarget(projects, input) {
+  const value = String(input || "").trim();
+  if (!value) return null;
+  const exact = projects.find((project) => (
+    project.key === value
+    || project.name === value
+    || project.relativePath === value
+    || project.path === value
+  ));
+  if (exact) return exact;
+  const normalized = normalizeProjectLookup(value);
+  return projects.find((project) => (
+    normalizeProjectLookup(project.key) === normalized
+    || normalizeProjectLookup(project.name) === normalized
+    || normalizeProjectLookup(project.relativePath) === normalized
+  )) || null;
+}
+
+function projectAutomationPatchFromTool(args = {}) {
+  const patch = {};
+  if (typeof args.enabled === "boolean") patch.enabled = args.enabled;
+  if (args.mode === "explore" || args.mode === "execute") patch.mode = args.mode;
+  if (args.cadence_minutes !== undefined) patch.cadenceMinutes = Number(args.cadence_minutes);
+  if (Array.isArray(args.file_roots)) patch.fileRoots = args.file_roots;
+  if (Array.isArray(args.allowed_command_prefixes)) {
+    patch.allowedCommandPrefixes = args.allowed_command_prefixes;
+  }
+  return patch;
+}
+
+function registerProjectAutomationTool() {
+  const toolName = "projectAutomationManage";
+  const tool = {
+    type: "function",
+    function: {
+      name: toolName,
+      description: [
+        "Inspect or operate user-controlled project automation.",
+        "Call get without project_key to list canonical project keys; do not guess a key from the display name.",
+        "Use request_update to ask the user to change enablement, mode, cadence, writable roots, or command prefixes.",
+        "The request remains pending until the user approves it in Biography.",
+        "Use disable for 关闭自动运行; it immediately revokes automation and stops an active run.",
+        "run_now only works for an already enabled project. stop only interrupts the current run.",
+        "Scheduler tasks are separate and must not be used to change project automation."
+      ].join(" "),
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          action: {
+            type: "string",
+            enum: ["get", "request_update", "run_now", "stop", "disable"]
+          },
+          project_key: { type: "string" },
+          enabled: { type: "boolean" },
+          mode: { type: "string", enum: ["explore", "execute"] },
+          cadence_minutes: { type: "integer", minimum: 15, maximum: 10080 },
+          file_roots: { type: "array", items: { type: "string" }, maxItems: 16 },
+          allowed_command_prefixes: {
+            type: "array",
+            items: { type: "string" },
+            maxItems: 16
+          },
+          reason: { type: "string", maxLength: 500 }
+        },
+        required: ["action"]
+      }
+    }
+  };
+  const currentTools = window.zion?.state?.get?.("chat.tools") || [];
+  if (!currentTools.some((item) => item?.function?.name === toolName)) {
+    window.zion?.state?.set?.("chat.tools", [...currentTools, tool]);
+  }
+  const previousHandlers = window.zion?.state?.get?.("chat.toolHandlers") || {};
+  const previousHandler = previousHandlers[toolName];
+  const handler = async (args = {}) => {
+    const action = String(args.action || "").trim();
+    const requestedProject = String(args.project_key || "").trim();
+    const automation = readProjectAutomation();
+    const projects = await loadProjectAutomationCatalog();
+    if (action === "get") {
+      if (!requestedProject) {
+        return JSON.stringify({
+          projects: projects.map((project) => ({
+            key: project.key,
+            name: project.name,
+            policy: automation.projects[project.key] || normalizeProjectPolicy()
+          })),
+          pending: automation.requests.filter((request) => request.status === "pending")
+        }, null, 2);
+      }
+      const project = resolveProjectAutomationTarget(projects, requestedProject);
+      if (!project) {
+        return JSON.stringify({
+          ok: false,
+          code: "PROJECT_NOT_FOUND",
+          requestedProject,
+          availableProjects: projects.map(({ key, name }) => ({ key, name }))
+        }, null, 2);
+      }
+      return JSON.stringify({
+            projectKey: project.key,
+            projectName: project.name,
+            policy: automation.projects[project.key] || normalizeProjectPolicy(),
+            pending: automation.requests.filter((request) => (
+              request.projectKey === project.key && request.status === "pending"
+            ))
+          }, null, 2);
+    }
+    if (!requestedProject) return "Missing project_key";
+    const project = resolveProjectAutomationTarget(projects, requestedProject);
+    if (!project) {
+      return JSON.stringify({
+        ok: false,
+        code: "PROJECT_NOT_FOUND",
+        requestedProject,
+        availableProjects: projects.map(({ key, name }) => ({ key, name }))
+      }, null, 2);
+    }
+    const projectKey = project.key;
+    const policy = automation.projects[projectKey] || normalizeProjectPolicy();
+    if (action === "disable") {
+      if (policy.activeTaskId) window.zion?.agents?.stopTask?.(policy.activeTaskId);
+      writeProjectAutomation(updateProjectPolicy(automation, projectKey, {
+        enabled: false,
+        activeTaskId: "",
+        lastStatus: "idle",
+        lastError: policy.activeTaskId ? "Stopped and disabled from conversation" : ""
+      }));
+      window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+        projectKey,
+        status: "disabled"
+      });
+      return JSON.stringify({ status: "disabled", projectKey, projectName: project.name }, null, 2);
+    }
+    if (action === "request_update") {
+      const patch = projectAutomationPatchFromTool(args);
+      if (!Object.keys(patch).length) return "No automation changes requested";
+      if (patch.enabled === false) {
+        return handler({ action: "disable", project_key: projectKey });
+      }
+      const request = {
+        id: `automation-request-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        projectKey,
+        patch,
+        reason: args.reason,
+        status: "pending",
+        requestedAt: Date.now()
+      };
+      writeProjectAutomation(addAutomationRequest(automation, request));
+      window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+        projectKey,
+        status: "approval-requested",
+        requestId: request.id
+      });
+      openBiographyPanel();
+      return JSON.stringify({
+        status: "pending_user_approval",
+        requestId: request.id,
+        projectKey,
+        patch
+      }, null, 2);
+    }
+    if (action === "run_now") {
+      if (!policy.enabled) return "Project automation is disabled; request user approval first";
+      if (policy.activeTaskId) return `Project automation is already running: ${policy.activeTaskId}`;
+      window.zion?.events?.emit?.("identity/projectAutomationRunRequested", { projectKey });
+      return JSON.stringify({ status: "queued", projectKey }, null, 2);
+    }
+    if (action === "stop") {
+      if (!policy.activeTaskId) return "Project automation is not running";
+      window.zion?.agents?.stopTask?.(policy.activeTaskId);
+      writeProjectAutomation(updateProjectPolicy(automation, projectKey, {
+        activeTaskId: "",
+        lastStatus: "idle",
+        lastError: "Stopped from conversation"
+      }));
+      window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+        projectKey,
+        status: "stopped"
+      });
+      return JSON.stringify({ status: "stopped", projectKey }, null, 2);
+    }
+    return `Unsupported action: ${action}`;
+  };
+  window.zion?.state?.set?.("chat.toolHandlers", {
+    ...previousHandlers,
+    [toolName]: handler
+  });
+  return {
+    dispose() {
+      const tools = window.zion?.state?.get?.("chat.tools") || [];
+      window.zion?.state?.set?.(
+        "chat.tools",
+        tools.filter((item) => item?.function?.name !== toolName)
+      );
+      const handlers = { ...(window.zion?.state?.get?.("chat.toolHandlers") || {}) };
+      if (handlers[toolName] === handler) {
+        if (previousHandler) handlers[toolName] = previousHandler;
+        else delete handlers[toolName];
+        window.zion?.state?.set?.("chat.toolHandlers", handlers);
+      }
+    }
+  };
 }
 
 function openBiographyPanel() {
@@ -1173,6 +1651,7 @@ function renderBiographyView(container) {
   let workingProjectsLoading = false;
   let workingProjectsError = "";
   let workingProjectsPromise = null;
+  let workingProjectsRefreshQueued = false;
   const openingProjectPaths = new Set();
   let citationRecords = [];
   let citationLoading = false;
@@ -1225,12 +1704,21 @@ function renderBiographyView(container) {
       profilePaths = paths;
       const projectsRoot = paths.projectsIndex.replace(/\/index\.md$/, "");
       const index = await readLocalFileIfExists(paths.projectsIndex);
+      const automation = readProjectAutomation();
       let entries = [];
       try {
         entries = await readLocalDirectoryEntries(projectsRoot);
       } catch {}
-      const rows = resolveProjectIndexRows(parseProjectIndex(index), entries, projectsRoot);
-      workingProjects = { index, rows, paths, projectsRoot };
+      const rows = resolveProjectIndexRows(parseProjectIndex(index), entries, projectsRoot)
+        .map((project) => {
+          const key = projectAutomationKey(project, projectsRoot);
+          return {
+            ...project,
+            key,
+            automation: automation.projects[key] || normalizeProjectPolicy()
+          };
+        });
+      workingProjects = { index, rows, paths, projectsRoot, automation };
       return workingProjects;
     })().catch((loadError) => {
       workingProjectsError = loadError?.message || String(loadError);
@@ -1243,8 +1731,74 @@ function renderBiographyView(container) {
     return workingProjectsPromise;
   };
 
+  const requestWorkingProjectsRefresh = () => {
+    if (workingProjectsPromise) {
+      workingProjectsRefreshQueued = true;
+      return;
+    }
+    void loadWorkingProjects({ refresh: true }).catch(() => {}).finally(() => {
+      if (!workingProjectsRefreshQueued || disposed) return;
+      workingProjectsRefreshQueued = false;
+      requestWorkingProjectsRefresh();
+    });
+  };
+
   const showWorkingProjectError = (message) => {
     window.zion?.notification?.show?.(message, { type: "error", duration: 3200 });
+  };
+
+  const saveWorkingProjectAutomation = async (project, patch) => {
+    if (!project?.key || !workingProjects) return false;
+    try {
+      const current = project.automation || normalizeProjectPolicy();
+      const nextPatch = patch?.enabled === false
+        ? {
+            ...patch,
+            activeTaskId: "",
+            lastStatus: "idle",
+            lastError: current.activeTaskId ? "Stopped and disabled from Biography" : ""
+          }
+        : patch;
+      if (patch?.enabled === false && current.activeTaskId) {
+        window.zion?.agents?.stopTask?.(current.activeTaskId);
+      }
+      const next = updateProjectPolicy(
+        workingProjects.automation,
+        project.key,
+        nextPatch,
+        Date.now()
+      );
+      workingProjects.automation = writeProjectAutomation(next);
+      project.automation = workingProjects.automation.projects[project.key];
+      render();
+      window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+        projectKey: project.key,
+        status: "policy-updated"
+      });
+      return true;
+    } catch (error) {
+      showWorkingProjectError(`保存自动推进设置失败：${error?.message || String(error)}`);
+      return false;
+    }
+  };
+
+  const resolveWorkingProjectAutomationRequest = (project, request, approved) => {
+    if (!workingProjects || !request?.id) return;
+    workingProjects.automation = writeProjectAutomation(
+      resolveAutomationRequest(
+        workingProjects.automation,
+        request.id,
+        approved,
+        Date.now()
+      )
+    );
+    project.automation = workingProjects.automation.projects[project.key] || normalizeProjectPolicy();
+    render();
+    window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+      projectKey: project.key,
+      status: approved ? "request-approved" : "request-rejected",
+      requestId: request.id
+    });
   };
 
   const openWorkingProjectDocument = async (kind, title, path, knownContent = null) => {
@@ -1278,6 +1832,16 @@ function renderBiographyView(container) {
       if (!disposed) render();
     }
   };
+
+  const automationChangedDisposable = window.zion?.events?.on?.(
+    "identity/projectAutomationChanged",
+    (payload = {}) => {
+      if (activeSection !== "working-projects") return;
+      if (payload.status === "policy-updated") return;
+      requestWorkingProjectsRefresh();
+    }
+  );
+  if (automationChangedDisposable) disposables.push(automationChangedDisposable);
 
   const loadCitationRecords = async () => {
     if (citationLoadPromise) return citationLoadPromise;
@@ -1811,7 +2375,7 @@ function renderBiographyView(container) {
       workingRefresh.disabled = workingProjectsLoading;
       workingRefresh.innerHTML = `<span class="codicon codicon-${workingProjectsLoading ? "loading codicon-modifier-spin" : "refresh"}" aria-hidden="true"></span>`;
       workingRefresh.onclick = () => {
-        void loadWorkingProjects({ refresh: true }).catch(() => {});
+        requestWorkingProjectsRefresh();
       };
       workingHeader.append(workingIntro, workingRefresh);
       workingView.appendChild(workingHeader);
@@ -1836,9 +2400,21 @@ function renderBiographyView(container) {
           projectList.appendChild(state);
         }
         for (const project of workingProjects.rows) {
-          const card = document.createElement(project.path ? "button" : "article");
-          if (project.path) card.type = "button";
+          const card = document.createElement("article");
           card.className = `zion-biography-working-project${project.path ? "" : " is-unresolved"}`;
+          if (project.path) {
+            card.setAttribute("role", "button");
+            card.tabIndex = 0;
+            card.onclick = (event) => {
+              if (event.target?.closest?.("button, input, select")) return;
+              void openWorkingProject(project);
+            };
+            card.onkeydown = (event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              void openWorkingProject(project);
+            };
+          }
           const cardHeader = document.createElement("div");
           cardHeader.className = "zion-biography-working-project-header";
           const heading = document.createElement("strong");
@@ -1871,16 +2447,193 @@ function renderBiographyView(container) {
             footer.appendChild(unresolved);
           } else {
             const opening = openingProjectPaths.has(project.path);
-            card.disabled = opening;
             const chevron = document.createElement("span");
             chevron.className = `codicon codicon-${opening ? "loading codicon-modifier-spin" : "chevron-right"}`;
             chevron.setAttribute("aria-hidden", "true");
             footer.appendChild(chevron);
-            card.onclick = () => {
-              void openWorkingProject(project);
-            };
           }
           card.append(cardHeader, nextStep, footer);
+          if (project.path && project.key) {
+            const policy = project.automation || normalizeProjectPolicy();
+            const automation = document.createElement("div");
+            automation.className = "zion-biography-project-automation";
+            automation.onclick = (event) => event.stopPropagation();
+
+            const automationHeader = document.createElement("div");
+            automationHeader.className = "zion-biography-project-automation-header";
+            const toggleLabel = document.createElement("label");
+            toggleLabel.className = "zion-biography-project-automation-toggle";
+            const toggle = document.createElement("input");
+            toggle.type = "checkbox";
+            toggle.checked = policy.enabled;
+            toggle.setAttribute("aria-label", `自动推进 ${project.name}`);
+            toggle.onchange = () => {
+              void saveWorkingProjectAutomation(project, { enabled: toggle.checked });
+            };
+            const toggleText = document.createElement("span");
+            toggleText.textContent = "自动推进";
+            toggleLabel.append(toggle, toggleText);
+
+            const runButton = document.createElement("button");
+            runButton.type = "button";
+            runButton.className = "zion-biography-icon-button";
+            runButton.title = policy.enabled ? "立即推进一次" : "请先开启自动推进";
+            runButton.setAttribute("aria-label", `立即推进 ${project.name}`);
+            runButton.disabled = !policy.enabled || policy.lastStatus === "running";
+            runButton.innerHTML = `<span class="codicon codicon-${policy.lastStatus === "running" ? "loading codicon-modifier-spin" : "play"}" aria-hidden="true"></span>`;
+            runButton.onclick = () => {
+              window.zion?.events?.emit?.("identity/projectAutomationRunRequested", {
+                projectKey: project.key
+              });
+            };
+            automationHeader.append(toggleLabel, runButton);
+
+            const fields = document.createElement("div");
+            fields.className = "zion-biography-project-automation-fields";
+            const mode = document.createElement("select");
+            mode.className = "zion-biography-project-automation-select";
+            mode.setAttribute("aria-label", `${project.name} 自动推进模式`);
+            for (const [value, label] of [["explore", "仅探索"], ["execute", "可执行"]]) {
+              const option = document.createElement("option");
+              option.value = value;
+              option.textContent = label;
+              option.selected = policy.mode === value;
+              mode.appendChild(option);
+            }
+            mode.onchange = () => {
+              void saveWorkingProjectAutomation(project, { mode: mode.value });
+            };
+
+            const cadence = document.createElement("select");
+            cadence.className = "zion-biography-project-automation-select";
+            cadence.setAttribute("aria-label", `${project.name} 检查频率`);
+            for (const [value, label] of [[30, "每 30 分钟"], [120, "每 2 小时"], [1440, "每天"]]) {
+              const option = document.createElement("option");
+              option.value = String(value);
+              option.textContent = label;
+              option.selected = policy.cadenceMinutes === value;
+              cadence.appendChild(option);
+            }
+            cadence.onchange = () => {
+              void saveWorkingProjectAutomation(project, {
+                cadenceMinutes: Number(cadence.value),
+                nextEligibleAt: Date.now()
+              });
+            };
+            fields.append(mode, cadence);
+
+            if (policy.mode === "execute") {
+              const roots = document.createElement("input");
+              roots.type = "text";
+              roots.className = "zion-biography-project-automation-roots";
+              roots.placeholder = "允许写入目录，逗号分隔";
+              roots.value = policy.fileRoots.join(", ");
+              roots.setAttribute("aria-label", `${project.name} 允许写入目录`);
+              roots.onchange = () => {
+                void saveWorkingProjectAutomation(project, {
+                  fileRoots: roots.value.split(",").map((value) => value.trim()).filter(Boolean)
+                });
+              };
+              fields.appendChild(roots);
+
+              const commands = document.createElement("input");
+              commands.type = "text";
+              commands.className = "zion-biography-project-automation-roots";
+              commands.placeholder = "允许命令前缀，逗号分隔";
+              commands.value = policy.allowedCommandPrefixes.join(", ");
+              commands.setAttribute("aria-label", `${project.name} 允许命令前缀`);
+              commands.onchange = () => {
+                void saveWorkingProjectAutomation(project, {
+                  allowedCommandPrefixes: commands.value
+                    .split(",")
+                    .map((value) => value.trim())
+                    .filter(Boolean)
+                });
+              };
+              fields.appendChild(commands);
+            }
+
+            const pendingRequest = workingProjects.automation.requests.find((request) => (
+              request.projectKey === project.key && request.status === "pending"
+            ));
+            let approval = null;
+            if (pendingRequest) {
+              approval = document.createElement("div");
+              approval.className = "zion-biography-project-automation-approval";
+              const approvalText = document.createElement("div");
+              approvalText.className = "zion-biography-project-automation-approval-text";
+              const requested = [];
+              if (typeof pendingRequest.patch.enabled === "boolean") {
+                requested.push(pendingRequest.patch.enabled ? "开启自动推进" : "关闭自动推进");
+              }
+              if (pendingRequest.patch.mode) {
+                requested.push(pendingRequest.patch.mode === "execute" ? "切换为可执行" : "切换为仅探索");
+              }
+              if (pendingRequest.patch.cadenceMinutes) {
+                requested.push(`频率 ${pendingRequest.patch.cadenceMinutes} 分钟`);
+              }
+              if (pendingRequest.patch.fileRoots?.length) {
+                requested.push(`允许写入 ${pendingRequest.patch.fileRoots.join("、")}`);
+              }
+              if (pendingRequest.patch.allowedCommandPrefixes?.length) {
+                requested.push(`允许命令 ${pendingRequest.patch.allowedCommandPrefixes.join("、")}`);
+              }
+              approvalText.textContent = [
+                requested.join(" · ") || "调整自动推进设置",
+                pendingRequest.reason
+              ].filter(Boolean).join("：");
+              const approvalActions = document.createElement("div");
+              approvalActions.className = "zion-biography-project-automation-approval-actions";
+              const approve = document.createElement("button");
+              approve.type = "button";
+              approve.className = "zion-biography-icon-button";
+              approve.title = "批准自动化变更";
+              approve.setAttribute("aria-label", `批准 ${project.name} 自动化变更`);
+              approve.innerHTML = '<span class="codicon codicon-check" aria-hidden="true"></span>';
+              approve.onclick = () => resolveWorkingProjectAutomationRequest(
+                project,
+                pendingRequest,
+                true
+              );
+              const reject = document.createElement("button");
+              reject.type = "button";
+              reject.className = "zion-biography-icon-button";
+              reject.title = "拒绝自动化变更";
+              reject.setAttribute("aria-label", `拒绝 ${project.name} 自动化变更`);
+              reject.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>';
+              reject.onclick = () => resolveWorkingProjectAutomationRequest(
+                project,
+                pendingRequest,
+                false
+              );
+              approvalActions.append(approve, reject);
+              approval.append(approvalText, approvalActions);
+            }
+
+            const runtime = document.createElement("div");
+            runtime.className = `zion-biography-project-automation-runtime is-${policy.lastStatus}`;
+            const statusLabels = {
+              idle: "尚未运行",
+              running: "正在推进",
+              success: "上次运行成功",
+              failed: "上次运行失败",
+              attention: "等待用户处理"
+            };
+            const lastTime = policy.lastCompletedAt || policy.lastRunAt;
+            runtime.textContent = [
+              statusLabels[policy.lastStatus] || "尚未运行",
+              policy.lastPhase || "",
+              lastTime ? new Date(lastTime).toLocaleString() : "",
+              policy.lastError || ""
+            ].filter(Boolean).join(" · ");
+            automation.append(
+              automationHeader,
+              fields,
+              ...(approval ? [approval] : []),
+              runtime
+            );
+            card.appendChild(automation);
+          }
           projectList.appendChild(card);
         }
         workingView.appendChild(projectList);
@@ -1889,7 +2642,8 @@ function renderBiographyView(container) {
         documentActions.className = "zion-biography-working-documents";
         for (const [titleText, path, content, kind, icon] of [
           ["项目索引", workingProjects.paths.projectsIndex, workingProjects.index, "working-index", "list-tree"],
-          ["杂思收集箱", workingProjects.paths.projectsInbox, null, "working-inbox", "inbox"]
+          ["杂思收集箱", workingProjects.paths.projectsInbox, null, "working-inbox", "inbox"],
+          ["待处理事项", workingProjects.paths.projectsAttention, null, "working-attention", "bell"]
         ]) {
           const action = document.createElement("button");
           action.type = "button";
@@ -2240,12 +2994,59 @@ export async function activate(ctx) {
   let disposed = false;
   let biographyQueue = Promise.resolve();
 
+  projectAutomationStore = ctx?.globalState || {
+    get(key, fallback) {
+      try {
+        const raw = localStorage.getItem(`plugin.dev.identity.global.${key}`);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch {
+        return fallback;
+      }
+    },
+    async update(key, value) {
+      localStorage.setItem(`plugin.dev.identity.global.${key}`, JSON.stringify(value));
+    }
+  };
+  projectAutomationMemoryState = normalizeAutomationDocument(
+    projectAutomationStore.get(PROJECT_AUTOMATION_STORAGE_KEY, {})
+  );
   profileScaffoldReady = false;
   try {
     await ensureProfileFilesInitialized({ force: true });
   } catch (error) {
     console.warn("[dev.identity] profile scaffold initialization unavailable", error);
   }
+  const projectAutomationTool = registerProjectAutomationTool();
+  disposables.push(projectAutomationTool);
+  const heartbeatDisposable = window.zion?.events?.on?.("scheduler/heartbeat", () => {
+    void runProjectCoordinator({ reason: "heartbeat" }).catch((error) => {
+      console.warn("[dev.identity] project automation heartbeat failed", error);
+    });
+  });
+  if (heartbeatDisposable) disposables.push(heartbeatDisposable);
+  const runRequestedDisposable = window.zion?.events?.on?.(
+    "identity/projectAutomationRunRequested",
+    (payload = {}) => {
+      void runProjectCoordinator({
+        reason: "manual",
+        projectKey: payload.projectKey
+      }).catch((error) => {
+        window.zion?.notification?.show?.(
+          `自动推进失败：${error?.message || String(error)}`,
+          { type: "error", duration: 4000 }
+        );
+      });
+    }
+  );
+  if (runRequestedDisposable) disposables.push(runRequestedDisposable);
+  const startupCoordinatorTimer = window.setTimeout(() => {
+    void runProjectCoordinator({ reason: "startup" }).catch(() => {});
+  }, 0);
+  disposables.push({
+    dispose() {
+      window.clearTimeout(startupCoordinatorTimer);
+    }
+  });
 
   void (async () => {
     try {

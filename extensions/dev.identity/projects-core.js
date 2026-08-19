@@ -1,17 +1,17 @@
 const DEFAULT_PROJECT_INDEX_LIMIT = 1600;
 const DEFAULT_PROJECT_INBOX_LIMIT = 800;
-const DEFAULT_PROJECT_TEMPLATE_LIMIT = 2000;
+const DEFAULT_PROJECT_ATTENTION_LIMIT = 800;
 const TRUNCATION_MARKER = "\n[truncated]";
 
 const PROJECT_MAINTENANCE_INSTRUCTIONS = Object.freeze([
   "Treat ~/.zion-next/memory/projects as model-maintained working memory.",
-  "Each project lives in projects/{canonical-slug}/; project.md is its front door, and supporting artifacts may live beside it.",
-  "Every project.md preserves the template frontmatter and eight fixed sections: Goal, Current State, Plan, Timeline, Artifacts and Resources, Operating Notes, Lessons Learned, and Relationships.",
-  "When the user explicitly starts or commits to a concrete project, read projects/_template.md, create projects/{canonical-slug}/project.md from it, and add its linked row to projects/index.md in the same turn; do not create projects from passing mentions.",
+  "When the user explicitly starts or commits to a concrete project, create projects/{canonical-slug}/project.md from projects/_template.md and add its linked row to projects/index.md in the same turn; do not create projects from passing mentions.",
   "Before editing an existing project, read its project.md and preserve its fixed frontmatter and section structure.",
   "Only substantive progress, decisions, milestones, blocker changes, or completed plan items justify a project update.",
   "When project.md changes, update the matching one-line entry in projects/index.md in the same turn; write the project cell as a relative Markdown link such as [Project](./project-directory/project.md).",
   "Record a first-time unformed idea as one line in projects/inbox.md; when it recurs, propose creating a project and wait for user confirmation; after promotion, remove its inbox entry.",
+  "Treat projects/attention.md as requests that need the user's decision; do not mark an item complete unless the user resolves it.",
+  "Use projectAutomationManage for automatic-run policy; any projects/.automation.json file is legacy and non-authoritative.",
   "Do not infer autonomy grants, deadlines, completion, blockers, project ownership, or user beliefs."
 ]);
 
@@ -69,6 +69,11 @@ export const PROJECT_INBOX_TEMPLATE = `# 杂思收集箱
 > 未成形的想法先记录在这里；同一想法再次出现时提议立项。
 `;
 
+export const PROJECT_ATTENTION_TEMPLATE = `# 待处理事项
+
+> 自动推进遇到需要用户决策、授权或验收的事项会记录在这里。
+`;
+
 export function buildProjectTemplate(options = {}) {
   const project = compactLine(options.project, "project-name");
   const date = normalizeDate(options.date);
@@ -95,6 +100,8 @@ tags: []
 - 阻塞：
 - 等待：
 
+## 调研
+
 ## 计划
 
 ## 时间线
@@ -120,9 +127,9 @@ export function buildProjectContext(index, options = {}) {
     options.inbox,
     options.inboxMaxChars ?? DEFAULT_PROJECT_INBOX_LIMIT
   );
-  const templateContent = clipCharacters(
-    options.template,
-    options.templateMaxChars ?? DEFAULT_PROJECT_TEMPLATE_LIMIT
+  const attentionContent = clipCharacters(
+    options.attention,
+    options.attentionMaxChars ?? DEFAULT_PROJECT_ATTENTION_LIMIT
   );
   const fragments = [];
   if (indexContent) {
@@ -139,11 +146,11 @@ export function buildProjectContext(index, options = {}) {
       "</projects_inbox>"
     ].join("\n"));
   }
-  if (templateContent) {
+  if (attentionContent) {
     fragments.push([
-      '<project_template source="~/.zion-next/memory/projects/_template.md">',
-      `  <content>${escapeXml(templateContent)}</content>`,
-      "</project_template>"
+      '<projects_attention source="~/.zion-next/memory/projects/attention.md">',
+      `  <content>${escapeXml(attentionContent)}</content>`,
+      "</projects_attention>"
     ].join("\n"));
   }
   return {

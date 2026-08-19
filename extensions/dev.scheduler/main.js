@@ -18,6 +18,7 @@ import { LocalSchedulerStore } from "./store.js";
 const VIEW_ID = "scheduler.tasks";
 const STATUS_ID = "dev.scheduler.status";
 const MAX_CONCURRENT_SERVICE_RUNS = 3;
+const COORDINATOR_HEARTBEAT_INTERVAL_MS = 5 * 60_000;
 
 function currentLocale() {
   return String(
@@ -781,6 +782,7 @@ export async function activate(ctx) {
   let leaderRelease = null;
   let leaderAbort = null;
   let servicePollTimer = null;
+  let coordinatorHeartbeatTimer = null;
   let serviceClaiming = false;
   const activeServiceRuns = new Set();
   let serviceOnline = false;
@@ -836,6 +838,27 @@ export async function activate(ctx) {
 
   const emitChanged = () => {
     if (!disposed) window.zion?.events?.emit?.("scheduler/changed");
+  };
+  const stopCoordinatorHeartbeat = () => {
+    if (coordinatorHeartbeatTimer) window.clearInterval(coordinatorHeartbeatTimer);
+    coordinatorHeartbeatTimer = null;
+  };
+  const startCoordinatorHeartbeat = () => {
+    stopCoordinatorHeartbeat();
+    const emit = (reason) => {
+      if (!disposed && isLeader) {
+        window.zion?.events?.emit?.("scheduler/heartbeat", {
+          at: Date.now(),
+          reason,
+          workerId
+        });
+      }
+    };
+    emit("leader-start");
+    coordinatorHeartbeatTimer = window.setInterval(
+      () => emit("interval"),
+      COORDINATOR_HEARTBEAT_INTERVAL_MS
+    );
   };
   const updateStatus = () => {
     if (disposed) return;
@@ -1219,8 +1242,10 @@ export async function activate(ctx) {
       void navigator.locks.request("zion.scheduler.local.leader", { signal: leaderAbort.signal }, async () => {
         isLeader = true;
         engine.start();
+        startCoordinatorHeartbeat();
         updateStatus();
         await new Promise((resolve) => { leaderRelease = resolve; });
+        stopCoordinatorHeartbeat();
         engine.stop();
         isLeader = false;
       }).catch((error) => {
@@ -1229,6 +1254,7 @@ export async function activate(ctx) {
     } else {
       isLeader = true;
       engine.start();
+      startCoordinatorHeartbeat();
     }
   };
   startLeader();
@@ -1313,6 +1339,7 @@ export async function activate(ctx) {
       leaderRelease?.();
       leaderAbort?.abort?.();
       if (servicePollTimer) window.clearInterval(servicePollTimer);
+      stopCoordinatorHeartbeat();
       window.removeEventListener("storage", onSchedulerStorage);
       migrationDisposable?.dispose?.();
       engine.stop();

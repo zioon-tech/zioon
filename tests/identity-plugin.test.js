@@ -30,7 +30,7 @@ describe("identity context core", () => {
       biography: "- shipped identity",
       projects: "# 项目索引\n| Zion Next | active | high | 完成 M1 | 08-18 |",
       projectsInbox: "# 杂思收集箱\n- 评估 M2",
-      projectsTemplate: "---\nproject: project-name\n---\n\n# project-name\n\n## 目标\n\n## 当前状态"
+      projectsAttention: "# 待处理事项\n- [ ] 批准执行"
     });
 
     expect(text).toContain("<agent_identity");
@@ -38,9 +38,12 @@ describe("identity context core", () => {
     expect(text).toContain("<biography");
     expect(text).toContain("<projects_index");
     expect(text).toContain("<projects_inbox");
-    expect(text).toContain("<project_template");
+    expect(text).toContain("<projects_attention");
     expect(text).toContain("Zion Next");
     expect(text).toContain("评估 M2");
+    expect(text).toContain("批准执行");
+    expect(text).toContain("legacy and non-authoritative");
+    expect(text).toContain("projectAutomationManage");
     expect(text).toContain("&lt;trusted&gt;");
     expect(text).toContain("A &amp; B");
     expect(text).not.toContain("Name: Zion <trusted>");
@@ -54,7 +57,6 @@ describe("identity context core", () => {
     expect(emptyProjects).not.toContain("<projects_index");
     expect(emptyProjects).toContain("model-maintained working memory");
     expect(emptyProjects).toContain("create projects/{canonical-slug}/project.md");
-    expect(emptyProjects).toContain("eight fixed sections");
   });
 
   it("extracts only the latest completed user and assistant exchange", () => {
@@ -308,6 +310,9 @@ describe("identity extension", () => {
       const commands = new Map();
     const subscriptions = [];
     const stateValues = new Map();
+    const eventHandlers = new Map();
+    const fileWrites = [];
+    let automationContent = '{"version":1,"projects":{"zion-next":{"enabled":true,"mode":"execute"}}}';
     window.zion = {
       messages: {
         registerContributor(value) {
@@ -322,7 +327,11 @@ describe("identity extension", () => {
           })
       },
       events: {
-        on: vi.fn(() => ({ dispose: vi.fn() }))
+        on: vi.fn((topic, handler) => {
+          eventHandlers.set(topic, handler);
+          return { dispose: vi.fn(() => eventHandlers.delete(topic)) };
+        }),
+        emit: vi.fn((topic, payload) => eventHandlers.get(topic)?.(payload))
       },
       auxiliaryBar: {
         registerView: vi.fn((value) => {
@@ -339,6 +348,14 @@ describe("identity extension", () => {
         }),
         clearOwner: vi.fn()
       },
+      agents: {
+        createTask: vi.fn((task) => task),
+        runTaskHeadless: vi.fn(async (taskId) => ({
+          ok: true,
+          task: { id: taskId, status: "done", result: { workResult: "research complete" } }
+        })),
+        getTask: vi.fn(() => null)
+      },
       state: {
         get: vi.fn((key) => {
           if (key === "localTools.baseUrl") return "http://127.0.0.1:9999";
@@ -349,8 +366,16 @@ describe("identity extension", () => {
         set: vi.fn((key, value) => stateValues.set(key, value))
       }
     };
-    vi.stubGlobal("fetch", vi.fn(async (url) => {
+    vi.stubGlobal("fetch", vi.fn(async (url, options = {}) => {
       const requestUrl = new URL(url);
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body);
+        fileWrites.push(body);
+        return new globalThis.Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
       if (requestUrl.pathname.endsWith("/files/entries")) {
         return new globalThis.Response(JSON.stringify({
           path: "/Users/test/.zion-next/memory/projects",
@@ -374,8 +399,12 @@ describe("identity extension", () => {
             ? "# 项目索引\n| 项目 | 状态 | 优先级 | 下一步 | 更新 |\n|---|---|---|---|---|\n| [Zion Next](./zion-next/project.md) | active | high | 完成 M1 | 2026-08-19 |"
           : path.endsWith("projects/inbox.md")
             ? "# 杂思收集箱\n\n- 评估 M2"
+          : path.endsWith("projects/attention.md")
+            ? "# 待处理事项\n\n- [ ] 批准执行"
+          : path.endsWith("projects/.automation.json")
+            ? automationContent
           : path.endsWith("zion-next/project.md")
-            ? "# Zion Next\n\n## 当前状态\n\nM1 已完成"
+            ? "# Zion Next\n\n## 目标\n\n完成项目自动化。\n\n## 当前状态\n\nM1 已完成\n\n## 计划\n\n- [ ] 完成 M2"
           : path.endsWith("digest.md")
             ? "# 自传摘要\n\n- Shipped biography digest"
             : `${JSON.stringify({
@@ -413,7 +442,7 @@ describe("identity extension", () => {
     expect(messages[1].content).not.toContain("Shipped biography view");
     expect(messages[1].content).toContain("<projects_index");
     expect(messages[1].content).toContain("<projects_inbox");
-    expect(messages[1].content).toContain("<project_template");
+    expect(messages[1].content).toContain("<projects_attention");
     expect(messages[1].content).toContain("| [Zion Next](./zion-next/project.md) | active |");
     expect(messages[1].content).toContain("评估 M2");
       const sessionEvents = await commands.get("identity.getSessionBiographyEvents")({ sessionId: "session-view" });
@@ -465,6 +494,75 @@ describe("identity extension", () => {
     expect(workingProject?.textContent).toContain("Zion Next");
     expect(workingProject?.textContent).toContain("active");
     expect(workingProject?.textContent).toContain("high");
+    const automationToggle = workingProject?.querySelector('input[type="checkbox"]');
+    expect(automationToggle?.checked).toBe(false);
+    automationToggle.checked = true;
+    automationToggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(JSON.parse(
+        localStorage.getItem("plugin.dev.identity.global.projectAutomation.v1")
+      ).projects["zion-next"].enabled).toBe(true);
+    });
+    expect(fileWrites.some((write) => write.path.endsWith("projects/.automation.json"))).toBe(false);
+    const automationTool = stateValues.get("chat.toolHandlers")?.projectAutomationManage;
+    expect(automationTool).toBeTypeOf("function");
+    const resolvedByName = JSON.parse(await automationTool({
+      action: "get",
+      project_key: "Zion Next"
+    }));
+    expect(resolvedByName).toEqual(expect.objectContaining({
+      projectKey: "zion-next",
+      projectName: "Zion Next"
+    }));
+    const missingProject = JSON.parse(await automationTool({
+      action: "get",
+      project_key: "Zion Next Research"
+    }));
+    expect(missingProject).toEqual(expect.objectContaining({
+      ok: false,
+      code: "PROJECT_NOT_FOUND",
+      availableProjects: [{ key: "zion-next", name: "Zion Next" }]
+    }));
+    const requestResult = JSON.parse(await automationTool({
+      action: "request_update",
+      project_key: "zion-next",
+      mode: "execute",
+      reason: "用户希望进入执行阶段"
+    }));
+    expect(requestResult.status).toBe("pending_user_approval");
+    await vi.waitFor(() => {
+      expect(host.querySelector('[aria-label="批准 Zion Next 自动化变更"]')).toBeTruthy();
+    });
+    host.querySelector('[aria-label="批准 Zion Next 自动化变更"]')?.click();
+    expect(JSON.parse(
+      localStorage.getItem("plugin.dev.identity.global.projectAutomation.v1")
+    ).projects["zion-next"].mode).toBe("execute");
+    let runAutomation;
+    await vi.waitFor(() => {
+      runAutomation = host.querySelector('[aria-label="立即推进 Zion Next"]');
+      expect(runAutomation?.disabled).toBe(false);
+    });
+    runAutomation?.click();
+    await vi.waitFor(() => expect(window.zion.agents.runTaskHeadless).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(host.textContent).toContain("上次运行成功"));
+    expect(window.zion.agents.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: "researcher",
+      executionPolicy: expect.objectContaining({
+        preset: "workspace-write",
+        maxToolCalls: 24
+      })
+    }));
+    const disabled = JSON.parse(await automationTool({
+      action: "disable",
+      project_key: "Zion Next"
+    }));
+    expect(disabled).toEqual(expect.objectContaining({
+      status: "disabled",
+      projectKey: "zion-next"
+    }));
+    expect(JSON.parse(
+      localStorage.getItem("plugin.dev.identity.global.projectAutomation.v1")
+    ).projects["zion-next"].enabled).toBe(false);
     workingProject?.click();
     await vi.waitFor(() => expect(inspectorItem?.title).toBe("Zion Next"));
     expect(inspectorItem.path).toBe("/Users/test/.zion-next/memory/projects/zion-next/project.md");
@@ -475,6 +573,9 @@ describe("identity extension", () => {
     documentActions.find((button) => button.textContent.includes("杂思收集箱"))?.click();
     await vi.waitFor(() => expect(inspectorItem?.title).toBe("杂思收集箱"));
     expect(inspectorItem.file?.content).toContain("评估 M2");
+    documentActions.find((button) => button.textContent.includes("待处理事项"))?.click();
+    await vi.waitFor(() => expect(inspectorItem?.title).toBe("待处理事项"));
+    expect(inspectorItem.file?.content).toContain("批准执行");
     biographyTab("经历项目")?.click();
     expect(host.textContent).toContain("memory-panel");
     biographyTab("摘要")?.click();
@@ -574,6 +675,7 @@ describe("identity extension", () => {
     const expectedCreated = [
       `${root}/projects/index.md`,
       `${root}/projects/inbox.md`,
+      `${root}/projects/attention.md`,
       `${root}/projects/_template.md`
     ];
     expect(writes.map((write) => write.path)).toEqual(expectedCreated);
@@ -582,16 +684,17 @@ describe("identity extension", () => {
     expect(first).toEqual({ ok: true, created: [] });
     expect(files.get(`${root}/projects/index.md`)).toContain("# 项目索引");
     expect(files.get(`${root}/projects/inbox.md`)).toContain("# 杂思收集箱");
+    expect(files.get(`${root}/projects/attention.md`)).toContain("# 待处理事项");
     expect(files.get(`${root}/projects/_template.md`)).toContain("autonomy: none");
 
     const second = await initialize();
     expect(second).toEqual({ ok: true, created: [] });
-    expect(writes).toHaveLength(3);
+    expect(writes).toHaveLength(4);
 
     files.set(`${root}/projects/inbox.md`, "");
     const third = await initialize();
     expect(third).toEqual({ ok: true, created: [] });
-    expect(writes).toHaveLength(3);
+    expect(writes).toHaveLength(4);
     expect(files.get(`${root}/identity.md`)).toBe("# Identity\nExisting");
     expect(files.get(`${root}/user.md`)).toBe("# User\nExisting");
     disposable.dispose();
@@ -695,7 +798,7 @@ describe("identity extension", () => {
       const restored = await contributor.contribute([{ role: "user", content: "after reload" }], { sessionId: "session-cache" });
       expect(restored[0].content).toContain("Digest A");
       expect(restored[0].content).not.toContain("Digest B");
-      expect(fileReads).toBeLessThanOrEqual(readsAfterFirst + 6);
+      expect(fileReads).toBeLessThanOrEqual(readsAfterFirst + 8);
 
       const refreshed = await commands.get("identity.refreshContext")({ sessionId: "session-cache" });
       expect(refreshed).toEqual(expect.objectContaining({ ok: true, sessionId: "session-cache" }));

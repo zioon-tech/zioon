@@ -1221,8 +1221,77 @@ async function maybeGenerateScratchTaskTitle(task, transcript) {
   return true;
 }
 
+async function runProgrammaticTask(task) {
+  if (!task || activeRuns.has(task.id)) return null;
+  if (!window.zion?.chat?.execute) throw new Error("Chat runtime is unavailable");
+  const sessionId = getTaskSessionId(task);
+  const runId = uid("run");
+  const startedAt = now();
+  patchTask(task.id, {
+    status: "running",
+    startedAt,
+    activeRunId: runId,
+    taskSessionId: sessionId,
+    result: null,
+    error: "",
+    runCount: Number(task.runCount || 0) + 1,
+    events: [createRunEvent("runner.start", {
+      runId,
+      runner: "programmatic",
+      message: task.executionPolicy?.preset || "read-only"
+    })]
+  });
+  let timeout = null;
+  try {
+    const execution = window.zion.chat.execute({
+      prompt: String(task.prompt || task.anchorText || "").trim(),
+      executionMode: "local-only",
+      sessionId,
+      policy: task.executionPolicy
+    });
+    activeRuns.set(task.id, {
+      runId,
+      stop() {
+        void execution.abort("user");
+      }
+    });
+    const timeoutMs = Math.max(1, Number(task.timeoutMinutes || 10)) * 60_000;
+    timeout = window.setTimeout(() => void execution.abort("timeout"), timeoutMs);
+    const completion = await execution.completion;
+    const succeeded = completion?.status === "completed";
+    const output = String(completion?.output || "").trim();
+    patchTask(task.id, {
+      status: succeeded ? "done" : completion?.status === "aborted" ? "aborted" : "error",
+      completedAt: now(),
+      activeRunId: "",
+      body: `user ${task.prompt || ""}\n\nassistant ${output}`,
+      result: {
+        workResult: output,
+        status: completion?.status || "failed",
+        usage: completion?.usage || null
+      },
+      error: succeeded ? "" : String(completion?.error || completion?.reason || "Automatic run failed")
+    });
+    return completion;
+  } catch (error) {
+    patchTask(task.id, {
+      status: "error",
+      completedAt: now(),
+      activeRunId: "",
+      error: error?.message || String(error)
+    });
+    throw error;
+  } finally {
+    if (timeout) window.clearTimeout(timeout);
+    activeRuns.delete(task.id);
+    emitChanged();
+  }
+}
+
 async function runTask(task, handle) {
-  if (!task || !handle?.view || !handle?.proxy) return;
+  if (!task) return;
+  if (task.executionPolicy) return runProgrammaticTask(task);
+  if (!handle?.view || !handle?.proxy) return;
   if (activeRuns.has(task.id)) return;
   const sessionId = getTaskSessionId(task);
   const runId = uid("run");
@@ -1405,6 +1474,7 @@ function installAgentApi() {
       const task = readTasks().find((item) => item?.id === id);
       return task ? runTask(task, handle) : null;
     },
+    runTaskHeadless,
     stopTask: (id) => {
       const task = readTasks().find((item) => item?.id === id);
       return task ? stopTask(task) : null;
@@ -1607,6 +1677,19 @@ async function runTaskHeadless(taskId) {
   let handle = null;
   let host = null;
   try {
+    if (task.executionPolicy) {
+      await runTask(task, null);
+      const next = readTasks().find((item) => item?.id === taskId);
+      return {
+        ok: next?.status === "done",
+        task: next ? {
+          id: next.id,
+          status: next.status,
+          result: next.result || null,
+          error: next.error || ""
+        } : null
+      };
+    }
     if (lastTaskEditorHandle?.sessionId === getTaskSessionId(task)) {
       handle = lastTaskEditorHandle;
     } else {

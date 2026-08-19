@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  PROJECT_ATTENTION_TEMPLATE,
   PROJECT_FILE_TEMPLATE,
   PROJECT_INDEX_TEMPLATE,
   PROJECT_INBOX_TEMPLATE,
@@ -15,6 +16,7 @@ describe("identity project memory core", () => {
     expect(PROJECT_INDEX_TEMPLATE).toContain("| 项目 | 状态 | 优先级 | 下一步 | 更新 |");
     expect(PROJECT_INBOX_TEMPLATE).toContain("# 杂思收集箱");
     expect(PROJECT_INBOX_TEMPLATE).toContain("再次出现时提议立项");
+    expect(PROJECT_ATTENTION_TEMPLATE).toContain("# 待处理事项");
 
     const template = buildProjectTemplate({
       project: "示例项目",
@@ -28,6 +30,7 @@ describe("identity project memory core", () => {
     expect(template).toContain("# 示例项目");
     expect(template).toContain("## 目标");
     expect(template).toContain("## 当前状态");
+    expect(template).toContain("## 调研");
     expect(template).toContain("## 计划");
     expect(template).toContain("## 时间线");
     expect(template).toContain("## 产物与资源");
@@ -54,10 +57,10 @@ describe("identity project memory core", () => {
       `# Index\n${"A < B & C ".repeat(20)}`,
       {
         inbox: `# Inbox\n${"Idea < draft & review ".repeat(20)}`,
-        template: PROJECT_FILE_TEMPLATE,
+        attention: "# Attention\n- [ ] Need approval",
         maxChars: 80,
         inboxMaxChars: 70,
-        templateMaxChars: 2000
+        attentionMaxChars: 70
       }
     );
 
@@ -68,10 +71,8 @@ describe("identity project memory core", () => {
       '<projects_inbox source="~/.zion-next/memory/projects/inbox.md">'
     );
     expect(context.fragment).toContain(
-      '<project_template source="~/.zion-next/memory/projects/_template.md">'
+      '<projects_attention source="~/.zion-next/memory/projects/attention.md">'
     );
-    expect(context.fragment).toContain("## 当前状态");
-    expect(context.fragment).toContain("## 经验教训");
     expect(context.fragment).toContain("&lt;");
     expect(context.fragment).toContain("&amp;");
     expect(context.fragment).toContain("[truncated]");
@@ -80,9 +81,9 @@ describe("identity project memory core", () => {
     expect(context.instructions.join("\n")).toContain("read its project.md");
     expect(context.instructions.join("\n")).toContain("projects/index.md");
     expect(context.instructions.join("\n")).toContain("create projects/{canonical-slug}/project.md");
-    expect(context.instructions.join("\n")).toContain("eight fixed sections");
-    expect(context.instructions.join("\n")).toContain("project.md is its front door");
     expect(context.instructions.join("\n")).toContain("remove its inbox entry");
+    expect(context.instructions.join("\n")).toContain("legacy and non-authoritative");
+    expect(context.instructions.join("\n")).toContain("projectAutomationManage");
     expect(context.instructions.join("\n")).toContain("Do not infer autonomy grants");
   });
 

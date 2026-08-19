@@ -614,6 +614,11 @@ declare global {
         getExecutionPlan(task: any): any;
         isRunning(id: string): boolean;
         runTask(id: string, handle?: any): Promise<void> | null;
+        runTaskHeadless(id: string): Promise<{
+          ok: boolean;
+          error?: string;
+          task?: { id: string; status: string; result: any; error: string } | null;
+        }>;
         stopTask(id: string): void | null;
         createTask(task: any): any;
         updateTask(id: string, patch: any): any | null;

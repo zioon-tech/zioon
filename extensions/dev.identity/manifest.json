@@ -24,12 +24,14 @@
         "zh-CN": [
           "维护 Agent 身份与用户画像",
           "维护项目索引与项目工作记忆",
+          "按项目授权自动调研、规划与执行",
           "从会话蒸馏经历事件",
           "向模型注入可引用的自传摘要"
         ],
         "en-US": [
           "Maintain agent identity and user profile",
           "Maintain project index and working memory",
+          "Authorize automatic research, planning, and execution per project",
           "Distill biography events from sessions",
           "Inject a citable biography digest into model context"
         ]
