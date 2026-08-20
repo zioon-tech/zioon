@@ -148,3 +148,39 @@ Expected: UI 不显示工具参数值、Prompt 或工具结果正文。
 git add manifest.json main.js styles.css dashboard-model.js dashboard-model.test.mjs
 git commit -m "feat: redesign mind dashboard as execution console"
 ```
+
+### Task 4: 收敛行首状态标记
+
+**Files:**
+- Modify: `/Users/bytedance/.zion-next/plugins/dev.mind-dashboard/styles.css`
+- Modify: `/Users/bytedance/.zion-next/plugins/dev.mind-dashboard/manifest.json`
+- Modify: `/Users/bytedance/.zion-next/plugins/dev.mind-dashboard/package.json`
+
+- [ ] **Step 1: 将贯穿行高的色条改为状态圆点**
+
+```css
+.mind-dashboard-run-row,
+.mind-dashboard-project-row {
+  grid-template-columns: 8px minmax(0, 1fr) 14px;
+}
+
+.mind-dashboard-row-marker {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+```
+
+- [ ] **Step 2: 保留现有状态语义色**
+
+异常、警告、运行、成功和无活动继续使用现有 `--md-danger`、`--md-warning`、`--md-accent`、`--md-success` 和弱边框色，不添加阴影、描边或发光。
+
+- [ ] **Step 3: 升级插件缓存版本**
+
+将 manifest、入口 URL、样式 URL 和 package version 升级到 `0.2.2`。
+
+- [ ] **Step 4: 运行验证**
+
+Run: `npm test && node --check main.js && node --check dashboard-model.js && git diff --check`
+
+Expected: 所有命令成功。
