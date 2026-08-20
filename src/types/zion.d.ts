@@ -1,3 +1,6 @@
+import type { RunLedger, RunSourceRef, RunTrigger } from "../core/run-ledger";
+import type { CapabilityPolicy, RunPolicyCounters, ToolCallLike, ToolLike } from "../core/run-policy";
+
 export type Disposable = { dispose(): void };
 
 export type Keybinding = {
@@ -202,6 +205,12 @@ declare global {
         register(id: string, css: string): Disposable;
         get(id: string): string | undefined;
         list(): string[];
+      };
+      runs?: RunLedger;
+      policies?: {
+        normalizeCapabilityPolicy(input?: any): CapabilityPolicy;
+        authorizeToolCall(call: ToolCallLike, inputPolicy?: any, counters?: RunPolicyCounters): { allowed: boolean; reason?: string };
+        filterToolsForPolicy<T extends ToolLike>(tools: T[], inputPolicy?: any): T[];
       };
       // ui
       statusBar: {
@@ -569,6 +578,10 @@ declare global {
         execute(request: {
           prompt: string;
           executionMode: "local-only" | "service-backed";
+          title?: string;
+          trigger?: RunTrigger;
+          source?: RunSourceRef;
+          metadata?: Record<string, any>;
           sessionId?: string;
           policy?: {
             preset: "read-only" | "workspace-write" | "trusted-automation";

@@ -1,151 +1,22 @@
-const WRITE_TOOL_PATTERN = /(write|edit|delete|remove|move|rename|mkdir|shell|bash|terminal|mail|send|schedule|taskmanage)/i;
-const SAFE_TOOL_NAMES = new Set([
-  "fsEntries",
-  "fsRead",
-  "fsTree",
-  "sessionList",
-  "sessionGet",
-  "webFetch",
-  "webSearch",
-  "localSearch",
-  "glob",
-  "grep",
-  "read",
-  "tree",
-  "memoryManage"
-]);
-const SAFE_MEMORY_ACTIONS = new Set(["list", "tree", "read", "search", "build_context", "providers"]);
-const MUTATING_TOOL_NAMES = new Set(["write", "edit", "Bash", "sendMail", "todoWrite"]);
-const LEGACY_SCHEDULED_TOOL_ALIASES = new Map([
-  ["fsWrite", "write"],
-  ["fsEdit", "edit"],
-  ["terminalExecute", "Bash"]
-]);
+import {
+  authorizeToolCall,
+  filterReadOnlyTools,
+  filterToolsForPolicy,
+  isReadOnlyToolCall,
+  isReadOnlyToolName,
+  normalizeCapabilityPolicy,
+  normalizeToolCall
+} from "../../src/core/run-policy";
 
-export function isReadOnlyToolName(name) {
-  const normalized = String(name || "").trim();
-  return !!normalized && !WRITE_TOOL_PATTERN.test(normalized);
-}
-
-export function filterReadOnlyTools(tools) {
-  return filterToolsForPolicy(tools, { preset: "read-only" });
-}
-
-export function normalizeCapabilityPolicy(input = {}) {
-  const preset = ["read-only", "workspace-write", "trusted-automation"].includes(input?.preset)
-    ? input.preset
-    : "read-only";
-  return {
-    preset,
-    // Keep saved tasks created before the local-tools migration runnable.
-    allowedTools: Array.isArray(input?.allowedTools)
-      ? [...new Set(input.allowedTools.map((name) => LEGACY_SCHEDULED_TOOL_ALIASES.get(String(name)) || String(name)))]
-      : [],
-    fileRoots: Array.isArray(input?.fileRoots) ? input.fileRoots.map(String).filter(Boolean) : [],
-    allowedCommandPrefixes: Array.isArray(input?.allowedCommandPrefixes) ? input.allowedCommandPrefixes.map(String).filter(Boolean) : [],
-    allowedTerminalSessionIds: Array.isArray(input?.allowedTerminalSessionIds) ? input.allowedTerminalSessionIds.map(String).filter(Boolean) : [],
-    allowedRecipients: Array.isArray(input?.allowedRecipients) ? input.allowedRecipients.map((value) => String(value).toLowerCase()).filter(Boolean) : [],
-    maxMailPerRun: Math.max(0, Number(input?.maxMailPerRun) || 0),
-    maxToolCalls: Math.max(1, Number(input?.maxToolCalls) || 50)
-  };
-}
-
-export function filterToolsForPolicy(tools, inputPolicy = {}) {
-  const policy = normalizeCapabilityPolicy(inputPolicy);
-  const explicitlyAllowed = new Set(policy.allowedTools);
-  return (Array.isArray(tools) ? tools : []).flatMap((tool) => {
-    const name = String(tool?.function?.name || tool?.name || "");
-    const readOnly = SAFE_TOOL_NAMES.has(name) && isReadOnlyToolName(name);
-    const mutating = MUTATING_TOOL_NAMES.has(name) && explicitlyAllowed.has(name);
-    if (!readOnly && !mutating) return [];
-    if (mutating && policy.preset === "read-only") return [];
-    if (name === "Bash" || name === "sendMail" || name === "todoWrite") {
-      if (policy.preset !== "trusted-automation") return [];
-    }
-    if (name !== "memoryManage") return [tool];
-    const clone = globalThis.structuredClone
-      ? globalThis.structuredClone(tool)
-      : JSON.parse(JSON.stringify(tool));
-    const action = clone?.function?.parameters?.properties?.action;
-    if (action) action.enum = Array.from(SAFE_MEMORY_ACTIONS);
-    return [clone];
-  });
-}
-
-export function isReadOnlyToolCall(call) {
-  const name = String(call?.name || "");
-  if (!SAFE_TOOL_NAMES.has(name) || !isReadOnlyToolName(name)) return false;
-  if (name === "memoryManage") return SAFE_MEMORY_ACTIONS.has(String(call?.args?.action || ""));
-  return true;
-}
-
-function normalizePath(value) {
-  const raw = String(value || "").trim().replaceAll("\\", "/");
-  const prefix = raw.startsWith("/") ? "/" : /^[A-Za-z]:\//.test(raw) ? raw.slice(0, 3) : "";
-  const source = prefix === "/" ? raw.slice(1) : prefix ? raw.slice(3) : raw;
-  const parts = [];
-  for (const part of source.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") parts.pop();
-    else parts.push(part);
-  }
-  return `${prefix}${parts.join("/")}`.replace(/\/+$/, "");
-}
-
-function isPathWithinRoots(value, roots) {
-  const path = normalizePath(value);
-  return roots.some((rootValue) => {
-    const root = normalizePath(rootValue);
-    return !!root && (path === root || path.startsWith(`${root}/`));
-  });
-}
-
-export function authorizeToolCall(call, inputPolicy = {}, counters = {}) {
-  const policy = normalizeCapabilityPolicy(inputPolicy);
-  const name = String(call?.name || "");
-  const args = call?.args || {};
-  if (Number(counters.toolCalls || 0) >= policy.maxToolCalls) return { allowed: false, reason: "tool call quota exceeded" };
-  if (isReadOnlyToolCall(call)) return { allowed: true };
-  if (!policy.allowedTools.includes(name)) return { allowed: false, reason: "tool is not allowed by task policy" };
-  if (policy.preset === "read-only") return { allowed: false, reason: "read-only policy" };
-  if (name === "write" || name === "edit") {
-    const path = args.file_path || args.path;
-    return isPathWithinRoots(path, policy.fileRoots)
-      ? { allowed: true }
-      : { allowed: false, reason: "file path is outside allowed roots" };
-  }
-  if (policy.preset !== "trusted-automation") return { allowed: false, reason: "trusted automation is required" };
-  if (name === "Bash") {
-    const command = String(args.command || "").trim();
-    const commandAllowed = policy.allowedCommandPrefixes.length === 0 || policy.allowedCommandPrefixes.some((prefix) =>
-      command === prefix || command.startsWith(`${prefix} `)
-    );
-    if (!commandAllowed) return { allowed: false, reason: "terminal command is outside allowed prefixes" };
-    if (policy.allowedTerminalSessionIds.length && !policy.allowedTerminalSessionIds.includes(String(args.session_id || ""))) {
-      return { allowed: false, reason: "terminal session is not allowed" };
-    }
-    return { allowed: true };
-  }
-  if (name === "sendMail") {
-    if (Number(counters.mail || 0) >= policy.maxMailPerRun) return { allowed: false, reason: "mail quota exceeded" };
-    const recipients = [...(args.to || []), ...(args.cc || []), ...(args.bcc || [])].map((value) => String(value).toLowerCase());
-    if (!recipients.length || recipients.some((email) => !policy.allowedRecipients.includes(email))) {
-      return { allowed: false, reason: "mail recipient is not allowed" };
-    }
-    return { allowed: true };
-  }
-  if (name === "todoWrite") return { allowed: true };
-  return { allowed: false, reason: "unsupported mutating tool" };
-}
-
-export function normalizeToolCall(call) {
-  const args = { ...(call?.args || {}) };
-  for (const key of ["url", "uri", "href"]) {
-    if (typeof args[key] !== "string") continue;
-    args[key] = args[key].trim().replace(/^`+|`+$/g, "").trim();
-  }
-  return { ...call, args };
-}
+export {
+  authorizeToolCall,
+  filterReadOnlyTools,
+  filterToolsForPolicy,
+  isReadOnlyToolCall,
+  isReadOnlyToolName,
+  normalizeCapabilityPolicy,
+  normalizeToolCall
+};
 
 function createAsyncEventQueue() {
   const values = [];
@@ -190,6 +61,7 @@ export function createProgrammaticExecutor(deps) {
     getTools,
     executeTool,
     runContributors,
+    runs,
     emit
   } = deps;
 
@@ -202,6 +74,8 @@ export function createProgrammaticExecutor(deps) {
 
     const runId = createId("run");
     const sessionId = String(request.sessionId || `scheduled:${runId}`);
+    const runModel = getActiveModel?.() || null;
+    const policy = normalizeCapabilityPolicy(request.policy);
     const queue = createAsyncEventQueue();
     const controllerRef = { current: null };
     let sequence = 0;
@@ -219,6 +93,7 @@ export function createProgrammaticExecutor(deps) {
         data
       };
       queue.push(event);
+      try { runs?.recordEvent?.(event); } catch {}
       try { emit?.("chat/runEvent", event); } catch {}
       return event;
     };
@@ -240,9 +115,22 @@ export function createProgrammaticExecutor(deps) {
       let output = "";
       let usage = { input_tokens: 0, output_tokens: 0 };
       let messages = [{ role: "user", content: prompt }];
-      const policy = normalizeCapabilityPolicy(request.policy);
       const counters = { toolCalls: 0, mail: 0 };
       const tools = filterToolsForPolicy(getTools?.() || [], policy);
+
+      try {
+        runs?.start?.({
+          id: runId,
+          title: request.title || "",
+          source: request.source || null,
+          trigger: request.trigger || "user",
+          sessionId,
+          executionMode: request.executionMode,
+          model: runModel,
+          policy,
+          metadata: request.metadata || {}
+        });
+      } catch {}
 
       publish("run.started", {
         prompt,
@@ -281,7 +169,7 @@ export function createProgrammaticExecutor(deps) {
           const result = await runStream({
             messages,
             tools,
-            activeModel: getActiveModel?.(),
+            activeModel: runModel,
             runId,
             sessionId,
             panelId: null,
@@ -328,6 +216,14 @@ export function createProgrammaticExecutor(deps) {
               input_tokens: usage.input_tokens + Number(result.usage.input_tokens || result.usage.prompt_tokens || 0),
               output_tokens: usage.output_tokens + Number(result.usage.output_tokens || result.usage.completion_tokens || 0)
             };
+            try {
+              runs?.recordUsage?.({
+                runId,
+                stepIndex: turn,
+                model: runModel,
+                usage: result.usage
+              });
+            } catch {}
           }
           if (aborted) break;
 

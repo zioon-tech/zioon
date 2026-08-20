@@ -97,11 +97,17 @@ describe("programmatic chat runner", () => {
 
   it("returns a handle and emits an ordered transcript", async () => {
     const globalEvents = [];
+    const runs = {
+      start: vi.fn(),
+      recordEvent: vi.fn(),
+      recordUsage: vi.fn()
+    };
     const execute = createProgrammaticExecutor({
       getActiveModel: () => ({ providerId: "test", modelId: "test" }),
       getTools: () => [],
       runContributors: async (messages) => messages,
       emit: (topic, event) => globalEvents.push({ topic, event }),
+      runs,
         runStream: async ({ onToken, sessionId }) => {
           expect(sessionId).toBe("scheduled-session");
         onToken("hello ");
@@ -115,6 +121,9 @@ describe("programmatic chat runner", () => {
       prompt: "say hello",
       executionMode: "local-only",
       sessionId: "scheduled-session",
+      title: "Scheduled hello",
+      source: { pluginId: "dev.scheduler", kind: "scheduled-task", id: "task-1" },
+      trigger: "schedule",
       policy: { preset: "read-only" }
     });
     const result = await handle.completion;
@@ -133,6 +142,19 @@ describe("programmatic chat runner", () => {
     ]);
     expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(globalEvents).toHaveLength(events.length);
+    expect(runs.start).toHaveBeenCalledWith(expect.objectContaining({
+      id: handle.runId,
+      title: "Scheduled hello",
+      source: { pluginId: "dev.scheduler", kind: "scheduled-task", id: "task-1" },
+      trigger: "schedule",
+      sessionId: "scheduled-session"
+    }));
+    expect(runs.recordEvent.mock.calls.map(([event]) => event.type)).toEqual(events.map((event) => event.type));
+    expect(runs.recordUsage).toHaveBeenCalledWith(expect.objectContaining({
+      runId: handle.runId,
+      stepIndex: 1,
+      usage: { input_tokens: 4, output_tokens: 2 }
+    }));
   });
 
   it("executes only exposed read-only tools and continues the turn", async () => {

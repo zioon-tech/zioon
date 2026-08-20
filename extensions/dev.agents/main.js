@@ -1385,14 +1385,25 @@ async function runProgrammaticTask(task) {
     );
   };
   try {
+    const source = task.automation?.projectKey
+      ? { pluginId: "dev.identity", kind: "project", id: task.automation.projectKey }
+      : { pluginId: "dev.agents", kind: "agent-task", id: task.id };
     execution = window.zion.chat.execute({
+      title: task.title || `Agent Task: ${task.id}`,
       prompt,
       executionMode: "local-only",
       sessionId,
+      source,
+      trigger: task.automation ? "supervisor" : "user",
+      metadata: {
+        agentTaskId: task.id,
+        agentId: task.agentId || "",
+        automation: task.automation || null
+      },
       policy: task.executionPolicy
     });
     activeRuns.set(task.id, {
-      runId,
+      runId: execution.runId || runId,
       stop() {
         void execution.abort("user");
       }

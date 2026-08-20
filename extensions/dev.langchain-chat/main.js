@@ -756,6 +756,19 @@ export async function activate(ctx) {
   const getRunState = runtime.getRunState;
   const setRunState = runtime.setRunState;
   ctx.subscriptions.push(runtime);
+  const abortedLedgerDisposable = window.zion?.events?.on?.("chat/aborted", (payload = {}) => {
+    const runId = String(payload?.runId || "");
+    if (!runId) return;
+    try {
+      window.zion?.runs?.recordEvent?.({
+        runId,
+        type: "run.aborted",
+        ts: Date.now(),
+        data: { reason: payload?.reason || "user" }
+      });
+    } catch {}
+  });
+  if (abortedLedgerDisposable) ctx.subscriptions.push(abortedLedgerDisposable);
 
   const buildMockCurrentMessages = async (opts = {}) => {
     const ed = getEd(opts);
@@ -849,6 +862,7 @@ export async function activate(ctx) {
       window.zion?.__runMessageContributors
         ? window.zion.__runMessageContributors(messages, stage, contributorCtx)
         : messages,
+    runs: window.zion?.runs,
     emit: (topic, payload) => window.zion?.events?.emit?.(topic, payload)
   });
     const programmaticRuns = new Map();
@@ -1204,6 +1218,7 @@ export async function activate(ctx) {
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
 
     // 3. 插入 assistant 块（用于承载输出）
+    const startedAt = Date.now();
     const runId = "run_" + Math.random().toString(36).slice(2);
     const { anchor, insertLine } = insertAssistantBlock(ed, {
       sessionId: sid,
@@ -1225,9 +1240,43 @@ export async function activate(ctx) {
       answerHeadLine: typeof anchor?.headLine === "number" ? anchor.headLine : null,
       insertLine
     };
+    const ledgerSource = opts?.source || {
+      pluginId: "dev.langchain-chat",
+      kind: "chat-session",
+      id: sid
+    };
+    const recordRunEvent = (type, data = {}) => {
+      try {
+        window.zion?.runs?.recordEvent?.({
+          runId,
+          type,
+          ts: Date.now(),
+          data
+        });
+      } catch {}
+    };
+    try {
+      window.zion?.runs?.start?.({
+        id: runId,
+        title: opts?.title || "",
+        source: ledgerSource,
+        trigger: opts?.trigger || "user",
+        sessionId: sid,
+        panelId,
+        executionMode: "interactive",
+        model: runModel,
+        metadata: {
+          requestSource: contributorCtx.requestSource
+        }
+      });
+    } catch {}
     runtime.beginRun(sid, runId);
     setRunState(sid, { aborted: false, model: runModel }, runId);
     try { window.zion?.state?.set?.(`chat.followLatest.${sid}`, runFollowLatest); } catch {}
+    recordRunEvent("run.started", {
+      executionMode: "interactive",
+      model: runModel
+    });
     window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId, model: runModel, ...runAnchorPayload });
       if (autoScrollAssistant && typeof anchor?.headLine === "number") {
       scheduleDocLineVisible(ed, anchor.headLine, { sessionId: sid, forceBottom: true, structuralRole: true, traceId: runId });
@@ -1247,6 +1296,7 @@ export async function activate(ctx) {
         try { tokenBuffer?.flush?.(); } catch {}
         if (!runtime.markError(sid, error, runId)) return false;
         failed = true;
+        recordRunEvent("run.failed", { error: error.message });
         window.zion.events.emit("chat/runError", { runId, error, sessionId: sid, panelId });
         const message = `大模型调用失败: ${error.message}`;
         try {
@@ -1337,8 +1387,10 @@ export async function activate(ctx) {
       };
     })();
 
+    let runOutput = "";
     const appendToken = (tk) => {
       if (!isThisRunActive()) return;
+      runOutput += String(tk || "");
       tokenBuffer.push(tk);
     };
 
@@ -1396,6 +1448,10 @@ export async function activate(ctx) {
       tokenBuffer.stop();
       if (!runtime.markAwaiting(sid, runId)) return false;
       if (!skipSessionPersistence) window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
+      recordRunEvent("run.completed", {
+        output: runOutput,
+        durationMs: Date.now() - startedAt
+      });
       window.zion.events.emit("chat/runFinished", { runId, sessionId: sid, panelId });
       return true;
     };
@@ -1438,6 +1494,12 @@ export async function activate(ctx) {
             panelId,
             ...runAnchorPayload
           });
+          recordRunEvent("tool.requested", {
+            turn: stepIndex,
+            callId: tc.id,
+            name: tc.name,
+            args: tc.args
+          });
           const p = executeToolCall({ ...tc, cardId, runId }, sid)
             .then(res => {
               if (!isThisRunActive()) return;
@@ -1456,6 +1518,12 @@ export async function activate(ctx) {
                 panelId,
                 assistantBlockId: runAnchorPayload.assistantBlockId
               });
+              recordRunEvent("tool.completed", {
+                turn: stepIndex,
+                callId: tc.id,
+                name: tc.name,
+                result: content
+              });
             })
             .catch(err => {
               if (!isThisRunActive()) return;
@@ -1472,6 +1540,12 @@ export async function activate(ctx) {
                 sessionId: sid,
                 panelId,
                 assistantBlockId: runAnchorPayload.assistantBlockId
+              });
+              recordRunEvent("tool.completed", {
+                turn: stepIndex,
+                callId: tc.id,
+                name: tc.name,
+                error: err?.message || String(err)
               });
             });
           promises.push(p);
@@ -1505,6 +1579,12 @@ export async function activate(ctx) {
             sessionId: sid,
             panelId,
             assistantBlockId: runAnchorPayload.assistantBlockId
+          });
+          recordRunEvent("tool.denied", {
+            turn: stepIndex,
+            callId: id,
+            name,
+            reason: tc?.error || "invalid arguments"
           });
         },
         onEnd: () => { /* 中间步骤不清理，留到链式结束后统一 finalize */ },
@@ -1550,6 +1630,14 @@ export async function activate(ctx) {
             stepIndex,
             usage: streamResult.usage,
             cfg
+          });
+          window.zion?.runs?.recordUsage?.({
+            runId,
+            sessionId: opts?.usageSessionId || sid,
+            panelId,
+            model: runModel,
+            stepIndex,
+            usage: streamResult.usage
           });
         } catch {}
       }

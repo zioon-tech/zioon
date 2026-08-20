@@ -947,9 +947,17 @@ export async function activate(ctx) {
       run.sessionId = sessionId;
       store.saveRun(run);
       const handle = window.zion.chat.execute({
+        title: task.title,
         prompt: task.prompt,
         executionMode: task.executionMode || "local-only",
         sessionId,
+        source: { pluginId: "dev.scheduler", kind: "scheduled-task", id: task.id },
+        trigger: "schedule",
+        metadata: {
+          schedulerRunId: run.id,
+          remoteRunId: remoteContext?.runId || null,
+          taskType: task.type || "agent"
+        },
         policy: task.capability || { preset: "read-only" }
       });
       run.chatRunId = handle.runId;

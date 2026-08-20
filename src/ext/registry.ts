@@ -3,6 +3,12 @@ import { open as openSettingsPanel, close as closeSettingsPanel } from "../setti
 import { EventBus } from "../core/event-bus";
 import { StateBus } from "../core/state-bus";
 import type { Disposable, Keybinding, CommandHandler, PasteHandler, MenuItem, MessageContributor, Decorator } from "../types/zion";
+import { createRunLedger } from "../core/run-ledger";
+import {
+  authorizeToolCall,
+  filterToolsForPolicy,
+  normalizeCapabilityPolicy
+} from "../core/run-policy";
 import type { EditorCore } from "../editor/EditorCore";
 import { EditorProxy } from "../editor/EditorProxy";
 import type { EditorProxy as IEditorProxy } from "../types/zion";
@@ -2287,6 +2293,10 @@ class Registry {
 
 const registry = new Registry();
 const chatUsageStore = createChatUsageStore();
+const runLedger = createRunLedger({
+  emit: (topic, payload) => registry.emit(topic, payload)
+});
+try { runLedger.reconcileActiveRuns([], "startup"); } catch {}
 
 // Expose window.zion API
 (function expose() {
@@ -2367,6 +2377,12 @@ const chatUsageStore = createChatUsageStore();
         try { const el = document.getElementById('zion-style-' + id); return el?.textContent || undefined; } catch { return undefined; }
       },
       list: () => Array.from(document.querySelectorAll('style[id^="zion-style-"]')).map(function(el) { return el.id.replace('zion-style-', ''); })
+    },
+    runs: runLedger,
+    policies: {
+      normalizeCapabilityPolicy,
+      authorizeToolCall,
+      filterToolsForPolicy
     },
     usage: chatUsageStore,
     notification: {
