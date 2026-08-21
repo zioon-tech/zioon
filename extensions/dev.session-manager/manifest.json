@@ -1,13 +1,13 @@
 {
   "name": "dev.session-manager",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "description": "Manage session lists, folders, import/export, cloning, and switching.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.session-manager",
     "name": "Session Manager",
-    "version": "0.0.1",
+    "version": "0.0.4",
     "main": "./main.js",
     "presentation": {
       "displayName": {
@@ -18,7 +18,7 @@
         "zh-CN": "管理会话列表、文件夹、导入导出、克隆和切换。",
         "en-US": "Manage session lists, folders, import/export, cloning, and switching."
       },
-      "icon": "history",
+      "icon": "messages-square",
       "category": "workspace",
       "features": {
         "zh-CN": [
@@ -52,7 +52,7 @@
             "en-US": "Show Sessions"
           },
           "command": "zion.sessions.showPanel",
-          "icon": "history"
+          "icon": "messages-square"
         }
       ]
     },

@@ -639,94 +639,68 @@ export function installTerminalManagerPanel() {
 
 export function mountTerminalManagerSidebarViewInto(container) {
   const root = document.createElement("div");
-  Object.assign(root.style, {
-    padding: "12px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-    boxSizing: "border-box",
-    width: "100%"
-  });
-
-  const header = document.createElement("div");
-  Object.assign(header.style, {
-    display: "flex",
-    flexDirection: "column",
-    gap: "4px"
-  });
-
-  const title = document.createElement("div");
-  title.textContent = t("ui.sessions", "终端会话");
-  Object.assign(title.style, {
-    fontSize: "15px",
-    fontWeight: "600",
-    letterSpacing: "0.01em"
-  });
+  root.className = "zion-terminal-manager-sidebar";
 
   const summary = document.createElement("div");
+  summary.className = "zion-terminal-manager-summary";
   summary.textContent = t("ui.loading", "正在读取会话...");
-  Object.assign(summary.style, {
-    fontSize: "11px",
-    lineHeight: "1.5",
-    opacity: "0.6"
-  });
-
-  header.appendChild(title);
-  header.appendChild(summary);
 
   const toolbar = document.createElement("div");
-  Object.assign(toolbar.style, {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "8px"
-  });
+  toolbar.className = "zion-terminal-manager-toolbar";
 
   const toolbarActions = document.createElement("div");
-  Object.assign(toolbarActions.style, {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    flexWrap: "wrap"
-  });
+  toolbarActions.className = "zion-terminal-manager-actions";
 
-  const makeButton = (text, primary = false) => {
+  const setButtonContent = (button, text, icon = "", iconOnly = false) => {
+    button.replaceChildren();
+    if (icon) {
+      const iconElement = document.createElement("span");
+      iconElement.className = `codicon codicon-${icon}`;
+      iconElement.setAttribute("aria-hidden", "true");
+      button.appendChild(iconElement);
+    }
+    if (!iconOnly) {
+      const label = document.createElement("span");
+      label.textContent = text;
+      button.appendChild(label);
+    }
+    button.title = text;
+    button.setAttribute("aria-label", text);
+  };
+
+  const makeButton = (text, primary = false, icon = "", iconOnly = false) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = text;
-    Object.assign(btn.style, {
-      border: "1px solid var(--border)",
-      borderRadius: "8px",
-      background: primary ? "color-mix(in srgb, var(--accent) 18%, transparent)" : "transparent",
-      color: "var(--fg)",
-      padding: "6px 10px",
-      fontSize: "12px",
-      cursor: "pointer"
-    });
+    btn.className = `zion-terminal-manager-button${primary ? " is-primary" : ""}${iconOnly ? " is-icon" : ""}`;
+    setButtonContent(btn, text, icon, iconOnly);
     return btn;
   };
 
-  const createToggleBtn = makeButton(t("ui.newTerminal", "新建终端"), true);
-  const refreshBtn = makeButton(t("ui.refresh", "刷新"));
+  const searchWrap = document.createElement("label");
+  searchWrap.className = "zion-terminal-manager-search";
+  const searchIcon = document.createElement("span");
+  searchIcon.className = "codicon codicon-search";
+  searchIcon.setAttribute("aria-hidden", "true");
+  const searchInput = document.createElement("input");
+  searchInput.type = "search";
+  searchInput.placeholder = t("ui.searchSessions", "搜索终端");
+  searchInput.setAttribute("aria-label", searchInput.placeholder);
+  searchWrap.appendChild(searchIcon);
+  searchWrap.appendChild(searchInput);
+
+  const createToggleBtn = makeButton(t("ui.newTerminal", "新建终端"), true, "add", true);
+  const refreshBtn = makeButton(t("ui.refresh", "刷新"), false, "refresh", true);
+  toolbarActions.appendChild(searchWrap);
   toolbarActions.appendChild(createToggleBtn);
   toolbarActions.appendChild(refreshBtn);
 
   const ctxWrap = document.createElement("label");
-  Object.assign(ctxWrap.style, {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "6px",
-    fontSize: "11px",
-    lineHeight: "1.4",
-    userSelect: "none",
-    cursor: "pointer",
-    opacity: "0.72"
-  });
+  ctxWrap.className = "zion-terminal-manager-context";
   const cbCtx = document.createElement("input");
   cbCtx.type = "checkbox";
   cbCtx.style.margin = "0";
   const spanCtx = document.createElement("span");
-  spanCtx.textContent = t("ui.injectContext", "在对话中注入终端上下文");
+  spanCtx.textContent = t("ui.injectContextShort", "注入上下文");
   ctxWrap.appendChild(cbCtx);
   ctxWrap.appendChild(spanCtx);
   try {
@@ -743,19 +717,16 @@ export function mountTerminalManagerSidebarViewInto(container) {
     } catch {}
   });
 
+  const contextRow = document.createElement("div");
+  contextRow.className = "zion-terminal-manager-context-row";
+  contextRow.appendChild(ctxWrap);
+  contextRow.appendChild(summary);
+
   toolbar.appendChild(toolbarActions);
-  toolbar.appendChild(ctxWrap);
+  toolbar.appendChild(contextRow);
 
   const form = document.createElement("div");
-  Object.assign(form.style, {
-    display: "none",
-    gridTemplateColumns: "1fr",
-    gap: "8px",
-    padding: "12px",
-    border: "1px solid color-mix(in srgb, var(--border) 38%, transparent)",
-    borderRadius: "12px",
-    background: "color-mix(in srgb, var(--panel) 82%, transparent)"
-  });
+  form.className = "zion-terminal-manager-form";
 
   const mkInput = (label, placeholder = "", type = "text") => {
     const wrap = document.createElement("label");
@@ -764,7 +735,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
     wrap.style.gap = "4px";
     const lb = document.createElement("span");
     lb.textContent = label;
-    Object.assign(lb.style, { fontSize: "10px", opacity: "0.62", textTransform: "uppercase", letterSpacing: "0.03em" });
+    lb.className = "zion-terminal-manager-field-label";
     const inp = document.createElement("input");
     inp.type = type;
     inp.placeholder = placeholder;
@@ -772,7 +743,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
       width: "100%",
       boxSizing: "border-box",
       border: "1px solid var(--border)",
-      borderRadius: "8px",
+      borderRadius: "4px",
       background: "transparent",
       color: "var(--fg)",
       outline: "none",
@@ -791,7 +762,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
   typeWrap.style.gap = "4px";
   const typeLb = document.createElement("span");
   typeLb.textContent = t("ui.type", "Type");
-  Object.assign(typeLb.style, { fontSize: "10px", opacity: "0.62", textTransform: "uppercase", letterSpacing: "0.03em" });
+  typeLb.className = "zion-terminal-manager-field-label";
   const typeSel = document.createElement("select");
   ["local", "ssh"].forEach((v) => {
     const o = document.createElement("option");
@@ -803,7 +774,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
     width: "100%",
     boxSizing: "border-box",
     border: "1px solid var(--border)",
-    borderRadius: "8px",
+    borderRadius: "4px",
     background: "transparent",
     color: "var(--fg)",
     outline: "none",
@@ -836,24 +807,10 @@ export function mountTerminalManagerSidebarViewInto(container) {
   btns.appendChild(cancelCreateBtn);
 
   const list = document.createElement("div");
-  Object.assign(list.style, {
-    display: "flex",
-    flexDirection: "column",
-    gap: "0",
-    width: "100%",
-    boxSizing: "border-box"
-  });
+  list.className = "zion-terminal-manager-list";
 
   const message = document.createElement("div");
-  Object.assign(message.style, {
-    display: "none",
-    fontSize: "11px",
-    lineHeight: "1.45",
-    padding: "8px 10px",
-    borderRadius: "8px",
-    border: "1px solid color-mix(in srgb, var(--border) 36%, transparent)",
-    background: "color-mix(in srgb, var(--panel) 82%, transparent)"
-  });
+  message.className = "zion-terminal-manager-message";
 
   const readBase = () => {
     const st1 = window.zion?.state?.get("localTools.baseUrl");
@@ -894,7 +851,12 @@ export function mountTerminalManagerSidebarViewInto(container) {
     const type = (s?.type || "local") === "ssh" ? "SSH" : t("ui.local", "Local");
     const cwd = shortPath(s?.cwd) || t("ui.cwdUnset", "未设置工作目录");
     const fa = formatLastActivity(s?.last_activity);
-    return { text: `${type} · ${cwd} · ${fa.text || "(unknown)"}`, title: fa.title || String(s?.cwd || "") };
+    return {
+      type,
+      cwd,
+      activity: fa.text || t("ui.unknown", "未知"),
+      title: [String(s?.cwd || ""), fa.title].filter(Boolean).join("\n")
+    };
   }
 
   function showMessage(text, tone = "info") {
@@ -954,28 +916,32 @@ export function mountTerminalManagerSidebarViewInto(container) {
 
   function syncCreateVisibility() {
     form.style.display = createExpanded ? "grid" : "none";
-    createToggleBtn.textContent = createExpanded ? t("ui.collapseNew", "收起新建") : t("ui.newTerminal", "新建终端");
+    setButtonContent(
+      createToggleBtn,
+      createExpanded ? t("ui.collapseNew", "收起新建") : t("ui.newTerminal", "新建终端"),
+      createExpanded ? "chevron-up" : "add",
+      true
+    );
     const isSsh = typeSel.value === "ssh";
     sshUser.wrap.style.display = isSsh ? "flex" : "none";
     sshHost.wrap.style.display = isSsh ? "flex" : "none";
     sshPort.wrap.style.display = isSsh ? "flex" : "none";
   }
 
-  function updateSummary(items) {
+  function updateSummary(items, visibleItems = items) {
     const arr = Array.isArray(items) ? items : [];
-    const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
-    const active = arr.find((item) => item?.id && item.id === activeId) || null;
     if (!arr.length) {
-      summary.textContent = t("ui.noSessionsSummary", "还没有终端会话。可以先新建一个本地终端。");
+      summary.textContent = `0 ${t("ui.sessionsUnit", "个会话")}`;
       return;
     }
-    summary.textContent = active
-      ? t("ui.summaryActive", "共 {count} 个会话，当前使用 {name}。", { count: arr.length, name: sessionTitle(active) })
-      : t("ui.summaryNoActive", "共 {count} 个会话，还没有当前终端。", { count: arr.length });
+    const count = visibleItems.length === arr.length
+      ? String(arr.length)
+      : `${visibleItems.length}/${arr.length}`;
+    summary.textContent = `${count} ${t("ui.sessionsUnit", "个会话")}`;
   }
 
   function updateSelectedStyles() {
-    const rows = list.querySelectorAll(".zion-session-row");
+    const rows = list.querySelectorAll(".zion-terminal-manager-session");
     const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
     rows.forEach((r) => {
       const sid = r.dataset.sid || "";
@@ -1068,151 +1034,103 @@ export function mountTerminalManagerSidebarViewInto(container) {
   }
 
   function renderList(items) {
-    currentItems = Array.isArray(items) ? items : [];
+    currentItems = (Array.isArray(items) ? items : [])
+      .slice()
+      .sort((a, b) => Number(b?.last_activity || 0) - Number(a?.last_activity || 0));
     list.innerHTML = "";
-    const arr = currentItems;
+    const query = searchInput.value.trim().toLowerCase();
+    const arr = currentItems.filter((session) => {
+      if (!query) return true;
+      const haystack = [
+        sessionTitle(session),
+        session?.cwd,
+        session?.ssh_host,
+        session?.ssh_user,
+        session?.id
+      ].map((value) => String(value || "").toLowerCase()).join("\n");
+      return haystack.includes(query);
+    });
     const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
-    updateSummary(arr);
+    updateSummary(currentItems, arr);
 
     if (arr.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = t("ui.noSessions", "还没有终端会话。点击“新建终端”创建一个本地会话。");
-      Object.assign(empty.style, {
-        fontSize: "12px",
-        lineHeight: "1.5",
-        opacity: "0.72",
-        textAlign: "left",
-        padding: "10px 0"
-      });
+      empty.className = "zion-terminal-manager-empty";
+      empty.textContent = currentItems.length
+        ? t("ui.noMatchingSessions", "没有匹配的终端会话。")
+        : t("ui.noSessions", "还没有终端会话。点击“新建终端”创建一个本地会话。");
       list.appendChild(empty);
       return;
     }
 
     arr.forEach((s) => {
       const card = document.createElement("div");
-      card.className = "zion-session-row";
+      card.className = "zion-terminal-manager-session";
+      card.classList.toggle("is-disconnected", s?.active === false);
+      card.classList.toggle("is-ssh", (s?.type || "local") === "ssh");
       card.dataset.level = "0";
       card.dataset.sid = String(s.id || "");
       card.tabIndex = 0;
-      Object.assign(card.style, {
-        display: "flex",
-        flexDirection: "column",
-        gap: "0",
-        padding: "12px 0",
-        borderRadius: "0",
-        cursor: "default",
-        border: "none",
-        borderBottom: "1px solid color-mix(in srgb, var(--border) 18%, transparent)",
-        background: "transparent",
-        boxShadow: "none",
-        width: "100%",
-        boxSizing: "border-box",
-        whiteSpace: "normal"
-      });
 
       const row = document.createElement("div");
-      Object.assign(row.style, {
-        display: "grid",
-        gridTemplateColumns: "minmax(0,1fr) auto",
-        gap: "12px",
-        alignItems: "center"
-      });
+      row.className = "zion-terminal-manager-session-row";
 
       const main = document.createElement("button");
       main.type = "button";
-      Object.assign(main.style, {
-        border: "none",
-        background: "transparent",
-        color: "var(--fg)",
-        padding: "0",
-        textAlign: "left",
-        cursor: "pointer",
-        display: "flex",
-        flexDirection: "column",
-        gap: "4px",
-        minWidth: "0"
-      });
+      main.className = "zion-terminal-manager-session-main";
       main.addEventListener("click", () => {
         selectedId = s.id;
         setActiveSession(s.id);
         renderList(currentItems);
       });
 
+      const titleRow = document.createElement("div");
+      titleRow.className = "zion-terminal-manager-session-title-row";
+
       const mainTitle = document.createElement("div");
+      mainTitle.className = "zion-terminal-manager-session-title";
       mainTitle.textContent = sessionTitle(s);
-      Object.assign(mainTitle.style, {
-        fontSize: "12px",
-        fontWeight: "600",
-        lineHeight: "1.4",
-        whiteSpace: "nowrap",
-        overflow: "hidden",
-        textOverflow: "ellipsis"
-      });
 
       const meta = sessionMeta(s);
+      const activity = document.createElement("time");
+      activity.className = "zion-terminal-manager-session-activity";
+      activity.textContent = meta.activity;
+      if (meta.title) activity.title = meta.title;
+
       const mainMeta = document.createElement("div");
-      mainMeta.textContent = meta.text;
+      mainMeta.className = "zion-terminal-manager-session-meta";
+      const typeIcon = document.createElement("span");
+      typeIcon.className = `codicon codicon-${(s?.type || "local") === "ssh" ? "remote" : "terminal"}`;
+      typeIcon.setAttribute("aria-hidden", "true");
+      const metaText = document.createElement("span");
+      metaText.className = "zion-terminal-manager-session-path";
+      metaText.textContent = `${meta.type} · ${meta.cwd}`;
+      mainMeta.appendChild(typeIcon);
+      mainMeta.appendChild(metaText);
+      mainMeta.appendChild(activity);
       if (meta.title) mainMeta.title = meta.title;
-      Object.assign(mainMeta.style, {
-        fontSize: "11px",
-        lineHeight: "1.5",
-        opacity: "0.6",
-        whiteSpace: "normal",
-        wordBreak: "break-word"
-      });
 
-      const rawId = document.createElement("div");
-      rawId.textContent = String(s.id || "");
-      Object.assign(rawId.style, {
-        fontSize: "10px",
-        lineHeight: "1.3",
-        opacity: "0.38",
-        fontFamily: "var(--font-mono, monospace)"
-      });
-
-      main.appendChild(mainTitle);
+      titleRow.appendChild(mainTitle);
+      main.appendChild(titleRow);
       main.appendChild(mainMeta);
-      if (String(s.id || "") && String(s.id || "") !== sessionTitle(s)) main.appendChild(rawId);
 
       const side = document.createElement("div");
-      Object.assign(side.style, {
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        flexWrap: "wrap",
-        justifyContent: "flex-end"
-      });
+      side.className = "zion-terminal-manager-session-side";
 
       const isActive = activeId && s.id && activeId === s.id;
       if (isActive) {
         const current = document.createElement("span");
+        current.className = "zion-terminal-manager-current";
         current.textContent = t("ui.current", "当前");
-        Object.assign(current.style, {
-          fontSize: "10px",
-          lineHeight: "1.2",
-          opacity: "0.72",
-          padding: "0 6px",
-          minHeight: "18px",
-          display: "inline-flex",
-          alignItems: "center",
-          borderRadius: "999px",
-          background: "color-mix(in srgb, var(--accent) 14%, transparent)"
-        });
         side.appendChild(current);
       }
 
       const moreBtn = document.createElement("button");
       moreBtn.type = "button";
-      moreBtn.textContent = expandedId === s.id ? t("ui.collapse", "收起") : t("ui.more", "更多");
-      Object.assign(moreBtn.style, {
-        border: "none",
-        background: "transparent",
-        color: "var(--fg)",
-        opacity: "0.64",
-        padding: "0",
-        fontSize: "11px",
-        cursor: "pointer"
-      });
+      moreBtn.className = "zion-terminal-manager-more";
+      moreBtn.title = expandedId === s.id ? t("ui.collapse", "收起") : t("ui.more", "更多");
+      moreBtn.setAttribute("aria-label", moreBtn.title);
+      moreBtn.innerHTML = `<span class="codicon codicon-${expandedId === s.id ? "chevron-up" : "ellipsis"}" aria-hidden="true"></span>`;
       moreBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         selectedId = s.id;
@@ -1227,14 +1145,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
 
       if (expandedId === s.id) {
         const detail = document.createElement("div");
-        Object.assign(detail.style, {
-          display: "grid",
-          gridTemplateColumns: "1fr",
-          gap: "10px",
-          marginTop: "10px",
-          paddingTop: "10px",
-          borderTop: "1px solid color-mix(in srgb, var(--border) 16%, transparent)"
-        });
+        detail.className = "zion-terminal-manager-detail";
 
         if ((s.type || "local") === "ssh") {
           const sshInfo = document.createElement("div");
@@ -1244,12 +1155,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
         }
 
         const cwdRow = document.createElement("div");
-        Object.assign(cwdRow.style, {
-          display: "grid",
-          gridTemplateColumns: "minmax(0,1fr) auto",
-          gap: "8px",
-          alignItems: "center"
-        });
+        cwdRow.className = "zion-terminal-manager-cwd";
 
         const cwdInp = document.createElement("input");
         cwdInp.type = "text";
@@ -1259,7 +1165,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
           width: "100%",
           boxSizing: "border-box",
           border: "1px solid var(--border)",
-          borderRadius: "8px",
+          borderRadius: "4px",
           background: "transparent",
           color: "var(--fg)",
           outline: "none",
@@ -1281,12 +1187,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
         detail.appendChild(cwdRow);
 
         const actions = document.createElement("div");
-        Object.assign(actions.style, {
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          flexWrap: "wrap"
-        });
+        actions.className = "zion-terminal-manager-detail-actions";
 
         const openBtn = makeButton(t("ui.openTerminal", "打开终端"));
         openBtn.addEventListener("click", async () => {
@@ -1384,10 +1285,10 @@ export function mountTerminalManagerSidebarViewInto(container) {
   typeSel.addEventListener("change", syncCreateVisibility);
   createBtn.addEventListener("click", create);
   refreshBtn.addEventListener("click", refresh);
+  searchInput.addEventListener("input", () => renderList(currentItems));
 
   function refreshI18n() {
-    title.textContent = t("ui.sessions", "终端会话");
-    spanCtx.textContent = t("ui.injectContext", "在对话中注入终端上下文");
+    spanCtx.textContent = t("ui.injectContextShort", "注入上下文");
     typeLb.textContent = t("ui.type", "Type");
     try { sshUser.wrap.querySelector("span").textContent = t("ui.sshUser", "SSH User"); } catch {}
     try { sshHost.wrap.querySelector("span").textContent = t("ui.sshHost", "SSH Host (or alias)"); } catch {}
@@ -1396,7 +1297,9 @@ export function mountTerminalManagerSidebarViewInto(container) {
     sshHost.inp.title = t("ui.sshHostTitle", "You can use SSH config alias (e.g., las-dev) or direct hostname (e.g., 101.126.47.38)");
     createBtn.textContent = t("ui.create", "创建终端");
     cancelCreateBtn.textContent = t("ui.cancel", "取消");
-    refreshBtn.textContent = t("ui.refresh", "刷新");
+    searchInput.placeholder = t("ui.searchSessions", "搜索终端");
+    searchInput.setAttribute("aria-label", searchInput.placeholder);
+    setButtonContent(refreshBtn, t("ui.refresh", "刷新"), "refresh", true);
     syncCreateVisibility();
     renderList(currentItems);
   }
@@ -1405,7 +1308,6 @@ export function mountTerminalManagerSidebarViewInto(container) {
 
   form.appendChild(btns);
 
-  root.appendChild(header);
   root.appendChild(toolbar);
   root.appendChild(form);
   root.appendChild(message);

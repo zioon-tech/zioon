@@ -1,13 +1,13 @@
 {
   "name": "dev.plugins",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "View, enable, disable, install, and develop Zion plugins.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.plugins",
     "name": "Plugin Manager",
-    "version": "0.0.1",
+    "version": "0.0.3",
     "main": "./main.js",
     "presentation": {
       "displayName": {

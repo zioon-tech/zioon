@@ -893,6 +893,17 @@ describe("identity extension", () => {
   it("appends a finished run and rebuilds digest.md", async () => {
     let onRunFinished;
     const writes = [];
+    const extraEvents = Array.from({ length: 13 }, (_, index) => ({
+      id: `global-session-${index + 1}:run-1:0`,
+      at: `2026-08-12T${String(index).padStart(2, "0")}:00:00.000Z`,
+      kind: "outcome",
+      summary: `记录全局尾部标签 ${index + 1}`,
+      confirmed: false,
+      project: `project-${index + 1}`,
+      topics: [`topic-${index + 1}`],
+      sessionId: `global-session-${index + 1}`,
+      runId: "run-1"
+    }));
     const storedEvents = [{
       id: "session-1:run-0:0",
       at: "2026-08-13T10:00:00.000Z",
@@ -913,7 +924,7 @@ describe("identity extension", () => {
       topics: ["observability"],
       sessionId: "other-session",
       runId: "run-1"
-    }];
+    }, ...extraEvents];
     let distillationMessages = [];
     const stateValues = new Map();
     window.zion = {
@@ -1004,6 +1015,10 @@ describe("identity extension", () => {
       expect(distillationMessages[1].content).toContain("<global_biography_index>");
       expect(distillationMessages[1].content).toContain("memory-panel（1 条）");
       expect(distillationMessages[1].content).toContain("zion（1 条）");
+      expect(distillationMessages[1].content).toContain("project-13（1 条）");
+      expect(distillationMessages[1].content).toContain("topic-13（1 条）");
+      expect(distillationMessages[1].content).not.toContain("还有 5 个项目未展示");
+      expect(distillationMessages[1].content).not.toContain("还有 1 个主题未展示");
       expect(distillationMessages[1].content).toContain("<session_history>");
       expect(distillationMessages[1].content).toContain("确定使用 biography 事件记录");
       expect(distillationMessages[1].content).toContain("已有主题标签：agent-identity, storage");
@@ -1011,6 +1026,10 @@ describe("identity extension", () => {
     expect(writes[1].body.path).toBe("/Users/test/.zion-next/memory/biography/digest.md");
       expect(writes[1].body.content).toContain("[project/memory-panel]");
     expect(writes[1].body.content).toContain("完成身份注入和自动自传记录");
+    await vi.waitFor(() => {
+      expect(stateValues.get("sessions.derivedTags")?.biography?.sessions?.["session-1"])
+        .toBeTruthy();
+    });
     expect(stateValues.get("sessions.derivedTags").biography.sessions["session-1"]).toEqual(
       expect.arrayContaining([
         { path: "project/memory-panel", kind: "project" },

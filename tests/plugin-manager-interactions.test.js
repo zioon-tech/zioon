@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activate } from "../extensions/dev.plugins/main.js";
+import { createPluginDetailModel, renderPluginEditor } from "../extensions/dev.plugins/plugin-details.js";
 
 function memoryPlugin() {
   const manifest = JSON.parse(fs.readFileSync(
@@ -116,14 +117,59 @@ describe("plugin manager detail navigation", () => {
     expect(openFileTab).toHaveBeenCalledTimes(3);
   });
 
-  it("toggles plugin state without opening plugin details", async () => {
-    const toggle = container.querySelector(".zion-plugin-manager-row input[type='checkbox']");
-    toggle.click();
+  it("controls plugin state from the row settings menu without opening plugin details", async () => {
+    expect(container.querySelector(".zion-plugin-manager-row input[type='checkbox']")).toBeNull();
+    expect(container.querySelector(".zion-plugin-manager-row-status")).toBeNull();
+    expect(container.querySelector(".zion-plugin-manager-row")?.dataset.status).toBe("active");
+
+    const menu = container.querySelector(".zion-plugin-manager-row-menu");
+    const trigger = menu.querySelector(".zion-plugin-manager-row-menu-trigger");
+    expect(trigger.querySelector(".codicon-kebab-vertical")).toBeTruthy();
+    trigger.click();
+    const disableItem = Array.from(menu.querySelectorAll(".zion-plugin-manager-row-menu-item"))
+      .find((item) => item.textContent.includes("停用插件"));
+    disableItem.click();
     await Promise.resolve();
     await Promise.resolve();
 
     expect(pluginManager.disable).toHaveBeenCalledWith("dev.memory");
     expect(openFileTab).not.toHaveBeenCalled();
     expect(inspectorOpen).not.toHaveBeenCalled();
+  });
+
+  it("controls plugin state from the detail page", async () => {
+    const detail = document.createElement("div");
+    const onToggle = vi.fn(async (enabled) => {
+      plugin.enabled = enabled;
+      plugin.state = enabled ? "active" : "disabled";
+    });
+
+    renderPluginEditor(detail, createPluginDetailModel(plugin, {
+      locale: "zh-CN",
+      onToggle,
+      onReload: vi.fn(),
+      runCommand: vi.fn()
+    }));
+
+    expect(detail.querySelector(".zion-plugin-detail-toggle input")).toBeNull();
+    const disableButton = Array.from(detail.querySelectorAll(".zion-plugin-detail-button"))
+      .find((button) => button.textContent.includes("停用插件"));
+    disableButton.click();
+    await Promise.resolve();
+    expect(onToggle).toHaveBeenCalledWith(false);
+
+    detail.replaceChildren();
+    renderPluginEditor(detail, createPluginDetailModel(plugin, {
+      locale: "zh-CN",
+      onToggle,
+      onReload: vi.fn(),
+      runCommand: vi.fn()
+    }));
+
+    const enableButton = Array.from(detail.querySelectorAll(".zion-plugin-detail-button"))
+      .find((button) => button.textContent.includes("启用插件"));
+    enableButton.click();
+    await Promise.resolve();
+    expect(onToggle).toHaveBeenLastCalledWith(true);
   });
 });

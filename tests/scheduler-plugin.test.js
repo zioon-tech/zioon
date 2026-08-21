@@ -11,6 +11,16 @@ function disposable(fn = () => {}) {
   return { dispose: fn };
 }
 
+function createMemoryStorage() {
+  const values = new Map();
+  return {
+    getItem: (key) => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => { values.set(key, String(value)); },
+    removeItem: (key) => values.delete(key),
+    clear: () => values.clear()
+  };
+}
+
 describe("scheduler plugin", () => {
   let subscriptions;
   let commands;
@@ -149,7 +159,77 @@ describe("scheduler plugin", () => {
     }
   });
 
+  it("does not start the same claimed service run twice", async () => {
+    let resolveCompletion;
+    const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+    const remoteTask = {
+      id: "remote-task",
+      revision: 1,
+      executionMode: "service-backed",
+      taskType: "agent",
+      clientTaskId: "task-remote",
+      title: "Remote report",
+      prompt: "Generate report",
+      enabled: true,
+      schedule: { kind: "daily", time: "09:00", timeZone: "UTC" },
+      capability: { preset: "read-only", allowedTools: [] },
+      timeoutSeconds: 60,
+      nextRun: Date.now() + 60_000
+    };
+    const remoteRun = {
+      id: "remote-run",
+      occurrenceId: "occurrence-1",
+      taskId: remoteTask.id,
+      scheduledFor: Date.now(),
+      leaseUntil: Date.now() + 60_000,
+      task: remoteTask
+    };
+    let claimCount = 0;
+    const fetchMock = vi.fn(async (url) => {
+      const value = String(url);
+      if (value.endsWith("/scheduler/tasks")) {
+        return new globalThis.Response(JSON.stringify({ tasks: [remoteTask] }), { status: 200 });
+      }
+      if (value.endsWith("/scheduler/runs/claim")) {
+        claimCount += 1;
+        return new globalThis.Response(JSON.stringify({
+          run: claimCount <= 2 ? remoteRun : null
+        }), { status: 200 });
+      }
+      return new globalThis.Response(JSON.stringify({}), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    externalCommands.set("zion.sessions.new", vi.fn(async () => "session-remote"));
+    externalCommands.set("zion.sessions.transformDoc", vi.fn(async () => true));
+    externalCommands.set("zion.sessions.patchMeta", vi.fn(async () => true));
+    externalCommands.set("zion.sessions.bumpUpdatedAt", vi.fn(() => true));
+    window.zion.state = {
+      get: vi.fn((key) => key === "chat.tools" ? [] : null),
+      set: vi.fn(),
+      onDidChange: vi.fn(() => disposable())
+    };
+    window.zion.chat.execute = vi.fn(() => ({
+      runId: "chat-run-remote",
+      completion,
+      abort: vi.fn(),
+      events: { async *[Symbol.asyncIterator]() {} }
+    }));
+
+    await activate({ subscriptions });
+    await vi.waitFor(() => expect(claimCount).toBeGreaterThanOrEqual(2));
+
+    expect(window.zion.chat.execute).toHaveBeenCalledTimes(1);
+
+    resolveCompletion({ runId: "chat-run-remote", status: "completed", output: "done" });
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/scheduler/runs/remote-run/complete")
+      )).toBe(true);
+    });
+  });
+
   it("saves a panel task without timer binding errors", async () => {
+    vi.stubGlobal("localStorage", createMemoryStorage());
     vi.stubGlobal("setTimeout", function setTimeoutWithBindingCheck() {
       if (this !== globalThis) throw new TypeError("Illegal invocation");
       return 1;
@@ -251,6 +331,43 @@ describe("scheduler plugin", () => {
     row.dispatchEvent(new Event("mouseleave"));
     expect(container.querySelector('.scheduler-task-row[data-task-id="task-hover"]')).toBe(row);
     expect(container.textContent).toContain("Hover updated");
+    mounted.dispose();
+  });
+
+  it("shows local tasks as busy when their persisted run is active", async () => {
+    window.zion.state = { set: vi.fn(), get: vi.fn(), onDidChange: vi.fn(() => disposable()) };
+    const store = new LocalSchedulerStore();
+    store.saveTask({
+      id: "task-active",
+      title: "Active local report",
+      prompt: "Summarize",
+      enabled: true,
+      nextRun: Date.now() + 3_600_000,
+      schedule: { kind: "daily", time: "09:00" },
+      timeoutSeconds: 600,
+      createdAt: 1
+    });
+    store.saveRun({
+      id: "run-active",
+      taskId: "task-active",
+      taskTitle: "Active local report",
+      executionMode: "local-only",
+      status: "running",
+      startedAt: Date.now(),
+      completedAt: null,
+      output: "",
+      events: []
+    });
+
+    await activate({ subscriptions });
+    const container = document.createElement("div");
+    const mounted = views[0].component.render(container);
+    const row = container.querySelector('.scheduler-task-row[data-task-id="task-active"]');
+    const runButton = row?.querySelector('[data-action="run"]');
+
+    expect(row?.dataset.state).toBe("running");
+    expect(runButton?.disabled).toBe(true);
+    expect(row?.textContent).toContain("运行中");
     mounted.dispose();
   });
 

@@ -741,14 +741,14 @@ export async function activate(ctx) {
   try {
     const st = window.zion.state;
     const cur = st?.get?.("ui.bottomPanel.activeViewId");
-    if (!cur || cur === "core.output") {
+    if (!cur) {
       st?.set?.("ui.bottomPanel.activeViewId", VIEW_ID);
     }
     const disp = st?.onDidChange?.("ui.bottomPanel.visible", (nv) => {
       if (!nv) return;
       const active = st?.get?.("ui.bottomPanel.activeViewId");
       if (active === VIEW_ID) return;
-      if (!active || active === "core.output") {
+      if (!active) {
         window.zion.bottomPanel?.activateView?.(VIEW_ID);
       }
     });

@@ -165,6 +165,112 @@ describe("scheduler controller", () => {
     expect(onChange).toHaveBeenCalled();
   });
 
+  it("rolls back a newly created service task when local task persistence fails", async () => {
+    const store = {
+      getTask: vi.fn(() => null),
+      listTasks: vi.fn(() => []),
+      saveTask: vi.fn(() => { throw new Error("local storage unavailable"); })
+    };
+    const service = {
+      createTask: vi.fn(async () => ({
+        id: "remote-task",
+        revision: 1,
+        nextRun: NOW + 60_000,
+        enabled: true
+      })),
+      deleteTask: vi.fn(async () => undefined)
+    };
+    const controller = new SchedulerController({
+      store,
+      service,
+      now: () => NOW
+    });
+    const task = buildSchedulerTask({
+      title: "Service task",
+      prompt: "Produce a report",
+      executionMode: "service-backed",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW);
+
+    await expect(controller.saveTask(task)).rejects.toThrow("local storage unavailable");
+    expect(service.createTask).toHaveBeenCalledTimes(1);
+    expect(service.deleteTask).toHaveBeenCalledWith(expect.objectContaining({
+      remoteTaskId: "remote-task"
+    }));
+  });
+
+  it("rejects local manual runs while a previous active run is still present", async () => {
+    const engine = {
+      reconcile: vi.fn(),
+      isRunning: vi.fn(() => false),
+      execute: vi.fn(async (task) => ({ status: "completed", taskId: task.id }))
+    };
+    const { controller, store } = createController({ engine });
+    const task = buildSchedulerTask({
+      id: "task-active",
+      title: "Local task",
+      prompt: "Read the workspace",
+      schedule: { kind: "daily", time: "09:00" },
+      timeoutSeconds: 60
+    }, null, NOW);
+    store.saveTask(task);
+    store.saveRun({
+      id: "run-active",
+      taskId: task.id,
+      taskTitle: task.title,
+      executionMode: "local-only",
+      status: "running",
+      startedAt: NOW,
+      completedAt: null,
+      output: "",
+      events: []
+    });
+
+    await expect(controller.runNow(task.id)).rejects.toThrow("任务正在运行");
+    expect(engine.execute).not.toHaveBeenCalled();
+  });
+
+  it("fails stale local runs before enforcing overlap", async () => {
+    const engine = {
+      reconcile: vi.fn(),
+      isRunning: vi.fn(() => false),
+      execute: vi.fn(async (task) => ({ status: "completed", taskId: task.id }))
+    };
+    const { controller, store } = createController({ engine });
+    const task = buildSchedulerTask({
+      id: "task-stale",
+      title: "Local task",
+      prompt: "Read the workspace",
+      schedule: { kind: "daily", time: "09:00" },
+      timeoutSeconds: 60
+    }, null, NOW);
+    store.saveTask(task);
+    store.saveRun({
+      id: "run-stale",
+      taskId: task.id,
+      taskTitle: task.title,
+      executionMode: "local-only",
+      status: "running",
+      startedAt: NOW - 700_000,
+      completedAt: null,
+      sessionId: "session-stale",
+      output: "",
+      events: []
+    });
+
+    await expect(controller.runNow(task.id)).resolves.toMatchObject({
+      queued: false,
+      result: { status: "completed", taskId: task.id }
+    });
+    expect(store.getRun("run-stale")).toMatchObject({
+      status: "failed",
+      completedAt: NOW,
+      stale: true,
+      error: "运行超过超时时间，已自动标记为失败"
+    });
+    expect(engine.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps saved data when UI change notification fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const store = new LocalSchedulerStore();

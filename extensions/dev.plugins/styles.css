@@ -3,45 +3,53 @@
   min-height: 100%;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
   box-sizing: border-box;
+  background: var(--panel);
 }
 
 .zion-plugin-manager-summary {
-  padding: 10px 10px 7px;
+  padding: 7px 10px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
   color: color-mix(in srgb, var(--fg) 62%, transparent);
   font-size: 10px;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
 .zion-plugin-manager-search {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) 26px;
   gap: 4px;
-  padding: 0 10px 9px;
+  padding: 7px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
 }
 
 .zion-plugin-manager-search input {
   width: 100%;
-  height: 28px;
+  height: 26px;
   min-width: 0;
   padding: 0 8px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 4px;
   outline: none;
   background: transparent;
   color: var(--fg);
   font-size: 11px;
 }
 
+.zion-plugin-manager-search input:focus,
+.zion-plugin-manager-tools-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+}
+
 .zion-plugin-manager-filter {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   display: grid;
   place-items: center;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 4px;
   background: transparent;
   color: color-mix(in srgb, var(--fg) 72%, transparent);
   cursor: pointer;
@@ -56,7 +64,7 @@
 .zion-plugin-manager-filter-menu {
   display: none;
   gap: 3px;
-  padding: 0 10px 8px;
+  padding: 6px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
 }
 
@@ -69,7 +77,7 @@
   height: 23px;
   padding: 0 7px;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: 3px;
   background: transparent;
   color: color-mix(in srgb, var(--fg) 62%, transparent);
   font-size: 10px;
@@ -85,9 +93,10 @@
 
 .zion-plugin-manager-message {
   display: none;
-  margin: 7px 10px 0;
+  margin: 7px 8px 0;
   padding: 6px 8px;
-  border-left: 2px solid var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 4px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   font-size: 10px;
   line-height: 1.45;
@@ -98,7 +107,7 @@
 }
 
 .zion-plugin-manager-message.is-error {
-  border-left-color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 42%, var(--border));
   color: color-mix(in srgb, var(--error) 76%, var(--fg));
   background: color-mix(in srgb, var(--error) 8%, transparent);
 }
@@ -106,16 +115,17 @@
 .zion-plugin-manager-list {
   display: flex;
   flex-direction: column;
+  flex: 0 0 auto;
 }
 
 .zion-plugin-manager-row {
   position: relative;
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) auto;
-  gap: 7px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 6px;
   align-items: center;
-  min-height: 57px;
-  padding: 7px 8px;
+  min-height: 50px;
+  padding: 6px 8px;
   border: 0;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
   background: transparent;
@@ -129,19 +139,41 @@
 }
 
 .zion-plugin-manager-row.is-selected {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.zion-plugin-manager-row[data-status="disabled"] {
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
 }
 
 .zion-plugin-manager-row-icon {
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
-  color: color-mix(in srgb, var(--accent) 82%, var(--fg));
-  font-size: 14px;
+  color: color-mix(in srgb, var(--fg) 68%, transparent);
+  font-size: 13px;
+}
+
+.zion-plugin-manager-row[data-tone="success"] .zion-plugin-manager-row-icon {
+  color: var(--success);
+}
+
+.zion-plugin-manager-row[data-tone="warning"] .zion-plugin-manager-row-icon {
+  color: #d29922;
+}
+
+.zion-plugin-manager-row[data-tone="error"] .zion-plugin-manager-row-icon {
+  color: var(--error);
+}
+
+.zion-plugin-manager-row[data-status="disabled"] .zion-plugin-manager-row-icon,
+.zion-plugin-manager-row[data-status="disabled"] .zion-plugin-manager-row-copy {
+  opacity: 0.58;
+}
+
+.zion-plugin-manager-row[data-tone="error"] .zion-plugin-manager-row-description {
+  color: color-mix(in srgb, var(--error) 82%, var(--fg));
 }
 
 .zion-plugin-manager-row-copy {
@@ -173,37 +205,96 @@
 }
 
 .zion-plugin-manager-row-description {
-  margin-top: 3px;
+  margin-top: 2px;
   font-size: 10px;
 }
 
 .zion-plugin-manager-row-controls {
   display: flex;
   align-items: center;
+  gap: 4px;
+}
+
+.zion-plugin-manager-row-menu {
+  position: relative;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+}
+
+.zion-plugin-manager-row-menu > summary {
+  list-style: none;
+}
+
+.zion-plugin-manager-row-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.zion-plugin-manager-row-menu-trigger {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--fg) 52%, transparent);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  user-select: none;
+}
+
+.zion-plugin-manager-row-menu-trigger:hover,
+.zion-plugin-manager-row-menu[open] .zion-plugin-manager-row-menu-trigger {
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg);
+}
+
+.zion-plugin-manager-row-menu-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  min-width: 120px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--elevation-2);
+}
+
+.zion-plugin-manager-row-menu-item {
+  width: 100%;
+  height: 25px;
+  display: flex;
+  align-items: center;
   gap: 7px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 10px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-.zion-plugin-manager-row-status {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--fg) 32%, transparent);
+.zion-plugin-manager-row-menu-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
 
-.zion-plugin-manager-row-status.is-success {
-  background: var(--success);
+.zion-plugin-manager-row-menu-item.is-primary {
+  color: var(--success);
 }
 
-.zion-plugin-manager-row-status.is-warning {
-  background: #d29922;
+.zion-plugin-manager-row-menu-item.is-danger {
+  color: var(--error);
 }
 
-.zion-plugin-manager-row-status.is-error {
-  background: var(--error);
-}
-
-.zion-plugin-manager-row input[type="checkbox"] {
-  margin: 0;
+.zion-plugin-manager-row-menu-item:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .zion-plugin-manager-empty {
@@ -213,9 +304,150 @@
 }
 
 .zion-plugin-manager-tools {
-  margin: 8px 10px 10px;
-  padding-top: 8px;
+  margin: 0;
   border-top: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+}
+
+.zion-plugin-manager-tools-summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.zion-plugin-manager-tools-summary::-webkit-details-marker {
+  display: none;
+}
+
+.zion-plugin-manager-tools-summary:hover {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: var(--fg);
+}
+
+.zion-plugin-manager-tools-summary .codicon {
+  font-size: 12px;
+}
+
+.zion-plugin-manager-tools[open] > .zion-plugin-manager-tools-summary .codicon {
+  transform: rotate(90deg);
+}
+
+.zion-plugin-manager-tools-content {
+  border-top: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+}
+
+.zion-plugin-manager-tools-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 9px 12px;
+}
+
+.zion-plugin-manager-tools-section + .zion-plugin-manager-tools-section {
+  border-top: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+}
+
+.zion-plugin-manager-tools-title {
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.zion-plugin-manager-tools-description {
+  color: color-mix(in srgb, var(--fg) 52%, transparent);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.zion-plugin-manager-tools-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+}
+
+.zion-plugin-manager-tools-row.is-search {
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
+}
+
+.zion-plugin-manager-tools-row.is-development {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.zion-plugin-manager-tools-input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 10px;
+}
+
+.zion-plugin-manager-tools-button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 76%, transparent);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.zion-plugin-manager-tools-button.is-icon {
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.zion-plugin-manager-tools-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg);
+}
+
+.zion-plugin-manager-tools-button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.zion-plugin-manager-drop-zone {
+  min-height: 38px;
+  display: grid;
+  place-items: center;
+  padding: 6px 8px;
+  border: 1px dashed color-mix(in srgb, var(--fg) 24%, var(--border));
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.zion-plugin-manager-tools-results {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: color-mix(in srgb, var(--fg) 68%, transparent);
+  font-size: 10px;
+}
+
+.zion-plugin-manager-tools-status {
+  color: color-mix(in srgb, var(--fg) 62%, transparent);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .zion-plugin-detail-editor {
@@ -335,10 +567,29 @@
   color: var(--fg);
 }
 
+.zion-plugin-detail-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .zion-plugin-detail-button.is-primary {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--bg);
+}
+
+.zion-plugin-detail-button.is-danger {
+  border-color: color-mix(in srgb, var(--error) 35%, var(--border));
+  color: color-mix(in srgb, var(--error) 82%, var(--fg));
+}
+
+.zion-plugin-detail-button.is-danger:hover {
+  background: color-mix(in srgb, var(--error) 8%, transparent);
+  color: color-mix(in srgb, var(--error) 88%, var(--fg));
+}
+
+.zion-plugin-detail-button.is-compact {
+  min-width: 74px;
 }
 
 .zion-plugin-detail-actions {
@@ -560,48 +811,6 @@
   margin-top: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
-}
-
-.zion-plugin-detail-toggle {
-  position: relative;
-  width: 27px;
-  height: 16px;
-  display: inline-block;
-  flex: 0 0 auto;
-}
-
-.zion-plugin-detail-toggle input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.zion-plugin-detail-toggle-visual {
-  position: absolute;
-  inset: 0;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--fg) 24%, transparent);
-  cursor: pointer;
-}
-
-.zion-plugin-detail-toggle-visual::after {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--bg);
-  content: "";
-  transition: transform 120ms ease;
-}
-
-.zion-plugin-detail-toggle input:checked + .zion-plugin-detail-toggle-visual {
-  background: var(--success);
-}
-
-.zion-plugin-detail-toggle input:checked + .zion-plugin-detail-toggle-visual::after {
-  transform: translateX(11px);
 }
 
 .zion-plugin-detail-subsection {

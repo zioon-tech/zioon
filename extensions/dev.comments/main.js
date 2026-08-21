@@ -23,6 +23,10 @@ const ACTIVE_KEY = "comments.activeThreadId";
 const CHANGED_EVENT = "comments/changed";
 const SESSIONS_DB_NAME = "zion.sessions.db";
 const THREAD_PAYLOAD_KEY_PREFIX = "zion.comments.threadPayload.";
+const THREAD_RECORD_KEY_PREFIX = "zion.comments.threadRecord.";
+const THREAD_RECORD_IDS_KEY = "zion.comments.threadRecordIds.v1";
+const HOT_THREAD_INDEX_LIMIT = 120;
+const EMERGENCY_THREAD_INDEX_LIMIT = 24;
 const MAX_STORED_SOURCE_CONTEXT_CHARS = 4000;
 const AGGRESSIVE_MAX_STORED_SOURCE_CONTEXT_CHARS = 1500;
 const DEFAULT_MAX_STORED_ANCHOR_CHARS = 2000;
@@ -31,6 +35,7 @@ const DEFAULT_MAX_STORED_QUOTE_CHARS = 1000;
 const AGGRESSIVE_MAX_STORED_QUOTE_CHARS = 400;
 const COMMENT_PANEL_MIN_ROW_GAP = 8;
 const COMMENT_WHEEL_GESTURE_IDLE_MS = 220;
+const PANEL_COMMENT_BUTTON_ATTR = "data-zion-comments-panel-button";
 let pendingFocusThreadId = "";
 let pendingExpandThreadId = "";
 let pendingRevealThreadId = "";
@@ -46,6 +51,10 @@ const commentRunFollowTargetsBySession = new Map();
 const threadPayloadCache = new Map();
 const threadPayloadLoads = new Map();
 const pendingThreadPayloadPersists = new Map();
+const threadRecordCache = new Map();
+const pendingThreadRecordPersists = new Map();
+let pendingThreadRecordFlush = false;
+let threadRecordArchiveLoaded = false;
 const liveAnchorOverrides = new Map();
 const liveAnchorDirtyBySession = new Map();
 const liveAnchorPersistTimers = new Map();
@@ -207,8 +216,9 @@ const I18N_MESSAGES = {
     "cmd.focusSource.description": "从评论编辑器返回主编辑器中的评论来源",
       "toolbar.createThread": "创建评论线程",
       "toolbar.comment": "评论",
+      "panel.open": "打开评论",
       "thread.created": "已创建评论线程",
-      "thread.createFailedStorage": "创建评论失败：本地评论存储空间不足，请删除部分旧评论后重试",
+      "thread.createFailedStorage": "创建评论失败：本地存储写入失败，请清理浏览器站点数据或检查存储权限后重试",
     "header.subtitle": "正文中的锚定评论",
     "anchor.open": "打开评论",
     "anchor.count": "{count} 条评论",
@@ -268,8 +278,9 @@ const I18N_MESSAGES = {
     "cmd.focusSource.description": "Return from the comment editor to the source editor",
       "toolbar.createThread": "Create comment thread",
       "toolbar.comment": "Comment",
+      "panel.open": "Open comments",
       "thread.created": "Comment thread created",
-      "thread.createFailedStorage": "Failed to create comment: local comment storage is full. Delete older comments and try again.",
+      "thread.createFailedStorage": "Failed to create comment: local storage write failed. Clear browser site data or check storage permissions and try again.",
     "header.subtitle": "Anchored comments in the source document",
     "anchor.open": "Open comments",
     "anchor.count": "{count} comments",
@@ -376,6 +387,10 @@ function getThreadPayloadStorageKey(threadId) {
   return `${THREAD_PAYLOAD_KEY_PREFIX}${String(threadId || "")}`;
 }
 
+function getThreadRecordStorageKey(threadId) {
+  return `${THREAD_RECORD_KEY_PREFIX}${String(threadId || "")}`;
+}
+
 function normalizeThreadPayload(payload) {
   const next = payload && typeof payload === "object" ? { ...payload } : {};
   if (typeof next.body !== "string") delete next.body;
@@ -437,6 +452,72 @@ function stripThreadForStorage(thread) {
   return next;
 }
 
+function normalizeThreadRecord(thread, mode = "default") {
+  const id = String(thread?.id || "");
+  if (!id) return null;
+  return compactThreadForStorage(stripThreadForStorage(thread), mode);
+}
+
+function chooseLocalThreadIndex(threads, limit = HOT_THREAD_INDEX_LIMIT) {
+  const activeId = String(window.zion?.state?.get?.(ACTIVE_KEY) || "");
+  return [...(Array.isArray(threads) ? threads : [])]
+    .filter((thread) => thread?.id)
+    .sort((left, right) => {
+      const leftActive = String(left?.id || "") === activeId ? 1 : 0;
+      const rightActive = String(right?.id || "") === activeId ? 1 : 0;
+      if (leftActive !== rightActive) return rightActive - leftActive;
+      const leftOpen = left?.resolved ? 0 : 1;
+      const rightOpen = right?.resolved ? 0 : 1;
+      if (leftOpen !== rightOpen) return rightOpen - leftOpen;
+      return getThreadLatestAt(right) - getThreadLatestAt(left);
+    })
+    .slice(0, Math.max(1, Number(limit) || HOT_THREAD_INDEX_LIMIT));
+}
+
+async function persistThreadRecordIds(ids) {
+  try {
+    await openSessionsDB(SESSIONS_DB_NAME);
+    await idbSetKV(SESSIONS_DB_NAME, THREAD_RECORD_IDS_KEY, [...new Set(ids.map(String).filter(Boolean))]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function schedulePersistThreadRecords(threads) {
+  for (const thread of Array.isArray(threads) ? threads : []) {
+    const record = normalizeThreadRecord(thread);
+    const id = String(record?.id || "");
+    if (!id) continue;
+    let changed = true;
+    try {
+      changed = JSON.stringify(threadRecordCache.get(id) || null) !== JSON.stringify(record);
+    } catch {}
+    threadRecordCache.set(id, record);
+    if (changed || !threadRecordArchiveLoaded) pendingThreadRecordPersists.set(id, record);
+  }
+  if (pendingThreadRecordFlush) return;
+  pendingThreadRecordFlush = true;
+  Promise.resolve().then(async () => {
+    pendingThreadRecordFlush = false;
+    const pending = [...pendingThreadRecordPersists.values()];
+    pendingThreadRecordPersists.clear();
+    if (!pending.length) return;
+    try {
+      await openSessionsDB(SESSIONS_DB_NAME);
+      for (const record of pending) {
+        await idbSetKV(SESSIONS_DB_NAME, getThreadRecordStorageKey(record.id), record);
+      }
+      const storedIds = await idbGetKV(SESSIONS_DB_NAME, THREAD_RECORD_IDS_KEY);
+      const ids = Array.isArray(storedIds) ? storedIds.map(String).filter(Boolean) : [];
+      await persistThreadRecordIds([
+        ...pending.map((record) => String(record.id)),
+        ...ids
+      ]);
+    } catch {}
+  });
+}
+
 function applyThreadPayload(thread, payload) {
   if (!thread || typeof thread !== "object" || !payload || typeof payload !== "object") return thread;
   const next = { ...thread };
@@ -472,7 +553,7 @@ async function persistThreadPayload(thread) {
       await idbDelKV(SESSIONS_DB_NAME, getThreadPayloadStorageKey(id));
     }
     return true;
-    } catch {
+  } catch {
     return false;
   }
 }
@@ -482,10 +563,13 @@ function schedulePersistThreadPayload(thread) {
   if (!id) return;
   const payload = normalizeThreadPayload(extractThreadPayload(thread));
   if (!hasStoredThreadPayload(payload)) return;
+  let unchanged = false;
   try {
     const cached = threadPayloadCache.get(id);
-    if (cached && JSON.stringify(cached) === JSON.stringify(payload)) return;
+    unchanged = !!cached && JSON.stringify(cached) === JSON.stringify(payload);
   } catch {}
+  if (unchanged) return;
+  threadPayloadCache.set(id, payload);
   const alreadyScheduled = pendingThreadPayloadPersists.get(id)?.scheduled === true;
   pendingThreadPayloadPersists.set(id, { id, ...payload, scheduled: true });
   if (alreadyScheduled) return;
@@ -513,7 +597,7 @@ async function loadThreadPayload(threadOrId, opts = {}) {
         try { window.dispatchEvent(new CustomEvent("zion:comments-changed")); } catch {}
       }
       return payload;
-      } catch {
+    } catch {
       return {};
     } finally {
       threadPayloadLoads.delete(id);
@@ -533,8 +617,62 @@ function deleteThreadPayload(threadId) {
     try {
       await openSessionsDB(SESSIONS_DB_NAME);
       await idbDelKV(SESSIONS_DB_NAME, getThreadPayloadStorageKey(id));
-      } catch {}
+    } catch {}
   });
+}
+
+function deleteThreadRecord(threadId) {
+  const id = String(threadId || "");
+  if (!id) return;
+  threadRecordCache.delete(id);
+  pendingThreadRecordPersists.delete(id);
+  Promise.resolve().then(async () => {
+    try {
+      await openSessionsDB(SESSIONS_DB_NAME);
+      await idbDelKV(SESSIONS_DB_NAME, getThreadRecordStorageKey(id));
+      const storedIds = await idbGetKV(SESSIONS_DB_NAME, THREAD_RECORD_IDS_KEY);
+      const ids = Array.isArray(storedIds) ? storedIds.map(String).filter(Boolean) : [];
+      await persistThreadRecordIds(ids.filter((item) => item !== id));
+    } catch {}
+  });
+}
+
+function deleteThreadArchive(threadId) {
+  deleteThreadPayload(threadId);
+  deleteThreadRecord(threadId);
+}
+
+function resetThreadStorageRuntime() {
+  threadPayloadCache.clear();
+  threadPayloadLoads.clear();
+  pendingThreadPayloadPersists.clear();
+  threadRecordCache.clear();
+  pendingThreadRecordPersists.clear();
+  pendingThreadRecordFlush = false;
+  threadRecordArchiveLoaded = false;
+}
+
+async function hydrateThreadRecordArchive(opts = {}) {
+  if (threadRecordArchiveLoaded && !opts.force) return threadRecordCache.size;
+  try {
+    await openSessionsDB(SESSIONS_DB_NAME);
+    const storedIds = await idbGetKV(SESSIONS_DB_NAME, THREAD_RECORD_IDS_KEY);
+    const ids = Array.isArray(storedIds) ? storedIds.map(String).filter(Boolean) : [];
+    let changed = false;
+    for (const id of ids) {
+      const record = await idbGetKV(SESSIONS_DB_NAME, getThreadRecordStorageKey(id));
+      if (!record?.id) continue;
+      const before = threadRecordCache.has(String(record.id));
+      threadRecordCache.set(String(record.id), record);
+      changed = changed || !before;
+    }
+    threadRecordArchiveLoaded = true;
+    if (changed && opts.emitChanged) emitChanged();
+    return threadRecordCache.size;
+  } catch {
+    threadRecordArchiveLoaded = true;
+    return threadRecordCache.size;
+  }
 }
 
 function readStoredThreadsRaw() {
@@ -547,14 +685,59 @@ function readStoredThreadsRaw() {
   }
 }
 
+function writeLocalThreads(payload) {
+  try {
+    localStorage.setItem(STORAGE_KEY, payload);
+    return { ok: true, error: null };
+  } catch (error) {
+    try {
+      if (localStorage.getItem(STORAGE_KEY) === payload) return { ok: true, error: null };
+    } catch {}
+    return { ok: false, error };
+  }
+}
+
+function isQuotaError(error) {
+  const name = String(error?.name || "");
+  const message = String(error?.message || error || "");
+  return name === "QuotaExceededError" || /quota|storage.*full|exceeded/i.test(message);
+}
+
+function reclaimVolatileLocalStorage() {
+  const keys = [
+    "zion.scheduler.local.runs.v1"
+  ];
+  let changed = false;
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw || raw.length < 100_000) continue;
+      localStorage.removeItem(key);
+      changed = true;
+    } catch {}
+  }
+  return changed;
+}
+
 function readAllThreads() {
-  return readStoredThreadsRaw().map((thread) => {
+  const byId = new Map();
+  for (const thread of threadRecordCache.values()) {
     const id = String(thread?.id || "");
-    const withLiveAnchor = id && liveAnchorOverrides.has(id)
-      ? { ...thread, ...liveAnchorOverrides.get(id) }
-      : thread;
-    return applyThreadPayload(withLiveAnchor, threadPayloadCache.get(id));
-  });
+    if (id) byId.set(id, thread);
+  }
+  for (const thread of readStoredThreadsRaw()) {
+    const id = String(thread?.id || "");
+    if (id) byId.set(id, thread);
+  }
+  return [...byId.values()]
+    .sort((left, right) => getThreadLatestAt(right) - getThreadLatestAt(left))
+    .map((thread) => {
+      const id = String(thread?.id || "");
+      const withLiveAnchor = id && liveAnchorOverrides.has(id)
+        ? { ...thread, ...liveAnchorOverrides.get(id) }
+        : thread;
+      return applyThreadPayload(withLiveAnchor, threadPayloadCache.get(id));
+    });
 }
 
 function persistLiveAnchorsForSession(sessionId) {
@@ -760,19 +943,44 @@ function writeAllThreads(list, opts = {}) {
     : ["default", "aggressive", "minimal"];
   let lastError = null;
   let lastPayloadLength = -1;
+  let reclaimed = false;
 
-  for (const mode of modes) {
-    const normalizedList = rawList.map((item) => compactThreadForStorage(stripThreadForStorage(item), mode));
+  const attempts = [];
+  const addAttempts = (items, label) => {
+    for (const mode of modes) attempts.push({ items, mode, label });
+  };
+  if (rawList.length <= HOT_THREAD_INDEX_LIMIT) addAttempts(rawList, "full");
+  addAttempts(chooseLocalThreadIndex(rawList, HOT_THREAD_INDEX_LIMIT), "hot");
+  addAttempts(chooseLocalThreadIndex(rawList, EMERGENCY_THREAD_INDEX_LIMIT), "emergency");
+
+  for (const attempt of attempts) {
+    const normalizedList = attempt.items.map((item) => compactThreadForStorage(stripThreadForStorage(item), attempt.mode));
     const payload = JSON.stringify(normalizedList);
     lastPayloadLength = payload.length;
-    try {
-      localStorage.setItem(STORAGE_KEY, payload);
+    const result = writeLocalThreads(payload);
+    if (result.ok) {
+      schedulePersistThreadRecords(rawList);
       for (const thread of rawList) schedulePersistThreadPayload(thread);
       if (!opts.silent) emitChanged();
-        return { ok: true, list: rawList, storedList: normalizedList, payloadLength: payload.length, storedCount: normalizedList.length, compactionMode: mode };
-    } catch (error) {
-      lastError = error;
-      if (String(error?.name || "") !== "QuotaExceededError") break;
+      return {
+        ok: true,
+        list: rawList,
+        storedList: normalizedList,
+        payloadLength: payload.length,
+        storedCount: normalizedList.length,
+        compactionMode: attempt.mode,
+        indexMode: attempt.label
+      };
+    }
+    lastError = result.error;
+    if (!isQuotaError(result.error)) break;
+    if (!reclaimed && reclaimVolatileLocalStorage()) {
+      reclaimed = true;
+      attempts.push({
+        items: chooseLocalThreadIndex(rawList, EMERGENCY_THREAD_INDEX_LIMIT),
+        mode: "minimal",
+        label: "reclaimed"
+      });
     }
   }
 
@@ -966,6 +1174,18 @@ function compactText(value, max = 88) {
       }
   }
 
+function getThreadLogTitle(thread) {
+  return compactText(
+    thread?.title
+    || thread?.summary
+    || thread?.quote
+    || thread?.anchorText
+    || thread?.sourceTitle
+    || thread?.id,
+    72
+  );
+}
+
 function appendSummaryInlineMarkdown(target, value) {
   const source = String(value || "");
   const tokenRe = /(\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|`([^`\n]+)`|\*([^*\n]+)\*)/g;
@@ -1117,7 +1337,7 @@ function patchThread(id, patch, opts = {}) {
 
 function deleteThread(id) {
   const result = writeAllThreads(readAllThreads().filter((item) => item?.id !== id));
-  if (result?.ok) deleteThreadPayload(id);
+  if (result?.ok) deleteThreadArchive(id);
   return result;
 }
 
@@ -1741,7 +1961,7 @@ function createThreadFromSelection({ view, from, to, selectionText, editor: sour
     if (!persistedThread) {
       try {
         window.zion?.notification?.show?.(
-          t("thread.createFailedStorage", "Failed to create comment: local comment storage is full. Delete older comments and try again."),
+          t("thread.createFailedStorage", "Failed to create comment: local storage write failed. Clear browser site data or check storage permissions and try again."),
           { type: "error", duration: 2600 }
         );
       } catch {}
@@ -1819,6 +2039,113 @@ function createThreadFromEditor(editor = null) {
 function openCommentsPanel() {
   try { window.zion?.auxiliaryBar?.activateView?.(VIEW_ID); } catch {}
   try { markCommentThreadViewed(window.zion?.state?.get?.(ACTIVE_KEY)); } catch {}
+  try { updatePanelCommentButtons(); } catch {}
+}
+
+function isCommentsAuxiliaryViewActive() {
+  try {
+    return window.zion?.state?.get?.("ui.auxiliaryBar.visible") === true
+      && String(window.zion?.state?.get?.("ui.auxiliaryBar.activeViewId") || "") === VIEW_ID;
+  } catch {
+    return false;
+  }
+}
+
+export function updatePanelCommentButtons() {
+  const activePanelId = String(window.zion?.panels?.getActivePanelId?.() || "");
+  const commentsActive = isCommentsAuxiliaryViewActive();
+  for (const button of document.querySelectorAll(`[${PANEL_COMMENT_BUTTON_ATTR}="1"]`)) {
+    const panelId = String(button.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || "");
+    const active = commentsActive && !!panelId && panelId === activePanelId;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+
+export function mountPanelCommentButton(panelRoot) {
+  if (!(panelRoot instanceof HTMLElement)) return null;
+  const panelId = String(panelRoot.getAttribute("data-panel-id") || "");
+  const editorHost = Array.from(panelRoot.children).find((child) => child.classList?.contains("zion-editor-host"));
+  if (!panelId || !(editorHost instanceof HTMLElement)) return null;
+
+  let button = panelRoot.querySelector(`[${PANEL_COMMENT_BUTTON_ATTR}="1"]`);
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "zion-panel-comment-button";
+    button.innerHTML = '<span class="codicon codicon-comment-discussion" aria-hidden="true"></span>';
+    button.title = t("panel.open", "打开评论");
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-pressed", "false");
+    button.setAttribute(PANEL_COMMENT_BUTTON_ATTR, "1");
+    button.onclick = (event) => {
+      try {
+        event.preventDefault();
+        event.stopPropagation();
+      } catch {}
+      try { window.zion?.panels?.focus?.(panelId); } catch {}
+      try {
+        const panel = window.zion?.panels?.list?.()?.find?.((item) => String(item?.id || "") === panelId);
+        const sessionId = String(panel?.activeTabId || "");
+        if (sessionId) rememberSourcePanelSession(panelId, sessionId);
+        else rememberSourceFocus(window.zion?.panels?.getEditor?.(panelId) || null);
+      } catch {}
+      openCommentsPanel();
+      updatePanelCommentButtons();
+    };
+  }
+  if (button.parentElement !== editorHost) editorHost.appendChild(button);
+  updatePanelCommentButtons();
+  return button;
+}
+
+function installPanelCommentButtons() {
+  let disposed = false;
+  const mountAll = () => {
+    if (disposed) return;
+    for (const panelRoot of document.querySelectorAll(".zion-panel[data-panel-id]")) {
+      mountPanelCommentButton(panelRoot);
+    }
+  };
+  const mountPanel = (panelId) => {
+    if (disposed) return;
+    const root = Array.from(document.querySelectorAll(".zion-panel[data-panel-id]"))
+      .find((item) => String(item.getAttribute("data-panel-id") || "") === String(panelId || ""));
+    if (root) mountPanelCommentButton(root);
+  };
+
+  mountAll();
+  const frame = requestAnimationFrame(mountAll);
+  const disposables = [];
+  try {
+    disposables.push(window.zion?.events?.on?.("panel/created", ({ panelId } = {}) => {
+      mountPanel(panelId);
+      requestAnimationFrame(() => mountPanel(panelId));
+    }));
+  } catch {}
+  try { disposables.push(window.zion?.events?.on?.("panel/focusChanged", updatePanelCommentButtons)); } catch {}
+  try {
+    disposables.push(window.zion?.events?.on?.("panel/tabActivated", () => {
+      mountAll();
+      requestAnimationFrame(mountAll);
+    }));
+  } catch {}
+  try { disposables.push(window.zion?.events?.on?.("ui/auxiliaryBarActiveViewChanged", updatePanelCommentButtons)); } catch {}
+  try { disposables.push(window.zion?.state?.onDidChange?.("ui.auxiliaryBar.visible", updatePanelCommentButtons)); } catch {}
+  try { disposables.push(window.zion?.state?.onDidChange?.("ui.auxiliaryBar.activeViewId", updatePanelCommentButtons)); } catch {}
+
+  return {
+    dispose() {
+      disposed = true;
+      try { cancelAnimationFrame(frame); } catch {}
+      for (const disposable of disposables) {
+        try { disposable?.dispose?.(); } catch {}
+      }
+      for (const button of document.querySelectorAll(`[${PANEL_COMMENT_BUTTON_ATTR}="1"]`)) {
+        try { button.remove(); } catch {}
+      }
+    }
+  };
 }
 
 function getInspectorSourceEditor(threadOrSessionId) {
@@ -5271,10 +5598,26 @@ async function runThread(thread, handle) {
       window.zion?.state?.set?.(`chat.followSuppressUntil.${threadSessionId}`, Date.now() + 300);
     } catch {}
     const contextMessages = await buildThreadContextMessages(thread);
+    const threadLogTitle = getThreadLogTitle(thread);
     await window.zion?.commands?.executeCommand?.("chat.run", {
       editor,
       sessionId: threadSessionId,
       panelId: handle?.panelId || `comments:${thread.id}`,
+      title: threadLogTitle ? `评论 · ${threadLogTitle}` : "",
+      displayName: threadLogTitle,
+      sourceTitle: thread?.sourceTitle || "",
+      source: {
+        pluginId: "dev.comments",
+        kind: "comment",
+        id: String(thread?.id || threadSessionId)
+      },
+      metadata: {
+        commentId: String(thread?.id || ""),
+        threadId: String(thread?.id || ""),
+        commentTitle: threadLogTitle,
+        sourceTitle: String(thread?.sourceTitle || ""),
+        parentSessionId: String(thread?.parentSessionId || thread?.sessionId || "")
+      },
       skipSessionPersistence: true,
       autoInsertUserPrompt: false,
       autoFocusUserPrompt: false,
@@ -5317,7 +5660,9 @@ function escapeHtml(value) {
 
 export async function activate(ctx) {
   const disposables = [];
+  resetThreadStorageRuntime();
   try { await migrateLegacyThreadPayloadStorage(); } catch {}
+  try { await hydrateThreadRecordArchive({ emitChanged: false }); } catch {}
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) disposables.push(disp);
@@ -5570,6 +5915,7 @@ export async function activate(ctx) {
     component: { render: renderCommentsPanel }
   });
   if (viewDisposable) disposables.push(viewDisposable);
+  disposables.push(installPanelCommentButtons());
 
   const decorator = window.zion.editor.registerDecorator({
     id: "dev.comments.anchors",

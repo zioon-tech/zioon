@@ -1,3 +1,5 @@
+import type { ContextHealthRecommendation, ContextHealthSeverity } from "./run-health";
+
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "stopped" | "interrupted";
 export type RunTrigger = "user" | "schedule" | "supervisor" | "retry" | "system";
 
@@ -5,6 +7,14 @@ export type RunSourceRef = {
   pluginId: string;
   kind: string;
   id: string;
+};
+
+export type RunSourceKindRegistration = {
+  kind: string;
+  label: string;
+  color?: string;
+  order?: number;
+  pluginId?: string;
 };
 
 export type RunModelRef = {
@@ -20,6 +30,21 @@ export type RunUsageTokens = {
   cacheRead: number;
   cacheWrite: number;
   reasoning: number;
+};
+
+export type RunContextHealth = {
+  sessionId?: string;
+  estimatedTokens: number;
+  modelContextWindow: number;
+  utilization: number;
+  warningThreshold: number;
+  criticalThreshold: number;
+  messageCount: number;
+  compressionCount: number;
+  severity: ContextHealthSeverity;
+  recommendation: ContextHealthRecommendation;
+  reasons: string[];
+  updatedAt: number;
 };
 
 export type RunToolSummary = {
@@ -67,6 +92,7 @@ export type RunRecord = {
   terminalReason?: string;
   error?: string;
   usage: RunUsageTokens;
+  contextHealth?: RunContextHealth;
   cost: number | null;
   currency: string;
   stepCount: number;
@@ -138,6 +164,14 @@ const DEFAULT_CURRENCY = "USD";
 const DEFAULT_MAX_RUNS = 500;
 const DEFAULT_MAX_EVENTS = 5000;
 const DEFAULT_MAX_OUTCOMES = 1000;
+const DEFAULT_SOURCE_KINDS: RunSourceKindRegistration[] = [
+  { kind: "project", label: "项目", color: "cyan", order: 10, pluginId: "core" },
+  { kind: "agent-task", label: "Agent", color: "blue", order: 20, pluginId: "core" },
+  { kind: "scheduled-task", label: "定时任务", color: "orange", order: 30, pluginId: "core" },
+  { kind: "chat-session", label: "对话", color: "gray", order: 40, pluginId: "core" },
+  { kind: "comment", label: "评论", color: "purple", order: 50, pluginId: "core" },
+  { kind: "core", label: "Core", color: "gray", order: 1000, pluginId: "core" }
+];
 
 function emptyUsage(): RunUsageTokens {
   return { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
@@ -212,6 +246,89 @@ function normalizeModel(value: any): RunModelRef | null {
   return { providerId, modelId, label };
 }
 
+function normalizeSourceKindRegistration(input: any): RunSourceKindRegistration | null {
+  const kind = cleanString(input?.kind || "", 80);
+  const label = cleanString(input?.label || kind, 80);
+  if (!kind || !label) return null;
+  const order = Number(input?.order);
+  return {
+    kind,
+    label,
+    color: cleanString(input?.color || "", 40) || undefined,
+    order: Number.isFinite(order) ? order : undefined,
+    pluginId: cleanString(input?.pluginId || input?.plugin || "", 120) || undefined
+  };
+}
+
+function sanitizeModel(value: any): RunModelRef | undefined {
+  return normalizeModel(value) || undefined;
+}
+
+function normalizeRecommendation(value: any): ContextHealthRecommendation {
+  return ["continue", "compress", "new-session"].includes(value) ? value : "continue";
+}
+
+function normalizeSeverity(
+  value: any,
+  recommendation: ContextHealthRecommendation,
+  utilization: number,
+  warningThreshold: number,
+  criticalThreshold: number
+): ContextHealthSeverity {
+  if (value === "critical" || value === "warning" || value === "ok") return value;
+  if (recommendation === "new-session" || utilization >= criticalThreshold) return "critical";
+  if (recommendation === "compress" || utilization >= warningThreshold) return "warning";
+  return "ok";
+}
+
+function normalizeRatio(value: any, fallback = 0): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(1, n);
+}
+
+function normalizeThreshold(value: any, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0 || n >= 1) return fallback;
+  return n;
+}
+
+function normalizeContextHealth(input: any, now = Date.now(), fallbackSessionId = ""): RunContextHealth {
+  const estimatedTokens = positiveInteger(input?.estimatedTokens ?? input?.tokens ?? input?.contextTokens);
+  const modelContextWindow = Math.max(
+    1,
+    positiveInteger(
+      input?.modelContextWindow
+      ?? input?.contextWindow
+      ?? input?.contextWindowTokens
+      ?? input?.maxTokens
+    ) || 128_000
+  );
+  const utilization = normalizeRatio(
+    input?.utilization,
+    estimatedTokens ? Math.min(1, estimatedTokens / modelContextWindow) : 0
+  );
+  const warningThreshold = normalizeThreshold(input?.warningThreshold ?? input?.threshold, 0.7);
+  const criticalThreshold = Math.max(warningThreshold, normalizeThreshold(input?.criticalThreshold, 0.85));
+  const recommendation = normalizeRecommendation(input?.recommendation);
+  return {
+    sessionId: cleanString(input?.sessionId || fallbackSessionId || "", 180) || undefined,
+    estimatedTokens,
+    modelContextWindow,
+    utilization,
+    warningThreshold,
+    criticalThreshold,
+    messageCount: positiveInteger(input?.messageCount),
+    compressionCount: positiveInteger(input?.compressionCount),
+    severity: normalizeSeverity(input?.severity, recommendation, utilization, warningThreshold, criticalThreshold),
+    recommendation,
+    reasons: Array.isArray(input?.reasons)
+      ? input.reasons.map((item: any) => cleanString(item, 120)).filter(Boolean).slice(0, 12)
+      : [],
+    updatedAt: positiveInteger(input?.updatedAt ?? input?.ts) || now
+  };
+}
+
 function normalizeStatus(value: any): RunStatus {
   return ["queued", "running", "completed", "failed", "stopped", "interrupted"].includes(value)
     ? value
@@ -249,6 +366,7 @@ function normalizeRun(input: any, now = Date.now()): RunRecord | null {
     terminalReason: cleanString(input?.terminalReason || "", 240) || undefined,
     error: cleanString(input?.error || "", 500) || undefined,
     usage,
+    contextHealth: input?.contextHealth ? normalizeContextHealth(input.contextHealth, now, input?.sessionId) : undefined,
     cost: typeof input?.cost === "number" && Number.isFinite(input.cost) ? input.cost : null,
     currency: cleanString(input?.currency || DEFAULT_CURRENCY, 16) || DEFAULT_CURRENCY,
     stepCount: positiveInteger(input?.stepCount),
@@ -324,6 +442,7 @@ function sanitizeEventData(type: string, data: any): Record<string, any> {
     const prompt = String(data?.prompt || "");
     return {
       executionMode: cleanString(data?.executionMode || "", 80) || undefined,
+      model: sanitizeModel(data?.model),
       promptLength: prompt.length,
       promptPreview: prompt.slice(0, 500),
       policy: data?.policy && typeof data.policy === "object" ? {
@@ -346,6 +465,12 @@ function sanitizeEventData(type: string, data: any): Record<string, any> {
   }
   if (type === "run.failed") return { error: cleanString(data?.error || "", 500) };
   if (type === "run.aborted") return { reason: cleanString(data?.reason || "user", 120) };
+  if (type === "turn.started") {
+    return {
+      turn: positiveInteger(data?.turn ?? data?.stepIndex),
+      model: sanitizeModel(data?.model)
+    };
+  }
   if (type === "tool.requested") {
     const args = data?.args && typeof data.args === "object" ? data.args : {};
     return {
@@ -376,7 +501,15 @@ function sanitizeEventData(type: string, data: any): Record<string, any> {
   if (type === "turn.completed" || type === "model.usage") {
     return {
       turn: positiveInteger(data?.turn ?? data?.stepIndex),
+      model: sanitizeModel(data?.model),
       usage: data?.usage ? normalizeRunUsage(data.usage) : undefined
+    };
+  }
+  if (type === "context.window") {
+    return {
+      ...normalizeContextHealth(data),
+      turn: positiveInteger(data?.turn ?? data?.stepIndex),
+      model: sanitizeModel(data?.model)
     };
   }
   return JSON.parse(JSON.stringify(data || {}));
@@ -458,6 +591,11 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
   const maxEvents = Math.max(1, Number(options.maxEvents || DEFAULT_MAX_EVENTS));
   const maxOutcomes = Math.max(1, Number(options.maxOutcomes || DEFAULT_MAX_OUTCOMES));
   const listeners = new Set<(snapshot: RunLedgerSnapshot) => void>();
+  let sourceKindToken = 0;
+  const sourceKinds = new Map<string, RunSourceKindRegistration & { token: number }>();
+  for (const item of DEFAULT_SOURCE_KINDS) {
+    sourceKinds.set(item.kind, { ...item, token: 0 });
+  }
   let document = loadDocument(storage, storageKey, now());
 
   const persist = () => {
@@ -521,19 +659,35 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
           status: "running",
           startedAt: run.startedAt || at,
           executionMode: cleanString(data.executionMode || run.executionMode || "", 80) || undefined,
+          model: normalizeModel(data.model) || run.model,
           policy: data.policy || run.policy
+        };
+      } else if (event.type === "turn.started") {
+        next = {
+          ...next,
+          stepCount: Math.max(run.stepCount || 0, positiveInteger(data.turn)),
+          model: normalizeModel(data.model) || run.model
         };
       } else if (event.type === "turn.completed") {
         next = {
           ...next,
           stepCount: Math.max(run.stepCount || 0, positiveInteger(data.turn)),
+          model: normalizeModel(data.model) || run.model,
           usage: data.usage ? normalizeRunUsage(data.usage) : run.usage
         };
       } else if (event.type === "model.usage") {
         next = {
           ...next,
           stepCount: Math.max(run.stepCount || 0, positiveInteger(data.turn)),
+          model: normalizeModel(data.model) || run.model,
           usage: addUsage(run.usage, normalizeRunUsage(data.usage || {}))
+        };
+      } else if (event.type === "context.window") {
+        next = {
+          ...next,
+          stepCount: Math.max(run.stepCount || 0, positiveInteger(data.turn)),
+          model: normalizeModel(data.model) || run.model,
+          contextHealth: normalizeContextHealth({ ...data, updatedAt: at }, at, run.sessionId)
         };
       } else if (event.type === "tool.requested") {
         const id = cleanString(data.callId || "", 180);
@@ -661,7 +815,7 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
         runId,
         type: "model.usage",
         ts: at,
-        data: { usage, stepIndex: input?.stepIndex }
+        data: { usage, stepIndex: input?.stepIndex, model: input?.model }
       }, at);
       if (event) appendEvent(event);
       persist();
@@ -748,6 +902,29 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
     getEvents(runId: string): RunLedgerEvent[] {
       const id = cleanString(runId || "", 180);
       return document.events.filter((event) => event.runId === id);
+    },
+    registerSourceKind(input: any) {
+      const normalized = normalizeSourceKindRegistration(input);
+      if (!normalized) throw new Error("source kind and label are required");
+      const previous = sourceKinds.get(normalized.kind) || null;
+      const token = ++sourceKindToken;
+      const entry = { ...normalized, token };
+      sourceKinds.set(entry.kind, entry);
+      emitChanged("source-kind", { sourceKind: normalized });
+      return {
+        dispose() {
+          const current = sourceKinds.get(entry.kind);
+          if (!current || current.token !== token) return;
+          if (previous) sourceKinds.set(entry.kind, previous);
+          else sourceKinds.delete(entry.kind);
+          emitChanged("source-kind", { sourceKind: normalized, removed: true });
+        }
+      };
+    },
+    getSourceKinds(): RunSourceKindRegistration[] {
+      return Array.from(sourceKinds.values())
+        .map(({ token: _token, ...item }) => item)
+        .sort((a, b) => Number(a.order ?? 100) - Number(b.order ?? 100) || a.label.localeCompare(b.label));
     },
     getSnapshot,
     subscribe(filterOrHandler: RunListFilter | ((snapshot: RunLedgerSnapshot) => void), maybeHandler?: (snapshot: RunLedgerSnapshot) => void) {

@@ -1,4 +1,5 @@
 export type ContextHealthRecommendation = "continue" | "compress" | "new-session";
+export type ContextHealthSeverity = "ok" | "warning" | "critical";
 
 export type ContextHealthInput = {
   sessionId?: string;
@@ -6,6 +7,8 @@ export type ContextHealthInput = {
   estimatedTokens?: number;
   messageCount?: number;
   compressionCount?: number;
+  warningThreshold?: number;
+  criticalThreshold?: number;
 };
 
 export type ContextHealthSnapshot = {
@@ -13,11 +16,17 @@ export type ContextHealthSnapshot = {
   estimatedTokens: number;
   modelContextWindow: number;
   utilization: number;
+  warningThreshold: number;
+  criticalThreshold: number;
   messageCount: number;
   compressionCount: number;
+  severity: ContextHealthSeverity;
   recommendation: ContextHealthRecommendation;
   reasons: string[];
 };
+
+const DEFAULT_WARNING_THRESHOLD = 0.7;
+const DEFAULT_CRITICAL_THRESHOLD = 0.85;
 
 function nonNegative(value: any): number {
   const n = Number(value || 0);
@@ -29,24 +38,34 @@ export function estimateContextHealth(input: ContextHealthInput = {}): ContextHe
   const modelContextWindow = Math.max(1, nonNegative(input.modelContextWindow) || 128_000);
   const messageCount = nonNegative(input.messageCount);
   const compressionCount = nonNegative(input.compressionCount);
+  const warningThreshold = normalizeThreshold(input.warningThreshold, DEFAULT_WARNING_THRESHOLD);
+  const criticalThreshold = Math.max(
+    warningThreshold,
+    normalizeThreshold(input.criticalThreshold, DEFAULT_CRITICAL_THRESHOLD)
+  );
   const utilization = Math.min(1, estimatedTokens / modelContextWindow);
   const reasons: string[] = [];
+  let severity: ContextHealthSeverity = "ok";
   let recommendation: ContextHealthRecommendation = "continue";
 
-  if (utilization >= 0.85) {
+  if (utilization >= criticalThreshold) {
+    severity = "critical";
     recommendation = "new-session";
     reasons.push("context-window-critical");
-  } else if (utilization >= 0.65) {
+  } else if (utilization >= warningThreshold) {
+    severity = "warning";
     recommendation = "compress";
     reasons.push("context-window-high");
   }
 
   if (messageCount >= 80 && recommendation === "continue") {
+    severity = "warning";
     recommendation = "compress";
     reasons.push("many-messages");
   }
 
   if (compressionCount >= 3 && utilization >= 0.55) {
+    severity = "critical";
     recommendation = "new-session";
     reasons.push("repeated-compression");
   }
@@ -56,9 +75,18 @@ export function estimateContextHealth(input: ContextHealthInput = {}): ContextHe
     estimatedTokens,
     modelContextWindow,
     utilization,
+    warningThreshold,
+    criticalThreshold,
     messageCount,
     compressionCount,
+    severity,
     recommendation,
     reasons
   };
+}
+
+function normalizeThreshold(value: any, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0 || n >= 1) return fallback;
+  return n;
 }

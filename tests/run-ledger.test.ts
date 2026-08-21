@@ -124,20 +124,155 @@ describe("core run ledger", () => {
     });
     expect(ledger.get("live")?.status).toBe("running");
   });
+
+  it("preserves model snapshots on run and turn events", () => {
+    const ledger = createRunLedger({ storage: memoryStorage(), storageKey: "runs" });
+    ledger.start({
+      id: "model-run",
+      model: { providerId: "anthropic", modelId: "claude-3-5-sonnet", label: "Claude Sonnet" }
+    });
+
+    ledger.recordEvent({
+      runId: "model-run",
+      type: "run.started",
+      data: {
+        executionMode: "interactive",
+        model: { providerId: "anthropic", modelId: "claude-3-5-sonnet", label: "Claude Sonnet" }
+      }
+    });
+    ledger.recordEvent({
+      runId: "model-run",
+      type: "turn.started",
+      data: {
+        turn: 2,
+        model: { providerId: "openai", modelId: "gpt-4.1", label: "GPT-4.1" }
+      }
+    });
+    ledger.recordUsage({
+      runId: "model-run",
+      stepIndex: 2,
+      model: { providerId: "openai", modelId: "gpt-4.1", label: "GPT-4.1" },
+      usage: { input_tokens: 10, output_tokens: 5 }
+    });
+
+    expect(ledger.get("model-run")).toMatchObject({
+      executionMode: "interactive",
+      model: { providerId: "openai", modelId: "gpt-4.1", label: "GPT-4.1" },
+      stepCount: 2
+    });
+    expect(ledger.getEvents("model-run").map((event) => event.data?.model).filter(Boolean)).toEqual([
+      { providerId: "anthropic", modelId: "claude-3-5-sonnet", label: "Claude Sonnet" },
+      { providerId: "openai", modelId: "gpt-4.1", label: "GPT-4.1" },
+      { providerId: "openai", modelId: "gpt-4.1", label: "GPT-4.1" }
+    ]);
+  });
+
+  it("registers runtime source kinds for plugins", () => {
+    const topics: Array<{ topic: string; payload: any }> = [];
+    const ledger = createRunLedger({
+      storage: memoryStorage(),
+      storageKey: "runs",
+      emit: (topic, payload) => topics.push({ topic, payload })
+    });
+
+    expect(ledger.getSourceKinds()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "project", label: "项目" }),
+      expect.objectContaining({ kind: "core", label: "Core" })
+    ]));
+
+    const disposable = ledger.registerSourceKind({
+      kind: "devops-run",
+      label: "DevOps",
+      color: "purple",
+      order: 45,
+      pluginId: "dev.devops"
+    });
+
+    expect(ledger.getSourceKinds()).toContainEqual({
+      kind: "devops-run",
+      label: "DevOps",
+      color: "purple",
+      order: 45,
+      pluginId: "dev.devops"
+    });
+    expect(topics.some((item) => item.payload?.reason === "source-kind")).toBe(true);
+
+    disposable.dispose();
+    expect(ledger.getSourceKinds().some((item) => item.kind === "devops-run")).toBe(false);
+  });
+
+  it("projects sanitized context window health onto runs", () => {
+    const ledger = createRunLedger({ storage: memoryStorage(), storageKey: "runs" });
+    ledger.start({
+      id: "context-run",
+      sessionId: "session-context",
+      model: { providerId: "deepseek", modelId: "deepseek-v4-flash", label: "DeepSeek V4 Flash" }
+    });
+
+    ledger.recordEvent({
+      runId: "context-run",
+      type: "context.window",
+      ts: 2000,
+      data: {
+        turn: 1,
+        sessionId: "session-context",
+        estimatedTokens: 72_000,
+        modelContextWindow: 100_000,
+        utilization: 0.72,
+        warningThreshold: 0.7,
+        criticalThreshold: 0.85,
+        messageCount: 18,
+        compressionCount: 0,
+        recommendation: "compress",
+        reasons: ["context-window-high"],
+        model: { providerId: "deepseek", modelId: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+        messages: [{ role: "user", content: "raw prompt must not be stored" }]
+      }
+    });
+
+    expect(ledger.get("context-run")).toMatchObject({
+      stepCount: 1,
+      contextHealth: {
+        sessionId: "session-context",
+        estimatedTokens: 72_000,
+        modelContextWindow: 100_000,
+        utilization: 0.72,
+        warningThreshold: 0.7,
+        severity: "warning",
+        recommendation: "compress",
+        reasons: ["context-window-high"],
+        updatedAt: 2000
+      }
+    });
+    const event = ledger.getEvents("context-run").find((item) => item.type === "context.window");
+    expect(event?.data).toMatchObject({
+      turn: 1,
+      estimatedTokens: 72_000,
+      modelContextWindow: 100_000,
+      severity: "warning",
+      recommendation: "compress"
+    });
+    expect(event?.data).not.toHaveProperty("messages");
+  });
 });
 
 describe("core run health", () => {
   it("recommends compression or new sessions from deterministic thresholds", () => {
     expect(estimateContextHealth({
+      estimatedTokens: 69_000,
+      modelContextWindow: 100_000
+    })).toMatchObject({ recommendation: "continue", severity: "ok" });
+
+    expect(estimateContextHealth({
       estimatedTokens: 70_000,
       modelContextWindow: 100_000,
       messageCount: 20
-    }).recommendation).toBe("compress");
+    })).toMatchObject({ recommendation: "compress", severity: "warning" });
 
     expect(estimateContextHealth({
       estimatedTokens: 58_000,
       modelContextWindow: 100_000,
       compressionCount: 3
-    }).recommendation).toBe("new-session");
+    })).toMatchObject({ recommendation: "new-session", severity: "critical" });
   });
 });

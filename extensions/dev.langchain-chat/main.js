@@ -23,6 +23,7 @@ import { registerModelsTools } from "./models-tools.js";
 import { createChatOverviewRail } from "./overview-rail.js";
 import { ModelsSettingsPage } from "./ModelsSettingsPage.jsx";
 import { buildTerminalSessionsContextXml } from "./terminal-context.js";
+import { buildContextWindowSnapshot } from "./context-health.js";
 import {
   appendAssistantToken as appendAssistantTokenToEditor,
   ensureTrailingUserPromptInDocText,
@@ -34,6 +35,7 @@ import { createChatRuntime } from "../../src/chat/runtime";
 import { reconstructWidgetHistoryMessages } from "../../src/chat/widget-history";
 import { createToolCardId } from "../../src/chat/tool-card-id";
 import { createProgrammaticExecutor } from "./programmatic-runner.js";
+import { inferToolResultError } from "./tool-result-diagnostics.js";
 
 
 const I18N_NS = "dev.langchain-chat";
@@ -736,6 +738,45 @@ export async function activate(ctx) {
     if (pid.startsWith("agents:") || sid.startsWith("agent-task:")) return "agents";
     return "";
   };
+  const compactRunTitle = (value, max = 120) => {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
+  };
+  const resolveSessionTitleForRun = (sessionId) => {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return "";
+    try {
+      const meta = window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", sid)
+        || window.zion?.state?.get?.(`sessions.meta.${sid}`);
+      const title = compactRunTitle(meta?.title);
+      if (title && title !== sid) return title;
+    } catch {}
+    try {
+      const catalog = window.zion?.state?.get?.("sessions.catalog");
+      if (Array.isArray(catalog)) {
+        const found = catalog.find((item) => String(item?.id || "") === sid);
+        const title = compactRunTitle(found?.title);
+        if (title && title !== sid) return title;
+      }
+    } catch {}
+    return "";
+  };
+  const resolveRunDisplayName = (opts, sessionId) => {
+    const metadata = opts?.metadata && typeof opts.metadata === "object" ? opts.metadata : {};
+    return compactRunTitle(
+      opts?.displayName
+      || opts?.sourceName
+      || metadata.displayName
+      || metadata.sourceName
+      || metadata.commentTitle
+      || metadata.threadTitle
+      || metadata.sessionTitle
+      || opts?.sourceTitle
+      || opts?.title
+      || resolveSessionTitleForRun(sessionId)
+    );
+  };
   const isEditorShowingSession = (editor, sid) => {
     if (!editor || !sid) return false;
     try {
@@ -778,9 +819,10 @@ export async function activate(ctx) {
     const sid = getSessionId({ ...opts, panelId });
     if (!sid) throw new Error("No target session");
     const runThinkingEffort = normalizeThinkingEffort(opts?.thinkingEffort);
-    const runModel = getResolvedModelSnapshot(
+    const resolveActiveRunModel = () => getResolvedModelSnapshot(
       runThinkingEffort === "auto" ? null : { ...window.zion.state.get("chat.activeModel"), thinkingEffort: runThinkingEffort }
     );
+    const runModel = resolveActiveRunModel();
     const cursor = ed.getCursor();
     const fullDoc = ed.getValue();
     const lines = fullDoc.split("\n");
@@ -848,6 +890,10 @@ export async function activate(ctx) {
   const executeProgrammatic = createProgrammaticExecutor({
     runStream,
     getActiveModel: () => getResolvedModelSnapshot(window.zion.state.get("chat.activeModel")),
+    resolveModelConfig: async (model) => {
+      const prov = window.zion?.models?.getProvider?.(model?.providerId);
+      return await prov?.resolve?.(model?.modelId);
+    },
     getTools: () => {
       const tools = Array.isArray(window.zion?.state?.get?.("chat.tools"))
         ? window.zion.state.get("chat.tools")
@@ -1122,9 +1168,10 @@ export async function activate(ctx) {
       const autoScrollAssistant = opts?.autoScrollAssistant !== false;
       const moveSelectionToAssistant = opts?.moveSelectionToAssistant !== false;
       const runFollowLatest = opts?.followLatest === false ? false : true;
-    const runModel = getResolvedModelSnapshot(
+    const resolveActiveRunModel = () => getResolvedModelSnapshot(
       runThinkingEffort === "auto" ? null : { ...window.zion.state.get("chat.activeModel"), thinkingEffort: runThinkingEffort }
     );
+    const runModel = resolveActiveRunModel();
     const streaming = !!getRunState(sid)?.streaming;
     if (streaming) {
       console.log("[langchain-chat] already streaming in current session, abort");
@@ -1245,6 +1292,14 @@ export async function activate(ctx) {
       kind: "chat-session",
       id: sid
     };
+    const runDisplayName = resolveRunDisplayName(opts, sid);
+    const runMetadata = {
+      ...(opts?.metadata && typeof opts.metadata === "object" ? opts.metadata : {}),
+      requestSource: contributorCtx.requestSource
+    };
+    if (runDisplayName && !runMetadata.displayName) runMetadata.displayName = runDisplayName;
+    if (runDisplayName && !runMetadata.sessionTitle) runMetadata.sessionTitle = runDisplayName;
+    if (opts?.sourceTitle && !runMetadata.sourceTitle) runMetadata.sourceTitle = compactRunTitle(opts.sourceTitle);
     const recordRunEvent = (type, data = {}) => {
       try {
         window.zion?.runs?.recordEvent?.({
@@ -1258,16 +1313,14 @@ export async function activate(ctx) {
     try {
       window.zion?.runs?.start?.({
         id: runId,
-        title: opts?.title || "",
+        title: opts?.title || runDisplayName || "",
         source: ledgerSource,
         trigger: opts?.trigger || "user",
         sessionId: sid,
         panelId,
         executionMode: "interactive",
         model: runModel,
-        metadata: {
-          requestSource: contributorCtx.requestSource
-        }
+        metadata: runMetadata
       });
     } catch {}
     runtime.beginRun(sid, runId);
@@ -1471,10 +1524,50 @@ export async function activate(ctx) {
       let stepReasoning = "";
       const stepIndex = Number(window.zion?.state?.get?.(`chat.usageStep.${runId}`) || 0) + 1;
       try { window.zion?.state?.set?.(`chat.usageStep.${runId}`, stepIndex); } catch {}
+      const stepOutputStartLength = runOutput.length;
+      const stepModel = resolveActiveRunModel();
+      const stateBeforeModelUpdate = getRunState(sid);
+      setRunState(sid, { model: stepModel }, runId);
+      // #region debug-point D:model-state-update
+      fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"D",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:runStep:model-state-update",msg:"[DEBUG] model state updated",data:{stepIndex,before:{runId:stateBeforeModelUpdate?.runId,streaming:stateBeforeModelUpdate?.streaming,aborted:stateBeforeModelUpdate?.aborted,error:stateBeforeModelUpdate?.error},after:{runId:getRunState(sid)?.runId,streaming:getRunState(sid)?.streaming,aborted:getRunState(sid)?.aborted,error:getRunState(sid)?.error},current:runtime.isCurrentRun(sid,runId),active:runtime.isRunActive(sid,runId)},ts:Date.now()})}).catch(()=>{});
+      // #endregion
+      recordRunEvent("turn.started", {
+        turn: stepIndex,
+        model: stepModel
+      });
+      try {
+        const prov = window.zion?.models?.getProvider?.(stepModel?.providerId);
+        const cfg = await prov?.resolve?.(stepModel?.modelId);
+        const contextWindow = buildContextWindowSnapshot({
+          sessionId: sid,
+          messages: msgs,
+          model: stepModel,
+          cfg,
+          state: window.zion?.state
+        });
+        recordRunEvent("context.window", {
+          ...contextWindow,
+          turn: stepIndex,
+          model: stepModel
+        });
+        window.zion?.events?.emit?.("chat/contextWindow", {
+          runId,
+          sessionId: sid,
+          panelId,
+          stepIndex,
+          model: stepModel,
+          ...contextWindow
+        });
+      } catch (error) {
+        console.warn("[langchain-chat] context window estimate failed:", error);
+      }
+      // #region debug-point A:before-followup-request
+      fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"A",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:runStep:before-runStream",msg:"[DEBUG] runStep before runStream",data:{stepIndex,messageCount:Array.isArray(msgs)?msgs.length:0,lastRoles:Array.isArray(msgs)?msgs.slice(-3).map((m)=>({role:m?.role,toolCalls:Array.isArray(m?.tool_calls)?m.tool_calls.length:0,toolCallId:m?.tool_call_id||"",contentLength:typeof m?.content==="string"?m.content.length:0})):[],hasTools:Array.isArray(tools)&&tools.length>0,initialModel:runModel,currentModel:stepModel,current:runtime.isCurrentRun(sid,runId),active:runtime.isRunActive(sid,runId)},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       const streamResult = await runStream({
         messages: msgs,
         tools,
-        activeModel: runModel,
+        activeModel: stepModel,
         onToken: appendToken,
         beforeControlEvent: () => {
           try { tokenBuffer.flush(); } catch {}
@@ -1508,6 +1601,7 @@ export async function activate(ctx) {
               resultsById.set(tc.id, item);
               receivedResults.push(item);
               const ok = inferToolOk(tc.name, res);
+              const toolError = inferToolResultError(tc.name, res, ok);
               window.zion.events.emit("chat/toolResult", {
                 runId,
                 cardId,
@@ -1522,7 +1616,8 @@ export async function activate(ctx) {
                 turn: stepIndex,
                 callId: tc.id,
                 name: tc.name,
-                result: content
+                result: content,
+                ...(toolError ? { error: toolError } : {})
               });
             })
             .catch(err => {
@@ -1609,6 +1704,9 @@ export async function activate(ctx) {
       });
 
       stepReasoning = String(streamResult?.reasoning_content || "");
+      // #region debug-point B:after-followup-response
+      fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"B",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:runStep:after-runStream",msg:"[DEBUG] runStream returned",data:{stepIndex,calls:calls.length,contentDeltaLength:Math.max(0,runOutput.length-stepOutputStartLength),reasoningLength:stepReasoning.length,aborted:!!streamResult?.aborted,hasError:!!streamResult?.error,resultKeys:Object.keys(streamResult||{}),current:runtime.isCurrentRun(sid,runId),active:runtime.isRunActive(sid,runId)},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       if (streamResult?.aborted) {
         aborted = true;
         runtime.markAborted(sid, runId);
@@ -1616,17 +1714,17 @@ export async function activate(ctx) {
       }
       if (streamResult?.usage) {
         try {
-          const prov = window.zion?.models?.getProvider?.(runModel?.providerId);
-          const cfg = await prov?.resolve?.(runModel?.modelId);
+          const prov = window.zion?.models?.getProvider?.(stepModel?.providerId);
+          const cfg = await prov?.resolve?.(stepModel?.modelId);
           window.zion?.usage?.record?.({
             runId,
             sessionId: opts?.usageSessionId || sid,
             panelId,
-            providerId: runModel?.providerId,
-            providerType: cfg?.providerType || runModel?.providerId,
-            modelId: runModel?.modelId,
-            modelName: cfg?.modelName || runModel?.modelId,
-            label: runModel?.label || cfg?.label || cfg?.modelName || runModel?.modelId,
+            providerId: stepModel?.providerId,
+            providerType: cfg?.providerType || stepModel?.providerId,
+            modelId: stepModel?.modelId,
+            modelName: cfg?.modelName || stepModel?.modelId,
+            label: stepModel?.label || cfg?.label || cfg?.modelName || stepModel?.modelId,
             stepIndex,
             usage: streamResult.usage,
             cfg
@@ -1635,7 +1733,7 @@ export async function activate(ctx) {
             runId,
             sessionId: opts?.usageSessionId || sid,
             panelId,
-            model: runModel,
+            model: stepModel,
             stepIndex,
             usage: streamResult.usage
           });
@@ -1646,6 +1744,9 @@ export async function activate(ctx) {
       if (promises.length > 0) {
         try { await Promise.allSettled(promises); } catch {}
       }
+      // #region debug-point A:after-tool-settlement
+      fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"A",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:runStep:after-tools",msg:"[DEBUG] tools settled",data:{stepIndex,calls:calls.length,receivedResults:receivedResults.length,promises:promises.length,current:runtime.isCurrentRun(sid,runId),active:runtime.isRunActive(sid,runId),aborted,failed},ts:Date.now()})}).catch(()=>{});
+      // #endregion
 
       const seenResultIds = new Set();
       const results = receivedResults
@@ -1811,11 +1912,17 @@ export async function activate(ctx) {
             assistantMsg,
             ...toolMsgs
           ];
+          // #region debug-point C:continue-after-tools
+          fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"C",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:loop:continue",msg:"[DEBUG] continuing after tools",data:{calls:step.calls.length,results:step.results.length,nextMessageCount:msgs.length,initialModel:runModel,nextModel:resolveActiveRunModel(),protocolModel:active,current:runtime.isCurrentRun(sid,runId)},ts:Date.now()})}).catch(()=>{});
+          // #endregion
           // 继续下一步
           continue;
         }
 
         // 无新的工具调用，结束链式
+        // #region debug-point B:break-without-tools
+        fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"B",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:loop:break",msg:"[DEBUG] ending tool loop",data:{calls:step.calls.length,reasoningLength:String(step.reasoning_content||"").length,totalOutputLength:runOutput.length,current:runtime.isCurrentRun(sid,runId)},ts:Date.now()})}).catch(()=>{});
+        // #endregion
         break;
       }
 

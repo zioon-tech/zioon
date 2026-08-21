@@ -1,13 +1,13 @@
 {
   "name": "dev.comments",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Create anchored comment threads around editor selections.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.comments",
     "name": "Comments",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "main": "./main.js",
     "presentation": {
       "displayName": {

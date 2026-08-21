@@ -9,6 +9,7 @@ import {
   insertCommentSummariesIntoMessages,
   isCommentPanelUserScrollActive,
   mapStoredCommentAnchor,
+  mountPanelCommentButton,
   moveCommentEditorToBoundary,
   resolveCommentSessionId,
   resolveStoredRangeAnchor,
@@ -40,6 +41,54 @@ describe("comment editor interactions", () => {
     localStorage.removeItem("zion.comments.threads.v1");
     window.zion = originalZion;
     vi.unstubAllGlobals();
+  });
+
+  it("mounts the comments launcher on the editor side and opens the auxiliary comments view", () => {
+    const state = new Map([
+      ["ui.auxiliaryBar.visible", false],
+      ["ui.auxiliaryBar.activeViewId", ""]
+    ]);
+    const focus = vi.fn();
+    const activateView = vi.fn((id) => {
+      state.set("ui.auxiliaryBar.visible", true);
+      state.set("ui.auxiliaryBar.activeViewId", id);
+    });
+    window.zion = {
+      state: { get: (key) => state.get(key) },
+      panels: {
+        getActivePanelId: () => "panel-1",
+        list: () => [{ id: "panel-1", activeTabId: "session-1" }],
+        focus,
+        getEditor: () => null,
+        getEditorBySession: () => null
+      },
+      auxiliaryBar: { activateView }
+    };
+
+    const panel = document.createElement("section");
+    panel.className = "zion-panel";
+    panel.dataset.panelId = "panel-1";
+    const tabsBar = document.createElement("div");
+    tabsBar.className = "zion-editor-tabsbar";
+    const editorHeader = document.createElement("div");
+    editorHeader.className = "zion-editor-header";
+    const editorHost = document.createElement("div");
+    editorHost.className = "zion-editor-host";
+    panel.append(tabsBar, editorHeader, editorHost);
+    document.body.appendChild(panel);
+
+    const button = mountPanelCommentButton(panel);
+
+    expect(button?.parentElement).toBe(editorHost);
+    expect(tabsBar.querySelector("[data-zion-comments-panel-button]")).toBeNull();
+    expect(editorHeader.querySelector("[data-zion-comments-panel-button]")).toBeNull();
+    expect(button?.querySelector(".codicon-comment-discussion")).toBeTruthy();
+
+    button?.click();
+
+    expect(focus).toHaveBeenCalledWith("panel-1");
+    expect(activateView).toHaveBeenCalledWith("dev.comments.panel");
+    expect(button?.classList.contains("is-active")).toBe(true);
   });
 
   it("moves to the document boundary without moving the outer comment list", () => {

@@ -1,13 +1,13 @@
 {
   "name": "dev.terminal-manager",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "description": "Manage local and SSH terminal sessions, reconnection, and working directories.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.terminal-manager",
     "name": "Terminal Manager",
-    "version": "0.0.1",
+    "version": "0.0.4",
     "main": "./main.js",
     "presentation": {
       "displayName": {
@@ -50,6 +50,9 @@
           "categoryKey": "dev.terminal-manager.category.terminal",
           "keybinding": "Alt+N"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "activationEvents": [

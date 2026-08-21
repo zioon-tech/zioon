@@ -1,5 +1,5 @@
 import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, getInspectorTextSessionId, inspectorRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
-import { createZionIcon, hasZionIcon, setZionIconOnly, zionIconName } from "../icons";
+import { createZionIcon, createZionIconFromCodicon, hasZionIcon, setZionIconOnly, zionIconName } from "../icons";
 import { applyInspectorMarkdownCommentRanges, createInspectorMarkdownPreviewView, createInspectorTextView, getInspectorMarkdownSelection, openInspectorSearch, renderInspectorMarkdown, setInspectorLineWrapping } from "./inspectorContent";
 import { createSelectionToolbarButton, createSelectionToolbarItemsContainer } from "../../editor/extensions/selection-toolbar";
 
@@ -7,6 +7,88 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): 
   const node = document.createElement(tag);
   if (className) node.className = className;
   return node;
+}
+
+type InspectorRecentPage = {
+  url: string;
+  title: string;
+  visitedAt: number;
+};
+
+type InspectorBrowserChoice = {
+  key: string;
+  icon: string;
+  title: string;
+  subtitle: string;
+  value: string;
+};
+
+const INSPECTOR_RECENT_PAGES_KEY = "zion.inspector.recentPages";
+const INSPECTOR_RECENT_PAGES_LIMIT = 24;
+
+function normalizeInspectorBrowserInput(value: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const hasScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(raw);
+  const isLocal = /^localhost(?::\d+)?(?:[/?#]|$)/i.test(raw)
+    || /^(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:[/?#]|$)/.test(raw);
+  const looksLikeUrl = hasScheme
+    || isLocal
+    || /^[^\s/]+\.[^\s]+(?:[/?#].*)?$/.test(raw)
+    || /^[^\s]+\.[^\s]+\/[^\s]*$/.test(raw);
+  const candidate = hasScheme ? raw : looksLikeUrl ? `${isLocal ? "http" : "https"}://${raw}` : "";
+  if (candidate) {
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.toString();
+    } catch {}
+  }
+  return `https://www.bing.com/search?${new URLSearchParams({ q: raw }).toString()}`;
+}
+
+function inspectorTitleForUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.host || url;
+  } catch {
+    return url;
+  }
+}
+
+function readInspectorRecentPages(): InspectorRecentPage[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(INSPECTOR_RECENT_PAGES_KEY) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => {
+        const url = normalizeInspectorBrowserInput(item?.url);
+        if (!url) return null;
+        return {
+          url,
+          title: String(item?.title || inspectorTitleForUrl(url)).trim() || inspectorTitleForUrl(url),
+          visitedAt: Number.isFinite(Number(item?.visitedAt)) ? Number(item.visitedAt) : 0
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => b.visitedAt - a.visitedAt)
+      .slice(0, INSPECTOR_RECENT_PAGES_LIMIT) as InspectorRecentPage[];
+  } catch {
+    return [];
+  }
+}
+
+function writeInspectorRecentPages(items: InspectorRecentPage[]): void {
+  try {
+    localStorage.setItem(INSPECTOR_RECENT_PAGES_KEY, JSON.stringify(items.slice(0, INSPECTOR_RECENT_PAGES_LIMIT)));
+  } catch {}
+}
+
+function rememberInspectorRecentPage(url: string, title?: string): void {
+  const normalized = normalizeInspectorBrowserInput(url);
+  if (!normalized) return;
+  const nextTitle = String(title || inspectorTitleForUrl(normalized)).trim() || inspectorTitleForUrl(normalized);
+  const rest = readInspectorRecentPages().filter((item) => item.url !== normalized);
+  writeInspectorRecentPages([{ url: normalized, title: nextTitle, visitedAt: Date.now() }, ...rest]);
 }
 
 function attachInlineTabsScrollbar(viewport: HTMLElement, scroller: HTMLElement) {
@@ -152,7 +234,7 @@ function appendIconAndLabel(target: HTMLElement, icon: string, label: string) {
   target.textContent = "";
   const codiconMatch = value.match(/^\$\(([^)]+)\)$/);
   if (codiconMatch) {
-    target.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+    target.appendChild(createZionIconFromCodicon(codiconMatch[1]));
   } else if (hasZionIcon(value)) {
     target.appendChild(createZionIcon(zionIconName(value)));
   } else if (value) {
@@ -744,7 +826,7 @@ export function initWorkbench(host: HTMLElement): {
       btn.textContent = "";
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+        btn.appendChild(createZionIconFromCodicon(codiconMatch[1]));
       } else if (hasZionIcon(icon)) {
         btn.appendChild(createZionIcon(zionIconName(icon)));
       } else {
@@ -776,6 +858,20 @@ export function initWorkbench(host: HTMLElement): {
     const activeId = activityBarRuntime.getActiveItemId();
 
     const list = el("div", "zion-activitybar-list");
+    const createCommandSearchButton = () => {
+      const button = el("button", "zion-activitybar-item zion-activitybar-command") as HTMLButtonElement;
+      button.type = "button";
+      button.title = "搜索命令";
+      button.setAttribute("aria-label", "搜索命令");
+      setCodiconOnly(button, "search");
+      button.onclick = () => {
+        try {
+          (window as any).zion?.commands?.executeCommand?.("commandPalette.open");
+        } catch {}
+      };
+      return button;
+    };
+    let commandSearchAdded = false;
     for (const it of items) {
       const btn = el("button", "zion-activitybar-item");
       btn.type = "button";
@@ -787,7 +883,7 @@ export function initWorkbench(host: HTMLElement): {
       btn.textContent = "";
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+        btn.appendChild(createZionIconFromCodicon(codiconMatch[1]));
       } else if (hasZionIcon(icon)) {
         btn.appendChild(createZionIcon(zionIconName(icon)));
       } else {
@@ -795,10 +891,15 @@ export function initWorkbench(host: HTMLElement): {
       }
       btn.onclick = () => activityBarRuntime.activateItem(it.id);
       list.appendChild(btn);
+      if (it.id === "sessions.activity") {
+        list.appendChild(createCommandSearchButton());
+        commandSearchAdded = true;
+      }
     }
+    if (!commandSearchAdded) list.prepend(createCommandSearchButton());
     activityBarEl.appendChild(list);
 
-    // Bottom actions area (settings + commands)
+    // Bottom actions area
     const bottom = el("div", "zion-activitybar-bottom");
 
     const settingsBtn = el("button", "zion-activitybar-item zion-activitybar-settings") as HTMLButtonElement;
@@ -812,18 +913,6 @@ export function initWorkbench(host: HTMLElement): {
       } catch {}
     };
     bottom.appendChild(settingsBtn);
-
-    const cmdBtn = el("button", "zion-activitybar-item zion-activitybar-command") as HTMLButtonElement;
-    cmdBtn.type = "button";
-    cmdBtn.title = "Commands";
-    cmdBtn.setAttribute("aria-label", "Commands");
-    setCodiconOnly(cmdBtn, "search");
-    cmdBtn.onclick = () => {
-      try {
-        (window as any).zion?.commands?.executeCommand?.("commandPalette.open");
-      } catch {}
-    };
-    bottom.appendChild(cmdBtn);
 
     activityBarEl.appendChild(bottom);
   };
@@ -1255,8 +1344,21 @@ export function initWorkbench(host: HTMLElement): {
   inspectorTabs.setAttribute("role", "tablist");
   inspectorTabs.setAttribute("aria-label", "查看中的内容");
   inspectorTabsViewport.appendChild(inspectorTabs);
+  const inspectorNewTabButton = el("button", "zion-inspector-tabbar-action") as HTMLButtonElement;
+  inspectorNewTabButton.type = "button";
+  inspectorNewTabButton.title = "新建标签页";
+  inspectorNewTabButton.setAttribute("aria-label", "新建标签页");
+  setCodiconOnly(inspectorNewTabButton, "plus");
+  inspectorTabsViewport.appendChild(inspectorNewTabButton);
   const inspectorTabsScrollbar = attachInlineTabsScrollbar(inspectorTabsViewport, inspectorTabs);
   const inspectorToolbar = el("div", "zion-inspector-toolbar");
+  const inspectorHistoryButton = el("button", "zion-inspector-toolbar-action zion-inspector-history-button") as HTMLButtonElement;
+  inspectorHistoryButton.type = "button";
+  inspectorHistoryButton.title = "历史记录";
+  inspectorHistoryButton.setAttribute("aria-label", "历史记录");
+  inspectorHistoryButton.setAttribute("aria-haspopup", "menu");
+  inspectorHistoryButton.setAttribute("aria-expanded", "false");
+  setCodiconOnly(inspectorHistoryButton, "history");
   const inspectorToolbarPath = el("div", "zion-inspector-toolbar-path");
   const inspectorToolbarActions = el("div", "zion-inspector-toolbar-actions");
   const inspectorToolbarMenuButton = el("button", "zion-inspector-toolbar-action zion-inspector-toolbar-menu-button") as HTMLButtonElement;
@@ -1266,11 +1368,18 @@ export function initWorkbench(host: HTMLElement): {
   inspectorToolbarMenuButton.setAttribute("aria-haspopup", "menu");
   inspectorToolbarMenuButton.setAttribute("aria-expanded", "false");
   setCodiconOnly(inspectorToolbarMenuButton, "settings");
+  const inspectorHistoryMenu = el("div", "zion-inspector-history-menu");
+  inspectorHistoryMenu.setAttribute("role", "menu");
+  const inspectorBrowserSuggestions = el("div", "zion-inspector-browser-suggestions");
+  inspectorBrowserSuggestions.setAttribute("role", "listbox");
   const inspectorToolbarMenu = el("div", "zion-inspector-toolbar-menu");
   inspectorToolbarMenu.setAttribute("role", "menu");
+  inspectorToolbar.appendChild(inspectorHistoryButton);
   inspectorToolbar.appendChild(inspectorToolbarPath);
   inspectorToolbar.appendChild(inspectorToolbarActions);
   inspectorToolbar.appendChild(inspectorToolbarMenuButton);
+  inspectorToolbar.appendChild(inspectorHistoryMenu);
+  inspectorToolbar.appendChild(inspectorBrowserSuggestions);
   inspectorToolbar.appendChild(inspectorToolbarMenu);
   const inspectorContent = el("div", "zion-inspector-content");
   const inspectorStatusBar = el("div", "zion-inspector-statusbar");
@@ -1297,6 +1406,9 @@ export function initWorkbench(host: HTMLElement): {
   const inspectorLineWrapping = new Map<string, boolean>();
   const inspectorBrowserHistory = new Map<string, { entries: string[]; index: number }>();
   const inspectorBrowserStages = new Map<string, { url: string; stage: HTMLElement; iframe: HTMLIFrameElement }>();
+  let inspectorNewTabSeq = 0;
+  let inspectorBrowserSuggestionChoices: InspectorBrowserChoice[] = [];
+  let inspectorBrowserSuggestionIndex = -1;
   let lastInspectorItem: ReturnType<typeof inspectorRuntime.getActiveItem> = null;
   let lastInspectorRenderer: ReturnType<typeof inspectorRuntime.getRenderer> = null;
   let lastInspectorItemsSignature = "";
@@ -1327,6 +1439,7 @@ export function initWorkbench(host: HTMLElement): {
     }
   };
   const getInspectorFileIcon = (item: any) => {
+    if (item?.browserStartPage) return "browser";
     if (item?.url) return "globe";
     if (item?.file?.kind === "image") return "image";
     if (item?.file?.kind === "pdf") return "file-pdf";
@@ -1361,6 +1474,253 @@ export function initWorkbench(host: HTMLElement): {
     };
     return button;
   };
+  const isInspectorBrowserItem = (candidate: any) => !!candidate?.browserStartPage || !!candidate?.url || candidate?.ownerId === "core.inspector.browser";
+  const getActiveInspectorBrowserItem = () => {
+    const active = inspectorRuntime.getActiveItem();
+    return active && isInspectorBrowserItem(active) ? active : null;
+  };
+  const openInspectorNewTab = () => {
+    inspectorNewTabSeq += 1;
+    const id = `browser:new:${Date.now()}:${inspectorNewTabSeq}`;
+    inspectorRuntime.open({
+      id,
+      ownerId: "core.inspector.browser",
+      title: "新标签页",
+      path: `about:inspector-new-tab/${id}`,
+      displayPath: "新标签页",
+      language: "text",
+      browserStartPage: true
+    });
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLInputElement>(".zion-inspector-browser-address")?.focus({ preventScroll: true });
+    });
+  };
+  const openInspectorBrowser = (value: string, targetId = "") => {
+    const url = normalizeInspectorBrowserInput(value);
+    if (!url) return false;
+    const title = inspectorTitleForUrl(url);
+    rememberInspectorRecentPage(url, title);
+    const target = targetId ? inspectorRuntime.getItems().find((candidate) => candidate.id === targetId) : null;
+    if (target && isInspectorBrowserItem(target)) {
+      inspectorRuntime.update(target.id, {
+        title,
+        path: url,
+        displayPath: url,
+        url,
+        browserStartPage: false,
+        language: "text"
+      });
+      return true;
+    }
+    inspectorRuntime.open({
+      id: `browser:${encodeURIComponent(url)}`,
+      ownerId: "core.inspector.browser",
+      title,
+      path: url,
+      displayPath: url,
+      url,
+      language: "text"
+    });
+    return true;
+  };
+  const hideInspectorHistoryMenu = () => {
+    inspectorHistoryMenu.classList.remove("is-open");
+    inspectorHistoryButton.classList.remove("is-active");
+    inspectorHistoryButton.setAttribute("aria-expanded", "false");
+  };
+  const hideInspectorBrowserSuggestions = () => {
+    inspectorBrowserSuggestions.classList.remove("is-open");
+    inspectorBrowserSuggestions.replaceChildren();
+    inspectorBrowserSuggestionChoices = [];
+    inspectorBrowserSuggestionIndex = -1;
+  };
+  const setInspectorBrowserSuggestionIndex = (index: number) => {
+    inspectorBrowserSuggestionIndex = index;
+    const options = Array.from(inspectorBrowserSuggestions.querySelectorAll<HTMLElement>(".zion-inspector-browser-choice"));
+    options.forEach((option, optionIndex) => {
+      option.classList.toggle("is-selected", optionIndex === index);
+      option.setAttribute("aria-selected", optionIndex === index ? "true" : "false");
+    });
+  };
+  const createInspectorBrowserChoice = (choice: InspectorBrowserChoice, onChoose: (value: string) => void) => {
+    const button = el("button", "zion-inspector-browser-choice") as HTMLButtonElement;
+    button.type = "button";
+    button.title = choice.subtitle || choice.title;
+    button.setAttribute("role", "option");
+    const glyph = el("span", "zion-inspector-browser-choice-icon");
+    setCodiconOnly(glyph, choice.icon);
+    const text = el("span", "zion-inspector-browser-choice-text");
+    const title = el("span", "zion-inspector-browser-choice-title");
+    title.textContent = choice.title;
+    const subtitle = el("span", "zion-inspector-browser-choice-subtitle");
+    subtitle.textContent = choice.subtitle;
+    text.appendChild(title);
+    text.appendChild(subtitle);
+    button.appendChild(glyph);
+    button.appendChild(text);
+    button.onmousedown = (event) => event.preventDefault();
+    button.onclick = () => {
+      hideInspectorHistoryMenu();
+      hideInspectorBrowserSuggestions();
+      onChoose(choice.value);
+    };
+    return button;
+  };
+  const buildInspectorBrowserChoices = (query: string, currentUrl = ""): InspectorBrowserChoice[] => {
+    const raw = String(query || "").trim();
+    const lower = raw.toLowerCase();
+    const normalizedCurrent = normalizeInspectorBrowserInput(currentUrl || "");
+    const choices: InspectorBrowserChoice[] = [];
+    const seen = new Set<string>();
+    if (raw) {
+      const normalized = normalizeInspectorBrowserInput(raw);
+      const search = normalized.includes("www.bing.com/search?");
+      choices.push({
+        key: `typed:${normalized}`,
+        icon: search ? "search" : "globe",
+        title: search ? `搜索 "${raw}"` : "打开地址",
+        subtitle: normalized,
+        value: raw
+      });
+      seen.add(normalized);
+    }
+    for (const page of readInspectorRecentPages()) {
+      if (page.url === normalizedCurrent || seen.has(page.url)) continue;
+      if (lower && !page.url.toLowerCase().includes(lower) && !page.title.toLowerCase().includes(lower)) continue;
+      choices.push({
+        key: `recent:${page.url}`,
+        icon: "history",
+        title: page.title || inspectorTitleForUrl(page.url),
+        subtitle: page.url,
+        value: page.url
+      });
+      seen.add(page.url);
+      if (choices.length >= 8) break;
+    }
+    return choices.slice(0, 8);
+  };
+  const showInspectorBrowserSuggestions = (address: HTMLInputElement, onChoose: (value: string) => void, currentUrl = "") => {
+    const choices = buildInspectorBrowserChoices(address.value, currentUrl);
+    if (!choices.length) {
+      hideInspectorBrowserSuggestions();
+      return;
+    }
+    inspectorBrowserSuggestionChoices = choices;
+    inspectorBrowserSuggestionIndex = -1;
+    inspectorBrowserSuggestions.replaceChildren();
+    for (const choice of choices) {
+      inspectorBrowserSuggestions.appendChild(createInspectorBrowserChoice(choice, onChoose));
+    }
+    hideInspectorHistoryMenu();
+    inspectorBrowserSuggestions.classList.add("is-open");
+  };
+  const showInspectorHistoryMenu = () => {
+    hideInspectorBrowserSuggestions();
+    inspectorHistoryMenu.replaceChildren();
+    const currentTarget = getActiveInspectorBrowserItem();
+    const recent = readInspectorRecentPages().slice(0, 12);
+    if (!recent.length) {
+      const empty = el("div", "zion-inspector-history-empty");
+      empty.textContent = "暂无历史记录";
+      inspectorHistoryMenu.appendChild(empty);
+    } else {
+      for (const page of recent) {
+        inspectorHistoryMenu.appendChild(createInspectorBrowserChoice({
+          key: `history:${page.url}`,
+          icon: "history",
+          title: page.title || inspectorTitleForUrl(page.url),
+          subtitle: page.url,
+          value: page.url
+        }, (value) => openInspectorBrowser(value, currentTarget?.id || "")));
+      }
+    }
+    inspectorHistoryMenu.classList.add("is-open");
+    inspectorHistoryButton.classList.add("is-active");
+    inspectorHistoryButton.setAttribute("aria-expanded", "true");
+  };
+  const createInspectorAddressInput = (value: string, onSubmit: (value: string) => void, currentUrl = "") => {
+    const address = document.createElement("input");
+    address.className = "zion-inspector-browser-address";
+    address.type = "text";
+    address.value = value;
+    address.placeholder = "搜索或输入 URL";
+    address.spellcheck = false;
+    address.setAttribute("aria-label", "搜索或输入 URL");
+    const choose = (nextValue: string) => {
+      hideInspectorBrowserSuggestions();
+      onSubmit(nextValue);
+    };
+    address.oninput = () => showInspectorBrowserSuggestions(address, choose, currentUrl);
+    address.onfocus = () => showInspectorBrowserSuggestions(address, choose, currentUrl);
+    address.onkeydown = (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (!inspectorBrowserSuggestions.classList.contains("is-open")) {
+          showInspectorBrowserSuggestions(address, choose, currentUrl);
+        }
+        if (!inspectorBrowserSuggestionChoices.length) return;
+        event.preventDefault();
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        const nextIndex = inspectorBrowserSuggestionIndex < 0
+          ? (direction > 0 ? 0 : inspectorBrowserSuggestionChoices.length - 1)
+          : (inspectorBrowserSuggestionIndex + direction + inspectorBrowserSuggestionChoices.length) % inspectorBrowserSuggestionChoices.length;
+        setInspectorBrowserSuggestionIndex(nextIndex);
+        return;
+      }
+      if (event.key === "Escape") {
+        hideInspectorBrowserSuggestions();
+        return;
+      }
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      const choice = inspectorBrowserSuggestionIndex >= 0 ? inspectorBrowserSuggestionChoices[inspectorBrowserSuggestionIndex] : null;
+      choose(choice?.value || address.value);
+    };
+    return address;
+  };
+  inspectorNewTabButton.onclick = openInspectorNewTab;
+  inspectorHistoryButton.onclick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (inspectorHistoryMenu.classList.contains("is-open")) {
+      hideInspectorHistoryMenu();
+    } else {
+      showInspectorHistoryMenu();
+    }
+  };
+  const renderInspectorStart = (targetId = "") => {
+    const start = el("div", "zion-inspector-start");
+    const recent = readInspectorRecentPages().slice(0, 12);
+    if (recent.length > 0) {
+      const heading = el("div", "zion-inspector-start-heading");
+      heading.textContent = "最近页面";
+      const list = el("div", "zion-inspector-recent-list");
+      for (const page of recent) {
+        const item = el("button", "zion-inspector-recent-item") as HTMLButtonElement;
+        item.type = "button";
+        item.title = page.url;
+        item.onclick = () => openInspectorBrowser(page.url, targetId);
+        const icon = el("span", "zion-inspector-recent-icon");
+        setCodiconOnly(icon, "history");
+        const text = el("span", "zion-inspector-recent-text");
+        const title = el("span", "zion-inspector-recent-title");
+        title.textContent = page.title || inspectorTitleForUrl(page.url);
+        const url = el("span", "zion-inspector-recent-url");
+        url.textContent = page.url;
+        text.appendChild(title);
+        text.appendChild(url);
+        item.appendChild(icon);
+        item.appendChild(text);
+        list.appendChild(item);
+      }
+      start.appendChild(heading);
+      start.appendChild(list);
+    } else {
+      const empty = el("div", "zion-inspector-start-empty");
+      empty.textContent = "搜索或输入 URL";
+      start.appendChild(empty);
+    }
+    inspectorContent.appendChild(start);
+  };
   const updateInspectorToolbarMenuState = () => {
     const hasMenuItems = inspectorToolbarMenu.children.length > 0;
     inspectorToolbarMenuButton.hidden = !hasMenuItems;
@@ -1372,13 +1732,17 @@ export function initWorkbench(host: HTMLElement): {
   inspectorToolbarMenuButton.onclick = (event) => {
     event.preventDefault();
     event.stopPropagation();
+    hideInspectorHistoryMenu();
+    hideInspectorBrowserSuggestions();
     const nextOpen = !inspectorToolbar.classList.contains("is-menu-open");
     inspectorToolbar.classList.toggle("is-menu-open", nextOpen);
     inspectorToolbarMenuButton.setAttribute("aria-expanded", nextOpen ? "true" : "false");
   };
   const closeInspectorToolbarMenuOnOutsideClick = (event: MouseEvent) => {
-    if (!inspectorToolbar.classList.contains("is-menu-open")) return;
     if (event.target instanceof Node && inspectorToolbar.contains(event.target)) return;
+    hideInspectorHistoryMenu();
+    hideInspectorBrowserSuggestions();
+    if (!inspectorToolbar.classList.contains("is-menu-open")) return;
     inspectorToolbar.classList.remove("is-menu-open");
     inspectorToolbarMenuButton.setAttribute("aria-expanded", "false");
   };
@@ -1546,28 +1910,43 @@ export function initWorkbench(host: HTMLElement): {
     inspectorTabs.innerHTML = "";
     inspectorToolbarActions.innerHTML = "";
     inspectorToolbarMenu.innerHTML = "";
+    hideInspectorHistoryMenu();
+    hideInspectorBrowserSuggestions();
     updateInspectorToolbarMenuState();
     resetInspectorContent(items);
-    inspectorContent.classList.remove("is-empty", "is-browser", "is-html-preview");
+    inspectorContent.classList.remove("is-empty", "is-browser", "is-browser-start", "is-html-preview");
     inspectorToolbarPath.classList.remove("is-browser-address");
     if (!item) {
       inspectorTitle.textContent = "查看";
       inspectorTitle.title = "";
       inspectorMeta.textContent = "";
+      inspectorStatusBar.dataset.saveState = "";
       inspectorToolbarPath.replaceChildren();
-      inspectorToolbarPath.textContent = "";
-      inspectorToolbarPath.title = "";
+      const address = createInspectorAddressInput("", (value) => {
+        openInspectorBrowser(value);
+      }, "");
+      inspectorToolbarPath.appendChild(address);
+      inspectorToolbarPath.title = "搜索或输入 URL";
+      inspectorToolbarPath.classList.add("is-browser-address");
+      inspectorToolbarActions.appendChild(createInspectorAction("search", "打开或搜索", () => {
+        openInspectorBrowser(address.value);
+      }));
+      updateInspectorToolbarMenuState();
       inspectorFileIcon.textContent = "";
       inspectorContent.classList.add("is-empty");
-      renderInspectorState("panel-inspector", "暂无打开内容", "从文件链接、网页地址或预览操作打开内容后会显示在这里。");
+      renderInspectorStart();
       inspectorTabsScrollbar.sync();
+      requestAnimationFrame(() => {
+        if (inspectorRuntime.getActiveItem()) return;
+        try { address.focus({ preventScroll: true }); } catch {}
+      });
       return;
     }
     if (item.id !== activeId) inspectorRuntime.activate(item.id);
     inspectorTitle.textContent = item.title;
     inspectorTitle.title = item.title;
     const inspectorMetaParts = [
-        item.url ? "网页预览" : item.editable ? "可编辑" : "只读",
+        item.url || item.browserStartPage ? "网页预览" : item.editable ? "可编辑" : "只读",
       item.language && item.language !== "text" ? item.language.toUpperCase() : "",
         typeof item.file?.size === "number" ? `${Math.max(0, Math.round(item.file.size / 1024)) || 1} KB` : "",
         item.file?.truncated ? `仅预览前 ${Math.max(1, Math.round(Number(item.file.loadedBytes || 0) / 1024))} KB` : ""
@@ -1607,7 +1986,10 @@ export function initWorkbench(host: HTMLElement): {
       setCodiconOnly(tabIcon, getInspectorFileIcon(tab));
       const label = el("span", "zion-inspector-tab-label");
       label.textContent = tab.title;
-      const close = el("span", "zion-inspector-tab-close");
+      const close = el("button", "zion-inspector-tab-close") as HTMLButtonElement;
+      close.type = "button";
+      close.title = `关闭 ${tab.title}`;
+      close.setAttribute("aria-label", `关闭 ${tab.title}`);
       setCodiconOnly(close, "close");
       close.onclick = (event) => {
         event.preventDefault();
@@ -1639,26 +2021,40 @@ export function initWorkbench(host: HTMLElement): {
       button.appendChild(close);
       inspectorTabs.appendChild(button);
     }
-    requestAnimationFrame(inspectorTabsScrollbar.sync);
+    const activeInspectorTab = Array.from(inspectorTabs.querySelectorAll<HTMLElement>(".zion-inspector-tab"))
+      .find((candidate) => candidate.dataset.inspectorItemId === item.id) || null;
+    requestAnimationFrame(() => {
+      try { activeInspectorTab?.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch {}
+      inspectorTabsScrollbar.sync();
+    });
+    if (item.browserStartPage) {
+      inspectorToolbarPath.replaceChildren();
+      const address = createInspectorAddressInput("", (value) => {
+        openInspectorBrowser(value, item.id);
+      }, "");
+      inspectorToolbarPath.appendChild(address);
+      inspectorToolbarPath.title = "搜索或输入 URL";
+      inspectorToolbarPath.classList.add("is-browser-address");
+      inspectorToolbarActions.appendChild(createInspectorAction("search", "打开或搜索", () => {
+        openInspectorBrowser(address.value, item.id);
+      }));
+      inspectorContent.classList.add("is-empty", "is-browser-start");
+      renderInspectorStart(item.id);
+      requestAnimationFrame(() => {
+        if (inspectorRuntime.getActiveItemId() !== item.id) return;
+        try { address.focus({ preventScroll: true }); } catch {}
+      });
+      return;
+    }
     const file = item.file || { kind: "binary" as const };
     if (item.url) {
-      const normalizeBrowserUrl = (value: string) => {
-        const raw = String(value || "").trim();
-        if (!raw) return "";
-        const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`;
-        try {
-          const parsed = new URL(candidate);
-          return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : "";
-        } catch {
-          return "";
-        }
-      };
-      const currentUrl = normalizeBrowserUrl(item.url);
+      const currentUrl = normalizeInspectorBrowserInput(item.url);
       if (!currentUrl) {
         inspectorContent.classList.add("is-empty");
         renderInspectorState("warning-triangle", "无法打开网页", "Inspector 网页预览仅支持 HTTP 和 HTTPS 地址。");
         return;
       }
+      rememberInspectorRecentPage(currentUrl, item.title);
       let history = inspectorBrowserHistory.get(item.id);
       if (!history) {
         history = { entries: [currentUrl], index: 0 };
@@ -1669,36 +2065,31 @@ export function initWorkbench(host: HTMLElement): {
         history.index = history.entries.length - 1;
       }
       const navigate = (url: string, mode: "push" | "history" = "push") => {
-        const normalized = normalizeBrowserUrl(url);
+        const normalized = normalizeInspectorBrowserInput(url);
         if (!normalized) return;
         if (mode === "push") {
           history!.entries = history!.entries.slice(0, history!.index + 1);
           if (history!.entries[history!.entries.length - 1] !== normalized) history!.entries.push(normalized);
           history!.index = history!.entries.length - 1;
         }
+        rememberInspectorRecentPage(normalized);
         inspectorRuntime.update(item.id, {
           url: normalized,
           path: normalized,
           displayPath: normalized,
-          title: (() => {
-            try { return new URL(normalized).host || normalized; } catch { return normalized; }
-          })()
+          title: inspectorTitleForUrl(normalized)
         });
       };
-      const address = document.createElement("input");
-      address.className = "zion-inspector-browser-address";
-      address.type = "text";
-      address.value = currentUrl;
-      address.spellcheck = false;
-      address.setAttribute("aria-label", "网页地址");
-      address.onkeydown = (event) => {
-        if (event.key !== "Enter") return;
-        event.preventDefault();
-        navigate(address.value);
-      };
+      const address = createInspectorAddressInput(currentUrl, (value) => {
+        navigate(value);
+      }, currentUrl);
+      address.setAttribute("aria-label", "网页地址或搜索内容");
       inspectorToolbarPath.replaceChildren(address);
       inspectorToolbarPath.title = currentUrl;
       inspectorToolbarPath.classList.add("is-browser-address");
+      inspectorToolbarActions.appendChild(createInspectorAction("search", "打开或搜索", () => {
+        navigate(address.value);
+      }));
       const back = createInspectorAction("arrow-left", "后退", () => {
         if (history!.index <= 0) return;
         history!.index -= 1;
@@ -2391,7 +2782,7 @@ export function initWorkbench(host: HTMLElement): {
       const icon = String(v.icon || "").trim();
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        tab.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+        tab.appendChild(createZionIconFromCodicon(codiconMatch[1]));
       } else if (hasZionIcon(icon)) {
         tab.appendChild(createZionIcon(zionIconName(icon)));
       } else if (icon) {
@@ -2431,7 +2822,7 @@ export function initWorkbench(host: HTMLElement): {
       const text = tr((action as any).textKey, String((action as any).text || "").trim()).trim();
       const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
       if (codiconMatch) {
-        btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+        btn.appendChild(createZionIconFromCodicon(codiconMatch[1]));
       } else if (hasZionIcon(icon)) {
         btn.appendChild(createZionIcon(zionIconName(icon)));
       } else if (icon) {
@@ -2655,7 +3046,7 @@ export function initWorkbench(host: HTMLElement): {
         btn.textContent = "";
         const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
         if (codiconMatch) {
-          btn.appendChild(createZionIcon(zionIconName(codiconMatch[1])));
+          btn.appendChild(createZionIconFromCodicon(codiconMatch[1]));
         } else if (hasZionIcon(icon)) {
           btn.appendChild(createZionIcon(zionIconName(icon)));
         } else {

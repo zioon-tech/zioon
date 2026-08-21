@@ -76,7 +76,7 @@ function runStatusLabel(status, run = null) {
 
 function taskState(task, engine, activeRun = null) {
   if (engine?.isRunning?.(task.id)) return "running";
-  if (task.executionMode === "service-backed" && ACTIVE_RUN_STATUSES.has(activeRun?.status)) {
+  if (ACTIVE_RUN_STATUSES.has(activeRun?.status)) {
     return activeRun.status;
   }
   return task.enabled ? "enabled" : "paused";
@@ -766,7 +766,13 @@ export async function activate(ctx) {
   const updateStatus = () => {
     if (disposed) return;
     const enabled = store.listTasks().filter((task) => task.enabled).length;
-    const running = (engine ? Array.from(engine.runningTasks || []).length : 0) + activeServiceRuns.size;
+    const localRunningTaskIds = new Set(engine ? Array.from(engine.runningTasks || []) : []);
+    for (const run of store.listRuns()) {
+      if (!ACTIVE_RUN_STATUSES.has(run?.status)) continue;
+      if (run.executionMode === "service-backed") continue;
+      if (run.taskId) localRunningTaskIds.add(run.taskId);
+    }
+    const running = localRunningTaskIds.size + activeServiceRuns.size;
     statusDisposable?.dispose?.();
     statusDisposable = window.zion.statusBar.registerItem({
       id: STATUS_ID,
@@ -1113,6 +1119,9 @@ export async function activate(ctx) {
           const remoteRun = await service.claim(workerId, availableTools);
         serviceOnline = true;
         if (remoteRun) {
+          if (activeServiceRuns.has(remoteRun.id)) {
+            return;
+          }
           claimedRun = remoteRun;
           const snapshot = remoteRun.task || {};
           const existing = store.listTasks().find((task) =>

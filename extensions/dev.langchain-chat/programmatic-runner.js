@@ -7,6 +7,8 @@ import {
   normalizeCapabilityPolicy,
   normalizeToolCall
 } from "../../src/core/run-policy";
+import { buildContextWindowSnapshot } from "./context-health.js";
+import { inferToolResultError } from "./tool-result-diagnostics.js";
 
 export {
   authorizeToolCall,
@@ -58,6 +60,7 @@ export function createProgrammaticExecutor(deps) {
   const {
     runStream,
     getActiveModel,
+    resolveModelConfig,
     getTools,
     executeTool,
     runContributors,
@@ -135,6 +138,7 @@ export function createProgrammaticExecutor(deps) {
       publish("run.started", {
         prompt,
         executionMode: request.executionMode,
+        model: runModel,
         policy: { ...policy, allowedTools: tools.map((tool) => tool?.function?.name || tool?.name) }
       });
 
@@ -152,7 +156,7 @@ export function createProgrammaticExecutor(deps) {
         let turn = 0;
         while (!aborted) {
           turn += 1;
-          publish("turn.started", { turn });
+          publish("turn.started", { turn, model: runModel });
           if (runContributors) {
             messages = await runContributors(messages, "post", {
               editor: null,
@@ -162,6 +166,21 @@ export function createProgrammaticExecutor(deps) {
               runId
             });
           }
+          try {
+            const cfg = await resolveModelConfig?.(runModel);
+            const contextWindow = buildContextWindowSnapshot({
+              sessionId,
+              messages,
+              model: runModel,
+              cfg,
+              state: globalThis.window?.zion?.state
+            });
+            publish("context.window", {
+              ...contextWindow,
+              turn,
+              model: runModel
+            });
+          } catch {}
 
           const calls = [];
           let turnOutput = "";
@@ -252,11 +271,13 @@ export function createProgrammaticExecutor(deps) {
             let toolResult;
             try {
               toolResult = await executeTool(call, { runId, sessionId, policy });
+              const toolError = inferToolResultError(call.name, toolResult);
               publish("tool.completed", {
                 turn,
                 callId: call.id,
                 name: call.name,
-                result: String(toolResult ?? "").slice(0, 4000)
+                result: String(toolResult ?? "").slice(0, 4000),
+                ...(toolError ? { error: toolError } : {})
               });
             } catch (error) {
               toolResult = `Tool "${call.name}" error: ${error?.message || String(error)}`;

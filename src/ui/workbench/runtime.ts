@@ -112,6 +112,7 @@ export type InspectorItem = {
   path?: string;
   displayPath?: string;
   url?: string;
+  browserStartPage?: boolean;
   language?: string;
   file?: InspectorFile;
   editable?: boolean;
@@ -1117,11 +1118,13 @@ class InspectorRuntime {
     const items = this.getItems();
     const closedIndex = items.findIndex((item) => item.id === id);
     if (!this.items.delete(id)) return;
+    const remaining = this.getItems();
     if (this.getActiveItemId() === id) {
-      const remaining = this.getItems();
       core?.state.set("ui.inspector.activeItemId", remaining[Math.min(Math.max(0, closedIndex), remaining.length - 1)]?.id || null);
     }
-    if (this.items.size === 0) core?.state.set("ui.inspector.visible", false);
+    if (remaining.length === 0) {
+      core?.state.set("ui.inspector.visible", false);
+    }
     this.emitter.emit();
   }
 
@@ -1137,7 +1140,6 @@ class InspectorRuntime {
       if (!this.items.has(this.getActiveItemId() || "")) {
         core?.state.set("ui.inspector.activeItemId", this.getItems()[0]?.id || null);
       }
-      if (this.items.size === 0) core?.state.set("ui.inspector.visible", false);
       this.emitter.emit();
     }
   }
@@ -1310,7 +1312,7 @@ class BottomPanelRuntime {
   setHeight(px: number): void {
     const h = Math.max(120, Math.min(700, Math.round(px)));
     core?.state.set("ui.bottomPanel.height", h);
-    core?.state.set("ui.bottomPanel.visible", true);
+    if (!this.isVisible()) core?.state.set("ui.bottomPanel.visible", true);
     if (!this.isMaximized()) this.lastNonMaximizedHeight = h;
     this.emitter.emit();
   }

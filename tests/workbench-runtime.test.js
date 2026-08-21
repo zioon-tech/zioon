@@ -103,6 +103,28 @@ describe("workbench runtime", () => {
     disp.dispose();
   });
 
+  it("does not re-emit bottom panel visibility while resizing an already visible panel", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    let visibleChanges = 0;
+    state.onDidChange("ui.bottomPanel.visible", () => {
+      visibleChanges += 1;
+    });
+
+    state.set("ui.bottomPanel.visible", true);
+    bottomPanelRuntime.setHeight(360);
+
+    expect(state.get("ui.bottomPanel.height")).toBe(360);
+    expect(visibleChanges).toBe(1);
+  });
+
   it("activityBar.activateItem should show sidebar and activate mapped view", () => {
     const state = createState();
     bindWorkbenchCore({

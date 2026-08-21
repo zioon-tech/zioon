@@ -232,24 +232,23 @@ function appendError(container, plugin) {
   container.appendChild(error);
 }
 
-function createToggle(plugin, onToggle) {
-  const label = element("label", "zion-plugin-detail-toggle");
-  const input = document.createElement("input");
-  input.type = "checkbox";
-  input.checked = !!plugin?.enabled;
-  const visual = element("span", "zion-plugin-detail-toggle-visual");
-  input.onchange = async () => {
-    input.disabled = true;
+function createEnableAction(plugin, onToggle, locale, compact = false) {
+  const enabled = !!plugin?.enabled;
+  const node = element("button", `zion-plugin-detail-button${enabled ? " is-danger" : " is-primary"}${compact ? " is-compact" : ""}`);
+  node.type = "button";
+  node.appendChild(icon(enabled ? "debug-stop" : "play"));
+  node.appendChild(document.createTextNode(enabled
+    ? (locale === "en-US" ? "Disable" : "停用插件")
+    : (locale === "en-US" ? "Enable" : "启用插件")));
+  node.onclick = async () => {
+    node.disabled = true;
     try {
-      await onToggle?.(input.checked);
-    } catch {
-      input.checked = !input.checked;
+      await onToggle?.(!enabled);
     } finally {
-      input.disabled = false;
+      node.disabled = false;
     }
   };
-  label.append(input, visual);
-  return label;
+  return node;
 }
 
 function createSummaryHeader(model) {
@@ -332,9 +331,13 @@ function renderSettings(container, model) {
 
   const toggleRow = element("div", "zion-plugin-detail-setting-row is-bordered");
   const copy = element("div");
-  copy.appendChild(element("strong", "", model.locale === "en-US" ? "Enable plugin" : "启用插件"));
-  copy.appendChild(element("p", "", model.locale === "en-US" ? "The preference persists across reloads." : "该偏好会持久化，重新加载后不会被覆盖。"));
-  toggleRow.append(copy, createToggle(model.plugin, model.onToggle));
+  copy.appendChild(element("strong", "", model.plugin?.enabled
+    ? (model.locale === "en-US" ? "Plugin is enabled" : "插件已启用")
+    : (model.locale === "en-US" ? "Plugin is disabled" : "插件已停用")));
+  copy.appendChild(element("p", "", model.locale === "en-US"
+    ? "This setting persists across reloads."
+    : "该状态会持久化，重新加载后不会被覆盖。"));
+  toggleRow.append(copy, createEnableAction(model.plugin, model.onToggle, model.locale));
   section.appendChild(toggleRow);
   container.appendChild(section);
 }
@@ -363,8 +366,8 @@ function renderEditorContent(container, model) {
     const entry = model.presentation.entrypoints[0];
     actions.appendChild(button(entry.title, entry.icon, () => model.runCommand?.(entry.command), true));
   }
+  actions.appendChild(createEnableAction(model.plugin, model.onToggle, model.locale, true));
   actions.appendChild(button(model.locale === "en-US" ? "Reload" : "重新加载", "refresh", model.onReload));
-  actions.appendChild(createToggle(model.plugin, model.onToggle));
   hero.appendChild(actions);
   container.appendChild(hero);
 

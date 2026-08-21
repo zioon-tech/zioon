@@ -1,3 +1,4 @@
+import { ACTIVE_RUN_STATUSES, isStaleActiveRun } from "./controller.js";
 import { computeNextRun } from "./schedule.js";
 
 const MAX_TIMER_DELAY = 2_147_000_000;
@@ -8,6 +9,12 @@ function defaultSetTimer(callback, delay) {
 
 function defaultClearTimer(timer) {
   return globalThis.clearTimeout(timer);
+}
+
+function staleRunError(run) {
+  if (run?.sessionId) return "运行超过超时时间，已自动标记为失败";
+  if (run?.status === "pending") return "运行在分配执行会话前超时，已自动清理";
+  return "运行状态长时间未完成，已自动清理";
 }
 
 export class LocalSchedulerEngine {
@@ -30,6 +37,52 @@ export class LocalSchedulerEngine {
         this.onChange?.();
       }
     };
+  }
+
+  _listRuns(taskId) {
+    try {
+      return typeof this.store?.listRuns === "function" ? this.store.listRuns(taskId) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  _updateTaskLastRun(task, run, now) {
+    if (!task || typeof this.store?.saveTask !== "function") return;
+    this.store.saveTask({
+      ...task,
+      lastRun: {
+        id: run.id,
+        status: run.status,
+        startedAt: run.startedAt || run.scheduledFor || run.createdAt || null,
+        completedAt: run.completedAt || null
+      },
+      updatedAt: now
+    });
+  }
+
+  _markStaleActiveRuns(task, now) {
+    if (!task?.id || typeof this.store?.saveRun !== "function") return false;
+    let changed = false;
+    for (const run of this._listRuns(task.id)) {
+      if (!ACTIVE_RUN_STATUSES.has(run?.status)) continue;
+      if (!isStaleActiveRun(run, task, now)) continue;
+      const next = this.store.saveRun({
+        ...run,
+        status: "failed",
+        completedAt: now,
+        error: run.error || staleRunError(run),
+        stale: true
+      });
+      this._updateTaskLastRun(task, next || run, now);
+      changed = true;
+    }
+    return changed;
+  }
+
+  _findActiveRun(task) {
+    if (!task?.id) return null;
+    return this._listRuns(task.id).find((run) => ACTIVE_RUN_STATUSES.has(run?.status)) || null;
   }
 
   start() {
@@ -58,8 +111,13 @@ export class LocalSchedulerEngine {
     let changed = false;
     let nearest = null;
 
-    for (const task of tasks) {
+    for (let task of tasks) {
       if (!task.enabled || (task.executionMode && task.executionMode !== "local-only")) continue;
+      if (this._markStaleActiveRuns(task, now)) {
+        changed = true;
+        task = this.store.getTask?.(task.id) || task;
+      }
+      const activeRun = this._findActiveRun(task);
       let nextRun = Number(task.nextRun);
       if (!Number.isFinite(nextRun)) {
         nextRun = computeNextRun(task.schedule, now);
@@ -78,7 +136,7 @@ export class LocalSchedulerEngine {
           lastSkippedAt: due ? task.lastSkippedAt : now
         });
         changed = true;
-        if (due && !this.runningTasks.has(task.id)) void this.execute(task);
+        if (due && !activeRun && !this.runningTasks.has(task.id)) void this.execute(task);
         nextRun = advanced;
       }
       if (nextRun != null && (nearest == null || nextRun < nearest)) nearest = nextRun;
@@ -93,6 +151,11 @@ export class LocalSchedulerEngine {
 
   async execute(task) {
     if (this.runningTasks.has(task.id)) {
+      return null;
+    }
+    const now = this.now();
+    if (this._markStaleActiveRuns(task, now)) this.onChange?.();
+    if (this._findActiveRun(task)) {
       return null;
     }
     this.runningTasks.add(task.id);

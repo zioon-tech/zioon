@@ -8,6 +8,7 @@ const ICON_PATHS: IconPathMap = {
   copy: '<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   "more-horizontal": '<circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/>',
+  "more-vertical": '<circle cx="12" cy="6" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="18" r="1.2"/>',
   "external-link": '<path d="M14 4h6v6"/><path d="M10 14 20 4"/><path d="M20 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4"/>',
   play: '<path d="M8 5v14l11-7-11-7Z"/>',
   square: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
@@ -67,6 +68,7 @@ const ICON_PATHS: IconPathMap = {
   lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   database: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
   bot: '<rect x="6" y="8" width="12" height="10" rx="3"/><path d="M12 4v4"/><path d="M9 13h.01M15 13h.01"/><path d="M10 18v2h4v-2"/>',
+  conversations: '<path d="M7 16H5l-3 3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v1"/><path d="M9 9h9a4 4 0 0 1 4 4v8l-4-3H9a3 3 0 0 1-3-3v-3a3 3 0 0 1 3-3Z"/><path d="M10 13h7"/>',
   "messages-square": '<path d="M21 14a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/>',
   "message-circle-plus": '<path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/><path d="M8 12h8M12 8v8"/>',
   tag: '<path d="M20 12 12 20 4 12V4h8l8 8Z"/><path d="M8 8h.01"/>',
@@ -137,6 +139,8 @@ const CODICON_ALIASES: Record<string, string> = {
   check: "check",
   ellipsis: "more-horizontal",
   "kebab-horizontal": "more-horizontal",
+  "kebab-vertical": "more-vertical",
+  "ellipsis-vertical": "more-vertical",
   more: "more-horizontal",
   "link-external": "external-link",
   play: "play",
@@ -206,6 +210,36 @@ const CODICON_ALIASES: Record<string, string> = {
   loading: "loader"
 };
 
+const NATIVE_CODICON_NAMES = new Set(["comment-discussion"]);
+
+function normalizeCodiconName(name: string): string {
+  return String(name || "").trim().replace(/^codicon-/, "").replace(/[^a-z0-9-]/gi, "");
+}
+
+function shouldUseNativeCodicon(name: string): boolean {
+  return NATIVE_CODICON_NAMES.has(normalizeCodiconName(name));
+}
+
+export function codiconHtml(name: string, className = "", size?: number): string {
+  const codiconName = normalizeCodiconName(name) || "file";
+  const extraClass = className ? ` ${className}` : "";
+  const style = typeof size === "number" ? ` style="font-size:${size}px;width:${size}px;height:${size}px;"` : "";
+  return `<span class="codicon codicon-${codiconName}${extraClass}" aria-hidden="true"${style}></span>`;
+}
+
+export function createCodicon(name: string, className = "", size?: number): HTMLSpanElement {
+  const span = document.createElement("span");
+  const codiconName = normalizeCodiconName(name) || "file";
+  span.className = `codicon codicon-${codiconName}${className ? ` ${className}` : ""}`;
+  span.setAttribute("aria-hidden", "true");
+  if (typeof size === "number") {
+    span.style.fontSize = `${size}px`;
+    span.style.width = `${size}px`;
+    span.style.height = `${size}px`;
+  }
+  return span;
+}
+
 export function zionIconName(name: string): string {
   const value = String(name || "").trim();
   const raw = (TEXT_ALIASES[value] || value).replace(/^codicon-/, "");
@@ -239,12 +273,24 @@ export function setZionIconOnly(target: HTMLElement, name: string, className = "
   target.appendChild(createZionIcon(name, className, size));
 }
 
+export function zionIconHtmlFromCodicon(codicon: string, className = "", size?: number): string {
+  const raw = normalizeCodiconName(codicon);
+  if (shouldUseNativeCodicon(raw)) return codiconHtml(raw, className, size);
+  return zionIconHtml(zionIconName(raw), className, size);
+}
+
+export function createZionIconFromCodicon(codicon: string, className = "", size?: number): HTMLSpanElement {
+  const raw = normalizeCodiconName(codicon);
+  if (shouldUseNativeCodicon(raw)) return createCodicon(raw, className, size);
+  return createZionIcon(zionIconName(raw), className, size);
+}
+
 export function installZionIcons() {
   const api = {
     html: zionIconHtml,
-    htmlFromCodicon: (codicon: string, className = "", size?: number) => zionIconHtml(zionIconName(codicon), className, size),
+    htmlFromCodicon: zionIconHtmlFromCodicon,
     create: createZionIcon,
-    createFromCodicon: (codicon: string, className = "", size?: number) => createZionIcon(zionIconName(codicon), className, size),
+    createFromCodicon: createZionIconFromCodicon,
     nameFromCodicon: zionIconName,
     has: hasZionIcon
   };

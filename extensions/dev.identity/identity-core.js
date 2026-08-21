@@ -47,7 +47,7 @@ export function normalizeBiographyLabel(value, maxChars = 64) {
 
 function normalizeTopics(values) {
   const source = Array.isArray(values) ? values : typeof values === "string" ? values.split(",") : [];
-  return Array.from(new Set(source.map((value) => normalizeBiographyLabel(value, 48)).filter(Boolean))).slice(0, 4);
+  return Array.from(new Set(source.map((value) => normalizeBiographyLabel(value, 48)).filter(Boolean))).slice(0, 2);
 }
 
 export function escapeXml(value) {

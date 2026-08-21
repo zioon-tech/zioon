@@ -48,6 +48,15 @@ function activeRunStatusText(status) {
   return "正在运行";
 }
 
+function findActiveRun(store, taskId) {
+  try {
+    return (store.listRuns(String(taskId || "")) || [])
+      .find((run) => ACTIVE_RUN_STATUSES.has(run?.status)) || null;
+  } catch {
+    return null;
+  }
+}
+
 function runActivityStartedAt(run) {
   const value = Number(run?.startedAt || run?.scheduledFor || run?.createdAt || 0);
   return Number.isFinite(value) && value > 0 ? value : 0;
@@ -338,7 +347,9 @@ export class SchedulerController {
 
     const previous = this.getTask(task.id);
     let saved;
+    let shouldRollbackRemoteCreate = false;
     if (task.executionMode === "service-backed") {
+      shouldRollbackRemoteCreate = !task.remoteTaskId;
       const remote = await this._serviceCall(() =>
         task.remoteTaskId ? this.service.updateTask(task) : this.service.createTask(task)
       );
@@ -358,7 +369,16 @@ export class SchedulerController {
         nextRun: task.enabled ? computeNextRun(task.schedule, this.now()) : null
       };
     }
-    this.store.saveTask(saved);
+    try {
+      this.store.saveTask(saved);
+    } catch (error) {
+      if (shouldRollbackRemoteCreate && saved?.remoteTaskId && this.service?.deleteTask) {
+        try {
+          await this.service.deleteTask(saved);
+        } catch {}
+      }
+      throw error;
+    }
     this._notify();
     return saved;
   }
@@ -402,13 +422,13 @@ export class SchedulerController {
   async runNow(taskId) {
     const task = this.getTask(taskId);
     if (!task) throw new Error("Task not found");
+    const staleRuns = this._markStaleRuns({ taskId: task.id });
+    if (staleRuns.length) {
+      await this._reportTerminalRuns(staleRuns, "timeout");
+      this._notify();
+    }
+    const activeRun = findActiveRun(this.store, task.id);
     if (task.executionMode === "service-backed") {
-      const staleRuns = this._markStaleRuns({ taskId: task.id });
-      if (staleRuns.length) {
-        await this._reportTerminalRuns(staleRuns, "timeout");
-        this._notify();
-      }
-      const activeRun = this.store.listRuns(task.id).find((run) => ACTIVE_RUN_STATUSES.has(run.status));
       if (this.pendingRunRequests.has(task.id) || activeRun) {
         throw new Error(activeRun ? `任务${activeRunStatusText(activeRun.status)}` : "任务正在提交，请稍候");
       }
@@ -428,8 +448,16 @@ export class SchedulerController {
       }
     }
     if (!this.engine) throw new Error("Scheduler engine is unavailable");
-    const result = await this.engine.execute(task);
-    return { queued: false, result };
+    if (this.pendingRunRequests.has(task.id) || activeRun || this.engine.isRunning?.(task.id)) {
+      throw new Error(activeRun ? `任务${activeRunStatusText(activeRun.status)}` : "任务正在提交，请稍候");
+    }
+    this.pendingRunRequests.add(task.id);
+    try {
+      const result = await this.engine.execute(task);
+      return { queued: false, result };
+    } finally {
+      this.pendingRunRequests.delete(task.id);
+    }
   }
 
 

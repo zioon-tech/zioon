@@ -583,20 +583,91 @@ function extractSessionContext(payload, documentText) {
   try {
     meta = window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", payload.sessionId) || {};
   } catch {}
-  const tags = [];
-  const tagPattern = /(^|[\s([{])#(project\/[\p{L}\p{N}_/-]+)(?=$|[\s)\]},.;:!?])/gu;
+  const projectTags = [];
+  const topicTags = [];
+  const tagPattern = /(^|[\s([{])#((?:project|topic)\/[\p{L}\p{N}_/-]+)(?=$|[\s)\]},.;:!?])/gu;
   let match;
-  while ((match = tagPattern.exec(String(documentText || ""))) !== null) tags.push(match[2]);
+  while ((match = tagPattern.exec(String(documentText || ""))) !== null) {
+    const path = String(match[2] || "").trim();
+    if (path.startsWith("project/")) projectTags.push(path);
+    if (path.startsWith("topic/")) topicTags.push(path);
+  }
   const explicitProject = String(
     meta?.project
     || meta?.projectName
     || meta?.workspace?.project
     || ""
   ).trim();
-  if (explicitProject) tags.unshift(`project/${explicitProject}`);
+  if (explicitProject) projectTags.unshift(`project/${explicitProject}`);
   return {
     title: String(meta?.title || "").trim(),
-    projectTags: Array.from(new Set(tags)).slice(0, 8)
+    projectTags: Array.from(new Set(projectTags)).slice(0, 8),
+    topicTags: Array.from(new Set(topicTags)).slice(0, 8)
+  };
+}
+
+function normalizeVocabularyPath(value) {
+  const path = String(value || "")
+    .replace(/^#/, "")
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("/");
+  return path.length <= 200 ? path : "";
+}
+
+function isUsefulManualTagPath(path) {
+  const value = normalizeVocabularyPath(path);
+  if (!value) return false;
+  if (/^\d+(?:\/\d+)*$/.test(value)) return false;
+  if (/^定时任务\/\d{4}\/\d{2}\/\d{2}$/.test(value)) return false;
+  return true;
+}
+
+function mergeFacetItems(items, values) {
+  const byValue = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    const value = normalizeBiographyLabel(item?.value);
+    if (!value) continue;
+    byValue.set(value, { value, count: Number(item?.count || 0) || 0 });
+  }
+  for (const raw of Array.isArray(values) ? values : []) {
+    const value = normalizeBiographyLabel(raw);
+    if (!value || byValue.has(value)) continue;
+    byValue.set(value, { value, count: 0 });
+  }
+  return Array.from(byValue.values())
+    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+}
+
+async function loadSessionTagVocabulary() {
+  let vocabulary = null;
+  try {
+    vocabulary = await Promise.resolve(
+      window.zion?.commands?.executeCommand?.("zion.sessions.getTagVocabulary")
+    );
+  } catch {}
+  const paths = Array.from(new Set(
+    [
+      ...(vocabulary?.catalog || []),
+      ...(vocabulary?.legacyCatalog || []),
+      ...(vocabulary?.document || []),
+      ...(vocabulary?.derived || []),
+      ...(vocabulary?.all || [])
+    ]
+      .map(normalizeVocabularyPath)
+      .filter(isUsefulManualTagPath)
+  ));
+  const projects = [];
+  const topics = [];
+  for (const path of paths) {
+    if (path.startsWith("project/")) projects.push(path.slice("project/".length));
+    if (path.startsWith("topic/")) topics.push(path.slice("topic/".length));
+  }
+  return {
+    paths: paths.slice(0, 160),
+    projects: Array.from(new Set(projects)).slice(0, 80),
+    topics: Array.from(new Set(topics)).slice(0, 80)
   };
 }
 
@@ -605,6 +676,7 @@ async function getDistillationContext(sessionId) {
   const events = await loadBiographyEvents();
   const sessionEvents = events.filter((event) => String(event?.sessionId || "") === id);
   const facets = buildBiographyFacets(events);
+  const tagVocabulary = await loadSessionTagVocabulary();
   const history = sessionEvents
     .slice()
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
@@ -618,10 +690,9 @@ async function getDistillationContext(sessionId) {
   return {
     knownProjects: Array.from(new Set(sessionEvents.map((event) => event.project).filter(Boolean))).slice(0, 8),
     knownTopics: Array.from(new Set(sessionEvents.flatMap((event) => event.topics || []).filter(Boolean))).slice(0, 16),
-    globalProjects: facets.projects.slice(0, 8),
-    globalTopics: facets.topics.slice(0, 12),
-    remainingProjects: Math.max(0, facets.projects.length - 8),
-    remainingTopics: Math.max(0, facets.topics.length - 12),
+    globalProjects: mergeFacetItems(facets.projects, tagVocabulary.projects),
+    globalTopics: mergeFacetItems(facets.topics, tagVocabulary.topics),
+    manualTags: tagVocabulary.paths,
     sessionEventCount: sessionEvents.length,
     history
   };
@@ -637,6 +708,8 @@ function buildDistillationMessages(exchange, sessionContext = {}) {
   const context = [
     sessionContext.title ? `会话标题：${sessionContext.title}` : "",
     sessionContext.projectTags?.length ? `会话项目标签：${sessionContext.projectTags.join(", ")}` : "",
+    sessionContext.topicTags?.length ? `会话主题标签：${sessionContext.topicTags.join(", ")}` : "",
+    sessionContext.manualTags?.length ? `可复用手动/正文标签：${sessionContext.manualTags.join(", ")}` : "",
     sessionContext.knownProjects?.length ? `本会话已使用项目标签：${sessionContext.knownProjects.join(", ")}` : "",
     sessionContext.knownTopics?.length ? `本会话已使用主题标签：${sessionContext.knownTopics.join(", ")}` : ""
   ].filter(Boolean).join("\n") || "会话没有显式标题或项目标签。";
@@ -645,12 +718,10 @@ function buildDistillationMessages(exchange, sessionContext = {}) {
     sessionContext.globalProjects?.length
       ? sessionContext.globalProjects.map((item) => `- ${item.value}（${item.count} 条）`).join("\n")
       : "- 暂无",
-    sessionContext.remainingProjects ? `还有 ${sessionContext.remainingProjects} 个项目未展示。` : "",
     "主题：",
     sessionContext.globalTopics?.length
       ? sessionContext.globalTopics.map((item) => `- ${item.value}（${item.count} 条）`).join("\n")
-      : "- 暂无",
-    sessionContext.remainingTopics ? `还有 ${sessionContext.remainingTopics} 个主题未展示。` : ""
+      : "- 暂无"
   ].filter(Boolean).join("\n");
   const sessionHistory = [
     `已有事件：${sessionContext.sessionEventCount || 0} 条`,
@@ -675,9 +746,11 @@ function buildDistillationMessages(exchange, sessionContext = {}) {
         "仅记录对未来有持续价值的 decision、milestone、outcome、lesson。",
         "普通问答、寒暄、尚未完成的计划、泛化建议、重复事件不记录。",
         "每次输出 0-2 条，summary 不超过 80 个中文字符，不得添加输入中没有的事实。",
-        "project 是事件所属项目的稳定短名；优先使用 #project 标签，其次使用会话标题或输入中明确出现的仓库/服务/产品名。无法确定时必须为空字符串。",
-        "topics 是 0-4 个主题短标签，例如 cost、model-routing、agent-identity；不要把 decision/outcome 等事件类型重复写入 topics。",
-        "如果本会话已有项目或主题标签，属于同一项目/主题时必须复用已有标签，不要创建同义变体；只有确实是新项目或新主题时才新增标签。",
+        "project 是事件所属项目的稳定短名；优先使用 #project 标签，其次使用会话标题或输入中明确出现的仓库/服务/产品名；无法确定时必须为空字符串。",
+        "topics 是 0-2 个主题短标签，默认使用中文，例如 成本、模型路由、agent身份；专有名词、服务名、协议名可保留英文或中英混合；不要把 decision/outcome 等事件类型重复写入 topics。",
+        "优先复用本会话、手动标签或全局索引里的 project/topics；同一项目或主题必须复用已有标签，不要创建同义变体。",
+        "只有确实会帮助未来检索、且现有标签无法表达时才新增 topic；一次性新闻、素材、候选人项目细节、临时错误码等细节应写入 summary，不要扩散成 topic。",
+        "可以使用层级标签表达稳定父子关系，例如 视频/生成、安全/iot、合规/内容；已有层级标签优先沿用同一层级，不要并列创建同义平铺标签。",
         "全局项目和主题索引用于识别已有标签；当前会话历史用于判断延续关系和重复事件。",
         "历史事件只用于去重和理解上下文，不要重复生成历史事件；只有当前轮产生新事实时才输出事件。",
         "只有用户明确确认时 confirmed 才能为 true。",
@@ -3172,7 +3245,7 @@ export async function activate(ctx) {
       id: BIOGRAPHY_VIEW_ID,
       pluginId: "dev.identity",
       title: "Biography",
-      icon: "$(history)",
+      icon: "$(book)",
       order: 7,
       keepWhenActive: true,
       component: { render: renderBiographyView }
@@ -3184,7 +3257,7 @@ export async function activate(ctx) {
     const activity = window.zion?.activityBar?.registerItem?.({
       id: "identity.biography.activity",
       pluginId: "dev.identity",
-      icon: "$(history)",
+      icon: "$(book)",
       tooltip: "Biography",
       auxiliaryBarViewId: BIOGRAPHY_VIEW_ID,
       order: 37

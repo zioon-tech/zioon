@@ -1379,6 +1379,9 @@ export async function runStream({
               usage
             });
             if (continued) return continued;
+            // #region debug-point B:stream-completion-summary
+            fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"B",traceId:String(runId||""),location:"extensions/dev.langchain-chat/chat-service.js:stream:done",msg:"[DEBUG] provider stream completed",data:{stepIndex,providerId:active?.providerId,modelId:active?.modelId,providerType,finishReason,contentLength:contentBuf.length,reasoningLength:reasoningBuf.length,sawToolCalls,sawCompletionSignal,toolCallBuffers:toolCallsBuffer.length},ts:Date.now()})}).catch(()=>{});
+            // #endregion
             onEnd();
             return { reasoning_content: reasoningBuf, usage };
           }
@@ -1463,6 +1466,9 @@ export async function runStream({
         usage
       });
       if (continued) return continued;
+      // #region debug-point B:stream-reader-end-summary
+      fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"B",traceId:String(runId||""),location:"extensions/dev.langchain-chat/chat-service.js:stream:reader-end",msg:"[DEBUG] provider stream reader ended",data:{stepIndex,providerId:active?.providerId,modelId:active?.modelId,providerType,finishReason,contentLength:contentBuf.length,reasoningLength:reasoningBuf.length,sawToolCalls,sawCompletionSignal,toolCallBuffers:toolCallsBuffer.length},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       onEnd();
       return { reasoning_content: reasoningBuf, usage };
     } else {

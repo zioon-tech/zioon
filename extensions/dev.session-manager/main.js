@@ -5,10 +5,12 @@ import { loadSessionTagIndex, saveSessionTagIndex } from "./storage/session-tag-
 import { deleteRemoteSession, readRemoteSnapshot, writeRemoteSession, writeRemoteSnapshot, writeRemoteTree } from "./storage/remote.js";
 import {
   createSessionTagIndex,
+  getIndexedSessionTags,
   removeSessionTagIndexEntry,
   updateSessionTagIndex,
   validateSessionTagIndex
 } from "./model/session-tag-index.js";
+import { normalizeTagPath, validateCatalog } from "./model/tag-catalog.js";
 import { createSessionUrlModel } from "./model/url.js";
 import { createSessionTreeModel } from "./model/tree.js";
 import { createSessionUIStateModel } from "./model/ui-state.js";
@@ -382,6 +384,68 @@ let sessionTagIndexBackfillHandle = 0;
 let sessionPreviewBackfillHandle = 0;
 let sessionTagIndexPersistQueue = Promise.resolve();
 const pendingSessionTagDocs = new Map();
+
+function flattenLegacyTagCatalog(raw) {
+  const tags = Array.isArray(raw?.tags) ? raw.tags : [];
+  const byId = new Map(tags.map((tag) => [String(tag?.id || ""), tag]));
+  const paths = [];
+  const resolvePath = (tag, seen = new Set()) => {
+    if (!tag || typeof tag !== "object") return "";
+    const id = String(tag.id || "");
+    if (id && seen.has(id)) return "";
+    const nextSeen = new Set(seen);
+    if (id) nextSeen.add(id);
+    const parent = tag.parentId ? byId.get(String(tag.parentId)) : null;
+    const parentPath = parent ? resolvePath(parent, nextSeen) : "";
+    return [parentPath, tag.name].filter(Boolean).join("/");
+  };
+  for (const tag of tags) {
+    const path = normalizeTagPath(resolvePath(tag));
+    if (path) paths.push(path);
+  }
+  return Array.from(new Set(paths));
+}
+
+function collectSessionTagIndexPaths(index) {
+  const paths = new Set();
+  const current = validateSessionTagIndex(index);
+  for (const sessionId of Object.keys(current.sessions || {})) {
+    for (const path of getIndexedSessionTags(current, sessionId)) paths.add(path);
+  }
+  return Array.from(paths);
+}
+
+function collectDerivedTagPaths() {
+  const paths = new Set();
+  let registry = null;
+  try { registry = window.zion?.state?.get?.("sessions.derivedTags"); } catch {}
+  if (!registry || typeof registry !== "object") return [];
+  for (const source of Object.values(registry)) {
+    for (const tags of Object.values(source?.sessions || {})) {
+      for (const tag of Array.isArray(tags) ? tags : []) {
+        const path = normalizeTagPath(typeof tag === "string" ? tag : tag?.path);
+        if (path) paths.add(path);
+      }
+    }
+  }
+  return Array.from(paths);
+}
+
+async function loadSessionTagVocabulary() {
+  const storedCatalog = await idbGetKV(DB_NAME, "sessions.tagCatalog").catch(() => []);
+  const legacyCatalog = await idbGetKV(DB_NAME, "tagCatalog.v1").catch(() => null);
+  const catalog = validateCatalog(storedCatalog).entries.map((entry) => entry.path);
+  const legacy = flattenLegacyTagCatalog(legacyCatalog);
+  const document = collectSessionTagIndexPaths(sessionTagIndex);
+  const derived = collectDerivedTagPaths();
+  return {
+    catalog,
+    legacyCatalog: legacy,
+    document,
+    derived,
+    all: Array.from(new Set([...catalog, ...legacy, ...document, ...derived]))
+  };
+}
 
 function publishSessionTagIndex(next) {
   sessionTagIndex = validateSessionTagIndex(next);
@@ -1797,7 +1861,7 @@ export async function activate(ctx) {
     const dispItem = window.zion.activityBar.registerItem({
       id: "sessions.activity",
       pluginId: "dev.session-manager",
-      icon: "$(history)",
+      icon: "$(messages-square)",
       tooltip: t("ui.sessions", "Sessions"),
       tooltipKey: "dev.session-manager.ui.sessions",
       sideBarViewId: "sessions.list",
@@ -1808,7 +1872,7 @@ export async function activate(ctx) {
       pluginId: "dev.session-manager",
       title: t("ui.sessions", "Sessions"),
       titleKey: "dev.session-manager.ui.sessions",
-      icon: "$(history)",
+      icon: "$(messages-square)",
       order: 10,
       location: "sidebar",
       headerLeading: {
@@ -3063,7 +3127,10 @@ export async function activate(ctx) {
     openSessionsPanel();
     return true;
   });
-  ctx.subscriptions.push(dShow);
+  const dGetTagVocabulary = window.zion.commands.registerCommand("zion.sessions.getTagVocabulary", () => (
+    loadSessionTagVocabulary()
+  ));
+  ctx.subscriptions.push(dShow, dGetTagVocabulary);
 
   // 注册快捷键（manifest 已声明，这里可选）
   try {

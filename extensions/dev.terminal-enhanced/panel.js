@@ -167,13 +167,15 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 }
 
 .zte-topbar.is-bottom-header {
-  height: 28px;
+  height: 26px;
+  max-height: 26px;
   min-width: 0;
   flex: 1 1 0;
   max-width: min(440px, 40vw);
   padding: 0;
   margin: 0 6px 0 auto;
   overflow: hidden;
+  align-self: center;
 }
 .zte-topbar.is-bottom-header .zte-tabs {
   padding: 0;
@@ -191,7 +193,9 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   height: 22px;
 }
 .zte-topbar.is-bottom-header .zte-actions {
+  height: 26px;
   gap: 2px;
+  align-items: center;
 }
 
 .zte-tabs {
@@ -627,6 +631,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 .zte-topbar.is-bottom-header {
   background: transparent;
   border-bottom: 0;
+  height: 26px;
+  max-height: 26px;
 }
 
 .zte-topbar.is-bottom-header .zte-tab {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderSessionsTagHeader } from "../extensions/dev.session-manager/ui/sidebar-header.js";
-import { hasZionIcon, zionIconName } from "../src/ui/icons";
+import { createZionIconFromCodicon, hasZionIcon, zionIconName } from "../src/ui/icons";
 
 describe("sessions tag split header", () => {
   it("registers the selected new-session icon", () => {
@@ -11,6 +11,16 @@ describe("sessions tag split header", () => {
   it("registers the card view toggle icon", () => {
     expect(hasZionIcon("layout-grid")).toBe(true);
     expect(zionIconName("layout-grid")).toBe("layout-grid");
+  });
+
+  it("keeps comments and sessions on distinct activity icons", () => {
+    const commentsIcon = createZionIconFromCodicon("comment-discussion");
+    expect(commentsIcon.classList.contains("codicon-comment-discussion")).toBe(true);
+
+    const sessionsIcon = createZionIconFromCodicon("messages-square");
+    expect(hasZionIcon("messages-square")).toBe(true);
+    expect(zionIconName("messages-square")).toBe("messages-square");
+    expect(sessionsIcon.dataset.zionIcon).toBe("messages-square");
   });
 
   it("renders snapshots, delegates add, and detaches", () => {

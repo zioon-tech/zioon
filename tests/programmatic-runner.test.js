@@ -8,8 +8,16 @@ import {
   isReadOnlyToolName,
   normalizeToolCall
 } from "../extensions/dev.langchain-chat/programmatic-runner.js";
+import { resolveModelContextWindowTokens } from "../extensions/dev.langchain-chat/context-health.js";
 
 describe("programmatic chat runner", () => {
+  it("uses explicit model context window metadata before output token fallbacks", () => {
+    expect(resolveModelContextWindowTokens(
+      { max_tokens: 4096 },
+      { providerId: "custom", modelId: "local", contextWindowTokens: 64_000 }
+    )).toBe(64_000);
+  });
+
   it("filters mutating tools from local-only runs", () => {
     expect(isReadOnlyToolName("memory.search")).toBe(true);
     expect(isReadOnlyToolName("fs.write")).toBe(false);
@@ -104,6 +112,7 @@ describe("programmatic chat runner", () => {
     };
     const execute = createProgrammaticExecutor({
       getActiveModel: () => ({ providerId: "test", modelId: "test" }),
+      resolveModelConfig: async () => ({ contextWindowTokens: 1000, charsPerToken: 4 }),
       getTools: () => [],
       runContributors: async (messages) => messages,
       emit: (topic, event) => globalEvents.push({ topic, event }),
@@ -134,13 +143,22 @@ describe("programmatic chat runner", () => {
     expect(events.map((event) => event.type)).toEqual([
       "run.started",
       "turn.started",
+      "context.window",
       "message.delta",
       "message.delta",
       "message.completed",
       "turn.completed",
       "run.completed"
     ]);
-    expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(events[0].data.model).toEqual({ providerId: "test", modelId: "test" });
+    expect(events[1].data.model).toEqual({ providerId: "test", modelId: "test" });
+    expect(events[2].data).toMatchObject({
+      model: { providerId: "test", modelId: "test" },
+      modelContextWindow: 1000,
+      severity: "ok",
+      recommendation: "continue"
+    });
+    expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(globalEvents).toHaveLength(events.length);
     expect(runs.start).toHaveBeenCalledWith(expect.objectContaining({
       id: handle.runId,
@@ -187,6 +205,56 @@ describe("programmatic chat runner", () => {
     for await (const event of handle.events) events.push(event.type);
     expect(events).toContain("tool.requested");
     expect(events).toContain("tool.completed");
+  });
+
+  it("records returned Bash failures as tool.completed errors", async () => {
+    let step = 0;
+    const runs = {
+      start: vi.fn(),
+      recordEvent: vi.fn(),
+      recordUsage: vi.fn()
+    };
+    const toolExecutor = vi.fn(async () => JSON.stringify({
+      command: "ssh host.example.com",
+      ok: false,
+      exit_code: 255,
+      stdout: "",
+      stderr: "Error reading SSH protocol banner"
+    }));
+    const execute = createProgrammaticExecutor({
+      getTools: () => [{ function: { name: "Bash" } }],
+      getActiveModel: () => null,
+      runStream: async ({ onToolCall, onToken, onEnd }) => {
+        step += 1;
+        if (step === 1) {
+          onToolCall({ id: "call-ssh", name: "Bash", args: { command: "ssh host.example.com" } });
+        } else {
+          onToken("done");
+        }
+        onEnd();
+        return {};
+      },
+      executeTool: toolExecutor,
+      runs
+    });
+
+    const handle = execute({
+      prompt: "check ssh",
+      executionMode: "local-only",
+      policy: { preset: "trusted-automation", allowedTools: ["Bash"] }
+    });
+    await expect(handle.completion).resolves.toMatchObject({ status: "completed", output: "done" });
+
+    const completed = runs.recordEvent.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.type === "tool.completed");
+    expect(completed).toMatchObject({
+      data: {
+        callId: "call-ssh",
+        name: "Bash",
+        error: "Error reading SSH protocol banner"
+      }
+    });
   });
 
   it("aborts the active provider request", async () => {

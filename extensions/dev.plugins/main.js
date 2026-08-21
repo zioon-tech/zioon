@@ -25,6 +25,10 @@ const I18N_MESSAGES = {
     "ui.searchQuery": "搜索关键词",
     "ui.listAll": "列出全部",
     "ui.install": "安装",
+    "ui.pluginActions": "插件操作",
+    "ui.enablePlugin": "启用插件",
+    "ui.disablePlugin": "停用插件",
+    "ui.reloadPlugin": "重新加载插件",
     "ui.devMode": "开发模式",
     "ui.devDesc": "把本地插件目录映射成可热更新的开发会话，适合调试插件。",
     "ui.startDev": "启动开发",
@@ -130,6 +134,10 @@ const I18N_MESSAGES = {
     "ui.searchQuery": "Search query",
     "ui.listAll": "List All",
     "ui.install": "Install",
+    "ui.pluginActions": "Plugin actions",
+    "ui.enablePlugin": "Enable plugin",
+    "ui.disablePlugin": "Disable plugin",
+    "ui.reloadPlugin": "Reload plugin",
     "ui.devMode": "Development Mode",
     "ui.devDesc": "Map a local plugin directory into a hot-reload development session for debugging plugins.",
     "ui.startDev": "Start Dev",
@@ -352,169 +360,70 @@ function mountPluginsSidebarViewInto(container) {
   const list = h("div", { className: "zion-plugin-manager-list" });
   root.appendChild(list);
 
-  const toolsPanel = h("details", {
-    style: {
-      borderTop: "1px solid color-mix(in srgb, var(--border) 28%, transparent)",
-      paddingTop: "12px"
-    }
-  });
+  const toolsPanel = h("details", { className: "zion-plugin-manager-tools" });
 
-  const toolsSummary = h("summary", {
-    style: {
-      cursor: "pointer",
-      listStyle: "none",
-      userSelect: "none",
-      fontSize: "12px",
-      fontWeight: "600",
-      opacity: "0.88"
-    }
-  }, t("ui.advancedTools", "高级工具"));
+  const toolsSummaryLabel = h("span", {}, t("ui.advancedTools", "高级工具"));
+  const toolsSummary = h("summary", { className: "zion-plugin-manager-tools-summary" },
+    h("span", { className: "codicon codicon-chevron-right", "aria-hidden": "true" }),
+    toolsSummaryLabel
+  );
 
-  const toolsContent = h("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: "10px",
-      marginTop: "10px"
-    }
-  });
+  const toolsContent = h("div", { className: "zion-plugin-manager-tools-content" });
   toolsPanel.appendChild(toolsSummary);
   toolsPanel.appendChild(toolsContent);
 
-  const serviceBox = h("div", {
-    style: {
-      border: "1px solid color-mix(in srgb, var(--border) 32%, transparent)",
-      borderRadius: "12px",
-      padding: "12px",
-      display: "flex",
-      flexDirection: "column",
-      gap: "8px",
-      background: "color-mix(in srgb, var(--panel) 90%, transparent)"
-    }
-  });
-  const serviceTitle = h("div", {
-    style: {
-      fontSize: "12px",
-      fontWeight: "600"
-    }
-  }, t("ui.installPlugins", "安装插件"));
+  const serviceBox = h("section", { className: "zion-plugin-manager-tools-section" });
+  const serviceTitle = h("div", { className: "zion-plugin-manager-tools-title" },
+    t("ui.installPlugins", "安装插件")
+  );
 
-  const serviceDesc = h("div", {
-    style: {
-      fontSize: "11px",
-      lineHeight: "1.5",
-      opacity: "0.58"
-    }
-  }, t("ui.installDesc", "支持配置服务地址、搜索可安装插件，或直接拖拽 ZIP 包安装。"));
+  const serviceDesc = h("div", { className: "zion-plugin-manager-tools-description" },
+    t("ui.installDesc", "支持配置服务地址、搜索可安装插件，或直接拖拽 ZIP 包安装。")
+  );
 
-  const urlRow = h("div", {
-    style: {
-      display: "flex",
-      gap: "6px"
-    }
-  });
+  const urlRow = h("div", { className: "zion-plugin-manager-tools-row" });
 
   const urlInput = h("input", {
     type: "text",
     placeholder: DEFAULT_BASE_URL,
-    style: {
-      flex: "1",
-      height: "28px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      padding: "0 10px",
-      outline: "none",
-      boxSizing: "border-box",
-      fontSize: "12px"
-    }
+    className: "zion-plugin-manager-tools-input"
   });
 
   const saveUrlBtn = h("button", {
-    style: {
-      height: "28px",
-      padding: "0 10px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      cursor: "pointer",
-      fontSize: "12px"
-    }
+    className: "zion-plugin-manager-tools-button",
+    type: "button"
   }, t("ui.saveUrl", "Save URL"));
 
   urlRow.appendChild(urlInput);
   urlRow.appendChild(saveUrlBtn);
 
-  const dropZone = h("div", {
-    style: {
-      border: "2px dashed var(--border)",
-      borderRadius: "10px",
-      padding: "12px",
-      textAlign: "center",
-      fontSize: "12px",
-      opacity: "0.78"
-    }
-  }, t("ui.dropZip", "拖拽 ZIP 插件包到此处进行安装"));
+  const dropZone = h("div", { className: "zion-plugin-manager-drop-zone" },
+    t("ui.dropZip", "拖拽 ZIP 插件包到此处进行安装")
+  );
 
-  const actionRow = h("div", {
-    style: {
-      display: "flex",
-      gap: "6px"
-    }
-  });
+  const actionRow = h("div", { className: "zion-plugin-manager-tools-row is-search" });
 
   const queryInput = h("input", {
     type: "text",
     placeholder: t("ui.searchQuery", "Search query"),
-    style: {
-      flex: "1",
-      height: "28px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      padding: "0 10px",
-      outline: "none",
-      boxSizing: "border-box",
-      fontSize: "12px"
-    }
+    className: "zion-plugin-manager-tools-input"
   });
 
   const searchBtn = h("button", {
-    style: {
-      height: "28px",
-      padding: "0 10px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      cursor: "pointer",
-      fontSize: "12px"
-    }
-  }, t("ui.search", "Search"));
+    className: "zion-plugin-manager-tools-button is-icon",
+    type: "button",
+    title: t("ui.search", "Search"),
+    "aria-label": t("ui.search", "Search")
+  }, h("span", { className: "codicon codicon-search", "aria-hidden": "true" }));
 
   const listBtn = h("button", {
-    style: {
-      height: "28px",
-      padding: "0 10px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      cursor: "pointer",
-      fontSize: "12px"
-    }
-  }, t("ui.listAll", "List All"));
+    className: "zion-plugin-manager-tools-button is-icon",
+    type: "button",
+    title: t("ui.listAll", "List All"),
+    "aria-label": t("ui.listAll", "List All")
+  }, h("span", { className: "codicon codicon-list-tree", "aria-hidden": "true" }));
 
-  const resultsList = h("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: "6px"
-    }
-  });
+  const resultsList = h("div", { className: "zion-plugin-manager-tools-results" });
 
   actionRow.appendChild(queryInput);
   actionRow.appendChild(searchBtn);
@@ -527,82 +436,32 @@ function mountPluginsSidebarViewInto(container) {
   serviceBox.appendChild(actionRow);
   serviceBox.appendChild(resultsList);
 
-  const devBox = h("div", {
-    style: {
-      border: "1px solid color-mix(in srgb, var(--border) 32%, transparent)",
-      borderRadius: "12px",
-      padding: "12px",
-      display: "flex",
-      flexDirection: "column",
-      gap: "8px",
-      background: "color-mix(in srgb, var(--panel) 90%, transparent)"
-    }
-  });
+  const devBox = h("section", { className: "zion-plugin-manager-tools-section" });
 
-  const devTitle = h("div", {
-    style: {
-      fontSize: "12px",
-      fontWeight: "600"
-    }
-  }, t("ui.devMode", "开发模式"));
+  const devTitle = h("div", { className: "zion-plugin-manager-tools-title" },
+    t("ui.devMode", "开发模式")
+  );
 
-  const devDesc = h("div", {
-    style: {
-      fontSize: "11px",
-      lineHeight: "1.5",
-      opacity: "0.58"
-    }
-  }, t("ui.devDesc", "把本地插件目录映射成可热更新的开发会话，适合调试插件。"));
+  const devDesc = h("div", { className: "zion-plugin-manager-tools-description" },
+    t("ui.devDesc", "把本地插件目录映射成可热更新的开发会话，适合调试插件。")
+  );
 
-  const devRow = h("div", {
-    style: {
-      display: "flex",
-      gap: "6px"
-    }
-  });
+  const devRow = h("div", { className: "zion-plugin-manager-tools-row is-development" });
 
   const devPathInput = h("input", {
     type: "text",
     placeholder: "/absolute/path/to/your-plugin",
-    style: {
-      flex: "1",
-      height: "28px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      padding: "0 10px",
-      outline: "none",
-      boxSizing: "border-box",
-      fontSize: "12px"
-    }
+    className: "zion-plugin-manager-tools-input"
   });
 
   const devStartBtn = h("button", {
-    style: {
-      height: "28px",
-      padding: "0 10px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      cursor: "pointer",
-      fontSize: "12px"
-    }
+    className: "zion-plugin-manager-tools-button",
+    type: "button"
   }, t("ui.startDev", "Start Dev"));
 
   const devStopBtn = h("button", {
-    style: {
-      height: "28px",
-      padding: "0 10px",
-      borderRadius: "8px",
-      border: "1px solid var(--border)",
-      background: "transparent",
-      color: "var(--fg)",
-      cursor: "pointer",
-      fontSize: "12px",
-      opacity: "0.6"
-    },
+    className: "zion-plugin-manager-tools-button",
+    type: "button",
     disabled: true
   }, t("ui.stopDev", "Stop Dev"));
 
@@ -610,13 +469,7 @@ function mountPluginsSidebarViewInto(container) {
   devRow.appendChild(devStartBtn);
   devRow.appendChild(devStopBtn);
 
-  const devStatus = h("div", {
-    style: {
-      fontSize: "12px",
-      opacity: "0.8",
-      wordBreak: "break-word"
-    }
-  });
+  const devStatus = h("div", { className: "zion-plugin-manager-tools-status" });
 
   devBox.appendChild(devTitle);
   devBox.appendChild(devDesc);
@@ -767,6 +620,73 @@ function mountPluginsSidebarViewInto(container) {
     onReload: () => reloadPlugin(plugin)
   });
 
+  const closeRowMenus = (except = null) => {
+    list.querySelectorAll(".zion-plugin-manager-row-menu[open]").forEach((menu) => {
+      if (menu !== except) menu.open = false;
+    });
+  };
+
+  const createMenuItem = ({ label, iconName, tone = "", onClick }) => {
+    const item = h("button", {
+      className: `zion-plugin-manager-row-menu-item${tone ? ` is-${tone}` : ""}`,
+      type: "button"
+    }, h("span", { className: `codicon codicon-${iconName}`, "aria-hidden": "true" }), h("span", {}, label));
+    item.onclick = async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      item.disabled = true;
+      try {
+        await onClick?.();
+      } finally {
+        item.disabled = false;
+      }
+    };
+    return item;
+  };
+
+  const createRowActionsMenu = (plugin, presentation) => {
+    const menu = h("details", { className: "zion-plugin-manager-row-menu" });
+    const summary = h("summary", {
+      className: "zion-plugin-manager-row-menu-trigger",
+      title: t("ui.pluginActions", "插件操作"),
+      "aria-label": `${presentation.name}: ${t("ui.pluginActions", "插件操作")}`
+    }, h("span", { className: "codicon codicon-kebab-vertical", "aria-hidden": "true" }));
+    const body = h("div", { className: "zion-plugin-manager-row-menu-popover" });
+    const isEnabled = !!plugin?.enabled;
+
+    summary.onclick = (event) => {
+      event.stopPropagation();
+      closeRowMenus(menu);
+    };
+    summary.onkeydown = (event) => {
+      event.stopPropagation();
+    };
+    menu.onclick = (event) => event.stopPropagation();
+    menu.ontoggle = () => {
+      if (menu.open) closeRowMenus(menu);
+    };
+
+    body.appendChild(createMenuItem({
+      label: isEnabled ? t("ui.disablePlugin", "停用插件") : t("ui.enablePlugin", "启用插件"),
+      iconName: isEnabled ? "debug-stop" : "play",
+      tone: isEnabled ? "danger" : "primary",
+      onClick: async () => {
+        menu.open = false;
+        await togglePlugin(plugin, !isEnabled);
+      }
+    }));
+    body.appendChild(createMenuItem({
+      label: t("ui.reloadPlugin", "重新加载插件"),
+      iconName: "refresh",
+      onClick: async () => {
+        menu.open = false;
+        await reloadPlugin(plugin);
+      }
+    }));
+    menu.append(summary, body);
+    return menu;
+  };
+
   function openPluginEditor(plugin, focus = true) {
     if (!plugin || typeof window.zion?.panels?.openFileTab !== "function") return false;
     const presentation = getPluginPresentation(plugin, {
@@ -832,7 +752,10 @@ function mountPluginsSidebarViewInto(container) {
         className: `zion-plugin-manager-row${selectedPluginId === plugin.id ? " is-selected" : ""}`,
         role: "button",
         tabindex: "0",
-        "aria-label": presentation.name
+        "aria-label": `${presentation.name}: ${status.label}`,
+        "data-status": status.id,
+        "data-tone": status.tone,
+        title: status.label
       });
       row.onclick = () => openPluginEditor(plugin, true);
       row.onkeydown = (event) => {
@@ -852,33 +775,17 @@ function mountPluginsSidebarViewInto(container) {
         )
       );
       const controls = h("div", { className: "zion-plugin-manager-row-controls" });
-      const dot = h("span", {
-        className: `zion-plugin-manager-row-status is-${status.tone}`,
-        title: status.label
-      });
 
-      const toggle = h("input", { type: "checkbox" });
-      toggle.checked = !!plugin?.enabled;
-      toggle.setAttribute("aria-label", `${presentation.name}: ${status.label}`);
-      toggle.onclick = (event) => event.stopPropagation();
-      toggle.onchange = async (event) => {
-        event.stopPropagation();
-        const next = !!toggle.checked;
-        toggle.disabled = true;
-        try {
-          await togglePlugin(plugin, next);
-        } catch {
-          toggle.checked = !next;
-        } finally {
-          toggle.disabled = false;
-        }
-      };
-
-      controls.append(dot, toggle);
+      controls.appendChild(createRowActionsMenu(plugin, presentation));
       row.append(icon, copy, controls);
       list.appendChild(row);
     }
   }
+
+  root.addEventListener("click", (event) => {
+    if (event.target?.closest?.(".zion-plugin-manager-row-menu")) return;
+    closeRowMenus();
+  });
 
   filterButton.onclick = () => {
     filterMenu.classList.toggle("is-open");
@@ -1163,7 +1070,6 @@ function mountPluginsSidebarViewInto(container) {
         } catch {}
         devStartBtn.disabled = true;
         devStopBtn.disabled = false;
-        devStopBtn.style.opacity = "1";
         showMessage(t("msg.devStarted", "开发模式已启动。"));
       } else {
         throw new Error(ret.error?.message || t("msg.devInstallFailed", "开发模式安装失败"));
@@ -1206,7 +1112,6 @@ function mountPluginsSidebarViewInto(container) {
     }
     devStartBtn.disabled = false;
     devStopBtn.disabled = true;
-    devStopBtn.style.opacity = "0.6";
   };
 
   searchInput.addEventListener("input", () => {
@@ -1220,14 +1125,16 @@ function mountPluginsSidebarViewInto(container) {
     filterButton.title = getCurrentLocale() === "en-US" ? "Filter plugins" : "筛选插件";
     filterButton.setAttribute("aria-label", filterButton.title);
     renderFilterMenu();
-    toolsSummary.textContent = t("ui.advancedTools", "高级工具");
+    toolsSummaryLabel.textContent = t("ui.advancedTools", "高级工具");
     serviceTitle.textContent = t("ui.installPlugins", "安装插件");
     serviceDesc.textContent = t("ui.installDesc", "支持配置服务地址、搜索可安装插件，或直接拖拽 ZIP 包安装。");
     saveUrlBtn.textContent = t("ui.saveUrl", "Save URL");
     dropZone.textContent = t("ui.dropZip", "拖拽 ZIP 插件包到此处进行安装");
     queryInput.placeholder = t("ui.searchQuery", "Search query");
-    searchBtn.textContent = t("ui.search", "Search");
-    listBtn.textContent = t("ui.listAll", "List All");
+    searchBtn.title = t("ui.search", "Search");
+    searchBtn.setAttribute("aria-label", searchBtn.title);
+    listBtn.title = t("ui.listAll", "List All");
+    listBtn.setAttribute("aria-label", listBtn.title);
     devTitle.textContent = t("ui.devMode", "开发模式");
     devDesc.textContent = t("ui.devDesc", "把本地插件目录映射成可热更新的开发会话，适合调试插件。");
     devStartBtn.textContent = t("ui.startDev", "Start Dev");

@@ -13,6 +13,7 @@ import { initWorkbench } from "./ui/workbench/workbench";
 import { initCommandPalette } from "./ui/workbench/commandPalette";
 import { installZionIcons, zionIconHtml } from "./ui/icons";
 import { reconcileKeyedElements } from "./ui/keyed-elements";
+import { createRunLogViewDefinition } from "./ui/run-log-view";
 import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
@@ -3018,21 +3019,21 @@ function mountPanelSessionTabsBar(
           (e) => {
             const ev = e as WheelEvent;
             if (!viewport || !root) return;
-            const canScroll = root.scrollWidth > viewport.clientWidth + 1;
-            if (!canScroll) return;
             const dx = ev.deltaX || 0;
             const dy = ev.deltaY || 0;
             const delta = Math.abs(dy) >= Math.abs(dx) ? dy : dx;
             if (!delta) return;
+            try {
+              ev.preventDefault();
+              ev.stopPropagation();
+            } catch {}
+            const canScroll = root.scrollWidth > viewport.clientWidth + 1;
+            if (!canScroll) return;
             const prev = tabStripScrollLeft;
             setTabStripScrollLeft(prev + delta);
             const moved = Math.abs(tabStripScrollLeft - prev) > 0.5;
             if (moved) {
               updateViewportScrollState();
-              try {
-                ev.preventDefault();
-                ev.stopPropagation();
-              } catch {}
             }
           },
           { passive: false, signal: lifecycleSignal }
@@ -5419,40 +5420,9 @@ async function bootstrap() {
   } catch {}
 
   try {
-    window.zion.bottomPanel?.registerView({
-      id: "core.output",
-      pluginId: "core",
-      title: "Output",
-      icon: "$(output)",
-      order: 10,
-      keepWhenActive: true,
-      maximizable: true,
-      component: {
-        render: (container: HTMLElement) => {
-          const wrap = document.createElement("div");
-          wrap.style.padding = "10px";
-          wrap.style.fontFamily = "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)";
-          wrap.style.fontSize = "12px";
-          wrap.style.whiteSpace = "pre-wrap";
-          wrap.style.lineHeight = "1.5";
-          wrap.textContent =
-            "Bottom Panel 已启用。\n\n" +
-            "可以：\n" +
-            "- 拖拽面板顶部的细条调整高度\n" +
-            "- 点击顶部右侧按钮打开/关闭\n" +
-            '- Cmd/Ctrl + K 打开命令台，搜索 bottomPanel.toggle\n';
-          container.appendChild(wrap);
-          return {
-            dispose: () => {
-              try {
-                wrap.remove();
-              } catch {}
-            }
-          };
-        }
-      }
-    });
-
+    window.zion.bottomPanel?.registerView(
+      createRunLogViewDefinition(window.zion)
+    );
   } catch {}
 
   try {
