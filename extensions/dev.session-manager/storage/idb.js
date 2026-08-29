@@ -149,6 +149,23 @@ export async function idbDel(dbName, store, key) {
   }));
 }
 
+export async function idbClear(dbName, store) {
+  return runTx(dbName, (db) => new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+    const tx = db.transaction(store, "readwrite");
+    const req = tx.objectStore(store).clear();
+    req.onerror = () => settle(reject, req.error || tx.error || new Error("idb clear error"));
+    tx.oncomplete = () => settle(resolve, true);
+    tx.onabort = () => settle(reject, tx.error || req.error || new Error("idb transaction aborted"));
+    tx.onerror = () => settle(reject, tx.error || req.error || new Error("idb transaction error"));
+  }));
+}
+
 export const idbGetKV = (dbName, key) => idbGet(dbName, "kv", key);
 export const idbSetKV = (dbName, key, value) => idbSet(dbName, "kv", { key, value });
 export const idbDelKV = (dbName, key) => idbDel(dbName, "kv", key);

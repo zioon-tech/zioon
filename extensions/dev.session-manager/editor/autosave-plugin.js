@@ -17,7 +17,9 @@ export function createSessionAutoSavePlugin(opts) {
   const zion = opts?.zion || window.zion;
 
   const buckets = new Map();
+  const pendingPersistence = new Set();
   const autosaveQuietDelayMs = 700;
+  const autosaveMaxDelayMs = 2000;
 
   const getBucketKey = (view) => {
     try {
@@ -33,7 +35,7 @@ export function createSessionAutoSavePlugin(opts) {
     const key = getBucketKey(view);
     let bucket = buckets.get(key);
     if (!bucket) {
-      bucket = { key, timer: 0, pendingDoc: null, pendingId: null, pendingView: null };
+      bucket = { key, timer: 0, maxTimer: 0, pendingDoc: null, pendingId: null, pendingView: null };
       buckets.set(key, bucket);
     }
     return bucket;
@@ -52,10 +54,23 @@ export function createSessionAutoSavePlugin(opts) {
     }
   };
 
-  const clearTimer = (bucket) => {
+  const clearQuietTimer = (bucket) => {
     try { if (bucket?.timer) cancelIdleCallback(bucket.timer); } catch {}
     try { if (bucket?.timer) clearTimeout(bucket.timer); } catch {}
     if (bucket) bucket.timer = 0;
+  };
+
+  const clearTimers = (bucket) => {
+    clearQuietTimer(bucket);
+    try { if (bucket?.maxTimer) clearTimeout(bucket.maxTimer); } catch {}
+    if (bucket) bucket.maxTimer = 0;
+  };
+
+  const trackPersistence = (result) => {
+    if (!result || typeof result.then !== "function") return;
+    const pending = Promise.resolve(result).catch(() => false);
+    pendingPersistence.add(pending);
+    void pending.finally(() => pendingPersistence.delete(pending));
   };
 
   const commit = (id, doc) => {
@@ -64,7 +79,7 @@ export function createSessionAutoSavePlugin(opts) {
     const meta = loadMeta(id);
     const newHash = hashString(text);
     if (newHash === (meta.hash || "")) return false;
-    saveDoc(id, text);
+    trackPersistence(saveDoc(id, text));
     meta.documentPreview = extractDocumentLeadPreview(text);
     meta.documentPreviewVersion = 1;
     const rs = zion?.state?.get(`chat.runs.${id}`) || null;
@@ -75,7 +90,7 @@ export function createSessionAutoSavePlugin(opts) {
         const ann = getAnnotationsState(id);
         if (ann) meta.annotations = ann;
       } catch {}
-      saveMeta(id, meta);
+      trackPersistence(saveMeta(id, meta));
       try { onSaved(meta); } catch {}
       return true;
     }
@@ -86,7 +101,7 @@ export function createSessionAutoSavePlugin(opts) {
       const ann = getAnnotationsState(id);
       if (ann) meta.annotations = ann;
     } catch {}
-    saveMeta(id, meta);
+    trackPersistence(saveMeta(id, meta));
     upsertIndexEntry({ id, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
     try { postSaved(id, meta.updatedAt, meta.hash); } catch {}
     try { onSaved(meta); } catch {}
@@ -94,10 +109,10 @@ export function createSessionAutoSavePlugin(opts) {
   };
 
   const scheduleSave = (bucket) => {
-    clearTimer(bucket);
+    clearQuietTimer(bucket);
     const idle = typeof requestIdleCallback === "function";
     const fn = () => {
-      bucket.timer = 0;
+      clearTimers(bucket);
       const id = bucket.pendingId || getCurrentId(bucket.pendingView);
       if (!id || !bucket.pendingDoc) return;
       const doc = bucket.pendingDoc;
@@ -115,6 +130,9 @@ export function createSessionAutoSavePlugin(opts) {
       }
     };
     bucket.timer = setTimeout(scheduleIdleCommit, autosaveQuietDelayMs);
+    if (!bucket.maxTimer) {
+      bucket.maxTimer = setTimeout(fn, autosaveMaxDelayMs);
+    }
   };
 
   const flush = (idOverride) => {
@@ -128,8 +146,16 @@ export function createSessionAutoSavePlugin(opts) {
       bucket.pendingDoc = null;
       bucket.pendingId = null;
       bucket.pendingView = null;
-      clearTimer(bucket);
+      clearTimers(bucket);
       saved = commit(id, doc) || saved;
+    }
+    return saved;
+  };
+
+  const flushDurably = async (idOverride) => {
+    const saved = flush(idOverride);
+    while (pendingPersistence.size) {
+      await Promise.allSettled([...pendingPersistence]);
     }
     return saved;
   };
@@ -152,10 +178,11 @@ export function createSessionAutoSavePlugin(opts) {
       destroy() {
         const key = getBucketKey(this?.view);
         const bucket = buckets.get(key);
-        clearTimer(bucket);
+        clearTimers(bucket);
         buckets.delete(key);
       }
     }),
-    flush
+    flush,
+    flushDurably
   };
 }

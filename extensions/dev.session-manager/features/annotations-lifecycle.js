@@ -1,9 +1,9 @@
 export function createAnnotationsLifecycle(opts) {
-  const dbName = opts?.dbName;
-  const idbGet = opts?.idbGet;
   const loadMeta = opts?.loadMeta;
+  const loadMetaAsync = opts?.loadMetaAsync;
   const saveMeta = opts?.saveMeta;
   const now = opts?.now;
+  const shouldSkipLifecyclePersistence = opts?.shouldSkipLifecyclePersistence;
   const getZion = () => {
     try {
       const v = opts?.getZion?.();
@@ -53,6 +53,9 @@ export function createAnnotationsLifecycle(opts) {
   function attachLifecyclePersistence(ctx) {
     try {
       const handler = () => {
+        try {
+          if (shouldSkipLifecyclePersistence?.()) return;
+        } catch {}
         try { persistCurrentAnnotations(); } catch {}
       };
       const visHandler = () => {
@@ -128,8 +131,7 @@ export function createAnnotationsLifecycle(opts) {
         } catch {}
         let ann = null;
         try {
-          const rec = await idbGet(dbName, "metas", id);
-          const meta = rec?.meta;
+          const meta = await loadMetaAsync(id);
           if (meta && meta.annotations) {
             ann = meta.annotations;
             try { getZion()?.state?.set(`sessions.meta.${id}`, meta); } catch {}
@@ -223,8 +225,8 @@ export function createAnnotationsLifecycle(opts) {
 
         if (!meta || typeof meta !== "object") {
           try {
-            const rec = await idbGet(dbName, "metas", id);
-            if (rec && rec.meta && typeof rec.meta === "object") meta = rec.meta;
+            const stored = await loadMetaAsync(id);
+            if (stored && typeof stored === "object") meta = stored;
           } catch {}
         }
 

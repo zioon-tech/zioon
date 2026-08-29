@@ -17,6 +17,9 @@ describe("sessions tag split header", () => {
     const commentsIcon = createZionIconFromCodicon("comment-discussion");
     expect(commentsIcon.classList.contains("codicon-comment-discussion")).toBe(true);
 
+    const remoteIcon = createZionIconFromCodicon("remote");
+    expect(remoteIcon.classList.contains("codicon-remote")).toBe(true);
+
     const sessionsIcon = createZionIconFromCodicon("messages-square");
     expect(hasZionIcon("messages-square")).toBe(true);
     expect(zionIconName("messages-square")).toBe("messages-square");

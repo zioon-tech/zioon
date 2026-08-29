@@ -42,4 +42,36 @@ describe("session annotations lifecycle", () => {
       }
     }]);
   });
+
+  it("does not start a second lifecycle write during an intentional reload", () => {
+    const saved = [];
+    const listeners = new Map();
+    const zion = {
+      state: { get: vi.fn(() => "session-a") },
+      commands: {
+        executeCommand: vi.fn(() => ({ tools: [], thinking: [] }))
+      }
+    };
+    const originalAddEventListener = window.addEventListener;
+    const subscriptions = [];
+    window.addEventListener = vi.fn((name, handler) => {
+      listeners.set(name, handler);
+    });
+    const lifecycle = createAnnotationsLifecycle({
+      loadMeta: (id) => ({ id }),
+      loadMetaAsync: async (id) => ({ id }),
+      saveMeta: (id, meta) => saved.push({ id, meta }),
+      shouldSkipLifecyclePersistence: () => true,
+      getZion: () => zion
+    });
+
+    try {
+      lifecycle.attachLifecyclePersistence({ subscriptions });
+      listeners.get("beforeunload")?.();
+      expect(saved).toEqual([]);
+    } finally {
+      subscriptions.forEach((item) => item.dispose?.());
+      window.addEventListener = originalAddEventListener;
+    }
+  });
 });

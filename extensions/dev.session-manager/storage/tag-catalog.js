@@ -1,12 +1,11 @@
-// Catalog persistence on top of the existing Sessions IndexedDB kv store.
-import { idbGetKV, idbSetKV } from "./idb.js";
+import { readRemoteSessionKV, writeRemoteSessionKV } from "./remote.js";
 import { validateCatalog } from "../model/tag-catalog.js";
 
 const KEY = "sessions.tagCatalog";
 
-export async function loadTagCatalog(dbName) {
+export async function loadTagCatalog() {
   try {
-    const raw = await idbGetKV(dbName, KEY);
+    const raw = (await readRemoteSessionKV(KEY))?.value;
     const value = raw?.value ?? raw;
     return validateCatalog(value).entries;
   } catch {
@@ -14,8 +13,8 @@ export async function loadTagCatalog(dbName) {
   }
 }
 
-export async function saveTagCatalog(dbName, entries) {
+export async function saveTagCatalog(_dbName, entries) {
   const clean = validateCatalog(entries).entries;
-  await idbSetKV(dbName, KEY, clean);
+  await writeRemoteSessionKV(KEY, clean);
   return clean;
 }

@@ -1,6 +1,4 @@
 export function createSessionTreeModel(opts) {
-  const dbName = opts?.dbName;
-  const idbSetKV = opts?.idbSetKV;
   const warnStorageIssue = opts?.warnStorageIssue;
   const onPersist = opts?.onPersist;
   const onDelete = opts?.onDelete;
@@ -39,20 +37,17 @@ export function createSessionTreeModel(opts) {
 
   function saveTree(tree) {
     const optimistic = cloneValue(tree);
-    let previous;
-    try { previous = getZion()?.state?.get("sessions.treeMem"); } catch {}
     try { getZion()?.state?.set("sessions.treeMem", optimistic); } catch {}
     (async () => {
       try {
-        await idbSetKV(dbName, "tree", optimistic);
-        try { onPersist?.("tree"); } catch {}
-      } catch (e) {
+        if (typeof onPersist !== "function") {
+          throw new Error("durable session storage unavailable");
+        }
+        await onPersist("tree", null, optimistic);
+      } catch (error) {
         try {
-          if (getZion()?.state?.get("sessions.treeMem") === optimistic) {
-            getZion()?.state?.set("sessions.treeMem", previous);
-          }
+          warnStorageIssue?.("saveTree", error);
         } catch {}
-        try { warnStorageIssue?.("saveTree", e); } catch {}
       }
     })();
   }
@@ -100,20 +95,17 @@ export function createSessionTreeModel(opts) {
 
   function setIndex(list) {
     const optimistic = cloneValue(list);
-    let previous;
-    try { previous = getZion()?.state?.get("sessions.indexMem"); } catch {}
     try { getZion()?.state?.set("sessions.indexMem", optimistic); } catch {}
     (async () => {
       try {
-        await idbSetKV(dbName, "index", optimistic);
-        try { onPersist?.("index"); } catch {}
-      } catch (e) {
+        if (typeof onPersist !== "function") {
+          throw new Error("durable session storage unavailable");
+        }
+        await onPersist("index", null, optimistic);
+      } catch (error) {
         try {
-          if (getZion()?.state?.get("sessions.indexMem") === optimistic) {
-            getZion()?.state?.set("sessions.indexMem", previous);
-          }
+          warnStorageIssue?.("setIndex", error);
         } catch {}
-        try { warnStorageIssue?.("setIndex", e); } catch {}
       }
     })();
   }

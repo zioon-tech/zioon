@@ -55,6 +55,7 @@ const threadRecordCache = new Map();
 const pendingThreadRecordPersists = new Map();
 let pendingThreadRecordFlush = false;
 let threadRecordArchiveLoaded = false;
+let threadArchiveReady = false;
 const liveAnchorOverrides = new Map();
 const liveAnchorDirtyBySession = new Map();
 const liveAnchorPersistTimers = new Map();
@@ -218,7 +219,7 @@ const I18N_MESSAGES = {
       "toolbar.comment": "评论",
       "panel.open": "打开评论",
       "thread.created": "已创建评论线程",
-      "thread.createFailedStorage": "创建评论失败：本地存储写入失败，请清理浏览器站点数据或检查存储权限后重试",
+      "thread.createFailedStorage": "创建评论失败：评论数据库与本地索引均不可写，请检查浏览器存储权限后重试",
     "header.subtitle": "正文中的锚定评论",
     "anchor.open": "打开评论",
     "anchor.count": "{count} 条评论",
@@ -280,7 +281,7 @@ const I18N_MESSAGES = {
       "toolbar.comment": "Comment",
       "panel.open": "Open comments",
       "thread.created": "Comment thread created",
-      "thread.createFailedStorage": "Failed to create comment: local storage write failed. Clear browser site data or check storage permissions and try again.",
+      "thread.createFailedStorage": "Failed to create comment: both the comment database and local index are unavailable. Check browser storage permissions and try again.",
     "header.subtitle": "Anchored comments in the source document",
     "anchor.open": "Open comments",
     "anchor.count": "{count} comments",
@@ -478,6 +479,7 @@ async function persistThreadRecordIds(ids) {
   try {
     await openSessionsDB(SESSIONS_DB_NAME);
     await idbSetKV(SESSIONS_DB_NAME, THREAD_RECORD_IDS_KEY, [...new Set(ids.map(String).filter(Boolean))]);
+    threadArchiveReady = true;
     return true;
   } catch {
     return false;
@@ -552,6 +554,7 @@ async function persistThreadPayload(thread) {
     } else {
       await idbDelKV(SESSIONS_DB_NAME, getThreadPayloadStorageKey(id));
     }
+    threadArchiveReady = true;
     return true;
   } catch {
     return false;
@@ -650,6 +653,7 @@ function resetThreadStorageRuntime() {
   pendingThreadRecordPersists.clear();
   pendingThreadRecordFlush = false;
   threadRecordArchiveLoaded = false;
+  threadArchiveReady = false;
 }
 
 async function hydrateThreadRecordArchive(opts = {}) {
@@ -666,6 +670,7 @@ async function hydrateThreadRecordArchive(opts = {}) {
       threadRecordCache.set(String(record.id), record);
       changed = changed || !before;
     }
+    threadArchiveReady = true;
     threadRecordArchiveLoaded = true;
     if (changed && opts.emitChanged) emitChanged();
     return threadRecordCache.size;
@@ -703,29 +708,13 @@ function isQuotaError(error) {
   return name === "QuotaExceededError" || /quota|storage.*full|exceeded/i.test(message);
 }
 
-function reclaimVolatileLocalStorage() {
-  const keys = [
-    "zion.scheduler.local.runs.v1"
-  ];
-  let changed = false;
-  for (const key of keys) {
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw || raw.length < 100_000) continue;
-      localStorage.removeItem(key);
-      changed = true;
-    } catch {}
-  }
-  return changed;
-}
-
 function readAllThreads() {
   const byId = new Map();
-  for (const thread of threadRecordCache.values()) {
+  for (const thread of readStoredThreadsRaw()) {
     const id = String(thread?.id || "");
     if (id) byId.set(id, thread);
   }
-  for (const thread of readStoredThreadsRaw()) {
+  for (const thread of threadRecordCache.values()) {
     const id = String(thread?.id || "");
     if (id) byId.set(id, thread);
   }
@@ -943,7 +932,6 @@ function writeAllThreads(list, opts = {}) {
     : ["default", "aggressive", "minimal"];
   let lastError = null;
   let lastPayloadLength = -1;
-  let reclaimed = false;
 
   const attempts = [];
   const addAttempts = (items, label) => {
@@ -954,7 +942,10 @@ function writeAllThreads(list, opts = {}) {
   addAttempts(chooseLocalThreadIndex(rawList, EMERGENCY_THREAD_INDEX_LIMIT), "emergency");
 
   for (const attempt of attempts) {
-    const normalizedList = attempt.items.map((item) => compactThreadForStorage(stripThreadForStorage(item), attempt.mode));
+    const normalizedList = attempt.items.map((item) => compactThreadForStorage(
+      threadArchiveReady ? stripThreadForStorage(item) : item,
+      attempt.mode
+    ));
     const payload = JSON.stringify(normalizedList);
     lastPayloadLength = payload.length;
     const result = writeLocalThreads(payload);
@@ -974,14 +965,23 @@ function writeAllThreads(list, opts = {}) {
     }
     lastError = result.error;
     if (!isQuotaError(result.error)) break;
-    if (!reclaimed && reclaimVolatileLocalStorage()) {
-      reclaimed = true;
-      attempts.push({
-        items: chooseLocalThreadIndex(rawList, EMERGENCY_THREAD_INDEX_LIMIT),
-        mode: "minimal",
-        label: "reclaimed"
-      });
-    }
+  }
+
+  if (threadArchiveReady) {
+    schedulePersistThreadRecords(rawList);
+    for (const thread of rawList) schedulePersistThreadPayload(thread);
+    if (!opts.silent) emitChanged();
+    return {
+      ok: true,
+      list: rawList,
+      storedList: [],
+      payloadLength: lastPayloadLength,
+      storedCount: 0,
+      compactionMode: "none",
+      indexMode: "indexeddb-only",
+      localIndexPersisted: false,
+      localIndexError: lastError
+    };
   }
 
   return {
@@ -1961,7 +1961,7 @@ function createThreadFromSelection({ view, from, to, selectionText, editor: sour
     if (!persistedThread) {
       try {
         window.zion?.notification?.show?.(
-          t("thread.createFailedStorage", "Failed to create comment: local storage write failed. Clear browser site data or check storage permissions and try again."),
+          t("thread.createFailedStorage", "Failed to create comment: both the comment database and local index are unavailable. Check browser storage permissions and try again."),
           { type: "error", duration: 2600 }
         );
       } catch {}
@@ -5936,18 +5936,6 @@ export async function activate(ctx) {
       }
     });
     if (inspectorDecorator) disposables.push(inspectorDecorator);
-  } catch {}
-
-  try {
-    const activity = window.zion.activityBar?.registerItem?.({
-      id: "comments.activity",
-      pluginId: "dev.comments",
-      icon: "$(comment-discussion)",
-      tooltip: "Comments",
-      order: 35,
-      onClick: openCommentsPanel
-    });
-    if (activity) disposables.push(activity);
   } catch {}
 
   const disposable = {

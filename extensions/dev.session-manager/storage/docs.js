@@ -1,9 +1,7 @@
 export function createSessionDocRepo(opts) {
-  const dbName = opts?.dbName;
-  const idbGet = opts?.idbGet;
-  const idbSet = opts?.idbSet;
   const warnStorageIssue = opts?.warnStorageIssue;
   const onPersist = opts?.onPersist;
+  const onLoad = opts?.onLoad;
   const now = opts?.now;
   const getZion = () => {
     try {
@@ -15,6 +13,7 @@ export function createSessionDocRepo(opts) {
 
   const docKey = (id) => `zion.session.${id}.doc`;
   const metaKey = (id) => `zion.session.${id}.meta`;
+  const isMissingSession = (error) => Number(error?.status) === 404;
 
   function loadDoc(id) {
     const zion = getZion();
@@ -24,11 +23,13 @@ export function createSessionDocRepo(opts) {
     } catch {}
     (async () => {
       try {
-        const rec = await idbGet(dbName, "docs", id);
+        const rec = await onLoad?.(id);
         const text = rec?.text || "";
         try { zion?.state?.set(`sessions.doc.${id}`, text); } catch {}
       } catch (e) {
-        try { warnStorageIssue?.("loadDoc", e); } catch {}
+        if (!isMissingSession(e)) {
+          try { warnStorageIssue?.("loadDoc", e); } catch {}
+        }
       }
     })();
     return "";
@@ -37,20 +38,19 @@ export function createSessionDocRepo(opts) {
   function saveDoc(id, text) {
     const zion = getZion();
     const nextText = String(text || "");
-    let previous;
-    try { previous = zion?.state?.get(`sessions.doc.${id}`); } catch {}
     try { zion?.state?.set(`sessions.doc.${id}`, nextText); } catch {}
-    (async () => {
+    return (async () => {
       try {
-        await idbSet(dbName, "docs", { id, text: nextText });
-        try { onPersist?.("doc", id); } catch {}
-      } catch (e) {
+        if (typeof onPersist !== "function") {
+          throw new Error("durable session storage unavailable");
+        }
+        await onPersist("doc", id, nextText);
+        return true;
+      } catch (error) {
         try {
-          if (zion?.state?.get(`sessions.doc.${id}`) === nextText) {
-            zion?.state?.set(`sessions.doc.${id}`, previous);
-          }
+          warnStorageIssue?.("saveDoc", error);
         } catch {}
-        try { warnStorageIssue?.("saveDoc", e); } catch {}
+        return false;
       }
     })();
   }
@@ -62,41 +62,45 @@ export function createSessionDocRepo(opts) {
       if (typeof mem === "string") return mem;
     } catch {}
     try {
-      const rec = await idbGet(dbName, "docs", id);
+      const rec = await onLoad?.(id);
       const text = rec?.text || "";
       try { zion?.state?.set(`sessions.doc.${id}`, text); } catch {}
       return text;
     } catch (e) {
-      try { warnStorageIssue?.("loadDocAsync", e); } catch {}
+      if (!isMissingSession(e)) {
+        try { warnStorageIssue?.("loadDocAsync", e); } catch {}
+      }
       throw e;
     }
   }
 
-    async function loadMetaAsync(id) {
-      const zion = getZion();
-      let mem = null;
-      try {
-        const value = zion?.state?.get(`sessions.meta.${id}`);
-        if (value && typeof value === "object") mem = value;
-      } catch {}
-      try {
-        const rec = await idbGet(dbName, "metas", id);
-        const stored = rec?.meta && typeof rec.meta === "object" ? rec.meta : null;
-        const base = stored || mem || { id, title: `Session ${id}`, createdAt: now(), updatedAt: now(), size: 0, hash: "", titleAuto: true };
-        const meta = { ...base, id };
-        if (stored && mem && typeof mem === "object") {
-          for (const [key, value] of Object.entries(mem)) {
-            if (!(key in meta)) meta[key] = value;
-          }
+  async function loadMetaAsync(id) {
+    const zion = getZion();
+    let mem = null;
+    try {
+      const value = zion?.state?.get(`sessions.meta.${id}`);
+      if (value && typeof value === "object") mem = value;
+    } catch {}
+    try {
+      const rec = await onLoad?.(id);
+      const stored = rec?.meta && typeof rec.meta === "object" ? rec.meta : null;
+      const base = stored || mem || { id, title: `Session ${id}`, createdAt: now(), updatedAt: now(), size: 0, hash: "", titleAuto: true };
+      const meta = { ...base, id };
+      if (stored && mem && typeof mem === "object") {
+        for (const [key, value] of Object.entries(mem)) {
+          if (!(key in meta)) meta[key] = value;
         }
-        try { zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
-        return meta;
-      } catch (e) {
-        try { warnStorageIssue?.("loadMetaAsync", e); } catch {}
-        if (mem) return mem;
-        throw e;
       }
+      try { zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
+      return meta;
+    } catch (e) {
+      if (!isMissingSession(e)) {
+        try { warnStorageIssue?.("loadMetaAsync", e); } catch {}
+      }
+      if (mem) return mem;
+      throw e;
     }
+  }
 
   function loadMeta(id) {
     const zion = getZion();
@@ -106,11 +110,13 @@ export function createSessionDocRepo(opts) {
     } catch {}
     (async () => {
       try {
-        const rec = await idbGet(dbName, "metas", id);
+        const rec = await onLoad?.(id);
         const meta = rec?.meta || { id, title: `Session ${id}`, createdAt: now(), updatedAt: now(), size: 0, hash: "", titleAuto: true };
         try { zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
       } catch (e) {
-        try { warnStorageIssue?.("loadMeta", e); } catch {}
+        if (!isMissingSession(e)) {
+          try { warnStorageIssue?.("loadMeta", e); } catch {}
+        }
       }
     })();
     return { id, title: `Session ${id}`, createdAt: now(), updatedAt: now(), size: 0, hash: "", titleAuto: true };
@@ -118,23 +124,22 @@ export function createSessionDocRepo(opts) {
 
   function saveMeta(id, meta) {
     const zion = getZion();
-    let previous;
-    try { previous = zion?.state?.get(`sessions.meta.${id}`); } catch {}
     try { zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
-    (async () => {
+    return (async () => {
       try {
-        await idbSet(dbName, "metas", { id, meta });
-        try { onPersist?.("meta", id); } catch {}
-      } catch (e) {
+        if (typeof onPersist !== "function") {
+          throw new Error("durable session storage unavailable");
+        }
+        await onPersist("meta", id, meta);
+        return true;
+      } catch (error) {
         try {
-          if (zion?.state?.get(`sessions.meta.${id}`) === meta) {
-            zion?.state?.set(`sessions.meta.${id}`, previous);
-          }
+          warnStorageIssue?.("saveMeta", error);
         } catch {}
-        try { warnStorageIssue?.("saveMeta", e); } catch {}
+        return false;
       }
     })();
   }
 
-    return { docKey, metaKey, loadDoc, saveDoc, loadDocAsync, loadMeta, loadMetaAsync, saveMeta };
+  return { docKey, metaKey, loadDoc, saveDoc, loadDocAsync, loadMeta, loadMetaAsync, saveMeta };
 }

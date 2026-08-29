@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EditorCore } from "../src/editor/EditorCore";
 import { createSessionAutoSavePlugin } from "../extensions/dev.session-manager/editor/autosave-plugin.js";
 
@@ -167,6 +167,104 @@ describe("session autosave plugin", () => {
       expect(plugin.flush("session-a")).toBe(true);
       expect(metas.get("session-a").documentPreview).toBe("first question");
       expect(metas.get("session-a").documentPreviewVersion).toBe(1);
+    } finally {
+      core.view.destroy();
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("commits within the maximum delay while edits keep arriving", () => {
+    vi.useFakeTimers();
+    const originalGetClientRects = globalThis.Range.prototype.getClientRects;
+    Object.defineProperty(globalThis.Range.prototype, "getClientRects", {
+      configurable: true,
+      value: () => []
+    });
+    const saved = [];
+    const host = document.createElement("div");
+    host.dataset.panelId = "panel-a";
+    document.body.appendChild(host);
+    const plugin = createSessionAutoSavePlugin({
+      zion: { state: { get: () => null } },
+      getCurrentId: () => "session-a",
+      loadMeta: (id) => ({ id, title: id, createdAt: 1, updatedAt: 1, size: 0, hash: "" }),
+      saveDoc: (id, text) => saved.push({ id, text }),
+      saveMeta: () => {},
+      hashString: (text) => `hash:${text}`,
+      now: () => 2,
+      getAnnotationsState: () => null,
+      rebuildIndexFromTree: () => {},
+      upsertIndexEntry: () => {},
+      postSaved: () => {},
+      onSaved: () => {}
+    });
+    const core = new EditorCore(host, "start", "panel-a");
+    core.addExternalExtension(plugin.extension);
+
+    try {
+      core.setValue("edit-1");
+      vi.advanceTimersByTime(500);
+      core.setValue("edit-2");
+      vi.advanceTimersByTime(500);
+      core.setValue("edit-3");
+      vi.advanceTimersByTime(500);
+      core.setValue("edit-4");
+      vi.advanceTimersByTime(500);
+
+      expect(saved).toEqual([{ id: "session-a", text: "edit-4" }]);
+    } finally {
+      core.view.destroy();
+      document.body.innerHTML = "";
+      if (originalGetClientRects) {
+        Object.defineProperty(globalThis.Range.prototype, "getClientRects", {
+          configurable: true,
+          value: originalGetClientRects
+        });
+      } else {
+        delete globalThis.Range.prototype.getClientRects;
+      }
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for durable persistence when explicitly flushed", async () => {
+    let resolveDocument;
+    const documentPersisted = new Promise((resolve) => {
+      resolveDocument = resolve;
+    });
+    const host = document.createElement("div");
+    host.dataset.panelId = "panel-a";
+    document.body.appendChild(host);
+    const plugin = createSessionAutoSavePlugin({
+      zion: { state: { get: () => null } },
+      getCurrentId: () => "session-a",
+      loadMeta: (id) => ({ id, title: id, createdAt: 1, updatedAt: 1, size: 0, hash: "" }),
+      saveDoc: () => documentPersisted,
+      saveMeta: () => Promise.resolve(true),
+      hashString: (text) => `hash:${text}`,
+      now: () => 2,
+      getAnnotationsState: () => null,
+      rebuildIndexFromTree: () => {},
+      upsertIndexEntry: () => {},
+      postSaved: () => {},
+      onSaved: () => {}
+    });
+    const core = new EditorCore(host, "before", "panel-a");
+    core.addExternalExtension(plugin.extension);
+
+    try {
+      core.setValue("after");
+      let completed = false;
+      const flushing = plugin.flushDurably("session-a").then((result) => {
+        completed = true;
+        return result;
+      });
+      await Promise.resolve();
+      expect(completed).toBe(false);
+
+      resolveDocument(true);
+      await expect(flushing).resolves.toBe(true);
+      expect(completed).toBe(true);
     } finally {
       core.view.destroy();
       document.body.innerHTML = "";

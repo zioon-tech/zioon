@@ -109,6 +109,23 @@ function createFakeIndexedDB() {
   };
 }
 
+function createFailingIndexedDB() {
+  globalThis.indexedDB = {
+    open: () => {
+      const request = {
+        result: undefined,
+        error: new DOMException("IndexedDB unavailable", "InvalidStateError"),
+        onupgradeneeded: null,
+        onsuccess: null,
+        onerror: null,
+        onblocked: null
+      };
+      queueMicrotask(() => request.onerror?.({ target: request }));
+      return request;
+    }
+  };
+}
+
 function setupZionHarness() {
   const commands = new Map();
   const state = new Map();
@@ -289,12 +306,65 @@ describe("comments storage", () => {
     activated?.dispose?.();
   });
 
-  it("reclaims volatile run storage instead of failing comment creation", async () => {
+  it("prefers the IndexedDB record when the local index is stale", async () => {
+    const idb = createFakeIndexedDB();
+    idb.setKV(THREAD_RECORD_IDS_KEY, ["thread-1"]);
+    idb.setKV(`${THREAD_RECORD_PREFIX}thread-1`, {
+      id: "thread-1",
+      sessionId: "session-main",
+      parentSessionId: "session-main",
+      threadSessionId: "comment:thread-1",
+      anchorKind: "range",
+      from: 6,
+      to: 12,
+      startLine: 0,
+      endLine: 0,
+      anchorText: "target",
+      quote: "target",
+      resolved: false,
+      createdAt: 1,
+      updatedAt: 2
+    });
+    localStorage.setItem(COMMENTS_KEY, JSON.stringify([{
+      id: "thread-1",
+      sessionId: "session-main",
+      parentSessionId: "session-main",
+      threadSessionId: "comment:thread-1",
+      anchorKind: "range",
+      from: 0,
+      to: 5,
+      startLine: 0,
+      endLine: 0,
+      anchorText: "hello",
+      quote: "hello",
+      resolved: false,
+      createdAt: 1,
+      updatedAt: 1
+    }]));
+    const { commands } = setupZionHarness();
+
+    const { activated } = await loadCommentsPlugin();
+    const anchors = commands.get("comments.getSourceAnchors")({
+      sessionId: "session-main",
+      sourceText: "hello target world"
+    });
+
+    expect(anchors).toEqual([{
+      id: "thread-1",
+      from: 6,
+      to: 12,
+      active: false
+    }]);
+
+    activated?.dispose?.();
+  });
+
+  it("creates comments through IndexedDB when the local index is full", async () => {
     const idb = createFakeIndexedDB();
     localStorage.setItem(SCHEDULER_RUNS_KEY, "x".repeat(120_000));
     const originalSetItem = Storage.prototype.setItem;
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
-      if (key === COMMENTS_KEY && localStorage.getItem(SCHEDULER_RUNS_KEY)) {
+      if (key === COMMENTS_KEY) {
         throw new DOMException("quota exceeded", "QuotaExceededError");
       }
       return originalSetItem.call(this, key, value);
@@ -311,14 +381,68 @@ describe("comments storage", () => {
     });
     await flushMicrotasks();
 
-    const localIndex = JSON.parse(localStorage.getItem(COMMENTS_KEY) || "[]");
     expect(created).toBeTruthy();
-    expect(localStorage.getItem(SCHEDULER_RUNS_KEY)).toBeNull();
-    expect(localIndex).toHaveLength(1);
-    expect(localIndex[0]).not.toHaveProperty("body");
-    expect(localIndex[0]).not.toHaveProperty("sourceContextText");
-    expect(idb.getKV(`${THREAD_PAYLOAD_PREFIX}${localIndex[0].id}`).sourceContextText).toContain("target phrase");
+    expect(localStorage.getItem(COMMENTS_KEY)).toBeNull();
+    expect(localStorage.getItem(SCHEDULER_RUNS_KEY)).toHaveLength(120_000);
+    expect(idb.getKV(THREAD_RECORD_IDS_KEY)).toContain(created.id);
+    expect(idb.getKV(`${THREAD_RECORD_PREFIX}${created.id}`)).toMatchObject({
+      id: created.id,
+      sessionId: "session-main"
+    });
+    expect(idb.getKV(`${THREAD_PAYLOAD_PREFIX}${created.id}`).sourceContextText).toContain("target phrase");
     expect(notifications.find((item) => item.options?.type === "error")).toBeUndefined();
+
+    activated?.dispose?.();
+  });
+
+  it("keeps the full thread in localStorage when IndexedDB is unavailable", async () => {
+    createFailingIndexedDB();
+    const { selectionItems, notifications } = setupZionHarness();
+    const { view, from, to } = createEditor("before target phrase after", "target phrase");
+
+    const { activated } = await loadCommentsPlugin();
+    const created = selectionItems.get("comments.create").run({
+      view,
+      selectionText: "target phrase",
+      from,
+      to
+    });
+
+    const stored = JSON.parse(localStorage.getItem(COMMENTS_KEY) || "[]");
+    expect(created).toBeTruthy();
+    expect(stored[0]).toMatchObject({
+      id: created.id,
+      anchorText: "target phrase"
+    });
+    expect(stored[0].sourceContextText).toContain("target phrase");
+    expect(notifications.find((item) => item.options?.type === "error")).toBeUndefined();
+
+    activated?.dispose?.();
+  });
+
+  it("fails creation only when both IndexedDB and the local index are unavailable", async () => {
+    createFailingIndexedDB();
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
+      if (key === COMMENTS_KEY) {
+        throw new DOMException("quota exceeded", "QuotaExceededError");
+      }
+      return originalSetItem.call(this, key, value);
+    });
+    const { selectionItems, notifications } = setupZionHarness();
+    const { view, from, to } = createEditor("before target phrase after", "target phrase");
+
+    const { activated } = await loadCommentsPlugin();
+    const created = selectionItems.get("comments.create").run({
+      view,
+      selectionText: "target phrase",
+      from,
+      to
+    });
+
+    expect(created).toBeNull();
+    expect(notifications.find((item) => item.options?.type === "error")?.message)
+      .toContain("comment database and local index are unavailable");
 
     activated?.dispose?.();
   });

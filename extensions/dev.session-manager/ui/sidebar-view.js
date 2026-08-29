@@ -26,6 +26,8 @@ export function createSessionsSidebarViewManager(opts) {
   const loadMeta = opts?.loadMeta;
   const getAllSessionDocs = opts?.getAllSessionDocs || (async () => []);
   const writeSessionDoc = opts?.writeSessionDoc || (async () => {});
+  const loadTagCatalogFromStorage = opts?.loadTagCatalog || loadTagCatalog;
+  const saveTagCatalogToStorage = opts?.saveTagCatalog || saveTagCatalog;
   const catalogDbName = opts?.dbName || "zion.sessions.db";
   const LS_SELECTED_DAY = "zion.sessions.sidebar.selectedDay";
   const LS_SELECTED_RANGE_DAYS = "zion.sessions.sidebar.selectedRangeDays";
@@ -407,7 +409,7 @@ export function createSessionsSidebarViewManager(opts) {
     if (catalogLoaded) return;
     catalogLoaded = true;
     try {
-      catalogEntries = await loadTagCatalog(catalogDbName);
+      catalogEntries = await loadTagCatalogFromStorage(catalogDbName);
     } catch {
       catalogEntries = [];
     }
@@ -416,7 +418,7 @@ export function createSessionsSidebarViewManager(opts) {
 
   async function persistCatalog() {
     try {
-      catalogEntries = await saveTagCatalog(catalogDbName, catalogEntries);
+      catalogEntries = await saveTagCatalogToStorage(catalogDbName, catalogEntries);
     } catch (error) {
       try { console.warn("[session-manager] tag catalog persist failed", error); } catch {}
     }

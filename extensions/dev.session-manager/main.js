@@ -1,8 +1,20 @@
 import { registerSessionTools } from "./session-tools.js";
-import { openSessionsDB, idbDel, idbGet, idbGetAll, idbGetKV, idbSet, idbSetKV } from "./storage/idb.js";
+import {
+  clearMigratedBrowserSessions,
+  readBrowserSessionCandidate
+} from "./storage/browser-migration.js";
 import { createSessionDocRepo } from "./storage/docs.js";
-import { loadSessionTagIndex, saveSessionTagIndex } from "./storage/session-tag-index.js";
-import { deleteRemoteSession, readRemoteSnapshot, writeRemoteSession, writeRemoteSnapshot, writeRemoteTree } from "./storage/remote.js";
+import {
+  deleteRemoteSession,
+  migrateBrowserSessionStorage,
+  readRemoteSession,
+  readRemoteSessionKV,
+  readRemoteSnapshot,
+  readRemoteStatus,
+  writeRemoteSession,
+  writeRemoteSessionKV,
+  writeRemoteTree
+} from "./storage/remote.js";
 import {
   createSessionTagIndex,
   getIndexedSessionTags,
@@ -323,14 +335,14 @@ function t(key, fallback, values) {
 }
 
 /** ========== Storage & Utils ========== */
-const LS_INDEX = "zion.sessions.index";
-const LS_TREE = "zion.sessions.tree";
 const LS_LAST = "zion.sessions.lastActiveId";
 const LS_AUTO = "zion.autosave";
 const LS_FOLDER_OPEN = "zion.sessions.folderOpen";
 const URL_SESSION = "zionSession";
 const URL_SESSION_ALT = "session";
 const PENDING_INLINE_EDIT_KEY = "sessions.pendingInlineEdit";
+const INTENTIONAL_RELOAD_KEY = "sessions.intentionalReload";
+const RELOAD_PREPARING_KEY = "sessions.reloadPreparing";
 function debugSessions(event, payload) {
   void event;
   void payload;
@@ -353,30 +365,86 @@ function safeJSONParse(text, fallback) {
   }
 }
 
-/** Storage error warning: log and surface a status item (first time). */
+let storageWarningNotification = null;
+let storageWarningLastShownAt = 0;
+let storageWarningCount = 0;
+
+function findStorageWarningNotification() {
+  try {
+    const marked = document.querySelector("[data-zion-session-storage-warning]");
+    if (marked) return marked;
+    return Array.from(document.querySelectorAll(".zion-notification"))
+      .find((item) => String(item.textContent || "").includes("Sessions storage write failed")) || null;
+  } catch {
+    return null;
+  }
+}
+
+function clearStorageWarning() {
+  try {
+    const warnings = Array.from(document.querySelectorAll(
+      "[data-zion-session-storage-warning], .zion-notification"
+    ));
+    for (const item of warnings) {
+      const legacy = String(item.textContent || "").includes("Sessions storage write failed");
+      if (legacy || item.hasAttribute("data-zion-session-storage-warning")) item.remove();
+    }
+  } catch {}
+  storageWarningNotification = null;
+  storageWarningLastShownAt = 0;
+  storageWarningCount = 0;
+  try { window.zion?.state?.set("sessions.storageError", null); } catch {}
+}
+
+/** Surface one persistent-storage warning while retaining every error in diagnostics. */
 function warnStorageIssue(where, error) {
   try {
     console.error("[sessions] storage write failed at", where, error);
-    // mark an error state for diagnostics
-    try { window.zion?.state?.set("sessions.storageError", { where, error: String(error) }); } catch {}
-    try { window.zion?.state?.set("sessions.storageUnavailable", true); } catch {}
-    // Surface storage failures as a notification now that the top status bar is hidden.
+    storageWarningCount += 1;
     try {
-      window.zion?.notification?.show?.("Sessions storage write failed. Some changes may not persist.", {
+      window.zion?.state?.set("sessions.storageError", {
+        where,
+        error: String(error),
+        count: storageWarningCount,
+        at: now()
+      });
+    } catch {}
+    try { window.zion?.state?.set("sessions.storageUnavailable", true); } catch {}
+    try {
+      if (
+        window.zion?.state?.get(RELOAD_PREPARING_KEY) === true
+        || window.zion?.state?.get(INTENTIONAL_RELOAD_KEY) === true
+      ) return;
+    } catch {}
+    storageWarningNotification = storageWarningNotification?.isConnected
+      ? storageWarningNotification
+      : findStorageWarningNotification();
+    const hasVisibleWarning = storageWarningNotification?.isConnected === true;
+    const recentlyShown = now() - storageWarningLastShownAt < 30000;
+    if (hasVisibleWarning || recentlyShown) return;
+    try {
+      storageWarningLastShownAt = now();
+      storageWarningNotification = window.zion?.notification?.show?.("会话暂未写入本地存储服务，正在自动重试。", {
         type: "warning",
-        duration: 0,
+        duration: 12000,
         dismissible: true
       });
+      try { storageWarningNotification?.setAttribute?.("data-zion-session-storage-warning", "true"); } catch {}
     } catch {}
   } catch {}
 }
 
-/** ======== IndexedDB (sessions) ======== */
+/** ======== Durable session storage (zion-local-tools SQLite) ======== */
 const DB_NAME = "zion.sessions.db";
 let remoteSnapshotQueue = Promise.resolve();
 let remoteStorageOnline = false;
 let remoteSyncTimer = 0;
 let remoteRevision = null;
+const durableSessionIds = new Set();
+const remoteSessionKV = new Map();
+const pendingRemoteMutations = [];
+let remoteMutationFlushActive = false;
+let remoteMutationFlushScheduled = false;
 let sessionTagIndex = createSessionTagIndex();
 let sessionTagIndexReady = false;
 let sessionTagIndexTimer = 0;
@@ -432,8 +500,12 @@ function collectDerivedTagPaths() {
 }
 
 async function loadSessionTagVocabulary() {
-  const storedCatalog = await idbGetKV(DB_NAME, "sessions.tagCatalog").catch(() => []);
-  const legacyCatalog = await idbGetKV(DB_NAME, "tagCatalog.v1").catch(() => null);
+  const storedCatalog = remoteSessionKV.has("sessions.tagCatalog")
+    ? remoteSessionKV.get("sessions.tagCatalog")
+    : (await readRemoteSessionKV("sessions.tagCatalog").catch(() => null))?.value || [];
+  const legacyCatalog = remoteSessionKV.has("tagCatalog.v1")
+    ? remoteSessionKV.get("tagCatalog.v1")
+    : (await readRemoteSessionKV("tagCatalog.v1").catch(() => null))?.value || null;
   const catalog = validateCatalog(storedCatalog).entries.map((entry) => entry.path);
   const legacy = flattenLegacyTagCatalog(legacyCatalog);
   const document = collectSessionTagIndexPaths(sessionTagIndex);
@@ -457,7 +529,11 @@ function persistCurrentSessionTagIndex() {
   const snapshot = sessionTagIndex;
   sessionTagIndexPersistQueue = sessionTagIndexPersistQueue
     .catch(() => {})
-    .then(() => saveSessionTagIndex(DB_NAME, snapshot))
+    .then(() => enqueueRemoteMutation({
+      type: "kv",
+      id: "sessions.tagIndex",
+      value: snapshot
+    }))
     .catch((error) => {
       try { console.warn("[sessions] tag index persist failed", error); } catch {}
     });
@@ -501,145 +577,222 @@ function setRemoteStorageState(online, error = null) {
   remoteStorageOnline = !!online;
   try {
     window.zion?.state?.set("sessions.remoteStorageOnline", remoteStorageOnline);
-    if (error) window.zion?.state?.set("sessions.remoteStorageError", String(error));
+    window.zion?.state?.set("sessions.remoteStorageError", error ? String(error) : null);
   } catch {}
 }
 
-async function collectSessionSnapshot() {
-  const [docs, metas] = await Promise.all([
-    idbGetAll(DB_NAME, "docs"),
-    idbGetAll(DB_NAME, "metas")
-  ]);
-  return {
-    version: 1,
-    updatedAt: now(),
-    tree: window.zion?.state?.get("sessions.treeMem") || null,
-    index: window.zion?.state?.get("sessions.indexMem") || [],
-    docs: docs.filter((item) => item && item.id).map((item) => ({ id: item.id, text: String(item.text || "") })),
-    metas: metas.filter((item) => item && item.id).map((item) => ({ id: item.id, meta: item.meta || {} }))
-  };
+function createRemoteOperationId(kind, id) {
+  const random = globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${kind}:${String(id || "global")}:${random}`;
 }
 
-function scheduleRemoteSnapshot(kind, id) {
-  try { localStorage.setItem("zion.sessions.remoteDirty", "1"); } catch {}
-  if (!remoteStorageOnline) return;
-  remoteSnapshotQueue = remoteSnapshotQueue
-    .catch(() => {})
-    .then(async () => {
-      if (!remoteStorageOnline) return;
+function publishRemotePersistenceState(status, error = null) {
+  try {
+    window.zion?.state?.set("sessions.persistence", {
+      status,
+      pending: pendingRemoteMutations.length,
+      lastCommittedAt: status === "saved" ? now() : null,
+      error: error ? String(error) : null
+    });
+  } catch {}
+}
+
+function rejectPendingRemoteWaiters(error) {
+  for (const mutation of pendingRemoteMutations) {
+    for (const waiter of mutation.waiters || []) waiter.reject(error);
+    mutation.waiters = [];
+  }
+}
+
+async function flushRemoteMutations() {
+  if (remoteMutationFlushActive) {
+    const activeResult = await remoteSnapshotQueue;
+    if (activeResult === false) return false;
+    if (pendingRemoteMutations.length) return flushRemoteMutations();
+    return true;
+  }
+  remoteMutationFlushScheduled = false;
+  remoteMutationFlushActive = true;
+  publishRemotePersistenceState("saving");
+  remoteSnapshotQueue = (async () => {
+    while (pendingRemoteMutations.length) {
+      const mutation = pendingRemoteMutations[0];
+      mutation.attempted = true;
       try {
-        let result;
-        if (kind === "doc" || kind === "meta") {
-          const payload = {};
-          if (kind === "doc") payload.text = (await idbGet(DB_NAME, "docs", id))?.text || "";
-          if (kind === "meta") payload.meta = (await idbGet(DB_NAME, "metas", id))?.meta || null;
-          result = await writeRemoteSession(id, payload, remoteRevision);
-        } else if (kind === "tree" || kind === "index") {
-          result = await writeRemoteTree(
-            window.zion?.state?.get("sessions.treeMem"),
-            window.zion?.state?.get("sessions.indexMem") || [],
-            remoteRevision
-          );
-        } else {
-          result = await writeRemoteSnapshot(await collectSessionSnapshot(), remoteRevision);
+        let result = null;
+        if (mutation.type === "session") {
+          result = await writeRemoteSession(mutation.id, mutation.payload, {
+            operationId: mutation.operationId
+          });
+        } else if (mutation.type === "delete") {
+          result = await deleteRemoteSession(mutation.id, {
+            operationId: mutation.operationId
+          });
+        } else if (mutation.type === "tree") {
+          result = await writeRemoteTree(mutation.tree, mutation.index, null);
+        } else if (mutation.type === "kv") {
+          result = await writeRemoteSessionKV(mutation.id, mutation.value);
         }
         if (result?.conflict) {
-          setRemoteStorageState(false, "Remote session snapshot changed in another client");
-          return;
+          const error = new Error(`Durable session conflict for ${mutation.id || "tree"}`);
+          error.result = result;
+          throw error;
         }
         remoteRevision = result?.revision || remoteRevision;
-        try { localStorage.removeItem("zion.sessions.remoteDirty"); } catch {}
+        if (mutation.type === "kv") remoteSessionKV.set(mutation.id, mutation.value);
+        pendingRemoteMutations.shift();
+        for (const waiter of mutation.waiters || []) waiter.resolve(result);
         setRemoteStorageState(true);
+        try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
       } catch (error) {
         setRemoteStorageState(false, error);
+        for (const waiter of mutation.waiters || []) waiter.reject(error);
+        mutation.waiters = [];
+        rejectPendingRemoteWaiters(error);
+        publishRemotePersistenceState("pending", error);
+        return false;
       }
+    }
+    publishRemotePersistenceState("saved");
+    clearStorageWarning();
+    return true;
+  })().finally(() => {
+    remoteMutationFlushActive = false;
+  });
+  const result = await remoteSnapshotQueue;
+  if (result === false) return false;
+  if (pendingRemoteMutations.length) return flushRemoteMutations();
+  return true;
+}
+
+function enqueueRemoteMutation(mutation) {
+  let operation = null;
+  for (let index = pendingRemoteMutations.length - 1; index >= 0; index -= 1) {
+    const candidate = pendingRemoteMutations[index];
+    if (candidate.attempted) continue;
+    if (candidate.type !== mutation.type || candidate.id !== mutation.id) continue;
+    operation = candidate;
+    break;
+  }
+  if (!operation) {
+    operation = {
+      ...mutation,
+      operationId: mutation.operationId || createRemoteOperationId(mutation.type, mutation.id),
+      waiters: [],
+      attempted: false
+    };
+    pendingRemoteMutations.push(operation);
+  } else if (mutation.type === "session") {
+    operation.payload = { ...(operation.payload || {}), ...(mutation.payload || {}) };
+  } else if (mutation.type === "tree") {
+    operation.tree = mutation.tree;
+    operation.index = mutation.index;
+  } else if (mutation.type === "kv") {
+    operation.value = mutation.value;
+  }
+  const promise = new Promise((resolve, reject) => {
+    operation.waiters.push({ resolve, reject });
+  });
+  publishRemotePersistenceState("pending");
+  if (!remoteMutationFlushScheduled && !remoteMutationFlushActive) {
+    remoteMutationFlushScheduled = true;
+    globalThis.queueMicrotask(() => { void flushRemoteMutations(); });
+  }
+  return promise;
+}
+
+function scheduleRemoteSnapshot(kind, id, value) {
+  if (kind === "doc" || kind === "meta") {
+    return enqueueRemoteMutation({
+      type: "session",
+      id: String(id || ""),
+      payload: kind === "doc" ? { text: String(value || "") } : { meta: value || {} }
     });
+  }
+  if (kind === "tree" || kind === "index") {
+    return enqueueRemoteMutation({
+      type: "tree",
+      id: "tree",
+      tree: window.zion?.state?.get("sessions.treeMem"),
+      index: window.zion?.state?.get("sessions.indexMem") || []
+    });
+  }
+  return Promise.resolve(false);
 }
 
 function scheduleRemoteDelete(id) {
-  try { localStorage.setItem("zion.sessions.remoteDirty", "1"); } catch {}
-  if (!remoteStorageOnline) return;
-  remoteSnapshotQueue = remoteSnapshotQueue
-    .catch(() => {})
-    .then(async () => {
-      if (!remoteStorageOnline) return;
-      try {
-        const result = await deleteRemoteSession(id, remoteRevision);
-        if (result?.conflict) {
-          setRemoteStorageState(false, "Remote session changed in another client");
-          return;
-        }
-        remoteRevision = result?.revision || remoteRevision;
-        setRemoteStorageState(true);
-      } catch (error) {
-        setRemoteStorageState(false, error);
-      }
-    });
+  return enqueueRemoteMutation({
+    type: "delete",
+    id: String(id || "")
+  });
 }
 
 async function purgeSessionData(id) {
-  try { await idbDel(DB_NAME, "docs", id); } catch (e) { warnStorageIssue("deleteDoc", e); }
-  try { await idbDel(DB_NAME, "metas", id); } catch (e) { warnStorageIssue("deleteMeta", e); }
   try { localStorage.removeItem(docKey(id)); } catch {}
   try { localStorage.removeItem(metaKey(id)); } catch {}
   try { window.zion?.state?.set(`sessions.doc.${id}`, undefined); } catch {}
   try { window.zion?.state?.set(`sessions.meta.${id}`, undefined); } catch {}
+  durableSessionIds.delete(String(id || ""));
   removeIndexedSessionTags(id);
-  scheduleRemoteDelete(id);
+  void scheduleRemoteDelete(id).catch(() => {});
 }
 
-async function hydrateLocalCacheFromRemote(snapshot) {
+function hydrateFromDurableSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return;
-  const tree = snapshot.tree && snapshot.tree.type === "folder" ? snapshot.tree : null;
-  const index = Array.isArray(snapshot.index) ? snapshot.index : [];
-  if (tree) {
-    await idbSetKV(DB_NAME, "tree", tree);
-    window.zion?.state?.set("sessions.treeMem", tree);
+  const previousIds = new Set(durableSessionIds);
+  durableSessionIds.clear();
+  const docs = Array.isArray(snapshot.docs) ? snapshot.docs : [];
+  const metas = Array.isArray(snapshot.metas) ? snapshot.metas : [];
+  for (const item of docs) {
+    const id = String(item?.id || "").trim();
+    if (!id) continue;
+    durableSessionIds.add(id);
+    previousIds.delete(id);
+    try { window.zion?.state?.set(`sessions.doc.${id}`, String(item.text || "")); } catch {}
   }
-  await idbSetKV(DB_NAME, "index", index);
-  window.zion?.state?.set("sessions.indexMem", index);
-  const remoteDocIds = new Set(Array.isArray(snapshot.docs) ? snapshot.docs.map((item) => item?.id).filter(Boolean) : []);
-  const remoteMetaIds = new Set(Array.isArray(snapshot.metas) ? snapshot.metas.map((item) => item?.id).filter(Boolean) : []);
-  for (const item of await idbGetAll(DB_NAME, "docs")) {
-    if (item?.id && !remoteDocIds.has(item.id)) await idbDel(DB_NAME, "docs", item.id);
+  for (const item of metas) {
+    const id = String(item?.id || "").trim();
+    if (!id) continue;
+    durableSessionIds.add(id);
+    previousIds.delete(id);
+    try { window.zion?.state?.set(`sessions.meta.${id}`, { ...(item.meta || {}), id }); } catch {}
   }
-  for (const item of await idbGetAll(DB_NAME, "metas")) {
-    if (item?.id && !remoteMetaIds.has(item.id)) await idbDel(DB_NAME, "metas", item.id);
+  for (const id of previousIds) {
+    try { window.zion?.state?.set(`sessions.doc.${id}`, undefined); } catch {}
+    try { window.zion?.state?.set(`sessions.meta.${id}`, undefined); } catch {}
   }
-  for (const item of Array.isArray(snapshot.docs) ? snapshot.docs : []) {
-    if (item?.id) await idbSet(DB_NAME, "docs", { id: item.id, text: String(item.text || "") });
+  if (snapshot.tree?.type === "folder") {
+    try { window.zion?.state?.set("sessions.treeMem", snapshot.tree); } catch {}
   }
-  for (const item of Array.isArray(snapshot.metas) ? snapshot.metas : []) {
-    if (item?.id) {
-      const meta = { ...(item.meta || {}), id: item.id };
-      await idbSet(DB_NAME, "metas", { id: item.id, meta });
-      window.zion?.state?.set(`sessions.meta.${item.id}`, meta);
-    }
+  try {
+    window.zion?.state?.set(
+      "sessions.indexMem",
+      Array.isArray(snapshot.index) ? snapshot.index : []
+    );
+    window.zion?.state?.set("sessions.metaReady", true);
+  } catch {}
+  remoteSessionKV.clear();
+  for (const [key, value] of Object.entries(snapshot.kv || {})) {
+    remoteSessionKV.set(key, value);
   }
 }
 
-async function syncRemoteStorage() {
+async function syncRemoteStorage({ force = false } = {}) {
   try {
-    const snapshot = await readRemoteSnapshot();
-    let dirty = false;
-    try { dirty = localStorage.getItem("zion.sessions.remoteDirty") === "1"; } catch {}
-    remoteRevision = snapshot?.revision || null;
-    const remoteData = snapshot?.snapshot || snapshot;
-    if (dirty) {
-      const result = await writeRemoteSnapshot(await collectSessionSnapshot(), remoteRevision);
-      if (result?.conflict) {
-        setRemoteStorageState(false, "Remote session snapshot changed in another client");
-        return false;
-      }
-      remoteRevision = result?.revision || remoteRevision;
-      try { localStorage.removeItem("zion.sessions.remoteDirty"); } catch {}
-    } else if (remoteData && typeof remoteData === "object" && remoteData.tree) {
-      await hydrateLocalCacheFromRemote(remoteData);
-    } else {
-      const local = await collectSessionSnapshot();
-      const result = await writeRemoteSnapshot(local, remoteRevision);
-      remoteRevision = result?.revision || remoteRevision;
+    const flushed = await flushRemoteMutations();
+    if (flushed === false && pendingRemoteMutations.length) return false;
+    const status = await readRemoteStatus();
+    if (!force && remoteRevision && status?.revision === remoteRevision) {
+      setRemoteStorageState(true);
+      return true;
     }
+    const response = await readRemoteSnapshot();
+    const snapshot = response?.snapshot || response;
+    if (snapshot && typeof snapshot === "object") {
+      hydrateFromDurableSnapshot(snapshot);
+    }
+    remoteRevision = response?.revision || status?.revision || null;
     setRemoteStorageState(true);
     return true;
   } catch (error) {
@@ -656,149 +809,90 @@ const {
   loadDocAsync,
   loadMeta,
   loadMetaAsync,
-  saveMeta
+  saveMeta: persistSessionMeta
 } = createSessionDocRepo({
-  dbName: DB_NAME,
-  idbGet,
-  idbSet,
   warnStorageIssue,
   now,
   onPersist: scheduleRemoteSnapshot,
-  applyAnnotationsForSession,
+  onLoad: readRemoteSession,
   getZion: () => window.zion
 });
 
 function saveDoc(id, text) {
+  durableSessionIds.add(String(id || ""));
   const value = String(text || "");
   const result = persistSessionDoc(id, value);
   scheduleSessionTagIndexUpdate(id, value);
   return result;
 }
 
-/** preload tree/index into memory and migrate legacy localStorage once */
+function saveMeta(id, meta) {
+  durableSessionIds.add(String(id || ""));
+  return persistSessionMeta(id, meta);
+}
+
+function hasBrowserSessionCandidate(candidate) {
+  const snapshot = candidate?.snapshot || {};
+  return Number(candidate?.candidates || 0) > 0
+    || snapshot.tree?.type === "folder"
+    || (Array.isArray(snapshot.index) && snapshot.index.length > 0)
+    || Object.keys(snapshot.kv || {}).length > 0;
+}
+
+/** Recover browser-era data once, then use SQLite as the only session source. */
 async function initSessionsStorage() {
   try {
-    await openSessionsDB(DB_NAME);
-    sessionTagIndex = await loadSessionTagIndex(DB_NAME);
-    sessionTagIndexReady = true;
-    publishSessionTagIndex(sessionTagIndex);
-    // preload KV: tree/index
-    let treeFromIDB = null;
-    try {
-      const tree = await idbGetKV(DB_NAME, "tree");
-      if (tree && tree.type === "folder" && Array.isArray(tree.children)) {
-        treeFromIDB = tree;
-        try { window.zion?.state?.set("sessions.treeMem", tree); } catch {}
-      } else if (tree != null) {
-        const error = new Error("invalid sessions tree in IndexedDB");
-        try { warnStorageIssue("loadTree", error); } catch {}
-        return { ok: false, reason: "invalidTree", error };
+    const candidate = await readBrowserSessionCandidate(DB_NAME);
+    if (hasBrowserSessionCandidate(candidate)) {
+      const report = await migrateBrowserSessionStorage(
+        candidate.sourceId,
+        candidate.snapshot,
+        candidate.fingerprint
+      );
+      try { window.zion?.state?.set("sessions.browserMigration", report); } catch {}
+      if (!report?.verified) {
+        throw new Error("browser session migration could not verify every candidate");
       }
-    } catch (e) {
-      try { warnStorageIssue("loadTree", e); } catch {}
-      return { ok: false, reason: "loadTree", error: e };
-    }
-    try {
-      const idx = await idbGetKV(DB_NAME, "index");
-      if (Array.isArray(idx)) {
-        try { window.zion?.state?.set("sessions.indexMem", idx); } catch {}
-          const indexedIds = new Set(
-            idx.map((entry) => String(entry?.id || "").trim()).filter(Boolean)
-          );
-          const metadataEntries = await idbGetAll(DB_NAME, "metas");
-          for (const record of metadataEntries) {
-            const id = String(record?.id || "").trim();
-            const meta = record?.meta;
-            if (!indexedIds.has(id)) continue;
-            if (meta && typeof meta === "object") {
-              try { window.zion?.state?.set(`sessions.meta.${id}`, meta); } catch {}
-            }
-          }
-          try { window.zion?.state?.set("sessions.metaReady", true); } catch {}
+      try {
+        await clearMigratedBrowserSessions(DB_NAME);
+      } catch (cleanupError) {
+        try { console.warn("[sessions] migrated browser data cleanup failed", cleanupError); } catch {}
       }
-        else {
-          try { window.zion?.state?.set("sessions.metaReady", true); } catch {}
-        }
-    } catch (e) {
-      try { warnStorageIssue("loadIndex", e); } catch {}
-      return { ok: false, reason: "loadIndex", error: e };
+    } else if (!candidate?.available && candidate?.error) {
+      try { console.warn("[sessions] legacy IndexedDB could not be inspected", candidate.error); } catch {}
     }
 
-    // migrate from localStorage if no tree in IDB but legacy tree/index exist
-    const hasTreeInIDB = !!treeFromIDB;
-    const legacyTreeRaw = localStorage.getItem(LS_TREE);
-    const legacyIndexRaw = localStorage.getItem(LS_INDEX);
-    if (!hasTreeInIDB && (legacyTreeRaw || legacyIndexRaw)) {
-      console.info("[sessions] migrating from localStorage to IndexedDB...");
-      const legacyTree = safeJSONParse(legacyTreeRaw || "", null);
-      let ids = [];
-      if (legacyTree && legacyTree.type === "folder") {
-        const collect = (n) => n.type === "session" ? [n.id] : (Array.isArray(n.children) ? n.children.flatMap(collect) : []);
-        ids = collect(legacyTree);
-      } else {
-        const legacyIndex = safeJSONParse(legacyIndexRaw || "[]", []);
-        if (Array.isArray(legacyIndex)) ids = legacyIndex.map(it => it.id).filter(Boolean);
-      }
-      // migrate docs/metas
-      const migrationErrors = [];
-      for (const sid of ids) {
-        try {
-          const d = localStorage.getItem(docKey(sid)) || "";
-          const m = safeJSONParse(localStorage.getItem(metaKey(sid)) || "{}", { id: sid, title: `Session ${sid}`, createdAt: now(), updatedAt: now(), size: d.length, hash: "", titleAuto: true });
-          await idbSet(DB_NAME, "docs", { id: sid, text: d });
-          await idbSet(DB_NAME, "metas", { id: sid, meta: m });
-          try { window.zion?.state?.set(`sessions.doc.${sid}`, d); } catch {}
-          try { window.zion?.state?.set(`sessions.meta.${sid}`, m); } catch {}
-        } catch (e) {
-          migrationErrors.push(e);
-          console.warn("[sessions] migrate doc/meta error:", sid, e);
-        }
-      }
-      if (migrationErrors.length) {
-        throw new Error(`session migration failed for ${migrationErrors.length} item(s)`);
-      }
-      // persist tree/index to idb
-      if (legacyTree) {
-        await idbSetKV(DB_NAME, "tree", legacyTree);
-        try { window.zion?.state?.set("sessions.treeMem", legacyTree); } catch {}
-      }
-      const legacyIndex = safeJSONParse(legacyIndexRaw || "[]", []);
-      if (Array.isArray(legacyIndex)) {
-        await idbSetKV(DB_NAME, "index", legacyIndex);
-        try { window.zion?.state?.set("sessions.indexMem", legacyIndex); } catch {}
-      }
-      // clean heavy localStorage keys
-      try {
-        localStorage.removeItem(LS_TREE);
-        localStorage.removeItem(LS_INDEX);
-        // remove zion.session.* keys
-        const toDel = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && (k.startsWith("zion.session.") && (k.endsWith(".doc") || k.endsWith(".meta")))) {
-            toDel.push(k);
-          }
-        }
-        toDel.forEach(k => { try { localStorage.removeItem(k); } catch {} });
-      } catch {}
-      console.info("[sessions] migration to IndexedDB finished.");
-      window.zion?.statusBar?.registerItem({
-        id: "session.migrated",
-        text: "✓ Migrated",
-        tooltip: "Sessions migrated to IndexedDB"
-      });
+    let response = await readRemoteSnapshot();
+    if (!response) {
+      const initialTree = {
+        id: "root",
+        type: "folder",
+        title: "Sessions",
+        children: []
+      };
+      await writeRemoteTree(initialTree, [], null);
+      response = await readRemoteSnapshot();
     }
-    void syncRemoteStorage().then(() => {
-      scheduleSessionTagIndexBackfill();
-      scheduleSessionDocumentPreviewBackfill();
-    });
+    const snapshot = response?.snapshot || response;
+    if (!snapshot || typeof snapshot !== "object") {
+      throw new Error("durable session snapshot unavailable");
+    }
+    hydrateFromDurableSnapshot(snapshot);
+    remoteRevision = response?.revision || null;
+    sessionTagIndex = validateSessionTagIndex(
+      remoteSessionKV.get("sessions.tagIndex")
+    );
+    sessionTagIndexReady = true;
+    publishSessionTagIndex(sessionTagIndex);
+    setRemoteStorageState(true);
+    scheduleSessionTagIndexBackfill();
+    scheduleSessionDocumentPreviewBackfill();
     if (!remoteSyncTimer) {
       remoteSyncTimer = window.setInterval(() => { void syncRemoteStorage(); }, 30000);
     }
     return { ok: true };
   } catch (e) {
     console.error("[sessions] initSessionsStorage error:", e);
-    try { warnStorageIssue("initSessionsStorage", e); } catch {}
     return { ok: false, reason: "initSessionsStorage", error: e };
   }
 }
@@ -861,8 +955,6 @@ const {
   isFolderOpen,
   openAncestors
 } = createSessionTreeModel({
-  dbName: DB_NAME,
-  idbSetKV,
   warnStorageIssue,
   loadMeta,
   saveDoc,
@@ -897,15 +989,18 @@ const {
 const {
   getAnnotationsState,
   persistAnnotations,
+  persistCurrentAnnotations,
   attachLifecyclePersistence,
   attachLifecycleRestore,
   attachAnnotationsAutoPersistence
 } = createAnnotationsLifecycle({
-  dbName: DB_NAME,
-  idbGet,
   loadMeta,
+  loadMetaAsync,
   saveMeta,
   now,
+  shouldSkipLifecyclePersistence: () => (
+    window.zion?.state?.get(INTENTIONAL_RELOAD_KEY) === true
+  ),
   getZion: () => window.zion
 });
 
@@ -958,11 +1053,9 @@ async function backfillSessionTagIndex() {
   let next = sessionTagIndex;
   if (staleIds.length) {
     const stale = new Set(staleIds);
-    const docs = await idbGetAll(DB_NAME, "docs");
-    for (const record of docs) {
-      const id = String(record?.id || "").trim();
+    for (const id of staleIds) {
       if (!stale.has(id)) continue;
-      const text = String(record?.text || "");
+      const text = String(await loadDocAsync(id) || "");
       const metaHash = String(loadMeta(id)?.hash || "");
       next = updateSessionTagIndex(next, id, text, metaHash || hashString(text));
       stale.delete(id);
@@ -1004,19 +1097,13 @@ async function backfillSessionDocumentPreviews() {
   }
   if (!missing.size) return false;
 
-  const docs = await idbGetAll(DB_NAME, "docs");
-  const docsById = new Map(
-    docs.map((record) => [
-      String(record?.id || "").trim(),
-      String(record?.text || "")
-    ])
-  );
   for (const id of missing) {
     const meta = loadMeta(id);
+    const text = await loadDocAsync(id);
     saveMeta(id, {
       ...meta,
       id,
-      documentPreview: extractDocumentLeadPreview(docsById.get(id) || ""),
+      documentPreview: extractDocumentLeadPreview(text || ""),
       documentPreviewVersion: 1
     });
   }
@@ -1446,15 +1533,26 @@ const __sidebarViewManager = createSessionsSidebarViewManager({
   getIndex,
   loadMeta,
   dbName: DB_NAME,
+  loadTagCatalog: async () => validateCatalog(
+    remoteSessionKV.get("sessions.tagCatalog") || []
+  ).entries,
+  saveTagCatalog: async (_dbName, entries) => {
+    const clean = validateCatalog(entries).entries;
+    await enqueueRemoteMutation({
+      type: "kv",
+      id: "sessions.tagCatalog",
+      value: clean
+    });
+    return clean;
+  },
   getAllSessionDocs: async () => {
-    try {
-      const docs = await idbGetAll(DB_NAME, "docs");
-      return (Array.isArray(docs) ? docs : [])
-        .map((rec) => ({ id: String(rec?.id || ""), text: String(rec?.text || "") }))
-        .filter((doc) => doc.id);
-    } catch {
-      return [];
+    const docs = [];
+    for (const id of durableSessionIds) {
+      try {
+        docs.push({ id, text: String(await loadDocAsync(id) || "") });
+      } catch {}
     }
+    return docs;
   },
   writeSessionDoc: async (id, text) => {
     await saveDoc(String(id || ""), String(text || ""));
@@ -1644,19 +1742,20 @@ async function importSessionsFromFile() {
 
 /** ========== Activate Extension ========== */
 export async function activate(ctx) {
+  clearStorageWarning();
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) ctx.subscriptions.push(disp);
   } catch {}
 
-  // 初始化 IndexedDB 并预载数据/迁移
+  // Recover legacy browser data, then preload the authoritative SQLite snapshot.
   const storageStatus = await initSessionsStorage();
   if (!storageStatus?.ok) {
     try { window.zion?.state?.set("sessions.storageUnavailable", true); } catch {}
     try { window.zion?.state?.set("sessions.catalog", getIndex()); } catch {}
     try {
       window.zion?.notification?.show?.(
-        "Sessions storage is unavailable. Free disk space and refresh before editing sessions.",
+        "本地会话存储服务不可用。请确认 zion-local-tools 正常运行后刷新。",
         { type: "error", duration: 0, dismissible: true }
       );
     } catch {}
@@ -2053,7 +2152,59 @@ export async function activate(ctx) {
 
   /** ========== Commands ========== */
 
-  ctx.subscriptions.push(registerSessionFlushCommand({ zion: window.zion, plugin }));
+  ctx.subscriptions.push(registerSessionFlushCommand({
+    zion: window.zion,
+    plugin,
+    flushRemote: flushRemoteMutations
+  }));
+  ctx.subscriptions.push(window.zion.commands.registerCommand(
+    "zion.sessions.prepareForReload",
+    async () => {
+      try {
+        persistCurrentAnnotations();
+        await plugin.flushDurably();
+        const durable = await flushRemoteMutations();
+        if (durable === false || pendingRemoteMutations.length) {
+          throw new Error("session persistence queue is not empty");
+        }
+        window.zion?.state?.set(INTENTIONAL_RELOAD_KEY, true);
+        return true;
+      } catch (error) {
+        console.error("[sessions] prepare for reload failed", error);
+        return false;
+      }
+    }
+  ));
+  try { window.zion?.state?.set(INTENTIONAL_RELOAD_KEY, false); } catch {}
+  try { window.zion?.state?.set(RELOAD_PREPARING_KEY, false); } catch {}
+  const flushPendingSessionWrites = () => {
+    try {
+      if (window.zion?.state?.get(INTENTIONAL_RELOAD_KEY) === true) return;
+    } catch {}
+    try { plugin.flush(); } catch {}
+    void flushRemoteMutations();
+  };
+  const flushWhenHidden = () => {
+    if (document.visibilityState === "hidden") flushPendingSessionWrites();
+  };
+  const protectPendingWrites = (event) => {
+    try {
+      if (window.zion?.state?.get(INTENTIONAL_RELOAD_KEY) === true) return;
+    } catch {}
+    if (!pendingRemoteMutations.length) return;
+    event.preventDefault();
+    event.returnValue = "";
+  };
+  window.addEventListener("pagehide", flushPendingSessionWrites);
+  window.addEventListener("beforeunload", protectPendingWrites);
+  document.addEventListener("visibilitychange", flushWhenHidden);
+  ctx.subscriptions.push({
+    dispose() {
+      window.removeEventListener("pagehide", flushPendingSessionWrites);
+      window.removeEventListener("beforeunload", protectPendingWrites);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+    }
+  });
 
   try {
     let prefetchTimer = 0;
@@ -2078,6 +2229,7 @@ export async function activate(ctx) {
         const max = 12;
         const target = uniq.slice(0, max);
         for (const id of target) {
+          if (remoteStorageOnline && !durableSessionIds.has(id)) continue;
           try {
             loadMeta(id);
             await loadDocAsync(id);
