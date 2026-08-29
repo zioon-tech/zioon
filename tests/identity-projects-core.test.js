@@ -78,7 +78,13 @@ describe("identity project memory core", () => {
     expect(context.fragment).toContain("[truncated]");
     expect(context.fragment).not.toContain("A < B");
     expect(context.instructions.join("\n")).toContain("model-maintained working memory");
-    expect(context.instructions.join("\n")).toContain("read its project.md");
+    expect(context.instructions.join("\n")).toContain("Project working-memory routine");
+    expect(context.instructions.join("\n")).toContain("project's durable notebook");
+    expect(context.instructions.join("\n")).toContain("use semantic judgment");
+    expect(context.instructions.join("\n")).toContain("Do not force ordinary questions");
+    expect(context.instructions.join("\n")).toContain("read the linked project.md");
+    expect(context.instructions.join("\n")).toContain("Before every final answer");
+    expect(context.instructions.join("\n")).toContain("leave project memory unchanged");
     expect(context.instructions.join("\n")).toContain("projects/index.md");
     expect(context.instructions.join("\n")).toContain("create projects/{canonical-slug}/project.md");
     expect(context.instructions.join("\n")).toContain("remove its inbox entry");

@@ -51,13 +51,6 @@
           "tooltip": "Terminal",
           "bottomPanelViewId": "terminal.view",
           "order": 30
-        },
-        {
-          "id": "preview.activity",
-          "icon": "🌐",
-          "tooltip": "Preview",
-          "auxiliaryBarViewId": "preview.view",
-          "order": 40
         }
       ]
     }
@@ -73,12 +66,14 @@
 | `icon` | `string \| SVG` | ✅ | 图标（emoji 或 SVG 元素） |
 | `tooltip` | `string` | ✅ | 鼠标悬停提示 |
 | `sideBarViewId` | `string` | ❌ | 关联的左侧边栏视图 ID |
-| `auxiliaryBarViewId` | `string` | ❌ | 关联的右侧辅助边栏视图 ID |
+| `auxiliaryBarViewId` | `string` | ❌ | 兼容字段；关联的右侧辅助视图会由右侧导航栏展示，不再生成可见的 Activity Bar 项 |
 | `bottomPanelViewId` | `string` | ❌ | 关联的底部面板视图 ID |
 | `order` | `number` | ❌ | 排序权重（越小越靠前） |
 | `when` | `string` | ❌ | 显示条件（表达式） |
 
 **注意**：必须指定 `sideBarViewId`、`auxiliaryBarViewId` 或 `bottomPanelViewId` 中的一个。
+
+Auxiliary Bar 已有独立的右侧视图导航。新插件应只调用 `auxiliaryBar.registerView`，不要再为同一视图注册 Activity Bar 项。
 
 ## 📝 API 使用
 

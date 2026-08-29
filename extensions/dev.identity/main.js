@@ -1,4 +1,3 @@
-import { parseMessages } from "../../src/chat/doc.ts";
 import {
   buildBiographyDigest,
   buildBiographyFacets,
@@ -13,10 +12,6 @@ import {
   parseBiographyEventsJsonl,
   parseDistillationResult
 } from "./identity-core.js";
-import {
-  publishSessionDerivedTagSource,
-  removeSessionDerivedTagSource
-} from "../shared/session-derived-tags.js";
 import {
   PROJECT_FILE_TEMPLATE,
   PROJECT_INDEX_TEMPLATE,
@@ -53,6 +48,75 @@ let projectCoordinatorPromise = null;
 let projectAutomationMemoryState = normalizeAutomationDocument();
 let projectAutomationStore = null;
 const identitySnapshotPromises = new Map();
+
+function fallbackParseMessages(content) {
+  const messages = [];
+  const lines = String(content || "").split("\n");
+  let currentRole = "user";
+  let currentContent = [];
+  const push = () => {
+    if (!currentContent.length) return;
+    messages.push({
+      role: currentRole,
+      content: currentContent.join("\n").trim()
+    });
+    currentContent = [];
+  };
+  for (const line of lines) {
+    const match = /^(system|user|assistant)\s+(.*)$/.exec(line);
+    if (match) {
+      push();
+      currentRole = match[1];
+      const contentPart = currentRole === "assistant"
+        ? match[2].replace(/\s*<!--\s*zion-assistant-block:id=[^>]+-->\s*$/i, "")
+        : match[2];
+      if (contentPart.trim()) currentContent.push(contentPart);
+      continue;
+    }
+    currentContent.push(line);
+  }
+  push();
+  return messages;
+}
+
+function parseSessionMessages(documentText) {
+  const parse = window.zion?.sessions?.parseMessages;
+  if (typeof parse === "function") return parse(documentText);
+  return fallbackParseMessages(documentText);
+}
+
+function publishDerivedTagSource(source) {
+  const publish = window.zion?.sessions?.publishDerivedTagSource;
+  if (typeof publish === "function") return publish(source);
+  try {
+    const current = window.zion?.state?.get?.("sessions.derivedTags") || {};
+    if (!source?.id || !window.zion?.state?.set) return false;
+    window.zion.state.set("sessions.derivedTags", {
+      ...(current && typeof current === "object" ? current : {}),
+      [source.id]: source
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeDerivedTagSource(sourceId) {
+  const remove = window.zion?.sessions?.removeDerivedTagSource;
+  if (typeof remove === "function") return remove(sourceId);
+  try {
+    const id = String(sourceId || "").trim();
+    const current = window.zion?.state?.get?.("sessions.derivedTags") || {};
+    if (!id || !current || typeof current !== "object" || !window.zion?.state?.set) return false;
+    if (!Object.prototype.hasOwnProperty.call(current, id)) return false;
+    const next = { ...current };
+    delete next[id];
+    window.zion.state.set("sessions.derivedTags", next);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const IDENTITY_TEMPLATE = `---
 type: identity
@@ -329,8 +393,7 @@ async function loadBiographyEvents() {
 }
 
 function publishBiographySessionTags(events) {
-  return publishSessionDerivedTagSource(
-    window.zion,
+  return publishDerivedTagSource(
     buildBiographySessionTagSource(events)
   );
 }
@@ -830,6 +893,10 @@ async function captureSessionDocument(payload) {
   try {
     const editor = window.zion?.panels?.getEditorBySession?.(payload.panelId, payload.sessionId);
     const value = editor?.getValue?.();
+    if (typeof value === "string" && value.trim()) return value;
+  } catch {}
+  try {
+    const value = await window.zion?.sessions?.getDocument?.(payload.sessionId, { flush: true });
     if (typeof value === "string" && value.trim()) return value;
   } catch {}
   try {
@@ -3253,18 +3320,6 @@ export async function activate(ctx) {
     if (view) disposables.push(view);
   } catch {}
 
-  try {
-    const activity = window.zion?.activityBar?.registerItem?.({
-      id: "identity.biography.activity",
-      pluginId: "dev.identity",
-      icon: "$(book)",
-      tooltip: "Biography",
-      auxiliaryBarViewId: BIOGRAPHY_VIEW_ID,
-      order: 37
-    });
-    if (activity) disposables.push(activity);
-  } catch {}
-
   const runFinished = window.zion?.events?.on?.("chat/runFinished", (payload = {}) => {
     if (disposed || !eligibleFinishedRun(payload)) return;
     const documentPromise = captureSessionDocument(payload);
@@ -3273,7 +3328,7 @@ export async function activate(ctx) {
       .then(async () => {
         const documentText = await documentPromise;
         if (disposed || !documentText.trim()) return;
-        const exchange = extractLatestExchange(parseMessages(documentText));
+        const exchange = extractLatestExchange(parseSessionMessages(documentText));
         if (!exchange) return;
         try {
           const citations = await recordBiographyCitations(exchange.assistant, payload);
@@ -3319,7 +3374,7 @@ export async function activate(ctx) {
   const disposable = {
     dispose() {
       disposed = true;
-      removeSessionDerivedTagSource(window.zion, "biography");
+      removeDerivedTagSource("biography");
       for (const item of disposables.splice(0)) {
         try { item?.dispose?.(); } catch {}
       }

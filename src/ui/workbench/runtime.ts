@@ -566,7 +566,9 @@ class ActivityBarRuntime {
   }
 
   getItems(): ActivityBarItem[] {
-    const arr = Array.from(this.items.values()).filter(it => evalWhen(it.when));
+    const arr = Array.from(this.items.values()).filter(it =>
+      evalWhen(it.when) && !it.auxiliaryBarViewId
+    );
     arr.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
     return arr;
   }
@@ -641,6 +643,16 @@ class ActivityBarRuntime {
   syncActiveBySideBarViewId(viewId: string) {
     const match = Array.from(this.items.values())
       .filter(it => it.sideBarViewId === viewId)
+      .sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id))[0];
+    if (match) {
+      core?.state.set("ui.activityBar.activeItemId", match.id);
+      this.emitter.emit();
+    }
+  }
+
+  syncActiveByBottomPanelViewId(viewId: string) {
+    const match = Array.from(this.items.values())
+      .filter(it => it.bottomPanelViewId === viewId)
       .sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id))[0];
     if (match) {
       core?.state.set("ui.activityBar.activeItemId", match.id);
@@ -1263,6 +1275,7 @@ class BottomPanelRuntime {
     core?.state.set("ui.bottomPanel.activeViewId", id);
     core?.state.set("ui.bottomPanel.lastOpenedViewId", id);
     core?.events.emit("ui/bottomPanelActiveViewChanged", { id });
+    activityBarRuntime.syncActiveByBottomPanelViewId(id);
     this.emitter.emit();
   }
 

@@ -4,7 +4,7 @@ import { attachEditor } from "../src/ext/registry";
 import { SessionSync } from "../src/panel/SessionSync";
 import { createChatAnnotationsApi } from "../src/chat/annotations";
 import { createToolCardId } from "../src/chat/tool-card-id";
-import { installToolCallCards } from "../extensions/dev.tools/tool-calls.js";
+import { installToolCallCards, resolveToolActionTarget } from "../extensions/dev.tools/tool-calls.js";
 import { installThinkingCards } from "../extensions/dev.thinking/thinking-cards.js";
 
 const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -108,6 +108,41 @@ afterEach(() => {
     } catch {}
   }
   document.body.innerHTML = "";
+});
+
+describe("tool action terminal target", () => {
+  it("uses the original tool execution context instead of ambient UI state", () => {
+    const target = resolveToolActionTarget({
+      id: "tool-1",
+      name: "write"
+    }, {
+      tools: [{
+        id: "tool-1",
+        name: "write",
+        args: { path: "README.md", session_id: "terminal-original" },
+        executionContext: { terminalSession: { id: "terminal-original" } }
+      }]
+    }, {
+      terminalSessionId: "terminal-history"
+    });
+
+    expect(target).toMatchObject({
+      name: "write",
+      terminalSessionId: "terminal-original"
+    });
+  });
+
+  it("does not invent a terminal target for browser-authorized file tools", () => {
+    expect(resolveToolActionTarget({
+      id: "fs-tool-1",
+      name: "fswrite"
+    }, {
+      tools: [{ id: "fs-tool-1", name: "fsWrite", args: { file_path: "README.md" } }]
+    })).toMatchObject({
+      name: "fswrite",
+      terminalSessionId: ""
+    });
+  });
 });
 
 describe("chat cards DOM lifecycle", () => {

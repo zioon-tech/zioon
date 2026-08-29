@@ -1660,18 +1660,6 @@ const disposables = [];
     });
     if (view) disposables.push(view);
   } catch {}
-  try {
-    const activity = window.zion.activityBar?.registerItem?.({
-      id: "memory.activity",
-      pluginId: "dev.memory",
-      icon: "$(database)",
-      tooltip: t("title", "Memory"),
-      tooltipKey: "dev.memory.title",
-      order: 36,
-      onClick: openMemoryPanel
-    });
-    if (activity) disposables.push(activity);
-  } catch {}
   const disposable = {
     dispose() {
       for (const d of disposables.splice(0)) {

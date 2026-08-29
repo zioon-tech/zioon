@@ -36,6 +36,7 @@ export type RunContextHealth = {
   sessionId?: string;
   estimatedTokens: number;
   modelContextWindow: number;
+  contextWindowKnown?: boolean;
   utilization: number;
   warningThreshold: number;
   criticalThreshold: number;
@@ -295,18 +296,19 @@ function normalizeThreshold(value: any, fallback: number): number {
 
 function normalizeContextHealth(input: any, now = Date.now(), fallbackSessionId = ""): RunContextHealth {
   const estimatedTokens = positiveInteger(input?.estimatedTokens ?? input?.tokens ?? input?.contextTokens);
-  const modelContextWindow = Math.max(
-    1,
-    positiveInteger(
-      input?.modelContextWindow
-      ?? input?.contextWindow
-      ?? input?.contextWindowTokens
-      ?? input?.maxTokens
-    ) || 128_000
+  const configuredContextWindow = positiveInteger(
+    input?.modelContextWindow
+    ?? input?.contextWindow
+    ?? input?.contextWindowTokens
+    ?? input?.maxTokens
   );
+  const contextWindowKnown = input?.contextWindowKnown === false
+    ? false
+    : configuredContextWindow > 0;
+  const modelContextWindow = contextWindowKnown ? configuredContextWindow : 0;
   const utilization = normalizeRatio(
     input?.utilization,
-    estimatedTokens ? Math.min(1, estimatedTokens / modelContextWindow) : 0
+    estimatedTokens && modelContextWindow ? Math.min(1, estimatedTokens / modelContextWindow) : 0
   );
   const warningThreshold = normalizeThreshold(input?.warningThreshold ?? input?.threshold, 0.7);
   const criticalThreshold = Math.max(warningThreshold, normalizeThreshold(input?.criticalThreshold, 0.85));
@@ -315,6 +317,7 @@ function normalizeContextHealth(input: any, now = Date.now(), fallbackSessionId 
     sessionId: cleanString(input?.sessionId || fallbackSessionId || "", 180) || undefined,
     estimatedTokens,
     modelContextWindow,
+    contextWindowKnown,
     utilization,
     warningThreshold,
     criticalThreshold,

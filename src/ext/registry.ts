@@ -1541,7 +1541,12 @@ class Registry {
   }
 
   // models: provider registry (placeholder)
-  registerModelProvider(provider: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }): Disposable {
+  registerModelProvider(provider: {
+    id: string;
+    list: () => any | Promise<any>;
+    resolve: (id: string) => any | Promise<any>;
+    checkAvailability?: (options?: { modelIds?: string[]; force?: boolean }) => any | Promise<any>;
+  }): Disposable {
     this.modelProviders.push(provider);
     return {
       dispose: () => {
@@ -2348,7 +2353,12 @@ try { runLedger.reconcileActiveRuns([], "startup"); } catch {}
         (registry as any).getEditorProxyForView(view) || inspectorRuntime.getTextEditorForView(view)
     },
     models: {
-      registerProvider: (p: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }) =>
+      registerProvider: (p: {
+        id: string;
+        list: () => any | Promise<any>;
+        resolve: (id: string) => any | Promise<any>;
+        checkAvailability?: (options?: { modelIds?: string[]; force?: boolean }) => any | Promise<any>;
+      }) =>
         (registry as any).registerModelProvider(p),
       listProviders: () => (registry as any).listModelProviders(),
       getProvider: (id: string) => (registry as any).getModelProvider(id)

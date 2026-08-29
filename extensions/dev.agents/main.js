@@ -1987,18 +1987,6 @@ const disposables = [];
     if (view) disposables.push(view);
   } catch {}
   try {
-    const activity = window.zion.activityBar?.registerItem?.({
-      id: "agents.activity",
-      pluginId: "dev.agents",
-      icon: "$(agent)",
-      tooltip: t("title", "Agents"),
-      tooltipKey: "dev.agents.title",
-      order: 34,
-      onClick: openAgentsPanel
-    });
-    if (activity) disposables.push(activity);
-  } catch {}
-  try {
     const selectionItem = window.zion.editor?.selectionToolbar?.registerItem?.({
       id: "agents.create",
       order: 19,

@@ -50,6 +50,9 @@ describe("identity context core", () => {
     expect(text).toContain("~/.zion-next/memory/biography/events.jsonl");
     expect(text).toContain("user-owned read-only data");
     expect(text).toContain("model-maintained working memory");
+    expect(text).toContain("Project working-memory routine");
+    expect(text).toContain("use semantic judgment");
+    expect(text).toContain("Before every final answer");
     expect(text).toContain("Do not infer autonomy grants");
     expect(text).toContain("[[memory:<event-id>]]");
     expect(text).toContain("Only valid biography event markers count as cited memory");

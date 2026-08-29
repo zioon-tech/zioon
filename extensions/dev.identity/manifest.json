@@ -108,6 +108,10 @@
     "activationEvents": [
       "onStartupFinished"
     ],
+    "dependencies": {
+      "dev.langchain-chat": ">=0.1.0",
+      "dev.session-manager": ">=0.1.0"
+    },
     "engines": {
       "zion": ">=1.0.0"
     }

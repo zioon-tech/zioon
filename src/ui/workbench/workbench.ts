@@ -25,6 +25,7 @@ type InspectorBrowserChoice = {
 
 const INSPECTOR_RECENT_PAGES_KEY = "zion.inspector.recentPages";
 const INSPECTOR_RECENT_PAGES_LIMIT = 24;
+const ACTIVITY_BAR_WIDTH = 60;
 
 function normalizeInspectorBrowserInput(value: string): string {
   const raw = String(value || "").trim();
@@ -251,6 +252,14 @@ function appendIconAndLabel(target: HTMLElement, icon: string, label: string) {
   }
 }
 
+function appendActivityBarContent(target: HTMLElement, icon: string, label: string) {
+  const iconHost = el("span", "zion-activitybar-icon");
+  appendIconAndLabel(iconHost, icon, "");
+  const text = el("span", "zion-activitybar-label");
+  text.textContent = safeText(label);
+  target.replaceChildren(iconHost, text);
+}
+
 function clearTabDragClasses(container: HTMLElement) {
   try {
     container.querySelectorAll(".is-dragging, .is-drag-over, .is-drop-before, .is-drop-after").forEach((node) => {
@@ -263,9 +272,13 @@ function installReorderableTab(
   tab: HTMLElement,
   container: HTMLElement,
   viewId: string,
-  applyOrder: (ids: string[]) => void
+  applyOrder: (ids: string[]) => void,
+  orientation: "horizontal" | "vertical" = "horizontal"
 ) {
   let dragged = false;
+  const isAfterMidpoint = (event: DragEvent, rect: DOMRect) => orientation === "vertical"
+    ? event.clientY > rect.top + rect.height / 2
+    : event.clientX > rect.left + rect.width / 2;
   tab.draggable = true;
   tab.addEventListener("dragstart", (event) => {
     dragged = true;
@@ -283,7 +296,7 @@ function installReorderableTab(
     clearTabDragClasses(container);
     tab.classList.add("is-drag-over");
     const rect = tab.getBoundingClientRect();
-    tab.classList.add(event.clientX > rect.left + rect.width / 2 ? "is-drop-after" : "is-drop-before");
+    tab.classList.add(isAfterMidpoint(event, rect) ? "is-drop-after" : "is-drop-before");
   });
   tab.addEventListener("dragleave", () => {
     tab.classList.remove("is-drag-over");
@@ -302,7 +315,7 @@ function installReorderableTab(
     const toIndex = ids.indexOf(toId);
     if (fromIndex < 0 || toIndex < 0) return;
     const rect = tab.getBoundingClientRect();
-    let insertIndex = event.clientX > rect.left + rect.width / 2 ? toIndex + 1 : toIndex;
+    let insertIndex = isAfterMidpoint(event, rect) ? toIndex + 1 : toIndex;
     const [moved] = ids.splice(fromIndex, 1);
     if (fromIndex < insertIndex) insertIndex -= 1;
     ids.splice(Math.max(0, Math.min(ids.length, insertIndex)), 0, moved);
@@ -569,7 +582,7 @@ export function initWorkbench(host: HTMLElement): {
 
   const getMediumOverlayMetrics = () => {
     const rootWidth = Math.max(0, root.getBoundingClientRect().width);
-    const activityWidth = activityBarRuntime.isVisible() ? 48 : 0;
+    const activityWidth = activityBarRuntime.isVisible() ? ACTIVITY_BAR_WIDTH : 0;
     const sidebarWidth = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0
       ? sideBarRuntime.getWidth()
       : 0;
@@ -597,7 +610,7 @@ export function initWorkbench(host: HTMLElement): {
 
   const getDesktopPanelMetrics = (xVisible: boolean, inspectorVisible: boolean) => {
     const rootWidth = Math.max(0, root.getBoundingClientRect().width);
-    const activityWidth = activityBarRuntime.isVisible() ? 48 : 0;
+    const activityWidth = activityBarRuntime.isVisible() ? ACTIVITY_BAR_WIDTH : 0;
     const sidebarWidth = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0
       ? sideBarRuntime.getWidth()
       : 0;
@@ -639,7 +652,7 @@ export function initWorkbench(host: HTMLElement): {
       const requestedSidePanelWidth = (xVisible ? xw : 0) + (inspectorVisible ? inspectorWidth : 0);
       const sidebarBudget = Math.max(
         0,
-        root.getBoundingClientRect().width - (aVisible ? 48 : 0) - w - EDITOR_MIN_WIDTH
+        root.getBoundingClientRect().width - (aVisible ? ACTIVITY_BAR_WIDTH : 0) - w - EDITOR_MIN_WIDTH
       );
 
       if (!isMobile && !isCompactOverlay && sVisible && wideningSidePanelByDrag
@@ -692,7 +705,7 @@ export function initWorkbench(host: HTMLElement): {
       activityBarEl.style.visibility = "hidden";
       activityBarEl.style.pointerEvents = "none";
     } else {
-      root.style.setProperty("--activitybar-w", aVisible ? "48px" : "0px");
+      root.style.setProperty("--activitybar-w", aVisible ? `${ACTIVITY_BAR_WIDTH}px` : "0px");
       root.style.setProperty("--sidebar-w", sVisible ? `${w}px` : "0px");
       root.style.setProperty(
         "--auxbar-w",
@@ -801,7 +814,7 @@ export function initWorkbench(host: HTMLElement): {
 
   const getMediumOverlayLeftPx = () => {
     try {
-      const activityW = activityBarRuntime.isVisible() ? 48 : 0;
+      const activityW = activityBarRuntime.isVisible() ? ACTIVITY_BAR_WIDTH : 0;
       const sideW = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0 ? sideBarRuntime.getWidth() : 0;
       return Math.max(0, activityW + sideW);
     } catch {
@@ -863,7 +876,7 @@ export function initWorkbench(host: HTMLElement): {
       button.type = "button";
       button.title = "搜索命令";
       button.setAttribute("aria-label", "搜索命令");
-      setCodiconOnly(button, "search");
+      appendActivityBarContent(button, "$(search)", "搜索");
       button.onclick = () => {
         try {
           (window as any).zion?.commands?.executeCommand?.("commandPalette.open");
@@ -880,15 +893,7 @@ export function initWorkbench(host: HTMLElement): {
       btn.setAttribute("aria-label", tooltip);
       if (activeId === it.id) btn.classList.add("is-active");
       const icon = String(it.icon || "").trim();
-      btn.textContent = "";
-      const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
-      if (codiconMatch) {
-        btn.appendChild(createZionIconFromCodicon(codiconMatch[1]));
-      } else if (hasZionIcon(icon)) {
-        btn.appendChild(createZionIcon(zionIconName(icon)));
-      } else {
-        btn.textContent = safeText(icon);
-      }
+      appendActivityBarContent(btn, icon, tooltip);
       btn.onclick = () => activityBarRuntime.activateItem(it.id);
       list.appendChild(btn);
       if (it.id === "sessions.activity") {
@@ -906,7 +911,7 @@ export function initWorkbench(host: HTMLElement): {
     settingsBtn.type = "button";
     settingsBtn.title = "设置";
     settingsBtn.setAttribute("aria-label", "设置");
-    settingsBtn.appendChild(createZionIcon("settings"));
+    appendActivityBarContent(settingsBtn, "$(settings)", "设置");
     settingsBtn.onclick = () => {
       try {
         (window as any).zion?.settings?.open?.();
@@ -987,23 +992,23 @@ export function initWorkbench(host: HTMLElement): {
   auxiliaryBarEl.style.position = "relative";
   const auxHeader = el("div", "zion-auxbar-header");
   const auxHeadLeft = el("div", "zion-auxbar-headleft");
-  const auxTabsViewport = el("div", "zion-inline-tabs-scrollbar-viewport zion-auxbar-tabs-viewport");
-  const auxTabs = el("div", "zion-auxbar-tabs");
-  auxTabsViewport.appendChild(auxTabs);
-  const auxTabsScrollbar = attachInlineTabsScrollbar(auxTabsViewport, auxTabs);
   const auxTitle = el("div", "zion-auxbar-title");
   const auxActions = el("div", "zion-auxbar-actions");
   auxHeadLeft.appendChild(auxTitle);
-  auxHeadLeft.appendChild(auxTabsViewport);
   auxHeader.appendChild(auxHeadLeft);
   auxHeader.appendChild(auxActions);
   const auxContent = el("div", "zion-auxbar-content");
   const auxEmpty = el("div", "zion-auxbar-empty");
   auxEmpty.textContent = "暂无可用视图";
+  const auxRail = el("nav", "zion-auxbar-rail");
+  auxRail.setAttribute("role", "tablist");
+  auxRail.setAttribute("aria-label", "辅助栏视图");
+  auxRail.setAttribute("aria-orientation", "vertical");
   const auxResizer = el("div", "zion-auxbar-resizer");
 
   auxiliaryBarEl.appendChild(auxHeader);
   auxiliaryBarEl.appendChild(auxContent);
+  auxiliaryBarEl.appendChild(auxRail);
   auxiliaryBarEl.appendChild(auxResizer);
 
   let auxMountedViewId: string | null = null;
@@ -1211,8 +1216,7 @@ export function initWorkbench(host: HTMLElement): {
       const previousId = auxMountedViewId;
       const generation = ++auxMountGeneration;
       auxMountedViewId = null;
-      auxTabs.innerHTML = "";
-      auxTabsScrollbar.sync();
+      auxRail.innerHTML = "";
       try {
         for (const rec of auxKeepContainers.values()) rec.container.style.display = "none";
       } catch {}
@@ -1225,39 +1229,80 @@ export function initWorkbench(host: HTMLElement): {
 
     const activeViewId = auxiliaryBarRuntime.getActiveViewId();
 
-    auxTabs.style.display = views.length > 1 ? "flex" : "none";
-    auxTitle.style.display = views.length > 1 ? "none" : "block";
-    auxTitle.textContent = translatedTitle(views[0], "");
-    auxTabs.innerHTML = "";
-    if (auxTabs.style.display !== "none") {
-      for (const v of views) {
-        const tab = el("button", "zion-auxbar-tab");
-        (tab as HTMLButtonElement).type = "button";
-        const title = translatedTitle(v);
-        tab.title = title;
-        tab.setAttribute("aria-label", title);
-        tab.dataset.viewId = v.id;
-        appendIconAndLabel(tab, String(v.icon || ""), title);
-        if (v.id === activeViewId) tab.classList.add("is-active");
-        (tab as HTMLButtonElement).onclick = () => auxiliaryBarRuntime.activateView(v.id);
-        installReorderableTab(tab, auxTabs, v.id, (ids) => auxiliaryBarRuntime.setViewOrder(ids));
-        auxTabs.appendChild(tab);
-      }
-      const activeTab = activeViewId
-        ? Array.from(auxTabs.querySelectorAll<HTMLElement>(".zion-auxbar-tab")).find(tab => tab.dataset.viewId === activeViewId) || null
-        : null;
-      if (activeTab) {
-        requestAnimationFrame(() => {
-          try { activeTab.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch {}
-          auxTabsScrollbar.sync();
-        });
-      }
-    }
-    requestAnimationFrame(auxTabsScrollbar.sync);
-
     const nextId = activeViewId && auxiliaryBarRuntime.getView(activeViewId) ? activeViewId : views[0]?.id ?? null;
     if (nextId !== activeViewId && nextId) {
       auxiliaryBarRuntime.activateView(nextId);
+    }
+    const activeView = nextId ? auxiliaryBarRuntime.getView(nextId) : null;
+    auxTitle.textContent = translatedTitle(activeView, "Auxiliary Bar");
+
+    auxActions.querySelectorAll(".zion-auxbar-plugin-action").forEach((node) => node.remove());
+    const pluginActions = document.createDocumentFragment();
+    for (const action of activeView?.headerActions || []) {
+      const btn = el("button", "zion-auxbar-action zion-auxbar-plugin-action") as HTMLButtonElement;
+      btn.type = "button";
+      const title = translatedTitle(action as any);
+      btn.title = title;
+      btn.setAttribute("aria-label", tr((action as any).ariaLabelKey, safeText(action.ariaLabel || title)));
+      const actionAny = action as any;
+      const syncActive = () => {
+        let active = false;
+        try {
+          active = typeof actionAny.active === "function" ? !!actionAny.active() : !!actionAny.active;
+        } catch {}
+        btn.classList.toggle("is-active", active);
+        if (actionAny.active === undefined) btn.removeAttribute("aria-pressed");
+        else btn.setAttribute("aria-pressed", String(active));
+      };
+      appendIconAndLabel(btn, String(action.icon || ""), "");
+      if (!btn.childElementCount) btn.textContent = safeText(title);
+      syncActive();
+      btn.onclick = () => {
+        let result: void | Promise<void> = undefined;
+        try {
+          result = action.onClick() as void | Promise<void>;
+        } catch {}
+        syncActive();
+        void Promise.resolve(result).then(syncActive, syncActive);
+      };
+      pluginActions.appendChild(btn);
+    }
+    auxActions.insertBefore(pluginActions, auxActions.firstChild);
+
+    auxRail.innerHTML = "";
+    for (const view of views) {
+      const item = el("button", "zion-auxbar-rail-item") as HTMLButtonElement;
+      item.type = "button";
+      item.setAttribute("role", "tab");
+      const title = translatedTitle(view);
+      item.title = title;
+      item.setAttribute("aria-label", title);
+      item.setAttribute("aria-selected", String(view.id === nextId));
+      item.dataset.viewId = view.id;
+      const icon = el("span", "zion-auxbar-rail-icon");
+      appendIconAndLabel(icon, String(view.icon || "$(layout-sidebar-right)"), "");
+      const label = el("span", "zion-auxbar-rail-label");
+      label.textContent = title;
+      item.append(icon, label);
+      if (view.id === nextId) item.classList.add("is-active");
+      item.onclick = () => auxiliaryBarRuntime.activateView(view.id);
+      installReorderableTab(
+        item,
+        auxRail,
+        view.id,
+        (ids) => auxiliaryBarRuntime.setViewOrder(ids),
+        "vertical"
+      );
+      auxRail.appendChild(item);
+    }
+    const activeRailItem = nextId
+      ? Array.from(auxRail.querySelectorAll<HTMLElement>(".zion-auxbar-rail-item"))
+          .find(item => item.dataset.viewId === nextId) || null
+      : null;
+    if (activeRailItem) {
+      requestAnimationFrame(() => {
+        try { activeRailItem.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch {}
+      });
     }
 
     if (views.length === 0) {

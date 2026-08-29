@@ -20,6 +20,9 @@ type CommandMetaContribution = Pick<CommandMeta, "id" | "title" | "titleKey" | "
 const STYLE_ID = "zion-command-palette-style";
 const RECENT_KEY = "zion.commandPalette.recent.v2";
 const TAG_RE = /(^|[\s([{])#([\p{L}\p{N}_/-]+)(?=$|[\s)\]},.;:!?])/gu;
+const EXTERNALIZED_BUILTIN_PLUGIN_IDS = new Set<string>([
+  "dev.identity"
+]);
 
 function isFenceLine(lineText: string): boolean {
   return /^\s*`{3,}/.test(lineText) || /^\s*~{3,}/.test(lineText);
@@ -665,32 +668,47 @@ function loadOpenSessionIds(): Set<string> {
 
 function loadManifestMeta(): Map<string, CommandMetaContribution> {
   const out = new Map<string, CommandMetaContribution>();
+  const addManifest = (manifest: any) => {
+    const pluginId = safeText(manifest?.zion?.id || "");
+    const pluginName = safeText(manifest?.zion?.name || pluginId);
+    const commands = manifest?.zion?.contributes?.commands;
+    if (!Array.isArray(commands)) return;
+    for (const c of commands) {
+      const id = safeText(c?.id || "");
+      if (!id) continue;
+      const title = safeText(c?.title || id);
+      const description = safeText(c?.description || "");
+      if (!out.has(id)) {
+        out.set(id, {
+          id,
+          title,
+          titleKey: safeText(c?.titleKey || ""),
+          description,
+          descriptionKey: safeText(c?.descriptionKey || ""),
+          category: safeText(c?.category || pluginName),
+          categoryKey: safeText(c?.categoryKey || ""),
+          pluginId
+        });
+      }
+    }
+  };
+
   try {
-    const manifests = (import.meta as any).glob("/extensions/**/manifest.json", { eager: true }) as Record<string, any>;
+    const manifests = (import.meta as any).glob([
+      "/extensions/**/manifest.json",
+      "!/extensions/dev.identity/manifest.json"
+    ], { eager: true }) as Record<string, any>;
     for (const mod of Object.values(manifests)) {
       const manifest = mod?.default || mod;
       const pluginId = safeText(manifest?.zion?.id || "");
-      const pluginName = safeText(manifest?.zion?.name || pluginId);
-      const commands = manifest?.zion?.contributes?.commands;
-      if (!Array.isArray(commands)) continue;
-      for (const c of commands) {
-        const id = safeText(c?.id || "");
-        if (!id) continue;
-        const title = safeText(c?.title || id);
-        const description = safeText(c?.description || "");
-        if (!out.has(id)) {
-          out.set(id, {
-            id,
-            title,
-            titleKey: safeText(c?.titleKey || ""),
-            description,
-            descriptionKey: safeText(c?.descriptionKey || ""),
-            category: safeText(c?.category || pluginName),
-            categoryKey: safeText(c?.categoryKey || ""),
-            pluginId
-          });
-        }
-      }
+      if (EXTERNALIZED_BUILTIN_PLUGIN_IDS.has(pluginId)) continue;
+      addManifest(manifest);
+    }
+  } catch {}
+  try {
+    const plugins = (window as any).zion?.plugins?.list?.();
+    if (Array.isArray(plugins)) {
+      for (const plugin of plugins) addManifest(plugin?.manifest);
     }
   } catch {}
   for (const [id, meta] of Object.entries(BUILTIN_COMMAND_META)) {

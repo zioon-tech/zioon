@@ -1217,14 +1217,6 @@ export async function activate(ctx) {
     }],
     component: panel
   });
-  const activityDisposable = window.zion.activityBar?.registerItem?.({
-    id: "scheduler.activity",
-    pluginId: "dev.scheduler",
-    icon: "$(clock)",
-    tooltip: "定时任务",
-    auxiliaryBarViewId: VIEW_ID,
-    order: 35
-  });
 
   const open = window.zion.commands.registerCommand("scheduler.openPanel", () => {
     window.zion.auxiliaryBar.activateView(VIEW_ID);
@@ -1253,7 +1245,7 @@ export async function activate(ctx) {
   });
 
   updateStatus();
-  ctx.subscriptions.push(viewDisposable, activityDisposable, open, create, runNow, cancel, repairSessionArchive, schedulerTool, {
+  ctx.subscriptions.push(viewDisposable, open, create, runNow, cancel, repairSessionArchive, schedulerTool, {
     dispose() {
         disposed = true;
       leaderRelease?.();

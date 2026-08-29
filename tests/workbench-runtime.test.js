@@ -237,7 +237,41 @@ describe("workbench runtime", () => {
     dispView.dispose();
   });
 
-  it("activityBar item with auxiliaryBarViewId should toggle auxiliary bar visibility", () => {
+  it("syncs the active Activity item when a Bottom Panel tab is selected", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    const view = bottomPanelRuntime.registerView({
+      id: "core.output",
+      pluginId: "core",
+      title: "日志",
+      component: { render: () => {} }
+    });
+    const item = activityBarRuntime.registerItem({
+      id: "core.run-log.activity",
+      pluginId: "core",
+      icon: "$(output)",
+      tooltip: "日志",
+      bottomPanelViewId: "core.output",
+      order: 80
+    });
+
+    bottomPanelRuntime.activateView("core.output");
+
+    expect(state.get("ui.activityBar.activeItemId")).toBe("core.run-log.activity");
+    expect(state.get("ui.bottomPanel.visible")).toBe(true);
+
+    item.dispose();
+    view.dispose();
+  });
+
+  it("keeps legacy auxiliary Activity items callable but omits them from the visible list", () => {
     const state = createState();
     bindWorkbenchCore({
       state,
@@ -260,6 +294,8 @@ describe("workbench runtime", () => {
       auxiliaryBarViewId: "preview.view",
       order: 30
     });
+
+    expect(activityBarRuntime.getItems().some((item) => item.id === "preview.activity")).toBe(false);
 
     activityBarRuntime.activateItem("preview.activity");
     expect(state.get("ui.activityBar.activeItemId")).toBe("preview.activity");

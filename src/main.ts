@@ -1,6 +1,6 @@
 import "katex/dist/katex.min.css";
 // Vite: eagerly bundle extension CSS (extracted from src/styles.css)
-import.meta.glob("/extensions/**/styles.css", { eager: true });
+import.meta.glob(["/extensions/**/styles.css", "!/extensions/dev.identity/styles.css"], { eager: true });
 import { EditorCore, type VimOperationalMode } from "./editor/EditorCore";
 import "./pwa-test";
 import { attachEditor, detachEditor, listAttachedEditorCores, setActiveEditorPanel } from "./ext/registry";
@@ -17,7 +17,9 @@ import { createRunLogViewDefinition } from "./ui/run-log-view";
 import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
+import { parseMessages } from "./chat/doc";
 import { SessionRuntime } from "./session/runtime";
+import { publishSessionDerivedTagSource, removeSessionDerivedTagSource } from "./session/derived-tags";
 import { createThemeManager } from "./theme/themeManager";
 import { createI18nManager } from "./i18n/i18nManager";
 import { EditorState, Prec, StateEffect, type Extension } from "@codemirror/state";
@@ -36,6 +38,9 @@ installZionIcons();
 const STORAGE_KEY = 'zion.autosave';
 const PANEL_WORKSPACE_STORAGE_KEY = "zion.panelWorkspace.v1";
 const EDITOR_PATH_RENAME_FALLBACK_KEY = "__fallback__";
+const EXTERNALIZED_BUILTIN_PLUGIN_IDS = new Set<string>([
+  "dev.identity"
+]);
 const editorPathInlineRenameHandlers = new Map<string, (opts?: any) => boolean>();
 
 /** 读回上次的内容 */
@@ -3605,7 +3610,42 @@ async function bootstrap() {
     runtime: sessionRuntime,
     resolveContext: (opts?: any) => sessionRuntime.resolveContext(opts || {}),
     getPanelSessionId: (panelId: string) => sessionRuntime.getPanelSessionId(panelId),
-    isEditorShowingSession: (editor: any, sessionId: string) => sessionRuntime.isEditorShowingSession(editor, sessionId)
+    isEditorShowingSession: (editor: any, sessionId: string) => sessionRuntime.isEditorShowingSession(editor, sessionId),
+    parseMessages: (docText: string) => parseMessages(docText),
+    getDocument: async (sessionId: string, opts?: { flush?: boolean }) => {
+      const id = String(sessionId || "").trim();
+      if (!id) return "";
+      if (opts?.flush) {
+        try { await Promise.resolve(window.zion.commands.executeCommand("zion.sessions.flushPendingSave", id)); } catch {}
+      }
+      try {
+        const asyncDoc = await Promise.resolve(window.zion.commands.executeCommand("zion.sessions.getDocAsync", id));
+        if (typeof asyncDoc === "string") return asyncDoc;
+      } catch {}
+      try {
+        const doc = window.zion.commands.executeCommand("zion.sessions.getDoc", id);
+        if (typeof doc === "string") return doc;
+      } catch {}
+      try {
+        const cachedDoc = window.zion.state.get<string>(`sessions.doc.${id}`);
+        if (typeof cachedDoc === "string") return cachedDoc;
+      } catch {}
+      try {
+        const activeEditor = window.zion.window.activeEditor || null;
+        const activeSessionId = activeEditor?.getSessionId?.()
+          || activeEditor?.sessionId
+          || activeEditor?.core?.getSessionId?.()
+          || null;
+        if (activeSessionId === id && typeof activeEditor?.getValue === "function") return activeEditor.getValue();
+      } catch {}
+      return "";
+    },
+    getMessages: async (sessionId: string, opts?: { flush?: boolean }) => {
+      const docText = await (window.zion as any).sessions.getDocument(sessionId, opts);
+      return parseMessages(docText);
+    },
+    publishDerivedTagSource: (source: any) => publishSessionDerivedTagSource(window.zion, source),
+    removeDerivedTagSource: (sourceId: string) => removeSessionDerivedTagSource(window.zion, sourceId)
   };
 
   // 初始化插件管理器
@@ -4059,9 +4099,40 @@ async function bootstrap() {
   const persistPanelWorkspaceNow = () => {
     try { savePanelWorkspaceSnapshotNow(buildPanelWorkspaceSnapshot()); } catch {}
   };
-  const reloadWindowPreservingWorkspace = () => {
+  const reloadWindowPreservingWorkspace = async () => {
     persistPanelWorkspaceNow();
+    try { window.zion?.state?.set("sessions.reloadPreparing", true); } catch {}
+    try {
+      const commands = window.zion?.commands;
+      const available = commands?.list?.() || [];
+      if (available.includes("zion.sessions.prepareForReload")) {
+        const prepared = await Promise.resolve(
+          commands.executeCommand("zion.sessions.prepareForReload")
+        );
+        if (prepared !== true) {
+          try { window.zion?.state?.set("sessions.reloadPreparing", false); } catch {}
+          notificationManager.show("会话尚未完成保存，已取消重新加载。", {
+            type: "warning",
+            duration: 3000
+          });
+          return false;
+        }
+      }
+    } catch (error) {
+      try { window.zion?.state?.set("sessions.reloadPreparing", false); } catch {}
+      console.error("[zion] failed to prepare session storage for reload", error);
+      notificationManager.show("会话尚未完成保存，已取消重新加载。", {
+        type: "warning",
+        duration: 3000
+      });
+      return false;
+    }
+    try {
+      window.zion?.state?.set("sessions.reloadPreparing", false);
+      window.zion?.state?.set("sessions.intentionalReload", true);
+    } catch {}
     requestAnimationFrame(() => location.reload());
+    return true;
   };
   const attachPanelScrollPersistence = (panelId: string) => {
     try { panelScrollPersistDisposers.get(panelId)?.(); } catch {}
@@ -4462,9 +4533,10 @@ async function bootstrap() {
     (window as any).zion.commands.registerCommand("zion.settings.show", () => {
       try { (window as any).zion.settings.open(); } catch {}
     });
-    (window as any).zion.commands.registerCommand("zion.reloadWindow", () => {
-      reloadWindowPreservingWorkspace();
-    });
+    (window as any).zion.commands.registerCommand(
+      "zion.reloadWindow",
+      () => reloadWindowPreservingWorkspace()
+    );
   } catch (e) {
     console.warn("[zion] failed to register settings commands", e);
   }
@@ -5389,12 +5461,16 @@ async function bootstrap() {
     
     // Add plugin management commands
     window.zion.commands.registerCommand("zion.showPlugins", () => openPluginsPanel(pluginManager));
-    window.zion.commands.registerCommand("zion.reloadPlugins", () => {
-      reloadWindowPreservingWorkspace();
-    });
+    window.zion.commands.registerCommand(
+      "zion.reloadPlugins",
+      () => reloadWindowPreservingWorkspace()
+    );
 
     // 预安装内置插件
     await preinstallBuiltinPlugins(pluginManager);
+
+    // 同步已经外迁到 ~/.zion-next/plugins 的内置插件。
+    await syncExternalizedBuiltinPlugins(pluginManager, pluginInstaller);
     
     // 页面刷新后恢复开发会话的WebSocket连接
     await restoreDevSessions(pluginManager, pluginInstaller);
@@ -5420,9 +5496,16 @@ async function bootstrap() {
   } catch {}
 
   try {
-    window.zion.bottomPanel?.registerView(
-      createRunLogViewDefinition(window.zion)
-    );
+    const runLogView = createRunLogViewDefinition(window.zion);
+    window.zion.bottomPanel?.registerView(runLogView);
+    window.zion.activityBar?.registerItem({
+      id: "core.run-log.activity",
+      pluginId: "core",
+      icon: runLogView.icon,
+      tooltip: runLogView.title,
+      bottomPanelViewId: runLogView.id,
+      order: 80
+    });
   } catch {}
 
   try {
@@ -6244,7 +6327,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
       }
     };
 
-    const connectWebSocket = (serviceUrl: string, devId: string) => {
+    const connectWebSocket = (serviceUrl: string, devId: string, sourceDir?: string) => {
       const wsUrl = serviceUrl.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
       const ws = new WebSocket(wsUrl);
       ws.onopen = () => {
@@ -6257,7 +6340,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
             // 变更事件：重新读取 manifest 并热重载插件
             const installer = (window as any).zion.pluginInstaller;
             const baseUrl = getServiceBaseUrl() + `/plugins/dev/${devId}`;
-            const ret = await installer.installFromDevBase(baseUrl, devId);
+            const ret = await installer.installFromDevBase(baseUrl, devId, { sourceDir });
             if (ret.success && ret.plugin) {
               // 使用热重载方法（不检查版本变化）
               try {
@@ -6313,11 +6396,11 @@ function openPluginsPanel(pluginManager: PluginManager) {
 
         // 开发模式安装（manifest.json）
         const installer = (window as any).zion.pluginInstaller;
-        const ret = await installer.installFromDevBase(baseUrl, devId);
+        const ret = await installer.installFromDevBase(baseUrl, devId, { sourceDir: devDir });
         if (ret.success && ret.plugin) {
           await pluginManager.installFromInfo(ret.plugin, { enabled: true });
           devStatus.textContent = `Dev session started: ${devId} (${ret.plugin.id})`;
-          const ws = connectWebSocket(serviceUrl, devId);
+          const ws = connectWebSocket(serviceUrl, devId, devDir);
           activeDevSessions.set(devId, { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir });
           
           // 显示开发模式启动通知
@@ -6328,11 +6411,12 @@ function openPluginsPanel(pluginManager: PluginManager) {
             const sessions = (window.zion.state.get("plugins.devSessions") || {}) as Record<string, any>;
             sessions[devId] = { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir };
             window.zion.state.set("plugins.devSessions", sessions);
-
-            const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
-            const saved = JSON.parse(savedRaw);
-            saved[ret.plugin.id] = { devId, baseUrl, dir: devDir };
-            localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+            pluginManager.saveDevSessionRecord({
+              pluginId: ret.plugin.id,
+              devId,
+              baseUrl,
+              dir: devDir
+            });
           } catch {}
 
           devStartBtn.disabled = true;
@@ -6364,14 +6448,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
             const sessions = (window.zion.state.get("plugins.devSessions") || {}) as Record<string, any>;
             delete sessions[devId];
             window.zion.state.set("plugins.devSessions", sessions);
-
-            // 清理本地存储映射（按 pluginId）
-            const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
-            const saved = JSON.parse(savedRaw);
-            if (sess.pluginId && saved[sess.pluginId]) {
-              delete saved[sess.pluginId];
-              localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
-            }
+            pluginManager.removeDevSessionRecord({ devId });
           } catch {}
           activeDevSessions.delete(devId);
         }
@@ -6405,7 +6482,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
     reloadBtn.style.borderRadius = "4px";
     reloadBtn.style.padding = "4px 8px";
     reloadBtn.style.fontSize = "12px";
-    reloadBtn.onclick = () => location.reload();
+    reloadBtn.onclick = () => { void reloadWindowPreservingWorkspace(); };
     leftButtons.appendChild(reloadBtn);
 
     const closeBtn = document.createElement("button");
@@ -6429,6 +6506,30 @@ function openPluginsPanel(pluginManager: PluginManager) {
   }
 }
 
+async function syncExternalizedBuiltinPlugins(pluginManager: PluginManager, pluginInstaller: HttpPluginInstaller) {
+  for (const pluginId of EXTERNALIZED_BUILTIN_PLUGIN_IDS) {
+    try {
+      const existing = pluginManager.get(pluginId);
+      if (existing && pluginManager.getPluginOrigin(existing) === "dev") {
+        console.log(`[PluginManager] 跳过外迁插件同步，保留开发版本: ${pluginId}`);
+        continue;
+      }
+
+      const ret = await pluginInstaller.installFromService(pluginId);
+      if (!ret.success || !ret.plugin) {
+        console.warn(`[PluginManager] 外迁插件同步失败: ${pluginId}`, ret.error?.message || "unknown error");
+        continue;
+      }
+
+      const enabled = pluginManager.getEnabledPreference(pluginId) ?? true;
+      await pluginManager.installFromInfo(ret.plugin, { enabled });
+      console.log(`[PluginManager] 已同步外迁插件: ${pluginId}@${ret.plugin.version}`);
+    } catch (error) {
+      console.warn(`[PluginManager] 外迁插件同步异常: ${pluginId}`, error);
+    }
+  }
+}
+
 /**
  * 预安装内置插件
  */
@@ -6441,7 +6542,10 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
 
     try {
       // 加载 manifest.json（新格式）
-      const manifestJsons = (import.meta as any).glob('/extensions/**/manifest.json', { eager: true }) as Record<string, any>;
+      const manifestJsons = (import.meta as any).glob([
+        '/extensions/**/manifest.json',
+        '!/extensions/dev.identity/manifest.json'
+      ], { eager: true }) as Record<string, any>;
 
       const existingIds = new Set(builtinPlugins.map(p => p.id));
 
@@ -6453,6 +6557,10 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
 
         const zionData = manifest.zion || {};
         const pluginId = zionData.id || manifest.name || `zion.${dirName.replace(/^dev\./, '')}`;
+        if (EXTERNALIZED_BUILTIN_PLUGIN_IDS.has(pluginId)) {
+          console.log(`[PluginManager] 跳过已外迁内置插件: ${pluginId}`);
+          continue;
+        }
         if (existingIds.has(pluginId)) continue;
         existingIds.add(pluginId);
 
@@ -6475,6 +6583,7 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
           createdAt: Date.now(),
           updatedAt: Date.now(),
           isLegacy: false,
+          origin: 'builtin',
           enabled: true
         });
       }
@@ -6510,6 +6619,11 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
     // 检查并安装每个内置插件
     for (const pluginInfo of builtinPlugins) {
       try {
+        const existing = pluginManager.get(pluginInfo.id);
+        if (existing && pluginManager.getPluginOrigin(existing) !== 'builtin') {
+          console.log(`[PluginManager] 跳过内置插件 ${pluginInfo.id}，保留 ${pluginManager.getPluginOrigin(existing)} 版本`);
+          continue;
+        }
         console.log(`[PluginManager] 同步内置插件信息: ${pluginInfo.id}`);
         const enabled = pluginManager.getEnabledPreference(pluginInfo.id) ?? true;
         await pluginManager.updateFromInfo(pluginInfo, { enabled });
@@ -6527,21 +6641,29 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
 /**
  * 页面刷新后恢复开发会话的WebSocket连接
  */
+// 开发会话恢复重试：app 启动竞态时本地服务可能暂不可达，稍后自动重试而不是放弃
+let devSessionsRestoreRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let devSessionsRestoreRetryCount = 0;
+const DEV_SESSIONS_RESTORE_MAX_RETRY = 10;
+
+function scheduleDevSessionsRestoreRetry(pluginManager: PluginManager, pluginInstaller: any) {
+  if (devSessionsRestoreRetryTimer) return;
+  if (devSessionsRestoreRetryCount >= DEV_SESSIONS_RESTORE_MAX_RETRY) {
+    console.warn('[PluginManager] 开发会话恢复重试次数用尽，放弃（刷新页面可再次触发）');
+    return;
+  }
+  devSessionsRestoreRetryCount++;
+  console.log(`[PluginManager] 将在 3 秒后重试开发会话恢复（第 ${devSessionsRestoreRetryCount}/${DEV_SESSIONS_RESTORE_MAX_RETRY} 次）`);
+  devSessionsRestoreRetryTimer = setTimeout(async () => {
+    devSessionsRestoreRetryTimer = null;
+    await restoreDevSessions(pluginManager, pluginInstaller);
+  }, 3000);
+}
+
 async function restoreDevSessions(pluginManager: PluginManager, pluginInstaller: any) {
   try {
     console.log('[PluginManager] 尝试恢复开发会话...');
-    
-    // 从localStorage读取保存的开发会话信息
-    const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
-    const saved = JSON.parse(savedRaw);
-    
-    if (!saved || Object.keys(saved).length === 0) {
-      console.log('[PluginManager] 没有需要恢复的开发会话');
-      return;
-    }
-    
-    console.log(`[PluginManager] 发现 ${Object.keys(saved).length} 个开发会话需要恢复`);
-    
+
     const getServiceBaseUrl = (): string => {
       try {
         return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_BASE_URL;
@@ -6549,134 +6671,181 @@ async function restoreDevSessions(pluginManager: PluginManager, pluginInstaller:
         return DEFAULT_BASE_URL;
       }
     };
-    
+
     const serviceUrl = getServiceBaseUrl();
+    let restoredCount = 0;
+    let failedCount = 0;
+    let hadUnreachable = false;
+
+    const wireDevSession = (pluginId: string, devId: string, baseUrl: string, dir: string) => {
+      const wsUrl = serviceUrl.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log(`[PluginManager] 开发会话WebSocket已连接: ${devId}`);
+      };
+
+      ws.onmessage = async (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "dev:change" && msg.devId === devId) {
+            const update = await pluginInstaller.installFromDevBase(baseUrl, devId, { sourceDir: dir });
+            if (update.success && update.plugin) {
+              await pluginManager.hotReloadFromInfo(update.plugin, { enabled: true });
+            } else {
+              console.warn("[PluginManager] 开发会话恢复安装失败:", update.error?.message);
+            }
+          } else if (msg.type === "dev:stop") {
+            pluginManager.removeDevSessionRecord({ devId });
+          }
+        } catch (error) {
+          console.error("[PluginManager] 开发会话恢复热重载错误:", error);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log(`[PluginManager] 开发会话WebSocket已关闭: ${devId}`);
+      };
+
+      ws.onerror = () => {
+        console.error(`[PluginManager] 开发会话WebSocket错误: ${devId}`);
+      };
+
+      const sessions = (window.zion.state.get("plugins.devSessions") || {}) as Record<string, any>;
+      sessions[devId] = { ws, baseUrl, pluginId, dir };
+      window.zion.state.set("plugins.devSessions", sessions);
+    };
+
+    // 启动（或复用，服务端幂等）一个开发会话
+    const reviveDevSession = async (dir: string): Promise<{ devId: string; baseUrl: string }> => {
+      const res = await fetch(`${serviceUrl}/plugins/dev/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: dir })
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      }
+      const data = await res.json();
+      const devId = String(data?.data?.devId || '').trim();
+      const baseUrlPath = String(data?.data?.baseUrl || '').trim();
+      if (!devId || !baseUrlPath) {
+        throw new Error("invalid dev start response");
+      }
+      const baseUrl = /^https?:\/\//i.test(baseUrlPath)
+        ? baseUrlPath
+        : `${serviceUrl.replace(/\/$/, '')}/${baseUrlPath.replace(/^\//, '')}`;
+      return { devId, baseUrl };
+    };
+
+    // 完整恢复一个会话目录：start + install + 记录 + WebSocket
+    const restoreOne = async (dir: string, hintPluginId?: string): Promise<{ pluginId: string } | null> => {
+      const started = await reviveDevSession(dir);
+      const ret = await pluginInstaller.installFromDevBase(started.baseUrl, started.devId, { sourceDir: dir });
+      if (!ret.success || !ret.plugin) {
+        throw new Error(ret.error?.message || "开发插件安装失败");
+      }
+      await pluginManager.hotReloadFromInfo(ret.plugin, { enabled: true, skipNotification: true });
+      if (hintPluginId && hintPluginId !== ret.plugin.id) {
+        pluginManager.removeDevSessionRecord({ pluginId: hintPluginId });
+      }
+      pluginManager.saveDevSessionRecord({
+        pluginId: ret.plugin.id,
+        devId: started.devId,
+        baseUrl: started.baseUrl,
+        dir
+      });
+      wireDevSession(ret.plugin.id, started.devId, started.baseUrl, dir);
+      return { pluginId: ret.plugin.id };
+    };
+
+    // ---- 阶段一：服务端注册表合并恢复（自愈本地记录丢失/被清理）----
+    try {
+      const listRes = await fetch(`${serviceUrl}/plugins/dev/list`);
+      if (listRes.ok) {
+        const listData = await listRes.json();
+        const serverSessions: any[] = listData?.data?.sessions || [];
+        const records = pluginManager.listDevSessionRecords();
+        const knownDirs = new Set(Object.values(records).map((r: any) => String(r?.dir || '').trim()).filter(Boolean));
+        console.log(`[PluginManager] 服务端开发会话注册表: ${serverSessions.length} 条`);
+        for (const s of serverSessions) {
+          if (!s?.devId || !s?.dir) continue;
+          if (s.dirExists === false) continue; // 目录已删除，服务端会自行清理注册表
+          if (knownDirs.has(String(s.dir).trim())) continue; // 本地已有记录，走阶段二
+          try {
+            const r = await restoreOne(String(s.dir));
+            restoredCount += 1;
+            console.log(`[PluginManager] 从服务端注册表恢复开发插件: ${r?.pluginId} (dir=${s.dir})`);
+          } catch (e) {
+            console.warn(`[PluginManager] 注册表恢复单个会话失败 (dir=${s.dir}):`, e);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[PluginManager] 拉取服务端开发会话注册表失败（本地服务可能未就绪）:', e);
+    }
+
+    // ---- 阶段二：按本地记录恢复 ----
+    const saved = pluginManager.listDevSessionRecords();
+
+    if (Object.keys(saved).length === 0) {
+      console.log('[PluginManager] 没有需要恢复的开发会话');
+      if (!hadUnreachable) devSessionsRestoreRetryCount = 0;
+      return;
+    }
+    
+    console.log(`[PluginManager] 发现 ${Object.keys(saved).length} 个开发会话需要恢复`);
     
     // 恢复每个开发会话
     for (const [pluginId, devInfo] of Object.entries(saved)) {
       try {
-        const info = devInfo as any;
-        const devId = info.devId;
-        const baseUrl = info.baseUrl;
-        const dir = info.dir;
+        const devId = devInfo.devId;
+        const dir = devInfo.dir;
         
-        if (!devId || !baseUrl || !dir) {
+        if (!devId || !dir) {
           console.warn(`[PluginManager] 无效的开发会话信息: pluginId=${pluginId}`);
+          failedCount += 1;
           continue;
         }
         
         console.log(`[PluginManager] 恢复开发会话: pluginId=${pluginId}, devId=${devId}`);
-        
-        // 检查插件是否已安装
-        const plugin = pluginManager.list().find(p => p.id === pluginId);
-        if (!plugin) {
-          console.log(`[PluginManager] 插件 ${pluginId} 未安装，跳过恢复`);
-          continue;
-        }
-        
-        // 【修复】先尝试重启开发会话（防止后端重启导致会话丢失）
-        try {
-          const res = await fetch(`${serviceUrl}/plugins/dev/start`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path: dir })
-          });
-          
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-          }
-          
-          const data = await res.json();
-          const newDevId = data?.data?.devId;
-          const newBaseUrl = serviceUrl + data?.data?.baseUrl;
-          
-          if (!newDevId || !newBaseUrl) {
-            throw new Error("invalid dev start response");
-          }
-          
-          console.log(`[PluginManager] 开发会话已重启: ${pluginId} (oldDevId=${devId} -> newDevId=${newDevId})`);
 
-          // 用新路径更新插件
-          const ret = await pluginInstaller.installFromDevBase(newBaseUrl, newDevId);
-          if (ret.success && ret.plugin) {
-            await pluginManager.hotReloadFromInfo(ret.plugin, { enabled: true, skipNotification: true });
-          }
-          
-          // 更新 localStorage 中的开发会话信息
-          saved[pluginId] = { devId: newDevId, baseUrl: newBaseUrl, dir: dir };
-          localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
-          
-          // 用新 devId 连接 WebSocket
-          const wsUrl = serviceUrl.replace(/^http/, "ws") + `/plugins/dev/ws/${newDevId}`;
-          const ws = new WebSocket(wsUrl);
-          
-          ws.onopen = () => {
-            console.log(`[PluginManager] 开发会话WebSocket已连接: ${newDevId}`);
-          };
-          
-          ws.onmessage = async (ev) => {
-            try {
-              const msg = JSON.parse(ev.data);
-              if (msg.type === "dev:change" && msg.devId === newDevId) {
-                // 变更事件：重新读取 manifest 并热重载插件
-                const ret = await pluginInstaller.installFromDevBase(newBaseUrl, newDevId);
-                if (ret.success && ret.plugin) {
-                  // 使用热重载方法（不检查版本变化）
-                  try {
-                    await pluginManager.hotReloadFromInfo(ret.plugin, { enabled: true });
-                  } catch (e) {
-                    console.error("[PluginManager] 开发会话恢复热重载错误:", e);
-                  }
-                } else {
-                  console.warn("[PluginManager] 开发会话恢复安装失败:", ret.error?.message);
-                }
-              } else if (msg.type === "dev:stop") {
-                console.log(`[PluginManager] 开发会话已停止: ${newDevId}`);
-                // 清理本地存储
-                try {
-                  const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
-                  const saved = JSON.parse(savedRaw);
-                  delete saved[pluginId];
-                  localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
-                } catch {}
-              }
-            } catch (e) {
-              // 非JSON消息或错误
-            }
-          };
-          
-          ws.onclose = () => {
-            console.log(`[PluginManager] 开发会话WebSocket已关闭: ${newDevId}`);
-          };
-          
-          ws.onerror = (error) => {
-            console.error(`[PluginManager] 开发会话WebSocket错误: ${newDevId}`, error);
-          };
-          
-          // 保存到全局state
-          const sessions = (window.zion.state.get("plugins.devSessions") || {}) as Record<string, any>;
-          sessions[newDevId] = { ws, baseUrl: newBaseUrl, pluginId, dir };
-          window.zion.state.set("plugins.devSessions", sessions);
-          
-          console.log(`[PluginManager] 开发会话恢复成功: pluginId=${pluginId}, devId=${newDevId}`);
-          
-        } catch (startError) {
-          console.error(`[PluginManager] 重启开发会话失败 ${pluginId}:`, startError);
-          // 如果重启失败，清理插件信息，避免后续加载失败
-          console.warn(`[PluginManager] 清理失效的开发插件: ${pluginId}`);
-          await pluginManager.uninstall(pluginId);
-          
-          // 从本地存储中删除
-          delete saved[pluginId];
-          localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+        const r = await restoreOne(dir, pluginId);
+        const restoredPluginId = r?.pluginId || pluginId;
+
+        // 清理旧 devId 的 WebSocket 登记与记录
+        const sessions = (window.zion.state.get("plugins.devSessions") || {}) as Record<string, any>;
+        const newDevId = pluginManager.listDevSessionRecords()[restoredPluginId]?.devId;
+        if (newDevId && newDevId !== devId) {
+          try { sessions[devId]?.ws?.close?.(); } catch {}
+          delete sessions[devId];
+          pluginManager.removeDevSessionRecord({ devId });
         }
-        
-      } catch (error) {
-        console.error(`[PluginManager] 恢复开发会话失败 pluginId=${pluginId}:`, error);
+
+        restoredCount += 1;
+        console.log(`[PluginManager] 开发会话恢复成功: pluginId=${restoredPluginId}`);
+      } catch (error: any) {
+        const errMsg = String(error?.message || error || "");
+        const isDefinitiveFailure = /^HTTP 4\d\d/.test(errMsg); // 目录不存在等明确失效
+        if (isDefinitiveFailure) {
+          failedCount += 1;
+          console.warn(`[PluginManager] 开发会话明确失效，清理记录: ${pluginId}`);
+          pluginManager.removeDevSessionRecord({ pluginId });
+        } else {
+          // 本地服务暂不可达（app/服务启动竞态）：保留记录，稍后重试
+          hadUnreachable = true;
+          console.warn(`[PluginManager] 本地服务暂不可达，保留开发会话 ${pluginId} 等待重试`);
+        }
       }
     }
     
-    console.log('[PluginManager] 开发会话恢复完成');
+    if (hadUnreachable) {
+      scheduleDevSessionsRestoreRetry(pluginManager, pluginInstaller);
+    } else {
+      devSessionsRestoreRetryCount = 0;
+    }
+
+    console.log(`[PluginManager] 开发会话恢复完成: restored=${restoredCount}, failed=${failedCount}`);
   } catch (error) {
     console.error('[PluginManager] 恢复开发会话失败:', error);
   }
