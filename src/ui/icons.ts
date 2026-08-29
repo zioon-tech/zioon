@@ -210,7 +210,7 @@ const CODICON_ALIASES: Record<string, string> = {
   loading: "loader"
 };
 
-const NATIVE_CODICON_NAMES = new Set(["comment-discussion"]);
+const NATIVE_CODICON_NAMES = new Set(["comment-discussion", "remote"]);
 
 function normalizeCodiconName(name: string): string {
   return String(name || "").trim().replace(/^codicon-/, "").replace(/[^a-z0-9-]/gi, "");

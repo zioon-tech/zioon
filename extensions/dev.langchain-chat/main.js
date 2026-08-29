@@ -22,8 +22,11 @@ import { installModelSwitcher } from "./model-switcher.js";
 import { registerModelsTools } from "./models-tools.js";
 import { createChatOverviewRail } from "./overview-rail.js";
 import { ModelsSettingsPage } from "./ModelsSettingsPage.jsx";
-import { buildTerminalSessionsContextXml } from "./terminal-context.js";
 import { buildContextWindowSnapshot } from "./context-health.js";
+import {
+  rebuildModelCatalog,
+  startModelHealthMonitor
+} from "./model-catalog.js";
 import {
   appendAssistantToken as appendAssistantTokenToEditor,
   ensureTrailingUserPromptInDocText,
@@ -97,6 +100,7 @@ const I18N_MESSAGES = {
     "modelSwitcher.provider": "提供方",
     "modelSwitcher.modelId": "模型 ID",
     "modelSwitcher.displayName": "显示名称",
+    "modelSwitcher.description": "模型描述",
     "modelSwitcher.providerType": "接口类型",
     "modelSwitcher.baseUrl": "接口地址",
     "modelSwitcher.modelOverride": "模型名覆盖",
@@ -111,6 +115,7 @@ const I18N_MESSAGES = {
     "modelSwitcher.readonlySuffix": "（只读）",
     "modelSwitcher.placeholder.modelId": "例如：deepseek-v4-flash",
     "modelSwitcher.placeholder.label": "例如：My Model",
+    "modelSwitcher.placeholder.description": "模型定位、优势或适用场景",
     "modelSwitcher.placeholder.baseUrl": "例如：https://api.openai.com/v1/chat/completions",
     "modelSwitcher.placeholder.modelOverride": "可选，例如：gpt-4o-mini",
     "status.imageSupported": "图像",
@@ -190,6 +195,7 @@ const I18N_MESSAGES = {
     "modelSwitcher.provider": "Provider",
     "modelSwitcher.modelId": "Model ID",
     "modelSwitcher.displayName": "Display Name",
+    "modelSwitcher.description": "Model Description",
     "modelSwitcher.providerType": "Provider Type",
     "modelSwitcher.baseUrl": "Base URL",
     "modelSwitcher.modelOverride": "Model Override",
@@ -204,6 +210,7 @@ const I18N_MESSAGES = {
     "modelSwitcher.readonlySuffix": " (read-only)",
     "modelSwitcher.placeholder.modelId": "e.g. deepseek-v4-flash",
     "modelSwitcher.placeholder.label": "e.g. My Model",
+    "modelSwitcher.placeholder.description": "Model role, strengths, or use cases",
     "modelSwitcher.placeholder.baseUrl": "e.g. https://api.openai.com/v1/chat/completions",
     "modelSwitcher.placeholder.modelOverride": "Optional, e.g. gpt-4o-mini",
     "status.imageSupported": "image",
@@ -552,36 +559,10 @@ export async function activate(ctx) {
   // 模型目录与激活模型状态
   async function refreshCatalog() {
     try {
-      const ids = window.zion.models.listProviders() || [];
-      const models = [];
-      for (const pid of ids) {
-        const prov = window.zion.models.getProvider(pid);
-        if (!prov) continue;
-        const list = await prov.list();
-        for (const m of (list || [])) {
-          // 检查是否需要配置
-          let requiresConfig = false;
-          let configHint = "";
-          try {
-            const cfg = await prov.resolve(m.id);
-            if (cfg?._requiresConfig && (!cfg.key || !cfg.key.trim())) {
-              requiresConfig = true;
-              configHint = cfg._configHint || "需要配置 API key";
-            }
-          } catch {}
-          
-          models.push({ 
-            providerId: pid, 
-            id: m.id, 
-            label: m.label || m.id,
-            requiresConfig,
-            configHint
-          });
-        }
-      }
-      window.zion.state.set("models.catalog", models);
+      return await rebuildModelCatalog();
     } catch (e) {
       console.warn("[langchain-chat] refreshCatalog error", e);
+      return [];
     }
   }
   function getResolvedModelSnapshot(source) {
@@ -630,6 +611,8 @@ export async function activate(ctx) {
   }
   await refreshCatalog();
   ensureActiveModel();
+  const modelHealthMonitor = startModelHealthMonitor();
+  ctx.subscriptions.push(modelHealthMonitor);
 
   const initStoredBool = (stateKey, lsKey, defaultValue = true) => {
     try {
@@ -833,18 +816,6 @@ export async function activate(ctx) {
       messages.unshift(...opts.contextMessages.filter((m) => m?.role && typeof m.content === "string"));
     }
     if (!messages.length) throw new Error("No content to mock");
-
-    try {
-      let includeTerminal = window.zion?.state?.get("chat.includeTerminalContext");
-      if (includeTerminal === undefined) includeTerminal = true;
-      if (includeTerminal !== false) {
-        const sessions = Array.isArray(window.zion?.state?.get("terminal.sessions"))
-          ? window.zion.state.get("terminal.sessions")
-          : [];
-        const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
-        messages = insertAfterLeadingSystem(messages, { role: "user", content: buildTerminalSessionsContextXml(activeId, sessions) });
-      }
-    } catch {}
 
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
     if (window.zion?.__runMessageContributors) {
@@ -1220,46 +1191,6 @@ export async function activate(ctx) {
       console.log("[langchain-chat] no content, abort");
       return;
     }
-
-    // 根据开关注入终端上下文（默认开启；显式关闭时不注入）
-    try {
-      let includeTerminal = window.zion?.state?.get("chat.includeTerminalContext");
-      // 默认开启注入（若用户尚未显式设置）
-      if (includeTerminal === undefined) {
-        includeTerminal = true;
-        try { window.zion?.state?.set("chat.includeTerminalContext", true); } catch {}
-      }
-      if (includeTerminal !== false) {
-        // 若状态总线中暂时没有会话列表，主动获取一次，确保注入“所有会话信息”
-        const readBase = () => {
-          const st1 = window.zion?.state?.get("localTools.baseUrl");
-          if (typeof st1 === "string" && st1.trim()) return st1.trim();
-          try {
-            const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
-            if (s) return s.trim();
-          } catch {}
-          return "http://127.0.0.1:8765";
-        };
-        let sessions = window.zion?.state?.get("terminal.sessions");
-        if (!Array.isArray(sessions) || sessions.length === 0) {
-          try {
-            const base = readBase().replace(/\/$/, "");
-            const resp = await fetch(`${base}/sessions`, { method: "GET" });
-            const j = await resp.json().catch(() => null);
-            if (resp.ok && j && Array.isArray(j.sessions)) {
-              sessions = j.sessions;
-              try { window.zion?.state?.set("terminal.sessions", sessions); } catch {}
-            } else {
-              sessions = Array.isArray(sessions) ? sessions : [];
-            }
-          } catch {
-            sessions = Array.isArray(sessions) ? sessions : [];
-          }
-        }
-        const activeId = window.zion?.state?.get("terminal.activeSessionId") || null;
-        baseMessages = insertAfterLeadingSystem(baseMessages, { role: "user", content: buildTerminalSessionsContextXml(activeId, sessions) });
-      }
-    } catch {}
 
     // 解析工具定义（委托给独立 tools 插件）
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;

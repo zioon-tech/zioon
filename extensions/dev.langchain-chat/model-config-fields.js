@@ -23,6 +23,11 @@ export const THINKING_MODE_FIELDS = [
 
 export const DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS = 3;
 export const MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS = 20;
+export const MAX_MODEL_DESCRIPTION_LENGTH = 500;
+
+export function normalizeModelDescription(value) {
+  return Array.from(String(value || "").trim()).slice(0, MAX_MODEL_DESCRIPTION_LENGTH).join("");
+}
 
 export function normalizeAutoContinueOnColonMaxAttempts(
   value,

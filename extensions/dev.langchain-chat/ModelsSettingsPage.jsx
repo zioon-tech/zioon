@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
+  MAX_MODEL_DESCRIPTION_LENGTH,
   MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
   THINKING_MODE_FIELDS,
   getThinkingEffortOptions,
@@ -9,9 +10,17 @@ import {
   inferThinkingCapability,
   inferThinkingEffortCapability,
   normalizeAutoContinueOnColonMaxAttempts,
+  normalizeModelDescription,
   normalizeThinkingEffort,
   normalizeThinkingMode
 } from "./model-config-fields.js";
+import {
+  getBuiltinModelLimits,
+  hasCapabilityLimitOverride,
+  normalizeModelLimits,
+  resolveModelLimits
+} from "./model-limits.js";
+import { refreshModelCatalog } from "./model-catalog.js";
 
 const DYN_KEY = "zion.models.dynamic";
 const PROVIDER_ORDER = ["deepseek", "anthropic", "google"];
@@ -101,17 +110,35 @@ function loadCustomRows() {
     .sort((a, b) => String(a.label || a.id).localeCompare(String(b.label || b.id)));
 }
 
-function loadProviderDraft(providerId) {
+function loadProviderDraft(providerId, modelId, catalogItem = null) {
   const meta = BUILTIN_PROVIDER_META[providerId];
   if (!meta) return null;
   const cfg = loadJson(meta.configKey, {});
   const apiKey = localStorage.getItem(meta.apiKeyKey) || "";
+  const detectedLimits = normalizeModelLimits(
+    catalogItem?.detectedLimits || catalogItem?.limits || getBuiltinModelLimits(providerId, modelId)
+  );
+  const limits = resolveModelLimits({
+    providerId,
+    modelId,
+    descriptor: { limits: detectedLimits },
+    config: cfg
+  });
   return {
     apiKey,
+    description: normalizeModelDescription(
+      cfg.modelDescriptions?.[modelId] || catalogItem?.description
+    ),
     label: String(cfg.label || ""),
     modelName: String(cfg.modelName || ""),
     temperature: cfg.temperature ?? "",
-    max_tokens: cfg.max_tokens ?? "",
+    max_tokens: limits.defaultOutputTokens ?? "",
+    contextWindowTokens: limits.contextWindowTokens ?? "",
+    maxInputTokens: limits.maxInputTokens ?? "",
+    maxOutputTokens: limits.maxOutputTokens ?? "",
+    limitsSource: limits.source || "unknown",
+    useDetectedLimits: !hasCapabilityLimitOverride(cfg, modelId),
+    detectedLimits,
     stream: cfg.stream !== false,
     supportsImage: cfg.supportsImage ?? providerId !== "deepseek",
     supportsThinking: cfg.supportsThinking,
@@ -127,10 +154,11 @@ function loadProviderDraft(providerId) {
   };
 }
 
-function saveProviderDraft(providerId, draft) {
+function saveProviderDraft(providerId, modelId, draft) {
   const meta = BUILTIN_PROVIDER_META[providerId];
   if (!meta) return;
-  const next = {};
+  const current = loadJson(meta.configKey, {});
+  const next = { ...current };
   for (const field of meta.fields) {
     if (field === "stream") next.stream = !!draft.stream;
     if (field === "supportsImage") next.supportsImage = !!draft.supportsImage;
@@ -148,11 +176,37 @@ function saveProviderDraft(providerId, draft) {
         draft.autoContinueOnColonMaxAttempts
       );
     }
-    if (field === "temperature" && draft.temperature !== "") next.temperature = Number(draft.temperature);
-    if (field === "max_tokens" && draft.max_tokens !== "") next.max_tokens = Number(draft.max_tokens);
-    if (field === "label" && String(draft.label || "").trim()) next.label = String(draft.label).trim();
-    if (field === "modelName" && String(draft.modelName || "").trim()) next.modelName = String(draft.modelName).trim();
+    if (field === "temperature") {
+      if (draft.temperature !== "") next.temperature = Number(draft.temperature);
+      else delete next.temperature;
+    }
+    if (field === "label") {
+      if (String(draft.label || "").trim()) next.label = String(draft.label).trim();
+      else delete next.label;
+    }
+    if (field === "modelName") {
+      if (String(draft.modelName || "").trim()) next.modelName = String(draft.modelName).trim();
+      else delete next.modelName;
+    }
   }
+  const modelLimits = { ...(current.modelLimits || {}) };
+  const perModel = {};
+  if (!draft.useDetectedLimits) {
+    if (draft.contextWindowTokens !== "") perModel.contextWindowTokens = Number(draft.contextWindowTokens);
+    if (draft.maxInputTokens !== "") perModel.maxInputTokens = Number(draft.maxInputTokens);
+    if (draft.maxOutputTokens !== "") perModel.maxOutputTokens = Number(draft.maxOutputTokens);
+  }
+  if (draft.max_tokens !== "") perModel.defaultOutputTokens = Number(draft.max_tokens);
+  if (Object.keys(perModel).length) modelLimits[modelId] = perModel;
+  else delete modelLimits[modelId];
+  if (Object.keys(modelLimits).length) next.modelLimits = modelLimits;
+  else delete next.modelLimits;
+  const modelDescriptions = { ...(current.modelDescriptions || {}) };
+  const description = normalizeModelDescription(draft.description);
+  if (description) modelDescriptions[modelId] = description;
+  else delete modelDescriptions[modelId];
+  if (Object.keys(modelDescriptions).length) next.modelDescriptions = modelDescriptions;
+  else delete next.modelDescriptions;
   localStorage.setItem(meta.apiKeyKey, String(draft.apiKey || "").trim());
   localStorage.setItem(meta.configKey, JSON.stringify(next));
 }
@@ -161,12 +215,16 @@ function emptyCustomDraft() {
   return {
     id: "",
     label: "",
+    description: "",
     url: "",
     key: "",
     providerType: "openai",
     modelName: "",
     temperature: "",
     max_tokens: "",
+    contextWindowTokens: "",
+    maxInputTokens: "",
+    maxOutputTokens: "",
     stream: true,
     supportsImage: false,
     supportsThinking: "",
@@ -183,12 +241,16 @@ function draftFromCustomRow(row) {
   return {
     id: String(row.id || ""),
     label: String(row.label || ""),
+    description: normalizeModelDescription(row.description),
     url: String(row.url || ""),
     key: String(row.key || ""),
     providerType: String(row.providerType || "openai"),
     modelName: String(row.modelName || row.model || ""),
     temperature: row.temperature ?? "",
     max_tokens: row.max_tokens ?? "",
+    contextWindowTokens: row.contextWindowTokens ?? row.limits?.contextWindowTokens ?? "",
+    maxInputTokens: row.maxInputTokens ?? row.limits?.maxInputTokens ?? "",
+    maxOutputTokens: row.maxOutputTokens ?? row.limits?.maxOutputTokens ?? "",
     stream: row.stream !== false,
     supportsImage: !!row.supportsImage,
     supportsThinking: row.supportsThinking ?? "",
@@ -200,37 +262,42 @@ function draftFromCustomRow(row) {
   };
 }
 
-async function rebuildCatalog() {
-  const ids = window.zion?.models?.listProviders?.() || [];
-  const models = [];
-  for (const pid of ids) {
-    const prov = window.zion?.models?.getProvider?.(pid);
-    if (!prov?.list) continue;
-    let list = [];
-    try {
-      list = await prov.list();
-    } catch {}
-    for (const m of list || []) {
-      let requiresConfig = false;
-      let configHint = "";
-      try {
-        const cfg = await prov.resolve?.(m.id);
-        if (cfg?._requiresConfig && (!cfg.key || !String(cfg.key).trim())) {
-          requiresConfig = true;
-          configHint = cfg._configHint || tt("需要配置 API key", "API key required");
-        }
-      } catch {}
-      models.push({
-        providerId: pid,
-        id: m.id,
-        label: m.label || m.id,
-        requiresConfig,
-        configHint
-      });
+function buildProviderDrafts(catalog) {
+  const drafts = {};
+  for (const row of Array.isArray(catalog) ? catalog : []) {
+    if (!BUILTIN_PROVIDER_META[row?.providerId]) continue;
+    drafts[`${row.providerId}:${row.id}`] = loadProviderDraft(row.providerId, row.id, row);
+  }
+  return drafts;
+}
+
+function validateLimitDraft(draft) {
+  const fields = [
+    [tt("上下文窗口", "Context window"), draft?.contextWindowTokens],
+    [tt("最大输入", "Max input"), draft?.maxInputTokens],
+    [tt("最大输出", "Max output"), draft?.maxOutputTokens],
+    [tt("默认输出", "Default output"), draft?.max_tokens]
+  ];
+  for (const [label, value] of fields) {
+    if (value === "" || value == null) continue;
+    if (!Number.isFinite(Number(value)) || Number(value) <= 0) {
+      return tt(`${label}必须是正数`, `${label} must be a positive number`);
     }
   }
-  window.zion?.state?.set?.("models.catalog", models);
-  return models;
+  const contextWindowTokens = Number(draft?.contextWindowTokens || 0);
+  const maxInputTokens = Number(draft?.maxInputTokens || 0);
+  const maxOutputTokens = Number(draft?.maxOutputTokens || 0);
+  const defaultOutputTokens = Number(draft?.max_tokens || 0);
+  if (maxInputTokens && contextWindowTokens && maxInputTokens > contextWindowTokens) {
+    return tt("最大输入不能超过上下文窗口", "Max input cannot exceed the context window");
+  }
+  if (maxOutputTokens && contextWindowTokens && maxOutputTokens > contextWindowTokens) {
+    return tt("最大输出不能超过上下文窗口", "Max output cannot exceed the context window");
+  }
+  if (defaultOutputTokens && maxOutputTokens && defaultOutputTokens > maxOutputTokens) {
+    return tt("默认输出不能超过模型最大输出", "Default output cannot exceed the model maximum");
+  }
+  return "";
 }
 
 function useZionState(key, fallbackValue) {
@@ -259,16 +326,42 @@ function getProviderSummary(providerId) {
   return tt("模型提供方", "Model provider");
 }
 
-function describeConfigState(requiresConfig) {
-  return requiresConfig ? tt("还需要补全密钥后才能稳定使用", "Complete the key before stable use") : tt("已具备基本使用条件", "Ready for basic use");
+function describeAvailability(row) {
+  if (row?.requiresConfig || row?.availability?.status === "misconfigured") {
+    return tt("还需要补全配置后才能使用", "Complete the configuration before use");
+  }
+  const status = row?.availability?.status || "unknown";
+  if (status === "available") return tt("最近检查可用", "Available at the latest check");
+  if (status === "degraded") return tt("最近检查状态不稳定", "The latest check was degraded");
+  if (status === "unavailable") return tt("最近检查不可用", "Unavailable at the latest check");
+  return tt("尚未确认可用性", "Availability has not been confirmed");
+}
+
+function formatAvailability(row) {
+  if (row?.requiresConfig || row?.availability?.status === "misconfigured") {
+    return tt("待配置", "Misconfigured");
+  }
+  const status = row?.availability?.status || "unknown";
+  if (status === "available") return tt("可用", "Available");
+  if (status === "degraded") return tt("不稳定", "Degraded");
+  if (status === "unavailable") return tt("不可用", "Unavailable");
+  return tt("未知", "Unknown");
+}
+
+function formatTokenLimit(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return tt("未知", "Unknown");
+  return new Intl.NumberFormat(isEn() ? "en-US" : "zh-CN").format(Math.round(number));
 }
 
 function getBuiltInStatusRows(row, isActive) {
   return [
     { label: tt("提供方", "Provider"), value: getProviderTitle(row.providerId) },
     { label: tt("模型标识", "Model ID"), value: row.id },
+    { label: tt("上下文窗口", "Context Window"), value: formatTokenLimit(row.limits?.contextWindowTokens) },
+    { label: tt("最大输出", "Max Output"), value: formatTokenLimit(row.limits?.maxOutputTokens) },
     { label: tt("当前默认", "Default"), value: isActive ? tt("是", "Yes") : tt("否", "No") },
-    { label: tt("连接状态", "Connection"), value: row.requiresConfig ? tt("待补全", "Incomplete") : tt("已就绪", "Ready") }
+    { label: tt("连接状态", "Connection"), value: formatAvailability(row) }
   ];
 }
 
@@ -276,6 +369,8 @@ function getCustomStatusRows(editingId, isActive, draft) {
   return [
     { label: tt("模型 ID", "Model ID"), value: editingId || tt("新建中", "New") },
     { label: tt("接口地址", "Base URL"), value: draft.url || tt("未填写", "Empty") },
+    { label: tt("上下文窗口", "Context Window"), value: formatTokenLimit(draft.contextWindowTokens) },
+    { label: tt("最大输出", "Max Output"), value: formatTokenLimit(draft.maxOutputTokens) },
     { label: tt("当前默认", "Default"), value: isActive ? tt("是", "Yes") : tt("否", "No") },
     { label: tt("连接状态", "Connection"), value: draft.key ? tt("已填写密钥", "Key provided") : tt("待补全", "Incomplete") }
   ];
@@ -352,7 +447,7 @@ function ThinkingConfigFields({ draft, onChange, modelInfo }) {
   );
 }
 
-function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, saving }) {
+function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, onResetLimits, saving }) {
   const meta = BUILTIN_PROVIDER_META[providerId];
   if (!meta || !draft) return null;
   const showAdvanced = true;
@@ -371,7 +466,7 @@ function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, sa
               type="password"
               value={draft.apiKey}
               placeholder={tt("输入 API Key", "Enter API Key")}
-              onChange={(e) => onChange(providerId, "apiKey", e.target.value)}
+              onChange={(e) => onChange("apiKey", e.target.value)}
             />
           </label>
           {providerId === "deepseek" ? (
@@ -381,10 +476,20 @@ function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, sa
                 type="text"
                 value={draft.label}
                 placeholder={tt("例如：DeepSeek Chat", "e.g. DeepSeek Chat")}
-                onChange={(e) => onChange(providerId, "label", e.target.value)}
+                onChange={(e) => onChange("label", e.target.value)}
               />
             </label>
           ) : null}
+          <label className="lc-models-field wide">
+            <span>{tt("模型描述", "Model Description")}</span>
+            <textarea
+              rows="3"
+              maxLength={MAX_MODEL_DESCRIPTION_LENGTH}
+              value={draft.description}
+              placeholder={tt("记录模型定位、优势或适用场景", "Describe the model's role, strengths, or use cases")}
+              onChange={(e) => onChange("description", e.target.value)}
+            />
+          </label>
           {providerId === "deepseek" ? (
             <label className="lc-models-field">
               <span>{tt("默认模型", "Default Model")}</span>
@@ -392,13 +497,13 @@ function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, sa
                 type="text"
                 value={draft.modelName}
                 placeholder={tt("例如：deepseek-v4-flash", "e.g. deepseek-v4-flash")}
-                onChange={(e) => onChange(providerId, "modelName", e.target.value)}
+                onChange={(e) => onChange("modelName", e.target.value)}
               />
             </label>
           ) : null}
         </div>
         <div className="lc-models-actions">
-          <button type="button" className="primary" onClick={() => void onSave(providerId)} disabled={saving}>
+          <button type="button" className="primary" onClick={() => void onSave()} disabled={saving}>
             {saving ? tt("保存中...", "Saving...") : tt("保存更改", "Save Changes")}
           </button>
         </div>
@@ -413,16 +518,48 @@ function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, sa
               type="number"
               value={draft.temperature}
               placeholder="0.7"
-              onChange={(e) => onChange(providerId, "temperature", e.target.value)}
+              onChange={(e) => onChange("temperature", e.target.value)}
             />
           </label>
           <label className="lc-models-field">
-            <span>Max Tokens</span>
+            <span>{tt("上下文窗口", "Context Window")}</span>
             <input
               type="number"
+              min="1"
+              value={draft.contextWindowTokens}
+              placeholder={String(draft.detectedLimits?.contextWindowTokens || "")}
+              onChange={(e) => onChange("contextWindowTokens", e.target.value)}
+            />
+          </label>
+          <label className="lc-models-field">
+            <span>{tt("最大输入 Tokens", "Max Input Tokens")}</span>
+            <input
+              type="number"
+              min="1"
+              value={draft.maxInputTokens}
+              placeholder={String(draft.detectedLimits?.maxInputTokens || "")}
+              onChange={(e) => onChange("maxInputTokens", e.target.value)}
+            />
+          </label>
+          <label className="lc-models-field">
+            <span>{tt("最大输出 Tokens", "Max Output Tokens")}</span>
+            <input
+              type="number"
+              min="1"
+              value={draft.maxOutputTokens}
+              placeholder={String(draft.detectedLimits?.maxOutputTokens || "")}
+              onChange={(e) => onChange("maxOutputTokens", e.target.value)}
+            />
+          </label>
+          <label className="lc-models-field">
+            <span>{tt("默认输出 Tokens", "Default Output Tokens")}</span>
+            <input
+              type="number"
+              min="1"
+              max={draft.maxOutputTokens || undefined}
               value={draft.max_tokens}
-              placeholder={providerId === "anthropic" ? "64000" : "32768"}
-              onChange={(e) => onChange(providerId, "max_tokens", e.target.value)}
+              placeholder={providerId === "anthropic" ? "64000" : providerId === "google" ? "32768" : tt("服务商默认", "Provider default")}
+              onChange={(e) => onChange("max_tokens", e.target.value)}
             />
           </label>
           {providerId === "deepseek" ? (
@@ -440,14 +577,14 @@ function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, sa
                 max={MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS}
                 step="1"
                 value={draft.autoContinueOnColonMaxAttempts}
-                onChange={(e) => onChange(providerId, "autoContinueOnColonMaxAttempts", e.target.value)}
+                onChange={(e) => onChange("autoContinueOnColonMaxAttempts", e.target.value)}
               />
             </label>
           ) : null}
           {showAdvanced ? (
             <ThinkingConfigFields
               draft={draft}
-              onChange={(field, value) => onChange(providerId, field, value)}
+              onChange={onChange}
               modelInfo={{ providerId, providerType, modelId, modelName: effectiveModelName }}
             />
           ) : null}
@@ -457,7 +594,7 @@ function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, sa
             <input
               type="checkbox"
               checked={!!draft.stream}
-              onChange={(e) => onChange(providerId, "stream", e.target.checked)}
+                  onChange={(e) => onChange("stream", e.target.checked)}
             />
             <span>{tt("流式返回", "Stream")}</span>
           </label>
@@ -467,7 +604,7 @@ function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, sa
                 <input
                   type="checkbox"
                   checked={!!draft.supportsImage}
-                  onChange={(e) => onChange(providerId, "supportsImage", e.target.checked)}
+                  onChange={(e) => onChange("supportsImage", e.target.checked)}
                 />
                 <span>{tt("支持图片", "Supports Images")}</span>
               </label>
@@ -476,13 +613,21 @@ function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, sa
                   <input
                     type="checkbox"
                     checked={!!draft[field.key]}
-                    onChange={(e) => onChange(providerId, field.key, e.target.checked)}
+                    onChange={(e) => onChange(field.key, e.target.checked)}
                   />
                   <span>{getThinkingModeLabel(field.key)}</span>
                 </label>
               ))}
             </>
           ) : null}
+        </div>
+        <div className="lc-models-actions">
+          <button type="button" onClick={onResetLimits} disabled={draft.useDetectedLimits}>
+            {tt("恢复自动限制", "Restore Detected Limits")}
+          </button>
+          <span className="lc-models-row-meta">
+            {tt("限制来源", "Limits Source")}: {draft.useDetectedLimits ? draft.limitsSource : tt("手动覆盖", "Manual Override")}
+          </span>
         </div>
       </details>
     </div>
@@ -571,6 +716,16 @@ function CustomModelDetail({
               <option value="gemini">Gemini</option>
             </select>
           </label>
+          <label className="lc-models-field wide">
+            <span>{tt("模型描述", "Model Description")}</span>
+            <textarea
+              rows="3"
+              maxLength={MAX_MODEL_DESCRIPTION_LENGTH}
+              value={draft.description}
+              placeholder={tt("记录模型定位、优势或适用场景", "Describe the model's role, strengths, or use cases")}
+              onChange={(e) => onChange("description", e.target.value)}
+            />
+          </label>
         </div>
       </section>
 
@@ -586,8 +741,20 @@ function CustomModelDetail({
             <input type="number" value={draft.temperature} placeholder="0.7" onChange={(e) => onChange("temperature", e.target.value)} />
           </label>
           <label className="lc-models-field">
-            <span>Max Tokens</span>
-            <input type="number" value={draft.max_tokens} placeholder="4096" onChange={(e) => onChange("max_tokens", e.target.value)} />
+            <span>{tt("上下文窗口", "Context Window")}</span>
+            <input type="number" min="1" value={draft.contextWindowTokens} placeholder="128000" onChange={(e) => onChange("contextWindowTokens", e.target.value)} />
+          </label>
+          <label className="lc-models-field">
+            <span>{tt("最大输入 Tokens", "Max Input Tokens")}</span>
+            <input type="number" min="1" value={draft.maxInputTokens} placeholder="128000" onChange={(e) => onChange("maxInputTokens", e.target.value)} />
+          </label>
+          <label className="lc-models-field">
+            <span>{tt("最大输出 Tokens", "Max Output Tokens")}</span>
+            <input type="number" min="1" value={draft.maxOutputTokens} placeholder="8192" onChange={(e) => onChange("maxOutputTokens", e.target.value)} />
+          </label>
+          <label className="lc-models-field">
+            <span>{tt("默认输出 Tokens", "Default Output Tokens")}</span>
+            <input type="number" min="1" max={draft.maxOutputTokens || undefined} value={draft.max_tokens} placeholder="4096" onChange={(e) => onChange("max_tokens", e.target.value)} />
           </label>
           <ThinkingConfigFields
             draft={draft}
@@ -637,7 +804,7 @@ function selectFallback(activeModel, builtins, customRows) {
 
   if (builtins[0]) return { kind: "catalog", providerId: builtins[0].providerId, id: builtins[0].id };
   if (customRows[0]) return { kind: "custom", providerId: "user.dynamic", id: customRows[0].id };
-  return { kind: "new-custom", providerId: "user.dynamic", id: "" };
+  return null;
 }
 
 function isValidSelection(selection, builtins, customRows) {
@@ -658,11 +825,7 @@ export function ModelsSettingsPage() {
   const catalogFromState = useZionState("models.catalog", []);
   const [catalog, setCatalog] = useState(Array.isArray(catalogFromState) ? catalogFromState : []);
   const [customRows, setCustomRows] = useState(() => loadCustomRows());
-  const [providerDrafts, setProviderDrafts] = useState(() => ({
-    deepseek: loadProviderDraft("deepseek"),
-    anthropic: loadProviderDraft("anthropic"),
-    google: loadProviderDraft("google")
-  }));
+  const [providerDrafts, setProviderDrafts] = useState(() => buildProviderDrafts(catalogFromState));
   const [selection, setSelection] = useState(null);
   const [customDraft, setCustomDraft] = useState(emptyCustomDraft);
   const [editingCustomId, setEditingCustomId] = useState("");
@@ -670,7 +833,9 @@ export function ModelsSettingsPage() {
   const [savingKey, setSavingKey] = useState("");
 
   useEffect(() => {
-    setCatalog(Array.isArray(catalogFromState) ? catalogFromState : []);
+    const nextCatalog = Array.isArray(catalogFromState) ? catalogFromState : [];
+    setCatalog(nextCatalog);
+    setProviderDrafts(buildProviderDrafts(nextCatalog));
   }, [catalogFromState]);
 
   const builtins = useMemo(
@@ -726,15 +891,11 @@ export function ModelsSettingsPage() {
       ? builtins.find((row) => row.providerId === selection.providerId && row.id === selection.id) || null
       : null;
   const refresh = async () => {
-    const next = await rebuildCatalog();
+    const next = await refreshModelCatalog({ checkHealth: true });
     const nextCustomRows = loadCustomRows();
     setCatalog(next);
     setCustomRows(nextCustomRows);
-    setProviderDrafts({
-      deepseek: loadProviderDraft("deepseek"),
-      anthropic: loadProviderDraft("anthropic"),
-      google: loadProviderDraft("google")
-    });
+    setProviderDrafts(buildProviderDrafts(next));
     setSelection((prev) => {
       const nextBuiltins = next.filter((row) => row.providerId !== "user.dynamic");
       if (isValidSelection(prev, nextBuiltins, nextCustomRows)) return prev;
@@ -742,20 +903,50 @@ export function ModelsSettingsPage() {
     });
   };
 
-  const setProviderField = (providerId, field, value) => {
+  const setProviderField = (providerId, modelId, field, value) => {
+    const key = `${providerId}:${modelId}`;
     setProviderDrafts((prev) => ({
       ...prev,
-      [providerId]: {
-        ...(prev[providerId] || loadProviderDraft(providerId)),
-        [field]: value
+      [key]: {
+        ...(prev[key] || loadProviderDraft(providerId, modelId)),
+        [field]: value,
+        ...(["contextWindowTokens", "maxInputTokens", "maxOutputTokens"].includes(field)
+          ? { useDetectedLimits: false, limitsSource: "user" }
+          : {})
       }
     }));
   };
 
-  const handleSaveProvider = async (providerId) => {
-    setSavingKey(`provider:${providerId}`);
+  const resetProviderLimits = (providerId, modelId) => {
+    const key = `${providerId}:${modelId}`;
+    setProviderDrafts((prev) => {
+      const current = prev[key] || loadProviderDraft(providerId, modelId);
+      const detected = current.detectedLimits || getBuiltinModelLimits(providerId, modelId);
+      return {
+        ...prev,
+        [key]: {
+          ...current,
+          contextWindowTokens: detected.contextWindowTokens ?? "",
+          maxInputTokens: detected.maxInputTokens ?? "",
+          maxOutputTokens: detected.maxOutputTokens ?? "",
+          limitsSource: detected.source || "unknown",
+          useDetectedLimits: true
+        }
+      };
+    });
+  };
+
+  const handleSaveProvider = async (providerId, modelId) => {
+    const key = `${providerId}:${modelId}`;
+    const draft = providerDrafts[key] || loadProviderDraft(providerId, modelId);
+    const validationError = validateLimitDraft(draft);
+    if (validationError) {
+      setStatus(validationError);
+      return;
+    }
+    setSavingKey(`provider:${providerId}:${modelId}`);
     try {
-      saveProviderDraft(providerId, providerDrafts[providerId]);
+      saveProviderDraft(providerId, modelId, draft);
       await refresh();
       try { window.zion?.events?.emit?.("models/configChanged", { providerId }); } catch {}
       setStatus(`${getProviderTitle(providerId)} 配置已保存`);
@@ -796,6 +987,8 @@ export function ModelsSettingsPage() {
     if (!id) return setStatus(tt("缺少 Model ID", "Missing Model ID"));
     if (!url) return setStatus(tt("缺少 Base URL", "Missing Base URL"));
     if (!key) return setStatus(tt("缺少 API Key", "Missing API Key"));
+    const validationError = validateLimitDraft(customDraft);
+    if (validationError) return setStatus(validationError);
 
     setSavingKey("custom");
     try {
@@ -807,6 +1000,7 @@ export function ModelsSettingsPage() {
       }
       const next = {
         label: String(customDraft.label || "").trim() || undefined,
+        description: normalizeModelDescription(customDraft.description) || undefined,
         url,
         key,
         providerType: String(customDraft.providerType || "openai"),
@@ -826,6 +1020,9 @@ export function ModelsSettingsPage() {
       }
       if (customDraft.temperature !== "") next.temperature = Number(customDraft.temperature);
       if (customDraft.max_tokens !== "") next.max_tokens = Number(customDraft.max_tokens);
+      if (customDraft.contextWindowTokens !== "") next.contextWindowTokens = Number(customDraft.contextWindowTokens);
+      if (customDraft.maxInputTokens !== "") next.maxInputTokens = Number(customDraft.maxInputTokens);
+      if (customDraft.maxOutputTokens !== "") next.maxOutputTokens = Number(customDraft.maxOutputTokens);
       dict[id] = next;
       saveDynamicStore(dict);
       await refresh();
@@ -877,6 +1074,9 @@ export function ModelsSettingsPage() {
 
   const activeLabel = activeModel?.label || activeModel?.modelId || tt("未选择模型", "No model selected");
   const selectedProviderId = selectedBuiltIn?.providerId || null;
+  const selectedProviderDraftKey = selectedBuiltIn
+    ? `${selectedBuiltIn.providerId}:${selectedBuiltIn.id}`
+    : "";
 
   return (
     <div className="lc-models">
@@ -967,7 +1167,7 @@ export function ModelsSettingsPage() {
                 <div>
                   <div className="lc-models-detail-title">{selectedBuiltIn.label || selectedBuiltIn.id}</div>
                   <div className="lc-models-detail-subtitle">
-                    {getProviderSummary(selectedBuiltIn.providerId)}{isEn() ? ", " : "，"}{describeConfigState(selectedBuiltIn.requiresConfig)}{isEn() ? "." : "。"}
+                    {getProviderSummary(selectedBuiltIn.providerId)}{isEn() ? ", " : "，"}{describeAvailability(selectedBuiltIn)}{isEn() ? "." : "。"}
                   </div>
                   <div className="lc-models-detail-meta">
                     <span className="lc-models-row-meta">{getProviderTitle(selectedBuiltIn.providerId)}</span>
@@ -1001,10 +1201,11 @@ export function ModelsSettingsPage() {
               <ProviderConfigEditor
                 providerId={selectedProviderId}
                 modelId={selectedBuiltIn.id}
-                draft={providerDrafts[selectedProviderId]}
-                onChange={setProviderField}
-                onSave={handleSaveProvider}
-                saving={savingKey === `provider:${selectedProviderId}`}
+                draft={providerDrafts[selectedProviderDraftKey] || loadProviderDraft(selectedProviderId, selectedBuiltIn.id, selectedBuiltIn)}
+                onChange={(field, value) => setProviderField(selectedProviderId, selectedBuiltIn.id, field, value)}
+                onSave={() => handleSaveProvider(selectedProviderId, selectedBuiltIn.id)}
+                onResetLimits={() => resetProviderLimits(selectedProviderId, selectedBuiltIn.id)}
+                saving={savingKey === `provider:${selectedProviderId}:${selectedBuiltIn.id}`}
               />
             </div>
           ) : (

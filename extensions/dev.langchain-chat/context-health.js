@@ -1,3 +1,5 @@
+import { normalizeModelLimits } from "./model-limits.js";
+
 export const CONTEXT_WARNING_THRESHOLD = 0.7;
 export const CONTEXT_CRITICAL_THRESHOLD = 0.85;
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 128000;
@@ -36,29 +38,37 @@ function firstPositive(values) {
 function inferKnownContextWindow(model = {}, cfg = {}) {
   const provider = String(model?.providerId || cfg?.providerId || cfg?.providerType || "").toLowerCase();
   const name = String(cfg?.modelName || cfg?.model || model?.modelId || cfg?.id || "").toLowerCase();
+  if (
+    name.includes("claude-sonnet-5")
+    || name.includes("claude-sonnet-4-6")
+    || name.includes("claude-opus-4-8")
+    || name.includes("claude-opus-4-7")
+  ) return 1000000;
   if (provider.includes("anthropic") || provider.includes("claude") || name.includes("claude")) return 200000;
-  if (provider.includes("google") || provider.includes("gemini") || name.includes("gemini")) return 1000000;
+  if (provider.includes("google") || provider.includes("gemini") || name.includes("gemini")) return 1048576;
   if (name.includes("gpt-4.1")) return 1047576;
   if (name.includes("gpt-4o") || name.includes("gpt-4-turbo")) return 128000;
   if (name.includes("o3") || name.includes("o4")) return 200000;
+  if (name.includes("deepseek-v4") || name.includes("deepseek v4")) return 1000000;
   if (provider.includes("deepseek") || name.includes("deepseek")) return 128000;
   if (name.includes("qwen")) return 128000;
   return 0;
 }
 
 export function resolveModelContextWindowTokens(cfg = {}, model = {}) {
-  const explicit = firstPositive(CONTEXT_WINDOW_KEYS.flatMap((key) => [cfg?.[key], model?.[key]]));
+  const configuredLimits = normalizeModelLimits(cfg);
+  const modelLimits = normalizeModelLimits(model);
+  const explicit = firstPositive([
+    configuredLimits.maxInputTokens,
+    configuredLimits.contextWindowTokens,
+    modelLimits.maxInputTokens,
+    modelLimits.contextWindowTokens,
+    ...CONTEXT_WINDOW_KEYS.flatMap((key) => [cfg?.[key], model?.[key]])
+  ]);
   if (explicit) return explicit;
   const known = inferKnownContextWindow(model, cfg);
   if (known) return known;
-  return firstPositive([
-    cfg?.max_tokens,
-    cfg?.maxTokens,
-    cfg?.max_output_tokens,
-    model?.max_tokens,
-    model?.maxTokens,
-    model?.max_output_tokens
-  ]) || DEFAULT_CONTEXT_WINDOW_TOKENS;
+  return 0;
 }
 
 function estimateValueChars(value) {
@@ -115,7 +125,9 @@ export function buildContextWindowSnapshot({
   warningThreshold = CONTEXT_WARNING_THRESHOLD,
   criticalThreshold = CONTEXT_CRITICAL_THRESHOLD
 } = {}) {
-  const modelContextWindow = Math.max(1, resolveModelContextWindowTokens(cfg, model));
+  const resolvedContextWindow = resolveModelContextWindowTokens(cfg, model);
+  const contextWindowKnown = resolvedContextWindow > 0;
+  const modelContextWindow = contextWindowKnown ? resolvedContextWindow : 0;
   const estimatedTokens = estimateMessagesTokens(messages, {
     cfg,
     charsPerToken: readCharsPerToken(state, cfg)
@@ -127,7 +139,7 @@ export function buildContextWindowSnapshot({
     normalizedWarning,
     normalizeThreshold(criticalThreshold, CONTEXT_CRITICAL_THRESHOLD)
   );
-  const utilization = Math.min(1, estimatedTokens / modelContextWindow);
+  const utilization = contextWindowKnown ? Math.min(1, estimatedTokens / modelContextWindow) : 0;
   const reasons = [];
   let severity = "ok";
   let recommendation = "continue";
@@ -141,6 +153,7 @@ export function buildContextWindowSnapshot({
     recommendation = "compress";
     reasons.push("context-window-high");
   }
+  if (!contextWindowKnown) reasons.push("context-window-unknown");
 
   if (messageCount >= 80 && recommendation === "continue") {
     severity = "warning";
@@ -158,6 +171,7 @@ export function buildContextWindowSnapshot({
     sessionId: sessionId ? String(sessionId) : undefined,
     estimatedTokens,
     modelContextWindow,
+    contextWindowKnown,
     utilization,
     warningThreshold: normalizedWarning,
     criticalThreshold: normalizedCritical,

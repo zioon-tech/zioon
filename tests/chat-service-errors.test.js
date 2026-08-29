@@ -9,6 +9,7 @@ vi.mock("../extensions/dev.langchain-chat/llm-proxy.ts", () => ({
 }));
 
 import { runStream } from "../extensions/dev.langchain-chat/chat-service.js";
+import { getModelAvailability } from "../extensions/dev.langchain-chat/model-health.js";
 
 function createSseResponse(payload) {
   const encoder = new globalThis.TextEncoder();
@@ -64,6 +65,7 @@ function run(overrides = {}) {
 describe("runStream error propagation and retries", () => {
   beforeEach(() => {
     mocks.proxyLLMRequest.mockReset();
+    localStorage.clear();
     window.zion = {
       notification: { show: vi.fn() },
       models: {
@@ -97,6 +99,11 @@ describe("runStream error propagation and retries", () => {
       retryable: false
     });
     expect(result.error?.message).toContain("invalid access token");
+    expect(getModelAvailability("test", "test-model")).toMatchObject({
+      status: "unavailable",
+      reason: "invalid_credentials",
+      source: "actual-run"
+    });
   });
 
   it("retries a transient in-stream proxy error before any output", async () => {
@@ -115,6 +122,11 @@ describe("runStream error propagation and retries", () => {
     expect(onToken.mock.calls.map(([token]) => token).join("")).toBe("recovered");
     expect(onEnd).toHaveBeenCalledOnce();
     expect(onError).not.toHaveBeenCalled();
+    expect(getModelAvailability("test", "test-model")).toMatchObject({
+      status: "available",
+      reason: "request_succeeded",
+      source: "actual-run"
+    });
     expect(window.zion.notification.show).toHaveBeenCalledWith(
       expect.stringContaining("自动重试 (1/3)"),
       expect.objectContaining({ type: "warning" })

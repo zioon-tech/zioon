@@ -127,11 +127,52 @@ export type SelectionToolbarItem = {
   render?: (ctx: SelectionToolbarContext & { anchorEl: HTMLElement; event?: Event }) => HTMLElement;
 };
 
-export type ModelInfo = { id: string; label?: string };
+export type ModelLimits = {
+  contextWindowTokens?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  defaultOutputTokens?: number;
+  source?: "provider-api" | "builtin" | "user" | "unknown" | string;
+  updatedAt?: number | string;
+};
+
+export type ModelAvailability = {
+  status: "available" | "degraded" | "unavailable" | "misconfigured" | "unknown";
+  reason?: string;
+  source?: "provider-list" | "actual-run" | "config" | "unknown" | string;
+  checkedAt?: number;
+  expiresAt?: number | null;
+  stale?: boolean;
+  latencyMs?: number;
+  httpStatus?: number;
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
+  consecutiveFailures?: number;
+};
+
+export type ModelInfo = {
+  id: string;
+  label?: string;
+  description?: string;
+  limits?: ModelLimits;
+  capabilities?: Record<string, boolean | string | number>;
+  availability?: ModelAvailability;
+};
 export type ModelProvider = {
   id: string;
   list(): ModelInfo[] | Promise<ModelInfo[]>;
   resolve(modelId: string): any | Promise<any>;
+  checkAvailability?(options?: {
+    modelIds?: string[];
+    force?: boolean;
+  }): any | Promise<any>;
+};
+
+export type PluginDevSessionRecord = {
+  pluginId: string;
+  devId: string;
+  baseUrl: string;
+  dir: string;
 };
 
 // Slash Commands
@@ -200,6 +241,30 @@ declare global {
           key: string,
           handler: (newVal: T | undefined, oldVal: T | undefined) => void
         ): Disposable;
+      };
+      plugins?: {
+        list(): any[];
+        get(id: string): any | undefined;
+        getStats(): any;
+        getPluginOrigin(plugin: any): "builtin" | "dev" | "external";
+        installFromInfo(plugin: any, options?: { enabled?: boolean }): Promise<any>;
+        hotReloadFromInfo(plugin: any, options?: { enabled?: boolean; skipNotification?: boolean }): Promise<any>;
+        enable(id: string): Promise<void>;
+        disable(id: string): Promise<void>;
+        uninstall(id: string): Promise<void>;
+        on(event: string, handler: (...args: any[]) => void): void;
+        off(event: string, handler: (...args: any[]) => void): void;
+        listDevSessionRecords(): Record<string, PluginDevSessionRecord>;
+        saveDevSessionRecord(record: PluginDevSessionRecord): boolean;
+        removeDevSessionRecord(filter: { pluginId?: string; devId?: string }): boolean;
+      };
+      pluginInstaller?: {
+        setBaseUrl(url: string): void;
+        installFromFile(file: File): Promise<any>;
+        installFromService(pluginId: string): Promise<any>;
+        installFromDevBase(baseUrl: string, devId: string, options?: { sourceDir?: string }): Promise<any>;
+        searchPlugins(query: string, limit?: number): Promise<any>;
+        listPlugins(limit?: number, offset?: number): Promise<any>;
       };
         styles: {
         register(id: string, css: string): Disposable;
@@ -543,6 +608,16 @@ declare global {
         };
         getPanelSessionId(panelId: string): string | null;
         isEditorShowingSession(editor: EditorProxy | null, sessionId: string | null): boolean;
+        parseMessages(docText: string): any[];
+        getDocument(sessionId: string, opts?: { flush?: boolean }): Promise<string>;
+        getMessages(sessionId: string, opts?: { flush?: boolean }): Promise<any[]>;
+        publishDerivedTagSource(source: {
+          id: string;
+          label?: string;
+          readOnly?: boolean;
+          sessions?: Record<string, Array<string | { path: string; kind?: string }>>;
+        }): boolean;
+        removeDerivedTagSource(sourceId: string): boolean;
       };
       // models registry (placeholder)
       models?: {

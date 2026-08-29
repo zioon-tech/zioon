@@ -9,7 +9,10 @@ import {
   buildFileTreeModel,
   normalizeContextBiographyEvents
 } from "../extensions/dev.tools/context-panel.js";
-import { createTerminalToolExecutionContext, resolveTerminalToolArgs } from "../extensions/dev.tools/terminal-tool-context.js";
+import {
+  createTerminalToolExecutionContext,
+  getTerminalSessionRequirementError
+} from "../extensions/dev.tools/terminal-tool-context.js";
 
 const terminalSessions = [
   { id: "local-1", type: "local", cwd: "/Users/bytedance" },
@@ -97,13 +100,29 @@ describe("context file resources", () => {
     expect(isKnownFileToolFailure("// File: /tmp/errors.txt (1-1)\n     1 | ENOENT is documented here")).toBe(false);
   });
 
-  it("captures auto-injected terminal args without mutating provider args", () => {
-    const original = { path: "README.md" };
-    const resolved = resolveTerminalToolArgs("read", original, "local-1");
-
-    expect(original).toEqual({ path: "README.md" });
-    expect(resolved).toEqual({ path: "README.md", session_id: "local-1" });
-    expect(createTerminalToolExecutionContext(resolved, terminalSessions)).toMatchObject({
+  it("requires an explicit terminal session before creating execution context", () => {
+    expect(getTerminalSessionRequirementError("read", { path: "README.md" }, terminalSessions)).toContain("Missing session_id");
+    expect(getTerminalSessionRequirementError("read", {
+      path: "README.md",
+      session_id: "local-1"
+    }, terminalSessions)).toBe("");
+    expect(getTerminalSessionRequirementError("Bash", {
+      command: "pwd",
+      session_id: "local"
+    }, terminalSessions)).toContain("terminal session type");
+    expect(getTerminalSessionRequirementError("Bash", {
+      command: "pwd",
+      session_id: "machine:local"
+    }, terminalSessions)).toContain("is a machine_id");
+    expect(getTerminalSessionRequirementError("Bash", {
+      command: "pwd",
+      session_id: "missing-session"
+    }, terminalSessions)).toContain("Unknown session_id");
+    expect(getTerminalSessionRequirementError("fsRead", { path: "README.md" })).toBe("");
+    expect(createTerminalToolExecutionContext({
+      path: "README.md",
+      session_id: "local-1"
+    }, terminalSessions)).toMatchObject({
       sourceId: "terminal:local-1",
       terminalSession: { id: "local-1", type: "local", cwd: "/Users/bytedance" }
     });

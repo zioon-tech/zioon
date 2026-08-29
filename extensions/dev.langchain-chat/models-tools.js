@@ -1,9 +1,15 @@
 /**
  * dev.langchain-chat: models tools for LLM (CRUD + set active)
- * - Registers a single aggregated tool "modelsManage" to list/get/add/update/delete/set_active/import/export models.
+ * - Registers a single aggregated tool "modelsManage" to list/check/get/add/update/delete/set_active/import/export models.
  * - Writable provider: user.dynamic (stored in localStorage), other providers are read-only.
  */
-import { normalizeAutoContinueOnColonMaxAttempts } from "./model-config-fields.js";
+import {
+  normalizeAutoContinueOnColonMaxAttempts,
+  normalizeModelDescription
+} from "./model-config-fields.js";
+import { refreshModelCatalog } from "./model-catalog.js";
+import { invalidateModelAvailability } from "./model-health.js";
+import { userModelsProvider } from "./user-models-provider.js";
 
 export function registerModelsTools() {
   try {
@@ -29,43 +35,9 @@ export function registerModelsTools() {
       try {
         const ids = window.zion?.models?.listProviders?.() || [];
         if (ids.includes(DYN_PROVIDER_ID)) return;
-        const provider = {
-          id: DYN_PROVIDER_ID,
-          async list() {
-            const dict = loadStore();
-            return Object.keys(dict).map(id => ({ id, label: dict[id]?.label || id }));
-          },
-          async resolve(modelId) {
-            const dict = loadStore();
-            const cfg = dict[modelId];
-            if (!cfg) return null;
-            return { id: modelId, ...cfg };
-          }
-        };
-        window.zion?.models?.registerProvider?.(provider);
+        window.zion?.models?.registerProvider?.(userModelsProvider);
       } catch (e) {
         console.warn("[models-tools] ensureProvider error", e);
-      }
-    };
-
-    const rebuildCatalog = async () => {
-      try {
-        const ids = window.zion?.models?.listProviders?.() || [];
-        const models = [];
-        for (const pid of ids) {
-          const prov = window.zion?.models?.getProvider?.(pid);
-          if (!prov?.list) continue;
-          let list = [];
-          try { list = await prov.list(); } catch {}
-          for (const m of (list || [])) {
-            models.push({ providerId: pid, id: m.id, label: m.label || m.id });
-          }
-        }
-        window.zion?.state?.set("models.catalog", models);
-        return models;
-      } catch (e) {
-        console.warn("[models-tools] rebuildCatalog error", e);
-        return [];
       }
     };
 
@@ -78,6 +50,42 @@ export function registerModelsTools() {
       } catch { return false; }
     };
 
+    const validateLimitArgs = (args) => {
+      const fields = [
+        ["context_window_tokens", args?.context_window_tokens],
+        ["max_input_tokens", args?.max_input_tokens],
+        ["max_output_tokens", args?.max_output_tokens],
+        ["max_tokens", args?.max_tokens]
+      ];
+      for (const [name, value] of fields) {
+        if (value == null) continue;
+        const number = Number(value);
+        if (!Number.isFinite(number) || number <= 0) return `${name} must be a positive number`;
+      }
+      if (
+        args?.context_window_tokens != null
+        && args?.max_input_tokens != null
+        && Number(args.max_input_tokens) > Number(args.context_window_tokens)
+      ) {
+        return "max_input_tokens cannot exceed context_window_tokens";
+      }
+      if (
+        args?.context_window_tokens != null
+        && args?.max_output_tokens != null
+        && Number(args.max_output_tokens) > Number(args.context_window_tokens)
+      ) {
+        return "max_output_tokens cannot exceed context_window_tokens";
+      }
+      if (
+        args?.max_output_tokens != null
+        && args?.max_tokens != null
+        && Number(args.max_tokens) > Number(args.max_output_tokens)
+      ) {
+        return "max_tokens cannot exceed max_output_tokens";
+      }
+      return "";
+    };
+
     ensureProvider();
 
     /* ===== Tool schema ===== */
@@ -86,19 +94,30 @@ export function registerModelsTools() {
         type: "function",
         function: {
           name: "modelsManage",
-          description: "模型管理（list/get/add/update/delete/set_active/import/export）。仅支持新增/修改/删除 user.dynamic 提供者下的模型。",
+          description: "模型目录与健康管理（list/check/get/add/update/delete/set_active/import/export）。list 会返回实时可用性；仅支持新增/修改/删除 user.dynamic 提供者下的模型。",
           parameters: {
             type: "object",
             properties: {
-              action: { type: "string", enum: ["list","get","add","update","delete","set_active","import","export"], description: "操作类型" },
+              action: { type: "string", enum: ["list","check","get","add","update","delete","set_active","import","export"], description: "操作类型" },
               provider_id: { type: "string", description: "提供者ID（add/update/delete/export 默认 user.dynamic；list 时用于筛选；不传则显示全部）" },
               model_id: { type: "string", description: "模型ID（get/update/delete/set_active 必填）" },
+              availability: {
+                type: "string",
+                enum: ["available", "degraded", "unavailable", "misconfigured", "unknown"],
+                description: "list/check 时按当前可用性筛选"
+              },
+              refresh_health: { type: "boolean", description: "list 时是否刷新已过期健康状态，默认 true" },
+              force: { type: "boolean", description: "check 时忽略缓存强制检查；set_active 时允许显式选择不可用模型" },
               label: { type: "string", description: "模型标签（可选）" },
+              description: { type: "string", maxLength: 500, description: "模型描述（可选）" },
               url: { type: "string", description: "OpenAI 兼容 URL" },
               key: { type: "string", description: "API key" },
               stream: { type: "boolean", description: "是否流式" },
               temperature: { type: "number", description: "采样温度" },
-              max_tokens: { type: "number", description: "最大输出 tokens" },
+              context_window_tokens: { type: "number", description: "模型上下文窗口 tokens" },
+              max_input_tokens: { type: "number", description: "模型最大输入 tokens" },
+              max_output_tokens: { type: "number", description: "模型能力允许的最大输出 tokens" },
+              max_tokens: { type: "number", description: "Zion 单次请求默认输出 tokens" },
               supportsImage: { type: "boolean", description: "是否支持图片输入" },
               supportsThinking: { type: "boolean", description: "模型是否支持思考" },
               supportsThinkingEffort: { type: "boolean", description: "模型是否支持思考强度控制" },
@@ -150,13 +169,63 @@ export function registerModelsTools() {
         const modelId = String(args?.model_id || "").trim();
         const dict = loadStore();
 
-        const refresh = async () => { try { await rebuildCatalog(); } catch {} };
+        const refresh = async ({
+          checkHealth = false,
+          force = false,
+          pid = providerId,
+          mid = modelId || undefined,
+          invalidate = false
+        } = {}) => {
+          try {
+            if (invalidate) invalidateModelAvailability({ providerId: pid, modelId: mid });
+            return await refreshModelCatalog({
+              checkHealth,
+              force,
+              providerId: pid,
+              modelId: mid
+            });
+          } catch {
+            return [];
+          }
+        };
 
         if (action === "list") {
-          const models = await rebuildCatalog();
-          const filtered = providerId ? models.filter(m => m.providerId === providerId) : models;
+          const models = await refresh({
+            checkHealth: args?.refresh_health !== false,
+            pid: providerId,
+            mid: modelId || undefined
+          });
+          const availability = String(args?.availability || "").trim();
+          const filtered = models.filter((model) => {
+            if (providerId && model.providerId !== providerId) return false;
+            if (modelId && model.id !== modelId) return false;
+            if (availability && model.availability?.status !== availability) return false;
+            return true;
+          });
           const active = window.zion?.state?.get("chat.activeModel");
-          return JSON.stringify({ models: filtered, active }, null, 2);
+          const summary = {};
+          for (const model of models) {
+            const status = model.availability?.status || "unknown";
+            summary[status] = (summary[status] || 0) + 1;
+          }
+          return JSON.stringify({ models: filtered, active, summary }, null, 2);
+        }
+
+        if (action === "check") {
+          const models = await refresh({
+            checkHealth: true,
+            force: args?.force !== false,
+            pid: providerId,
+            mid: modelId || undefined
+          });
+          const availability = String(args?.availability || "").trim();
+          const filtered = models.filter((model) => {
+            if (providerId && model.providerId !== providerId) return false;
+            if (modelId && model.id !== modelId) return false;
+            if (availability && model.availability?.status !== availability) return false;
+            return true;
+          });
+          return JSON.stringify({ checked: filtered }, null, 2);
         }
 
         if (action === "get") {
@@ -167,7 +236,9 @@ export function registerModelsTools() {
             if (!prov?.resolve) return `Provider not found: ${providerId}`;
             const cfg = await prov.resolve(modelId);
             if (!cfg) return `Model not found: ${providerId}:${modelId}`;
-            return JSON.stringify(cfg, null, 2);
+            const catalog = await refresh({ checkHealth: true, pid: providerId, mid: modelId });
+            const item = catalog.find((model) => model.providerId === providerId && model.id === modelId);
+            return JSON.stringify({ ...cfg, availability: item?.availability }, null, 2);
           } else {
             const ids = window.zion?.models?.listProviders?.() || [];
             for (const pid of ids) {
@@ -175,7 +246,11 @@ export function registerModelsTools() {
               if (!prov?.resolve) continue;
               try {
                 const cfg = await prov.resolve(modelId);
-                if (cfg) return JSON.stringify(cfg, null, 2);
+                if (cfg) {
+                  const catalog = await refresh({ checkHealth: true, pid, mid: modelId });
+                  const item = catalog.find((model) => model.providerId === pid && model.id === modelId);
+                  return JSON.stringify({ ...cfg, availability: item?.availability }, null, 2);
+                }
               } catch {}
             }
             return `Model not found: ${modelId}`;
@@ -187,7 +262,7 @@ export function registerModelsTools() {
           let pid = providerId;
           // If provider_id is missing, search catalog to locate the model across providers.
           if (!pid) {
-            const models = (await rebuildCatalog()) || [];
+            const models = await refresh({ checkHealth: true, pid: undefined, mid: modelId });
             const found = models.find(m => m.id === modelId);
             if (found) pid = found.providerId;
           }
@@ -195,19 +270,41 @@ export function registerModelsTools() {
           const ok = await modelExists(pid, modelId);
           if (!ok) return `Model not found: ${pid}:${modelId}`;
           // Label 优先使用目录中的 label
-          const catalog = window.zion?.state?.get("models.catalog") || [];
+          const catalog = await refresh({ checkHealth: true, pid, mid: modelId });
           const item = catalog.find(m => m.providerId === pid && m.id === modelId);
+          if (
+            !args?.force
+            && (item?.availability?.status === "unavailable" || item?.availability?.status === "misconfigured")
+          ) {
+            return JSON.stringify({
+              error: "Model is not currently usable",
+              model: `${pid}:${modelId}`,
+              availability: item.availability
+            }, null, 2);
+          }
           window.zion?.state?.set("chat.activeModel", { providerId: pid, modelId, label: item?.label || modelId });
-          return JSON.stringify({ set_active: `${pid}:${modelId}` }, null, 2);
+          return JSON.stringify({
+            set_active: `${pid}:${modelId}`,
+            availability: item?.availability || { status: "unknown" }
+          }, null, 2);
         }
 
         if (action === "add" || action === "update") {
           const pid = providerId || DYN_PROVIDER_ID;
+          const limitError = validateLimitArgs(args);
+          if (limitError) return limitError;
+          if (
+            pid !== DYN_PROVIDER_ID
+            && !modelId
+            && [args?.description, args?.context_window_tokens, args?.max_input_tokens, args?.max_output_tokens]
+              .some((value) => value != null)
+          ) {
+            return "Missing model_id for model limits";
+          }
           const updateBuiltinProviderConfig = (storageKey, { allowLabel = false, allowModel = false } = {}) => {
             const configStr = localStorage.getItem(storageKey) || "{}";
             const config = JSON.parse(configStr);
             if (args?.temperature != null) config.temperature = Number(args.temperature);
-            if (args?.max_tokens != null) config.max_tokens = Number(args.max_tokens);
             if (args?.stream != null) config.stream = !!args.stream;
             if (args?.supportsImage != null) config.supportsImage = !!args.supportsImage;
             if (args?.supportsThinking != null) config.supportsThinking = !!args.supportsThinking;
@@ -223,6 +320,31 @@ export function registerModelsTools() {
             }
             if (allowLabel && args?.label != null) config.label = String(args.label);
             if (allowModel && args?.model != null) config.modelName = String(args.model);
+            if (modelId && args?.description != null) {
+              const modelDescriptions = { ...(config.modelDescriptions || {}) };
+              const description = normalizeModelDescription(args.description);
+              if (description) modelDescriptions[modelId] = description;
+              else delete modelDescriptions[modelId];
+              if (Object.keys(modelDescriptions).length) config.modelDescriptions = modelDescriptions;
+              else delete config.modelDescriptions;
+            }
+            if (modelId && [
+              args?.context_window_tokens,
+              args?.max_input_tokens,
+              args?.max_output_tokens,
+              args?.max_tokens
+            ].some((value) => value != null)) {
+              const modelLimits = { ...(config.modelLimits || {}) };
+              const limits = { ...(modelLimits[modelId] || {}) };
+              if (args?.context_window_tokens != null) limits.contextWindowTokens = Number(args.context_window_tokens);
+              if (args?.max_input_tokens != null) limits.maxInputTokens = Number(args.max_input_tokens);
+              if (args?.max_output_tokens != null) limits.maxOutputTokens = Number(args.max_output_tokens);
+              if (args?.max_tokens != null) limits.defaultOutputTokens = Number(args.max_tokens);
+              modelLimits[modelId] = limits;
+              config.modelLimits = modelLimits;
+            } else if (args?.max_tokens != null) {
+              config.max_tokens = Number(args.max_tokens);
+            }
             localStorage.setItem(storageKey, JSON.stringify(config));
           };
 
@@ -233,7 +355,7 @@ export function registerModelsTools() {
               localStorage.setItem("zion.claude.apiKey", String(args.key));
             }
             updateBuiltinProviderConfig("zion.claude.config");
-            await refresh();
+            await refresh({ checkHealth: true, force: true, pid, mid: modelId || undefined, invalidate: true });
             return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "Claude API key configured" } }, null, 2);
           }
 
@@ -243,7 +365,7 @@ export function registerModelsTools() {
               localStorage.setItem("zion.gemini.apiKey", String(args.key));
             }
             updateBuiltinProviderConfig("zion.gemini.config");
-            await refresh();
+            await refresh({ checkHealth: true, force: true, pid, mid: modelId || undefined, invalidate: true });
             return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "Gemini API key configured" } }, null, 2);
           }
 
@@ -253,7 +375,7 @@ export function registerModelsTools() {
               localStorage.setItem("zion.deepseek.apiKey", String(args.key));
             }
             updateBuiltinProviderConfig("zion.deepseek.config", { allowLabel: true, allowModel: true });
-            await refresh();
+            await refresh({ checkHealth: true, force: true, pid, mid: modelId || undefined, invalidate: true });
             return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "DeepSeek API key configured" } }, null, 2);
           }
 
@@ -262,11 +384,17 @@ export function registerModelsTools() {
           if (!modelId) return "Missing model_id";
           const patch = {
             label: args?.label != null ? String(args.label) : undefined,
+            description: args?.description != null
+              ? normalizeModelDescription(args.description)
+              : undefined,
             url: args?.url != null ? String(args.url) : undefined,
             key: args?.key != null ? String(args.key) : undefined,
             stream: args?.stream != null ? !!args.stream : undefined,
             temperature: args?.temperature != null ? Number(args.temperature) : undefined,
             max_tokens: args?.max_tokens != null ? Number(args.max_tokens) : undefined,
+            contextWindowTokens: args?.context_window_tokens != null ? Number(args.context_window_tokens) : undefined,
+            maxInputTokens: args?.max_input_tokens != null ? Number(args.max_input_tokens) : undefined,
+            maxOutputTokens: args?.max_output_tokens != null ? Number(args.max_output_tokens) : undefined,
             supportsImage: args?.supportsImage != null ? !!args.supportsImage : undefined,
             supportsThinking: args?.supportsThinking != null ? !!args.supportsThinking : undefined,
             supportsThinkingEffort: args?.supportsThinkingEffort != null ? !!args.supportsThinkingEffort : undefined,
@@ -291,7 +419,7 @@ export function registerModelsTools() {
           dict[modelId] = next;
           saveStore(dict);
           ensureProvider();
-          await refresh();
+          await refresh({ checkHealth: true, force: true, pid, mid: modelId, invalidate: true });
           return JSON.stringify({ saved: { providerId: pid, id: modelId, config: next } }, null, 2);
         }
 
@@ -302,7 +430,8 @@ export function registerModelsTools() {
           if (dict[modelId]) {
             delete dict[modelId];
             saveStore(dict);
-            await refresh();
+            invalidateModelAvailability({ providerId: pid, modelId });
+            await refresh({ pid, mid: undefined });
             // If active model was deleted, pick a fallback
             const active = window.zion?.state?.get("chat.activeModel");
             if (active?.providerId === pid && active?.modelId === modelId) {
@@ -328,7 +457,8 @@ export function registerModelsTools() {
           const cur = dict;
           const next = merge ? { ...cur, ...src } : { ...src };
           saveStore(next);
-          await refresh();
+          invalidateModelAvailability({ providerId: pid });
+          await refresh({ pid, mid: undefined });
           return JSON.stringify({ imported: Object.keys(src).length, total: Object.keys(next).length }, null, 2);
         }
 

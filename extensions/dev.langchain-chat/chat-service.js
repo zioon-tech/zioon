@@ -19,6 +19,10 @@ import {
 } from "./model-config-fields.js";
 import { proxyLLMRequest } from "./llm-proxy.ts";
 import { repairToolCallMessageOrder } from "../../src/chat/message-order.ts";
+import {
+  recordModelAvailabilityFailure,
+  recordModelAvailabilitySuccess
+} from "./model-health.js";
 
 /**
  * 消息格式转换函数 - 将标准消息格式转换为特定 provider 所需的格式
@@ -956,6 +960,7 @@ export async function runStream({
 }) {
   // 读取当前激活的模型（默认 DeepSeek V4 Flash）
   const active = activeModel || window.zion.state.get("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-v4-flash" };
+  const availabilityStartedAt = Date.now();
   const reasoningSegmentId = stepIndex != null ? `${runId}:step:${stepIndex}` : runId;
   const controlEventBase = {
     runId,
@@ -969,9 +974,25 @@ export async function runStream({
     silentReasoning
   };
   const provider = window.zion.models.getProvider(active.providerId);
-  if (!provider) throw new Error(`Provider not found: ${active.providerId}`);
-  let cfg = await provider.resolve(active.modelId);
-  if (!cfg) throw new Error(`Model config not found: ${active.providerId}:${active.modelId}`);
+  if (!provider) {
+    const error = new Error(`Provider not found: ${active.providerId}`);
+    error.code = "provider_not_found";
+    recordModelAvailabilityFailure(active, error);
+    throw error;
+  }
+  let cfg;
+  try {
+    cfg = await provider.resolve(active.modelId);
+  } catch (error) {
+    recordModelAvailabilityFailure(active, error);
+    throw error;
+  }
+  if (!cfg) {
+    const error = new Error(`Model config not found: ${active.providerId}:${active.modelId}`);
+    error.code = "model_not_found";
+    recordModelAvailabilityFailure(active, error);
+    throw error;
+  }
   const thinkingEffortOverride = normalizeThinkingEffort(active?.thinkingEffort);
   if (thinkingEffortOverride !== "auto") {
     cfg = {
@@ -983,7 +1004,10 @@ export async function runStream({
   
   // 检查是否需要配置 API key
   if (cfg._requiresConfig && (!cfg.key || !cfg.key.trim())) {
-    throw new Error(`模型 ${active.providerId}:${active.modelId} 需要配置 API key。${cfg._configHint || '请使用 modelsManage 工具配置 API key。'}`);
+    const error = new Error(`模型 ${active.providerId}:${active.modelId} 需要配置 API key。${cfg._configHint || '请使用 modelsManage 工具配置 API key。'}`);
+    error.code = "missing_api_key";
+    recordModelAvailabilityFailure(active, error);
+    throw error;
   }
 
   // 创建 AbortController 用于停止请求
@@ -1382,6 +1406,9 @@ export async function runStream({
             // #region debug-point B:stream-completion-summary
             fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"B",traceId:String(runId||""),location:"extensions/dev.langchain-chat/chat-service.js:stream:done",msg:"[DEBUG] provider stream completed",data:{stepIndex,providerId:active?.providerId,modelId:active?.modelId,providerType,finishReason,contentLength:contentBuf.length,reasoningLength:reasoningBuf.length,sawToolCalls,sawCompletionSignal,toolCallBuffers:toolCallsBuffer.length},ts:Date.now()})}).catch(()=>{});
             // #endregion
+            recordModelAvailabilitySuccess(active, {
+              latencyMs: Math.max(0, Date.now() - availabilityStartedAt)
+            });
             onEnd();
             return { reasoning_content: reasoningBuf, usage };
           }
@@ -1469,6 +1496,9 @@ export async function runStream({
       // #region debug-point B:stream-reader-end-summary
       fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"B",traceId:String(runId||""),location:"extensions/dev.langchain-chat/chat-service.js:stream:reader-end",msg:"[DEBUG] provider stream reader ended",data:{stepIndex,providerId:active?.providerId,modelId:active?.modelId,providerType,finishReason,contentLength:contentBuf.length,reasoningLength:reasoningBuf.length,sawToolCalls,sawCompletionSignal,toolCallBuffers:toolCallsBuffer.length},ts:Date.now()})}).catch(()=>{});
       // #endregion
+      recordModelAvailabilitySuccess(active, {
+        latencyMs: Math.max(0, Date.now() - availabilityStartedAt)
+      });
       onEnd();
       return { reasoning_content: reasoningBuf, usage };
     } else {
@@ -1609,6 +1639,9 @@ export async function runStream({
         usage
       });
       if (continued) return continued;
+      recordModelAvailabilitySuccess(active, {
+        latencyMs: Math.max(0, Date.now() - availabilityStartedAt)
+      });
       onEnd();
       return { reasoning_content: reasoningBuf, usage };
     }
@@ -1660,6 +1693,7 @@ export async function runStream({
           _retryBaseDelay
         });
       }
+      recordModelAvailabilityFailure(active, e);
       onError?.(e);
       return { reasoning_content: reasoningBuf, error: e };
   }

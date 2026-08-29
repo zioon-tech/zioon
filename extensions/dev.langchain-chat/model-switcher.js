@@ -10,6 +10,7 @@
 import {
   DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
   MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
+  MAX_MODEL_DESCRIPTION_LENGTH,
   THINKING_MODE_FIELDS,
   getThinkingEffortOptions,
   getThinkingEffortOptionLabel,
@@ -18,6 +19,7 @@ import {
   getThinkingModeOptions,
   getThinkingModeOptionLabel,
   normalizeAutoContinueOnColonMaxAttempts,
+  normalizeModelDescription,
   normalizeThinkingEffort,
   normalizeThinkingMode
 } from "./model-config-fields.js";
@@ -749,6 +751,8 @@ export function installModelSwitcher() {
     // 字段
     const inpId = textInput(t("modelSwitcher.placeholder.modelId", "e.g. deepseek-v4-flash"));
     const inpLabel = textInput(t("modelSwitcher.placeholder.label", "e.g. My Model"));
+    const inpDescription = textInput(t("modelSwitcher.placeholder.description", "Model purpose or strengths"));
+    inpDescription.maxLength = MAX_MODEL_DESCRIPTION_LENGTH;
     const selProviderType = document.createElement("select");
     Object.assign(selProviderType.style, {
       flex: "1",
@@ -806,6 +810,9 @@ export function installModelSwitcher() {
     const inpModelName = textInput(t("modelSwitcher.placeholder.modelOverride", "Optional, e.g. gpt-4o-mini"));
     const inpTemp = numberInput("0.7");
     const inpMaxTok = numberInput("4096");
+    const inpContextWindow = numberInput("128000");
+    const inpMaxInput = numberInput("128000");
+    const inpMaxOutput = numberInput("8192");
     const inpAutoContinueOnColon = numberInput(String(DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS));
     inpAutoContinueOnColon.min = "0";
     inpAutoContinueOnColon.max = String(MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS);
@@ -824,12 +831,16 @@ export function installModelSwitcher() {
     if (isNew) {
       inpId.value = "";
       inpLabel.value = "";
+      inpDescription.value = "";
       selProviderType.value = "openai";
       inpUrl.value = "";
       inpKey.value = "";
       inpModelName.value = "";
       inpTemp.value = "0";
       inpMaxTok.value = "";
+      inpContextWindow.value = "";
+      inpMaxInput.value = "";
+      inpMaxOutput.value = "";
       inpAutoContinueOnColon.value = String(DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS);
       inpInputPrice.value = "";
       inpOutputPrice.value = "";
@@ -843,12 +854,16 @@ export function installModelSwitcher() {
       const cfg = spec?.cfg || {};
       inpId.value = spec.id || "";
       inpLabel.value = spec.label || "";
+      inpDescription.value = cfg.description || spec.description || "";
       selProviderType.value = cfg.providerType || cfg.provider_type || "openai";
       inpUrl.value = cfg.url || cfg.baseURL || "";
       inpKey.value = cfg.key || cfg.apiKey || "";
       inpModelName.value = cfg.modelName || cfg.model || "";
       inpTemp.value = typeof cfg.temperature === "number" ? String(cfg.temperature) : "0";
       inpMaxTok.value = cfg.max_tokens != null ? String(cfg.max_tokens) : "";
+      inpContextWindow.value = cfg.contextWindowTokens ?? cfg.limits?.contextWindowTokens ?? "";
+      inpMaxInput.value = cfg.maxInputTokens ?? cfg.limits?.maxInputTokens ?? "";
+      inpMaxOutput.value = cfg.maxOutputTokens ?? cfg.limits?.maxOutputTokens ?? "";
       inpAutoContinueOnColon.value = String(
         normalizeAutoContinueOnColonMaxAttempts(cfg.autoContinueOnColonMaxAttempts)
       );
@@ -868,10 +883,14 @@ export function installModelSwitcher() {
         inpUrl.disabled = true;
         // 其他字段都可编辑
         inpLabel.disabled = false;
+        inpDescription.disabled = false;
         inpKey.disabled = false;
         inpModelName.disabled = false;
         inpTemp.disabled = false;
         inpMaxTok.disabled = false;
+        inpContextWindow.disabled = false;
+        inpMaxInput.disabled = false;
+        inpMaxOutput.disabled = false;
         inpAutoContinueOnColon.disabled = false;
         inpInputPrice.disabled = false;
         inpOutputPrice.disabled = false;
@@ -882,7 +901,7 @@ export function installModelSwitcher() {
         cbPreservedThinking.disabled = false;
         cbInterleavedThinking.disabled = false;
       } else if (readonly) {
-        [inpId, inpLabel, selProviderType, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok, inpAutoContinueOnColon, inpInputPrice, inpOutputPrice, selThinkingMode, selThinkingEffort].forEach(el => el.disabled = true);
+        [inpId, inpLabel, inpDescription, selProviderType, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok, inpContextWindow, inpMaxInput, inpMaxOutput, inpAutoContinueOnColon, inpInputPrice, inpOutputPrice, selThinkingMode, selThinkingEffort].forEach(el => el.disabled = true);
         [cbStream, cbImg, cbPreservedThinking, cbInterleavedThinking].forEach(el => el.disabled = true);
       }
     }
@@ -904,12 +923,16 @@ export function installModelSwitcher() {
     })()));
     editorWrap.appendChild(fieldRow(t("modelSwitcher.modelId", "Model ID"), inpId));
     editorWrap.appendChild(fieldRow(t("modelSwitcher.displayName", "Display Name"), inpLabel));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.description", "Model Description"), inpDescription));
     editorWrap.appendChild(fieldRow(t("modelSwitcher.providerType", "Provider Type"), selProviderType));
     editorWrap.appendChild(fieldRow(t("modelSwitcher.baseUrl", "Base URL"), inpUrl));
     editorWrap.appendChild(fieldRow("API Key", inpKey));
     editorWrap.appendChild(fieldRow(t("modelSwitcher.modelOverride", "Model Override"), inpModelName));
     editorWrap.appendChild(fieldRow("Temperature", inpTemp));
-    editorWrap.appendChild(fieldRow("Max Tokens", inpMaxTok));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.contextWindow", "Context Window"), inpContextWindow));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.maxInputTokens", "Max Input Tokens"), inpMaxInput));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.maxOutputTokens", "Max Output Tokens"), inpMaxOutput));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.defaultOutputTokens", "Default Output Tokens"), inpMaxTok));
     if (isDeepseekProvider) {
       const row = fieldRow(
         t("modelSwitcher.autoContinueOnColonMaxAttempts", "Abnormal-stop Continuations"),
@@ -977,11 +1000,28 @@ export function installModelSwitcher() {
           localStorage.setItem("zion.deepseek.apiKey", key);
           
           // 保存其他参数
+          const previous = (() => {
+            try { return JSON.parse(localStorage.getItem("zion.deepseek.config") || "{}"); } catch { return {}; }
+          })();
+          const modelLimits = { ...(previous.modelLimits || {}) };
+          const modelDescriptions = { ...(previous.modelDescriptions || {}) };
+          const description = normalizeModelDescription(inpDescription.value);
+          if (description) modelDescriptions[id] = description;
+          else delete modelDescriptions[id];
+          modelLimits[id] = {
+            ...(modelLimits[id] || {}),
+            contextWindowTokens: inpContextWindow.value === "" ? undefined : Number(inpContextWindow.value),
+            maxInputTokens: inpMaxInput.value === "" ? undefined : Number(inpMaxInput.value),
+            maxOutputTokens: inpMaxOutput.value === "" ? undefined : Number(inpMaxOutput.value),
+            defaultOutputTokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value)
+          };
           const deepseekConfig = {
+            ...previous,
             label: inpLabel.value.trim() || undefined,
             modelName: inpModelName.value.trim() || undefined,
             temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
-            max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
+            modelLimits,
+            modelDescriptions: Object.keys(modelDescriptions).length ? modelDescriptions : undefined,
             autoContinueOnColonMaxAttempts: normalizeAutoContinueOnColonMaxAttempts(
               inpAutoContinueOnColon.value
             ),
@@ -1024,11 +1064,15 @@ export function installModelSwitcher() {
       }
       const cfg = {
         label: inpLabel.value.trim() || undefined,
+        description: normalizeModelDescription(inpDescription.value) || undefined,
         url,
         key,
         stream: !!cbStream.checked,
         temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
         max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
+        contextWindowTokens: inpContextWindow.value === "" ? undefined : Number(inpContextWindow.value),
+        maxInputTokens: inpMaxInput.value === "" ? undefined : Number(inpMaxInput.value),
+        maxOutputTokens: inpMaxOutput.value === "" ? undefined : Number(inpMaxOutput.value),
         pricing: {
           inputPerMTok: inpInputPrice.value === "" ? undefined : Number(inpInputPrice.value),
           outputPerMTok: inpOutputPrice.value === "" ? undefined : Number(inpOutputPrice.value),

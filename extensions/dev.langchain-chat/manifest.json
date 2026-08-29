@@ -1,13 +1,13 @@
 {
   "name": "dev.langchain-chat",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "Provide chat run, stop, retry, and model configuration capabilities.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.langchain-chat",
     "name": "Chat",
-    "version": "0.0.1",
+    "version": "0.0.3",
     "main": "./main.js",
     "presentation": {
       "displayName": {
