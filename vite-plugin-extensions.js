@@ -7,6 +7,8 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
  * 仅支持 manifest.json（新格式）
  */
 export function zionExtensionsPlugin() {
+  const externalizedBuiltinExtensions = new Set(['dev.identity']);
+
   return {
     name: 'zion-extensions',
     apply: 'build',
@@ -23,7 +25,7 @@ export function zionExtensionsPlugin() {
       
       // 扫描所有插件（仅支持 manifest.json）
       const extensions = readdirSync(extensionsDir)
-        .filter(dir => existsSync(resolve(extensionsDir, dir, 'manifest.json')));
+        .filter(dir => !externalizedBuiltinExtensions.has(dir) && existsSync(resolve(extensionsDir, dir, 'manifest.json')));
 
       extensions.forEach(extName => {
         const extPath = resolve(extensionsDir, extName);

@@ -1,4 +1,20 @@
 import { mountTerminalManagerSidebarViewInto } from "./session-tools.js";
+import {
+  buildTerminalInventoryContextXml,
+  filterTerminalSessions
+} from "./terminal-inventory.js";
+import {
+  closeTerminalSession,
+  createTerminalSession,
+  ensureTerminalSessions,
+  getTerminalMachine,
+  getTerminalSession,
+  listTerminalSessions,
+  publishTerminalSessions,
+  reactivateTerminalSession,
+  setTerminalSessionCwd,
+  updateTerminalMachine
+} from "./terminal-service.js";
 
 const I18N_NS = "dev.terminal-manager";
 const I18N_MESSAGES = {
@@ -13,7 +29,7 @@ const I18N_MESSAGES = {
     "ui.loading": "正在读取会话...",
     "ui.newTerminal": "新建终端",
     "ui.collapseNew": "收起新建",
-    "ui.searchSessions": "搜索终端",
+    "ui.searchSessions": "搜索机器、项目或终端",
     "ui.create": "创建终端",
     "ui.cancel": "取消",
     "ui.injectContext": "在对话中注入终端上下文",
@@ -30,6 +46,10 @@ const I18N_MESSAGES = {
     "ui.noSessions": "还没有终端会话。点击“新建终端”创建一个本地会话。",
     "ui.noMatchingSessions": "没有匹配的终端会话。",
     "ui.sessionsUnit": "个会话",
+    "ui.machinesUnit": "台机器",
+    "ui.workspacesUnit": "个项目",
+    "ui.available": "可用",
+    "ui.disconnected": "已断开",
     "ui.sshSession": "SSH 会话",
     "ui.localTerminal": "本地终端",
     "ui.local": "本地",
@@ -41,6 +61,9 @@ const I18N_MESSAGES = {
     "ui.collapse": "收起",
     "ui.cwd": "工作目录",
     "ui.updateCwd": "更新目录",
+    "ui.machineName": "机器名称",
+    "ui.machineDescription": "机器描述",
+    "ui.saveMachine": "保存机器信息",
     "ui.openTerminal": "打开终端",
     "ui.reconnect": "重新连接",
     "ui.closeSession": "关闭会话",
@@ -57,7 +80,8 @@ const I18N_MESSAGES = {
     "msg.createFailed": "创建终端失败，请检查填写内容。",
     "msg.createFailedWithError": "创建终端失败：{message}",
     "msg.created": "终端已创建，并设为当前会话。",
-    "msg.closed": "已关闭终端会话。"
+    "msg.closed": "已关闭终端会话。",
+    "msg.machineUpdated": "已更新机器信息。"
   },
   "en-US": {
     "category.terminal": "Terminal",
@@ -70,7 +94,7 @@ const I18N_MESSAGES = {
     "ui.loading": "Loading sessions...",
     "ui.newTerminal": "New Terminal",
     "ui.collapseNew": "Collapse",
-    "ui.searchSessions": "Search terminals",
+    "ui.searchSessions": "Search machines, projects, or terminals",
     "ui.create": "Create Terminal",
     "ui.cancel": "Cancel",
     "ui.injectContext": "Inject terminal context into chat",
@@ -87,6 +111,10 @@ const I18N_MESSAGES = {
     "ui.noSessions": "No terminal sessions yet. Click \"New Terminal\" to create a local session.",
     "ui.noMatchingSessions": "No matching terminal sessions.",
     "ui.sessionsUnit": "sessions",
+    "ui.machinesUnit": "machines",
+    "ui.workspacesUnit": "projects",
+    "ui.available": "Available",
+    "ui.disconnected": "Disconnected",
     "ui.sshSession": "SSH Session",
     "ui.localTerminal": "Local Terminal",
     "ui.local": "Local",
@@ -98,6 +126,9 @@ const I18N_MESSAGES = {
     "ui.collapse": "Collapse",
     "ui.cwd": "Working Directory",
     "ui.updateCwd": "Update CWD",
+    "ui.machineName": "Machine Name",
+    "ui.machineDescription": "Machine Description",
+    "ui.saveMachine": "Save Machine",
     "ui.openTerminal": "Open Terminal",
     "ui.reconnect": "Reconnect",
     "ui.closeSession": "Close Session",
@@ -114,9 +145,17 @@ const I18N_MESSAGES = {
     "msg.createFailed": "Failed to create terminal. Check the form values.",
     "msg.createFailedWithError": "Failed to create terminal: {message}",
     "msg.created": "Terminal created and set as current session.",
-    "msg.closed": "Terminal session closed."
+    "msg.closed": "Terminal session closed.",
+    "msg.machineUpdated": "Machine information updated."
   }
 };
+
+function insertAfterLeadingSystem(messages, injectedMessage) {
+  const list = Array.isArray(messages) ? messages : [];
+  let index = 0;
+  while (index < list.length && list[index]?.role === "system") index += 1;
+  return [...list.slice(0, index), injectedMessage, ...list.slice(index)];
+}
 
 export async function activate(ctx) {
   try {
@@ -124,24 +163,50 @@ export async function activate(ctx) {
     if (disp) ctx.subscriptions.push(disp);
   } catch {}
 
+  try {
+    const contributor = window.zion?.messages?.registerContributor?.({
+      id: "dev.terminal-manager.inventory",
+      order: 55,
+      stage: "pre",
+      contribute: async (messages) => {
+        if (window.zion?.state?.get?.("chat.includeTerminalContext") === false) return messages;
+        const sessions = await ensureTerminalSessions();
+        const inventory = window.zion?.state?.get?.("terminal.inventory")
+          || publishTerminalSessions(sessions);
+        if (!inventory?.machines?.length) return messages;
+        const content = buildTerminalInventoryContextXml(inventory);
+        return insertAfterLeadingSystem(messages, { role: "user", content });
+      }
+    });
+    if (contributor) ctx.subscriptions.push(contributor);
+  } catch (error) {
+    console.warn("[dev.terminal-manager] register inventory contributor failed", error);
+  }
+
   // 注册 terminalManage 工具 schema 到 chat.tools
   try {
     const terminalManageTool = {
       type: "function",
       function: {
         name: "terminalManage",
-        description: "Manage persistent terminal sessions (local or SSH). Supports actions: create/list/get/close/reactivate/set_cwd. For SSH, provide ssh_host, ssh_user?, ssh_port?.",
+        description: "Manage terminal sessions, workspaces, and machine descriptions. session_id is a concrete terminal session id for execution; machine_id identifies a machine and is only for filtering or machine metadata.",
         parameters: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["create","list","get","close","reactivate","set_cwd"], description: "Management action" },
-            type: { type: "string", enum: ["local","ssh"], description: "Session type (default local)" },
+            action: { type: "string", enum: ["create","list","get","close","reactivate","set_cwd","list_machines","get_machine","update_machine"], description: "Management action" },
+            type: { type: "string", enum: ["local","ssh"], description: "Session type for create only; this is not a session_id" },
             ssh_user: { type: "string", description: "SSH username (ssh sessions)" },
             ssh_host: { type: "string", description: "SSH host (ssh sessions)" },
             ssh_port: { type: "number", description: "SSH port (default 22)" },
             initial_cwd: { type: "string", description: "Initial working directory" },
-            session_id: { type: "string", description: "Target session id (get/close/reactivate/set_cwd)" },
-            cwd: { type: "string", description: "New working directory (set_cwd)" }
+            session_id: { type: "string", description: "Exact terminal session_id from terminal_inventory preferred_session_id or list sessions[].session_id; not machine_id, workspace_id, local, or ssh" },
+            cwd: { type: "string", description: "New working directory (set_cwd)" },
+            machine_id: { type: "string", description: "Machine ID from terminal_inventory, for list/get_machine/update_machine filters; do not pass as session_id" },
+            name: { type: "string", maxLength: 120, description: "Machine display name (update_machine)" },
+            description: { type: "string", maxLength: 500, description: "Machine description and detected resource information (update_machine)" },
+            workspace_id: { type: "string", description: "Workspace ID from terminal_inventory, for list/create filters; do not pass as session_id" },
+            status: { type: "string", enum: ["connected", "disconnected", "stale"], description: "Optional list filter" },
+            limit: { type: "number", minimum: 1, maximum: 200, description: "Maximum items returned by list or list_machines" }
           },
           required: ["action"],
           additionalProperties: false
@@ -164,115 +229,83 @@ export async function activate(ctx) {
       handlers.terminalManage = async (args) => {
         try {
           const action = String(args?.action || "").trim();
-          const readBase = () => {
-            const st1 = window.zion?.state?.get("localTools.baseUrl");
-            if (typeof st1 === "string" && st1.trim()) return st1.trim();
-            try {
-              const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
-              if (s) return s.trim();
-            } catch {}
-            return "http://127.0.0.1:8765";
-          };
-          const base = readBase().replace(/\/$/, "");
-
           if (action === "create") {
-            const type = String(args?.type || "local").trim();
-            const ssh_user = typeof args?.ssh_user === "string" ? args.ssh_user.trim() : undefined;
-            const ssh_host = typeof args?.ssh_host === "string" ? args.ssh_host.trim() : undefined;
-            const ssh_port = typeof args?.ssh_port === "number" ? args.ssh_port : undefined;
-            const initial_cwd = typeof args?.initial_cwd === "string" ? args.initial_cwd.trim() : undefined;
-            const payload = { type, ssh_user, ssh_host, ssh_port, initial_cwd };
-            const res = await fetch(`${base}/sessions`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload)
-            });
-            const data = await res.json().catch(() => null);
-            if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
-            // 更新状态
-            const list = (window.zion?.state?.get("terminal.sessions") || []).slice();
-            if (data?.session?.id) list.push(data.session);
-            window.zion?.state?.set("terminal.sessions", list);
-            window.zion?.state?.set("terminal.activeSessionId", data?.session?.id || null);
-            return JSON.stringify(data, null, 2);
+            return JSON.stringify({ session: await createTerminalSession(args) }, null, 2);
           }
-
           if (action === "list") {
-            const res = await fetch(`${base}/sessions`, { method: "GET" });
-            const data = await res.json().catch(() => null);
-            if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
-            window.zion?.state?.set("terminal.sessions", data?.sessions || []);
-            return JSON.stringify(data, null, 2);
+            const sessions = await listTerminalSessions();
+            const filtered = filterTerminalSessions(sessions, args);
+            const limit = Math.min(50, Math.max(1, Number(args?.limit) || 20));
+            const selected = filtered.slice(0, limit).map((session) => ({
+              session_id: session.id,
+              id: session.id,
+              session_type: session.type,
+              machine_id: session.machineId,
+              workspace_id: session.workspaceId,
+              cwd: session.cwd,
+              connection_status: session.connectionStatus,
+              stale: session.stale,
+              last_activity_at: session.lastActivityAt
+            }));
+            return JSON.stringify({
+              session_id_field: "Use sessions[].session_id for Bash/terminalExecute/read/write/edit/glob/grep/tree. Do not use machine_id, workspace_id, local, or ssh as session_id.",
+              total: filtered.length,
+              returned: selected.length,
+              truncated: filtered.length > selected.length,
+              sessions: selected
+            }, null, 2);
           }
-
           if (action === "get") {
-            const sid = String(args?.session_id || "").trim();
-            if (!sid) return "Missing session_id";
-            const res = await fetch(`${base}/sessions/${encodeURIComponent(sid)}`, { method: "GET" });
-            const data = await res.json().catch(() => null);
-            if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
-            return JSON.stringify(data, null, 2);
+            return JSON.stringify({ session: await getTerminalSession(args?.session_id) }, null, 2);
           }
-
+          if (action === "list_machines") {
+            await listTerminalSessions();
+            const inventory = window.zion?.state?.get?.("terminal.inventory");
+            const machines = Array.isArray(inventory?.machines) ? inventory.machines : [];
+            const limit = Math.min(200, Math.max(1, Number(args?.limit) || 100));
+            const selected = machines.slice(0, limit).map((machine) => ({
+              machine_id: machine.id,
+              id: machine.id,
+              name: machine.name,
+              description: machine.description,
+              kind: machine.kind,
+              status: machine.status,
+              workspace_count: machine.workspaceCount,
+              session_count: machine.sessionCount,
+              available_session_count: machine.availableSessionCount,
+              disconnected_session_count: machine.disconnectedSessionCount,
+              stale_session_count: machine.staleSessionCount,
+              last_seen_at: machine.lastSeenAt
+            }));
+            return JSON.stringify({
+              total: machines.length,
+              returned: selected.length,
+              truncated: machines.length > selected.length,
+              machines: selected
+            }, null, 2);
+          }
+          if (action === "get_machine") {
+            return JSON.stringify({ machine: await getTerminalMachine(args?.machine_id) }, null, 2);
+          }
+          if (action === "update_machine") {
+            return JSON.stringify({
+              machine: await updateTerminalMachine(args?.machine_id, {
+                name: args?.name,
+                description: args?.description
+              })
+            }, null, 2);
+          }
           if (action === "close") {
-            const sid = String(args?.session_id || "").trim();
-            if (!sid) return "Missing session_id";
-            const res = await fetch(`${base}/sessions/${encodeURIComponent(sid)}`, { method: "DELETE" });
-            const data = await res.json().catch(() => null);
-            if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
-            // 更新状态
-            const list = (window.zion?.state?.get("terminal.sessions") || []).filter(s => s?.id !== sid);
-            window.zion?.state?.set("terminal.sessions", list);
-            const cur = window.zion?.state?.get("terminal.activeSessionId");
-            if (cur === sid) window.zion?.state?.set("terminal.activeSessionId", null);
-            return JSON.stringify(data, null, 2);
+            await closeTerminalSession(args?.session_id);
+            return JSON.stringify({ closed: true, session_id: args?.session_id }, null, 2);
           }
-
           if (action === "set_cwd") {
-            const sid = String(args?.session_id || "").trim();
-            const cwd = String(args?.cwd || "").trim();
-            if (!sid) return "Missing session_id";
-            if (!cwd) return "Missing cwd";
-            const res = await fetch(`${base}/sessions/${encodeURIComponent(sid)}/exec`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ command: `cd "${cwd}"` })
-            });
-            const data = await res.json().catch(() => null);
-            if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
-            // 更新状态中的该会话 cwd（如果存在）
-            const list = (window.zion?.state?.get("terminal.sessions") || []).slice();
-            for (let i = 0; i < list.length; i++) {
-              if (list[i]?.id === sid) {
-                list[i] = { ...list[i], cwd };
-                break;
-              }
-            }
-            window.zion?.state?.set("terminal.sessions", list);
-            return JSON.stringify(data, null, 2);
+            await setTerminalSessionCwd(args?.session_id, args?.cwd);
+            return JSON.stringify({ updated: true, session_id: args?.session_id, cwd: args?.cwd }, null, 2);
           }
-
           if (action === "reactivate") {
-            const sid = String(args?.session_id || "").trim();
-            if (!sid) return "Missing session_id";
-            const res = await fetch(`${base}/sessions/${encodeURIComponent(sid)}/activate`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" }
-            });
-            const data = await res.json().catch(() => null);
-            if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
-            // 更新状态
-            if (data?.session) {
-              const list = (window.zion?.state?.get("terminal.sessions") || []).slice();
-              const idx = list.findIndex(s => s?.id === sid);
-              if (idx >= 0) {
-                list[idx] = data.session;
-              }
-              window.zion?.state?.set("terminal.sessions", list);
-            }
-            return JSON.stringify(data, null, 2);
+            return JSON.stringify({ session: await reactivateTerminalSession(args?.session_id) }, null, 2);
           }
-
           return "Unknown action";
         } catch (e) {
           return `terminalManage error: ${e?.message || String(e)}`;
@@ -286,95 +319,11 @@ export async function activate(ctx) {
 
   // 命令/状态栏
 
-  const readBase = () => {
-    const st1 = window.zion?.state?.get("localTools.baseUrl");
-    if (typeof st1 === "string" && st1.trim()) return st1.trim();
-    try {
-      const s = localStorage.getItem("zion.localTools.baseUrl") || localStorage.getItem("zion.localSearch.baseUrl") || "";
-      if (s) return s.trim();
-    } catch {}
-    return "http://127.0.0.1:8765";
-  };
-
-  const refreshSessions = async () => {
-    const base = readBase().replace(/\/$/, "");
-    const res = await fetch(`${base}/sessions`, { method: "GET" });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
-    window.zion?.state?.set("terminal.sessions", sessions);
-    return sessions;
-  };
-
-  const ensureSessions = async () => {
-    const sessions = window.zion?.state?.get("terminal.sessions");
-    if (Array.isArray(sessions) && sessions.length) return sessions;
-    try {
-      return await refreshSessions();
-    } catch {
-      return Array.isArray(sessions) ? sessions : [];
-    }
-  };
-
-  const createSession = async (args) => {
-    const base = readBase().replace(/\/$/, "");
-    const payload = {
-      type: String(args?.type || "local").trim() || "local",
-      ssh_user: typeof args?.ssh_user === "string" ? args.ssh_user.trim() || undefined : undefined,
-      ssh_host: typeof args?.ssh_host === "string" ? args.ssh_host.trim() || undefined : undefined,
-      ssh_port: typeof args?.ssh_port === "number" ? args.ssh_port : (args?.ssh_port ? Number(args.ssh_port) : undefined),
-      initial_cwd: typeof args?.initial_cwd === "string" ? args.initial_cwd.trim() || undefined : undefined
-    };
-    const res = await fetch(`${base}/sessions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const list = (window.zion?.state?.get("terminal.sessions") || []).slice();
-    if (data?.session?.id) list.push(data.session);
-    window.zion?.state?.set("terminal.sessions", list);
-    window.zion?.state?.set("terminal.activeSessionId", data?.session?.id || null);
-    return data?.session || null;
-  };
-
-  const closeSession = async (sid) => {
-    const sessionId = String(sid || "").trim();
-    if (!sessionId) return false;
-    const base = readBase().replace(/\/$/, "");
-    const res = await fetch(`${base}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
-    await res.json().catch(() => null);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const list = (window.zion?.state?.get("terminal.sessions") || []).filter(s => s?.id !== sessionId);
-    window.zion?.state?.set("terminal.sessions", list);
-    const cur = window.zion?.state?.get("terminal.activeSessionId");
-    if (cur === sessionId) window.zion?.state?.set("terminal.activeSessionId", null);
-    return true;
-  };
-
-  const setSessionCwd = async (sid, cwd) => {
-    const sessionId = String(sid || "").trim();
-    const nextCwd = String(cwd || "").trim();
-    if (!sessionId || !nextCwd) return false;
-    const base = readBase().replace(/\/$/, "");
-    const res = await fetch(`${base}/sessions/${encodeURIComponent(sessionId)}/exec`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command: `cd "${nextCwd}"` })
-    });
-    await res.json().catch(() => null);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const list = (window.zion?.state?.get("terminal.sessions") || []).slice();
-    for (let i = 0; i < list.length; i++) {
-      if (list[i]?.id === sessionId) {
-        list[i] = { ...list[i], cwd: nextCwd };
-        break;
-      }
-    }
-    window.zion?.state?.set("terminal.sessions", list);
-    return true;
-  };
+  const refreshSessions = () => listTerminalSessions();
+  const ensureSessions = () => ensureTerminalSessions();
+  const createSession = (args) => createTerminalSession(args);
+  const closeSession = (sessionId) => closeTerminalSession(sessionId);
+  const setSessionCwd = (sessionId, cwd) => setTerminalSessionCwd(sessionId, cwd);
 
   const openCmd = window.zion.commands.registerCommand("terminal.openManager", () => {
     try {
@@ -440,7 +389,7 @@ export async function activate(ctx) {
     const dispItem = window.zion.activityBar.registerItem({
       id: "terminal.activity",
       pluginId: "dev.terminal-manager",
-      icon: "$(terminal)",
+      icon: "$(remote)",
       tooltip: "Terminal",
       tooltipKey: "dev.terminal-manager.ui.terminal",
       sideBarViewId: "terminal.manager",

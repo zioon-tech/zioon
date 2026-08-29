@@ -208,6 +208,30 @@ function getSessionAnnotations(sessionId) {
   }
 }
 
+export function resolveToolActionTarget(payload = {}, annotations = {}, historyEntry = null) {
+  const toolId = String(payload?.id || payload?.toolCallId || "").trim();
+  const tools = Array.isArray(annotations?.tools) ? annotations.tools : [];
+  const tool = tools.find((item) => {
+    const id = String(item?.id || "").trim();
+    const toolCallId = String(item?.toolCallId || "").trim();
+    return !!toolId && (id === toolId || toolCallId === toolId);
+  }) || null;
+  const name = normalizeToolName(payload?.name || tool?.name || "");
+  const candidates = [
+    payload?.terminalSessionId,
+    payload?.args?.session_id,
+    payload?.executionContext?.terminalSession?.id,
+    tool?.args?.session_id,
+    tool?.executionContext?.terminalSession?.id,
+    historyEntry?.terminalSessionId,
+    historyEntry?.session_id
+  ];
+  const terminalSessionId = candidates
+    .map((value) => String(value || "").trim())
+    .find(Boolean) || "";
+  return { name, terminalSessionId, tool };
+}
+
 function updateSessionAnnotations(sessionId, updater) {
   try {
     return window?.zion?.commands?.executeCommand?.("zion.chatCards.updateSessionAnnotations", { sessionId, updater }) || {};
@@ -1223,8 +1247,8 @@ function getToolTerminalContext(name, args = {}, fallbackSessionId = "") {
   const sessionId = String(args?.session_id || fallbackSessionId || "").trim();
   if (!sessionId) {
     return {
-      inlineLabel: "Local",
-      fullLabel: "Local default: no terminal session selected",
+      inlineLabel: "session required",
+      fullLabel: "No terminal session recorded",
       sessionId: ""
     };
   }
@@ -1246,8 +1270,8 @@ function getToolTerminalHeaderContext(name, args = {}, fallbackSessionId = "") {
   const sessionId = String(args?.session_id || fallbackSessionId || "").trim();
   if (!sessionId) {
     return {
-      label: "Local default",
-      tooltip: "Local default: no terminal session selected",
+      label: "Session required",
+      tooltip: "No terminal session recorded",
       sessionId: ""
     };
   }
@@ -1276,10 +1300,10 @@ function getTerminalHeaderLabels(sessionId, cwd) {
   const session = findTerminalSession(sessionId);
   const machine = getTerminalMachineLabel(session);
   const workingDir = String(cwd || session?.cwd || session?.initial_cwd || "").trim();
-  const scope = sessionId ? (machine || "Local") : "Local default";
+  const scope = sessionId ? (machine || "Local") : "Session required";
   return {
     title: [scope, workingDir].filter(Boolean).join(" · "),
-    tooltip: [scope, workingDir || "No terminal session selected"].filter(Boolean).join("\n")
+    tooltip: [scope, workingDir || "No terminal session recorded"].filter(Boolean).join("\n")
   };
 }
 
@@ -1362,7 +1386,7 @@ function createTreeToolView(args = {}, result = null, ok = null) {
   const depth = typeof args?.max_depth === "number" ? args.max_depth : null;
   const session = findTerminalSession(sessionId);
   const machine = getTerminalMachineLabel(session);
-  const scope = sessionId ? (machine || "Local") : "Local default";
+  const scope = sessionId ? (machine || "Local") : "Session required";
   const status = result == null
     ? "running"
     : (ok === false || /^(\s*(tree error|http \d+|missing path))/i.test(String(result || "")) ? "failed" : "done");
@@ -1553,7 +1577,7 @@ function openChangesForTool({ id, name, args, getContext }) {
 
 function canAcceptRevertTool(name, args) {
   const n = normalizeToolName(name);
-  return !!args && (n === "edit" || n === "fsedit" || n === "write" || n === "fswrite");
+  return !!args && (n === "edit" || n === "write");
 }
 
 function emitToolCardAction(action, { id, name, args, getContext }) {
@@ -1566,9 +1590,11 @@ function emitToolCardAction(action, { id, name, args, getContext }) {
     const ctx = getContext?.() || {};
     const payload = {
       id,
+      name,
       path: args?.path || args?.file_path,
       panelId: ctx.panelId,
-      sessionId: ctx.sessionId
+      sessionId: ctx.sessionId,
+      terminalSessionId: String(args?.session_id || "").trim()
     };
     if (isEdit) {
       payload.old_string = args?.old_string;
@@ -3112,9 +3138,19 @@ export function installToolCallCards() {
       }
 
       try {
+        const chatSessionId = payload?.sessionId || this.getVisibleSessionId();
+        const annotations = chatSessionId ? getSessionAnnotations(chatSessionId) : {};
+        const target = resolveToolActionTarget(payload, annotations);
+        if (target.name === "fsedit") {
+          notify("浏览器授权文件的回退不能通过终端工具执行", { type: "error", duration: 5000 });
+          return;
+        }
+        if (!target.terminalSessionId) {
+          notify("Revert 失败: 原工具调用没有记录 terminal session_id", { type: "error", duration: 6000 });
+          return;
+        }
         // 调用 edit 工具处理器来执行回退操作
         // Revert 就是将 new_string 替换回 old_string
-        const sid = window.zion?.state?.get("terminal.activeSessionId");
         const readBase = () => {
           const st1 = window.zion?.state?.get("localTools.baseUrl");
           if (typeof st1 === "string" && st1.trim()) return st1.trim();
@@ -3135,7 +3171,7 @@ export function installToolCallCards() {
             old_string: new_string,
             new_string: old_string,
             replace_all,
-            session_id: sid || undefined
+            session_id: target.terminalSessionId
           })
         });
 
@@ -3175,7 +3211,17 @@ export function installToolCallCards() {
       }
 
       try {
-        const sid = window.zion?.state?.get("terminal.activeSessionId");
+        const chatSessionId = payload?.sessionId || this.getVisibleSessionId();
+        const annotations = chatSessionId ? getSessionAnnotations(chatSessionId) : {};
+        const target = resolveToolActionTarget(payload, annotations);
+        if (target.name === "fsedit") {
+          notify("浏览器授权文件的接受操作不能通过终端工具执行", { type: "error", duration: 5000 });
+          return;
+        }
+        if (!target.terminalSessionId) {
+          notify("Accept 失败: 原工具调用没有记录 terminal session_id", { type: "error", duration: 6000 });
+          return;
+        }
         const readBase = () => {
           const st1 = window.zion?.state?.get("localTools.baseUrl");
           if (typeof st1 === "string" && st1.trim()) return st1.trim();
@@ -3196,7 +3242,7 @@ export function installToolCallCards() {
             old_string,
             new_string,
             replace_all,
-            session_id: sid || undefined
+            session_id: target.terminalSessionId
           })
         });
 
@@ -3245,13 +3291,21 @@ export function installToolCallCards() {
         const byContent = list.slice().reverse().find(findByContent);
         const byPath = list.slice().reverse().find(findByPath);
         const item = byId || byContent || byPath;
+        const target = resolveToolActionTarget(payload, ann, item);
+        if (target.name === "fswrite") {
+          notify("浏览器授权文件的回退不能通过终端工具执行", { type: "error", duration: 5000 });
+          return;
+        }
+        if (!target.terminalSessionId) {
+          notify("Revert 失败: 原工具调用没有记录 terminal session_id", { type: "error", duration: 6000 });
+          return;
+        }
         if (baseId && !byId) {
           if (!byContent) {
             notify("Revert 失败: 未找到对应的 write 记录（可能跨会话/已被清理）", { type: "error", duration: 6000 });
             return;
           }
         }
-        const sid2 = window.zion?.state?.get("terminal.activeSessionId");
         const readBase = () => {
           const st1 = window.zion?.state?.get("localTools.baseUrl");
           if (typeof st1 === "string" && st1.trim()) return st1.trim();
@@ -3269,7 +3323,7 @@ export function installToolCallCards() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               path,
-              session_id: sid2 || undefined
+              session_id: target.terminalSessionId
             })
           });
           const raw = await res.text().catch(() => "");
@@ -3297,7 +3351,7 @@ export function installToolCallCards() {
           body: JSON.stringify({
             path,
             content: beforeContent,
-            session_id: sid2 || undefined
+            session_id: target.terminalSessionId
           })
         });
         const raw = await res.text().catch(() => "");
@@ -3336,6 +3390,15 @@ export function installToolCallCards() {
         const byContent = list.slice().reverse().find(findByContent);
         const byPath = list.slice().reverse().find(findByPath);
         const item = byId || byContent || byPath;
+        const target = resolveToolActionTarget(payload, ann, item);
+        if (target.name === "fswrite") {
+          notify("浏览器授权文件的接受操作不能通过终端工具执行", { type: "error", duration: 5000 });
+          return;
+        }
+        if (!target.terminalSessionId) {
+          notify("Accept 失败: 原工具调用没有记录 terminal session_id", { type: "error", duration: 6000 });
+          return;
+        }
         const content = typeof payload?.content === "string" ? payload.content : item?.afterContent;
         if (baseId && !byId && typeof payload?.content !== "string") {
           if (!byContent) {
@@ -3347,7 +3410,6 @@ export function installToolCallCards() {
           notify("Accept 失败: 未找到写入内容", { type: "error", duration: 4000 });
           return;
         }
-        const sid2 = window.zion?.state?.get("terminal.activeSessionId");
         const readBase = () => {
           const st1 = window.zion?.state?.get("localTools.baseUrl");
           if (typeof st1 === "string" && st1.trim()) return st1.trim();
@@ -3365,7 +3427,7 @@ export function installToolCallCards() {
           body: JSON.stringify({
             path,
             content,
-            session_id: sid2 || undefined
+            session_id: target.terminalSessionId
           })
         });
         const raw = await res.text().catch(() => "");
@@ -3401,7 +3463,7 @@ export function installToolCallCards() {
             if (it.from < from || it.from > to) return;
           }
           const name = String(it.name || "");
-          if (name !== "edit" && name !== "write" && name !== "fsedit" && name !== "fswrite") return;
+          if (name !== "edit" && name !== "write") return;
           items.push({ id, ...it });
         });
       } catch {}
@@ -3412,7 +3474,7 @@ export function installToolCallCards() {
             if (!it) return;
             if (it.from < from || it.from > to) return;
             const name = String(it.name || "");
-            if (name !== "edit" && name !== "write" && name !== "fsedit" && name !== "fswrite") return;
+            if (name !== "edit" && name !== "write") return;
             items.push({ id, ...it });
           });
         } catch {}
@@ -3423,19 +3485,25 @@ export function installToolCallCards() {
       }
       items.sort((a, b) => a.from - b.from);
       for (const it of items) {
-        if (it.name === "edit" || it.name === "fsedit") {
+        if (it.name === "edit") {
           await this.onEditAccept({
             id: it.id,
+            name: it.name,
             path: it.args?.path,
             old_string: it.args?.old_string,
             new_string: it.args?.new_string,
-            replace_all: it.args?.replace_all
+            replace_all: it.args?.replace_all,
+            sessionId: payload?.sessionId || this.getVisibleSessionId(),
+            terminalSessionId: it.args?.session_id
           });
-        } else if (it.name === "write" || it.name === "fswrite") {
+        } else if (it.name === "write") {
           await this.onWriteAccept({
             id: it.id,
+            name: it.name,
             path: it.args?.path,
-            content: it.args?.content
+            content: it.args?.content,
+            sessionId: payload?.sessionId || this.getVisibleSessionId(),
+            terminalSessionId: it.args?.session_id
           });
         }
       }
@@ -3457,7 +3525,7 @@ export function installToolCallCards() {
             if (it.from < from || it.from > to) return;
           }
           const name = String(it.name || "");
-          if (name !== "edit" && name !== "write" && name !== "fsedit" && name !== "fswrite") return;
+          if (name !== "edit" && name !== "write") return;
           items.push({ id, ...it });
         });
       } catch {}
@@ -3468,7 +3536,7 @@ export function installToolCallCards() {
             if (!it) return;
             if (it.from < from || it.from > to) return;
             const name = String(it.name || "");
-            if (name !== "edit" && name !== "write" && name !== "fsedit" && name !== "fswrite") return;
+            if (name !== "edit" && name !== "write") return;
             items.push({ id, ...it });
           });
         } catch {}
@@ -3479,19 +3547,25 @@ export function installToolCallCards() {
       }
       items.sort((a, b) => b.from - a.from);
       for (const it of items) {
-        if (it.name === "edit" || it.name === "fsedit") {
+        if (it.name === "edit") {
           await this.onEditRevert({
             id: it.id,
+            name: it.name,
             path: it.args?.path,
             old_string: it.args?.old_string,
             new_string: it.args?.new_string,
-            replace_all: it.args?.replace_all
+            replace_all: it.args?.replace_all,
+            sessionId: payload?.sessionId || this.getVisibleSessionId(),
+            terminalSessionId: it.args?.session_id
           });
-        } else if (it.name === "write" || it.name === "fswrite") {
+        } else if (it.name === "write") {
           await this.onWriteRevert({
             id: it.id,
+            name: it.name,
             path: it.args?.path,
-            content: it.args?.content
+            content: it.args?.content,
+            sessionId: payload?.sessionId || this.getVisibleSessionId(),
+            terminalSessionId: it.args?.session_id
           });
         }
       }

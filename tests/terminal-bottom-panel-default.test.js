@@ -81,5 +81,33 @@ describe("terminal bottom panel defaults", () => {
     await activate({ subscriptions: [] });
 
     expect(zion.state.get("ui.bottomPanel.activeViewId")).toBe("terminal.enhanced.view");
+    expect(zion.bottomPanel.registerView).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "terminal.enhanced.view",
+        icon: "$(remote)"
+      })
+    );
+    expect(zion.auxiliaryBar.registerView).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "terminal.enhanced.aux.view",
+        icon: "$(remote)"
+      })
+    );
+  });
+
+  it("requires terminalExecute callers to provide session_id", async () => {
+    const zion = createZion({
+      "terminal.activeSessionId": "ambient-session",
+      "terminal.sessions": [{ id: "ambient-session", status: "running" }]
+    });
+    window.zion = zion;
+
+    await activate({ subscriptions: [] });
+
+    const tool = zion.state.get("chat.tools").find((item) => item?.function?.name === "terminalExecute");
+    const handler = zion.state.get("chat.toolHandlers").terminalExecute;
+    expect(tool.function.parameters.required).toContain("session_id");
+    await expect(handler({ command: "pwd" })).resolves.toContain("Missing session_id");
+    await expect(handler({ command: "pwd", session_id: "local" })).resolves.toContain("terminal session type");
   });
 });

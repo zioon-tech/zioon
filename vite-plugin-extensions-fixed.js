@@ -8,6 +8,7 @@ import { createRequire } from 'module';
  */
 export function zionExtensionsPlugin() {
   const require = createRequire(import.meta.url);
+  const externalizedBuiltinExtensions = new Set(['dev.identity']);
   
   return {
     name: 'zion-extensions-fixed',
@@ -31,6 +32,7 @@ export function zionExtensionsPlugin() {
       // 扫描所有插件
       const extensions = readdirSync(extensionsDir)
         .filter(dir => {
+          if (externalizedBuiltinExtensions.has(dir)) return false;
           const dirPath = resolve(extensionsDir, dir);
           try {
             return statSync(dirPath).isDirectory() && 

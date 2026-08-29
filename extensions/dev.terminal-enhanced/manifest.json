@@ -1,13 +1,13 @@
 {
   "name": "dev.terminal-enhanced",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Provide an enhanced terminal panel, command history, and smart assistance.",
   "author": "Zion Next Team",
   "license": "MIT",
   "zion": {
     "id": "dev.terminal-enhanced",
     "name": "Terminal Enhanced",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "main": "./main.js",
     "presentation": {
       "displayName": {

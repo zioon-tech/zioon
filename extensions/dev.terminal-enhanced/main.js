@@ -1,6 +1,8 @@
 import { installTerminalEnhancedPanel } from "./panel.js";
+import { getTerminalSessionRequirementError } from "../dev.tools/terminal-tool-context.js";
 
 const I18N_NS = "dev.terminal-enhanced";
+const TERMINAL_SESSION_REQUIRED_ERROR = "Missing session_id. Use terminal_inventory workspace preferred_session_id, or call terminalManage with action=\"list\" to choose a terminal session. Do not use machine_id, workspace_id, local, or ssh as session_id.";
 const I18N_MESSAGES = {
   "zh-CN": {
     "category.terminal": "终端",
@@ -365,14 +367,6 @@ function connectPty(sessionId, cols = 80, rows = 24) {
 }
 
 /**
- * Resolve active session id from state
- */
-function getActiveSessionId() {
-  const sid = window.zion?.state?.get("terminal.activeSessionId");
-  return typeof sid === "string" && sid ? sid : null;
-}
-
-/**
  * Reactivate a session (for SSH sessions that have disconnected)
  */
 async function reactivateSession(sessionId) {
@@ -460,16 +454,16 @@ export async function activate(ctx) {
         type: "function",
         function: {
           name: "terminalExecute",
-          description: "Execute command in terminal session and return output",
+          description: "Execute a command in an explicitly selected terminal session and return output. session_id is required and must be an exact terminal session id from terminal_inventory workspace preferred_session_id or terminalManage list sessions[].session_id. Do not pass machine_id, workspace_id, local, or ssh.",
           parameters: {
             type: "object",
             properties: {
               command: { type: "string", description: "Shell command to execute" },
-              session_id: { type: "string", description: "Target session id (optional)" },
+              session_id: { type: "string", description: "Required exact terminal session_id. Do not use machine_id, workspace_id, local, or ssh." },
               timeout: { type: "number", description: "Timeout milliseconds", default: 30000 },
               capture_ansi: { type: "boolean", description: "No-op on server; output already plain text", default: false }
             },
-            required: ["command"],
+            required: ["command", "session_id"],
             additionalProperties: false
           }
         }
@@ -482,9 +476,11 @@ export async function activate(ctx) {
       handlers.terminalExecute = async (args) => {
         const cmd = String(args?.command || "").trim();
         if (!cmd) return "Missing command";
+        const sid = String(args?.session_id || "").trim();
+        const terminalSessions = window.zion?.state?.get("terminal.sessions") || [];
+        const requirementError = getTerminalSessionRequirementError("terminalExecute", { session_id: sid }, terminalSessions);
+        if (requirementError) return requirementError || TERMINAL_SESSION_REQUIRED_ERROR;
         await ensureSessions();
-        const sid = String(args?.session_id || getActiveSessionId() || "").trim();
-        if (!sid) return "Missing session_id (no active session)";
         const timeout = typeof args?.timeout === "number" ? args.timeout : 30000;
         const rec = await executeInSession(sid, cmd, { timeout });
         return JSON.stringify({
@@ -590,9 +586,9 @@ export async function activate(ctx) {
   });
   const cmdExec = window.zion.commands.registerCommand("terminal.executeCommand", async (args) => {
     const command = typeof args === "string" ? args : String(args?.command || "").trim();
-    const sessionId = typeof args === "object" && args?.session_id ? String(args.session_id) : (getActiveSessionId() || "");
+    const sessionId = typeof args === "object" && args?.session_id ? String(args.session_id).trim() : "";
     if (!command) return false;
-    if (!sessionId) return "No active session";
+    if (!sessionId) return TERMINAL_SESSION_REQUIRED_ERROR;
     try {
       const silent = typeof args === "object" && (args?.silent === true || args?.internal === true);
       const rec = await executeInSession(sessionId, command, {
@@ -692,7 +688,7 @@ export async function activate(ctx) {
       pluginId: "dev.terminal-enhanced",
       title: "Terminal",
       titleKey: "dev.terminal-enhanced.ui.terminal",
-      icon: "$(terminal)",
+      icon: "$(remote)",
       order: 10,
       keepWhenActive: true,
       maximizable: true,
@@ -762,7 +758,7 @@ export async function activate(ctx) {
       pluginId: "dev.terminal-enhanced",
       title: "Terminal",
       titleKey: "dev.terminal-enhanced.ui.terminal",
-      icon: "$(terminal)",
+      icon: "$(remote)",
       order: 30,
       keepWhenActive: true,
       onActivate: () => {

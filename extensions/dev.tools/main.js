@@ -6,7 +6,11 @@ import { registerChangesPanel } from "./changes-panel.js";
 import { registerFilesPanel } from "./files-panel.js";
 import { registerContextPanel } from "./context-panel.js";
 import { getCurrentSessionChangeState, getSessionChangeState } from "./session-change-state.js";
-import { createTerminalToolExecutionContext, resolveTerminalToolArgs, TERMINAL_AWARE_TOOL_NAMES } from "./terminal-tool-context.js";
+import {
+  createTerminalToolExecutionContext,
+  getTerminalSessionRequirementError,
+  TERMINAL_AWARE_TOOL_NAMES
+} from "./terminal-tool-context.js";
 import { ToolsSettingsPage, buildToolRows } from "./ToolsSettingsPage.jsx";
 
 const I18N_NS = "dev.tools";
@@ -398,6 +402,8 @@ const I18N_MESSAGES = {
     "changes.copyFailed": "Copy failed"
   }
 };
+
+const TERMINAL_SESSION_ID_PARAM_DESCRIPTION = "Required exact terminal session_id from terminal_inventory workspace preferred_session_id or terminalManage list sessions[].session_id. Do not use machine_id, workspace_id, local, or ssh.";
 
 function t(key, fallback, values) {
   try {
@@ -886,15 +892,15 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "glob",
-          description: "Fast file pattern matching. Returns matching file paths sorted by modification time.",
+          description: "Fast file pattern matching through a specific terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
               pattern: { type: "string", description: "Glob pattern (e.g., **/*.js)" },
               path: { type: "string", description: "Directory to search (optional, default cwd)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["pattern"],
+            required: ["pattern", "session_id"],
             additionalProperties: false
           }
         }
@@ -904,7 +910,7 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "grep",
-          description: "Powerful content search via local Python service (ripgrep-backed).",
+          description: "Ripgrep-backed content search through a specific terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
@@ -921,9 +927,9 @@ function registerDefaultTools() {
               head_limit: { type: "number", description: "Limit output to first N lines/entries" },
               offset: { type: "number", description: "Skip first N lines/entries" },
               multiline: { type: "boolean", description: "Enable multiline search (rg -U --multiline --multiline-dotall)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["pattern"],
+            required: ["pattern", "session_id"],
             additionalProperties: false
           }
         }
@@ -933,16 +939,16 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "read",
-            description: "Read a file's content (supports local or SSH session via local tools service). If multiple terminal sessions exist, especially with SSH or different working directories, prefer passing the correct session_id explicitly instead of relying on the current active session.",
+          description: "Read a file's content through a specific local or SSH terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "File path to read" },
               offset: { type: "number", description: "Start line (1-based, optional)" },
               limit: { type: "number", description: "Number of lines to read (optional)" },
-                session_id: { type: "string", description: "Optional terminal session ID (local/ssh). Strongly recommended when multiple sessions, SSH sessions, or different cwd values are present." }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["path"],
+            required: ["path", "session_id"],
             additionalProperties: false
           }
         }
@@ -952,16 +958,16 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "write",
-            description: "Write content to a file (supports local or SSH session via local tools service). If multiple terminal sessions exist, especially with SSH or different working directories, prefer passing the correct session_id explicitly instead of relying on the current active session.",
+          description: "Write content through a specific local or SSH terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "File path to write" },
               content: { type: "string", description: "Content to write" },
               prompt: { type: "string", description: "Short summary of what is being written (<=100 chars)" },
-                session_id: { type: "string", description: "Optional terminal session ID (local/ssh). Strongly recommended when multiple sessions, SSH sessions, or different cwd values are present." }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["path", "content"],
+            required: ["path", "content", "session_id"],
             additionalProperties: false
           }
         }
@@ -971,7 +977,7 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "edit",
-            description: "Edit a file by exact string replacement (supports local or SSH session via local tools service). If multiple terminal sessions exist, especially with SSH or different working directories, prefer passing the correct session_id explicitly instead of relying on the current active session.",
+          description: "Edit a file through a specific local or SSH terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
@@ -980,9 +986,9 @@ function registerDefaultTools() {
               new_string: { type: "string", description: "Replacement string" },
               replace_all: { type: "boolean", description: "Replace all occurrences (default false)" },
               prompt: { type: "string", description: "Short summary of what is being edited (<=100 chars)" },
-                session_id: { type: "string", description: "Optional terminal session ID (local/ssh). Strongly recommended when multiple sessions, SSH sessions, or different cwd values are present." }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["path", "old_string", "new_string"],
+            required: ["path", "old_string", "new_string", "session_id"],
             additionalProperties: false
           }
         }
@@ -1008,15 +1014,15 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "tree",
-          description: "Get directory tree structure (supports local or SSH session via local tools service).",
+          description: "Get a directory tree through a specific terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "Directory path" },
               max_depth: { type: "number", description: "Maximum traversal depth (default 1)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["path"],
+            required: ["path", "session_id"],
             additionalProperties: false
           }
         }
@@ -1026,7 +1032,7 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "Bash",
-            description: "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures. When multiple terminal sessions exist, always prefer the correct session_id that matches the intended machine and cwd instead of assuming the current active session is right.\n\nBefore executing the command, please follow these steps:\n\n1. Directory Verification:\n   - If the command will create new directories or files, first use the LS tool to verify the parent directory exists and is the correct location\n   - For example, before running \"mkdir foo/bar\", first use LS to check that \"foo\" exists and is the intended parent directory\n\n2. Command Execution:\n   - Always quote file paths that contain spaces with double quotes (e.g., cd \"path with spaces/file.txt\")\n   - Examples of proper quoting:\n     - cd \"/Users/name/My Documents\" (correct)\n     - cd /Users/name/My Documents (incorrect - will fail)\n     - python \"/path/with spaces/script.py\" (correct)\n     - python /path/with spaces/script.py (incorrect - will fail)\n   - After ensuring proper quoting, execute the command.\n   - Capture the output of the command.\n\nUsage notes:\n  - The command argument is required.\n  - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).\n  - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.\n  - If the output exceeds 30000 characters, output will be truncated before being returned to you.\n  - VERY IMPORTANT: Avoid using search commands like `find` and `grep`. Instead use Grep, Glob.\n  - When issuing multiple commands, use ';' or '&&'. DO NOT use newlines (except inside quoted strings).\n  - Prefer absolute paths over 'cd' unless the user requests it explicitly.",
+          description: "Executes a command in the explicitly selected persistent terminal session. session_id is required and must be an exact terminal session id from terminal_inventory workspace preferred_session_id or terminalManage list sessions[].session_id. Do not pass machine_id values such as machine:local, workspace_id values, or session type values local/ssh.\n\nBefore executing the command, please follow these steps:\n\n1. Directory Verification:\n   - If the command will create new directories or files, first use the LS tool to verify the parent directory exists and is the correct location\n   - For example, before running \"mkdir foo/bar\", first use LS to check that \"foo\" exists and is the intended parent directory\n\n2. Command Execution:\n   - Always quote file paths that contain spaces with double quotes (e.g., cd \"path with spaces/file.txt\")\n   - Examples of proper quoting:\n     - cd \"/Users/name/My Documents\" (correct)\n     - cd /Users/name/My Documents (incorrect - will fail)\n     - python \"/path/with spaces/script.py\" (correct)\n     - python /path/with spaces/script.py (incorrect - will fail)\n   - After ensuring proper quoting, execute the command.\n   - Capture the output of the command.\n\nUsage notes:\n  - The command and session_id arguments are required.\n  - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).\n  - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.\n  - If the output exceeds 30000 characters, output will be truncated before being returned to you.\n  - VERY IMPORTANT: Avoid using search commands like `find` and `grep`. Instead use Grep, Glob.\n  - When issuing multiple commands, use ';' or '&&'. DO NOT use newlines (except inside quoted strings).\n  - Prefer absolute paths over 'cd' unless the user requests it explicitly.",
           parameters: {
             type: "object",
             properties: {
@@ -1048,10 +1054,10 @@ function registerDefaultTools() {
               },
               session_id: {
                 type: "string",
-                  description: "Optional terminal session ID to execute within (see terminalManage). Strongly recommended when multiple sessions, SSH sessions, or different cwd values are present."
+                description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION
               }
             },
-            required: ["command"],
+            required: ["command", "session_id"],
             additionalProperties: false
           }
         }
@@ -1589,6 +1595,7 @@ function registerDefaultTools() {
             if (chatSessionId) {
               const entry = {
                 toolCallId,
+                terminalSessionId: sessionId,
                 path,
                 prompt,
                 beforeContent,
@@ -1613,6 +1620,7 @@ function registerDefaultTools() {
           if (chatSessionId) {
             const entry = {
               toolCallId,
+              terminalSessionId: sessionId,
               path,
               prompt,
               beforeContent,
@@ -2027,7 +2035,52 @@ function registerDefaultTools() {
             if (!installer) throw new Error("PluginInstaller not ready");
           };
 
-          const connectDevWS = (serviceBase, devId, baseUrlAbs, pluginId) => {
+          const listDevSessionRecords = () => {
+            if (typeof pm?.listDevSessionRecords === "function") {
+              return pm.listDevSessionRecords();
+            }
+            try {
+              return JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}");
+            } catch {
+              return {};
+            }
+          };
+
+          const saveDevSessionRecord = (record) => {
+            if (typeof pm?.saveDevSessionRecord === "function") {
+              return pm.saveDevSessionRecord(record);
+            }
+            try {
+              const records = listDevSessionRecords();
+              records[record.pluginId] = {
+                devId: record.devId,
+                baseUrl: record.baseUrl,
+                dir: record.dir
+              };
+              localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(records));
+              return true;
+            } catch {
+              return false;
+            }
+          };
+
+          const removeDevSessionRecord = (devId) => {
+            if (typeof pm?.removeDevSessionRecord === "function") {
+              return pm.removeDevSessionRecord({ devId });
+            }
+            try {
+              const records = listDevSessionRecords();
+              for (const [pluginId, record] of Object.entries(records)) {
+                if (record?.devId === devId) delete records[pluginId];
+              }
+              localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(records));
+              return true;
+            } catch {
+              return false;
+            }
+          };
+
+          const connectDevWS = (serviceBase, devId, baseUrlAbs, pluginId, sourceDir) => {
             try {
               const wsUrl = serviceBase.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
               const ws = new WebSocket(wsUrl);
@@ -2035,7 +2088,7 @@ function registerDefaultTools() {
                 try {
                   const msg = JSON.parse(ev.data);
                   if (msg?.type === "dev:change" && msg?.devId === devId) {
-                    const ret = await installer.installFromDevBase(baseUrlAbs, devId);
+                    const ret = await installer.installFromDevBase(baseUrlAbs, devId, { sourceDir });
                     if (ret.success && ret.plugin) {
                       try {
                         // 使用热重载方法（不检查版本变化）
@@ -2051,7 +2104,7 @@ function registerDefaultTools() {
               ws.onclose = () => { /* optional log */ };
 
               const sessions = window.zion.state.get("plugins.devSessions") || {};
-              sessions[devId] = { ws, baseUrl: baseUrlAbs, pluginId };
+              sessions[devId] = { ws, baseUrl: baseUrlAbs, pluginId, dir: sourceDir };
               window.zion.state.set("plugins.devSessions", sessions);
             } catch (e) { /* ignore ws error */ }
           };
@@ -2070,8 +2123,7 @@ function registerDefaultTools() {
             ensurePM();
             // Gather dev sessions mapping (runtime + persisted)
             const sessionsState = window.zion?.state?.get("plugins.devSessions") || {};
-            let persisted = {};
-            try { persisted = JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}"); } catch {}
+            const persisted = listDevSessionRecords();
             const items = pm.list().map(p => {
               const run = Object.values(sessionsState).find((s) => s && s.pluginId === p.id) || null;
               const saved = persisted[p.id] || null;
@@ -2145,11 +2197,18 @@ function registerDefaultTools() {
             if (!devId || !baseUrlRel) return "Invalid dev start response";
 
             const baseAbs = serviceUrl.replace(/\/$/, "") + baseUrlRel;
-            const ret = await installer.installFromDevBase(baseAbs, devId);
+            const devDir = data?.data?.dir || path;
+            const ret = await installer.installFromDevBase(baseAbs, devId, { sourceDir: devDir });
             if (!ret.success || !ret.plugin) return `Install failed: ${ret.error?.message || "Unknown"}`;
             await pm.installFromInfo(ret.plugin, { enabled: true });
 
-            connectDevWS(serviceUrl, devId, baseAbs, ret.plugin.id);
+            connectDevWS(serviceUrl, devId, baseAbs, ret.plugin.id, devDir);
+            saveDevSessionRecord({
+              pluginId: ret.plugin.id,
+              devId,
+              baseUrl: baseAbs,
+              dir: devDir
+            });
 
             return JSON.stringify({ ok: true, devId, plugin: ret.plugin.id, baseUrl: baseAbs }, null, 2);
           }
@@ -2168,12 +2227,16 @@ function registerDefaultTools() {
               } catch {}
               try { sessions[id]?.ws?.close?.(); } catch {}
               delete sessions[id];
+              removeDevSessionRecord(id);
             };
 
             if (devId) {
               await stopOne(devId);
             } else {
-              const ids = Object.keys(sessions);
+              const ids = new Set(Object.keys(sessions));
+              for (const record of Object.values(listDevSessionRecords())) {
+                if (record?.devId) ids.add(record.devId);
+              }
               for (const id of ids) { await stopOne(id); }
             }
             window.zion.state.set("plugins.devSessions", sessions);
@@ -2187,7 +2250,7 @@ function registerDefaultTools() {
       };
     }
 
-    // 包装工具处理器：自动注入 terminal 上下文
+    // 包装终端感知工具：校验显式 session_id 并记录 execution context
     const wrappedHandlers = wrapHandlersWithTerminalContext(handlers);
     window.zion.state.set("chat.toolHandlers", wrappedHandlers);
 
@@ -2199,12 +2262,12 @@ function registerDefaultTools() {
 }
 
 /**
- * 包装工具处理器：自动注入当前 active terminal 的 session_id
+ * 包装终端感知工具处理器：强制要求显式 session_id，并记录执行上下文。
  * 
  * 设计原则：
  * 1. 插件间依赖最小：只读取状态，不依赖具体实现
- * 2. 向后兼容：用户仍可显式传递 session_id 来覆盖
- * 3. 集中管理：便于维护和扩展
+ * 2. 不读取 Terminal Panel 的 UI 焦点
+ * 3. 集中管理：便于维护、审计和扩展
  */
 function wrapHandlersWithTerminalContext(handlers) {
   for (const toolName of TERMINAL_AWARE_TOOL_NAMES) {
@@ -2213,10 +2276,12 @@ function wrapHandlersWithTerminalContext(handlers) {
       
       handlers[toolName] = async function(args, ...rest) {
         try {
-          args = resolveTerminalToolArgs(toolName, args, window.zion?.state?.get("terminal.activeSessionId"));
+          const terminalSessions = window.zion?.state?.get("terminal.sessions") || [];
+          const requirementError = getTerminalSessionRequirementError(toolName, args, terminalSessions);
+          if (requirementError) return requirementError;
           const executionContext = createTerminalToolExecutionContext(
             args,
-            window.zion?.state?.get("terminal.sessions") || []
+            terminalSessions
           );
           if (executionContext) {
             const meta = rest[0] || {};
