@@ -72,3 +72,53 @@ describe("PluginManager enabled state persistence", () => {
     expect(JSON.parse(localStorage.getItem("zion.pluginStates") || "{}").disabled).toContain("dev.example");
   });
 });
+
+describe("PluginManager development session persistence", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("persists and removes development session records by devId", () => {
+    const manager = new PluginManager({ pluginDir: "", extensionsDir: "", logLevel: "error" });
+
+    expect(manager.saveDevSessionRecord({
+      pluginId: "dev.example",
+      devId: "dev-12345678",
+      baseUrl: "http://127.0.0.1:8765/plugins/dev/dev-12345678",
+      dir: "/tmp/dev.example"
+    })).toBe(true);
+
+    expect(manager.listDevSessionRecords()).toEqual({
+      "dev.example": {
+        pluginId: "dev.example",
+        devId: "dev-12345678",
+        baseUrl: "http://127.0.0.1:8765/plugins/dev/dev-12345678",
+        dir: "/tmp/dev.example"
+      }
+    });
+
+    expect(manager.removeDevSessionRecord({ devId: "dev-12345678" })).toBe(true);
+    expect(manager.listDevSessionRecords()).toEqual({});
+  });
+
+  it("migrates legacy dev plugin metadata only once", async () => {
+    localStorage.setItem("zion.installedPlugins", JSON.stringify([{
+      ...pluginInfo(true),
+      origin: "dev",
+      path: "http://127.0.0.1:8765/plugins/dev/dev-87654321",
+      sourceDir: "/tmp/dev.example",
+      devId: "dev-87654321"
+    }]));
+
+    const manager = new PluginManager({ pluginDir: "", extensionsDir: "", logLevel: "error" });
+    await (manager as any).loadPersistedPlugins();
+
+    expect(manager.listDevSessionRecords()["dev.example"]).toMatchObject({
+      devId: "dev-87654321",
+      dir: "/tmp/dev.example"
+    });
+
+    manager.removeDevSessionRecord({ pluginId: "dev.example" });
+    expect(manager.listDevSessionRecords()).toEqual({});
+  });
+});

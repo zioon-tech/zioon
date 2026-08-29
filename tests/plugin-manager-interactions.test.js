@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activate } from "../extensions/dev.plugins/main.js";
-import { createPluginDetailModel, renderPluginEditor } from "../extensions/dev.plugins/plugin-details.js";
+import { createPluginDetailModel, getPluginOriginInfo, renderPluginEditor } from "../extensions/dev.plugins/plugin-details.js";
 
 function memoryPlugin() {
   const manifest = JSON.parse(fs.readFileSync(
@@ -135,6 +135,42 @@ describe("plugin manager detail navigation", () => {
     expect(pluginManager.disable).toHaveBeenCalledWith("dev.memory");
     expect(openFileTab).not.toHaveBeenCalled();
     expect(inspectorOpen).not.toHaveBeenCalled();
+  });
+
+  it("shows plugin origin in the sidebar and detail page", () => {
+    const row = container.querySelector(".zion-plugin-manager-row");
+    expect(row?.dataset.origin).toBe("builtin");
+    expect(row?.querySelector(".zion-plugin-origin-badge")).toBeNull();
+    expect(row?.querySelector(".zion-plugin-manager-row-meta")?.textContent).toContain("内置");
+
+    const zipPlugin = {
+      ...plugin,
+      id: "dev.zip-plugin",
+      origin: "external",
+      path: "file:dev.zip-plugin.zip"
+    };
+    expect(getPluginOriginInfo(zipPlugin, "zh-CN")).toMatchObject({
+      id: "external",
+      shortLabel: "ZIP",
+      label: "ZIP/外部安装"
+    });
+
+    const devPlugin = {
+      ...plugin,
+      id: "dev.local-plugin",
+      origin: "dev",
+      sourceDir: "/Users/test/.zion-next/plugins/dev.local-plugin"
+    };
+    const detail = document.createElement("div");
+    renderPluginEditor(detail, createPluginDetailModel(devPlugin, {
+      locale: "zh-CN",
+      onToggle: vi.fn(),
+      onReload: vi.fn(),
+      runCommand: vi.fn()
+    }));
+
+    expect(detail.querySelector(".zion-plugin-detail-origin")).toBeNull();
+    expect(detail.textContent).toContain("开发热更新");
   });
 
   it("controls plugin state from the detail page", async () => {

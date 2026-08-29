@@ -83,7 +83,8 @@ describe("plugin skill contributions", () => {
       root: "/Users/test/.zion-next/skills/.plugins",
       previous: [],
       plugins: [plugin()],
-      bundledSources
+      bundledSources,
+      bundledSkillFiles: {}
     });
 
     expect(first).toEqual([
@@ -102,7 +103,8 @@ describe("plugin skill contributions", () => {
       root: "/Users/test/.zion-next/skills/.plugins",
       previous: first,
       plugins: [],
-      bundledSources
+      bundledSources,
+      bundledSkillFiles: {}
     });
     expect(second).toEqual([]);
     expect(requests[1].url).toBe("http://127.0.0.1:8765/files/delete");
@@ -121,6 +123,12 @@ describe("plugin skill contributions", () => {
       path: "https://plugins.example/dev.identity.zip",
       skillContents: {
         "skills/biography-memory": "---\nname: biography-memory\ndescription: ZIP skill\n---\n"
+      },
+      skillFiles: {
+        "skills/biography-memory": {
+          "SKILL.md": "---\nname: biography-memory\ndescription: ZIP skill\n---\n",
+          "scripts/query-biography.py": "print('ok')\n"
+        }
       }
     });
 
@@ -132,8 +140,10 @@ describe("plugin skill contributions", () => {
     });
 
     expect(materialized).toHaveLength(1);
-    expect(requests).toHaveLength(1);
+    expect(requests).toHaveLength(2);
     expect(requests[0].url).toBe("http://127.0.0.1:8765/files/write");
+    expect(JSON.parse(requests[0].init.body).path).toBe("/Users/test/.zion-next/skills/.plugins/dev.identity/biography-memory/SKILL.md");
     expect(JSON.parse(requests[0].init.body).content).toContain("ZIP skill");
+    expect(JSON.parse(requests[1].init.body).path).toBe("/Users/test/.zion-next/skills/.plugins/dev.identity/biography-memory/scripts/query-biography.py");
   });
 });

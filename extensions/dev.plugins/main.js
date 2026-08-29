@@ -1,5 +1,6 @@
 import {
   createPluginDetailModel,
+  getPluginOriginInfo,
   getPluginPresentation,
   getPluginStatus,
   renderPluginEditor
@@ -523,15 +524,20 @@ function mountPluginsSidebarViewInto(container) {
     }
   };
 
+  const getDisplayOrigin = (plugin) => {
+    const source = isDevelopmentPlugin(plugin)
+      ? { ...plugin, origin: "dev" }
+      : plugin;
+    return getPluginOriginInfo(source, getCurrentLocale());
+  };
+
   const matchesFilter = (plugin) => {
     if (activeFilter === "enabled") return !!plugin?.enabled;
     if (activeFilter === "disabled") return !plugin?.enabled;
     if (activeFilter === "error") return plugin?.state === "error" || !!plugin?.error;
-    if (activeFilter === "builtin") {
-      const path = String(plugin?.path || "");
-      return path.includes("/extensions/") || path.startsWith("internal:");
-    }
-    if (activeFilter === "development") return isDevelopmentPlugin(plugin);
+    if (activeFilter === "builtin") return getDisplayOrigin(plugin).id === "builtin";
+    if (activeFilter === "external") return getDisplayOrigin(plugin).id === "external";
+    if (activeFilter === "development") return getDisplayOrigin(plugin).id === "dev";
     return true;
   };
 
@@ -541,6 +547,7 @@ function mountPluginsSidebarViewInto(container) {
     ["disabled", "停用", "Disabled"],
     ["error", "异常", "Errors"],
     ["builtin", "内置", "Built in"],
+    ["external", "ZIP", "ZIP"],
     ["development", "开发中", "Development"]
   ];
 
@@ -748,14 +755,16 @@ function mountPluginsSidebarViewInto(container) {
         fallbackDescription: getPluginDescription(plugin)
       });
       const status = getPluginStatus(plugin, getCurrentLocale());
+      const origin = getDisplayOrigin(plugin);
       const row = h("div", {
         className: `zion-plugin-manager-row${selectedPluginId === plugin.id ? " is-selected" : ""}`,
         role: "button",
         tabindex: "0",
-        "aria-label": `${presentation.name}: ${status.label}`,
+        "aria-label": `${presentation.name}: ${origin.label}, ${status.label}`,
         "data-status": status.id,
+        "data-origin": origin.id,
         "data-tone": status.tone,
-        title: status.label
+        title: `${origin.title} · ${status.label}`
       });
       row.onclick = () => openPluginEditor(plugin, true);
       row.onkeydown = (event) => {
@@ -768,8 +777,10 @@ function mountPluginsSidebarViewInto(container) {
         h("span", { className: `codicon codicon-${presentation.icon}` })
       );
       const copy = h("div", { className: "zion-plugin-manager-row-copy" },
-        h("div", { className: "zion-plugin-manager-row-title" }, presentation.name),
-        h("div", { className: "zion-plugin-manager-row-meta" }, `${plugin.id} · v${plugin.version || "0.0.0"}`),
+        h("div", { className: "zion-plugin-manager-row-title" },
+          h("span", { className: "zion-plugin-manager-row-name" }, presentation.name)
+        ),
+        h("div", { className: "zion-plugin-manager-row-meta" }, `${origin.shortLabel} · ${plugin.id} · v${plugin.version || "0.0.0"}`),
         h("div", { className: "zion-plugin-manager-row-description" },
           plugin?.error?.message || presentation.description || status.label
         )
@@ -986,8 +997,22 @@ function mountPluginsSidebarViewInto(container) {
   const activeDevSessions = new Map();
 
   const getServiceBaseUrl = () => readServiceUrl();
+  const getPersistedDevSessions = () => {
+    if (typeof pluginManager?.listDevSessionRecords === "function") {
+      return pluginManager.listDevSessionRecords();
+    }
+    try {
+      return JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}");
+    } catch {
+      return {};
+    }
+  };
 
-  const connectWebSocket = (serviceUrl, devId) => {
+  const runtimeDevSessions = window.zion.state?.get?.("plugins.devSessions") || {};
+  devStopBtn.disabled = Object.keys(runtimeDevSessions).length === 0
+    && Object.keys(getPersistedDevSessions()).length === 0;
+
+  const connectWebSocket = (serviceUrl, devId, sourceDir) => {
     const wsUrl = serviceUrl.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
     const ws = new WebSocket(wsUrl);
     ws.onopen = () => {
@@ -1000,7 +1025,7 @@ function mountPluginsSidebarViewInto(container) {
           const baseUrl = getServiceBaseUrl() + `/plugins/dev/${devId}`;
           if (!pluginInstaller || typeof pluginInstaller.installFromDevBase !== "function") return;
           if (!pluginManager || typeof pluginManager.hotReloadFromInfo !== "function") return;
-          const ret = await pluginInstaller.installFromDevBase(baseUrl, devId);
+          const ret = await pluginInstaller.installFromDevBase(baseUrl, devId, { sourceDir });
           if (ret.success && ret.plugin) {
             try {
               await pluginManager.hotReloadFromInfo(ret.plugin, { enabled: true });
@@ -1053,20 +1078,29 @@ function mountPluginsSidebarViewInto(container) {
         throw new Error(t("msg.installerDevUnavailable", "Installer 不可用"));
       }
 
-      const ret = await pluginInstaller.installFromDevBase(baseUrl, devId);
+      const ret = await pluginInstaller.installFromDevBase(baseUrl, devId, { sourceDir: devDir });
       if (ret.success && ret.plugin) {
         await pluginManager.installFromInfo(ret.plugin, { enabled: true });
         devStatus.textContent = t("msg.devStartedStatus", "开发会话已启动：{id} ({plugin})", { id: devId, plugin: ret.plugin.id });
-        const ws = connectWebSocket(serviceUrl, devId);
+        const ws = connectWebSocket(serviceUrl, devId, devDir);
         activeDevSessions.set(devId, { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir });
         try {
           const sessions = (window.zion.state.get("plugins.devSessions") || {});
           sessions[devId] = { ws, baseUrl, pluginId: ret.plugin.id, dir: devDir };
           window.zion.state.set("plugins.devSessions", sessions);
-          const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
-          const saved = JSON.parse(savedRaw);
-          saved[ret.plugin.id] = { devId, baseUrl, dir: devDir };
-          localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+          if (typeof pluginManager.saveDevSessionRecord === "function") {
+            pluginManager.saveDevSessionRecord({
+              pluginId: ret.plugin.id,
+              devId,
+              baseUrl,
+              dir: devDir
+            });
+          } else {
+            const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
+            const saved = JSON.parse(savedRaw);
+            saved[ret.plugin.id] = { devId, baseUrl, dir: devDir };
+            localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+          }
         } catch {}
         devStartBtn.disabled = true;
         devStopBtn.disabled = false;
@@ -1083,28 +1117,42 @@ function mountPluginsSidebarViewInto(container) {
   devStopBtn.onclick = async () => {
     const serviceUrl = getServiceBaseUrl();
     try {
-      for (const [devId, sess] of activeDevSessions.entries()) {
+      const sessions = window.zion.state.get("plugins.devSessions") || {};
+      const sessionsToStop = new Map(activeDevSessions);
+      for (const [devId, session] of Object.entries(sessions)) {
+        if (!sessionsToStop.has(devId)) sessionsToStop.set(devId, session);
+      }
+      for (const record of Object.values(getPersistedDevSessions())) {
+        if (record?.devId && !sessionsToStop.has(record.devId)) {
+          sessionsToStop.set(record.devId, record);
+        }
+      }
+
+      for (const [devId, sess] of sessionsToStop.entries()) {
         try {
           await fetch(`${serviceUrl}/plugins/dev/stop`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ devId })
           });
-          sess.ws.close();
+          sess?.ws?.close?.();
         } catch {}
         try {
-          const sessions = (window.zion.state.get("plugins.devSessions") || {});
           delete sessions[devId];
-          window.zion.state.set("plugins.devSessions", sessions);
-          const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
-          const saved = JSON.parse(savedRaw);
-          if (sess.pluginId && saved[sess.pluginId]) {
-            delete saved[sess.pluginId];
-            localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+          if (typeof pluginManager.removeDevSessionRecord === "function") {
+            pluginManager.removeDevSessionRecord({ devId });
+          } else {
+            const savedRaw = localStorage.getItem("zion.plugins.devSessionsInfo") || "{}";
+            const saved = JSON.parse(savedRaw);
+            if (sess.pluginId && saved[sess.pluginId]) {
+              delete saved[sess.pluginId];
+              localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(saved));
+            }
           }
         } catch {}
         activeDevSessions.delete(devId);
       }
+      window.zion.state.set("plugins.devSessions", sessions);
       devStatus.textContent = t("msg.devStoppedShort", "开发会话已停止。");
       showMessage(t("msg.devStopped", "开发模式已停止。"));
     } catch (e) {

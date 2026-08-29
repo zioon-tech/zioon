@@ -161,7 +161,8 @@ export class HttpPluginInstaller {
    */
   async installFromDevBase(
     baseUrl: string,
-    devId: string
+    devId: string,
+    options: { sourceDir?: string } = {}
   ): Promise<PluginInstallResult> {
     try {
       const manifestUrl = `${baseUrl}/manifest.json`;
@@ -186,6 +187,7 @@ export class HttpPluginInstaller {
       if (!/^(blob:|data:|https?:)/i.test(mainPath)) {
         mainPath = `${baseUrl}/${String(mainPath).replace(/^\.\//, '')}`;
       }
+      mainPath = this.withCacheBust(mainPath, `zionDevTs=${Date.now()}`);
 
       // 构建 PluginInfo
       const pluginInfo: PluginInfo = {
@@ -208,7 +210,10 @@ export class HttpPluginInstaller {
         peerDependencies: manifest?.zion?.peerDependencies ? Object.keys(manifest.zion.peerDependencies) : [],
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        isLegacy: !manifest?.zion
+        isLegacy: !manifest?.zion,
+        origin: 'dev',
+        devId,
+        sourceDir: options.sourceDir
       };
 
       // 验证
@@ -229,7 +234,14 @@ export class HttpPluginInstaller {
       if (this.options.cache) {
         const cached = this.cache.get(pluginInfo.id);
         if (cached && cached.version === pluginInfo.version) {
-          this.cache.set(pluginInfo.id, { ...cached, manifest: pluginInfo.manifest, updatedAt: Date.now() });
+          this.cache.set(pluginInfo.id, {
+            ...cached,
+            ...pluginInfo,
+            state: cached.state,
+            enabled: cached.enabled,
+            createdAt: cached.createdAt,
+            updatedAt: Date.now()
+          });
           return { success: true, plugin: this.cache.get(pluginInfo.id)!, warnings: validation.warnings };
         }
         this.cache.set(pluginInfo.id, pluginInfo);
@@ -248,6 +260,18 @@ export class HttpPluginInstaller {
         },
         warnings: []
       };
+    }
+  }
+
+  private withCacheBust(inputUrl: string, token: string): string {
+    try {
+      const url = new URL(inputUrl, window.location.href);
+      const [key, value] = token.split('=');
+      url.searchParams.set(key || 't', value || String(Date.now()));
+      return url.toString();
+    } catch {
+      const separator = inputUrl.includes('?') ? '&' : '?';
+      return `${inputUrl}${separator}${token}`;
     }
   }
 
@@ -518,6 +542,8 @@ export class HttpPluginInstaller {
     }
 
     const skillContents: Record<string, string> = {};
+    const skillFiles: Record<string, Record<string, string>> = {};
+    const styleContents: Record<string, string> = {};
     const contributedSkills = manifest?.zion?.contributes?.skills;
     if (Array.isArray(contributedSkills)) {
       for (const declaredPath of contributedSkills) {
@@ -528,10 +554,40 @@ export class HttpPluginInstaller {
           .replace(/\/+$/, '');
         const parts = relativePath.split('/').filter(Boolean);
         if (!parts.length || parts.some((part) => part === '.' || part === '..')) continue;
-        const skillEntry = zip.file(`${parts.join('/')}/SKILL.md`);
-        if (!skillEntry) continue;
-        const content = await skillEntry.async('string');
-        if (content.length <= 256 * 1024) skillContents[parts.join('/')] = content;
+        const skillDir = parts.join('/');
+        const skillPrefix = `${skillDir}/`;
+        const files: Record<string, string> = {};
+        for (const [entryPath, entry] of Object.entries(zip.files)) {
+          if ((entry as any)?.dir) continue;
+          if (!entryPath.startsWith(skillPrefix)) continue;
+          const relativeFile = entryPath.slice(skillPrefix.length);
+          if (!relativeFile || relativeFile.includes('../') || !this.isTextSkillFile(relativeFile)) continue;
+          const content = await entry.async('string');
+          if (content.length <= 256 * 1024) files[relativeFile] = content;
+        }
+        if (typeof files['SKILL.md'] === 'string') {
+          skillContents[skillDir] = files['SKILL.md'];
+          skillFiles[skillDir] = files;
+        }
+      }
+    }
+
+    const contributedStyles = manifest?.zion?.contributes?.styles;
+    if (Array.isArray(contributedStyles)) {
+      for (const declaredPath of contributedStyles) {
+        const relativePath = String(declaredPath || '')
+          .trim()
+          .replace(/\\/g, '/')
+          .replace(/^\.\//, '')
+          .replace(/^\/+/, '');
+        const parts = relativePath.split('/').filter(Boolean);
+        if (!parts.length || parts.some((part) => part === '.' || part === '..')) continue;
+        const stylePath = parts.join('/');
+        if (!/\.css$/i.test(stylePath)) continue;
+        const entry = zip.file(stylePath);
+        if (!entry) continue;
+        const content = await entry.async('string');
+        if (content.length <= 256 * 1024) styleContents[stylePath] = content;
       }
     }
 
@@ -576,10 +632,18 @@ export class HttpPluginInstaller {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       isLegacy: !manifest?.zion,
-      skillContents: Object.keys(skillContents).length ? skillContents : undefined
+      origin: 'external',
+      skillContents: Object.keys(skillContents).length ? skillContents : undefined,
+      skillFiles: Object.keys(skillFiles).length ? skillFiles : undefined,
+      styleContents: Object.keys(styleContents).length ? styleContents : undefined
     };
 
     return pluginInfo;
+  }
+
+  private isTextSkillFile(relativePath: string): boolean {
+    if (!relativePath || relativePath.split('/').some((part) => part === '.' || part === '..')) return false;
+    return /\.(md|mdx|txt|json|ya?ml|js|mjs|cjs|ts|tsx|jsx|py|sh|bash|zsh|xml|html|css|csv)$/i.test(relativePath);
   }
 
   /**

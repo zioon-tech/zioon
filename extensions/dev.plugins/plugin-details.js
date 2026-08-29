@@ -128,6 +128,57 @@ export function getPluginStatus(plugin, locale = "zh-CN") {
   return { id: "enabled", label: zh ? "等待激活" : "Enabled", tone: "warning" };
 }
 
+export function getPluginOriginInfo(plugin, locale = "zh-CN") {
+  const zh = locale !== "en-US";
+  const explicit = String(plugin?.origin || "").trim();
+  const path = String(plugin?.path || "").trim();
+  const manifest = plugin?.manifest || {};
+  const main = String(manifest?.zion?.main || manifest?.main || "").trim();
+  const hasDevMarker = !!plugin?.sourceDir
+    || !!plugin?.devId
+    || /\/plugins\/dev\//.test(path)
+    || /\/plugins\/dev\//.test(main);
+  const id = explicit === "builtin" || explicit === "dev" || explicit === "external"
+    ? explicit
+    : hasDevMarker
+      ? "dev"
+      : path.startsWith("/extensions/") || main.startsWith("internal:")
+        ? "builtin"
+        : "external";
+  const detail = id === "dev"
+    ? String(plugin?.sourceDir || path || main || "").trim()
+    : String(path || main || "").trim();
+  if (id === "builtin") {
+    return {
+      id,
+      shortLabel: zh ? "内置" : "Built-in",
+      label: zh ? "内置插件" : "Built-in plugin",
+      title: zh ? "随应用内置加载" : "Bundled with the app",
+      detail
+    };
+  }
+  if (id === "dev") {
+    return {
+      id,
+      shortLabel: zh ? "热更" : "Dev",
+      label: zh ? "开发热更新" : "Hot-reload dev",
+      title: detail
+        ? (zh ? `开发热更新：${detail}` : `Hot-reload dev: ${detail}`)
+        : (zh ? "开发热更新插件" : "Hot-reload development plugin"),
+      detail
+    };
+  }
+  return {
+    id: "external",
+    shortLabel: "ZIP",
+    label: zh ? "ZIP/外部安装" : "ZIP/external install",
+    title: detail
+      ? (zh ? `ZIP/外部安装：${detail}` : `ZIP/external install: ${detail}`)
+      : (zh ? "ZIP 或外部分发包安装" : "Installed from a ZIP or external package"),
+    detail
+  };
+}
+
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -254,6 +305,7 @@ function createEnableAction(plugin, onToggle, locale, compact = false) {
 function createSummaryHeader(model) {
   const { plugin, presentation, locale } = model;
   const status = getPluginStatus(plugin, locale);
+  const origin = getPluginOriginInfo(plugin, locale);
   const header = element("header", "zion-plugin-detail-summary");
   const pluginIcon = element("div", "zion-plugin-detail-icon");
   pluginIcon.appendChild(icon(presentation.icon));
@@ -262,13 +314,14 @@ function createSummaryHeader(model) {
   title.appendChild(document.createTextNode(presentation.name));
   title.appendChild(element("span", `zion-plugin-detail-status is-${status.tone}`, status.label));
   copy.appendChild(title);
-  copy.appendChild(element("div", "zion-plugin-detail-meta", `${plugin.id} · v${plugin.version || "0.0.0"} · ${presentation.categoryLabel}`));
+  copy.appendChild(element("div", "zion-plugin-detail-meta", `${plugin.id} · v${plugin.version || "0.0.0"} · ${presentation.categoryLabel} · ${origin.label}`));
   header.append(pluginIcon, copy);
   return header;
 }
 
 function renderOverview(container, model) {
   const { plugin, presentation, contributions, locale } = model;
+  const origin = getPluginOriginInfo(plugin, locale);
   const layout = element("div", "zion-plugin-detail-overview");
   const main = element("main", "zion-plugin-detail-main");
   appendError(main, plugin);
@@ -294,7 +347,8 @@ function renderOverview(container, model) {
     [locale === "en-US" ? "Status" : "状态", getPluginStatus(plugin, locale).label],
     [locale === "en-US" ? "Author" : "作者", plugin.author || plugin.manifest?.author || "Zion Developer"],
     [locale === "en-US" ? "License" : "许可", plugin.license || plugin.manifest?.license || "未声明"],
-    [locale === "en-US" ? "Source" : "来源", String(plugin.path || "").includes("/extensions/") ? (locale === "en-US" ? "Built in" : "内置") : (locale === "en-US" ? "Installed" : "已安装")],
+    [locale === "en-US" ? "Source" : "来源", origin.label],
+    [locale === "en-US" ? "Path" : "路径", origin.detail || (locale === "en-US" ? "Unknown" : "未知")],
     [locale === "en-US" ? "Activation" : "激活事件", (plugin.manifest?.zion?.activationEvents || []).join("、") || (locale === "en-US" ? "On demand" : "按需")]
   ];
   for (const [label, value] of fields) {

@@ -22,6 +22,15 @@ export type PluginState =
   | 'error'        // 错误状态
   | 'uninstalled'; // 已卸载
 
+export type PluginOrigin = 'builtin' | 'dev' | 'external';
+
+export interface PluginDevSessionRecord {
+  pluginId: string;
+  devId: string;
+  baseUrl: string;
+  dir: string;
+}
+
 /**
  * 插件错误类型
  */
@@ -188,10 +197,20 @@ export interface PluginInfo {
   createdAt: number;
   updatedAt: number;
   isLegacy: boolean;
+  /** 插件来源：内置扩展、开发目录或外部分发包 */
+  origin?: PluginOrigin;
   /** 是否启用（UI/管理器用） */
   enabled?: boolean;
   /** ZIP 插件中由 contributes.skills 声明的 SKILL.md 内容 */
   skillContents?: Record<string, string>;
+  /** ZIP/开发插件中由 contributes.skills 声明的技能目录文本文件 */
+  skillFiles?: Record<string, Record<string, string>>;
+  /** ZIP 插件中由 contributes.styles 声明的样式内容 */
+  styleContents?: Record<string, string>;
+  /** 开发模式插件的本地源码目录 */
+  sourceDir?: string;
+  /** 开发模式插件会话 ID */
+  devId?: string;
 }
 
 /**

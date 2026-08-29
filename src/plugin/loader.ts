@@ -68,7 +68,8 @@ export class PluginLoader {
         peerDependencies: this.getPeerDependencies(manifest),
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        isLegacy: format === 'legacy'
+        isLegacy: format === 'legacy',
+        origin: pluginPath.startsWith('/extensions/') ? 'builtin' : 'external'
       };
 
       // 缓存插件信息
@@ -324,7 +325,10 @@ export class PluginLoader {
     try {
       if (path.startsWith('internal:')) {
         const key = path.slice('internal:'.length);
-        const extensionModules = (import.meta as any).glob('/extensions/**/*.{js,ts,jsx,tsx}') as Record<
+        const extensionModules = (import.meta as any).glob([
+          '/extensions/**/*.{js,ts,jsx,tsx}',
+          '!/extensions/dev.identity/**/*.{js,ts,jsx,tsx}'
+        ]) as Record<
           string,
           () => Promise<any>
         >;
@@ -344,7 +348,10 @@ export class PluginLoader {
 
       const normalizedExtensionPath = this.normalizeExtensionsPath(path);
       if (normalizedExtensionPath) {
-        const extensionModules = (import.meta as any).glob('/extensions/**/*.{js,ts,jsx,tsx}') as Record<
+        const extensionModules = (import.meta as any).glob([
+          '/extensions/**/*.{js,ts,jsx,tsx}',
+          '!/extensions/dev.identity/**/*.{js,ts,jsx,tsx}'
+        ]) as Record<
           string,
           () => Promise<any>
         >;

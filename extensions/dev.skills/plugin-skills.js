@@ -1,7 +1,22 @@
-const BUNDLED_PLUGIN_SKILLS = import.meta.glob("/extensions/**/skills/**/SKILL.md", {
+const BUNDLED_PLUGIN_SKILLS = import.meta.glob([
+  "/extensions/**/skills/**/SKILL.md",
+  "!/extensions/dev.identity/skills/**/SKILL.md"
+], {
   query: "?raw",
   import: "default"
 });
+const BUNDLED_PLUGIN_SKILL_FILES = import.meta.glob(
+  [
+    "/extensions/**/skills/**/*.{md,mdx,txt,json,yaml,yml,js,mjs,cjs,ts,tsx,jsx,py,sh,bash,zsh,xml,html,css,csv}",
+    "!/extensions/dev.identity/skills/**/*.{md,mdx,txt,json,yaml,yml,js,mjs,cjs,ts,tsx,jsx,py,sh,bash,zsh,xml,html,css,csv}"
+  ],
+  {
+    query: "?raw",
+    import: "default"
+  }
+);
+
+const TEXT_SKILL_FILE_RE = /\.(md|mdx|txt|json|ya?ml|js|mjs|cjs|ts|tsx|jsx|py|sh|bash|zsh|xml|html|css|csv)$/i;
 
 function trimSlashes(value) {
   return String(value || "").replace(/^\/+|\/+$/g, "");
@@ -26,6 +41,19 @@ function safePathSegment(value) {
 
 function joinResourcePath(base, relative) {
   return `${String(base || "").replace(/\/+$/, "")}/${String(relative || "").replace(/^\/+/, "")}`;
+}
+
+function joinFsPath(base, relative) {
+  return `${String(base || "").replace(/\/+$/, "")}/${String(relative || "").replace(/^\/+/, "")}`;
+}
+
+function normalizeSkillFilePath(value) {
+  const raw = String(value || "").trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!raw || raw.startsWith("/") || raw.endsWith("/")) return "";
+  const parts = raw.split("/").filter(Boolean);
+  if (!parts.length || parts.some((part) => part === "." || part === "..")) return "";
+  const joined = parts.join("/");
+  return TEXT_SKILL_FILE_RE.test(joined) ? joined : "";
 }
 
 function modernManifest(plugin) {
@@ -54,11 +82,15 @@ export function collectPluginSkillContributions(plugins) {
         id,
         pluginId,
         pluginPath,
+        sourceDir: typeof plugin?.sourceDir === "string" ? plugin.sourceDir : "",
         skillName,
         relativePath,
         embeddedContent: typeof plugin?.skillContents?.[relativePath] === "string"
           ? plugin.skillContents[relativePath]
           : "",
+        embeddedFiles: plugin?.skillFiles?.[relativePath] && typeof plugin.skillFiles[relativePath] === "object"
+          ? plugin.skillFiles[relativePath]
+          : null,
         sourceFile: joinResourcePath(pluginPath, `${relativePath}/SKILL.md`)
       });
     }
@@ -89,6 +121,116 @@ async function fetchSkillContent(sourceFile, bundledSources) {
   } catch {
     return "";
   }
+}
+
+async function loadRawModule(value) {
+  if (typeof value === "string") return value;
+  if (typeof value !== "function") return "";
+  try {
+    const loaded = await value();
+    return typeof loaded === "string" ? loaded : "";
+  } catch {
+    return "";
+  }
+}
+
+async function bundledSkillFiles(sourceDir, bundledSources = BUNDLED_PLUGIN_SKILL_FILES) {
+  const prefix = `/${trimSlashes(sourceDir)}/`;
+  const files = {};
+  for (const [rawPath, loader] of Object.entries(bundledSources || {})) {
+    const normalizedPath = `/${trimSlashes(rawPath)}`;
+    if (!normalizedPath.startsWith(prefix)) continue;
+    const relativeFile = normalizeSkillFilePath(normalizedPath.slice(prefix.length));
+    if (!relativeFile) continue;
+    const content = await loadRawModule(loader);
+    if (content) files[relativeFile] = content;
+  }
+  return files;
+}
+
+async function listLocalDirEntries(base, dir) {
+  try {
+    const url = `${base}/files/entries?path=${encodeURIComponent(dir)}&max_depth=1`;
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) return [];
+    const json = await res.json().catch(() => null);
+    const raw = json && typeof json === "object" && "results" in json ? json.results : json;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((entry) => {
+        const path = String(entry?.path || entry?.full_path || entry || "").trim().replace(/\/$/, "");
+        if (!path) return null;
+        const type = String(entry?.type || entry?.kind || "").toLowerCase() || (String(entry).endsWith("/") ? "dir" : "file");
+        return { path, type: type === "directory" ? "dir" : type };
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function readLocalTextFile(base, path) {
+  try {
+    const url = `${base}/files/read?path=${encodeURIComponent(path)}`;
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) return "";
+    const json = await res.json().catch(() => null);
+    const content = json && typeof json === "object" ? json.content : "";
+    return typeof content === "string" && content.length <= 256 * 1024 ? content : "";
+  } catch {
+    return "";
+  }
+}
+
+async function localSkillFiles(base, sourceDir, relativePath, maxDepth = 6) {
+  const skillRoot = joinFsPath(sourceDir, relativePath);
+  const files = {};
+  const walk = async (dir, depth) => {
+    if (depth > maxDepth) return;
+    const entries = await listLocalDirEntries(base, dir);
+    for (const entry of entries) {
+      if (!entry?.path) continue;
+      const relativeFile = normalizeSkillFilePath(entry.path.slice(skillRoot.length).replace(/^\/+/, ""));
+      if (entry.type === "dir") {
+        await walk(entry.path, depth + 1);
+        continue;
+      }
+      if (!relativeFile) continue;
+      const content = await readLocalTextFile(base, entry.path);
+      if (content) files[relativeFile] = content;
+    }
+  };
+  await walk(skillRoot, 0);
+  return files;
+}
+
+async function resolveSkillFiles(base, declaration, options, skillContent) {
+  const embedded = declaration.embeddedFiles && typeof declaration.embeddedFiles === "object"
+    ? { ...declaration.embeddedFiles }
+    : {};
+  if (Object.keys(embedded).length) {
+    if (skillContent && !embedded["SKILL.md"]) embedded["SKILL.md"] = skillContent;
+    return embedded;
+  }
+
+  const bundled = await bundledSkillFiles(
+    joinResourcePath(declaration.pluginPath, declaration.relativePath),
+    options.bundledSkillFiles
+  );
+  if (Object.keys(bundled).length) {
+    if (skillContent && !bundled["SKILL.md"]) bundled["SKILL.md"] = skillContent;
+    return bundled;
+  }
+
+  if (declaration.sourceDir) {
+    const local = await localSkillFiles(base, declaration.sourceDir, declaration.relativePath);
+    if (Object.keys(local).length) {
+      if (skillContent && !local["SKILL.md"]) local["SKILL.md"] = skillContent;
+      return local;
+    }
+  }
+
+  return skillContent ? { "SKILL.md": skillContent } : {};
 }
 
 async function writeFile(base, path, content) {
@@ -132,22 +274,36 @@ export async function materializePluginSkills(options = {}) {
     const destinationDir = `${root}/${safePathSegment(declaration.pluginId)}/${declaration.skillName}`;
     const destinationFile = `${destinationDir}/SKILL.md`;
     const content = embeddedContent || await fetchSkillContent(declaration.sourceFile, options.bundledSources);
-    if (!content.trim()) {
+    const files = await resolveSkillFiles(base, declaration, options, content);
+    if (!String(files["SKILL.md"] || "").trim()) {
       const existing = previousById.get(declaration.id);
       if (existing) materialized.push(existing);
       continue;
     }
-    await writeFile(base, destinationFile, content);
+    const writtenFiles = [];
+    for (const [relativeFile, fileContent] of Object.entries(files).sort(([a], [b]) => {
+      if (a === "SKILL.md") return -1;
+      if (b === "SKILL.md") return 1;
+      return a.localeCompare(b);
+    })) {
+      const normalizedFile = normalizeSkillFilePath(relativeFile);
+      if (!normalizedFile || typeof fileContent !== "string") continue;
+      const targetFile = `${destinationDir}/${normalizedFile}`;
+      await writeFile(base, targetFile, fileContent);
+      writtenFiles.push(targetFile);
+    }
     materialized.push({
       ...catalogEntry,
       path: destinationDir,
-      file: destinationFile
+      file: destinationFile,
+      files: writtenFiles
     });
   }
 
   for (const entry of previous) {
-    if (!entry?.id || desiredIds.has(entry.id) || !entry.file) continue;
-    await deleteFile(base, entry.file);
+    if (!entry?.id || desiredIds.has(entry.id)) continue;
+    const files = Array.isArray(entry.files) && entry.files.length ? entry.files : [entry.file].filter(Boolean);
+    for (const file of files) await deleteFile(base, file);
   }
 
   return materialized;
