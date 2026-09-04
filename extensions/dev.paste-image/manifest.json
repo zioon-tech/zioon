@@ -22,15 +22,30 @@
       "category": "editor",
       "features": {
         "zh-CN": [
-          "处理剪贴板图片并插入为 Markdown 图片。"
+          "处理剪贴板、文件选择和拖放图片，并插入为 Markdown 图片。"
         ],
         "en-US": [
-          "Handle clipboard images and insert them as Markdown images."
+          "Handle clipboard, file picker, and dropped images as Markdown images."
         ]
-      }
+      },
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "插入图片",
+            "en-US": "Insert Image"
+          },
+          "command": "image.insertFromFile",
+          "icon": "file-media"
+        }
+      ]
     },
     "contributes": {
-      "commands": [],
+      "commands": [
+        {
+          "id": "image.insertFromFile",
+          "title": "插入图片"
+        }
+      ],
       "keybindings": []
     },
     "activationEvents": [

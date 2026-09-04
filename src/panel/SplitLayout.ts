@@ -53,8 +53,12 @@ function installHorizontalWheelBridge(host: HTMLElement): void {
       const tableScroller = target.closest(".cm-md-table-scroll") as HTMLElement | null;
       if (tableScroller && canScrollX(tableScroller, delta)) return;
 
-      // Table reached its horizontal edge (or isn't scrollable): contain the
-      // wheel here so it doesn't chain into the panels layout and pan panels.
+      if (canScrollX(host, delta)) {
+        const max = Math.max(0, host.scrollWidth - host.clientWidth);
+        host.scrollLeft = Math.max(0, Math.min(max, host.scrollLeft + delta));
+      }
+      // The table cannot consume this horizontal gesture. Route it once to the
+      // panel strip, then stop native scroll chaining from applying it again.
       event.preventDefault();
       event.stopPropagation();
     },

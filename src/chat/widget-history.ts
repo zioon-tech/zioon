@@ -15,6 +15,7 @@
 // context builders never drift apart.
 
 import { getAssistantBlockIdFromHeader, stripAssistantBlockIdComment } from "./restore";
+import { isContinuationBoundaryLine } from "./session-document-format.js";
 
 const THINKING_STUB_RE = /^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/i;
 const TOOL_STUB_RE = /^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/i;
@@ -123,6 +124,23 @@ function buildRoleRanges(text: string): RoleRange[] {
   let assistantBlockId: string | null = null;
   for (const line of lines) {
     const trimmed = line.trim();
+    if (isContinuationBoundaryLine(line)) {
+      if (pos > startPos) {
+        ranges.push({
+          role: currentRole,
+          from: startPos,
+          to: pos,
+          hasContent,
+          assistantBlockId
+        });
+      }
+      pos += line.length + 1;
+      currentRole = "user";
+      startPos = pos;
+      hasContent = false;
+      assistantBlockId = null;
+      continue;
+    }
     if (THINKING_STUB_RE.test(trimmed) || TOOL_STUB_RE.test(trimmed)) {
       pos += line.length + 1;
       continue;
@@ -173,6 +191,7 @@ function buildAssistantTextSegments(text: string, range: RoleRange, units: Unit[
     if (lineFrom >= range.to) break;
 
     const trimmed = line.trim();
+    if (isContinuationBoundaryLine(line)) continue;
     const roleMatch = line.match(/^(system|user|assistant)\s+(.*)$/);
     const lineIsWidget = THINKING_STUB_RE.test(trimmed)
       || TOOL_STUB_RE.test(trimmed)

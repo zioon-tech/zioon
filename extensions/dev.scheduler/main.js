@@ -18,12 +18,19 @@ import {
   finalizeProgrammaticSession,
   projectRunEventToSession
 } from "../dev.langchain-chat/programmatic-session.js";
+import {
+  abortSchedulerRuntimeRun,
+  createSchedulerRuntimeHandle,
+  observeSchedulerRuntimeRun,
+  readSchedulerRuntimeConfig,
+  runtimeTaskEligibility,
+  shouldUseSchedulerRuntime
+} from "./runtime-backend.js";
 
 export { projectRunEventToSession };
 
 const VIEW_ID = "scheduler.tasks";
 const STATUS_ID = "dev.scheduler.status";
-const MAX_CONCURRENT_SERVICE_RUNS = 3;
 const COORDINATOR_HEARTBEAT_INTERVAL_MS = 5 * 60_000;
 
 function currentLocale() {
@@ -278,9 +285,11 @@ function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
     });
     form.querySelector("[data-policy-title]").textContent = `${currentTaskType === "command" ? "命令" : "Agent"} · ${executionMode === "service-backed" ? "Service-backed" : "Local-only"} · ${form.elements.preset.selectedOptions[0].textContent}`;
     form.querySelector("[data-policy-description]").textContent = currentTaskType === "command"
-      ? "按计划直接执行命令，并在运行记录中保存 stdout/stderr；需要 zion-local-tools 可用。"
+      ? executionMode === "service-backed"
+        ? "任务状态与触发由 Runtime 持有，命令通过 local-tools 执行；关闭页面后继续运行。"
+        : "命令通过 local-tools 执行，浏览器需保持打开；错过的触发不会补跑。"
       : executionMode === "service-backed"
-          ? "命令前缀留空时，Bash 可执行本地工具沙箱允许的命令；填写前缀会进一步限制。触发和待执行队列由 zion-local-tools 持久化；需要至少一个 Zion 页面在线领取并执行。"
+          ? "任务、触发、工具调用和运行记录均由 Runtime 持有，关闭页面后继续执行。"
           : "命令前缀留空时，Bash 可执行本地工具沙箱允许的命令；填写前缀会进一步限制。浏览器需保持打开；错过的触发不会补跑。";
   };
   form.elements.kind.addEventListener("change", updateFields);
@@ -585,6 +594,7 @@ function createPanel({
             && (
               run.executionMode === "service-backed"
               || detailTask?.executionMode === "service-backed"
+              || run.backend === "runtime"
               || status !== "running"
             );
           const detail = document.createElement("div");
@@ -684,10 +694,7 @@ export async function activate(ctx) {
   let statusDisposable = null;
   let leaderRelease = null;
   let leaderAbort = null;
-  let servicePollTimer = null;
   let coordinatorHeartbeatTimer = null;
-  let serviceClaiming = false;
-  const activeServiceRuns = new Set();
   let serviceOnline = false;
   let isLeader = false;
   let disposed = false;
@@ -695,6 +702,7 @@ export async function activate(ctx) {
   let archivePathQueue = Promise.resolve();
   let migrationPromise = null;
   let migrationDisposable = null;
+  const runtimeObservers = new Map();
 
   const resolveArchiveFolder = () => {
     if (!archiveFolderPromise) {
@@ -772,21 +780,21 @@ export async function activate(ctx) {
       if (run.executionMode === "service-backed") continue;
       if (run.taskId) localRunningTaskIds.add(run.taskId);
     }
-    const running = localRunningTaskIds.size + activeServiceRuns.size;
+    const running = localRunningTaskIds.size;
     statusDisposable?.dispose?.();
     statusDisposable = window.zion.statusBar.registerItem({
       id: STATUS_ID,
       text: `$(clock) ${enabled}${running ? ` · ${running} 运行中` : ""}`,
-      tooltip: `${isLeader ? "当前标签页负责本地调度" : "其他标签页负责本地调度"}；zion-local-tools ${serviceOnline ? "已连接" : "未连接"}`,
+      tooltip: `${isLeader ? "当前标签页负责 local-only 任务" : "其他标签页负责 local-only 任务"}；Zion Runtime ${serviceOnline ? "已连接" : "未连接"}`,
       priority: 36,
       onClick: () => window.zion.commands.executeCommand("scheduler.openPanel")
     });
   };
 
-  const runCommandTask = async (task, remoteContext = null) => {
+  const runCommandTask = async (task) => {
     const startedAt = Date.now();
     const run = {
-      id: remoteContext?.runId || id("localrun"),
+      id: id("localrun"),
       chatRunId: null,
       sessionId: null,
       taskId: task.id,
@@ -810,9 +818,6 @@ export async function activate(ctx) {
       const event = { runId: run.id, ts: Date.now(), type, data };
       store.appendRunEvent(run.id, event);
       emitChanged();
-      if (remoteContext) {
-        try { await service.appendEvent(remoteContext.runId, workerId, event); } catch {}
-      }
     };
 
     try {
@@ -851,20 +856,6 @@ export async function activate(ctx) {
           updatedAt: Date.now()
         });
       }
-      if (remoteContext) {
-        try {
-          await service.complete(remoteContext.runId, workerId, {
-            status,
-            sessionId: null,
-            chatRunId: null,
-            output,
-            error: status === "failed" ? (result?.error || stderr || `命令退出码 ${exitCode}`) : null,
-            usage: null
-          });
-        } catch (error) {
-          console.warn("[scheduler] failed to report remote command completion", error);
-        }
-      }
       return { status, output, exitCode: Number.isFinite(exitCode) ? exitCode : null, result };
     } catch (error) {
       serviceOnline = false;
@@ -883,18 +874,6 @@ export async function activate(ctx) {
           updatedAt: Date.now()
         });
       }
-      if (remoteContext) {
-        try {
-          await service.complete(remoteContext.runId, workerId, {
-            status: "failed",
-            sessionId: null,
-            chatRunId: null,
-            output: "",
-            error: error?.message || String(error),
-            usage: null
-          });
-        } catch {}
-      }
       return null;
     } finally {
       emitChanged();
@@ -902,20 +881,26 @@ export async function activate(ctx) {
     }
   };
 
-  const runTask = async (task, remoteContext = null) => {
-    if (isCommandTask(task)) return runCommandTask(task, remoteContext);
-    if (!window.zion?.chat?.execute) throw new Error("Chat runtime 尚未就绪");
+  const runTask = async (task) => {
+    if (isCommandTask(task)) return runCommandTask(task);
+    const runtimeConfig = readSchedulerRuntimeConfig();
+    const runtimeEligibility = runtimeTaskEligibility(task);
+    const useRuntime = runtimeEligibility.eligible
+      && await shouldUseSchedulerRuntime(runtimeConfig);
+    if (!useRuntime && !window.zion?.chat?.execute) {
+      throw new Error("Chat runtime 尚未就绪");
+    }
     const taggedTask = withSessionTag(task, currentLocale());
     if (taggedTask.sessionTag !== task.sessionTag) store.saveTask(taggedTask);
     task = taggedTask;
     const startedAt = Date.now();
-    const archiveTimestamp = Number(remoteContext?.scheduledFor || startedAt);
+    const archiveTimestamp = startedAt;
     const archiveDate = archiveDateForTimestamp(
       archiveTimestamp,
       task.schedule?.timeZone
     );
     const run = {
-      id: remoteContext?.runId || id("localrun"),
+      id: id("localrun"),
       chatRunId: null,
       sessionId: null,
       taskId: task.id,
@@ -927,7 +912,12 @@ export async function activate(ctx) {
       completedAt: null,
       output: "",
       error: null,
-      events: []
+      events: [],
+      backend: useRuntime ? "runtime" : "browser",
+      runtimeBaseUrl: useRuntime ? runtimeConfig.baseUrl : null,
+      runtimeRunId: null,
+      runtimeAttemptId: null,
+      lastEventSequence: 0
     };
     store.saveRun(run);
     emitChanged();
@@ -952,21 +942,30 @@ export async function activate(ctx) {
       if (!sessionId) throw new Error("无法创建定时任务会话");
       run.sessionId = sessionId;
       store.saveRun(run);
-      const handle = window.zion.chat.execute({
-        title: task.title,
-        prompt: task.prompt,
-        executionMode: task.executionMode || "local-only",
-        sessionId,
-        source: { pluginId: "dev.scheduler", kind: "scheduled-task", id: task.id },
-        trigger: "schedule",
-        metadata: {
-          schedulerRunId: run.id,
-          remoteRunId: remoteContext?.runId || null,
-          taskType: task.type || "agent"
-        },
-        policy: task.capability || { preset: "read-only" }
-      });
+      const handle = useRuntime
+        ? await createSchedulerRuntimeHandle({
+            task,
+            schedulerRunId: run.id,
+            workbenchSessionId: sessionId,
+            baseUrl: runtimeConfig.baseUrl
+          })
+        : window.zion.chat.execute({
+            title: task.title,
+            prompt: task.prompt,
+            executionMode: task.executionMode || "local-only",
+            sessionId,
+            source: { pluginId: "dev.scheduler", kind: "scheduled-task", id: task.id },
+            trigger: "schedule",
+            metadata: {
+              schedulerRunId: run.id,
+              taskType: task.type || "agent"
+            },
+            policy: task.capability || { preset: "read-only" }
+          });
       run.chatRunId = handle.runId;
+      run.runtimeRunId = useRuntime ? handle.runId : null;
+      run.runtimeAttemptId = useRuntime ? handle.attemptId : null;
+      run.runtimeModel = useRuntime ? handle.model || null : null;
       store.saveRun(run);
       timeout = window.setTimeout(() => void handle.abort("timeout"), Number(task.timeoutSeconds || 300) * 1000);
       let pendingEvents = [];
@@ -976,15 +975,33 @@ export async function activate(ctx) {
         eventFlushTimer = null;
         if (!pendingEvents.length) return;
         const current = store.getRun(run.id);
-        store.saveRun({ ...current, events: [...(current?.events || []), ...pendingEvents] });
+        const lastEventSequence = pendingEvents.reduce(
+          (latest, event) => Math.max(latest, Number(event?.sequence) || 0),
+          Number(current?.lastEventSequence || 0)
+        );
+        store.saveRun({
+          ...current,
+          events: [...(current?.events || []), ...pendingEvents],
+          lastEventSequence
+        });
         pendingEvents = [];
         emitChanged();
       };
       const consuming = (async () => {
         for await (const event of handle.events) {
           await projectRunEventToSession(window.zion, sessionId, event);
-          if (remoteContext && event.type !== "message.delta") {
-            try { await service.appendEvent(remoteContext.runId, workerId, event); } catch {}
+          if (useRuntime) {
+            const current = store.getRun(run.id);
+            store.saveRun({
+              ...current,
+              events: [...(current?.events || []), event],
+              lastEventSequence: Math.max(
+                Number(current?.lastEventSequence || 0),
+                Number(event?.sequence || 0)
+              )
+            });
+            emitChanged();
+            continue;
           }
           pendingEvents.push(event);
           if (!eventFlushTimer) eventFlushTimer = window.setTimeout(flushEvents, 200);
@@ -1012,20 +1029,6 @@ export async function activate(ctx) {
           updatedAt: Date.now()
         });
       }
-      if (remoteContext) {
-          try {
-            await service.complete(remoteContext.runId, workerId, {
-              status,
-              sessionId,
-              chatRunId: handle.runId,
-              output: result.output || "",
-              error: result.error || null,
-              usage: result.usage || null
-            });
-          } catch (error) {
-            console.warn("[scheduler] failed to report remote completion", error);
-          }
-      }
       return result;
     } catch (error) {
       if (timeout) window.clearTimeout(timeout);
@@ -1046,22 +1049,127 @@ export async function activate(ctx) {
           updatedAt: Date.now()
         });
       }
-      if (remoteContext) {
-        try {
-          await service.complete(remoteContext.runId, workerId, {
-            status: "failed",
-            sessionId: run.sessionId,
-            chatRunId: run.chatRunId,
-            output: "",
-            error: error?.message || String(error),
-            usage: null
-          });
-        } catch {}
-      }
       return null;
     } finally {
       emitChanged();
       updateStatus();
+    }
+  };
+
+  const recoverRuntimeRun = async (run) => {
+    if (
+      disposed
+      || run?.backend !== "runtime"
+      || !run.runtimeRunId
+      || !run.sessionId
+      || !ACTIVE_RUN_STATUSES.has(run.status)
+      || runtimeObservers.has(run.id)
+    ) {
+      return null;
+    }
+    const task = store.getTask(run.taskId);
+    if (!task) return null;
+
+    const observer = new AbortController();
+    runtimeObservers.set(run.id, observer);
+    try {
+      const runtimeConfig = readSchedulerRuntimeConfig();
+      const observed = await observeSchedulerRuntimeRun({
+        runtimeRunId: run.runtimeRunId,
+        afterSequence: run.lastEventSequence || 0,
+        baseUrl: run.runtimeBaseUrl || runtimeConfig.baseUrl,
+        signal: observer.signal,
+        onEvent: async (event) => {
+          if (disposed) return;
+          const current = store.getRun(run.id);
+          if (!current) return;
+          const sequence = Number(event?.sequence || 0);
+          if (sequence && sequence <= Number(current.lastEventSequence || 0)) {
+            return;
+          }
+          await projectRunEventToSession(window.zion, run.sessionId, event);
+          store.saveRun({
+            ...current,
+            events: [...(current.events || []), event],
+            lastEventSequence: Math.max(
+              Number(current.lastEventSequence || 0),
+              sequence
+            ),
+            observationError: null
+          });
+          emitChanged();
+        }
+      });
+      if (disposed) return null;
+
+      const runtimeRun = observed.run;
+      const terminalStatus = runtimeRun.status === "completed"
+        ? "success"
+        : runtimeRun.status === "aborted"
+          ? "aborted"
+          : ["failed", "interrupted"].includes(runtimeRun.status)
+            ? "failed"
+            : null;
+      if (!terminalStatus) return runtimeRun;
+
+      const completedAt = Number(runtimeRun.completedAt || Date.now());
+      const saved = store.saveRun({
+        ...store.getRun(run.id),
+        status: terminalStatus,
+        completedAt,
+        output: runtimeRun.output || "",
+        error: runtimeRun.error
+          || (runtimeRun.status === "interrupted" ? "Runtime 执行被中断" : null),
+        usage: runtimeRun.usage || null,
+        lastEventSequence: observed.lastEventSequence,
+        observationError: null
+      });
+      await finalizeScheduledSession(window.zion, run.sessionId, saved);
+      const savedTask = store.getTask(task.id);
+      if (savedTask) {
+        store.saveTask({
+          ...savedTask,
+          lastRun: {
+            id: run.id,
+            status: terminalStatus,
+            startedAt: run.startedAt,
+            completedAt
+          },
+          updatedAt: Date.now()
+        });
+      }
+      emitChanged();
+      updateStatus();
+      return runtimeRun;
+    } catch (error) {
+      if (!disposed && error?.name !== "AbortError") {
+        const current = store.getRun(run.id);
+        if (current && ACTIVE_RUN_STATUSES.has(current.status)) {
+          store.saveRun({
+            ...current,
+            observationError: error?.message || String(error),
+            observationCheckedAt: Date.now()
+          });
+          emitChanged();
+        }
+      }
+      return null;
+    } finally {
+      if (runtimeObservers.get(run.id) === observer) {
+        runtimeObservers.delete(run.id);
+      }
+    }
+  };
+
+  const recoverRuntimeRuns = () => {
+    for (const run of store.listRuns()) {
+      if (
+        run?.backend === "runtime"
+        && run.runtimeRunId
+        && ACTIVE_RUN_STATUSES.has(run.status)
+      ) {
+        void recoverRuntimeRun(run);
+      }
     }
   };
 
@@ -1073,6 +1181,11 @@ export async function activate(ctx) {
     const controller = new SchedulerController({
       store,
       service,
+      cancelRuntimeRun: (run, reason) => abortSchedulerRuntimeRun({
+        runtimeRunId: run.runtimeRunId,
+        baseUrl: run.runtimeBaseUrl || readSchedulerRuntimeConfig().baseUrl,
+        reason
+      }),
       onChange: () => { emitChanged(); updateStatus(); },
       onServiceStatus: (online) => { serviceOnline = online; }
     });
@@ -1088,9 +1201,7 @@ export async function activate(ctx) {
     const loadRunDetails = (runId) => controller.getRunDetails(runId);
     const cancelRun = (runId, reason = "user") => controller.cancelRun(runId, reason);
     const requestRun = async (task) => {
-      const result = await controller.runNow(task.id);
-      if (task.executionMode === "service-backed") void pollService();
-      return result;
+      return controller.runNow(task.id);
     };
     void requestSessionMigration();
     migrationDisposable = window.zion?.state?.onDidChange?.(
@@ -1098,65 +1209,8 @@ export async function activate(ctx) {
       () => { void requestSessionMigration(); }
     ) || null;
 
-    const pollService = async () => {
-      if (
-        disposed
-        || !isLeader
-        || serviceClaiming
-        || activeServiceRuns.size >= MAX_CONCURRENT_SERVICE_RUNS
-        || !window.zion?.chat?.execute
-      ) return;
-      serviceClaiming = true;
-      let claimedRun = null;
-      try {
-          const availableTools = (window.zion?.state?.get?.("chat.tools") || [])
-            .map((tool) => String(tool?.function?.name || tool?.name || ""))
-            .filter(Boolean);
-          if (service?.executeCommand) {
-            if (!availableTools.includes("Bash")) availableTools.push("Bash");
-            if (!availableTools.includes("terminalExecute")) availableTools.push("terminalExecute");
-          }
-          const remoteRun = await service.claim(workerId, availableTools);
-        serviceOnline = true;
-        if (remoteRun) {
-          if (activeServiceRuns.has(remoteRun.id)) {
-            return;
-          }
-          claimedRun = remoteRun;
-          const snapshot = remoteRun.task || {};
-          const existing = store.listTasks().find((task) =>
-            task.remoteTaskId === remoteRun.taskId || task.id === snapshot.clientTaskId
-          );
-          const task = {
-            ...(existing || snapshot),
-            id: existing?.id || snapshot.clientTaskId || `service_${remoteRun.taskId}`,
-            executionMode: "service-backed",
-            capability: snapshot.capability || { preset: "read-only" }
-          };
-          activeServiceRuns.add(remoteRun.id);
-          updateStatus();
-          void (async () => {
-            await runTask(task, {
-              runId: remoteRun.id,
-              scheduledFor: remoteRun.scheduledFor
-            });
-            await refreshServiceTasks();
-          })().finally(() => {
-            activeServiceRuns.delete(remoteRun.id);
-            updateStatus();
-            void pollService();
-          });
-        }
-      } catch {
-        serviceOnline = false;
-      } finally {
-        serviceClaiming = false;
-        updateStatus();
-      }
-      if (claimedRun && activeServiceRuns.size < MAX_CONCURRENT_SERVICE_RUNS) void pollService();
-    };
-
   const startLeader = () => {
+    recoverRuntimeRuns();
     if (navigator?.locks?.request) {
       leaderAbort = new AbortController();
       void navigator.locks.request("zion.scheduler.local.leader", { signal: leaderAbort.signal }, async () => {
@@ -1186,8 +1240,6 @@ export async function activate(ctx) {
     };
     window.addEventListener("storage", onSchedulerStorage);
     void refreshServiceTasks();
-    servicePollTimer = window.setInterval(() => void pollService(), 3000);
-    void pollService();
 
     const panel = createPanel({
       store,
@@ -1250,10 +1302,11 @@ export async function activate(ctx) {
         disposed = true;
       leaderRelease?.();
       leaderAbort?.abort?.();
-      if (servicePollTimer) window.clearInterval(servicePollTimer);
       stopCoordinatorHeartbeat();
       window.removeEventListener("storage", onSchedulerStorage);
       migrationDisposable?.dispose?.();
+      for (const observer of runtimeObservers.values()) observer.abort();
+      runtimeObservers.clear();
       engine.stop();
       statusDisposable?.dispose?.();
     }

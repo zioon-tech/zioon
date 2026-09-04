@@ -4,6 +4,7 @@ import {
   normalizeToolName,
   statusLabel
 } from "./artifact-model.js";
+import { refreshRuntimeSessionArtifacts } from "./runtime-artifact-state.js";
 import { getCurrentSessionChangeState, normalizeChangePath, subscribeSessionChangeState } from "./session-change-state.js";
 import { highlightLine, inferLanguageFromPath } from "./syntax-highlight.js";
 
@@ -120,6 +121,7 @@ function createChangesPanel(container, getPendingSelection) {
   const pending = getPendingSelection?.();
   if (pending) selectPayload(pending);
   render();
+  void syncArtifacts();
 
   return {
     dispose() {
@@ -170,7 +172,13 @@ function createChangesPanel(container, getPendingSelection) {
     }
   }
 
-  function syncArtifacts() {
+  async function syncArtifacts() {
+    const currentSessionId = getCurrentSessionId();
+    if (currentSessionId) {
+      try {
+        await refreshRuntimeSessionArtifacts({ sessionId: currentSessionId });
+      } catch {}
+    }
     if (!root.isConnected || !root.querySelector(".zion-changes-scroll")) {
       render();
       return;

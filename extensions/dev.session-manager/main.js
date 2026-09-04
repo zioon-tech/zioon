@@ -6,15 +6,20 @@ import {
 import { createSessionDocRepo } from "./storage/docs.js";
 import {
   deleteRemoteSession,
+  forkRemoteChatSession,
   migrateBrowserSessionStorage,
+  readRemoteActiveRun,
+  readRemoteTree,
   readRemoteSession,
   readRemoteSessionKV,
   readRemoteSnapshot,
   readRemoteStatus,
+  subscribeRemoteEvents,
   writeRemoteSession,
   writeRemoteSessionKV,
   writeRemoteTree
 } from "./storage/remote.js";
+import { createSessionRealtimeSync } from "./storage/realtime.js";
 import {
   createSessionTagIndex,
   getIndexedSessionTags,
@@ -40,6 +45,9 @@ import { registerSessionDocCommands } from "./commands/doc-apis.js";
 import { registerSessionTagExclusionCommands } from "./commands/tag-exclusions.js";
 import { registerSessionTreeCommands } from "./commands/tree-apis.js";
 import { createSessionAutoSavePlugin } from "./editor/autosave-plugin.js";
+import {
+  createSessionCollaborationManager
+} from "./collaboration-client.js";
 import { renderSessionsTagHeader } from "./ui/sidebar-header.js";
 import { createSessionsSidebarViewManager } from "./ui/sidebar-view.js";
 import { createSessionsPanelManager } from "./ui/panel.js";
@@ -434,13 +442,16 @@ function warnStorageIssue(where, error) {
   } catch {}
 }
 
-/** ======== Durable session storage (zion-local-tools SQLite) ======== */
+/** ======== Durable Workbench session storage (Zion Runtime SQLite) ======== */
 const DB_NAME = "zion.sessions.db";
 let remoteSnapshotQueue = Promise.resolve();
 let remoteStorageOnline = false;
 let remoteSyncTimer = 0;
 let remoteRevision = null;
+let remoteEventCursor = 0;
+let remoteRealtimeSync = null;
 const durableSessionIds = new Set();
+const remoteSessionRevisions = new Map();
 const remoteSessionKV = new Map();
 const pendingRemoteMutations = [];
 let remoteMutationFlushActive = false;
@@ -452,6 +463,13 @@ let sessionTagIndexBackfillHandle = 0;
 let sessionPreviewBackfillHandle = 0;
 let sessionTagIndexPersistQueue = Promise.resolve();
 const pendingSessionTagDocs = new Map();
+
+function workbenchClientId() {
+  return globalThis.crypto?.randomUUID?.()
+    || `workbench-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+const WORKBENCH_CLIENT_ID = workbenchClientId();
 
 function flattenLegacyTagCatalog(raw) {
   const tags = Array.isArray(raw?.tags) ? raw.tags : [];
@@ -622,17 +640,46 @@ async function flushRemoteMutations() {
       try {
         let result = null;
         if (mutation.type === "session") {
-          result = await writeRemoteSession(mutation.id, mutation.payload, {
-            operationId: mutation.operationId
+          const collaborative = collaborationSynced(mutation.id);
+          const payload = collaborative
+            ? Object.fromEntries(
+                Object.entries(mutation.payload || {})
+                  .filter(([key]) => key !== "text")
+              )
+            : mutation.payload;
+          if (!Object.keys(payload || {}).length) {
+            pendingRemoteMutations.shift();
+            for (const waiter of mutation.waiters || []) waiter.resolve({
+              ok: true,
+              skipped: true,
+              reason: "collaboration-document-owned"
+            });
+            continue;
+          }
+          result = await writeRemoteSession(mutation.id, payload, {
+            operationId: mutation.operationId,
+            expectedSessionRevision: collaborative
+              ? undefined
+              : remoteSessionRevisions.get(mutation.id),
+            sourceClientId: WORKBENCH_CLIENT_ID
           });
         } else if (mutation.type === "delete") {
           result = await deleteRemoteSession(mutation.id, {
-            operationId: mutation.operationId
+            operationId: mutation.operationId,
+            expectedSessionRevision: remoteSessionRevisions.get(mutation.id),
+            sourceClientId: WORKBENCH_CLIENT_ID
           });
         } else if (mutation.type === "tree") {
-          result = await writeRemoteTree(mutation.tree, mutation.index, null);
+          result = await writeRemoteTree(
+            mutation.tree,
+            mutation.index,
+            null,
+            { sourceClientId: WORKBENCH_CLIENT_ID }
+          );
         } else if (mutation.type === "kv") {
-          result = await writeRemoteSessionKV(mutation.id, mutation.value);
+          result = await writeRemoteSessionKV(mutation.id, mutation.value, {
+            sourceClientId: WORKBENCH_CLIENT_ID
+          });
         }
         if (result?.conflict) {
           const error = new Error(`Durable session conflict for ${mutation.id || "tree"}`);
@@ -640,6 +687,12 @@ async function flushRemoteMutations() {
           throw error;
         }
         remoteRevision = result?.revision || remoteRevision;
+        if (mutation.id && Number.isFinite(Number(result?.session_revision))) {
+          remoteSessionRevisions.set(
+            String(mutation.id),
+            Number(result.session_revision)
+          );
+        }
         if (mutation.type === "kv") remoteSessionKV.set(mutation.id, mutation.value);
         pendingRemoteMutations.shift();
         for (const waiter of mutation.waiters || []) waiter.resolve(result);
@@ -749,6 +802,9 @@ function hydrateFromDurableSnapshot(snapshot) {
     if (!id) continue;
     durableSessionIds.add(id);
     previousIds.delete(id);
+    if (Number.isFinite(Number(item?.session_revision))) {
+      remoteSessionRevisions.set(id, Number(item.session_revision));
+    }
     try { window.zion?.state?.set(`sessions.doc.${id}`, String(item.text || "")); } catch {}
   }
   for (const item of metas) {
@@ -761,6 +817,7 @@ function hydrateFromDurableSnapshot(snapshot) {
   for (const id of previousIds) {
     try { window.zion?.state?.set(`sessions.doc.${id}`, undefined); } catch {}
     try { window.zion?.state?.set(`sessions.meta.${id}`, undefined); } catch {}
+    remoteSessionRevisions.delete(id);
   }
   if (snapshot.tree?.type === "folder") {
     try { window.zion?.state?.set("sessions.treeMem", snapshot.tree); } catch {}
@@ -793,11 +850,241 @@ async function syncRemoteStorage({ force = false } = {}) {
       hydrateFromDurableSnapshot(snapshot);
     }
     remoteRevision = response?.revision || status?.revision || null;
+    remoteEventCursor = Math.max(
+      remoteEventCursor,
+      Number(response?.event_cursor || status?.event_cursor) || 0
+    );
+    remoteRealtimeSync?.setCursor(remoteEventCursor);
     setRemoteStorageState(true);
     return true;
   } catch (error) {
     setRemoteStorageState(false, error);
     return false;
+  }
+}
+
+function openSessionEditors(sessionId) {
+  const id = String(sessionId || "");
+  if (!id) return [];
+  const editors = [];
+  try {
+    for (const entry of window.zion?.panels?.listEditors?.() || []) {
+      if (String(entry?.sessionId || "") !== id) continue;
+      const editor = window.zion?.panels?.getEditorBySession?.(
+        entry.panelId,
+        id
+      );
+      if (editor && !editors.includes(editor)) editors.push(editor);
+    }
+  } catch {}
+  return editors;
+}
+
+function collaborationSynced(sessionId) {
+  const state = window.zion?.state?.get?.(
+    `sessions.collaboration.${String(sessionId || "")}`
+  );
+  return state?.connected === true && state?.synced === true;
+}
+
+async function refreshRemoteTree() {
+  const remote = await readRemoteTree();
+  if (remote?.tree?.type === "folder") {
+    window.zion?.state?.set("sessions.treeMem", remote.tree);
+  }
+  if (Array.isArray(remote?.index)) {
+    window.zion?.state?.set("sessions.indexMem", remote.index);
+    window.zion?.state?.set("sessions.catalog", remote.index);
+  }
+  remoteRevision = remote?.revision || remoteRevision;
+  remoteEventCursor = Math.max(
+    remoteEventCursor,
+    Number(remote?.event_cursor) || 0
+  );
+  remoteRealtimeSync?.setCursor(remoteEventCursor);
+  try { refreshSessionsSidebarViewIfOpen(); } catch {}
+  try { refreshSessionsOverlayIfOpen(); } catch {}
+  return remote;
+}
+
+async function applyRemoteSessionRecord(event) {
+  const sessionId = String(event?.sessionId || "");
+  if (!sessionId) return;
+  const record = await readRemoteSession(sessionId);
+  if (!record || record.deleted) return;
+  const previousText = window.zion?.state?.get?.(`sessions.doc.${sessionId}`);
+  const editors = openSessionEditors(sessionId);
+  const dirty = !collaborationSynced(sessionId)
+    && editors.some((editor) =>
+      typeof previousText === "string"
+      && String(editor?.getValue?.() ?? "") !== previousText
+    );
+  remoteSessionRevisions.set(
+    sessionId,
+    Number(record.session_revision) || 0
+  );
+  window.zion?.state?.set(`sessions.meta.${sessionId}`, {
+    ...(record.meta || {}),
+    id: sessionId
+  });
+  const indexEntry = event?.data?.indexEntry || {
+    id: sessionId,
+    title: record.meta?.title || sessionId,
+    updatedAt: record.meta?.updatedAt || event?.createdAt || 0,
+    createdAt: record.meta?.createdAt || 0,
+    size: record.meta?.size || String(record.text || "").length,
+    hash: record.meta?.hash || record.content_hash || ""
+  };
+  const currentIndex = window.zion?.state?.get("sessions.indexMem");
+  const nextIndex = Array.isArray(currentIndex)
+    ? currentIndex.slice()
+    : [];
+  const existingIndex = nextIndex.findIndex((item) => item?.id === sessionId);
+  if (existingIndex >= 0) {
+    nextIndex[existingIndex] = {
+      ...nextIndex[existingIndex],
+      ...indexEntry
+    };
+  } else {
+    nextIndex.push(indexEntry);
+  }
+  window.zion?.state?.set("sessions.indexMem", nextIndex);
+  window.zion?.state?.set("sessions.catalog", nextIndex);
+  if (dirty) {
+    window.zion?.state?.set("sessions.externalUpdate", {
+      id: sessionId,
+      updatedAt: event?.createdAt || Date.now(),
+      hash: record.content_hash || "",
+      sessionRevision: record.session_revision
+    });
+  } else {
+    const text = String(record.text || "");
+    window.zion?.state?.set(`sessions.doc.${sessionId}`, text);
+    if (!collaborationSynced(sessionId)) {
+      for (const editor of editors) {
+        if (String(editor?.getValue?.() ?? "") !== text) {
+          editor?.setValue?.(text, { source: "session-load" });
+        }
+      }
+    }
+  }
+  try { refreshSessionsSidebarViewIfOpen(); } catch {}
+  try { refreshSessionsOverlayIfOpen(); } catch {}
+}
+
+async function applyRemoteWorkbenchEvent(event, { ownEvent = false } = {}) {
+  if (!event || typeof event !== "object") return;
+  remoteEventCursor = Math.max(
+    remoteEventCursor,
+    Number(event.sequence) || 0
+  );
+  remoteRevision = event.revision || remoteRevision;
+  const sessionId = String(event.sessionId || "");
+  if (sessionId && Number.isFinite(Number(event.sessionRevision))) {
+    remoteSessionRevisions.set(sessionId, Number(event.sessionRevision));
+  }
+  window.zion?.state?.set("sessions.realtimeCursor", remoteEventCursor);
+
+  if (String(event.type || "").startsWith("run.")) {
+    const active = event.type === "run.started";
+    window.zion?.state?.set(`sessions.activeRun.${sessionId}`, active
+      ? {
+          runId: event.runId,
+          attemptId: event.data?.attemptId || "",
+          status: event.data?.status || "running",
+          sequence: event.sequence
+        }
+      : null);
+    window.zion?.events?.emit?.("runtime/sessionRunEvent", {
+      ...event,
+      ownEvent
+    });
+    return;
+  }
+  if (ownEvent) return;
+  if (event.type === "document.checkpointed") {
+    if (!collaborationSynced(sessionId)) {
+      await applyRemoteSessionRecord(event);
+    }
+    return;
+  }
+  if (
+    event.type === "collaboration.updated"
+    || (
+      event.type === "session.updated"
+      && event.data?.reason === "collaboration"
+    )
+  ) {
+    return;
+  }
+  if (event.type === "session.deleted") {
+    durableSessionIds.delete(sessionId);
+    remoteSessionRevisions.delete(sessionId);
+    window.zion?.state?.set(`sessions.doc.${sessionId}`, undefined);
+    window.zion?.state?.set(`sessions.meta.${sessionId}`, undefined);
+    await refreshRemoteTree();
+    return;
+  }
+  if (event.type === "tree.updated") {
+    await refreshRemoteTree();
+    return;
+  }
+  if (
+    event.type === "session.created"
+    || event.type === "session.updated"
+  ) {
+    await applyRemoteSessionRecord(event);
+    if (event.type === "session.created") await refreshRemoteTree();
+  }
+}
+
+function startRemoteRealtimeSync() {
+  if (remoteRealtimeSync) return remoteRealtimeSync;
+  remoteRealtimeSync = createSessionRealtimeSync({
+    subscribe: subscribeRemoteEvents,
+    initialCursor: remoteEventCursor,
+    clientId: WORKBENCH_CLIENT_ID,
+    onEvent: applyRemoteWorkbenchEvent,
+    async onReset() {
+      await syncRemoteStorage({ force: true });
+      return remoteEventCursor;
+    },
+    onStatus(status) {
+      window.zion?.state?.set("sessions.realtime", status);
+    }
+  });
+  void remoteRealtimeSync.start();
+  return remoteRealtimeSync;
+}
+
+async function discoverActiveSessionRun(sessionId) {
+  const id = String(sessionId || "").trim();
+  if (!id) return null;
+  try {
+    const result = await readRemoteActiveRun(id);
+    if (!result?.activeRun?.runId) return null;
+    const event = {
+      sequence: remoteEventCursor,
+      type: "run.started",
+      sessionId: id,
+      runId: result.activeRun.runId,
+      data: {
+        attemptId: result.activeRun.attemptId || "",
+        status: result.activeRun.status || "running",
+        discovered: true
+      },
+      ownEvent: false
+    };
+    window.zion?.state?.set(`sessions.activeRun.${id}`, {
+      runId: event.runId,
+      attemptId: event.data.attemptId,
+      status: event.data.status,
+      sequence: event.sequence
+    });
+    window.zion?.events?.emit?.("runtime/sessionRunEvent", event);
+    return event;
+  } catch {
+    return null;
   }
 }
 
@@ -879,6 +1166,10 @@ async function initSessionsStorage() {
     }
     hydrateFromDurableSnapshot(snapshot);
     remoteRevision = response?.revision || null;
+    remoteEventCursor = Math.max(
+      0,
+      Number(response?.event_cursor) || 0
+    );
     sessionTagIndex = validateSessionTagIndex(
       remoteSessionKV.get("sessions.tagIndex")
     );
@@ -1559,8 +1850,8 @@ const __sidebarViewManager = createSessionsSidebarViewManager({
   }
 });
 
-  function refreshSessionsSidebarViewIfOpen(opts) {
-    __sidebarViewManager.refreshIfOpen(opts);
+function refreshSessionsSidebarViewIfOpen(opts) {
+  __sidebarViewManager.refreshIfOpen(opts);
 }
 
 function mountSessionsSidebarViewInto(container) {
@@ -1755,13 +2046,57 @@ export async function activate(ctx) {
     try { window.zion?.state?.set("sessions.catalog", getIndex()); } catch {}
     try {
       window.zion?.notification?.show?.(
-        "本地会话存储服务不可用。请确认 zion-local-tools 正常运行后刷新。",
+        "Runtime 会话存储不可用。请确认 Zion Runtime 正常运行后刷新。",
         { type: "error", duration: 0, dismissible: true }
       );
     } catch {}
     return;
   }
   try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
+  try { window.zion?.state?.set("sessions.clientId", WORKBENCH_CLIENT_ID); } catch {}
+  const realtimeSync = startRemoteRealtimeSync();
+  ctx.subscriptions.push({
+    dispose() {
+      realtimeSync.dispose();
+      remoteRealtimeSync = null;
+      if (remoteSyncTimer) {
+        window.clearInterval(remoteSyncTimer);
+        remoteSyncTimer = 0;
+      }
+    }
+  });
+  const collaborationManager = createSessionCollaborationManager({
+    zion: window.zion,
+    clientId: WORKBENCH_CLIENT_ID
+  });
+  const collaborationAnchorCommand = window.zion?.commands?.registerCommand?.(
+    "zion.sessions.createCollaborationAnchor",
+    ({ id, index, before, after } = {}) =>
+      collaborationManager.createAnchor(id, index, { before, after })
+  );
+  if (collaborationAnchorCommand) ctx.subscriptions.push(collaborationAnchorCommand);
+  if (collaborationManager.enabled) {
+    const collaborationDecorator = window.zion?.editor?.registerDecorator?.({
+      id: "dev.session-manager.collaboration",
+      apply: (editor) => collaborationManager.bindEditor(editor)
+    });
+    if (collaborationDecorator) ctx.subscriptions.push(collaborationDecorator);
+  }
+  ctx.subscriptions.push({
+    dispose() {
+      collaborationManager.dispose();
+    }
+  });
+  const activeRunDiscovery = window.zion?.events?.on?.(
+    "session/afterSwitch",
+    ({ sessionId } = {}) => {
+      void discoverActiveSessionRun(sessionId);
+    }
+  );
+  if (activeRunDiscovery) ctx.subscriptions.push(activeRunDiscovery);
+  void discoverActiveSessionRun(
+    window.zion?.state?.get?.("sessions.currentId")
+  );
   scheduleSessionTagIndexBackfill();
   ctx.subscriptions.push(registerSessionTreeCommands({
     zion: window.zion,
@@ -2077,7 +2412,12 @@ export async function activate(ctx) {
   try {
     const ch = getChannel();
     if (ch) {
-      ch.onmessage = (ev) => {
+      ch.onmessage = null;
+    }
+    if (collaborationManager.enabled) {
+      window.zion.state.set("sessions.externalUpdate", null);
+    } else if (ch) {
+      const onLegacySessionMessage = (ev) => {
         const msg = ev?.data;
         if (!msg || msg.type !== "saved") return;
         const cur = window.zion.state.get("sessions.currentId");
@@ -2112,6 +2452,12 @@ export async function activate(ctx) {
           }
         }
       };
+      ch.onmessage = onLegacySessionMessage;
+      ctx.subscriptions.push({
+        dispose() {
+          if (ch.onmessage === onLegacySessionMessage) ch.onmessage = null;
+        }
+      });
     }
   } catch {}
 
@@ -3054,6 +3400,18 @@ export async function activate(ctx) {
     insertSessionNodeAfter(nextId, srcId, meta.title);
     rebuildIndexFromTree();
     window.zion.state.set("sessions.catalog", getIndex());
+    if (window.zion?.state?.get?.("runtime.connection")?.backend === "runtime") {
+      try {
+        await forkRemoteChatSession(srcId, {
+          id: nextId,
+          title: newTitle
+        });
+      } catch (error) {
+        if (Number(error?.status || 0) !== 404) {
+          console.warn("[sessions] Runtime transcript fork failed", error);
+        }
+      }
+    }
     const targetPanelId = window.zion?.panels?.ensureAtSide?.("right", sourcePanelId || undefined) || sourcePanelId || null;
     if (targetPanelId) {
       try {

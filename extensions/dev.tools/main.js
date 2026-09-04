@@ -12,8 +12,34 @@ import {
   TERMINAL_AWARE_TOOL_NAMES
 } from "./terminal-tool-context.js";
 import { ToolsSettingsPage, buildToolRows } from "./ToolsSettingsPage.jsx";
+import { createHttpRuntimeClient } from "../../src/runtime/http-runtime-client.ts";
+import {
+  readWorkbenchRuntimeConfig
+} from "../../src/runtime/workbench-runtime-config.ts";
 
 const I18N_NS = "dev.tools";
+const DEFAULT_RUNTIME_INTERACTION_PROFILE_ID = "interactive.default";
+const RUNTIME_WORKSPACE_WRITE_TOOLS = new Set([
+  "write",
+  "edit",
+  "memoryManage",
+  "agentsManage",
+  "identityManage",
+  "projectAutomationManage",
+  "sessionCreate",
+  "sessionUpdate",
+  "sessionDelete"
+]);
+const RUNTIME_TRUSTED_AUTOMATION_TOOLS = new Set([
+  "Bash",
+  "sendMail",
+  "todoWrite",
+  "mcpCall",
+  "schedulerManage",
+  "modelsManage",
+  "toolsManage",
+  "mailManage"
+]);
 const I18N_MESSAGES = {
   "zh-CN": {
     "category.tools": "工具",
@@ -28,7 +54,9 @@ const I18N_MESSAGES = {
     "cmd.openFilesPicker": "文件：打开...",
     "cmd.openFilesPicker.description": "选择本地文件夹或打开某个终端会话的当前目录",
     "status.tools": "工具：{count}",
+    "status.toolsRuntime": "工具：{runtime}/{count}",
     "status.tooltip": "管理已启用工具",
+    "status.tooltipRuntime": "Runtime 当前可执行 {runtime}/{count} 个已启用工具",
     "switcher.title": "选择工具",
     "switcher.search": "搜索工具...",
     "switcher.footer": "Enter：切换 • Esc：关闭 • ↑↓：导航",
@@ -221,7 +249,9 @@ const I18N_MESSAGES = {
     "cmd.openFilesPicker": "Files: Open...",
     "cmd.openFilesPicker.description": "Choose a local folder or open the current directory of a terminal session",
     "status.tools": "Tools: {count}",
+    "status.toolsRuntime": "Tools: {runtime}/{count}",
     "status.tooltip": "Manage enabled tools",
+    "status.tooltipRuntime": "Runtime can execute {runtime}/{count} enabled tools",
     "switcher.title": "Select Tools",
     "switcher.search": "Search tools...",
     "switcher.footer": "Enter: toggle • Esc: close • ↑↓: navigate",
@@ -429,6 +459,241 @@ function updateSessionAnnotations(sessionId, updater) {
   }
 }
 
+function uniqueStrings(values) {
+  return Array.from(new Set(
+    (Array.isArray(values) ? values : [])
+      .map(String)
+      .map((value) => value.trim())
+      .filter(Boolean)
+  ));
+}
+
+function toolName(tool) {
+  return String(tool?.function?.name || tool?.name || "").trim();
+}
+
+function workbenchToolNames(state = window.zion?.state) {
+  return uniqueStrings((state?.get?.("chat.tools") || []).map(toolName));
+}
+
+function runtimeCapabilityToWorkbenchTool(tool) {
+  const name = toolName(tool);
+  if (!name) return null;
+  return {
+    type: "function",
+    function: {
+      name,
+      description: String(tool?.description || ""),
+      parameters: tool?.inputSchema && typeof tool.inputSchema === "object"
+        ? tool.inputSchema
+        : { type: "object", additionalProperties: true }
+    },
+    "x-zionRuntimeOnly": true,
+    "x-zionToolHostKinds": Array.isArray(tool?.hostKinds)
+      ? tool.hostKinds.map(String)
+      : [],
+    ...(tool?.owner && typeof tool.owner === "object"
+      ? { "x-zionToolOwner": tool.owner }
+      : {}),
+    ...(tool?.availability && typeof tool.availability === "object"
+      ? { "x-zionToolAvailability": tool.availability }
+      : {}),
+    ...(tool?.policy && typeof tool.policy === "object"
+      ? { "x-zionToolPolicy": tool.policy }
+      : {})
+  };
+}
+
+export function mergeRuntimeCapabilityToolsIntoWorkbenchTools({
+  state = window.zion?.state,
+  capabilityTools = []
+} = {}) {
+  const existing = Array.isArray(state?.get?.("chat.tools"))
+    ? state.get("chat.tools")
+    : [];
+  const names = new Set(existing.map(toolName).filter(Boolean));
+  const additions = [];
+  for (const tool of Array.isArray(capabilityTools) ? capabilityTools : []) {
+    const name = toolName(tool);
+    if (!name || names.has(name)) continue;
+    const converted = runtimeCapabilityToWorkbenchTool(tool);
+    if (!converted) continue;
+    additions.push(converted);
+    names.add(name);
+  }
+  if (!additions.length) return existing;
+  const next = [...existing, ...additions];
+  state?.set?.("chat.tools", next);
+  return next;
+}
+
+function readRuntimeInteractionProfileId({
+  state = window.zion?.state,
+  storage = globalThis.localStorage
+} = {}) {
+  const fromState = String(state?.get?.("runtime.interactionProfileId") || "").trim();
+  if (fromState) return fromState;
+  try {
+    const stored = String(storage?.getItem?.("zion.runtime.interactionProfileId") || "").trim();
+    if (stored) return stored;
+  } catch {}
+  return DEFAULT_RUNTIME_INTERACTION_PROFILE_ID;
+}
+
+export function createRuntimeToolPolicyPatch(enabledNames) {
+  const allowedTools = uniqueStrings(enabledNames);
+  const trustedAutomation = allowedTools.some((name) =>
+    RUNTIME_TRUSTED_AUTOMATION_TOOLS.has(name)
+  );
+  const workspaceWrite = allowedTools.some((name) =>
+    RUNTIME_WORKSPACE_WRITE_TOOLS.has(name)
+  );
+  return {
+    preset: trustedAutomation
+      ? "trusted-automation"
+      : workspaceWrite
+        ? "workspace-write"
+        : "read-only",
+    allowedTools,
+    allowedRecipients: allowedTools.includes("sendMail") ? ["*"] : [],
+    maxMailPerRun: allowedTools.includes("sendMail") ? 10 : 0
+  };
+}
+
+export async function syncEnabledToolsFromRuntimeProfile({
+  state = window.zion?.state,
+  storage = globalThis.localStorage,
+  fetchImpl = globalThis.fetch
+} = {}) {
+  const config = readWorkbenchRuntimeConfig({ state, storage });
+  if (config.mode === "browser") {
+    state?.set?.("runtime.toolSync", {
+      status: "skipped",
+      reason: "browser-mode",
+      syncedAt: Date.now()
+    });
+    return { applied: false, reason: "browser-mode" };
+  }
+  const profileId = readRuntimeInteractionProfileId({ state, storage });
+  const client = createHttpRuntimeClient({
+    baseUrl: config.baseUrl,
+    fetchImpl
+  });
+
+  try {
+    const [capabilityTools, profile] = await Promise.all([
+      client.getCapabilityTools(),
+      client.getInteractionProfile(profileId)
+    ]);
+    mergeRuntimeCapabilityToolsIntoWorkbenchTools({ state, capabilityTools });
+    const supportedNames = uniqueStrings(capabilityTools.map(toolName));
+    const supported = new Set(supportedNames);
+    const localNames = workbenchToolNames(state);
+    const localSet = new Set(localNames);
+    const runtimeEnabled = uniqueStrings(profile?.policy?.allowedTools)
+      .filter((name) => supported.has(name) && localSet.has(name));
+    const currentEnabled = Array.isArray(state?.get?.("chat.enabledTools"))
+      ? uniqueStrings(state.get("chat.enabledTools"))
+      : localNames;
+    const browserOnlyEnabled = currentEnabled.filter((name) =>
+      localSet.has(name) && !supported.has(name)
+    );
+    const nextEnabled = uniqueStrings([
+      ...runtimeEnabled,
+      ...browserOnlyEnabled
+    ]);
+
+    state?.set?.("runtime.capabilityTools", capabilityTools);
+    state?.set?.("runtime.supportedToolNames", supportedNames);
+    state?.set?.("runtime.enabledToolNames", runtimeEnabled);
+    state?.set?.("runtime.interactionProfile", profile);
+    state?.set?.("runtime.interactionProfileId", profile?.id || profileId);
+    if (localNames.length) {
+      state?.set?.("chat.enabledTools", nextEnabled);
+      state?.set?.("chat.toolsKnownNames", localNames);
+    }
+    state?.set?.("runtime.toolSync", {
+      status: "synced",
+      profileId: profile?.id || profileId,
+      supportedToolCount: supportedNames.length,
+      enabledToolCount: runtimeEnabled.length,
+      syncedAt: Date.now()
+    });
+    return {
+      applied: true,
+      profile,
+      capabilityTools,
+      enabledTools: nextEnabled,
+      runtimeEnabledTools: runtimeEnabled
+    };
+  } catch (error) {
+    state?.set?.("runtime.toolSync", {
+      status: "error",
+      profileId,
+      error: error?.message || String(error),
+      syncedAt: Date.now()
+    });
+    return {
+      applied: false,
+      reason: error?.message || String(error)
+    };
+  }
+}
+
+export async function persistEnabledToolsToRuntimeProfile({
+  enabledTools,
+  state = window.zion?.state,
+  storage = globalThis.localStorage,
+  fetchImpl = globalThis.fetch
+} = {}) {
+  const config = readWorkbenchRuntimeConfig({ state, storage });
+  if (config.mode === "browser") {
+    return { persisted: false, reason: "browser-mode" };
+  }
+  const supportedNames = uniqueStrings(state?.get?.("runtime.supportedToolNames"));
+  if (!supportedNames.length) {
+    return { persisted: false, reason: "no-runtime-catalog" };
+  }
+  const supported = new Set(supportedNames);
+  const runtimeEnabled = uniqueStrings(enabledTools)
+    .filter((name) => supported.has(name));
+  const profileId = readRuntimeInteractionProfileId({ state, storage });
+  const client = createHttpRuntimeClient({
+    baseUrl: config.baseUrl,
+    fetchImpl
+  });
+
+  try {
+    const profile = await client.patchInteractionProfile(profileId, {
+      policy: createRuntimeToolPolicyPatch(runtimeEnabled),
+      metadata: {
+        toolSelectionUserManaged: true
+      }
+    });
+    state?.set?.("runtime.interactionProfile", profile);
+    state?.set?.("runtime.interactionProfileId", profile?.id || profileId);
+    state?.set?.("runtime.enabledToolNames", uniqueStrings(profile?.policy?.allowedTools));
+    state?.set?.("runtime.toolSync", {
+      status: "persisted",
+      profileId: profile?.id || profileId,
+      enabledToolCount: runtimeEnabled.length,
+      syncedAt: Date.now()
+    });
+    return { persisted: true, profile };
+  } catch (error) {
+    state?.set?.("runtime.toolSync", {
+      status: "error",
+      profileId,
+      error: error?.message || String(error),
+      syncedAt: Date.now()
+    });
+    return {
+      persisted: false,
+      reason: error?.message || String(error)
+    };
+  }
+}
+
 export async function activate(ctx) {
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
@@ -437,6 +702,19 @@ export async function activate(ctx) {
 
   // 注册默认工具与处理器
   registerDefaultTools();
+
+  let applyingRuntimeToolProfile = false;
+  let runtimeToolSyncPromise = null;
+  const syncRuntimeToolSelection = () => {
+    if (runtimeToolSyncPromise) return runtimeToolSyncPromise;
+    applyingRuntimeToolProfile = true;
+    runtimeToolSyncPromise = syncEnabledToolsFromRuntimeProfile()
+      .finally(() => {
+        applyingRuntimeToolProfile = false;
+        runtimeToolSyncPromise = null;
+      });
+    return runtimeToolSyncPromise;
+  };
 
   try {
     registerContextPanel(ctx);
@@ -537,7 +815,13 @@ export async function activate(ctx) {
 
   // 打开/关闭工具切换器命令
   const dispOpen = window.zion.commands.registerCommand("tools.openSwitcher", async () => {
-    ensureEnabledTools();
+    applyingRuntimeToolProfile = true;
+    try {
+      ensureEnabledTools();
+    } finally {
+      applyingRuntimeToolProfile = false;
+    }
+    await syncRuntimeToolSelection();
     toolSwitcher?.open?.();
   });
   const dispClose = window.zion.commands.registerCommand("tools.closeSwitcher", () => {
@@ -552,23 +836,49 @@ export async function activate(ctx) {
     const enabled = window.zion.state.get("chat.enabledTools");
     const enabledNames = Array.isArray(enabled) ? enabled : all.map(t => t?.function?.name).filter(Boolean);
     const n = enabledNames.filter(Boolean).length;
+    const runtimeSupported = window.zion.state.get("runtime.supportedToolNames");
+    const runtimeMode = String(
+      window.zion.state.get("runtime.mode")
+      || localStorage.getItem("zion.runtime.mode")
+      || "auto"
+    ).toLowerCase();
+    const showRuntimeCount = runtimeMode !== "browser"
+      && Array.isArray(runtimeSupported)
+      && runtimeSupported.length > 0;
+    const runtimeSet = new Set(showRuntimeCount ? runtimeSupported : []);
+    const runtimeCount = showRuntimeCount
+      ? enabledNames.filter((name) => runtimeSet.has(name)).length
+      : 0;
+    const buttonText = showRuntimeCount
+      ? t("status.toolsRuntime", "Tools: {runtime}/{count}", {
+          runtime: runtimeCount,
+          count: n
+        })
+      : t("status.tools", "Tools: {count}", { count: n });
+    const buttonTooltip = showRuntimeCount
+      ? t(
+          "status.tooltipRuntime",
+          "Runtime can execute {runtime}/{count} enabled tools",
+          { runtime: runtimeCount, count: n }
+        )
+      : t("status.tooltip", "Manage enabled tools");
     toolsBtnDisp?.dispose?.();
     toolsBtnDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: "dev.tools.button",
-      text: t("status.tools", "Tools: {count}", { count: n }),
-      tooltip: `${t("status.tooltip", "Manage enabled tools")} (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)`,
+      text: buttonText,
+      tooltip: `${buttonTooltip} (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)`,
       priority: 70,
       onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
     }) || window.zion.editorHeaderMenu?.register?.({
       id: "dev.tools.button",
-      title: t("status.tools", "Tools: {count}", { count: n }),
+      title: buttonText,
       section: "Chat",
       order: 20,
       onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
     }) || window.zion.statusBar.registerItem({
       id: "dev.tools.button",
-      text: t("status.tools", "Tools: {count}", { count: n }),
-      tooltip: `${t("status.tooltip", "Manage enabled tools")} (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)`,
+      text: buttonText,
+      tooltip: `${buttonTooltip} (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)`,
       onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
     });
   };
@@ -599,8 +909,14 @@ export async function activate(ctx) {
         finalEnabled = Array.from(new Set([...filtered, ...names]));
       }
 
-      window.zion.state.set("chat.enabledTools", finalEnabled);
-      window.zion.state.set("chat.toolsKnownNames", names.slice());
+      applyingRuntimeToolProfile = true;
+      try {
+        window.zion.state.set("chat.enabledTools", finalEnabled);
+        window.zion.state.set("chat.toolsKnownNames", names.slice());
+      } finally {
+        applyingRuntimeToolProfile = false;
+      }
+      void syncRuntimeToolSelection();
     } catch {}
   });
   ctx.subscriptions.push({ dispose: () => off.dispose?.() });
@@ -624,6 +940,11 @@ export async function activate(ctx) {
       const prevCustomized = localStorage.getItem("zion.enabledTools.userCustomized") === "1";
       const customizedNow = enabledArr.length < names.length;
       localStorage.setItem("zion.enabledTools.userCustomized", (prevCustomized || customizedNow) ? "1" : "0");
+      if (!applyingRuntimeToolProfile) {
+        void persistEnabledToolsToRuntimeProfile({
+          enabledTools: enabledArr
+        });
+      }
     } catch {}
   };
 
@@ -641,7 +962,6 @@ export async function activate(ctx) {
     const next = Array.isArray(value) ? value.map(String).filter((name) => names.includes(name)) : [];
     window.zion.state.set("chat.enabledTools", next);
     window.zion.state.set("chat.toolsKnownNames", names);
-    persistEnabledTools();
   };
 
   try {
@@ -681,8 +1001,20 @@ export async function activate(ctx) {
   }
 
   ctx.subscriptions.push(
-    window.zion.state.onDidChange("chat.tools", () => { ensureEnabledTools(); updateToolsBtn(); }),
+    window.zion.state.onDidChange("chat.tools", () => {
+      applyingRuntimeToolProfile = true;
+      try {
+        ensureEnabledTools();
+      } finally {
+        applyingRuntimeToolProfile = false;
+      }
+      updateToolsBtn();
+      void syncRuntimeToolSelection();
+    }),
     window.zion.state.onDidChange("chat.enabledTools", () => { persistEnabledTools(); updateToolsBtn(); }),
+    window.zion.state.onDidChange("runtime.supportedToolNames", updateToolsBtn),
+    window.zion.state.onDidChange("runtime.mode", () => { updateToolsBtn(); void syncRuntimeToolSelection(); }),
+    window.zion.state.onDidChange("runtime.baseUrl", () => { void syncRuntimeToolSelection(); }),
     window.zion.events.on("i18n/changed", updateToolsBtn)
   );
 
@@ -735,11 +1067,21 @@ function parseToolsFromDocument(content) {
   // 合并状态总线预注册工具
   const regTools = window.zion?.state?.get("chat.tools") || [];
   const merged = [...regTools, ...tools];
+  const runtimeBackend = String(
+    window.zion?.state?.get?.("runtime.connection")?.backend
+    || window.zion?.state?.get?.("runtime.mode")
+    || localStorage.getItem("zion.runtime.mode")
+    || "auto"
+  ).toLowerCase();
+  const runtimeActive = runtimeBackend === "runtime";
+  const eligible = runtimeActive
+    ? merged
+    : merged.filter((tool) => tool?.["x-zionRuntimeOnly"] !== true);
 
   // 依据启用列表过滤（chat.enabledTools），未设置则默认全启用
   const enabledNames = window.zion?.state?.get("chat.enabledTools");
   const set = Array.isArray(enabledNames) ? new Set(enabledNames) : null;
-  const filtered = set ? merged.filter(t => t?.function?.name && set.has(t.function.name)) : merged;
+  const filtered = set ? eligible.filter(t => t?.function?.name && set.has(t.function.name)) : eligible;
 
   return filtered.length > 0 ? filtered : null;
 }
@@ -1093,7 +1435,7 @@ function registerDefaultTools() {
               path: { type: "string", description: "Local plugin directory (for startDev)" },
               plugin_id: { type: "string", description: "Plugin ID (for install/enable/disable/uninstall)" },
               devId: { type: "string", description: "Dev session ID (for stopDev)" },
-              serviceUrl: { type: "string", description: "Override local tools service base URL (default from localStorage zion.pluginServiceUrl)" }
+              serviceUrl: { type: "string", description: "Override plugin host base URL (default from localStorage zion.pluginServiceUrl)" }
             },
             required: ["action"],
             additionalProperties: false
@@ -2026,8 +2368,8 @@ function registerDefaultTools() {
           const installer = (window.zion || {}).pluginInstaller;
 
           const readServiceUrl = () => {
-            try { return (localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8765").replace(/\/$/, ""); }
-            catch { return "http://127.0.0.1:8765"; }
+            try { return (localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8767").replace(/\/$/, ""); }
+            catch { return "http://127.0.0.1:8767"; }
           };
 
           const ensurePM = () => {

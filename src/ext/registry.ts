@@ -32,6 +32,21 @@ import {
   stripAssistantBlockIdComment
 } from "../chat/restore";
 import { createZionIcon, hasZionIcon, zionIconName } from "../ui/icons";
+import {
+  beginImageInsertion,
+  cancelImageInsertion,
+  completeImageInsertion,
+  failImageInsertion,
+  hideImageDropIndicator,
+  showImageDropIndicator
+} from "../editor/image-transactions";
+import {
+  getImageAssetMetadata,
+  isImageAssetUri,
+  putImageAsset,
+  readImageAssetDataUrl,
+  resolveImageAsset
+} from "../media/image-assets";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -412,7 +427,7 @@ class Registry {
     dom.addEventListener("paste", async (e: ClipboardEvent) => {
       try {
         const cd = e.clipboardData;
-        const editor: IEditorProxy | null = (window as any).zion?.window?.activeEditor ?? null;
+        const editor: IEditorProxy | null = this.editorProxies.get(panelId) || null;
         if (!cd || !editor) return;
 
         // run handlers by priority (desc)
@@ -420,14 +435,28 @@ class Registry {
           (a, b) => (b.priority ?? 50) - (a.priority ?? 50)
         );
         for (const h of handlers) {
+          const context = { clipboardData: cd, editor };
+          let claim: unknown = undefined;
+          if (typeof h.claim === "function") {
+            try {
+              claim = h.claim(context);
+            } catch (err) {
+              console.error("[zion] paste handler claim error:", h.id, err);
+              continue;
+            }
+            if (claim === false || claim == null) continue;
+            e.preventDefault();
+          }
           try {
-            const handled = await h.handle({ clipboardData: cd, editor });
+            const handled = await h.handle({ ...context, claim });
             if (handled) {
               e.preventDefault();
               return;
             }
+            if (claim !== undefined) return;
           } catch (err) {
             console.error("[zion] paste handler error:", h.id, err);
+            if (claim !== undefined) return;
           }
         }
       } catch (err) {
@@ -1563,8 +1592,14 @@ class Registry {
   }
 
   async runMessageContributors(messages: any[], stage: "pre" | "post" = "pre", runCtx: any = {}): Promise<any[]> {
+    const excludedContributorIds = new Set(
+      Array.isArray(runCtx?.excludedContributorIds)
+        ? runCtx.excludedContributorIds.map(String)
+        : []
+    );
     const contribs = [...this.messageContribs]
       .filter(c => (c.stage ?? "pre") === stage)
+      .filter(c => !excludedContributorIds.has(String(c.id || "")))
       .sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
 
     const ctx = {
@@ -2350,7 +2385,45 @@ try { runLedger.reconcileActiveRuns([], "startup"); } catch {}
       detachEditor: (panelId: string) => (registry as any).detachEditor(panelId),
       listAttachedEditorCores: () => (registry as any).listAttachedEditorCores(),
       getEditorForView: (view: EditorView) =>
-        (registry as any).getEditorProxyForView(view) || inspectorRuntime.getTextEditorForView(view)
+        (registry as any).getEditorProxyForView(view) || inspectorRuntime.getTextEditorForView(view),
+      images: {
+        begin: (editor: IEditorProxy, options: any) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          if (!view) throw new Error("Editor view is unavailable");
+          return beginImageInsertion(view, options);
+        },
+        complete: (editor: IEditorProxy, operationId: string, images: any[]) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          return view ? completeImageInsertion(view, operationId, images) : false;
+        },
+        fail: (editor: IEditorProxy, operationId: string, message?: string) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          return view ? failImageInsertion(view, operationId, message) : false;
+        },
+        cancel: (editor: IEditorProxy, operationId: string) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          return view ? cancelImageInsertion(view, operationId) : false;
+        },
+        showDropTarget: (
+          editor: IEditorProxy,
+          point: { x: number; y: number },
+          options?: { count?: number; moving?: boolean }
+        ) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          return view ? showImageDropIndicator(view, point, options) : null;
+        },
+        hideDropTarget: (editor: IEditorProxy) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          if (view) hideImageDropIndicator(view);
+        }
+      }
+    },
+    media: {
+      isImageAssetUri,
+      putImage: putImageAsset,
+      resolveImage: resolveImageAsset,
+      readImageDataUrl: readImageAssetDataUrl,
+      getImageMetadata: getImageAssetMetadata
     },
     models: {
       registerProvider: (p: {

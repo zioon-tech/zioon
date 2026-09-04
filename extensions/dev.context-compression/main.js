@@ -20,6 +20,12 @@ import { KVCacheOptimizer } from './kv-cache-optimizer.js';
 import { CompressionSettingsPanel } from './ui/settings-panel.js';
 import { CompressionStatus } from './ui/compression-status.js';
 import { stripAssistantBlockIdComment } from '../../src/chat/restore.ts';
+import { isContinuationBoundaryLine } from '../../src/chat/session-document-format.js';
+import {
+  compressionSettingsSyncDirection,
+  loadCompressionSettingsFromRuntime,
+  syncCompressionSettingsToRuntime
+} from './compression-runtime-state.js';
 
 const I18N_NS = 'dev.context-compression';
 const I18N_MESSAGES = {
@@ -112,6 +118,7 @@ function t(key, fallback, values) {
 }
 
 let __settingsPanelSingleton = null;
+let __runtimeSettingsSyncTimer = 0;
 
 const __compressionMem = { kv: {}, versions: {} };
 
@@ -520,6 +527,35 @@ async function clearVersionsForActiveSession() {
   return { ok: true };
 }
 
+function scheduleCompressionSettingsSync(settings) {
+  try {
+    if (__runtimeSettingsSyncTimer) window.clearTimeout(__runtimeSettingsSyncTimer);
+    __runtimeSettingsSyncTimer = window.setTimeout(() => {
+      __runtimeSettingsSyncTimer = 0;
+      void syncCompressionSettingsToRuntime({ settings }).catch(() => {});
+    }, 200);
+  } catch {}
+}
+
+async function reconcileCompressionSettingsWithRuntime() {
+  const local = await getCompressionSettings();
+  const runtime = await loadCompressionSettingsFromRuntime();
+  const direction = compressionSettingsSyncDirection(local, runtime);
+  if (direction === 'restore') {
+    const restored = {
+      ...local,
+      ...runtime
+    };
+    await storageSetKV('compression.settings', restored);
+    try { window.zion?.state?.set?.('compression.settings', restored); } catch {}
+    return restored;
+  }
+  if (direction === 'upload') {
+    await syncCompressionSettingsToRuntime({ settings: local });
+  }
+  return runtime || local;
+}
+
 export async function activate(ctx) {
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
@@ -673,8 +709,13 @@ export async function activate(ctx) {
     window.zion.commands.registerCommand('compression.settings.save', async (settings) => {
       try {
         if (settings && typeof settings === 'object') {
-          try { window.zion?.state?.set?.('compression.settings', settings); } catch {}
-          await storageSetKV(SETTINGS_KV_KEY, settings);
+          const next = {
+            ...settings,
+            updatedAt: Date.now()
+          };
+          try { window.zion?.state?.set?.('compression.settings', next); } catch {}
+          await storageSetKV(SETTINGS_KV_KEY, next);
+          scheduleCompressionSettingsSync(next);
           return { ok: true };
         }
         return { ok: false, error: 'invalid_settings' };
@@ -737,10 +778,10 @@ export async function activate(ctx) {
     );
   }
   
-  ensureDefaultSettings(SETTINGS_KV_KEY);
+  await ensureDefaultSettings(SETTINGS_KV_KEY);
 
   try {
-    const initialSettings = await getCompressionSettings();
+    const initialSettings = await reconcileCompressionSettingsWithRuntime();
     syncEngineFromSettings(compressionEngine, initialSettings);
   } catch {}
 
@@ -963,6 +1004,23 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispContributor);
   log('registered message contributor', { id: 'dev.context-compression', stage: 'post', order: 90 });
+  try {
+    const runtimeConnectionDisposable = window.zion?.state?.onDidChange?.(
+      'runtime.connection',
+      () => {
+        void reconcileCompressionSettingsWithRuntime()
+          .then((settings) => syncEngineFromSettings(compressionEngine, settings))
+          .catch(() => {});
+      }
+    );
+    if (runtimeConnectionDisposable) ctx.subscriptions.push(runtimeConnectionDisposable);
+  } catch {}
+  ctx.subscriptions.push({
+    dispose() {
+      if (__runtimeSettingsSyncTimer) window.clearTimeout(__runtimeSettingsSyncTimer);
+      __runtimeSettingsSyncTimer = 0;
+    }
+  });
 
   let statusDisp = null;
   const updateStatus = () => {
@@ -1430,6 +1488,7 @@ function stripWidgetStubs(text) {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    if (isContinuationBoundaryLine(line)) continue;
     if (/^(思考|Thinking)(?:\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->)?$/i.test(trimmed)) continue;
     if (/^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?$/i.test(trimmed)) continue;
     // Strip leading role headers like "system|user|assistant <content>"
@@ -1456,6 +1515,7 @@ function parseMessages(content) {
   for (const line of lines) {
     const roleMatch = line.match(/^(system|user|assistant)\s+(.*)$/);
     const imageMatch = line.match(/^!\[.*\]\((.*)\)$/);
+    const continuation = isContinuationBoundaryLine(line);
 
     if (roleMatch) {
       if (currentContent.length > 0 || currentImages.length > 0) {
@@ -1473,7 +1533,9 @@ function parseMessages(content) {
         currentImages = [];
       }
       currentRole = roleMatch[1];
-      const contentPart = currentRole === 'assistant'
+      const contentPart = continuation
+        ? ""
+        : currentRole === 'assistant'
         ? stripAssistantBlockIdComment(roleMatch[2])
         : roleMatch[2];
       if (contentPart.trim()) currentContent.push(contentPart);

@@ -74,7 +74,7 @@ describe("pluginsManage development sessions", () => {
 
     vi.stubGlobal("fetch", vi.fn(async (url) => {
       if (String(url).endsWith("/plugins/dev/start")) {
-        return new Response(JSON.stringify({
+        return new globalThis.Response(JSON.stringify({
           success: true,
           data: {
             devId: "dev-12345678",
@@ -84,7 +84,10 @@ describe("pluginsManage development sessions", () => {
         }), { status: 200 });
       }
       if (String(url).endsWith("/plugins/dev/stop")) {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
+        return new globalThis.Response(
+          JSON.stringify({ success: true }),
+          { status: 200 }
+        );
       }
       throw new Error(`Unexpected request: ${url}`);
     }));
@@ -100,7 +103,7 @@ describe("pluginsManage development sessions", () => {
     expect(pluginManager.saveDevSessionRecord).toHaveBeenCalledWith({
       pluginId: "dev.example",
       devId: "dev-12345678",
-      baseUrl: "http://127.0.0.1:8765/plugins/dev/dev-12345678",
+      baseUrl: "http://127.0.0.1:8767/plugins/dev/dev-12345678",
       dir: "/tmp/dev.example"
     });
 

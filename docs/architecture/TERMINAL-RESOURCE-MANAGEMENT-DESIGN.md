@@ -499,15 +499,18 @@ terminal.activeSessionId = 用户当前在 Terminal Panel 中查看和交互的 
 
 目录构建遵循以下压缩顺序：
 
-1. 始终保留 Machine 和 Workspace 名称。
+1. 优先保留策略通过 `allowedTerminalSessionIds` 显式指定的 Session 所属 Machine 和
+   Workspace。
 2. 对无歧义 Workspace 省略完整路径。
 3. 对同名 Workspace 增加短路径或仓库信息。
 4. 省略静态未知字段。
 5. 机器资源使用紧凑单位，不注入完整指标对象。
-6. 最后才按最近活动裁剪 Workspace，并明确 `omitted_count`。
+6. 其余项按本机优先、最近活动优先的稳定顺序裁剪。
 
-建议默认预算为 2000-3000 tokens。当前约 6 台机器和 100 个 Workspace，在只保留名称、数量
-和短 ID 时可以容纳。
+自动上下文默认最多包含 8 台 Machine、全局 24 个 Workspace、每台 Machine 12 个
+Workspace。显式指定 Session 的父级资源不受名义上限影响。根节点通过 `truncated`、
+`total_machine_count`、`total_workspace_count` 和 `total_session_count` 报告裁剪状态；
+完整目录仍可通过 `terminalInventory` 或 `terminalManage action=list` 按需查询。
 
 ### 6.5 注入方式与安全
 

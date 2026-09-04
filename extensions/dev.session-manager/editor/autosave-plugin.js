@@ -1,5 +1,6 @@
 import { ViewPlugin } from "@codemirror/view";
 import { Transaction } from "@codemirror/state";
+import { ySyncAnnotation } from "y-codemirror.next";
 import { extractDocumentLeadPreview } from "../../shared/session-preview.js";
 
 export function createSessionAutoSavePlugin(opts) {
@@ -47,7 +48,8 @@ export function createSessionAutoSavePlugin(opts) {
         const userEvent = tr?.annotation?.(Transaction.userEvent);
         return userEvent === "zion.sessionLoad"
           || userEvent === "zion.sessionSeed"
-          || userEvent === "zion.cardRestore";
+          || userEvent === "zion.cardRestore"
+          || tr?.annotation?.(ySyncAnnotation) != null;
       });
     } catch {
       return false;
@@ -79,7 +81,14 @@ export function createSessionAutoSavePlugin(opts) {
     const meta = loadMeta(id);
     const newHash = hashString(text);
     if (newHash === (meta.hash || "")) return false;
-    trackPersistence(saveDoc(id, text));
+    const collaborationSynced = zion?.state?.get?.(
+      `sessions.collaboration.${id}`
+    )?.synced === true;
+    if (collaborationSynced) {
+      try { zion?.state?.set?.(`sessions.doc.${id}`, text); } catch {}
+    } else {
+      trackPersistence(saveDoc(id, text));
+    }
     meta.documentPreview = extractDocumentLeadPreview(text);
     meta.documentPreviewVersion = 1;
     const rs = zion?.state?.get(`chat.runs.${id}`) || null;

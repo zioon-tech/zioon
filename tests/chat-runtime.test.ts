@@ -132,4 +132,25 @@ describe("createChatRuntime", () => {
     });
     runtime.dispose();
   });
+
+  it("detaches remote observers without aborting their Runtime Run on dispose", () => {
+    const state = createState({ "sessions.currentId": "session-1" });
+    const runtime = createChatRuntime({
+      state,
+      events: { emit: vi.fn() },
+      getSessionId: () => "session-1"
+    });
+    const controller = {
+      abortOnDispose: false,
+      abort: vi.fn(),
+      dispose: vi.fn()
+    };
+
+    runtime.beginRun("session-1", "run-remote");
+    runtime.setController("session-1", controller, "run-remote");
+    runtime.dispose();
+
+    expect(controller.dispose).toHaveBeenCalledOnce();
+    expect(controller.abort).not.toHaveBeenCalled();
+  });
 });

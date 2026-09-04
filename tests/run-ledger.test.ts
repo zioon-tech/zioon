@@ -86,6 +86,58 @@ describe("core run ledger", () => {
     expect(topics.some((item) => item.topic === "runs/changed")).toBe(true);
   });
 
+  it("does not persist transient token stream events", () => {
+    const storage = memoryStorage();
+    const ledger = createRunLedger({ storage, storageKey: "runs" });
+    ledger.start({ id: "streaming-run", status: "running" });
+    const writesAfterStart = storage.setItem.mock.calls.length;
+
+    for (let index = 0; index < 100; index += 1) {
+      expect(ledger.recordEvent({
+        runId: "streaming-run",
+        type: index % 2 === 0 ? "reasoning.delta" : "message.delta",
+        sequence: index + 1,
+        data: { delta: "x" }
+      })).toBeNull();
+    }
+
+    expect(ledger.getEvents("streaming-run")).toEqual([]);
+    expect(storage.setItem).toHaveBeenCalledTimes(writesAfterStart);
+  });
+
+  it("drops legacy transient token events while loading persisted state", () => {
+    const storage = memoryStorage();
+    storage.values.set("runs", JSON.stringify({
+      version: 1,
+      runs: [{ id: "legacy-run", status: "running" }],
+      events: [{
+        id: "reasoning-1",
+        runId: "legacy-run",
+        type: "reasoning.delta",
+        ts: 100,
+        data: { length: 1 }
+      }, {
+        id: "message-1",
+        runId: "legacy-run",
+        type: "message.delta",
+        ts: 101,
+        data: { length: 1 }
+      }, {
+        id: "tool-1",
+        runId: "legacy-run",
+        type: "tool.requested",
+        ts: 102,
+        data: { callId: "call-1", name: "read" }
+      }],
+      outcomes: []
+    }));
+
+    const ledger = createRunLedger({ storage, storageKey: "runs" });
+
+    expect(ledger.getEvents("legacy-run").map((event) => event.type))
+      .toEqual(["tool.requested"]);
+  });
+
   it("submits verifier outcomes without changing the run source", () => {
     const ledger = createRunLedger({ storage: memoryStorage(), storageKey: "runs" });
     const run = ledger.start({

@@ -31,6 +31,7 @@ import { getCM, vim, Vim } from "@replit/codemirror-vim";
 import { inlineWidgetDecorationsExtension } from "./inlineWidgets";
 import { obsidianSyntaxExtension } from "./extensions/obsidian";
 import { roleScopedFencedCode } from "./roleScopedMarkdown";
+import { imageInsertionExtension } from "./image-transactions";
 
 function selectNextOccurrenceDown(view: EditorView): boolean {
   const { state } = view;
@@ -504,6 +505,7 @@ export class EditorCore {
           selectionToolbarExtension(),
           linkDetector,
           linkStyles,
+          imageInsertionExtension(),
           obsidianSyntaxExtension(),
           // minimap compartment (can be toggled)
           this.minimapComp.of([]),

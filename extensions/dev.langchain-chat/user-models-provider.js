@@ -1,9 +1,9 @@
 /**
- * user.dynamic provider ( backed by localStorage )
+ * user.dynamic provider (Runtime Host first, localStorage fallback)
  *
  * Purpose:
- * - 不再在代码中写死 models.json；模型由用户通过 UI/对话（modelsManage 工具）配置并保存到 localStorage。
- * - 使用与 models-tools 中相同的 key（zion.models.dynamic），以保证两者一致。
+ * - 不再在代码中写死 models.json；模型由用户通过 UI/对话（modelsManage 工具）配置。
+ * - Runtime 可用时以 Runtime Model Profile 为权威；离线/浏览器模式才使用 localStorage fallback。
  */
 
 import { withResolvedModelLimits } from "./model-limits.js";
@@ -12,20 +12,11 @@ import {
   buildDiscoveryAvailability,
   createProviderModelDiscovery
 } from "./provider-model-discovery.js";
+import {
+  loadDynamicModelStore
+} from "./runtime-user-model-store.js";
 
-const DYN_KEY = "zion.models.dynamic";
 const discoveryLoaders = new Map();
-
-function loadStore() {
-  try {
-    const raw = localStorage.getItem(DYN_KEY);
-    if (!raw) return {};
-    const j = JSON.parse(raw);
-    return j && typeof j === "object" ? j : {};
-  } catch {
-    return {};
-  }
-}
 
 export function deriveOpenAIModelsUrl(value) {
   try {
@@ -72,7 +63,7 @@ function getDiscoveryLoader(modelsUrl) {
 export const userModelsProvider = {
   id: "user.dynamic",
   async list() {
-    const dict = loadStore();
+    const dict = await loadDynamicModelStore();
     return Object.keys(dict).map(id => {
       const cfg = dict[id] || {};
       const resolved = withResolvedModelLimits(cfg, {
@@ -88,12 +79,22 @@ export const userModelsProvider = {
     });
   },
   async checkAvailability({ modelIds = [], force = false } = {}) {
-    const dict = loadStore();
+    const dict = await loadDynamicModelStore();
     const models = {};
     const groups = new Map();
 
     for (const modelId of modelIds) {
       const cfg = dict[modelId] || {};
+      if (cfg._runtimeBacked && cfg._credentialConfigured) {
+        models[modelId] = {
+          status: "available",
+          reason: "runtime_credential_configured",
+          source: "runtime-profile",
+          checkedAt: Date.now(),
+          expiresAt: null
+        };
+        continue;
+      }
       const apiKey = String(cfg.key || cfg.apiKey || "").trim();
       const providerType = String(cfg.providerType || "openai").toLowerCase();
       const modelsUrl = providerType === "openai" ? deriveOpenAIModelsUrl(cfg.url) : "";
@@ -154,7 +155,7 @@ export const userModelsProvider = {
     };
   },
   async resolve(modelId) {
-    const dict = loadStore();
+    const dict = await loadDynamicModelStore();
     const cfg = dict[modelId];
     if (!cfg) return null;
     // 确保 modelName 字段存在，如果没有则使用 modelId 或 cfg.model 作为默认值

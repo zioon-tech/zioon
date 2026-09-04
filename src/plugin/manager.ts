@@ -79,7 +79,14 @@ export class PluginManager extends EventEmitter {
     if (explicit === 'builtin' || explicit === 'dev' || explicit === 'external') return explicit;
     const path = String(plugin?.path || '');
     const manifest: any = plugin?.manifest || {};
-    const main = String(manifest?.zion?.main || manifest?.main || '');
+    const main = String(
+      plugin?.contract?.entries?.workbench
+      || manifest?.zion?.entries?.workbench
+      || manifest?.zion?.entries?.ui
+      || manifest?.zion?.main
+      || manifest?.main
+      || ''
+    );
     if (path.startsWith('/extensions/') || main.startsWith('internal:')) return 'builtin';
     if (/\/plugins\/dev\//.test(path) || /\/plugins\/dev\//.test(main)) return 'dev';
     return 'external';
@@ -165,10 +172,17 @@ export class PluginManager extends EventEmitter {
   }
 
   private getMainEntry(plugin: PluginInfo): string {
-    const manifest: any = plugin.manifest as any;
-    if (manifest && manifest.zion && typeof manifest.zion.main === 'string') return manifest.zion.main;
-    if (manifest && typeof manifest.main === 'string') return manifest.main;
-    return '';
+    try {
+      return [
+        this.loader.getEntry(plugin, 'workbench'),
+        this.loader.getEntry(plugin, 'renderer')
+      ].filter(Boolean).join('|');
+    } catch {
+      const manifest: any = plugin.manifest as any;
+      if (manifest && manifest.zion && typeof manifest.zion.main === 'string') return manifest.zion.main;
+      if (manifest && typeof manifest.main === 'string') return manifest.main;
+      return '';
+    }
   }
 
   private shouldReplaceInstalledPlugin(existing: PluginInfo, incoming: PluginInfo): boolean {
@@ -274,6 +288,10 @@ export class PluginManager extends EventEmitter {
           }
 
           const pluginInfo = await this.loader.loadPlugin(pluginPath);
+          if (!this.loader.supportsHost(pluginInfo, 'workbench')) {
+            this.log('debug', `跳过无 Workbench Entry 的插件包: ${pluginInfo.id}`);
+            continue;
+          }
           pluginInfo.origin = 'builtin';
           const existing = this.plugins.get(pluginInfo.id);
           if (existing && this.getPluginOrigin(existing) !== 'builtin') {
@@ -736,6 +754,11 @@ export class PluginManager extends EventEmitter {
         this.log('warn', `插件已激活: ${pluginId}`);
         return;
       }
+      if (!this.loader.supportsHost(pluginInfo, 'workbench')) {
+        pluginInfo.state = 'installed';
+        this.log('info', `插件包 ${pluginId} 未声明 Workbench Host，跳过客户端激活`);
+        return;
+      }
 
       // 更新状态
       pluginInfo.state = 'activating';
@@ -1097,7 +1120,10 @@ export class PluginManager extends EventEmitter {
             skillFiles: rec.skillFiles && typeof rec.skillFiles === 'object' ? rec.skillFiles : undefined,
             styleContents: rec.styleContents && typeof rec.styleContents === 'object' ? rec.styleContents : undefined,
             sourceDir: typeof rec.sourceDir === 'string' ? rec.sourceDir : undefined,
-            devId: typeof rec.devId === 'string' ? rec.devId : undefined
+            devId: typeof rec.devId === 'string' ? rec.devId : undefined,
+            contract: rec.contract && typeof rec.contract === 'object'
+              ? rec.contract
+              : undefined
           };
           this.plugins.set(info.id, info);
 
@@ -1145,7 +1171,8 @@ export class PluginManager extends EventEmitter {
         skillFiles: p.skillFiles,
         styleContents: p.styleContents,
         sourceDir: p.sourceDir,
-        devId: p.devId
+        devId: p.devId,
+        contract: p.contract
       }));
       localStorage.setItem('zion.installedPlugins', JSON.stringify(arr));
     } catch (e) {

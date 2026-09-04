@@ -336,7 +336,10 @@ function getSearchPanelHost() {
   try {
     const panelId = window.zion?.panels?.getActivePanelId?.();
     if (panelId) {
-      const panelRoot = document.querySelector(`[data-panel-id="${CSS.escape(String(panelId))}"]`);
+      const escapedPanelId = globalThis.CSS?.escape
+        ? globalThis.CSS.escape(String(panelId))
+        : String(panelId).replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+      const panelRoot = document.querySelector(`[data-panel-id="${escapedPanelId}"]`);
       const host = panelRoot?.querySelector?.('.zion-editor-host');
       if (host && host instanceof HTMLElement) return host;
     }

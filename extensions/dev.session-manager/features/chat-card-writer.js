@@ -91,6 +91,7 @@ export function hasLiveChatCardWriter(zion, { sessionId, panelId } = {}) {
 }
 
 export function shouldPersistChatCardInBackground(zion, payload = {}) {
+  if (payload?.documentWriter === false) return false;
   const sessionId = String(payload?.sessionId || "").trim();
   return !!sessionId && !hasLiveChatCardWriter(zion, {
     sessionId,

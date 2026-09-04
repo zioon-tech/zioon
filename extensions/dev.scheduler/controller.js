@@ -70,6 +70,7 @@ function staleRunTimeoutMs(run, task) {
 
 export function isStaleActiveRun(run, task = null, now = Date.now()) {
   if (!run || !ACTIVE_RUN_STATUSES.has(run.status) || TERMINAL_RUN_STATUSES.has(run.status)) return false;
+  if (run.backend === "runtime" && run.runtimeRunId) return false;
   const startedAt = runActivityStartedAt(run);
   if (!startedAt) return false;
   return Number(now) - startedAt > staleRunTimeoutMs(run, task);
@@ -255,10 +256,19 @@ function runFromRemote(remote, taskByRemoteId) {
 }
 
 export class SchedulerController {
-  constructor({ store, service, runTask, onChange = () => {}, onServiceStatus = () => {}, now = () => Date.now() }) {
+  constructor({
+    store,
+    service,
+    runTask,
+    cancelRuntimeRun,
+    onChange = () => {},
+    onServiceStatus = () => {},
+    now = () => Date.now()
+  }) {
     this.store = store;
     this.service = service;
     this.runTask = runTask;
+    this.cancelRuntimeRun = cancelRuntimeRun;
     this.onChange = onChange;
     this.onServiceStatus = onServiceStatus;
     this.now = now;
@@ -467,7 +477,13 @@ export class SchedulerController {
     if (!ACTIVE_RUN_STATUSES.has(run.status)) return run;
     const task = this.store.getTask(run.taskId);
     const serviceBacked = run.executionMode === "service-backed" || task?.executionMode === "service-backed";
-    if (!serviceBacked && run.status === "running") {
+    const runtimeBacked = run.backend === "runtime" && run.runtimeRunId;
+    if (runtimeBacked) {
+      if (!this.cancelRuntimeRun) {
+        throw new Error("Runtime 取消接口不可用");
+      }
+      await this.cancelRuntimeRun(run, reason);
+    } else if (!serviceBacked && run.status === "running") {
       throw new Error("当前运行仍在本地执行，暂不支持直接取消");
     }
     const completedAt = this.now();
@@ -627,23 +643,9 @@ export class SchedulerController {
     if (this.service.cancel) {
       try {
         await this.service.cancel(run.id, reason);
-        return;
       } catch {
-        // Fall through to the legacy completion endpoint below.
+        // Local cleanup remains available when Runtime is unreachable.
       }
-    }
-    if (!this.service.complete) return;
-    try {
-      await this.service.complete(run.id, "local-cancel", {
-        status: run.status,
-        sessionId: run.sessionId || null,
-        chatRunId: run.chatRunId || null,
-        output: run.output || "",
-        error: run.error || null,
-        usage: run.usage || null
-      });
-    } catch {
-      // Local cleanup must remain available even when the scheduler service is unreachable.
     }
   }
 }

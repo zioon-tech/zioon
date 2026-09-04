@@ -1041,4 +1041,249 @@ describe("identity extension", () => {
     );
     disposable.dispose();
   });
+
+  it("restores newer Runtime project automation into the Workbench projection", async () => {
+    const stateValues = new Map([
+      ["runtime.mode", "runtime"],
+      ["runtime.baseUrl", "http://runtime.test"],
+      ["runtime.connection", {
+        backend: "runtime",
+        baseUrl: "http://runtime.test",
+        projectAutomationWorker: true
+      }]
+    ]);
+    const eventHandlers = new Map();
+    const runtimeControlCalls = [];
+    const globalValues = new Map([
+      ["projectAutomation.v1", {
+        version: 1,
+        projects: {
+          "zion-next": {
+            enabled: false,
+            mode: "explore",
+            updatedAt: 1000
+          }
+        },
+        requests: []
+      }]
+    ]);
+    const runtimeDocument = {
+      version: 1,
+      projects: {
+        "zion-next": {
+          enabled: false,
+          mode: "execute",
+          cadenceMinutes: 30,
+          updatedAt: 2000
+        }
+      },
+      requests: []
+    };
+    window.zion = {
+      messages: {
+        registerContributor: vi.fn(() => ({ dispose: vi.fn() }))
+      },
+      commands: {
+        registerCommand: vi.fn(() => ({ dispose: vi.fn() })),
+        executeCommand: vi.fn(() => null)
+      },
+      events: {
+        on: vi.fn((topic, handler) => {
+          eventHandlers.set(topic, handler);
+          return { dispose: vi.fn(() => eventHandlers.delete(topic)) };
+        }),
+        emit: vi.fn((topic, payload) => eventHandlers.get(topic)?.(payload))
+      },
+      auxiliaryBar: {
+        registerView: vi.fn(() => ({ dispose: vi.fn() }))
+      },
+      activityBar: {
+        registerItem: vi.fn(() => ({ dispose: vi.fn() }))
+      },
+      state: {
+        get: vi.fn((key) => {
+          if (key === "localTools.baseUrl") return "http://127.0.0.1:9999";
+          if (key === "terminal.sessions") {
+            return [{ id: "term-1", type: "local", cwd: "/Users/test/project" }];
+          }
+          return stateValues.get(key) ?? null;
+        }),
+        set: vi.fn((key, value) => stateValues.set(key, value)),
+        onDidChange: vi.fn(() => ({ dispose: vi.fn() }))
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url, options = {}) => {
+      const requestUrl = new URL(url);
+      if (requestUrl.host === "runtime.test") {
+        if (requestUrl.pathname.endsWith("/project-automation/projects/zion-next/run")) {
+          runtimeControlCalls.push({
+            path: requestUrl.pathname,
+            body: JSON.parse(options.body || "{}")
+          });
+          return new globalThis.Response(JSON.stringify({
+            status: "running",
+            projectKey: "zion-next",
+            runId: "runtime-project-run-1"
+          }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+        const key = decodeURIComponent(requestUrl.pathname.split("/").at(-1));
+        if (options.method === "PUT") {
+          return new globalThis.Response(JSON.stringify({ ok: true, revision: "runtime:3" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+        if (key.endsWith(".projectAutomation.v1")) {
+          return new globalThis.Response(JSON.stringify({ value: runtimeDocument }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+        return new globalThis.Response(JSON.stringify({ error: "not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (options.method === "POST") {
+        return new globalThis.Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (requestUrl.pathname.endsWith("/files/entries")) {
+        return new globalThis.Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new globalThis.Response(JSON.stringify({ error: "not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" }
+      });
+    }));
+
+    const disposable = await activate({
+      subscriptions: [],
+      globalState: {
+        get: vi.fn((key, fallback) => globalValues.get(key) ?? fallback),
+        update: vi.fn(async (key, value) => {
+          globalValues.set(key, value);
+        })
+      }
+    });
+
+    expect(globalValues.get("projectAutomation.v1").projects["zion-next"]).toMatchObject({
+      enabled: false,
+      mode: "execute",
+      cadenceMinutes: 30,
+      updatedAt: 2000
+    });
+    expect(stateValues.get("runtime.projectAutomationSync")).toMatchObject({
+      status: "loaded",
+      revision: 2000
+    });
+    eventHandlers.get("identity/projectAutomationRunRequested")?.({
+      projectKey: "zion-next"
+    });
+    await vi.waitFor(() => expect(runtimeControlCalls).toEqual([
+      {
+        path: "/v1/project-automation/projects/zion-next/run",
+        body: { interaction_profile_id: "interactive.default" }
+      }
+    ]));
+    disposable.dispose();
+  });
+
+  it("skips Workbench biography fallback for Runtime-owned runs", async () => {
+    let onRunFinished;
+    const writes = [];
+    const runStream = vi.fn();
+    const stateValues = new Map();
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    window.zion = {
+      messages: {
+        registerContributor: vi.fn(() => ({ dispose: vi.fn() }))
+      },
+      commands: {
+        registerCommand: vi.fn(() => ({ dispose: vi.fn() })),
+        executeCommand: vi.fn((id) => {
+          if (id === "zion.sessions.getDocAsync") {
+            return "user 继续推进 Runtime\nassistant 已完成 Runtime post processor。";
+          }
+          return true;
+        })
+      },
+      events: {
+        on: vi.fn((topic, handler) => {
+          if (topic === "chat/runFinished") onRunFinished = handler;
+          return { dispose: vi.fn() };
+        }),
+        emit: vi.fn()
+      },
+      panels: { getEditorBySession: vi.fn(() => null) },
+      state: {
+        get: vi.fn((key) => {
+          if (key === "localTools.baseUrl") return "http://127.0.0.1:9999";
+          if (key === "terminal.sessions") return [{ id: "term-1", type: "local", cwd: "/Users/test/project" }];
+          return stateValues.get(key) ?? null;
+        }),
+        set: vi.fn((key, value) => stateValues.set(key, value))
+      },
+      llm: {
+        runStream
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url, options = {}) => {
+      if (options.method === "POST") {
+        writes.push({ url: String(url), body: JSON.parse(options.body || "{}") });
+        return new globalThis.Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      const requestUrl = new URL(url);
+      if (requestUrl.pathname.endsWith("/files/entries")) {
+        return new globalThis.Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      const path = decodeURIComponent(requestUrl.searchParams.get("path") || "");
+      const content = path.endsWith("events.jsonl")
+        ? ""
+        : path.endsWith("digest.md")
+          ? "# 自传摘要\n"
+          : "# Existing\n";
+      return new globalThis.Response(JSON.stringify({ content }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }));
+
+    const disposable = await activate({ subscriptions: [] });
+    writes.length = 0;
+    onRunFinished({
+      sessionId: "session-1",
+      runId: "runtime-run-1",
+      panelId: "panel-1",
+      requestSource: "interactive",
+      backend: "runtime"
+    });
+    await Promise.resolve();
+
+    expect(runStream).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+    expect(info).toHaveBeenCalledWith(
+      "[dev.identity] biography skipped: handled by Runtime post-processor",
+      expect.objectContaining({
+        sessionId: "session-1",
+        runId: "runtime-run-1"
+      })
+    );
+    disposable.dispose();
+    info.mockRestore();
+  });
 });

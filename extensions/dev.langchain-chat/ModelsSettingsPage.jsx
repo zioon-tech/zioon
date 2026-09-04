@@ -21,8 +21,17 @@ import {
   resolveModelLimits
 } from "./model-limits.js";
 import { refreshModelCatalog } from "./model-catalog.js";
+import {
+  deleteDynamicModel,
+  loadDynamicModelStore,
+  loadLocalDynamicModelStore,
+  upsertDynamicModel
+} from "./runtime-user-model-store.js";
+import {
+  loadProviderConfig,
+  saveProviderConfig
+} from "./provider-config-storage.js";
 
-const DYN_KEY = "zion.models.dynamic";
 const PROVIDER_ORDER = ["deepseek", "anthropic", "google"];
 const isEn = () => String(window.zion?.i18n?.getLocale?.() || window.zion?.state?.get?.("ui.locale") || "").startsWith("en");
 const tt = (zh, en) => (isEn() ? en : zh);
@@ -85,6 +94,9 @@ const BUILTIN_PROVIDER_META = {
 };
 
 function loadJson(key, fallback) {
+  if (key?.endsWith(".config")) {
+    return loadProviderConfig(key);
+  }
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return fallback;
@@ -96,15 +108,18 @@ function loadJson(key, fallback) {
 }
 
 function loadDynamicStore() {
-  return loadJson(DYN_KEY, {});
-}
-
-function saveDynamicStore(dict) {
-  localStorage.setItem(DYN_KEY, JSON.stringify(dict));
+  return loadLocalDynamicModelStore();
 }
 
 function loadCustomRows() {
   const dict = loadDynamicStore();
+  return Object.entries(dict)
+    .map(([id, cfg]) => ({ id, ...cfg }))
+    .sort((a, b) => String(a.label || a.id).localeCompare(String(b.label || b.id)));
+}
+
+async function loadCustomRowsAsync() {
+  const dict = await loadDynamicModelStore();
   return Object.entries(dict)
     .map(([id, cfg]) => ({ id, ...cfg }))
     .sort((a, b) => String(a.label || a.id).localeCompare(String(b.label || b.id)));
@@ -208,7 +223,7 @@ function saveProviderDraft(providerId, modelId, draft) {
   if (Object.keys(modelDescriptions).length) next.modelDescriptions = modelDescriptions;
   else delete next.modelDescriptions;
   localStorage.setItem(meta.apiKeyKey, String(draft.apiKey || "").trim());
-  localStorage.setItem(meta.configKey, JSON.stringify(next));
+  saveProviderConfig(meta.configKey, next);
 }
 
 function emptyCustomDraft() {
@@ -870,20 +885,26 @@ export function ModelsSettingsPage() {
   }, []);
 
   useEffect(() => {
-    const nextCustomRows = loadCustomRows();
-    setCustomRows(nextCustomRows);
+    void loadCustomRowsAsync().then(setCustomRows).catch(() => {
+      setCustomRows(loadCustomRows());
+    });
   }, [catalog]);
 
   useEffect(() => {
-    const nextCustomRows = loadCustomRows();
-    const nextBuiltins = Array.isArray(catalogFromState)
-      ? catalogFromState.filter((row) => row.providerId !== "user.dynamic")
-      : [];
-    setCustomRows(nextCustomRows);
-    setSelection((prev) => {
-      if (isValidSelection(prev, nextBuiltins, nextCustomRows)) return prev;
-      return selectFallback(activeModel, nextBuiltins, nextCustomRows);
-    });
+    let cancelled = false;
+    void (async () => {
+      const nextCustomRows = await loadCustomRowsAsync().catch(() => loadCustomRows());
+      if (cancelled) return;
+      const nextBuiltins = Array.isArray(catalogFromState)
+        ? catalogFromState.filter((row) => row.providerId !== "user.dynamic")
+        : [];
+      setCustomRows(nextCustomRows);
+      setSelection((prev) => {
+        if (isValidSelection(prev, nextBuiltins, nextCustomRows)) return prev;
+        return selectFallback(activeModel, nextBuiltins, nextCustomRows);
+      });
+    })();
+    return () => { cancelled = true; };
   }, [activeModel, catalogFromState]);
 
   const selectedBuiltIn =
@@ -892,7 +913,7 @@ export function ModelsSettingsPage() {
       : null;
   const refresh = async () => {
     const next = await refreshModelCatalog({ checkHealth: true });
-    const nextCustomRows = loadCustomRows();
+    const nextCustomRows = await loadCustomRowsAsync().catch(() => loadCustomRows());
     setCatalog(next);
     setCustomRows(nextCustomRows);
     setProviderDrafts(buildProviderDrafts(next));
@@ -986,7 +1007,13 @@ export function ModelsSettingsPage() {
     const key = String(customDraft.key || "").trim();
     if (!id) return setStatus(tt("缺少 Model ID", "Missing Model ID"));
     if (!url) return setStatus(tt("缺少 Base URL", "Missing Base URL"));
-    if (!key) return setStatus(tt("缺少 API Key", "Missing API Key"));
+    const existingRow = editingCustomId
+      ? customRows.find((item) => item.id === editingCustomId)
+      : null;
+    const credentialAlreadyConfigured = !!existingRow?._credentialConfigured;
+    if (!key && !credentialAlreadyConfigured) {
+      return setStatus(tt("缺少 API Key", "Missing API Key"));
+    }
     const validationError = validateLimitDraft(customDraft);
     if (validationError) return setStatus(validationError);
 
@@ -1002,7 +1029,7 @@ export function ModelsSettingsPage() {
         label: String(customDraft.label || "").trim() || undefined,
         description: normalizeModelDescription(customDraft.description) || undefined,
         url,
-        key,
+        ...(key ? { key } : {}),
         providerType: String(customDraft.providerType || "openai"),
         stream: !!customDraft.stream,
         supportsImage: !!customDraft.supportsImage,
@@ -1023,14 +1050,15 @@ export function ModelsSettingsPage() {
       if (customDraft.contextWindowTokens !== "") next.contextWindowTokens = Number(customDraft.contextWindowTokens);
       if (customDraft.maxInputTokens !== "") next.maxInputTokens = Number(customDraft.maxInputTokens);
       if (customDraft.maxOutputTokens !== "") next.maxOutputTokens = Number(customDraft.maxOutputTokens);
-      dict[id] = next;
-      saveDynamicStore(dict);
+      const saved = await upsertDynamicModel({ modelId: id, config: next });
       await refresh();
       try { window.zion?.events?.emit?.("models/configChanged", { providerId: "user.dynamic", modelId: id }); } catch {}
       setEditingCustomId(id);
       setCustomDraft(draftFromCustomRow({ id, ...next }));
       setSelection({ kind: "custom", providerId: "user.dynamic", id });
-      setStatus(tt(`已保存 custom model: ${id}`, `Saved custom model: ${id}`));
+      setStatus(saved?.warning
+        ? tt(`已本地保存 custom model: ${id}；Runtime 同步失败`, `Saved custom model locally: ${id}; Runtime sync failed`)
+        : tt(`已保存 custom model: ${id}`, `Saved custom model: ${id}`));
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1043,9 +1071,7 @@ export function ModelsSettingsPage() {
     if (!ok) return;
     setSavingKey(`delete:${row.id}`);
     try {
-      const dict = loadDynamicStore();
-      delete dict[row.id];
-      saveDynamicStore(dict);
+      await deleteDynamicModel({ modelId: row.id });
       await refresh();
       try { window.zion?.events?.emit?.("models/configChanged", { providerId: "user.dynamic", modelId: row.id }); } catch {}
       if (selection?.kind === "custom" && selection.id === row.id) {

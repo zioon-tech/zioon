@@ -1,6 +1,9 @@
 import { Prec, RangeSetBuilder, StateField } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, keymap, gutter, GutterMarker, WidgetType } from "@codemirror/view";
 import { foldService } from "@codemirror/language";
+import {
+  isContinuationBoundaryLine
+} from "../../src/chat/session-document-format.js";
 
 /**
  * Roles plugin (standalone, used by dev.roles extension):
@@ -89,6 +92,7 @@ function getHighlightBlockRoles(opts) {
 /** @param {string} text @param {string[]} prefixes */
 function getRoleForLine(text, prefixes) {
   const t = text || "";
+  if (isContinuationBoundaryLine(t)) return "user";
   for (const r of prefixes) {
     if (t.startsWith(r + " ")) return r;
   }
@@ -139,7 +143,7 @@ function buildRoleSpacerDecorations(state, prefixes) {
     const line = doc.lineAt(pos);
     const text = doc.sliceString(line.from, line.to);
     const roleHere = getRoleForLine(text, prefixes);
-    if (roleHere && line.number !== 1) {
+    if (roleHere && !isContinuationBoundaryLine(text) && line.number !== 1) {
       builder.add(
         line.from,
         line.from,
@@ -257,12 +261,12 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex, flashLin
     const line = doc.lineAt(pos);
     const text = doc.sliceString(line.from, line.to);
     const roleHere = getRoleForLine(text, prefixes);
+    const continuationHere = isContinuationBoundaryLine(text);
 
     if (roleHere) {
       // 开启新块
       currentRole = roleHere;
     }
-
     const inBlock = !!(currentRole && highlightBlockRoles.includes(currentRole));
     const shouldStart = !!(roleHere && inBlock);
     let shouldEnd = false;
@@ -300,7 +304,7 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex, flashLin
         builder.add(line.from, line.from, Decoration.line({ class: lineClasses.join(" ") }));
     }
 
-    if (roleHere) {
+    if (roleHere && !continuationHere) {
       // 标记角色前缀为胶囊样式（仅角色词本身，不包含空格）
       // 行首角色 token 额外加 cm-role-token-head
       const tokenLen = roleHere.length;
@@ -441,6 +445,7 @@ function buildRolesIndexFromState(state, prefixes, scope = {}) {
       const line = doc.lineAt(pos);
       const text = doc.sliceString(line.from, line.to);
       const roleHere = getRoleForLine(text, prefixes);
+      const continuationHere = isContinuationBoundaryLine(text);
 
       if (roleHere) {
         if (firstRoleLine0 == null) {
@@ -455,16 +460,22 @@ function buildRolesIndexFromState(state, prefixes, scope = {}) {
           current = null;
         }
         const tokenLen = roleHere.length;
-        const contentStart = Math.min(line.to, line.from + tokenLen + 1); // skip "role "
+        const contentStart = continuationHere
+          ? Math.min(doc.length, line.to + 1)
+          : Math.min(line.to, line.from + tokenLen + 1); // skip "role "
         current = {
           role: roleHere,
-          startLine: line.number - 1,
+          startLine: continuationHere
+            ? Math.min(doc.lines - 1, line.number)
+            : line.number - 1,
           from: contentStart,
           startPos: contentStart,
           endPos: contentStart,
           preview: ''
         };
-        const rem = doc.sliceString(contentStart, line.to).trim();
+        const rem = continuationHere
+          ? ""
+          : doc.sliceString(contentStart, line.to).trim();
         if (rem) current.preview = rem.slice(0, 160);
       } else if (current) {
         // extend current block
@@ -752,7 +763,11 @@ export function roles(opts = {}) {
   const getRolesBlocksFromView = (view) => {
     const idx = buildRolesIndexFromView(view, prefixes);
     if (!idx || !Array.isArray(idx.blocks)) return null;
-    return idx.blocks.filter((b) => b && b.role === "user" && typeof b.startLine === "number");
+    return idx.blocks.filter((block) =>
+      block
+      && ["user", "assistant"].includes(block.role)
+      && typeof block.startLine === "number"
+    );
   };
 
   const noRoleNavTarget = () => {
@@ -834,7 +849,7 @@ export function roles(opts = {}) {
     const nav = computeNav(view, blocks);
 
     if (nav.nextIndex >= blocks.length) {
-      return noRoleNavTarget();
+      return jumpToPos(view, view.state.doc.length);
     }
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
@@ -853,7 +868,7 @@ export function roles(opts = {}) {
     const nav = computeNav(view, blocks);
 
     if (nav.nextIndex >= blocks.length) {
-      return noRoleNavTarget();
+      return setSelectionToPos(view, view.state.doc.length);
     }
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
@@ -866,12 +881,15 @@ export function roles(opts = {}) {
     return setSelectionToPos(view, view.state.doc.line(line0 + 1).from, line0);
   };
 
+  const roleNavigationModifier = /Mac|iPhone|iPad|iPod/i.test(
+    String(globalThis.navigator?.platform || "")
+  ) ? "Alt" : "Mod";
   const navBindings = [];
   navBindings.push(
-    { key: "Alt-ArrowUp", run: jumpToPrevRole },
-    { key: "Alt-ArrowDown", run: jumpToNextRole },
-    { key: "Alt-Shift-ArrowUp", run: selectToPrevRole },
-    { key: "Alt-Shift-ArrowDown", run: selectToNextRole }
+    { key: `${roleNavigationModifier}-ArrowUp`, run: jumpToPrevRole },
+    { key: `${roleNavigationModifier}-ArrowDown`, run: jumpToNextRole },
+    { key: `${roleNavigationModifier}-Shift-ArrowUp`, run: selectToPrevRole },
+    { key: `${roleNavigationModifier}-Shift-ArrowDown`, run: selectToNextRole }
   );
 
   const navKeymap = Prec.highest(keymap.of(navBindings));

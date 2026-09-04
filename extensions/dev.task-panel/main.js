@@ -22,6 +22,12 @@
  *   into the editor and trigger chat.run automatically (with a simple re-entrancy lock).
  */
 
+import { registerTaskTools } from "./task-tools.js";
+import {
+  applyRuntimeTodoListsToState,
+  loadRuntimeTodoLists
+} from "./task-runtime-state.js";
+
 const I18N_NS = 'dev.task-panel';
 const LS_TASKS_STATE = 'zion.devTaskPanel.tasksState.v1';
 const MAX_PERSISTED_TASKS = 200;
@@ -750,7 +756,6 @@ Please read the info above, check the task status and continue to work out the f
   }
 }
 
-import { registerTaskTools } from "./task-tools.js";
 export async function activate(ctx) {
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
@@ -758,6 +763,41 @@ export async function activate(ctx) {
   } catch {}
 
   ensureStateKeys();
+
+  let runtimeTodoRefreshTimer = 0;
+  const restoreRuntimeTodoProjection = async () => {
+    try {
+      const todoLists = await loadRuntimeTodoLists({ limit: MAX_PERSISTED_TASKS });
+      if (!todoLists.length) return [];
+      return applyRuntimeTodoListsToState(todoLists);
+    } catch (e) {
+      try {
+        window.zion?.state?.set?.('todo.runtimeSync', {
+          status: 'error',
+          syncedAt: Date.now(),
+          error: e?.message || String(e)
+        });
+      } catch {}
+      return [];
+    }
+  };
+  const scheduleRuntimeTodoRestore = (delay = 250) => {
+    try {
+      if (runtimeTodoRefreshTimer) window.clearTimeout(runtimeTodoRefreshTimer);
+      runtimeTodoRefreshTimer = window.setTimeout(() => {
+        runtimeTodoRefreshTimer = 0;
+        void restoreRuntimeTodoProjection();
+      }, Math.max(0, Number(delay) || 0));
+    } catch {}
+  };
+  ctx.subscriptions.push({
+    dispose() {
+      try {
+        if (runtimeTodoRefreshTimer) window.clearTimeout(runtimeTodoRefreshTimer);
+      } catch {}
+      runtimeTodoRefreshTimer = 0;
+    }
+  });
 
   // Panel handle (created via decorator apply)
   let panelHandle = null;
@@ -827,6 +867,11 @@ export async function activate(ctx) {
     } catch (e) { console.warn('[task-panel] active task persist error', e); }
   });
   ctx.subscriptions.push(dispActiveTaskChange);
+
+  const dispRuntimeConnection = window.zion.state.onDidChange('runtime.connection', () => {
+    scheduleRuntimeTodoRestore(100);
+  });
+  ctx.subscriptions.push(dispRuntimeConnection);
 
   // When todo.list changes (from tool calls), append/update the matching session task snapshot.
   const dispTodoList = window.zion.state.onDidChange('todo.list', (newList) => {
@@ -914,9 +959,10 @@ export async function activate(ctx) {
     }
   };
 
-  const dispRunFinished = window.zion.events.on('chat/runFinished', (p) => {
+  const dispRunFinished = window.zion.events.on('chat/runFinished', async (p) => {
     // clear any lock when a run finishes (we waited for it)
     try { window.zion.state.set('__todo_auto_continue_lock', false); } catch {}
+    await restoreRuntimeTodoProjection();
     handleRunEnd();
   });
   ctx.subscriptions.push(dispRunFinished);
@@ -948,6 +994,8 @@ export async function activate(ctx) {
 
   // Register Task tools (todoWrite)
   try { registerTaskTools(); } catch {}
+
+  scheduleRuntimeTodoRestore(0);
 
   // Clean-up on deactivate handled by ctx.subscriptions
 }

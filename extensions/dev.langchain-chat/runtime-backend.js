@@ -1,0 +1,724 @@
+import {
+  createHttpRuntimeClient,
+  createRemoteRunHandle
+} from "../../src/runtime/http-runtime-client.ts";
+import { toZionNextRunEvent } from "../../src/runtime/zion-next-compatibility.ts";
+import {
+  DEFAULT_WORKBENCH_RUNTIME_BASE_URL,
+  probeWorkbenchRuntime,
+  readWorkbenchRuntimeConfig,
+  shouldUseWorkbenchRuntime
+} from "../../src/runtime/workbench-runtime-config.ts";
+
+export const CHAT_RUNTIME_ENABLED_KEY = "zion.chat.runtime.enabled";
+export const CHAT_RUNTIME_BASE_URL_KEY = "zion.chat.runtime.baseUrl";
+export const DEFAULT_CHAT_RUNTIME_BASE_URL = DEFAULT_WORKBENCH_RUNTIME_BASE_URL;
+export const DEFAULT_INTERACTIVE_RUNTIME_PROFILE_ID = "interactive.default";
+
+const INTERACTIVE_PROJECTION_OPTIONS = Object.freeze({
+  mode: "projection",
+  reasoningMode: "stream",
+  maxDelayMs: 50,
+  maxChunkChars: 256
+});
+
+const RUNTIME_SUPPORTED_TOOLS = new Set([
+  "read",
+  "glob",
+  "grep",
+  "tree",
+  "write",
+  "edit",
+  "Bash",
+  "webSearch",
+  "webFetch",
+  "sendMail",
+  "todoWrite",
+  "mcpListTools",
+  "mcpCall",
+  "terminalInventory",
+  "skillsList",
+  "memoryList",
+  "memoryManage",
+  "agentsManage",
+  "identityContext",
+  "identityManage",
+  "projectAutomationManage",
+  "schedulerManage",
+  "modelsManage",
+  "toolsManage",
+  "mailManage",
+  "sessionList",
+  "sessionGet",
+  "sessionCreate",
+  "sessionUpdate",
+  "sessionDelete"
+]);
+const RUNTIME_WORKSPACE_WRITE_TOOLS = new Set([
+  "write",
+  "edit",
+  "memoryManage",
+  "agentsManage",
+  "identityManage",
+  "projectAutomationManage",
+  "sessionCreate",
+  "sessionUpdate",
+  "sessionDelete"
+]);
+const RUNTIME_TRUSTED_AUTOMATION_TOOLS = new Set([
+  "Bash",
+  "sendMail",
+  "todoWrite",
+  "mcpCall",
+  "modelsManage",
+  "toolsManage",
+  "mailManage"
+]);
+const SUPPORTED_MESSAGE_ROLES = new Set(["system", "user", "assistant", "tool"]);
+const RUNTIME_BACKED_CONTEXT_CONTRIBUTORS = [
+  {
+    contributorId: "dev.skills.standard",
+    providerId: "dev.skills.available"
+  },
+  {
+    contributorId: "dev.memory.context",
+    providerId: "dev.memory.context"
+  },
+  {
+    contributorId: "dev.identity.context",
+    providerId: "dev.identity.context"
+  },
+  {
+    contributorId: "dev.context-compression",
+    providerId: "dev.context-compression"
+  },
+  {
+    contributorId: "dev.terminal-manager.inventory",
+    providerId: "dev.terminal-manager.inventory"
+  },
+  {
+    contributorId: "dev.terminal-enhanced.context",
+    providerId: "dev.terminal-manager.inventory"
+  }
+];
+
+function supportedRuntimeMessageContent(message = {}) {
+  const content = message.content;
+  if (typeof content === "string") return true;
+  if (
+    message.role === "assistant"
+    && content == null
+    && (Array.isArray(message.tool_calls) || Array.isArray(message.toolCalls))
+  ) {
+    return true;
+  }
+  if (!Array.isArray(content) || content.length === 0) return false;
+  if (message.role !== "user") return false;
+  return content.every((part) => (
+    part?.type === "text" && typeof part.text === "string"
+  ) || (
+    part?.type === "image_url"
+    && typeof part.image_url?.url === "string"
+    && part.image_url.url.trim().length > 0
+  ));
+}
+
+function runtimeMessageShapeSupported(messages = []) {
+  const callIds = new Set();
+  for (const message of messages) {
+    const calls = Array.isArray(message?.tool_calls)
+      ? message.tool_calls
+      : Array.isArray(message?.toolCalls)
+        ? message.toolCalls
+        : [];
+    for (const call of calls) {
+      const id = String(call?.id || "").trim();
+      const name = String(call?.function?.name || "").trim();
+      if (!id || !name) return false;
+      callIds.add(id);
+    }
+  }
+  return messages.every((message) => {
+    const role = String(message?.role || "");
+    if (!SUPPORTED_MESSAGE_ROLES.has(role) || !supportedRuntimeMessageContent(message)) {
+      return false;
+    }
+    if (role === "tool") {
+      const id = String(message?.tool_call_id || message?.toolCallId || "").trim();
+      return !!id && callIds.has(id);
+    }
+    return !message?.tool_call_id && !message?.toolCallId;
+  });
+}
+
+function selectedToolNames(tools) {
+  return [...new Set(
+    (Array.isArray(tools) ? tools : [])
+      .map((tool) => String(tool?.function?.name || tool?.name || ""))
+      .filter(Boolean)
+  )];
+}
+
+function activeRuntimeContextProviderIds(runtimeConnection) {
+  const connection = runtimeConnection && typeof runtimeConnection === "object"
+    ? runtimeConnection
+    : globalThis.window?.zion?.state?.get?.("runtime.connection");
+  if (String(connection?.backend || "") !== "runtime") return new Set();
+  const plugins = Array.isArray(connection?.runtimePlugins)
+    ? connection.runtimePlugins
+    : [];
+  const ids = [];
+  for (const plugin of plugins) {
+    if (String(plugin?.status || "") !== "active") continue;
+    ids.push(...(Array.isArray(plugin.contextProviderIds)
+      ? plugin.contextProviderIds
+      : []));
+  }
+  return new Set(ids.map(String).filter(Boolean));
+}
+
+export function runtimeBackedContributorIds(runtimeConnection) {
+  const providers = activeRuntimeContextProviderIds(runtimeConnection);
+  return RUNTIME_BACKED_CONTEXT_CONTRIBUTORS
+    .filter((item) => providers.has(item.providerId))
+    .map((item) => item.contributorId);
+}
+
+function configuredRuntimeSupportedToolNames(options = {}) {
+  const configured = options.supportedToolNames
+    || options.state?.get?.("runtime.supportedToolNames")
+    || globalThis.window?.zion?.state?.get?.("runtime.supportedToolNames");
+  return Array.isArray(configured) && configured.length
+    ? selectedToolNames(configured.map((name) => ({ name })))
+    : Array.from(RUNTIME_SUPPORTED_TOOLS);
+}
+
+export function listInteractiveRuntimeSupportedTools(options = {}) {
+  return configuredRuntimeSupportedToolNames(options);
+}
+
+export function createInteractiveRuntimePolicy(tools, options = {}) {
+  const runtimeSupportedTools = new Set(configuredRuntimeSupportedToolNames(options));
+  const selectedNames = selectedToolNames(tools);
+  const allowedTools = selectedNames.filter((name) =>
+    runtimeSupportedTools.has(name)
+  );
+  const unsupportedTools = selectedNames.filter((name) =>
+    !runtimeSupportedTools.has(name)
+  );
+  const trustedAutomation = allowedTools.some((name) =>
+    RUNTIME_TRUSTED_AUTOMATION_TOOLS.has(name)
+  );
+  const workspaceWrite = allowedTools.some((name) =>
+    RUNTIME_WORKSPACE_WRITE_TOOLS.has(name)
+  );
+  const preset = trustedAutomation
+    ? "trusted-automation"
+    : workspaceWrite
+      ? "workspace-write"
+      : "read-only";
+
+  return {
+    policy: {
+      preset,
+      allowedTools,
+      fileRoots: [],
+      allowedCommandPrefixes: [],
+      allowedTerminalSessionIds: [],
+      allowedRecipients: allowedTools.includes("sendMail") ? ["*"] : [],
+      maxMailPerRun: allowedTools.includes("sendMail") ? 10 : 0
+    },
+    selectedTools: selectedNames,
+    unsupportedTools
+  };
+}
+
+export function readInteractiveRuntimeConfig({
+  state = globalThis.window?.zion?.state,
+  storage = globalThis.localStorage
+} = {}) {
+  const config = readWorkbenchRuntimeConfig({
+    state,
+    storage,
+    legacyEnabledStateKey: "chat.runtime.enabled",
+    legacyEnabledStorageKey: CHAT_RUNTIME_ENABLED_KEY,
+    legacyBaseUrlStateKey: "chat.runtime.baseUrl",
+    legacyBaseUrlStorageKey: CHAT_RUNTIME_BASE_URL_KEY
+  });
+  return config;
+}
+
+export function shouldUseInteractiveRuntime(config, options = {}) {
+  return shouldUseWorkbenchRuntime(config, options);
+}
+
+export function probeInteractiveRuntime(config, options = {}) {
+  return probeWorkbenchRuntime({
+    baseUrl: config.baseUrl,
+    ...options
+  });
+}
+
+export function interactiveRuntimeEligibility({
+  messages,
+  tools,
+  content,
+  requestSource,
+  skipSessionPersistence
+}) {
+  if (requestSource) {
+    return { eligible: false, reason: "non-interactive-source" };
+  }
+  if (skipSessionPersistence) {
+    return { eligible: false, reason: "session-persistence-disabled" };
+  }
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { eligible: false, reason: "no-messages" };
+  }
+  if (!runtimeMessageShapeSupported(messages)) {
+    return { eligible: false, reason: "unsupported-message-shape" };
+  }
+  const {
+    policy,
+    unsupportedTools
+  } = createInteractiveRuntimePolicy(tools);
+  const explicitToolNames = Array.from(
+    String(content || "").matchAll(/^tools?:\s*([a-zA-Z0-9_]+)/gm),
+    (match) => match[1]
+  );
+  const unsupportedExplicitTool = explicitToolNames.find(
+    (name) => !configuredRuntimeSupportedToolNames().includes(name)
+  );
+  if (unsupportedExplicitTool) {
+    return {
+      eligible: false,
+      reason: `unsupported-tool:${unsupportedExplicitTool}`
+    };
+  }
+  return {
+    eligible: true,
+    reason: null,
+    toolNames: policy.allowedTools,
+    unsupportedToolNames: unsupportedTools
+  };
+}
+
+function projectEvents(events) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for await (const event of events) {
+        yield toZionNextRunEvent(event);
+      }
+    }
+  };
+}
+
+function unavailableModel(message) {
+  const error = new Error(message);
+  error.code = "RUNTIME_MODEL_UNAVAILABLE";
+  return error;
+}
+
+function unsupportedRuntimeContext(message) {
+  const error = new Error(message);
+  error.code = "RUNTIME_CONTEXT_UNSUPPORTED";
+  return error;
+}
+
+function assertRuntimeMessageShape(messages) {
+  if (!runtimeMessageShapeSupported(Array.isArray(messages) ? messages : [])) {
+    throw unsupportedRuntimeContext(
+      "A Workbench message contributor produced a message shape unsupported by Runtime"
+    );
+  }
+}
+
+export async function prepareInteractiveRuntimeMessages({
+  messages,
+  runContributors,
+  contributorContext = {}
+}) {
+  let prepared = Array.isArray(messages) ? messages : [];
+  if (typeof runContributors !== "function") return prepared;
+  const context = {
+    ...contributorContext,
+    runtimeBackend: "external",
+    excludedContributorIds: Array.from(new Set([
+      ...(Array.isArray(contributorContext.excludedContributorIds)
+        ? contributorContext.excludedContributorIds.map(String)
+        : []),
+      ...runtimeBackedContributorIds(contributorContext.runtimeConnection)
+    ]))
+  };
+  prepared = await runContributors(prepared, "pre", context);
+  prepared = await runContributors(prepared, "post", context);
+  assertRuntimeMessageShape(prepared);
+  return prepared;
+}
+
+function importedProfileId(selectedModel) {
+  const safe = (value) => String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-");
+  return `workbench.${safe(selectedModel?.providerId)}.${safe(selectedModel?.modelId)}`;
+}
+
+function modelRequestOptions(selectedConfig = {}) {
+  const thinkingMode = String(selectedConfig?.thinkingMode || "").toLowerCase();
+  const thinkingEffort = String(selectedConfig?.thinkingEffort || "").toLowerCase();
+  const options = {};
+  if (["auto", "off", "on"].includes(thinkingMode)) {
+    options.thinkingMode = thinkingMode;
+  }
+  if (
+    ["auto", "minimal", "low", "medium", "high", "xhigh", "max"]
+      .includes(thinkingEffort)
+  ) {
+    options.thinkingEffort = thinkingEffort;
+  }
+  return options;
+}
+
+function importableProfile(selectedModel, selectedConfig) {
+  if (String(selectedConfig?.providerType || "").toLowerCase() !== "openai") {
+    return null;
+  }
+  const endpoint = String(selectedConfig?.url || "").trim();
+  const model = String(
+    selectedConfig?.modelName
+    || selectedConfig?.model
+    || selectedModel?.modelId
+    || ""
+  ).trim();
+  if (!endpoint || !model) return null;
+  return {
+    id: importedProfileId(selectedModel),
+    label: String(selectedModel?.label || selectedConfig?.label || model),
+    providerId: String(selectedModel?.providerId || selectedConfig?.providerId || "runtime"),
+    sourceModelId: String(selectedModel?.modelId || model),
+    providerType: "openai",
+    endpoint,
+    model,
+    credentialRequired: selectedConfig?._requiresConfig === true
+      || !!String(selectedConfig?.key || selectedConfig?.apiKey || "").trim(),
+    temperature: selectedConfig?.temperature,
+    maxOutputTokens: selectedConfig?.max_tokens,
+    capabilities: {
+      supportsImage: !!selectedConfig?.supportsImage,
+      supportsThinking: !!selectedConfig?.supportsThinking,
+      preservedThinking: !!selectedConfig?.preservedThinking,
+      interleavedThinking: !!selectedConfig?.interleavedThinking
+    }
+  };
+}
+
+function findRuntimeProfile(profiles, selectedModel) {
+  const selectedProfileId = String(selectedModel?.profileId || "");
+  const selectedProviderId = String(selectedModel?.providerId || "");
+  const selectedModelId = String(selectedModel?.modelId || "");
+  if (selectedProfileId) {
+    return profiles.find((item) => item.id === selectedProfileId);
+  }
+
+  const importedId = importedProfileId(selectedModel);
+  const imported = profiles.find((item) => item.id === importedId);
+  if (imported) return imported;
+
+  const matches = profiles.filter((item) =>
+    (
+      item.id === selectedModelId
+      || item.model === selectedModelId
+      || item.sourceModelId === selectedModelId
+    )
+    && (!selectedProviderId || item.providerId === selectedProviderId)
+  );
+  return matches.find((item) => item.credentialConfigured === true) || matches[0];
+}
+
+export async function resolveInteractiveRuntimeModel(
+  client,
+  selectedModel,
+  selectedConfig
+) {
+  const catalog = await client.getModels();
+  const profiles = Array.isArray(catalog.profiles) ? catalog.profiles : [];
+  const selectedProviderId = String(selectedModel?.providerId || "");
+  const selectedModelId = String(selectedModel?.modelId || "");
+  let profile = findRuntimeProfile(profiles, selectedModel);
+  const importable = importableProfile(selectedModel, selectedConfig);
+  const credential = String(
+    selectedConfig?.key || selectedConfig?.apiKey || ""
+  ).trim();
+  if (
+    importable
+    && (
+      !profile
+      || (profile.credentialConfigured === false && credential)
+    )
+  ) {
+    profile = await client.upsertModelProfile(importable.id, {
+      profile: importable,
+      ...(credential ? { credential } : {})
+    });
+  }
+  if (!profile) {
+    throw unavailableModel(
+      `Selected model is not configured in Runtime: `
+      + `${selectedProviderId || "unknown"}/${selectedModelId || "unknown"}`
+    );
+  }
+  return {
+    profileId: profile.id,
+    providerId: String(profile.providerId || profile.providerType || "runtime"),
+    modelId: profile.model,
+    label: profile.label || profile.model
+  };
+}
+
+export async function syncWorkbenchModelProfiles({
+  models,
+  resolveConfig,
+  baseUrl,
+  fetchImpl
+}) {
+  const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
+  const catalog = await client.getModels();
+  const profiles = Array.isArray(catalog.profiles)
+    ? [...catalog.profiles]
+    : [];
+  const imported = [];
+  const skipped = [];
+
+  for (const selectedModel of Array.isArray(models) ? models : []) {
+    let selectedConfig;
+    try {
+      selectedConfig = await resolveConfig(selectedModel);
+    } catch (error) {
+      skipped.push({
+        model: selectedModel,
+        reason: error?.message || String(error)
+      });
+      continue;
+    }
+    const importable = importableProfile(selectedModel, selectedConfig);
+    const credential = String(
+      selectedConfig?.key || selectedConfig?.apiKey || ""
+    ).trim();
+    if (!importable) {
+      skipped.push({ model: selectedModel, reason: "unsupported-provider" });
+      continue;
+    }
+    if (importable.credentialRequired && !credential) {
+      skipped.push({ model: selectedModel, reason: "missing-credential" });
+      continue;
+    }
+    const existing = findRuntimeProfile(profiles, selectedModel);
+    if (
+      existing
+      && (
+        existing.credentialConfigured !== false
+        || !credential
+      )
+    ) continue;
+
+    const profile = await client.upsertModelProfile(importable.id, {
+      profile: importable,
+      ...(credential ? { credential } : {})
+    });
+    const previousIndex = profiles.findIndex((item) => item.id === profile.id);
+    if (previousIndex >= 0) profiles[previousIndex] = profile;
+    else profiles.push(profile);
+    imported.push(profile);
+  }
+
+  return { profiles, imported, skipped };
+}
+
+export async function resolveInteractiveRuntimeProfileModel({
+  baseUrl,
+  fetchImpl,
+  interactionProfileId = DEFAULT_INTERACTIVE_RUNTIME_PROFILE_ID
+}) {
+  const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
+  const [profile, catalog] = await Promise.all([
+    client.getInteractionProfile(interactionProfileId),
+    client.getModels()
+  ]);
+  const modelProfileId = String(
+    profile?.modelProfileId
+    || profile?.model?.profileId
+    || ""
+  ).trim();
+  if (!modelProfileId) return null;
+  const profiles = Array.isArray(catalog.profiles) ? catalog.profiles : [];
+  const modelProfile = profiles.find((item) => item.id === modelProfileId);
+  if (!modelProfile) return null;
+  return {
+    profileId: modelProfile.id,
+    providerId: String(modelProfile.providerId || profile?.model?.providerId || "runtime"),
+    modelId: String(
+      modelProfile.sourceModelId
+      || modelProfile.model
+      || profile?.model?.modelId
+      || modelProfile.id
+    ),
+    label: String(modelProfile.label || modelProfile.model || modelProfile.id)
+  };
+}
+
+export async function persistInteractiveRuntimeProfileModel({
+  selectedModel,
+  selectedModelConfig,
+  baseUrl,
+  fetchImpl,
+  interactionProfileId = DEFAULT_INTERACTIVE_RUNTIME_PROFILE_ID
+}) {
+  const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
+  const runtimeModel = await resolveInteractiveRuntimeModel(
+    client,
+    selectedModel,
+    selectedModelConfig
+  );
+  const profile = await client.patchInteractionProfile(interactionProfileId, {
+    modelProfileId: runtimeModel.profileId
+  });
+  return { runtimeModel, profile };
+}
+
+export async function createInteractiveRuntimeHandle({
+  messages,
+  sessionHistory = messages,
+  tools,
+  selectedModel,
+  selectedModelConfig,
+  title,
+  workbenchSessionId,
+  metadata,
+  baseUrl,
+  fetchImpl,
+  interactionProfileId = DEFAULT_INTERACTIVE_RUNTIME_PROFILE_ID
+}) {
+  const {
+    policy,
+    selectedTools,
+    unsupportedTools
+  } = createInteractiveRuntimePolicy(tools);
+  const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
+  const runtimeModel = await resolveInteractiveRuntimeModel(
+    client,
+    selectedModel,
+    selectedModelConfig
+  );
+  const handle = await createRemoteRunHandle(client, {
+    interactionProfileId,
+    title: title || "",
+    ...(workbenchSessionId ? { sessionId: String(workbenchSessionId) } : {}),
+    messages: messages.map((message) => ({
+      role: message.role,
+      content: message.content == null ? "" : message.content,
+      ...(message.reasoning_content
+        ? { reasoningContent: String(message.reasoning_content) }
+        : message.reasoningContent
+          ? { reasoningContent: String(message.reasoningContent) }
+          : {}),
+      ...(Array.isArray(message.tool_calls)
+        ? { toolCalls: message.tool_calls }
+        : Array.isArray(message.toolCalls)
+          ? { toolCalls: message.toolCalls }
+          : {}),
+      ...(message.tool_call_id
+        ? { toolCallId: String(message.tool_call_id) }
+        : message.toolCallId
+          ? { toolCallId: String(message.toolCallId) }
+          : {})
+    })),
+    sessionHistory: sessionHistory.map((message) => ({
+      role: message.role,
+      content: message.content == null ? "" : message.content,
+      ...(message.reasoning_content
+        ? { reasoningContent: String(message.reasoning_content) }
+        : message.reasoningContent
+          ? { reasoningContent: String(message.reasoningContent) }
+          : {}),
+      ...(Array.isArray(message.tool_calls)
+        ? { toolCalls: message.tool_calls }
+        : Array.isArray(message.toolCalls)
+          ? { toolCalls: message.toolCalls }
+          : {}),
+      ...(message.tool_call_id
+        ? { toolCallId: String(message.tool_call_id) }
+        : message.toolCallId
+          ? { toolCallId: String(message.toolCallId) }
+          : {})
+    })),
+    model: runtimeModel,
+    modelOptions: modelRequestOptions({
+      ...selectedModelConfig,
+      ...(selectedModel?.thinkingMode != null
+        ? { thinkingMode: selectedModel.thinkingMode }
+        : {}),
+      ...(selectedModel?.thinkingEffort != null
+        ? { thinkingEffort: selectedModel.thinkingEffort }
+        : {})
+    }),
+    policy,
+    metadata: {
+      ...(metadata || {}),
+      source: "interactive-chat",
+      workbenchProtocolVersion: 2,
+      interactionProfileId,
+      workbenchSessionId,
+      workbenchEnabledTools: selectedTools,
+      runtimeEnabledTools: policy.allowedTools,
+      runtimeUnsupportedTools: unsupportedTools
+    }
+  }, {
+    subscription: {
+      ...INTERACTIVE_PROJECTION_OPTIONS
+    }
+  });
+  return {
+    ...handle,
+    events: projectEvents(handle.events)
+  };
+}
+
+export async function observeInteractiveRuntimeRun({
+  runtimeRunId,
+  afterSequence = 0,
+  baseUrl,
+  fetchImpl,
+  signal,
+  onRun = async () => {},
+  onEvent = async () => {}
+}) {
+  const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
+  await onRun(await client.getRun(runtimeRunId));
+  let lastEventSequence = Math.max(0, Number(afterSequence) || 0);
+  for await (const event of client.subscribe(runtimeRunId, {
+    afterSequence: lastEventSequence,
+    signal,
+    ...INTERACTIVE_PROJECTION_OPTIONS
+  })) {
+    const projected = toZionNextRunEvent(event);
+    await onEvent(projected);
+    lastEventSequence = Math.max(
+      lastEventSequence,
+      Number(projected.sequence) || 0
+    );
+  }
+  return {
+    run: await client.getRun(runtimeRunId),
+    lastEventSequence
+  };
+}
+
+export async function abortInteractiveRuntimeRun({
+  runtimeRunId,
+  baseUrl,
+  reason = "user",
+  fetchImpl
+}) {
+  const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
+  await client.abort(runtimeRunId, reason);
+}

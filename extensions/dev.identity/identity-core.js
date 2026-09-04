@@ -243,7 +243,7 @@ function normalizeBiographyEvent(input) {
   };
 }
 
-function normalizeBiographyEvents(inputs) {
+export function normalizeBiographyEvents(inputs) {
   const events = [];
   const seen = new Set();
   for (const input of Array.isArray(inputs) ? inputs : []) {

@@ -10,6 +10,13 @@
     "name": "Agents",
     "version": "0.0.1",
     "main": "./main.js",
+    "entries": {
+      "ui": "./main.js",
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
     "presentation": {
       "displayName": {
         "zh-CN": "智能体",

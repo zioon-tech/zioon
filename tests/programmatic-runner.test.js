@@ -25,18 +25,202 @@ describe("programmatic chat runner", () => {
     expect(isReadOnlyToolName("terminal_run")).toBe(false);
     expect(isReadOnlyToolCall({ name: "memoryManage", args: { action: "search" } })).toBe(true);
     expect(isReadOnlyToolCall({ name: "memoryManage", args: { action: "delete" } })).toBe(false);
+    expect(isReadOnlyToolCall({ name: "agentsManage", args: { action: "list_tasks" } })).toBe(true);
+    expect(isReadOnlyToolCall({ name: "agentsManage", args: { action: "create_task" } })).toBe(false);
     expect(normalizeToolCall({ name: "webFetch", args: { url: " `https://example.com/` ", prompt: "keep `code`" } })).toMatchObject({
       args: { url: "https://example.com/", prompt: "keep `code`" }
     });
     expect(filterReadOnlyTools([
       { function: { name: "webSearch" } },
       { function: { name: "fs.write" } },
-      { function: { name: "schedulerManage" } }
-    ])).toEqual([{ function: { name: "webSearch" } }]);
+      { function: { name: "schedulerManage" } },
+      {
+        function: {
+          name: "memoryManage",
+          parameters: {
+            properties: {
+              action: {
+                enum: ["list", "tree", "read", "search", "build_context", "providers", "create", "update", "delete"]
+              }
+            }
+          }
+        }
+      },
+      {
+        function: {
+          name: "agentsManage",
+          parameters: {
+            properties: {
+              action: {
+                enum: ["list_agents", "list_tasks", "get_task", "create_task", "run_task"]
+              }
+            }
+          }
+        }
+      },
+      {
+        function: {
+          name: "identityManage",
+          parameters: {
+            properties: {
+              action: {
+                enum: ["get", "update_snapshot", "patch_files", "append_biography_events", "load_files", "write_files", "clear"]
+              }
+            }
+          }
+        }
+      }
+    ])).toEqual([
+      { function: { name: "webSearch" } },
+      {
+        function: {
+          name: "memoryManage",
+          parameters: {
+            properties: {
+              action: {
+                enum: ["list", "tree", "read", "search", "build_context", "providers"]
+              }
+            }
+          }
+        }
+      },
+      {
+        function: {
+          name: "agentsManage",
+          parameters: {
+            properties: {
+              action: {
+                enum: ["list_agents", "list_tasks", "get_task"]
+              }
+            }
+          }
+        }
+      },
+      {
+        function: {
+          name: "identityManage",
+          parameters: {
+            properties: {
+              action: {
+                enum: ["get"]
+              }
+            }
+          }
+        }
+      }
+    ]);
+    expect(filterToolsForPolicy([
+      {
+        function: {
+          name: "identityManage",
+          parameters: {
+            properties: {
+              action: {
+                enum: ["get", "write_files"]
+              }
+            }
+          }
+        }
+      }
+    ], {
+      preset: "workspace-write",
+      allowedTools: ["read"]
+    })).toEqual([
+      {
+        function: {
+          name: "identityManage",
+          parameters: {
+            properties: {
+              action: {
+                enum: ["get"]
+              }
+            }
+          }
+        }
+      }
+    ]);
     expect(authorizeToolCall(
       { name: "schedulerManage", args: { action: "create" } },
       { preset: "trusted-automation", allowedTools: ["schedulerManage"] }
     ).allowed).toBe(false);
+    expect(authorizeToolCall(
+      { name: "memoryManage", args: { action: "delete", id: "mem_1" } },
+      { preset: "read-only", allowedTools: ["memoryManage"] }
+    ).allowed).toBe(false);
+    expect(authorizeToolCall(
+      { name: "memoryManage", args: { action: "delete", id: "mem_1" } },
+      { preset: "workspace-write", allowedTools: ["memoryManage"] }
+    ).allowed).toBe(true);
+    expect(authorizeToolCall(
+      { name: "agentsManage", args: { action: "create_task", prompt: "Plan" } },
+      { preset: "read-only", allowedTools: ["agentsManage"] }
+    ).allowed).toBe(false);
+    expect(authorizeToolCall(
+      { name: "agentsManage", args: { action: "create_task", prompt: "Plan" } },
+      { preset: "workspace-write", allowedTools: ["agentsManage"] }
+    ).allowed).toBe(true);
+    expect(authorizeToolCall(
+      { name: "agentsManage", args: { action: "run_task", task_id: "task_1" } },
+      { preset: "workspace-write", allowedTools: ["agentsManage"] }
+    ).allowed).toBe(true);
+    expect(authorizeToolCall(
+      { name: "agentsManage", args: { action: "open_panel" } },
+      { preset: "workspace-write", allowedTools: ["agentsManage"] }
+    )).toMatchObject({
+      allowed: false,
+      reason: "unsupported agentsManage action"
+    });
+    expect(isReadOnlyToolCall({ name: "identityManage", args: { action: "get" } })).toBe(true);
+    expect(isReadOnlyToolCall({ name: "identityManage", args: { action: "patch_files" } })).toBe(false);
+    expect(authorizeToolCall(
+      { name: "identityManage", args: { action: "patch_files", files: { user: "x" } } },
+      { preset: "read-only", allowedTools: ["identityManage"] }
+    ).allowed).toBe(false);
+    expect(authorizeToolCall(
+      { name: "identityManage", args: { action: "patch_files", files: { user: "x" } } },
+      { preset: "workspace-write", allowedTools: ["identityManage"] }
+    ).allowed).toBe(true);
+    expect(filterToolsForPolicy([
+      {
+        function: {
+          name: "projectAutomationManage",
+          parameters: {
+            properties: {
+              action: {
+                enum: ["get", "request_update", "disable"]
+              }
+            }
+          }
+        }
+      }
+    ], {
+      preset: "read-only",
+      allowedTools: ["projectAutomationManage"]
+    })[0].function.parameters.properties.action.enum).toEqual(["get"]);
+    expect(authorizeToolCall(
+      {
+        name: "projectAutomationManage",
+        args: { action: "request_update", project_key: "zion-next", mode: "execute" }
+      },
+      { preset: "workspace-write", allowedTools: ["projectAutomationManage"] }
+    ).allowed).toBe(true);
+    expect(authorizeToolCall(
+      {
+        name: "projectAutomationManage",
+        args: { action: "run_now", project_key: "zion-next" }
+      },
+      { preset: "workspace-write", allowedTools: ["projectAutomationManage"] }
+    ).allowed).toBe(true);
+    expect(authorizeToolCall(
+      {
+        name: "projectAutomationManage",
+        args: { action: "approve_request", request_id: "request-1" }
+      },
+      { preset: "workspace-write", allowedTools: ["projectAutomationManage"] }
+    )).toMatchObject({
+      allowed: false,
+      reason: "unsupported projectAutomationManage action"
+    });
   });
 
   it("enforces scoped write, terminal and mail capabilities", () => {
@@ -83,6 +267,13 @@ describe("programmatic chat runner", () => {
       { name: "Bash", args: { command: "rm -rf /", session_id: "term-1" } },
       trusted
     ).allowed).toBe(false);
+    expect(authorizeToolCall(
+      { name: "Bash", args: { command: "npm test && cat ~/.ssh/config", session_id: "term-1" } },
+      trusted
+    )).toMatchObject({
+      allowed: false,
+      reason: "terminal command is outside allowed prefixes"
+    });
     expect(authorizeToolCall(
       { name: "Bash", args: { command: "npm test", session_id: "term-1" } },
       { preset: "trusted-automation", allowedTools: ["terminalExecute"], allowedCommandPrefixes: ["npm test"] }
@@ -205,6 +396,79 @@ describe("programmatic chat runner", () => {
     for await (const event of handle.events) events.push(event.type);
     expect(events).toContain("tool.requested");
     expect(events).toContain("tool.completed");
+  });
+
+  it("returns invalid tool arguments to the model for correction", async () => {
+    let step = 0;
+    const execute = createProgrammaticExecutor({
+      getTools: () => [{
+        function: {
+          name: "webSearch",
+          parameters: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"]
+          }
+        }
+      }],
+      getActiveModel: () => null,
+      runStream: async ({ messages, onInvalidToolCall, onToken, onEnd }) => {
+        step += 1;
+        if (step === 1) {
+          onInvalidToolCall({
+            id: "invalid-1",
+            name: "webSearch",
+            args: {},
+            error: "query is required"
+          });
+        } else {
+          expect(messages.at(-1)).toMatchObject({
+            role: "tool",
+            tool_call_id: "invalid-1",
+            content: expect.stringContaining("query is required")
+          });
+          onToken("corrected");
+        }
+        onEnd();
+        return {};
+      },
+      executeTool: vi.fn()
+    });
+
+    const handle = execute({ prompt: "search", executionMode: "local-only" });
+    await expect(handle.completion).resolves.toMatchObject({
+      status: "completed",
+      output: "corrected"
+    });
+    expect(step).toBe(2);
+  });
+
+  it("fails and closes the event stream when tool discovery throws", async () => {
+    const execute = createProgrammaticExecutor({
+      getTools: () => {
+        throw new Error("tool registry unavailable");
+      },
+      getActiveModel: () => null,
+      runStream: vi.fn(),
+      executeTool: vi.fn()
+    });
+
+    const handle = execute({ prompt: "search", executionMode: "local-only" });
+    const outcome = await Promise.race([
+      handle.completion,
+      new Promise((resolve) => setTimeout(() => resolve({ status: "pending" }), 25))
+    ]);
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: "tool registry unavailable"
+    });
+
+    const events = [];
+    for await (const event of handle.events) events.push(event);
+    expect(events.at(-1)).toMatchObject({
+      type: "run.failed",
+      data: { error: "tool registry unavailable" }
+    });
   });
 
   it("records returned Bash failures as tool.completed errors", async () => {

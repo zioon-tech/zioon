@@ -45,6 +45,23 @@ describe("chat doc streaming", () => {
     ]);
   });
 
+  it("treats an invisible continuation boundary as the preserved user suffix", () => {
+    expect(parseMessages([
+      "first question",
+      "assistant <!-- zion-assistant:id=run-middle --> inserted answer",
+      "user <!-- zion-continuation:id=run-middle -->",
+      "preserve this paragraph",
+      "and this paragraph too"
+    ].join("\n"))).toEqual([
+      { role: "user", content: "first question" },
+      { role: "assistant", content: "inserted answer" },
+      {
+        role: "user",
+        content: "preserve this paragraph\nand this paragraph too"
+      }
+    ]);
+  });
+
   it("appends by assistant id even when the stored line points at an older answer", () => {
     const editor = createMockEditor([
       "user old",

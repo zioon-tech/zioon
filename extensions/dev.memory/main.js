@@ -1,5 +1,14 @@
 import { getEditorCore } from "../dev.tools/editor-core.js";
 import { createFilesCodeEditor, createFilesCodeViewer, createFilesMarkdownPreview, iconForFile, isMarkdownTab, languageFromFilename, shouldShowMarkdownPreview } from "../dev.tools/files-panel.js";
+import {
+  applyMemorySnapshotToStorage,
+  buildMemoryContextFromSnapshot,
+  insertAfterLeadingSystem as insertAfterLeadingSystemMessage,
+  loadMemorySnapshotFromRuntime,
+  memorySnapshotFromStorage,
+  shouldApplyRuntimeMemorySnapshot,
+  syncMemorySnapshotToRuntime
+} from "./memory-runtime-state.js";
 
 const VIEW_ID = "dev.memory.panel";
 const STORAGE_KEY = "zion.memory.items.v1";
@@ -10,6 +19,7 @@ const CHANGED_EVENT = "memory/changed";
 const ACTIVE_CHANGED_EVENT = "memory/activeChanged";
 const I18N_NS = "dev.memory";
 const DEFAULT_MEMORY_ROOT = "~/zion-next/memory";
+let memoryRuntimeSyncTimer = 0;
 
 const I18N_MESSAGES = {
   "zh-CN": {
@@ -223,6 +233,60 @@ function writeJson(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
+function syncCurrentMemorySnapshotToRuntime() {
+  const snapshot = memorySnapshotFromStorage();
+  return syncMemorySnapshotToRuntime({ snapshot });
+}
+
+function scheduleRuntimeMemorySync() {
+  try {
+    if (memoryRuntimeSyncTimer) window.clearTimeout(memoryRuntimeSyncTimer);
+    memoryRuntimeSyncTimer = window.setTimeout(() => {
+      memoryRuntimeSyncTimer = 0;
+      void syncCurrentMemorySnapshotToRuntime()
+        .catch(() => {});
+    }, 250);
+  } catch {}
+}
+
+function flushRuntimeMemorySync() {
+  try {
+    if (memoryRuntimeSyncTimer) window.clearTimeout(memoryRuntimeSyncTimer);
+    memoryRuntimeSyncTimer = 0;
+    void syncCurrentMemorySnapshotToRuntime()
+      .catch(() => {});
+  } catch {}
+}
+
+async function restoreMemorySnapshotFromRuntimeIfNewer() {
+  try {
+    const runtimeSnapshot = await loadMemorySnapshotFromRuntime();
+    if (!runtimeSnapshot) return false;
+    const localSnapshot = memorySnapshotFromStorage();
+    if (!shouldApplyRuntimeMemorySnapshot(localSnapshot, runtimeSnapshot)) return false;
+    const applied = applyMemorySnapshotToStorage(runtimeSnapshot);
+    try {
+      window.zion?.state?.set?.("runtime.memorySync", {
+        status: "loaded",
+        syncedAt: Date.now(),
+        count: applied.items.length
+      });
+    } catch {}
+    emitChanged();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function reconcileRuntimeMemorySnapshot() {
+  void restoreMemorySnapshotFromRuntimeIfNewer()
+    .then((loaded) => {
+      if (!loaded) scheduleRuntimeMemorySync();
+    })
+    .catch(() => {});
+}
+
 function normalizeMemory(item = {}) {
   const id = String(item.id || uid());
   const createdAt = Number(item.createdAt || now());
@@ -266,6 +330,7 @@ function writeMemories(list, opts = {}) {
   const safe = Array.isArray(list) ? list.map(normalizeMemory) : [];
   writeJson(STORAGE_KEY, safe);
   syncState(safe);
+  scheduleRuntimeMemorySync();
   if (!opts.silent) emitChanged();
 }
 
@@ -290,6 +355,7 @@ function setActiveMemory(id, options = {}) {
   const value = String(id || "");
   try { localStorage.setItem(ACTIVE_KEY, value); } catch {}
   try { window.zion?.state?.set?.("memory.activeId", value); } catch {}
+  scheduleRuntimeMemorySync();
   if (options.silent) return;
   try { window.zion?.events?.emit?.(ACTIVE_CHANGED_EVENT, { id: value }); } catch {}
   try { window.dispatchEvent(new CustomEvent("zion:memory-active-changed", { detail: { id: value } })); } catch {}
@@ -309,6 +375,7 @@ function getSettings() {
 function saveSettings(patch) {
   const next = { ...getSettings(), ...(patch || {}) };
   writeJson(SETTINGS_KEY, next);
+  scheduleRuntimeMemorySync();
   emitChanged();
   return next;
 }
@@ -387,105 +454,8 @@ function extractLatestUserText(messages) {
   return "";
 }
 
-function scoreMemory(item, query) {
-  let score = 0;
-  if (item.pinned) score += 40;
-  if (item.enabled) score += 10;
-  score += Math.floor((item.confidence || 0) * 10);
-  const q = String(query || "").toLowerCase();
-  if (!q) return score;
-  const hay = `${item.title}\n${item.tags?.join(" ")}\n${item.content}`.toLowerCase();
-  for (const token of q.split(/[^a-z0-9_\-\u4e00-\u9fa5]+/i).filter((x) => x.length > 2).slice(0, 32)) {
-    if (hay.includes(token)) score += item.title.toLowerCase().includes(token) ? 8 : 3;
-  }
-  return score;
-}
-
-function escapeXml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function selectMemoriesForContext(query = "", opts = {}) {
-  const settings = getSettings();
-  const maxItems = Number(opts.maxItems || 12);
-  const layer = String(opts.layer || settings.autoInjectLayer || "working");
-  return readMemories()
-    .filter((item) => item.enabled !== false)
-    .filter((item) => item.layer === layer || (!!settings.includePinnedLongTerm && item.pinned))
-    .map((item) => ({ item, score: scoreMemory(item, query) }))
-    .sort((a, b) => b.score - a.score || compareMemories(a.item, b.item))
-    .slice(0, maxItems)
-    .map((entry) => entry.item);
-}
-
 function buildMemoryContext(query = "", opts = {}) {
-  const settings = getSettings();
-  const items = selectMemoriesForContext(query, opts);
-  const maxChars = Math.max(800, Number(opts.maxChars || settings.maxContextChars || 5000));
-  const footer = "\n</working_memory>";
-  const parts = [
-    "<working_memory>",
-    `  <root>${escapeXml(settings.memoryRootPath || DEFAULT_MEMORY_ROOT)}</root>`,
-    "  <instructions>",
-    "    These notes are working memory and are intentionally kept in the model context.",
-    "    Treat them as persistent user/project preferences and relevant facts.",
-    "    Long-term memory lives under the same root and should be retrieved on demand with the memoryManage tool.",
-    "  </instructions>",
-    `  <memories count="${items.length}">`
-  ];
-  let truncated = false;
-  for (const item of items) {
-    const attrs = [
-      `id="${escapeXml(item.id)}"`,
-      `path="${escapeXml(item.path)}"`,
-      `type="${escapeXml(item.type)}"`,
-      `scope="${escapeXml(item.scope)}"`,
-      `layer="${escapeXml(item.layer)}"`,
-      `provider="${escapeXml(item.providerId)}"`,
-      `enabled="${item.enabled !== false ? "true" : "false"}"`,
-      item.pinned ? "pinned=\"true\"" : "",
-      item.confidence != null ? `confidence="${escapeXml(item.confidence)}"` : "",
-      item.tags?.length ? `tags="${escapeXml(item.tags.join(","))}"` : ""
-    ].filter(Boolean).join(" ");
-    const prefix = [
-      `    <memory ${attrs}>`,
-      `      <title>${escapeXml(item.title)}</title>`,
-      "      <content>"
-    ].join("\n");
-    const suffix = "\n      </content>\n    </memory>";
-    const currentLen = `${parts.join("\n")}\n  </memories>${footer}`.length;
-    const remaining = maxChars - currentLen - prefix.length - suffix.length - 64;
-    if (remaining <= 0) {
-      truncated = true;
-      break;
-    }
-    let content = String(item.content || "").trim();
-    if (content.length > remaining) {
-      content = `${content.slice(0, Math.max(0, remaining))}\n[Memory truncated]`;
-      truncated = true;
-    }
-    parts.push(`${prefix}\n${escapeXml(content)}${suffix}`);
-  }
-  if (truncated) parts.push("    <truncated>true</truncated>");
-  parts.push("  </memories>");
-  const text = `${parts.join("\n")}${footer}`;
-  return { text, items, maxChars };
-}
-
-function insertWorkingMemoryAfterLeadingSystem(messages, memoryMessage) {
-  const list = Array.isArray(messages) ? messages : [];
-  let insertAt = 0;
-  while (insertAt < list.length && list[insertAt]?.role === "system") insertAt += 1;
-  return [
-    ...list.slice(0, insertAt),
-    memoryMessage,
-    ...list.slice(insertAt)
-  ];
+  return buildMemoryContextFromSnapshot(memorySnapshotFromStorage(), query, opts);
 }
 
 function registerDefaultProviders() {
@@ -1524,7 +1494,7 @@ function registerMessageContributor(disposables) {
       const query = extractLatestUserText(messages);
       const context = buildMemoryContext(query);
       if (!context.items.length) return messages;
-      return insertWorkingMemoryAfterLeadingSystem(messages, { role: "user", content: context.text });
+      return insertAfterLeadingSystemMessage(messages, { role: "user", content: context.text });
     }
   });
   if (disp) disposables.push(disp);
@@ -1634,14 +1604,30 @@ function registerMemoryTool(disposables) {
 
 
 export async function activate(ctx) {
-  
-const disposables = [];
+  const disposables = [];
   try {
     const disp = window.zion?.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) disposables.push(disp);
   } catch {}
   registerDefaultProviders();
   disposables.push(installMemoryApi());
+  reconcileRuntimeMemorySnapshot();
+  try {
+    const runtimeConnectionDisposable = window.zion?.state?.onDidChange?.(
+      "runtime.connection",
+      reconcileRuntimeMemorySnapshot
+    );
+    if (runtimeConnectionDisposable) disposables.push(runtimeConnectionDisposable);
+  } catch {}
+  try {
+    const onPageHide = () => flushRuntimeMemorySync();
+    window.addEventListener("pagehide", onPageHide, { passive: true });
+    disposables.push({
+      dispose() {
+        try { window.removeEventListener("pagehide", onPageHide); } catch {}
+      }
+    });
+  } catch {}
   try { disposables.push(window.zion.commands.registerCommand("memory.openPanel", openMemoryPanel)); } catch {}
   try { disposables.push(window.zion.commands.registerCommand("memory.create", () => { const item = createMemory(); openMemoryPanel(); return item; })); } catch {}
   try { disposables.push(window.zion.commands.registerCommand("memory.rememberSelection", rememberSelection)); } catch {}
@@ -1662,6 +1648,10 @@ const disposables = [];
   } catch {}
   const disposable = {
     dispose() {
+      if (memoryRuntimeSyncTimer) {
+        try { window.clearTimeout(memoryRuntimeSyncTimer); } catch {}
+        memoryRuntimeSyncTimer = 0;
+      }
       for (const d of disposables.splice(0)) {
         try { d?.dispose?.(); } catch {}
       }

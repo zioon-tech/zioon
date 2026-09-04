@@ -3,6 +3,7 @@
  */
 
 import type { PluginManifest, PluginError, PluginErrorType } from './types';
+import { validatePluginManifest } from '../../packages/plugin-sdk/src/manifest.mjs';
 
 /**
  * 版本比较工具
@@ -265,40 +266,12 @@ export class PluginValidator {
     errors: string[];
     warnings: string[];
   } {
-    const errors: string[] = [];
-    const warnings: string[] = [];
+    const shared = validatePluginManifest(manifest);
+    const errors: string[] = [...shared.errors];
+    const warnings: string[] = [...shared.warnings];
 
-    // 验证必需字段
-    if (!manifest.zion?.id) {
-      errors.push('缺少必需字段: zion.id');
-    }
-    if (!manifest.zion?.name) {
-      errors.push('缺少必需字段: zion.name');
-    }
-    if (!manifest.zion?.version) {
-      errors.push('缺少必需字段: zion.version');
-    }
-    if (!manifest.zion?.main) {
-      errors.push('缺少必需字段: zion.main');
-    }
-
-    // 验证 ID 格式
-    if (manifest.zion?.id) {
-      const id = manifest.zion.id;
-      if (!/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(id)) {
-        errors.push('插件ID格式无效，只能包含小写字母、数字、点和连字符');
-      }
-      if (id.length > 50) {
-        warnings.push('插件ID过长，建议不超过50个字符');
-      }
-    }
-
-    // 验证版本格式
-    if (manifest.zion?.version) {
-      const version = manifest.zion.version;
-      if (!/^\d+\.\d+\.\d+(-[a-z0-9.]+)?$/i.test(version)) {
-        errors.push('插件版本格式无效，应遵循语义化版本规范');
-      }
+    if (shared.normalized.id.length > 50) {
+      warnings.push('插件ID过长，建议不超过50个字符');
     }
 
     // 验证引擎要求

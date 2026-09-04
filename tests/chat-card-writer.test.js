@@ -6,6 +6,24 @@ import {
 } from "../extensions/dev.session-manager/features/chat-card-writer.js";
 
 describe("chat card writer ownership", () => {
+  it("never lets a remote observer become a document writer", () => {
+    const zion = {
+      panels: {
+        getActivePanelId: () => "panel-a",
+        getEditorBySession: () => null,
+        listEditors: () => []
+      },
+      state: { get: vi.fn(() => "session-a") },
+      window: { activeEditor: null }
+    };
+
+    expect(shouldPersistChatCardInBackground(zion, {
+      sessionId: "session-a",
+      runId: "run-1",
+      documentWriter: false
+    })).toBe(false);
+  });
+
   it("keeps a named source panel as the writer after focus moves elsewhere", () => {
     const sourceEditor = { panelId: "panel-a", sessionId: "session-a" };
     const zion = {

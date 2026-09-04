@@ -3,7 +3,11 @@
 > 状态：已被后续方案取代 | 最后更新：2026-07-26
 >
 > 本文保留为历史讨论。其“前端 TypeScript Runtime + 后端 Python Runtime 独立实现”的方向
-> 不再推荐，因为会导致 Web、Desktop、CLI 和 Cloud 行为分叉。当前决策来源：
+> 不再推荐，因为会导致 Web、Desktop、CLI 和 Cloud 行为分叉。当前权威产品架构：
+>
+> - [ZION-DISTRIBUTED-RUNTIME-PRODUCT-ARCHITECTURE.md](./ZION-DISTRIBUTED-RUNTIME-PRODUCT-ARCHITECTURE.md)
+>
+> 早期决策来源：
 >
 > - [AGENT-RUNTIME-BOUNDARY-STRATEGY.md](./AGENT-RUNTIME-BOUNDARY-STRATEGY.md)
 > - [MULTI-SURFACE-AGENT-PLATFORM.md](./MULTI-SURFACE-AGENT-PLATFORM.md)
@@ -294,10 +298,10 @@ POST /webhook/generic        # 通用webhook接收
 
 ## 附录：相关文档
 
-- [现有任务面板设计](../extensions/dev.task-panel/README.md)
-- [现有邮件服务](../extensions/dev.mail/README.md)
-- [PWA架构](../README-PWA.md)
-- [Local Tools服务](../../zion-local-tools/README.md)
+- [现有任务面板 manifest](../../extensions/dev.task-panel/manifest.json)
+- [现有邮件服务 manifest](../../extensions/dev.mail/manifest.json)
+- [PWA 架构](../../README-PWA.md)
+- Local Tools 服务：外部 `zion-local-tools` 仓库的 `README.md`
 
 ## 变更记录
 

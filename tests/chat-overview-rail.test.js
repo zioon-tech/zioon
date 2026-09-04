@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { EditorCore } from "../src/editor/EditorCore";
 import {
   collectUserMessageItemsFromText,
+  createChatOverviewRail,
   findAssistantBlockRange,
   jumpToLine
 } from "../extensions/dev.langchain-chat/overview-rail.js";
@@ -37,6 +38,21 @@ describe("chat overview rail", () => {
       headLine: 4,
       endLine: 5,
       lineCount: 6
+    });
+  });
+
+  it("prefers the completed Run id over a later assistant block", () => {
+    const text = [
+      "user first",
+      "assistant <!-- zion-assistant:id=run-middle --> current answer",
+      "user later",
+      "assistant <!-- zion-assistant:id=run-later --> later answer"
+    ].join("\n");
+
+    expect(findAssistantBlockRange(text, 99, "run-middle")).toEqual({
+      headLine: 1,
+      endLine: 1,
+      lineCount: 4
     });
   });
 
@@ -85,6 +101,25 @@ describe("chat overview rail", () => {
     ]);
   });
 
+  it("keeps continuation metadata out of user navigation previews", () => {
+    const text = [
+      "first question",
+      "assistant inserted answer",
+      "user <!-- zion-continuation:id=run-middle -->",
+      "preserved suffix"
+    ].join("\n");
+
+    expect(findAssistantBlockRange(text, 1)).toEqual({
+      headLine: 1,
+      endLine: 1,
+      lineCount: 4
+    });
+    expect(collectUserMessageItemsFromText(text)).toEqual([
+      { line: 0, endLine: 0, index: 1, preview: "first question" },
+      { line: 3, endLine: 3, index: 2, preview: "preserved suffix" }
+    ]);
+  });
+
   it("keeps the full user block range when the preview is truncated", () => {
     const longLine = "很长的补充内容".repeat(20);
     const text = [
@@ -97,6 +132,107 @@ describe("chat overview rail", () => {
     const [item] = collectUserMessageItemsFromText(text);
     expect(item.endLine).toBe(2);
     expect(item.preview.endsWith("…")).toBe(true);
+  });
+
+  it("uses the streaming pending tail instead of the document bottom for latest", async () => {
+    const previousZion = window.zion;
+    const values = new Map();
+    window.zion = {
+      state: {
+        get: (key) => values.get(key),
+        set: (key, value) => values.set(key, value),
+        onDidChange: () => ({ dispose() {} })
+      },
+      events: {
+        on: () => ({ dispose() {} })
+      },
+      panels: {
+        list: () => [{
+          id: "panel-overview",
+          activeTabId: "session-overview"
+        }]
+      }
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const editor = new EditorCore(
+      host,
+      [
+        "user first",
+        "assistant <!-- zion-assistant:id=run-middle --> ",
+        "user later",
+        "assistant <!-- zion-assistant:id=run-later --> later answer"
+      ].join("\n"),
+      "panel-overview"
+    );
+    editor.setSessionId("session-overview");
+    window.zion.state.set("chat.runs.session-overview", {
+      runId: "run-middle",
+      streaming: true
+    });
+
+    const pending = document.createElement("span");
+    pending.className = "zion-pending-assistant-output";
+    pending.dataset.runId = "run-middle";
+    const tail = document.createElement("span");
+    tail.className = "zion-pending-assistant-tail";
+    pending.appendChild(tail);
+    editor.view.dom.appendChild(pending);
+
+    Object.defineProperty(editor.view.scrollDOM, "scrollHeight", {
+      configurable: true,
+      value: 1_000
+    });
+    Object.defineProperty(editor.view.scrollDOM, "clientHeight", {
+      configurable: true,
+      value: 200
+    });
+    Object.defineProperty(editor.view.scrollDOM, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ top: 0, bottom: 200 })
+    });
+    Object.defineProperty(tail, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ top: 350, bottom: 500 })
+    });
+
+    const rail = createChatOverviewRail({
+      panelId: "panel-overview",
+      getView: () => editor.view,
+      getSessionId: () => "session-overview",
+      addVisualExtension: (extension) =>
+        editor.addExternalExtension(extension)
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const latest = editor.view.dom.querySelector(".zion-chat-overview-nav-latest");
+      latest.click();
+
+      expect(editor.view.scrollDOM.scrollTop).toBe(348);
+      expect(editor.view.scrollDOM.scrollTop).not.toBe(800);
+
+      pending.remove();
+      window.zion.state.set("chat.runs.session-overview", {
+        runId: "run-middle",
+        streaming: false
+      });
+      window.zion.state.set(
+        "chat.assistantBlockId.session-overview",
+        "run-middle"
+      );
+      window.zion.state.set("chat.answerHeadLine.session-overview", 99);
+      const lineBlockAt = vi.spyOn(editor.view, "lineBlockAt");
+      latest.click();
+
+      expect(lineBlockAt).toHaveBeenCalledWith(
+        editor.view.state.doc.line(2).to
+      );
+    } finally {
+      rail.dispose();
+      editor.dispose();
+      document.body.replaceChildren();
+      window.zion = previousZion;
+    }
   });
 
   it("jumps inside a comment editor without scrolling the outer comments list", () => {

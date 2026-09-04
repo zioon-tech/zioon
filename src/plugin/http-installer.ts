@@ -9,9 +9,14 @@ import type {
   PluginInstallResult,
   PluginError,
   PluginInstallOptions,
-  PluginManifest
+  PluginManifest,
+  NormalizedPluginManifest
 } from './types';
 import { VersionUtils } from './utils';
+import {
+  normalizePluginManifest,
+  validatePluginManifest
+} from '../../packages/plugin-sdk/src/manifest.mjs';
 
 /**
  * HTTP插件安装器选项
@@ -181,30 +186,40 @@ export class HttpPluginInstaller {
         throw new Error(`读取开发清单失败: ${res.status} ${res.statusText}`);
       }
       const manifest = await res.json() as PluginManifest;
-
-      // 解析主入口（绝对URL）
-      let mainPath = manifest?.zion?.main || (manifest as any)?.main || 'dist/main.js';
-      if (!/^(blob:|data:|https?:)/i.test(mainPath)) {
-        mainPath = `${baseUrl}/${String(mainPath).replace(/^\.\//, '')}`;
+      const contract = normalizePluginManifest(manifest);
+      const entries = { ...contract.entries };
+      for (const kind of ['workbench', 'renderer'] as const) {
+        const entry = entries[kind];
+        if (!entry) continue;
+        const url = /^(blob:|data:|https?:)/i.test(entry)
+          ? entry
+          : `${baseUrl}/${String(entry).replace(/^\.\//, '')}`;
+        entries[kind] = this.withCacheBust(url, `zionDevTs=${Date.now()}`);
       }
-      mainPath = this.withCacheBust(mainPath, `zionDevTs=${Date.now()}`);
+      const projectedContract: NormalizedPluginManifest = {
+        ...contract,
+        entries
+      };
+      const mainPath = entries.workbench;
 
       // 构建 PluginInfo
       const pluginInfo: PluginInfo = {
-        id: manifest?.zion?.id || (manifest as any)?.id || manifest?.name || 'unknown.plugin',
-        name: manifest?.zion?.name || manifest?.name || 'Unnamed Plugin',
-        version: manifest?.zion?.version || manifest?.version || '0.0.1',
+        id: contract.id,
+        name: contract.name,
+        version: contract.version,
         description: manifest?.description,
         author: manifest?.author,
         license: manifest?.license,
         path: baseUrl,
-        manifest: {
-          ...manifest,
-          zion: {
-            ...(manifest?.zion || {}),
-            main: mainPath
-          }
-        },
+        manifest: mainPath
+          ? {
+              ...manifest,
+              zion: {
+                ...(manifest?.zion || {}),
+                main: mainPath
+              }
+            }
+          : manifest,
         state: 'installed',
         dependencies: manifest?.zion?.dependencies ? Object.keys(manifest.zion.dependencies) : [],
         peerDependencies: manifest?.zion?.peerDependencies ? Object.keys(manifest.zion.peerDependencies) : [],
@@ -213,7 +228,8 @@ export class HttpPluginInstaller {
         isLegacy: !manifest?.zion,
         origin: 'dev',
         devId,
-        sourceDir: options.sourceDir
+        sourceDir: options.sourceDir,
+        contract: projectedContract
       };
 
       // 验证
@@ -540,13 +556,19 @@ export class HttpPluginInstaller {
     } else {
       throw new Error('插件包缺少 manifest.json 或 package.json');
     }
+    const contract = normalizePluginManifest(manifest);
 
     const skillContents: Record<string, string> = {};
     const skillFiles: Record<string, Record<string, string>> = {};
     const styleContents: Record<string, string> = {};
-    const contributedSkills = manifest?.zion?.contributes?.skills;
-    if (Array.isArray(contributedSkills)) {
-      for (const declaredPath of contributedSkills) {
+    const contributedSkills = [
+      ...(Array.isArray(manifest?.zion?.contributes?.skills)
+        ? manifest.zion.contributes.skills
+        : []),
+      ...(contract.entries.skill ? [contract.entries.skill] : [])
+    ];
+    if (contributedSkills.length) {
+      for (const declaredPath of new Set(contributedSkills)) {
         const relativePath = String(declaredPath || '')
           .trim()
           .replace(/\\/g, '/')
@@ -591,41 +613,43 @@ export class HttpPluginInstaller {
       }
     }
 
-    // 解析主入口
-    const mainRel: string = manifest?.zion?.main || manifest?.main || 'dist/main.js';
-    const normMainRel = String(mainRel).replace(/^\.\//, '');
-
-    const mainEntry =
-      zip.file(normMainRel) ||
-      // 兼容常见目录
-      zip.file(`dist/main.js`) ||
-      zip.file(`main.js`);
-
-    if (!mainEntry) {
-      throw new Error(`未找到主入口文件: ${normMainRel}`);
+    const projectedEntries = { ...contract.entries };
+    for (const kind of ['workbench', 'renderer'] as const) {
+      const declaredEntry = contract.entries[kind];
+      if (!declaredEntry) continue;
+      const relativeEntry = declaredEntry.replace(/^\.\//, '');
+      const zipEntry = zip.file(relativeEntry);
+      if (!zipEntry) {
+        throw new Error(`未找到 ${kind} 入口文件: ${relativeEntry}`);
+      }
+      const code = await zipEntry.async('string');
+      const base64 = btoa(unescape(encodeURIComponent(code)));
+      projectedEntries[kind] = `data:text/javascript;base64,${base64}`;
     }
-
-    // 生成 Data URL（持久化，刷新仍可用）
-    const mainCode = await mainEntry.async('string');
-    const base64 = btoa(unescape(encodeURIComponent(mainCode)));
-    const mainUrl = `data:text/javascript;base64,${base64}`;
+    const projectedContract: NormalizedPluginManifest = {
+      ...contract,
+      entries: projectedEntries
+    };
+    const mainUrl = projectedEntries.workbench;
 
     // 组装 PluginInfo（使用绝对 mainUrl，loader 将直接动态导入）
     const pluginInfo: PluginInfo = {
-      id: manifest?.zion?.id || manifest?.name || 'unknown.plugin',
-      name: manifest?.zion?.name || manifest?.name || 'Unnamed Plugin',
-      version: manifest?.zion?.version || manifest?.version || '1.0.0',
+      id: contract.id,
+      name: contract.name,
+      version: contract.version,
       description: manifest?.description,
       author: manifest?.author,
       license: manifest?.license,
       path: sourceUrl, // 保留源，可用于追踪
-      manifest: {
-        ...manifest,
-        zion: {
-          ...manifest.zion,
-          main: mainUrl
-        }
-      },
+      manifest: mainUrl
+        ? {
+            ...manifest,
+            zion: {
+              ...manifest.zion,
+              main: mainUrl
+            }
+          }
+        : manifest,
       state: 'installed',
       dependencies: manifest?.zion?.dependencies ? Object.keys(manifest.zion.dependencies) : [],
       peerDependencies: manifest?.zion?.peerDependencies ? Object.keys(manifest.zion.peerDependencies) : [],
@@ -635,7 +659,8 @@ export class HttpPluginInstaller {
       origin: 'external',
       skillContents: Object.keys(skillContents).length ? skillContents : undefined,
       skillFiles: Object.keys(skillFiles).length ? skillFiles : undefined,
-      styleContents: Object.keys(styleContents).length ? styleContents : undefined
+      styleContents: Object.keys(styleContents).length ? styleContents : undefined,
+      contract: projectedContract
     };
 
     return pluginInfo;
@@ -656,6 +681,13 @@ export class HttpPluginInstaller {
   }> {
     const errors: string[] = [];
     const warnings: string[] = [];
+    const shared = pluginInfo.contract
+      ? null
+      : validatePluginManifest(pluginInfo.manifest);
+    if (shared) {
+      errors.push(...shared.errors);
+      warnings.push(...shared.warnings);
+    }
 
     // 基本验证
     if (!pluginInfo.id) {
@@ -675,17 +707,15 @@ export class HttpPluginInstaller {
       errors.push('插件清单不能为空');
     }
 
-    // 主入口（Blob URL）验证
-    try {
-      const main =
-        (pluginInfo.manifest as any)?.zion?.main ||
-        (pluginInfo.manifest as any)?.main;
-      if (typeof main !== 'string') {
-        errors.push('主入口无效');
-      } else if (!/^(blob:|data:|https?:)/i.test(main)) {
-        warnings.push('主入口不是绝对URL，可能无法在浏览器环境加载');
+    const contract = pluginInfo.contract || shared?.normalized;
+    if (contract?.hosts.workbench) {
+      for (const kind of ['workbench', 'renderer'] as const) {
+        const entry = contract.entries[kind];
+        if (entry && !/^(blob:|data:|https?:|internal:)/i.test(entry)) {
+          warnings.push(`${kind} 入口不是绝对URL，可能无法在浏览器环境加载`);
+        }
       }
-    } catch {}
+    }
 
     return {
       valid: errors.length === 0,

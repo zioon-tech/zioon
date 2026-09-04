@@ -148,6 +148,40 @@ describe("SessionSync", () => {
     sync.dispose();
   });
 
+  it("does not mirror changes when Yjs owns split-view synchronization", () => {
+    const events = createEvents();
+    const source = createViewEditor("after", "session-1");
+    const target = createViewEditor("before", "session-1");
+    (source.getView() as any).dom.dataset = {
+      zionCollaborationBound: "true"
+    };
+    (target.getView() as any).dom.dataset = {
+      zionCollaborationBound: "true"
+    };
+    const editors = new Map<string, any>([
+      ["panel-a", source],
+      ["panel-b", target]
+    ]);
+    const sync = new SessionSync({
+      events,
+      getActivePanelId: () => "panel-a",
+      listPanels: () => [
+        { id: "panel-a", activeTabId: "session-1" },
+        { id: "panel-b", activeTabId: "session-1" }
+      ],
+      getEditor: (panelId) => editors.get(panelId) || null
+    });
+
+    events.emit("editor.change", {
+      panelId: "panel-a",
+      view: source.getView(),
+      update: { transactions: [] }
+    });
+
+    expect(target.getValue()).toBe("before");
+    sync.dispose();
+  });
+
   it("does not fall back to the active panel when the changed panel has no active session", () => {
     const events = createEvents();
     const editors = new Map([

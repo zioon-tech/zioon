@@ -1,7 +1,7 @@
 /**
  * dev.langchain-chat: models tools for LLM (CRUD + set active)
  * - Registers a single aggregated tool "modelsManage" to list/check/get/add/update/delete/set_active/import/export models.
- * - Writable provider: user.dynamic (stored in localStorage), other providers are read-only.
+ * - Writable provider: user.dynamic (Runtime Host first, localStorage fallback), other providers are read-only.
  */
 import {
   normalizeAutoContinueOnColonMaxAttempts,
@@ -10,31 +10,28 @@ import {
 import { refreshModelCatalog } from "./model-catalog.js";
 import { invalidateModelAvailability } from "./model-health.js";
 import { userModelsProvider } from "./user-models-provider.js";
+import {
+  DYNAMIC_PROVIDER_ID,
+  deleteDynamicModel,
+  loadDynamicModelStore,
+  saveLocalDynamicModelStore,
+  upsertDynamicModel
+} from "./runtime-user-model-store.js";
+import {
+  loadProviderConfig,
+  saveProviderConfig
+} from "./provider-config-storage.js";
 
 export function registerModelsTools() {
   try {
     /* ===== Local storage + dynamic provider ===== */
-    const DYN_KEY = "zion.models.dynamic";
-    const DYN_PROVIDER_ID = "user.dynamic";
-
-    const loadStore = () => {
-      try {
-        const raw = localStorage.getItem(DYN_KEY);
-        if (!raw) return {};
-        const j = JSON.parse(raw);
-        return j && typeof j === "object" ? j : {};
-      } catch {
-        return {};
-      }
-    };
-    const saveStore = (dict) => {
-      try { localStorage.setItem(DYN_KEY, JSON.stringify(dict)); } catch {}
-    };
+    const loadStore = () => loadDynamicModelStore();
+    const saveStore = (dict) => saveLocalDynamicModelStore(dict);
 
     const ensureProvider = () => {
       try {
         const ids = window.zion?.models?.listProviders?.() || [];
-        if (ids.includes(DYN_PROVIDER_ID)) return;
+        if (ids.includes(DYNAMIC_PROVIDER_ID)) return;
         window.zion?.models?.registerProvider?.(userModelsProvider);
       } catch (e) {
         console.warn("[models-tools] ensureProvider error", e);
@@ -167,7 +164,7 @@ export function registerModelsTools() {
         const providerIdRaw = typeof args?.provider_id === "string" ? String(args.provider_id).trim() : undefined;
         const providerId = providerIdRaw && providerIdRaw.length ? providerIdRaw : undefined;
         const modelId = String(args?.model_id || "").trim();
-        const dict = loadStore();
+        const dict = await loadStore();
 
         const refresh = async ({
           checkHealth = false,
@@ -290,11 +287,11 @@ export function registerModelsTools() {
         }
 
         if (action === "add" || action === "update") {
-          const pid = providerId || DYN_PROVIDER_ID;
+          const pid = providerId || DYNAMIC_PROVIDER_ID;
           const limitError = validateLimitArgs(args);
           if (limitError) return limitError;
           if (
-            pid !== DYN_PROVIDER_ID
+            pid !== DYNAMIC_PROVIDER_ID
             && !modelId
             && [args?.description, args?.context_window_tokens, args?.max_input_tokens, args?.max_output_tokens]
               .some((value) => value != null)
@@ -302,8 +299,7 @@ export function registerModelsTools() {
             return "Missing model_id for model limits";
           }
           const updateBuiltinProviderConfig = (storageKey, { allowLabel = false, allowModel = false } = {}) => {
-            const configStr = localStorage.getItem(storageKey) || "{}";
-            const config = JSON.parse(configStr);
+            const config = loadProviderConfig(storageKey);
             if (args?.temperature != null) config.temperature = Number(args.temperature);
             if (args?.stream != null) config.stream = !!args.stream;
             if (args?.supportsImage != null) config.supportsImage = !!args.supportsImage;
@@ -345,7 +341,7 @@ export function registerModelsTools() {
             } else if (args?.max_tokens != null) {
               config.max_tokens = Number(args.max_tokens);
             }
-            localStorage.setItem(storageKey, JSON.stringify(config));
+            saveProviderConfig(storageKey, config);
           };
 
           // 特殊处理：配置预定义 provider 的 API key
@@ -380,7 +376,7 @@ export function registerModelsTools() {
           }
 
           // user.dynamic provider 的处理
-          if (pid !== DYN_PROVIDER_ID) return "Only user.dynamic, anthropic, google, deepseek providers are supported for configuration";
+          if (pid !== DYNAMIC_PROVIDER_ID) return "Only user.dynamic, anthropic, google, deepseek providers are supported for configuration";
           if (!modelId) return "Missing model_id";
           const patch = {
             label: args?.label != null ? String(args.label) : undefined,
@@ -416,20 +412,26 @@ export function registerModelsTools() {
             const v = patch[k];
             if (v !== undefined) next[k] = v;
           });
-          dict[modelId] = next;
-          saveStore(dict);
+          const saved = await upsertDynamicModel({ modelId, config: next });
           ensureProvider();
           await refresh({ checkHealth: true, force: true, pid, mid: modelId, invalidate: true });
-          return JSON.stringify({ saved: { providerId: pid, id: modelId, config: next } }, null, 2);
+          return JSON.stringify({
+            saved: {
+              providerId: pid,
+              id: modelId,
+              config: next,
+              store: saved.savedTo,
+              warning: saved.warning
+            }
+          }, null, 2);
         }
 
         if (action === "delete") {
-          const pid = providerId || DYN_PROVIDER_ID;
-          if (pid !== DYN_PROVIDER_ID) return "Only user.dynamic provider is writable";
+          const pid = providerId || DYNAMIC_PROVIDER_ID;
+          if (pid !== DYNAMIC_PROVIDER_ID) return "Only user.dynamic provider is writable";
           if (!modelId) return "Missing model_id";
           if (dict[modelId]) {
-            delete dict[modelId];
-            saveStore(dict);
+            const deleted = await deleteDynamicModel({ modelId });
             invalidateModelAvailability({ providerId: pid, modelId });
             await refresh({ pid, mid: undefined });
             // If active model was deleted, pick a fallback
@@ -439,7 +441,11 @@ export function registerModelsTools() {
               const next = catalog[0] || null;
               window.zion?.state?.set("chat.activeModel", next ? { providerId: next.providerId, modelId: next.id, label: next.label } : null);
             }
-            return JSON.stringify({ deleted: `${pid}:${modelId}` }, null, 2);
+            return JSON.stringify({
+              deleted: `${pid}:${modelId}`,
+              store: deleted.deletedFrom,
+              warning: deleted.warning
+            }, null, 2);
           }
           return `Model not found in ${pid}: ${modelId}`;
         }
@@ -451,20 +457,33 @@ export function registerModelsTools() {
             try { data = JSON.parse(data); } catch { return "Invalid data: not JSON"; }
           }
           if (!data || typeof data !== "object") return "Invalid data: expect object map { id: config }";
-          const pid = providerId || DYN_PROVIDER_ID;
-          if (pid !== DYN_PROVIDER_ID) return "Only user.dynamic provider is writable";
+          const pid = providerId || DYNAMIC_PROVIDER_ID;
+          if (pid !== DYNAMIC_PROVIDER_ID) return "Only user.dynamic provider is writable";
           const src = data;
           const cur = dict;
           const next = merge ? { ...cur, ...src } : { ...src };
-          saveStore(next);
+          if (!merge) saveStore({});
+          const results = [];
+          for (const [id, config] of Object.entries(next)) {
+            results.push(await upsertDynamicModel({
+              modelId: id,
+              config
+            }));
+          }
           invalidateModelAvailability({ providerId: pid });
           await refresh({ pid, mid: undefined });
-          return JSON.stringify({ imported: Object.keys(src).length, total: Object.keys(next).length }, null, 2);
+          return JSON.stringify({
+            imported: Object.keys(src).length,
+            total: Object.keys(next).length,
+            runtime: results.filter((item) => item.savedTo === "runtime").length,
+            local: results.filter((item) => item.savedTo === "local").length,
+            warnings: results.filter((item) => item.warning).map((item) => item.warning)
+          }, null, 2);
         }
 
         if (action === "export") {
-          const pid = providerId || DYN_PROVIDER_ID;
-          const out = pid === DYN_PROVIDER_ID ? dict : {};
+          const pid = providerId || DYNAMIC_PROVIDER_ID;
+          const out = pid === DYNAMIC_PROVIDER_ID ? dict : {};
           return JSON.stringify(out, null, 2);
         }
 

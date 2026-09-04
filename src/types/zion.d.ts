@@ -33,7 +33,8 @@ export interface EditorProxy {
 export type PasteHandler = {
   id: string;
   priority?: number; // higher first, default 50
-  handle(ctx: { clipboardData: DataTransfer; editor: EditorProxy }): boolean | Promise<boolean>;
+  claim?(ctx: { clipboardData: DataTransfer; editor: EditorProxy }): unknown | false | null;
+  handle(ctx: { clipboardData: DataTransfer; editor: EditorProxy; claim?: unknown }): boolean | Promise<boolean>;
 };
 
 export type MessageContributor = {
@@ -550,11 +551,51 @@ declare global {
         detachEditor?(panelId: string): EditorProxy | null;
         listAttachedEditorCores?(): any[];
         getEditorForView?(view: any): EditorProxy | null;
+        images?: {
+          begin(editor: EditorProxy, options: {
+            count: number;
+            from?: number;
+            to?: number;
+            position?: number;
+            kind?: "inline" | "solo" | "gallery";
+            userEvent?: string;
+            retry?: () => void | Promise<void>;
+            cancel?: () => void;
+          }): string;
+          complete(editor: EditorProxy, operationId: string, images: Array<{ src: string; alt?: string }>): boolean;
+          fail(editor: EditorProxy, operationId: string, message?: string): boolean;
+          cancel(editor: EditorProxy, operationId: string): boolean;
+          showDropTarget(editor: EditorProxy, point: { x: number; y: number }, options?: { count?: number; moving?: boolean }): {
+            position: number;
+            kind: "inline" | "solo" | "gallery";
+          } | null;
+          hideDropTarget(editor: EditorProxy): void;
+        };
         selectionToolbar?: {
           registerItem(item: SelectionToolbarItem): Disposable;
           list(): SelectionToolbarItem[];
           onDidChange(handler: () => void): Disposable;
         };
+      };
+      media?: {
+        isImageAssetUri(source: string): boolean;
+        putImage(source: Blob | string, metadata?: {
+          name?: string;
+          mimeType?: string;
+          width?: number;
+          height?: number;
+        }): Promise<string>;
+        resolveImage(source: string): Promise<string | null>;
+        readImageDataUrl(source: string): Promise<string | null>;
+        getImageMetadata(source: string): Promise<{
+          id: string;
+          name?: string;
+          mimeType?: string;
+          size?: number;
+          width?: number;
+          height?: number;
+          createdAt?: number;
+        } | null>;
       };
       // active editor
       window: {

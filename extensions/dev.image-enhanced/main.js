@@ -1,4 +1,3 @@
-const APP_IMG_PREFIX = "app://img/";
 const I18N_NS = "dev.image-enhanced";
 const I18N_MESSAGES = {
   "zh-CN": {
@@ -74,50 +73,6 @@ function t(key, fallback, values) {
   return fallback;
 }
 
-function openPasteImageDB() {
-  return new Promise((resolve, reject) => {
-    try {
-      const req = indexedDB.open("dev.paste-image-db", 1);
-      req.onupgradeneeded = (e) => {
-        const db = e.target.result;
-        if (!db.objectStoreNames.contains("images")) {
-          db.createObjectStore("images", { keyPath: "id" });
-        }
-      };
-      req.onsuccess = (e) => resolve(e.target.result);
-      req.onerror = (e) => reject(e.target.error);
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-async function resolveAppImage(src) {
-  if (!src || !src.startsWith(APP_IMG_PREFIX)) return null;
-  const id = src.slice(APP_IMG_PREFIX.length);
-  if (!id) return null;
-  const db = await openPasteImageDB();
-  return new Promise((resolve) => {
-    try {
-      const tx = db.transaction("images", "readonly");
-      const store = tx.objectStore("images");
-      const req = store.get(id);
-      req.onsuccess = (e) => {
-        try { db.close(); } catch {}
-        const rec = e.target.result;
-        resolve(rec?.dataUrl || null);
-      };
-      req.onerror = () => {
-        try { db.close(); } catch {}
-        resolve(null);
-      };
-    } catch {
-      try { db.close(); } catch {}
-      resolve(null);
-    }
-  });
-}
-
 async function copyToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
@@ -141,8 +96,8 @@ async function copyToClipboard(text) {
 
 async function resolveSrcToUrl(src) {
   if (!src) return null;
-  if (src.startsWith(APP_IMG_PREFIX)) return await resolveAppImage(src);
-  return src;
+  const resolver = window.zion?.media?.resolveImage;
+  return typeof resolver === "function" ? await resolver(src) : src;
 }
 
 async function copyImageToClipboard(url) {
@@ -300,8 +255,13 @@ function closeImageViewer() {
   viewerState = null;
 }
 
-async function openImageViewerByUrl(src, alt) {
-  const url = await resolveSrcToUrl(src);
+async function openImageViewerByUrl(src, alt, groupItems = null, groupIndex = 0) {
+  const items = Array.isArray(groupItems) && groupItems.length
+    ? groupItems
+    : [{ src, alt }];
+  let currentIndex = Math.max(0, Math.min(Number(groupIndex) || 0, items.length - 1));
+  const initialItem = items[currentIndex] || { src, alt };
+  const url = await resolveSrcToUrl(initialItem.src);
   if (!url) return;
   closeImageViewer();
 
@@ -314,7 +274,7 @@ async function openImageViewerByUrl(src, alt) {
   const viewerImg = document.createElement("img");
   viewerImg.className = "zion-image-viewer-img";
   viewerImg.src = url;
-  viewerImg.alt = alt || "Image";
+  viewerImg.alt = initialItem.alt || "Image";
   imageContainer.appendChild(viewerImg);
 
   const toolbar = document.createElement("div");
@@ -340,6 +300,8 @@ async function openImageViewerByUrl(src, alt) {
   const scaleDisplay = document.createElement("span");
   scaleDisplay.className = "zion-image-viewer-scale";
   scaleDisplay.textContent = "100%";
+  const imageCounter = document.createElement("span");
+  imageCounter.className = "zion-image-viewer-scale";
 
   const state = { scale: 1, tx: 0, ty: 0, dragging: false, startX: 0, startY: 0 };
   const updateTransform = () => {
@@ -356,27 +318,50 @@ async function openImageViewerByUrl(src, alt) {
     state.ty = 0;
     updateTransform();
   };
+  const showItem = async (nextIndex) => {
+    currentIndex = (nextIndex + items.length) % items.length;
+    const item = items[currentIndex];
+    const nextUrl = await resolveSrcToUrl(item.src);
+    if (!nextUrl) return;
+    viewerImg.src = nextUrl;
+    viewerImg.alt = item.alt || "Image";
+    imageCounter.textContent = `${currentIndex + 1} / ${items.length}`;
+    viewerState = { items, index: currentIndex, src: item.src, url: nextUrl };
+    reset();
+  };
 
-  toolbar.append(
+  const controls = [
     mkBtn("−", () => zoom(-0.2)),
     scaleDisplay,
     mkBtn("+", () => zoom(0.2)),
-    mkBtn("↺", () => reset()),
+    mkBtn("↺", () => reset())
+  ];
+  if (items.length > 1) {
+    imageCounter.textContent = `${currentIndex + 1} / ${items.length}`;
+    controls.push(
+      sep(),
+      mkBtn("←", () => { void showItem(currentIndex - 1); }),
+      imageCounter,
+      mkBtn("→", () => { void showItem(currentIndex + 1); })
+    );
+  }
+  controls.push(
     sep(),
     mkBtn(t("ui.copy", "复制"), async () => {
-      try { await copyImageToClipboard(src); showNotification("success", t("msg.copied", "图片已复制到剪贴板")); } catch (e) { showNotification("error", t("msg.copyFailed", "复制失败：{message}", { message: e?.message || e })); }
+      try { await copyImageToClipboard(viewerState?.src || src); showNotification("success", t("msg.copied", "图片已复制到剪贴板")); } catch (e) { showNotification("error", t("msg.copyFailed", "复制失败：{message}", { message: e?.message || e })); }
     }),
     mkBtn(t("ui.download", "下载"), async () => {
-      try { await downloadImage(src); } catch (e) { showNotification("error", t("msg.downloadFailed", "下载失败：{message}", { message: e?.message || e })); }
+      try { await downloadImage(viewerState?.src || src); } catch (e) { showNotification("error", t("msg.downloadFailed", "下载失败：{message}", { message: e?.message || e })); }
     }),
     sep(),
     mkBtn("✕", () => closeImageViewer())
   );
+  toolbar.append(...controls);
 
   overlay.append(imageContainer, toolbar);
   document.body.appendChild(overlay);
   viewerOverlay = overlay;
-  viewerState = { src, url };
+  viewerState = { items, index: currentIndex, src: initialItem.src, url };
 
   const onWheel = (e) => {
     e.preventDefault();
@@ -412,6 +397,14 @@ async function openImageViewerByUrl(src, alt) {
       e.preventDefault();
       e.stopPropagation();
       closeImageViewer();
+    } else if (items.length > 1 && e.key === "ArrowLeft") {
+      e.preventDefault();
+      e.stopPropagation();
+      void showItem(currentIndex - 1);
+    } else if (items.length > 1 && e.key === "ArrowRight") {
+      e.preventDefault();
+      e.stopPropagation();
+      void showItem(currentIndex + 1);
     }
   };
   const onClickBg = (e) => {
@@ -454,6 +447,31 @@ function parseMarkdownImageAt(view, pos) {
   } catch {
     return null;
   }
+}
+
+function readImageInfo(view, wrap) {
+  const src = wrap?.dataset?.imageSrc;
+  const from = Number(wrap?.dataset?.imageFrom);
+  const to = Number(wrap?.dataset?.imageTo);
+  if (src && Number.isInteger(from) && Number.isInteger(to) && to > from) {
+    const gallery = wrap.closest?.(".cm-md-gallery");
+    const cells = gallery ? [...gallery.querySelectorAll(".cm-md-gallery-cell")] : [];
+    const groupItems = cells.map(cell => ({
+      src: cell.dataset.imageSrc || "",
+      alt: cell.dataset.imageAlt || ""
+    })).filter(item => item.src);
+    return {
+      from,
+      to,
+      src,
+      raw: wrap.dataset.imageMarkdown || view.state.sliceDoc(from, to),
+      groupItems,
+      groupIndex: Math.max(0, cells.indexOf(wrap))
+    };
+  }
+  let pos = null;
+  try { pos = view.posAtDOM(wrap); } catch {}
+  return typeof pos === "number" ? parseMarkdownImageAt(view, pos) : null;
 }
 
 function createToolbar() {
@@ -829,7 +847,7 @@ export async function activate(ctx) {
   const disp = window.zion?.editor?.registerDecorator?.({
     id: "dev.image-enhanced.toolbar",
     apply: (editor) => {
-      const view = editor?.core?.view;
+      const view = editor?.getView?.();
       if (!view) return { dispose() {} };
       const styleEl = ensureStyles();
       const toolbar = createToolbar();
@@ -859,16 +877,13 @@ export async function activate(ctx) {
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
         if (toolbar.el.contains(target)) return;
-        const img = target.closest?.(".cm-md-img, .cm-md-img-fallback");
+        const img = target.closest?.(".cm-md-img, .cm-md-img-fallback, .cm-md-gallery-cell");
         if (!img) {
           hide();
           return;
         }
         const wrap = img.closest?.(".cm-md-img-wrap") || img;
-        let pos = null;
-        try { pos = view.posAtDOM(wrap); } catch {}
-        if (typeof pos !== "number") { hide(); return; }
-        const info = parseMarkdownImageAt(view, pos);
+        const info = readImageInfo(view, wrap);
         if (!info) { hide(); return; }
         current = info;
         toolbar.el.style.display = "flex";
@@ -879,13 +894,10 @@ export async function activate(ctx) {
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
         if (toolbar.el.contains(target)) return;
-        const img = target.closest?.(".cm-md-img, .cm-md-img-fallback");
+        const img = target.closest?.(".cm-md-img, .cm-md-img-fallback, .cm-md-gallery-cell");
         if (!img) return;
         const wrap = img.closest?.(".cm-md-img-wrap") || img;
-        let pos = null;
-        try { pos = view.posAtDOM(wrap); } catch {}
-        if (typeof pos !== "number") return;
-        const info = parseMarkdownImageAt(view, pos);
+        const info = readImageInfo(view, wrap);
         if (!info) return;
         current = info;
         ev.preventDefault();
@@ -894,7 +906,15 @@ export async function activate(ctx) {
         toolbar.el.style.display = "none";
         const src = info.src;
         showImageMenuAt(ev.clientX, ev.clientY, [
-          { label: `🔍 ${t("ui.zoomView", "放大查看")}`, action: () => openImageViewerByUrl(src, img.getAttribute?.("alt") || "") },
+          {
+            label: `🔍 ${t("ui.zoomView", "放大查看")}`,
+            action: () => openImageViewerByUrl(
+              src,
+              img.getAttribute?.("alt") || img.dataset?.imageAlt || "",
+              info.groupItems,
+              info.groupIndex
+            )
+          },
           { label: `📋 ${t("ui.copyImage", "复制图片")}`, action: async () => { try { await copyImageToClipboard(src); showNotification("success", t("msg.copied", "图片已复制到剪贴板")); } catch (e) { showNotification("error", t("msg.copyFailed", "复制失败：{message}", { message: e?.message || e })); } } },
           { label: `⬇️ ${t("ui.downloadImage", "下载图片")}`, action: async () => { try { await downloadImage(src); } catch (e) { showNotification("error", t("msg.downloadFailed", "下载失败：{message}", { message: e?.message || e })); } } },
           { label: `🌐 ${t("ui.openInNewTab", "在新标签页打开")}`, action: async () => { try { const url = await resolveSrcToUrl(src); if (url) window.open(url, "_blank", "noopener,noreferrer"); } catch {} } },
@@ -922,7 +942,7 @@ export async function activate(ctx) {
         const src = current?.src;
         if (!src) return;
         try {
-          await openImageViewerByUrl(src, "");
+          await openImageViewerByUrl(src, "", current?.groupItems, current?.groupIndex);
         } catch {}
         hide();
       };

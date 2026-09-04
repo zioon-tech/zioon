@@ -2777,6 +2777,7 @@ export function installToolCallCards() {
       return true;
     };
     isPrimaryWriterPayload = (payload) => {
+      if (payload?.documentWriter === false) return false;
       if (payload?.panelId && this.panelId) return payload.panelId === this.panelId;
       if (payload?.sessionId) {
         const activePanelId = window.zion?.panels?.getActivePanelId?.() || null;
@@ -2856,6 +2857,7 @@ export function installToolCallCards() {
       return !this.currentRunId || this.runActive;
     };
     onCall = (payload) => {
+      if (payload?.documentWriter === false) return;
       if (!this.shouldHandleScopedPayload(payload)) return;
       if (!this.acceptsRunEvent(payload)) return;
       const tc = payload?.toolCall || payload;
@@ -3825,6 +3827,10 @@ export function installToolCallCards() {
       // Phase 3: 兜底 (创建新锚点)
       for (const it of itemsToProcess) {
         if (processedIds.has(it.id)) continue;
+        if (it?.requiresDocumentAnchor === true) {
+          skippedFallback = true;
+          continue;
+        }
         const sameIdAnchor = anchors.find((anchor) => String(anchor.markerId || "") === String(it.id || ""));
         if (sameIdAnchor && !hasMatchingAssistantParent(it, sameIdAnchor)) {
           skippedFallback = true;

@@ -32,6 +32,20 @@ import {
   selectAutomationCandidate,
   updateProjectPolicy
 } from "./project-automation-core.js";
+import {
+  canSyncIdentitySnapshotToRuntime,
+  controlRuntimeProjectAutomation,
+  createIdentitySnapshot,
+  hasIdentityContext,
+  insertAfterLeadingSystem as insertAfterLeadingSystemMessage,
+  loadIdentitySnapshotFromRuntime,
+  loadProjectAutomationFromRuntime,
+  projectAutomationRevision,
+  projectAutomationSyncDirection,
+  syncIdentitySnapshotToRuntime,
+  syncProjectAutomationToRuntime
+} from "./identity-runtime-state.js";
+import { isContinuationBoundaryLine } from "../../src/chat/session-document-format.js";
 
 const MEMORY_ROOT_DISPLAY = "~/.zion-next/memory";
 const BIOGRAPHY_VIEW_ID = "dev.identity.biography";
@@ -41,12 +55,16 @@ const BIOGRAPHY_CACHE_VERSION = 1;
 const BIOGRAPHY_RENDER_PAGE_SIZE = 80;
 const IDENTITY_SNAPSHOT_VERSION = 3;
 const PROJECT_AUTOMATION_STORAGE_KEY = "projectAutomation.v1";
+const PROJECT_AUTOMATION_RUNTIME_RESTORE_INTERVAL_MS = 1000;
 let memoryRootPromise = null;
 let profileScaffoldReady = false;
 let profileScaffoldPromise = null;
 let projectCoordinatorPromise = null;
 let projectAutomationMemoryState = normalizeAutomationDocument();
 let projectAutomationStore = null;
+let projectAutomationRuntimeSyncQueue = Promise.resolve();
+let projectAutomationSyncGeneration = 0;
+let projectAutomationRuntimeRestoreTimer = 0;
 const identitySnapshotPromises = new Map();
 
 function fallbackParseMessages(content) {
@@ -63,6 +81,11 @@ function fallbackParseMessages(content) {
     currentContent = [];
   };
   for (const line of lines) {
+    if (isContinuationBoundaryLine(line)) {
+      push();
+      currentRole = "user";
+      continue;
+    }
     const match = /^(system|user|assistant)\s+(.*)$/.exec(line);
     if (match) {
       push();
@@ -531,6 +554,11 @@ async function loadIdentityContext() {
       projectsAttention
     });
   } catch (error) {
+    try {
+      const snapshot = await loadIdentitySnapshotFromRuntime();
+      const fallback = snapshot?.content || "";
+      if (fallback.trim()) return fallback;
+    } catch {}
     console.warn("[dev.identity] profile read failed", error);
     return "";
   }
@@ -602,12 +630,44 @@ async function buildFreshIdentitySnapshot(sessionId) {
   const content = await loadIdentityContext();
   if (!content) return null;
   const paths = await getProfilePaths().catch(() => null);
-  return {
+  const createdAt = new Date().toISOString();
+  const sourceRoot = paths?.identity
+    ? paths.identity.replace(/\/identity\.md$/, "")
+    : MEMORY_ROOT_DISPLAY;
+  const snapshot = {
     version: IDENTITY_SNAPSHOT_VERSION,
-    createdAt: new Date().toISOString(),
-    sourceRoot: paths?.identity ? paths.identity.replace(/\/identity\.md$/, "") : MEMORY_ROOT_DISPLAY,
+    createdAt,
+    sourceRoot,
     content
   };
+  void syncIdentityContextSnapshotToRuntime(snapshot).catch(() => {});
+  return snapshot;
+}
+
+async function syncIdentityContextSnapshotToRuntime(snapshot) {
+  if (!snapshot?.content) return false;
+  await syncIdentitySnapshotToRuntime({
+    snapshot: createIdentitySnapshot({
+      content: snapshot.content,
+      sourceRoot: snapshot.sourceRoot || MEMORY_ROOT_DISPLAY,
+      savedAt: Date.parse(snapshot.createdAt) || Date.now()
+    })
+  });
+  return true;
+}
+
+async function syncFreshIdentityContextSnapshotToRuntime() {
+  if (!canSyncIdentitySnapshotToRuntime()) return false;
+  const content = await loadIdentityContext();
+  if (!content) return false;
+  const paths = await getProfilePaths().catch(() => null);
+  return syncIdentityContextSnapshotToRuntime({
+    createdAt: new Date().toISOString(),
+    sourceRoot: paths?.identity
+      ? paths.identity.replace(/\/identity\.md$/, "")
+      : MEMORY_ROOT_DISPLAY,
+    content
+  });
 }
 
 async function loadIdentityContextForSession(sessionId, options = {}) {
@@ -632,13 +692,6 @@ async function loadIdentityContextForSession(sessionId, options = {}) {
   } finally {
     if (identitySnapshotPromises.get(id) === promise) identitySnapshotPromises.delete(id);
   }
-}
-
-function insertAfterLeadingSystemMessages(messages, message) {
-  const list = Array.isArray(messages) ? messages : [];
-  let index = 0;
-  while (index < list.length && list[index]?.role === "system") index += 1;
-  return [...list.slice(0, index), message, ...list.slice(index)];
 }
 
 function extractSessionContext(payload, documentText) {
@@ -886,6 +939,13 @@ function eligibleFinishedRun(payload = {}) {
   return true;
 }
 
+function runtimeBiographyPostProcessorOwnsRun(payload = {}) {
+  if (String(payload.backend || "") !== "runtime") return false;
+  const requestSource = String(payload.requestSource || "");
+  if (requestSource && requestSource !== "interactive") return false;
+  return true;
+}
+
 async function captureSessionDocument(payload) {
   try {
     window.zion?.commands?.executeCommand?.("zion.sessions.flushPendingSave", payload.sessionId);
@@ -923,6 +983,7 @@ async function updateBiography(distilled, payload) {
   if (written) {
       const allEvents = await loadBiographyEvents();
       await writeLocalFile(paths.digest, buildBiographyDigest(allEvents));
+      void syncFreshIdentityContextSnapshotToRuntime().catch(() => {});
       void writeBiographyEventsCache(paths.events, allEvents, true);
       publishBiographySessionTags(allEvents);
     try {
@@ -988,13 +1049,126 @@ function readProjectAutomation() {
   return normalizeAutomationDocument(projectAutomationMemoryState);
 }
 
-function writeProjectAutomation(document) {
+function storeProjectAutomationProjection(document, { persist = true } = {}) {
   const normalized = normalizeAutomationDocument(document);
   projectAutomationMemoryState = normalized;
-  try {
-    void projectAutomationStore?.update?.(PROJECT_AUTOMATION_STORAGE_KEY, normalized);
-  } catch {}
+  if (persist) {
+    try {
+      void projectAutomationStore?.update?.(PROJECT_AUTOMATION_STORAGE_KEY, normalized);
+    } catch {}
+  }
   return normalized;
+}
+
+function scheduleProjectAutomationRuntimeSync(document) {
+  const normalized = normalizeAutomationDocument(document);
+  const fingerprint = JSON.stringify(normalized);
+  const generation = projectAutomationSyncGeneration;
+  projectAutomationRuntimeSyncQueue = projectAutomationRuntimeSyncQueue
+    .catch(() => {})
+    .then(() => {
+      if (generation !== projectAutomationSyncGeneration) {
+        return { synced: false, reason: "plugin-disposed" };
+      }
+      if (JSON.stringify(readProjectAutomation()) !== fingerprint) {
+        return { synced: false, reason: "superseded" };
+      }
+      return syncProjectAutomationToRuntime({ document: normalized });
+    });
+  return projectAutomationRuntimeSyncQueue;
+}
+
+function writeProjectAutomation(document) {
+  const normalized = storeProjectAutomationProjection(document);
+  void scheduleProjectAutomationRuntimeSync(normalized).catch(() => {});
+  return normalized;
+}
+
+async function reconcileProjectAutomationRuntimeState({ emit = false } = {}) {
+  const generation = projectAutomationSyncGeneration;
+  const runtime = await loadProjectAutomationFromRuntime();
+  if (generation !== projectAutomationSyncGeneration) {
+    return { action: "none", reason: "plugin-disposed" };
+  }
+  const local = readProjectAutomation();
+  const action = projectAutomationSyncDirection(local, runtime);
+  if (action === "restore") {
+    const restored = storeProjectAutomationProjection(runtime, { persist: false });
+    await projectAutomationStore?.update?.(PROJECT_AUTOMATION_STORAGE_KEY, restored);
+    window.zion?.state?.set?.("runtime.projectAutomationSync", {
+      status: "loaded",
+      syncedAt: Date.now(),
+      revision: projectAutomationRevision(restored)
+    });
+    if (emit) {
+      window.zion?.events?.emit?.("identity/projectAutomationChanged", {
+        status: "runtime-restored"
+      });
+    }
+    return { action, document: restored };
+  }
+  if (action === "upload") {
+    const result = await scheduleProjectAutomationRuntimeSync(local);
+    return { action, document: local, result };
+  }
+  return {
+    action,
+    document: runtime || local
+  };
+}
+
+function runtimeOwnsProjectAutomationCoordinator() {
+  const connection = window.zion?.state?.get?.("runtime.connection");
+  return String(connection?.backend || "") === "runtime"
+    && connection?.projectAutomationWorker === true;
+}
+
+function hasActiveProjectAutomation(document = readProjectAutomation()) {
+  return Object.values(normalizeAutomationDocument(document).projects)
+    .some((policy) => policy.activeTaskId && policy.lastStatus === "running");
+}
+
+function scheduleProjectAutomationRuntimeRestore(
+  delay = PROJECT_AUTOMATION_RUNTIME_RESTORE_INTERVAL_MS
+) {
+  try {
+    if (projectAutomationRuntimeRestoreTimer) {
+      window.clearTimeout(projectAutomationRuntimeRestoreTimer);
+    }
+    projectAutomationRuntimeRestoreTimer = 0;
+    if (!runtimeOwnsProjectAutomationCoordinator()) return;
+    projectAutomationRuntimeRestoreTimer = window.setTimeout(() => {
+      projectAutomationRuntimeRestoreTimer = 0;
+      void reconcileProjectAutomationRuntimeState({ emit: true })
+        .then((result) => {
+          void window.zion?.agents?.refreshRuntimeSnapshot?.();
+          if (hasActiveProjectAutomation(result.document)) {
+            scheduleProjectAutomationRuntimeRestore();
+          }
+        })
+        .catch(() => {});
+    }, Math.max(0, Number(delay) || 0));
+  } catch {}
+}
+
+async function runProjectAutomationThroughRuntime(action, projectKey) {
+  if (!runtimeOwnsProjectAutomationCoordinator()) {
+    return { handled: false, reason: "runtime-coordinator-unavailable" };
+  }
+  const result = await controlRuntimeProjectAutomation({
+    action,
+    projectKey,
+    interactionProfileId: window.zion?.state?.get?.("runtime.interactionProfileId")
+      || "interactive.default"
+  });
+  if (result.handled) {
+    const reconciled = await reconcileProjectAutomationRuntimeState({ emit: true });
+    void window.zion?.agents?.refreshRuntimeSnapshot?.();
+    if (hasActiveProjectAutomation(reconciled.document)) {
+      scheduleProjectAutomationRuntimeRestore();
+    }
+  }
+  return result;
 }
 
 async function appendProjectAttention(paths, project, reason, detail = "") {
@@ -1361,7 +1535,14 @@ function registerProjectAutomationTool() {
     const projectKey = project.key;
     const policy = automation.projects[projectKey] || normalizeProjectPolicy();
     if (action === "disable") {
-      if (policy.activeTaskId) window.zion?.agents?.stopTask?.(policy.activeTaskId);
+      const runtimeStop = policy.activeTaskId
+        ? await runProjectAutomationThroughRuntime("stop", projectKey).catch(() => ({
+            handled: false
+          }))
+        : { handled: false };
+      if (policy.activeTaskId && !runtimeStop.handled) {
+        window.zion?.agents?.stopTask?.(policy.activeTaskId);
+      }
       writeProjectAutomation(updateProjectPolicy(automation, projectKey, {
         enabled: false,
         activeTaskId: "",
@@ -1410,6 +1591,10 @@ function registerProjectAutomationTool() {
     }
     if (action === "stop") {
       if (!policy.activeTaskId) return "Project automation is not running";
+      const runtimeStop = await runProjectAutomationThroughRuntime("stop", projectKey);
+      if (runtimeStop.handled) {
+        return JSON.stringify(runtimeStop.result, null, 2);
+      }
       window.zion?.agents?.stopTask?.(policy.activeTaskId);
       writeProjectAutomation(updateProjectPolicy(automation, projectKey, {
         activeTaskId: "",
@@ -1866,6 +2051,9 @@ function renderBiographyView(container) {
     workingProjectsLoading = true;
     workingProjectsError = "";
     workingProjectsPromise = (async () => {
+      if (options.refresh) {
+        await reconcileProjectAutomationRuntimeState().catch(() => {});
+      }
       const paths = profilePaths || await getProfilePaths();
       profilePaths = paths;
       const projectsRoot = paths.projectsIndex.replace(/\/index\.md$/, "");
@@ -1926,7 +2114,13 @@ function renderBiographyView(container) {
           }
         : patch;
       if (patch?.enabled === false && current.activeTaskId) {
-        window.zion?.agents?.stopTask?.(current.activeTaskId);
+        const runtimeStop = await runProjectAutomationThroughRuntime(
+          "stop",
+          project.key
+        ).catch(() => ({ handled: false }));
+        if (!runtimeStop.handled) {
+          window.zion?.agents?.stopTask?.(current.activeTaskId);
+        }
       }
       const next = updateProjectPolicy(
         workingProjects.automation,
@@ -3176,15 +3370,27 @@ export async function activate(ctx) {
   projectAutomationMemoryState = normalizeAutomationDocument(
     projectAutomationStore.get(PROJECT_AUTOMATION_STORAGE_KEY, {})
   );
+  const activationProjectAutomationStore = projectAutomationStore;
+  projectAutomationSyncGeneration += 1;
+  try {
+    const reconciled = await reconcileProjectAutomationRuntimeState();
+    if (hasActiveProjectAutomation(reconciled.document)) {
+      scheduleProjectAutomationRuntimeRestore();
+    }
+  } catch (error) {
+    console.warn("[dev.identity] Runtime project automation reconciliation unavailable", error);
+  }
   profileScaffoldReady = false;
   try {
     await ensureProfileFilesInitialized({ force: true });
+    void syncFreshIdentityContextSnapshotToRuntime().catch(() => {});
   } catch (error) {
     console.warn("[dev.identity] profile scaffold initialization unavailable", error);
   }
   const projectAutomationTool = registerProjectAutomationTool();
   disposables.push(projectAutomationTool);
   const heartbeatDisposable = window.zion?.events?.on?.("scheduler/heartbeat", () => {
+    if (runtimeOwnsProjectAutomationCoordinator()) return;
     void runProjectCoordinator({ reason: "heartbeat" }).catch((error) => {
       console.warn("[dev.identity] project automation heartbeat failed", error);
     });
@@ -3193,10 +3399,17 @@ export async function activate(ctx) {
   const runRequestedDisposable = window.zion?.events?.on?.(
     "identity/projectAutomationRunRequested",
     (payload = {}) => {
-      void runProjectCoordinator({
-        reason: "manual",
-        projectKey: payload.projectKey
-      }).catch((error) => {
+      void (async () => {
+        const runtimeResult = await runProjectAutomationThroughRuntime(
+          "run",
+          payload.projectKey
+        );
+        if (runtimeResult.handled) return runtimeResult.result;
+        return runProjectCoordinator({
+          reason: "manual",
+          projectKey: payload.projectKey
+        });
+      })().catch((error) => {
         window.zion?.notification?.show?.(
           `自动推进失败：${error?.message || String(error)}`,
           { type: "error", duration: 4000 }
@@ -3206,6 +3419,7 @@ export async function activate(ctx) {
   );
   if (runRequestedDisposable) disposables.push(runRequestedDisposable);
   const startupCoordinatorTimer = window.setTimeout(() => {
+    if (runtimeOwnsProjectAutomationCoordinator()) return;
     void runProjectCoordinator({ reason: "startup" }).catch(() => {});
   }, 0);
   disposables.push({
@@ -3233,17 +3447,35 @@ export async function activate(ctx) {
     id: "dev.identity.context",
     order: 85,
     stage: "pre",
-      contribute: async (messages, runCtx = {}) => {
-        const context = await loadIdentityContextForSession(resolveContextSessionId(runCtx));
+    contribute: async (messages, runCtx = {}) => {
+      if (hasIdentityContext(messages)) return messages;
+      const context = await loadIdentityContextForSession(resolveContextSessionId(runCtx));
       if (!context) return messages;
-      return insertAfterLeadingSystemMessages(messages, { role: "system", content: context });
+      return insertAfterLeadingSystemMessage(messages, { role: "system", content: context });
     }
   });
   if (contributor) disposables.push(contributor);
+  try {
+    const runtimeConnectionDisposable = window.zion?.state?.onDidChange?.(
+      "runtime.connection",
+      () => {
+        void syncFreshIdentityContextSnapshotToRuntime().catch(() => {});
+        void reconcileProjectAutomationRuntimeState({ emit: true })
+          .then((result) => {
+            if (hasActiveProjectAutomation(result.document)) {
+              scheduleProjectAutomationRuntimeRestore(0);
+            }
+          })
+          .catch(() => {});
+      }
+    );
+    if (runtimeConnectionDisposable) disposables.push(runtimeConnectionDisposable);
+  } catch {}
 
   const initializeCommand = window.zion?.commands?.registerCommand?.("identity.initialize", async () => {
     try {
       const created = await ensureProfileFilesInitialized({ force: true });
+      void syncFreshIdentityContextSnapshotToRuntime().catch(() => {});
       const message = created.length
         ? `已创建 ${created.length} 个身份档案文件`
         : "身份档案文件已存在";
@@ -3321,7 +3553,17 @@ export async function activate(ctx) {
   } catch {}
 
   const runFinished = window.zion?.events?.on?.("chat/runFinished", (payload = {}) => {
+    if (String(payload.backend || "") === "runtime") {
+      void reconcileProjectAutomationRuntimeState({ emit: true }).catch(() => {});
+    }
     if (disposed || !eligibleFinishedRun(payload)) return;
+    if (runtimeBiographyPostProcessorOwnsRun(payload)) {
+      console.info("[dev.identity] biography skipped: handled by Runtime post-processor", {
+        sessionId: payload.sessionId,
+        runId: payload.runId
+      });
+      return;
+    }
     const documentPromise = captureSessionDocument(payload);
     biographyQueue = biographyQueue
       .catch(() => {})
@@ -3374,6 +3616,14 @@ export async function activate(ctx) {
   const disposable = {
     dispose() {
       disposed = true;
+      if (projectAutomationStore === activationProjectAutomationStore) {
+        projectAutomationSyncGeneration += 1;
+        projectAutomationStore = null;
+      }
+      if (projectAutomationRuntimeRestoreTimer) {
+        window.clearTimeout(projectAutomationRuntimeRestoreTimer);
+        projectAutomationRuntimeRestoreTimer = 0;
+      }
       removeDerivedTagSource("biography");
       for (const item of disposables.splice(0)) {
         try { item?.dispose?.(); } catch {}

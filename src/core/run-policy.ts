@@ -50,11 +50,60 @@ const SAFE_TOOL_NAMES = new Set([
   "grep",
   "read",
   "tree",
-  "memoryManage"
+  "memoryManage",
+  "agentsManage",
+  "identityManage",
+  "projectAutomationManage"
 ]);
 
 const SAFE_MEMORY_ACTIONS = new Set(["list", "tree", "read", "search", "build_context", "providers"]);
-const MUTATING_TOOL_NAMES = new Set(["write", "edit", "Bash", "sendMail", "todoWrite"]);
+const SAFE_AGENTS_ACTIONS = new Set(["list_agents", "list_tasks", "get_task"]);
+const SAFE_IDENTITY_ACTIONS = new Set(["get"]);
+const SAFE_PROJECT_AUTOMATION_ACTIONS = new Set(["get"]);
+const WRITE_IDENTITY_ACTIONS = new Set([
+  "update_snapshot",
+  "patch_files",
+  "append_biography_events",
+  "load_files",
+  "write_files",
+  "clear"
+]);
+const WRITE_PROJECT_AUTOMATION_ACTIONS = new Set([
+  "request_update",
+  "disable",
+  "run_now",
+  "stop"
+]);
+const SAFE_MANAGE_TOOL_ACTIONS = new Map([
+  ["memoryManage", SAFE_MEMORY_ACTIONS],
+  ["agentsManage", SAFE_AGENTS_ACTIONS],
+  ["identityManage", SAFE_IDENTITY_ACTIONS],
+  ["projectAutomationManage", SAFE_PROJECT_AUTOMATION_ACTIONS]
+]);
+const WRITE_AGENTS_ACTIONS = new Set([
+  "create_task",
+  "create_research_task",
+  "delete_task",
+  "select_task",
+  "run_task",
+  "stop_task"
+]);
+const MUTATING_TOOL_NAMES = new Set([
+  "write",
+  "edit",
+  "Bash",
+  "sendMail",
+  "todoWrite",
+  "modelsManage",
+  "toolsManage",
+  "mailManage",
+  "agentsManage",
+  "identityManage",
+  "projectAutomationManage",
+  "sessionCreate",
+  "sessionUpdate",
+  "sessionDelete"
+]);
 
 const LEGACY_SCHEDULED_TOOL_ALIASES = new Map([
   ["fsWrite", "write"],
@@ -106,16 +155,26 @@ export function filterToolsForPolicy<T extends ToolLike>(tools: T[], inputPolicy
     const readOnly = SAFE_TOOL_NAMES.has(name) && isReadOnlyToolName(name);
     const mutating = MUTATING_TOOL_NAMES.has(name) && explicitlyAllowed.has(name);
     if (!readOnly && !mutating) return [];
-    if (mutating && policy.preset === "read-only") return [];
-    if (name === "Bash" || name === "sendMail" || name === "todoWrite") {
+    if (mutating && policy.preset === "read-only" && !readOnly) return [];
+    if (
+      name === "Bash"
+      || name === "sendMail"
+      || name === "todoWrite"
+      || name === "modelsManage"
+      || name === "toolsManage"
+      || name === "mailManage"
+    ) {
       if (policy.preset !== "trusted-automation") return [];
     }
-    if (name !== "memoryManage") return [tool];
+    const safeActions = SAFE_MANAGE_TOOL_ACTIONS.get(name);
+    if (!safeActions) return [tool];
     const clone = globalThis.structuredClone
       ? globalThis.structuredClone(tool)
       : JSON.parse(JSON.stringify(tool));
     const action = clone?.function?.parameters?.properties?.action;
-    if (action) action.enum = Array.from(SAFE_MEMORY_ACTIONS);
+    if (action && (policy.preset === "read-only" || !explicitlyAllowed.has(name))) {
+      action.enum = Array.from(safeActions);
+    }
     return [clone];
   });
 }
@@ -124,6 +183,9 @@ export function isReadOnlyToolCall(call: ToolCallLike): boolean {
   const name = String(call?.name || "");
   if (!SAFE_TOOL_NAMES.has(name) || !isReadOnlyToolName(name)) return false;
   if (name === "memoryManage") return SAFE_MEMORY_ACTIONS.has(String(call?.args?.action || ""));
+  if (name === "agentsManage") return SAFE_AGENTS_ACTIONS.has(String(call?.args?.action || ""));
+  if (name === "identityManage") return SAFE_IDENTITY_ACTIONS.has(String(call?.args?.action || ""));
+  if (name === "projectAutomationManage") return SAFE_PROJECT_AUTOMATION_ACTIONS.has(String(call?.args?.action || ""));
   return true;
 }
 
@@ -148,6 +210,60 @@ function isPathWithinRoots(value: any, roots: string[]): boolean {
   });
 }
 
+function hasUnquotedShellControlSyntax(value: string): boolean {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') {
+        quote = null;
+        continue;
+      }
+      if (char === "`" || (char === "$" && value[index + 1] === "(")) return true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (
+      char === ";"
+      || char === "|"
+      || char === "&"
+      || char === "<"
+      || char === ">"
+      || char === "`"
+      || char === "\n"
+      || char === "\r"
+      || (char === "$" && value[index + 1] === "(")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function commandMatchesAllowedPrefix(command: string, prefixValue: string): boolean {
+  const prefix = prefixValue.trim();
+  if (!prefix) return false;
+  if (command === prefix) return true;
+  if (!command.startsWith(`${prefix} `)) return false;
+  return !hasUnquotedShellControlSyntax(command.slice(prefix.length));
+}
+
 export function authorizeToolCall(
   call: ToolCallLike,
   inputPolicy: any = {},
@@ -168,12 +284,27 @@ export function authorizeToolCall(
       ? { allowed: true }
       : { allowed: false, reason: "file path is outside allowed roots" };
   }
+  if (name === "memoryManage") return { allowed: true };
+  if (name === "agentsManage") {
+    return WRITE_AGENTS_ACTIONS.has(String(args.action || ""))
+      ? { allowed: true }
+      : { allowed: false, reason: "unsupported agentsManage action" };
+  }
+  if (name === "identityManage") {
+    return WRITE_IDENTITY_ACTIONS.has(String(args.action || ""))
+      ? { allowed: true }
+      : { allowed: false, reason: "unsupported identityManage action" };
+  }
+  if (name === "projectAutomationManage") {
+    return WRITE_PROJECT_AUTOMATION_ACTIONS.has(String(args.action || ""))
+      ? { allowed: true }
+      : { allowed: false, reason: "unsupported projectAutomationManage action" };
+  }
   if (policy.preset !== "trusted-automation") return { allowed: false, reason: "trusted automation is required" };
   if (name === "Bash") {
     const command = String(args.command || "").trim();
-    const commandAllowed = policy.allowedCommandPrefixes.length === 0 || policy.allowedCommandPrefixes.some((prefix) =>
-      command === prefix || command.startsWith(`${prefix} `)
-    );
+    const commandAllowed = policy.allowedCommandPrefixes.length === 0
+      || policy.allowedCommandPrefixes.some((prefix) => commandMatchesAllowedPrefix(command, prefix));
     if (!commandAllowed) return { allowed: false, reason: "terminal command is outside allowed prefixes" };
     if (policy.allowedTerminalSessionIds.length && !policy.allowedTerminalSessionIds.includes(String(args.session_id || ""))) {
       return { allowed: false, reason: "terminal session is not allowed" };

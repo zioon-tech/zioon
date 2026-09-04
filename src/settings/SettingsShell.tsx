@@ -57,7 +57,9 @@ function tr(key: string | undefined, fallback = ""): string {
   try {
     const translated = window.zion?.i18n?.t?.(key);
     if (translated && translated !== key) return translated;
-  } catch {}
+  } catch {
+    // Fall back to the supplied copy when the i18n service is unavailable.
+  }
   return fallback || key;
 }
 
@@ -231,10 +233,16 @@ function useSettingsPages(): SettingsPageContribution[] {
     let i18nDisp: { dispose?: () => void } | undefined;
     try {
       i18nDisp = window.zion?.events?.on?.("i18n/changed", () => setRevision((v) => v + 1));
-    } catch {}
+    } catch {
+      // The settings shell can run before the global event bus is installed.
+    }
     return () => {
       disp.dispose();
-      try { i18nDisp?.dispose?.(); } catch {}
+      try {
+        i18nDisp?.dispose?.();
+      } catch {
+        // Disposal is best-effort during Workbench teardown.
+      }
     };
   }, []);
   return useMemo(() => settingsRegistry.getPages(), [revision]);

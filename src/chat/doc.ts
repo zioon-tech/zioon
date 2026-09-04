@@ -7,6 +7,7 @@ import {
   sanitizeCardMarkerId,
   stripAssistantBlockIdComment
 } from "./restore";
+import { isContinuationBoundaryLine } from "./session-document-format.js";
 
 const ASSISTANT_ROLE_RE = /^\s*assistant\s+/;
 const ANY_ROLE_RE = /^\s*(system|user|assistant|tool)\s+/;
@@ -264,6 +265,19 @@ export function parseMessages(content: string): ChatMessage[] {
 
     if (WIDGET_STUB_RE.test(trimmed)) continue;
     if (TOOL_WIDGET_STUB_RE.test(trimmed)) continue;
+
+    if (isContinuationBoundaryLine(line)) {
+      if (currentContent.length > 0 || currentImages.length > 0) {
+        messages.push({
+          role: currentRole,
+          content: buildMessageContent(currentContent, currentImages)
+        });
+        currentContent = [];
+        currentImages = [];
+      }
+      currentRole = "user";
+      continue;
+    }
 
     if (roleMatch) {
       const contentPart = roleMatch[1] === "assistant"

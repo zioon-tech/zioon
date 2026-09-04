@@ -10,10 +10,24 @@ import {
   programmaticCompletionState,
   programmaticEventLogEntry
 } from "./programmatic-task-core.js";
+import {
+  AGENTS_ACTIVE_STORAGE_KEY,
+  AGENTS_TASKS_STORAGE_KEY,
+  DEFAULT_AGENTS,
+  OUTPUT_CONTRACT
+} from "./agents-runtime-shared.js";
+import {
+  agentsSnapshotFromStorage,
+  applyAgentsSnapshotToStorage,
+  hasRuntimeActiveAgentTasks,
+  loadAgentsSnapshotFromRuntime,
+  shouldApplyRuntimeAgentsSnapshot,
+  syncAgentsSnapshotToRuntime
+} from "./agents-runtime-state.js";
 
 const VIEW_ID = "dev.agents.panel";
-const STORAGE_KEY = "zion.agents.tasks.v1";
-const ACTIVE_KEY = "agents.activeTaskId";
+const STORAGE_KEY = AGENTS_TASKS_STORAGE_KEY;
+const ACTIVE_KEY = AGENTS_ACTIVE_STORAGE_KEY;
 const CHANGED_EVENT = "agents/changed";
 const TASK_BODY_EVENT = "zion:agent-task-body";
 const I18N_NS = "dev.agents";
@@ -153,92 +167,14 @@ const I18N_MESSAGES = {
   }
 };
 
-const OUTPUT_CONTRACT = [
-  { id: "contextBrief", heading: "Context Brief", label: "Context Brief" },
-  { id: "workResult", heading: "Work Result", label: "Work Result" },
-  { id: "evidence", heading: "Evidence", label: "Evidence" },
-  { id: "nextActions", heading: "Next Actions", label: "Next Actions" }
-];
 const AUTO_TITLE_MAX_LENGTH = 36;
-
-const DEFAULT_AGENTS = [
-  {
-    id: "researcher",
-    labelKey: "agent.researcher",
-    color: "cyan",
-    modelPolicy: "fast",
-    isolation: "context",
-    background: true,
-    maxTurns: 8,
-    tools: ["read", "search", "web"],
-    disallowedTools: ["edit", "write", "shell-write"],
-    permissionMode: "read-only",
-    outputContract: OUTPUT_CONTRACT,
-    prompt: [
-      "你是一个只读 Researcher sub-agent。",
-      "适合调研代码、文档和外部资料，不直接修改文件。",
-      "输出必须包含：Context Brief、关键发现、证据、建议下一步。"
-    ].join("\n")
-  },
-  {
-    id: "planner",
-    labelKey: "agent.planner",
-    color: "purple",
-    modelPolicy: "inherit",
-    isolation: "context",
-    background: false,
-    maxTurns: 6,
-    tools: ["read", "search"],
-    disallowedTools: ["edit", "write", "shell-write"],
-    permissionMode: "plan",
-    outputContract: OUTPUT_CONTRACT,
-    prompt: [
-      "你是一个 Planner sub-agent。",
-      "目标是把模糊需求拆成可执行步骤，明确依赖、风险和验收标准。",
-      "不要直接写代码，除非用户明确要求。"
-    ].join("\n")
-  },
-  {
-    id: "implementer",
-    labelKey: "agent.implementer",
-    color: "green",
-    modelPolicy: "capable",
-    isolation: "worktree-proposed",
-    background: true,
-    maxTurns: 12,
-    tools: ["read", "search", "edit", "test"],
-    disallowedTools: ["destructive-git", "secrets"],
-    permissionMode: "accept-edits",
-    outputContract: OUTPUT_CONTRACT,
-    prompt: [
-      "你是一个 Implementer sub-agent。",
-      "适合实现自包含的改动。优先小步提交、最小修改、可验证结果。",
-      "输出必须说明修改范围、验证方式和剩余风险。"
-    ].join("\n")
-  },
-  {
-    id: "reviewer",
-    labelKey: "agent.reviewer",
-    color: "orange",
-    modelPolicy: "inherit",
-    isolation: "context",
-    background: true,
-    maxTurns: 6,
-    tools: ["read", "diff", "test"],
-    disallowedTools: ["edit", "write"],
-    permissionMode: "read-only",
-    outputContract: OUTPUT_CONTRACT,
-    prompt: [
-      "你是一个 Reviewer sub-agent。",
-      "重点发现 bug、回归风险、缺失测试和安全问题。",
-      "按严重程度排序，避免只做总结。"
-    ].join("\n")
-  }
-];
 
 let lastTaskEditorHandle = null;
 let pendingFocusTaskId = "";
 const activeRuns = new Map();
+let agentsRuntimeSyncTimer = 0;
+let agentsRuntimeRestoreTimer = 0;
+const AGENTS_RUNTIME_RESTORE_INTERVAL_MS = 1800;
 
 function t(key, fallback, values) {
   const fullKey = `${I18N_NS}.${key}`;
@@ -284,12 +220,83 @@ function writeTasks(list, opts = {}) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {}
+  scheduleRuntimeAgentsSync();
+  if (hasRuntimeActiveAgentTasks({ tasks: next })) {
+    scheduleRuntimeAgentsRestore(AGENTS_RUNTIME_RESTORE_INTERVAL_MS);
+  }
   if (!opts.silent) emitChanged();
 }
 
 function emitChanged() {
   try { window.zion?.events?.emit?.(CHANGED_EVENT, {}); } catch {}
   try { window.dispatchEvent(new CustomEvent("zion:agents-changed")); } catch {}
+}
+
+function syncCurrentAgentsSnapshotToRuntime() {
+  const snapshot = agentsSnapshotFromStorage();
+  return syncAgentsSnapshotToRuntime({ snapshot });
+}
+
+function scheduleRuntimeAgentsSync() {
+  try {
+    if (agentsRuntimeSyncTimer) window.clearTimeout(agentsRuntimeSyncTimer);
+    agentsRuntimeSyncTimer = window.setTimeout(() => {
+      agentsRuntimeSyncTimer = 0;
+      void syncCurrentAgentsSnapshotToRuntime().catch(() => {});
+    }, 250);
+  } catch {}
+}
+
+function isRuntimeBackendActive() {
+  try {
+    if (String(window.zion?.state?.get?.("runtime.connection")?.backend || "") === "runtime") {
+      return true;
+    }
+  } catch {}
+  try {
+    return String(localStorage.getItem("zion.runtime.mode") || "").trim() === "runtime";
+  } catch {
+    return false;
+  }
+}
+
+async function refreshAgentsSnapshotFromRuntime() {
+  try {
+    const runtimeSnapshot = await loadAgentsSnapshotFromRuntime();
+    if (!runtimeSnapshot) return { loaded: false, applied: false, snapshot: null };
+    const localSnapshot = agentsSnapshotFromStorage();
+    const applied = shouldApplyRuntimeAgentsSnapshot(localSnapshot, runtimeSnapshot);
+    if (applied) {
+      applyAgentsSnapshotToStorage(runtimeSnapshot);
+      for (const task of runtimeSnapshot.tasks || []) {
+        if (String(task?.body || "").trim()) {
+          publishTaskBody(task.id, task.body);
+        }
+      }
+      emitChanged();
+    }
+    return { loaded: true, applied, snapshot: runtimeSnapshot };
+  } catch {
+    return { loaded: false, applied: false, snapshot: null };
+  }
+}
+
+function scheduleRuntimeAgentsRestore(delay = AGENTS_RUNTIME_RESTORE_INTERVAL_MS) {
+  try {
+    if (agentsRuntimeRestoreTimer) window.clearTimeout(agentsRuntimeRestoreTimer);
+    if (!isRuntimeBackendActive()) return;
+    agentsRuntimeRestoreTimer = window.setTimeout(() => {
+      agentsRuntimeRestoreTimer = 0;
+      void refreshAgentsSnapshotFromRuntime()
+        .then((result) => {
+          const snapshot = result.snapshot || agentsSnapshotFromStorage();
+          if (hasRuntimeActiveAgentTasks(snapshot)) {
+            scheduleRuntimeAgentsRestore(AGENTS_RUNTIME_RESTORE_INTERVAL_MS);
+          }
+        })
+        .catch(() => {});
+    }, Math.max(0, Number(delay) || 0));
+  } catch {}
 }
 
 function publishTaskBody(taskId, body) {
@@ -326,6 +333,7 @@ function setActiveTask(id) {
   const value = String(id || "");
   try { localStorage.setItem(ACTIVE_KEY, value); } catch {}
   try { window.zion?.state?.set?.(ACTIVE_KEY, value); } catch {}
+  scheduleRuntimeAgentsSync();
   emitChanged();
 }
 
@@ -1688,6 +1696,7 @@ function installAgentApi() {
     getTasksForSession,
     getExecutionPlan: buildExecutionPlan,
     isRunning: (id) => activeRuns.has(id),
+    refreshRuntimeSnapshot: refreshAgentsSnapshotFromRuntime,
     runTask: (id, handle = lastTaskEditorHandle) => {
       const task = readTasks().find((item) => item?.id === id);
       return task ? runTask(task, handle) : null;
@@ -1936,13 +1945,21 @@ async function runTaskHeadless(taskId) {
 }
 
 export async function activate(ctx) {
-  
-const disposables = [];
+  const disposables = [];
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) disposables.push(disp);
   } catch {}
   disposables.push(installAgentApi());
+  void refreshAgentsSnapshotFromRuntime()
+    .then((result) => {
+      if (!result.loaded) scheduleRuntimeAgentsSync();
+      const snapshot = result.snapshot || agentsSnapshotFromStorage();
+      if (hasRuntimeActiveAgentTasks(snapshot)) {
+        scheduleRuntimeAgentsRestore(AGENTS_RUNTIME_RESTORE_INTERVAL_MS);
+      }
+    })
+    .catch(() => {});
   disposables.push(window.zion.commands.registerCommand("agents.openPanel", openAgentsPanel));
   disposables.push(window.zion.commands.registerCommand("agents.createTaskFromSelection", () => {
     const editor = window.zion?.window?.activeEditor;
@@ -2021,8 +2038,31 @@ const disposables = [];
     });
     if (decorator) disposables.push(decorator);
   } catch {}
+  try {
+    const runtimeDisp = window.zion.state?.onDidChange?.(
+      "runtime.connection",
+      () => {
+        void refreshAgentsSnapshotFromRuntime()
+          .then((result) => {
+            if (!result.loaded) scheduleRuntimeAgentsSync();
+            const snapshot = result.snapshot || agentsSnapshotFromStorage();
+            if (hasRuntimeActiveAgentTasks(snapshot)) {
+              scheduleRuntimeAgentsRestore(0);
+            }
+          })
+          .catch(() => {});
+      }
+    );
+    if (runtimeDisp) disposables.push(runtimeDisp);
+  } catch {}
   const disposable = {
     dispose() {
+      try {
+        if (agentsRuntimeSyncTimer) window.clearTimeout(agentsRuntimeSyncTimer);
+        if (agentsRuntimeRestoreTimer) window.clearTimeout(agentsRuntimeRestoreTimer);
+      } catch {}
+      agentsRuntimeSyncTimer = 0;
+      agentsRuntimeRestoreTimer = 0;
       for (const d of disposables.splice(0)) {
         try { d?.dispose?.(); } catch {}
       }

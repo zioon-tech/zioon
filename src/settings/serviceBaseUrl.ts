@@ -9,6 +9,7 @@ export type ServiceBaseUrlConfigV1 = {
 export const SERVICE_BASEURL_STORAGE_KEY = "zion.settings.serviceBaseUrl";
 
 export const DEFAULT_BASE_URL = "http://127.0.0.1:8765";
+export const DEFAULT_PLUGIN_SERVICE_BASE_URL = "http://127.0.0.1:8767";
 
 export const SERVICE_DEFS: Array<{
   id: ServiceId;
@@ -20,7 +21,7 @@ export const SERVICE_DEFS: Array<{
   {
     id: "pluginService",
     name: "Plugin Service",
-    defaultBaseUrl: DEFAULT_BASE_URL,
+    defaultBaseUrl: DEFAULT_PLUGIN_SERVICE_BASE_URL,
     legacyStorageKey: "zion.pluginServiceUrl"
   },
   {
@@ -101,7 +102,10 @@ export function loadServiceBaseUrlConfig(): ServiceBaseUrlConfigV1 {
           ? fromLegacy
           : def.defaultBaseUrl;
 
-    const norm = normalizeBaseUrl(chosen);
+    const migrated = def.id === "pluginService" && chosen === DEFAULT_BASE_URL
+      ? DEFAULT_PLUGIN_SERVICE_BASE_URL
+      : chosen;
+    const norm = normalizeBaseUrl(migrated);
     out.services[def.id] = {
       name: def.name,
       baseUrl: norm.ok ? norm.value : def.defaultBaseUrl
@@ -167,4 +171,3 @@ export function initServiceBaseUrlConfig(): ServiceBaseUrlConfigV1 {
   applyServiceBaseUrlConfigToRuntime(cfg);
   return cfg;
 }
-

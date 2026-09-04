@@ -37,6 +37,7 @@ export class SessionSync {
   }
 
   syncFromPanel(sourcePanelId: string | null, sourceView: any = null, sourceUpdate: any = null): void {
+    if (isCollaborationBound(sourceView)) return;
     if (!sourcePanelId) {
       sourcePanelId = this.opts.getActivePanelId();
     }
@@ -69,6 +70,7 @@ export class SessionSync {
       const targetEditor = this.opts.getEditor(panel.id);
       if (!targetEditor) continue;
       const targetView = targetEditor.getView?.();
+      if (isCollaborationBound(targetView)) continue;
       const targetViewSessionId = getViewSessionId(targetView);
       if (targetViewSessionId && targetViewSessionId !== sourceSessionId) {
         // The panel says it is on this session, but the active editor view is bound elsewhere.
@@ -108,6 +110,14 @@ export class SessionSync {
         this.syncingPanels.delete(panel.id);
       }
     }
+  }
+}
+
+function isCollaborationBound(view: any): boolean {
+  try {
+    return view?.dom?.dataset?.zionCollaborationBound === "true";
+  } catch {
+    return false;
   }
 }
 

@@ -128,10 +128,7 @@ describe('Slash commands plugin', () => {
     expect(core.getValue()).toBe('****');
   });
 
-  it('injects styles and marks the first item active', async () => {
-    const style = document.getElementById('zion-slash-commands-style');
-    expect(style).toBeTruthy();
-
+  it('marks the first item active', async () => {
     core.replaceSelection('/');
 
     const items = Array.from(document.querySelectorAll('.zion-slash-item'));

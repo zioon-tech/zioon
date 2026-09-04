@@ -511,6 +511,7 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
         result: null,
         ok: null,
         expanded: false,
+        ...(payload?.documentWriter === false ? { requiresDocumentAnchor: true } : {}),
         ...(payload?.assistantBlockId ? { assistantBlockId: payload.assistantBlockId } : {})
       };
       if (id !== String(tc.id)) {
@@ -573,6 +574,7 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
         segmentKey,
         text: "",
         expanded: false,
+        ...(payload?.documentWriter === false ? { requiresDocumentAnchor: true } : {}),
         ...(payload?.assistantBlockId ? { assistantBlockId: payload.assistantBlockId } : {})
       });
       debugLog("event.reasoningStart", { sessionId, panelId: payload?.panelId, runId, segmentKey, id });

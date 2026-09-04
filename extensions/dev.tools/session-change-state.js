@@ -1,4 +1,5 @@
 import { buildFileArtifacts, statusLabel } from "./artifact-model.js";
+import { getCachedRuntimeArtifacts } from "./runtime-artifact-state.js";
 
 export function getCurrentSessionChangeState() {
   const sessionId = getCurrentSessionId();
@@ -10,7 +11,24 @@ export function getSessionChangeState(sessionId = getCurrentSessionId()) {
   const tools = Array.isArray(annotations.tools)
     ? annotations.tools
     : (window.zion?.tools?.getAllToolCalls?.() || []);
-  const artifacts = buildFileArtifacts(tools, annotations, sessionId);
+  const browserArtifacts = buildFileArtifacts(tools, annotations, sessionId);
+  const artifactsByKey = new Map(
+    getCachedRuntimeArtifacts(sessionId).map((artifact) => [
+      `${artifact.toolCallId}\u001f${normalizeChangePath(artifact.path)}`,
+      artifact
+    ])
+  );
+  for (const artifact of browserArtifacts) {
+    const key = `${artifact.toolCallId}\u001f${normalizeChangePath(artifact.path)}`;
+    artifactsByKey.set(key, {
+      ...(artifactsByKey.get(key) || {}),
+      ...artifact
+    });
+  }
+  const artifacts = Array.from(artifactsByKey.values()).sort((left, right) =>
+    Number(left.createdAt || 0) - Number(right.createdAt || 0)
+    || String(left.path || "").localeCompare(String(right.path || ""))
+  );
   return buildChangeState(sessionId, artifacts);
 }
 
@@ -26,6 +44,7 @@ export function subscribeSessionChangeState(listener) {
   try { disposables.push(window.zion?.events?.on?.("chat/toolResult", notify)); } catch {}
   try { disposables.push(window.zion?.events?.on?.("chat/annotationsChanged", notify)); } catch {}
   try { disposables.push(window.zion?.state?.onDidChange?.("sessions.currentId", notify)); } catch {}
+  try { disposables.push(window.zion?.state?.onDidChange?.("runtime.connection", notify)); } catch {}
   return {
     dispose() {
       for (const disposable of disposables.splice(0)) {

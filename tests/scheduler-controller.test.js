@@ -9,13 +9,14 @@ import { LocalSchedulerStore } from "../extensions/dev.scheduler/store.js";
 
 const NOW = new Date(2026, 6, 27, 8, 0, 0).getTime();
 
-function createController({ service = {}, engine = null } = {}) {
+function createController({ service = {}, engine = null, cancelRuntimeRun } = {}) {
   const store = new LocalSchedulerStore();
   const onChange = vi.fn();
   const onServiceStatus = vi.fn();
   const controller = new SchedulerController({
     store,
     service,
+    cancelRuntimeRun,
     onChange,
     onServiceStatus,
     now: () => NOW
@@ -493,5 +494,42 @@ describe("scheduler controller", () => {
         run: { id: "run-next", status: "pending" }
       });
       expect(service.runNow).toHaveBeenCalledTimes(1);
+    });
+
+    it("preserves and cancels active Runtime-backed runs through Runtime", async () => {
+      const cancelRuntimeRun = vi.fn(async () => undefined);
+      const { controller, store } = createController({ cancelRuntimeRun });
+      const task = buildSchedulerTask({
+        id: "task-runtime",
+        title: "Runtime task",
+        prompt: "Produce a report",
+        schedule: { kind: "daily", time: "09:00" },
+        timeoutSeconds: 60
+      }, null, NOW);
+      store.saveTask(task);
+      store.saveRun({
+        id: "run-runtime",
+        taskId: task.id,
+        taskTitle: task.title,
+        executionMode: "local-only",
+        backend: "runtime",
+        runtimeRunId: "runtime-run-1",
+        status: "running",
+        startedAt: NOW - 700_000,
+        completedAt: null,
+        output: "",
+        events: []
+      });
+
+      expect(controller.reconcileStaleRuns()).toBe(false);
+      expect(store.getRun("run-runtime").status).toBe("running");
+      await expect(controller.cancelRun("run-runtime", "user")).resolves.toMatchObject({
+        status: "aborted",
+        completedAt: NOW
+      });
+      expect(cancelRuntimeRun).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimeRunId: "runtime-run-1" }),
+        "user"
+      );
     });
 });

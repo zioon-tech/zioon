@@ -211,6 +211,62 @@ describe("chat cards DOM lifecycle", () => {
     }
   });
 
+  it("does not let a remote observer insert thinking or tool markers", async () => {
+    const assistantBlockId = "run-observed";
+    const initial = `user hi\nassistant <!-- zion-assistant:id=${assistantBlockId} --> \n`;
+    const h = createHarness({ "panel-a": "session-1" }, initial);
+    try {
+      const scope = {
+        sessionId: "session-1",
+        panelId: null,
+        runId: assistantBlockId,
+        assistantBlockId,
+        documentWriter: false
+      };
+      window.zion.events.emit("chat/runStarted", scope);
+      window.zion.events.emit("chat/reasoningStart", scope);
+      window.zion.events.emit("chat/reasoningToken", {
+        ...scope,
+        token: "remote reasoning"
+      });
+      window.zion.events.emit("chat/toolCall", {
+        ...scope,
+        toolCall: {
+          id: "remote-tool",
+          name: "read",
+          args: { path: "remote.txt" }
+        }
+      });
+      await wait(100);
+
+      expect(h.editors.get("panel-a")!.getValue()).toBe(initial);
+      expect(
+        h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline")
+      ).toHaveLength(0);
+      expect(
+        h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline")
+      ).toHaveLength(0);
+
+      h.editors.get("panel-a")!.setValue([
+        "user hi",
+        `assistant <!-- zion-assistant:id=${assistantBlockId} --> `,
+        "调用 read <!-- zion-tool:id=tool:run-observed:remote-tool -->",
+        "思考 <!-- zion-thinking:id=thinking:run-observed:1 -->",
+        ""
+      ].join("\n"), { source: "session-load" });
+      await wait(100);
+
+      expect(
+        h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-thinking-inline")
+      ).toHaveLength(1);
+      expect(
+        h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline")
+      ).toHaveLength(1);
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("ignores late tool and reasoning events from an interrupted run after a new run starts", async () => {
     const initial = [
       "user old",

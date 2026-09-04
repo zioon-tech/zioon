@@ -1,7 +1,10 @@
 # Agent Runtime 边界与仓库整合方案
 
-> 状态：建议方案，待决策  
+> 状态：支持性历史方案
 > 日期：2026-07-26  
+> 当前权威产品架构：
+> [ZION-DISTRIBUTED-RUNTIME-PRODUCT-ARCHITECTURE.md](./ZION-DISTRIBUTED-RUNTIME-PRODUCT-ARCHITECTURE.md)。
+> 本文保留早期边界分析；角色、Placement、Relay 和插件模型冲突时，以权威文档为准。
 > 关联：[SCHEDULED-TASKS-DESIGN.md](./SCHEDULED-TASKS-DESIGN.md)
 > 多端拓扑：[MULTI-SURFACE-AGENT-PLATFORM.md](./MULTI-SURFACE-AGENT-PLATFORM.md)
 
@@ -113,9 +116,10 @@ Skills、Memory、Terminal Context、Context Compression、Comments 等插件通
 | 需要浏览器状态 | 显式 Context Resource，由前端上传快照 |
 | 纯 UI 行为 | 不再允许修改 Runtime 消息 |
 
-### 2.5 后端目前是能力集合，不是 Agent Runtime
+### 2.5 历史后端只是能力集合，不是 Agent Runtime
 
-`zion-local-tools` 具备 FastAPI、文件、Bash、SSH、邮件、搜索、MCP 和 Scheduler，但缺少：
+迁移前的 `zion-local-tools` 同时包含文件、Bash、SSH、邮件、搜索、MCP 和 Scheduler，
+但缺少：
 
 - provider credential vault；
 - 标准化模型适配器；
@@ -127,7 +131,9 @@ Skills、Memory、Terminal Context、Context Compression、Comments 等插件通
 - confirmation token；
 - usage 和上下文压缩策略。
 
-因此当前 `service-backed` 只能持久化触发和待执行 Run，不能在浏览器关闭后完成模型推理。
+该缺口现由独立 `apps/runtime` 补齐。Scheduler、Workbench 会话状态和模型网络边界已迁入
+Runtime；local-tools 默认只注册设备工具路由。持久任务在创建时校验 Runtime Tool
+Broker 能力，不再交给 Workbench 领取执行。
 
 ---
 

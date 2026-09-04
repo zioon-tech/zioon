@@ -2,6 +2,20 @@
  * 插件系统类型定义
  */
 
+import type {
+  NormalizedPluginManifest,
+  PluginCapabilityKind,
+  PluginEntryKind,
+  PluginHostKind
+} from '../../packages/plugin-sdk/src/manifest.mjs';
+
+export type {
+  NormalizedPluginManifest,
+  PluginCapabilityKind,
+  PluginEntryKind,
+  PluginHostKind
+} from '../../packages/plugin-sdk/src/manifest.mjs';
+
 /**
  * 可销毁对象
  */
@@ -55,6 +69,23 @@ export interface PluginError {
   timestamp: number;
 }
 
+export type PluginEntries = Partial<Record<PluginEntryKind, string>> & {
+  /** @deprecated Use workbench. */
+  ui?: string;
+  /** @deprecated Use resource. */
+  tools?: string;
+  /** @deprecated Use resource. */
+  device?: string;
+};
+
+export type PluginCapabilityDeclaration = {
+  id: string;
+  kind: PluginCapabilityKind;
+  host: PluginHostKind;
+  risk?: string;
+  requiredScopes?: string[];
+};
+
 /**
  * 插件清单（新格式）
  */
@@ -68,7 +99,19 @@ export interface PluginManifest {
     id: string;
     name: string;
     version: string;
-    main: string;
+    /** @deprecated Use entries.workbench. */
+    main?: string;
+    manifestVersion?: number;
+    entries?: PluginEntries;
+    hosts?: Partial<Record<PluginHostKind, boolean>>;
+    capabilities?: PluginCapabilityDeclaration[];
+    runtime?: {
+      apiVersion: number;
+    };
+    compatibility?: {
+      pluginApi?: number;
+      runtimeProtocol?: number;
+    };
     presentation?: {
       displayName?: string | Record<string, string>;
       description?: string | Record<string, string>;
@@ -170,7 +213,8 @@ export interface ExtensionManifest {
   pasteHandlers?: Array<{
     id: string;
     priority?: number;
-    handle: (ctx: { clipboardData: DataTransfer; editor: any }) => boolean | Promise<boolean>;
+    claim?: (ctx: { clipboardData: DataTransfer; editor: any }) => unknown | false | null;
+    handle: (ctx: { clipboardData: DataTransfer; editor: any; claim?: unknown }) => boolean | Promise<boolean>;
   }>;
   decorators?: Array<{
     id: string;
@@ -211,6 +255,8 @@ export interface PluginInfo {
   sourceDir?: string;
   /** 开发模式插件会话 ID */
   devId?: string;
+  /** Shared Plugin SDK v2 normalization used by every host. */
+  contract?: NormalizedPluginManifest;
 }
 
 /**
@@ -343,7 +389,14 @@ export interface PluginPackageInfo {
     id: string;
     name: string;
     version: string;
-    main: string;
+    main?: string;
+    manifestVersion?: number;
+    entries?: PluginEntries;
+    hosts?: Partial<Record<PluginHostKind, boolean>>;
+    capabilities?: PluginCapabilityDeclaration[];
+    runtime?: {
+      apiVersion: number;
+    };
   };
 }
 

@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { attachEditor } from '../src/ext/registry';
 import { EditorCore } from '../src/editor/EditorCore';
 import { roles } from '../extensions/dev.roles/roles.js';
+import {
+  pendingAssistantExtension
+} from '../extensions/dev.session-manager/editor/pending-assistant-plugin.js';
 
 function dispatchKey(target, { key, code, shiftKey, ctrlKey, metaKey, altKey }) {
   const ev = new window.KeyboardEvent('keydown', {
@@ -41,6 +44,28 @@ describe('Roles navigation keymap', () => {
   afterEach(() => {
     if (originalPlatform != null) setNavigatorPlatform(originalPlatform);
     vi.useRealTimers();
+  });
+
+  it('hides internal continuation boundaries while keeping the suffix as user content', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const editor = new EditorCore(host, [
+      'user first',
+      'assistant answer',
+      'user <!-- zion-continuation:id=run-middle -->',
+      'preserved suffix'
+    ].join('\n'));
+    editor.addExternalExtension([
+      roles(),
+      pendingAssistantExtension()
+    ]);
+
+    expect(editor.view.state.doc.toString()).toContain('zion-continuation');
+    expect(editor.view.dom.textContent).not.toContain('zion-continuation');
+    expect(editor.view.dom.textContent).toContain('preserved suffix');
+
+    editor.dispose();
+    host.remove();
   });
 
   it('Mod-ArrowUp jumps to previous role start; double jumps to doc top', () => {

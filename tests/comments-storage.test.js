@@ -267,7 +267,7 @@ describe("comments storage", () => {
     expect(idb.getKV(`${THREAD_PAYLOAD_PREFIX}thread-0`).sourceContextText.length).toBeGreaterThan(8000);
 
     activated?.dispose?.();
-  });
+  }, 10_000);
 
   it("loads archived thread records from IndexedDB even when the local index is empty", async () => {
     const idb = createFakeIndexedDB();

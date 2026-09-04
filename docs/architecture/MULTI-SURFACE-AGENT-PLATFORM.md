@@ -1,7 +1,10 @@
 # Zion 多端 Agent Platform：Web、Desktop、Cloud 与 CLI
 
-> 状态：建议方案，待决策  
+> 状态：支持性历史方案
 > 日期：2026-07-26  
+> 当前权威产品架构：
+> [ZION-DISTRIBUTED-RUNTIME-PRODUCT-ARCHITECTURE.md](./ZION-DISTRIBUTED-RUNTIME-PRODUCT-ARCHITECTURE.md)。
+> 本文保留早期多端拓扑分析；角色、Placement、Relay 和插件模型冲突时，以权威文档为准。
 > 关联：[AGENT-RUNTIME-BOUNDARY-STRATEGY.md](./AGENT-RUNTIME-BOUNDARY-STRATEGY.md)
 
 ## 1. 核心判断
@@ -423,7 +426,7 @@ CLI 发起 cloud Run
 
 ## 9. 多端事件和输出协议
 
-RunEvent 必须同时满足 UI、CLI 和 API：
+Canonical RunEvent 必须同时满足审计、恢复和服务端投影：
 
 ```typescript
 interface RunEvent<T> {
@@ -442,7 +445,9 @@ interface RunEvent<T> {
 }
 ```
 
-同一事件可投影为：
+客户端不直接消费高频 canonical delta。Runtime Client SDK 先生成
+`RunProjectionEvent`：连续文本/reasoning 合并为有界 chunk，语义事件保持原样，
+并保留最后一个 canonical sequence 作为恢复 cursor。同一 projection 可呈现为：
 
 - Web 工具卡片；
 - Desktop 通知；
@@ -451,7 +456,16 @@ interface RunEvent<T> {
 - Session transcript；
 - webhook delivery。
 
-不得为 CLI 单独设计一套事件，也不得让 Desktop 直接消费内部 Node 对象。
+不同表面只选择不同订阅策略，不定义不同协议：
+
+- Workbench/Desktop：正文 stream，reasoning stream；
+- Mobile foreground：正文 stream，reasoning summary/none；
+- CLI：默认 projection，显式 `--raw-events` 才读取 canonical log；
+- background client：只接收生命周期、审批和完成通知。
+
+不得为 CLI 单独设计一套事件，不得让 Desktop 直接消费内部 Node 对象，也不得把
+token 级事件写入浏览器持久化状态。慢消费者通过有界队列把 backpressure 传回
+Runtime。
 
 ---
 
@@ -670,4 +684,3 @@ CLI 应在第一阶段进入，因为它能迫使 Agent Core、事件和 headles
 8. Cloud 是 Control Plane + Runtime pool + sandbox。
 9. Workspace、身份、凭证和插件协议从第一天按多设备设计。
 10. 先做 Local Runtime + CLI，再做 Desktop，最后做 Cloud multi-tenant。
-

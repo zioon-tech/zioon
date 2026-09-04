@@ -119,7 +119,7 @@ export function createProgrammaticExecutor(deps) {
       let usage = { input_tokens: 0, output_tokens: 0 };
       let messages = [{ role: "user", content: prompt }];
       const counters = { toolCalls: 0, mail: 0 };
-      const tools = filterToolsForPolicy(getTools?.() || [], policy);
+      let tools = [];
 
       try {
         runs?.start?.({
@@ -135,14 +135,14 @@ export function createProgrammaticExecutor(deps) {
         });
       } catch {}
 
-      publish("run.started", {
-        prompt,
-        executionMode: request.executionMode,
-        model: runModel,
-        policy: { ...policy, allowedTools: tools.map((tool) => tool?.function?.name || tool?.name) }
-      });
-
       try {
+        tools = filterToolsForPolicy(getTools?.() || [], policy);
+        publish("run.started", {
+          prompt,
+          executionMode: request.executionMode,
+          model: runModel,
+          policy: { ...policy, allowedTools: tools.map((tool) => tool?.function?.name || tool?.name) }
+        });
         if (runContributors) {
           messages = await runContributors(messages, "pre", {
             editor: null,
@@ -212,11 +212,21 @@ export function createProgrammaticExecutor(deps) {
               });
             },
             onInvalidToolCall(call) {
+              const id = String(call?.id || "");
+              const name = String(call?.name || "tool");
+              if (!id) return;
+              const validationError = String(call?.error || "invalid arguments");
+              calls.push({
+                id,
+                name,
+                args: call?.args && typeof call.args === "object" ? call.args : {},
+                validationError
+              });
               publish("tool.denied", {
                 turn,
-                callId: call.id,
-                name: call.name,
-                reason: call.error || "invalid arguments"
+                callId: id,
+                name,
+                reason: validationError
               });
             },
             onError(error) {
@@ -260,6 +270,14 @@ export function createProgrammaticExecutor(deps) {
               type: "function",
               function: { name: call.name, arguments: JSON.stringify(call.args || {}) }
             });
+            if (call.validationError) {
+              toolMessages.push({
+                role: "tool",
+                tool_call_id: call.id,
+                content: `Invalid tool call arguments for "${call.name}": ${call.validationError}`
+              });
+              continue;
+            }
             const decision = authorizeToolCall(call, policy, counters);
             if (!decision.allowed) {
               publish("tool.denied", { turn, callId: call.id, name: call.name, reason: decision.reason });

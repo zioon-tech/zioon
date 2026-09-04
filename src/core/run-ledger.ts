@@ -164,6 +164,10 @@ const DEFAULT_STORAGE_KEY = "zion.core.runLedger.v1";
 const DEFAULT_CURRENCY = "USD";
 const DEFAULT_MAX_RUNS = 500;
 const DEFAULT_MAX_EVENTS = 5000;
+const TRANSIENT_STREAM_EVENT_TYPES = new Set([
+  "message.delta",
+  "reasoning.delta"
+]);
 const DEFAULT_MAX_OUTCOMES = 1000;
 const DEFAULT_SOURCE_KINDS: RunSourceKindRegistration[] = [
   { kind: "project", label: "项目", color: "cyan", order: 10, pluginId: "core" },
@@ -526,7 +530,9 @@ function normalizeDocument(input: any, now = Date.now()): RunLedgerDocument {
       .filter(Boolean) as RunRecord[],
     events: (Array.isArray(input?.events) ? input.events : [])
       .map((event: any) => normalizeEvent(event, now))
-      .filter(Boolean) as RunLedgerEvent[],
+      .filter((event: RunLedgerEvent | null) =>
+        !!event && !TRANSIENT_STREAM_EVENT_TYPES.has(event.type)
+      ) as RunLedgerEvent[],
     outcomes: (Array.isArray(input?.outcomes) ? input.outcomes : [])
       .map(normalizeOutcome)
       .filter(Boolean) as RunOutcome[]
@@ -791,6 +797,7 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
     recordEvent(input: any): RunLedgerEvent | null {
       const event = normalizeEvent(input, now());
       if (!event) return null;
+      if (TRANSIENT_STREAM_EVENT_TYPES.has(event.type)) return null;
       appendEvent(event);
       applyEventToRun(event);
       persist();

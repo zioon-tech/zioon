@@ -20,6 +20,14 @@ import { geminiProvider } from "./gemini-provider.js";
 import { userModelsProvider } from "./user-models-provider.js";
 import { installModelSwitcher } from "./model-switcher.js";
 import { registerModelsTools } from "./models-tools.js";
+import {
+  loadLocalDynamicModelStore,
+  upsertDynamicModel
+} from "./runtime-user-model-store.js";
+import {
+  loadProviderConfig,
+  saveProviderConfigPatch
+} from "./provider-config-storage.js";
 import { createChatOverviewRail } from "./overview-rail.js";
 import { ModelsSettingsPage } from "./ModelsSettingsPage.jsx";
 import { buildContextWindowSnapshot } from "./context-health.js";
@@ -38,6 +46,24 @@ import { createChatRuntime } from "../../src/chat/runtime";
 import { reconstructWidgetHistoryMessages } from "../../src/chat/widget-history";
 import { createToolCardId } from "../../src/chat/tool-card-id";
 import { createProgrammaticExecutor } from "./programmatic-runner.js";
+import {
+  finalizeProgrammaticSession,
+  projectRunEventToSession
+} from "./programmatic-session.js";
+import {
+  abortInteractiveRuntimeRun,
+  createInteractiveRuntimeHandle,
+  interactiveRuntimeEligibility,
+  listInteractiveRuntimeSupportedTools,
+  observeInteractiveRuntimeRun,
+  persistInteractiveRuntimeProfileModel,
+  prepareInteractiveRuntimeMessages,
+  probeInteractiveRuntime,
+  readInteractiveRuntimeConfig,
+  resolveInteractiveRuntimeProfileModel,
+  shouldUseInteractiveRuntime,
+  syncWorkbenchModelProfiles
+} from "./runtime-backend.js";
 import { inferToolResultError } from "./tool-result-diagnostics.js";
 
 
@@ -526,6 +552,29 @@ export async function activate(ctx) {
     if (disp) ctx.subscriptions.push(disp);
   } catch {}
 
+  try {
+    const fallbackRuntimeTools = listInteractiveRuntimeSupportedTools();
+    const currentRuntimeTools = window.zion?.state?.get?.("runtime.supportedToolNames");
+    const seededFallback = !Array.isArray(currentRuntimeTools) || currentRuntimeTools.length === 0;
+    if (seededFallback) {
+      window.zion?.state?.set?.("runtime.supportedToolNames", fallbackRuntimeTools);
+    }
+    ctx.subscriptions.push({
+      dispose() {
+        try {
+          const current = window.zion?.state?.get?.("runtime.supportedToolNames");
+          if (
+            seededFallback
+            && Array.isArray(current)
+            && current.join("\n") === fallbackRuntimeTools.join("\n")
+          ) {
+            window.zion?.state?.set?.("runtime.supportedToolNames", []);
+          }
+        } catch {}
+      }
+    });
+  } catch {}
+
   const RUN_FINISHED_SOUND_STATE_KEY = "chat.runFinishedSoundEnabled";
   const RUN_FINISHED_SOUND_LS_KEY = "zion.chat.runFinishedSoundEnabled";
   const llm = window.zion.llm || (window.zion.llm = {});
@@ -577,7 +626,12 @@ export async function activate(ctx) {
       providerId,
       modelId,
       label: String(active?.label || item?.label || modelId),
-      thinkingEffort: normalizeThinkingEffort(active?.thinkingEffort)
+      ...(active?.thinkingMode != null
+        ? { thinkingMode: normalizeThinkingMode(active.thinkingMode) }
+        : {}),
+      ...(active?.thinkingEffort != null
+        ? { thinkingEffort: normalizeThinkingEffort(active.thinkingEffort) }
+        : {})
     };
   }
   function ensureActiveModel() {
@@ -614,6 +668,195 @@ export async function activate(ctx) {
   const modelHealthMonitor = startModelHealthMonitor();
   ctx.subscriptions.push(modelHealthMonitor);
 
+  let runtimeStatusDisposable = null;
+  let runtimeModelSyncPromise = null;
+  const updateRuntimeStatus = async () => {
+    const config = readInteractiveRuntimeConfig();
+    const health = config.mode === "browser"
+      ? {
+          available: false,
+          schedulerWorker: false,
+          checkedAt: Date.now()
+        }
+      : await probeInteractiveRuntime(config);
+    const backend = config.mode === "browser"
+      ? "browser"
+      : health.available
+        ? "runtime"
+        : config.mode === "runtime"
+          ? "runtime-offline"
+          : "browser";
+    window.zion?.state?.set?.("runtime.connection", {
+      ...health,
+      mode: config.mode,
+      backend,
+      baseUrl: config.baseUrl
+    });
+    runtimeStatusDisposable?.dispose?.();
+    const register = window.zion?.bottomStatusBar?.registerItem
+      || window.zion?.statusBar?.registerItem;
+    runtimeStatusDisposable = register?.({
+      id: "dev.runtime.connection",
+      text: backend === "runtime"
+        ? "$(server) Runtime"
+        : backend === "runtime-offline"
+          ? "$(debug-disconnect) Runtime offline"
+          : "$(browser) Browser",
+      tooltip: backend === "runtime"
+        ? `Runtime connected: ${config.baseUrl}`
+        : backend === "runtime-offline"
+          ? `Runtime unavailable: ${config.baseUrl}`
+          : "Using browser compatibility runtime",
+      priority: 74
+    }) || null;
+  };
+  const syncRuntimeModelProfiles = () => {
+    if (runtimeModelSyncPromise) return runtimeModelSyncPromise;
+    runtimeModelSyncPromise = (async () => {
+      const config = readInteractiveRuntimeConfig();
+      if (!await shouldUseInteractiveRuntime(config)) return null;
+      const catalog = window.zion?.state?.get?.("models.catalog") || [];
+      const candidates = (Array.isArray(catalog) ? catalog : [])
+        .filter((model) => !["anthropic", "google"].includes(model?.providerId))
+        .map((model) => ({
+          providerId: model.providerId,
+          modelId: model.id,
+          label: model.label || model.id
+        }));
+      const result = await syncWorkbenchModelProfiles({
+        models: candidates,
+        baseUrl: config.baseUrl,
+        resolveConfig: async (model) => {
+          const provider = window.zion?.models?.getProvider?.(model.providerId);
+          return provider?.resolve?.(model.modelId);
+        }
+      });
+      window.zion?.state?.set?.("runtime.modelSync", {
+        imported: result.imported.map((profile) => profile.id),
+        skipped: result.skipped,
+        syncedAt: Date.now()
+      });
+      return result;
+    })()
+      .catch((error) => {
+        window.zion?.state?.set?.("runtime.modelSync", {
+          imported: [],
+          skipped: [],
+          error: error?.message || String(error),
+          syncedAt: Date.now()
+        });
+        return null;
+      })
+      .finally(() => {
+        runtimeModelSyncPromise = null;
+      });
+    return runtimeModelSyncPromise;
+  };
+
+  let applyingRuntimeActiveModel = false;
+  let runtimeActiveModelSyncPromise = null;
+  const syncActiveModelFromRuntimeProfile = () => {
+    if (runtimeActiveModelSyncPromise) return runtimeActiveModelSyncPromise;
+    runtimeActiveModelSyncPromise = (async () => {
+      const config = readInteractiveRuntimeConfig();
+      if (!await shouldUseInteractiveRuntime(config)) return null;
+      const model = await resolveInteractiveRuntimeProfileModel({
+        baseUrl: config.baseUrl
+      });
+      if (!model) return null;
+      applyingRuntimeActiveModel = true;
+      try {
+        window.zion?.state?.set?.("chat.activeModel", {
+          profileId: model.profileId,
+          providerId: model.providerId,
+          modelId: model.modelId,
+          label: model.label
+        });
+        try {
+          localStorage.setItem(
+            "zion.chat.defaultModel",
+            JSON.stringify({
+              providerId: model.providerId,
+              modelId: model.modelId
+            })
+          );
+        } catch {}
+      } finally {
+        applyingRuntimeActiveModel = false;
+      }
+      window.zion?.state?.set?.("runtime.defaultModelSync", {
+        status: "synced",
+        profileId: model.profileId,
+        providerId: model.providerId,
+        modelId: model.modelId,
+        syncedAt: Date.now()
+      });
+      return model;
+    })()
+      .catch((error) => {
+        window.zion?.state?.set?.("runtime.defaultModelSync", {
+          status: "error",
+          error: error?.message || String(error),
+          syncedAt: Date.now()
+        });
+        return null;
+      })
+      .finally(() => {
+        runtimeActiveModelSyncPromise = null;
+      });
+    return runtimeActiveModelSyncPromise;
+  };
+  const persistActiveModelToRuntimeProfile = (model) => {
+    if (!model?.providerId || !model?.modelId) return null;
+    const config = readInteractiveRuntimeConfig();
+    if (config.mode === "browser") return null;
+    return (async () => {
+      if (!await shouldUseInteractiveRuntime(config)) return null;
+      const provider = window.zion?.models?.getProvider?.(model.providerId);
+      const selectedModelConfig = await provider?.resolve?.(model.modelId);
+      const result = await persistInteractiveRuntimeProfileModel({
+        selectedModel: model,
+        selectedModelConfig,
+        baseUrl: config.baseUrl
+      });
+      window.zion?.state?.set?.("runtime.defaultModelSync", {
+        status: "persisted",
+        profileId: result.runtimeModel.profileId,
+        providerId: result.runtimeModel.providerId,
+        modelId: result.runtimeModel.modelId,
+        syncedAt: Date.now()
+      });
+      return result;
+    })().catch((error) => {
+      window.zion?.state?.set?.("runtime.defaultModelSync", {
+        status: "error",
+        providerId: model.providerId,
+        modelId: model.modelId,
+        error: error?.message || String(error),
+        syncedAt: Date.now()
+      });
+      return null;
+    });
+  };
+  void updateRuntimeStatus()
+    .then(() => syncRuntimeModelProfiles())
+    .then(() => syncActiveModelFromRuntimeProfile());
+  const runtimeStatusTimer = window.setInterval(
+    () => void updateRuntimeStatus(),
+    5000
+  );
+  ctx.subscriptions.push({
+    dispose() {
+      window.clearInterval(runtimeStatusTimer);
+      runtimeStatusDisposable?.dispose?.();
+    }
+  });
+  const runtimeModelSyncDisposable = window.zion?.events?.on?.(
+    "models/configChanged",
+    () => void syncRuntimeModelProfiles()
+  );
+  if (runtimeModelSyncDisposable) ctx.subscriptions.push(runtimeModelSyncDisposable);
+
   const initStoredBool = (stateKey, lsKey, defaultValue = true) => {
     try {
       const existing = window.zion?.state?.get?.(stateKey);
@@ -638,6 +881,9 @@ export async function activate(ctx) {
           "zion.chat.defaultModel",
           JSON.stringify({ providerId: String(nv.providerId), modelId: String(nv.modelId) })
         );
+        if (!applyingRuntimeActiveModel) {
+          void persistActiveModelToRuntimeProfile(nv);
+        }
       } catch {}
     })
   );
@@ -883,6 +1129,7 @@ export async function activate(ctx) {
     emit: (topic, payload) => window.zion?.events?.emit?.(topic, payload)
   });
     const programmaticRuns = new Map();
+    const interactiveRuntimeObservers = new Map();
     const executeAndTrack = (request = {}) => {
       const handle = executeProgrammatic(request);
       const sessionId = request?.sessionId ? String(request.sessionId) : null;
@@ -926,6 +1173,10 @@ export async function activate(ctx) {
           try { void handle.abort("user"); } catch {}
         }
         programmaticRuns.clear();
+        for (const observer of interactiveRuntimeObservers.values()) {
+          try { observer.abort(); } catch {}
+        }
+        interactiveRuntimeObservers.clear();
       try {
         if (prevChatApi) window.zion.chat = prevChatApi;
       } catch {}
@@ -1113,6 +1364,512 @@ export async function activate(ctx) {
     return true;
   }
 
+  const runInteractiveThroughRuntime = async ({
+    opts,
+    ed,
+    panelId,
+    sid,
+    cursor,
+    messages,
+    tools,
+    runModel,
+    requestSource,
+    runtimeConfig,
+    documentAnchor,
+    autoScrollAssistant,
+    runFollowLatest
+  }) => {
+    // Empty input placeholders are local editor affordances, not durable Yjs state.
+    const appendUserPrompt = false;
+    let handle;
+    try {
+      const contributorContext = {
+        editor: ed,
+        sessionId: sid,
+        panelId,
+        requestSource: requestSource || "interactive",
+        runtimeConnection: window.zion?.state?.get?.("runtime.connection"),
+        runId: `runtime-context-${Date.now().toString(36)}`
+      };
+      const preparedMessages = await prepareInteractiveRuntimeMessages({
+        messages,
+        runContributors: window.zion?.__runMessageContributors,
+        contributorContext
+      });
+      const provider = window.zion?.models?.getProvider?.(runModel?.providerId);
+      const selectedModelConfig = await provider?.resolve?.(runModel?.modelId);
+      handle = await createInteractiveRuntimeHandle({
+        messages: preparedMessages,
+        sessionHistory: messages,
+        tools,
+        selectedModel: runModel,
+        selectedModelConfig,
+        title: opts?.title || resolveSessionTitleForRun(sid),
+        workbenchSessionId: sid,
+        metadata: {
+          ...(opts?.metadata && typeof opts.metadata === "object" ? opts.metadata : {}),
+          requestSource: "interactive",
+          workbenchContributorsApplied: true,
+          includeTerminalContext: false,
+          documentProjection: {
+            appendUserPrompt: !!appendUserPrompt,
+            anchor: documentAnchor || null
+          },
+          workbenchClientId: String(
+            window.zion?.state?.get?.("sessions.clientId") || ""
+          )
+        },
+        baseUrl: runtimeConfig.baseUrl
+      });
+    } catch (error) {
+      if (
+        runtimeConfig.mode === "auto"
+        && [
+          "RUNTIME_MODEL_UNAVAILABLE",
+          "RUNTIME_CONTEXT_UNSUPPORTED"
+        ].includes(error?.code)
+      ) {
+        window.zion?.notification?.show?.(
+          error?.code === "RUNTIME_CONTEXT_UNSUPPORTED"
+            ? "当前插件上下文无法交给 Runtime，本次继续使用 Browser"
+            : "当前模型尚未配置到 Runtime，本次继续使用 Browser",
+          { type: "warning", duration: 5000 }
+        );
+        return { fallbackToBrowser: true };
+      }
+      window.zion.events.emit("chat/runError", {
+        error,
+        sessionId: sid,
+        panelId
+      });
+      window.zion?.notification?.show?.(
+        `Runtime 启动失败: ${error?.message || String(error)}`,
+        { type: "error", duration: 8000 }
+      );
+      return null;
+    }
+
+    const runId = handle.runId;
+    const startedAt = Date.now();
+    const insertLine = Math.max(0, Number(cursor?.line || 0) + 1);
+    const anchor = {
+      sessionId: sid,
+      assistantBlockId: runId,
+      headLine: insertLine,
+      anchorPos: Number(documentAnchor?.fallback?.offset) || 0
+    };
+    const runAnchorPayload = {
+      assistantBlockId: anchor?.assistantBlockId || runId,
+      answerAnchorPos: typeof anchor?.anchorPos === "number" ? anchor.anchorPos : null,
+      answerHeadLine: typeof anchor?.headLine === "number" ? anchor.headLine : null,
+      insertLine
+    };
+    const runDisplayName = resolveRunDisplayName(opts, sid);
+    const runMetadata = {
+      ...(opts?.metadata && typeof opts.metadata === "object" ? opts.metadata : {}),
+      requestSource: "interactive",
+      backend: "runtime",
+      runtimeBaseUrl: runtimeConfig.baseUrl,
+      runtimeRunId: runId,
+      runtimeAttemptId: handle.attemptId,
+      runtimeModel: handle.model || null,
+      assistantBlockId: runAnchorPayload.assistantBlockId
+    };
+    if (runDisplayName && !runMetadata.displayName) runMetadata.displayName = runDisplayName;
+    if (runDisplayName && !runMetadata.sessionTitle) runMetadata.sessionTitle = runDisplayName;
+
+    try {
+      window.zion?.runs?.start?.({
+        id: runId,
+        title: opts?.title || runDisplayName || "",
+        source: opts?.source || {
+          pluginId: "dev.langchain-chat",
+          kind: "chat-session",
+          id: sid
+        },
+        trigger: opts?.trigger || "user",
+        sessionId: sid,
+        panelId,
+        executionMode: "interactive-runtime",
+        model: handle.model || null,
+        metadata: runMetadata
+      });
+    } catch {}
+
+    runtime.beginRun(sid, runId);
+    setRunState(sid, { aborted: false, model: handle.model || null }, runId);
+    try {
+      window.zion?.state?.set?.(`chat.followLatest.${sid}`, runFollowLatest);
+      window.zion?.state?.set?.(
+        `chat.assistantBlockId.${sid}`,
+        runAnchorPayload.assistantBlockId
+      );
+      window.zion?.state?.set?.(
+        `chat.answerHeadLine.${sid}`,
+        runAnchorPayload.answerHeadLine
+      );
+      window.zion?.state?.set?.(
+        `chat.answerAnchorPos.${sid}`,
+        runAnchorPayload.answerAnchorPos
+      );
+    } catch {}
+    runtime.setController(sid, {
+      abortOnDispose: false,
+      abort() {
+        void handle.abort("user").catch(() => {});
+      },
+      dispose() {
+        handle.detach();
+      }
+    }, runId);
+
+    if (autoScrollAssistant && typeof anchor?.headLine === "number") {
+      scheduleDocLineVisible(ed, anchor.headLine, {
+        sessionId: sid,
+        forceBottom: true,
+        structuralRole: true,
+        traceId: runId
+      });
+    }
+
+    let terminalProjected = false;
+    const projectionOptions = {
+      requestSource: requestSource || "interactive",
+      backend: "runtime",
+      runtimeRunId: runId,
+      panelId,
+      assistantBlockId: runAnchorPayload.assistantBlockId,
+      answerAnchorPos: runAnchorPayload.answerAnchorPos,
+      documentWriter: true,
+      assistantBlockReady: true,
+      completeAssistantMessage: async (payload) => {
+        window.zion?.events?.emit?.(
+          "runtime/pendingAssistantCommitted",
+          payload
+        );
+      },
+      appendAssistantToken: async () => true
+    };
+    const recordRemoteEvent = (event) => {
+      try {
+        window.zion?.runs?.recordEvent?.({
+          runId,
+          type: event.type,
+          ts: event.ts ?? event.timestamp ?? Date.now(),
+          sequence: event.sequence,
+          data: event.data || {}
+        });
+      } catch {}
+    };
+    const consuming = (async () => {
+      for await (const event of handle.events) {
+        recordRemoteEvent(event);
+        await projectRunEventToSession(
+          window.zion,
+          sid,
+          event,
+          projectionOptions
+        );
+        if (["run.completed", "run.failed", "run.aborted"].includes(event.type)) {
+          terminalProjected = true;
+        }
+      }
+    })();
+
+    const result = await handle.completion;
+    await consuming;
+    if (result.status === "aborted" && result.reason === "detached") {
+      return result;
+    }
+    if (!terminalProjected) {
+      const type = result.status === "completed"
+        ? "run.completed"
+        : result.status === "aborted"
+          ? "run.aborted"
+          : "run.failed";
+      const terminalEvent = {
+        runId,
+        attemptId: handle.attemptId,
+        type,
+        ts: Date.now(),
+        data: {
+          output: result.output || "",
+          usage: result.usage || null,
+          error: result.error || null,
+          reason: result.reason || null
+        }
+      };
+      recordRemoteEvent(terminalEvent);
+      await projectRunEventToSession(
+        window.zion,
+        sid,
+        terminalEvent,
+        projectionOptions
+      );
+    }
+
+    if (result.status === "completed") {
+      runtime.markAwaiting(sid, runId);
+    } else if (result.status === "aborted") {
+      runtime.markAborted(sid, runId);
+    } else {
+      runtime.markError(
+        sid,
+        new Error(result.error || "Runtime Run failed"),
+        runId
+      );
+    }
+    runtime.syncGlobalStreamingForActiveSession();
+    if (result.status === "completed") {
+      if (
+        appendUserPrompt
+        && autoScrollAssistant
+        && window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false
+        && isEditorShowingSession(ed, sid)
+      ) {
+        const revealPrompt = () => {
+          ensureTrailingUserPromptVisible(ed, {
+            startLineHint: insertLine,
+            sessionId: sid,
+            traceId: runId
+          });
+        };
+        revealPrompt();
+        setTimeout(revealPrompt, 100);
+        setTimeout(revealPrompt, 300);
+      }
+      window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
+    } else if (result.status === "failed") {
+      window.zion?.notification?.show?.(
+        `Runtime 执行失败: ${result.error || "未知错误"}`,
+        { type: "error", duration: 8000 }
+      );
+    }
+
+    return {
+      ...result,
+      durationMs: Date.now() - startedAt
+    };
+  };
+
+  const recoverInteractiveRuntimeRun = async (runRecord) => {
+    const metadata = runRecord?.metadata && typeof runRecord.metadata === "object"
+      ? runRecord.metadata
+      : {};
+    const runId = String(metadata.runtimeRunId || runRecord?.id || "");
+    const sid = String(runRecord?.sessionId || "");
+    if (
+      !runId
+      || !sid
+      || metadata.backend !== "runtime"
+      || interactiveRuntimeObservers.has(runId)
+    ) {
+      return null;
+    }
+
+    const panelId = runRecord?.panelId || null;
+    const assistantBlockId = String(metadata.assistantBlockId || runId);
+    const baseUrl = String(
+      metadata.runtimeBaseUrl
+      || readInteractiveRuntimeConfig().baseUrl
+    );
+    const previousEvents = window.zion?.runs?.getEvents?.(runId) || [];
+    const afterSequence = previousEvents.reduce(
+      (latest, event) => Math.max(latest, Number(event?.sequence) || 0),
+      0
+    );
+    const observer = new AbortController();
+    interactiveRuntimeObservers.set(runId, observer);
+    let terminalProjected = false;
+
+    try {
+      const observed = await observeInteractiveRuntimeRun({
+        runtimeRunId: runId,
+        afterSequence,
+        baseUrl,
+        signal: observer.signal,
+        onRun: async (remoteRun) => {
+          if (!["queued", "running"].includes(remoteRun.status)) return;
+          window.zion?.runs?.start?.({
+            ...runRecord,
+            status: "running",
+            completedAt: undefined,
+            terminalReason: undefined,
+            error: undefined,
+            metadata
+          });
+          runtime.beginRun(sid, runId);
+          setRunState(sid, {
+            aborted: false,
+            model: runRecord.model || null
+          }, runId);
+          try {
+            window.zion?.state?.set?.(
+              `chat.assistantBlockId.${sid}`,
+              assistantBlockId
+            );
+          } catch {}
+          runtime.setController(sid, {
+            abortOnDispose: false,
+            abort() {
+              void abortInteractiveRuntimeRun({
+                runtimeRunId: runId,
+                baseUrl,
+                reason: "user"
+              }).catch(() => {});
+            }
+          }, runId);
+          if (afterSequence > 0) {
+            await projectRunEventToSession(window.zion, sid, {
+              runId,
+              type: "run.started",
+              data: { model: runRecord.model || null }
+            }, {
+              requestSource: "interactive",
+              panelId,
+              assistantBlockId,
+              documentWriter: false
+            });
+          }
+        },
+        onEvent: async (event) => {
+          window.zion?.runs?.recordEvent?.({
+            runId,
+            type: event.type,
+            ts: event.ts ?? event.timestamp ?? Date.now(),
+            sequence: event.sequence,
+            data: event.data || {}
+          });
+          await projectRunEventToSession(window.zion, sid, event, {
+            requestSource: "interactive",
+            backend: "runtime",
+            runtimeRunId: runId,
+            panelId,
+            assistantBlockId,
+            documentWriter: false,
+            completeAssistantMessage: async (payload) => {
+              window.zion?.events?.emit?.(
+                "runtime/pendingAssistantCommitted",
+                payload
+              );
+            },
+            appendAssistantToken: async () => true
+          });
+          if (["run.completed", "run.failed", "run.aborted"].includes(event.type)) {
+            terminalProjected = true;
+          }
+        }
+      });
+      if (observer.signal.aborted) return null;
+
+      const remoteRun = observed.run;
+      const terminalType = remoteRun.status === "completed"
+        ? "run.completed"
+        : remoteRun.status === "aborted"
+          ? "run.aborted"
+          : ["failed", "interrupted"].includes(remoteRun.status)
+            ? "run.failed"
+            : null;
+      if (terminalType && !terminalProjected) {
+        const terminalEvent = {
+          runId,
+          attemptId: remoteRun.attemptId,
+          type: terminalType,
+          ts: remoteRun.completedAt || Date.now(),
+          data: {
+            output: remoteRun.output || "",
+            usage: remoteRun.usage || null,
+            error: remoteRun.error || null,
+            reason: remoteRun.terminalReason || null
+          }
+        };
+        window.zion?.runs?.recordEvent?.(terminalEvent);
+        await projectRunEventToSession(window.zion, sid, terminalEvent, {
+          requestSource: "interactive",
+          backend: "runtime",
+          runtimeRunId: runId,
+          panelId,
+          assistantBlockId
+        });
+      }
+
+      if (remoteRun.status === "completed") {
+        runtime.markAwaiting(sid, runId);
+        await finalizeProgrammaticSession(window.zion, sid);
+      } else if (remoteRun.status === "aborted") {
+        runtime.markAborted(sid, runId);
+      } else if (["failed", "interrupted"].includes(remoteRun.status)) {
+        runtime.markError(
+          sid,
+          new Error(remoteRun.error || "Runtime Run failed"),
+          runId
+        );
+      }
+      runtime.syncGlobalStreamingForActiveSession();
+      return remoteRun;
+    } catch (error) {
+      if (!observer.signal.aborted) {
+        const current = window.zion?.runs?.get?.(runId) || runRecord;
+        window.zion?.runs?.start?.({
+          ...current,
+          status: "interrupted",
+          completedAt: Date.now(),
+          terminalReason: "runtime-reconnect-failed",
+          error: error?.message || String(error),
+          metadata
+        });
+        runtime.markError(sid, error, runId);
+        runtime.syncGlobalStreamingForActiveSession();
+      }
+      return null;
+    } finally {
+      if (interactiveRuntimeObservers.get(runId) === observer) {
+        interactiveRuntimeObservers.delete(runId);
+      }
+    }
+  };
+
+  const recoverInteractiveRuntimeRuns = () => {
+    const candidates = window.zion?.runs?.list?.({
+      status: ["queued", "running", "interrupted"]
+    }) || [];
+    for (const runRecord of candidates) {
+      if (runRecord?.metadata?.backend === "runtime") {
+        void recoverInteractiveRuntimeRun(runRecord);
+      }
+    }
+  };
+
+  const runtimeSessionRunSubscription = window.zion?.events?.on?.(
+    "runtime/sessionRunEvent",
+    (event = {}) => {
+      if (
+        event.type !== "run.started"
+        || event.ownEvent === true
+        || !event.runId
+        || !event.sessionId
+      ) {
+        return;
+      }
+      void recoverInteractiveRuntimeRun({
+        id: event.runId,
+        attemptId: event.data?.attemptId || "",
+        sessionId: event.sessionId,
+        status: "running",
+        metadata: {
+          backend: "runtime",
+          runtimeRunId: event.runId,
+          runtimeBaseUrl: readInteractiveRuntimeConfig().baseUrl,
+          assistantBlockId: event.runId,
+          requestSource: "interactive"
+        }
+      });
+    }
+  );
+  if (runtimeSessionRunSubscription) {
+    ctx.subscriptions.push(runtimeSessionRunSubscription);
+  }
+
   // 通用运行逻辑（含 Tool Calls 链式继续）
   const doRun = async (opts = {}) => {
     const ed = getEd(opts);
@@ -1194,6 +1951,73 @@ export async function activate(ctx) {
 
     // 解析工具定义（委托给独立 tools 插件）
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
+    const requestSource = opts?.requestSource || inferRequestSource({
+      sessionId: sid,
+      panelId
+    });
+    const interactiveRuntimeConfig = readInteractiveRuntimeConfig();
+    const interactiveRuntimeEligibilityResult = interactiveRuntimeEligibility({
+      messages: baseMessages,
+      tools,
+      content: contentBeforeCursor,
+      requestSource,
+      skipSessionPersistence
+    });
+    if (
+      interactiveRuntimeEligibilityResult.eligible
+      && await shouldUseInteractiveRuntime(interactiveRuntimeConfig)
+    ) {
+      try {
+        await Promise.resolve(
+          window.zion?.commands?.executeCommand?.(
+            "zion.sessions.flushPendingSave",
+            sid
+          )
+        );
+      } catch {}
+      const insertionOffset = lines
+        .slice(0, cursorLine)
+        .reduce((total, line) => total + line.length + 1, 0)
+        + String(lines[cursorLine] || "").length;
+      let documentAnchor = {
+        kind: "y-relative-position-v1",
+        fallback: {
+          offset: insertionOffset,
+          before: fullDoc.slice(
+            Math.max(0, insertionOffset - 64),
+            insertionOffset
+          ),
+          after: fullDoc.slice(insertionOffset, insertionOffset + 64)
+        }
+      };
+      try {
+        documentAnchor = window.zion?.commands?.executeCommand?.(
+          "zion.sessions.createCollaborationAnchor",
+          {
+            id: sid,
+            index: insertionOffset,
+            before: documentAnchor.fallback.before,
+            after: documentAnchor.fallback.after
+          }
+        ) || documentAnchor;
+      } catch {}
+      const runtimeResult = await runInteractiveThroughRuntime({
+        opts,
+        ed,
+        panelId,
+        sid,
+        cursor,
+        messages: baseMessages,
+        tools,
+        runModel,
+        requestSource,
+        runtimeConfig: interactiveRuntimeConfig,
+        documentAnchor,
+        autoScrollAssistant,
+        runFollowLatest
+      });
+      if (!runtimeResult?.fallbackToBrowser) return runtimeResult;
+    }
 
     // 3. 插入 assistant 块（用于承载输出）
     const startedAt = Date.now();
@@ -1455,13 +2279,8 @@ export async function activate(ctx) {
       let stepReasoning = "";
       const stepIndex = Number(window.zion?.state?.get?.(`chat.usageStep.${runId}`) || 0) + 1;
       try { window.zion?.state?.set?.(`chat.usageStep.${runId}`, stepIndex); } catch {}
-      const stepOutputStartLength = runOutput.length;
       const stepModel = resolveActiveRunModel();
-      const stateBeforeModelUpdate = getRunState(sid);
       setRunState(sid, { model: stepModel }, runId);
-      // #region debug-point D:model-state-update
-      fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"D",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:runStep:model-state-update",msg:"[DEBUG] model state updated",data:{stepIndex,before:{runId:stateBeforeModelUpdate?.runId,streaming:stateBeforeModelUpdate?.streaming,aborted:stateBeforeModelUpdate?.aborted,error:stateBeforeModelUpdate?.error},after:{runId:getRunState(sid)?.runId,streaming:getRunState(sid)?.streaming,aborted:getRunState(sid)?.aborted,error:getRunState(sid)?.error},current:runtime.isCurrentRun(sid,runId),active:runtime.isRunActive(sid,runId)},ts:Date.now()})}).catch(()=>{});
-      // #endregion
       recordRunEvent("turn.started", {
         turn: stepIndex,
         model: stepModel
@@ -1492,9 +2311,6 @@ export async function activate(ctx) {
       } catch (error) {
         console.warn("[langchain-chat] context window estimate failed:", error);
       }
-      // #region debug-point A:before-followup-request
-      fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"A",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:runStep:before-runStream",msg:"[DEBUG] runStep before runStream",data:{stepIndex,messageCount:Array.isArray(msgs)?msgs.length:0,lastRoles:Array.isArray(msgs)?msgs.slice(-3).map((m)=>({role:m?.role,toolCalls:Array.isArray(m?.tool_calls)?m.tool_calls.length:0,toolCallId:m?.tool_call_id||"",contentLength:typeof m?.content==="string"?m.content.length:0})):[],hasTools:Array.isArray(tools)&&tools.length>0,initialModel:runModel,currentModel:stepModel,current:runtime.isCurrentRun(sid,runId),active:runtime.isRunActive(sid,runId)},ts:Date.now()})}).catch(()=>{});
-      // #endregion
       const streamResult = await runStream({
         messages: msgs,
         tools,
@@ -1635,9 +2451,6 @@ export async function activate(ctx) {
       });
 
       stepReasoning = String(streamResult?.reasoning_content || "");
-      // #region debug-point B:after-followup-response
-      fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"B",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:runStep:after-runStream",msg:"[DEBUG] runStream returned",data:{stepIndex,calls:calls.length,contentDeltaLength:Math.max(0,runOutput.length-stepOutputStartLength),reasoningLength:stepReasoning.length,aborted:!!streamResult?.aborted,hasError:!!streamResult?.error,resultKeys:Object.keys(streamResult||{}),current:runtime.isCurrentRun(sid,runId),active:runtime.isRunActive(sid,runId)},ts:Date.now()})}).catch(()=>{});
-      // #endregion
       if (streamResult?.aborted) {
         aborted = true;
         runtime.markAborted(sid, runId);
@@ -1675,9 +2488,6 @@ export async function activate(ctx) {
       if (promises.length > 0) {
         try { await Promise.allSettled(promises); } catch {}
       }
-      // #region debug-point A:after-tool-settlement
-      fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"A",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:runStep:after-tools",msg:"[DEBUG] tools settled",data:{stepIndex,calls:calls.length,receivedResults:receivedResults.length,promises:promises.length,current:runtime.isCurrentRun(sid,runId),active:runtime.isRunActive(sid,runId),aborted,failed},ts:Date.now()})}).catch(()=>{});
-      // #endregion
 
       const seenResultIds = new Set();
       const results = receivedResults
@@ -1843,17 +2653,11 @@ export async function activate(ctx) {
             assistantMsg,
             ...toolMsgs
           ];
-          // #region debug-point C:continue-after-tools
-          fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"C",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:loop:continue",msg:"[DEBUG] continuing after tools",data:{calls:step.calls.length,results:step.results.length,nextMessageCount:msgs.length,initialModel:runModel,nextModel:resolveActiveRunModel(),protocolModel:active,current:runtime.isCurrentRun(sid,runId)},ts:Date.now()})}).catch(()=>{});
-          // #endregion
           // 继续下一步
           continue;
         }
 
         // 无新的工具调用，结束链式
-        // #region debug-point B:break-without-tools
-        fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"tool-followup-empty",runId:"pre-fix",hypothesisId:"B",traceId:String(runId),location:"extensions/dev.langchain-chat/main.js:loop:break",msg:"[DEBUG] ending tool loop",data:{calls:step.calls.length,reasoningLength:String(step.reasoning_content||"").length,totalOutputLength:runOutput.length,current:runtime.isCurrentRun(sid,runId)},ts:Date.now()})}).catch(()=>{});
-        // #endregion
         break;
       }
 
@@ -1893,6 +2697,7 @@ export async function activate(ctx) {
     window.zion.commands.registerCommand("chat.retry", (opts) => doRun(opts || {}))
   ];
   ctx.subscriptions.push(...cmds);
+  recoverInteractiveRuntimeRuns();
 
   const toggleStateBool = (key, defaultValue = true) => {
     let v = window.zion?.state?.get?.(key);
@@ -2104,10 +2909,12 @@ export async function activate(ctx) {
     const getActiveThinkingEffortSync = () => {
       const active = window.zion.state.get("chat.activeModel");
       if (!active?.providerId || !active?.modelId) return "auto";
+      if (active.thinkingEffort) {
+        return normalizeThinkingEffort(active.thinkingEffort);
+      }
       try {
         if (active.providerId === "user.dynamic") {
-          const raw = localStorage.getItem("zion.models.dynamic");
-          const dict = raw ? JSON.parse(raw) : {};
+          const dict = loadLocalDynamicModelStore();
           return normalizeThinkingEffort(dict?.[active.modelId]?.thinkingEffort);
         }
         const key =
@@ -2116,8 +2923,7 @@ export async function activate(ctx) {
           active.providerId === "google" ? "zion.gemini.config" :
           "";
         if (!key) return "auto";
-        const raw = localStorage.getItem(key);
-        const cfg = raw ? JSON.parse(raw) : {};
+        const cfg = loadProviderConfig(key);
         return normalizeThinkingEffort(cfg?.thinkingEffort);
       } catch {
         return "auto";
@@ -2178,37 +2984,31 @@ export async function activate(ctx) {
   let modelBtnDisp = null;
   let thinkingBtnDisp = null;
   let modelStatusSeq = 0;
-  const DYN_MODELS_KEY = "zion.models.dynamic";
   const providerConfigKey = (providerId) => {
     if (providerId === "deepseek") return "zion.deepseek.config";
     if (providerId === "anthropic") return "zion.claude.config";
     if (providerId === "google") return "zion.gemini.config";
     return "";
   };
-  const loadLocalJson = (key, fallback = {}) => {
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) return fallback;
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed : fallback;
-    } catch {
-      return fallback;
-    }
-  };
   const saveActiveModelConfigPatch = async (patch) => {
     const active = window.zion.state.get("chat.activeModel");
     if (!active?.providerId || !active?.modelId) return;
     if (active.providerId === "user.dynamic") {
-      const dict = loadLocalJson(DYN_MODELS_KEY, {});
+      const dict = loadLocalDynamicModelStore();
       const prev = dict[active.modelId] || {};
-      dict[active.modelId] = { ...prev, ...patch };
-      localStorage.setItem(DYN_MODELS_KEY, JSON.stringify(dict));
+      await upsertDynamicModel({
+        modelId: active.modelId,
+        config: { ...prev, ...patch }
+      });
     } else {
       const key = providerConfigKey(active.providerId);
       if (!key) return;
-      const prev = loadLocalJson(key, {});
-      localStorage.setItem(key, JSON.stringify({ ...prev, ...patch }));
+      saveProviderConfigPatch(key, patch);
     }
+    window.zion.state.set("chat.activeModel", {
+      ...active,
+      ...patch
+    });
     try { await window.zion.commands.executeCommand("models.listModels"); } catch {}
     try { window.zion.events.emit("models/configChanged", { providerId: active.providerId, modelId: active.modelId }); } catch {}
     await updateModelBtn();

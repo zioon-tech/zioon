@@ -1,4 +1,15 @@
 import { materializePluginSkills } from "./plugin-skills.js";
+import {
+  applySkillsSnapshotToState,
+  buildAvailableSkillsContextXml,
+  insertAfterLeadingSystem as insertAfterLeadingSystemMessage,
+  loadSkillsSnapshotFromRuntime,
+  normalizeSkillsSnapshot,
+  persistSkillsSnapshot,
+  selectNewestSkillsSnapshot,
+  SKILLS_SNAPSHOT_STORAGE_KEY,
+  skillsSnapshotFromState,
+} from "./skills-runtime-state.js";
 
 const DEFAULT_CONFIG = {
   maxActiveSkills: 3,
@@ -70,7 +81,6 @@ function t(key, fallback, values) {
   return fallback;
 }
 
-const SKILLS_SNAPSHOT_STORAGE_KEY = "zion.skills.snapshot.v1";
 let skillsStatusDisp = null;
 
 function getState() {
@@ -86,7 +96,8 @@ function loadSnapshot() {
     const raw = localStorage.getItem(SKILLS_SNAPSHOT_STORAGE_KEY) || "";
     const parsed = safeJSONParse(raw);
     if (!parsed || typeof parsed !== "object") return null;
-    return parsed;
+    const snapshot = normalizeSkillsSnapshot(parsed);
+    return snapshot;
   } catch {
     return null;
   }
@@ -101,24 +112,16 @@ function saveSnapshotSoon() {
       try {
         const state = getState();
         if (!state) return;
-        const snap = {
-          savedAt: Date.now(),
-          paths: state.get("skills.paths") || [],
-          enabled: state.get("skills.enabled") || [],
-          catalog: state.get("skills.catalog") || [],
-          cacheContent: state.get("skills.cacheContent") || {},
-          usageHistory: state.get("skills.usageHistory") || {},
-          tokenBudget: state.get("skills.tokenBudget") || DEFAULT_CONFIG.tokenBudget,
-          config: state.get("skills.config") || DEFAULT_CONFIG,
-          dependencyGraph: state.get("skills.dependencyGraph") || {},
-          pluginMaterialized: state.get("skills.pluginMaterialized") || [],
-          pluginLastSync: state.get("skills.pluginLastSync") || 0,
-          lastScan: state.get("skills.lastScan") || 0
-        };
-        localStorage.setItem(SKILLS_SNAPSHOT_STORAGE_KEY, JSON.stringify(snap));
-      } catch {}
+        const snap = skillsSnapshotFromState(state, DEFAULT_CONFIG);
+        void persistSkillsSnapshot({ snapshot: snap, state })
+          .catch((error) => {
+            console.warn("[skills] snapshot persistence failed", error);
+          });
+      } catch (error) {
+        console.warn("[skills] snapshot creation failed", error);
+      }
     },
-    { timeout: 1200 }
+    { timeout: 250 }
   );
 }
 
@@ -138,20 +141,51 @@ function restoreFromSnapshotIfNeeded() {
       (!Array.isArray(paths) || paths.length === 0) &&
       (!Array.isArray(catalog) || catalog.length === 0) &&
       (!lastScan || lastScan === 0);
-    if (!looksEmpty) return;
+    if (!looksEmpty) return snap;
 
-    if (Array.isArray(snap.paths)) state.set("skills.paths", snap.paths);
-    if (Array.isArray(snap.enabled)) state.set("skills.enabled", snap.enabled);
-    if (Array.isArray(snap.catalog)) state.set("skills.catalog", snap.catalog);
-    if (snap.cacheContent && typeof snap.cacheContent === "object") state.set("skills.cacheContent", snap.cacheContent);
-    if (snap.usageHistory && typeof snap.usageHistory === "object") state.set("skills.usageHistory", snap.usageHistory);
-    if (typeof snap.tokenBudget === "number") state.set("skills.tokenBudget", snap.tokenBudget);
-    if (snap.config && typeof snap.config === "object") state.set("skills.config", snap.config);
-    if (snap.dependencyGraph && typeof snap.dependencyGraph === "object") state.set("skills.dependencyGraph", snap.dependencyGraph);
-    if (Array.isArray(snap.pluginMaterialized)) state.set("skills.pluginMaterialized", snap.pluginMaterialized);
-    if (typeof snap.pluginLastSync === "number") state.set("skills.pluginLastSync", snap.pluginLastSync);
-    if (typeof snap.lastScan === "number") state.set("skills.lastScan", snap.lastScan);
-  } catch {}
+    applySkillsSnapshotToState(state, snap);
+    return snap;
+  } catch {
+    return null;
+  }
+}
+
+async function restoreFromRuntimeIfAvailable(localSnapshot = loadSnapshot()) {
+  const state = getState();
+  if (!state) return false;
+  try {
+    const runtimeSnapshot = await loadSkillsSnapshotFromRuntime({ state });
+    const selected = selectNewestSkillsSnapshot(
+      localSnapshot,
+      runtimeSnapshot?.catalog?.length ? runtimeSnapshot : null
+    );
+    if (!selected) return false;
+    if (selected.source === "local") {
+      await persistSkillsSnapshot({ snapshot: selected.snapshot, state });
+      return false;
+    }
+    applySkillsSnapshotToState(state, selected.snapshot);
+    try {
+      localStorage.setItem(
+        SKILLS_SNAPSHOT_STORAGE_KEY,
+        JSON.stringify(selected.snapshot)
+      );
+    } catch {}
+    state.set("runtime.skillsSync", {
+      status: "loaded",
+      syncedAt: Date.now(),
+      enabled: selected.snapshot.enabled.length,
+      total: selected.snapshot.catalog.length
+    });
+    return true;
+  } catch (error) {
+    state.set("runtime.skillsSync", {
+      status: "error",
+      syncedAt: Date.now(),
+      error: error?.message || String(error)
+    });
+    return false;
+  }
 }
 
 function ensureDefaults() {
@@ -256,40 +290,6 @@ function getCatalog() {
   const state = getState();
   const catalog = (state && state.get("skills.catalog")) || [];
   return Array.isArray(catalog) ? catalog : [];
-}
-
-function escapeXML(str) {
-  return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function generateAvailableSkillsXML(catalog, enabledSet) {
-  const enabledSkills = (catalog || []).filter((s) => enabledSet.has(s.id));
-  const skillXMLs = enabledSkills
-    .map((skill) => {
-      const name = escapeXML(skill.name || skill.id);
-      const desc = skill.description ? `<description>${escapeXML(skill.description)}</description>` : "";
-      const location = skill.path ? `<location>${escapeXML(`${skill.path}/SKILL.md`)}</location>` : "";
-      return `  <skill>\n    <name>${name}</name>\n    ${desc}\n    ${location}\n  </skill>`;
-    })
-    .join("\n");
-
-  return `<available_skills>\n${skillXMLs}\n</available_skills>\n\nWhen you need detailed instructions for a skill, use the Read tool to access the file at the specified location.`;
-}
-
-function insertAfterLeadingSystem(messages, injectedMessage) {
-  const list = Array.isArray(messages) ? messages : [];
-  let insertAt = 0;
-  while (insertAt < list.length && list[insertAt]?.role === "system") insertAt += 1;
-  return [
-    ...list.slice(0, insertAt),
-    injectedMessage,
-    ...list.slice(insertAt)
-  ];
 }
 
 async function listDirEntries(base, dir) {
@@ -757,9 +757,12 @@ function registerMessageContributor() {
         const catalog = await getCatalogOrScan();
         const enabled = getEnabledSet();
         if (enabled.size === 0) return messages;
-        const availableSkillsXML = generateAvailableSkillsXML(catalog, enabled);
+        const availableSkillsXML = buildAvailableSkillsContextXml({
+          catalog,
+          enabled: Array.from(enabled)
+        });
         const injectedMessage = { role: "user", content: availableSkillsXML };
-        return insertAfterLeadingSystem(messages, injectedMessage);
+        return insertAfterLeadingSystemMessage(messages, injectedMessage);
       } catch {
         return messages;
       }
@@ -1406,11 +1409,26 @@ function registerStateListeners() {
     for (const k of keysToPersist) {
       try { disposers.push(window.zion.state.onDidChange(k, () => saveSnapshotSoon())); } catch {}
     }
+    let previousRuntimeBackend = String(
+      window.zion.state.get("runtime.connection")?.backend || ""
+    );
+    try {
+      disposers.push(window.zion.state.onDidChange("runtime.connection", (value) => {
+        const nextRuntimeBackend = String(value?.backend || "");
+        if (
+          nextRuntimeBackend === "runtime"
+          && previousRuntimeBackend !== "runtime"
+        ) {
+          void restoreFromRuntimeIfAvailable(loadSnapshot());
+        }
+        previousRuntimeBackend = nextRuntimeBackend;
+      }));
+    } catch {}
   } catch {}
   return disposers;
 }
 
-function registerPluginSkillListeners() {
+function registerPluginSkillListeners(ready = Promise.resolve()) {
   let disposed = false;
   let manager = null;
   let retryTimer = 0;
@@ -1422,7 +1440,8 @@ function registerPluginSkillListeners() {
     if (scanTimer) clearTimeout(scanTimer);
     scanTimer = setTimeout(() => {
       scanTimer = 0;
-      void scanAllSkills()
+      void ready
+        .then(() => scanAllSkills())
         .then(() => updateStatusBar())
         .catch((error) => console.warn("[skills] plugin skill rescan failed", error));
     }, 80);
@@ -1462,13 +1481,17 @@ export async function activate(ctx) {
   } catch {}
 
   ensureDefaults();
-  restoreFromSnapshotIfNeeded();
+  const localSnapshot = restoreFromSnapshotIfNeeded();
+  const restorePromise = restoreFromRuntimeIfAvailable(localSnapshot);
+  void restorePromise.then((loaded) => {
+    if (loaded) updateStatusBar();
+  });
 
   const commands = registerCommands();
   registerSkillManagerTool();
   const contributor = registerMessageContributor();
   const listeners = registerStateListeners();
-  const pluginSkillListeners = registerPluginSkillListeners();
+  const pluginSkillListeners = registerPluginSkillListeners(restorePromise);
 
   try { ctx.subscriptions.push(...commands); } catch {}
   try { ctx.subscriptions.push(contributor); } catch {}
@@ -1628,6 +1651,7 @@ export async function activate(ctx) {
 
   try {
     Promise.resolve().then(async () => {
+      await restorePromise;
       try { await scanAllSkills(); } catch {}
       try { updateStatusBar(); } catch {}
     });
@@ -1643,6 +1667,7 @@ export async function activate(ctx) {
       if (retryTimer) window.clearTimeout(retryTimer);
       retryTimer = window.setTimeout(async () => {
         retryTimer = 0;
+        try { await restoreFromRuntimeIfAvailable(loadSnapshot()); } catch {}
         try { await scanAllSkills(); } catch {}
         try { updateStatusBar(); } catch {}
       }, 600);

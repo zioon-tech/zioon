@@ -4,6 +4,7 @@ import { addCursorAbove, addCursorBelow, copyLineDown, copyLineUp, moveLineDown,
 import { EditorCore } from "../../src/editor/EditorCore.ts";
 import { parseMessages } from "../../src/chat/doc.ts";
 import { stripAssistantBlockIdComment } from "../../src/chat/restore.ts";
+import { isContinuationBoundaryLine } from "../../src/chat/session-document-format.js";
 import { reconstructWidgetHistoryMessages } from "../../src/chat/widget-history.ts";
 import {
   DEFAULT_REASONING_CONTENT_PLACEHOLDER,
@@ -2137,7 +2138,7 @@ function installPanelCommentButtons() {
   return {
     dispose() {
       disposed = true;
-      try { cancelAnimationFrame(frame); } catch {}
+      try { window.cancelAnimationFrame(frame); } catch {}
       for (const disposable of disposables) {
         try { disposable?.dispose?.(); } catch {}
       }
@@ -5342,6 +5343,15 @@ function buildTranscriptMessageSpans(view, cursorPos) {
       const roleMatch = line.match(roleRe);
       const trimmed = line.trim();
       if (widgetRe.test(trimmed) || toolWidgetRe.test(trimmed)) {
+        offset = lineEnd + 1;
+        continue;
+      }
+      if (isContinuationBoundaryLine(line)) {
+        flush();
+        role = "user";
+        content = [];
+        spanFrom = lineEnd + 1;
+        spanTo = lineEnd + 1;
         offset = lineEnd + 1;
         continue;
       }

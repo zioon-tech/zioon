@@ -23,6 +23,16 @@ import {
   normalizeThinkingEffort,
   normalizeThinkingMode
 } from "./model-config-fields.js";
+import {
+  DYNAMIC_PROVIDER_ID,
+  deleteDynamicModel,
+  loadLocalDynamicModelStore,
+  upsertDynamicModel
+} from "./runtime-user-model-store.js";
+import {
+  loadProviderConfig,
+  saveProviderConfig
+} from "./provider-config-storage.js";
 
 function t(key, fallback, values) {
   const fullKey = `dev.langchain-chat.${key}`;
@@ -34,21 +44,8 @@ function t(key, fallback, values) {
 }
 
 export function installModelSwitcher() {
-  const DYN_KEY = "zion.models.dynamic";
-  const DYN_PROVIDER_ID = "user.dynamic";
-
   function loadDynamicStore() {
-    try {
-      const raw = localStorage.getItem(DYN_KEY);
-      if (!raw) return {};
-      const j = JSON.parse(raw);
-      return j && typeof j === "object" ? j : {};
-    } catch {
-      return {};
-    }
-  }
-  function saveDynamicStore(dict) {
-    try { localStorage.setItem(DYN_KEY, JSON.stringify(dict)); } catch {}
+    return loadLocalDynamicModelStore();
   }
   async function refreshCatalog() {
     try { await window.zion?.commands?.executeCommand("models.listModels"); } catch {}
@@ -409,7 +406,7 @@ export function installModelSwitcher() {
       right.appendChild(provSpan);
 
       // 操作按钮
-      const canEdit = m.providerId === DYN_PROVIDER_ID;
+      const canEdit = m.providerId === DYNAMIC_PROVIDER_ID;
       const btnEdit = iconButton(svgEdit(), canEdit ? t("modelSwitcher.edit", "Edit Model") : t("modelSwitcher.view", "View Model (read-only)"));
       btnEdit.addEventListener("click", async () => {
         const prov = window.zion?.models?.getProvider(m.providerId);
@@ -670,24 +667,20 @@ export function installModelSwitcher() {
   }
 
   async function doDeleteModel(m) {
-    if (!m || m.providerId !== DYN_PROVIDER_ID) return;
+    if (!m || m.providerId !== DYNAMIC_PROVIDER_ID) return;
     const ok = window.confirm(`Delete model "${m.id}"?`);
     if (!ok) return;
-    const dict = loadDynamicStore();
-    if (dict[m.id]) {
-      delete dict[m.id];
-      saveDynamicStore(dict);
-      await refreshCatalog();
-      // 如果删除的是激活模型，选择第一个
-      const act = getActive();
-      if (act?.providerId === m.providerId && act?.modelId === m.id) {
-        const cat = catalog();
-        const next = cat[0] || null;
-        if (next) setActive(next.providerId, next.id, next.label);
-        else window.zion?.state?.set("chat.activeModel", null);
-      }
-      refresh();
+    await deleteDynamicModel({ modelId: m.id });
+    await refreshCatalog();
+    // 如果删除的是激活模型，选择第一个
+    const act = getActive();
+    if (act?.providerId === m.providerId && act?.modelId === m.id) {
+      const cat = catalog();
+      const next = cat[0] || null;
+      if (next) setActive(next.providerId, next.id, next.label);
+      else window.zion?.state?.set("chat.activeModel", null);
     }
+    refresh();
   }
 
   async function testConnectivity(cfg, statusEl) {
@@ -738,7 +731,7 @@ export function installModelSwitcher() {
     editorWrap.style.display = "block";
 
     const isNew = !spec;
-    const providerId = spec?.providerId || DYN_PROVIDER_ID;
+    const providerId = spec?.providerId || DYNAMIC_PROVIDER_ID;
     // 对于 deepseek 提供者，允许编辑 API Key，其他字段只读
     const isDeepseekProvider = providerId === "deepseek";
     const readonly = !!spec?.readonly && !isDeepseekProvider;
@@ -914,7 +907,7 @@ export function installModelSwitcher() {
       let providerText = providerId;
       if (isDeepseekProvider) {
         providerText += t("modelSwitcher.editableSuffix", " (editable)");
-      } else if (providerId !== DYN_PROVIDER_ID) {
+      } else if (providerId !== DYNAMIC_PROVIDER_ID) {
         providerText += t("modelSwitcher.readonlySuffix", " (read-only)");
       }
       el.textContent = providerText;
@@ -984,25 +977,32 @@ export function installModelSwitcher() {
     });
 
     const btnSave = primaryButton(isNew ? t("modelSwitcher.save", "Save") : t("modelSwitcher.saveChanges", "Save Changes"), t("modelSwitcher.saveModel", "Save Model"), svgCheck());
-    btnSave.disabled = (providerId !== DYN_PROVIDER_ID && !isDeepseekProvider) || readonly;
+    btnSave.disabled = (providerId !== DYNAMIC_PROVIDER_ID && !isDeepseekProvider) || readonly;
     btnSave.addEventListener("click", async () => {
       const id = inpId.value.trim();
       const url = inpUrl.value.trim();
       const key = inpKey.value.trim();
       if (!id) { status.textContent = t("modelSwitcher.missingModelId", "Missing Model ID"); status.style.color = "rgb(220,80,80)"; return; }
       if (!url) { status.textContent = t("modelSwitcher.missingBaseUrl", "Missing Base URL"); status.style.color = "rgb(220,80,80)"; return; }
-      if (!key) { status.textContent = t("modelSwitcher.missingApiKey", "Missing API Key"); status.style.color = "rgb(220,80,80)"; return; }
+      const credentialAlreadyConfigured = !!(spec?.cfg?._credentialConfigured);
+      if (
+        providerId === DYNAMIC_PROVIDER_ID
+        && !key
+        && !credentialAlreadyConfigured
+      ) {
+        status.textContent = t("modelSwitcher.missingApiKey", "Missing API Key");
+        status.style.color = "rgb(220,80,80)";
+        return;
+      }
 
       // 对于 deepseek 提供者，保存所有参数到 localStorage
       if (isDeepseekProvider) {
         try {
           // 保存 API Key
-          localStorage.setItem("zion.deepseek.apiKey", key);
+          if (key) localStorage.setItem("zion.deepseek.apiKey", key);
           
           // 保存其他参数
-          const previous = (() => {
-            try { return JSON.parse(localStorage.getItem("zion.deepseek.config") || "{}"); } catch { return {}; }
-          })();
+          const previous = loadProviderConfig("zion.deepseek.config");
           const modelLimits = { ...(previous.modelLimits || {}) };
           const modelDescriptions = { ...(previous.modelDescriptions || {}) };
           const description = normalizeModelDescription(inpDescription.value);
@@ -1037,7 +1037,16 @@ export function installModelSwitcher() {
             preservedThinking: !!cbPreservedThinking.checked,
             interleavedThinking: !!cbInterleavedThinking.checked
           };
-          localStorage.setItem("zion.deepseek.config", JSON.stringify(deepseekConfig));
+          saveProviderConfig("zion.deepseek.config", deepseekConfig);
+
+          const active = getActive();
+          if (active?.providerId === providerId && active?.modelId === id) {
+            window.zion?.state?.set("chat.activeModel", {
+              ...active,
+              thinkingMode: deepseekConfig.thinkingMode,
+              thinkingEffort: deepseekConfig.thinkingEffort
+            });
+          }
           
           status.textContent = t("modelSwitcher.deepseekSaved", "DeepSeek configuration saved");
           status.style.color = "rgb(60,180,90)";
@@ -1055,9 +1064,12 @@ export function installModelSwitcher() {
         }
       }
 
-      // 对于 user.dynamic 提供者，保存到 localStorage 字典
+      // 对于 user.dynamic 提供者，优先保存到 Runtime Host，离线时回落到 localStorage。
       const dict = loadDynamicStore();
-      if (isNew && dict[id]) {
+      const existingInCatalog = catalog().some((item) =>
+        item?.providerId === DYNAMIC_PROVIDER_ID && item?.id === id
+      );
+      if (isNew && (dict[id] || existingInCatalog)) {
         status.textContent = t("modelSwitcher.modelExists", "Model already exists: {id}", { id });
         status.style.color = "rgb(220,80,80)";
         return;
@@ -1066,7 +1078,7 @@ export function installModelSwitcher() {
         label: inpLabel.value.trim() || undefined,
         description: normalizeModelDescription(inpDescription.value) || undefined,
         url,
-        key,
+        ...(key ? { key } : {}),
         stream: !!cbStream.checked,
         temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
         max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
@@ -1092,14 +1104,15 @@ export function installModelSwitcher() {
         cfg.model = modelName;
       }
 
-      dict[id] = cfg;
-      saveDynamicStore(dict);
+      const saved = await upsertDynamicModel({ modelId: id, config: cfg });
       await refreshCatalog();
-      try { window.zion?.events?.emit?.("models/configChanged", { providerId: DYN_PROVIDER_ID, modelId: id }); } catch {}
+      try { window.zion?.events?.emit?.("models/configChanged", { providerId: DYNAMIC_PROVIDER_ID, modelId: id }); } catch {}
       const cat = catalog();
-      const item = cat.find(x => x.providerId === DYN_PROVIDER_ID && x.id === id);
-      setActive(DYN_PROVIDER_ID, id, item?.label || id);
-      status.textContent = t("modelSwitcher.saved", "Saved");
+      const item = cat.find(x => x.providerId === DYNAMIC_PROVIDER_ID && x.id === id);
+      setActive(DYNAMIC_PROVIDER_ID, id, item?.label || id);
+      status.textContent = saved?.warning
+        ? t("modelSwitcher.savedLocalFallback", "Saved locally; Runtime sync failed")
+        : t("modelSwitcher.saved", "Saved");
       status.style.color = "rgb(60,180,90)";
       // 刷新列表并关闭编辑器
       refresh();
@@ -1111,7 +1124,7 @@ export function installModelSwitcher() {
 
     const btnDelete = dangerButton(t("modelSwitcher.delete", "Delete"), t("modelSwitcher.delete", "Delete Model"), svgTrash());
     btnDelete.style.marginLeft = "auto";
-    btnDelete.disabled = isNew || providerId !== DYN_PROVIDER_ID || readonly || isDeepseekProvider;
+    btnDelete.disabled = isNew || providerId !== DYNAMIC_PROVIDER_ID || readonly || isDeepseekProvider;
     btnDelete.addEventListener("click", async () => {
       if (isNew) return;
       await doDeleteModel({ providerId, id: inpId.value.trim(), label: inpLabel.value.trim() });

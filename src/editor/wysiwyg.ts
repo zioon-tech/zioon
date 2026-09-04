@@ -4,6 +4,19 @@ import { syntaxTree } from "@codemirror/language";
 import katex from "katex";
 import mermaid from "mermaid";
 import { encode as encodePlantUML } from "plantuml-encoder";
+import {
+  collectStandaloneImageGroups,
+  formatImageInsertion,
+  type ImageDisplayKind,
+  type MarkdownImage
+} from "./image-model";
+import {
+  getImageDropTarget,
+  hideImageDropIndicator,
+  showImageDropIndicator
+} from "./image-transactions";
+import { resolveImageAsset } from "../media/image-assets";
+import { isContinuationBoundaryLine } from "../chat/session-document-format.js";
 
 /**
  * Revised WYSIWYG plugin:
@@ -49,7 +62,8 @@ function isValidInlineMathCandidate(source: string, start: number, end: number):
 /* Helper: Check if line contains tool call or thinking markers (skip WYSIWYG processing) */
 const isToolOrThinkingLine = (lineText: string): boolean => {
   return /^\s*调用\s+[^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/.test(lineText)
-    || /^\s*思考\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/.test(lineText);
+    || /^\s*思考\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/.test(lineText)
+    || isContinuationBoundaryLine(lineText);
 };
 
 function isRoleHeadLine(lineText: string): boolean {
@@ -481,7 +495,10 @@ function addNestedInlineDecorations(add: AddDecoration, contentStart: number, co
       const alt = m[4] || "";
       const src = m[5] || "";
       add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-      add(start, start, Decoration.widget({ widget: new SimpleImageWidget(alt, src), side: 1 }));
+      add(start, start, Decoration.widget({
+        widget: new SimpleImageWidget(alt, src, "inline", start, end),
+        side: 1
+      }));
       continue;
     }
     if (m[6]) {
@@ -913,9 +930,6 @@ const tableBlockDecorationsField = StateField.define({
   provide: field => EditorView.decorations.from(field, value => value.decorations)
 });
 
-/* App image short link resolver: app://img/<id> -> DataURL from IndexedDB ("dev.paste-image-db"/"images") */
-const APP_IMG_PREFIX = "app://img/";
-const appImageCache = new Map<string, string>();
 const wysiwygHeightCache = new Map<string, number>();
 
 function hashString(s: string): string {
@@ -975,65 +989,6 @@ function estimateTableHeight(headers: string[], rows: string[][]) {
   return Math.max(96, 54 + rowCount * 42 + wrappedLineAllowance * 18);
 }
 
-function openPasteImageDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    try {
-      const req = indexedDB.open("dev.paste-image-db", 1);
-      req.onupgradeneeded = (e: any) => {
-        const db: IDBDatabase = e.target.result;
-        if (!db.objectStoreNames.contains("images")) {
-          db.createObjectStore("images", { keyPath: "id" });
-        }
-      };
-      req.onsuccess = (e: any) => resolve(e.target.result as IDBDatabase);
-      req.onerror = (e: any) => reject(e.target.error);
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-async function getDataUrlById(id: string): Promise<string | null> {
-  if (!id) return null;
-  if (appImageCache.has(id)) return appImageCache.get(id)!;
-  const db = await openPasteImageDB();
-  return new Promise((resolve) => {
-    try {
-      const tx = db.transaction("images", "readonly");
-      const store = tx.objectStore("images");
-      const req = store.get(id);
-      req.onsuccess = (e: any) => {
-        try { db.close(); } catch {}
-        const rec = e.target.result as { id: string; dataUrl: string } | undefined;
-        if (rec && rec.dataUrl) {
-          appImageCache.set(id, rec.dataUrl);
-          resolve(rec.dataUrl);
-        } else {
-          resolve(null);
-        }
-      };
-      req.onerror = () => {
-        try { db.close(); } catch {}
-        resolve(null);
-      };
-    } catch {
-      try { db.close(); } catch {}
-      resolve(null);
-    }
-  });
-}
-
-async function resolveAppImage(src: string): Promise<string | null> {
-  if (!src || !src.startsWith(APP_IMG_PREFIX)) return null;
-  const id = src.slice(APP_IMG_PREFIX.length);
-  try {
-    const url = await getDataUrlById(id);
-    return url || null;
-  } catch {
-    return null;
-  }
-}
-
 /* Widget implementations (small, eq provided for reuse) */
 
 class SimpleLinkWidget extends WidgetType {
@@ -1052,82 +1007,277 @@ class SimpleLinkWidget extends WidgetType {
   ignoreEvent() { return true; }
 }
 
+const IMAGE_DRAG_MIME = "application/x-zion-editor-image";
+
+function setImageSourceMetadata(
+  element: HTMLElement,
+  image: Pick<MarkdownImage, "alt" | "src" | "markdown" | "from" | "to">
+) {
+  element.dataset.imageAlt = image.alt;
+  element.dataset.imageSrc = image.src;
+  element.dataset.imageMarkdown = image.markdown;
+  element.dataset.imageFrom = String(image.from);
+  element.dataset.imageTo = String(image.to);
+}
+
+function makeImageDraggable(
+  element: HTMLElement,
+  view: EditorView,
+  image: Pick<MarkdownImage, "alt" | "src" | "markdown" | "from" | "to">
+) {
+  element.draggable = true;
+  element.addEventListener("dragstart", (event) => {
+    try {
+      event.dataTransfer?.setData(IMAGE_DRAG_MIME, JSON.stringify({
+        markdown: image.markdown,
+        from: image.from,
+        to: image.to
+      }));
+      event.dataTransfer?.setData("text/plain", image.markdown);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    } catch {}
+    event.stopPropagation();
+  });
+  element.addEventListener("dragend", () => hideImageDropIndicator(view));
+}
+
+function createImageElement(
+  image: Pick<MarkdownImage, "alt" | "src" | "markdown" | "from" | "to">,
+  kind: ImageDisplayKind,
+  wrap: HTMLElement
+): HTMLImageElement {
+  const img = document.createElement("img");
+  img.className = `cm-md-img cm-md-img-${kind}`;
+  img.alt = image.alt || "";
+  img.referrerPolicy = "no-referrer";
+  img.loading = "lazy";
+  img.addEventListener("load", () => {
+    requestAnimationFrame(() => {
+      const cacheKey = `img:${kind}:${image.src || ""}`;
+      updateCachedHeight(wrap, cacheKey);
+      applyCachedMinHeight(wrap, cacheKey);
+    });
+  });
+  return img;
+}
+
 class SimpleImageWidget extends WidgetType {
-  constructor(private alt: string, private src: string) { super(); }
-  eq(other: SimpleImageWidget) { return other.alt === this.alt && other.src === this.src; }
-  toDOM() {
+  constructor(
+    private alt: string,
+    private src: string,
+    private kind: ImageDisplayKind = "inline",
+    private from = -1,
+    private to = -1
+  ) {
+    super();
+  }
+
+  eq(other: SimpleImageWidget) {
+    return other.alt === this.alt
+      && other.src === this.src
+      && other.kind === this.kind
+      && other.from === this.from
+      && other.to === this.to;
+  }
+
+  toDOM(view: EditorView) {
+    const markdown = `![${this.alt}](${this.src})`;
+    const image = {
+      alt: this.alt,
+      src: this.src,
+      markdown,
+      from: this.from,
+      to: this.to
+    };
     const wrap = document.createElement("span");
-    wrap.className = "cm-md-img-wrap";
-    const cacheKey = `img:${this.src || ""}`;
+    wrap.className = `cm-md-img-wrap cm-md-img-wrap-${this.kind}`;
+    setImageSourceMetadata(wrap, image);
+    const cacheKey = `img:${this.kind}:${this.src || ""}`;
     applyCachedMinHeight(wrap, cacheKey);
 
-    const mkFallback = () => {
-      const fallback = document.createElement("span");
-      fallback.className = "cm-md-img-fallback";
-      appendTableInlineMarkdown(fallback, this.alt || "[image]");
-      return fallback;
-    };
+    const fallback = document.createElement("span");
+    fallback.className = "cm-md-img-fallback";
+    appendTableInlineMarkdown(fallback, this.alt || "[image]");
+    wrap.appendChild(fallback);
 
-    const src = this.src || "";
-    // Handle internal short link: app://img/<id>
-    if (src.startsWith(APP_IMG_PREFIX)) {
-      const ph = mkFallback();
-      wrap.appendChild(ph);
-      // Async resolve to DataURL and replace placeholder
-      resolveAppImage(src).then((url) => {
-        if (!url) return;
-        try {
-          const img = document.createElement("img");
-          img.className = "cm-md-img";
-          img.alt = this.alt || "";
-          img.referrerPolicy = "no-referrer";
-          (img as any).loading = "lazy";
-          img.src = url;
-          img.addEventListener("load", () => {
-            requestAnimationFrame(() => {
-              updateCachedHeight(wrap, cacheKey);
-              applyCachedMinHeight(wrap, cacheKey);
-            });
-          });
-          img.addEventListener("error", () => {
-            const fb = mkFallback();
-            requestAnimationFrame(() => {
-              if (img.parentNode) img.parentNode.replaceChild(fb, img);
-            });
-          });
-          requestAnimationFrame(() => {
-            try { wrap.replaceChild(img, ph); } catch {}
-          });
-        } catch {}
-      }).catch(() => {
-        // keep fallback if resolve fails
-      });
-    } else {
-      const img = document.createElement("img");
-      img.className = "cm-md-img";
-      img.alt = this.alt || "";
-      img.referrerPolicy = "no-referrer";
-      (img as any).loading = "lazy";
-      img.src = src;
-      img.addEventListener("load", () => {
-        requestAnimationFrame(() => {
-          updateCachedHeight(wrap, cacheKey);
-          applyCachedMinHeight(wrap, cacheKey);
-        });
-      });
+    resolveImageAsset(this.src || "").then((url) => {
+      if (!url || !wrap.isConnected) return;
+      const img = createImageElement(image, this.kind, wrap);
+      setImageSourceMetadata(img, image);
+      makeImageDraggable(img, view, image);
       img.addEventListener("error", () => {
-        const fb = mkFallback();
         requestAnimationFrame(() => {
-          if (img.parentNode) img.parentNode.replaceChild(fb, img);
+          if (!img.parentNode) return;
+          const replacement = fallback.cloneNode(true);
+          img.parentNode.replaceChild(replacement, img);
         });
       });
-      wrap.appendChild(img);
-    }
+      img.src = url;
+      requestAnimationFrame(() => {
+        try { wrap.replaceChild(img, fallback); } catch {}
+      });
+    }).catch(() => {});
 
     return wrap;
   }
+
   ignoreEvent() { return true; }
 }
+
+class ImageGalleryWidget extends WidgetType {
+  constructor(private items: MarkdownImage[]) {
+    super();
+  }
+
+  eq(other: ImageGalleryWidget) {
+    return other.items.length === this.items.length
+      && other.items.every((item, index) => {
+        const current = this.items[index];
+        return item.src === current.src
+          && item.alt === current.alt
+          && item.from === current.from
+          && item.to === current.to;
+      });
+  }
+
+  toDOM(view: EditorView) {
+    const root = document.createElement("div");
+    root.className = "cm-md-gallery";
+    root.dataset.imageCount = String(this.items.length);
+    for (const item of this.items) {
+      const cell = document.createElement("span");
+      cell.className = "cm-md-img-wrap cm-md-gallery-cell";
+      setImageSourceMetadata(cell, item);
+      const fallback = document.createElement("span");
+      fallback.className = "cm-md-img-fallback";
+      fallback.textContent = item.alt || "[image]";
+      cell.appendChild(fallback);
+      makeImageDraggable(cell, view, item);
+      resolveImageAsset(item.src).then((url) => {
+        if (!url || !cell.isConnected) return;
+        const img = createImageElement(item, "gallery", cell);
+        setImageSourceMetadata(img, item);
+        img.src = url;
+        requestAnimationFrame(() => {
+          try { cell.replaceChild(img, fallback); } catch {}
+        });
+      }).catch(() => {});
+      root.appendChild(cell);
+    }
+    const badge = document.createElement("span");
+    badge.className = "cm-md-gallery-badge";
+    badge.textContent = `${this.items.length} 张`;
+    root.appendChild(badge);
+    return root;
+  }
+
+  ignoreEvent() { return true; }
+}
+
+function collectImageGroups(state: EditorState) {
+  const roleBlocks = state.field(roleFenceBlocksField, false) || collectRoleScopedFenceBlocks(state.doc);
+  const mathBlocks = collectStateBlockMathRanges(state);
+  return collectStandaloneImageGroups(state.doc, (from, to) => {
+    if (roleBlocks.some(block => from < block.to && to > block.from)) return true;
+    if (mathBlocks.some(block => from < block.to && to > block.from)) return true;
+    return isToolOrThinkingLine(state.doc.sliceString(from, to));
+  });
+}
+
+function selectionIntersectsRange(state: EditorState, from: number, to: number): boolean {
+  return state.selection.ranges.some(range =>
+    range.empty
+      ? range.from >= from && range.from < to
+      : range.from < to && range.to > from
+  );
+}
+
+function buildImageGalleryDecorations(state: EditorState) {
+  const keepActiveLineRendered = state.facet(wysiwygKeepActiveLineRenderedFacet);
+  const ranges = [];
+  for (const group of collectImageGroups(state)) {
+    if (group.items.length < 2) continue;
+    if (!keepActiveLineRendered && selectionIntersectsRange(state, group.from, group.to)) continue;
+    ranges.push(
+      Decoration.replace({
+        widget: new ImageGalleryWidget(group.items),
+        block: true
+      }).range(group.from, group.to)
+    );
+  }
+  return ranges.length ? Decoration.set(ranges, true) : Decoration.none;
+}
+
+const imageGalleryField = StateField.define({
+  create(state) {
+    return buildImageGalleryDecorations(state);
+  },
+  update(value, transaction) {
+    const refresh = transaction.annotation(Transaction.userEvent) === "wysiwyg-refresh";
+    if (transaction.docChanged || transaction.selection || refresh) {
+      return buildImageGalleryDecorations(transaction.state);
+    }
+    return value;
+  },
+  provide: field => EditorView.decorations.from(field)
+});
+
+const imageInternalDragHandlers = EditorView.domEventHandlers({
+  dragover(event, view) {
+    const types = [...(event.dataTransfer?.types || [])];
+    if (!types.includes(IMAGE_DRAG_MIME)) return false;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    showImageDropIndicator(view, { x: event.clientX, y: event.clientY }, {
+      count: 1,
+      moving: true
+    });
+    return true;
+  },
+  dragleave(event, view) {
+    const related = event.relatedTarget;
+    if (!(related instanceof Node) || !view.dom.contains(related)) {
+      hideImageDropIndicator(view);
+    }
+    return false;
+  },
+  drop(event, view) {
+    const raw = event.dataTransfer?.getData(IMAGE_DRAG_MIME);
+    if (!raw) return false;
+    event.preventDefault();
+    hideImageDropIndicator(view);
+    try {
+      const payload = JSON.parse(raw) as { markdown?: string; from?: number; to?: number };
+      const markdown = String(payload.markdown || "");
+      const from = Number(payload.from);
+      const to = Number(payload.to);
+      if (!markdown || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to <= from) {
+        return true;
+      }
+      if (view.state.sliceDoc(from, to) !== markdown) return true;
+      const target = getImageDropTarget(view, { x: event.clientX, y: event.clientY }, 1);
+      if (target.position >= from && target.position <= to) return true;
+      const insert = formatImageInsertion(
+        view.state.doc,
+        target.position,
+        target.position,
+        markdown,
+        target.kind
+      );
+      const changes = view.state.changes([
+        { from, to, insert: "" },
+        { from: target.position, to: target.position, insert }
+      ].sort((left, right) => left.from - right.from));
+      view.dispatch({
+        changes,
+        selection: { anchor: changes.mapPos(target.position, 1) },
+        scrollIntoView: true,
+        userEvent: "move.image"
+      });
+    } catch {}
+    return true;
+  }
+});
 
 class SimpleCodeWidget extends WidgetType {
   constructor(private code: string) { super(); }
@@ -1836,6 +1986,21 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
   } catch {
     previewTableRanges = [];
   }
+  const imageGroups = collectStandaloneImageGroups(doc, (from, to) =>
+    isInsideFencedCode(from) || isToolOrThinkingLine(doc.sliceString(from, to))
+  );
+  const standaloneImageStarts = new Set<number>();
+  for (const group of imageGroups) {
+    for (const item of group.items) standaloneImageStarts.add(item.from);
+    if (group.items.length !== 1) continue;
+    const item = group.items[0];
+    if (!inViewport(view, item.from, item.to) || activeLines.has(item.lineNumber)) continue;
+    add(item.from, item.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
+    add(item.from, item.from, Decoration.widget({
+      widget: new SimpleImageWidget(item.alt, item.src, "solo", item.from, item.to),
+      side: 1
+    }));
+  }
 
   // 1) Block-level via syntax tree (only for nodes within viewport)
   try {
@@ -2189,11 +2354,15 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       if (m[10]) {
         const alt = m[11] || "";
         const src = m[12] || "";
+        if (standaloneImageStarts.has(start)) continue;
         if (isActive) {
           // active line: keep raw markdown
         } else {
           add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-          add(start, start, Decoration.widget({ widget: new SimpleImageWidget(alt, src), side: 1 }));
+          add(start, start, Decoration.widget({
+            widget: new SimpleImageWidget(alt, src, "inline", start, end),
+            side: 1
+          }));
         }
         continue;
       }
@@ -2751,6 +2920,8 @@ export function wysiwyg(options: { keepActiveLineRendered?: boolean } = {}): Ext
     wysiwygKeepActiveLineRenderedFacet.of(options.keepActiveLineRendered !== false),
     roleFenceBlocksField,
     tableBlockDecorationsField,
+    imageGalleryField,
+    imageInternalDragHandlers,
     wysiwygPlugin
   ];
 }

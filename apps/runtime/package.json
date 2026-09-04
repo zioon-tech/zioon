@@ -1,0 +1,19 @@
+{
+  "name": "@zion/runtime-host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone local Runtime Host for Zion",
+  "bin": {
+    "zion": "bin/zion.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "chat": "node src/chat-cli.mjs",
+    "cli": "node src/runtime-cli.mjs",
+    "start": "node src/main.mjs",
+    "test": "vitest run tests"
+  }
+}

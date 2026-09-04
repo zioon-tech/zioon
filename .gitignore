@@ -1,9 +1,11 @@
 .vercel
 dist/*
+packages/*/dist/
 dev-dist/
 dev-dist/sw.js
 .env*.local
 node_modules/
+.runtime-data/
 .aider*
 .trae/
 .worktrees/.dbg/

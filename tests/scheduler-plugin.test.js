@@ -30,6 +30,7 @@ describe("scheduler plugin", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    localStorage.setItem("zion.runtime.mode", "browser");
     subscriptions = [];
     commands = new Map();
     views = [];
@@ -159,73 +160,26 @@ describe("scheduler plugin", () => {
     }
   });
 
-  it("does not start the same claimed service run twice", async () => {
-    let resolveCompletion;
-    const completion = new Promise((resolve) => { resolveCompletion = resolve; });
-    const remoteTask = {
-      id: "remote-task",
-      revision: 1,
-      executionMode: "service-backed",
-      taskType: "agent",
-      clientTaskId: "task-remote",
-      title: "Remote report",
-      prompt: "Generate report",
-      enabled: true,
-      schedule: { kind: "daily", time: "09:00", timeZone: "UTC" },
-      capability: { preset: "read-only", allowedTools: [] },
-      timeoutSeconds: 60,
-      nextRun: Date.now() + 60_000
-    };
-    const remoteRun = {
-      id: "remote-run",
-      occurrenceId: "occurrence-1",
-      taskId: remoteTask.id,
-      scheduledFor: Date.now(),
-      leaseUntil: Date.now() + 60_000,
-      task: remoteTask
-    };
-    let claimCount = 0;
+  it("never claims service-backed Runs in Workbench", async () => {
+    localStorage.setItem("zion.runtime.mode", "runtime");
+    localStorage.setItem("zion.runtime.baseUrl", "http://127.0.0.1:9888");
     const fetchMock = vi.fn(async (url) => {
       const value = String(url);
       if (value.endsWith("/scheduler/tasks")) {
-        return new globalThis.Response(JSON.stringify({ tasks: [remoteTask] }), { status: 200 });
-      }
-      if (value.endsWith("/scheduler/runs/claim")) {
-        claimCount += 1;
-        return new globalThis.Response(JSON.stringify({
-          run: claimCount <= 2 ? remoteRun : null
-        }), { status: 200 });
+        return new globalThis.Response(JSON.stringify({ tasks: [] }), { status: 200 });
       }
       return new globalThis.Response(JSON.stringify({}), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    externalCommands.set("zion.sessions.new", vi.fn(async () => "session-remote"));
-    externalCommands.set("zion.sessions.transformDoc", vi.fn(async () => true));
-    externalCommands.set("zion.sessions.patchMeta", vi.fn(async () => true));
-    externalCommands.set("zion.sessions.bumpUpdatedAt", vi.fn(() => true));
-    window.zion.state = {
-      get: vi.fn((key) => key === "chat.tools" ? [] : null),
-      set: vi.fn(),
-      onDidChange: vi.fn(() => disposable())
-    };
-    window.zion.chat.execute = vi.fn(() => ({
-      runId: "chat-run-remote",
-      completion,
-      abort: vi.fn(),
-      events: { async *[Symbol.asyncIterator]() {} }
-    }));
 
     await activate({ subscriptions });
-    await vi.waitFor(() => expect(claimCount).toBeGreaterThanOrEqual(2));
+    await Promise.resolve();
+    await Promise.resolve();
 
-    expect(window.zion.chat.execute).toHaveBeenCalledTimes(1);
-
-    resolveCompletion({ runId: "chat-run-remote", status: "completed", output: "done" });
-    await vi.waitFor(() => {
-      expect(fetchMock.mock.calls.some(([url]) =>
-        String(url).endsWith("/scheduler/runs/remote-run/complete")
-      )).toBe(true);
-    });
+    expect(fetchMock.mock.calls.some(([url]) =>
+      String(url).endsWith("/scheduler/runs/claim")
+    )).toBe(false);
+    expect(window.zion.chat.execute).not.toHaveBeenCalled();
   });
 
   it("saves a panel task without timer binding errors", async () => {
@@ -560,6 +514,285 @@ describe("scheduler plugin", () => {
     });
   });
 
+  it("routes an opted-in read-only Agent task through the Runtime Host", async () => {
+    localStorage.setItem("zion.runtime.mode", "runtime");
+    localStorage.setItem("zion.runtime.baseUrl", "http://127.0.0.1:9876");
+    externalCommands.set("zion.sessions.new", vi.fn(async () => "session-runtime"));
+    externalCommands.set("zion.sessions.ensureAssistantBlock", vi.fn(async () => true));
+    externalCommands.set("zion.sessions.appendAssistantToken", vi.fn(async () => true));
+    externalCommands.set("zion.sessions.transformDoc", vi.fn(async () => true));
+    externalCommands.set("zion.sessions.patchMeta", vi.fn(async () => true));
+    externalCommands.set("zion.sessions.bumpUpdatedAt", vi.fn(() => true));
+    window.zion.state = {
+      set: vi.fn(),
+      get: vi.fn(),
+      onDidChange: vi.fn(() => disposable())
+    };
+    const runtimeEvents = [
+      {
+        schemaVersion: 1,
+        eventId: "event-started",
+        runId: "runtime-run-1",
+        attemptId: "runtime-attempt-1",
+        sequence: 1,
+        type: "run.started",
+        timestamp: 100,
+        data: {}
+      },
+      {
+        schemaVersion: 1,
+        eventId: "event-delta",
+        runId: "runtime-run-1",
+        attemptId: "runtime-attempt-1",
+        sequence: 2,
+        type: "message.delta",
+        timestamp: 101,
+        data: { delta: "runtime summary" }
+      },
+      {
+        schemaVersion: 1,
+        eventId: "event-completed",
+        runId: "runtime-run-1",
+        attemptId: "runtime-attempt-1",
+        sequence: 3,
+        type: "run.completed",
+        timestamp: 102,
+        data: {
+          output: "runtime summary",
+          usage: {
+            inputTokens: 10,
+            outputTokens: 2,
+            reasoningTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0
+          }
+        }
+      }
+    ];
+    const sse = runtimeEvents.map((event) =>
+      `id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+    ).join("");
+    const fetchMock = vi.fn(async (url, init = {}) => {
+      const value = String(url);
+      if (value === "http://127.0.0.1:9876/v1/runs" && init.method === "POST") {
+        return new globalThis.Response(JSON.stringify({
+          runId: "runtime-run-1",
+          attemptId: "runtime-attempt-1",
+          status: "accepted"
+        }), { status: 202, headers: { "Content-Type": "application/json" } });
+      }
+      if (
+        value
+        === "http://127.0.0.1:9876/v1/runs/runtime-run-1/projection/stream"
+          + "?after=0&reasoning=none&max_delay_ms=100&max_chunk_chars=512"
+      ) {
+        return new globalThis.Response(sse, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" }
+        });
+      }
+      if (value.endsWith("/scheduler/tasks")) {
+        return new globalThis.Response(JSON.stringify({ tasks: [] }), { status: 200 });
+      }
+      if (value.endsWith("/scheduler/runs/claim")) {
+        return new globalThis.Response(JSON.stringify({ run: null }), { status: 200 });
+      }
+      return new globalThis.Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = new LocalSchedulerStore();
+    store.saveTask({
+      id: "task-runtime",
+      taskType: "agent",
+      executionMode: "local-only",
+      title: "Runtime summary",
+      prompt: "Summarize through Runtime",
+      enabled: false,
+      schedule: { kind: "daily", time: "09:00" },
+      capability: { preset: "read-only", allowedTools: [] },
+      timeoutSeconds: 60,
+      createdAt: 1
+    });
+
+    await activate({ subscriptions });
+    await commands.get("scheduler.runNow")("task-runtime");
+
+    expect(window.zion.chat.execute).not.toHaveBeenCalled();
+    const createCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === "http://127.0.0.1:9876/v1/runs" && init?.method === "POST"
+    );
+    expect(JSON.parse(createCall[1].body)).toMatchObject({
+      title: "Runtime summary",
+      prompt: "Summarize through Runtime",
+      interactionProfileId: "scheduled.default",
+      timeoutMs: 60_000,
+      metadata: {
+        source: "scheduler",
+        interactionProfileId: "scheduled.default",
+        schedulerTaskId: "task-runtime",
+        workbenchSessionId: "session-runtime"
+      }
+    });
+    expect(store.listRuns()[0]).toMatchObject({
+      backend: "runtime",
+      chatRunId: "runtime-run-1",
+      runtimeRunId: "runtime-run-1",
+      runtimeAttemptId: "runtime-attempt-1",
+      lastEventSequence: 3,
+      status: "success",
+      output: "runtime summary"
+    });
+    expect(externalCommands.get("zion.sessions.appendAssistantToken")).toHaveBeenCalledWith({
+      id: "session-runtime",
+      token: "runtime summary",
+      runId: "runtime-run-1",
+      assistantBlockId: "runtime-run-1"
+    });
+  });
+
+  it("reattaches an accepted Runtime Run after Workbench restarts", async () => {
+    vi.stubGlobal("localStorage", createMemoryStorage());
+    externalCommands.set("zion.sessions.appendAssistantToken", vi.fn(async () => true));
+    externalCommands.set("zion.sessions.transformDoc", vi.fn(async () => true));
+    externalCommands.set("zion.sessions.patchMeta", vi.fn(async () => true));
+    externalCommands.set("zion.sessions.bumpUpdatedAt", vi.fn(() => true));
+    window.zion.state = {
+      set: vi.fn(),
+      get: vi.fn(),
+      onDidChange: vi.fn(() => disposable())
+    };
+    const resumedEvents = [
+      {
+        schemaVersion: 1,
+        eventId: "event-resumed-delta",
+        runId: "runtime-run-resume",
+        attemptId: "runtime-attempt-resume",
+        sequence: 2,
+        type: "message.delta",
+        timestamp: 201,
+        data: { delta: "finished while closed" }
+      },
+      {
+        schemaVersion: 1,
+        eventId: "event-resumed-completed",
+        runId: "runtime-run-resume",
+        attemptId: "runtime-attempt-resume",
+        sequence: 3,
+        type: "run.completed",
+        timestamp: 202,
+        data: { output: "finished while closed", usage: {} }
+      }
+    ];
+    const sse = resumedEvents.map((event) =>
+      `id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+    ).join("");
+    const fetchMock = vi.fn(async (url) => {
+      const value = String(url);
+      if (
+        value
+        === "http://127.0.0.1:9876/v1/runs/runtime-run-resume/projection/stream"
+          + "?after=1&reasoning=none&max_delay_ms=100&max_chunk_chars=512"
+      ) {
+        return new globalThis.Response(sse, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" }
+        });
+      }
+      if (value === "http://127.0.0.1:9876/v1/runs/runtime-run-resume") {
+        return new globalThis.Response(JSON.stringify({
+          run: {
+            id: "runtime-run-resume",
+            attemptId: "runtime-attempt-resume",
+            status: "completed",
+            completedAt: 203,
+            output: "finished while closed",
+            usage: null
+          }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (value.endsWith("/scheduler/tasks")) {
+        return new globalThis.Response(JSON.stringify({ tasks: [] }), { status: 200 });
+      }
+      if (value.endsWith("/scheduler/runs/claim")) {
+        return new globalThis.Response(JSON.stringify({ run: null }), { status: 200 });
+      }
+      return new globalThis.Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = new LocalSchedulerStore();
+    store.saveTask({
+      id: "task-runtime-resume",
+      taskType: "agent",
+      executionMode: "local-only",
+      title: "Resume Runtime",
+      prompt: "Resume",
+      enabled: false,
+      schedule: { kind: "daily", time: "09:00" },
+      capability: { preset: "read-only", allowedTools: [] },
+      timeoutSeconds: 60,
+      createdAt: 1
+    });
+    store.saveRun({
+      id: "local-run-resume",
+      taskId: "task-runtime-resume",
+      taskTitle: "Resume Runtime",
+      executionMode: "local-only",
+      backend: "runtime",
+      runtimeBaseUrl: "http://127.0.0.1:9876",
+      runtimeRunId: "runtime-run-resume",
+      runtimeAttemptId: "runtime-attempt-resume",
+      chatRunId: "runtime-run-resume",
+      sessionId: "session-runtime-resume",
+      status: "running",
+      startedAt: 100,
+      completedAt: null,
+      output: "",
+      error: null,
+      lastEventSequence: 1,
+      events: [{
+        sequence: 1,
+        type: "run.started",
+        runId: "runtime-run-resume",
+        data: {}
+      }]
+    });
+
+    await activate({ subscriptions });
+    await vi.waitFor(() => {
+      expect(store.getRun("local-run-resume")).toMatchObject({
+        status: "success",
+        output: "finished while closed",
+        lastEventSequence: 3,
+        observationError: null
+      });
+    });
+
+    expect(window.zion.chat.execute).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:9876/v1/runs/runtime-run-resume/projection/stream"
+        + "?after=1&reasoning=none&max_delay_ms=100&max_chunk_chars=512",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          accept: "text/event-stream",
+          "last-event-id": "1"
+        })
+      })
+    );
+    expect(externalCommands.get("zion.sessions.appendAssistantToken")).toHaveBeenCalledTimes(1);
+    expect(externalCommands.get("zion.sessions.appendAssistantToken")).toHaveBeenCalledWith({
+      id: "session-runtime-resume",
+      token: "finished while closed",
+      runId: "runtime-run-resume",
+      assistantBlockId: "runtime-run-resume"
+    });
+  });
+
   it("does not create a scheduled session at root when the archive folder is unavailable", async () => {
     const createSession = vi.fn(async () => "session-1");
     externalCommands.set("zion.sessions.getTreeSnapshot", vi.fn(async () => null));
@@ -588,6 +821,7 @@ describe("scheduler plugin", () => {
   });
 
   it("runs command tasks directly without creating an agent session", async () => {
+    localStorage.setItem("zion.runtime.mode", "runtime");
     window.zion.state = { set: vi.fn(), get: vi.fn(), onDidChange: vi.fn(() => disposable()) };
     const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({
       ok: true,

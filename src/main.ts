@@ -14,7 +14,10 @@ import { initCommandPalette } from "./ui/workbench/commandPalette";
 import { installZionIcons, zionIconHtml } from "./ui/icons";
 import { reconcileKeyedElements } from "./ui/keyed-elements";
 import { createRunLogViewDefinition } from "./ui/run-log-view";
-import { DEFAULT_BASE_URL, initServiceBaseUrlConfig } from "./settings/serviceBaseUrl";
+import {
+  DEFAULT_PLUGIN_SERVICE_BASE_URL,
+  initServiceBaseUrlConfig
+} from "./settings/serviceBaseUrl";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
 import { parseMessages } from "./chat/doc";
@@ -3924,6 +3927,7 @@ async function bootstrap() {
     const hostEl = createEditorSlotHost(panelId, sessionId);
     panel.editorHostEl.appendChild(hostEl);
     const slotCore = new EditorCore(hostEl, "", panelId);
+    try { slotCore.setSessionId(sessionId); } catch {}
     const proxy = attachEditor(slotCore, panelId);
     const slot = registerEditorSlot(panelId, sessionId, slotCore, proxy, hostEl, false);
     if (seedText) slotCore.setValue(seedText, { source: "session-seed" });
@@ -4351,6 +4355,7 @@ async function bootstrap() {
     } catch {}
     const editorInitialText = activeSessionId && seedText ? "" : seedText;
     const nextCore = new EditorCore(slotHost || panel.editorHostEl, editorInitialText, panelId);
+    try { nextCore.setSessionId(activeSessionId); } catch {}
     panelCores.set(panelId, nextCore);
     const nextProxy = attachEditor(nextCore, panelId);
     panelManager.setPanelEditor(panelId, nextProxy);
@@ -5447,9 +5452,9 @@ async function bootstrap() {
     // 初始化 HTTP 插件安装器（服务地址可配置）
     const defaultServiceUrl = (() => {
       try {
-        return localStorage.getItem('zion.pluginServiceUrl') || DEFAULT_BASE_URL;
+        return localStorage.getItem('zion.pluginServiceUrl') || DEFAULT_PLUGIN_SERVICE_BASE_URL;
       } catch {
-        return DEFAULT_BASE_URL;
+        return DEFAULT_PLUGIN_SERVICE_BASE_URL;
       }
     })();
     const pluginInstaller = new HttpPluginInstaller({
@@ -6043,7 +6048,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
     serviceBox.style.borderRadius = "6px";
 
     const serviceTitle = document.createElement("div");
-    serviceTitle.textContent = "Install from Service (zion-local-tools)";
+    serviceTitle.textContent = "Install from Plugin Host";
     serviceTitle.style.fontWeight = "600";
     serviceTitle.style.marginBottom = "6px";
     serviceTitle.style.fontSize = "12px";
@@ -6056,13 +6061,13 @@ function openPluginsPanel(pluginManager: PluginManager) {
 
     const urlInput = document.createElement("input");
     urlInput.type = "text";
-    urlInput.placeholder = DEFAULT_BASE_URL;
+    urlInput.placeholder = DEFAULT_PLUGIN_SERVICE_BASE_URL;
     urlInput.style.flex = "1";
     urlInput.value = (() => {
       try {
-        return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_BASE_URL;
+        return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_PLUGIN_SERVICE_BASE_URL;
       } catch {
-        return DEFAULT_BASE_URL;
+        return DEFAULT_PLUGIN_SERVICE_BASE_URL;
       }
     })();
     urlInput.onchange = () => {
@@ -6321,9 +6326,9 @@ function openPluginsPanel(pluginManager: PluginManager) {
 
     const getServiceBaseUrl = (): string => {
       try {
-        return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_BASE_URL;
+        return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_PLUGIN_SERVICE_BASE_URL;
       } catch {
-        return DEFAULT_BASE_URL;
+        return DEFAULT_PLUGIN_SERVICE_BASE_URL;
       }
     };
 
@@ -6666,9 +6671,9 @@ async function restoreDevSessions(pluginManager: PluginManager, pluginInstaller:
 
     const getServiceBaseUrl = (): string => {
       try {
-        return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_BASE_URL;
+        return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_PLUGIN_SERVICE_BASE_URL;
       } catch {
-        return DEFAULT_BASE_URL;
+        return DEFAULT_PLUGIN_SERVICE_BASE_URL;
       }
     };
 

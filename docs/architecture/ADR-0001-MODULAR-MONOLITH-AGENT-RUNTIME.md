@@ -1,21 +1,23 @@
 # ADR-0001：采用 Monorepo 模块化单体与独立 Agent Runtime
 
-- 状态：Proposed
+- 状态：Accepted
 - 日期：2026-07-26
 - 决策人：Zion maintainers
+- 当前产品架构：[ZION-DISTRIBUTED-RUNTIME-PRODUCT-ARCHITECTURE.md](./ZION-DISTRIBUTED-RUNTIME-PRODUCT-ARCHITECTURE.md)
 - 详细分析：[AGENT-RUNTIME-BOUNDARY-STRATEGY.md](./AGENT-RUNTIME-BOUNDARY-STRATEGY.md)
 - 多端拓扑：[MULTI-SURFACE-AGENT-PLATFORM.md](./MULTI-SURFACE-AGENT-PLATFORM.md)
+- 支持性蓝图：[ZION-RUNTIME-PLATFORM-BLUEPRINT.md](./ZION-RUNTIME-PLATFORM-BLUEPRINT.md)
 
 ## 背景
 
 Zion 当前由两个仓库组成：
 
-- `zion-next`：Vite PWA、编辑器、插件系统、模型适配、Agent loop 和浏览器工具。
-- `zion-local-tools`：FastAPI、本地文件、终端、SSH、邮件、MCP 和 Scheduler。
+- `zion-next`：Vite PWA Workbench、插件 UI 与独立 Node Runtime。
+- `zion-local-tools`：FastAPI 本地 Tool Host，提供文件、搜索、终端、SSH、邮件和 MCP。
 
-调度 Control Plane 已开始进入后端，但 Agent Runtime 仍在浏览器。工具 schema 和 handler
-通过 `window.zion.state` 动态注册，Session 和 Run 通过浏览器事件连接。这导致新增定时任务、
-权限或工具时需要跨多个插件和仓库修改。
+历史实现曾把应用会话、Scheduler 控制面和 LLM 代理放入 local-tools。当前实现已将这些
+职责迁入 `apps/runtime`；旧接口只作为显式开启的迁移兼容面保留。详细边界见
+[RUNTIME-LOCAL-TOOLS-BOUNDARY.md](./RUNTIME-LOCAL-TOOLS-BOUNDARY.md)。
 
 需要同时解决：
 

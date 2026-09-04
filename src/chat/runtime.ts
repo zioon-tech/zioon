@@ -15,6 +15,8 @@ type EventsLike = {
 
 type AbortLike = {
   abort?: () => void;
+  dispose?: () => void;
+  abortOnDispose?: boolean;
 };
 
 type CreateChatRuntimeOptions = {
@@ -200,7 +202,13 @@ export function createChatRuntime(opts: CreateChatRuntimeOptions) {
     dispose() {
       try { sessionSub?.dispose?.(); } catch {}
       for (const entry of runControllers.values()) {
-        try { entry.controller?.abort?.(); } catch {}
+        try {
+          if (entry.controller?.abortOnDispose === false) {
+            entry.controller?.dispose?.();
+          } else {
+            entry.controller?.abort?.();
+          }
+        } catch {}
       }
       runControllers.clear();
     }

@@ -1,4 +1,9 @@
 import { EditorView } from "@codemirror/view";
+import { getAssistantBlockIdFromHeader } from "../../src/chat/restore.ts";
+import { isContinuationBoundaryLine } from "../../src/chat/session-document-format.js";
+import {
+  revealPendingAssistantInView
+} from "../dev.session-manager/editor/pending-assistant-plugin.js";
 
 const ROLE_HEAD_RE = /^\s*(system|user|assistant|tool)\s+/;
 const ASSISTANT_HEAD_RE = /^\s*assistant\s+/;
@@ -52,8 +57,15 @@ function setFollowLatest(sessionId, value) {
   } catch {}
 }
 
-function resolveAssistantHeadLine(lines, preferredHeadLine) {
+function resolveAssistantHeadLine(lines, preferredHeadLine, assistantBlockId) {
   if (!Array.isArray(lines) || lines.length === 0) return -1;
+  const expectedId = String(assistantBlockId || "");
+  if (expectedId) {
+    const exact = lines.findIndex((line) =>
+      getAssistantBlockIdFromHeader(line) === expectedId
+    );
+    if (exact >= 0) return exact;
+  }
 
   if (
     typeof preferredHeadLine === "number" &&
@@ -84,8 +96,16 @@ function getOverviewLines(text) {
   return String(text || "").replace(/\r/g, "").split("\n");
 }
 
-function findAssistantBlockRangeFromLines(lines, preferredHeadLine) {
-  const headLine = resolveAssistantHeadLine(lines, preferredHeadLine);
+function findAssistantBlockRangeFromLines(
+  lines,
+  preferredHeadLine,
+  assistantBlockId
+) {
+  const headLine = resolveAssistantHeadLine(
+    lines,
+    preferredHeadLine,
+    assistantBlockId
+  );
   if (headLine < 0) return null;
 
   let endLine = headLine;
@@ -101,17 +121,16 @@ function findAssistantBlockRangeFromLines(lines, preferredHeadLine) {
   };
 }
 
-export function findAssistantBlockRange(text, preferredHeadLine) {
-  return findAssistantBlockRangeFromLines(getOverviewLines(text), preferredHeadLine);
-}
-
-function findTrailingUserPromptLine(lines, assistantRange) {
-  if (!assistantRange || typeof assistantRange.endLine !== "number") return null;
-  const targetLine = assistantRange.endLine + 1;
-  if (targetLine < lines.length && USER_HEAD_RE.test(lines[targetLine] || "")) {
-    return targetLine;
-  }
-  return null;
+export function findAssistantBlockRange(
+  text,
+  preferredHeadLine,
+  assistantBlockId
+) {
+  return findAssistantBlockRangeFromLines(
+    getOverviewLines(text),
+    preferredHeadLine,
+    assistantBlockId
+  );
 }
 
 function lineToOffset(lineIndex, lineCount, railHeight, markerSize) {
@@ -182,9 +201,12 @@ function collectUserMessageItemsFromLines(lines) {
   }
   for (let i = 0; i < lines.length; i++) {
     if (!USER_HEAD_RE.test(lines[i] || "")) continue;
+    const continuation = isContinuationBoundaryLine(lines[i]);
     let endLine = i;
     const previewLines = [];
-    const firstLine = String(lines[i] || "").replace(USER_HEAD_RE, "").trim();
+    const firstLine = continuation
+      ? ""
+      : String(lines[i] || "").replace(USER_HEAD_RE, "").trim();
     if (firstLine) previewLines.push(firstLine);
     let previewLength = firstLine.length;
     for (let j = i + 1; j < lines.length; j++) {
@@ -196,7 +218,11 @@ function collectUserMessageItemsFromLines(lines) {
         previewLength += bodyLine.length + 1;
       }
     }
-    addItem(i, endLine, previewLines);
+    addItem(
+      continuation ? Math.min(lines.length - 1, i + 1) : i,
+      endLine,
+      previewLines
+    );
     i = endLine;
   }
   return items;
@@ -525,19 +551,40 @@ export function createChatOverviewRail(editor) {
   const revealLatestAnswer = (sessionId, forceFollow = false) => {
     if (!scrollDOM) return;
     if (forceFollow && sessionId) setFollowLatest(sessionId, true);
+    const activeRun = sessionId
+      ? window.zion?.state?.get?.(`chat.runs.${sessionId}`)
+      : null;
+    if (
+      activeRun?.streaming
+      && revealPendingAssistantInView(view, {
+        runId: activeRun.runId,
+        sessionId,
+        margin: 48
+      })
+    ) {
+      scheduleRender();
+      return;
+    }
     const preferredHeadLine = sessionId
       ? window.zion?.state?.get?.(`chat.answerHeadLine.${sessionId}`)
       : undefined;
+    const assistantBlockId = sessionId
+      ? window.zion?.state?.get?.(`chat.assistantBlockId.${sessionId}`)
+        || activeRun?.runId
+      : "";
     const docText = view.state.doc.toString();
     const lines = getOverviewLines(docText);
-    const range = findAssistantBlockRangeFromLines(lines, preferredHeadLine);
+    const range = findAssistantBlockRangeFromLines(
+      lines,
+      preferredHeadLine,
+      assistantBlockId
+    );
     if (range) {
       try {
-        const trailingUserLine = findTrailingUserPromptLine(lines, range);
-        const targetLine = trailingUserLine == null ? range.endLine : trailingUserLine;
+        const targetLine = range.endLine;
         const line = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, targetLine + 1)));
         const block = view.lineBlockAt(line.to);
-        const margin = getBottomSafeMargin(scrollDOM, trailingUserLine == null ? 48 : 72);
+        const margin = getBottomSafeMargin(scrollDOM, 48);
         const maxScrollTop = Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight);
         const nextScrollTop = Math.max(0, Math.min(maxScrollTop, block.bottom - scrollDOM.clientHeight + margin));
         try {
@@ -702,11 +749,20 @@ export function createChatOverviewRail(editor) {
     const preferredHeadLine = sessionId
       ? window.zion?.state?.get?.(`chat.answerHeadLine.${sessionId}`)
       : undefined;
+    const activeRun = sessionId
+      ? window.zion?.state?.get?.(`chat.runs.${sessionId}`)
+      : null;
+    const assistantBlockId = sessionId
+      ? window.zion?.state?.get?.(`chat.assistantBlockId.${sessionId}`)
+        || activeRun?.runId
+      : "";
     const lines = getOverviewLines(doc.toString());
-    const range = findAssistantBlockRangeFromLines(lines, preferredHeadLine);
-    const isStreaming = sessionId
-      ? !!window.zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming
-      : false;
+    const range = findAssistantBlockRangeFromLines(
+      lines,
+      preferredHeadLine,
+      assistantBlockId
+    );
+    const isStreaming = !!activeRun?.streaming;
     const followLatest = sessionId ? isFollowLatestEnabled(sessionId) : false;
     const userMessages = collectUserMessageItemsFromLines(lines);
     const userNav = computeUserNavState(view, userMessages);
@@ -798,7 +854,8 @@ export function createChatOverviewRail(editor) {
       if (!isStreaming) return;
       if (!isFollowLatestEnabled(sessionId)) return;
       const suppressUntil = Number(window.zion?.state?.get?.(`chat.followSuppressUntil.${sessionId}`) || 0);
-      if (suppressUntil > Date.now()) return;
+      const domSuppressUntil = Number(scrollDOM.__zionProgrammaticScrollUntil || 0);
+      if (Math.max(suppressUntil, domSuppressUntil) > Date.now()) return;
       const distanceToBottom = scrollDOM.scrollHeight - scrollDOM.scrollTop - scrollDOM.clientHeight;
       if (distanceToBottom > 12) {
         setFollowLatest(sessionId, false);
@@ -831,6 +888,21 @@ export function createChatOverviewRail(editor) {
           if (!payload?.sessionId || !targetSessionId || payload.sessionId === targetSessionId) {
             if (topic === "chat/runStarted" && payload?.sessionId === targetSessionId) {
               setFollowLatest(targetSessionId, true);
+              const blockId = String(
+                payload?.assistantBlockId || payload?.runId || ""
+              );
+              if (blockId) {
+                window.zion?.state?.set?.(
+                  `chat.assistantBlockId.${targetSessionId}`,
+                  blockId
+                );
+              }
+              if (Number.isFinite(Number(payload?.answerHeadLine))) {
+                window.zion?.state?.set?.(
+                  `chat.answerHeadLine.${targetSessionId}`,
+                  Number(payload.answerHeadLine)
+                );
+              }
             }
             scheduleRender();
           }

@@ -1,19 +1,17 @@
 # Zion Scheduled Tasks & Agent Automation — 设计文档
 
-> 状态：Phase 0 / service-backed 控制面已实现 | 最后更新：2026-07-26
+> 状态：Runtime-owned 控制面已实现 | 最后更新：2026-09-03
 > 
 > 基于对 Codex、Claude Code、Microsoft Agent Framework 定时任务机制的调研，
 > 结合 zion-next (memory-panel 分支) 当前架构的分析。
 >
-> **v0.2 决策：** 浏览器定时器只提供 `local-only`、best-effort 的执行模式；
-> 用户创建的持久定时任务由 zion-local-tools 作为唯一控制面和执行 owner。插件是管理、
-> 观察和本地降级 UI，不是第二个独立 scheduler。
+> **v0.4 决策：** 浏览器定时器只提供 `local-only`、best-effort 的执行模式；
+> 用户创建的持久定时任务由 Zion Runtime 作为唯一控制面和执行 owner。插件只负责管理
+> 和观察，不是第二个 scheduler 或执行 worker。
 >
-> **v0.3 实施状态：** 已实现 `local-only` 与 `service-backed`。后者由
-> zion-local-tools 使用 SQLite 持久化 Task、occurrence、Run 和 claim lease，断开期间
-> 到期的 Run 会保留为 pending，在线 Zion worker 领取后执行。后端 Agent Runtime 与模型
-> 凭证尚未迁移，因此 `service-backed` 不等同于“浏览器关闭时仍在推理”；完成该迁移后才
-> 将模式命名为 `durable`。
+> **v0.4 实施状态：** 已实现 `local-only` 与 `service-backed`。后者由 Runtime SQLite
+> 持久化 Task、occurrence、Run 和 claim lease，并由 Runtime worker 领取任务。
+> local-tools 只执行被 Runtime 策略授权的原子工具调用。
 >
 > Agent Runtime 的进程边界、Monorepo 方案和迁移步骤见
 > [AGENT-RUNTIME-BOUNDARY-STRATEGY.md](./AGENT-RUNTIME-BOUNDARY-STRATEGY.md) 与
@@ -221,18 +219,18 @@ OpenAI 用 Codex 从零构建百万行代码产品的核心原则：
 
 | 模式 | 适用场景 | owner | 可靠性承诺 | 可用权限 |
 |---|---|---|---|---|
-| `durable`（目标） | 浏览器关闭时仍需完成的 Agent 任务 | zion-local-tools Agent worker | 重启后恢复并完成推理；按 misfire policy 处理 | 后端 CapabilityPolicy 强制 |
-| `service-backed`（已实现） | 可靠保存触发、允许稍后执行 | zion-local-tools 控制面 + 浏览器 worker | 触发和 pending Run 不丢失；执行等待在线 Zion | 浏览器 ToolGateway 强制 |
+| `durable`（逐步扩展） | 浏览器关闭时仍需完成的 Agent 任务 | Runtime worker | Runtime 已支持工具可持续执行；按 misfire policy 处理 | Runtime CapabilityPolicy 强制 |
+| `service-backed`（已实现） | 可靠保存触发、允许兼容工具稍后执行 | Runtime 控制面 + Runtime/Workbench worker | 触发和 pending Run 不丢失；按工具能力选择 worker | Runtime 队列，执行边界双重校验 |
 | `local-only`（已实现） | 本地预览、开发、暂时离线 | 浏览器当前 profile 的 leader tab | 页面存活期间 best-effort；不补偿 | read-only / workspace-write / trusted-automation |
 
 浏览器不能创建“看似持久、实际依赖标签页”的任务。UI 必须明确区分
-`service-backed` 的“触发持久化、执行等待在线 worker”和真正 `durable` 的后端执行。
+`service-backed` 只接受 Runtime 当前可以提供的工具，创建或更新任务时即校验能力。
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                     zion-local-tools：控制面 + 默认执行面              │
+│                       Zion Runtime：控制面 + 默认执行面                │
 │                                                                       │
-│  Task API + Postgres              Scheduler / owner lease             │
+│  Task API + SQLite                Scheduler / owner lease             │
 │  ┌────────────────────┐           ┌─────────────────────────────┐   │
 │  │ Task revisions     │──occurrence│ timezone / DST / misfire /  │   │
 │  │ Run index/events   │           │ overlap / retry / idempotency│   │

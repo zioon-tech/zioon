@@ -9,7 +9,7 @@ describe("scheduler service client", () => {
   });
 
   it("persists service-backed task capabilities and schedule semantics", async () => {
-    localStorage.setItem("zion.localTools.baseUrl", "http://127.0.0.1:9999/");
+    localStorage.setItem("zion.runtime.baseUrl", "http://127.0.0.1:9999/");
     const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({
       id: "remote-1",
       revision: 1,
@@ -35,12 +35,13 @@ describe("scheduler service client", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://127.0.0.1:9999/scheduler/tasks");
+    expect(url).toBe("http://127.0.0.1:9999/v1/scheduler/tasks");
     expect(JSON.parse(options.body)).toMatchObject({
       clientTaskId: "local-1",
       taskType: "agent",
       command: "",
       cwd: "",
+      interactionProfileId: "scheduled.default",
       schedule: { kind: "daily", time: "09:00", misfirePolicy: "run-once", overlapPolicy: "forbid" },
       capability: {
         preset: "trusted-automation",
@@ -52,7 +53,7 @@ describe("scheduler service client", () => {
   });
 
   it("retrieves service-backed runs with an optional task filter", async () => {
-    localStorage.setItem("zion.localTools.baseUrl", "http://127.0.0.1:9999/");
+    localStorage.setItem("zion.runtime.baseUrl", "http://127.0.0.1:9999/");
     const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({
       runs: [{ id: "run-1", taskId: "remote-1", status: "success" }]
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -63,12 +64,12 @@ describe("scheduler service client", () => {
       { id: "run-1", taskId: "remote-1", status: "success" }
     ]);
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "http://127.0.0.1:9999/scheduler/runs?limit=25&offset=50&include_details=false&task_id=remote-1"
+      "http://127.0.0.1:9999/v1/scheduler/runs?limit=25&offset=50&include_details=false&task_id=remote-1"
     );
   });
 
   it("loads one complete run only when details are requested", async () => {
-    localStorage.setItem("zion.localTools.baseUrl", "http://127.0.0.1:9999/");
+    localStorage.setItem("zion.runtime.baseUrl", "http://127.0.0.1:9999/");
     const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({
       id: "run-1",
       events: [{ type: "run.finished" }],
@@ -83,12 +84,12 @@ describe("scheduler service client", () => {
       output: "done"
     });
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "http://127.0.0.1:9999/scheduler/runs/run%2F1"
+      "http://127.0.0.1:9999/v1/scheduler/runs/run%2F1"
     );
   });
 
   it("cancels service-backed runs with a reason", async () => {
-    localStorage.setItem("zion.localTools.baseUrl", "http://127.0.0.1:9999/");
+    localStorage.setItem("zion.runtime.baseUrl", "http://127.0.0.1:9999/");
     const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { "Content-Type": "application/json" }
@@ -98,7 +99,7 @@ describe("scheduler service client", () => {
 
     await expect(client.cancel("run/1", "user")).resolves.toEqual({ ok: true });
     const [url, options] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://127.0.0.1:9999/scheduler/runs/run%2F1/cancel");
+    expect(url).toBe("http://127.0.0.1:9999/v1/scheduler/runs/run%2F1/cancel");
     expect(options).toMatchObject({ method: "POST" });
     expect(JSON.parse(options.body)).toEqual({ reason: "user" });
   });
