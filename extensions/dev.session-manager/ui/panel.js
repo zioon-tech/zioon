@@ -1,5 +1,11 @@
 export function createSessionsPanelManager(opts) {
-  const zion = opts?.zion || window.zion;
+  // Extension chunks may be evaluated before the core API is installed.
+  // Resolve window.zion lazily so panel actions use the live command registry.
+  const zion = new Proxy({}, {
+    get(_target, property) {
+      return (opts?.zion || window.zion)?.[property];
+    }
+  });
   const getIndex = opts?.getIndex;
   const createSessionsListRenderer = opts?.createSessionsListRenderer;
   const refreshSessionsSidebarViewIfOpen = opts?.refreshSessionsSidebarViewIfOpen;

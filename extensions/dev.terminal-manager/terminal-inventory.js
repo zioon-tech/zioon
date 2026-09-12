@@ -1,3 +1,7 @@
+import {
+  machineReference
+} from "../../packages/node-protocol/src/resource-references.mjs";
+
 const STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_TEXT_LENGTH = 240;
 const MAX_DESCRIPTION_LENGTH = 500;
@@ -52,12 +56,14 @@ function basename(path) {
 }
 
 export function getTerminalMachineIdentity(session) {
+  const nodeId = text(session?.nodeId);
   const type = text(session?.type || "local").toLowerCase() === "ssh" ? "ssh" : "local";
   if (type === "local") {
     return {
-      id: "machine:local",
-      name: "本机",
+      id: nodeId ? machineReference(nodeId, "machine:local") : "machine:local",
+      name: text(session?.nodeLabel) || "本机",
       kind: "local",
+      ...(nodeId ? { nodeId, nodeLabel: text(session?.nodeLabel) } : {}),
       connection: {}
     };
   }
@@ -67,9 +73,12 @@ export function getTerminalMachineIdentity(session) {
   const port = Number(session?.ssh_port || session?.port || 22) || 22;
   const connectionKey = `${user}@${host}:${port}`;
   return {
-    id: `machine:ssh:${hash(connectionKey)}`,
+    id: nodeId
+      ? machineReference(nodeId, `machine:ssh:${hash(connectionKey)}`)
+      : `machine:ssh:${hash(connectionKey)}`,
     name: host || "SSH",
     kind: "ssh",
+    ...(nodeId ? { nodeId, nodeLabel: text(session?.nodeLabel) } : {}),
     connection: {
       host: host || undefined,
       user: user || undefined,
@@ -80,7 +89,8 @@ export function getTerminalMachineIdentity(session) {
 
 export function normalizeTerminalSession(session, now = Date.now()) {
   if (!session || typeof session !== "object") return null;
-  const id = bounded(session.id, 120);
+  const id = text(session.id);
+  if (id.length > 4096) return null;
   if (!id) return null;
   const machine = getTerminalMachineIdentity(session);
   const cwd = normalizeTerminalPath(session.cwd || session.initial_cwd);
@@ -114,11 +124,13 @@ export function buildTerminalInventory(sessions, options = {}) {
   const workspaceMap = new Map();
 
   for (const profile of machineProfiles) {
-    const id = bounded(profile?.id, 200);
+    const id = text(profile?.id);
     if (!id) continue;
     machineMap.set(id, {
       id,
       name: bounded(profile?.name, 120) || id,
+      nodeId: text(profile?.nodeId),
+      nodeLabel: text(profile?.nodeLabel),
       kind: text(profile?.kind).toLowerCase() === "ssh" ? "ssh" : "local",
       connection: {},
       description: bounded(profile?.description, MAX_DESCRIPTION_LENGTH)
@@ -155,6 +167,8 @@ export function buildTerminalInventory(sessions, options = {}) {
     }
     const machine = machineMap.get(identity.id);
     machine.kind = identity.kind;
+    machine.nodeId = identity.nodeId || "";
+    machine.nodeLabel = identity.nodeLabel || "";
     machine.connection = identity.connection;
     if (!machine.name) machine.name = identity.name;
     machine.sessionCount += 1;
@@ -171,6 +185,8 @@ export function buildTerminalInventory(sessions, options = {}) {
       workspaceMap.set(session.workspaceId, {
         id: session.workspaceId,
         machineId: session.machineId,
+        nodeId: session.nodeId || "",
+        resourceId: session.resourceId || "",
         name: basename(session.cwd),
         root: session.cwd,
         sessionCount: 0,
@@ -225,7 +241,7 @@ export function buildTerminalInventory(sessions, options = {}) {
     .join("|")
     + machineProfiles
       .map((profile) => [
-        bounded(profile?.id, 200),
+        text(profile?.id),
         bounded(profile?.name, 120),
         bounded(profile?.description, MAX_DESCRIPTION_LENGTH),
         activityTimestamp(profile?.updated_at ?? profile?.updatedAt)
@@ -417,6 +433,8 @@ export function buildTerminalInventoryContextXml(inventory, options = {}) {
     "    Workspace names may approximately match user wording.",
     "    Use a workspace preferred_session_id directly for Bash/terminalExecute/read/write/edit/glob/grep/tree when it matches the intended project.",
     "    session_id means a concrete terminal session id. Do not use machine_id, workspace_id, or type values such as local/ssh as session_id.",
+    "    Global session_id values also select the Node. Copy them exactly; never construct, shorten, or substitute them.",
+    "    Offline or stale terminals are unavailable. Refresh terminalInventory; do not switch machines or assume same-named workspaces contain the same files.",
     "    Use terminalManage action=list with a machine_id or workspace_id only when no suitable preferred_session_id is visible or a different session is needed.",
     "    Use terminalManage action=list_machines for all machine details, or get_machine and update_machine for one machine.",
     ...(projectionMeta.truncated
@@ -428,7 +446,7 @@ export function buildTerminalInventoryContextXml(inventory, options = {}) {
 
   for (const machine of machines) {
     lines.push(
-      `  <machine machine_id="${escapeXml(machine.id)}" name="${escapeXml(machine.name)}" status="${escapeXml(machine.status)}" sessions="${Number(machine.sessionCount || 0)}" available="${Number(machine.availableSessionCount || 0)}" disconnected="${Number(machine.disconnectedSessionCount || 0)}" workspaces="${Number(machine.workspaceCount || 0)}"${machine.preferredSessionId ? ` preferred_session_id="${escapeXml(machine.preferredSessionId)}"` : ""}>`
+      `  <machine machine_id="${escapeXml(machine.id, 4096)}" name="${escapeXml(machine.name)}"${machine.nodeId ? ` node_id="${escapeXml(machine.nodeId)}" node_name="${escapeXml(machine.nodeLabel)}"` : ""} status="${escapeXml(machine.status)}" sessions="${Number(machine.sessionCount || 0)}" available="${Number(machine.availableSessionCount || 0)}" disconnected="${Number(machine.disconnectedSessionCount || 0)}" workspaces="${Number(machine.workspaceCount || 0)}"${machine.preferredSessionId ? ` preferred_session_id="${escapeXml(machine.preferredSessionId, 4096)}"` : ""}>`
     );
     lines.push(`    <description>${escapeXml(machine.description || DEFAULT_MACHINE_DESCRIPTION, MAX_DESCRIPTION_LENGTH)}</description>`);
     for (const workspace of workspaces.filter((item) => item.machineId === machine.id)) {
@@ -437,7 +455,7 @@ export function buildTerminalInventoryContextXml(inventory, options = {}) {
         ? ` path="${escapeXml(workspace.root)}"`
         : "";
       const preferredSession = workspace.preferredSessionId
-        ? ` preferred_session_id="${escapeXml(workspace.preferredSessionId)}"`
+        ? ` preferred_session_id="${escapeXml(workspace.preferredSessionId, 4096)}"`
         : "";
       lines.push(
         `    <workspace workspace_id="${escapeXml(workspace.id)}" name="${escapeXml(workspace.name)}" sessions="${Number(workspace.sessionCount || 0)}" available="${Number(workspace.availableSessionCount || 0)}" disconnected="${Number(workspace.disconnectedSessionCount || 0)}"${preferredSession}${path} />`
@@ -446,6 +464,9 @@ export function buildTerminalInventoryContextXml(inventory, options = {}) {
     lines.push("  </machine>");
   }
 
+  for (const node of (Array.isArray(inventory?.nodes) ? inventory.nodes : []).slice(0, 24)) {
+    lines.push(`  <node node_id="${escapeXml(node.nodeId)}" name="${escapeXml(node.label)}" status="${escapeXml(node.status)}" />`);
+  }
   lines.push("</terminal_inventory>");
   return lines.join("\n");
 }

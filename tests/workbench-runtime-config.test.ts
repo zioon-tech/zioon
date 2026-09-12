@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   probeWorkbenchRuntime,
   readWorkbenchRuntimeConfig,
+  runtimeDeviceServiceBaseUrl,
   shouldUseWorkbenchRuntime,
   WORKBENCH_RUNTIME_BASE_URL_STORAGE_KEY,
   WORKBENCH_RUNTIME_MODE_STORAGE_KEY
@@ -70,6 +71,23 @@ describe("Workbench Runtime configuration", () => {
     }).enabled).toBe(false);
   });
 
+  it("builds same-origin Device service URLs only in Runtime mode", () => {
+    expect(runtimeDeviceServiceBaseUrl("local-tools", {
+      state: { get: () => undefined },
+      storage: storage({
+        [WORKBENCH_RUNTIME_MODE_STORAGE_KEY]: "runtime",
+        [WORKBENCH_RUNTIME_BASE_URL_STORAGE_KEY]: "https://runtime.test/"
+      })
+    })).toBe("https://runtime.test/v1/device-services/local-tools");
+
+    expect(runtimeDeviceServiceBaseUrl("plugin-service", {
+      state: { get: () => undefined },
+      storage: storage({
+        [WORKBENCH_RUNTIME_MODE_STORAGE_KEY]: "browser"
+      })
+    })).toBeNull();
+  });
+
   it("automatically uses a healthy Runtime and checks Scheduler ownership", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       ok: true,
@@ -80,6 +98,8 @@ describe("Workbench Runtime configuration", () => {
       runtimePluginFailures: 0,
       runtimePlugins: [{
         id: "dev.skills",
+        version: "2.1.0",
+        origin: "builtin",
         status: "active",
         contextProviderIds: ["dev.skills.available"],
         postProcessorIds: [],
@@ -106,6 +126,8 @@ describe("Workbench Runtime configuration", () => {
       runtimePluginFailures: 0,
       runtimePlugins: [{
         id: "dev.skills",
+        version: "2.1.0",
+        origin: "builtin",
         status: "active",
         contextProviderIds: ["dev.skills.available"],
         postProcessorIds: [],

@@ -1,0 +1,31 @@
+[Unit]
+Description=Zion Runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zion
+Group=zion
+WorkingDirectory=/opt/zion-next
+EnvironmentFile=/etc/zion-next/runtime.env
+ExecStart=/usr/local/bin/node /opt/zion-next/apps/runtime/src/main.mjs \
+  --host 127.0.0.1 \
+  --port 8766 \
+  --db /var/lib/zion-next/runtime.sqlite3 \
+  --workbench-dist /var/lib/zion-next/workbench-dist \
+  --external-plugin-root /var/lib/zion-next/plugins \
+  --external-runtime-plugins dev.identity \
+  --runtime-plugins dev.session-manager,dev.skills,dev.tools,dev.plugins,dev.terminal-manager,dev.identity,dev.memory,dev.agents,dev.scheduler,dev.langchain-chat,dev.mail,dev.context-compression
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/zion-next
+
+[Install]
+WantedBy=multi-user.target

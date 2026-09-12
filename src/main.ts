@@ -8,6 +8,12 @@ import type { Disposable } from "./types/zion";
 import { PluginManager } from "./plugin/manager";
 import { HttpPluginInstaller } from "./plugin/http-installer";
 import type { PluginInfo } from "./plugin/types";
+import {
+  EXTERNALIZED_BUILTIN_PLUGIN_IDS,
+  externalizedPluginIdForDevSession,
+  resolveExternalizedPluginServiceBaseUrl,
+  syncExternalizedBuiltinPlugins
+} from "./plugin/externalized";
 import { notificationManager } from "./notification/manager";
 import { initWorkbench } from "./ui/workbench/workbench";
 import { initCommandPalette } from "./ui/workbench/commandPalette";
@@ -18,6 +24,7 @@ import {
   DEFAULT_PLUGIN_SERVICE_BASE_URL,
   initServiceBaseUrlConfig
 } from "./settings/serviceBaseUrl";
+import { registerRemoteAccessSettings } from "./settings/RemoteAccessSettings";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
 import { parseMessages } from "./chat/doc";
@@ -25,6 +32,17 @@ import { SessionRuntime } from "./session/runtime";
 import { publishSessionDerivedTagSource, removeSessionDerivedTagSource } from "./session/derived-tags";
 import { createThemeManager } from "./theme/themeManager";
 import { createI18nManager } from "./i18n/i18nManager";
+import { ensureWorkbenchRuntimeAccess } from "./runtime/workbench-access";
+import {
+  readWorkbenchRuntimeConfig,
+  runtimeDeviceServiceBaseUrl
+} from "./runtime/workbench-runtime-config";
+import {
+  runtimeHostedPluginActivationAllowed
+} from "./runtime/workbench-plugin-policy";
+import {
+  installWorkbenchPwaUpgradeRecovery
+} from "./runtime/workbench-pwa-upgrade";
 import { EditorState, Prec, StateEffect, type Extension } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
@@ -36,14 +54,12 @@ import { selectionMatchHighlighter } from "./editor/extensions/selection-match-l
 import { tags as cmTags } from "@lezer/highlight";
 
 installZionIcons();
+installWorkbenchPwaUpgradeRecovery();
 
 // ---------- 自动保存 / 恢复 ----------
 const STORAGE_KEY = 'zion.autosave';
 const PANEL_WORKSPACE_STORAGE_KEY = "zion.panelWorkspace.v1";
 const EDITOR_PATH_RENAME_FALLBACK_KEY = "__fallback__";
-const EXTERNALIZED_BUILTIN_PLUGIN_IDS = new Set<string>([
-  "dev.identity"
-]);
 const editorPathInlineRenameHandlers = new Map<string, (opts?: any) => boolean>();
 
 /** 读回上次的内容 */
@@ -3404,6 +3420,10 @@ function mountPanelSessionTabsBar(
 async function bootstrap() {
   const host = document.getElementById("app")!;
   host.innerHTML = "";
+  await ensureWorkbenchRuntimeAccess(host);
+  host.innerHTML = "";
+  const runtimeHostedWorkbench =
+    readWorkbenchRuntimeConfig().mode === "runtime";
 
   const wb = initWorkbench(host);
   const editorContainer = wb.editorHost;
@@ -3564,10 +3584,12 @@ async function bootstrap() {
       const runDocumentSwitch = () => {
         if (panelId) {
           let seedText = "";
-          try {
-            const prefetched = window.zion.state.get<string>(`sessions.doc.${id}`);
-            if (typeof prefetched === "string") seedText = prefetched;
-          } catch {}
+          if (!runtimeHostedWorkbench) {
+            try {
+              const prefetched = window.zion.state.get<string>(`sessions.doc.${id}`);
+              if (typeof prefetched === "string") seedText = prefetched;
+            } catch {}
+          }
           ensureEditorSlotForSession(panelId, id, seedText);
         }
         const result = window.zion.commands.executeCommand("zion.sessions.switch", {
@@ -3654,11 +3676,17 @@ async function bootstrap() {
   // 初始化插件管理器
   const pluginManager = new PluginManager({
     pluginDir: '/plugins',
-    logLevel: 'info'
+    logLevel: 'info',
+    activationAllowed: runtimeHostedWorkbench
+      ? runtimeHostedPluginActivationAllowed
+      : undefined
   });
 
   // 优先读缓存；没有会话时保持空编辑器，避免启动时闪过硬编码示例内容。
-  const cached = savedPanelWorkspace?.manager ? "" : loadLastDoc();
+  const cached =
+    runtimeHostedWorkbench || savedPanelWorkspace?.manager
+      ? ""
+      : loadLastDoc();
   const initialDoc = cached || "";
 
   const core = new EditorCore(editorContainer, initialDoc, "panel-0");
@@ -3912,6 +3940,9 @@ async function bootstrap() {
   };
   ensureEditorSlotForSession = (panelId: string, sessionId: string, seedText = "") => {
     const existing = panelEditorSlots.get(panelId)?.get(sessionId) || null;
+    // #region debug-point C:ensure-editor-slot
+    void globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"C",location:"src/main.ts:ensureEditorSlotForSession",msg:"[DEBUG] Workbench ensured an editor slot for a Session",data:{panelId,editorSessionId:sessionId,existing:!!existing,seedLength:String(seedText||"").length,panelExists:!!panelManager.getPanel(panelId),activeTabId:panelManager.getPanel(panelId)?.activeTabId||null},ts:Date.now()}),keepalive:true}).catch(()=>{});
+    // #endregion
     if (existing) {
       activateCachedEditorSlot(panelId, sessionId);
       return existing;
@@ -4182,6 +4213,7 @@ async function bootstrap() {
               panelId: panel.id,
               skipPersistPrevious: true,
               forceReload: true,
+              focus: false,
               writeUrl: false,
               pushUrl: false
             })
@@ -4194,19 +4226,6 @@ async function bootstrap() {
           typeof savedPanelWorkspace?.manager?.activePanelId === "string"
             ? savedPanelWorkspace.manager.activePanelId
             : panelManager.getActivePanelId();
-        const finalPanel = finalActivePanelId ? panelManager.getPanel(finalActivePanelId) : null;
-        if (finalActivePanelId && finalPanel?.activeTabId) {
-          await Promise.resolve(
-            window.zion.commands.executeCommand("zion.sessions.switch", {
-              id: finalPanel.activeTabId,
-              panelId: finalActivePanelId,
-              skipPersistPrevious: true,
-              forceReload: true,
-              writeUrl: false,
-              pushUrl: false
-            })
-          );
-        }
         requestAnimationFrame(() => requestAnimationFrame(() => {
           try {
             const viewStates = savedPanelWorkspace?.viewStates || {};
@@ -4308,6 +4327,7 @@ async function bootstrap() {
       return activatePanelSession(panelId, nextId);
     });
   } catch {}
+  const pendingCurrentSessionOpens = new Set<string>();
   try {
     window.zion.state.onDidChange<string>("sessions.currentId", (sessionId) => {
       if (suspendSessionCurrentSync) return;
@@ -4316,11 +4336,31 @@ async function bootstrap() {
       if (!activePanelId) return;
       const panel = panelManager.getPanel(activePanelId);
       if (!panel || !sessionId) return;
+      // #region debug-point C:current-session-changed
+      void globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"C",location:"src/main.ts:sessions.currentId",msg:"[DEBUG] Global current Session changed",data:{runtimeSessionId:sessionId,panelId:activePanelId,activeTabId:panel.activeTabId||null,tabIds:panel.tabs.map((tab:any)=>String(tab?.id||"")),editorExists:!!panelManager.getEditor(activePanelId),editorSessionId:String((panelManager.getEditor(activePanelId) as any)?.sessionId||"")},ts:Date.now()}),keepalive:true}).catch(()=>{});
+      // #endregion
       if (isFilePanelTabId(panel.activeTabId)) return;
+      const editor = panelManager.getEditor(activePanelId);
+      const editorSessionId = String(
+        (editor as any)?.sessionId
+        || (editor as any)?.getSessionId?.()
+        || ""
+      );
+      if (!editor || editorSessionId !== sessionId) {
+        const key = `${activePanelId}:${sessionId}`;
+        if (!pendingCurrentSessionOpens.has(key)) {
+          pendingCurrentSessionOpens.add(key);
+          void Promise.resolve(openSessionInPanel(activePanelId, sessionId, {
+            focus: false,
+            forceReload: true
+          })).finally(() => pendingCurrentSessionOpens.delete(key));
+        }
+        return;
+      }
       const exists = panel.tabs.some((tab) => tab.id === sessionId);
       if (!exists) {
         panel.tabs = [...panel.tabs, { id: sessionId, title: sessionId, isDirty: false }];
-          try { window.zion.events.emit("panel/tabsChanged", { panelId: activePanelId, sessionId }); } catch {}
+        try { window.zion.events.emit("panel/tabsChanged", { panelId: activePanelId, sessionId }); } catch {}
       }
       panelManager.activateTab(activePanelId, sessionId);
       syncLegacyEditorTabsState(activePanelId);
@@ -4530,6 +4570,11 @@ async function bootstrap() {
   try {
     initServiceBaseUrlConfig();
   } catch {}
+  try {
+    registerRemoteAccessSettings();
+  } catch (e) {
+    console.warn("[zion] failed to register remote access settings", e);
+  }
 
   try {
     (window as any).zion.commands.registerCommand("settings.open", () => {
@@ -5409,7 +5454,13 @@ async function bootstrap() {
 
   // Initialize new plugin system
   try {
-    await pluginManager.initialize();
+    (window as any).zion.plugins = pluginManager;
+    window.zion.state.set("workbench.pluginsReady", false);
+    await pluginManager.initialize({
+      beforeActivate: () => preinstallBuiltinPlugins(pluginManager),
+      deferActivation: EXTERNALIZED_BUILTIN_PLUGIN_IDS
+    });
+    window.zion.state.set("workbench.pluginsReady", true);
     console.log('[PluginManager] 插件系统初始化完成');
 
     // Expose plugin manager to window.zion
@@ -5451,11 +5502,17 @@ async function bootstrap() {
 
     // 初始化 HTTP 插件安装器（服务地址可配置）
     const defaultServiceUrl = (() => {
+      const runtimeBase = runtimeDeviceServiceBaseUrl("plugin-service");
+      let configuredBase = DEFAULT_PLUGIN_SERVICE_BASE_URL;
       try {
-        return localStorage.getItem('zion.pluginServiceUrl') || DEFAULT_PLUGIN_SERVICE_BASE_URL;
-      } catch {
-        return DEFAULT_PLUGIN_SERVICE_BASE_URL;
-      }
+        configuredBase =
+          localStorage.getItem('zion.pluginServiceUrl')
+          || DEFAULT_PLUGIN_SERVICE_BASE_URL;
+      } catch {}
+      return resolveExternalizedPluginServiceBaseUrl({
+        configuredServiceBaseUrl: configuredBase,
+        runtimeServiceBaseUrl: runtimeBase
+      });
     })();
     const pluginInstaller = new HttpPluginInstaller({
       baseUrl: defaultServiceUrl,
@@ -5471,14 +5528,24 @@ async function bootstrap() {
       () => reloadWindowPreservingWorkspace()
     );
 
-    // 预安装内置插件
-    await preinstallBuiltinPlugins(pluginManager);
-
-    // 同步已经外迁到 ~/.zion-next/plugins 的内置插件。
-    await syncExternalizedBuiltinPlugins(pluginManager, pluginInstaller);
-    
-    // 页面刷新后恢复开发会话的WebSocket连接
-    await restoreDevSessions(pluginManager, pluginInstaller);
+    // Both local and Runtime-hosted Workbenches can sync externalized plugins.
+    // Remote installs use the authenticated same-origin Device Service gateway.
+    void syncExternalizedBuiltinPlugins({
+      pluginManager,
+      pluginInstaller,
+      serviceBaseUrl: defaultServiceUrl
+    }).catch((error) => console.warn("[PluginManager] External plugin sync failed", error))
+      .finally(async () => {
+        for (const id of EXTERNALIZED_BUILTIN_PLUGIN_IDS) {
+          if (pluginManager.get(id)?.enabled && pluginManager.get(id)?.state !== "active") {
+            try { await pluginManager.activate(id); } catch {}
+          }
+        }
+      });
+    if (!runtimeHostedWorkbench) {
+      // Direct local development sessions can also restore their WebSockets.
+      void restoreDevSessions(pluginManager, pluginInstaller);
+    }
     
   } catch (error) {
     console.error('[PluginManager] 插件系统初始化失败:', error);
@@ -6511,30 +6578,6 @@ function openPluginsPanel(pluginManager: PluginManager) {
   }
 }
 
-async function syncExternalizedBuiltinPlugins(pluginManager: PluginManager, pluginInstaller: HttpPluginInstaller) {
-  for (const pluginId of EXTERNALIZED_BUILTIN_PLUGIN_IDS) {
-    try {
-      const existing = pluginManager.get(pluginId);
-      if (existing && pluginManager.getPluginOrigin(existing) === "dev") {
-        console.log(`[PluginManager] 跳过外迁插件同步，保留开发版本: ${pluginId}`);
-        continue;
-      }
-
-      const ret = await pluginInstaller.installFromService(pluginId);
-      if (!ret.success || !ret.plugin) {
-        console.warn(`[PluginManager] 外迁插件同步失败: ${pluginId}`, ret.error?.message || "unknown error");
-        continue;
-      }
-
-      const enabled = pluginManager.getEnabledPreference(pluginId) ?? true;
-      await pluginManager.installFromInfo(ret.plugin, { enabled });
-      console.log(`[PluginManager] 已同步外迁插件: ${pluginId}@${ret.plugin.version}`);
-    } catch (error) {
-      console.warn(`[PluginManager] 外迁插件同步异常: ${pluginId}`, error);
-    }
-  }
-}
-
 /**
  * 预安装内置插件
  */
@@ -6621,21 +6664,7 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
       }
     } catch {}
 
-    // 检查并安装每个内置插件
-    for (const pluginInfo of builtinPlugins) {
-      try {
-        const existing = pluginManager.get(pluginInfo.id);
-        if (existing && pluginManager.getPluginOrigin(existing) !== 'builtin') {
-          console.log(`[PluginManager] 跳过内置插件 ${pluginInfo.id}，保留 ${pluginManager.getPluginOrigin(existing)} 版本`);
-          continue;
-        }
-        console.log(`[PluginManager] 同步内置插件信息: ${pluginInfo.id}`);
-        const enabled = pluginManager.getEnabledPreference(pluginInfo.id) ?? true;
-        await pluginManager.updateFromInfo(pluginInfo, { enabled });
-      } catch (error) {
-        console.error(`[PluginManager] 安装内置插件失败 ${pluginInfo.id}:`, error);
-      }
-    }
+    pluginManager.registerBuiltinCatalog(builtinPlugins);
 
     console.log('[PluginManager] 内置插件预安装完成');
   } catch (error) {
@@ -6776,6 +6805,10 @@ async function restoreDevSessions(pluginManager: PluginManager, pluginInstaller:
         for (const s of serverSessions) {
           if (!s?.devId || !s?.dir) continue;
           if (s.dirExists === false) continue; // 目录已删除，服务端会自行清理注册表
+          if (externalizedPluginIdForDevSession(s)) {
+            pluginManager.removeDevSessionRecord({ devId: String(s.devId) });
+            continue;
+          }
           if (knownDirs.has(String(s.dir).trim())) continue; // 本地已有记录，走阶段二
           try {
             const r = await restoreOne(String(s.dir));
@@ -6804,6 +6837,10 @@ async function restoreDevSessions(pluginManager: PluginManager, pluginInstaller:
     // 恢复每个开发会话
     for (const [pluginId, devInfo] of Object.entries(saved)) {
       try {
+        if (EXTERNALIZED_BUILTIN_PLUGIN_IDS.has(pluginId)) {
+          pluginManager.removeDevSessionRecord({ pluginId });
+          continue;
+        }
         const devId = devInfo.devId;
         const dir = devInfo.dir;
         

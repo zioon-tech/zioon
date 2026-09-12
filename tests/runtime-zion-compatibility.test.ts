@@ -302,6 +302,53 @@ describe("Runtime compatibility with current zion-next contracts", () => {
     expect((harness.zion as any).__llmPayloadQueue).toHaveLength(1);
   });
 
+  it("loads projected Runtime model request details before recording the payload", async () => {
+    const harness = projectionHarness();
+    const resolveEventDetail = vi.fn(async () => (
+      toZionNextRunEvent(runtimeEvent("model.request", {
+        turn: 3,
+        providerId: "deepseek",
+        modelId: "deepseek-v4-flash",
+        payload: {
+          model: "deepseek-v4-flash",
+          messages: [{ role: "user", content: "from lazy detail" }],
+          tools: [{ type: "function", function: { name: "webFetch" } }]
+        }
+      }))
+    ));
+    const projectedEvent = toZionNextRunEvent(runtimeEvent("model.request", {
+      turn: 3,
+      modelId: "deepseek-v4-flash",
+      messageCount: 1,
+      toolCount: 1,
+      detailAvailable: true,
+      rawEventSequence: 7
+    }));
+
+    await projectRunEventToSession(
+      harness.zion,
+      "session-1",
+      projectedEvent,
+      {
+        requestSource: "interactive",
+        panelId: "panel-1",
+        resolveEventDetail
+      }
+    );
+
+    expect(resolveEventDetail).toHaveBeenCalledWith(7, projectedEvent);
+    expect(harness.emitted).toEqual([{
+      topic: "llm/requestPayload",
+      payload: expect.objectContaining({
+        messageCount: 1,
+        toolCount: 1,
+        payload: expect.objectContaining({
+          messages: [{ role: "user", content: "from lazy detail" }]
+        })
+      })
+    }]);
+  });
+
   it("keeps interactive Runtime tokens on the existing editor anchor", async () => {
     const harness = projectionHarness();
     const appendAssistantToken = vi.fn(async () => true);
@@ -351,6 +398,56 @@ describe("Runtime compatibility with current zion-next contracts", () => {
           token: "anchored",
           panelId: "panel-1",
           assistantBlockId: "assistant-at-cursor"
+        })
+      }
+    ]);
+  });
+
+  it("keeps observer-only Runtime projection from mutating the Session document", async () => {
+    const harness = projectionHarness();
+    const appendAssistantToken = vi.fn(async () => false);
+    const options = {
+      assistantBlockId: "observer-run",
+      documentWriter: false,
+      appendAssistantToken
+    };
+
+    await projectRunEventToSession(
+      harness.zion,
+      "mobile-session",
+      toZionNextRunEvent(runtimeEvent("run.started", {})),
+      options
+    );
+    await projectRunEventToSession(
+      harness.zion,
+      "mobile-session",
+      toZionNextRunEvent(runtimeEvent("message.delta", { delta: "observed" })),
+      options
+    );
+
+    expect(appendAssistantToken).toHaveBeenCalledOnce();
+    expect(harness.zion.commands.executeCommand).not.toHaveBeenCalledWith(
+      "zion.sessions.ensureAssistantBlock",
+      expect.anything()
+    );
+    expect(harness.zion.commands.executeCommand).not.toHaveBeenCalledWith(
+      "zion.sessions.appendAssistantToken",
+      expect.anything()
+    );
+    expect(harness.emitted).toEqual([
+      {
+        topic: "chat/runStarted",
+        payload: expect.objectContaining({
+          sessionId: "mobile-session",
+          documentWriter: false
+        })
+      },
+      {
+        topic: "chat/token",
+        payload: expect.objectContaining({
+          sessionId: "mobile-session",
+          token: "observed",
+          documentWriter: false
         })
       }
     ]);

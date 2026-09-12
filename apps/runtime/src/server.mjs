@@ -8,10 +8,12 @@ import {
   createRunEventProjector,
   projectRunEvents
 } from "./run-event-projection.mjs";
+import { createMobileHttpHandler } from "./mobile-http-handler.mjs";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted", "interrupted"]);
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const POLICY_PRESETS = new Set(["read-only", "workspace-write", "trusted-automation"]);
+const NODE_ID_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,199}$/i;
 const THINKING_MODES = new Set(["auto", "off", "on"]);
 const THINKING_EFFORTS = new Set([
   "auto",
@@ -37,6 +39,8 @@ const TRUSTED_AUTOMATION_TOOLS = new Set([
   "schedulerManage",
   "modelsManage",
   "toolsManage",
+  "pluginsManage",
+  "terminalManage",
   "mailManage"
 ]);
 const NETWORK_TOOLS = new Set([
@@ -143,6 +147,17 @@ function normalizePolicy(policy) {
       : [],
     maxMailPerRun: Math.max(0, Number(policy?.maxMailPerRun) || 0)
   };
+}
+
+function normalizeExecutionTarget(value) {
+  if (value == null) return undefined;
+  const nodeId = String(value?.nodeId || "").trim();
+  if (!NODE_ID_PATTERN.test(nodeId)) {
+    const error = new Error("target.nodeId is invalid");
+    error.statusCode = 422;
+    throw error;
+  }
+  return { nodeId };
 }
 
 function normalizeModelOptions(value) {
@@ -382,15 +397,20 @@ function createId(prefix) {
   return `${prefix}_${randomUUID()}`;
 }
 
-function assertLocalBinding(host, allowRemote) {
-  if (allowRemote) return;
+function assertLocalBinding(host, allowRemote, accessControl) {
   if (host === "127.0.0.1" || host === "::1" || host === "localhost") return;
+  if (allowRemote && accessControl?.authorizeRuntimeRequest) return;
   throw new Error(
-    "Runtime Host has no remote authentication yet and may only bind to loopback"
+    allowRemote
+      ? "Remote Runtime binding requires Access Control"
+      : "Runtime Host has no remote authentication yet and may only bind to loopback"
   );
 }
 
-function allowLoopbackBrowserOrigin(request, response) {
+function allowBrowserOrigin(request, response, accessControl) {
+  if (accessControl?.applyCors) {
+    return accessControl.applyCors(request, response);
+  }
   const origin = String(request.headers.origin || "").trim();
   if (!origin) return true;
   try {
@@ -408,7 +428,8 @@ function allowLoopbackBrowserOrigin(request, response) {
   response.setHeader("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   response.setHeader(
     "access-control-allow-headers",
-    "content-type, authorization, last-event-id, x-api-key, api-key, anthropic-version, anthropic-beta"
+    "content-type, authorization, last-event-id, x-api-key, api-key, "
+    + "anthropic-version, anthropic-beta, x-zion-workbench-protocol"
   );
   response.setHeader("vary", "Origin");
   return true;
@@ -473,7 +494,9 @@ export function createRuntimeServer({
   deleteModelProfile,
   interactionProfiles,
   capabilityTools = [],
+  accessControl = null,
   nodeHttpHandler,
+  publicHttpHandlers = [],
   serviceHttpHandlers = [],
   upgradeHandlers = [],
   sessionEventStore = null,
@@ -493,7 +516,7 @@ export function createRuntimeServer({
   ) {
     throw new Error("Runtime SessionStore is required");
   }
-  assertLocalBinding(host, allowRemote);
+  assertLocalBinding(host, allowRemote, accessControl);
   const defaultModel = modelRefFromProfile(serviceInfo.modelProfile);
   const resolveRequestedModel = (requested) => {
     if (typeof resolveModel === "function") return resolveModel(requested || null);
@@ -517,6 +540,44 @@ export function createRuntimeServer({
   const handles = new Map();
   const sessionHandles = new Map();
   const projectionFailures = new Map();
+  const presentationForSession = async (sessionId) => {
+    if (sessionEventStore?.readSessionMeta) {
+      return await sessionEventStore.readSessionMeta(sessionId);
+    }
+    const record = await sessionEventStore?.readSession?.(sessionId);
+    return record?.meta && typeof record.meta === "object" ? record.meta : null;
+  };
+  const presentSession = async (session) => {
+    if (!session?.id) return session;
+    const presentation = await presentationForSession(session.id);
+    return presentation?.title
+      ? { ...session, title: String(presentation.title) }
+      : session;
+  };
+  const activeRunForSession = async (sessionId) => {
+    const handle = sessionHandles.get(sessionId);
+    if (handle) {
+      const run = await runs.get(handle.runId);
+      return {
+        runId: handle.runId,
+        attemptId: handle.attemptId,
+        status: run?.status || "running"
+      };
+    }
+    const run = await runs.getActiveRunForSession?.(sessionId);
+    return run
+      ? {
+          runId: run.id,
+          attemptId: run.attemptId,
+          status: run.status
+        }
+      : null;
+  };
+  const mobileHttpHandler = createMobileHttpHandler({
+    sessions,
+    activeRunForSession,
+    presentationForSession
+  });
   const publishSessionEvent = (type, {
     sessionId = "",
     runId = "",
@@ -654,7 +715,10 @@ export function createRuntimeServer({
         event,
         {
           appendUserPrompt:
-            runRequest?.metadata?.documentProjection?.appendUserPrompt === true
+            runRequest?.metadata?.documentProjection?.appendUserPrompt === true,
+          documentWriterClientId: String(
+            runRequest?.metadata?.workbenchClientId || ""
+          )
         }
       );
     }).catch((error) => {
@@ -680,6 +744,13 @@ export function createRuntimeServer({
             createdAt: Date.now()
           }]);
           projectedMessages = await sessions.getSessionTranscript(sessionId);
+          await sessionDocumentService?.reconcileTranscript?.(
+            sessionId,
+            await sessions.getSessionMessages(sessionId)
+          );
+          // #region debug-point D:assistant-transcript-persisted
+          globalThis.fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"D",location:"apps/runtime/src/server.mjs:assistant-transcript-persisted",msg:"[DEBUG] Canonical assistant message persisted",data:{runtimeSessionId:sessionId,runtimeRunId:result.runId||handle.runId,messageCount:projectedMessages.length,roles:projectedMessages.map((item)=>String(item?.role||"")),sequences:projectedMessages.map((item)=>Number(item?.sequence)||0)},ts:Date.now()})}).catch(()=>{});
+          // #endregion
         }
         if (sessionId) {
           publishSessionEvent(`run.${result.status}`, {
@@ -731,7 +802,7 @@ export function createRuntimeServer({
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url || "/", `http://${request.headers.host || host}`);
-      if (!allowLoopbackBrowserOrigin(request, response)) {
+      if (!allowBrowserOrigin(request, response, accessControl)) {
         json(response, 403, { error: "Browser origin is not allowed" });
         return;
       }
@@ -741,23 +812,54 @@ export function createRuntimeServer({
         return;
       }
 
+      // #region debug-point C:browser-debug-forwarder
+      if (request.method === "POST" && url.pathname === "/__trae_debug/event") {
+        const event = await readJson(request);
+        await globalThis.fetch("http://127.0.0.1:7777/event", {
+          method: "POST",
+          body: JSON.stringify(event)
+        }).catch(() => {});
+        response.writeHead(204, { "cache-control": "no-store" });
+        response.end();
+        return;
+      }
+      // #endregion
+
+      for (const handler of publicHttpHandlers) {
+        if (await handler(request, response, url)) return;
+      }
       if (
         nodeHttpHandler
         && await nodeHttpHandler(request, response, url)
       ) {
         return;
       }
-      for (const handler of serviceHttpHandlers) {
-        if (await handler(request, response, url)) return;
-      }
 
       if (request.method === "GET" && url.pathname === "/health") {
+        const principal = accessControl?.authenticateRequest?.(request);
+        if (accessControl && !accessControl.hasScope?.(principal, "runtime.read")) {
+          json(response, 200, {
+            ok: true,
+            service: "zion-runtime",
+            authRequired: true
+          });
+          return;
+        }
         json(response, 200, {
           ok: true,
           service: "zion-runtime",
+          authRequired: !!accessControl,
           ...serviceInfo
         });
         return;
+      }
+
+      if (accessControl) {
+        request.zionPrincipal = accessControl.authorizeRuntimeRequest(request);
+      }
+      if (await mobileHttpHandler(request, response, url)) return;
+      for (const handler of serviceHttpHandlers) {
+        if (await handler(request, response, url)) return;
       }
 
       if (request.method === "GET" && url.pathname === "/v1/models") {
@@ -895,7 +997,7 @@ export function createRuntimeServer({
         const body = await readJson(request);
         if (
           body?.metadata?.source === "interactive-chat"
-          && Number(body.metadata.workbenchProtocolVersion) !== 2
+          && Number(body.metadata.workbenchProtocolVersion) !== 4
         ) {
           json(response, 426, {
             error: "Workbench realtime protocol is outdated; refresh all Workbench tabs"
@@ -915,6 +1017,7 @@ export function createRuntimeServer({
             };
         const runRequest = {
           ...body,
+          target: normalizeExecutionTarget(body.target),
           ...(normalizedMessages ? { messages: normalizedMessages } : {}),
           ...(resolved.model ? { model: resolved.model } : {}),
           modelOptions: normalizeModelOptions(body.modelOptions),
@@ -1008,11 +1111,12 @@ export function createRuntimeServer({
       }
 
       if (request.method === "GET" && url.pathname === "/v1/sessions") {
+        const records = await sessions.listSessions({
+          limit: url.searchParams.get("limit"),
+          offset: url.searchParams.get("offset")
+        });
         json(response, 200, {
-          sessions: await sessions.listSessions({
-            limit: url.searchParams.get("limit"),
-            offset: url.searchParams.get("offset")
-          })
+          sessions: await Promise.all(records.map(presentSession))
         });
         return;
       }
@@ -1059,12 +1163,39 @@ export function createRuntimeServer({
           json(response, 409, { error: `Session is not active: ${session.status}` });
           return;
         }
+        const body = await readJson(request);
+        const clientRequestId = String(body.clientRequestId || "").trim();
+        if (clientRequestId.length > 200) {
+          json(response, 400, { error: "clientRequestId exceeds 200 characters" });
+          return;
+        }
+        if (clientRequestId && typeof sessions.getSessionMessageCommand === "function") {
+          const existing = sessions.getSessionMessageCommand(
+            sendMessageSessionId,
+            clientRequestId
+          );
+          if (existing?.status === "accepted" && existing.response) {
+            json(response, 202, {
+              ...existing.response,
+              clientRequestId,
+              replayed: true
+            });
+            return;
+          }
+          if (existing) {
+            json(response, 409, {
+              error: "Message submission is already in progress",
+              clientRequestId,
+              status: existing.status
+            });
+            return;
+          }
+        }
         if (sessionHandles.has(sendMessageSessionId)) {
           json(response, 409, { error: "Session already has an active Run" });
           return;
         }
         await reconcileSessionProjections();
-        const body = await readJson(request);
         const canonicalContent = normalizeMessageContent(body.content, "user");
         const content = messageContentText(canonicalContent);
         if (!content.trim()) {
@@ -1102,12 +1233,51 @@ export function createRuntimeServer({
           policy: session.policy,
           metadata: {
             ...session.metadata,
-            source: "session-message"
+            source: "session-message",
+            ...(clientRequestId ? { clientRequestId } : {})
           },
           maxTurns: body.maxTurns,
           timeoutMs: body.timeoutMs
         };
-        const handle = executor.execute(runRequest);
+        if (
+          clientRequestId
+          && typeof sessions.reserveSessionMessageCommand === "function"
+        ) {
+          const reservation = sessions.reserveSessionMessageCommand(
+            session.id,
+            clientRequestId,
+            Date.now()
+          );
+          if (!reservation.reserved) {
+            const existing = reservation.command;
+            if (existing?.status === "accepted" && existing.response) {
+              json(response, 202, {
+                ...existing.response,
+                clientRequestId,
+                replayed: true
+              });
+            } else {
+              json(response, 409, {
+                error: "Message submission is already in progress",
+                clientRequestId,
+                status: existing?.status || "submitting"
+              });
+            }
+            return;
+          }
+        }
+        let handle;
+        try {
+          handle = executor.execute(runRequest);
+        } catch (error) {
+          if (clientRequestId) {
+            sessions.releaseSessionMessageCommand?.(
+              session.id,
+              clientRequestId
+            );
+          }
+          throw error;
+        }
         let message;
         try {
           [message] = await sessions.appendSessionMessages(session.id, [{
@@ -1117,9 +1287,13 @@ export function createRuntimeServer({
             role: "user",
             content,
             canonicalContent,
+            ...(clientRequestId ? { clientRequestId } : {}),
             runId: handle.runId,
             createdAt: Date.now()
           }]);
+          // #region debug-point D:user-transcript-persisted
+          void sessions.getSessionTranscript(session.id).then((messages)=>globalThis.fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"D",location:"apps/runtime/src/server.mjs:user-transcript-persisted",msg:"[DEBUG] Canonical user message persisted before document projection",data:{runtimeSessionId:session.id,runtimeRunId:handle.runId,messageCount:messages.length,roles:messages.map((item)=>String(item?.role||"")),sequences:messages.map((item)=>Number(item?.sequence)||0)},ts:Date.now()})}).catch(()=>{})).catch(()=>{});
+          // #endregion
           await sessionDocumentService?.prepareRun?.(
             session.id,
             {
@@ -1131,16 +1305,32 @@ export function createRuntimeServer({
         } catch (error) {
           await handle.abort("session-persistence-failed");
           await handle.completion;
+          if (clientRequestId) {
+            sessions.releaseSessionMessageCommand?.(
+              session.id,
+              clientRequestId
+            );
+          }
           throw error;
         }
         trackHandle(handle, session.id, runRequest);
-        json(response, 202, {
+        const accepted = {
           sessionId: session.id,
           message,
           runId: handle.runId,
           attemptId: handle.attemptId,
-          status: "accepted"
-        });
+          status: "accepted",
+          ...(clientRequestId ? { clientRequestId } : {})
+        };
+        if (clientRequestId) {
+          sessions.completeSessionMessageCommand?.(
+            session.id,
+            clientRequestId,
+            accepted,
+            Date.now()
+          );
+        }
+        json(response, 202, accepted);
         return;
       }
 
@@ -1188,11 +1378,18 @@ export function createRuntimeServer({
         }
         await reconcileSessionProjections();
         const after = Math.max(0, Number(url.searchParams.get("after") || 0) || 0);
+        const messages = canonicalTranscriptSessionId
+          ? await sessions.getSessionTranscript(transcriptSessionId, after)
+          : await sessions.getSessionMessages(transcriptSessionId, after);
+        if (canonicalTranscriptSessionId) {
+          await sessionDocumentService?.reconcileTranscript?.(
+            transcriptSessionId,
+            await sessions.getSessionMessages(transcriptSessionId)
+          );
+        }
         json(response, 200, {
           sessionId: transcriptSessionId,
-          messages: canonicalTranscriptSessionId
-            ? await sessions.getSessionTranscript(transcriptSessionId, after)
-            : await sessions.getSessionMessages(transcriptSessionId, after)
+          messages
         });
         return;
       }
@@ -1203,18 +1400,86 @@ export function createRuntimeServer({
         "/active-run"
       );
       if (request.method === "GET" && activeRunSessionId) {
-        const handle = sessionHandles.get(activeRunSessionId);
-        const run = handle ? await runs.get(handle.runId) : null;
         json(response, 200, {
           sessionId: activeRunSessionId,
-          activeRun: handle
-            ? {
-                runId: handle.runId,
-                attemptId: handle.attemptId,
-                status: run?.status || "running"
-              }
-            : null
+          activeRun: await activeRunForSession(activeRunSessionId)
         });
+        return;
+      }
+      if (request.method === "PATCH" && sessionId) {
+        if (typeof sessions.updateSession !== "function") {
+          json(response, 501, { error: "Runtime Session update is unavailable" });
+          return;
+        }
+        const current = await sessions.getSession(sessionId);
+        if (!current) {
+          json(response, 404, { error: "Session not found" });
+          return;
+        }
+        if (current.status !== "active") {
+          json(response, 409, { error: `Session is not active: ${current.status}` });
+          return;
+        }
+        const body = await readJson(request);
+        const configurationUpdate = ["model", "policy", "skills"].some(
+          (field) => Object.hasOwn(body, field)
+        );
+        if (configurationUpdate && await activeRunForSession(sessionId)) {
+          json(response, 409, { error: "Cannot update Session configuration with an active Run" });
+          return;
+        }
+        const patch = {};
+        if (Object.hasOwn(body, "title")) {
+          const title = String(body.title || "").trim();
+          if (!title || title.length > 200) {
+            json(response, 400, { error: "Session title must contain 1-200 characters" });
+            return;
+          }
+          patch.title = title;
+        }
+        if (Object.hasOwn(body, "model")) {
+          patch.model = resolveRequestedModel(body.model);
+        }
+        if (Object.hasOwn(body, "policy")) {
+          patch.policy = normalizePolicy({
+            ...(current.policy || {}),
+            ...(body.policy && typeof body.policy === "object"
+              ? body.policy
+              : {})
+          });
+        }
+        if (Object.hasOwn(body, "skills")) {
+          if (!Array.isArray(body.skills?.enabled)) {
+            json(response, 400, { error: "Session skills.enabled must be an array" });
+            return;
+          }
+          patch.metadata = {
+            ...(current.metadata || {}),
+            skills: {
+              ...(current.metadata?.skills
+                && typeof current.metadata.skills === "object"
+                ? current.metadata.skills
+                : {}),
+              enabled: Array.from(new Set(
+                body.skills.enabled.map(String).map((value) => value.trim()).filter(Boolean)
+              ))
+            }
+          };
+        }
+        if (Object.keys(patch).length === 0) {
+          json(response, 400, {
+            error: "Session update requires title, model, policy, or skills"
+          });
+          return;
+        }
+        const session = await sessions.updateSession(sessionId, patch, Date.now());
+        publishSessionEvent("session.updated", {
+          sessionId,
+          data: {
+            fields: Object.keys(patch)
+          }
+        });
+        json(response, 200, { session: await presentSession(session) });
         return;
       }
       if (request.method === "GET" && sessionId) {
@@ -1223,7 +1488,7 @@ export function createRuntimeServer({
           json(response, 404, { error: "Session not found" });
           return;
         }
-        json(response, 200, { session });
+        json(response, 200, { session: await presentSession(session) });
         return;
       }
 
@@ -1287,6 +1552,10 @@ export function createRuntimeServer({
           runProjectionOptions(url)
         );
         while (!closed) {
+          accessControl?.reauthorize?.(
+            request.zionPrincipal,
+            "runtime.read"
+          );
           const events = await runs.getEvents(projectionStreamRunId, cursor);
           for (const event of events) {
             cursor = event.sequence;
@@ -1383,6 +1652,10 @@ export function createRuntimeServer({
           ) || 0
         );
         while (!closed) {
+          accessControl?.reauthorize?.(
+            request.zionPrincipal,
+            "runtime.read"
+          );
           const events = await runs.getEvents(streamRunId, cursor);
           for (const event of events) {
             cursor = event.sequence;

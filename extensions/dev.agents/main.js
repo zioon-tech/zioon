@@ -1293,6 +1293,7 @@ async function maybeGenerateScratchTaskTitle(task, transcript) {
     onError: (err) => { error = err || new Error("LLM error"); },
     runId: `agentTaskTitle-${task.id}-${Date.now()}`,
     sessionId: `agent-title:${task.id}`,
+    requestSource: "agent-task-title",
     silentReasoning: true
   });
   if (error) return false;

@@ -95,7 +95,9 @@ export function revealPendingAssistantInView(view, {
   const scrollDOM = view?.scrollDOM;
   const targetRect = target?.getBoundingClientRect?.();
   const rawViewportRect = scrollDOM?.getBoundingClientRect?.();
-  if (!scrollDOM || !targetRect) return false;
+  if (!scrollDOM || !targetRect) {
+    return false;
+  }
   const viewportRect = rawViewportRect
     && rawViewportRect.bottom > rawViewportRect.top
     ? rawViewportRect
@@ -149,7 +151,9 @@ function decorationsFor(state, entries) {
       source,
       entry.assistantBlockId
     );
-    const fallbackOffset = Number.isFinite(Number(entry.fallbackOffset))
+    const fallbackOffset = entry.fallbackOffset != null
+      && entry.fallbackOffset !== ""
+      && Number.isFinite(Number(entry.fallbackOffset))
       ? Number(entry.fallbackOffset)
       : state.doc.length;
     const position = blockEnd == null ? fallbackOffset : blockEnd;

@@ -24,6 +24,7 @@ function createRoot() {
 
 function createPlugin(root, {
   id,
+  version = "1.0.0",
   runtimeEntry = "./runtime.mjs",
   runtimeSource,
   entries = { runtime: runtimeEntry },
@@ -33,11 +34,11 @@ function createPlugin(root, {
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "manifest.json"), JSON.stringify({
     name: id,
-    version: "1.0.0",
+    version,
     zion: {
       id,
       name: id,
-      version: "1.0.0",
+      version,
       main: "./main.js",
       entries,
       runtime: {
@@ -117,6 +118,94 @@ describe("RuntimePluginService", () => {
     });
     await expect(provider.prepare()).resolves.toEqual([
       { role: "user", content: "configured" }
+    ]);
+  });
+
+  it("requires externalized plugins to come from the external plugin root", async () => {
+    const externalRoot = createRoot();
+    const builtinRoot = createRoot();
+    createPlugin(externalRoot, {
+      id: "dev.identity",
+      version: "2.0.0",
+      runtimeSource: `
+        export const runtimePluginApiVersion = 1;
+        export function activateRuntimePlugin() {
+          return {
+            contextProviders: [{
+              id: "dev.identity.external",
+              prepare: async () => []
+            }]
+          };
+        }
+      `
+    });
+    createPlugin(builtinRoot, {
+      id: "dev.identity",
+      version: "1.0.0",
+      runtimeSource: `
+        export const runtimePluginApiVersion = 1;
+        export function activateRuntimePlugin() {
+          throw new Error("builtin Identity must not be activated");
+        }
+      `
+    });
+
+    const service = trackService(externalRoot, new RuntimePluginService({
+      pluginRoots: [
+        { path: externalRoot, origin: "external" },
+        { path: builtinRoot, origin: "builtin" }
+      ],
+      enabledPluginIds: ["dev.identity"],
+      externalizedPluginIds: ["dev.identity"]
+    }));
+    const snapshot = await service.start();
+
+    expect(snapshot.plugins).toEqual([
+      expect.objectContaining({
+        id: "dev.identity",
+        version: "2.0.0",
+        origin: "external",
+        status: "active",
+        contextProviderIds: ["dev.identity.external"]
+      })
+    ]);
+  });
+
+  it("does not fall back to a builtin copy of an externalized plugin", async () => {
+    const externalRoot = createRoot();
+    const builtinRoot = createRoot();
+    createPlugin(builtinRoot, {
+      id: "dev.identity",
+      runtimeSource: `
+        export const runtimePluginApiVersion = 1;
+        export function activateRuntimePlugin() {
+          return {};
+        }
+      `
+    });
+
+    const service = trackService(externalRoot, new RuntimePluginService({
+      pluginRoots: [
+        { path: externalRoot, origin: "external" },
+        { path: builtinRoot, origin: "builtin" }
+      ],
+      enabledPluginIds: ["dev.identity"],
+      externalizedPluginIds: ["dev.identity"]
+    }));
+    const snapshot = await service.start();
+
+    expect(snapshot.plugins).toEqual([
+      expect.objectContaining({
+        id: "dev.identity",
+        status: "failed"
+      })
+    ]);
+    expect(snapshot.failures).toEqual([
+      expect.objectContaining({
+        id: "dev.identity",
+        phase: "discovery",
+        message: expect.stringContaining("external plugin root")
+      })
     ]);
   });
 
@@ -570,6 +659,9 @@ describe("RuntimePluginService", () => {
       expect.objectContaining({ id: "dev.duplicate", status: "failed" })
     ]);
     expect(logs).toEqual([
+      expect.stringContaining(
+        "dev.first:activated v1.0.0 from configured"
+      ),
       "dev.duplicate:activated",
       "dev.duplicate:rolled back",
       expect.stringContaining("dev.duplicate:activation:")
@@ -613,7 +705,13 @@ describe("RuntimePluginService", () => {
     expect(snapshot.state).toBe("stopped");
     expect(logs).toEqual([
       "dev.first:activated",
+      expect.stringContaining(
+        "dev.first:activated v1.0.0 from configured"
+      ),
       "dev.second:activated",
+      expect.stringContaining(
+        "dev.second:activated v1.0.0 from configured"
+      ),
       "dev.second:disposed",
       "dev.first:disposed"
     ]);

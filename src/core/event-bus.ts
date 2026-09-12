@@ -15,6 +15,11 @@ export class EventBus {
     }
   }
 
+  async emitAsync(topic: string, payload?: any): Promise<void> {
+    const handlers = Array.from(this.map.get(topic) || []);
+    await Promise.all(handlers.map(async (handler) => handler(payload)));
+  }
+
   on(topic: string, handler: (payload: any) => void): Disposable {
     let set = this.map.get(topic);
     if (!set) {

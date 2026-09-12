@@ -43,17 +43,32 @@ function endpointAllows(target, endpoint) {
   }
 }
 
-function resolveProfile(target, profiles) {
-  return profiles.find((profile) => endpointAllows(target, profile.endpoint)) || null;
+function resolveProfile(target, profiles, requestedProfileId = "") {
+  const profileId = String(requestedProfileId || "").trim();
+  if (!profileId) {
+    return profiles.find((profile) => endpointAllows(target, profile.endpoint)) || null;
+  }
+  const profile = profiles.find((item) => String(item?.id || "") === profileId);
+  if (!profile) {
+    const error = new Error("Model gateway profile was not found");
+    error.statusCode = 404;
+    throw error;
+  }
+  if (!endpointAllows(target, profile.endpoint)) {
+    const error = new Error("Model gateway target does not match the requested profile");
+    error.statusCode = 403;
+    throw error;
+  }
+  return profile;
 }
 
-function assertAllowedTarget(target, profiles) {
+function assertAllowedTarget(target, profiles, requestedProfileId = "") {
   if (!["http:", "https:"].includes(target.protocol)) {
     const error = new Error("Model gateway target must use HTTP(S)");
     error.statusCode = 400;
     throw error;
   }
-  const profile = resolveProfile(target, profiles);
+  const profile = resolveProfile(target, profiles, requestedProfileId);
   if (profile) return profile;
   if (target.protocol === "https:" && DEFAULT_ALLOWED_HOSTS.has(target.hostname)) {
     return null;
@@ -106,7 +121,14 @@ export function createModelGatewayHttpHandler({
       throw error;
     }
     const availableProfiles = typeof profiles === "function" ? profiles() : profiles;
-    const profile = assertAllowedTarget(target, availableProfiles || []);
+    const requestedProfileId = String(
+      url.searchParams.get("profileId") || ""
+    ).trim();
+    const profile = assertAllowedTarget(
+      target,
+      availableProfiles || [],
+      requestedProfileId
+    );
     const headers = requestHeaders(request);
     const lease = await credentialHeaders(profile, credentials);
     if (lease?.headers) {

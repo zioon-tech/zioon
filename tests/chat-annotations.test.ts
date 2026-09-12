@@ -96,6 +96,34 @@ describe("chat annotations api", () => {
     api.dispose();
   });
 
+  it("lets live state clear stale persisted card tombstones", () => {
+    const state = createState({
+      "sessions.annotations.s1": {
+        tools: [{ id: "tool-1" }],
+        thinking: [{ id: "thinking-1" }],
+        deletedToolIds: [],
+        deletedThinkingIds: []
+      }
+    });
+    const api = createChatAnnotationsApi({
+      state,
+      commands: createCommands(),
+      events: { emit() {} },
+      getSessionMeta: () => ({
+        annotations: {
+          tools: [{ id: "tool-1" }],
+          thinking: [{ id: "thinking-1" }],
+          deletedToolIds: ["tool-1"],
+          deletedThinkingIds: ["thinking-1"]
+        }
+      })
+    });
+
+    expect(api.getSessionAnnotations("s1").deletedToolIds).toBeUndefined();
+    expect(api.getSessionAnnotations("s1").deletedThinkingIds).toBeUndefined();
+    api.dispose();
+  });
+
   it("emits scoped clear and restore events for the target panel and session", () => {
     const emitted: Array<{ topic: string; payload: any }> = [];
     const state = createState();

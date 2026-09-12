@@ -112,6 +112,15 @@ export function mountTerminalManagerSidebarViewInto(container) {
   }
   typeField.append(typeLabel, typeSelect);
 
+  const nodeField = document.createElement("label");
+  nodeField.className = "zion-terminal-manager-field";
+  const nodeLabel = document.createElement("span");
+  nodeLabel.textContent = t("ui.executionNode", "执行节点");
+  const nodeSelect = document.createElement("select");
+  nodeSelect.setAttribute("aria-label", nodeLabel.textContent);
+  nodeField.append(nodeLabel, nodeSelect);
+  let createResourceId = "";
+
   const cwdField = field(t("ui.initialCwd", "初始工作目录"), "text", "/");
   const sshHostField = field(t("ui.sshHost", "SSH 主机（或别名）"), "text", "example.com");
   const sshUserField = field(t("ui.sshUser", "SSH 用户"), "text", "root");
@@ -128,6 +137,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
   cancelButton.textContent = t("ui.cancel", "取消");
   formActions.append(cancelButton, submitButton);
   form.append(
+    nodeField,
     typeField,
     cwdField.wrapper,
     sshHostField.wrapper,
@@ -157,6 +167,26 @@ export function mountTerminalManagerSidebarViewInto(container) {
 
   function syncForm() {
     form.hidden = !formVisible;
+    const selected = nodeSelect.value;
+    const nodes = window.zion?.state?.get?.("terminal.nodes") || [];
+    nodeField.hidden = !nodes.length;
+    nodeSelect.replaceChildren();
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = t("ui.selectNode", "选择执行节点");
+    nodeSelect.appendChild(placeholder);
+    const uniqueNodes = [...new Map(nodes.map((node) => [node.nodeId, node])).values()];
+    for (const node of uniqueNodes) {
+      const option = document.createElement("option");
+      option.value = node.nodeId;
+      option.textContent = `${node.label || node.nodeId}${node.status !== "online" ? ` (${node.status})` : ""}`;
+      option.disabled = node.status !== "online";
+      nodeSelect.appendChild(option);
+    }
+    nodeSelect.value = selected;
+    if (!nodeSelect.value && uniqueNodes.length === 1 && uniqueNodes[0].status === "online") {
+      nodeSelect.value = uniqueNodes[0].nodeId;
+    }
     const ssh = typeSelect.value === "ssh";
     sshHostField.wrapper.hidden = !ssh;
     sshUserField.wrapper.hidden = !ssh;
@@ -170,7 +200,9 @@ export function mountTerminalManagerSidebarViewInto(container) {
     sshHostField.input.value = machine?.connection?.host || "";
     sshUserField.input.value = machine?.connection?.user || "";
     sshPortField.input.value = machine?.connection?.port || "22";
+    createResourceId = workspace?.resourceId || "";
     syncForm();
+    nodeSelect.value = machine?.nodeId || nodeSelect.value;
     cwdField.input.focus();
   }
 
@@ -393,7 +425,9 @@ export function mountTerminalManagerSidebarViewInto(container) {
         iconName: machineIcon(machine),
         title: machine.name,
         tooltip: `${machine.connection?.user ? `${machine.connection.user}@` : ""}${machine.name} · ${machine.workspaceCount} ${t("ui.workspacesUnit", "个项目")} · ${machine.sessionCount} ${t("ui.sessionsUnit", "个会话")}`,
-        meta: "",
+        meta: machine.nodeLabel && machine.nodeLabel !== machine.name
+          ? machine.nodeLabel
+          : "",
         availableCount: machine.availableSessionCount,
         disconnectedCount: machine.disconnectedSessionCount,
         expanded: machineExpanded,
@@ -439,7 +473,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
           list.appendChild(makeTreeRow({
             level: 2,
             iconName: "terminal",
-            title: session.id,
+            title: session.name || session.nativeSessionId || session.id,
             tooltip: `${session.id}${session.cwd ? ` · ${session.cwd}` : ""}`,
             meta: [session.connectionStatus === "disconnected" ? t("ui.disconnected", "已断开") : "", formatLastActivity(session.lastActivityAt)]
               .filter(Boolean).join(" · "),
@@ -478,6 +512,7 @@ export function mountTerminalManagerSidebarViewInto(container) {
 
   createToggle.addEventListener("click", () => {
     formVisible = !formVisible;
+    createResourceId = "";
     syncForm();
   });
   cancelButton.addEventListener("click", () => {
@@ -485,10 +520,18 @@ export function mountTerminalManagerSidebarViewInto(container) {
     syncForm();
   });
   typeSelect.addEventListener("change", syncForm);
+  nodeSelect.addEventListener("change", () => { createResourceId = ""; });
   submitButton.addEventListener("click", async () => {
+    if (submitButton.disabled) return;
+    submitButton.disabled = true;
     try {
+      if (!nodeField.hidden && !nodeSelect.value) {
+        throw new Error(t("ui.selectNode", "选择执行节点"));
+      }
       await createTerminalSession({
         type: typeSelect.value,
+        node_id: nodeSelect.value || undefined,
+        resource_id: createResourceId || undefined,
         initial_cwd: cwdField.input.value,
         ssh_host: sshHostField.input.value,
         ssh_user: sshUserField.input.value,
@@ -499,6 +542,8 @@ export function mountTerminalManagerSidebarViewInto(container) {
       showMessage(t("msg.created", "终端已创建。"));
     } catch (error) {
       showMessage(error?.message || String(error), true);
+    } finally {
+      submitButton.disabled = false;
     }
   });
   refreshButton.addEventListener("click", refresh);

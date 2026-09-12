@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   createDefaultInteractionProfile,
   createDefaultScheduledInteractionProfile,
-  normalizeInteractionProfile
+  normalizeInteractionProfile,
+  resolveInteractionRequest
 } from "../src/interaction-profile-store.mjs";
 
 describe("InteractionProfile Context Providers", () => {
@@ -51,11 +52,51 @@ describe("InteractionProfile Context Providers", () => {
     }).contextProviders).toEqual({
       enabled: [
         "dev.skills.available",
+        "dev.terminal-manager.inventory",
         "dev.memory.context",
         "dev.identity.context",
         "dev.context-compression"
       ],
-      disabled: ["dev.terminal-manager.inventory"]
+      disabled: []
+    });
+  });
+
+  it("restores terminal context for Scheduler runs using a legacy scheduled default", () => {
+    const profile = normalizeInteractionProfile({
+      id: "scheduled.default",
+      modelProfileId: "model",
+      policy: {
+        preset: "trusted-automation",
+        allowedTools: ["Bash"]
+      },
+      contextProviders: {
+        enabled: ["dev.memory.context"],
+        disabled: ["dev.terminal-manager.inventory"]
+      },
+      metadata: {
+        includeTerminalContext: false
+      }
+    });
+
+    const resolved = resolveInteractionRequest({
+      body: {
+        interactionProfileId: "scheduled.default",
+        metadata: { source: "scheduler-worker" }
+      },
+      interactionProfiles: {
+        get: () => profile
+      }
+    });
+
+    expect(resolved.metadata).toMatchObject({
+      includeTerminalContext: true,
+      contextProviders: {
+        enabled: [
+          "dev.memory.context",
+          "dev.terminal-manager.inventory"
+        ],
+        disabled: []
+      }
     });
   });
 });

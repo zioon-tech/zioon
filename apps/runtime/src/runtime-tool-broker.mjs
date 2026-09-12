@@ -68,6 +68,17 @@ const RUNTIME_NATIVE_TOOL_NAMES = new Set(
   RUNTIME_NATIVE_TOOL_DEFINITIONS.map((tool) => tool.name)
 );
 
+const WEB_FETCH_PROXY_ORIGINS = [
+  "https://r.jinaai.cn",
+  "https://r.jina.ai"
+];
+
+function errorDetail(error) {
+  const message = String(error?.message || error || "unknown error");
+  const cause = String(error?.cause?.code || error?.cause?.message || "").trim();
+  return cause && !message.includes(cause) ? `${message} (${cause})` : message;
+}
+
 function stableValue(value) {
   if (Array.isArray(value)) return value.map(stableValue);
   if (!value || typeof value !== "object") return value;
@@ -343,41 +354,51 @@ export class RuntimeToolBroker {
       invocation.toolCall?.arguments?.url,
       this.lookupImpl
     );
-    const controller = new globalThis.AbortController();
-    const cancellation = signal.onCancel(() => controller.abort());
-    const timer = globalThis.setTimeout(
-      () => controller.abort(),
-      this.webTimeoutMs
-    );
-    try {
-      const proxy = new URL(`https://r.jina.ai/${target.href}`);
-      const response = await this.fetchImpl(proxy, {
-        method: "GET",
-        headers: {
-          accept: "text/markdown, text/plain;q=0.9",
-          "x-zion-invocation-id": invocation.invocationId
-        },
-        signal: controller.signal
-      });
-      const content = await response.text();
-      if (!response.ok) {
+    const failures = [];
+    for (const origin of WEB_FETCH_PROXY_ORIGINS) {
+      signal.throwIfCancelled();
+      const controller = new globalThis.AbortController();
+      const cancellation = signal.onCancel(() => controller.abort());
+      const timer = globalThis.setTimeout(
+        () => controller.abort(),
+        this.webTimeoutMs
+      );
+      const proxy = new URL(`${origin}/${target.href}`);
+      try {
+        const response = await this.fetchImpl(proxy, {
+          method: "GET",
+          headers: {
+            accept: "text/markdown, text/plain;q=0.9",
+            "x-zion-invocation-id": invocation.invocationId
+          },
+          signal: controller.signal
+        });
+        const content = await response.text();
+        if (!response.ok) {
+          failures.push(`${proxy.hostname}: HTTP ${response.status}`);
+          continue;
+        }
         return {
-          ok: false,
-          content: compactText(content || `HTTP ${response.status}`, this.maxWebResultChars),
-          error: `webFetch HTTP ${response.status}`
+          ok: true,
+          content: compactText(
+            `# Fetched: ${target.href}\n\n${content}`,
+            this.maxWebResultChars
+          )
         };
+      } catch (error) {
+        signal.throwIfCancelled();
+        failures.push(`${proxy.hostname}: ${errorDetail(error)}`);
+      } finally {
+        globalThis.clearTimeout(timer);
+        cancellation.dispose();
       }
-      return {
-        ok: true,
-        content: compactText(
-          `# Fetched: ${target.href}\n\n${content}`,
-          this.maxWebResultChars
-        )
-      };
-    } finally {
-      globalThis.clearTimeout(timer);
-      cancellation.dispose();
     }
+    const error = `webFetch proxy attempts failed: ${failures.join("; ")}`;
+    return {
+      ok: false,
+      error,
+      content: error
+    };
   }
 
   invokeTodoWrite(invocation) {

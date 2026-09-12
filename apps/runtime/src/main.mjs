@@ -7,8 +7,12 @@ import {
   createAgentExecutor,
   OpenAICompatibleEngine
 } from "../../../packages/runtime/dist/index.js";
+import { RuntimeAccessControl } from "./access-control.mjs";
 import { createAgentRunnerPluginService } from "./agent-runner-plugin-service.mjs";
 import { createRuntimeCollaborationService } from "./collaboration-service.mjs";
+import {
+  createDeviceServiceHttpHandler
+} from "./device-service-http-handler.mjs";
 import { EnvironmentCredentialProvider } from "./environment-credential-provider.mjs";
 import { createFetchModelTransport } from "./fetch-model-transport.mjs";
 import {
@@ -18,21 +22,30 @@ import {
   DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES,
   DEFAULT_INTERACTION_MODEL_PROFILE_ID,
   DEFAULT_SCHEDULED_INTERACTION_PROFILE_ID,
-  FileInteractionProfileStore
+  FileInteractionProfileStore,
+  resolveInteractionRequest
 } from "./interaction-profile-store.mjs";
 import { migrateLegacyLocalToolsState } from "./legacy-local-tools-state-migration.mjs";
-import { LocalToolsBroker } from "./local-tools-broker.mjs";
+import {
+  LOCAL_TOOLS_TOOL_DEFINITIONS,
+  LocalToolsBroker
+} from "./local-tools-broker.mjs";
 import { createModelGatewayHttpHandler } from "./model-gateway-http-handler.mjs";
 import { FileModelProfileStore } from "./model-profile-store.mjs";
 import { createBuiltinModelRegistry } from "./model-registry.mjs";
+import {
+  createModelRequestPublisher,
+  observeRunModelRequests
+} from "./model-request-observability.mjs";
 import { NodeBroker } from "./node-broker.mjs";
 import { createNodeHttpHandler } from "./node-http-handler.mjs";
 import { createPluginFileService } from "./plugin-file-service.mjs";
+import { createPluginHostService } from "./plugin-host-service.mjs";
 import { createPluginModelService } from "./plugin-model-service.mjs";
 import { createProjectAutomationHttpHandler } from "./project-automation-http-handler.mjs";
 import {
-  createProjectAutomationRuntimeService
-} from "../../../extensions/dev.identity/project-automation-runtime-service.js";
+  createTerminalManagementService
+} from "./terminal-management-service.mjs";
 import {
   modelRefForProfile,
   ProfileRoutingEngine
@@ -45,10 +58,12 @@ import {
 import { createSchedulerHttpHandler } from "./scheduler-http-handler.mjs";
 import { RuntimeSchedulerWorker } from "./scheduler-worker.mjs";
 import { createRuntimeServer } from "./server.mjs";
+import { SqliteAccessStore } from "./sqlite-access-store.mjs";
 import { SqliteNodeStateStore } from "./sqlite-node-state-store.mjs";
 import { SqliteRunStore } from "./sqlite-run-store.mjs";
 import { SqliteSchedulerStore } from "./sqlite-scheduler-store.mjs";
 import { SqliteWorkbenchStateStore } from "./sqlite-workbench-state-store.mjs";
+import { createWorkbenchStaticHttpHandler } from "./workbench-static-http-handler.mjs";
 import { createWorkbenchStateHttpHandler } from "./workbench-state-http-handler.mjs";
 
 function readArg(name, fallback) {
@@ -61,6 +76,15 @@ function parsePluginIds(value) {
   const source = String(value || "").trim();
   if (!source || source.toLowerCase() === "none") return [];
   return [...new Set(source.split(",").map((id) => id.trim()).filter(Boolean))];
+}
+
+function parseList(value) {
+  return [...new Set(
+    String(value || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+  )];
 }
 
 function positiveInteger(value, label) {
@@ -77,7 +101,7 @@ function enabledFlag(value) {
   );
 }
 
-const DEFAULT_PROFILE_TOOLSET_VERSION = 12;
+const DEFAULT_PROFILE_TOOLSET_VERSION = 13;
 const DEFAULT_SCHEDULED_READONLY_TOOLS = new Set([
   "read",
   "glob",
@@ -183,7 +207,11 @@ function createEngine(mode, credentials, models) {
   const profileId = readArg(
     "--model-profile",
     process.env.ZION_RUNTIME_MODEL_PROFILE
-      || (hasPreferredWorkbenchModel ? DEFAULT_INTERACTION_MODEL_PROFILE_ID : "")
+      || (
+        hasPreferredWorkbenchModel
+          ? DEFAULT_INTERACTION_MODEL_PROFILE_ID
+          : models.defaultProfileId
+      )
   );
   if (profileId) {
     const profile = models.get(profileId);
@@ -270,6 +298,10 @@ const dbPath = readArg(
   process.env.ZION_RUNTIME_DB
     || join(homedir(), ".zion-next", "runtime", "runtime.sqlite3")
 );
+const workbenchDist = readArg(
+  "--workbench-dist",
+  process.env.ZION_RUNTIME_WORKBENCH_DIST || ""
+);
 const modelProfilePath = readArg(
   "--model-profiles",
   process.env.ZION_RUNTIME_MODEL_PROFILES
@@ -293,17 +325,53 @@ const localToolsUrl = readArg(
   "--local-tools-url",
   process.env.ZION_LOCAL_TOOLS_URL || "http://127.0.0.1:8765"
 );
+const pluginServiceUrl = readArg(
+  "--plugin-service-url",
+  process.env.ZION_PLUGIN_SERVICE_URL || "http://127.0.0.1:8767"
+);
 const pluginRoot = readArg(
   "--plugin-root",
   process.env.ZION_RUNTIME_PLUGIN_ROOT
     || fileURLToPath(new URL("../../../extensions/", import.meta.url))
 );
+const externalPluginRoot = readArg(
+  "--external-plugin-root",
+  process.env.ZION_RUNTIME_EXTERNAL_PLUGIN_ROOT
+    || join(homedir(), ".zion-next", "plugins")
+);
+const externalizedRuntimePluginIds = parsePluginIds(readArg(
+  "--external-runtime-plugins",
+  process.env.ZION_RUNTIME_EXTERNAL_PLUGINS || "dev.identity"
+));
 const enabledRuntimePluginIds = parsePluginIds(readArg(
   "--runtime-plugins",
   process.env.ZION_RUNTIME_PLUGINS
-    || (toolMode === "node" ? "none" : "dev.terminal-manager,dev.skills,dev.memory,dev.identity,dev.context-compression,dev.scheduler,dev.session-manager,dev.langchain-chat,dev.tools,dev.mail,dev.agents")
+    || (toolMode === "node" ? "none" : "dev.terminal-manager,dev.skills,dev.memory,dev.identity,dev.context-compression,dev.scheduler,dev.session-manager,dev.langchain-chat,dev.tools,dev.plugins,dev.mail,dev.agents")
 ));
 const nodeToken = process.env.ZION_RUNTIME_NODE_TOKEN || "";
+const accessControlEnabled = enabledFlag(readArg(
+  "--access-control",
+  process.env.ZION_RUNTIME_ACCESS_CONTROL || "0"
+));
+const publicBaseUrl = readArg(
+  "--public-url",
+  process.env.ZION_RUNTIME_PUBLIC_URL || ""
+);
+const allowedOrigins = parseList(readArg(
+  "--allowed-origins",
+  process.env.ZION_RUNTIME_ALLOWED_ORIGINS || ""
+));
+if (publicBaseUrl) {
+  try {
+    allowedOrigins.push(new URL(publicBaseUrl).origin);
+  } catch {
+    throw new Error("Runtime public URL is invalid");
+  }
+}
+const allowInsecureRemote = enabledFlag(readArg(
+  "--allow-insecure-remote",
+  process.env.ZION_RUNTIME_ALLOW_INSECURE_REMOTE || "0"
+));
 const invocationLeaseMs = positiveInteger(
   readArg(
     "--invocation-lease-ms",
@@ -340,14 +408,38 @@ const legacyStateMigrationEnabled = enabledFlag(readArg(
 if (toolMode !== "local" && toolMode !== "node") {
   throw new Error(`Unsupported Runtime tool mode: ${toolMode}`);
 }
-if (toolMode === "node" && !nodeToken) {
-  throw new Error("Node tool mode requires ZION_RUNTIME_NODE_TOKEN");
+if (toolMode === "node" && !nodeToken && !accessControlEnabled) {
+  throw new Error(
+    "Node tool mode requires Access Control or ZION_RUNTIME_NODE_TOKEN"
+  );
 }
 
 const runs = new SqliteRunStore(dbPath);
 const workbenchState = new SqliteWorkbenchStateStore(dbPath);
+const accessStore = accessControlEnabled
+  ? new SqliteAccessStore(dbPath)
+  : null;
+const accessControl = accessStore
+  ? new RuntimeAccessControl({
+      store: accessStore,
+      allowedOrigins,
+      publicBaseUrl
+    })
+  : null;
 const collaboration = createRuntimeCollaborationService({
-  store: workbenchState
+  store: workbenchState,
+  authenticate: accessControl
+    ? (input) => accessControl.authenticateCollaboration(input)
+    : null,
+  reauthorize: accessControl
+    ? (context) => accessControl.reauthorize(
+        context?.principal,
+        "collaboration.write"
+      )
+    : null,
+  allowOrigin: accessControl
+    ? (request) => accessControl.originAllowed(request.headers?.origin)
+    : undefined
 });
 const scheduler = new SqliteSchedulerStore(dbPath);
 const interrupted = await runs.reconcileActiveRuns();
@@ -419,11 +511,20 @@ const deleteModelProfile = engineMode === "openai"
       };
     }
   : null;
+const listModelProfiles = () => (
+  engineMode === "openai" ? models.list() : runtimeModelProfiles
+);
+const listModelProfilesWithCredentialStatus = () => listModelProfiles()
+  .map((item) => ({
+    ...item,
+    credentialConfigured: credentials.has(item.credentialRef)
+  }));
 const localTools = new LocalToolsBroker({ baseUrl: localToolsUrl });
-const nodeStateStore = nodeToken
+const nodeGatewayEnabled = toolMode === "node" || !!nodeToken;
+const nodeStateStore = nodeGatewayEnabled
   ? new SqliteNodeStateStore(dbPath)
   : null;
-const nodeBroker = nodeToken
+const nodeBroker = nodeGatewayEnabled
   ? new NodeBroker({
       invocationLeaseMs,
       stateStore: nodeStateStore
@@ -431,10 +532,30 @@ const nodeBroker = nodeToken
   : null;
 const restoredNodeState = nodeBroker?.snapshot();
 const delegatedTools = toolMode === "node" ? nodeBroker : localTools;
-function createSchedulerPluginService({ scheduler, wakeWorker, availableTools }) {
-  const refreshAvailableTools = () => {
+const pluginHostService = createPluginHostService({
+  baseUrl: pluginServiceUrl,
+  nodeBroker
+});
+const terminalManagementService = createTerminalManagementService({
+  baseUrl: localToolsUrl,
+  nodeBroker
+});
+function createSchedulerPluginService({
+  scheduler,
+  wakeWorker,
+  availableTools,
+  availableModels,
+  availableNodes
+}) {
+  const refreshCapabilities = () => {
     if (typeof availableTools === "function") {
       scheduler.setAvailableTools(availableTools());
+    }
+    if (typeof availableModels === "function") {
+      scheduler.setAvailableModels(availableModels());
+    }
+    if (typeof availableNodes === "function") {
+      scheduler.setAvailableNodes(availableNodes());
     }
   };
   const mergeTaskPatch = (current, patch = {}) => ({
@@ -456,7 +577,7 @@ function createSchedulerPluginService({ scheduler, wakeWorker, availableTools })
     listRuns: ({ taskId = "", limit = 50, includeDetails = false } = {}) =>
       scheduler.listRuns({ taskId, limit, includeDetails }).runs || [],
     createTask(input = {}) {
-      refreshAvailableTools();
+      refreshCapabilities();
       const task = scheduler.createTask({
         ...input,
         interactionProfileId: input.interactionProfileId || "scheduled.default"
@@ -465,7 +586,7 @@ function createSchedulerPluginService({ scheduler, wakeWorker, availableTools })
       return task;
     },
     updateTask(taskId, patch = {}) {
-      refreshAvailableTools();
+      refreshCapabilities();
       const current = scheduler.getTask(String(taskId || ""));
       const task = scheduler.updateTask(current.id, mergeTaskPatch(current, patch));
       wakeWorker?.();
@@ -600,36 +721,52 @@ const identityFileService = createPluginFileService({
   toolHost: delegatedTools,
   invocationPrefix: "dev.identity.file"
 });
+const publishModelRequest = createModelRequestPublisher({
+  eventStore: workbenchState
+});
+const runModelRequestSubscription = observeRunModelRequests({
+  runStore: runs,
+  publish: publishModelRequest,
+  onError(error, event) {
+    process.stderr.write(
+      `[runtime-model-observability:${event?.runId || "unknown"}] `
+      + `${error?.message || String(error)}\n`
+    );
+  }
+});
 const agentRunnerService = createAgentRunnerPluginService({
   getExecutor: () => executor,
   interactionProfiles: interactionProfileStore,
   resolveModel
 });
-const projectAutomationService = createProjectAutomationRuntimeService({
-  stateStore: workbenchState,
-  fileService: identityFileService,
-  runnerService: agentRunnerService,
-  memoryRoot: identityMemoryRoot,
-  pollIntervalMs: projectAutomationPollIntervalMs,
-  logger(level, message) {
-    if (level !== "debug") {
-      process.stderr.write(`[runtime-project-automation:${level}] ${message}\n`);
-    }
-  }
-});
+let projectAutomationService = null;
 const runtimePlugins = new RuntimePluginService({
-  pluginRoots: [pluginRoot],
+  pluginRoots: [
+    {
+      path: externalPluginRoot,
+      origin: "external",
+      optional: true
+    },
+    {
+      path: pluginRoot,
+      origin: "builtin"
+    }
+  ],
   enabledPluginIds: enabledRuntimePluginIds,
+  externalizedPluginIds: externalizedRuntimePluginIds,
   stateStore: workbenchState,
   configByPluginId: {
     "dev.terminal-manager": {
-      baseUrl: localToolsUrl
+      baseUrl: localToolsUrl,
+      terminalManagementService
     },
     "dev.scheduler": {
       schedulerService: createSchedulerPluginService({
         scheduler,
         wakeWorker: () => schedulerWorker?.wake(),
-        availableTools: () => tools?.supportedToolNames || []
+        availableTools: () => tools?.supportedToolNames || [],
+        availableModels: listModelProfilesWithCredentialStatus,
+        availableNodes: () => nodeBroker?.snapshot().nodes || []
       })
     },
     "dev.session-manager": {
@@ -639,12 +776,7 @@ const runtimePlugins = new RuntimePluginService({
     },
     "dev.langchain-chat": {
       modelService: createModelManagementPluginService({
-        listProfiles: () => (
-          engineMode === "openai" ? models.list() : runtimeModelProfiles
-        ).map((item) => ({
-          ...item,
-          credentialConfigured: credentials.has(item.credentialRef)
-        })),
+        listProfiles: listModelProfilesWithCredentialStatus,
         importProfile: importModelProfile,
         deleteProfile: deleteModelProfile,
         interactionProfiles: interactionProfileStore
@@ -656,6 +788,9 @@ const runtimePlugins = new RuntimePluginService({
         interactionProfiles: interactionProfileStore
       })
     },
+    "dev.plugins": {
+      pluginHostService
+    },
     "dev.mail": {
       mailService: createMailManagementPluginService({
         interactionProfiles: interactionProfileStore
@@ -665,9 +800,32 @@ const runtimePlugins = new RuntimePluginService({
       fileService: identityFileService,
       modelService: createPluginModelService({
         engine,
-        resolveModel
+        resolveModel,
+        onRequest: publishModelRequest,
+        onRequestError(error, { requestContext } = {}) {
+          process.stderr.write(
+            `[runtime-model-observability:`
+            + `${requestContext?.source || "runtime-plugin"}] `
+            + `${error?.message || String(error)}\n`
+          );
+        }
       }),
-      projectAutomationService,
+      projectAutomation: {
+        stateStore: workbenchState,
+        runnerService: agentRunnerService,
+        memoryRoot: identityMemoryRoot,
+        pollIntervalMs: projectAutomationPollIntervalMs,
+        registerService(service) {
+          projectAutomationService = service || null;
+        },
+        logger(level, message) {
+          if (level !== "debug") {
+            process.stderr.write(
+              `[runtime-project-automation:${level}] ${message}\n`
+            );
+          }
+        }
+      },
       biography: {
         enabled: process.env.ZION_RUNTIME_IDENTITY_BIOGRAPHY_POSTPROCESSOR !== "0",
         memoryRoot: identityMemoryRoot
@@ -720,10 +878,18 @@ capabilityTools = () => {
     }
   );
 };
+const defaultAvailableToolNames = [
+  ...new Set([
+    ...(tools.supportedToolNames || []),
+    ...(toolMode === "node"
+      ? LOCAL_TOOLS_TOOL_DEFINITIONS.map((tool) => tool.name)
+      : [])
+  ])
+];
 let defaultInteractionProfile = interactionProfileStore.ensure(
   createDefaultInteractionProfile({
     modelProfileId: defaultInteractionModelProfileId || profile?.id,
-    availableToolNames: tools.supportedToolNames || []
+    availableToolNames: defaultAvailableToolNames
   })
 );
 defaultInteractionProfile = mergeDefaultProfileTools(
@@ -731,7 +897,7 @@ defaultInteractionProfile = mergeDefaultProfileTools(
   defaultInteractionProfile,
   {
     profileId: DEFAULT_INTERACTION_PROFILE_ID,
-    availableToolNames: tools.supportedToolNames || [],
+    availableToolNames: defaultAvailableToolNames,
     allowedToolNames: DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES,
     replaceDefaultTools: true
   }
@@ -741,23 +907,41 @@ mergeDefaultProfileTools(
   interactionProfileStore.ensure(
     createDefaultScheduledInteractionProfile({
       modelProfileId: defaultInteractionModelProfileId || profile?.id,
-      availableToolNames: tools.supportedToolNames || []
+      availableToolNames: defaultAvailableToolNames
     })
   ),
   {
     profileId: DEFAULT_SCHEDULED_INTERACTION_PROFILE_ID,
-    availableToolNames: tools.supportedToolNames || [],
+    availableToolNames: defaultAvailableToolNames,
     allowedToolNames: DEFAULT_SCHEDULED_READONLY_TOOLS,
     replaceDefaultTools: true
   }
 );
 scheduler.setAvailableTools(tools.supportedToolNames);
+scheduler.setAvailableModels(listModelProfilesWithCredentialStatus());
+scheduler.setAvailableNodes(nodeBroker?.snapshot().nodes || []);
 const nodeHttpHandler = nodeBroker
   ? createNodeHttpHandler({
       broker: nodeBroker,
-      token: nodeToken
+      token: accessControl ? "" : nodeToken,
+      authorize: accessControl
+        ? (input) => accessControl.authorizeNode(input)
+        : null
     })
   : null;
+const deviceServiceHttpHandler = createDeviceServiceHttpHandler({
+  broker: nodeBroker,
+  terminalService: terminalManagementService,
+  serviceBaseUrls: nodeBroker
+    ? {}
+    : {
+        "local-tools": localToolsUrl,
+        "plugin-service": pluginServiceUrl
+      },
+  authorize: accessControl
+    ? (request, route) => accessControl.authorizeDeviceService(request, route)
+    : null
+});
 executor = createAgentExecutor({
   engine,
   tools,
@@ -770,7 +954,7 @@ executor = createAgentExecutor({
 });
 const projectAutomationRuntimeAvailable = pluginSnapshot.plugins.some((plugin) => (
   plugin.id === "dev.identity" && plugin.status === "active"
-));
+)) && !!projectAutomationService;
 const projectAutomationRuntimeEnabled = projectAutomationWorkerEnabled
   && projectAutomationRuntimeAvailable;
 if (projectAutomationRuntimeEnabled) {
@@ -780,7 +964,14 @@ const schedulerWorker = schedulerWorkerEnabled
   ? new RuntimeSchedulerWorker({
       executor,
       scheduler,
+      sessions: runs,
       tools,
+      resolveRequest: (request) => resolveInteractionRequest({
+        body: request,
+        interactionProfiles: interactionProfileStore,
+        resolveModel,
+        fallbackModel: modelRefForProfile(profile)
+      }),
       availableTools: () => tools.supportedToolNames,
       pollIntervalMs: schedulerPollIntervalMs,
       logger(level, message) {
@@ -813,41 +1004,51 @@ if (legacyMigration.ok) {
 }
 const serviceHttpHandlers = [
   createModelGatewayHttpHandler({
-    profiles: () => (
-      engineMode === "openai" ? models.list() : runtimeModelProfiles
-    ),
+    profiles: listModelProfiles,
     credentials
   }),
-  createWorkbenchStateHttpHandler({ store: workbenchState }),
+  createWorkbenchStateHttpHandler({
+    store: workbenchState,
+    reauthorize: accessControl
+      ? (principal) => accessControl.reauthorize(principal, "runtime.read")
+      : null
+  }),
   createSchedulerHttpHandler({
     scheduler,
     abortRun: (runId, reason) => schedulerWorker?.abort(runId, reason),
     wakeWorker: () => schedulerWorker?.wake(),
-    availableTools: () => tools.supportedToolNames
+    availableTools: () => tools.supportedToolNames,
+    availableModels: listModelProfilesWithCredentialStatus,
+    availableNodes: () => nodeBroker?.snapshot().nodes || []
   }),
+  ...(deviceServiceHttpHandler ? [deviceServiceHttpHandler] : []),
   ...(projectAutomationRuntimeAvailable
     ? [createProjectAutomationHttpHandler({
         service: projectAutomationService
       })]
     : [])
 ];
+const workbenchStaticHandler = workbenchDist
+  ? await createWorkbenchStaticHttpHandler({ root: workbenchDist })
+  : null;
 const runtime = createRuntimeServer({
   executor,
   runs,
   host,
   port,
-  modelProfiles: () => (
-    engineMode === "openai" ? models.list() : runtimeModelProfiles
-  ).map((item) => ({
-    ...item,
-    credentialConfigured: credentials.has(item.credentialRef)
-  })),
+  allowRemote: allowInsecureRemote,
+  modelProfiles: listModelProfilesWithCredentialStatus,
   resolveModel,
   importModelProfile,
   deleteModelProfile,
   interactionProfiles: interactionProfileStore,
   capabilityTools,
+  accessControl,
   nodeHttpHandler,
+  publicHttpHandlers: [
+    ...(accessControl ? [accessControl.handleHttp.bind(accessControl)] : []),
+    ...(workbenchStaticHandler ? [workbenchStaticHandler] : [])
+  ],
   serviceHttpHandlers,
   upgradeHandlers: [collaboration.handleUpgrade],
   sessionEventStore: workbenchState,
@@ -882,6 +1083,7 @@ const runtime = createRuntimeServer({
       restoredNodeState?.durableReceiptCount || 0,
     runtimePlugins: pluginSnapshot.plugins,
     runtimePluginFailures: pluginSnapshot.failures.length,
+    externalizedRuntimePlugins: externalizedRuntimePluginIds,
     schedulerWorker: !!schedulerWorker,
     schedulerAvailableTools: schedulerWorker?.availableTools || [],
     projectAutomationWorker: projectAutomationRuntimeEnabled,
@@ -890,6 +1092,8 @@ const runtime = createRuntimeServer({
     defaultInteractionProfileId: defaultInteractionProfile.id,
     workbenchStateOwner: "runtime",
     collaboration: "yjs-hocuspocus",
+    accessControl: accessControl ? "single-space-pairing-v1" : "loopback",
+    workbenchHosted: !!workbenchStaticHandler,
     schedulerOwner: "runtime",
     legacyStateMigration: legacyMigration,
     recoveredInterruptedRuns: interrupted.length,
@@ -905,7 +1109,7 @@ process.stdout.write(
   `Zion Runtime listening at ${address?.url || `${host}:${port}`} using ${dbPath} `
   + `(engine=${engine.id}, plugins=${pluginSnapshot.plugins.length}, `
   + `scheduler=${schedulerWorker ? "on" : "off"}, `
-  + `projectAutomation=${projectAutomationService.running ? "on" : "off"}, `
+  + `projectAutomation=${projectAutomationService?.running ? "on" : "off"}, `
   + `recovered=${interrupted.length})\n`
 );
 
@@ -914,7 +1118,7 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   try {
-    await projectAutomationService.stop();
+    await projectAutomationService?.stop();
     await schedulerWorker?.stop();
     await collaboration.close();
     await runtime.close();
@@ -926,15 +1130,20 @@ async function shutdown() {
         nodeStateStore?.close();
       } finally {
         try {
-          await runtimePlugins.stop();
+          accessStore?.close();
         } finally {
           try {
-            scheduler.close();
+            await runtimePlugins.stop();
           } finally {
             try {
-              workbenchState.close();
+              scheduler.close();
             } finally {
-              runs.close();
+              try {
+                runModelRequestSubscription.dispose();
+                workbenchState.close();
+              } finally {
+                runs.close();
+              }
             }
           }
         }

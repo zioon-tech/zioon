@@ -11,8 +11,10 @@
     "node": ">=22.5"
   },
   "scripts": {
+    "access": "node src/access-cli.mjs",
     "chat": "node src/chat-cli.mjs",
     "cli": "node src/runtime-cli.mjs",
+    "remote": "node src/remote-launcher.mjs",
     "start": "node src/main.mjs",
     "test": "vitest run tests"
   }

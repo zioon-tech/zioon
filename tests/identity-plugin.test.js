@@ -13,7 +13,66 @@ import {
   parseDistillationResult,
   serializeBiographyEventsJsonl
 } from "../extensions/dev.identity/identity-core.js";
-import { activate } from "../extensions/dev.identity/main.js";
+import {
+  activate,
+  getLocalToolsBase
+} from "../extensions/dev.identity/main.js";
+
+describe("identity local-tools routing", () => {
+  it("uses the authenticated Runtime Device Service gateway remotely", () => {
+    const previous = window.zion;
+    try {
+      window.zion = {
+        state: {
+          get(key) {
+            if (key === "runtime.connection") {
+              return {
+                backend: "runtime",
+                baseUrl: "https://zion.example.com/"
+              };
+            }
+            if (key === "localTools.baseUrl") {
+              return "http://127.0.0.1:8765";
+            }
+            return undefined;
+          }
+        }
+      };
+
+      expect(getLocalToolsBase()).toBe(
+        "https://zion.example.com/v1/device-services/local-tools"
+      );
+    } finally {
+      window.zion = previous;
+    }
+  });
+
+  it("uses configured Runtime routing before runtime.connection is published", async () => {
+    const previous = window.zion;
+    try {
+      localStorage.setItem("zion.debug.identityCspFetch", "1");
+      localStorage.setItem("zion.runtime.mode", "runtime");
+      localStorage.setItem("zion.runtime.baseUrl", "https://runtime.zioon.tech");
+      window.zion = {
+        state: {
+          get() {
+            return undefined;
+          }
+        }
+      };
+
+      expect(getLocalToolsBase()).toBe(
+        "https://runtime.zioon.tech/v1/device-services/local-tools"
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } finally {
+      localStorage.removeItem("zion.debug.identityCspFetch");
+      localStorage.removeItem("zion.runtime.mode");
+      localStorage.removeItem("zion.runtime.baseUrl");
+      window.zion = previous;
+    }
+  });
+});
 
 describe("identity context core", () => {
   it("extracts unique biography citation markers", () => {
@@ -763,6 +822,7 @@ describe("identity extension", () => {
       `${root}/projects/attention.md`,
       `${root}/projects/_template.md`
     ];
+    await disposable.ready;
     expect(writes.map((write) => write.path)).toEqual(expectedCreated);
 
     const first = await initialize();
@@ -879,7 +939,7 @@ describe("identity extension", () => {
       expect(fileReads).toBe(readsAfterFirst);
 
       disposable.dispose();
-      await activate({ subscriptions: [] });
+      const restoredActivation = await activate({ subscriptions: [] });
       const restored = await contributor.contribute([{ role: "user", content: "after reload" }], { sessionId: "session-cache" });
       expect(restored[0].content).toContain("Digest A");
       expect(restored[0].content).not.toContain("Digest B");
@@ -891,6 +951,7 @@ describe("identity extension", () => {
 
       const afterRefresh = await contributor.contribute([{ role: "user", content: "after refresh" }], { sessionId: "session-cache" });
       expect(afterRefresh[0].content).toContain("Digest B");
+      restoredActivation.dispose();
     });
 
   it("appends a finished run and rebuilds digest.md", async () => {
@@ -1001,6 +1062,7 @@ describe("identity extension", () => {
     }));
 
     const disposable = await activate({ subscriptions: [] });
+    await disposable.ready;
     writes.length = 0;
     onRunFinished({ sessionId: "session-1", runId: "run-1", panelId: "panel-1" });
 
@@ -1175,6 +1237,7 @@ describe("identity extension", () => {
       }
     });
 
+    await disposable.ready;
     expect(globalValues.get("projectAutomation.v1").projects["zion-next"]).toMatchObject({
       enabled: false,
       mode: "execute",

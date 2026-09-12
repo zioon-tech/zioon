@@ -81,7 +81,6 @@ function projectEvents(events) {
 export async function createSchedulerRuntimeHandle({
   task,
   schedulerRunId,
-  workbenchSessionId,
   baseUrl,
   fetchImpl
 }) {
@@ -93,7 +92,11 @@ export async function createSchedulerRuntimeHandle({
       prompt: task.prompt || "",
       interactionProfileId: task.interactionProfileId
         || DEFAULT_SCHEDULED_RUNTIME_PROFILE_ID,
+      ...(task.modelProfileId
+        ? { model: { profileId: String(task.modelProfileId) } }
+        : {}),
       projectId: task.projectId || undefined,
+      ...(task.nodeId ? { target: { nodeId: String(task.nodeId) } } : {}),
       policy: task.capability || { preset: "read-only" },
       timeoutMs: Math.max(10, Number(task.timeoutSeconds) || 300) * 1000,
       metadata: {
@@ -101,8 +104,7 @@ export async function createSchedulerRuntimeHandle({
         interactionProfileId: task.interactionProfileId
           || DEFAULT_SCHEDULED_RUNTIME_PROFILE_ID,
         schedulerTaskId: task.id,
-        schedulerRunId,
-        workbenchSessionId
+        schedulerRunId
       }
     },
     {

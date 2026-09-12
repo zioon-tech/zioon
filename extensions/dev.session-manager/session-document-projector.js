@@ -14,6 +14,23 @@ function assistantBlockHeader(runId) {
   return id ? `assistant <!-- zion-assistant:id=${id} --> ` : "";
 }
 
+const CARD_MARKER_LINE_RE = /<!--\s*zion-(?:thinking|tool):id=/;
+
+function markdownBlockPrefix(text) {
+  const firstLine = String(text || "").split("\n", 1)[0];
+  return /^\s{0,3}(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|\x60{3}|~~~|(?:[-*_]\s*){3,}$|\|)/.test(firstLine)
+    ? "\n"
+    : "";
+}
+
+function hasInterleavedCardContent(source, range) {
+  const body = source.slice(range.headerAnswerStart, range.answerEnd);
+  if (!CARD_MARKER_LINE_RE.test(body)) return false;
+  return body.split("\n").some((line) =>
+    line.trim() && !CARD_MARKER_LINE_RE.test(line)
+  );
+}
+
 function decodeBase64(value) {
   if (typeof globalThis.Buffer?.from === "function") {
     return new Uint8Array(globalThis.Buffer.from(value, "base64"));
@@ -38,13 +55,48 @@ export function projectAssistantOutputText(documentText, {
   const range = assistantBlockRange(source, runId);
   if (!range?.exists) {
     const separator = source && !source.endsWith("\n") ? "\n" : "";
-    return `${source}${separator}${header}${answer}`;
+    return source + separator + header + markdownBlockPrefix(answer) + answer;
   }
   const current = source.slice(range.answerStart, range.answerEnd);
   if (current === answer) return source;
+  if (hasInterleavedCardContent(source, range)) return source;
   return source.slice(0, range.answerStart)
-    + (current ? answer : `${range.answerPrefix || ""}${answer}`)
+    + (current ? answer : (range.answerPrefix || markdownBlockPrefix(answer)) + answer)
     + source.slice(range.answerEnd);
+}
+
+export function appendAssistantTokenToYText(ytext, {
+  runId,
+  token
+} = {}) {
+  const text = String(token || "");
+  if (!text) return false;
+  const source = ytext.toString();
+  const range = assistantBlockRange(source, runId);
+  if (!range) return false;
+  if (!range.exists) {
+    const separator = source && !source.endsWith("\n") ? "\n" : "";
+    ytext.insert(
+      source.length,
+      separator + range.header + markdownBlockPrefix(text) + text
+    );
+    return true;
+  }
+
+  const current = source.slice(range.answerStart, range.answerEnd);
+  let insertAt = range.answerEnd;
+  let insert = text;
+  if (!current) {
+    insert = (range.answerPrefix || markdownBlockPrefix(text)) + text;
+  } else if (
+    range.answerStart === range.headerAnswerStart
+    && markdownBlockPrefix(current + text)
+  ) {
+    ytext.insert(range.headerAnswerStart, "\n");
+    insertAt += 1;
+  }
+  ytext.insert(insertAt, insert);
+  return true;
 }
 
 function lineRanges(source) {
@@ -115,6 +167,7 @@ function assistantBlockRange(source, runId) {
     header,
     blockStart: ranges[startIndex].start,
     blockEnd,
+    headerAnswerStart,
     answerStart,
     answerEnd,
     answerPrefix
@@ -246,7 +299,7 @@ export function applyAssistantOutputToYText(ytext, {
   if (!range) return false;
   if (!range.exists) {
     const separator = source && !source.endsWith("\n") ? "\n" : "";
-    const insert = `${separator}${range.header}${text}`;
+    const insert = separator + range.header + markdownBlockPrefix(text) + text;
     if (!insert) return false;
     ytext.insert(source.length, insert);
     return true;
@@ -254,12 +307,13 @@ export function applyAssistantOutputToYText(ytext, {
   if (!text) return false;
   const current = source.slice(range.answerStart, range.answerEnd);
   if (current === text) return false;
+  if (hasInterleavedCardContent(source, range)) return false;
   if (text.startsWith(current)) {
     const delta = text.slice(current.length);
     if (!delta) return false;
     ytext.insert(
       range.answerEnd,
-      current ? delta : `${range.answerPrefix || ""}${delta}`
+      current ? delta : (range.answerPrefix || markdownBlockPrefix(text)) + delta
     );
     return true;
   }
@@ -268,9 +322,31 @@ export function applyAssistantOutputToYText(ytext, {
   }
   ytext.insert(
     range.answerStart,
-    `${range.answerPrefix || ""}${text}`
+    (range.answerPrefix || markdownBlockPrefix(text)) + text
   );
   return true;
+}
+
+export function reconcileSessionMessagesInYText(ytext, messages = []) {
+  const source = Array.isArray(messages) ? messages : [];
+  let changed = false;
+  for (const userMessage of source) {
+    if (userMessage?.role !== "user" || !userMessage.runId) continue;
+    const assistantMessage = source.find((message) => (
+      message?.role === "assistant"
+      && message?.runId === userMessage.runId
+    ));
+    if (!assistantMessage) continue;
+    changed = prepareRunInYText(ytext, {
+      runId: userMessage.runId,
+      userContent: userMessage.content
+    }) || changed;
+    changed = applyAssistantOutputToYText(ytext, {
+      runId: userMessage.runId,
+      output: assistantMessage.content
+    }) || changed;
+  }
+  return changed;
 }
 
 export function createSessionDocumentProjector() {
@@ -300,6 +376,15 @@ export function createSessionDocumentProjector() {
         runId,
         output
       });
+    },
+    reconcileTranscript({
+      document,
+      messages
+    } = {}) {
+      return reconcileSessionMessagesInYText(
+        document.getText(SESSION_DOCUMENT_TEXT_KEY),
+        messages
+      );
     }
   });
 }

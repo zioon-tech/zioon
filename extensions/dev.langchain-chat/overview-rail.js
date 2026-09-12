@@ -855,8 +855,8 @@ export function createChatOverviewRail(editor) {
       if (!isFollowLatestEnabled(sessionId)) return;
       const suppressUntil = Number(window.zion?.state?.get?.(`chat.followSuppressUntil.${sessionId}`) || 0);
       const domSuppressUntil = Number(scrollDOM.__zionProgrammaticScrollUntil || 0);
-      if (Math.max(suppressUntil, domSuppressUntil) > Date.now()) return;
       const distanceToBottom = scrollDOM.scrollHeight - scrollDOM.scrollTop - scrollDOM.clientHeight;
+      if (Math.max(suppressUntil, domSuppressUntil) > Date.now()) return;
       if (distanceToBottom > 12) {
         setFollowLatest(sessionId, false);
         scheduleRender();

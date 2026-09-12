@@ -67,7 +67,10 @@ export class SessionDocumentRuntime {
     try { (targetEditor as any)?.setSessionId?.(id); } catch {}
     let currentText: string | undefined;
     try { currentText = targetEditor?.getValue?.(); } catch {}
-    if (currentText !== text) {
+    const collaborationOwnsDocument =
+      (targetEditor as any)?.getView?.()?.dom?.dataset
+        ?.zionCollaborationBound === "true";
+    if (!collaborationOwnsDocument && currentText !== text) {
       targetEditor?.setValue(text, { source: "session-load" });
     }
     this.opts.applyAnnotations(id, targetPanelId);

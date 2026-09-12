@@ -201,6 +201,28 @@ export function installModelSwitcher() {
   let currentItems = [];
   const metaCache = new Map(); // spec -> { stream?: boolean, supportsImage?: boolean, preservedThinking?: boolean, interleavedThinking?: boolean }
 
+  function withCatalogRuntimeConfig(item, config) {
+    const next = { ...(config || {}) };
+    if (!item?.runtimeProfileId) return next;
+    for (const key of [
+      "supportsImage",
+      "supportsThinking",
+      "supportsThinkingEffort",
+      "thinkingMode",
+      "thinkingEffort",
+      "preservedThinking",
+      "interleavedThinking"
+    ]) {
+      if (item[key] !== undefined) next[key] = item[key];
+    }
+    next._runtimeBacked = true;
+    next._runtimeProfileId = item.runtimeProfileId;
+    next._credentialConfigured =
+      item.credentialConfigured === true
+      || next._credentialConfigured === true;
+    return next;
+  }
+
   function activeSpec() {
     const a = window.zion?.state?.get("chat.activeModel");
     return a ? `${a.providerId}:${a.modelId}` : null;
@@ -300,7 +322,10 @@ export function installModelSwitcher() {
     }
     try {
       const prov = window.zion?.models?.getProvider(item.providerId);
-      const cfg = await prov?.resolve?.(item.id);
+      const cfg = withCatalogRuntimeConfig(
+        item,
+        await prov?.resolve?.(item.id)
+      );
       const m = {
         stream: cfg && cfg.stream !== false,
         supportsImage: !!cfg?.supportsImage,
@@ -412,7 +437,18 @@ export function installModelSwitcher() {
         const prov = window.zion?.models?.getProvider(m.providerId);
         let cfg = null;
         try { cfg = await prov?.resolve?.(m.id); } catch {}
-        openEditor({ providerId: m.providerId, id: m.id, label: m.label, cfg, readonly: !canEdit });
+        openEditor({
+          providerId: m.providerId,
+          id: m.id,
+          label: m.label,
+          cfg: {
+            ...withCatalogRuntimeConfig(m, cfg),
+            _credentialConfigured:
+              m.credentialConfigured === true
+              || cfg?._credentialConfigured === true
+          },
+          readonly: !canEdit
+        });
       });
       right.appendChild(btnEdit);
 
@@ -531,7 +567,6 @@ export function installModelSwitcher() {
 
   function open() {
     refreshLabels();
-    window.zion?.commands?.executeCommand("models.listModels");
     refresh();
     root.style.display = "block";
     positionPanel();
@@ -551,8 +586,13 @@ export function installModelSwitcher() {
     refresh();
   }
   const dispI18n = window.zion?.events?.on?.("i18n/changed", refreshLabels);
+  const dispCatalog = window.zion?.state?.onDidChange?.("models.catalog", () => {
+    metaCache.clear();
+    refresh();
+  });
   function dispose() {
     try { dispI18n?.dispose?.(); } catch {}
+    try { dispCatalog?.dispose?.(); } catch {}
     root.remove();
   }
 
@@ -851,6 +891,12 @@ export function installModelSwitcher() {
       selProviderType.value = cfg.providerType || cfg.provider_type || "openai";
       inpUrl.value = cfg.url || cfg.baseURL || "";
       inpKey.value = cfg.key || cfg.apiKey || "";
+      if (cfg._credentialConfigured && !inpKey.value) {
+        inpKey.placeholder = t(
+          "modelSwitcher.runtimeCredentialStored",
+          "Stored securely in Runtime; leave blank to keep"
+        );
+      }
       inpModelName.value = cfg.modelName || cfg.model || "";
       inpTemp.value = typeof cfg.temperature === "number" ? String(cfg.temperature) : "0";
       inpMaxTok.value = cfg.max_tokens != null ? String(cfg.max_tokens) : "";
@@ -1213,7 +1259,6 @@ function createHandle(root) {
   };
   return {
     open() {
-      window.zion?.commands?.executeCommand("models.listModels");
       input?.dispatchEvent(new Event("input"));
       root.style.display = "block";
       position();

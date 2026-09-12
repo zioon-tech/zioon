@@ -5,6 +5,13 @@ import {
 
 export const DYNAMIC_MODELS_KEY = "zion.models.dynamic";
 export const DYNAMIC_PROVIDER_ID = "user.dynamic";
+const RUNTIME_MODEL_CACHE_TTL_MS = 60_000;
+
+let runtimeModelCache = null;
+
+export function invalidateRuntimeDynamicModelCache() {
+  runtimeModelCache = null;
+}
 
 function safe(value) {
   return String(value || "")
@@ -14,6 +21,72 @@ function safe(value) {
 
 export function runtimeProfileIdForDynamicModel(modelId) {
   return `workbench.${safe(DYNAMIC_PROVIDER_ID)}.${safe(modelId)}`;
+}
+
+export function findRuntimeModelProfile(profiles, selectedModel) {
+  const list = Array.isArray(profiles) ? profiles : [];
+  const profileId = String(selectedModel?.profileId || "").trim();
+  if (profileId) {
+    const exact = list.find((profile) => String(profile?.id || "") === profileId);
+    if (exact) return exact;
+  }
+
+  const providerId = String(selectedModel?.providerId || "").trim();
+  const modelId = String(selectedModel?.modelId || "").trim();
+  const importedId = providerId && modelId
+    ? `workbench.${safe(providerId)}.${safe(modelId)}`
+    : "";
+  if (importedId) {
+    const imported = list.find((profile) => String(profile?.id || "") === importedId);
+    if (imported) return imported;
+  }
+
+  const matches = list.filter((profile) => (
+    (!providerId || String(profile?.providerId || "") === providerId)
+    && [
+      profile?.id,
+      profile?.sourceModelId,
+      profile?.model
+    ].some((value) => String(value || "") === modelId)
+  ));
+  return matches.find((profile) => profile?.credentialConfigured === true)
+    || matches[0]
+    || null;
+}
+
+export function mergeRuntimeModelProfileConfig(config, profile) {
+  const base = objectValue(config);
+  if (!profile || typeof profile !== "object") return base;
+  const capabilities = objectValue(profile.capabilities);
+  const metadata = objectValue(profile.metadata);
+  const next = {
+    ...base,
+    providerId: String(profile.providerId || base.providerId || ""),
+    providerType: String(profile.providerType || base.providerType || "openai"),
+    modelName: String(profile.model || base.modelName || base.model || ""),
+    url: String(profile.endpoint || base.url || base.baseURL || ""),
+    _runtimeBacked: true,
+    _runtimeProfileId: String(profile.id || base._runtimeProfileId || ""),
+    _credentialConfigured: profile.credentialConfigured === true
+  };
+  const copyDefined = (source, key, targetKey = key) => {
+    if (source[key] !== undefined) next[targetKey] = source[key];
+  };
+  copyDefined(profile, "temperature");
+  copyDefined(profile, "maxOutputTokens", "max_tokens");
+  copyDefined(capabilities, "supportsImage");
+  copyDefined(capabilities, "supportsThinking");
+  copyDefined(capabilities, "supportsThinkingEffort");
+  copyDefined(capabilities, "thinkingMode");
+  copyDefined(capabilities, "thinkingEffort");
+  copyDefined(capabilities, "preservedThinking");
+  copyDefined(capabilities, "interleavedThinking");
+  copyDefined(metadata, "stream");
+  copyDefined(metadata, "contextWindowTokens");
+  copyDefined(metadata, "maxInputTokens");
+  copyDefined(metadata, "defaultOutputTokens", "max_tokens");
+  copyDefined(metadata, "pricing");
+  return next;
 }
 
 function objectValue(value) {
@@ -169,20 +242,68 @@ export function shouldUseRuntimeModelStore({
   return config.mode === "runtime" ? config : null;
 }
 
-export async function loadRuntimeDynamicModelStore({
+async function loadRuntimeModelCatalog({
   state = globalThis.window?.zion?.state,
   storage = globalThis.localStorage,
-  fetchImpl = globalThis.fetch
+  fetchImpl = globalThis.fetch,
+  force = false
 } = {}) {
   const config = shouldUseRuntimeModelStore({ state, storage });
   if (!config) return null;
-  const client = createHttpRuntimeClient({
-    baseUrl: config.baseUrl,
-    fetchImpl
-  });
-  const catalog = await client.getModels();
+  const cacheKey = String(config.baseUrl || "");
+  const now = Date.now();
+  if (
+    !force
+    && runtimeModelCache?.key === cacheKey
+    && runtimeModelCache.fetchImpl === fetchImpl
+  ) {
+    if (runtimeModelCache.value && runtimeModelCache.expiresAt > now) {
+      return runtimeModelCache.value;
+    }
+    if (runtimeModelCache.promise) return runtimeModelCache.promise;
+  }
+  const promise = (async () => {
+    const client = createHttpRuntimeClient({
+      baseUrl: config.baseUrl,
+      fetchImpl
+    });
+    const catalog = await client.getModels();
+    runtimeModelCache = {
+      key: cacheKey,
+      fetchImpl,
+      value: catalog,
+      expiresAt: Date.now() + RUNTIME_MODEL_CACHE_TTL_MS,
+      promise: null
+    };
+    return catalog;
+  })();
+  runtimeModelCache = {
+    key: cacheKey,
+    fetchImpl,
+    value: null,
+    expiresAt: 0,
+    promise
+  };
+  try {
+    return await promise;
+  } catch (error) {
+    if (runtimeModelCache?.promise === promise) runtimeModelCache = null;
+    throw error;
+  }
+}
+
+export async function loadRuntimeModelProfiles(options = {}) {
+  const catalog = await loadRuntimeModelCatalog(options);
+  return catalog == null
+    ? null
+    : (Array.isArray(catalog.profiles) ? catalog.profiles : []);
+}
+
+export async function loadRuntimeDynamicModelStore(options = {}) {
+  const profiles = await loadRuntimeModelProfiles(options);
+  if (profiles == null) return null;
   const dict = {};
-  for (const profile of Array.isArray(catalog.profiles) ? catalog.profiles : []) {
+  for (const profile of profiles) {
     const entry = runtimeProfileToDynamicEntry(profile);
     if (entry) dict[entry.id] = entry.config;
   }
@@ -237,6 +358,7 @@ export async function upsertDynamicModel({
       profile: importable.profile,
       ...(importable.credential ? { credential: importable.credential } : {})
     });
+    invalidateRuntimeDynamicModelCache();
     const local = loadLocalDynamicModelStore({ storage });
     local[id] = runtimeProjectionConfig(id, nextConfig, profile);
     saveLocalDynamicModelStore(local, { storage });
@@ -276,6 +398,7 @@ export async function deleteDynamicModel({
     const profile = await client.deleteModelProfile(
       runtimeProfileIdForDynamicModel(id)
     );
+    invalidateRuntimeDynamicModelCache();
     return { deletedFrom: "runtime", modelId: id, profile };
   } catch (error) {
     return {

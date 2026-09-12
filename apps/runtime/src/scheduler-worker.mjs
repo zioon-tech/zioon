@@ -15,7 +15,9 @@ export class RuntimeSchedulerWorker {
   constructor({
     executor,
     scheduler,
+    sessions = null,
     tools,
+    resolveRequest = null,
     workerId = `runtime:${hostname()}:${randomUUID()}`,
     availableTools = ["read", "glob", "grep", "tree"],
     leaseSeconds = 600,
@@ -29,7 +31,11 @@ export class RuntimeSchedulerWorker {
     if (!tools?.invoke) throw new Error("Scheduler worker requires a Tool Broker");
     this.executor = executor;
     this.scheduler = scheduler;
+    this.sessions = sessions;
     this.tools = tools;
+    this.resolveRequest = typeof resolveRequest === "function"
+      ? resolveRequest
+      : null;
     this.workerId = String(workerId);
     this.availableToolsSource = availableTools;
     this.leaseSeconds = Math.max(30, Number(leaseSeconds) || 600);
@@ -42,6 +48,7 @@ export class RuntimeSchedulerWorker {
     this.activeHandle = null;
     this.activeExecution = null;
     this.activeCommandCancellation = null;
+    this.activeSessionId = null;
   }
 
   async claim() {
@@ -71,9 +78,12 @@ export class RuntimeSchedulerWorker {
   }
 
   async complete(runId, result) {
+    // #region debug-point D:runtime-scheduler-completion-link
+    try { const probe = globalThis.__zionScheduledSurfaceProbe; if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "pre-fix", hypothesisId: "D", location: "apps/runtime/src/scheduler-worker.mjs:complete", msg: "[DEBUG] Runtime Scheduler completion linkage", data: { schedulerRunId: runId, chatRunId: result.runId || null, sessionId: result.sessionId || this.activeSessionId || null, status: result.status }, ts: Date.now() }) }).catch(() => {}); } catch {}
+    // #endregion
     return this.scheduler.complete(runId, this.workerId, {
       status: TERMINAL_STATUS[result.status] || "failed",
-      sessionId: null,
+      sessionId: result.sessionId || this.activeSessionId || null,
       chatRunId: result.runId || null,
       output: result.output || "",
       error: result.error || null,
@@ -88,27 +98,114 @@ export class RuntimeSchedulerWorker {
       return;
     }
 
-    const handle = this.executor.execute({
+    const interactionProfileId = task.interactionProfileId || "scheduled.default";
+    const request = {
       title: task.title || "",
       prompt: task.prompt || "",
-      interactionProfileId: task.interactionProfileId || undefined,
+      interactionProfileId,
+      ...(task.modelProfileId
+        ? { model: { profileId: String(task.modelProfileId) } }
+        : {}),
       projectId: task.projectId || undefined,
+      ...(task.nodeId ? { target: { nodeId: String(task.nodeId) } } : {}),
       policy: task.capability || { preset: "read-only" },
       timeoutMs: Math.max(10, Number(task.timeoutSeconds) || 300) * 1000,
       metadata: {
         source: "scheduler-worker",
-        interactionProfileId: task.interactionProfileId || null,
+        interactionProfileId,
         schedulerRunId: claimedRun.id,
         schedulerTaskId: claimedRun.taskId,
         scheduledFor: claimedRun.scheduledFor || null
       }
+    };
+    const resolved = this.resolveRequest
+      ? await this.resolveRequest(request)
+      : null;
+    const sessionId = this.sessions?.createSession
+      ? `scheduler_session_${randomUUID().replaceAll("-", "")}`
+      : null;
+    if (sessionId) {
+      const timestamp = Date.now();
+      await this.sessions.createSession({
+        id: sessionId,
+        status: "active",
+        title: task.title || "定时任务",
+        projectId: task.projectId || undefined,
+        model: resolved?.model || request.model || undefined,
+        policy: resolved?.policy || request.policy,
+        metadata: {
+          ...(resolved?.metadata || request.metadata),
+          source: "scheduled-task",
+          schedulerTaskId: claimedRun.taskId,
+          schedulerRunId: claimedRun.id
+        },
+        createdAt: timestamp,
+        updatedAt: timestamp
+      });
+      this.activeSessionId = sessionId;
+    }
+    // #region debug-point A-B:scheduler-request
+    fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "scheduler-node-routing", runId: "post-fix", hypothesisId: "A-B", location: "apps/runtime/src/scheduler-worker.mjs:executeClaim", msg: "[DEBUG] Scheduler Agent request resolved", data: { schedulerRunId: claimedRun.id, schedulerTaskId: claimedRun.taskId, projectId: request.projectId || null, interactionProfileId, allowedTerminalSessionIds: resolved?.policy?.allowedTerminalSessionIds || request.policy?.allowedTerminalSessionIds || [], includeTerminalContext: resolved?.metadata?.includeTerminalContext, contextProviders: resolved?.metadata?.contextProviders || null }, ts: Date.now() }) }).catch(() => {});
+    // #endregion
+    const handle = this.executor.execute({
+      ...request,
+      ...(sessionId ? { sessionId } : {}),
+      ...(resolved?.model ? { model: resolved.model } : {}),
+      policy: resolved?.policy || request.policy,
+      metadata: resolved?.metadata || request.metadata
     });
     this.activeHandle = handle;
     this.activeSchedulerRunId = claimedRun.id;
+    if (sessionId && this.scheduler?.linkSession) {
+      this.scheduler.linkSession(claimedRun.id, this.workerId, {
+        sessionId,
+        chatRunId: handle.runId
+      });
+    }
+    if (sessionId && this.sessions?.appendSessionMessages) {
+      await this.sessions.appendSessionMessages(sessionId, [{
+        schemaVersion: 1,
+        id: `message_${randomUUID().replaceAll("-", "")}`,
+        sessionId,
+        role: "user",
+        content: task.prompt || "",
+        runId: handle.runId,
+        createdAt: Date.now()
+      }]);
+    }
 
+    const toolOutcomes = {
+      requested: 0,
+      succeeded: 0,
+      failed: 0,
+      lastError: ""
+    };
     const forwarding = (async () => {
       for await (const event of handle.events) {
         if (event.type === "message.delta") continue;
+        if (event.type === "tool.requested") {
+          toolOutcomes.requested += 1;
+        }
+        if (event.type === "tool.denied") {
+          toolOutcomes.failed += 1;
+          toolOutcomes.lastError = String(
+            event.data?.reason || "Tool call denied"
+          );
+        }
+        if (event.type === "tool.completed" && event.data?.ok === true) {
+          toolOutcomes.succeeded += 1;
+        }
+        if (event.type === "tool.completed" && event.data?.ok === false) {
+          toolOutcomes.failed += 1;
+          toolOutcomes.lastError = String(
+            event.data?.error || "Tool call failed"
+          );
+        }
+        // #region debug-point C-D:tool-outcome
+        if (event.type === "tool.completed") {
+          fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "scheduler-node-routing", runId: "post-fix", hypothesisId: "C-D", location: "apps/runtime/src/scheduler-worker.mjs:forwarding", msg: "[DEBUG] Scheduler observed tool completion", data: { schedulerRunId: claimedRun.id, sequence: event.sequence, name: event.data?.name || null, ok: event.data?.ok, error: event.data?.error || null }, ts: Date.now() }) }).catch(() => {});
+        }
+        // #endregion
         try {
           await this.appendEvent(claimedRun.id, event);
         } catch (error) {
@@ -118,7 +215,34 @@ export class RuntimeSchedulerWorker {
     })();
     const result = await handle.completion;
     await forwarding;
-    await this.complete(claimedRun.id, result);
+    const completedWithoutWorkingTools = (
+      result.status === "completed"
+      && toolOutcomes.requested > 0
+      && toolOutcomes.succeeded === 0
+      && toolOutcomes.failed > 0
+    );
+    const finalResult = completedWithoutWorkingTools
+      ? {
+          ...result,
+          status: "failed",
+          error: `All ${toolOutcomes.failed} tool calls failed${
+            toolOutcomes.lastError ? `: ${toolOutcomes.lastError}` : ""
+          }`
+        }
+      : result;
+    // #region debug-point D:completion-mapping
+    fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "scheduler-node-routing", runId: "post-fix", hypothesisId: "D", location: "apps/runtime/src/scheduler-worker.mjs:executeClaim", msg: "[DEBUG] Scheduler mapping Agent completion", data: { schedulerRunId: claimedRun.id, agentStatus: result.status, schedulerStatus: TERMINAL_STATUS[finalResult.status] || "failed", toolOutcomes, output: String(result.output || "").slice(0, 240) }, ts: Date.now() }) }).catch(() => {});
+    // #endregion
+    await this.complete(claimedRun.id, {
+      ...finalResult,
+      sessionId
+    });
+    if (
+      finalResult.status === "completed"
+      && this.sessions?.reconcileCompletedSessionMessages
+    ) {
+      await this.sessions.reconcileCompletedSessionMessages();
+    }
   }
 
   async executeCommandClaim(claimedRun) {
@@ -136,6 +260,7 @@ export class RuntimeSchedulerWorker {
       runId: claimedRun.id,
       attemptId: `scheduler:${claimedRun.id}`,
       projectId: task.projectId || undefined,
+      ...(task.nodeId ? { target: { nodeId: String(task.nodeId) } } : {}),
       policy: task.capability || { preset: "trusted-automation" },
       toolCall: {
         id: `scheduler:${claimedRun.id}:bash`,
@@ -190,6 +315,7 @@ export class RuntimeSchedulerWorker {
           await this.complete(claimedRun.id, {
             status: "failed",
             runId: this.activeHandle?.runId || null,
+            sessionId: this.activeSessionId,
             output: "",
             error: error.message,
             usage: null
@@ -205,6 +331,7 @@ export class RuntimeSchedulerWorker {
         this.activeHandle = null;
         this.activeCommandCancellation = null;
         this.activeSchedulerRunId = null;
+        this.activeSessionId = null;
         this.activeExecution = null;
       });
     await this.activeExecution;

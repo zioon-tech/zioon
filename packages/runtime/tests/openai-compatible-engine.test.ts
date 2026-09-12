@@ -224,6 +224,56 @@ describe("OpenAICompatibleEngine", () => {
     expect(sent.tools[0].function.name).toBe("search");
   });
 
+  it("rejects a partial stream that closes without a completion signal", async () => {
+    const engine = new OpenAICompatibleEngine({
+      endpoint: "https://model.example/v1/chat/completions",
+      model: "test-model",
+      transport: async () => response({
+        headers: { "content-type": "text/event-stream" },
+        chunks: [
+          "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"
+        ]
+      })
+    });
+    const iterator = engine.streamTurn(turnRequest())[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: modelRequestEvent()
+    });
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: "message.delta", delta: "partial" }
+    });
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: "incomplete_stream",
+      retryable: false,
+      message: "Model response stream ended before a completion signal"
+    });
+  });
+
+  it("rejects output terminated by the model token limit", async () => {
+    const engine = new OpenAICompatibleEngine({
+      endpoint: "https://model.example/v1/chat/completions",
+      model: "test-model",
+      transport: async () => response({
+        headers: { "content-type": "text/event-stream" },
+        chunks: [
+          "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"length\"}]}\n\n",
+          "data: [DONE]\n\n"
+        ]
+      })
+    });
+    const iterator = engine.streamTurn(turnRequest())[Symbol.asyncIterator]();
+
+    await iterator.next();
+    await iterator.next();
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: "incomplete_stream",
+      retryable: false,
+      message: "Model output was truncated (length)"
+    });
+  });
+
   it("sends preserved reasoning content back with assistant tool messages", async () => {
     const transport = vi.fn(async () => response({
       payload: {

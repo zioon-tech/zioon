@@ -536,6 +536,12 @@ export function initWorkbench(host: HTMLElement): {
       (isCompactOverlay && hasAux) ||
       (isCompactOverlay && hasInspector) ||
       (isCompactOverlay && hasBottom);
+    overlayMaskEl.style.left = !isMobile && isCompactOverlay
+      ? "calc(var(--activitybar-w, 0px) + var(--sidebar-w, 0px))"
+      : "0px";
+    overlayMaskEl.style.bottom = isMobile
+      ? "calc(var(--mobilebar-h, 0px) + var(--safe-bottom, 0px))"
+      : "0px";
     overlayMaskEl.style.display = hasOverlay ? "block" : "none";
   };
 
@@ -860,6 +866,17 @@ export function initWorkbench(host: HTMLElement): {
       } catch {}
     };
     mobileBarActionsEl.appendChild(cmdBtn);
+    const settingsBtn = el("button", "zion-mobilebar-action") as HTMLButtonElement;
+    settingsBtn.type = "button";
+    settingsBtn.title = "设置";
+    settingsBtn.setAttribute("aria-label", "设置");
+    setCodiconOnly(settingsBtn, "settings-gear");
+    settingsBtn.onclick = () => {
+      try {
+        (window as any).zion?.settings?.open?.();
+      } catch {}
+    };
+    mobileBarActionsEl.appendChild(settingsBtn);
   };
 
   const renderActivityBar = () => {
@@ -3224,7 +3241,10 @@ export function initWorkbench(host: HTMLElement): {
     bottomPanelRuntime.hide();
   } catch {}
 
-  const dispA = activityBarRuntime.onDidChange(() => renderActivityBar());
+  const dispA = activityBarRuntime.onDidChange(() => {
+    renderActivityBar();
+    renderMobileBar();
+  });
     const dispS = sideBarRuntime.onDidChange(() => {
       if (!adjustingSidebarForWidePanels && sidebarAutoCollapsedForWidePanels && sideBarRuntime.isVisible()) {
         sidebarAutoCollapsedForWidePanels = false;

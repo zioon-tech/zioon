@@ -243,6 +243,11 @@ describe("Runtime-backed Skills state", () => {
         name: "Writer",
         description: "Draft text",
         file: "/skills/writer/SKILL.md"
+      }, {
+        id: "reviewer",
+        name: "Reviewer",
+        description: "Review text",
+        file: "/skills/reviewer/SKILL.md"
       }]
     });
     activateRuntimePlugin({
@@ -281,6 +286,32 @@ describe("Runtime-backed Skills state", () => {
       }),
       { role: "user", content: "hello" }
     ]);
+    const sessionMessages = await providers[0].contribute(
+      [{ role: "user", content: "hello" }],
+      {
+        request: {
+          metadata: {
+            skills: {
+              enabled: ["reviewer"]
+            }
+          }
+        }
+      }
+    );
+    expect(sessionMessages[0].content).toContain("<name>Reviewer</name>");
+    expect(sessionMessages[0].content).not.toContain("<name>Writer</name>");
+    await expect(providers[0].contribute(
+      [{ role: "user", content: "hello" }],
+      {
+        request: {
+          metadata: {
+            skills: {
+              enabled: []
+            }
+          }
+        }
+      }
+    )).resolves.toEqual([{ role: "user", content: "hello" }]);
     await expect(tools[0].invoke({ enabled_only: true })).resolves.toMatchObject({
       ok: true,
       content: expect.stringContaining("\"id\": \"writer\"")

@@ -92,6 +92,76 @@ describe("SqliteSchedulerStore", () => {
     }))).toThrow("interactionProfileId is invalid");
   });
 
+  it("persists task model overrides and rejects unavailable model profiles", () => {
+    const store = createStore({
+      now: () => 1_000,
+      availableModels: [{
+        id: "workbench.deepseek.deepseek-v4-flash",
+        credentialRequired: true,
+        credentialConfigured: true
+      }, {
+        id: "workbench.local.free",
+        credentialRequired: false,
+        credentialConfigured: false
+      }, {
+        id: "workbench.deepseek.unconfigured",
+        credentialRequired: true,
+        credentialConfigured: false
+      }]
+    });
+    const created = store.createTask(task({
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash"
+    }));
+
+    expect(created).toMatchObject({
+      interactionProfileId: "scheduled.default",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash"
+    });
+    expect(store.updateTask(created.id, {
+      revision: created.revision,
+      modelProfileId: "workbench.local.free"
+    })).toMatchObject({
+      modelProfileId: "workbench.local.free"
+    });
+    expect(() => store.createTask(task({
+      modelProfileId: "workbench.missing"
+    }))).toThrow("model profile not found");
+    expect(() => store.createTask(task({
+      modelProfileId: "workbench.deepseek.unconfigured"
+    }))).toThrow("model credential is not configured");
+    expect(store.createTask(task({
+      taskType: "command",
+      prompt: "",
+      command: "/usr/bin/true",
+      nodeId: "node:macbook",
+      modelProfileId: "workbench.missing"
+    }))).toMatchObject({
+      taskType: "command",
+      modelProfileId: ""
+    });
+  });
+
+  it("persists optional Agent Nodes and requires a registered Node for commands", () => {
+    const store = createStore({
+      now: () => 1_000,
+      availableNodes: [{ nodeId: "node:macbook" }]
+    });
+    expect(store.createTask(task({
+      nodeId: "node:macbook"
+    }))).toMatchObject({
+      taskType: "agent",
+      nodeId: "node:macbook"
+    });
+    expect(() => store.createTask(task({
+      nodeId: "node:missing"
+    }))).toThrow("Node not found");
+    expect(() => store.createTask(task({
+      taskType: "command",
+      prompt: "",
+      command: "/usr/bin/true"
+    }))).toThrow("nodeId is required");
+  });
+
   it("rejects service-backed tasks that the Runtime cannot execute", () => {
     const store = createStore({
       availableTools: ["read", "write"]
@@ -127,6 +197,13 @@ describe("SqliteSchedulerStore", () => {
     });
     expect(claimed).toMatchObject({ id: queued.id, status: "leased" });
 
+    expect(store.linkSession(queued.id, "runtime-1", {
+      sessionId: "scheduler-session-1",
+      chatRunId: "run-1"
+    })).toMatchObject({
+      sessionId: "scheduler-session-1",
+      chatRunId: "run-1"
+    });
     store.appendEvent(queued.id, "runtime-1", { type: "run.started" });
     now = 2_000;
     const completed = store.complete(queued.id, "runtime-1", {
@@ -137,6 +214,8 @@ describe("SqliteSchedulerStore", () => {
     expect(completed).toMatchObject({
       status: "success",
       output: "done",
+      sessionId: "scheduler-session-1",
+      chatRunId: "run-1",
       completedAt: 2_000
     });
     expect(store.getTask(created.id).lastRun.id).toBe(queued.id);

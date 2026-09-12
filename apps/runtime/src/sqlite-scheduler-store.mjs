@@ -13,6 +13,7 @@ const MUTATING_TOOLS = new Set(["write", "edit", "Bash", "sendMail", "todoWrite"
 const FILE_WRITE_TOOLS = new Set(["write", "edit"]);
 const TERMINAL_STATUSES = new Set(["success", "failed", "aborted"]);
 const PROFILE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
+const NODE_ID_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,199}$/i;
 const LEGACY_TOOL_ALIASES = new Map([
   ["fsWrite", "write"],
   ["fsEdit", "edit"],
@@ -43,6 +44,22 @@ function uniqueStrings(value) {
 
 function normalizeTools(value) {
   return uniqueStrings(value).map((name) => LEGACY_TOOL_ALIASES.get(name) || name);
+}
+
+function normalizeModels(value) {
+  return new Map(
+    (Array.isArray(value) ? value : [])
+      .map((profile) => [String(profile?.id || "").trim(), profile])
+      .filter(([id]) => id)
+  );
+}
+
+function normalizeNodes(value) {
+  return new Set(
+    (Array.isArray(value) ? value : [])
+      .map((node) => String(node?.nodeId || node || "").trim())
+      .filter(Boolean)
+  );
 }
 
 function error(message, statusCode = 400) {
@@ -253,6 +270,18 @@ function validateTask(task) {
   ) {
     throw error("interactionProfileId is invalid", 422);
   }
+  if (
+    task.modelProfileId
+    && !PROFILE_ID_PATTERN.test(task.modelProfileId)
+  ) {
+    throw error("modelProfileId is invalid", 422);
+  }
+  if (task.nodeId && !NODE_ID_PATTERN.test(task.nodeId)) {
+    throw error("nodeId is invalid", 422);
+  }
+  if (task.taskType === "command" && !task.nodeId) {
+    throw error("nodeId is required for command tasks", 422);
+  }
   const allowed = new Set(policy.allowedTools);
   if (allowed.has("schedulerManage")) {
     throw error("schedulerManage cannot be used by scheduled tasks", 422);
@@ -315,11 +344,19 @@ function taskPayload(input, existing = null, timestamp = Date.now()) {
     command: String(input?.command ?? existing?.command ?? "").trim(),
     cwd: String(input?.cwd ?? existing?.cwd ?? "").trim(),
     note: String(input?.note ?? existing?.note ?? ""),
+    nodeId: String(input?.nodeId ?? existing?.nodeId ?? "").trim(),
     interactionProfileId: String(
       input?.interactionProfileId
       ?? existing?.interactionProfileId
-      ?? ""
-    ).trim(),
+      ?? "scheduled.default"
+    ).trim() || "scheduled.default",
+    modelProfileId: taskType === "agent"
+      ? String(
+        input?.modelProfileId
+        ?? existing?.modelProfileId
+        ?? ""
+      ).trim()
+      : "",
     schedule,
     capability,
     timeoutSeconds: Math.max(
@@ -384,12 +421,20 @@ function taskSupportedBy(task, tools) {
 export class SqliteSchedulerStore {
   constructor(path, {
     now = () => Date.now(),
-    availableTools = null
+    availableTools = null,
+    availableModels = null,
+    availableNodes = null
   } = {}) {
     this.path = path;
     this.now = now;
     this.availableTools = Array.isArray(availableTools)
       ? normalizeTools(availableTools)
+      : null;
+    this.availableModels = Array.isArray(availableModels)
+      ? normalizeModels(availableModels)
+      : null;
+    this.availableNodes = Array.isArray(availableNodes)
+      ? normalizeNodes(availableNodes)
       : null;
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
@@ -601,6 +646,14 @@ export class SqliteSchedulerStore {
     this.availableTools = normalizeTools(tools);
   }
 
+  setAvailableModels(models) {
+    this.availableModels = normalizeModels(models);
+  }
+
+  setAvailableNodes(nodes) {
+    this.availableNodes = normalizeNodes(nodes);
+  }
+
   createTask(input) {
     const timestamp = this.now();
     const task = {
@@ -634,6 +687,31 @@ export class SqliteSchedulerStore {
   }
 
   assertTaskSupported(task) {
+    if (
+      task.nodeId
+      && this.availableNodes
+      && !this.availableNodes.has(task.nodeId)
+    ) {
+      throw error(`Runtime Scheduler Node not found: ${task.nodeId}`, 422);
+    }
+    if (task.taskType === "agent" && task.modelProfileId && this.availableModels) {
+      const profile = this.availableModels.get(task.modelProfileId);
+      if (!profile) {
+        throw error(
+          `Runtime Scheduler model profile not found: ${task.modelProfileId}`,
+          422
+        );
+      }
+      if (
+        profile.credentialRequired !== false
+        && profile.credentialConfigured !== true
+      ) {
+        throw error(
+          `Runtime Scheduler model credential is not configured: ${task.modelProfileId}`,
+          422
+        );
+      }
+    }
     if (!this.availableTools) return;
     const unsupported = normalizeTools(task?.capability?.allowedTools)
       .filter((name) => !this.availableTools.includes(name));
@@ -896,6 +974,24 @@ export class SqliteSchedulerStore {
     }
   }
 
+  linkSession(runId, workerId, {
+    sessionId,
+    chatRunId
+  } = {}) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const run = this.requireLeasedRun(runId, workerId);
+      run.sessionId = sessionId ? String(sessionId) : null;
+      run.chatRunId = chatRunId ? String(chatRunId) : null;
+      this.writeRunRow(run);
+      this.db.exec("COMMIT");
+      return clone(run);
+    } catch (errorValue) {
+      this.db.exec("ROLLBACK");
+      throw errorValue;
+    }
+  }
+
   complete(runId, workerId, result) {
     if (!TERMINAL_STATUSES.has(String(result?.status))) {
       throw error("Invalid terminal status", 422);
@@ -905,8 +1001,8 @@ export class SqliteSchedulerStore {
       const run = this.requireLeasedRun(runId, workerId);
       Object.assign(run, {
         status: result.status,
-        sessionId: result.sessionId || null,
-        chatRunId: result.chatRunId || null,
+        sessionId: result.sessionId || run.sessionId || null,
+        chatRunId: result.chatRunId || run.chatRunId || null,
         output: String(result.output || ""),
         error: result.error ? String(result.error) : null,
         usage: result.usage || null,

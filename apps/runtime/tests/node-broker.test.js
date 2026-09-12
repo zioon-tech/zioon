@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { CancellationController } from "../../../packages/runtime/src/index";
 import { NodeBroker } from "../src/node-broker.mjs";
+import {
+  terminalReference
+} from "../../../packages/node-protocol/src/resource-references.mjs";
 
 function registration(overrides = {}) {
   return {
@@ -59,6 +62,194 @@ function invocation(overrides = {}) {
 }
 
 describe("NodeBroker", () => {
+  function setupNodes() {
+    const broker = new NodeBroker({ scheduleTimeout: () => ({ dispose() {} }) });
+    broker.registerNode(registration());
+    broker.registerNode(registration({
+      nodeId: "node:server",
+      instanceId: "instance:server"
+    }));
+    const ref = terminalReference({
+      nodeId: "node:server",
+      instanceId: "instance:server",
+      resourceId: "workspace:zion-next",
+      sessionId: "terminal:one"
+    });
+    return { broker, ref };
+  }
+
+  it("routes a global session ID to its Node and translates only its policy", async () => {
+    const { broker, ref } = setupNodes();
+    const input = invocation({
+      policy: { allowedTools: ["read"], allowedTerminalSessionIds: [ref] },
+      toolCall: { id: "call:one", name: "read", arguments: { path: "/a", session_id: ref } }
+    });
+    const completion = broker.invoke(input, new CancellationController().signal);
+    const command = await broker.nextCommand("node:server", "instance:server");
+    expect(command.invocation.toolCall.arguments.session_id).toBe("terminal:one");
+    expect(command.invocation.policy.allowedTerminalSessionIds).toEqual(["terminal:one"]);
+    expect(input.toolCall.arguments.session_id).toBe(ref);
+    expect(await broker.nextCommand("node:macbook", "instance:one")).toBeNull();
+    broker.completeInvocation("node:server", "instance:server", input.invocationId, { ok: true, content: "server" });
+    await expect(completion).resolves.toMatchObject({ content: "server" });
+    broker.close();
+  });
+
+  it("uses the sole allowed global session when the tool omits a target", async () => {
+    const { broker, ref } = setupNodes();
+    const input = invocation({
+      policy: { allowedTools: ["read"], allowedTerminalSessionIds: [ref] },
+      toolCall: {
+        id: "call:one",
+        name: "read",
+        arguments: { path: "/a" }
+      }
+    });
+
+    const completion = broker.invoke(
+      input,
+      new CancellationController().signal
+    );
+    const command = await broker.nextCommand(
+      "node:server",
+      "instance:server"
+    );
+
+    expect(command.invocation.toolCall.arguments.session_id).toBe(
+      "terminal:one"
+    );
+    expect(command.invocation.policy.allowedTerminalSessionIds).toEqual([
+      "terminal:one"
+    ]);
+    await expect(
+      broker.nextCommand("node:macbook", "instance:one")
+    ).resolves.toBeNull();
+    broker.completeInvocation(
+      "node:server",
+      "instance:server",
+      input.invocationId,
+      { ok: true, content: "server" }
+    );
+    await expect(completion).resolves.toMatchObject({ content: "server" });
+    broker.close();
+  });
+
+  it("routes by Node without requiring a resource or terminal id", async () => {
+    const { broker } = setupNodes();
+    const input = invocation({
+      target: { nodeId: "node:server" },
+      policy: { allowedTools: ["read"], allowedTerminalSessionIds: [] },
+      toolCall: {
+        id: "call:one",
+        name: "read",
+        arguments: { path: "/a" }
+      }
+    });
+
+    const completion = broker.invoke(
+      input,
+      new CancellationController().signal
+    );
+    const command = await broker.nextCommand(
+      "node:server",
+      "instance:server"
+    );
+
+    expect(command.resourceId).toBe("workspace:zion-next");
+    expect(command.invocation.toolCall.arguments).toEqual({ path: "/a" });
+    await expect(
+      broker.nextCommand("node:macbook", "instance:one")
+    ).resolves.toBeNull();
+    broker.completeInvocation(
+      "node:server",
+      "instance:server",
+      input.invocationId,
+      { ok: true, content: "server" }
+    );
+    await expect(completion).resolves.toMatchObject({ content: "server" });
+    broker.close();
+  });
+
+  it("does not fail over an offline or stale reference", async () => {
+    const { broker, ref } = setupNodes();
+    const input = invocation({
+      policy: { allowedTools: ["read"] },
+      toolCall: { name: "read", arguments: { session_id: ref } }
+    });
+    broker.disconnectNode("node:server", "instance:server");
+    await expect(broker.invoke(input, new CancellationController().signal)).rejects.toThrow("offline");
+    broker.registerNode(registration({ nodeId: "node:server", instanceId: "instance:new" }));
+    await expect(broker.invoke(input, new CancellationController().signal)).rejects.toThrow("Stale");
+    expect(broker.snapshot().pendingInvocations).toBe(0);
+    broker.close();
+  });
+
+  it("keeps offline registrations in legacy ambiguity checks", async () => {
+    const { broker } = setupNodes();
+    broker.disconnectNode("node:server", "instance:server");
+    await expect(broker.invoke(invocation(), new CancellationController().signal)).rejects.toThrow("Ambiguous");
+    broker.close();
+  });
+
+  it("rejects a reference outside the Run terminal policy", async () => {
+    const { broker, ref } = setupNodes();
+    const other = terminalReference({
+      nodeId: "node:macbook", instanceId: "instance:one",
+      resourceId: "workspace:zion-next", sessionId: "terminal:one"
+    });
+    await expect(broker.invoke(invocation({
+      policy: { allowedTools: ["read"], allowedTerminalSessionIds: [other] },
+      toolCall: { name: "read", arguments: { session_id: ref } }
+    }), new CancellationController().signal)).rejects.toThrow("outside");
+    expect(broker.snapshot().pendingInvocations).toBe(0);
+    broker.close();
+  });
+
+  it("rejects conflicting resource constraints before dispatch", async () => {
+    const { broker, ref } = setupNodes();
+    broker.registerNode(registration({
+      nodeId: "node:server", instanceId: "instance:server",
+      resources: [...registration().resources, { resourceId: "workspace:other", kind: "workspace", projectId: "zion-next" }]
+    }));
+    const outcome = broker.invoke(invocation({
+      target: { nodeId: "node:server", resourceId: "workspace:other" },
+      policy: { allowedTools: ["read"] },
+      toolCall: { name: "read", arguments: { session_id: ref } }
+    }), new CancellationController().signal).catch((error) => error);
+    const pending = broker.snapshot().pendingInvocations;
+    broker.close();
+    expect(pending).toBe(0);
+    expect((await outcome).message).toMatch(/conflict/i);
+  });
+
+  it("does not infer native session ownership from capability availability", async () => {
+    const { broker } = setupNodes();
+    broker.registerNode(registration({
+      nodeId: "node:server", instanceId: "instance:server",
+      capabilities: [{ name: "Bash" }]
+    }));
+    const outcome = broker.invoke(invocation({
+      policy: { allowedTools: ["read"] }
+    }), new CancellationController().signal).catch((error) => error);
+    const pending = broker.snapshot().pendingInvocations;
+    broker.close();
+    expect(pending).toBe(0);
+    expect((await outcome).message).toMatch(/ambiguous/i);
+  });
+
+  it("never redelivers a reference-bound operation to a replacement instance", async () => {
+    const { broker, ref } = setupNodes();
+    const outcome = broker.invoke(invocation({
+      policy: { allowedTools: ["read"] },
+      toolCall: { name: "read", arguments: { session_id: ref } }
+    }), new CancellationController().signal).catch((error) => error);
+    await broker.nextCommand("node:server", "instance:server");
+    broker.registerNode(registration({ nodeId: "node:server", instanceId: "instance:new" }));
+    expect((await outcome).message).toContain("may have executed");
+    expect(await broker.nextCommand("node:server", "instance:new")).toBeNull();
+    broker.close();
+  });
+
   it("registers capabilities without exposing local-only resource fields", async () => {
     const broker = new NodeBroker();
 
@@ -108,6 +299,28 @@ describe("NodeBroker", () => {
     ]);
   });
 
+  it("keeps internal Device service capabilities out of the model catalog", () => {
+    const broker = new NodeBroker();
+    broker.registerNode(registration({
+      capabilities: [
+        ...registration().capabilities,
+        {
+          name: "zion.internal.deviceService",
+          version: "1",
+          risk: "execute",
+          description: "Internal service relay",
+          inputSchema: { type: "object" },
+          hostKind: "device-service"
+        }
+      ]
+    }));
+
+    expect(broker.supportedToolNames).toEqual(["read"]);
+    expect(broker.getToolDefinitions().map((tool) => tool.name)).toEqual([
+      "read"
+    ]);
+  });
+
   it("aggregates authorized capabilities across matching online Nodes", async () => {
     const broker = new NodeBroker();
     broker.registerNode(registration());
@@ -142,6 +355,33 @@ describe("NodeBroker", () => {
     });
 
     expect(tools.map((tool) => tool.name).sort()).toEqual(["grep", "read"]);
+  });
+
+  it("limits advertised tools to the selected Node", async () => {
+    const broker = new NodeBroker();
+    broker.registerNode(registration());
+    broker.registerNode(registration({
+      nodeId: "node:server",
+      instanceId: "instance:server",
+      capabilities: [{
+        name: "grep",
+        version: "1",
+        risk: "read",
+        inputSchema: { type: "object" },
+        hostKind: "local-tools"
+      }]
+    }));
+
+    await expect(broker.listTools({
+      target: { nodeId: "node:server" },
+      policy: { allowedTools: ["read", "grep"] }
+    })).resolves.toEqual([
+      expect.objectContaining({ name: "grep" })
+    ]);
+    await expect(broker.listTools({
+      target: { nodeId: "node:missing" },
+      policy: { allowedTools: ["read"] }
+    })).rejects.toThrow("not registered");
   });
 
   it("routes an invocation to its project Node and accepts one result", async () => {

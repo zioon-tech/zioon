@@ -46,6 +46,7 @@ import {
   syncProjectAutomationToRuntime
 } from "./identity-runtime-state.js";
 import { isContinuationBoundaryLine } from "../../src/chat/session-document-format.js";
+import { runtimeDeviceServiceBaseUrl } from "../../src/runtime/workbench-runtime-config.ts";
 
 const MEMORY_ROOT_DISPLAY = "~/.zion-next/memory";
 const BIOGRAPHY_VIEW_ID = "dev.identity.biography";
@@ -66,6 +67,7 @@ let projectAutomationRuntimeSyncQueue = Promise.resolve();
 let projectAutomationSyncGeneration = 0;
 let projectAutomationRuntimeRestoreTimer = 0;
 const identitySnapshotPromises = new Map();
+let localToolsSessionsCache = { at: 0, sessions: [] };
 
 function fallbackParseMessages(content) {
   const messages = [];
@@ -172,7 +174,26 @@ version: 1
 ## 边界
 `;
 
-function getLocalToolsBase() {
+export function getLocalToolsBase() {
+  const runtimeConnection = window.zion?.state?.get?.("runtime.connection");
+  const connectedRuntimeBase = runtimeConnection?.backend === "runtime"
+    ? String(runtimeConnection.baseUrl || "").trim().replace(/\/$/, "")
+    : "";
+  const runtimeRelayBase = connectedRuntimeBase
+    ? `${connectedRuntimeBase}/v1/device-services/local-tools`
+    : runtimeDeviceServiceBaseUrl("local-tools", {
+        state: window.zion?.state,
+        storage: globalThis.localStorage
+      });
+  // #region debug-point A-B:route-input
+  try { if (localStorage.getItem("zion.debug.identityCspFetch") === "1") fetch("http://127.0.0.1:7778/event", { method: "POST", body: JSON.stringify({ sessionId: "identity-csp-fetch", runId: "post-fix", hypothesisId: "A-B", location: "extensions/dev.identity/main.js:getLocalToolsBase", msg: "[DEBUG] Identity file route input", data: { backend: runtimeConnection?.backend || null, connectionBaseUrl: runtimeConnection?.baseUrl || null, runtimeMode: window.zion?.state?.get?.("runtime.mode") || localStorage.getItem("zion.runtime.mode") || null, runtimeBaseUrl: window.zion?.state?.get?.("runtime.baseUrl") || localStorage.getItem("zion.runtime.baseUrl") || null, pageOrigin: globalThis.location?.origin || null }, ts: Date.now() }) }).catch(() => {}); } catch {}
+  // #endregion
+  if (runtimeRelayBase) {
+    // #region debug-point A-B:runtime-route
+    try { if (localStorage.getItem("zion.debug.identityCspFetch") === "1") fetch("http://127.0.0.1:7778/event", { method: "POST", body: JSON.stringify({ sessionId: "identity-csp-fetch", runId: "post-fix", hypothesisId: "A-B", location: "extensions/dev.identity/main.js:getLocalToolsBase", msg: "[DEBUG] Identity selected Runtime relay", data: { baseUrl: runtimeRelayBase }, ts: Date.now() }) }).catch(() => {}); } catch {}
+    // #endregion
+    return runtimeRelayBase;
+  }
   const stateValue = window.zion?.state?.get?.("localTools.baseUrl");
   if (typeof stateValue === "string" && stateValue.trim()) return stateValue.trim().replace(/\/$/, "");
   try {
@@ -181,6 +202,9 @@ function getLocalToolsBase() {
       || "";
     if (stored.trim()) return stored.trim().replace(/\/$/, "");
   } catch {}
+  // #region debug-point A-B-E:loopback-route
+  try { if (localStorage.getItem("zion.debug.identityCspFetch") === "1") fetch("http://127.0.0.1:7778/event", { method: "POST", body: JSON.stringify({ sessionId: "identity-csp-fetch", runId: "post-fix", hypothesisId: "A-B-E", location: "extensions/dev.identity/main.js:getLocalToolsBase", msg: "[DEBUG] Identity selected loopback fallback", data: { baseUrl: "http://127.0.0.1:8765" }, ts: Date.now() }) }).catch(() => {}); } catch {}
+  // #endregion
   return "http://127.0.0.1:8765";
 }
 
@@ -201,6 +225,87 @@ function pickLocalHome(sessions, activeSessionId = "") {
   const local = list.filter((session) => String(session?.type || "local").toLowerCase() !== "ssh");
   const active = local.find((session) => String(session?.id || "") === String(activeSessionId || ""));
   return inferHomeDirectory(active) || local.map(inferHomeDirectory).find(Boolean) || "";
+}
+
+function normalizeLocalPath(value) {
+  const text = String(value || "").trim().replace(/\\/g, "/");
+  const prefix = text.startsWith("/") ? "/" : /^[A-Za-z]:\//.test(text) ? text.slice(0, 3) : "";
+  const source = prefix === "/" ? text.slice(1) : prefix ? text.slice(3) : text;
+  const parts = [];
+  for (const part of source.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return `${prefix}${parts.join("/")}`.replace(/\/+$/, "");
+}
+
+function pathWithinRoot(pathValue, rootValue) {
+  const path = normalizeLocalPath(pathValue);
+  const root = normalizeLocalPath(rootValue);
+  return !!path && !!root && (path === root || path.startsWith(`${root}/`));
+}
+
+async function listLocalToolSessions() {
+  const stateSessions = window.zion?.state?.get?.("terminal.sessions");
+  if (Array.isArray(stateSessions) && stateSessions.length) return stateSessions;
+  const now = Date.now();
+  if (now - localToolsSessionsCache.at < 5000 && localToolsSessionsCache.sessions.length) {
+    return localToolsSessionsCache.sessions;
+  }
+  const response = await fetch(`${getLocalToolsBase()}/sessions`, { method: "GET" });
+  const raw = await response.text().catch(() => "");
+  const data = parseResponseBody(raw);
+  const sessions = response.ok && Array.isArray(data?.sessions) ? data.sessions : [];
+  localToolsSessionsCache = { at: now, sessions };
+  return sessions;
+}
+
+async function resolveLocalToolsSessionId(path = "") {
+  try {
+    const sessions = await listLocalToolSessions();
+    const activeSessionId = String(window.zion?.state?.get?.("terminal.activeSessionId") || "");
+    const withHomes = sessions
+      .map((session) => ({
+        session,
+        id: String(session?.id || session?.session_id || "").trim(),
+        home: inferHomeDirectory(session)
+      }))
+      .filter((item) => item.id);
+    const active = withHomes.find((item) =>
+      item.id === activeSessionId
+      && (!path || pathWithinRoot(path, item.home))
+    );
+    if (active) return active.id;
+    const matched = withHomes
+      .filter((item) => path && pathWithinRoot(path, item.home))
+      .sort((left, right) => right.home.length - left.home.length);
+    if (matched.length) return matched[0].id;
+    return activeSessionId || "";
+  } catch {
+    return "";
+  }
+}
+
+async function localToolsFileUrl(endpoint, path, params = {}) {
+  const url = new URL(`${getLocalToolsBase()}${endpoint}`, globalThis.location?.href || "http://localhost/");
+  if (path != null) url.searchParams.set("path", String(path));
+  for (const [key, value] of Object.entries(params || {})) {
+    if (value == null || value === "") continue;
+    url.searchParams.set(key, String(value));
+  }
+  const sessionId = await resolveLocalToolsSessionId(path);
+  if (sessionId) url.searchParams.set("session_id", sessionId);
+  return url.toString();
+}
+
+async function localToolsFileBody(path, body = {}) {
+  const sessionId = await resolveLocalToolsSessionId(path);
+  return {
+    ...body,
+    path,
+    ...(sessionId ? { session_id: sessionId } : {})
+  };
 }
 
 async function resolveMemoryRoot() {
@@ -278,8 +383,7 @@ function isMissingFile(status, data, raw) {
 }
 
 async function readLocalFileState(path) {
-  const base = getLocalToolsBase();
-  const response = await fetch(`${base}/files/read?path=${encodeURIComponent(path)}`, { method: "GET" });
+  const response = await fetch(await localToolsFileUrl("/files/read", path), { method: "GET" });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
   if (!response.ok || data?.error) {
@@ -297,9 +401,8 @@ async function readLocalFileIfExists(path) {
 }
 
 async function readLocalDirectoryEntries(path) {
-  const base = getLocalToolsBase();
   const response = await fetch(
-    `${base}/files/entries?path=${encodeURIComponent(path)}&max_depth=1`,
+    await localToolsFileUrl("/files/entries", path, { max_depth: 1 }),
     { method: "GET" }
   );
   const raw = await response.text().catch(() => "");
@@ -330,14 +433,11 @@ async function readLocalDirectoryEntries(path) {
 }
 
 async function readBiographyEventsPage(path, options = {}) {
-  const base = getLocalToolsBase();
-  const params = [
-    `path=${encodeURIComponent(String(path || ""))}`,
-    `limit=${Math.max(1, Number(options.limit || BIOGRAPHY_RENDER_PAGE_SIZE))}`
-  ];
-  if (options.tail) params.push(`tail=${Math.max(1, Number(options.tail))}`);
-  else if (options.offset) params.push(`offset=${Math.max(1, Number(options.offset))}`);
-  const response = await fetch(`${base}/files/read-jsonl?${params.join("&")}`, { method: "GET" });
+  const response = await fetch(await localToolsFileUrl("/files/read-jsonl", path, {
+    limit: Math.max(1, Number(options.limit || BIOGRAPHY_RENDER_PAGE_SIZE)),
+    ...(options.tail ? { tail: Math.max(1, Number(options.tail)) } : {}),
+    ...(!options.tail && options.offset ? { offset: Math.max(1, Number(options.offset)) } : {})
+  }), { method: "GET" });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
   if (response.status === 404) return null;
@@ -363,7 +463,9 @@ async function writeLocalFile(path, content) {
   const response = await fetch(`${base}/files/write`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, content: String(content || "") })
+    body: JSON.stringify(await localToolsFileBody(path, {
+      content: String(content || "")
+    }))
   });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
@@ -378,7 +480,10 @@ async function appendLocalJsonl(path, records) {
   const response = await fetch(`${base}/files/append-jsonl`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, records, dedupe_field: "id" })
+    body: JSON.stringify(await localToolsFileBody(path, {
+      records,
+      dedupe_field: "id"
+    }))
   });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
@@ -3372,21 +3477,31 @@ export async function activate(ctx) {
   );
   const activationProjectAutomationStore = projectAutomationStore;
   projectAutomationSyncGeneration += 1;
-  try {
-    const reconciled = await reconcileProjectAutomationRuntimeState();
-    if (hasActiveProjectAutomation(reconciled.document)) {
-      scheduleProjectAutomationRuntimeRestore();
-    }
-  } catch (error) {
-    console.warn("[dev.identity] Runtime project automation reconciliation unavailable", error);
-  }
   profileScaffoldReady = false;
-  try {
-    await ensureProfileFilesInitialized({ force: true });
-    void syncFreshIdentityContextSnapshotToRuntime().catch(() => {});
-  } catch (error) {
-    console.warn("[dev.identity] profile scaffold initialization unavailable", error);
-  }
+  window.zion?.state?.set?.("identity.initialization", { status: "loading" });
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  const initializationTimer = window.setTimeout(() => {
+    void Promise.allSettled([
+      reconcileProjectAutomationRuntimeState().then((reconciled) => {
+        if (!disposed && hasActiveProjectAutomation(reconciled.document)) {
+          scheduleProjectAutomationRuntimeRestore();
+        }
+      }),
+      ensureProfileFilesInitialized({ force: true }).then(() => {
+        if (!disposed) return syncFreshIdentityContextSnapshotToRuntime();
+      })
+    ]).then((results) => {
+      if (disposed) { resolveReady(); return; }
+      const errors = results.filter((result) => result.status === "rejected")
+        .map((result) => String(result.reason?.message || result.reason));
+      window.zion?.state?.set?.("identity.initialization", {
+        status: errors.length ? "degraded" : "ready", errors
+      });
+      resolveReady();
+    });
+  }, 0);
+  disposables.push({ dispose() { window.clearTimeout(initializationTimer); resolveReady(); } });
   const projectAutomationTool = registerProjectAutomationTool();
   disposables.push(projectAutomationTool);
   const heartbeatDisposable = window.zion?.events?.on?.("scheduler/heartbeat", () => {
@@ -3614,6 +3729,7 @@ export async function activate(ctx) {
   if (runFinished) disposables.push(runFinished);
 
   const disposable = {
+    ready,
     dispose() {
       disposed = true;
       if (projectAutomationStore === activationProjectAutomationStore) {

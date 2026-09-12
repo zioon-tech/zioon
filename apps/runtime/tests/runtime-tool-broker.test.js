@@ -174,7 +174,69 @@ describe("RuntimeToolBroker", () => {
       content: expect.stringContaining("# Fetched: https://example.com/page")
     });
     expect(String(fetchImpl.mock.calls[0][0]))
-      .toBe("https://r.jina.ai/https://example.com/page");
+      .toBe("https://r.jinaai.cn/https://example.com/page");
+  });
+
+  it("falls back to the alternate markdown proxy after a network failure", async () => {
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(
+        Object.assign(new TypeError("fetch failed"), {
+          cause: { code: "UND_ERR_CONNECT_TIMEOUT" }
+        })
+      )
+      .mockResolvedValueOnce(new globalThis.Response("# Page\nfallback", {
+        status: 200,
+        headers: { "content-type": "text/plain" }
+      }));
+    const broker = new RuntimeToolBroker({
+      localTools: {
+        listTools: async () => [],
+        invoke: vi.fn()
+      },
+      receipts: receiptStore(),
+      fetchImpl,
+      lookupImpl: vi.fn(async () => [{ address: "93.184.216.34" }])
+    });
+
+    await expect(broker.invoke(
+      invocation("webFetch", { url: "https://example.com/page" }),
+      new CancellationController().signal
+    )).resolves.toMatchObject({
+      ok: true,
+      content: expect.stringContaining("fallback")
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://r.jinaai.cn/https://example.com/page",
+      "https://r.jina.ai/https://example.com/page"
+    ]);
+  });
+
+  it("returns actionable diagnostics when every web proxy fails", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: { code: "UND_ERR_CONNECT_TIMEOUT" }
+      });
+    });
+    const broker = new RuntimeToolBroker({
+      localTools: {
+        listTools: async () => [],
+        invoke: vi.fn()
+      },
+      receipts: receiptStore(),
+      fetchImpl,
+      lookupImpl: vi.fn(async () => [{ address: "93.184.216.34" }])
+    });
+
+    await expect(broker.invoke(
+      invocation("webFetch", { url: "https://example.com/page" }),
+      new CancellationController().signal
+    )).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining(
+        "r.jinaai.cn: fetch failed (UND_ERR_CONNECT_TIMEOUT)"
+      ),
+      content: expect.stringContaining("r.jina.ai: fetch failed")
+    });
   });
 
   it("stores todo state in Runtime rather than local-tools", async () => {

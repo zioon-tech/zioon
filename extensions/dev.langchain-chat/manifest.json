@@ -9,6 +9,9 @@
     "name": "Chat",
     "version": "0.0.3",
     "main": "./main.js",
+    "dependencies": {
+      "dev.session-manager": "*"
+    },
     "entries": {
       "ui": "./main.js",
       "runtime": "./runtime.js"

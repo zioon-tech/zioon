@@ -34,7 +34,8 @@ describe("LLM Runtime gateway", () => {
         authorization: "Bearer legacy-browser-key",
         "content-type": "application/json"
       },
-      body: { model: "deepseek-chat", stream: true }
+      body: { model: "deepseek-chat", stream: true },
+      modelProfileId: "workbench.user.dynamic.deepseek-v4.1-flash-beta"
     });
 
     expect(await response.text()).toBe("data: ok\n\n");
@@ -42,6 +43,7 @@ describe("LLM Runtime gateway", () => {
     expect(fetchMock.mock.calls[1][0]).toBe(
       "http://127.0.0.1:9876/v1/model-gateway/proxy"
       + "?target=https%3A%2F%2Fapi.deepseek.com%2Fchat%2Fcompletions"
+      + "&profileId=workbench.user.dynamic.deepseek-v4.1-flash-beta"
     );
   });
 });

@@ -22,6 +22,8 @@ describe("scheduler service client", () => {
       id: "local-1",
       title: "Build",
       prompt: "Run checks",
+      nodeId: "node:cloud-runtime",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
       schedule: { kind: "daily", time: "09:00" },
       capability: {
         preset: "trusted-automation",
@@ -36,12 +38,15 @@ describe("scheduler service client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe("http://127.0.0.1:9999/v1/scheduler/tasks");
+    expect(options.credentials).toBe("include");
     expect(JSON.parse(options.body)).toMatchObject({
       clientTaskId: "local-1",
       taskType: "agent",
       command: "",
       cwd: "",
+      nodeId: "node:cloud-runtime",
       interactionProfileId: "scheduled.default",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
       schedule: { kind: "daily", time: "09:00", misfirePolicy: "run-once", overlapPolicy: "forbid" },
       capability: {
         preset: "trusted-automation",
@@ -50,6 +55,48 @@ describe("scheduler service client", () => {
       }
     });
     expect(JSON.parse(options.body)).not.toHaveProperty("sessionTag");
+  });
+
+  it("lists Runtime Nodes for task configuration", async () => {
+    localStorage.setItem("zion.runtime.baseUrl", "http://127.0.0.1:9999/");
+    const nodes = [{
+      nodeId: "node:cloud-runtime",
+      label: "Cloud Runtime",
+      platform: "linux",
+      status: "online"
+    }];
+    const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({
+      nodes
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new SchedulerServiceClient();
+
+    await expect(client.listNodes()).resolves.toEqual(nodes);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:9999/v1/device-nodes",
+      expect.objectContaining({ credentials: "include" })
+    );
+  });
+
+  it("lists Runtime model profiles for task configuration", async () => {
+    localStorage.setItem("zion.runtime.baseUrl", "http://127.0.0.1:9999/");
+    const profiles = [{
+      id: "workbench.deepseek.deepseek-v4-flash",
+      label: "DeepSeek V4 Flash",
+      credentialRequired: true,
+      credentialConfigured: true
+    }];
+    const fetchMock = vi.fn(async () => new globalThis.Response(JSON.stringify({
+      profiles
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new SchedulerServiceClient();
+
+    await expect(client.listModelProfiles()).resolves.toEqual(profiles);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:9999/v1/models",
+      expect.objectContaining({ credentials: "include" })
+    );
   });
 
   it("retrieves service-backed runs with an optional task filter", async () => {
@@ -84,7 +131,7 @@ describe("scheduler service client", () => {
       output: "done"
     });
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "http://127.0.0.1:9999/v1/scheduler/runs/run%2F1"
+      "http://127.0.0.1:9999/v1/scheduler/runs/run%2F1?event_limit=50"
     );
   });
 

@@ -201,6 +201,33 @@ export async function ensureScheduledSessionDateFolder({
   }
 }
 
+export async function removeEmptyScheduledSessionFolder({
+  zion,
+  store
+} = {}) {
+  try {
+    const tree = await zion?.commands?.executeCommand?.("zion.sessions.getTreeSnapshot");
+    if (!tree || tree.type !== "folder") return false;
+    const archiveState = store?.getSessionArchiveState?.() || {};
+    const stored = findTreeNode(tree, archiveState.folderId);
+    const folder = stored?.type === "folder" ? stored : null;
+    if (!folder || (folder.children || []).length > 0) return false;
+    const removed = await zion?.commands?.executeCommand?.(
+      "zion.sessions.deleteFolder",
+      folder.id
+    );
+    if (removed !== true) return false;
+    store?.saveSessionArchiveState?.({
+      folderId: null,
+      folderLocale: "",
+      migrationVersion: SESSION_ARCHIVE_MIGRATION_VERSION
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function migrateScheduledSessions({
   zion,
   store,

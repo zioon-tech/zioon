@@ -129,6 +129,12 @@ function loadProviderDraft(providerId, modelId, catalogItem = null) {
   const meta = BUILTIN_PROVIDER_META[providerId];
   if (!meta) return null;
   const cfg = loadJson(meta.configKey, {});
+  const runtimeBacked = !!String(catalogItem?.runtimeProfileId || "");
+  const configuredValue = (key, fallback) => (
+    runtimeBacked && catalogItem?.[key] !== undefined
+      ? catalogItem[key]
+      : fallback
+  );
   const apiKey = localStorage.getItem(meta.apiKeyKey) || "";
   const detectedLimits = normalizeModelLimits(
     catalogItem?.detectedLimits || catalogItem?.limits || getBuiltinModelLimits(providerId, modelId)
@@ -155,13 +161,30 @@ function loadProviderDraft(providerId, modelId, catalogItem = null) {
     useDetectedLimits: !hasCapabilityLimitOverride(cfg, modelId),
     detectedLimits,
     stream: cfg.stream !== false,
-    supportsImage: cfg.supportsImage ?? providerId !== "deepseek",
-    supportsThinking: cfg.supportsThinking,
-    supportsThinkingEffort: cfg.supportsThinkingEffort,
-    thinkingMode: normalizeThinkingMode(cfg.thinkingMode),
-    thinkingEffort: normalizeThinkingEffort(cfg.thinkingEffort),
-    preservedThinking: cfg.preservedThinking ?? providerId === "deepseek",
-    interleavedThinking: cfg.interleavedThinking ?? providerId === "deepseek",
+    supportsImage: configuredValue(
+      "supportsImage",
+      cfg.supportsImage ?? providerId !== "deepseek"
+    ),
+    supportsThinking: configuredValue("supportsThinking", cfg.supportsThinking),
+    supportsThinkingEffort: configuredValue(
+      "supportsThinkingEffort",
+      cfg.supportsThinkingEffort
+    ),
+    thinkingMode: normalizeThinkingMode(
+      configuredValue("thinkingMode", cfg.thinkingMode)
+    ),
+    thinkingEffort: normalizeThinkingEffort(
+      configuredValue("thinkingEffort", cfg.thinkingEffort)
+    ),
+    preservedThinking: configuredValue(
+      "preservedThinking",
+      cfg.preservedThinking ?? providerId === "deepseek"
+    ),
+    interleavedThinking: configuredValue(
+      "interleavedThinking",
+      cfg.interleavedThinking ?? providerId === "deepseek"
+    ),
+    _credentialConfigured: catalogItem?.credentialConfigured === true,
     autoContinueOnColonMaxAttempts:
       providerId === "deepseek"
         ? normalizeAutoContinueOnColonMaxAttempts(cfg.autoContinueOnColonMaxAttempts)
@@ -273,7 +296,9 @@ function draftFromCustomRow(row) {
     thinkingMode: normalizeThinkingMode(row.thinkingMode),
     thinkingEffort: normalizeThinkingEffort(row.thinkingEffort),
     preservedThinking: !!row.preservedThinking,
-    interleavedThinking: !!row.interleavedThinking
+    interleavedThinking: !!row.interleavedThinking,
+    _runtimeBacked: row._runtimeBacked === true,
+    _credentialConfigured: row._credentialConfigured === true
   };
 }
 
@@ -381,13 +406,18 @@ function getBuiltInStatusRows(row, isActive) {
 }
 
 function getCustomStatusRows(editingId, isActive, draft) {
+  const credentialStatus = draft.key
+    ? tt("已填写新密钥", "New key provided")
+    : draft._credentialConfigured
+      ? tt("已安全保存在 Runtime", "Stored securely in Runtime")
+      : tt("待补全", "Incomplete");
   return [
     { label: tt("模型 ID", "Model ID"), value: editingId || tt("新建中", "New") },
     { label: tt("接口地址", "Base URL"), value: draft.url || tt("未填写", "Empty") },
     { label: tt("上下文窗口", "Context Window"), value: formatTokenLimit(draft.contextWindowTokens) },
     { label: tt("最大输出", "Max Output"), value: formatTokenLimit(draft.maxOutputTokens) },
     { label: tt("当前默认", "Default"), value: isActive ? tt("是", "Yes") : tt("否", "No") },
-    { label: tt("连接状态", "Connection"), value: draft.key ? tt("已填写密钥", "Key provided") : tt("待补全", "Incomplete") }
+    { label: tt("凭证", "Credential"), value: credentialStatus }
   ];
 }
 
@@ -480,9 +510,16 @@ function ProviderConfigEditor({ providerId, modelId, draft, onChange, onSave, on
             <input
               type="password"
               value={draft.apiKey}
-              placeholder={tt("输入 API Key", "Enter API Key")}
+              placeholder={draft._credentialConfigured
+                ? tt("已保存在 Runtime；留空保持不变", "Stored in Runtime; leave blank to keep")
+                : tt("输入 API Key", "Enter API Key")}
               onChange={(e) => onChange("apiKey", e.target.value)}
             />
+            {draft._credentialConfigured && !draft.apiKey ? (
+              <span className="lc-models-row-meta">
+                {tt("密钥为只写凭证，不会从 Runtime 回显。", "Credentials are write-only and are never returned by Runtime.")}
+              </span>
+            ) : null}
           </label>
           {providerId === "deepseek" ? (
             <label className="lc-models-field">
@@ -721,7 +758,19 @@ function CustomModelDetail({
           </label>
           <label className="lc-models-field">
             <span>API Key</span>
-            <input type="password" value={draft.key} placeholder={tt("输入 API Key", "Enter API Key")} onChange={(e) => onChange("key", e.target.value)} />
+            <input
+              type="password"
+              value={draft.key}
+              placeholder={draft._credentialConfigured
+                ? tt("已保存在 Runtime；留空保持不变", "Stored in Runtime; leave blank to keep")
+                : tt("输入 API Key", "Enter API Key")}
+              onChange={(e) => onChange("key", e.target.value)}
+            />
+            {draft._credentialConfigured && !draft.key ? (
+              <span className="lc-models-row-meta">
+                {tt("密钥为只写凭证，不会从 Runtime 回显。", "Credentials are write-only and are never returned by Runtime.")}
+              </span>
+            ) : null}
           </label>
           <label className="lc-models-field">
             <span>{tt("接口类型", "Provider Type")}</span>
@@ -881,7 +930,7 @@ export function ModelsSettingsPage() {
   }, [builtins]);
 
   useEffect(() => {
-    void refresh();
+    void refresh({ checkHealth: false });
   }, []);
 
   useEffect(() => {
@@ -911,8 +960,8 @@ export function ModelsSettingsPage() {
     selection?.kind === "catalog"
       ? builtins.find((row) => row.providerId === selection.providerId && row.id === selection.id) || null
       : null;
-  const refresh = async () => {
-    const next = await refreshModelCatalog({ checkHealth: true });
+  const refresh = async ({ checkHealth = false, force = false } = {}) => {
+    const next = await refreshModelCatalog({ checkHealth, force });
     const nextCustomRows = await loadCustomRowsAsync().catch(() => loadCustomRows());
     setCatalog(next);
     setCustomRows(nextCustomRows);
@@ -1054,7 +1103,14 @@ export function ModelsSettingsPage() {
       await refresh();
       try { window.zion?.events?.emit?.("models/configChanged", { providerId: "user.dynamic", modelId: id }); } catch {}
       setEditingCustomId(id);
-      setCustomDraft(draftFromCustomRow({ id, ...next }));
+      setCustomDraft(draftFromCustomRow({
+        id,
+        ...next,
+        _runtimeBacked: saved?.savedTo === "runtime",
+        _credentialConfigured:
+          saved?.profile?.credentialConfigured === true
+          || existingRow?._credentialConfigured === true
+      }));
       setSelection({ kind: "custom", providerId: "user.dynamic", id });
       setStatus(saved?.warning
         ? tt(`已本地保存 custom model: ${id}；Runtime 同步失败`, `Saved custom model locally: ${id}; Runtime sync failed`)
@@ -1112,7 +1168,10 @@ export function ModelsSettingsPage() {
           <div className="lc-models-toolbar-meta">{tt("当前默认", "Current default")}: {activeLabel}</div>
         </div>
         <div className="lc-models-toolbar-actions">
-          <button type="button" onClick={() => void refresh()}>
+          <button
+            type="button"
+            onClick={() => void refresh({ checkHealth: true, force: true })}
+          >
             {tt("刷新", "Refresh")}
           </button>
           <button type="button" className="primary" onClick={startNewCustom}>

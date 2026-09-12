@@ -67,6 +67,8 @@ export type TranscriptMessage = {
   reasoningContent?: string;
   toolCallId?: string;
   toolCalls?: AssistantToolCall[];
+  /** Runtime-generated context marker; not accepted from client messages. */
+  contextProviderId?: string;
 };
 
 export type ToolDefinition = {
@@ -101,6 +103,7 @@ export type ToolInvocation = {
   attemptId: string;
   sessionId?: string;
   projectId?: string;
+  target?: ExecutionTarget;
   policy: CapabilityPolicy;
   toolCall: ToolCall;
 };
@@ -159,6 +162,10 @@ export type CapabilityPolicy = {
   maxMailPerRun: number;
 };
 
+export type ExecutionTarget = {
+  nodeId: string;
+};
+
 export type RunRequest = {
   prompt?: string;
   messages?: TranscriptMessage[];
@@ -167,6 +174,7 @@ export type RunRequest = {
   interactionProfileId?: string;
   sessionId?: string;
   projectId?: string;
+  target?: ExecutionTarget;
   model?: ModelRef;
   modelOptions?: ModelRequestOptions;
   policy?: Partial<CapabilityPolicy>;
@@ -189,6 +197,7 @@ export type RunRecord = {
   title: string;
   sessionId?: string;
   projectId?: string;
+  target?: ExecutionTarget;
   model?: ModelRef;
   modelOptions?: ModelRequestOptions;
   policy: CapabilityPolicy;

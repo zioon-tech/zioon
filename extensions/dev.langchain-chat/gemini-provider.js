@@ -54,7 +54,8 @@ export const geminiProvider = {
       config = JSON.parse(localStorage.getItem("zion.gemini.config") || "{}");
     } catch {}
     const apiKey = String(localStorage.getItem("zion.gemini.apiKey") || "").trim();
-    const discovery = await discoverRemoteModels({ credential: apiKey });
+    const discovery = discoverRemoteModels.peek({ credential: apiKey })
+      || { models: new Map() };
     return MODEL_IDS.map((id) => ({
       id,
       label: MODEL_LABELS[id] || id,
@@ -89,7 +90,8 @@ export const geminiProvider = {
       console.warn("[gemini-provider] Failed to read config from localStorage", e);
     }
 
-    const discovery = await discoverRemoteModels({ credential: apiKey });
+    const discovery = discoverRemoteModels.peek({ credential: apiKey })
+      || { models: new Map() };
     const common = withResolvedModelLimits({
       id: modelId,
       url: "https://generativelanguage.googleapis.com/v1beta/models",

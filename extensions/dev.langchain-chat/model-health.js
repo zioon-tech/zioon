@@ -169,6 +169,19 @@ export function invalidateModelAvailability({ providerId, modelId } = {}) {
 
 export function applyModelAvailability(item, health = getModelHealthSnapshot(), now = Date.now()) {
   if (!item || typeof item !== "object") return item;
+  if (item.credentialConfigured === true) {
+    return {
+      ...item,
+      availability: {
+        status: "available",
+        reason: "runtime_credential_configured",
+        source: "runtime-profile",
+        checkedAt: now,
+        expiresAt: null,
+        stale: false
+      }
+    };
+  }
   if (item.requiresConfig) {
     return {
       ...item,

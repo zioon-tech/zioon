@@ -104,4 +104,25 @@ describe("model health", () => {
       }
     });
   });
+
+  it("treats a write-only Runtime credential as configured", () => {
+    expect(applyModelAvailability({
+      providerId: "user.dynamic",
+      id: "runtime-model",
+      requiresConfig: false,
+      credentialConfigured: true
+    }, {
+      "user.dynamic::runtime-model": {
+        status: "misconfigured",
+        reason: "missing_key",
+        source: "config"
+      }
+    })).toMatchObject({
+      availability: {
+        status: "available",
+        reason: "runtime_credential_configured",
+        source: "runtime-profile"
+      }
+    });
+  });
 });

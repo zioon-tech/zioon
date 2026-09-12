@@ -64,28 +64,34 @@ function renderMarkdownNode(node) {
       return element("span", node.children, "zion-pending-markdown-paragraph");
     case "heading": {
       const level = Math.max(1, Math.min(6, Number(node.depth) || 1));
-      return element("span", node.children, `zion-pending-markdown-heading is-h${level}`);
+      return element(
+        "span",
+        node.children,
+        `zion-pending-markdown-heading cm-md-heading cm-md-h${level} is-h${level}`
+      );
     }
     case "strong":
-      return element("strong", node.children);
+      return element("strong", node.children, "cm-md-strong");
     case "emphasis":
-      return element("em", node.children);
+      return element("em", node.children, "cm-md-em");
     case "delete":
       return element("del", node.children);
     case "inlineCode": {
       const code = document.createElement("code");
+      code.className = "cm-md-code";
       code.textContent = String(node.value || "");
       return code;
     }
     case "code": {
       const pre = document.createElement("pre");
+      pre.className = "cm-md-codeblock";
       const code = document.createElement("code");
       code.textContent = String(node.value || "");
       pre.appendChild(code);
       return pre;
     }
     case "blockquote":
-      return element("blockquote", node.children);
+      return element("blockquote", node.children, "cm-md-quote");
     case "list":
       return element(node.ordered ? "ol" : "ul", node.children);
     case "listItem": {
@@ -105,6 +111,7 @@ function renderMarkdownNode(node) {
       return document.createElement("br");
     case "link": {
       const anchor = element("a", node.children);
+      anchor.className = "cm-md-link";
       anchor.href = safeHref(node.url);
       anchor.target = "_blank";
       anchor.rel = "noreferrer";

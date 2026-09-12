@@ -10,6 +10,7 @@ import type {
   PluginError,
   PluginInstallOptions,
   PluginManifest,
+  PluginEntries,
   NormalizedPluginManifest
 } from './types';
 import { VersionUtils } from './utils';
@@ -17,6 +18,10 @@ import {
   normalizePluginManifest,
   validatePluginManifest
 } from '../../packages/plugin-sdk/src/manifest.mjs';
+import {
+  createPluginModuleBlobUrl,
+  normalizePluginModulePath
+} from './module-urls';
 
 /**
  * HTTP插件安装器选项
@@ -64,6 +69,7 @@ export class HttpPluginInstaller {
       // 验证插件
       const validation = await this.validatePlugin(pluginInfo);
       if (!validation.valid) {
+        this.revokePluginEntryUrls(pluginInfo);
         return {
           success: false,
           error: {
@@ -75,10 +81,11 @@ export class HttpPluginInstaller {
         };
       }
 
-      // 检查缓存：如版本一致则复用缓存；如版本变化则更新缓存并返回新版本
+      // 检查缓存：如版本和脚本内容一致则复用缓存；否则更新缓存并返回新包内容
       if (this.options.cache && this.cache.has(pluginInfo.id)) {
         const cached = this.cache.get(pluginInfo.id)!;
-        if (cached.version === pluginInfo.version) {
+        if (this.isSameCachedPlugin(cached, pluginInfo)) {
+          this.revokePluginEntryUrls(pluginInfo);
           console.log(`[HttpPluginInstaller] 使用缓存插件: ${pluginInfo.id}@${cached.version}`);
           return {
             success: true,
@@ -86,8 +93,9 @@ export class HttpPluginInstaller {
             warnings: validation.warnings
           };
         }
-        // 版本不一致：更新缓存并返回新版本
-        console.log(`[HttpPluginInstaller] 检测到新版本，更新缓存: ${pluginInfo.id} ${cached.version} -> ${pluginInfo.version}`);
+        // 版本或包内容不一致：更新缓存并返回新版本
+        console.log(`[HttpPluginInstaller] 检测到插件包变化，更新缓存: ${pluginInfo.id} ${cached.version} -> ${pluginInfo.version}`);
+        this.revokePluginEntryUrls(cached);
         this.cache.set(pluginInfo.id, pluginInfo);
         return {
           success: true,
@@ -289,6 +297,18 @@ export class HttpPluginInstaller {
       const separator = inputUrl.includes('?') ? '&' : '?';
       return `${inputUrl}${separator}${token}`;
     }
+  }
+
+  private pluginScriptSignature(pluginInfo: PluginInfo): string {
+    return JSON.stringify({
+      sourceEntries: pluginInfo.sourceEntries || {},
+      scriptContents: pluginInfo.scriptContents || {}
+    });
+  }
+
+  private isSameCachedPlugin(cached: PluginInfo, incoming: PluginInfo): boolean {
+    return cached.version === incoming.version
+      && this.pluginScriptSignature(cached) === this.pluginScriptSignature(incoming);
   }
 
   /**
@@ -613,18 +633,35 @@ export class HttpPluginInstaller {
       }
     }
 
+    const scriptContents: Record<string, string> = {};
+    for (const [entryPath, entry] of Object.entries(zip.files)) {
+      if ((entry as any)?.dir) continue;
+      let modulePath = '';
+      try {
+        modulePath = normalizePluginModulePath(entryPath);
+      } catch {
+        continue;
+      }
+      if (!/\.(?:mjs|js)$/i.test(modulePath)) continue;
+      const content = await entry.async('string');
+      if (content.length <= 2 * 1024 * 1024) {
+        scriptContents[modulePath] = content;
+      }
+    }
+
     const projectedEntries = { ...contract.entries };
+    const sourceEntries: PluginEntries = {};
+    const moduleUrlCache = new Map<string, string>();
     for (const kind of ['workbench', 'renderer'] as const) {
       const declaredEntry = contract.entries[kind];
       if (!declaredEntry) continue;
-      const relativeEntry = declaredEntry.replace(/^\.\//, '');
-      const zipEntry = zip.file(relativeEntry);
-      if (!zipEntry) {
-        throw new Error(`未找到 ${kind} 入口文件: ${relativeEntry}`);
-      }
-      const code = await zipEntry.async('string');
-      const base64 = btoa(unescape(encodeURIComponent(code)));
-      projectedEntries[kind] = `data:text/javascript;base64,${base64}`;
+      const relativeEntry = normalizePluginModulePath(declaredEntry);
+      sourceEntries[kind] = declaredEntry;
+      projectedEntries[kind] = createPluginModuleBlobUrl({
+        entryPath: relativeEntry,
+        sources: scriptContents,
+        cache: moduleUrlCache
+      });
     }
     const projectedContract: NormalizedPluginManifest = {
       ...contract,
@@ -660,6 +697,9 @@ export class HttpPluginInstaller {
       skillContents: Object.keys(skillContents).length ? skillContents : undefined,
       skillFiles: Object.keys(skillFiles).length ? skillFiles : undefined,
       styleContents: Object.keys(styleContents).length ? styleContents : undefined,
+      scriptContents: Object.keys(scriptContents).length ? scriptContents : undefined,
+      sourceEntries: Object.keys(sourceEntries).length ? sourceEntries : undefined,
+      scriptBlobUrls: Object.fromEntries(moduleUrlCache),
       contract: projectedContract
     };
 
@@ -728,6 +768,9 @@ export class HttpPluginInstaller {
    * 清除缓存
    */
   clearCache(): void {
+    for (const pluginInfo of this.cache.values()) {
+      this.revokePluginEntryUrls(pluginInfo);
+    }
     this.cache.clear();
     console.log(`[HttpPluginInstaller] 缓存已清除`);
   }
@@ -736,8 +779,30 @@ export class HttpPluginInstaller {
    * 从缓存中移除插件
    */
   removeFromCache(pluginId: string): void {
+    const cached = this.cache.get(pluginId);
+    if (cached) this.revokePluginEntryUrls(cached);
     this.cache.delete(pluginId);
     console.log(`[HttpPluginInstaller] 插件已从缓存移除: ${pluginId}`);
+  }
+
+  private revokePluginEntryUrls(pluginInfo: PluginInfo): void {
+    const urls = new Set<string>();
+    for (const url of Object.values(pluginInfo.scriptBlobUrls || {})) {
+      if (typeof url === 'string' && url.startsWith('blob:')) urls.add(url);
+    }
+    const contract = pluginInfo.contract || normalizePluginManifest(pluginInfo.manifest);
+    for (const entry of new Set([
+      contract.entries.workbench,
+      contract.entries.renderer
+    ])) {
+      if (entry?.startsWith('blob:')) urls.add(entry);
+    }
+    for (const url of urls) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+    }
+    pluginInfo.scriptBlobUrls = undefined;
   }
 
 
@@ -765,6 +830,7 @@ export class HttpPluginInstaller {
       const pluginInfo = await this.processPluginData(buf, sourceUrl);
       const validation = await this.validatePlugin(pluginInfo);
       if (!validation.valid) {
+        this.revokePluginEntryUrls(pluginInfo);
         return {
           success: false,
           error: {

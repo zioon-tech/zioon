@@ -358,6 +358,7 @@ export class PluginLoader {
         const extensionModules = (import.meta as any).glob([
           '/extensions/**/*.{js,ts,jsx,tsx}',
           '!/extensions/dev.identity/**/*.{js,ts,jsx,tsx}',
+          '!/extensions/dev.byteintl-model/**/*.{js,ts,jsx,tsx}',
           '!/extensions/**/runtime.{js,ts,jsx,tsx}',
           '!/extensions/**/runtime/**/*.{js,ts,jsx,tsx}',
           '!/extensions/**/tools-entry.{js,ts,jsx,tsx}',
@@ -387,6 +388,7 @@ export class PluginLoader {
         const extensionModules = (import.meta as any).glob([
           '/extensions/**/*.{js,ts,jsx,tsx}',
           '!/extensions/dev.identity/**/*.{js,ts,jsx,tsx}',
+          '!/extensions/dev.byteintl-model/**/*.{js,ts,jsx,tsx}',
           '!/extensions/**/runtime.{js,ts,jsx,tsx}',
           '!/extensions/**/runtime/**/*.{js,ts,jsx,tsx}',
           '!/extensions/**/tools-entry.{js,ts,jsx,tsx}',

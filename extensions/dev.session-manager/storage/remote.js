@@ -5,6 +5,11 @@ import {
 import {
   subscribeEventSource
 } from "../../../packages/runtime-client/src/sse.mjs";
+import {
+  requestWorkbenchProtocolUpgrade
+} from "../../../src/runtime/workbench-pwa-upgrade.ts";
+
+const WORKBENCH_STATE_PROTOCOL = "5";
 
 function baseUrl() {
   return readWorkbenchRuntimeConfig({
@@ -21,10 +26,20 @@ async function request(path, options = {}) {
     const response = await fetch(`${baseUrl()}${path}`, {
       ...fetchOptions,
       signal: controller.signal,
-      headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) }
+      headers: {
+        "Content-Type": "application/json",
+        "X-Zion-Workbench-Protocol": WORKBENCH_STATE_PROTOCOL,
+        ...(fetchOptions.headers || {})
+      }
     });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
+      if (response.status === 426) {
+        void requestWorkbenchProtocolUpgrade(
+          response.headers.get("x-zion-workbench-protocol")
+          || String(body?.expectedProtocol || "")
+        );
+      }
       const error = new Error(
         body?.error || body?.detail || `Runtime Workbench state HTTP ${response.status}`
       );
@@ -42,6 +57,16 @@ async function request(path, options = {}) {
 
 export async function readRemoteSnapshot() {
   return request("/v1/workbench-state/snapshot", { method: "GET", timeoutMs: 30000 });
+}
+
+export async function readRemoteCatalog() {
+  try {
+    return await request("/v1/workbench-state/catalog", { method: "GET" });
+  } catch (error) {
+    // Older Runtime hosts keep the complete snapshot contract.
+    if (error?.status !== 404) throw error;
+    return readRemoteSnapshot();
+  }
 }
 
 export async function readRemoteStatus() {
@@ -102,10 +127,24 @@ export async function readRemoteSession(sessionId) {
   });
 }
 
+export async function updateRemoteRuntimeSession(sessionId, patch) {
+  return request(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch || {})
+  });
+}
+
 export async function readRemoteActiveRun(sessionId) {
   return request(`/v1/sessions/${encodeURIComponent(sessionId)}/active-run`, {
     method: "GET"
   });
+}
+
+export async function readRemoteRunEvent(runId, sequence) {
+  return request(
+    `/v1/runs/${encodeURIComponent(runId)}/events/${Number(sequence)}`,
+    { method: "GET" }
+  );
 }
 
 export async function writeRemoteSnapshot(snapshot, expectedRevision = null, {
@@ -125,18 +164,32 @@ export async function writeRemoteSession(sessionId, payload, options = {}) {
   const normalized = typeof options === "string"
     ? { expectedRevision: options }
     : (options || {});
-  return request(`/v1/workbench-state/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "PUT",
-    body: JSON.stringify({
-      ...payload,
-      expected_revision: normalized.expectedRevision || null,
-      operation_id: normalized.operationId || null,
-      expected_session_revision: Number.isFinite(normalized.expectedSessionRevision)
-        ? normalized.expectedSessionRevision
-        : null,
-      source_client_id: normalized.sourceClientId || null
-    })
+  const path = `/v1/workbench-state/sessions/${encodeURIComponent(sessionId)}`;
+  const body = (expectedSessionRevision = normalized.expectedSessionRevision) => ({
+    ...payload,
+    expected_revision: normalized.expectedRevision || null,
+    operation_id: normalized.operationId || null,
+    expected_session_revision: Number.isFinite(expectedSessionRevision)
+      ? expectedSessionRevision
+      : null,
+    source_client_id: normalized.sourceClientId || null
   });
+  const result = await request(path, {
+    method: "PUT",
+    body: JSON.stringify(body())
+  });
+  const retryRevision = Number(result?.session_revision);
+  if (
+    result?.conflict
+    && normalized.retryOnConflict !== false
+    && Number.isFinite(retryRevision)
+  ) {
+    return request(path, {
+      method: "PUT",
+      body: JSON.stringify(body(retryRevision))
+    });
+  }
+  return result;
 }
 
 export async function writeRemoteTree(tree, index, expectedRevision = null, {
@@ -157,17 +210,31 @@ export async function deleteRemoteSession(sessionId, options = {}) {
   const normalized = typeof options === "string"
     ? { expectedRevision: options }
     : (options || {});
-  return request(`/v1/workbench-state/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "DELETE",
-    body: JSON.stringify({
-      expected_revision: normalized.expectedRevision || null,
-      operation_id: normalized.operationId || null,
-      expected_session_revision: Number.isFinite(normalized.expectedSessionRevision)
-        ? normalized.expectedSessionRevision
-        : null,
-      source_client_id: normalized.sourceClientId || null
-    })
+  const path = `/v1/workbench-state/sessions/${encodeURIComponent(sessionId)}`;
+  const body = (expectedSessionRevision = normalized.expectedSessionRevision) => ({
+    expected_revision: normalized.expectedRevision || null,
+    operation_id: normalized.operationId || null,
+    expected_session_revision: Number.isFinite(expectedSessionRevision)
+      ? expectedSessionRevision
+      : null,
+    source_client_id: normalized.sourceClientId || null
   });
+  const result = await request(path, {
+    method: "DELETE",
+    body: JSON.stringify(body())
+  });
+  const retryRevision = Number(result?.session_revision);
+  if (
+    result?.conflict
+    && normalized.retryOnConflict !== false
+    && Number.isFinite(retryRevision)
+  ) {
+    return request(path, {
+      method: "DELETE",
+      body: JSON.stringify(body(retryRevision))
+    });
+  }
+  return result;
 }
 
 export async function readRemoteSessionRevisions(sessionId) {

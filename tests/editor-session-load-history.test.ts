@@ -63,4 +63,39 @@ describe("EditorCore session-load history", () => {
       cleanup();
     }
   });
+
+  it("rejects late session snapshots after collaboration owns the document", () => {
+    const { core, cleanup } = createEditor("current collaborative text");
+    try {
+      core.view.dom.dataset.zionCollaborationBound = "true";
+
+      core.setValue("stale HTTP snapshot", { source: "session-load" });
+      core.setValue("stale seed", { source: "session-seed" });
+
+      expect(core.getValue()).toBe("current collaborative text");
+      core.setValue("hydrated Yjs text", {
+        source: "collaboration-hydration"
+      });
+      expect(core.getValue()).toBe("hydrated Yjs text");
+      expect(undoDepth(core.view.state)).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("allows the synchronized Yjs document to hydrate a bound editor", () => {
+    const { core, cleanup } = createEditor("stale local text");
+    try {
+      core.view.dom.dataset.zionCollaborationBound = "true";
+
+      core.setValue("authoritative Yjs text", {
+        source: "collaboration-hydration"
+      });
+
+      expect(core.getValue()).toBe("authoritative Yjs text");
+      expect(undoDepth(core.view.state)).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
 });

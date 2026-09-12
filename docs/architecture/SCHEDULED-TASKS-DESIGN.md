@@ -813,6 +813,8 @@ interface ScheduledTask {
   revision: number;
   executionMode: "durable" | "service-backed" | "local-only";
   prompt: string;
+  interactionProfileId: string; // 默认 scheduled.default
+  modelProfileId?: string;      // 可选；覆盖 interaction profile 的默认模型
   schedule: {
     type: "cron" | "interval" | "once";
     expression: string;
@@ -846,6 +848,11 @@ interface CapabilityPolicy {
   maxToolCalls: number;
 }
 ```
+
+Agent 任务未设置 `modelProfileId` 时继承 `interactionProfileId` 的模型。显式设置时，
+Runtime 在创建或更新任务时校验模型 Profile 是否存在且凭据可用；命令任务忽略并清空
+该字段。模型覆盖只影响模型路由，不改变 interaction profile 的权限、上下文提供者或
+其他执行策略。
 
 持久任务的 `overlapPolicy` 默认 `forbid`，misfire 默认 `skip`；`local-only` 固定为
 `skip + forbid + maxAttempts=1`。DST 前后、时钟回拨、服务重启和 owner 切换都必须由

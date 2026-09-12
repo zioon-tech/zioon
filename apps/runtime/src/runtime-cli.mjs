@@ -15,8 +15,20 @@ import {
   DEVICE_PROTOCOL_VERSION
 } from "../../../packages/node-protocol/src/index.mjs";
 import {
-  DeviceConnector
+  DeviceConnector,
+  exchangeDevicePairing
 } from "../../device-connector/src/device-connector.mjs";
+import {
+  createDeviceCredentialStore,
+  deviceCredentialKey
+} from "../../device-connector/src/device-credential-store.mjs";
+import {
+  defaultDeviceProjectId,
+  defaultDeviceResourceId,
+  ensureDeviceTerminalSessions,
+  normalizeLocalToolsUrl,
+  resolveDeviceWorkspaceRoot
+} from "../../device-connector/src/device-setup.mjs";
 import { createCliCredentialStore } from "./cli-credential-store.mjs";
 import {
   loginWithOAuthDeviceFlow,
@@ -79,6 +91,9 @@ Options:
   --resource-id <id>          Device workspace resource id
   --workspace-root <path>     Device workspace root
   --terminal-sessions <ids>   Device terminal Session ids
+  --pairing-code <code>       One-time Resource Device pairing code
+  --pairing-id <id>           QR pairing identifier
+  --pairing-secret <secret>   QR pairing secret
   --help                      Show this help
 `;
 
@@ -104,7 +119,10 @@ const VALUE_OPTIONS = new Set([
   "--project-id",
   "--resource-id",
   "--workspace-root",
-  "--terminal-sessions"
+  "--terminal-sessions",
+  "--pairing-code",
+  "--pairing-id",
+  "--pairing-secret"
 ]);
 const TERMINAL_RUN_STATUSES = new Set([
   "completed",
@@ -274,29 +292,38 @@ export async function createCliDeviceHost({
   runtimeUrl,
   environment = process.env,
   output = process.stdout,
+  fetchImpl = globalThis.fetch,
   toolHost = null,
+  deviceCredentialStore = null,
   createConnector = (options) => new DeviceConnector(options)
 } = {}) {
-  const token = String(environment.ZION_DEVICE_TOKEN || "").trim();
-  if (!token) throw new Error("ZION_DEVICE_TOKEN is required");
   const machineName = hostname();
+  const workspaceRoot = resolveDeviceWorkspaceRoot({
+    configured: readArg(
+      argv,
+      "--workspace-root",
+      environment.ZION_NODE_WORKSPACE_ROOT || ""
+    ),
+    initialCwd: environment.INIT_CWD || "",
+    cwd: process.cwd()
+  });
   const projectId = readArg(
     argv,
     "--project",
-    readArg(argv, "--project-id", environment.ZION_NODE_PROJECT_ID || "")
+    readArg(
+      argv,
+      "--project-id",
+      environment.ZION_NODE_PROJECT_ID
+        || defaultDeviceProjectId(workspaceRoot)
+    )
   );
   const resourceId = readArg(
     argv,
     "--resource-id",
     environment.ZION_NODE_RESOURCE_ID
-      || (projectId ? `workspace:${projectId}` : "")
+      || defaultDeviceResourceId(projectId)
   );
-  const workspaceRoot = readArg(
-    argv,
-    "--workspace-root",
-    environment.ZION_NODE_WORKSPACE_ROOT || ""
-  );
-  const terminalSessionIds = readListArgs(argv, "--terminal-sessions");
+  let terminalSessionIds = readListArgs(argv, "--terminal-sessions");
   if (!terminalSessionIds.length) {
     terminalSessionIds.push(...readListArgs(argv, "--terminal-session"));
   }
@@ -305,17 +332,17 @@ export async function createCliDeviceHost({
       environment.ZION_NODE_TERMINAL_SESSION_IDS || ""
     ).split(",").map((value) => value.trim()).filter(Boolean));
   }
-  if (!projectId || !resourceId || !workspaceRoot || !terminalSessionIds.length) {
-    throw new Error(
-      "device connect requires project, resource, workspace root, "
-      + "and at least one terminal Session"
-    );
-  }
-  const localToolsUrl = readArg(
+  const localToolsUrl = normalizeLocalToolsUrl(readArg(
     argv,
     "--local-tools-url",
     environment.ZION_LOCAL_TOOLS_URL || "http://127.0.0.1:8765"
-  );
+  ));
+  terminalSessionIds = await ensureDeviceTerminalSessions({
+    localToolsUrl,
+    workspaceRoot,
+    sessionIds: terminalSessionIds,
+    fetchImpl
+  });
   const host = toolHost || new LocalToolsDeviceHost({
     baseUrl: localToolsUrl,
     resourceBindings: {
@@ -331,6 +358,61 @@ export async function createCliDeviceHost({
     "--node-id",
     environment.ZION_NODE_ID || deviceNodeId(machineName)
   );
+  const credentialStore = deviceCredentialStore || createDeviceCredentialStore();
+  const credentialKey = deviceCredentialKey(runtimeUrl, nodeId);
+  let token = String(environment.ZION_DEVICE_TOKEN || "").trim();
+  if (!token) {
+    const stored = await credentialStore.get(credentialKey);
+    if (
+      stored?.credential
+      && Number(stored.expiresAt || 0) > Date.now()
+    ) {
+      token = String(stored.credential);
+    }
+  }
+  if (!token) {
+    const pairingId = readArg(
+      argv,
+      "--pairing-id",
+      environment.ZION_DEVICE_PAIRING_ID || ""
+    );
+    const pairingSecret = readArg(
+      argv,
+      "--pairing-secret",
+      environment.ZION_DEVICE_PAIRING_SECRET || ""
+    );
+    const pairingCode = readArg(
+      argv,
+      "--pairing-code",
+      environment.ZION_DEVICE_PAIRING_CODE || ""
+    );
+    if ((!pairingId || !pairingSecret) && !pairingCode) {
+      throw new Error(
+        "Device credential is unavailable; provide ZION_DEVICE_TOKEN or "
+        + "--pairing-code"
+      );
+    }
+    const paired = await exchangeDevicePairing({
+      runtimeUrl,
+      pairingId,
+      secret: pairingSecret,
+      userCode: pairingCode,
+      device: {
+        deviceId: nodeId,
+        label: machineName,
+        platform: process.platform
+      },
+      fetchImpl
+    });
+    token = paired.credential;
+    await credentialStore.set(credentialKey, {
+      credential: token,
+      credentialId: paired.credentialId,
+      expiresAt: paired.expiresAt,
+      deviceId: nodeId,
+      runtimeUrl
+    });
+  }
   const connector = createConnector({
     runtimeUrl,
     token,
@@ -754,7 +836,8 @@ export async function runRuntimeCli({
       argv: args,
       runtimeUrl: baseUrl,
       environment,
-      output
+      output,
+      fetchImpl
     });
     if (jsonl) {
       writeRecord(output, {

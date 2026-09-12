@@ -189,6 +189,33 @@ describe("HttpRuntimeClient", () => {
     });
   });
 
+  it("applies shared authentication headers to every transport request", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      activeProfileId: null,
+      profiles: []
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }));
+    const client = createHttpRuntimeClient({
+      baseUrl: "https://runtime.test",
+      fetchImpl,
+      headers: { authorization: "Bearer paired-client" },
+      credentials: "include"
+    });
+
+    await client.getModels();
+
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(init).toMatchObject({
+      credentials: "include",
+      headers: {
+        accept: "application/json",
+        authorization: "Bearer paired-client"
+      }
+    });
+  });
+
   it("adapts a remote Run to the existing RunHandle contract", async () => {
     const server = createHarness({
       id: "echo",

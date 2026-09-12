@@ -5,6 +5,9 @@ import {
   getPluginStatus,
   renderPluginEditor
 } from "./plugin-details.js";
+import {
+  runtimeDeviceServiceBaseUrl
+} from "../../src/runtime/workbench-runtime-config.ts";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8767";
 
@@ -810,6 +813,8 @@ function mountPluginsSidebarViewInto(container) {
   };
 
   const readServiceUrl = () => {
+    const runtimeBase = runtimeDeviceServiceBaseUrl("plugin-service");
+    if (runtimeBase) return runtimeBase;
     try {
       return localStorage.getItem("zion.pluginServiceUrl") || DEFAULT_BASE_URL;
     } catch {
@@ -818,6 +823,13 @@ function mountPluginsSidebarViewInto(container) {
   };
 
   const setServiceUrl = (value) => {
+    const runtimeBase = runtimeDeviceServiceBaseUrl("plugin-service");
+    if (runtimeBase) {
+      try {
+        pluginInstaller?.setBaseUrl?.(runtimeBase);
+      } catch {}
+      return runtimeBase;
+    }
     const v = String(value || "").trim();
     const next = v || DEFAULT_BASE_URL;
     try {
@@ -1013,6 +1025,14 @@ function mountPluginsSidebarViewInto(container) {
     && Object.keys(getPersistedDevSessions()).length === 0;
 
   const connectWebSocket = (serviceUrl, devId, sourceDir) => {
+    if (serviceUrl.includes("/v1/device-services/")) {
+      devStatus.textContent = t(
+        "msg.devStartedStatus",
+        "开发会话已启动：{id}",
+        { id: devId, plugin: "" }
+      );
+      return null;
+    }
     const wsUrl = serviceUrl.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
     const ws = new WebSocket(wsUrl);
     ws.onopen = () => {

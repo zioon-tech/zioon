@@ -149,6 +149,10 @@
   gap: 3px;
 }
 
+.zion-terminal-manager-field[hidden] {
+  display: none;
+}
+
 .zion-terminal-manager-field > span {
   color: color-mix(in srgb, var(--fg) 54%, transparent);
   font-size: 10px;
@@ -165,6 +169,7 @@
   color: color-mix(in srgb, var(--fg) 64%, transparent);
   font-size: 10px;
   line-height: 16px;
+  overflow-wrap: anywhere;
 }
 
 .zion-terminal-manager-message[hidden] {

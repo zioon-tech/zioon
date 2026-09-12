@@ -95,11 +95,13 @@ function mergeAnnotationList(stored: any, live: any): any[] | undefined {
   return [...byId.values(), ...anonymous];
 }
 
-function unionStringList(a: any, b: any): string[] | undefined {
-  const values = [
-    ...(Array.isArray(a) ? a : []),
-    ...(Array.isArray(b) ? b : [])
-  ].map((id) => String(id || "")).filter(Boolean);
+function mergeStringList(a: any, b: any, hasLiveValue: boolean): string[] | undefined {
+  const values = (hasLiveValue && Array.isArray(b)
+    ? b
+    : Array.isArray(a)
+      ? a
+      : []
+  ).map((id) => String(id || "")).filter(Boolean);
   return values.length ? Array.from(new Set(values)) : undefined;
 }
 
@@ -111,10 +113,20 @@ function mergeAnnotations(stored: SessionAnnotations | null | undefined, live: S
   const thinking = mergeAnnotationList(a.thinking, b.thinking);
   if (tools !== undefined) next.tools = tools;
   if (thinking !== undefined) next.thinking = thinking;
-  const deletedToolIds = unionStringList(a.deletedToolIds, b.deletedToolIds);
-  const deletedThinkingIds = unionStringList(a.deletedThinkingIds, b.deletedThinkingIds);
+  const deletedToolIds = mergeStringList(
+    a.deletedToolIds,
+    b.deletedToolIds,
+    Object.prototype.hasOwnProperty.call(b, "deletedToolIds")
+  );
+  const deletedThinkingIds = mergeStringList(
+    a.deletedThinkingIds,
+    b.deletedThinkingIds,
+    Object.prototype.hasOwnProperty.call(b, "deletedThinkingIds")
+  );
   if (deletedToolIds) next.deletedToolIds = deletedToolIds;
+  else delete next.deletedToolIds;
   if (deletedThinkingIds) next.deletedThinkingIds = deletedThinkingIds;
+  else delete next.deletedThinkingIds;
   next.toolActions = { ...(a.toolActions || {}), ...(b.toolActions || {}) };
   return next;
 }
@@ -610,14 +622,16 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
             ...(payload?.assistantBlockId
               ? { assistantBlockId: payload.assistantBlockId }
               : (nextList[idx]?.assistantBlockId ? { assistantBlockId: nextList[idx].assistantBlockId } : {})),
-            text: prevText + token
+            text: payload?.replay && typeof payload?.reasoningText === "string"
+              ? payload.reasoningText : prevText + token
           };
         } else {
           nextList.push({
             id,
             runId,
             segmentKey,
-            text: token,
+            text: payload?.replay && typeof payload?.reasoningText === "string"
+              ? payload.reasoningText : token,
             expanded: false,
             ...(payload?.assistantBlockId ? { assistantBlockId: payload.assistantBlockId } : {})
           });

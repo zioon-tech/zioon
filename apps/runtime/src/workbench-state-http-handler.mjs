@@ -4,15 +4,32 @@ import { setTimeout as delay } from "node:timers/promises";
 const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const DEFAULT_EVENT_POLL_INTERVAL_MS = 100;
 const DEFAULT_EVENT_HEARTBEAT_MS = 15_000;
+export const WORKBENCH_STATE_PROTOCOL = "5";
 
-function json(response, status, value) {
+function json(response, status, value, headers = {}) {
   const body = JSON.stringify(value);
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
-    "cache-control": "no-store"
+    "cache-control": "no-store",
+    ...headers
   });
   response.end(body);
+}
+
+function requireWorkbenchStateProtocol(request, response) {
+  const received = String(
+    request.headers?.["x-zion-workbench-protocol"] || ""
+  );
+  if (received === WORKBENCH_STATE_PROTOCOL) return true;
+  json(response, 426, {
+    error: "Workbench state protocol upgrade required",
+    expectedProtocol: WORKBENCH_STATE_PROTOCOL
+  }, {
+    "clear-site-data": "\"executionContexts\"",
+    "x-zion-workbench-protocol": WORKBENCH_STATE_PROTOCOL
+  });
+  return false;
 }
 
 async function readJson(request) {
@@ -52,6 +69,7 @@ function matchKVPath(pathname) {
 
 export function createWorkbenchStateHttpHandler({
   store,
+  reauthorize = null,
   eventPollIntervalMs = DEFAULT_EVENT_POLL_INTERVAL_MS,
   eventHeartbeatMs = DEFAULT_EVENT_HEARTBEAT_MS
 }) {
@@ -65,6 +83,10 @@ export function createWorkbenchStateHttpHandler({
 
     if (request.method === "GET" && path === "/v1/workbench-state/status") {
       json(response, 200, store.readStatus());
+      return true;
+    }
+    if (request.method === "GET" && path === "/v1/workbench-state/catalog") {
+      json(response, 200, store.readCatalog());
       return true;
     }
     if (request.method === "GET" && path === "/v1/workbench-state/snapshot") {
@@ -117,6 +139,7 @@ export function createWorkbenchStateHttpHandler({
       const sessionId = String(url.searchParams.get("session_id") || "");
       let lastWriteAt = Date.now();
       while (!closed) {
+        if (reauthorize) reauthorize(request.zionPrincipal);
         const feed = store.listEvents(cursor, {
           limit: 500,
           sessionId
@@ -147,6 +170,7 @@ export function createWorkbenchStateHttpHandler({
       return true;
     }
     if (request.method === "PUT" && path === "/v1/workbench-state/snapshot") {
+      if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
       json(response, 200, store.writeSnapshot(
         body.snapshot,
@@ -156,6 +180,7 @@ export function createWorkbenchStateHttpHandler({
       return true;
     }
     if (request.method === "PUT" && path === "/v1/workbench-state/tree") {
+      if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
       json(response, 200, store.writeTree(
         body.tree,
@@ -169,6 +194,7 @@ export function createWorkbenchStateHttpHandler({
       request.method === "POST"
       && path === "/v1/workbench-state/migrate-browser-storage"
     ) {
+      if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
       json(response, 200, store.migrateBrowserStorage(
         body.source_id,
@@ -206,6 +232,7 @@ export function createWorkbenchStateHttpHandler({
     }
     const restoreSessionId = matchSessionPath(path, "/restore");
     if (restoreSessionId != null && request.method === "POST") {
+      if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
       json(response, 200, store.restoreSessionRevision(
         restoreSessionId,
@@ -226,10 +253,12 @@ export function createWorkbenchStateHttpHandler({
       return true;
     }
     if (sessionId != null && request.method === "PUT") {
+      if (!requireWorkbenchStateProtocol(request, response)) return true;
       json(response, 200, store.updateSession(sessionId, await readJson(request)));
       return true;
     }
     if (sessionId != null && request.method === "DELETE") {
+      if (!requireWorkbenchStateProtocol(request, response)) return true;
       json(response, 200, store.deleteSession(sessionId, await readJson(request)));
       return true;
     }

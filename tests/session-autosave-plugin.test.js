@@ -93,6 +93,42 @@ describe("session autosave plugin", () => {
     }
   });
 
+  it("does not save editors that own their persistence", () => {
+    const saved = [];
+    const host = document.createElement("div");
+    host.dataset.panelId = "comments:thread-1";
+    document.body.appendChild(host);
+    const plugin = createSessionAutoSavePlugin({
+      zion: { state: { get: () => null } },
+      getCurrentId: () => "comment:thread-1",
+      loadMeta: (id) => ({ id, title: id, createdAt: 1, updatedAt: 1, size: 0, hash: "" }),
+      saveDoc(id, text) {
+        saved.push({ id, text });
+      },
+      saveMeta: () => {},
+      hashString: (text) => `hash:${text}`,
+      now: () => 2,
+      getAnnotationsState: () => null,
+      rebuildIndexFromTree: () => {},
+      upsertIndexEntry: () => {},
+      postSaved: () => {},
+      onSaved: () => {}
+    });
+    const core = new EditorCore(host, "before", "comments:thread-1");
+    core.view.dom.dataset.zionSessionPersistence = "skip";
+    core.addExternalExtension(plugin.extension);
+
+    try {
+      core.setValue("after");
+
+      expect(plugin.flush("comment:thread-1")).toBe(false);
+      expect(saved).toEqual([]);
+    } finally {
+      core.view.destroy();
+      document.body.innerHTML = "";
+    }
+  });
+
   it("saves ordinary setValue replacements from editor features", () => {
     const saved = [];
     const host = document.createElement("div");

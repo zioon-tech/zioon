@@ -62,7 +62,18 @@ beforeEach(async () => {
     sessionEventStore: workbenchState,
     serviceHttpHandlers: [
       createWorkbenchStateHttpHandler({ store: workbenchState }),
-      createSchedulerHttpHandler({ scheduler }),
+      createSchedulerHttpHandler({
+        scheduler,
+        availableModels: () => [{
+          id: "workbench.deepseek.deepseek-v4-flash",
+          credentialRequired: true,
+          credentialConfigured: true
+        }, {
+          id: "workbench.deepseek.unconfigured",
+          credentialRequired: true,
+          credentialConfigured: false
+        }]
+      }),
       createProjectAutomationHttpHandler({ service: projectAutomationService })
     ]
   });
@@ -93,6 +104,7 @@ async function jsonRequest(path, options = {}) {
     ...options,
     headers: {
       "content-type": "application/json",
+      "x-zion-workbench-protocol": "5",
       ...(options.headers || {})
     }
   });
@@ -101,6 +113,34 @@ async function jsonRequest(path, options = {}) {
 }
 
 describe("Runtime control plane HTTP", () => {
+  it("rejects document writes from an outdated Workbench protocol", async () => {
+    resource.workbenchState.createSession({
+      id: "protected-session",
+      title: "Protected",
+      text: "user complete\nassistant complete"
+    });
+
+    const response = await fetch(
+      `${resource.url}/v1/workbench-state/sessions/protected-session`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "assistant partial" })
+      }
+    );
+
+    expect(response.status).toBe(426);
+    expect(response.headers.get("x-zion-workbench-protocol")).toBe("5");
+    expect(response.headers.get("clear-site-data")).toBe(
+      "\"executionContexts\""
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      expectedProtocol: "5"
+    });
+    expect(resource.workbenchState.readSession("protected-session").text)
+      .toBe("user complete\nassistant complete");
+  });
+
   it("owns durable Workbench state", async () => {
     const written = await jsonRequest("/v1/workbench-state/snapshot", {
       method: "PUT",
@@ -276,12 +316,48 @@ describe("Runtime control plane HTTP", () => {
     );
   });
 
+  it("deduplicates Session message commands by clientRequestId", async () => {
+    const session = await jsonRequest("/v1/sessions", {
+      method: "POST",
+      body: JSON.stringify({ title: "Mobile message" })
+    });
+    const path = `/v1/sessions/${session.body.session.id}/messages`;
+    const first = await jsonRequest(path, {
+      method: "POST",
+      body: JSON.stringify({
+        content: "hello from mobile",
+        clientRequestId: "mobile-request-1"
+      })
+    });
+    expect(first.response.status).toBe(202);
+    expect(first.body).toMatchObject({
+      clientRequestId: "mobile-request-1",
+      status: "accepted"
+    });
+
+    const replay = await jsonRequest(path, {
+      method: "POST",
+      body: JSON.stringify({
+        content: "hello from mobile",
+        clientRequestId: "mobile-request-1"
+      })
+    });
+    expect(replay.response.status).toBe(202);
+    expect(replay.body).toMatchObject({
+      runId: first.body.runId,
+      message: { id: first.body.message.id },
+      clientRequestId: "mobile-request-1",
+      replayed: true
+    });
+  });
+
   it("owns Scheduler task and Run state", async () => {
     const created = await jsonRequest("/v1/scheduler/tasks", {
       method: "POST",
       body: JSON.stringify({
         title: "Runtime task",
         prompt: "Run independently",
+        modelProfileId: "workbench.deepseek.deepseek-v4-flash",
         schedule: {
           kind: "interval",
           intervalMinutes: 10,
@@ -297,6 +373,8 @@ describe("Runtime control plane HTTP", () => {
     expect(created.response.status).toBe(201);
     expect(created.body).toMatchObject({
       executionMode: "service-backed",
+      interactionProfileId: "scheduled.default",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
       revision: 1
     });
 
@@ -314,11 +392,56 @@ describe("Runtime control plane HTTP", () => {
       status: "pending"
     });
 
+    resource.scheduler.claim({
+      workerId: "detail-test",
+      workerKind: "runtime",
+      availableTools: []
+    });
+    for (let index = 0; index < 60; index++) {
+      resource.scheduler.appendEvent(queued.body.id, "detail-test", {
+        type: "tool.completed",
+        sequence: index + 1,
+        data: { name: `tool-${index}` }
+      });
+    }
+    const limited = await jsonRequest(
+      `/v1/scheduler/runs/${queued.body.id}?event_limit=10`
+    );
+    expect(limited.body).toMatchObject({
+      eventCount: 60,
+      eventsTruncated: true
+    });
+    expect(limited.body.events).toHaveLength(10);
+
     const claim = await jsonRequest("/v1/scheduler/runs/claim", {
       method: "POST",
       body: "{}"
     });
     expect(claim.response.status).toBe(404);
+  });
+
+  it("rejects Scheduler task model profiles without Runtime credentials", async () => {
+    const rejected = await jsonRequest("/v1/scheduler/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Unavailable model task",
+        prompt: "Run independently",
+        modelProfileId: "workbench.deepseek.unconfigured",
+        schedule: {
+          kind: "interval",
+          intervalMinutes: 10,
+          timeZone: "UTC"
+        },
+        capability: {
+          preset: "read-only",
+          allowedTools: []
+        },
+        enabled: false
+      })
+    });
+
+    expect(rejected.response.status).toBe(422);
+    expect(rejected.body.error).toContain("model credential is not configured");
   });
 
   it("advertises all control-plane CORS methods", async () => {

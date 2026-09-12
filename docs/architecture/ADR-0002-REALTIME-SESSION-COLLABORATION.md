@@ -143,7 +143,8 @@ annotation 自行补写文档。这样多 View 和多 Workbench 都只渲染同�
 
 协同 WebSocket 和交互 Run 请求携带相同的 Workbench realtime protocol version。
 Runtime 拒绝旧协议客户端继续连接或发起 Run，防止升级前页面把旧 CRDT/终态逻辑
-重新写回权威文档。
+重新写回权威文档。当前协同协议为 v4；v4 客户端会拒绝将晚到的 HTTP Session
+snapshot 或 seed 通过已绑定的 CodeMirror/Yjs 文档重新写回 Runtime。
 
 ### Canonical Transcript
 
@@ -224,9 +225,13 @@ WebSocket Provider 和服务端生态更直接。
 - Hocuspocus 更新在安静窗口后只发布一个 `document.checkpointed`；
 - 自动测试覆盖多客户端并发编辑、断线重连、Runtime 重启恢复和 SQLite 收敛。
 
-阶段 5 和阶段 6 的结构化 `annotations`/`blocks` Yjs Map 尚未交付。当前卡片使用
-带稳定 ID 的文本 marker、单 writer 和 observer 等待策略；公网 Relay、Mobile
-后台推送及远程认证仍是后续工作。当前 WebSocket 仅允许 loopback origin。
+阶段 5 已按
+[ADR-0003](./ADR-0003-REMOTE-ACCESS-AND-DEVICE-PAIRING.md)
+开始交付 Access foundation：一次性配对、每设备 credential、设备吊销、同源
+Workbench Cookie 会话以及 Resource credential 到 Node 的绑定已经进入实现。
+公网 durable Relay、Mobile 后台推送、设备持钥 proof、远程 Approval，以及阶段 6
+的结构化 `annotations`/`blocks` Yjs Map 仍是后续工作。未启用 Access Control 时，
+WebSocket 继续只允许 loopback origin。
 
 ## 不采用
 

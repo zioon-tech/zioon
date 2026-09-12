@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require(["node", "sqlite"].join(":"));
+const SESSION_MESSAGE_COMMAND_STALE_MS = 15 * 60_000;
 
 function encode(value) {
   return JSON.stringify(value);
@@ -18,6 +19,7 @@ export class SqliteRunStore {
     this.path = path;
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
+    this.eventListeners = new Set();
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = FULL;
@@ -92,6 +94,17 @@ export class SqliteRunStore {
         FOREIGN KEY (run_id) REFERENCES runtime_runs(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS runtime_session_message_commands (
+        session_id TEXT NOT NULL,
+        client_request_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        response_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, client_request_id),
+        FOREIGN KEY (session_id) REFERENCES runtime_sessions(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS runtime_tool_invocation_receipts (
         invocation_id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
@@ -137,6 +150,8 @@ export class SqliteRunStore {
         ON runtime_session_messages(session_id, created_at);
       CREATE INDEX IF NOT EXISTS runtime_session_seed_created
         ON runtime_session_seed_transcript(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS runtime_session_message_commands_updated
+        ON runtime_session_message_commands(updated_at);
       CREATE INDEX IF NOT EXISTS runtime_tool_receipts_run
         ON runtime_tool_invocation_receipts(run_id, tool_name, completed_at);
       CREATE INDEX IF NOT EXISTS runtime_artifacts_run
@@ -213,10 +228,25 @@ export class SqliteRunStore {
         WHERE id = ?
       `).run(encode(next), next.status, next.updatedAt, event.runId);
       this.db.exec("COMMIT");
+      for (const listener of this.eventListeners) {
+        try {
+          Promise.resolve(listener(event)).catch(() => {});
+        } catch {}
+      }
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  subscribeEvents(listener) {
+    if (typeof listener !== "function") {
+      throw new Error("Runtime event listener must be a function");
+    }
+    this.eventListeners.add(listener);
+    return {
+      dispose: () => this.eventListeners.delete(listener)
+    };
   }
 
   async get(runId) {
@@ -340,6 +370,124 @@ export class SqliteRunStore {
       "SELECT payload_json FROM runtime_sessions WHERE id = ?"
     ).get(sessionId);
     return row ? decode(row.payload_json) : null;
+  }
+
+  async getActiveRunForSession(sessionId) {
+    const rows = this.db.prepare(`
+      SELECT payload_json
+      FROM runtime_runs
+      WHERE status IN ('queued', 'running')
+      ORDER BY updated_at DESC
+    `).all();
+    for (const row of rows) {
+      const run = decode(row.payload_json);
+      if (String(run?.sessionId || "") === String(sessionId || "")) return run;
+    }
+    return null;
+  }
+
+  async updateSession(sessionId, patch = {}, updatedAt = Date.now()) {
+    const id = String(sessionId || "");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare(
+        "SELECT payload_json FROM runtime_sessions WHERE id = ?"
+      ).get(id);
+      if (!row) throw new Error(`Session not found: ${id}`);
+      const current = decode(row.payload_json);
+      const input = decode(encode(patch));
+      const session = {
+        ...current,
+        ...input,
+        id: current.id,
+        createdAt: current.createdAt,
+        updatedAt: Math.max(
+          Number(current.updatedAt) || 0,
+          Number(updatedAt) || Date.now()
+        )
+      };
+      this.db.prepare(`
+        UPDATE runtime_sessions
+        SET payload_json = ?, status = ?, updated_at = ?
+        WHERE id = ?
+      `).run(encode(session), session.status, session.updatedAt, id);
+      this.db.exec("COMMIT");
+      return session;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  getSessionMessageCommand(sessionId, clientRequestId) {
+    const row = this.db.prepare(`
+      SELECT status, response_json, created_at, updated_at
+      FROM runtime_session_message_commands
+      WHERE session_id = ? AND client_request_id = ?
+    `).get(String(sessionId), String(clientRequestId));
+    if (!row) return null;
+    return {
+      sessionId: String(sessionId),
+      clientRequestId: String(clientRequestId),
+      status: String(row.status),
+      response: row.response_json ? decode(row.response_json) : null,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at)
+    };
+  }
+
+  reserveSessionMessageCommand(
+    sessionId,
+    clientRequestId,
+    createdAt = Date.now()
+  ) {
+    this.db.prepare(`
+      DELETE FROM runtime_session_message_commands
+      WHERE status = 'submitting' AND updated_at < ?
+    `).run(Number(createdAt) - SESSION_MESSAGE_COMMAND_STALE_MS);
+    const result = this.db.prepare(`
+      INSERT INTO runtime_session_message_commands (
+        session_id, client_request_id, status, response_json,
+        created_at, updated_at
+      )
+      VALUES (?, ?, 'submitting', NULL, ?, ?)
+      ON CONFLICT(session_id, client_request_id) DO NOTHING
+    `).run(
+      String(sessionId),
+      String(clientRequestId),
+      Number(createdAt),
+      Number(createdAt)
+    );
+    return {
+      reserved: Number(result.changes || 0) === 1,
+      command: this.getSessionMessageCommand(sessionId, clientRequestId)
+    };
+  }
+
+  completeSessionMessageCommand(
+    sessionId,
+    clientRequestId,
+    response,
+    updatedAt = Date.now()
+  ) {
+    this.db.prepare(`
+      UPDATE runtime_session_message_commands
+      SET status = 'accepted', response_json = ?, updated_at = ?
+      WHERE session_id = ? AND client_request_id = ?
+    `).run(
+      encode(response),
+      Number(updatedAt),
+      String(sessionId),
+      String(clientRequestId)
+    );
+    return this.getSessionMessageCommand(sessionId, clientRequestId);
+  }
+
+  releaseSessionMessageCommand(sessionId, clientRequestId) {
+    this.db.prepare(`
+      DELETE FROM runtime_session_message_commands
+      WHERE session_id = ? AND client_request_id = ? AND status = 'submitting'
+    `).run(String(sessionId), String(clientRequestId));
   }
 
   async listSessions({ limit = 100, offset = 0 } = {}) {
@@ -933,6 +1081,7 @@ export class SqliteRunStore {
   }
 
   close() {
+    this.eventListeners.clear();
     this.db.close();
   }
 }

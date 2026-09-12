@@ -52,6 +52,7 @@ const DEFAULT_INTERACTIVE_CONTEXT_PROVIDERS = [
 ];
 const DEFAULT_SCHEDULED_CONTEXT_PROVIDERS = [
   "dev.skills.available",
+  "dev.terminal-manager.inventory",
   "dev.memory.context",
   "dev.identity.context",
   "dev.context-compression"
@@ -239,10 +240,10 @@ export function createDefaultScheduledInteractionProfile({
     },
     contextProviders: {
       enabled: DEFAULT_SCHEDULED_CONTEXT_PROVIDERS,
-      disabled: ["dev.terminal-manager.inventory"]
+      disabled: []
     },
     metadata: {
-      includeTerminalContext: false
+      includeTerminalContext: true
     }
   });
 }
@@ -277,7 +278,7 @@ export function resolveInteractionRequest({
     ? resolveModel(requestedModel)
     : requestedModel || fallbackModel || null;
   const policy = mergePolicy(profile?.policy, body?.policy);
-  const metadata = {
+  let metadata = {
     ...objectValue(profile?.metadata),
     ...(profile
       ? {
@@ -288,6 +289,25 @@ export function resolveInteractionRequest({
       : {}),
     ...objectValue(body?.metadata)
   };
+  if (
+    profile?.id === DEFAULT_SCHEDULED_INTERACTION_PROFILE_ID
+    && metadata.source === "scheduler-worker"
+  ) {
+    const providers = normalizeContextProviders(metadata.contextProviders);
+    metadata = {
+      ...metadata,
+      includeTerminalContext: true,
+      contextProviders: {
+        enabled: Array.from(new Set([
+          ...providers.enabled,
+          "dev.terminal-manager.inventory"
+        ])),
+        disabled: providers.disabled.filter(
+          (id) => id !== "dev.terminal-manager.inventory"
+        )
+      }
+    };
+  }
 
   return {
     profile,

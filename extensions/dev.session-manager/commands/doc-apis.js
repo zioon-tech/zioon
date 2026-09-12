@@ -70,6 +70,7 @@ function dispatchMinimalDocUpdate(editor, nextText) {
 export function registerSessionDocCommands(opts) {
   const zion = opts?.zion || window.zion;
   const loadDoc = opts?.loadDoc;
+  const loadDocAsync = opts?.loadDocAsync || loadDoc;
   const loadMetaAsync = opts?.loadMetaAsync;
   const loadMeta = opts?.loadMeta;
   const saveDoc = opts?.saveDoc;
@@ -92,16 +93,22 @@ export function registerSessionDocCommands(opts) {
         if (docQueues.get(id) === next) docQueues.delete(id);
       });
     docQueues.set(id, next);
+    // Legacy callers may fire-and-forget; awaiting callers still receive failures.
+    void next.catch(() => {});
     return next;
   };
 
-  const applyDocText = (id, text) => {
+  const applyDocText = async (id, text) => {
+    const meta = { ...await (loadMetaAsync || loadMeta)(id) };
     const nextText = String(text || "");
-    saveDoc(id, nextText);
-    const meta = loadMeta(id);
+    const saved = saveDoc(id, nextText);
     meta.size = nextText.length;
     meta.hash = hashString(nextText);
-    saveMeta(id, meta);
+    const metaSaved = saveMeta(id, meta);
+    const committed = Promise.all([saved, metaSaved]).then((results) => {
+      if (results.includes(false)) throw new Error("Session write is pending durable storage");
+      return true;
+    });
     try { onDocChanged?.(id, nextText, meta); } catch {}
     const updatedEditors = new Set();
     try {
@@ -124,7 +131,7 @@ export function registerSessionDocCommands(opts) {
         return false;
       }
     })();
-    if (isOpenInPanel) return true;
+    if (isOpenInPanel) return committed;
     const cur = zion.state.get("sessions.currentId");
     if (cur === id) {
       try {
@@ -136,7 +143,7 @@ export function registerSessionDocCommands(opts) {
         if (editorSessionId === id) dispatchMinimalDocUpdate(activeEditor, nextText);
       } catch {}
     }
-    return true;
+    return committed;
   };
 
   const dGetDoc = zion.commands.registerCommand("zion.sessions.getDoc", (id) => {
@@ -159,13 +166,14 @@ export function registerSessionDocCommands(opts) {
     });
   const dPatchMeta = zion.commands.registerCommand("zion.sessions.patchMeta", ({ id, patch, updater } = {}) => {
     if (!id) return null;
-    const current = { ...(loadMeta(id) || {}), id };
-    const candidate = typeof updater === "function" ? updater(current) : { ...current, ...(patch || {}) };
-    if (!candidate || typeof candidate !== "object") return null;
-    const next = { ...candidate, id };
-    saveMeta(id, next);
-    try { zion.state.set(`sessions.meta.${id}`, next); } catch {}
-    return next;
+    return enqueueDocWrite(id, async () => {
+      const current = { ...await (loadMetaAsync || loadMeta)(id), id };
+      const candidate = typeof updater === "function" ? updater(current) : { ...current, ...(patch || {}) };
+      if (!candidate || typeof candidate !== "object") return null;
+      const next = { ...candidate, id };
+      if (await saveMeta(id, next) === false) throw new Error("Session metadata write failed");
+      return next;
+    });
   });
   const dSetDoc = zion.commands.registerCommand("zion.sessions.setDoc", ({ id, text }) => {
     if (!id) return false;
@@ -173,8 +181,8 @@ export function registerSessionDocCommands(opts) {
   });
   const dTransformDoc = zion.commands.registerCommand("zion.sessions.transformDoc", ({ id, transform }) => {
     if (!id || typeof transform !== "function") return false;
-    return enqueueDocWrite(id, () => {
-      const current = loadDoc(id);
+    return enqueueDocWrite(id, async () => {
+      const current = await loadDocAsync(id);
       const next = transform(current);
       if (next == null) return false;
       return applyDocText(id, String(next));
@@ -182,31 +190,37 @@ export function registerSessionDocCommands(opts) {
   });
     const dEnsureAssistant = zion.commands.registerCommand("zion.sessions.ensureAssistantBlock", ({ id, assistantBlockId }) => {
       if (!id || !assistantBlockId) return false;
-      return enqueueDocWrite(id, () => {
-        const doc = loadDoc(id);
+      return enqueueDocWrite(id, async () => {
+        const doc = await loadDocAsync(id);
         const next = ensureAssistantBlockInDoc(doc, assistantBlockId);
+        // #region debug-point B:ensure-assistant-document-write
+        globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"B",location:"extensions/dev.session-manager/commands/doc-apis.js:ensureAssistantBlock",msg:"[DEBUG] Ensuring an assistant block will update the durable document",data:{runtimeSessionId:String(id),runtimeRunId:String(assistantBlockId),beforeLength:String(doc||"").length,beforeRoles:Array.from(String(doc||"").matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),afterLength:String(next||"").length,afterRoles:Array.from(String(next||"").matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),changed:next!==doc},ts:Date.now()}),keepalive:true}).catch(()=>{});
+        // #endregion
         return applyDocText(id, next);
       });
     });
     const dAppendToken = zion.commands.registerCommand("zion.sessions.appendAssistantToken", ({ id, token, assistantBlockId }) => {
     if (!id || token == null) return false;
-    return enqueueDocWrite(id, () => {
-      const doc = loadDoc(id);
+    return enqueueDocWrite(id, async () => {
+      const doc = await loadDocAsync(id);
         const next = appendAssistantTokenToDoc(doc, token, assistantBlockId);
       return applyDocText(id, next);
     });
   });
   const dBumpUpdated = zion.commands.registerCommand("zion.sessions.bumpUpdatedAt", (id) => {
     if (!id) return false;
-    const meta = loadMeta(id);
-    meta.updatedAt = now();
-    meta.size = loadDoc(id).length;
-    meta.hash = hashString(loadDoc(id));
-    saveMeta(id, meta);
-    upsertIndexEntry({ id, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
-    zion.state.set("sessions.catalog", getIndex());
-    try { refreshSessionsSidebarViewIfOpen?.(); } catch {}
-    return true;
+    return enqueueDocWrite(id, async () => {
+      const text = await loadDocAsync(id);
+      const meta = { ...await (loadMetaAsync || loadMeta)(id) };
+      meta.updatedAt = now();
+      meta.size = text.length;
+      meta.hash = hashString(text);
+      if (await saveMeta(id, meta) === false) throw new Error("Session metadata write failed");
+      upsertIndexEntry({ id, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
+      zion.state.set("sessions.catalog", getIndex());
+      try { refreshSessionsSidebarViewIfOpen?.(); } catch {}
+      return true;
+    });
   });
 
       return [dGetDoc, dGetDocAsync, dGetMeta, dGetMetaAsync, dPatchMeta, dSetDoc, dTransformDoc, dEnsureAssistant, dAppendToken, dBumpUpdated];

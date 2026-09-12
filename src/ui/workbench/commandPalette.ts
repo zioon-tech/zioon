@@ -1,5 +1,6 @@
 import { matchSorter, rankings } from "match-sorter";
 import { BUILT_IN_THEME_OPTIONS, getRegisteredThemeOptions } from "../../theme/themes";
+import { EXTERNALIZED_BUILTIN_PLUGIN_IDS } from "../../plugin/externalized";
 
 type CommandMeta = {
   id: string;
@@ -20,9 +21,6 @@ type CommandMetaContribution = Pick<CommandMeta, "id" | "title" | "titleKey" | "
 const STYLE_ID = "zion-command-palette-style";
 const RECENT_KEY = "zion.commandPalette.recent.v2";
 const TAG_RE = /(^|[\s([{])#([\p{L}\p{N}_/-]+)(?=$|[\s)\]},.;:!?])/gu;
-const EXTERNALIZED_BUILTIN_PLUGIN_IDS = new Set<string>([
-  "dev.identity"
-]);
 
 function isFenceLine(lineText: string): boolean {
   return /^\s*`{3,}/.test(lineText) || /^\s*~{3,}/.test(lineText);

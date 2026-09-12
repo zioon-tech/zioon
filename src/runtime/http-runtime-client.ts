@@ -35,6 +35,7 @@ export type RuntimeModelProfile = {
   requestBody?: Record<string, unknown>;
   capabilities?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+  credentialRequired?: boolean;
   credentialConfigured?: boolean;
 };
 
@@ -115,6 +116,8 @@ export interface RuntimeClient {
 export type HttpRuntimeClientOptions = {
   baseUrl: string;
   fetchImpl?: typeof fetch;
+  headers?: HeadersInit;
+  credentials?: RequestCredentials;
 };
 
 export type RemoteRunHandle = RunHandle & {
@@ -474,6 +477,27 @@ export function createHttpRuntimeClient(
   const baseUrl = normalizeBaseUrl(options.baseUrl);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (!fetchImpl) throw new Error("Runtime fetch implementation is required");
+  const headerRecord = (input?: HeadersInit): Record<string, string> => {
+    const result: Record<string, string> = {};
+    new Headers(input).forEach((value, name) => {
+      result[name] = value;
+    });
+    return result;
+  };
+  const defaultHeaders = headerRecord(options.headers);
+  const fetchRequest = (
+    input: RequestInfo | URL,
+    init: RequestInit = {}
+  ): Promise<Response> => {
+    return fetchImpl(input, {
+      ...init,
+      ...(options.credentials ? { credentials: options.credentials } : {}),
+      headers: {
+        ...defaultHeaders,
+        ...headerRecord(init.headers)
+      }
+    });
+  };
 
   const runUrl = (runId: string, suffix = "") =>
     `${baseUrl}/v1/runs/${encodeURIComponent(runId)}${suffix}`;
@@ -482,7 +506,7 @@ export function createHttpRuntimeClient(
 
   return {
     async getModels() {
-      const response = await fetchImpl(`${baseUrl}/v1/models`, {
+      const response = await fetchRequest(`${baseUrl}/v1/models`, {
         headers: { accept: "application/json" }
       });
       const body = await readJson(response);
@@ -497,7 +521,7 @@ export function createHttpRuntimeClient(
     },
 
     async createRun(request) {
-      const response = await fetchImpl(`${baseUrl}/v1/runs`, {
+      const response = await fetchRequest(`${baseUrl}/v1/runs`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(request)
@@ -520,7 +544,7 @@ export function createHttpRuntimeClient(
     },
 
     async getCapabilityTools() {
-      const response = await fetchImpl(`${baseUrl}/v1/capabilities/tools`, {
+      const response = await fetchRequest(`${baseUrl}/v1/capabilities/tools`, {
         headers: { accept: "application/json" }
       });
       const body = await readJson(response);
@@ -528,7 +552,7 @@ export function createHttpRuntimeClient(
     },
 
     async getInteractionProfiles() {
-      const response = await fetchImpl(`${baseUrl}/v1/interaction-profiles`, {
+      const response = await fetchRequest(`${baseUrl}/v1/interaction-profiles`, {
         headers: { accept: "application/json" }
       });
       const body = await readJson(response);
@@ -538,7 +562,7 @@ export function createHttpRuntimeClient(
     },
 
     async getInteractionProfile(profileId) {
-      const response = await fetchImpl(interactionProfileUrl(profileId), {
+      const response = await fetchRequest(interactionProfileUrl(profileId), {
         headers: { accept: "application/json" }
       });
       const body = await readJson(response);
@@ -552,7 +576,7 @@ export function createHttpRuntimeClient(
     },
 
     async upsertInteractionProfile(profileId, profile) {
-      const response = await fetchImpl(interactionProfileUrl(profileId), {
+      const response = await fetchRequest(interactionProfileUrl(profileId), {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ profile })
@@ -568,7 +592,7 @@ export function createHttpRuntimeClient(
     },
 
     async patchInteractionProfile(profileId, patch) {
-      const response = await fetchImpl(interactionProfileUrl(profileId), {
+      const response = await fetchRequest(interactionProfileUrl(profileId), {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(patch)
@@ -584,7 +608,7 @@ export function createHttpRuntimeClient(
     },
 
     async upsertModelProfile(profileId, input) {
-      const response = await fetchImpl(
+      const response = await fetchRequest(
         `${baseUrl}/v1/model-profiles/${encodeURIComponent(profileId)}`,
         {
           method: "PUT",
@@ -603,7 +627,7 @@ export function createHttpRuntimeClient(
     },
 
     async deleteModelProfile(profileId) {
-      const response = await fetchImpl(
+      const response = await fetchRequest(
         `${baseUrl}/v1/model-profiles/${encodeURIComponent(profileId)}`,
         { method: "DELETE" }
       );
@@ -618,7 +642,7 @@ export function createHttpRuntimeClient(
     },
 
     async getRun(runId) {
-      const response = await fetchImpl(runUrl(runId), {
+      const response = await fetchRequest(runUrl(runId), {
         headers: { accept: "application/json" }
       });
       const body = await readJson(response);
@@ -632,7 +656,7 @@ export function createHttpRuntimeClient(
     },
 
     async getEvent(runId, sequence) {
-      const response = await fetchImpl(
+      const response = await fetchRequest(
         runUrl(runId, `/events/${sequenceValue(sequence)}`),
         { headers: { accept: "application/json" } }
       );
@@ -648,7 +672,7 @@ export function createHttpRuntimeClient(
 
     async getEvents(runId, afterSequence = 0) {
       const after = sequenceValue(afterSequence);
-      const response = await fetchImpl(
+      const response = await fetchRequest(
         `${runUrl(runId, "/events")}?after=${after}`,
         { headers: { accept: "application/json" } }
       );
@@ -663,7 +687,7 @@ export function createHttpRuntimeClient(
     },
 
     async getProjectionEvents(runId, afterSequence = 0, options = {}) {
-      const response = await fetchImpl(
+      const response = await fetchRequest(
         `${runUrl(runId, "/projection")}?${projectionQuery(afterSequence, options)}`,
         { headers: { accept: "application/json" } }
       );
@@ -695,7 +719,7 @@ export function createHttpRuntimeClient(
       const suffix = mode === "raw"
         ? "/events/stream"
         : "/projection/stream";
-      const response = fetchImpl(
+      const response = fetchRequest(
         `${runUrl(runId, suffix)}?${projectionQuery(after, subscription)}`,
         {
           headers: {
@@ -714,7 +738,7 @@ export function createHttpRuntimeClient(
     },
 
     async abort(runId, reason = "user") {
-      const response = await fetchImpl(runUrl(runId, "/abort"), {
+      const response = await fetchRequest(runUrl(runId, "/abort"), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ reason })

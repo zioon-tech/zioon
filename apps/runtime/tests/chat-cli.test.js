@@ -533,7 +533,7 @@ describe("Runtime control CLI", () => {
         "--workspace-root", "/workspace/zion-next",
         "--terminal-sessions", "terminal-1,terminal-2",
         "--node-id", "node:test",
-        "--local-tools-url", "http://local-tools.test"
+        "--local-tools-url", "http://127.0.0.1:8765"
       ],
       runtimeUrl: "https://runtime.test",
       environment: {
@@ -560,6 +560,62 @@ describe("Runtime control CLI", () => {
       })
     }));
     expect(host.snapshot).toMatchObject({ state: "running" });
+  });
+
+  it("pairs and persists a Resource credential before connecting", async () => {
+    const toolHost = {
+      assertHealthy: vi.fn(async () => {}),
+      invoke: vi.fn()
+    };
+    const connector = {
+      start: vi.fn(async () => ({ state: "running", nodeId: "node:test" })),
+      stop: vi.fn(async () => {})
+    };
+    const createConnector = vi.fn(() => connector);
+    const deviceCredentialStore = {
+      get: vi.fn(async () => null),
+      set: vi.fn(async () => {})
+    };
+    const fetchImpl = vi.fn(async () => jsonResponse(200, {
+      paired: true,
+      credential: "zion_v1.credential:test.secret",
+      credentialId: "credential:test",
+      expiresAt: Date.now() + 60_000,
+      device: {
+        deviceId: "node:test",
+        kind: "resource"
+      }
+    }));
+
+    await createCliDeviceHost({
+      argv: [
+        "--project", "zion-next",
+        "--resource-id", "workspace:zion-next",
+        "--workspace-root", "/workspace/zion-next",
+        "--terminal-sessions", "terminal-1",
+        "--node-id", "node:test",
+        "--pairing-code", "ABCD-EFGH-JKLM"
+      ],
+      runtimeUrl: "https://runtime.test",
+      environment: {},
+      output: new PassThrough(),
+      fetchImpl,
+      toolHost,
+      deviceCredentialStore,
+      createConnector
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(deviceCredentialStore.set).toHaveBeenCalledWith(
+      "https://runtime.test|node:test",
+      expect.objectContaining({
+        credential: "zion_v1.credential:test.secret",
+        deviceId: "node:test"
+      })
+    );
+    expect(createConnector).toHaveBeenCalledWith(expect.objectContaining({
+      token: "zion_v1.credential:test.secret"
+    }));
   });
 
   it("uses a Keychain-backed OAuth device credential for cloud requests", async () => {

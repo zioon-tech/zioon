@@ -27,7 +27,7 @@ export function createProviderModelDiscovery({
 }) {
   let cache = null;
 
-  return async function discoverModels({ credential = "", force = false } = {}) {
+  const discoverModels = async ({ credential = "", force = false } = {}) => {
     const checkedAt = Date.now();
     const credentialKey = String(credential || "").trim();
     if (!credentialKey) {
@@ -107,6 +107,18 @@ export function createProviderModelDiscovery({
       return result;
     }
   };
+  discoverModels.peek = ({ credential = "" } = {}) => {
+    const credentialKey = String(credential || "").trim();
+    if (
+      credentialKey
+      && cache?.credential === credentialKey
+      && cache.result?.expiresAt > Date.now()
+    ) {
+      return cache.result;
+    }
+    return null;
+  };
+  return discoverModels;
 }
 
 export function buildDiscoveryAvailability(result, modelIds, resolveRemoteId = (id) => id) {

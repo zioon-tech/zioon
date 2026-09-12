@@ -1,0 +1,66 @@
+{
+  "scope_type": "diff",
+  "TARGETS": [
+    {
+      "file_path": "packages/node-protocol/src/resource-references.mjs",
+      "target_type": "file",
+      "symbol": "resource-references.mjs",
+      "locator": "terminalReference, parseTerminalReference, machineReference, parseMachineReference",
+      "source": "untracked",
+      "reason": "New global execution reference contract",
+      "hunks": []
+    },
+    {
+      "file_path": "apps/runtime/src/node-broker.mjs",
+      "target_type": "file",
+      "symbol": "NodeBroker",
+      "locator": "registerNode, completeInvocation, invoke, selectTarget, policyForTarget, registeredTargets",
+      "source": "diff_hunk",
+      "reason": "Precise routing, instance lifetime and policy translation",
+      "hunks": [
+        {"old_start": 130, "old_lines": 0, "new_start": 140, "new_lines": 17},
+        {"old_start": 202, "old_lines": 1, "new_start": 228, "new_lines": 5},
+        {"old_start": 278, "old_lines": 1, "new_start": 308, "new_lines": 16},
+        {"old_start": 371, "old_lines": 2, "new_start": 428, "new_lines": 53}
+      ]
+    },
+    {
+      "file_path": "apps/runtime/src/terminal-management-service.mjs",
+      "target_type": "file",
+      "symbol": "createTerminalManagementService",
+      "locator": "createTerminalManagementService line 20; listInventory, createSession",
+      "source": "diff_hunk",
+      "reason": "Aggregate scoped inventories and select a creation target",
+      "hunks": [
+        {"old_start": 28, "old_lines": 0, "new_start": 33, "new_lines": 89},
+        {"old_start": 52, "old_lines": 2, "new_start": 144, "new_lines": 11}
+      ]
+    },
+    {
+      "file_path": "extensions/dev.terminal-manager/terminal-inventory.js",
+      "target_type": "file",
+      "symbol": "terminal-inventory.js",
+      "locator": "getTerminalMachineIdentity, normalizeTerminalSession, buildTerminalInventory, buildTerminalInventoryContextXml",
+      "source": "diff_hunk",
+      "reason": "Namespaced machines and exact execution handles in bounded model context",
+      "hunks": [
+        {"old_start": 58, "old_lines": 2, "new_start": 63, "new_lines": 2},
+        {"old_start": 83, "old_lines": 1, "new_start": 92, "new_lines": 2},
+        {"old_start": 431, "old_lines": 1, "new_start": 449, "new_lines": 1}
+      ]
+    }
+  ],
+  "diff_context": {
+    "files": [
+      {"file_path": "packages/node-protocol/src/resource-references.mjs", "status": "untracked", "mode": "untracked", "hunks": []},
+      {"file_path": "apps/runtime/src/node-broker.mjs", "status": "M", "mode": "unstaged", "hunks": [{"old_start":371,"old_lines":2,"new_start":428,"new_lines":53}]},
+      {"file_path": "apps/runtime/src/terminal-management-service.mjs", "status": "M", "mode": "unstaged", "hunks": [{"old_start":28,"old_lines":0,"new_start":33,"new_lines":89}]},
+      {"file_path": "extensions/dev.terminal-manager/terminal-inventory.js", "status": "M", "mode": "unstaged", "hunks": [{"old_start":83,"old_lines":1,"new_start":92,"new_lines":2}]}
+    ]
+  },
+  "fallback_notes": [
+    "Source-file units share helpers; hunk locations refer to the first implementation snapshot.",
+    "HTTP and real Connector integration are verified separately from this unit-test workflow.",
+    "Pre-existing staged changes outside the multi-node implementation are not test-generation targets."
+  ]
+}

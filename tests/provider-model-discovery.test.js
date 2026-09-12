@@ -25,11 +25,13 @@ describe("provider model discovery", () => {
       parseModels: (payload) => new Map(payload.data.map((item) => [item.id, item]))
     });
 
+    expect(discover.peek({ credential: "key" })).toBeNull();
     const first = await discover({ credential: "key" });
     const second = await discover({ credential: "key" });
 
     expect(first.status).toBe("available");
     expect(first.models.has("model-a")).toBe(true);
+    expect(discover.peek({ credential: "key" })).toBe(first);
     expect(second).toBe(first);
     expect(fetchMock).toHaveBeenCalledOnce();
   });

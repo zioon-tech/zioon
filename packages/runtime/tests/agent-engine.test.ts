@@ -145,6 +145,7 @@ describe("standalone agent executor", () => {
 
     const handle = executor.execute({
       prompt: "search",
+      target: { nodeId: "node:cloud-runtime" },
       policy: { allowedTools: ["search"], maxToolCalls: 2 }
     });
     await expect(handle.completion).resolves.toMatchObject({
@@ -155,7 +156,11 @@ describe("standalone agent executor", () => {
     expect(invocations).toHaveLength(1);
     expect(invocations[0]).toMatchObject({
       invocationId: `${handle.runId}:turn:1:tool:0`,
+      target: { nodeId: "node:cloud-runtime" },
       toolCall: { name: "search", arguments: { query: "runtime" } }
+    });
+    await expect(store.get(handle.runId)).resolves.toMatchObject({
+      target: { nodeId: "node:cloud-runtime" }
     });
     expect(engine.requests[0].tools.map((tool) => tool.name)).toEqual(["search"]);
     expect(engine.requests[1].messages.at(-2)).toEqual({

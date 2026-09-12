@@ -10,5 +10,8 @@
   "scripts": {
     "start": "node src/main.mjs",
     "test": "vitest run tests"
+  },
+  "dependencies": {
+    "werift": "^0.24.4"
   }
 }

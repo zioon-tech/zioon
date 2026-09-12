@@ -1,0 +1,28 @@
+[Unit]
+Description=Zion Cloud Device Connector
+After=network-online.target zion-local-tools.service zion-plugin-host.service
+Wants=network-online.target
+Requires=zion-local-tools.service
+
+[Service]
+Type=simple
+User=zion-worker
+Group=zion-worker
+WorkingDirectory=/srv/zion-workspaces/zion-next
+Environment=HOME=/home/zion-worker
+EnvironmentFile=/etc/zion-next/cloud-node.env
+ExecStart=/usr/local/bin/node /opt/zion-next/apps/device-connector/src/main.mjs
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/zion-worker /srv/zion-workspaces
+InaccessiblePaths=-/var/lib/zion-next -/etc/zion-next/runtime.env -/var/lib/caddy -/etc/caddy
+RestrictSUIDSGID=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -25,7 +25,9 @@ function normalizeMessages(messages = []) {
 export function createPluginModelService({
   engine,
   resolveModel = null,
-  defaultTimeoutMs = 30000
+  defaultTimeoutMs = 30000,
+  onRequest = null,
+  onRequestError = null
 } = {}) {
   if (!engine?.streamTurn) {
     throw new Error("Plugin model service requires an Agent engine");
@@ -34,7 +36,8 @@ export function createPluginModelService({
     async generateText({
       messages = [],
       model = null,
-      timeoutMs = defaultTimeoutMs
+      timeoutMs = defaultTimeoutMs,
+      requestContext = {}
     } = {}) {
       const controller = new CancellationController();
       const timeout = timeoutSignal(controller, timeoutMs);
@@ -50,6 +53,29 @@ export function createPluginModelService({
           signal: controller.signal
         })) {
           controller.signal.throwIfCancelled();
+          if (event?.type === "model.request" && typeof onRequest === "function") {
+            try {
+              await onRequest({
+                request: event.request && typeof event.request === "object"
+                  ? event.request
+                  : {},
+                requestContext: requestContext && typeof requestContext === "object"
+                  ? { ...requestContext }
+                  : {},
+                model: requestedModel || null,
+                timestamp: Date.now()
+              });
+            } catch (error) {
+              try {
+                onRequestError?.(error, {
+                  requestContext,
+                  model: requestedModel || null
+                });
+              } catch {
+                // Request observation must not affect the plugin model call.
+              }
+            }
+          }
           if (event?.type === "message.delta") text += String(event.delta || "");
         }
         return text;

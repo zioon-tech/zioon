@@ -200,7 +200,7 @@ async function* parseSse(body: AsyncIterable<string>): AsyncIterable<Record<stri
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).trimStart())
         .join("\n");
-      if (data && data !== "[DONE]") yield data;
+      if (data) yield data;
     }
     if (complete) {
       const data = pending
@@ -209,18 +209,47 @@ async function* parseSse(body: AsyncIterable<string>): AsyncIterable<Record<stri
         .map((line) => line.slice(5).trimStart())
         .join("\n");
       pending = "";
-      if (data && data !== "[DONE]") yield data;
+      if (data) yield data;
     }
   };
 
   for await (const chunk of body) {
     pending += chunk;
     for (const data of consume(false)) {
+      if (data === "[DONE]") {
+        yield { __zionSseDone: true };
+        continue;
+      }
       yield asRecord(JSON.parse(data));
     }
   }
   for (const data of consume(true)) {
+    if (data === "[DONE]") {
+      yield { __zionSseDone: true };
+      continue;
+    }
     yield asRecord(JSON.parse(data));
+  }
+}
+
+function incompleteStreamError(message: string): Error & {
+  code: string;
+  retryable: boolean;
+} {
+  const error = new Error(message) as Error & {
+    code: string;
+    retryable: boolean;
+  };
+  error.code = "incomplete_stream";
+  error.retryable = false;
+  return error;
+}
+
+function assertCompleteFinishReason(finishReason: string): void {
+  if (["length", "max_tokens"].includes(finishReason.toLowerCase())) {
+    throw incompleteStreamError(
+      `Model output was truncated (${finishReason})`
+    );
   }
 }
 
@@ -366,12 +395,25 @@ export class OpenAICompatibleEngine implements AgentEngine {
       }
 
       const toolBuffers = new Map<number, ToolCallBuffer>();
+      let sawCompletionSignal = false;
+      let finishReason = "";
       for await (const chunk of parseSse(response.body)) {
         request.signal.throwIfCancelled();
+        if (chunk.__zionSseDone === true) {
+          sawCompletionSignal = true;
+          continue;
+        }
         if (chunk.usage) {
           yield { type: "model.usage", usage: mapUsage(chunk.usage) };
         }
         const choice = asRecord(Array.isArray(chunk.choices) ? chunk.choices[0] : null);
+        const nextFinishReason = String(
+          choice.finish_reason ?? choice.finishReason ?? ""
+        ).trim();
+        if (nextFinishReason) {
+          sawCompletionSignal = true;
+          finishReason = nextFinishReason;
+        }
         const delta = asRecord(choice.delta);
         const reasoning = contentText(delta.reasoning_content ?? delta.reasoning);
         const content = contentText(delta.content);
@@ -380,6 +422,12 @@ export class OpenAICompatibleEngine implements AgentEngine {
         ingestToolCallDeltas(toolBuffers, delta.tool_calls);
       }
 
+      if (!sawCompletionSignal) {
+        throw incompleteStreamError(
+          "Model response stream ended before a completion signal"
+        );
+      }
+      assertCompleteFinishReason(finishReason);
       for (const [index, buffer] of Array.from(toolBuffers.entries()).sort(([a], [b]) => a - b)) {
         const definition = request.tools.find((tool) => tool.name === buffer.name);
         yield {
@@ -401,6 +449,9 @@ export class OpenAICompatibleEngine implements AgentEngine {
     request: EngineTurnRequest
   ): AsyncIterable<EngineOutputEvent> {
     const choice = asRecord(Array.isArray(payload.choices) ? payload.choices[0] : null);
+    assertCompleteFinishReason(String(
+      choice.finish_reason ?? choice.finishReason ?? ""
+    ).trim());
     const message = asRecord(choice.message);
     const reasoning = contentText(message.reasoning_content ?? message.reasoning);
     const content = contentText(message.content);

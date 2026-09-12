@@ -123,11 +123,18 @@ export function detectProviderFromURL(url: string): string | null {
 /**
  * 构建代理 URL
  */
-function buildProxyURL(_provider: string, originalURL: string): string {
+function buildProxyURL(
+  _provider: string,
+  originalURL: string,
+  modelProfileId = ""
+): string {
   const backendUrl = getBackendUrl();
   const query = new URLSearchParams({
     target: String(originalURL || "")
   });
+  if (modelProfileId) {
+    query.set("profileId", modelProfileId);
+  }
   return `${backendUrl}/v1/model-gateway/proxy?${query}`;
 }
 
@@ -140,6 +147,7 @@ export interface LLMProxyRequestConfig {
   headers: Record<string, string>;
   body: any;
   signal?: AbortSignal;
+  modelProfileId?: string;
 }
 
 /**
@@ -162,7 +170,11 @@ export async function proxyLLMRequest(config: LLMProxyRequestConfig): Promise<Re
  * 通过代理发送请求
  */
 async function proxyRequest(config: LLMProxyRequestConfig): Promise<Response> {
-  const proxyURL = buildProxyURL("any", config.url);
+  const proxyURL = buildProxyURL(
+    "any",
+    config.url,
+    String(config.modelProfileId || "").trim()
+  );
   
   const body = typeof config.body === 'string' ? config.body : JSON.stringify(config.body);
   

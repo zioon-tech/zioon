@@ -19,7 +19,13 @@ import { loadTagCatalog, saveTagCatalog } from "../storage/tag-catalog.js";
 import { createTagTreePanel } from "./tag-tree.js";
 
 export function createSessionsSidebarViewManager(opts) {
-  const zion = opts?.zion || window.zion;
+  // Extension chunks may be evaluated before the core API is installed.
+  // Resolve window.zion lazily so event handlers do not retain that early undefined value.
+  const zion = new Proxy({}, {
+    get(_target, property) {
+      return (opts?.zion || window.zion)?.[property];
+    }
+  });
   const createSessionsListRenderer = opts?.createSessionsListRenderer;
   const openAncestors = opts?.openAncestors;
   const getIndex = opts?.getIndex;

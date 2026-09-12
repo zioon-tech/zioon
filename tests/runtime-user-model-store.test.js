@@ -1,8 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deleteDynamicModel,
   dynamicConfigToRuntimeImport,
+  findRuntimeModelProfile,
+  invalidateRuntimeDynamicModelCache,
   loadDynamicModelStore,
+  mergeRuntimeModelProfileConfig,
   runtimeProfileIdForDynamicModel,
   runtimeProfileToDynamicEntry,
   upsertDynamicModel
@@ -37,6 +40,10 @@ function runtimeState() {
 }
 
 describe("Runtime-backed user.dynamic model store", () => {
+  beforeEach(() => {
+    invalidateRuntimeDynamicModelCache();
+  });
+
   it("maps Workbench dynamic model config to a Runtime model profile import", () => {
     expect(runtimeProfileIdForDynamicModel("kimi/k2.5")).toBe(
       "workbench.user.dynamic.kimi-k2.5"
@@ -92,6 +99,44 @@ describe("Runtime-backed user.dynamic model store", () => {
     });
   });
 
+  it("resolves the selected Runtime profile and applies its thinking capabilities", () => {
+    const profiles = [{
+      id: "workbench.deepseek.deepseek-v4-flash",
+      providerId: "deepseek",
+      sourceModelId: "deepseek-v4-flash",
+      providerType: "openai",
+      endpoint: "https://runtime.example/chat",
+      model: "deepseek-v4-flash",
+      credentialConfigured: true,
+      capabilities: {
+        supportsThinking: true,
+        preservedThinking: true,
+        interleavedThinking: true,
+        thinkingMode: "on",
+        thinkingEffort: "high"
+      }
+    }];
+    const profile = findRuntimeModelProfile(profiles, {
+      profileId: "workbench.deepseek.deepseek-v4-flash",
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash"
+    });
+
+    expect(mergeRuntimeModelProfileConfig({
+      preservedThinking: false,
+      interleavedThinking: false,
+      thinkingMode: "off"
+    }, profile)).toMatchObject({
+      preservedThinking: true,
+      interleavedThinking: true,
+      thinkingMode: "on",
+      thinkingEffort: "high",
+      _runtimeBacked: true,
+      _runtimeProfileId: "workbench.deepseek.deepseek-v4-flash",
+      _credentialConfigured: true
+    });
+  });
+
   it("loads Runtime dynamic models over local fallback when Runtime is connected", async () => {
     const storage = memoryStorage({
       "zion.models.dynamic": JSON.stringify({
@@ -130,6 +175,37 @@ describe("Runtime-backed user.dynamic model store", () => {
         _credentialConfigured: true
       }
     });
+  });
+
+  it("coalesces and briefly caches Runtime model catalog reads", async () => {
+    const storage = memoryStorage();
+    const fetchImpl = vi.fn(async () => jsonResponse(200, {
+      profiles: [{
+        id: "workbench.user.dynamic.remote",
+        providerId: "user.dynamic",
+        sourceModelId: "remote",
+        providerType: "openai",
+        endpoint: "https://remote.example/chat",
+        model: "remote-model",
+        credentialConfigured: true
+      }]
+    }));
+    const options = {
+      state: runtimeState(),
+      storage,
+      fetchImpl
+    };
+
+    const [first, second] = await Promise.all([
+      loadDynamicModelStore(options),
+      loadDynamicModelStore(options)
+    ]);
+    const third = await loadDynamicModelStore(options);
+
+    expect(first.remote._credentialConfigured).toBe(true);
+    expect(second).toEqual(first);
+    expect(third).toEqual(first);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("upserts and deletes Runtime profiles while keeping local fallback in sync", async () => {

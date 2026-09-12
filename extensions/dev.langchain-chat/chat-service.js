@@ -20,6 +20,9 @@ import {
 import { proxyLLMRequest } from "./llm-proxy.ts";
 import { repairToolCallMessageOrder } from "../../src/chat/message-order.ts";
 import {
+  registerLlmRequestPayload
+} from "../../src/runtime/llm-request-observability.ts";
+import {
   recordModelAvailabilityFailure,
   recordModelAvailabilitySuccess
 } from "./model-health.js";
@@ -275,10 +278,11 @@ function getProviderHeaders(cfg, providerType) {
   const headers = {
     "Content-Type": "application/json"
   };
+  const apiKey = String(cfg.key || cfg.apiKey || "").trim();
 
   if (providerType === "claude") {
     // Claude 需要 anthropic-version 头部
-    headers["x-api-key"] = cfg.key;
+    if (apiKey) headers["x-api-key"] = apiKey;
     headers["anthropic-version"] = cfg.anthropicVersion || "2023-06-01";
     return headers;
   }
@@ -289,8 +293,12 @@ function getProviderHeaders(cfg, providerType) {
   }
 
   // OpenAI 格式
-  headers["Authorization"] = `Bearer ${cfg.key}`;
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
   return headers;
+}
+
+function hasRuntimeManagedCredential(cfg) {
+  return cfg?._credentialConfigured === true || cfg?.credentialConfigured === true;
 }
 
 /**
@@ -825,7 +833,8 @@ async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
         method: options.method || "POST",
         headers: options.headers || {},
         body: options.body,
-        signal: options.signal
+        signal: options.signal,
+        modelProfileId: options.modelProfileId
       });
 
       if (response.ok) {
@@ -1003,7 +1012,9 @@ export async function runStream({
   }
   
   // 检查是否需要配置 API key
-  if (cfg._requiresConfig && (!cfg.key || !cfg.key.trim())) {
+  const resolvedApiKey = String(cfg.key || cfg.apiKey || "").trim();
+  const runtimeManagedCredential = hasRuntimeManagedCredential(cfg);
+  if (cfg._requiresConfig && !resolvedApiKey && !runtimeManagedCredential) {
     const error = new Error(`模型 ${active.providerId}:${active.modelId} 需要配置 API key。${cfg._configHint || '请使用 modelsManage 工具配置 API key。'}`);
     error.code = "missing_api_key";
     recordModelAvailabilityFailure(active, error);
@@ -1080,9 +1091,11 @@ export async function runStream({
 
     // 构建 provider 特定的 URL
     const url = buildProviderURL(cfg, providerType);
-    const apiKey = cfg.key || cfg.apiKey;
+    const apiKey = resolvedApiKey;
     if (!url) throw new Error("Invalid model config: missing url");
-    if (!apiKey && providerType !== "gemini") throw new Error("Invalid model config: missing api key");
+    if (!apiKey && providerType !== "gemini" && !runtimeManagedCredential) {
+      throw new Error("Invalid model config: missing api key");
+    }
 
     const stateMode = window.zion?.state?.get?.("chat.toolCallsReasoningContentMode");
     const mode = resolveToolCallsReasoningContentMode({ cfg, stateMode });
@@ -1232,14 +1245,7 @@ export async function runStream({
           debugDiffFromPrevStep: diffDebugPayloadMessages(prevPayloadMsgs, payloadMsgs),
           payload: body
         };
-        window.zion?.events?.emit?.("llm/requestPayload", requestPayload);
-        if (typeof window.zion?.llmPayloads?.add === "function") {
-          window.zion.llmPayloads.add(requestPayload);
-        } else {
-          const queue = window.zion.__llmPayloadQueue || (window.zion.__llmPayloadQueue = []);
-          queue.push(requestPayload);
-          while (queue.length > 80) queue.shift();
-        }
+        registerLlmRequestPayload(window.zion, requestPayload);
       } catch {}
 
       return await fetchWithRetry(
@@ -1248,7 +1254,8 @@ export async function runStream({
           method: "POST",
           headers,
           body: JSON.stringify(body),
-          signal: controller.signal
+          signal: controller.signal,
+          modelProfileId: cfg._runtimeProfileId
         },
         3,
           _retryBaseDelay

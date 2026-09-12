@@ -1,12 +1,15 @@
 import { Compartment, Prec } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { IndexeddbPersistence } from "y-indexeddb";
 import { yCollab } from "y-codemirror.next";
 import * as Y from "yjs";
 import {
-  assistantBlockHeaderText
+  assistantBlockHeaderText,
+  findAssistantBlockEndOffsetById
 } from "../../src/chat/restore";
+import {
+  appendAssistantTokenToYText
+} from "./session-document-projector.js";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
@@ -18,6 +21,7 @@ import {
 } from "./editor/pending-assistant-plugin.js";
 
 const COLLABORATION_TEXT_KEY = "content";
+const COLLABORATION_PROTOCOL = "5";
 const PENDING_COMMIT_GRACE_MS = 5_000;
 
 function websocketUrl(baseUrl, clientId) {
@@ -26,7 +30,7 @@ function websocketUrl(baseUrl, clientId) {
   url.pathname = "/v1/collaboration";
   url.search = "";
   url.searchParams.set("client_id", String(clientId || ""));
-  url.searchParams.set("protocol", "2");
+  url.searchParams.set("protocol", COLLABORATION_PROTOCOL);
   return url.toString();
 }
 
@@ -37,6 +41,12 @@ function sessionIdForEditor(editor) {
     || editor?.getView?.()?.dom?.getAttribute?.("data-session-id")
     || ""
   ).trim();
+}
+
+function optionalDocumentOffset(value) {
+  if (value == null || value === "") return null;
+  const offset = Number(value);
+  return Number.isFinite(offset) ? offset : null;
 }
 
 function encodeBase64(bytes) {
@@ -60,7 +70,7 @@ function collaborationState(zion, sessionId, patch = {}) {
 function containsCommittedPending(documentText, entry) {
   const source = String(documentText || "");
   const header = assistantBlockHeaderText(entry?.assistantBlockId);
-  const start = source.indexOf(header);
+  const start = source.lastIndexOf(header);
   if (start < 0) return false;
   const tail = source.slice(start + header.length);
   const nextRole = tail.search(/\n(?:system|user|assistant|tool)\s+/);
@@ -86,8 +96,7 @@ export function createSessionCollaborationManager({
   const enabled = runtimeConfig.mode !== "browser" && !!runtimeConfig.baseUrl;
   const providerFactory = createProvider || ((options) =>
     new HocuspocusProvider(options));
-  const persistenceFactory = createPersistence || ((name, document) =>
-    new IndexeddbPersistence(name, document));
+  const persistenceFactory = createPersistence || (() => null);
 
   const dispatchPending = (sessionId, effect) => {
     const record = records.get(sessionId);
@@ -110,9 +119,9 @@ export function createSessionCollaborationManager({
     pendingFollowHandles.delete(view);
   };
 
-  const schedulePendingFollow = (sessionId, runId) => {
+  const schedulePendingFollow = (sessionId, runId, entryHint = null) => {
     const record = records.get(sessionId);
-    const entry = pendingBySession.get(sessionId)?.get(runId);
+    const entry = pendingBySession.get(sessionId)?.get(runId) || entryHint;
     if (!record) return;
     for (const view of record.views) {
       if (pendingFollowHandles.has(view)) continue;
@@ -125,10 +134,31 @@ export function createSessionCollaborationManager({
           return;
         }
         try {
-          revealPendingAssistantInView(view, {
+          const revealed = revealPendingAssistantInView(view, {
             runId: entry?.runId || runId,
             sessionId
           });
+          if (!revealed && entry?.assistantBlockId) {
+            const position = findAssistantBlockEndOffsetById(
+              view.state.doc.toString(),
+              entry.assistantBlockId
+            ) ?? view.state.doc.length;
+            const suppressUntil = Date.now() + 160;
+            zion?.state?.set?.(
+              `chat.followSuppressUntil.${sessionId}`,
+              suppressUntil
+            );
+            view.scrollDOM.__zionProgrammaticScrollUntil = Math.max(
+              Number(view.scrollDOM.__zionProgrammaticScrollUntil) || 0,
+              suppressUntil
+            );
+            view.dispatch({
+              effects: EditorView.scrollIntoView(position, {
+                y: "nearest",
+                yMargin: 24
+              })
+            });
+          }
         } catch {}
       };
       const handle = typeof globalThis.requestAnimationFrame === "function"
@@ -138,8 +168,16 @@ export function createSessionCollaborationManager({
     }
   };
 
-  const clearPending = (sessionId, runId) => {
+  const scheduleSettledFollow = (sessionId, runId, entry) => {
+    schedulePendingFollow(sessionId, runId, entry);
+    globalThis.setTimeout(() => {
+      schedulePendingFollow(sessionId, runId, entry);
+    }, 120);
+  };
+
+  const clearPending = (sessionId, runId, { follow = false } = {}) => {
     const entries = pendingBySession.get(sessionId);
+    const entry = entries?.get(runId) || null;
     entries?.delete(runId);
     if (entries?.size === 0) pendingBySession.delete(sessionId);
     const timerKey = `${sessionId}:${runId}`;
@@ -148,6 +186,27 @@ export function createSessionCollaborationManager({
       pendingClearTimers.delete(timerKey);
     }
     dispatchPending(sessionId, clearPendingAssistant.of(runId));
+    if (follow && entry) {
+      scheduleSettledFollow(sessionId, runId, entry);
+    }
+  };
+
+  const commitPendingEntry = (sessionId, entry) => {
+    const record = records.get(sessionId);
+    if (!record?.ready || entry?.documentWriter !== true || !entry?.text) {
+      return false;
+    }
+    let committed = false;
+    record.document.transact(() => {
+      committed = appendAssistantTokenToYText(record.text, {
+        runId: entry.assistantBlockId,
+        token: entry.text
+      });
+    }, { source: "runtime-stream", clientId });
+    if (!committed) return false;
+    schedulePendingFollow(sessionId, entry.runId, entry);
+    clearPending(sessionId, entry.runId);
+    return true;
   };
 
   const completePending = (payload = {}) => {
@@ -159,7 +218,7 @@ export function createSessionCollaborationManager({
     if (!entry) return;
     entry.terminal = true;
     if (containsCommittedPending(records.get(sessionId)?.text?.toString?.(), entry)) {
-      clearPending(sessionId, runId);
+      clearPending(sessionId, runId, { follow: true });
       return;
     }
     const timerKey = `${sessionId}:${runId}`;
@@ -167,7 +226,7 @@ export function createSessionCollaborationManager({
       globalThis.clearTimeout(pendingClearTimers.get(timerKey));
     }
     pendingClearTimers.set(timerKey, globalThis.setTimeout(() => {
-      clearPending(sessionId, runId);
+      clearPending(sessionId, runId, { follow: true });
     }, PENDING_COMMIT_GRACE_MS));
   };
 
@@ -183,28 +242,31 @@ export function createSessionCollaborationManager({
       const previous = entries.get(runId) || {
         runId,
         assistantBlockId: String(payload.assistantBlockId || runId),
-        fallbackOffset: Number.isFinite(Number(payload.answerAnchorPos))
-          ? Number(payload.answerAnchorPos)
-          : null,
+        fallbackOffset: optionalDocumentOffset(payload.answerAnchorPos),
         text: "",
         terminal: false
       };
+      const nextFallbackOffset = optionalDocumentOffset(payload.answerAnchorPos);
       const entry = {
         ...previous,
+        documentWriter: payload.documentWriter === true,
         assistantBlockId: String(
           payload.assistantBlockId
           || previous.assistantBlockId
           || runId
         ),
-        fallbackOffset: Number.isFinite(Number(payload.answerAnchorPos))
-          ? Number(payload.answerAnchorPos)
-          : previous.fallbackOffset,
+        fallbackOffset: nextFallbackOffset ?? previous.fallbackOffset,
         text: previous.text + token
       };
       entries.set(runId, entry);
       pendingBySession.set(sessionId, entries);
+      const committed = commitPendingEntry(sessionId, entry);
+      // #region debug-point A:pending-token-accumulation
+      void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "A", location: "extensions/dev.session-manager/collaboration-client.js:chat-token", msg: "[DEBUG] Collaboration pending token accumulated", data: { sessionId, runId, assistantBlockId: entry.assistantBlockId, documentWriter: entry.documentWriter === true, tokenChars: token.length, previousChars: previous.text.length, pendingChars: entry.text.length, recordReady: records.get(sessionId)?.ready === true, committed }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
+      // #endregion
+      if (committed) return;
       dispatchPending(sessionId, setPendingAssistant.of(entry));
-      schedulePendingFollow(sessionId, runId);
+      schedulePendingFollow(sessionId, runId, entry);
     }));
     for (const topic of [
       "runtime/pendingAssistantCommitted",
@@ -295,11 +357,8 @@ export function createSessionCollaborationManager({
       const entries = pendingBySession.get(sessionId);
       if (!entries) return;
       for (const entry of [...entries.values()]) {
-        if (
-          entry.terminal
-          && containsCommittedPending(value, entry)
-        ) {
-          clearPending(sessionId, entry.runId);
+        if (containsCommittedPending(value, entry)) {
+          clearPending(sessionId, entry.runId, { follow: true });
         }
       }
     };
@@ -312,6 +371,7 @@ export function createSessionCollaborationManager({
       providerSynced,
       onTextChange,
       views: new Set(),
+      ready: false,
       references: 1
     };
     records.set(sessionId, record);
@@ -325,8 +385,17 @@ export function createSessionCollaborationManager({
 
   const bindEditor = (editor, { allowDeferred = true } = {}) => {
     const view = editor?.getView?.();
-    if (!enabled || !view) return { dispose() {} };
     const sessionId = sessionIdForEditor(editor);
+    // #region debug-point C:desktop-editor-binding
+    globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"C",location:"extensions/dev.session-manager/collaboration-client.js:bindEditor",msg:"[DEBUG] Desktop collaboration decorator evaluated an editor",data:{editorExists:!!editor,viewExists:!!view,enabled,allowDeferred,editorSessionId:sessionId,panelId:String(editor?.panelId||""),documentLength:String(editor?.getValue?.()||"").length},ts:Date.now()}),keepalive:true}).catch(()=>{});
+    // #endregion
+    if (!enabled || !view) return { dispose() {} };
+    if (view.dom?.dataset?.zionSessionPersistence === "skip") {
+      // #region debug-point C:comment-collaboration-skipped
+      void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "C", location: "extensions/dev.session-manager/collaboration-client.js:bindEditor", msg: "[DEBUG] Durable collaboration skipped a non-durable editor", data: { commentSessionId: sessionId, panelId: String(editor?.panelId || ""), persistenceMode: String(view.dom.dataset.zionSessionPersistence || "") }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
+      // #endregion
+      return { dispose() {} };
+    }
     if (!sessionId && allowDeferred) {
       let disposed = false;
       let binding = null;
@@ -378,11 +447,17 @@ export function createSessionCollaborationManager({
       globalThis.clearTimeout(timeout);
       const remoteText = record.text.toString();
       const localText = String(editor.getValue?.() || "");
+      // #region debug-point C:desktop-hydration-input
+      globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"C",location:"extensions/dev.session-manager/collaboration-client.js:hydration-input",msg:"[DEBUG] Desktop collaboration hydration compared remote and local documents",data:{runtimeSessionId:sessionId,remoteLength:remoteText.length,remoteRoles:Array.from(remoteText.matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),remoteMarkers:(remoteText.match(/zion-assistant:id=/g)||[]).length,localLength:localText.length,localRoles:Array.from(localText.matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),willSeedRemote:!remoteText&&!!localText,willHydrateLocal:!!remoteText&&remoteText!==localText},ts:Date.now()}),keepalive:true}).catch(()=>{});
+      // #endregion
       if (!remoteText && localText) {
         record.text.insert(0, localText);
       } else if (remoteText !== localText) {
-        editor.setValue?.(remoteText, { source: "session-load" });
+        editor.setValue?.(remoteText, { source: "collaboration-hydration" });
       }
+      // #region debug-point E:desktop-hydration-output
+      globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"E",location:"extensions/dev.session-manager/collaboration-client.js:hydration-output",msg:"[DEBUG] Desktop editor state after collaboration hydration",data:{runtimeSessionId:sessionId,editorLength:String(editor.getValue?.()||"").length,editorRoles:Array.from(String(editor.getValue?.()||"").matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),editorMarkers:(String(editor.getValue?.()||"").match(/zion-assistant:id=/g)||[]).length},ts:Date.now()}),keepalive:true}).catch(()=>{});
+      // #endregion
       view.dispatch({
         effects: compartment.reconfigure(
           Prec.highest([
@@ -394,8 +469,11 @@ export function createSessionCollaborationManager({
           ])
         )
       });
+      record.ready = true;
       for (const entry of pendingBySession.get(sessionId)?.values?.() || []) {
-        view.dispatch({ effects: setPendingAssistant.of(entry) });
+        if (!commitPendingEntry(sessionId, entry)) {
+          view.dispatch({ effects: setPendingAssistant.of(entry) });
+        }
       }
       record.provider.awareness?.setLocalStateField?.("user", {
         id: clientId,

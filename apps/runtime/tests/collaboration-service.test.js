@@ -2,15 +2,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import * as Y from "yjs";
 import { createAgentExecutor } from "../../../packages/runtime/src/index";
 import {
+  appendAssistantTokenToYText,
   applyAssistantOutputToYText,
   createSessionDocumentProjector,
   prepareRunInYText,
-  projectAssistantOutputText
+  projectAssistantOutputText,
+  reconcileSessionMessagesInYText
 } from "../../../extensions/dev.session-manager/session-document-projector.js";
 import {
   COLLABORATION_TEXT_KEY,
@@ -47,14 +49,14 @@ function waitFor(predicate, timeoutMs = 3_000) {
   });
 }
 
-function syncedProvider(url, name, document) {
+function syncedProvider(url, name, document, token = "") {
   return new Promise((resolve, reject) => {
     let provider;
     provider = new HocuspocusProvider({
       url,
       name,
       document,
-      token: "",
+      token,
       WebSocketPolyfill: WebSocket,
       onSynced() {
         resolve(provider);
@@ -79,6 +81,125 @@ afterEach(async () => {
 });
 
 describe("Runtime collaboration service", () => {
+  it("rejects an outdated collaboration protocol before upgrading", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-protocol-"));
+    const path = join(directory, "runtime.sqlite3");
+    const runs = new SqliteRunStore(path);
+    const workbenchState = new SqliteWorkbenchStateStore(path);
+    const collaboration = createCollaboration({ store: workbenchState });
+    const executor = createAgentExecutor({
+      engine: {
+        id: "collaboration-protocol-test",
+        async *streamTurn() {
+          yield { type: "message.delta", delta: "unused" };
+        }
+      },
+      tools: {
+        async listTools() { return []; },
+        async invoke() { throw new Error("No tools configured"); }
+      },
+      runs
+    });
+    const server = createRuntimeServer({
+      executor,
+      runs,
+      port: 0,
+      upgradeHandlers: [collaboration.handleUpgrade]
+    });
+    resources.push({
+      directory,
+      runs,
+      workbenchState,
+      collaboration,
+      server
+    });
+    const address = await server.start();
+    const response = await new Promise((resolve, reject) => {
+      const socket = new WebSocket(
+        `${address.url.replace(/^http/, "ws")}`
+        + "/v1/collaboration?client_id=old&protocol=4"
+      );
+      socket.once("unexpected-response", (_request, upgrade) => {
+        resolve(upgrade);
+      });
+      socket.once("open", () => {
+        socket.terminate();
+        reject(new Error("Outdated collaboration client was accepted"));
+      });
+      socket.once("error", () => {});
+    });
+
+    expect(response.statusCode).toBe(426);
+    expect(response.headers["x-zion-collaboration-protocol"]).toBe("5");
+    expect(response.headers["clear-site-data"]).toBe("\"executionContexts\"");
+    response.resume();
+  });
+
+  it("reauthorizes every authenticated client message", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-auth-"));
+    const path = join(directory, "runtime.sqlite3");
+    const runs = new SqliteRunStore(path);
+    const workbenchState = new SqliteWorkbenchStateStore(path);
+    workbenchState.createSession({
+      id: "authenticated-session",
+      title: "Authenticated",
+      text: "hello"
+    });
+    const reauthorize = vi.fn();
+    const collaboration = createCollaboration({
+      store: workbenchState,
+      authenticate({ token }) {
+        if (token !== "valid-client") throw new Error("unauthorized");
+        return { principal: { credentialId: "credential:test" } };
+      },
+      reauthorize
+    });
+    const executor = createAgentExecutor({
+      engine: {
+        id: "collaboration-auth-test",
+        async *streamTurn() {
+          yield { type: "message.delta", delta: "unused" };
+        }
+      },
+      tools: {
+        async listTools() { return []; },
+        async invoke() { throw new Error("No tools configured"); }
+      },
+      runs
+    });
+    const server = createRuntimeServer({
+      executor,
+      runs,
+      port: 0,
+      upgradeHandlers: [collaboration.handleUpgrade]
+    });
+    const resource = {
+      directory,
+      runs,
+      workbenchState,
+      collaboration,
+      server
+    };
+    resources.push(resource);
+    const address = await server.start();
+    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=auth&protocol=5`;
+    const document = new Y.Doc();
+    const provider = await syncedProvider(
+      url,
+      "authenticated-session",
+      document,
+      "valid-client"
+    );
+    resource.provider = provider;
+    document.getText(COLLABORATION_TEXT_KEY).insert(5, " world");
+
+    await waitFor(() => reauthorize.mock.calls.length > 0);
+    expect(reauthorize).toHaveBeenCalledWith({
+      principal: { credentialId: "credential:test" },
+      clientId: "auth"
+    });
+  });
+
   it("syncs a Runtime-backed Session between Yjs clients", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-"));
     const path = join(directory, "runtime.sqlite3");
@@ -123,7 +244,7 @@ describe("Runtime collaboration service", () => {
       server
     });
     const address = await server.start();
-    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=test-client&protocol=2`;
+    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=test-client&protocol=5`;
     const firstDocument = new Y.Doc();
     const secondDocument = new Y.Doc();
     const provider = await syncedProvider(url, "shared-session", firstDocument);
@@ -183,6 +304,95 @@ describe("Runtime collaboration service", () => {
         })
       ])
     );
+  });
+
+  it("does not race the connected document writer at Run termination", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-writer-"));
+    const path = join(directory, "runtime.sqlite3");
+    const runs = new SqliteRunStore(path);
+    const workbenchState = new SqliteWorkbenchStateStore(path);
+    workbenchState.createSession({
+      id: "writer-session",
+      title: "Writer",
+      text: "user hello"
+    });
+    const collaboration = createCollaboration({
+      store: workbenchState,
+      debounceMs: 25,
+      maxDebounceMs: 50
+    });
+    const executor = createAgentExecutor({
+      engine: {
+        id: "collaboration-writer-test",
+        async *streamTurn() {
+          yield { type: "message.delta", delta: "unused" };
+        }
+      },
+      tools: {
+        async listTools() { return []; },
+        async invoke() { throw new Error("No tools configured"); }
+      },
+      runs
+    });
+    const server = createRuntimeServer({
+      executor,
+      runs,
+      port: 0,
+      upgradeHandlers: [collaboration.handleUpgrade]
+    });
+    const resource = {
+      directory,
+      runs,
+      workbenchState,
+      collaboration,
+      server
+    };
+    resources.push(resource);
+    const address = await server.start();
+    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=writer-client&protocol=5`;
+    const document = new Y.Doc();
+    const provider = await syncedProvider(
+      url,
+      "writer-session",
+      document
+    );
+    resource.provider = provider;
+
+    await collaboration.prepareRun("writer-session", {
+      runId: "run-writer",
+      userContent: "hello"
+    });
+    await waitFor(() =>
+      document.getText(COLLABORATION_TEXT_KEY).toString()
+        .includes("zion-assistant:id=run-writer")
+    );
+    document.getText(COLLABORATION_TEXT_KEY).insert(
+      document.getText(COLLABORATION_TEXT_KEY).length,
+      "owner output"
+    );
+
+    await collaboration.applyRunEvent("writer-session", {
+      runId: "run-writer",
+      sequence: 10,
+      type: "message.delta",
+      data: { turn: 1, delta: "runtime stale output" }
+    }, {
+      documentWriterClientId: "writer-client"
+    });
+    await collaboration.applyRunEvent("writer-session", {
+      runId: "run-writer",
+      sequence: 11,
+      type: "run.aborted",
+      data: { reason: "user" }
+    }, {
+      documentWriterClientId: "writer-client"
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(document.getText(COLLABORATION_TEXT_KEY).toString())
+      .toContain("owner output");
+    expect(document.getText(COLLABORATION_TEXT_KEY).toString())
+      .not.toContain("runtime stale output");
   });
 
   it("preserves the submitted user message without a connected Workbench", async () => {
@@ -299,7 +509,7 @@ describe("Runtime collaboration service", () => {
     };
     resources.push(resource);
     const address = await server.start();
-    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=reconnect&protocol=2`;
+    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=reconnect&protocol=5`;
     const firstDocument = new Y.Doc();
     const secondDocument = new Y.Doc();
     const provider = await syncedProvider(
@@ -505,6 +715,43 @@ describe("Runtime collaboration service", () => {
     );
   });
 
+  it("keeps block Markdown parseable while appending split stream tokens", () => {
+    const document = new Y.Doc();
+    const ytext = document.getText(COLLABORATION_TEXT_KEY);
+    ytext.insert(
+      0,
+      "user hello\nassistant <!-- zion-assistant:id=run-heading --> "
+    );
+
+    expect(appendAssistantTokenToYText(ytext, {
+      runId: "run-heading",
+      token: "#"
+    })).toBe(true);
+    expect(appendAssistantTokenToYText(ytext, {
+      runId: "run-heading",
+      token: "# Heading"
+    })).toBe(true);
+    expect(ytext.toString()).toBe([
+      "user hello",
+      "assistant <!-- zion-assistant:id=run-heading --> ",
+      "## Heading"
+    ].join("\n"));
+  });
+
+  it("does not replace streamed text interleaved with card markers", () => {
+    const initial = [
+      "user hello",
+      "assistant <!-- zion-assistant:id=run-cards --> before tool",
+      "调用 read <!-- zion-tool:id=tool:run-cards:1 -->",
+      "after tool"
+    ].join("\n");
+
+    expect(projectAssistantOutputText(initial, {
+      runId: "run-cards",
+      output: "before toolafter tool"
+    })).toBe(initial);
+  });
+
   it("prepares a Run by filling a trailing user prompt without replacing history", () => {
     const document = new Y.Doc();
     const ytext = document.getText(COLLABORATION_TEXT_KEY);
@@ -630,6 +877,31 @@ describe("Runtime collaboration service", () => {
     ].join("\n"));
   });
 
+  it("repairs missing multi-turn document blocks from canonical messages", () => {
+    const document = new Y.Doc();
+    const ytext = document.getText(COLLABORATION_TEXT_KEY);
+    ytext.insert(0, [
+      "user first question",
+      "assistant <!-- zion-assistant:id=run-1 --> first answer",
+      "assistant <!-- zion-assistant:id=run-2 --> "
+    ].join("\n"));
+    const messages = [
+      { role: "user", runId: "run-1", content: "first question" },
+      { role: "assistant", runId: "run-1", content: "first answer" },
+      { role: "user", runId: "run-2", content: "second question" },
+      { role: "assistant", runId: "run-2", content: "second answer" }
+    ];
+
+    expect(reconcileSessionMessagesInYText(ytext, messages)).toBe(true);
+    expect(ytext.toString()).toBe([
+      "user first question",
+      "assistant <!-- zion-assistant:id=run-1 --> first answer",
+      "user second question",
+      "assistant <!-- zion-assistant:id=run-2 --> second answer"
+    ].join("\n"));
+    expect(reconcileSessionMessagesInYText(ytext, messages)).toBe(false);
+  });
+
   it("resolves a Yjs relative Run anchor before inserting the assistant block", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-anchor-"));
     const path = join(directory, "runtime.sqlite3");
@@ -694,7 +966,7 @@ describe("Runtime collaboration service", () => {
     ].join("\n"));
   });
 
-  it("keeps message.completed authoritative over aggregate Run output", async () => {
+  it("keeps text from tool-calling turns in the aggregate Run output", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-final-"));
     const path = join(directory, "runtime.sqlite3");
     const workbenchState = new SqliteWorkbenchStateStore(path);
@@ -744,8 +1016,7 @@ describe("Runtime collaboration service", () => {
 
     const text = workbenchState.readSession("final-session").text;
     expect(text).toContain("user latest question");
-    expect(text).toContain("final answer");
-    expect(text).not.toContain("intermediate text");
+    expect(text).toContain("intermediate textfinal answer");
     expect(text.endsWith("\nuser ")).toBe(false);
   });
 });

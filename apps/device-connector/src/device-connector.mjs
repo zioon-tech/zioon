@@ -5,6 +5,7 @@ import {
   normalizeToolResult,
   validateDeviceCommand
 } from "../../../packages/node-protocol/src/index.mjs";
+import { DEVICE_SERVICE_TOOL_NAME } from "./device-service-host.mjs";
 
 class ConnectorCancellationController {
   constructor() {
@@ -50,12 +51,61 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function normalizeRuntimeUrl(value) {
+  const url = new URL(String(value || ""));
+  const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(
+    url.hostname
+  );
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new Error(
+      "Remote Device Connector URLs must use HTTPS"
+    );
+  }
+  return url.toString().replace(/\/+$/, "");
+}
+
+export async function exchangeDevicePairing({
+  runtimeUrl,
+  pairingId = "",
+  secret = "",
+  userCode = "",
+  device,
+  fetchImpl = globalThis.fetch
+}) {
+  const baseUrl = normalizeRuntimeUrl(runtimeUrl);
+  const response = await fetchImpl(new URL("/v1/access/pair", baseUrl), {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      ...(pairingId && secret ? { pairingId, secret } : {}),
+      ...(userCode ? { userCode } : {}),
+      device
+    })
+  });
+  const payload = await responsePayload(response);
+  if (!response.ok) {
+    const error = new Error(String(
+      payload?.error || payload || `HTTP ${response.status}`
+    ));
+    error.statusCode = response.status;
+    throw error;
+  }
+  if (!String(payload?.credential || "")) {
+    throw new Error("Runtime pairing response has no Device credential");
+  }
+  return payload;
+}
+
 export class DeviceConnector {
   constructor({
     runtimeUrl,
     token,
     registration,
     toolHost,
+    serviceHost = null,
     fetchImpl = globalThis.fetch,
     pollWaitMs = 1_000,
     retryDelayMs = 250,
@@ -72,10 +122,11 @@ export class DeviceConnector {
       throw new Error("Device Connector requires a Tool Host");
     }
 
-    this.runtimeUrl = String(runtimeUrl).replace(/\/+$/, "");
+    this.runtimeUrl = normalizeRuntimeUrl(runtimeUrl);
     this.token = String(token);
     this.registration = normalizeNodeRegistration(registration);
     this.toolHost = toolHost;
+    this.serviceHost = serviceHost;
     this.fetchImpl = fetchImpl;
     this.pollWaitMs = pollWaitMs;
     this.retryDelayMs = retryDelayMs;
@@ -110,6 +161,7 @@ export class DeviceConnector {
     for (const active of this.active.values()) {
       active.controller.cancel("connector-shutdown");
     }
+    this.serviceHost?.close?.();
     await Promise.allSettled([
       this.loopPromise,
       ...[...this.active.values()].map((active) => active.task)
@@ -157,8 +209,13 @@ export class DeviceConnector {
       } catch (error) {
         this.pollController = null;
         if (this.state !== "running") break;
+        if ([401, 403].includes(Number(error?.statusCode))) {
+          this.rejectCredential(error);
+          break;
+        }
         if (error?.statusCode === 409) {
           this.state = "stale";
+          this.serviceHost?.close?.();
           for (const active of this.active.values()) {
             active.controller.cancel("connector-replaced");
           }
@@ -178,6 +235,10 @@ export class DeviceConnector {
         try {
           await this.register();
         } catch (registrationError) {
+          if ([401, 403].includes(Number(registrationError?.statusCode))) {
+            this.rejectCredential(registrationError);
+            break;
+          }
           this.logger({
             level: "warn",
             nodeId: this.registration.nodeId,
@@ -187,6 +248,21 @@ export class DeviceConnector {
         }
       }
     }
+  }
+
+  rejectCredential(error) {
+    this.state = "unauthorized";
+    this.serviceHost?.close?.();
+    for (const active of this.active.values()) {
+      active.controller.cancel("credential-rejected");
+    }
+    this.logger({
+      level: "error",
+      nodeId: this.registration.nodeId,
+      message: `credential rejected; pair this Device again: ${
+        errorMessage(error)
+      }`
+    });
   }
 
   acceptCommand(input) {
@@ -222,13 +298,22 @@ export class DeviceConnector {
           }`
         );
       }
-      result = normalizeToolResult(
-        await this.toolHost.invoke(
-          command.invocation,
-          controller.signal,
-          { resourceId: command.resourceId }
-        )
-      );
+      const toolName = String(command.invocation?.toolCall?.name || "");
+      const output = toolName === DEVICE_SERVICE_TOOL_NAME
+        ? await this.serviceHost?.invoke?.(
+            command.invocation.toolCall.arguments,
+            controller.signal,
+            command.invocation
+          )
+        : await this.toolHost.invoke(
+            command.invocation,
+            controller.signal,
+            { resourceId: command.resourceId }
+          );
+      if (!output) {
+        throw new Error(`Device service is unavailable: ${toolName}`);
+      }
+      result = normalizeToolResult(output);
     } catch (error) {
       result = {
         ok: false,

@@ -147,6 +147,33 @@ describe("runStream error propagation and retries", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("allows Runtime-managed credentials without exposing an API key in the browser", async () => {
+    window.zion.models.getProvider = () => ({
+      resolve: async () => ({
+        providerType: "openai",
+        modelName: "test-model",
+        url: "https://example.test/v1/chat/completions",
+        _requiresConfig: true,
+        _credentialConfigured: true,
+        _runtimeProfileId: "workbench.user.dynamic.test-model",
+        stream: true
+      })
+    });
+    mocks.proxyLLMRequest.mockResolvedValue(createSuccessStream("renamed"));
+    const onToken = vi.fn();
+    const onError = vi.fn();
+
+    await run({ onToken, onError, requestSource: "session-auto-rename" });
+
+    expect(mocks.proxyLLMRequest).toHaveBeenCalledOnce();
+    expect(mocks.proxyLLMRequest.mock.calls[0][0].headers.Authorization).toBeUndefined();
+    expect(mocks.proxyLLMRequest.mock.calls[0][0].modelProfileId).toBe(
+      "workbench.user.dynamic.test-model"
+    );
+    expect(onToken).toHaveBeenCalledWith("renamed");
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("surfaces an error object from a non-streaming 200 response", async () => {
     window.zion.models.getProvider = () => ({
       resolve: async () => ({

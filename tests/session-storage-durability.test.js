@@ -73,7 +73,7 @@ describe("session storage durability", () => {
       title: "Durable"
     });
 
-    expect(onLoad).toHaveBeenCalledTimes(2);
+    expect(onLoad).toHaveBeenCalledTimes(1);
     expect(state.get("sessions.doc.s1")).toBe("durable");
     expect(state.get("sessions.meta.s1").title).toBe("Durable");
   });

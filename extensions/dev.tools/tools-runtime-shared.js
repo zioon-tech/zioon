@@ -28,6 +28,8 @@ const TRUSTED_AUTOMATION_TOOLS = new Set([
   "schedulerManage",
   "modelsManage",
   "toolsManage",
+  "pluginsManage",
+  "terminalManage",
   "mailManage"
 ]);
 

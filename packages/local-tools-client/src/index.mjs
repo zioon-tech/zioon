@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { clearTimeout, setTimeout } from "node:timers";
 import { URL, URLSearchParams } from "node:url";
 
@@ -218,7 +219,11 @@ const FILE_TOOL_NAMES = new Set(["read", "glob", "grep", "tree", "write", "edit"
 const WRITE_TOOL_NAMES = new Set(["write", "edit"]);
 
 function normalizePath(value) {
-  const raw = String(value || "").trim().replaceAll("\\", "/");
+  let raw = String(value || "").trim().replaceAll("\\", "/");
+  if (raw === "~" || raw.startsWith("~/")) {
+    const home = homedir().replaceAll("\\", "/").replace(/\/+$/, "");
+    raw = raw === "~" ? home : `${home}/${raw.slice(2)}`;
+  }
   const drive = raw.match(/^[A-Za-z]:\//)?.[0] || "";
   const absolute = raw.startsWith("/") || !!drive;
   if (!absolute) return "";
@@ -318,10 +323,14 @@ function commandMatchesPrefix(command, prefixValue) {
 }
 
 function assertSessionAllowed(args, policy) {
-  const sessionId = String(args.session_id || "").trim();
   const allowedSessionIds = (policy.allowedTerminalSessionIds || [])
     .map(String)
     .filter(Boolean);
+  let sessionId = String(args.session_id || "").trim();
+  if (!sessionId && allowedSessionIds.length === 1) {
+    [sessionId] = allowedSessionIds;
+    args.session_id = sessionId;
+  }
   if (
     sessionId
     && allowedSessionIds.length
@@ -335,10 +344,19 @@ function assertSessionAllowed(args, policy) {
 function assertFileAllowed(args, policy, { allowUnscoped = false } = {}) {
   const roots = policy.fileRoots || [];
   if (!String(args.path || "").trim() && roots.length === 1) [args.path] = roots;
-  if (allowUnscoped && roots.length === 0 && normalizePath(args.path)) return;
-  if (!pathWithinRoots(args.path, roots)) {
-    throw new Error("file path is outside allowed roots");
+  const normalized = normalizePath(args.path);
+  if (allowUnscoped && roots.length === 0 && normalized) {
+    args.path = normalized;
+    return;
   }
+  if (!pathWithinRoots(normalized, roots)) {
+    const allowed = roots.map(normalizePath).filter(Boolean).join(", ") || "(none)";
+    throw new Error(
+      `file path "${String(args.path || "").trim() || "(missing)"}" `
+      + `is outside allowed roots: ${allowed}`
+    );
+  }
+  args.path = normalized;
 }
 
 function mailRecipients(args) {
@@ -702,6 +720,8 @@ export class LocalToolsDeviceHost {
   constructor({
     baseUrl = "http://127.0.0.1:8765",
     resourceBindings = {},
+    additionalRoots = [],
+    accessPolicyProvider = null,
     fetchImpl = globalThis.fetch,
     healthTimeoutMs = 5000,
     maxResultChars = 30_000
@@ -712,7 +732,13 @@ export class LocalToolsDeviceHost {
       healthTimeoutMs,
       maxResultChars
     });
+    this.accessPolicyProvider = typeof accessPolicyProvider === "function"
+      ? accessPolicyProvider
+      : null;
     this.bindings = new Map();
+    const extraRoots = (Array.isArray(additionalRoots) ? additionalRoots : [])
+      .map(normalizePath)
+      .filter(Boolean);
     for (const [resourceId, input] of Object.entries(resourceBindings)) {
       const root = normalizePath(input?.root);
       if (!root) {
@@ -720,6 +746,7 @@ export class LocalToolsDeviceHost {
       }
       this.bindings.set(resourceId, {
         root,
+        roots: [...new Set([root, ...extraRoots])],
         allowedTerminalSessionIds: new Set(
           Array.isArray(input?.allowedTerminalSessionIds)
             ? input.allowedTerminalSessionIds.map(String).filter(Boolean)
@@ -740,6 +767,25 @@ export class LocalToolsDeviceHost {
       throw new Error(`Device resource is not configured: ${resourceId || "missing"}`);
     }
 
+    const dynamicAccess = await this.accessPolicyProvider?.({
+      invocation,
+      resourceId,
+      binding: {
+        root: binding.root,
+        roots: [...binding.roots],
+        allowedTerminalSessionIds: Array.from(
+          binding.allowedTerminalSessionIds
+        )
+      }
+    });
+    const deviceRoots = Array.isArray(dynamicAccess?.fileRoots)
+      ? dynamicAccess.fileRoots.map(normalizePath).filter(Boolean)
+      : binding.roots;
+    const deviceSessionIds = new Set(
+      Array.isArray(dynamicAccess?.allowedTerminalSessionIds)
+        ? dynamicAccess.allowedTerminalSessionIds.map(String).filter(Boolean)
+        : binding.allowedTerminalSessionIds
+    );
     const remotePolicy = invocation.policy || {};
     const toolName = String(invocation.toolCall?.name || "");
     const resourceScoped = FILE_TOOL_NAMES.has(toolName)
@@ -748,8 +794,10 @@ export class LocalToolsDeviceHost {
     const requestedRoots = remotePolicy.fileRoots || [];
     const fileRoots = resourceScoped
       ? requestedRoots.length
-        ? intersectRoots(requestedRoots, binding.root)
-        : [binding.root]
+        ? [...new Set(deviceRoots.flatMap((root) =>
+            intersectRoots(requestedRoots, root)
+          ))]
+        : deviceRoots
       : requestedRoots;
     if (resourceScoped && !fileRoots.length) {
       throw new Error("Runtime file roots do not intersect the Device resource");
@@ -757,8 +805,8 @@ export class LocalToolsDeviceHost {
     const requestedSessions = (remotePolicy.allowedTerminalSessionIds || [])
       .map(String);
     const allowedTerminalSessionIds = requestedSessions.length
-      ? requestedSessions.filter((id) => binding.allowedTerminalSessionIds.has(id))
-      : Array.from(binding.allowedTerminalSessionIds);
+      ? requestedSessions.filter((id) => deviceSessionIds.has(id))
+      : Array.from(deviceSessionIds);
     if (requestedSessions.length && !allowedTerminalSessionIds.length) {
       throw new Error("Runtime terminal sessions do not intersect the Device resource");
     }

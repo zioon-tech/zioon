@@ -1,0 +1,65 @@
+{
+  "name": "dev.byteintl-model",
+  "version": "0.1.0",
+  "description": "Expose the ByteIntl ModelHub API as a loopback OpenAI-compatible Runtime endpoint.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.byteintl-model",
+    "name": "ByteIntl Model Adapter",
+    "version": "0.1.0",
+    "manifestVersion": 2,
+    "entries": {
+      "runtime": "./runtime.js"
+    },
+    "hosts": {
+      "runtime": true
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "presentation": {
+      "displayName": {
+        "zh-CN": "ByteIntl 模型适配器",
+        "en-US": "ByteIntl Model Adapter"
+      },
+      "description": {
+        "zh-CN": "通过 loopback OpenAI 兼容端点安全接入 ByteIntl ModelHub。",
+        "en-US": "Connect ByteIntl ModelHub through a loopback OpenAI-compatible endpoint."
+      },
+      "icon": "server",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "AK 查询参数安全注入",
+          "OpenAI 请求格式转换",
+          "非流式上游响应兼容"
+        ],
+        "en-US": [
+          "Secure query-parameter credential injection",
+          "OpenAI request normalization",
+          "Non-streaming upstream response compatibility"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "network",
+          "label": {
+            "zh-CN": "网络访问",
+            "en-US": "Network Access"
+          },
+          "description": {
+            "zh-CN": "访问配置的 ByteIntl ModelHub HTTPS 接口。",
+            "en-US": "Access the configured ByteIntl ModelHub HTTPS endpoint."
+          }
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

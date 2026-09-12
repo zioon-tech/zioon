@@ -344,6 +344,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             title: String(request.title || ""),
             sessionId: request.sessionId,
             projectId: request.projectId,
+            target: request.target,
             model: request.model,
             modelOptions: request.modelOptions,
             policy,
@@ -459,6 +460,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             model: request.model || null,
             sessionId: request.sessionId || null,
             projectId: request.projectId || null,
+            target: request.target || null,
             allowedTools: exposedTools.map((tool) => tool.name),
             maxTurns,
             maxToolCalls: policy.maxToolCalls
@@ -583,6 +585,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
                 attemptId,
                 sessionId: request.sessionId,
                 projectId: request.projectId,
+                target: request.target,
                 policy,
                 toolCall: call
               }, cancellation.signal);
@@ -748,6 +751,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         title: existingRun.title,
         sessionId: existingRun.sessionId,
         projectId: existingRun.projectId,
+        target: existingRun.target,
         model,
         modelOptions,
         policy: existingRun.policy,

@@ -130,6 +130,63 @@ describe("sessions list renderer", () => {
     expect(listEl.querySelector(".zion-session-card-preview")).toBeNull();
   });
 
+  it("renders comment sessions only beneath their parent session", () => {
+    const listEl = document.createElement("div");
+    const tree = {
+      id: "root",
+      type: "folder",
+      title: "Root",
+      children: [
+        { id: "comment:thread-1", type: "session", title: "Accidental durable comment" },
+        { id: "session-1", type: "session", title: "Parent session" }
+      ]
+    };
+    window.zion.commands = {
+      executeCommand: vi.fn((id) => id === "comments.listThreadRelations"
+        ? [{
+            id: "thread-1",
+            sessionId: "session-1",
+            parentSessionId: "session-1",
+            threadSessionId: "comment:thread-1",
+            title: "Review this section",
+            resolved: false,
+            updatedAt: 2
+          }]
+        : undefined)
+    };
+    const createRenderer = createSessionsListRendererFactory({
+      loadTree: () => tree,
+      ensureInitialTree: () => tree,
+      loadMeta: (id) => ({ id, title: id, updatedAt: 2, size: 10 }),
+      truncate: (value) => value,
+      setSmallDragImage: () => {},
+      fmtTime: (value) => String(value),
+      now: () => 3,
+      getSelection: () => [],
+      setSelection: () => {},
+      clearSelection: () => {},
+      isSelected: () => false,
+      toggleSelection: () => {},
+      getLastSelectedId: () => null,
+      setLastSelectedId: () => {},
+      isFolderOpen: () => true,
+      setFolderOpen: () => {},
+      moveNode: () => false
+    });
+    const render = createRenderer({
+      listEl,
+      hostElement: document.createElement("div"),
+      getQuery: () => "",
+      getSort: () => "updated"
+    });
+
+    render();
+
+    expect(listEl.querySelector('.zion-session-row.is-session[data-session-id="comment:thread-1"]')).toBeNull();
+    expect(listEl.querySelector('.zion-session-child-row[data-session-id="comment:thread-1"]')).toBeTruthy();
+    expect(listEl.querySelector('[data-session-id="session-1"]')).toBeTruthy();
+  });
+
   it("renders filtered sessions flat without opening their folders", () => {
     let flat = true;
     let matchId = "nested-match";

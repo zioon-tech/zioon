@@ -7651,3 +7651,473 @@ body.is-dragging-inline-tabs-scrollbar {
     display: none;
   }
 }
+
+.zion-pairing-shell {
+  width: 100%;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg, #ffffff);
+  color: var(--fg, #18181b);
+}
+
+.zion-pairing-panel {
+  width: min(100%, 360px);
+  display: grid;
+  gap: 12px;
+}
+
+.zion-pairing-panel h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.zion-pairing-panel p {
+  margin: 0;
+  color: var(--fg-muted, #71717a);
+  line-height: 1.5;
+}
+
+.zion-pairing-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.zion-pairing-form input,
+.zion-pairing-form button {
+  min-height: 38px;
+  border: 1px solid var(--border, #d4d4d8);
+  border-radius: 6px;
+  font: inherit;
+  letter-spacing: 0;
+}
+
+.zion-pairing-form input {
+  min-width: 0;
+  padding: 0 10px;
+  background: var(--surface, #ffffff);
+  color: inherit;
+  text-transform: uppercase;
+}
+
+.zion-pairing-form button {
+  padding: 0 14px;
+  border-color: var(--accent, #2563eb);
+  background: var(--accent, #2563eb);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.zion-pairing-form button:disabled,
+.zion-pairing-form input:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.zion-pairing-status {
+  min-height: 22px;
+  color: var(--danger, #dc2626) !important;
+}
+
+@media (max-width: 420px) {
+  .zion-pairing-shell {
+    place-items: start stretch;
+    padding-top: 18vh;
+  }
+
+  .zion-pairing-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+.zion-access-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.zion-access-summary,
+.zion-access-section-head,
+.zion-access-current,
+.zion-access-device-row,
+.zion-access-pairing-result,
+.zion-access-actions,
+.zion-access-segmented {
+  display: flex;
+  align-items: center;
+}
+
+.zion-access-summary,
+.zion-access-section-head {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.zion-access-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.zion-access-meta,
+.zion-access-section-meta,
+.zion-access-device-meta,
+.zion-access-expiry {
+  margin-top: 3px;
+  color: var(--fg-muted, #71717a);
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.zion-access-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.zion-access-state-dot,
+.zion-access-device-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--fg-muted, #71717a);
+}
+
+.zion-access-state.is-online .zion-access-state-dot,
+.zion-access-device-dot.is-online,
+.zion-access-device-dot.is-active {
+  background: #2f9e67;
+}
+
+.zion-access-device-dot.is-offline {
+  background: #d59b32;
+}
+
+.zion-access-device-dot.is-revoked {
+  background: var(--danger, #dc2626);
+}
+
+.zion-access-current {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-block: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 34%, transparent);
+  font-size: 11px;
+}
+
+.zion-access-pairing,
+.zion-access-devices,
+.zion-access-policy {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.zion-access-section-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.zion-access-segmented {
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 72%, transparent);
+  border-radius: 6px;
+}
+
+.zion-access-segmented button {
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.zion-access-segmented button.is-active {
+  background: color-mix(in srgb, var(--accent, #6272a4) 20%, transparent) !important;
+}
+
+.zion-access-create {
+  align-self: flex-start;
+}
+
+.zion-access-pairing-result {
+  align-items: stretch;
+  gap: 18px;
+  padding: 14px 0;
+  border-block: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 34%, transparent);
+}
+
+.zion-access-qr {
+  width: 160px;
+  height: 160px;
+  flex: 0 0 160px;
+  object-fit: contain;
+  border: 6px solid #ffffff;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.zion-access-code-area {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.zion-access-code {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, monospace);
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.zion-access-connector-command {
+  display: block;
+  max-width: 100%;
+  max-height: 96px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 48%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface, #ffffff) 82%, var(--bg, #ffffff));
+  color: inherit;
+  font: 11px/1.45 var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+  user-select: text;
+  white-space: pre-wrap;
+}
+
+.zion-access-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.zion-access-device-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 34%, transparent);
+}
+
+.zion-access-device-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 72px auto;
+  gap: 10px;
+  min-height: 52px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 24%, transparent);
+}
+
+.zion-access-device-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.zion-access-device-label {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-access-device-kind {
+  color: var(--fg-muted, #71717a);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+}
+
+.zion-access-policy-field {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(220px, 320px);
+  align-items: center;
+  gap: 12px;
+  padding-block: 8px;
+  border-block: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 34%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.zion-access-policy-field select,
+.zion-access-root-form input {
+  min-width: 0;
+  height: 28px;
+  border: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 80%, transparent);
+  border-radius: 4px;
+  background: var(--settings-input-bg, var(--bg, #1e1e1e));
+  color: inherit;
+  font: inherit;
+}
+
+.zion-access-policy-field select {
+  padding-inline: 8px;
+}
+
+.zion-access-permissions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+
+.zion-access-permission {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  font-size: 11px;
+}
+
+.zion-access-permission input {
+  width: 14px;
+  height: 14px;
+}
+
+.zion-access-root-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.zion-access-root-form input {
+  padding-inline: 8px;
+  font-family: var(--font-mono, monospace);
+}
+
+.zion-access-root-list,
+.zion-access-request-list,
+.zion-access-path-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.zion-access-root-list,
+.zion-access-request-list {
+  border-top: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 34%, transparent);
+}
+
+.zion-access-root-row,
+.zion-access-request-row {
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding-block: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 24%, transparent);
+}
+
+.zion-access-root-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.zion-access-request-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.zion-access-root-row code,
+.zion-access-request-main code,
+.zion-access-path-list code {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font: 10px/1.45 var(--font-mono, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zion-access-request-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.zion-access-request-row .zion-access-actions {
+  margin-top: 0;
+}
+
+.zion-access-details {
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #3c3c3c) 24%, transparent);
+  padding-block: 6px;
+  font-size: 11px;
+}
+
+.zion-access-details summary {
+  cursor: pointer;
+  color: var(--fg-muted, #71717a);
+}
+
+.zion-access-path-list {
+  gap: 4px;
+  padding: 8px 0 4px 16px;
+}
+
+.zion-access-message,
+.zion-access-error,
+.zion-access-empty {
+  min-height: 24px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.zion-access-message {
+  color: #2f9e67;
+}
+
+.zion-access-error {
+  color: var(--danger, #dc2626);
+}
+
+.zion-access-empty {
+  color: var(--fg-muted, #71717a);
+}
+
+@media (max-width: 640px) {
+  .zion-access-summary,
+  .zion-access-section-head,
+  .zion-access-pairing-result {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .zion-access-segmented {
+    align-self: stretch;
+  }
+
+  .zion-access-segmented button {
+    flex: 1;
+  }
+
+  .zion-access-qr {
+    width: min(72vw, 224px);
+    height: auto;
+    aspect-ratio: 1;
+    flex-basis: auto;
+    align-self: center;
+  }
+
+  .zion-access-device-row {
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+  }
+
+  .zion-access-policy-field,
+  .zion-access-request-row {
+    grid-template-columns: 1fr;
+  }
+
+  .zion-access-device-kind {
+    display: none;
+  }
+}

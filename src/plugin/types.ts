@@ -251,6 +251,16 @@ export interface PluginInfo {
   skillFiles?: Record<string, Record<string, string>>;
   /** ZIP 插件中由 contributes.styles 声明的样式内容 */
   styleContents?: Record<string, string>;
+  /** ZIP 插件中 Workbench/renderer JS 模块源码，用于刷新后重建 blob URL */
+  scriptContents?: Record<string, string>;
+  /** ZIP 插件中 Workbench/renderer 原始入口路径 */
+  sourceEntries?: PluginEntries;
+  /** ZIP 插件脚本源码在 IndexedDB 中的持久化 key */
+  scriptStorageKey?: string;
+  /** ZIP 插件脚本源码估算字符大小，用于展示和排障 */
+  scriptContentBytes?: number;
+  /** 当前页面中从 scriptContents 生成的 blob URL，不能跨刷新持久化 */
+  scriptBlobUrls?: Record<string, string>;
   /** 开发模式插件的本地源码目录 */
   sourceDir?: string;
   /** 开发模式插件会话 ID */

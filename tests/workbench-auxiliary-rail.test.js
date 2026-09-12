@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { initWorkbench } from "../src/ui/workbench/workbench";
-import { activityBarRuntime, auxiliaryBarRuntime, bindWorkbenchCore } from "../src/ui/workbench/runtime";
+import { activityBarRuntime, auxiliaryBarRuntime, bindWorkbenchCore, sideBarRuntime } from "../src/ui/workbench/runtime";
 
 function createState() {
   const map = new Map();
@@ -31,6 +31,113 @@ function createState() {
 }
 
 describe("workbench auxiliary rail", () => {
+  it("keeps the Activity Bar and Sidebar outside the medium-mode overlay mask", () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 902
+    });
+    const host = document.createElement("div");
+    host.id = "app";
+    host.style.height = "663px";
+    document.body.appendChild(host);
+
+    bindWorkbenchCore({
+      state: createState(),
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+    window.dispatchEvent(new Event("resize"));
+    const sideView = sideBarRuntime.registerView({
+      id: "test.medium.sidebar",
+      pluginId: "test",
+      title: "Sidebar",
+      component: { render: () => {} }
+    });
+    const auxView = auxiliaryBarRuntime.registerView({
+      id: "test.medium.aux",
+      pluginId: "test",
+      title: "Auxiliary",
+      component: { render: () => {} }
+    });
+    const wb = initWorkbench(host);
+    sideBarRuntime.show();
+    sideBarRuntime.activateView("test.medium.sidebar");
+    auxiliaryBarRuntime.show();
+    auxiliaryBarRuntime.activateView("test.medium.aux");
+
+    const mask = host.querySelector(".zion-overlay-mask");
+    expect(mask.style.display).toBe("block");
+    expect(mask.style.left).toBe(
+      "calc(var(--activitybar-w, 0px) + var(--sidebar-w, 0px))"
+    );
+    expect(mask.style.bottom).toBe("0px");
+
+    auxView.dispose();
+    sideView.dispose();
+    wb.dispose();
+    host.remove();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: originalWidth
+    });
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  it("keeps Settings and late Activity Bar items reachable on mobile", () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 390
+    });
+    const host = document.createElement("div");
+    host.id = "app";
+    host.style.height = "844px";
+    document.body.appendChild(host);
+    const openSettings = vi.fn();
+    window.zion = {
+      ...(window.zion || {}),
+      settings: { open: openSettings }
+    };
+
+    bindWorkbenchCore({
+      state: createState(),
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+    window.dispatchEvent(new Event("resize"));
+    const wb = initWorkbench(host);
+    const item = activityBarRuntime.registerItem({
+      id: "test.mobile.late",
+      pluginId: "test",
+      icon: "$(comment)",
+      tooltip: "Late mobile item"
+    });
+
+    const settings = host.querySelector(
+      '.zion-mobilebar-action[aria-label="设置"]'
+    );
+    expect(settings).toBeTruthy();
+    settings.click();
+    expect(openSettings).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(
+      '.zion-mobilebar-item[aria-label="Late mobile item"]'
+    )).toBeTruthy();
+
+    item.dispose();
+    wb.dispose();
+    host.remove();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: originalWidth
+    });
+    window.dispatchEvent(new Event("resize"));
+  });
+
   it("renders Activity Bar items with their registered icon and label", () => {
     const host = document.createElement("div");
     host.id = "app";

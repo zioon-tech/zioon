@@ -44,6 +44,27 @@ function parseMode(value: unknown): WorkbenchRuntimeMode | null {
   return null;
 }
 
+function defaultRuntimeBaseUrl(): string {
+  try {
+    const location = globalThis.location;
+    if (
+      import.meta.env.PROD
+      && ["http:", "https:"].includes(location?.protocol)
+    ) {
+      return location.origin;
+    }
+    if (
+      location?.protocol === "https:"
+      && !["localhost", "127.0.0.1", "::1", "[::1]"].includes(location.hostname)
+    ) {
+      return location.origin;
+    }
+  } catch {
+    // Non-browser clients retain the loopback default.
+  }
+  return DEFAULT_WORKBENCH_RUNTIME_BASE_URL;
+}
+
 export function readWorkbenchRuntimeConfig(
   options: WorkbenchRuntimeConfigOptions = {}
 ): {
@@ -70,7 +91,7 @@ export function readWorkbenchRuntimeConfig(
       ? state?.get?.(options.legacyBaseUrlStateKey)
       : null)
     || readStored(storage, options.legacyBaseUrlStorageKey)
-    || DEFAULT_WORKBENCH_RUNTIME_BASE_URL
+    || defaultRuntimeBaseUrl()
   ).trim().replace(/\/+$/, "");
 
   return {
@@ -80,6 +101,17 @@ export function readWorkbenchRuntimeConfig(
   };
 }
 
+export function runtimeDeviceServiceBaseUrl(
+  service: "local-tools" | "plugin-service",
+  options: WorkbenchRuntimeConfigOptions = {}
+): string | null {
+  const config = readWorkbenchRuntimeConfig(options);
+  const state = options.state ?? (globalThis as any).window?.zion?.state;
+  const backend = String(state?.get?.("runtime.connection")?.backend || "");
+  if (config.mode !== "runtime" && backend !== "runtime") return null;
+  return `${config.baseUrl}/v1/device-services/${service}`;
+}
+
 export type WorkbenchRuntimeHealth = {
   available: boolean;
   schedulerWorker: boolean;
@@ -87,6 +119,8 @@ export type WorkbenchRuntimeHealth = {
   engineId?: string;
   runtimePlugins?: Array<{
     id: string;
+    version?: string;
+    origin?: string;
     status: string;
     contextProviderIds: string[];
     postProcessorIds?: string[];
@@ -152,6 +186,12 @@ export async function probeWorkbenchRuntime({
       runtimePlugins: Array.isArray(payload.runtimePlugins)
         ? payload.runtimePlugins.map((plugin: any) => ({
             id: String(plugin?.id || ""),
+            ...(plugin?.version
+              ? { version: String(plugin.version) }
+              : {}),
+            ...(plugin?.origin
+              ? { origin: String(plugin.origin) }
+              : {}),
             status: String(plugin?.status || ""),
             contextProviderIds: Array.isArray(plugin?.contextProviderIds)
               ? plugin.contextProviderIds.map(String).filter(Boolean)

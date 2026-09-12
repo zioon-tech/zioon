@@ -1733,6 +1733,10 @@ class Registry {
     this.events.emit(topic, payload);
   }
 
+  emitAsync(topic: string, payload?: any): Promise<void> {
+    return this.events.emitAsync(topic, payload);
+  }
+
   // state
   getState<T>(key: string): T | undefined {
     return this.state.get<T>(key);
@@ -2361,6 +2365,7 @@ try { runLedger.reconcileActiveRuns([], "startup"); } catch {}
     },
     events: {
       emit: (topic: string, payload?: any) => registry.emit(topic, payload),
+      emitAsync: (topic: string, payload?: any) => registry.emitAsync(topic, payload),
       on: (topic: string, handler: (payload: any) => void) => registry.on(topic, handler)
     },
     state: {

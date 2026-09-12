@@ -23,6 +23,7 @@ function readLocalToolsBaseUrl() {
 async function request(baseUrl, path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...(options.headers || {}) }
   });
   if (response.status === 204) return null;
@@ -49,7 +50,9 @@ function taskPayload(task) {
     command: task.command || "",
     cwd: task.cwd || "",
     note: task.note || "",
+    nodeId: task.nodeId || "",
     interactionProfileId: task.interactionProfileId || "scheduled.default",
+    modelProfileId: task.modelProfileId || "",
     schedule: {
       ...task.schedule,
       timeZone: task.schedule?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || "local",
@@ -64,6 +67,14 @@ function taskPayload(task) {
 }
 
 export class SchedulerServiceClient {
+  async listNodes() {
+    return (await request(readRuntimeBaseUrl(), "/v1/device-nodes"))?.nodes || [];
+  }
+
+  async listModelProfiles() {
+    return (await request(readRuntimeBaseUrl(), "/v1/models"))?.profiles || [];
+  }
+
   async listTasks() {
     return (await runtimeRequest("/tasks"))?.tasks || [];
   }
@@ -99,7 +110,9 @@ export class SchedulerServiceClient {
   }
 
   async getRun(runId) {
-    const run = await runtimeRequest(`/runs/${encodeURIComponent(runId)}`);
+    const run = await runtimeRequest(
+      `/runs/${encodeURIComponent(runId)}?event_limit=50`
+    );
     return run ? { ...run, isSummary: false } : null;
   }
 

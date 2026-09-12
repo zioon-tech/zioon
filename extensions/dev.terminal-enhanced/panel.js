@@ -1,6 +1,10 @@
 /**
  * Terminal Enhanced Panel with PTY WebSocket + xterm.js
  */
+import {
+  runtimeDeviceServiceBaseUrl
+} from "../../src/runtime/workbench-runtime-config.ts";
+
 function t(key, fallback, values) {
   const fullKey = `dev.terminal-enhanced.${key}`;
   try {
@@ -196,6 +200,33 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   height: 26px;
   gap: 2px;
   align-items: center;
+}
+
+.zte-transport-status {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--fg) 68%, transparent);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.zte-transport-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.zte-transport-status[data-transport="webrtc"] {
+  color: var(--success, #2ea043);
+}
+.zte-transport-status[data-transport="relay"] {
+  color: var(--warning, #b7791f);
+}
+.zte-transport-status[data-transport="disconnected"] {
+  color: var(--danger, #d73a49);
 }
 
 .zte-tabs {
@@ -1168,6 +1199,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const actions = document.createElement("div");
   actions.className = "zte-actions";
 
+  const transportStatus = document.createElement("span");
+  transportStatus.className = "zte-transport-status";
+  transportStatus.setAttribute("aria-live", "polite");
+
   const iconHtml = (name) => {
     try {
       const html = window.zionIcons?.htmlFromCodicon?.(name);
@@ -1245,6 +1280,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   dockBtn.className = "zte-icon-btn";
   if (embedded) dockBtn.style.display = "none";
 
+  actions.appendChild(transportStatus);
   actions.appendChild(newBtn);
   actions.appendChild(dockBtn);
   actions.appendChild(closeBtn);
@@ -2077,6 +2113,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       ptyConnectNonce: 0,
       ptyRetryTimer: 0,
       ptyRetryCount: 0,
+      ptyTransportDisp: null,
+      ptyTransportStatus: { transport: "connecting" },
       termDataDisp: null,
       lastCols: 0,
       lastRows: 0
@@ -2097,6 +2135,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     return v;
   }
 
+  function preload() {
+    return ensureXtermLoaded().catch(() => false);
+  }
+
   function activateView(sessionId) {
     const sid = String(sessionId || "").trim();
     if (!sid) return;
@@ -2114,6 +2156,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
     try { clearTimeout(v.ptyRetryTimer); } catch {}
     try { clearTimeout(v.ptyStableTimer); } catch {}
     try { v.termDataDisp?.dispose?.(); } catch {}
+    try { v.ptyTransportDisp?.dispose?.(); } catch {}
     try { v.pty?.dispose?.(); } catch {}
     try { v.term?.dispose?.(); } catch {}
     try { v.container?.remove?.(); } catch {}
@@ -2152,25 +2195,26 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
 
     const type = s.type || "local";
     const cwd = String(s?.cwd || "").trim();
+    const nodePrefix = s.nodeLabel || s.nodeId ? `${s.nodeLabel || s.nodeId}: ` : "";
 
     if (type === "ssh") {
       const host = s.ssh_host || "unknown";
       const port = s.ssh_port || 22;
       const cwdShort = cwd ? cwd.split("/").filter(Boolean).slice(-2).join("/") : "";
       if (cwdShort) {
-        return `${host}:${cwdShort}`;
+        return `${nodePrefix}${host}:${cwdShort}`;
       }
-      return `${host}:${port}`;
+      return `${nodePrefix}${host}:${port}`;
     }
 
     // Local session - show cwd
     const cwdShort = cwd ? cwd.split("/").filter(Boolean).slice(-2).join("/") : "";
     if (cwdShort) {
-      return cwdShort;
+      return `${nodePrefix}${cwdShort}`;
     }
 
     // Fallback to ID
-    return s.id || "";
+    return `${nodePrefix}${s.name || s.nativeSessionId || s.id || ""}`;
   }
 
   function setClipboardText(text) {
@@ -2700,7 +2744,44 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   } catch {}
 
   function updateStatusText() {
-    // Status text removed as requested
+    const v = getActiveView();
+    if (!v) {
+      transportStatus.style.display = "none";
+      transportStatus.textContent = "";
+      transportStatus.removeAttribute("data-transport");
+      transportStatus.removeAttribute("title");
+      return;
+    }
+    const status = v.ptyTransportStatus || {
+      transport: v.ptyConnecting ? "connecting" : "disconnected"
+    };
+    const mode = String(status.transport || "connecting");
+    const labels = {
+      connecting: t("panel.transportConnecting", "连接中"),
+      webrtc: t("panel.transportDirect", "直连"),
+      relay: t("panel.transportRelay", "中转"),
+      local: t("panel.transportLocal", "本机"),
+      disconnected: t("panel.transportDisconnected", "重连中")
+    };
+    transportStatus.textContent = labels[mode] || labels.connecting;
+    transportStatus.dataset.transport = mode;
+    transportStatus.style.display = "inline-flex";
+
+    const route = [
+      status.localCandidateType,
+      status.remoteCandidateType
+    ].filter(Boolean).join(" → ");
+    const rtt = Number.isFinite(status.roundTripTimeMs)
+      ? ` · RTT ${status.roundTripTimeMs} ms`
+      : "";
+    const fallback = status.fallbackReason
+      ? `\n${t("panel.transportFallbackReason", "回退原因")}: ${status.fallbackReason}`
+      : "";
+    transportStatus.title = mode === "webrtc"
+      ? `${t("panel.transportDirectTitle", "WebRTC 点对点直连")}${route ? ` · ${route}` : ""}${rtt}`
+      : mode === "relay"
+        ? `${t("panel.transportRelayTitle", "经 Runtime HTTP 中转")}${fallback}`
+        : labels[mode] || labels.connecting;
   }
 
   function outputsToTextForSession(sessionId) {
@@ -2795,10 +2876,25 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       v.ptyStableTimer = 0;
 
       try { v.pty?.dispose?.(); } catch {}
+      try { v.ptyTransportDisp?.dispose?.(); } catch {}
+      v.ptyTransportDisp = null;
       v.pty = null;
+      v.ptyTransportStatus = { transport: "connecting" };
+      updateStatusText();
 
       const localPty = api.connectPty(sid, v.term.cols, v.term.rows);
       v.pty = localPty;
+      v.ptyTransportStatus = localPty.transportStatus || {
+        transport: localPty.transport || "local"
+      };
+      v.ptyTransportDisp = localPty.onTransportChange?.((status) => {
+        if (v.pty !== localPty) return;
+        v.ptyTransportStatus = status;
+        if (normId(activeViewId || currentSessionId || "") === sid) {
+          updateStatusText();
+        }
+      }) || null;
+      updateStatusText();
       localPty.onData((chunk) => {
         try { v.term.write(chunk); } catch {}
       });
@@ -2808,9 +2904,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
         if (v.pty !== localPty) return;
         try { clearTimeout(v.ptyStableTimer); } catch {}
         v.ptyStableTimer = 0;
+        try { v.ptyTransportDisp?.dispose?.(); } catch {}
+        v.ptyTransportDisp = null;
         try { localPty?.dispose?.(); } catch {}
         v.pty = null;
         v.ptyConnecting = false;
+        v.ptyTransportStatus = { transport: "disconnected" };
+        updateStatusText();
         v.usingPty = true;
         const isActive = normId(activeViewId || currentSessionId || "") === sid;
         if (!background && isActive) {
@@ -2844,6 +2944,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       }
 
       v.ptyConnecting = false;
+      v.ptyTransportStatus = localPty.transportStatus || {
+        transport: localPty.transport || "local"
+      };
+      updateStatusText();
       try { clearTimeout(v.ptyStableTimer); } catch {}
       v.ptyStableTimer = setTimeout(() => {
         const vv = sessionViews.get(sid);
@@ -2884,9 +2988,13 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       }
       return true;
     } catch {
+      try { v.ptyTransportDisp?.dispose?.(); } catch {}
+      v.ptyTransportDisp = null;
       try { v.pty?.dispose?.(); } catch {}
       v.pty = null;
       v.ptyConnecting = false;
+      v.ptyTransportStatus = { transport: "disconnected" };
+      updateStatusText();
       v.usingPty = true;
       try { clearTimeout(v.ptyStableTimer); } catch {}
       v.ptyStableTimer = 0;
@@ -3157,6 +3265,8 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   function readBaseUrl() {
+    const runtimeBase = runtimeDeviceServiceBaseUrl("local-tools");
+    if (runtimeBase) return runtimeBase;
     const st1 = window.zion?.state?.get("localTools.baseUrl");
     if (typeof st1 === "string" && st1.trim()) return st1.trim();
     try {
@@ -3441,7 +3551,17 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       const list = Array.isArray(sessions) ? sessions : [];
       const s = sid ? list.find(x => String(x?.id || "").trim() === String(sid || "").trim()) : null;
       const initial_cwd = typeof s?.cwd === "string" && s.cwd.trim() ? s.cwd.trim() : undefined;
-      await window.zion?.commands?.executeCommand?.("terminal.createSession", { type: "local", initial_cwd });
+      if (!s && (window.zion?.state?.get("terminal.nodes") || []).length > 1) {
+        await window.zion?.commands?.executeCommand?.("terminal.openManager");
+        return;
+      }
+      await window.zion?.commands?.executeCommand?.("terminal.createSession", {
+        type: s?.type || "local",
+        node_id: s?.nodeId,
+        resource_id: s?.resourceId,
+        machine_id: s?.machineId,
+        initial_cwd
+      });
     } catch {}
   };
 
@@ -3926,31 +4046,7 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   const disp6 = embedTabsInBottomHeader ? window.zion.state.onDidChange("ui.bottomPanel.activeViewId", syncHostHeaderTabsVisibility) : null;
   const disp7 = embedTabsInBottomHeader ? window.zion.state.onDidChange("ui.bottomPanel.visible", syncHostHeaderTabsVisibility) : null;
 
-  async function open(opts = {}) {
-    // 先显示 root，确保 DOM 准备好
-    const wasVisible = embedded ? true : root.style.display === "block";
-    if (!embedded) {
-      root.style.display = "block";
-      try { root.offsetHeight; } catch {} // Force reflow
-      try { applyDocking(root); } catch {}
-    }
-    try { if (xtermLoaded && getActiveView()?.term) fitActiveView(true); } catch {}
-
-    const av = getActiveView();
-    if (wasVisible && av?.pty?.ws?.readyState === WebSocket.OPEN) {
-      try { fitActiveView(true); } catch {}
-      if (opts.openQuick) {
-        setTimeout(() => openQuickPalette(), 0);
-      } else if (opts.openHistory) {
-        setTimeout(() => openHistoryPalette(), 0);
-      } else {
-        setTimeout(() => {
-          try { getActiveView()?.term?.focus?.(); } catch {}
-        }, 0);
-      }
-      return;
-    }
-
+  async function prepareOpen(opts = {}) {
     try {
       const sessions0 = window.zion?.state?.get("terminal.sessions") || [];
       const list0 = Array.isArray(sessions0) ? sessions0 : [];
@@ -4021,6 +4117,47 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
       }, 0);
     }
   }
+
+  function open(opts = {}) {
+    // 先显示 root，确保 DOM 准备好
+    const wasVisible = embedded ? true : root.style.display === "block";
+    if (!embedded) {
+      root.style.display = "block";
+      try { root.offsetHeight; } catch {} // Force reflow
+      try { applyDocking(root); } catch {}
+    }
+    try { if (xtermLoaded && getActiveView()?.term) fitActiveView(true); } catch {}
+
+    const av = getActiveView();
+    if (wasVisible && av?.pty?.ws?.readyState === WebSocket.OPEN) {
+      try { fitActiveView(true); } catch {}
+      if (opts.openQuick) {
+        setTimeout(() => openQuickPalette(), 0);
+      } else if (opts.openHistory) {
+        setTimeout(() => openHistoryPalette(), 0);
+      } else {
+        setTimeout(() => {
+          try { getActiveView()?.term?.focus?.(); } catch {}
+        }, 0);
+      }
+      return;
+    }
+
+    renderTabs();
+    renderFallbackOutputs();
+    if (opts.focusCommand) {
+      setTimeout(() => {
+        if (xtermLoaded && getActiveView()?.term) {
+          try { getActiveView().term.focus(); } catch {}
+          return;
+        }
+        cmdInput.focus();
+      }, 0);
+    }
+    Promise.resolve(prepareOpen(opts)).catch(() => {
+      try { renderFallbackOutputs(); } catch {}
+    });
+  }
   function close() {
     if (embedded) {
       try { api?.requestClose?.(); } catch {}
@@ -4062,10 +4199,10 @@ export function installTerminalEnhancedPanel(api = { execute: async () => {}, co
   }
 
   try {
-    root._zionTerminalEnhanced = { open, close, dispose, openQuickPalette, openHistoryPalette };
+    root._zionTerminalEnhanced = { open, close, dispose, preload, openQuickPalette, openHistoryPalette };
   } catch {}
 
-  return { open, close, dispose, openQuickPalette, openHistoryPalette };
+  return { open, close, dispose, preload, openQuickPalette, openHistoryPalette };
 }
 
 function createHandle(root) {

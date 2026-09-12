@@ -78,6 +78,42 @@ beforeEach(() => {
 });
 
 describe("sessions sidebar tag split layout", () => {
+  it("resolves the Zion command API lazily when extension code loads first", () => {
+    const previousZion = window.zion;
+    let rendererOptions;
+    try {
+      window.zion = undefined;
+      const manager = createSessionsSidebarViewManager({
+        createSessionsListRenderer: (options) => {
+          rendererOptions = options;
+          const render = () => {};
+          render.dispose = () => {};
+          render.syncSessionIndex = () => {};
+          return render;
+        },
+        getIndex: () => [{ id: "session-1" }],
+        loadMeta: () => ({ id: "session-1", title: "Session" })
+      });
+      const executeCommand = vi.fn(() => true);
+      window.zion = {
+        ...makeZion([]),
+        commands: { executeCommand },
+        panels: { getActivePanelId: () => null }
+      };
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      manager.mountInto(container);
+
+      expect(rendererOptions.onSwitchSession("session-1")).toBe(true);
+      expect(executeCommand).toHaveBeenCalledWith(
+        "zion.sessions.switch",
+        "session-1"
+      );
+    } finally {
+      window.zion = previousZion;
+    }
+  });
+
   it("reports and toggles the persisted tag split state before mounting", () => {
     localStorage.setItem("zion.sessions.sidebar.tagSplit", "1");
     const manager = createSessionsSidebarViewManager({

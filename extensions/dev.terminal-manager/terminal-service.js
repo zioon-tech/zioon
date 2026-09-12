@@ -3,12 +3,17 @@ import {
   DEFAULT_MACHINE_DESCRIPTION,
   normalizeTerminalSession
 } from "./terminal-inventory.js";
+import {
+  runtimeDeviceServiceBaseUrl
+} from "../../src/runtime/workbench-runtime-config.ts";
 
 function text(value) {
   return String(value ?? "").trim();
 }
 
 export function readTerminalServiceBaseUrl() {
+  const runtimeBase = runtimeDeviceServiceBaseUrl("local-tools");
+  if (runtimeBase) return runtimeBase;
   const stateValue = window.zion?.state?.get?.("localTools.baseUrl");
   if (typeof stateValue === "string" && stateValue.trim()) {
     return stateValue.trim().replace(/\/$/, "");
@@ -72,6 +77,7 @@ export async function listTerminalSessions() {
     request("/sessions", { method: "GET" }),
     listTerminalMachineProfiles().catch(() => currentMachineProfiles())
   ]);
+  window.zion?.state?.set?.("terminal.nodes", Array.isArray(data?.nodes) ? data.nodes : []);
   return publishTerminalSessions(
     Array.isArray(data?.sessions) ? data.sessions : [],
     machineProfiles
@@ -139,16 +145,27 @@ export function resolveTerminalCreatePayload(args = {}) {
   const inventory = window.zion?.state?.get?.("terminal.inventory");
   const machineId = text(args.machine_id || args.machineId);
   const workspaceId = text(args.workspace_id || args.workspaceId);
-  const machine = Array.isArray(inventory?.machines)
+  let machine = Array.isArray(inventory?.machines)
     ? inventory.machines.find((item) => item.id === machineId)
     : null;
   const workspace = Array.isArray(inventory?.workspaces)
     ? inventory.workspaces.find((item) => item.id === workspaceId)
     : null;
+  if (machineId && !machine) throw new Error("Unknown machine_id");
+  if (workspaceId && !workspace) throw new Error("Unknown workspace_id");
+  if (machine && workspace && machine.id !== workspace.machineId) {
+    throw new Error("machine_id and workspace_id refer to different machines");
+  }
+  machine ||= inventory?.machines?.find((item) => item.id === workspace?.machineId);
+  if (args.node_id && machine?.nodeId && args.node_id !== machine.nodeId) {
+    throw new Error("node_id conflicts with machine/workspace");
+  }
 
   const type = text(machine?.kind || args.type || "local") === "ssh" ? "ssh" : "local";
   const payload = {
     type,
+    ...((machine?.nodeId || args.node_id) ? { node_id: machine?.nodeId || args.node_id } : {}),
+    ...((workspace?.resourceId || args.resource_id) ? { resource_id: workspace?.resourceId || args.resource_id } : {}),
     initial_cwd: text(workspace?.root || args.initial_cwd || args.cwd) || undefined
   };
   if (type === "ssh") {

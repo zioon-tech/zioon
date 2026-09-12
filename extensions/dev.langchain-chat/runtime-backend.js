@@ -18,8 +18,8 @@ export const DEFAULT_INTERACTIVE_RUNTIME_PROFILE_ID = "interactive.default";
 const INTERACTIVE_PROJECTION_OPTIONS = Object.freeze({
   mode: "projection",
   reasoningMode: "stream",
-  maxDelayMs: 50,
-  maxChunkChars: 256
+  maxDelayMs: 200,
+  maxChunkChars: 1_024
 });
 
 const RUNTIME_SUPPORTED_TOOLS = new Set([
@@ -47,6 +47,8 @@ const RUNTIME_SUPPORTED_TOOLS = new Set([
   "schedulerManage",
   "modelsManage",
   "toolsManage",
+  "pluginsManage",
+  "terminalManage",
   "mailManage",
   "sessionList",
   "sessionGet",
@@ -72,6 +74,8 @@ const RUNTIME_TRUSTED_AUTOMATION_TOOLS = new Set([
   "mcpCall",
   "modelsManage",
   "toolsManage",
+  "pluginsManage",
+  "terminalManage",
   "mailManage"
 ]);
 const SUPPORTED_MESSAGE_ROLES = new Set(["system", "user", "assistant", "tool"]);
@@ -182,6 +186,12 @@ export function runtimeBackedContributorIds(runtimeConnection) {
   return RUNTIME_BACKED_CONTEXT_CONTRIBUTORS
     .filter((item) => providers.has(item.providerId))
     .map((item) => item.contributorId);
+}
+
+export function includeTerminalContextForRuntime(
+  state = globalThis.window?.zion?.state
+) {
+  return state?.get?.("chat.includeTerminalContext") !== false;
 }
 
 function configuredRuntimeSupportedToolNames(options = {}) {
@@ -303,11 +313,37 @@ export function interactiveRuntimeEligibility({
   };
 }
 
-function projectEvents(events) {
+async function projectEvent(event, resolveEventDetail = null) {
+  const projected = toZionNextRunEvent(event);
+  if (
+    projected.type === "model.request"
+    && !projected.data?.payload
+    && projected.data?.detailAvailable === true
+    && Number(projected.data?.rawEventSequence) > 0
+    && typeof resolveEventDetail === "function"
+  ) {
+    try {
+      const detail = await resolveEventDetail(
+        Number(projected.data.rawEventSequence)
+      );
+      if (detail?.type === "model.request") {
+        return toZionNextRunEvent(detail);
+      }
+    } catch (error) {
+      console.warn(
+        "[langchain-chat] failed to load Runtime model request detail:",
+        error
+      );
+    }
+  }
+  return projected;
+}
+
+function projectEvents(events, resolveEventDetail = null) {
   return {
     async *[Symbol.asyncIterator]() {
       for await (const event of events) {
-        yield toZionNextRunEvent(event);
+        yield await projectEvent(event, resolveEventDetail);
       }
     }
   };
@@ -336,10 +372,10 @@ function assertRuntimeMessageShape(messages) {
 export async function prepareInteractiveRuntimeMessages({
   messages,
   runContributors,
-  contributorContext = {}
+  contributorContext = {},
+  transformMessages
 }) {
   let prepared = Array.isArray(messages) ? messages : [];
-  if (typeof runContributors !== "function") return prepared;
   const context = {
     ...contributorContext,
     runtimeBackend: "external",
@@ -350,8 +386,15 @@ export async function prepareInteractiveRuntimeMessages({
       ...runtimeBackedContributorIds(contributorContext.runtimeConnection)
     ]))
   };
-  prepared = await runContributors(prepared, "pre", context);
-  prepared = await runContributors(prepared, "post", context);
+  if (typeof runContributors === "function") {
+    prepared = await runContributors(prepared, "pre", context);
+  }
+  if (typeof transformMessages === "function") {
+    prepared = await transformMessages(prepared, context);
+  }
+  if (typeof runContributors === "function") {
+    prepared = await runContributors(prepared, "post", context);
+  }
   assertRuntimeMessageShape(prepared);
   return prepared;
 }
@@ -399,8 +442,12 @@ function importableProfile(selectedModel, selectedConfig) {
     providerType: "openai",
     endpoint,
     model,
-    credentialRequired: selectedConfig?._requiresConfig === true
-      || !!String(selectedConfig?.key || selectedConfig?.apiKey || "").trim(),
+    credentialRequired: selectedConfig?.credentialRequired !== false
+      && (
+        selectedConfig?._requiresConfig === true
+        || selectedConfig?._credentialConfigured === true
+        || !!String(selectedConfig?.key || selectedConfig?.apiKey || "").trim()
+      ),
     temperature: selectedConfig?.temperature,
     maxOutputTokens: selectedConfig?.max_tokens,
     capabilities: {
@@ -479,7 +526,8 @@ export async function syncWorkbenchModelProfiles({
   models,
   resolveConfig,
   baseUrl,
-  fetchImpl
+  fetchImpl,
+  overwriteExisting = false
 }) {
   const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
   const catalog = await client.getModels();
@@ -508,13 +556,18 @@ export async function syncWorkbenchModelProfiles({
       skipped.push({ model: selectedModel, reason: "unsupported-provider" });
       continue;
     }
-    if (importable.credentialRequired && !credential) {
+    const existing = findRuntimeProfile(profiles, selectedModel);
+    if (
+      importable.credentialRequired
+      && !credential
+      && existing?.credentialConfigured !== true
+    ) {
       skipped.push({ model: selectedModel, reason: "missing-credential" });
       continue;
     }
-    const existing = findRuntimeProfile(profiles, selectedModel);
     if (
       existing
+      && !overwriteExisting
       && (
         existing.credentialConfigured !== false
         || !credential
@@ -593,6 +646,7 @@ export async function createInteractiveRuntimeHandle({
   selectedModelConfig,
   title,
   workbenchSessionId,
+  projectId,
   metadata,
   baseUrl,
   fetchImpl,
@@ -613,6 +667,9 @@ export async function createInteractiveRuntimeHandle({
     interactionProfileId,
     title: title || "",
     ...(workbenchSessionId ? { sessionId: String(workbenchSessionId) } : {}),
+    ...((projectId || metadata?.projectId) ? {
+      projectId: String(projectId || metadata.projectId)
+    } : {}),
     messages: messages.map((message) => ({
       role: message.role,
       content: message.content == null ? "" : message.content,
@@ -665,7 +722,7 @@ export async function createInteractiveRuntimeHandle({
     metadata: {
       ...(metadata || {}),
       source: "interactive-chat",
-      workbenchProtocolVersion: 2,
+      workbenchProtocolVersion: 4,
       interactionProfileId,
       workbenchSessionId,
       workbenchEnabledTools: selectedTools,
@@ -679,7 +736,10 @@ export async function createInteractiveRuntimeHandle({
   });
   return {
     ...handle,
-    events: projectEvents(handle.events)
+    events: projectEvents(
+      handle.events,
+      (sequence) => client.getEvent(handle.runId, sequence)
+    )
   };
 }
 
@@ -700,7 +760,10 @@ export async function observeInteractiveRuntimeRun({
     signal,
     ...INTERACTIVE_PROJECTION_OPTIONS
   })) {
-    const projected = toZionNextRunEvent(event);
+    const projected = await projectEvent(
+      event,
+      (sequence) => client.getEvent(runtimeRunId, sequence)
+    );
     await onEvent(projected);
     lastEventSequence = Math.max(
       lastEventSequence,

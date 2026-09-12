@@ -24,6 +24,8 @@ const AGENT_MUTATING_TOOLS = new Set([
   "sessionDelete",
   "memoryManage",
   "agentsManage",
+  "pluginsManage",
+  "terminalManage",
   "todoWrite"
 ]);
 

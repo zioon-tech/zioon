@@ -36,6 +36,8 @@ describe("scheduler controller", () => {
     }, null, NOW);
 
     expect(task.executionMode).toBe("local-only");
+    expect(task.interactionProfileId).toBe("scheduled.default");
+    expect(task.modelProfileId).toBe("");
     expect(task.capability).toMatchObject({ preset: "read-only", allowedTools: [] });
     expect(validateSchedulerTask(task)).toBe("");
 
@@ -51,6 +53,7 @@ describe("scheduler controller", () => {
     });
 
     const migrated = mergeSchedulerTask(task, {
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
       capability: {
         preset: "trusted-automation",
         allowedTools: ["fsWrite", "fsEdit", "terminalExecute"],
@@ -58,8 +61,13 @@ describe("scheduler controller", () => {
         allowedCommandPrefixes: ["npm test"]
       }
     }, NOW);
+    expect(migrated.modelProfileId)
+      .toBe("workbench.deepseek.deepseek-v4-flash");
     expect(migrated.capability.allowedTools).toEqual(["write", "edit", "Bash"]);
     expect(validateSchedulerTask(migrated)).toBe("");
+    expect(validateSchedulerTask(mergeSchedulerTask(task, {
+      modelProfileId: "../invalid"
+    }, NOW))).toContain("模型 Profile ID");
 
     const unsafe = mergeSchedulerTask(task, {
       capability: { preset: "read-only", allowedTools: ["Bash"] }
@@ -98,13 +106,18 @@ describe("scheduler controller", () => {
 
     const commandTask = buildSchedulerTask({
       taskType: "command",
+      executionMode: "service-backed",
+      nodeId: "node:macbook",
       title: "Parking monitor",
       command: "bash /tmp/parking_monitor.sh",
       schedule: { kind: "interval", intervalMinutes: 5 }
     }, null, NOW);
     expect(commandTask).toMatchObject({
       taskType: "command",
+      executionMode: "service-backed",
+      nodeId: "node:macbook",
       prompt: "",
+      modelProfileId: "",
       capability: {
         preset: "trusted-automation",
         allowedTools: ["Bash"],
@@ -112,6 +125,19 @@ describe("scheduler controller", () => {
       }
     });
     expect(validateSchedulerTask(commandTask)).toBe("");
+
+    expect(validateSchedulerTask(buildSchedulerTask({
+      taskType: "command",
+      executionMode: "service-backed",
+      title: "Missing Node",
+      command: "/usr/bin/true",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW))).toContain("必须选择执行 Node");
+
+    expect(validateSchedulerTask(mergeSchedulerTask(task, {
+      executionMode: "service-backed",
+      nodeId: "node:server"
+    }, NOW))).toBe("");
   });
 
   it("calls randomUUID with the correct browser API binding", () => {
@@ -316,12 +342,21 @@ describe("scheduler controller", () => {
       title: "Service task",
       prompt: "Produce a report",
       executionMode: "service-backed",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
       schedule: { kind: "daily", time: "09:00" }
     }, null, NOW);
 
     const saved = await controller.saveTask(task);
-    expect(service.createTask).toHaveBeenCalledWith(expect.objectContaining({ title: "Service task" }));
-    expect(saved).toMatchObject({ remoteTaskId: "remote-task", remoteRevision: 4, nextRun: NOW + 60_000 });
+    expect(service.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Service task",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash"
+    }));
+    expect(saved).toMatchObject({
+      remoteTaskId: "remote-task",
+      remoteRevision: 4,
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
+      nextRun: NOW + 60_000
+    });
 
     store.saveRun({
       id: "remote-run",
@@ -361,6 +396,44 @@ describe("scheduler controller", () => {
     await controller.deleteTask(saved.id);
     expect(service.deleteTask).toHaveBeenCalledWith(expect.objectContaining({ remoteTaskId: "remote-task" }));
     expect(onServiceStatus).toHaveBeenCalledWith(true);
+  });
+
+  it("imports Runtime task model and interaction profile assignments", async () => {
+    const service = {
+      listTasks: vi.fn(async () => [{
+        id: "remote-model-task",
+        clientTaskId: "local-model-task",
+        revision: 3,
+        taskType: "agent",
+        title: "Model task",
+        prompt: "Summarize",
+        interactionProfileId: "scheduled.default",
+        modelProfileId: "workbench.deepseek.deepseek-v4-flash",
+        schedule: {
+          kind: "daily",
+          time: "09:00",
+          timeZone: "Asia/Shanghai",
+          misfirePolicy: "run-once",
+          overlapPolicy: "forbid"
+        },
+        capability: { preset: "read-only", allowedTools: [] },
+        timeoutSeconds: 300,
+        enabled: true,
+        createdAt: NOW,
+        updatedAt: NOW,
+        nextRun: NOW + 60_000
+      }])
+    };
+    const { controller, store } = createController({ service });
+
+    await expect(controller.refreshServiceTasks()).resolves.toMatchObject({
+      online: true
+    });
+    expect(store.getTask("local-model-task")).toMatchObject({
+      remoteTaskId: "remote-model-task",
+      interactionProfileId: "scheduled.default",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash"
+    });
   });
 
   it("loads full service run details only for summary records", async () => {

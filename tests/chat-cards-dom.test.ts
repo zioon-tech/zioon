@@ -146,6 +146,54 @@ describe("tool action terminal target", () => {
 });
 
 describe("chat cards DOM lifecycle", () => {
+  it("distinguishes Device-root file tools from session-bound commands", async () => {
+    const initial = [
+      "user inspect",
+      "assistant <!-- zion-assistant:id=run-context --> ",
+      "调用 tree <!-- zion-tool:id=tool-tree -->",
+      "调用 Bash <!-- zion-tool:id=tool-bash -->",
+      ""
+    ].join("\n");
+    const h = createHarness({ "panel-a": "session-1" }, initial);
+    try {
+      window.zion.commands.executeCommand("zion.chatCards.setSessionAnnotations", {
+        sessionId: "session-1",
+        annotations: {
+          tools: [
+            {
+              id: "tool-tree",
+              name: "tree",
+              args: { path: "/workspace" },
+              assistantBlockId: "run-context",
+              expanded: true
+            },
+            {
+              id: "tool-bash",
+              name: "Bash",
+              args: { command: "pwd" },
+              assistantBlockId: "run-context",
+              expanded: true
+            }
+          ]
+        }
+      });
+
+      window.zion.commands.executeCommand("zion.chatCards.restoreSession", {
+        sessionId: "session-1",
+        panelId: "panel-a"
+      });
+      await wait(100);
+
+      const dom = h.cores.get("panel-a")!.view.dom;
+      expect(dom.querySelector(".zion-tool-tree-title")?.textContent)
+        .toContain("Device root");
+      expect(dom.querySelector(".zion-tool-terminal-title")?.textContent)
+        .toContain("Session required");
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("restores historical tool and thinking widgets into split panels for the same session", async () => {
     const text = ["user hi", "assistant ", "调用 read", "", "思考", ""].join("\n");
     const h = createHarness({ "panel-a": "session-1", "panel-b": "session-1" }, text);
@@ -262,6 +310,15 @@ describe("chat cards DOM lifecycle", () => {
       expect(
         h.cores.get("panel-a")!.view.dom.querySelectorAll(".zion-tool-call-inline")
       ).toHaveLength(1);
+      h.cores.get("panel-a")!.view.dom.querySelector<HTMLElement>(
+        ".zion-thinking-inline"
+      )?.click();
+      await wait(0);
+      expect(
+        h.cores.get("panel-a")!.view.dom.querySelector(
+          ".zion-thinking-card-body"
+        )?.textContent
+      ).toBe("remote reasoning");
     } finally {
       h.dispose();
     }

@@ -5,9 +5,17 @@ import {
   createAgentExecutor,
   MemoryRunStore
 } from "../../../packages/runtime/src/index";
+import { RuntimeAccessControl } from "../../runtime/src/access-control.mjs";
 import { NodeBroker } from "../../runtime/src/node-broker.mjs";
 import { createNodeHttpHandler } from "../../runtime/src/node-http-handler.mjs";
-import { DeviceConnector } from "../src/device-connector.mjs";
+import { SqliteAccessStore } from "../../runtime/src/sqlite-access-store.mjs";
+import {
+  DeviceConnector,
+  exchangeDevicePairing
+} from "../src/device-connector.mjs";
+import {
+  DEVICE_SERVICE_TOOL_NAME
+} from "../src/device-service-host.mjs";
 
 const resources = [];
 
@@ -50,7 +58,9 @@ async function waitFor(predicate, message) {
 async function createHarness({
   token = "device-secret",
   connectorToken = token,
-  toolHost
+  toolHost,
+  serviceHost,
+  registration: registrationInput = registration()
 } = {}) {
   const broker = new NodeBroker();
   const handler = createNodeHttpHandler({
@@ -73,12 +83,13 @@ async function createHarness({
   const connector = new DeviceConnector({
     runtimeUrl: `http://127.0.0.1:${address.port}`,
     token: connectorToken,
-    registration: registration(),
+    registration: registrationInput,
     toolHost: toolHost || {
       async invoke() {
         return { ok: true, content: "device result" };
       }
     },
+    serviceHost,
     pollWaitMs: 20,
     retryDelayMs: 5
   });
@@ -110,6 +121,7 @@ afterEach(async () => {
     await resource.connector.stop();
     resource.broker.close();
     await new Promise((resolve) => resource.server.close(resolve));
+    resource.accessStore?.close();
   }
 });
 
@@ -154,6 +166,168 @@ describe("DeviceConnector", () => {
       () => connector.snapshot().activeInvocations === 0,
       "Connector did not settle its invocation"
     );
+  });
+
+  it("dispatches internal service requests to the Device service host", async () => {
+    const serviceInvoke = vi.fn(async () => ({
+      ok: true,
+      content: JSON.stringify({ status: 200, bodyBase64: "" })
+    }));
+    const serviceRegistration = registration();
+    serviceRegistration.capabilities.push({
+      name: DEVICE_SERVICE_TOOL_NAME,
+      version: "1",
+      risk: "execute",
+      description: "Internal Device service",
+      inputSchema: { type: "object" },
+      hostKind: "device-service"
+    });
+    const { broker, connector } = await createHarness({
+      serviceHost: { invoke: serviceInvoke },
+      registration: serviceRegistration
+    });
+    await connector.start();
+
+    await expect(broker.invoke({
+      ...invocation(),
+      policy: { allowedTools: [DEVICE_SERVICE_TOOL_NAME] },
+      toolCall: {
+        id: "call:service",
+        name: DEVICE_SERVICE_TOOL_NAME,
+        arguments: {
+          service: "local-tools",
+          method: "GET",
+          path: "/sessions"
+        }
+      }
+    }, new CancellationController().signal)).resolves.toMatchObject({
+      ok: true
+    });
+    expect(serviceInvoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        service: "local-tools",
+        path: "/sessions"
+      }),
+      expect.any(Object),
+      expect.objectContaining({
+        invocationId: "invocation:connector"
+      })
+    );
+  });
+
+  it("pairs a Resource and completes an invocation with its bound credential", async () => {
+    const broker = new NodeBroker();
+    const accessStore = new SqliteAccessStore(":memory:");
+    const access = new RuntimeAccessControl({ store: accessStore });
+    const handler = createNodeHttpHandler({
+      broker,
+      authorize: (input) => access.authorizeNode(input),
+      maxWaitMs: 30
+    });
+    const server = createServer(async (request, response) => {
+      const url = new URL(
+        request.url || "/",
+        `http://${request.headers.host || "127.0.0.1"}`
+      );
+      if (await access.handleHttp(request, response, url)) return;
+      await handler(request, response, url);
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    const runtimeUrl = `http://127.0.0.1:${address.port}`;
+    const pairing = accessStore.createPairing({
+      kind: "resource",
+      delivery: "bearer"
+    });
+    const paired = await exchangeDevicePairing({
+      runtimeUrl,
+      userCode: pairing.userCode,
+      device: {
+        deviceId: "node:connector",
+        label: "Connector Test"
+      }
+    });
+    const connector = new DeviceConnector({
+      runtimeUrl,
+      token: paired.credential,
+      registration: registration(),
+      toolHost: {
+        async invoke() {
+          return { ok: true, content: "paired result" };
+        }
+      },
+      pollWaitMs: 20,
+      retryDelayMs: 5
+    });
+    resources.push({ broker, connector, server, accessStore });
+    await connector.start();
+
+    await expect(broker.invoke(
+      invocation(),
+      new CancellationController().signal
+    )).resolves.toEqual({
+      ok: true,
+      content: "paired result"
+    });
+  });
+
+  it("stops polling when the Resource credential is revoked", async () => {
+    const broker = new NodeBroker();
+    const accessStore = new SqliteAccessStore(":memory:");
+    const access = new RuntimeAccessControl({ store: accessStore });
+    const handler = createNodeHttpHandler({
+      broker,
+      authorize: (input) => access.authorizeNode(input),
+      maxWaitMs: 30
+    });
+    const server = createServer(async (request, response) => {
+      const url = new URL(
+        request.url || "/",
+        `http://${request.headers.host || "127.0.0.1"}`
+      );
+      if (await access.handleHttp(request, response, url)) return;
+      await handler(request, response, url);
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    const runtimeUrl = `http://127.0.0.1:${address.port}`;
+    const pairing = accessStore.createPairing({
+      kind: "resource",
+      delivery: "bearer"
+    });
+    const paired = accessStore.exchangePairing({
+      userCode: pairing.userCode,
+      deviceId: "node:connector"
+    });
+    const logger = vi.fn();
+    const connector = new DeviceConnector({
+      runtimeUrl,
+      token: paired.credential,
+      registration: registration(),
+      toolHost: { async invoke() {} },
+      pollWaitMs: 20,
+      retryDelayMs: 5,
+      logger
+    });
+    resources.push({ broker, connector, server, accessStore });
+    await connector.start();
+
+    accessStore.revokeDevice("node:connector");
+
+    await waitFor(
+      () => connector.snapshot().state === "unauthorized",
+      "Revoked Connector did not stop"
+    );
+    expect(logger).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      message: expect.stringContaining("pair this Device again")
+    }));
   });
 
   it("completes an Agent tool loop through the remote Node connection", async () => {
@@ -266,7 +440,7 @@ describe("DeviceConnector", () => {
   it("does not execute an invocation whose lease already expired", async () => {
     const invoke = vi.fn();
     const connector = new DeviceConnector({
-      runtimeUrl: "http://runtime.test",
+      runtimeUrl: "https://runtime.test",
       token: "device-secret",
       registration: registration(),
       toolHost: { invoke },
@@ -289,6 +463,50 @@ describe("DeviceConnector", () => {
     );
     expect(invoke).not.toHaveBeenCalled();
     expect(connector.snapshot().receiptCount).toBe(1);
+  });
+
+  it("refuses to send Device credentials over remote plaintext HTTP", () => {
+    expect(() => new DeviceConnector({
+      runtimeUrl: "http://runtime.test",
+      token: "device-secret",
+      registration: registration(),
+      toolHost: { invoke: vi.fn() }
+    })).toThrow("must use HTTPS");
+  });
+
+  it("exchanges a one-time pairing code for a Device credential", async () => {
+    const fetchImpl = vi.fn(async () => new globalThis.Response(JSON.stringify({
+      paired: true,
+      credential: "zion_v1.credential:test.secret",
+      credentialId: "credential:test",
+      expiresAt: 10_000,
+      device: {
+        deviceId: "node:connector",
+        kind: "resource"
+      }
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }));
+
+    await expect(exchangeDevicePairing({
+      runtimeUrl: "https://runtime.test",
+      userCode: "ABCD-EFGH-JKLM",
+      device: {
+        deviceId: "node:connector",
+        label: "Connector"
+      },
+      fetchImpl
+    })).resolves.toMatchObject({
+      credential: "zion_v1.credential:test.secret",
+      device: { deviceId: "node:connector" }
+    });
+    const [url, options] = fetchImpl.mock.calls[0];
+    expect(String(url)).toBe("https://runtime.test/v1/access/pair");
+    expect(JSON.parse(options.body)).toMatchObject({
+      userCode: "ABCD-EFGH-JKLM",
+      device: { deviceId: "node:connector" }
+    });
   });
 
   it("stops a stale Connector and cancels work after a replacement registers", async () => {

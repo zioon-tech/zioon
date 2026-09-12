@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   getBuiltinModelLimits,
   resolveModelLimits,
@@ -46,6 +46,21 @@ describe("model limits", () => {
       max_tokens: 32_768,
       maxOutputTokens: 65_536
     });
+  });
+
+  it("does not probe provider model APIs while resolving display metadata", async () => {
+    localStorage.clear();
+    localStorage.setItem("zion.claude.apiKey", "configured");
+    localStorage.setItem("zion.gemini.apiKey", "configured");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await claudeProvider.list();
+    await claudeProvider.resolve("claude-sonnet-5");
+    await geminiProvider.list();
+    await geminiProvider.resolve("gemini-3.6-flash");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockRestore();
   });
 
   it("stores a bounded per-model description", async () => {

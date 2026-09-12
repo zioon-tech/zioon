@@ -1,5 +1,8 @@
 import { materializePluginSkills } from "./plugin-skills.js";
 import {
+  runtimeDeviceServiceBaseUrl
+} from "../../src/runtime/workbench-runtime-config.ts";
+import {
   applySkillsSnapshotToState,
   buildAvailableSkillsContextXml,
   insertAfterLeadingSystem as insertAfterLeadingSystemMessage,
@@ -206,6 +209,8 @@ function ensureDefaults() {
 }
 
 function getLocalToolsBase() {
+  const runtimeBase = runtimeDeviceServiceBaseUrl("local-tools");
+  if (runtimeBase) return runtimeBase;
   const state = getState();
   const raw = (state && state.get("localTools.baseUrl")) || "http://127.0.0.1:8765";
   return String(raw || "http://127.0.0.1:8765").replace(/\/$/, "");
@@ -448,7 +453,6 @@ async function scanAllSkills() {
   const state = getState();
   if (!state) return [];
 
-  const paths = state.get("skills.paths") || [];
   const base = getLocalToolsBase();
   const prevCatalog = getCatalog();
   const healthy = await isLocalToolsHealthy(base);
@@ -456,6 +460,20 @@ async function scanAllSkills() {
     // Avoid wiping previously scanned skills when the local service is temporarily unavailable
     // (common during sleep/wake).
     return prevCatalog;
+  }
+  let paths = state.get("skills.paths") || [];
+  if (!Array.isArray(paths) || paths.length === 0) {
+    try {
+      const response = await fetch(`${base}/sessions`, { method: "GET" });
+      const data = await response.json().catch(() => null);
+      const home = response.ok
+        ? pickLocalHome(data?.sessions, state.get("terminal.activeSessionId"))
+        : "";
+      if (home) {
+        paths = [`${home}/.zion-next/skills`];
+        state.set("skills.paths", paths);
+      }
+    } catch {}
   }
   let pluginEntries = [];
   try {

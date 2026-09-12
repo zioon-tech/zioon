@@ -4,6 +4,7 @@ import {
   getTerminalMachine,
   listTerminalSessions,
   publishTerminalSessions,
+  readTerminalServiceBaseUrl,
   resolveTerminalCreatePayload,
   setTerminalSessionCwd,
   updateTerminalMachine
@@ -27,6 +28,17 @@ afterEach(() => {
 });
 
 describe("terminal service", () => {
+  it("uses the same-origin Device relay in Runtime mode", () => {
+    setupState({
+      "runtime.mode": "runtime",
+      "runtime.baseUrl": "https://runtime.test"
+    });
+
+    expect(readTerminalServiceBaseUrl()).toBe(
+      "https://runtime.test/v1/device-services/local-tools"
+    );
+  });
+
   it("publishes sessions and their derived inventory together", () => {
     const values = setupState();
 

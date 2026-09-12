@@ -9,6 +9,13 @@
     "name": "Plugin Manager",
     "version": "0.0.3",
     "main": "./main.js",
+    "entries": {
+      "ui": "./main.js",
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
     "presentation": {
       "displayName": {
         "zh-CN": "插件管理器",

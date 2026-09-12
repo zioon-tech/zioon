@@ -93,7 +93,10 @@ describe("Runtime Host", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         prompt: "stale",
-        metadata: { source: "interactive-chat" }
+        metadata: {
+          source: "interactive-chat",
+          workbenchProtocolVersion: 3
+        }
       })
     });
 
@@ -486,6 +489,65 @@ describe("Runtime Host", () => {
     });
     expect(created.interactionProfile).toMatchObject({
       id: "interactive.default"
+    });
+
+    const updateResponse = await fetch(
+      `${address.url}/v1/sessions/${encodeURIComponent(created.session.id)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Renamed session",
+          model: {
+            profileId: "workbench.user.dynamic.kimi-k2.5"
+          },
+          policy: {
+            allowedTools: ["read", "Bash"],
+            maxToolCalls: 12
+          },
+          skills: {
+            enabled: ["writer", "reviewer", "writer"]
+          }
+        })
+      }
+    );
+    expect(updateResponse.status).toBe(200);
+    await expect(updateResponse.json()).resolves.toMatchObject({
+      session: {
+        id: created.session.id,
+        title: "Renamed session",
+        model: {
+          profileId: "workbench.user.dynamic.kimi-k2.5"
+        },
+        policy: {
+          preset: "trusted-automation",
+          allowedTools: ["read", "Bash"],
+          maxToolCalls: 12
+        },
+        metadata: {
+          interactionProfileId: "interactive.default",
+          skills: {
+            enabled: ["writer", "reviewer"]
+          }
+        }
+      }
+    });
+
+    const refreshedSession = await fetch(
+      `${address.url}/v1/sessions/${encodeURIComponent(created.session.id)}`
+    );
+    await expect(refreshedSession.json()).resolves.toMatchObject({
+      session: {
+        title: "Renamed session",
+        policy: {
+          allowedTools: ["read", "Bash"]
+        },
+        metadata: {
+          skills: {
+            enabled: ["writer", "reviewer"]
+          }
+        }
+      }
     });
   });
 
@@ -1180,7 +1242,7 @@ describe("Runtime Host", () => {
         policy: { preset: "read-only", allowedTools: [] },
         metadata: {
           source: "interactive-chat",
-          workbenchProtocolVersion: 2
+          workbenchProtocolVersion: 4
         }
       })
     }).then((response) => response.json());

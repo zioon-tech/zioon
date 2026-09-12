@@ -156,11 +156,16 @@ export class SessionRuntime implements Disposable {
       editorSessionId: (this.opts.getEditor(panelId) as any)?.sessionId || null,
       editorId: (this.opts.getEditor(panelId) as any)?.editorId || null
     });
-    if (previousSessionId === sessionId && !switchOpts.forceReload) {
-      try { (this.opts.getEditor(panelId) as any)?.setSessionId?.(sessionId); } catch {}
+    const currentEditor = this.opts.getEditor(panelId);
+    if (
+      previousSessionId === sessionId
+      && !switchOpts.forceReload
+      && this.isEditorShowingSession(currentEditor, sessionId)
+    ) {
+      try { (currentEditor as any)?.setSessionId?.(sessionId); } catch {}
       if (switchOpts.focus !== false) {
         try { this.opts.focusPanel?.(panelId); } catch {}
-        try { this.opts.getEditor(panelId)?.focus?.(); } catch {}
+        try { currentEditor?.focus?.(); } catch {}
       }
       try { this.opts.syncLegacyEditorTabsState?.(panelId); } catch {}
       debugSessionRuntime("switchPanelSession.cachedNoReload", {
@@ -222,6 +227,9 @@ export class SessionRuntime implements Disposable {
       }
       return false;
     }
+    try {
+      (this.opts.getEditor(panelId) as any)?.setSessionId?.(sessionId);
+    } catch {}
     if (this.activeSwitches.get(panelId) !== switchToken) {
       return true;
     }

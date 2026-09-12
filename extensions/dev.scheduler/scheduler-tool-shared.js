@@ -30,10 +30,18 @@ export function schedulerTaskSchema() {
       command: { type: "string", maxLength: 4000, description: "Required for command tasks, for example: bash /path/to/script.sh" },
       cwd: { type: "string", description: "Optional working directory for command tasks" },
       note: { type: "string", maxLength: 1000, description: "Optional human-readable note shown in the scheduler panel" },
+      nodeId: {
+        type: "string",
+        description: "Execution Node id from terminalInventory nodes[].node_id. Optional for agent tasks and required for command tasks."
+      },
       executionMode: { type: "string", enum: ["local-only", "service-backed"] },
       interactionProfileId: {
         type: "string",
         description: "Runtime InteractionProfile id. Defaults to scheduled.default."
+      },
+      modelProfileId: {
+        type: "string",
+        description: "Optional Runtime model profile id for this agent task. When omitted, the task inherits the model from interactionProfileId. Use modelsManage list/check to choose a configured model."
       },
       schedule: {
         type: "object",
@@ -82,7 +90,7 @@ export function schedulerManageToolSchema({
     type: "function",
     function: {
       name: SCHEDULER_TOOL_NAME,
-      description: "Manage scheduled tasks in Zion. Supports agent tasks with prompts and command tasks with shell commands. Use list/get/list_runs before changing an existing task. Create, update, enable, disable, run, or delete only when the user explicitly requested that persistent action. For command tasks set taskType=command and command; do not hide shell commands inside prompt.",
+      description: "Manage scheduled tasks in Zion. Supports agent tasks with prompts and command tasks with shell commands. Use list/get/list_runs before changing an existing task. Create, update, enable, disable, run, or delete only when the user explicitly requested that persistent action. nodeId selects an execution Node from terminalInventory; it is optional for agent tasks and required for command tasks. For command tasks set taskType=command, executionMode=service-backed, nodeId, and command; do not hide shell commands inside prompt.",
       parameters: {
         type: "object",
         properties: {
@@ -107,7 +115,9 @@ export function taskSummary(task) {
     taskType: task.taskType || "agent",
     title: task.title,
     executionMode: task.executionMode,
+    nodeId: task.nodeId || null,
     interactionProfileId: task.interactionProfileId || null,
+    modelProfileId: task.modelProfileId || null,
     schedule: task.schedule,
     enabled: task.enabled,
     nextRun: task.nextRun,

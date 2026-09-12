@@ -180,6 +180,33 @@ describe("SessionRuntime", () => {
     expect(switched).toEqual([]);
   });
 
+  it("recreates a missing editor even when the tab is already active", async () => {
+    const { runtime, emitted, switched } = createRuntime([
+      {
+        id: "panel-a",
+        activeTabId: "session-a",
+        tabs: [{ id: "session-a" }],
+        editor: null
+      }
+    ]);
+
+    await expect(runtime.switchPanelSession("panel-a", "session-a"))
+      .resolves.toBe(true);
+
+    expect(switched).toEqual([
+      {
+        id: "session-a",
+        panelId: "panel-a",
+        previousSessionId: "session-a",
+        skipPersistPrevious: undefined
+      }
+    ]);
+    expect(emitted.map((entry) => entry.topic)).toEqual([
+      "session/beforeSwitch",
+      "session/afterSwitch"
+    ]);
+  });
+
   it("can force reload when a newly created session was pre-activated by legacy state sync", async () => {
     const { runtime, emitted, switched } = createRuntime([
       { id: "panel-a", activeTabId: "session-new", tabs: [{ id: "session-new" }], editor: { panelId: "panel-a" } as any }
@@ -298,5 +325,52 @@ describe("SessionRuntime", () => {
     expect(editor.value).toBe("existing text");
     expect(globalSessionId).toBe("session-a");
     expect(afterSwitch).toBe(0);
+  });
+
+  it("does not overwrite a collaboration-bound editor with a stale document load", async () => {
+    const editor = {
+      sessionId: "session-a",
+      value: "canonical collaborative document",
+      setSessionId(id: string | null) {
+        this.sessionId = id;
+      },
+      getValue() {
+        return this.value;
+      },
+      setValue(next: string) {
+        this.value = next;
+      },
+      getView() {
+        return {
+          dom: {
+            dataset: {
+              zionCollaborationBound: "true"
+            }
+          }
+        };
+      }
+    };
+    let globalSessionId = "session-a";
+    const runtime = new SessionDocumentRuntime({
+      getGlobalSessionId: () => globalSessionId,
+      getPanelSessionId: () => "session-b",
+      setGlobalSessionId: (id) => {
+        globalSessionId = id;
+      },
+      getTargetEditor: () => editor as any,
+      persistPreviousSession: () => {},
+      setLastActiveId: () => {},
+      loadDocument: async () => "stale HTTP document",
+      applyAnnotations: () => {}
+    });
+
+    await expect(runtime.switchSession({
+      id: "session-b",
+      panelId: "panel-a"
+    })).resolves.toBe(true);
+
+    expect(editor.sessionId).toBe("session-b");
+    expect(editor.value).toBe("canonical collaborative document");
+    expect(globalSessionId).toBe("session-b");
   });
 });

@@ -94,12 +94,18 @@ describe("Runtime schedulerManage tool", () => {
     expect(tool.name).toBe("schedulerManage");
     expect(tool.policy).toEqual({ minimumPreset: "trusted-automation" });
     expect(tool.inputSchema.properties.action.enum).not.toContain("open_panel");
+    expect(tool.inputSchema.properties.task.properties.modelProfileId)
+      .toMatchObject({ type: "string" });
+    expect(tool.inputSchema.properties.task.properties.nodeId)
+      .toMatchObject({ type: "string" });
 
     await expect(tool.invoke({
       action: "create",
       task: {
         title: "Daily report",
         prompt: "Summarize the project",
+        nodeId: "node:cloud-runtime",
+        modelProfileId: "workbench.deepseek.deepseek-v4-flash",
         schedule: { kind: "daily", time: "09:00" }
       }
     })).resolves.toMatchObject({
@@ -107,23 +113,33 @@ describe("Runtime schedulerManage tool", () => {
       content: expect.stringContaining("\"created\"")
     });
     expect(service.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      title: "Daily report"
+      title: "Daily report",
+      nodeId: "node:cloud-runtime",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash"
     }));
 
     const listed = JSON.parse((await tool.invoke({ action: "list" })).content);
     expect(listed.tasks).toEqual([
       expect.objectContaining({
         id: "sched_1",
-        interactionProfileId: "scheduled.default"
+        interactionProfileId: "scheduled.default",
+        nodeId: "node:cloud-runtime",
+        modelProfileId: "workbench.deepseek.deepseek-v4-flash"
       })
     ]);
 
     const updated = JSON.parse((await tool.invoke({
       action: "update",
       task_id: "sched_1",
-      patch: { title: "Updated report" }
+      patch: {
+        title: "Updated report",
+        modelProfileId: "workbench.kimi.k2"
+      }
     })).content);
-    expect(updated.updated).toMatchObject({ title: "Updated report" });
+    expect(updated.updated).toMatchObject({
+      title: "Updated report",
+      modelProfileId: "workbench.kimi.k2"
+    });
 
     const disabled = JSON.parse((await tool.invoke({
       action: "set_enabled",

@@ -10,6 +10,8 @@ export const ACTIVE_RUN_STATUSES = new Set(["pending", "claimed", "running"]);
 const TERMINAL_RUN_STATUSES = new Set(["success", "failed", "aborted"]);
 const DEFAULT_STALE_RUN_TIMEOUT_MS = 10 * 60_000;
 const MAX_COMMAND_LENGTH = 4000;
+const PROFILE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
+const NODE_ID_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,199}$/i;
 const LEGACY_TOOL_ALIASES = new Map([
   ["fsWrite", "write"],
   ["fsEdit", "edit"],
@@ -140,6 +142,15 @@ export function buildSchedulerTask(input = {}, existing = null, now = Date.now()
     command,
     cwd: String(input?.cwd ?? existing?.cwd ?? "").trim(),
     note: String(input?.note ?? existing?.note ?? "").trim(),
+    nodeId: String(input?.nodeId ?? existing?.nodeId ?? "").trim(),
+    interactionProfileId: String(
+      input?.interactionProfileId
+      ?? existing?.interactionProfileId
+      ?? "scheduled.default"
+    ).trim() || "scheduled.default",
+    modelProfileId: taskType === "agent"
+      ? String(input?.modelProfileId ?? existing?.modelProfileId ?? "").trim()
+      : "",
     schedule: {
       ...schedule,
       timeZone: String(input?.schedule?.timeZone || existing?.schedule?.timeZone || localTimeZone()),
@@ -181,6 +192,21 @@ export function validateSchedulerTask(task) {
   if (taskType === "command" && !String(task?.command || "").trim()) return "请输入要执行的命令";
   if (String(task?.command || "").length > MAX_COMMAND_LENGTH) return "命令不能超过 4000 个字符";
   if (!EXECUTION_MODES.has(task.executionMode)) return "不支持的执行模式";
+  if (task.nodeId && !NODE_ID_PATTERN.test(task.nodeId)) {
+    return "Node ID 格式不正确";
+  }
+  if (task.nodeId && task.executionMode !== "service-backed") {
+    return "指定 Node 需要使用 Service-backed 模式";
+  }
+  if (taskType === "command" && !task.nodeId) {
+    return "命令任务必须选择执行 Node";
+  }
+  if (taskType === "command" && task.executionMode !== "service-backed") {
+    return "命令任务必须使用 Service-backed 模式";
+  }
+  if (task.modelProfileId && !PROFILE_ID_PATTERN.test(task.modelProfileId)) {
+    return "模型 Profile ID 格式不正确";
+  }
 
   const scheduleError = validateSchedule(task.schedule);
   if (scheduleError) return scheduleError;
@@ -226,6 +252,11 @@ function taskFromRemote(remote, existing = null) {
     command: remote.command || existing?.command || "",
     cwd: remote.cwd || existing?.cwd || "",
     note: remote.note || existing?.note || "",
+    nodeId: remote.nodeId || existing?.nodeId || "",
+    interactionProfileId: remote.interactionProfileId
+      || existing?.interactionProfileId
+      || "scheduled.default",
+    modelProfileId: remote.modelProfileId || "",
     schedule: remote.schedule,
     capability: remote.capability,
     timeoutSeconds: remote.timeoutSeconds,
@@ -274,6 +305,7 @@ export class SchedulerController {
     this.now = now;
     this.engine = null;
     this.pendingRunRequests = new Set();
+    this.runDetails = new Map();
   }
 
   setEngine(engine) {
@@ -324,6 +356,8 @@ export class SchedulerController {
   }
 
   async getRunDetails(runId) {
+    const cached = this.runDetails.get(String(runId || ""));
+    if (cached && !ACTIVE_RUN_STATUSES.has(cached.status)) return cached;
     const previous = this.store.getRun(String(runId || ""));
     if (!previous || previous.isSummary !== true || !this.service?.getRun) return previous;
     try {
@@ -335,16 +369,18 @@ export class SchedulerController {
           .map((task) => [String(task.remoteTaskId), task])
       );
       const mapped = runFromRemote(remote, taskByRemoteId);
-      const saved = this.store.saveRun({
+      const detail = {
         ...previous,
         ...mapped,
         isSummary: false,
         output: mapped.output || previous.output || "",
         events: mapped.events.length ? mapped.events : previous.events || []
-      });
+      };
+      if (!ACTIVE_RUN_STATUSES.has(detail.status)) {
+        this.runDetails.set(String(detail.id), detail);
+      }
       this.onServiceStatus(true);
-      this._notify();
-      return saved;
+      return detail;
     } catch (error) {
       this.onServiceStatus(false);
       throw error;

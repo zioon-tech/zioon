@@ -36,6 +36,7 @@ export type WidgetHistoryOptions = {
   includeToolHistory?: boolean;
   includeThinkingHistory?: boolean;
   preservedThinking?: boolean;
+  interleavedThinking?: boolean;
   forceReasoning?: boolean;
   reasoningPlaceholder?: string;
 };
@@ -237,6 +238,7 @@ function widgetMessagesForUnit(unit: Unit, options: {
   forceReasoning: boolean;
   reasoningPlaceholder: string;
   includeThinkingMessage?: boolean;
+  reasoningContent?: string;
 }): any[] {
   if (unit.kind === "thinking") {
     if (options.includeThinkingMessage === false) return [];
@@ -248,11 +250,74 @@ function widgetMessagesForUnit(unit: Unit, options: {
     function: { name: unit.data.name, arguments: JSON.stringify(unit.data.args || {}) }
   };
   const aMsg: any = { role: "assistant", tool_calls: [tc] };
-  if (options.forceReasoning) aMsg.reasoning_content = options.reasoningPlaceholder;
+  if (options.reasoningContent) {
+    aMsg.reasoning_content = options.reasoningContent;
+  } else if (options.forceReasoning) {
+    aMsg.reasoning_content = options.reasoningPlaceholder;
+  }
   return [
     aMsg,
     { role: "tool", tool_call_id: unit.data.id, content: unit.data.result }
   ];
+}
+
+function appendReasoning(current: string, next: unknown): string {
+  const text = String(next || "").trim();
+  if (!text) return current;
+  return current ? `${current}\n\n${text}` : text;
+}
+
+function buildInterleavedReplacement(
+  base: any,
+  segments: string[],
+  units: Unit[],
+  options: {
+    forceReasoning: boolean;
+    reasoningPlaceholder: string;
+  }
+): any[] {
+  const replacement: any[] = [];
+  const cleanBase = { ...(base || {}), role: "assistant" };
+  let pendingReasoning = stripLeadingOmitted(cleanBase.reasoning_content);
+  delete cleanBase.reasoning_content;
+
+  const appendText = (content: string) => {
+    const textBase = pendingReasoning
+      ? { ...cleanBase, reasoning_content: pendingReasoning }
+      : cleanBase;
+    const message = assistantTextMessage(textBase, content);
+    if (!message) return;
+    replacement.push(message);
+    pendingReasoning = "";
+  };
+
+  appendText(segments[0]);
+  for (let i = 0; i < units.length; i += 1) {
+    const unit = units[i];
+    if (unit.kind === "thinking") {
+      pendingReasoning = appendReasoning(
+        pendingReasoning,
+        unit.data.content
+      );
+    } else {
+      replacement.push(...widgetMessagesForUnit(unit, {
+        ...options,
+        includeThinkingMessage: false,
+        reasoningContent: pendingReasoning
+      }));
+      pendingReasoning = "";
+    }
+    appendText(segments[i + 1]);
+  }
+
+  if (pendingReasoning) {
+    replacement.push({
+      ...cleanBase,
+      content: "",
+      reasoning_content: pendingReasoning
+    });
+  }
+  return replacement;
 }
 
 /**
@@ -276,6 +341,8 @@ export function reconstructWidgetHistoryMessages(
 
   const ann = annotations || {};
   const preservedThinking = !!options.preservedThinking;
+  const interleavedThinking =
+    preservedThinking && !!options.interleavedThinking;
   const forceReasoning = !!options.forceReasoning;
   const reasoningPlaceholder = options.reasoningPlaceholder || DEFAULT_REASONING_CONTENT_PLACEHOLDER;
 
@@ -283,7 +350,11 @@ export function reconstructWidgetHistoryMessages(
   const widgetAnchors = buildChatWidgetAnchorIndex(docText);
 
   const itemsToolsRaw = Array.isArray(ann.tools) ? ann.tools : [];
-  const deleted = new Set((Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : []).map(String));
+  const deleted = new Set(
+    (Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [])
+      .map(String)
+      .filter((id) => !widgetAnchors.tools.has(id))
+  );
   const itemsTools = itemsToolsRaw
     .map((it) => resolveChatWidgetPosition(it, widgetAnchors.tools))
     .filter((it: any) => it && it.id && !deleted.has(String(it.id)))
@@ -292,7 +363,11 @@ export function reconstructWidgetHistoryMessages(
     .sort((a: any, b: any) => (a.from || 0) - (b.from || 0));
 
   const itemsThinkingRaw = Array.isArray(ann.thinking) ? ann.thinking : [];
-  const deletedThinking = new Set((Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : []).map(String));
+  const deletedThinking = new Set(
+    (Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [])
+      .map(String)
+      .filter((id) => !widgetAnchors.thinking.has(id))
+  );
   const itemsThinking = itemsThinkingRaw
     .map((it) => resolveChatWidgetPosition(it, widgetAnchors.thinking))
     .filter((it: any) => it && it.id && !deletedThinking.has(String(it.id)))
@@ -385,7 +460,7 @@ export function reconstructWidgetHistoryMessages(
     const idx = typeof originalMsgIdx === "number" ? originalMsgIdx + offset : -1;
     const units = (groups.get(rangeIndex) || []).slice().sort((a, b) => (a.pos || 0) - (b.pos || 0));
     let base = idx >= 0 ? msgs[idx] : { role: "assistant", content: "" };
-    if (preservedThinking) {
+    if (preservedThinking && !interleavedThinking) {
       for (const unit of units) {
         if (unit.kind === "thinking") {
           if (base && base.role === "assistant") {
@@ -400,21 +475,33 @@ export function reconstructWidgetHistoryMessages(
 
     const segments = range ? buildAssistantTextSegments(docText, range, units) : [];
     if (range && segments.length === units.length + 1) {
-      const replacement: any[] = [];
-      let usedReasoning = false;
-      const first = assistantTextMessage(base, segments[0], { includeReasoning: !usedReasoning });
-      if (first) replacement.push(first);
-      if (first && typeof first.reasoning_content === "string") usedReasoning = true;
-      for (let i = 0; i < units.length; i += 1) {
-        replacement.push(...widgetMessagesForUnit(units[i], {
-          forceReasoning,
-          reasoningPlaceholder,
-          includeThinkingMessage: !preservedThinking
-        }));
-        const textMsg = assistantTextMessage(base, segments[i + 1], { includeReasoning: !usedReasoning });
-        if (textMsg) replacement.push(textMsg);
-        if (textMsg && typeof textMsg.reasoning_content === "string") usedReasoning = true;
-      }
+      const replacement: any[] = interleavedThinking
+        ? buildInterleavedReplacement(base, segments, units, {
+            forceReasoning,
+            reasoningPlaceholder
+          })
+        : (() => {
+            const next: any[] = [];
+            let usedReasoning = false;
+            const first = assistantTextMessage(base, segments[0], {
+              includeReasoning: !usedReasoning
+            });
+            if (first) next.push(first);
+            if (first && typeof first.reasoning_content === "string") usedReasoning = true;
+            for (let i = 0; i < units.length; i += 1) {
+              next.push(...widgetMessagesForUnit(units[i], {
+                forceReasoning,
+                reasoningPlaceholder,
+                includeThinkingMessage: !preservedThinking
+              }));
+              const textMsg = assistantTextMessage(base, segments[i + 1], {
+                includeReasoning: !usedReasoning
+              });
+              if (textMsg) next.push(textMsg);
+              if (textMsg && typeof textMsg.reasoning_content === "string") usedReasoning = true;
+            }
+            return next;
+          })();
       if (idx >= 0) {
         msgs.splice(idx, 1, ...replacement);
         offset += replacement.length - 1;

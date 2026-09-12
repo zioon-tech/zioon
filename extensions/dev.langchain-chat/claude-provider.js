@@ -57,7 +57,8 @@ export const claudeProvider = {
       config = JSON.parse(localStorage.getItem("zion.claude.config") || "{}");
     } catch {}
     const apiKey = String(localStorage.getItem("zion.claude.apiKey") || "").trim();
-    const discovery = await discoverRemoteModels({ credential: apiKey });
+    const discovery = discoverRemoteModels.peek({ credential: apiKey })
+      || { models: new Map() };
     return MODEL_IDS.map((id) => ({
       id,
       label: MODEL_LABELS[id] || id,
@@ -92,7 +93,8 @@ export const claudeProvider = {
       console.warn("[claude-provider] Failed to read config from localStorage", e);
     }
 
-    const discovery = await discoverRemoteModels({ credential: apiKey });
+    const discovery = discoverRemoteModels.peek({ credential: apiKey })
+      || { models: new Map() };
     const common = withResolvedModelLimits({
       id: modelId,
       url: "https://api.anthropic.com/v1/messages",

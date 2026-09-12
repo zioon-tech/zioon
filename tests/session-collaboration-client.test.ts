@@ -6,6 +6,9 @@ import * as Y from "yjs";
 import {
   createSessionCollaborationManager
 } from "../extensions/dev.session-manager/collaboration-client.js";
+import {
+  pendingAssistantField
+} from "../extensions/dev.session-manager/editor/pending-assistant-plugin.js";
 
 function editorHarness(initialText = "hello") {
   const parent = document.createElement("div");
@@ -61,6 +64,44 @@ function eventBus() {
 }
 
 describe("Session collaboration client", () => {
+  it("does not open browser IndexedDB for Runtime-owned documents", async () => {
+    const originalIndexedDb = globalThis.indexedDB;
+    const indexedDb = { open: vi.fn() };
+    vi.stubGlobal("indexedDB", indexedDb);
+    const manager = createSessionCollaborationManager({
+      zion: {
+        state: {
+          get() {},
+          set() {}
+        }
+      },
+      clientId: "workbench-a",
+      runtimeConfig: {
+        mode: "runtime",
+        enabled: true,
+        baseUrl: "http://127.0.0.1:8766"
+      },
+      createProvider(options: any) {
+        queueMicrotask(() => options.onSynced());
+        return {
+          awareness: new Awareness(options.document),
+          destroy() {}
+        };
+      }
+    });
+    const editor = editorHarness();
+    const binding = manager.bindEditor(editor);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(indexedDb.open).not.toHaveBeenCalled();
+    } finally {
+      binding.dispose();
+      manager.dispose();
+      editor.dispose();
+      vi.stubGlobal("indexedDB", originalIndexedDb);
+    }
+  });
+
   it("binds an editor whose Session id is assigned immediately after attach", async () => {
     const createProvider = vi.fn((options: any) => {
       queueMicrotask(() => options.onSynced());
@@ -99,6 +140,36 @@ describe("Session collaboration client", () => {
     expect(createProvider).toHaveBeenCalledWith(
       expect.objectContaining({ name: "session-late" })
     );
+
+    binding.dispose();
+    manager.dispose();
+    editor.dispose();
+  });
+
+  it("does not bind editors that own their persistence", () => {
+    const createProvider = vi.fn();
+    const manager = createSessionCollaborationManager({
+      zion: {
+        state: {
+          get() {},
+          set() {}
+        }
+      },
+      clientId: "workbench-a",
+      runtimeConfig: {
+        mode: "runtime",
+        enabled: true,
+        baseUrl: "http://127.0.0.1:8766"
+      },
+      createProvider
+    });
+    const editor = editorHarness("comment body");
+    editor.sessionId = "comment:thread-1";
+    editor.getView().dom.dataset.zionSessionPersistence = "skip";
+    const binding = manager.bindEditor(editor);
+
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(manager.isSynced("comment:thread-1")).toBe(false);
 
     binding.dispose();
     manager.dispose();
@@ -154,6 +225,62 @@ describe("Session collaboration client", () => {
         ?.textContent
     ).toBe("bold");
     expect(editor.getValue()).toBe("user current question");
+
+    binding.dispose();
+    manager.dispose();
+    editor.dispose();
+  });
+
+  it("places pending output at the document end when the runtime omits its anchor", () => {
+    const events = eventBus();
+    const neverSynced = new Promise(() => {});
+    const manager = createSessionCollaborationManager({
+      zion: {
+        events,
+        state: {
+          get() {},
+          set() {}
+        }
+      },
+      clientId: "workbench-a",
+      runtimeConfig: {
+        mode: "runtime",
+        enabled: true,
+        baseUrl: "http://127.0.0.1:8766"
+      },
+      createProvider(options: any) {
+        return {
+          awareness: new Awareness(options.document),
+          destroy() {}
+        };
+      },
+      createPersistence() {
+        return {
+          whenSynced: neverSynced,
+          destroy() {}
+        };
+      }
+    });
+    const initial = [
+      "assistant <!-- zion-assistant:id=run-pending --> old",
+      "user current question",
+      "assistant <!-- zion-assistant:id=run-pending --> "
+    ].join("\n");
+    const editor = editorHarness(initial);
+    const binding = manager.bindEditor(editor);
+
+    events.emit("chat/token", {
+      sessionId: "session-1",
+      runId: "run-pending",
+      assistantBlockId: "run-pending",
+      backend: "runtime",
+      token: "streamed"
+    });
+
+    const decorations = editor.getView().state
+      .field(pendingAssistantField)
+      .decorations;
+    expect(decorations.iter().from).toBe(initial.length);
 
     binding.dispose();
     manager.dispose();
@@ -311,12 +438,96 @@ describe("Session collaboration client", () => {
       sharedDocument.getText("content").length,
       "streamed"
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(editor.getValue()).toBe(`${initial}streamed`);
     expect(
       editor.parent.querySelector(".zion-pending-assistant-output")
     ).toBeNull();
+    expect(
+      Number(zion.state.get("chat.followSuppressUntil.session-1"))
+    ).toBeGreaterThan(0);
+    expect(
+      Number((editor.getView().scrollDOM as any).__zionProgrammaticScrollUntil)
+    ).toBeGreaterThan(0);
+
+    binding.dispose();
+    manager.dispose();
+    editor.dispose();
+  });
+
+  it("streams the owner output into Yjs with stable block Markdown", async () => {
+    let sharedDocument: Y.Doc | null = null;
+    const events = eventBus();
+    const values = new Map<string, unknown>([
+      ["chat.followLatest.session-1", true]
+    ]);
+    const manager = createSessionCollaborationManager({
+      zion: {
+        events,
+        state: {
+          get(key: string) {
+            return values.get(key);
+          },
+          set(key: string, value: unknown) {
+            values.set(key, value);
+          }
+        }
+      },
+      clientId: "workbench-owner",
+      runtimeConfig: {
+        mode: "runtime",
+        enabled: true,
+        baseUrl: "http://127.0.0.1:8766"
+      },
+      createDocument() {
+        sharedDocument = new Y.Doc();
+        return sharedDocument;
+      },
+      createProvider(options: any) {
+        queueMicrotask(() => options.onSynced());
+        return {
+          awareness: new Awareness(options.document),
+          destroy() {}
+        };
+      },
+      createPersistence() {
+        return {
+          whenSynced: Promise.resolve(),
+          destroy() {}
+        };
+      }
+    });
+    const initial =
+      "user hi\nassistant <!-- zion-assistant:id=run-owner --> ";
+    const editor = editorHarness(initial);
+    const binding = manager.bindEditor(editor);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    for (const token of ["#", "# Heading"]) {
+      events.emit("chat/token", {
+        sessionId: "session-1",
+        runId: "run-owner",
+        assistantBlockId: "run-owner",
+        backend: "runtime",
+        documentWriter: true,
+        token
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const expected = `${initial}\n## Heading`;
+    expect(sharedDocument?.getText("content").toString()).toBe(expected);
+    expect(editor.getValue()).toBe(expected);
+    expect(
+      editor.parent.querySelector(".zion-pending-assistant-output")
+    ).toBeNull();
+    expect(
+      Number(values.get("chat.followSuppressUntil.session-1"))
+    ).toBeGreaterThan(0);
+    expect(
+      Number((editor.getView().scrollDOM as any).__zionProgrammaticScrollUntil)
+    ).toBeGreaterThan(0);
 
     binding.dispose();
     manager.dispose();

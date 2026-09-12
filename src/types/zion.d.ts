@@ -16,7 +16,9 @@ export interface EditorProxy {
   editorId?: string;
   sessionId?: string | null;
   getValue(): string;
-  setValue(v: string, opts?: { source?: "session-load" | "session-seed" }): void;
+  setValue(v: string, opts?: {
+    source?: "session-load" | "session-seed" | "collaboration-hydration";
+  }): void;
   replaceSelection(text: string): void;
   getSelection(): string;
   replaceRange(text: string, from: { line: number; ch: number }, to?: { line: number; ch: number }): void;
@@ -231,6 +233,7 @@ declare global {
       // events bus
       events: {
         emit(topic: string, payload?: any): void;
+        emitAsync(topic: string, payload?: any): Promise<void>;
         on(topic: string, handler: (payload: any) => void): Disposable;
       };
       // state bus

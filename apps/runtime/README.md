@@ -59,9 +59,10 @@ The current checkpoint provides:
 
 It connects to `zion-next` through the HTTP/SSE RuntimeClient while preserving a
 temporary browser compatibility path. It never exposes `zion-local-tools` directly.
-It is not safe to bind publicly: Client authentication, device pairing,
-per-device credentials, isolated third-party plugin execution, and OS
-keychain/Vault credential providers remain later milestones.
+Remote access is opt-in and uses the single-Space pairing boundary described
+below. The Runtime should still bind to loopback behind a same-origin HTTPS
+reverse proxy; isolated third-party plugin execution, remote Approval, and
+device-held proof-of-possession keys remain later milestones.
 
 ## Start
 
@@ -152,8 +153,9 @@ PUT /v1/model-profiles/{profileId}
 
 The request may contain a credential, but the response and `GET /v1/models` only
 expose `credentialConfigured`. The current local credential store is an
-intermediate `0600` file and must be replaced by OS Keychain/Vault before remote
-binding is enabled.
+intermediate `0600` file. Remote deployments should inject model credentials
+from their secret manager; OS Keychain/Vault-backed imported credentials remain
+a follow-up.
 
 Override the local port or database:
 
@@ -161,10 +163,89 @@ Override the local port or database:
 npm run runtime:serve -- --port 8877 --db /tmp/zion-runtime.sqlite3
 ```
 
+## Single-Space remote access
+
+The first remote-access checkpoint adds one-time Owner, Client, and Resource
+pairing without introducing an account system. Start Runtime on loopback behind
+an HTTPS reverse proxy that serves Workbench and proxies Runtime HTTP, SSE, and
+WebSocket routes on the same origin:
+
+```bash
+brew install cloudflared
+npm run remote:start
+```
+
+This convenience command builds Desktop Workbench and the independent Mobile
+Client, starts Runtime with Access Control, creates an outbound Cloudflare Quick
+Tunnel, and prints a browser pairing QR code. Desktop is served at `/`; Mobile
+is served at `/mobile/`. Use
+`npm run remote:start -- --public-url https://zion.example.com` when an HTTPS
+reverse proxy is already configured.
+
+Do not run `cloudflared` on managed corporate endpoints where it is prohibited.
+Deploy Runtime and the HTTPS gateway on an external host; corporate computers
+only need the outbound Device Connector. Cloudflare Pages can host a static
+Workbench preview, but it does not replace the Node Runtime or its same-origin
+HTTP, SSE, and WebSocket routes.
+
+The equivalent manual Runtime command is:
+
+```bash
+ZION_RUNTIME_ACCESS_CONTROL=1 \
+ZION_RUNTIME_PUBLIC_URL=https://zion.example.com \
+ZION_RUNTIME_ALLOWED_ORIGINS=https://zion.example.com \
+ZION_RUNTIME_TOOL_MODE=node \
+npm run runtime:serve -- \
+  --runtime-plugins dev.session-manager \
+  --workbench-dist ./dist
+```
+
+Create the first Owner invitation on the Runtime host:
+
+```bash
+npm run runtime:access -- pair create \
+  --kind owner \
+  --delivery cookie \
+  --public-url https://zion.example.com
+```
+
+Open the printed pairing URL on the phone or computer. The high-entropy secret
+is carried in the URL fragment, exchanged once, removed from the address bar,
+and replaced by a `Secure`, `HttpOnly`, `SameSite=Strict` session cookie.
+Workbench and Runtime must share an HTTPS origin.
+
+An authenticated Owner can create further invitations with
+`POST /v1/access/pairings`. The host-local CLI is also available:
+
+```bash
+# Browser or Mobile Client
+npm run runtime:access -- pair create \
+  --kind client --delivery cookie \
+  --public-url https://zion.example.com
+
+# Resource Host
+npm run runtime:access -- pair create \
+  --kind resource --delivery bearer
+
+npm run runtime:access -- devices list
+npm run runtime:access -- devices revoke <device-id>
+```
+
+Access Control keeps only credential and pairing-secret digests in SQLite.
+Owner, Client, and Resource scopes are distinct, and revoking one device revokes
+all credentials issued to that device. Unauthenticated `/health` exposes only
+service liveness and `authRequired`.
+
+Do not expose Runtime's plaintext HTTP listener directly. Non-loopback direct
+binding additionally requires `ZION_RUNTIME_ALLOW_INSECURE_REMOTE=1` and exists
+only for controlled development. Production traffic must terminate TLS at the
+same-origin Access Gateway.
+
 ## Device node mode
 
-The default tool mode remains direct, same-machine `local-tools`. Enable the
-remote Node Broker explicitly:
+The default tool mode remains direct, same-machine `local-tools`. Access-Control
+mode enables the remote Node Broker without a shared token. The legacy static
+token remains available only for loopback and private compatibility tests:
 
 ```bash
 ZION_RUNTIME_NODE_TOKEN=<shared-development-token> \
@@ -181,8 +262,8 @@ built-in Terminal Inventory Provider observes the Runtime machine rather than a
 remote Device; pass `--runtime-plugins ...` only for providers intentionally
 installed on that Host.
 
-The Node gateway endpoints are mounted only when
-`ZION_RUNTIME_NODE_TOKEN` is configured:
+The Node gateway endpoints are mounted in Node tool mode, or when the legacy
+development token is configured:
 
 ```text
 POST /v1/device-nodes/register
@@ -192,14 +273,14 @@ POST /v1/device-nodes/{nodeId}/invocations/{invocationId}/result
 GET  /v1/device-nodes
 ```
 
-This is a protocol validation checkpoint, not a public deployment boundary.
-The static bearer token must be replaced by device pairing and per-device
-credentials before remote binding. Device registrations, project/resource
-bindings, and completed Runtime-side invocation receipts use the Runtime SQLite
-database. A restored Device is deliberately offline until its Connector
-registers again. Runtime restart still interrupts active remote invocations;
-pending command delivery and Device-side receipts are not durable. Each Connector
-must also configure an absolute local workspace root and explicit local-tools
+Access-Control mode requires a paired Resource credential bound to the exact
+`nodeId`. Legacy static-token mode does not provide that isolation and must not
+be used on the public Internet. Device registrations, project/resource bindings,
+and completed Runtime-side invocation receipts use the Runtime SQLite database.
+A restored Device is deliberately offline until its Connector registers again.
+Runtime restart still interrupts active remote invocations; pending command
+delivery and Device-side receipts are not durable. Each Connector must also
+configure an absolute local workspace root and explicit local-tools
 terminal-session allowlist. Device Host intersects those local grants with every
 Runtime policy before invoking local-tools.
 
@@ -316,14 +397,18 @@ Keychain, refreshed when possible, and never written to the CLI config.
 The CLI can also act as the outbound Device Tool Host:
 
 ```bash
-ZION_DEVICE_TOKEN=<device-token> \
 npm run runtime:cli -- device connect \
   --runtime-profile cloud \
+  --pairing-code XXXX-XXXX-XXXX \
   --project zion-next \
   --resource-id workspace:zion-next \
   --workspace-root /absolute/path/to/zion-next \
   --terminal-sessions <local-tools-session-id>
 ```
+
+The one-time code is exchanged for a per-Device credential and persisted in
+the Device credential store. `ZION_DEVICE_TOKEN` remains an explicit
+compatibility override.
 
 To create a CLI Session that can use the read-only tools advertised by a Device:
 
@@ -383,14 +468,20 @@ npm run runtime:chat -- \
   --terminal-session <local-tools-session-id>
 ```
 
-The Runtime API remains loopback-only by default. Use an authenticated private
-tunnel for cross-machine validation; do not bind this checkpoint directly to the
-public internet.
+The Runtime API remains loopback-only by default. The shared-token example above
+is limited to an authenticated private tunnel. Public deployment requires the
+Access-Control mode and same-origin HTTPS gateway described earlier.
 
 ## API
 
 ```text
 GET  /health
+POST /v1/access/pair
+GET  /v1/access/session
+POST /v1/access/logout
+POST /v1/access/pairings
+GET  /v1/access/devices
+POST /v1/access/devices/{deviceId}/revoke
 GET  /v1/models
 GET  /v1/capabilities/tools
 GET  /v1/interaction-profiles
@@ -446,7 +537,9 @@ the current Workbench Session, stores the Yjs state in
 back to the normal Workbench document record. In-flight Run output uses the
 coalesced projection stream and is never persisted per token. Runtime commits
 the final assistant block to the collaborative document, so the Workbench that
-started a Run is not the only persistence owner.
+started a Run is not the only persistence owner. The current collaboration
+protocol is v4; older Workbench bundles are rejected so they cannot replay
+stale whole-document replacements.
 
 `/projection/stream` preserves the last raw Run event sequence as each SSE id.
 It accepts `reasoning=stream|summary|none`, `max_delay_ms`, and
@@ -513,18 +606,42 @@ Device-local resource root and terminal bindings.
 
 ## Runtime plugins
 
-Runtime Host scans manifests under the repository `extensions` directory by
-default, but executes only explicitly enabled plugin IDs. In local tool mode the
-default allowlist currently includes Terminal Manager, Skills, Memory, Identity,
-Context Compression, Scheduler, Session Manager, Chat model management, Tools,
-Mail, and Agents. Node mode defaults to no Runtime plugins because local
-machine-observation plugins may not describe the selected remote Device. Override
-the plugin root and allowlist with:
+Runtime Host scans built-in manifests under the repository `extensions`
+directory and external packages under `~/.zion-next/plugins` by default, but
+executes only explicitly enabled plugin IDs. `dev.identity` is externalized by
+default: it must exist under the external root and never falls back to the
+repository copy. This makes the Workbench UI and Runtime Entry use the same
+published package version.
+
+In local tool mode the default allowlist currently includes Terminal Manager,
+Skills, Memory, Identity, Context Compression, Scheduler, Session Manager, Chat
+model management, Tools, Plugin Manager, Mail, and Agents. Node mode defaults
+to no Runtime plugins because local machine-observation plugins may not
+describe the selected remote Device. Override the roots, externalized IDs, and
+allowlist with:
 
 ```bash
 npm run runtime:serve -- \
-  --plugin-root /absolute/plugin-root \
-  --runtime-plugins dev.example.context,dev.terminal-manager
+  --plugin-root /absolute/builtin-plugin-root \
+  --external-plugin-root /absolute/external-plugin-root \
+  --external-runtime-plugins dev.identity \
+  --runtime-plugins dev.identity,dev.example.context
+```
+
+Build the Identity browser and Runtime bundles, install the unpacked package,
+and publish the Plugin Host ZIP with:
+
+```bash
+npm run plugin:package:identity
+```
+
+On a separate Runtime host, install the uploaded ZIP atomically:
+
+```bash
+npm run plugin:install:runtime -- \
+  --archive /tmp/dev.identity-0.1.7.zip \
+  --plugin-root /var/lib/zion-next/plugins \
+  --plugin-id dev.identity
 ```
 
 Use `--runtime-plugins none` to start without Runtime plugins. A Runtime-capable
@@ -548,6 +665,17 @@ Context Providers. API version 2 adds Host-owned Tool, Context Provider, Run
 post-processor, namespaced state, and plugin-event registration. Plugin activation
 failures are isolated and reported in `/health`; successful registrations and
 plugins are disposed in reverse order during shutdown.
+
+`dev.plugins` contributes the headless `pluginsManage` catalog/search and
+development-session actions. Local mode connects to the Plugin Host through
+`ZION_PLUGIN_SERVICE_URL` or `--plugin-service-url` (default
+`http://127.0.0.1:8767`); Node mode routes the same requests through the paired
+Device Connector.
+
+`dev.terminal-manager` contributes both `terminalInventory` and
+`terminalManage`. In Node mode its terminal lifecycle and machine metadata
+requests are also routed through the paired Device Connector rather than the
+Runtime host's loopback interface.
 
 Runtime plugins currently execute in the Host process and therefore must be
 trusted code. Entry canonicalization prevents a manifest from escaping its plugin

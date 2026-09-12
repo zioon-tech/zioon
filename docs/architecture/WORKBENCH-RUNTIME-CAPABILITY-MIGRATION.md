@@ -659,8 +659,8 @@ The migration is correct when:
 - [x] Move model switcher default-model persistence from localStorage to Runtime
   `InteractionProfile`, with localStorage retained as browser/offline fallback.
 - [x] Migrate one simple built-in tool plugin as the reference
-  (`dev.terminal-manager` registers `terminalInventory` from its Runtime v2
-  entry).
+  (`dev.terminal-manager` registers `terminalInventory` and the Device-backed
+  `terminalManage` tool from its Runtime v2 entry).
 - [x] Make Workbench tool switcher render Runtime-only plugin tools from
   `/v1/capabilities/tools`.
 - [x] Add `scheduled.default` and let Scheduler tasks carry
@@ -675,9 +675,11 @@ The migration is correct when:
   InteractionProfile updates; browser provider health probes remain a
   Workbench-side enhancement.
 - [x] Add a `dev.tools` Runtime v2 entry for `toolsManage`, backed by Runtime
-  capability catalog inspection and InteractionProfile policy patching;
-  `pluginsManage` remains Workbench-only because it controls plugin install/dev
-  sessions and UI state.
+  capability catalog inspection and InteractionProfile policy patching.
+- [x] Add a `dev.plugins` Runtime v2 entry for the headless `pluginsManage`
+  subset. Catalog search and development-session lifecycle use the Device-hosted
+  Plugin Host; Workbench-local enable, disable, install, and uninstall state
+  remains client-owned and is not exposed as a headless action.
 - [x] Add a `dev.mail` Runtime v2 entry for `mailManage`, backed by
   `InteractionProfile.policy.allowedRecipients`, `maxMailPerRun`, and
   `sendMail` tool enablement; SMTP host/password configuration remains
@@ -753,6 +755,11 @@ The migration is correct when:
   suppresses its local heartbeat and polls Runtime projections while the health
   contract advertises `projectAutomationWorker: true`, retaining the browser
   coordinator only as an offline/older-Host fallback.
+- [x] Externalize the complete `dev.identity` UI and Runtime Entry as one
+  versioned package. Runtime marks plugin origins, requires Identity from the
+  external plugin root without built-in fallback, and loads the Project
+  Automation coordinator from the bundled Runtime Entry instead of importing
+  Identity source from Runtime Host core.
 - [x] Exclude Workbench contributors that are already backed by active Runtime
   context providers when creating Runtime Runs, preventing duplicate Skills,
   Memory, Identity, and terminal inventory injections.

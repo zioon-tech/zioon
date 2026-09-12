@@ -3,12 +3,7 @@ import { ACTIVE_RUN_STATUSES, buildSchedulerTask, SchedulerController, validateS
 import { describeSchedule, normalizeSchedule } from "./schedule.js";
 import { SchedulerServiceClient } from "./service-api.js";
 import {
-  archiveDateForTimestamp,
-  buildScheduledSessionContent,
-  ensureScheduledSessionDateFolder,
-  ensureScheduledSessionFolder,
-  migrateScheduledSessions,
-  scheduledSessionTagForDate,
+  removeEmptyScheduledSessionFolder,
   sessionTagForLocale,
   withSessionTag
 } from "./session-archive.js";
@@ -102,10 +97,122 @@ function compactCommand(command) {
   return value.length > 80 ? `${value.slice(0, 77)}...` : value;
 }
 
-function taskListMeta(task, next) {
+function modelProfileLabel(task, modelProfiles = []) {
+  if (isCommandTask(task)) return "";
+  const modelProfileId = String(task?.modelProfileId || "");
+  if (!modelProfileId) return "继承默认模型";
+  const profile = modelProfiles.find((item) => item?.id === modelProfileId);
+  return profile?.label || modelProfileId;
+}
+
+function modelProfileOptionsHtml(modelProfiles = [], selectedModelProfileId = "") {
+  const selectedId = String(selectedModelProfileId || "");
+  const profiles = modelProfiles.filter((profile) => {
+    const profileId = String(profile?.id || "");
+    return profileId && (
+      profile?.credentialRequired === false
+      || profile?.credentialConfigured === true
+      || profileId === selectedId
+    );
+  });
+  const options = profiles.map((profile) => {
+    const profileId = String(profile.id);
+    const available = profile.credentialRequired === false
+      || profile.credentialConfigured === true;
+    const label = `${profile.label || profileId}${available ? "" : "（凭据不可用）"}`;
+    return `
+      <option value="${escapeHtml(profileId)}" ${profileId === selectedId ? "selected" : ""}>
+        ${escapeHtml(label)}
+      </option>
+    `;
+  });
+  if (selectedId && !profiles.some((profile) => String(profile.id) === selectedId)) {
+    options.unshift(`
+      <option value="${escapeHtml(selectedId)}" selected>
+        ${escapeHtml(`${selectedId}（Runtime 未返回）`)}
+      </option>
+    `);
+  }
+  return `
+    <option value="" ${selectedId ? "" : "selected"}>继承 scheduled.default</option>
+    ${options.join("")}
+  `;
+}
+
+function syncModelProfileSelect(select, modelProfiles = []) {
+  if (!select) return;
+  const selectedModelProfileId = String(select.value || "");
+  select.innerHTML = modelProfileOptionsHtml(
+    modelProfiles,
+    selectedModelProfileId
+  );
+  select.value = selectedModelProfileId;
+}
+
+function nodeOptionsHtml(nodes = [], selectedNodeId = "", required = false) {
+  const selectedId = String(selectedNodeId || "");
+  const available = new Map(
+    nodes
+      .filter((node) => node?.nodeId)
+      .map((node) => [String(node.nodeId), node])
+  );
+  if (selectedId && !available.has(selectedId)) {
+    available.set(selectedId, {
+      nodeId: selectedId,
+      label: selectedId,
+      status: "offline"
+    });
+  }
+  const options = [...available.values()]
+    .sort((left, right) =>
+      String(left.label || left.nodeId).localeCompare(
+        String(right.label || right.nodeId)
+      )
+    )
+    .map((node) => {
+      const id = String(node.nodeId);
+      const state = node.status === "online" ? "在线" : "离线";
+      const platform = node.platform ? ` · ${node.platform}` : "";
+      return `<option value="${escapeHtml(id)}" ${id === selectedId ? "selected" : ""}>${escapeHtml(node.label || id)} · ${state}${escapeHtml(platform)}</option>`;
+    });
+  return `
+    <option value="" ${selectedId ? "" : "selected"} ${required ? "disabled" : ""}>${required ? "请选择执行 Node" : "自动选择"}</option>
+    ${options.join("")}
+  `;
+}
+
+function updateNodeSelectRequirement(select, required = false) {
+  if (!select) return;
+  select.required = required;
+  const emptyOption = Array.from(select.options)
+    .find((option) => option.value === "");
+  if (emptyOption) {
+    emptyOption.disabled = required;
+    emptyOption.textContent = required ? "请选择执行 Node" : "自动选择";
+  }
+}
+
+function syncNodeSelect(select, nodes = [], required = false) {
+  if (!select) return;
+  const selectedNodeId = String(select.value || "");
+  select.innerHTML = nodeOptionsHtml(nodes, selectedNodeId, required);
+  select.value = selectedNodeId;
+  updateNodeSelectRequirement(select, required);
+}
+
+function taskListMeta(task, next, modelProfiles = [], nodes = []) {
   const type = taskTypeLabel(task);
+  const model = isCommandTask(task)
+    ? ""
+    : ` · ${modelProfileLabel(task, modelProfiles)}`;
   const command = isCommandTask(task) ? ` · ${compactCommand(task.command) || "未设置命令"}` : "";
-  return `${type} · ${describeSchedule(task.schedule)}${command} · ${next}`;
+  const node = task.nodeId
+    ? nodes.find((item) => String(item?.nodeId) === String(task.nodeId))
+    : null;
+  const executionNode = task.nodeId
+    ? ` · ${node?.label || task.nodeId}`
+    : "";
+  return `${type}${model}${executionNode} · ${describeSchedule(task.schedule)}${command} · ${next}`;
 }
 
 export async function finalizeScheduledSession(zion, sessionId, run) {
@@ -138,15 +245,21 @@ function taskFromForm(form, existing = null) {
   return buildSchedulerTask({
     id: existing?.id,
     taskType,
-    executionMode: String(data.get("executionMode") || "local-only"),
+    executionMode: taskType === "command"
+      ? "service-backed"
+      : String(data.get("executionMode") || "local-only"),
     title: String(data.get("title") || "").trim(),
     prompt: String(data.get("prompt") || "").trim(),
+    modelProfileId: taskType === "agent"
+      ? String(data.get("modelProfileId") || "").trim()
+      : "",
     sessionTag: taskType === "command"
       ? ""
       : (existing?.sessionTag || sessionTagForLocale(currentLocale())),
     command,
     cwd: String(data.get("cwd") || "").trim(),
     note: String(data.get("note") || "").trim(),
+    nodeId: String(data.get("nodeId") || "").trim(),
     schedule: {
       kind: String(data.get("kind") || "daily"),
       intervalMinutes: Number(data.get("intervalMinutes") || 60),
@@ -168,12 +281,22 @@ function taskFromForm(form, existing = null) {
   }, existing);
 }
 
-function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
+function createTaskEditor({
+  task,
+  modelProfiles = [],
+  nodes = [],
+  onSave,
+  onCancel,
+  onToggle,
+  onDelete
+}) {
   const form = document.createElement("form");
   form.className = "scheduler-editor";
   const schedule = normalizeSchedule(task?.schedule || { kind: "daily", time: "09:00" });
   const capability = task?.capability || { preset: "read-only", allowedTools: [] };
   const taskType = task?.taskType || "agent";
+  const selectedModelProfileId = String(task?.modelProfileId || "");
+  const selectedNodeId = String(task?.nodeId || "");
   const legacyToolName = { write: "fsWrite", edit: "fsEdit", Bash: "terminalExecute" };
   const checked = (name) => capability.allowedTools?.includes(name) || capability.allowedTools?.includes(legacyToolName[name])
     ? "checked"
@@ -199,6 +322,16 @@ function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
           </select>
         </label>
       </div>
+      <label data-field="model-profile">模型
+        <select name="modelProfileId">
+          ${modelProfileOptionsHtml(modelProfiles, selectedModelProfileId)}
+        </select>
+      </label>
+      <label data-field="node-target">执行 Node
+        <select name="nodeId">
+          ${nodeOptionsHtml(nodes, selectedNodeId, taskType === "command")}
+        </select>
+      </label>
       <label data-field="prompt">任务提示词<textarea name="prompt" rows="7" maxlength="12000" placeholder="描述 Agent 要完成的任务">${escapeHtml(task?.prompt || "")}</textarea></label>
       <label data-field="command">命令<textarea name="command" rows="4" maxlength="4000" placeholder="例如：bash /Users/bytedance/.zion-next/scripts/parking_monitor.sh">${escapeHtml(task?.command || "")}</textarea></label>
       <div class="scheduler-grid" data-field="command-meta">
@@ -242,7 +375,7 @@ function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
           </fieldset>
           <label data-field="file-roots">允许写入的目录<textarea name="fileRoots" rows="2" placeholder="/path/to/workspace">${escapeHtml((capability.fileRoots || []).join("\n"))}</textarea></label>
           <label data-field="terminal-policy">允许的命令前缀（可选；留空允许 Bash 沙箱内的命令）<textarea name="allowedCommandPrefixes" rows="2" placeholder="例如：npm test&#10;python3 /path/to/script.py">${escapeHtml((capability.allowedCommandPrefixes || []).join("\n"))}</textarea></label>
-          <label data-field="terminal-policy">允许的终端 Session ID<input name="allowedTerminalSessionIds" value="${escapeHtml((capability.allowedTerminalSessionIds || []).join(", "))}" placeholder="可留空，表示任意已有终端"></label>
+          <label data-field="terminal-policy">允许的终端 Session ID<input name="allowedTerminalSessionIds" value="${escapeHtml((capability.allowedTerminalSessionIds || []).join(", "))}" placeholder="可选；留空由模型从 terminalInventory 动态选择"></label>
           <div class="scheduler-grid" data-field="mail-policy">
             <label>允许的邮件收件人<textarea name="allowedRecipients" rows="2" placeholder="team@example.com">${escapeHtml((capability.allowedRecipients || []).join("\n"))}</textarea></label>
             <label>每次最多发送<input name="maxMailPerRun" type="number" min="0" max="100" value="${Number(capability.maxMailPerRun || 0)}"></label>
@@ -259,21 +392,31 @@ function createTaskEditor({ task, onSave, onCancel, onToggle, onDelete }) {
   const updateFields = () => {
     const kind = form.elements.kind.value;
     const preset = form.elements.preset.value;
-    const executionMode = form.elements.executionMode.value;
+    let executionMode = form.elements.executionMode.value;
     const currentTaskType = form.elements.taskType.value;
     const promptField = form.querySelector('[data-field="prompt"]');
     const commandField = form.querySelector('[data-field="command"]');
     const commandMeta = form.querySelector('[data-field="command-meta"]');
+    const modelProfileField = form.querySelector('[data-field="model-profile"]');
+    const nodeField = form.querySelector('[data-field="node-target"]');
     promptField.hidden = currentTaskType !== "agent";
     commandField.hidden = currentTaskType !== "command";
     commandMeta.hidden = currentTaskType !== "command";
+    modelProfileField.hidden = currentTaskType !== "agent";
     form.elements.prompt.required = currentTaskType === "agent";
     form.elements.command.required = currentTaskType === "command";
     if (currentTaskType === "command") {
+      form.elements.executionMode.value = "service-backed";
+      executionMode = "service-backed";
       form.elements.preset.value = "trusted-automation";
       const terminalTool = form.querySelector('input[name="allowedTools"][value="Bash"]');
       if (terminalTool) terminalTool.checked = true;
     }
+    const nodeRequired = currentTaskType === "command";
+    const nodeEnabled = nodeRequired || executionMode === "service-backed";
+    nodeField.hidden = !nodeEnabled;
+    updateNodeSelectRequirement(form.elements.nodeId, nodeRequired);
+    if (!nodeEnabled) form.elements.nodeId.value = "";
     form.querySelector('[data-field="time"]').hidden = kind === "interval" || kind === "once";
     form.querySelector('[data-field="interval"]').hidden = kind !== "interval";
     form.querySelector('[data-field="once"]').hidden = kind !== "once";
@@ -330,7 +473,14 @@ function createTaskRow() {
   return row;
 }
 
-function syncTaskRow(row, task, engine, activeRun = null) {
+function syncTaskRow(
+  row,
+  task,
+  engine,
+  activeRun = null,
+  modelProfiles = [],
+  nodes = []
+) {
   const state = taskState(task, engine, activeRun);
   const next = task.enabled ? `下次 ${formatDate(task.nextRun)}` : "已暂停";
   const statusText = ACTIVE_RUN_STATUSES.has(state) ? runStatusLabel(state, activeRun) : next;
@@ -344,7 +494,14 @@ function syncTaskRow(row, task, engine, activeRun = null) {
   if (edit) edit.title = `编辑 ${task.title}`;
   if (dot) dot.dataset.status = state;
   if (title) title.textContent = task.title;
-  if (meta) meta.textContent = taskListMeta(task, statusText);
+  if (meta) {
+    meta.textContent = taskListMeta(
+      task,
+      statusText,
+      modelProfiles,
+      nodes
+    );
+  }
   if (run) {
     const isBusy = ACTIVE_RUN_STATUSES.has(state);
     const busyLabel = `任务${runStatusLabel(state, activeRun)}`;
@@ -354,7 +511,14 @@ function syncTaskRow(row, task, engine, activeRun = null) {
   }
 }
 
-function syncTaskList(list, tasks, engine, activeRuns) {
+function syncTaskList(
+  list,
+  tasks,
+  engine,
+  activeRuns,
+  modelProfiles = [],
+  nodes = []
+) {
   if (!tasks.length) {
     list.replaceChildren(createEmptyState("还没有定时任务"));
     return;
@@ -367,7 +531,14 @@ function syncTaskList(list, tasks, engine, activeRuns) {
     let row = existing.get(task.id);
     if (!row) row = createTaskRow();
     existing.delete(task.id);
-    syncTaskRow(row, task, engine, activeRuns.get(task.id));
+    syncTaskRow(
+      row,
+      task,
+      engine,
+      activeRuns.get(task.id),
+      modelProfiles,
+      nodes
+    );
     if (row !== nextNode) list.insertBefore(row, nextNode);
     nextNode = row.nextElementSibling;
   }
@@ -422,6 +593,32 @@ function syncRunList(list, runs) {
   for (const row of existing.values()) row.remove();
 }
 
+function schedulerEventSummary(event) {
+  const data = event?.data && typeof event.data === "object" ? event.data : {};
+  const detail = data.error
+    || data.reason
+    || data.name
+    || data.toolName
+    || data.status
+    || "";
+  return String(detail || "").replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
+function openScheduledRunSession(run) {
+  const sessionId = String(run?.sessionId || "").trim();
+  if (!sessionId) return false;
+  if (run.executionMode === "service-backed") {
+    const url = new URL(
+      `/mobile/chat/${encodeURIComponent(sessionId)}`,
+      globalThis.location?.origin || "http://127.0.0.1"
+    );
+    globalThis.open?.(url.href, "_blank", "noopener");
+    return true;
+  }
+  window.zion.commands.executeCommand("zion.sessions.switch", sessionId);
+  return true;
+}
+
 function createSchedulerListRoot() {
   const root = document.createElement("div");
   root.className = "scheduler-panel";
@@ -442,7 +639,13 @@ function createSchedulerListRoot() {
   return root;
 }
 
-function syncSchedulerListRoot(root, store, engine) {
+function syncSchedulerListRoot(
+  root,
+  store,
+  engine,
+  modelProfiles = [],
+  nodes = []
+) {
   const tasks = store.listTasks();
   const allRuns = store.listRuns();
   const activeRuns = new Map();
@@ -452,7 +655,14 @@ function syncSchedulerListRoot(root, store, engine) {
     }
   }
   const runs = allRuns.slice(0, 20);
-  syncTaskList(root.querySelector(".scheduler-task-list"), tasks, engine, activeRuns);
+  syncTaskList(
+    root.querySelector(".scheduler-task-list"),
+    tasks,
+    engine,
+    activeRuns,
+    modelProfiles,
+    nodes
+  );
   syncRunList(root.querySelector(".scheduler-run-list"), runs);
   const clearRuns = root.querySelector('[data-action="clear-runs"]');
   if (clearRuns) clearRuns.hidden = !runs.length;
@@ -462,7 +672,12 @@ function createPanel({
   store,
   engine,
   refreshAll,
+  refreshModels,
+  refreshNodes,
+  refreshTasks,
   refreshRuns,
+  getModelProfiles,
+  getNodes,
   loadRunDetails,
   saveTask,
   toggleTask,
@@ -476,11 +691,24 @@ function createPanel({
       let mode = "list";
       let editing = null;
       let selectedRun = null;
+      let selectedRunDetail = null;
       let disposed = false;
+      let serviceError = "";
 
       const requestRender = () => {
         if (disposed) return;
-        if (mode === "edit") return;
+        if (mode === "edit") {
+          syncModelProfileSelect(
+            container.querySelector('select[name="modelProfileId"]'),
+            getModelProfiles?.() || []
+          );
+          syncNodeSelect(
+            container.querySelector('select[name="nodeId"]'),
+            getNodes?.() || [],
+            container.querySelector('select[name="taskType"]')?.value === "command"
+          );
+          return;
+        }
         render();
       };
 
@@ -532,11 +760,18 @@ function createPanel({
         const runRow = target.closest?.(".scheduler-run-row");
         if (runRow) {
           selectedRun = runRow.dataset.runId;
+          selectedRunDetail = null;
+          // #region debug-point B:scheduler-history-selection
+          try { const probe = globalThis.__zionScheduledSurfaceProbe; const selected = store.getRun(selectedRun); if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "pre-fix", hypothesisId: "B", location: "extensions/dev.scheduler/main.js:history-click", msg: "[DEBUG] Scheduler history row selected", data: { selectedRun, found: !!selected, isSummary: selected?.isSummary === true, status: selected?.status || null, eventCount: selected?.events?.length || 0, outputLength: String(selected?.output || "").length }, ts: Date.now() }) }).catch(() => {}); } catch {}
+          // #endregion
           mode = "run";
           render();
           if (store.getRun(selectedRun)?.isSummary === true) {
             void Promise.resolve(loadRunDetails?.(selectedRun))
-              .then(render)
+              .then((detail) => {
+                if (selectedRun === detail?.id) selectedRunDetail = detail;
+                render();
+              })
               .catch((error) => {
                 window.zion?.notification?.show?.(error?.message || String(error), { type: "error" });
               });
@@ -549,6 +784,8 @@ function createPanel({
           container.replaceChildren();
           container.appendChild(createTaskEditor({
             task: editing,
+            modelProfiles: getModelProfiles?.() || [],
+            nodes: getNodes?.() || [],
             onCancel: () => { mode = "list"; editing = null; render(); },
             onSave: async (task) => {
               try {
@@ -585,10 +822,20 @@ function createPanel({
           return;
         }
         if (mode === "run" && selectedRun) {
-          const run = store.getRun(selectedRun);
+          const run = selectedRunDetail?.id === selectedRun
+            ? selectedRunDetail
+            : store.getRun(selectedRun);
+          // #region debug-point B:scheduler-history-render
+          try { const probe = globalThis.__zionScheduledSurfaceProbe; if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "pre-fix", hypothesisId: "B", location: "extensions/dev.scheduler/main.js:detail-render", msg: "[DEBUG] Scheduler detail render resolved store record", data: { selectedRun, found: !!run, isSummary: run?.isSummary === true, status: run?.status || null, eventCount: run?.events?.length || 0, outputLength: String(run?.output || "").length }, ts: Date.now() }) }).catch(() => {}); } catch {}
+          // #endregion
           if (!run) { mode = "list"; render(); return; }
           const status = run.status || "unknown";
           const loadingDetails = run.isSummary === true;
+          const events = (run.events || []).slice(-30);
+          const omittedEvents = Math.max(
+            0,
+            Number(run.eventCount || run.events?.length || 0) - events.length
+          );
           const detailTask = store.getTask(run.taskId);
           const canCancel = ACTIVE_RUN_STATUSES.has(status)
             && (
@@ -604,7 +851,7 @@ function createPanel({
               <button type="button" class="scheduler-icon-button scheduler-back" title="返回" aria-label="返回"><span class="codicon codicon-arrow-left" aria-hidden="true"></span></button>
               <strong class="scheduler-header-title">运行记录</strong>
                 ${canCancel ? '<button type="button" class="scheduler-text-button danger" data-action="cancel-run">取消运行</button>' : ""}
-              ${run.sessionId ? '<button type="button" class="scheduler-text-button" data-action="open-session">打开会话</button>' : ""}
+              ${run.sessionId ? '<button type="button" class="scheduler-text-button" data-action="open-session">查看会话</button>' : ""}
             </header>
             <div class="scheduler-detail-body">
               <div class="scheduler-detail-title">
@@ -614,14 +861,14 @@ function createPanel({
               ${run.error ? `<div class="scheduler-error">${escapeHtml(run.error)}</div>` : ""}
               ${run.command ? `<section class="scheduler-detail-section"><div class="scheduler-list-label"><span>命令</span></div><pre>${escapeHtml(run.cwd ? `cd ${run.cwd}\n${run.command}` : run.command)}</pre></section>` : ""}
               <section class="scheduler-detail-section"><div class="scheduler-list-label"><span>输出</span></div><pre>${escapeHtml(loadingDetails ? "正在加载…" : run.output || "暂无输出")}</pre></section>
-              <section class="scheduler-detail-section"><div class="scheduler-list-label"><span>事件</span></div><div class="scheduler-events">${(run.events || []).map((event) => `
-                <div><time>${new Date(event.ts).toLocaleTimeString()}</time><strong>${escapeHtml(event.type)}</strong><code>${escapeHtml(JSON.stringify(event.data || {}))}</code></div>
+              <section class="scheduler-detail-section"><div class="scheduler-list-label"><span>执行轨迹</span>${omittedEvents ? `<small>省略较早的 ${omittedEvents} 条</small>` : ""}</div><div class="scheduler-events">${events.map((event) => `
+                <div><time>${new Date(event.ts || event.timestamp).toLocaleTimeString()}</time><strong>${escapeHtml(event.type)}</strong><code>${escapeHtml(schedulerEventSummary(event))}</code></div>
               `).join("") || `<div class="scheduler-empty scheduler-empty-compact">${loadingDetails ? "正在加载…" : "暂无事件"}</div>`}</div></section>
             </div>
           `;
-          detail.querySelector(".scheduler-back").addEventListener("click", () => { mode = "list"; selectedRun = null; render(); });
+          detail.querySelector(".scheduler-back").addEventListener("click", () => { mode = "list"; selectedRun = null; selectedRunDetail = null; render(); });
           detail.querySelector('[data-action="open-session"]')?.addEventListener("click", () => {
-            window.zion.commands.executeCommand("zion.sessions.switch", run.sessionId);
+            openScheduledRunSession(run);
           });
           detail.querySelector('[data-action="cancel-run"]')?.addEventListener("click", async (event) => {
             if (typeof globalThis.confirm === "function" && !globalThis.confirm(`取消运行“${run.taskTitle || run.id}”？`)) return;
@@ -649,13 +896,48 @@ function createPanel({
           root.addEventListener("click", handleListClick);
           container.replaceChildren(root);
         }
-        syncSchedulerListRoot(root, store, engine);
-    };
+        syncSchedulerListRoot(
+          root,
+          store,
+          engine,
+          getModelProfiles?.() || [],
+          getNodes?.() || []
+        );
+        const headerNote = root.querySelector(".scheduler-header-note");
+        if (headerNote) {
+          headerNote.textContent = serviceError
+            ? "Runtime 同步失败"
+            : "Agent / 命令";
+          headerNote.title = serviceError;
+        }
+      };
 
       render();
-      const refreshRunHistory = () => Promise.resolve(refreshRuns?.()).catch(() => {});
-      void refreshRunHistory();
-      const runHistoryTimer = window.setInterval(() => void refreshRunHistory(), 30_000);
+      const refreshRemoteState = async () => {
+        try {
+          const [modelResult, nodeResult, taskResult, runResult] = await Promise.all([
+            Promise.resolve(refreshModels?.()),
+            Promise.resolve(refreshNodes?.()),
+            Promise.resolve(refreshTasks?.()),
+            Promise.resolve(refreshRuns?.())
+          ]);
+          const error = modelResult?.error
+            || nodeResult?.error
+            || taskResult?.error
+            || runResult?.error
+            || null;
+          serviceError = error?.message || (error ? String(error) : "");
+        } catch (error) {
+          serviceError = error?.message || String(error);
+          console.warn("[scheduler] remote refresh failed", error);
+        }
+        requestRender();
+      };
+      void refreshRemoteState();
+      const remoteRefreshTimer = window.setInterval(
+        () => void refreshRemoteState(),
+        30_000
+      );
       const disposable = window.zion.events.on("scheduler/changed", requestRender);
       const createDisposable = window.zion.events.on("scheduler/createRequested", () => {
         mode = "edit";
@@ -665,7 +947,7 @@ function createPanel({
       return {
         dispose: () => {
           disposed = true;
-          window.clearInterval(runHistoryTimer);
+          window.clearInterval(remoteRefreshTimer);
           disposable.dispose();
           createDisposable.dispose();
           container.classList.remove("scheduler-panel-host");
@@ -679,6 +961,46 @@ function createPanel({
 export async function activate(ctx) {
   const store = new LocalSchedulerStore();
   const service = new SchedulerServiceClient();
+  let modelProfiles = [];
+  let modelProfilesRequest = null;
+  const refreshModelProfiles = () => {
+    if (modelProfilesRequest) return modelProfilesRequest;
+    modelProfilesRequest = service.listModelProfiles()
+      .then((profiles) => {
+        modelProfiles = profiles;
+        return { online: true, models: modelProfiles };
+      })
+      .catch((error) => ({
+        online: false,
+        models: modelProfiles,
+        error
+      }))
+      .finally(() => {
+        modelProfilesRequest = null;
+      });
+    return modelProfilesRequest;
+  };
+  void refreshModelProfiles();
+  let runtimeNodes = [];
+  let runtimeNodesRequest = null;
+  const refreshRuntimeNodes = () => {
+    if (runtimeNodesRequest) return runtimeNodesRequest;
+    runtimeNodesRequest = service.listNodes()
+      .then((nodes) => {
+        runtimeNodes = nodes;
+        return { online: true, nodes: runtimeNodes };
+      })
+      .catch((error) => ({
+        online: false,
+        nodes: runtimeNodes,
+        error
+      }))
+      .finally(() => {
+        runtimeNodesRequest = null;
+      });
+    return runtimeNodesRequest;
+  };
+  void refreshRuntimeNodes();
   const workerId = (() => {
     const key = "zion.scheduler.workerId";
     try {
@@ -698,54 +1020,7 @@ export async function activate(ctx) {
   let serviceOnline = false;
   let isLeader = false;
   let disposed = false;
-  let archiveFolderPromise = null;
-  let archivePathQueue = Promise.resolve();
-  let migrationPromise = null;
-  let migrationDisposable = null;
   const runtimeObservers = new Map();
-
-  const resolveArchiveFolder = () => {
-    if (!archiveFolderPromise) {
-      archiveFolderPromise = ensureScheduledSessionFolder({
-        zion: window.zion,
-        store,
-        locale: currentLocale()
-      }).finally(() => {
-        archiveFolderPromise = null;
-      });
-    }
-    return archiveFolderPromise;
-  };
-  const resolveArchiveDateFolder = (archiveDate) => {
-    const pending = archivePathQueue
-      .catch(() => {})
-      .then(() => ensureScheduledSessionDateFolder({
-        zion: window.zion,
-        store,
-        locale: currentLocale(),
-        archiveDate,
-        ensureFolder: resolveArchiveFolder
-      }));
-    archivePathQueue = pending.then(() => undefined, () => undefined);
-    return pending;
-  };
-  const requestSessionMigration = (force = false) => {
-    if (disposed) return Promise.resolve(false);
-    if (!migrationPromise) {
-      migrationPromise = migrateScheduledSessions({
-        zion: window.zion,
-        store,
-        locale: currentLocale(),
-        force,
-        moveOutsideArchive: force,
-        ensureFolder: resolveArchiveFolder,
-        ensureDateFolder: ({ archiveDate }) => resolveArchiveDateFolder(archiveDate)
-      }).finally(() => {
-        migrationPromise = null;
-      });
-    }
-    return migrationPromise;
-  };
 
   const emitChanged = () => {
     if (!disposed) window.zion?.events?.emit?.("scheduler/changed");
@@ -812,6 +1087,9 @@ export async function activate(ctx) {
       events: []
     };
     store.saveRun(run);
+    // #region debug-point C:scheduled-run-owned-by-scheduler
+    try { const probe = globalThis.__zionScheduledSurfaceProbe; if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "post-fix", hypothesisId: "C", location: "extensions/dev.scheduler/main.js:runTask", msg: "[DEBUG] Browser Scheduler run remains outside the Workbench session tree", data: { schedulerRunId: run.id, schedulerTaskId: task.id, workbenchSessionId: null }, ts: Date.now() }) }).catch(() => {}); } catch {}
+    // #endregion
     emitChanged();
 
     const appendEvent = async (type, data = {}) => {
@@ -887,18 +1165,13 @@ export async function activate(ctx) {
     const runtimeEligibility = runtimeTaskEligibility(task);
     const useRuntime = runtimeEligibility.eligible
       && await shouldUseSchedulerRuntime(runtimeConfig);
+    if (task.modelProfileId && !useRuntime) {
+      throw new Error("指定的任务模型需要通过 Runtime 执行，请启用 Runtime 模式");
+    }
     if (!useRuntime && !window.zion?.chat?.execute) {
       throw new Error("Chat runtime 尚未就绪");
     }
-    const taggedTask = withSessionTag(task, currentLocale());
-    if (taggedTask.sessionTag !== task.sessionTag) store.saveTask(taggedTask);
-    task = taggedTask;
     const startedAt = Date.now();
-    const archiveTimestamp = startedAt;
-    const archiveDate = archiveDateForTimestamp(
-      archiveTimestamp,
-      task.schedule?.timeZone
-    );
     const run = {
       id: id("localrun"),
       chatRunId: null,
@@ -924,36 +1197,16 @@ export async function activate(ctx) {
 
     let timeout = null;
     try {
-      const folderId = await resolveArchiveDateFolder(archiveDate);
-      if (!folderId) throw new Error("无法准备定时任务日期文件夹");
-      const datedTag = scheduledSessionTagForDate(task.sessionTag, archiveDate);
-      const sessionId = await window.zion.commands.executeCommand("zion.sessions.new", {
-          title: `定时任务 · ${task.title} · ${new Date(startedAt).toLocaleString()}`,
-          content: buildScheduledSessionContent(task.prompt, datedTag),
-          parentId: folderId,
-          open: false,
-          meta: {
-            source: "scheduled-task",
-            scheduledTaskId: task.id,
-            scheduledRunId: run.id,
-            scheduledRunStatus: "running"
-          }
-      });
-      if (!sessionId) throw new Error("无法创建定时任务会话");
-      run.sessionId = sessionId;
-      store.saveRun(run);
       const handle = useRuntime
         ? await createSchedulerRuntimeHandle({
             task,
             schedulerRunId: run.id,
-            workbenchSessionId: sessionId,
             baseUrl: runtimeConfig.baseUrl
           })
         : window.zion.chat.execute({
             title: task.title,
             prompt: task.prompt,
             executionMode: task.executionMode || "local-only",
-            sessionId,
             source: { pluginId: "dev.scheduler", kind: "scheduled-task", id: task.id },
             trigger: "schedule",
             metadata: {
@@ -989,7 +1242,6 @@ export async function activate(ctx) {
       };
       const consuming = (async () => {
         for await (const event of handle.events) {
-          await projectRunEventToSession(window.zion, sessionId, event);
           if (useRuntime) {
             const current = store.getRun(run.id);
             store.saveRun({
@@ -1020,7 +1272,6 @@ export async function activate(ctx) {
         error: result.error || (result.reason === "timeout" ? "运行超时" : null),
         usage: result.usage || null
       });
-      await finalizeScheduledSession(window.zion, sessionId, store.getRun(run.id));
       const savedTask = store.getTask(task.id);
       if (savedTask) {
         store.saveTask({
@@ -1033,14 +1284,6 @@ export async function activate(ctx) {
     } catch (error) {
       if (timeout) window.clearTimeout(timeout);
       store.saveRun({ ...store.getRun(run.id), status: "failed", completedAt: Date.now(), error: error?.message || String(error) });
-      if (run.sessionId) {
-        await projectRunEventToSession(window.zion, run.sessionId, {
-          runId: run.chatRunId || run.id,
-          type: "run.failed",
-          data: { error: error?.message || String(error) }
-        });
-        await finalizeScheduledSession(window.zion, run.sessionId, store.getRun(run.id));
-      }
       const savedTask = store.getTask(task.id);
       if (savedTask) {
         store.saveTask({
@@ -1061,7 +1304,6 @@ export async function activate(ctx) {
       disposed
       || run?.backend !== "runtime"
       || !run.runtimeRunId
-      || !run.sessionId
       || !ACTIVE_RUN_STATUSES.has(run.status)
       || runtimeObservers.has(run.id)
     ) {
@@ -1087,7 +1329,6 @@ export async function activate(ctx) {
           if (sequence && sequence <= Number(current.lastEventSequence || 0)) {
             return;
           }
-          await projectRunEventToSession(window.zion, run.sessionId, event);
           store.saveRun({
             ...current,
             events: [...(current.events || []), event],
@@ -1124,7 +1365,6 @@ export async function activate(ctx) {
         lastEventSequence: observed.lastEventSequence,
         observationError: null
       });
-      await finalizeScheduledSession(window.zion, run.sessionId, saved);
       const savedTask = store.getTask(task.id);
       if (savedTask) {
         store.saveTask({
@@ -1203,11 +1443,11 @@ export async function activate(ctx) {
     const requestRun = async (task) => {
       return controller.runNow(task.id);
     };
-    void requestSessionMigration();
-    migrationDisposable = window.zion?.state?.onDidChange?.(
-      "sessions.catalog",
-      () => { void requestSessionMigration(); }
-    ) || null;
+    void removeEmptyScheduledSessionFolder({
+      zion: window.zion,
+      store,
+      locale: currentLocale()
+    });
 
   const startLeader = () => {
     recoverRuntimeRuns();
@@ -1245,7 +1485,12 @@ export async function activate(ctx) {
       store,
       engine,
       refreshAll: () => { emitChanged(); updateStatus(); },
+      refreshModels: refreshModelProfiles,
+      refreshNodes: refreshRuntimeNodes,
+      refreshTasks: refreshServiceTasks,
       refreshRuns: refreshServiceRuns,
+      getModelProfiles: () => modelProfiles,
+      getNodes: () => runtimeNodes,
       loadRunDetails,
       saveTask,
       toggleTask,
@@ -1286,10 +1531,6 @@ export async function activate(ctx) {
   const cancel = window.zion.commands.registerCommand("scheduler.cancelRun", (runId, reason = "user") =>
     cancelRun(String(runId || ""), reason)
   );
-  const repairSessionArchive = window.zion.commands.registerCommand(
-    "scheduler.repairSessionArchive",
-    () => requestSessionMigration(true)
-  );
   const schedulerTool = registerSchedulerTool({
     controller,
     openPanel: () => window.zion.commands.executeCommand("scheduler.openPanel"),
@@ -1297,14 +1538,13 @@ export async function activate(ctx) {
   });
 
   updateStatus();
-  ctx.subscriptions.push(viewDisposable, open, create, runNow, cancel, repairSessionArchive, schedulerTool, {
+  ctx.subscriptions.push(viewDisposable, open, create, runNow, cancel, schedulerTool, {
     dispose() {
         disposed = true;
       leaderRelease?.();
       leaderAbort?.abort?.();
       stopCoordinatorHeartbeat();
       window.removeEventListener("storage", onSchedulerStorage);
-      migrationDisposable?.dispose?.();
       for (const observer of runtimeObservers.values()) observer.abort();
       runtimeObservers.clear();
       engine.stop();

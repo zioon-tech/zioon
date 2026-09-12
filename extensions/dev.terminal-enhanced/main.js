@@ -1,5 +1,8 @@
 import { installTerminalEnhancedPanel } from "./panel.js";
 import { getTerminalSessionRequirementError } from "../dev.tools/terminal-tool-context.js";
+import {
+  runtimeDeviceServiceBaseUrl
+} from "../../src/runtime/workbench-runtime-config.ts";
 
 const I18N_NS = "dev.terminal-enhanced";
 const TERMINAL_SESSION_REQUIRED_ERROR = "Missing session_id. Use terminal_inventory workspace preferred_session_id, or call terminalManage with action=\"list\" to choose a terminal session. Do not use machine_id, workspace_id, local, or ssh as session_id.";
@@ -49,6 +52,14 @@ const I18N_MESSAGES = {
     "panel.noActiveSessionCreate": "没有活动会话，请先创建或切换会话",
     "panel.reactivateFailed": "激活会话失败：{message}",
     "panel.ptyReconnectTriggered": "PTY 未连接，已触发重连",
+    "panel.transportConnecting": "连接中",
+    "panel.transportDirect": "直连",
+    "panel.transportRelay": "中转",
+    "panel.transportLocal": "本机",
+    "panel.transportDisconnected": "重连中",
+    "panel.transportDirectTitle": "WebRTC 点对点直连",
+    "panel.transportRelayTitle": "经 Runtime HTTP 中转",
+    "panel.transportFallbackReason": "回退原因",
     "slash.commandPalette.title": "命令面板（终端）",
     "slash.commandPalette.description": "打开终端快速命令选择器",
     "slash.history.title": "终端历史",
@@ -101,6 +112,14 @@ const I18N_MESSAGES = {
     "panel.noActiveSessionCreate": "No active session. Create or switch to a session first.",
     "panel.reactivateFailed": "Failed to reactivate session: {message}",
     "panel.ptyReconnectTriggered": "PTY is not connected; reconnect triggered",
+    "panel.transportConnecting": "Connecting",
+    "panel.transportDirect": "Direct",
+    "panel.transportRelay": "Relay",
+    "panel.transportLocal": "Local",
+    "panel.transportDisconnected": "Reconnecting",
+    "panel.transportDirectTitle": "WebRTC peer-to-peer connection",
+    "panel.transportRelayTitle": "Relayed through Runtime HTTP",
+    "panel.transportFallbackReason": "Fallback reason",
     "slash.commandPalette.title": "Command Palette (Terminal)",
     "slash.commandPalette.description": "Open terminal quick command selector",
     "slash.history.title": "Terminal History",
@@ -174,6 +193,8 @@ function buildRecentTerminalOutputsXml(outputs) {
  * Read local tools base URL (shared convention with terminal-manager)
  */
 function readBaseUrl() {
+  const runtimeBase = runtimeDeviceServiceBaseUrl("local-tools");
+  if (runtimeBase) return runtimeBase;
   const st1 = window.zion?.state?.get("localTools.baseUrl");
   if (typeof st1 === "string" && st1.trim()) return st1.trim();
   try {
@@ -285,12 +306,699 @@ async function executeInSession(sessionId, command, options = {}) {
   return rec;
 }
 
+const WEBRTC_ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:global.stun.twilio.com:3478" }
+];
+
+function waitForIceGathering(peer, timeoutMs = 3000) {
+  if (peer.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      peer.removeEventListener("icegatheringstatechange", onChange);
+      resolve();
+    };
+    const onChange = () => {
+      if (peer.iceGatheringState === "complete") finish();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    peer.addEventListener("icegatheringstatechange", onChange);
+  });
+}
+
+async function readSelectedIceRoute(peer) {
+  if (typeof peer?.getStats !== "function") return {};
+  try {
+    const stats = await peer.getStats();
+    const reports = [];
+    stats.forEach((report) => reports.push(report));
+    const transport = reports.find((report) =>
+      report?.type === "transport" && report.selectedCandidatePairId
+    );
+    const selectedPair = transport
+      ? stats.get(transport.selectedCandidatePairId)
+      : reports.find((report) =>
+          report?.type === "candidate-pair"
+          && report.state === "succeeded"
+          && (report.nominated || report.selected)
+        );
+    if (!selectedPair) return {};
+    const local = stats.get(selectedPair.localCandidateId);
+    const remote = stats.get(selectedPair.remoteCandidateId);
+    const roundTripTime = Number(selectedPair.currentRoundTripTime);
+    return {
+      localCandidateType: String(local?.candidateType || ""),
+      remoteCandidateType: String(remote?.candidateType || ""),
+      protocol: String(local?.protocol || remote?.protocol || ""),
+      ...(Number.isFinite(roundTripTime)
+        ? { roundTripTimeMs: Math.max(0, Math.round(roundTripTime * 1000)) }
+        : {})
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function connectRuntimePtyWebRtc(
+  baseUrl,
+  sessionId,
+  cols = 80,
+  rows = 24,
+  options = {}
+) {
+  if (typeof globalThis.RTCPeerConnection !== "function") {
+    throw new Error("WebRTC is unavailable");
+  }
+  const base = String(baseUrl || "").replace(/\/$/, "");
+  const sid = encodeURIComponent(String(sessionId || ""));
+  const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 4000);
+  const socketState = { readyState: WebSocket.CONNECTING };
+  const peer = new globalThis.RTCPeerConnection({
+    iceServers: options.iceServers || WEBRTC_ICE_SERVERS
+  });
+  const dataChannel = peer.createDataChannel("zion-terminal", {
+    ordered: true
+  });
+  dataChannel.binaryType = "arraybuffer";
+  const outputDecoder = new TextDecoder();
+  let channelId = "";
+  let disposed = false;
+  let closed = false;
+  let opened = false;
+  let inputBuffer = "";
+  let inputTimer = 0;
+  let pendingResize = { cols, rows };
+  let dataHandler = () => {};
+  let errorHandler = () => {};
+  let closeHandler = () => {};
+  let readyResolve;
+  let readyReject;
+  const transportReady = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  const request = async (path, init = {}) => {
+    const response = await fetch(`${base}${path}`, {
+      ...init,
+      headers: {
+        accept: "application/json",
+        ...(init.body ? { "content-type": "application/json" } : {}),
+        ...(init.headers || {})
+      }
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(payload?.error || `PTY WebRTC HTTP ${response.status}`);
+    }
+    return payload;
+  };
+  const finish = (error, notify = true) => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(inputTimer);
+    socketState.readyState = WebSocket.CLOSED;
+    if (!opened && error) readyReject(error);
+    try { dataChannel.close(); } catch {}
+    try { peer.close(); } catch {}
+    if (error && notify) errorHandler(error);
+    if (notify) closeHandler();
+  };
+  const sendControl = (value) => {
+    if (!opened || disposed || dataChannel.readyState !== "open") return;
+    if (dataChannel.bufferedAmount > 1024 * 1024) {
+      finish(new Error("PTY WebRTC input buffer exceeded the size limit"));
+      return;
+    }
+    dataChannel.send(JSON.stringify(value));
+  };
+  const flushInput = () => {
+    inputTimer = 0;
+    if (!inputBuffer || !opened || disposed) return;
+    const data = inputBuffer;
+    inputBuffer = "";
+    sendControl({ type: "input", data });
+  };
+  dataChannel.onmessage = (event) => {
+    if (typeof event.data === "string") {
+      let control;
+      try {
+        control = JSON.parse(event.data);
+      } catch {
+        dataHandler(event.data);
+        return;
+      }
+      if (control?.type === "ready") {
+        opened = true;
+        socketState.readyState = WebSocket.OPEN;
+        if (pendingResize) {
+          sendControl({ type: "resize", ...pendingResize });
+          pendingResize = null;
+        }
+        flushInput();
+        readyResolve();
+      } else if (control?.type === "error") {
+        finish(new Error(control.message || "PTY WebRTC failed"));
+      } else if (control?.type === "close") {
+        const tail = outputDecoder.decode();
+        if (tail) dataHandler(tail);
+        finish();
+      }
+      return;
+    }
+    const bytes = event.data instanceof ArrayBuffer
+      ? new Uint8Array(event.data)
+      : ArrayBuffer.isView(event.data)
+        ? new Uint8Array(
+            event.data.buffer,
+            event.data.byteOffset,
+            event.data.byteLength
+          )
+        : null;
+    if (bytes) dataHandler(outputDecoder.decode(bytes, { stream: true }));
+  };
+  dataChannel.onerror = () => {
+    finish(new Error("PTY WebRTC DataChannel failed"));
+  };
+  dataChannel.onclose = () => {
+    if (!disposed) finish(new Error("PTY WebRTC DataChannel closed"));
+  };
+  peer.onconnectionstatechange = () => {
+    if (peer.connectionState === "failed") {
+      finish(new Error("PTY WebRTC connection failed"));
+    }
+  };
+
+  const ready = (async () => {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    await waitForIceGathering(peer);
+    const local = peer.localDescription;
+    if (!local?.sdp) throw new Error("PTY WebRTC offer is unavailable");
+    const payload = await request(`/sessions/${sid}/pty/webrtc/offer`, {
+      method: "POST",
+      body: JSON.stringify({
+        offer: { type: local.type, sdp: local.sdp },
+        cols,
+        rows
+      })
+    });
+    channelId = String(payload?.channelId || "");
+    if (!channelId || !payload?.answer?.sdp) {
+      throw new Error("PTY WebRTC answer is unavailable");
+    }
+    await peer.setRemoteDescription(payload.answer);
+    await Promise.race([
+      transportReady,
+      new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error("PTY WebRTC connection timed out")),
+          timeoutMs
+        );
+      })
+    ]);
+  })().catch((error) => {
+    finish(null, false);
+    throw error;
+  });
+
+  return {
+    transport: "webrtc",
+    ws: socketState,
+    ready,
+    getDiagnostics() {
+      return readSelectedIceRoute(peer);
+    },
+    send(data) {
+      if (disposed) return;
+      inputBuffer += String(data || "");
+      if (inputBuffer.length >= 4096) {
+        clearTimeout(inputTimer);
+        flushInput();
+      } else if (!inputTimer) {
+        inputTimer = setTimeout(flushInput, 4);
+      }
+    },
+    resize(nextCols, nextRows) {
+      pendingResize = {
+        cols: Math.max(1, Number(nextCols) || 80),
+        rows: Math.max(1, Number(nextRows) || 24)
+      };
+      if (opened) {
+        sendControl({ type: "resize", ...pendingResize });
+        pendingResize = null;
+      }
+    },
+    onData(handler) {
+      dataHandler = typeof handler === "function" ? handler : () => {};
+      return { dispose() { dataHandler = () => {}; } };
+    },
+    onError(handler) {
+      errorHandler = typeof handler === "function" ? handler : () => {};
+    },
+    onClose(handler) {
+      closeHandler = typeof handler === "function" ? handler : () => {};
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimeout(inputTimer);
+      socketState.readyState = WebSocket.CLOSING;
+      if (channelId) {
+        fetch(
+          `${base}/sessions/${sid}/pty/webrtc/${encodeURIComponent(channelId)}`,
+          { method: "DELETE", keepalive: true }
+        ).catch(() => {});
+      }
+      finish(null, false);
+    }
+  };
+}
+
+export function connectRuntimePtyRelay(
+  baseUrl,
+  sessionId,
+  cols = 80,
+  rows = 24
+) {
+  const base = String(baseUrl || "").replace(/\/$/, "");
+  const sid = encodeURIComponent(String(sessionId || ""));
+  const socketState = { readyState: WebSocket.CONNECTING };
+  const controller = new AbortController();
+  let channelId = "";
+  let disposed = false;
+  let closed = false;
+  let inputBuffer = "";
+  let inputTimer = 0;
+  let inputInFlight = false;
+  let dataHandler = () => {};
+  let errorHandler = () => {};
+  let closeHandler = () => {};
+  let writeQueue = Promise.resolve();
+  const outputDecoder = new TextDecoder();
+
+  const request = async (path, options = {}) => {
+    const response = await fetch(`${base}${path}`, {
+      ...options,
+      headers: {
+        accept: "application/json",
+        ...(options.body ? { "content-type": "application/json" } : {}),
+        ...(options.headers || {})
+      },
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(payload?.error || `PTY relay HTTP ${response.status}`);
+    }
+    return payload;
+  };
+  const finish = (error, notify = true) => {
+    if (closed) return;
+    closed = true;
+    socketState.readyState = WebSocket.CLOSED;
+    controller.abort();
+    if (error && notify) errorHandler(error);
+    if (notify) closeHandler();
+  };
+  const enqueueWrite = (operation) => {
+    writeQueue = writeQueue.then(operation).catch((error) => {
+      finish(error);
+    });
+    return writeQueue;
+  };
+  const flushInput = () => {
+    inputTimer = 0;
+    if (inputInFlight || disposed || closed || !inputBuffer) return;
+    const data = inputBuffer;
+    inputBuffer = "";
+    inputInFlight = true;
+    void enqueueWrite(async () => {
+      await ready;
+      if (disposed || !channelId) return;
+      await request(
+        `/sessions/${sid}/pty/relay/${encodeURIComponent(channelId)}/input`,
+        {
+          method: "POST",
+          body: JSON.stringify({ type: "input", data })
+        }
+      );
+    }).finally(() => {
+      inputInFlight = false;
+      if (inputBuffer && !disposed && !closed) {
+        inputTimer = setTimeout(flushInput, 0);
+      }
+    });
+  };
+  const readEvents = async () => {
+    while (!disposed && !closed) {
+      const payload = await request(
+        `/sessions/${sid}/pty/relay/${encodeURIComponent(channelId)}`
+        + "/events?waitMs=15000"
+      );
+      for (const event of payload?.events || []) {
+        if (event?.type === "data" && event.dataBase64) {
+          const binary = globalThis.atob(String(event.dataBase64));
+          const bytes = Uint8Array.from(binary, (character) =>
+            character.charCodeAt(0)
+          );
+          dataHandler(outputDecoder.decode(bytes, { stream: true }));
+        } else if (event?.type === "error") {
+          errorHandler(new Error(event.message || "PTY relay failed"));
+        }
+      }
+      if (payload?.closed) {
+        const tail = outputDecoder.decode();
+        if (tail) dataHandler(tail);
+        finish();
+        return;
+      }
+    }
+  };
+  const ready = request(`/sessions/${sid}/pty/relay/open`, {
+    method: "POST",
+    body: JSON.stringify({ cols, rows })
+  }).then((payload) => {
+    channelId = String(payload?.channelId || "");
+    if (!channelId) throw new Error("PTY relay returned no channel");
+    socketState.readyState = WebSocket.OPEN;
+    void readEvents().catch((error) => {
+      if (!disposed) finish(error);
+    });
+  });
+
+  return {
+    transport: "relay",
+    ws: socketState,
+    ready,
+    send(data) {
+      if (disposed) return;
+      inputBuffer += String(data || "");
+      if (inputBuffer.length >= 4096) {
+        clearTimeout(inputTimer);
+        flushInput();
+      } else if (!inputTimer) {
+        inputTimer = setTimeout(flushInput, 4);
+      }
+    },
+    resize(nextCols, nextRows) {
+      enqueueWrite(async () => {
+        await ready;
+        if (disposed || !channelId) return;
+        await request(
+          `/sessions/${sid}/pty/relay/${encodeURIComponent(channelId)}/input`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              type: "resize",
+              cols: nextCols,
+              rows: nextRows
+            })
+          }
+        );
+      });
+    },
+    onData(handler) {
+      dataHandler = typeof handler === "function" ? handler : () => {};
+      return { dispose() { dataHandler = () => {}; } };
+    },
+    onError(handler) {
+      errorHandler = typeof handler === "function" ? handler : () => {};
+    },
+    onClose(handler) {
+      closeHandler = typeof handler === "function" ? handler : () => {};
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimeout(inputTimer);
+      socketState.readyState = WebSocket.CLOSING;
+      const closingChannelId = channelId;
+      if (closingChannelId) {
+        fetch(
+          `${base}/sessions/${sid}/pty/relay/`
+          + encodeURIComponent(closingChannelId),
+          { method: "DELETE", keepalive: true }
+        ).catch(() => {});
+      }
+      finish(null, false);
+    }
+  };
+}
+
+export function connectRuntimePty(
+  baseUrl,
+  sessionId,
+  cols = 80,
+  rows = 24
+) {
+  const socketState = { readyState: WebSocket.CONNECTING };
+  let active = null;
+  let attempt = null;
+  let disposed = false;
+  let queuedInput = "";
+  let queuedResize = { cols, rows };
+  let dataHandler = () => {};
+  let errorHandler = () => {};
+  let closeHandler = () => {};
+  let transportStatus = { transport: "connecting", phase: "webrtc" };
+  const transportHandlers = new Set();
+
+  const wire = (connection) => {
+    connection.onData((chunk) => dataHandler(chunk));
+    connection.onError((error) => {
+      if (active === connection && !disposed) errorHandler(error);
+    });
+    connection.onClose(() => {
+      if (active === connection && !disposed) closeHandler();
+    });
+  };
+  const setTransportStatus = (next) => {
+    transportStatus = { ...transportStatus, ...next };
+    for (const handler of [...transportHandlers]) {
+      try { handler({ ...transportStatus }); } catch {}
+    }
+  };
+  const activate = async (connection) => {
+    active = connection;
+    await connection.ready;
+    if (disposed) {
+      connection.dispose();
+      return;
+    }
+    socketState.readyState = WebSocket.OPEN;
+    if (queuedResize) {
+      connection.resize(queuedResize.cols, queuedResize.rows);
+      queuedResize = null;
+    }
+    if (queuedInput) {
+      connection.send(queuedInput);
+      queuedInput = "";
+    }
+  };
+  const ready = (async () => {
+    try {
+      attempt = connectRuntimePtyWebRtc(baseUrl, sessionId, cols, rows);
+      wire(attempt);
+      await Promise.race([
+        attempt.ready,
+        new Promise((_, reject) => {
+          setTimeout(
+            () => reject(new Error("PTY WebRTC negotiation timed out")),
+            5000
+          );
+        })
+      ]);
+      await activate(attempt);
+      setTransportStatus({ transport: "webrtc", phase: "connected" });
+      void attempt.getDiagnostics?.().then((diagnostics) => {
+        if (active === attempt && !disposed) {
+          setTransportStatus({
+            transport: "webrtc",
+            phase: "connected",
+            ...diagnostics
+          });
+        }
+      });
+      console.info("[dev.terminal-enhanced] PTY transport: WebRTC");
+    } catch (error) {
+      try { attempt?.dispose?.(); } catch {}
+      if (disposed) throw error;
+      const fallbackReason = error?.message || String(error);
+      console.info(
+        "[dev.terminal-enhanced] WebRTC unavailable; using Runtime relay:",
+        fallbackReason
+      );
+      setTransportStatus({
+        transport: "connecting",
+        phase: "relay",
+        fallbackReason
+      });
+      attempt = connectRuntimePtyRelay(baseUrl, sessionId, cols, rows);
+      wire(attempt);
+      await activate(attempt);
+      setTransportStatus({
+        transport: "relay",
+        phase: "connected",
+        fallbackReason
+      });
+    }
+  })();
+
+  return {
+    get transport() {
+      return active?.transport || "connecting";
+    },
+    get transportStatus() {
+      return { ...transportStatus };
+    },
+    ws: socketState,
+    ready,
+    send(data) {
+      if (disposed) return;
+      if (active && socketState.readyState === WebSocket.OPEN) {
+        active.send(data);
+      } else {
+        queuedInput += String(data || "");
+      }
+    },
+    resize(nextCols, nextRows) {
+      if (disposed) return;
+      queuedResize = { cols: nextCols, rows: nextRows };
+      if (active && socketState.readyState === WebSocket.OPEN) {
+        active.resize(nextCols, nextRows);
+        queuedResize = null;
+      }
+    },
+    onData(handler) {
+      dataHandler = typeof handler === "function" ? handler : () => {};
+      return { dispose() { dataHandler = () => {}; } };
+    },
+    onError(handler) {
+      errorHandler = typeof handler === "function" ? handler : () => {};
+    },
+    onClose(handler) {
+      closeHandler = typeof handler === "function" ? handler : () => {};
+    },
+    onTransportChange(handler) {
+      if (typeof handler !== "function") return { dispose() {} };
+      transportHandlers.add(handler);
+      handler({ ...transportStatus });
+      return { dispose: () => transportHandlers.delete(handler) };
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      transportHandlers.clear();
+      socketState.readyState = WebSocket.CLOSING;
+      try { attempt?.dispose?.(); } catch {}
+      socketState.readyState = WebSocket.CLOSED;
+    }
+  };
+}
+
+export function connectCommandRelay(sessionId) {
+  const ws = { readyState: WebSocket.OPEN };
+  let input = "";
+  let disposed = false;
+  let dataHandler = () => {};
+  let errorHandler = () => {};
+  let closeHandler = () => {};
+  let queue = Promise.resolve();
+  const setupCommand = /^(?:export (?:TERM|COLORTERM|CLICOLOR)=|alias ls=|ls --color=auto)/;
+  const emit = (value) => {
+    if (!disposed) dataHandler(String(value || ""));
+  };
+  const execute = (command, visible) => {
+    queue = queue.then(async () => {
+      if (visible) emit(`\r\n$ ${command}\r\n`);
+      const result = await executeInSession(sessionId, command, {
+        timeout: 120_000,
+        silent: true
+      });
+      if (visible && result.output) {
+        emit(`${String(result.output).replace(/\n/g, "\r\n")}\r\n`);
+      }
+      if (visible) emit("$ ");
+    }).catch((error) => {
+      errorHandler(error);
+      emit(`\r\n${error?.message || String(error)}\r\n$ `);
+    });
+  };
+  const ready = Promise.resolve().then(() => {
+    emit("Remote command mode via Device Connector\r\n$ ");
+  });
+
+  return {
+    transport: "command",
+    ws,
+    ready,
+    send(value) {
+      if (disposed) return;
+      const chunk = String(value || "");
+      const complete = !input && /[\r\n]$/.test(chunk);
+      if (complete && setupCommand.test(chunk.trim())) {
+        execute(chunk.trim(), false);
+        return;
+      }
+      for (const character of chunk) {
+        if (character === "\u0003") {
+          input = "";
+          emit("^C\r\n$ ");
+          continue;
+        }
+        if (character === "\u007f" || character === "\b") {
+          if (input) {
+            input = input.slice(0, -1);
+            emit("\b \b");
+          }
+          continue;
+        }
+        if (character === "\r" || character === "\n") {
+          const command = input.trim();
+          input = "";
+          if (command) execute(command, true);
+          else emit("\r\n$ ");
+          continue;
+        }
+        if (character >= " ") {
+          input += character;
+          emit(character);
+        }
+      }
+    },
+    resize() {},
+    onData(handler) {
+      dataHandler = typeof handler === "function" ? handler : () => {};
+      return { dispose() { dataHandler = () => {}; } };
+    },
+    onError(handler) {
+      errorHandler = typeof handler === "function" ? handler : () => {};
+    },
+    onClose(handler) {
+      closeHandler = typeof handler === "function" ? handler : () => {};
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      ws.readyState = WebSocket.CLOSED;
+      closeHandler();
+    }
+  };
+}
+
 /**
  * Connect PTY via WebSocket for interactive terminal
  * - Returns { send(data), resize(cols, rows), dispose() }
  */
 function connectPty(sessionId, cols = 80, rows = 24) {
   const base = readBaseUrl().replace(/\/$/, "");
+  if (base.includes("/v1/device-services/")) {
+    return connectRuntimePty(base, sessionId, cols, rows);
+  }
   const wsUrl = base.replace(/^http/i, "ws") + `/sessions/${encodeURIComponent(sessionId)}/pty/ws`;
   const ws = new WebSocket(wsUrl);
   ws.binaryType = "arraybuffer";
@@ -325,6 +1033,7 @@ function connectPty(sessionId, cols = 80, rows = 24) {
   };
 
   return {
+    transport: "local",
     ws,
     ready,
     send(data) {
@@ -502,6 +1211,23 @@ export async function activate(ctx) {
   const AUX_VIEW_ID = "terminal.enhanced.aux.view";
   let bottomPanel = null;
   let auxPanel = null;
+  const prewarmTerminalClientModules = () => {
+    const load = () => Promise.allSettled([
+      import("xterm/css/xterm.css?url"),
+      import("xterm"),
+      import("xterm-addon-fit"),
+      import("xterm-addon-search"),
+      import("xterm-addon-web-links")
+    ]).catch(() => {});
+    try {
+      if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(() => { void load(); }, { timeout: 3000 });
+      } else {
+        window.setTimeout(() => { void load(); }, 1200);
+      }
+    } catch {}
+  };
+  prewarmTerminalClientModules();
 
   const ensureBottomPanelReady = async () => {
     try {
@@ -712,6 +1438,7 @@ export async function activate(ctx) {
             { mount: container, rootId: "zion-terminal-enhanced-root-bottom", embedTabsInBottomHeader: true }
           );
           bottomPanel = h;
+          try { h?.preload?.(); } catch {}
           try {
             setTimeout(() => {
               try {
@@ -781,6 +1508,7 @@ export async function activate(ctx) {
             { mount: container, rootId: "zion-terminal-enhanced-root-aux" }
           );
           auxPanel = h;
+          try { h?.preload?.(); } catch {}
           try {
             setTimeout(() => {
               try {

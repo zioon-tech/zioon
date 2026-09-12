@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PluginManager } from "../src/plugin/manager";
 import type { PluginInfo } from "../src/plugin/types";
 
@@ -27,6 +27,60 @@ function pluginInfo(enabled: boolean): PluginInfo {
     isLegacy: false,
     enabled
   };
+}
+
+function stubBlobUrls(prefix = "blob:plugin-manager") {
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
+  const blobs = new Map<string, Blob>();
+  let counter = 0;
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn((blob: Blob) => {
+      const url = `${prefix}-${++counter}`;
+      blobs.set(url, blob);
+      return url;
+    })
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn()
+  });
+
+  return {
+    blobs,
+    restore() {
+      vi.restoreAllMocks();
+      if (originalCreateObjectURL) {
+        Object.defineProperty(URL, "createObjectURL", {
+          configurable: true,
+          value: originalCreateObjectURL
+        });
+      } else {
+        delete (URL as any).createObjectURL;
+      }
+      if (originalRevokeObjectURL) {
+        Object.defineProperty(URL, "revokeObjectURL", {
+          configurable: true,
+          value: originalRevokeObjectURL
+        });
+      } else {
+        delete (URL as any).revokeObjectURL;
+      }
+    }
+  };
+}
+
+function readBlobText(blob: Blob | undefined): Promise<string> {
+  if (!blob) return Promise.resolve("");
+  const candidate = blob as Blob & { text?: () => Promise<string> };
+  if (typeof candidate.text === "function") return candidate.text();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("Failed to read Blob"));
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.readAsText(blob);
+  });
 }
 
 describe("PluginManager enabled state persistence", () => {
@@ -70,6 +124,274 @@ describe("PluginManager enabled state persistence", () => {
       enabled: false
     });
     expect(JSON.parse(localStorage.getItem("zion.pluginStates") || "{}").disabled).toContain("dev.example");
+  });
+
+  it("keeps a policy-blocked plugin installed without loading it", async () => {
+    const manager = new PluginManager({
+      pluginDir: "",
+      extensionsDir: "",
+      logLevel: "error",
+      activationAllowed: () => false
+    });
+
+    await manager.installFromInfo(pluginInfo(true), { enabled: true });
+
+    expect(manager.get("dev.example")?.state).toBe("installed");
+    expect(manager.getActivePlugins()).toEqual([]);
+  });
+
+  it("does not activate an externalized plugin from a persisted dev session", async () => {
+    const manager = new PluginManager({
+      pluginDir: "",
+      extensionsDir: "",
+      logLevel: "error"
+    });
+    const identity = {
+      ...pluginInfo(true),
+      id: "dev.identity",
+      name: "Identity",
+      origin: "dev" as const,
+      path: "http://127.0.0.1:8767/plugins/dev/dev-old",
+      devId: "dev-old",
+      sourceDir: "/Users/test/.zion-next/plugins/dev.identity"
+    };
+    identity.manifest.name = "dev.identity";
+    identity.manifest.zion!.id = "dev.identity";
+    identity.manifest.zion!.name = "Identity";
+
+    await manager.installFromInfo(identity, { enabled: true });
+
+    expect(manager.get("dev.identity")?.state).toBe("installed");
+    expect(manager.getActivePlugins()).toEqual([]);
+  });
+
+  it("rehydrates persisted ZIP plugin modules with fresh blob URLs", async () => {
+    const { blobs, restore } = stubBlobUrls("blob:rehydrated-plugin");
+    try {
+      localStorage.setItem("zion.installedPlugins", JSON.stringify([{
+        ...pluginInfo(true),
+        id: "dev.zip-modules",
+        name: "Zip Modules",
+        origin: "external",
+        path: "file://dev.zip-modules.zip",
+        manifest: {
+          name: "dev.zip-modules",
+          version: "1.0.0",
+          zion: {
+            id: "dev.zip-modules",
+            name: "Zip Modules",
+            version: "1.0.0",
+            main: "./main.js"
+          }
+        },
+        scriptContents: {
+          "main.js": "import { label } from './dashboard-model.js';\nexport function activate() { return label; }\n",
+          "dashboard-model.js": "export const label = 'dashboard';\n"
+        },
+        sourceEntries: {
+          workbench: "./main.js"
+        },
+        contract: undefined
+      }]));
+
+      const manager = new PluginManager({ pluginDir: "", extensionsDir: "", logLevel: "error" });
+      await (manager as any).loadPersistedPlugins();
+
+      const restored = manager.get("dev.zip-modules");
+      const mainUrl = String(restored?.contract?.entries.workbench || "");
+      expect(mainUrl).toMatch(/^blob:rehydrated-plugin-/);
+      expect((restored?.manifest as any).zion.main).toBe(mainUrl);
+      expect(await readBlobText(blobs.get(mainUrl))).toContain("from 'blob:rehydrated-plugin-1'");
+
+      await (manager as any).savePluginStates();
+      const saved = JSON.parse(localStorage.getItem("zion.installedPlugins") || "[]");
+      expect(saved[0].manifest.zion.main).toBe("./main.js");
+      expect(saved[0].contract.entries.workbench).toBe("./main.js");
+      expect(saved[0].scriptContents).toBeUndefined();
+      expect(saved[0].scriptBlobUrls).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not persist ZIP JavaScript sources into localStorage", async () => {
+    const largeSource = `export function activate() {}\n${"x".repeat(600_000)}`;
+    const largePlugin: PluginInfo = {
+      ...pluginInfo(true),
+      id: "dev.large-zip",
+      name: "Large Zip",
+      origin: "external",
+      path: "file://dev.large-zip.zip",
+      manifest: {
+        name: "dev.large-zip",
+        version: "1.0.0",
+        zion: {
+          id: "dev.large-zip",
+          name: "Large Zip",
+          version: "1.0.0",
+          main: "blob:large-plugin-main"
+        }
+      },
+      scriptContents: {
+        "main.js": largeSource
+      },
+      sourceEntries: {
+        workbench: "./main.js"
+      },
+      scriptBlobUrls: {
+        "main.js": "blob:large-plugin-main"
+      }
+    };
+    const manager = new PluginManager({
+      pluginDir: "",
+      extensionsDir: "",
+      logLevel: "error",
+      activationAllowed: () => false
+    });
+
+    await manager.installFromInfo(largePlugin, { enabled: true });
+
+    const raw = localStorage.getItem("zion.installedPlugins") || "";
+    const saved = JSON.parse(raw);
+    expect(raw.length).toBeLessThan(100_000);
+    expect(saved[0].scriptContents).toBeUndefined();
+    expect(saved[0].scriptContentBytes).toBeGreaterThan(600_000);
+  });
+
+  it("does not persist bundled plugins because they are scanned from the Workbench bundle", async () => {
+    const manager = new PluginManager({
+      pluginDir: "",
+      extensionsDir: "",
+      logLevel: "error",
+      activationAllowed: () => false
+    });
+
+    await manager.installFromInfo(pluginInfo(true), { enabled: true });
+
+    expect(JSON.parse(localStorage.getItem("zion.installedPlugins") || "[]")).toEqual([]);
+  });
+
+  it("retries installed plugin persistence after removing the previous oversized value", async () => {
+    localStorage.setItem("zion.installedPlugins", "x".repeat(1000));
+    const originalSetItem = Storage.prototype.setItem;
+    const removeSpy = vi.spyOn(Storage.prototype, "removeItem");
+    let failedOnce = false;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
+      if (key === "zion.installedPlugins" && !failedOnce) {
+        failedOnce = true;
+        throw new DOMException("quota", "QuotaExceededError");
+      }
+      return originalSetItem.call(this, key, value);
+    });
+    const manager = new PluginManager({
+      pluginDir: "",
+      extensionsDir: "",
+      logLevel: "error",
+      activationAllowed: () => false
+    });
+    const external = {
+      ...pluginInfo(true),
+      id: "dev.external",
+      origin: "external" as const,
+      path: "https://runtime.test/plugins/dev.external/download"
+    };
+
+    await manager.installFromInfo(external, { enabled: true });
+
+    expect(removeSpy).toHaveBeenCalledWith("zion.installedPlugins");
+    expect(JSON.parse(localStorage.getItem("zion.installedPlugins") || "[]")[0]).toMatchObject({
+      id: "dev.external"
+    });
+  });
+
+  it("rewrites installed plugins even when the small state record initially hits quota", async () => {
+    localStorage.setItem("zion.installedPlugins", "x".repeat(1000));
+    const originalSetItem = Storage.prototype.setItem;
+    let failedStateOnce = false;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
+      if (key === "zion.pluginStates" && !failedStateOnce) {
+        failedStateOnce = true;
+        throw new DOMException("quota", "QuotaExceededError");
+      }
+      return originalSetItem.call(this, key, value);
+    });
+    const manager = new PluginManager({
+      pluginDir: "",
+      extensionsDir: "",
+      logLevel: "error",
+      activationAllowed: () => false
+    });
+    const external = {
+      ...pluginInfo(true),
+      id: "dev.external-state-retry",
+      origin: "external" as const,
+      path: "https://runtime.test/plugins/dev.external-state-retry/download"
+    };
+
+    await manager.installFromInfo(external, { enabled: true });
+
+    expect(JSON.parse(localStorage.getItem("zion.pluginStates") || "{}").enabled)
+      .toContain("dev.external-state-retry");
+    expect(JSON.parse(localStorage.getItem("zion.installedPlugins") || "[]")[0])
+      .toMatchObject({ id: "dev.external-state-retry" });
+  });
+
+  it("falls back to lightweight installed plugin records when embedded assets exceed quota", async () => {
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
+      if (key === "zion.installedPlugins" && String(value).includes("large-skill-content")) {
+        throw new DOMException("quota", "QuotaExceededError");
+      }
+      return originalSetItem.call(this, key, value);
+    });
+    const manager = new PluginManager({
+      pluginDir: "",
+      extensionsDir: "",
+      logLevel: "error",
+      activationAllowed: () => false
+    });
+    const external = {
+      ...pluginInfo(true),
+      id: "dev.asset-heavy",
+      origin: "external" as const,
+      path: "https://runtime.test/plugins/dev.asset-heavy/download",
+      skillContents: {
+        "heavy-skill": "large-skill-content"
+      },
+      skillFiles: {
+        "heavy-skill": {
+          "SKILL.md": "large-skill-content"
+        }
+      },
+      styleContents: {
+        "styles.css": "large-skill-content"
+      }
+    };
+
+    await manager.installFromInfo(external, { enabled: true });
+
+    const saved = JSON.parse(localStorage.getItem("zion.installedPlugins") || "[]");
+    expect(saved[0]).toMatchObject({ id: "dev.asset-heavy" });
+    expect(saved[0].skillContents).toBeUndefined();
+    expect(saved[0].skillFiles).toBeUndefined();
+    expect(saved[0].styleContents).toBeUndefined();
+  });
+
+  it("retries activation when an enabled builtin was previously policy-blocked", async () => {
+    const manager = new PluginManager({
+      pluginDir: "",
+      extensionsDir: "",
+      logLevel: "error",
+      activationAllowed: () => true
+    });
+    const activate = vi.spyOn(manager, "activate").mockResolvedValue();
+    const info = pluginInfo(true);
+    (manager as any).plugins.set(info.id, info);
+    (manager as any).enabledPlugins.add(info.id);
+
+    await manager.updateFromInfo({ ...info }, { enabled: true });
+
+    expect(activate).toHaveBeenCalledWith("dev.example");
   });
 });
 

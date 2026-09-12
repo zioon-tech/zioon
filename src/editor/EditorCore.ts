@@ -229,7 +229,7 @@ function getSelectionHighlightExtensions(enabled: boolean): Extension[] {
 export type CursorPos = { line: number; ch: number };
 
 export type EditorSetValueOptions = {
-  source?: "session-load" | "session-seed";
+  source?: "session-load" | "session-seed" | "collaboration-hydration";
 };
 
 export type EditorCoreOptions = {
@@ -577,7 +577,13 @@ export class EditorCore {
 
   setValue(v: string, opts?: EditorSetValueOptions): void {
     const { state } = this.view;
-    const isSessionReplace = opts?.source === "session-load" || opts?.source === "session-seed";
+    const collaborationOwnsDocument =
+      this.view.dom.dataset.zionCollaborationBound === "true";
+    const isExternalSessionReplace =
+      opts?.source === "session-load" || opts?.source === "session-seed";
+    if (collaborationOwnsDocument && isExternalSessionReplace) return;
+    const isSessionReplace =
+      isExternalSessionReplace || opts?.source === "collaboration-hydration";
     const annotations = isSessionReplace
       ? [
           Transaction.userEvent.of(opts?.source === "session-seed" ? "zion.sessionSeed" : "zion.sessionLoad"),

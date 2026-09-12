@@ -200,6 +200,8 @@ export async function activate(ctx) {
             ssh_port: { type: "number", description: "SSH port (default 22)" },
             initial_cwd: { type: "string", description: "Initial working directory" },
             session_id: { type: "string", description: "Exact terminal session_id from terminal_inventory preferred_session_id or list sessions[].session_id; not machine_id, workspace_id, local, or ssh" },
+            node_id: { type: "string", description: "Explicit execution Node for create when no machine/workspace is selected" },
+            resource_id: { type: "string", description: "Explicit resource binding for create" },
             cwd: { type: "string", description: "New working directory (set_cwd)" },
             machine_id: { type: "string", description: "Machine ID from terminal_inventory, for list/get_machine/update_machine filters; do not pass as session_id" },
             name: { type: "string", maxLength: 120, description: "Machine display name (update_machine)" },

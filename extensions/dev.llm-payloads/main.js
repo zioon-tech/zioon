@@ -1,4 +1,5 @@
 import { getEditorCore } from "../dev.tools/editor-core.js";
+import { extractRequestMessages } from "./request-messages.js";
 
 const VIEW_ID = "dev.llm-payloads.panel";
 const FILES_VIEW_ID = "dev.tools.files";
@@ -307,7 +308,7 @@ function subscribe(fn) {
 function normalizeRecord(payload) {
   const rawPayload = payload?.payload ?? {};
   const payloadText = safeStringify(rawPayload, MAX_PAYLOAD_CHARS);
-  const messages = Array.isArray(rawPayload?.messages) ? rawPayload.messages : [];
+  const messages = extractRequestMessages(rawPayload);
   const messageChars = messages.reduce((sum, msg) => sum + contentLength(msg?.content), 0);
   const id = String(payload?.id || `llm_payload_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`);
   return {
@@ -415,6 +416,15 @@ function flattenContent(content) {
       if (!item || typeof item !== "object") return String(item || "");
       if (typeof item.text === "string") return item.text;
       if (item.image_url?.url) return `[image:${item.image_url.url}]`;
+      if (item.inlineData?.mimeType || item.inline_data?.mime_type) {
+        return `[image:${item.inlineData?.mimeType || item.inline_data?.mime_type}]`;
+      }
+      if (item.fileData?.fileUri || item.file_data?.file_uri) {
+        return `[file:${item.fileData?.fileUri || item.file_data?.file_uri}]`;
+      }
+      if (item.functionCall?.name || item.function_call?.name) {
+        return `[tool:${item.functionCall?.name || item.function_call?.name}]`;
+      }
       return "";
     }).filter(Boolean).join("\n");
   }
@@ -777,4 +787,3 @@ function formatTime(ts) {
     return "";
   }
 }
-

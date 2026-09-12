@@ -893,6 +893,24 @@ export class SqliteWorkbenchStateStore {
     };
   }
 
+  readCatalog() {
+    const tree = this.readTree();
+    const sessions = this.db.prepare(`
+      SELECT documents.id, COALESCE(heads.revision, 0) AS session_revision
+      FROM runtime_workbench_documents AS documents
+      LEFT JOIN runtime_workbench_session_heads AS heads ON heads.id = documents.id
+      ORDER BY documents.id
+    `).all();
+    const metas = this.db.prepare(`
+      SELECT id, json_remove(meta_json, '$.annotations') AS summary_json
+      FROM runtime_workbench_metadata ORDER BY id
+    `).all().map((row) => ({ id: row.id, meta: decode(row.summary_json, {}) }));
+    const kv = Object.fromEntries(this.db.prepare(
+      "SELECT key, value_json FROM runtime_workbench_kv ORDER BY key"
+    ).all().map((row) => [row.key, decode(row.value_json)]));
+    return { ...tree, catalog: { tree: tree.tree, index: tree.index, sessions, metas, kv } };
+  }
+
   readStatus() {
     const state = this.state();
     return {
@@ -908,6 +926,14 @@ export class SqliteWorkbenchStateStore {
         "SELECT COUNT(*) AS count FROM runtime_workbench_metadata"
       ).get().count)
     };
+  }
+
+  readSessionMeta(sessionId) {
+    const id = normalizeId(sessionId);
+    const row = this.db.prepare(
+      "SELECT meta_json FROM runtime_workbench_metadata WHERE id = ?"
+    ).get(id);
+    return row ? { ...decode(row.meta_json, {}), id } : null;
   }
 
   readTree() {
@@ -1096,6 +1122,9 @@ export class SqliteWorkbenchStateStore {
         return { ok: false, conflict: true, revision: globalRevision };
       }
       const current = this.currentSession(id);
+      // #region debug-point C:comment-runtime-session-upsert
+      if (id.startsWith("comment:")) void globalThis.fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "C", location: "apps/runtime/src/sqlite-workbench-state-store.mjs:updateSession", msg: "[DEBUG] Runtime received a durable comment-session write", data: { commentSessionId: id, sessionAlreadyExists: current.exists === true, treeNodeAlreadyExists: !!findNodeAndParent(this.stateTree(), id)?.node, requestedParentId: String(input.parent_id || input.parentId || ""), effectiveNewParentId: String(input.parent_id || input.parentId || "root"), writesDocument: input.text != null, writesMetadata: input.meta != null, reason: String(input.reason || "update") }, ts: Date.now() }) }).catch(() => {});
+      // #endregion
       if (
         input.expected_session_revision != null
         && Number(input.expected_session_revision) !== current.revision

@@ -118,6 +118,7 @@ export function registerSessionAutoRenameCommand(opts) {
         },
         runId: `autoRename-${Date.now()}`,
         sessionId: id,
+        requestSource: "session-auto-rename",
         silentReasoning: true
       });
       if (err) throw err;

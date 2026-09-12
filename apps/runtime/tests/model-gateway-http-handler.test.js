@@ -98,6 +98,77 @@ describe("Runtime model gateway", () => {
     expect(upstream).toHaveBeenCalledOnce();
   });
 
+  it("uses the requested profile when multiple profiles share an endpoint", async () => {
+    const acquire = vi.fn(async ({ ref }) => ({
+      headers: {
+        authorization: ref === "model.requested"
+          ? "Bearer requested-secret"
+          : "Bearer wrong-secret"
+      },
+      release: vi.fn()
+    }));
+    const upstream = vi.fn(async (_url, options) => {
+      expect(options.headers.authorization).toBe("Bearer requested-secret");
+      return new Response("data: ok\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" }
+      });
+    });
+    const handler = createModelGatewayHttpHandler({
+      profiles: [{
+        id: "first-match",
+        endpoint: "https://models.example/v1/chat/completions",
+        credentialRef: "model.first"
+      }, {
+        id: "requested-profile",
+        endpoint: "https://models.example/v1/chat/completions",
+        credentialRef: "model.requested"
+      }],
+      credentials: { acquire },
+      fetchImpl: upstream
+    });
+    const url = await startServer(handler);
+
+    const query = new URLSearchParams({
+      target: "https://models.example/v1/chat/completions",
+      profileId: "requested-profile"
+    });
+    const response = await fetch(
+      `${url}/v1/model-gateway/proxy?${query}`,
+      { method: "POST", body: '{"model":"demo"}' }
+    );
+
+    expect(response.status).toBe(200);
+    expect(acquire).toHaveBeenCalledWith({ ref: "model.requested" });
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a target that does not match the requested profile", async () => {
+    const handler = createModelGatewayHttpHandler({
+      profiles: [{
+        id: "requested-profile",
+        endpoint: "https://models.example/v1/chat/completions",
+        credentialRef: "model.requested"
+      }],
+      fetchImpl: vi.fn()
+    });
+    const url = await startServer(handler);
+    const query = new URLSearchParams({
+      target: "https://api.deepseek.com/chat/completions",
+      profileId: "requested-profile"
+    });
+
+    const response = await fetch(
+      `${url}/v1/model-gateway/proxy?${query}`,
+      { method: "POST", body: "{}" }
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Model gateway target does not match the requested profile"
+    });
+  });
+
   it("rejects arbitrary proxy targets", async () => {
     const handler = createModelGatewayHttpHandler({
       profiles: [],

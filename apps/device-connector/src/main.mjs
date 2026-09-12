@@ -1,12 +1,31 @@
 import { randomUUID } from "node:crypto";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import process from "node:process";
 import {
   LOCAL_TOOLS_TOOL_DEFINITIONS,
   LocalToolsDeviceHost
 } from "../../../packages/local-tools-client/src/index.mjs";
 import { DEVICE_PROTOCOL_VERSION } from "../../../packages/node-protocol/src/index.mjs";
-import { DeviceConnector } from "./device-connector.mjs";
+import {
+  DeviceConnector,
+  exchangeDevicePairing
+} from "./device-connector.mjs";
+import {
+  DEVICE_SERVICE_CAPABILITY,
+  DeviceServiceHost
+} from "./device-service-host.mjs";
+import {
+  createDeviceCredentialStore,
+  deviceCredentialKey
+} from "./device-credential-store.mjs";
+import { DeviceAccessManager } from "./device-access-policy.mjs";
+import {
+  defaultDeviceProjectId,
+  defaultDeviceResourceId,
+  ensureDeviceTerminalSessions,
+  normalizeLocalToolsUrl,
+  resolveDeviceWorkspaceRoot
+} from "./device-setup.mjs";
 
 function readArg(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -35,45 +54,126 @@ const runtimeUrl = readArg(
   "--runtime-url",
   process.env.ZION_RUNTIME_URL || "http://127.0.0.1:8766"
 );
-const localToolsUrl = readArg(
+const localToolsUrl = normalizeLocalToolsUrl(readArg(
   "--local-tools-url",
   process.env.ZION_LOCAL_TOOLS_URL || "http://127.0.0.1:8765"
-);
-const token = process.env.ZION_DEVICE_TOKEN || "";
-if (!token) {
-  throw new Error("ZION_DEVICE_TOKEN is required");
-}
+));
+const pluginServiceUrl = normalizeLocalToolsUrl(readArg(
+  "--plugin-service-url",
+  process.env.ZION_PLUGIN_SERVICE_URL || "http://127.0.0.1:8767"
+));
 
 const machineName = hostname();
 const nodeId = readArg(
   "--node-id",
   process.env.ZION_NODE_ID || nodeIdFromHostname(machineName)
 );
+const workspaceRoot = resolveDeviceWorkspaceRoot({
+  configured: readArg(
+    "--workspace-root",
+    process.env.ZION_NODE_WORKSPACE_ROOT || ""
+  ),
+  initialCwd: process.env.INIT_CWD || "",
+  cwd: process.cwd()
+});
 const projectId = readArg(
   "--project-id",
-  process.env.ZION_NODE_PROJECT_ID || ""
+  process.env.ZION_NODE_PROJECT_ID || defaultDeviceProjectId(workspaceRoot)
 );
 const resourceId = readArg(
   "--resource-id",
   process.env.ZION_NODE_RESOURCE_ID
-    || (projectId ? `workspace:${projectId}` : "")
+    || defaultDeviceResourceId(projectId)
 );
-const workspaceRoot = readArg(
-  "--workspace-root",
-  process.env.ZION_NODE_WORKSPACE_ROOT || ""
-);
-const terminalSessionIds = parseList(readArg(
-  "--terminal-sessions",
-  process.env.ZION_NODE_TERMINAL_SESSION_IDS || ""
+const builtInRoots = [
+  `${homedir()}/.zion-next/skills`,
+  `${homedir()}/.zion-next/memory`
+];
+const configuredRoots = parseList(readArg(
+  "--additional-roots",
+  process.env.ZION_NODE_ADDITIONAL_ROOTS || ""
 ));
-if (!projectId || !resourceId || !workspaceRoot || !terminalSessionIds.length) {
-  throw new Error(
-    "Device Connector requires project id, resource id, workspace root, "
-    + "and at least one terminal session"
+const additionalRoots = [...new Set([...builtInRoots, ...configuredRoots])];
+const terminalSessionIds = await ensureDeviceTerminalSessions({
+  localToolsUrl,
+  workspaceRoot,
+  additionalRoots,
+  sessionIds: parseList(readArg(
+    "--terminal-sessions",
+    process.env.ZION_NODE_TERMINAL_SESSION_IDS || ""
+  ))
+});
+const deviceAccess = new DeviceAccessManager({
+  localToolsUrl,
+  workspaceRoot,
+  baseRoots: builtInRoots,
+  bootstrapRoots: configuredRoots,
+  scope: readArg(
+    "--access-scope",
+    process.env.ZION_DEVICE_ACCESS_SCOPE || "selected-roots"
+  ),
+  policyPath: readArg(
+    "--access-policy",
+    process.env.ZION_DEVICE_ACCESS_POLICY || undefined
+  )
+});
+await deviceAccess.state({ force: true });
+const credentialStore = createDeviceCredentialStore();
+const credentialKey = deviceCredentialKey(runtimeUrl, nodeId);
+let token = String(process.env.ZION_DEVICE_TOKEN || "").trim();
+if (!token) {
+  const stored = await credentialStore.get(credentialKey);
+  if (
+    stored?.credential
+    && Number(stored.expiresAt || 0) > Date.now()
+  ) {
+    token = String(stored.credential);
+  }
+}
+if (!token) {
+  const pairingId = readArg(
+    "--pairing-id",
+    process.env.ZION_DEVICE_PAIRING_ID || ""
   );
+  const pairingSecret = readArg(
+    "--pairing-secret",
+    process.env.ZION_DEVICE_PAIRING_SECRET || ""
+  );
+  const pairingCode = readArg(
+    "--pairing-code",
+    process.env.ZION_DEVICE_PAIRING_CODE || ""
+  );
+  if ((!pairingId || !pairingSecret) && !pairingCode) {
+    throw new Error(
+      "Device credential is unavailable; provide ZION_DEVICE_TOKEN or "
+      + "--pairing-code"
+    );
+  }
+  const paired = await exchangeDevicePairing({
+    runtimeUrl,
+    pairingId,
+    secret: pairingSecret,
+    userCode: pairingCode,
+    device: {
+      deviceId: nodeId,
+      label: machineName,
+      platform: process.platform
+    }
+  });
+  token = paired.credential;
+  await credentialStore.set(credentialKey, {
+    credential: token,
+    credentialId: paired.credentialId,
+    expiresAt: paired.expiresAt,
+    deviceId: nodeId,
+    runtimeUrl
+  });
 }
 const toolHost = new LocalToolsDeviceHost({
   baseUrl: localToolsUrl,
+  additionalRoots,
+  accessPolicyProvider: ({ invocation }) =>
+    deviceAccess.authorizeInvocation(invocation),
   resourceBindings: {
     [resourceId]: {
       root: workspaceRoot,
@@ -82,6 +182,11 @@ const toolHost = new LocalToolsDeviceHost({
   }
 });
 await toolHost.assertHealthy();
+const serviceHost = new DeviceServiceHost({
+  localToolsUrl,
+  pluginServiceUrl,
+  deviceAccess
+});
 
 const connector = new DeviceConnector({
   runtimeUrl,
@@ -92,20 +197,23 @@ const connector = new DeviceConnector({
     instanceId: `instance:${randomUUID()}`,
     label: machineName,
     platform: process.platform,
-    capabilities: LOCAL_TOOLS_TOOL_DEFINITIONS.map((tool) => ({
-      name: tool.name,
-      version: "1",
-      risk: ["write", "edit"].includes(tool.name)
-        ? "write"
-        : tool.name === "sendMail"
-          ? "external-effect"
-          : ["Bash", "mcpCall"].includes(tool.name)
-            ? "execute"
-            : "read",
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      hostKind: "local-tools"
-    })),
+    capabilities: [
+      ...LOCAL_TOOLS_TOOL_DEFINITIONS.map((tool) => ({
+        name: tool.name,
+        version: "1",
+        risk: ["write", "edit"].includes(tool.name)
+          ? "write"
+          : tool.name === "sendMail"
+            ? "external-effect"
+            : ["Bash", "mcpCall"].includes(tool.name)
+              ? "execute"
+              : "read",
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        hostKind: "local-tools"
+      })),
+      DEVICE_SERVICE_CAPABILITY
+    ],
     resources: [{
       resourceId,
       kind: "workspace",
@@ -114,6 +222,7 @@ const connector = new DeviceConnector({
     }]
   },
   toolHost,
+  serviceHost,
   logger({ level, nodeId: sourceNodeId, message }) {
     process.stderr.write(
       `[device-connector:${sourceNodeId}] ${level}: ${message}\n`

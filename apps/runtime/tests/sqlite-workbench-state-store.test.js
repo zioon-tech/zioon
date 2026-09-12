@@ -56,6 +56,10 @@ describe("SqliteWorkbenchStateStore", () => {
       documents: 2,
       metadata: 2
     });
+    expect(store.readSessionMeta("a")).toMatchObject({
+      id: "a",
+      title: "A2"
+    });
   });
 
   it("enforces revisions and makes operation ids idempotent", () => {

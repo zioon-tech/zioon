@@ -33,7 +33,7 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
-    emptyOutDir: false,
+    emptyOutDir: true,
     // 增加chunk大小限制警告
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
@@ -45,6 +45,7 @@ export default defineConfig({
       // 不排除任何依赖，全部打包
       external: [], 
       output: {
+        onlyExplicitManualChunks: true,
         // 为插件创建独立的chunk
         manualChunks: (id) => {
           // 插件代码单独打包
@@ -75,6 +76,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png'],
       workbox: {
+        importScripts: ["/sw-client-refresh.js"],
+        navigateFallbackDenylist: [/^\/mobile(?:\/|$)/],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024
       },
       manifest: {

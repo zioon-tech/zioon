@@ -1,3 +1,7 @@
+import {
+  registerLlmRequestPayload
+} from "../../src/runtime/llm-request-observability.ts";
+
 const projectionStateByZion = new WeakMap();
 const REASONING_BATCH_CHARS = 256;
 const REASONING_BATCH_INTERVAL_MS = 250;
@@ -30,84 +34,88 @@ function reasoningKey(sessionId, event) {
   return `${sessionId}:${event.runId}:${reasoningPayload({}, event).reasoningSegmentId}`;
 }
 
-function startReasoningProjection(zion, sessionId, event, payload) {
+function startReasoningProjection(zion, sessionId, event, payload, emit) {
   const state = getProjectionState(zion);
   const key = reasoningKey(sessionId, event);
   const projected = reasoningPayload(payload, event);
   if (!state.activeReasoning.has(key)) {
     state.activeReasoning.set(key, projected);
-    zion.events.emit("chat/reasoningStart", projected);
+    emit("chat/reasoningStart", projected);
   }
   return projected;
 }
 
-function emitReasoningBuffer(zion, key) {
+function emitReasoningBuffer(zion, key, emit) {
   const state = getProjectionState(zion);
   const buffered = state.reasoningBuffers.get(key);
   if (!buffered?.token) return false;
-  zion.events.emit("chat/reasoningToken", {
+  emit("chat/reasoningToken", {
     ...buffered.payload,
-    token: buffered.token
+    token: buffered.token,
+    ...(buffered.payload.replay ? { reasoningText: buffered.fullText } : {})
   });
   buffered.token = "";
   buffered.lastEmittedAt = Date.now();
   return true;
 }
 
-function bufferReasoningProjection(zion, sessionId, event, payload) {
+function bufferReasoningProjection(zion, sessionId, event, payload, emit) {
   const state = getProjectionState(zion);
   const key = reasoningKey(sessionId, event);
   const projected = startReasoningProjection(
     zion,
     sessionId,
     event,
-    payload
+    payload,
+    emit
   );
   const now = Date.now();
   const buffered = state.reasoningBuffers.get(key) || {
     payload: projected,
     token: "",
+    fullText: "",
     lastEmittedAt: now
   };
   buffered.payload = projected;
   buffered.token += String(event.data?.delta || "");
+  buffered.fullText += String(event.data?.delta || "");
   state.reasoningBuffers.set(key, buffered);
   if (
     buffered.token.length >= REASONING_BATCH_CHARS
     || now - buffered.lastEmittedAt >= REASONING_BATCH_INTERVAL_MS
   ) {
-    emitReasoningBuffer(zion, key);
+    emitReasoningBuffer(zion, key, emit);
   }
 }
 
-function finishReasoningProjection(zion, sessionId, event, { emit = true } = {}) {
+function finishReasoningProjection(zion, sessionId, event, dispatch, { emit = true } = {}) {
   const state = getProjectionState(zion);
   const key = reasoningKey(sessionId, event);
-  emitReasoningBuffer(zion, key);
+  emitReasoningBuffer(zion, key, dispatch);
   state.reasoningBuffers.delete(key);
   const projected = state.activeReasoning.get(key);
   if (!projected) return;
   state.activeReasoning.delete(key);
-  if (emit) zion.events.emit("chat/reasoningEnd", projected);
+  if (emit) dispatch("chat/reasoningEnd", projected);
 }
 
-function flushRunReasoningBuffers(zion, sessionId, runId) {
+function flushRunReasoningBuffers(zion, sessionId, runId, emit) {
   const state = getProjectionState(zion);
   const prefix = `${sessionId}:${runId}:`;
   for (const key of state.reasoningBuffers.keys()) {
-    if (key.startsWith(prefix)) emitReasoningBuffer(zion, key);
+    if (key.startsWith(prefix)) emitReasoningBuffer(zion, key, emit);
   }
 }
 
-function finishRunReasoningProjections(zion, sessionId, runId, { emit = true } = {}) {
+function finishRunReasoningProjections(zion, sessionId, runId, dispatch, { emit = true } = {}) {
   const state = getProjectionState(zion);
   const prefix = `${sessionId}:${runId}:`;
   for (const [key, projected] of state.activeReasoning.entries()) {
     if (!key.startsWith(prefix)) continue;
-    emitReasoningBuffer(zion, key);
+    emitReasoningBuffer(zion, key, dispatch);
     state.reasoningBuffers.delete(key);
     state.activeReasoning.delete(key);
-    if (emit) zion.events.emit("chat/reasoningEnd", projected);
+    if (emit) dispatch("chat/reasoningEnd", projected);
   }
 }
 
@@ -118,17 +126,27 @@ export async function projectRunEventToSession(
   options = {}
 ) {
   if (!sessionId || !event) return;
+  let deliveries = Promise.resolve();
+  const errors = [];
+  const emit = (topic, value) => {
+    if (typeof zion.events.emitAsync !== "function") return zion.events.emit(topic, value);
+    deliveries = deliveries.then(() => zion.events.emitAsync(topic, value))
+      .catch((error) => { errors.push(error); });
+  };
+  try {
   const requestSource = String(options.requestSource || "scheduled-task");
   const panelId = options.panelId || null;
   const assistantBlockId = options.assistantBlockId || event.runId;
   const assistantBlockReady = options.assistantBlockReady === true;
+  const documentWriter = options.documentWriter !== false;
   const payload = {
     runId: event.runId,
     assistantBlockId,
     sessionId,
     panelId,
     requestSource,
-    documentWriter: options.documentWriter !== false,
+    documentWriter,
+    ...(options.replay ? { replay: true } : {}),
     ...(Number.isFinite(Number(options.answerAnchorPos))
       ? { answerAnchorPos: Number(options.answerAnchorPos) }
       : {}),
@@ -136,7 +154,20 @@ export async function projectRunEventToSession(
     ...(options.runtimeRunId ? { runtimeRunId: String(options.runtimeRunId) } : {})
   };
   if (event.type === "run.started") {
-    if (!assistantBlockReady) {
+    if (options.resetProjection === true) {
+      const state = getProjectionState(zion);
+      const prefix = `${sessionId}:${event.runId}:`;
+      for (const key of state.activeReasoning.keys()) {
+        if (key.startsWith(prefix)) state.activeReasoning.delete(key);
+      }
+      for (const key of state.reasoningBuffers.keys()) {
+        if (key.startsWith(prefix)) state.reasoningBuffers.delete(key);
+      }
+    }
+    // #region debug-point B:observer-run-start-document-write
+    globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"B",location:"extensions/dev.langchain-chat/programmatic-session.js:run.started",msg:"[DEBUG] Programmatic Run start evaluated document initialization",data:{runtimeSessionId:sessionId,runtimeRunId:String(event.runId||""),documentWriter:payload.documentWriter,assistantBlockReady,currentDocumentLength:String(zion.commands.executeCommand("zion.sessions.getDoc",sessionId)||"").length},ts:Date.now()}),keepalive:true}).catch(()=>{});
+    // #endregion
+    if (documentWriter && !assistantBlockReady) {
       await zion.commands.executeCommand("zion.sessions.ensureAssistantBlock", {
         id: sessionId,
         assistantBlockId
@@ -149,16 +180,16 @@ export async function projectRunEventToSession(
       awaiting: false,
       error: false
     });
-    zion.events.emit("chat/runStarted", payload);
+    emit("chat/runStarted", payload);
     return;
   }
   if (event.type === "message.delta") {
-    flushRunReasoningBuffers(zion, sessionId, event.runId);
+    flushRunReasoningBuffers(zion, sessionId, event.runId, emit);
     const token = String(event.data?.delta || "");
     const handled = typeof options.appendAssistantToken === "function"
       ? await options.appendAssistantToken(token, event) === true
       : false;
-    if (!handled) {
+    if (!handled && documentWriter) {
       if (assistantBlockReady) {
         await zion.commands.executeCommand("zion.sessions.ensureAssistantBlock", {
           id: sessionId,
@@ -172,7 +203,7 @@ export async function projectRunEventToSession(
         assistantBlockId
       });
     }
-    zion.events.emit("chat/token", {
+    emit("chat/token", {
       ...payload,
       token
     });
@@ -186,20 +217,41 @@ export async function projectRunEventToSession(
     return;
   }
   if (event.type === "reasoning.started") {
-    startReasoningProjection(zion, sessionId, event, payload);
+    startReasoningProjection(zion, sessionId, event, payload, emit);
     return;
   }
   if (event.type === "reasoning.delta") {
-    bufferReasoningProjection(zion, sessionId, event, payload);
+    bufferReasoningProjection(zion, sessionId, event, payload, emit);
     return;
   }
   if (event.type === "reasoning.completed") {
-    finishReasoningProjection(zion, sessionId, event);
+    finishReasoningProjection(zion, sessionId, event, emit);
     return;
   }
   if (event.type === "model.request") {
-    const rawPayload = event.data?.payload && typeof event.data.payload === "object"
-      ? event.data.payload
+    let detailEvent = event;
+    if (
+      !event.data?.payload
+      && event.data?.detailAvailable === true
+      && Number(event.data?.rawEventSequence) > 0
+      && typeof options.resolveEventDetail === "function"
+    ) {
+      try {
+        const resolved = await options.resolveEventDetail(
+          Number(event.data.rawEventSequence),
+          event
+        );
+        if (resolved?.type === "model.request") detailEvent = resolved;
+      } catch (error) {
+        console.warn(
+          "[langchain-chat] failed to load Runtime model request detail:",
+          error
+        );
+      }
+    }
+    const detailData = detailEvent.data || {};
+    const rawPayload = detailData.payload && typeof detailData.payload === "object"
+      ? detailData.payload
       : {};
     const requestPayload = {
       id: String(
@@ -212,41 +264,52 @@ export async function projectRunEventToSession(
       panelId,
       source: requestSource,
       requestSource,
-      stepIndex: Number(event.data?.turn ?? event.data?.stepIndex ?? 0) || undefined,
+      stepIndex: Number(
+        detailData.turn
+        ?? detailData.stepIndex
+        ?? event.data?.turn
+        ?? event.data?.stepIndex
+        ?? 0
+      ) || undefined,
       providerId: String(
-        event.data?.providerId
+        detailData.providerId
+        || detailData.model?.providerId
+        || event.data?.providerId
         || event.data?.model?.providerId
         || ""
       ),
-      providerType: String(event.data?.providerType || "openai"),
+      providerType: String(
+        detailData.providerType
+        || event.data?.providerType
+        || "openai"
+      ),
       modelId: String(
-        event.data?.modelId
+        detailData.modelId
+        || detailData.model?.modelId
+        || event.data?.modelId
         || event.data?.model?.modelId
         || rawPayload.model
         || ""
       ),
       modelLabel: String(
-        event.data?.modelLabel
+        detailData.modelLabel
+        || detailData.model?.label
+        || event.data?.modelLabel
         || event.data?.model?.label
         || rawPayload.model
         || ""
       ),
-      url: String(event.data?.url || ""),
-      stream: event.data?.stream !== false,
+      url: String(detailData.url || event.data?.url || ""),
+      stream: (detailData.stream ?? event.data?.stream) !== false,
       messageCount: Array.isArray(rawPayload.messages)
         ? rawPayload.messages.length
-        : 0,
-      toolCount: Array.isArray(rawPayload.tools) ? rawPayload.tools.length : 0,
+        : Number(event.data?.messageCount || 0),
+      toolCount: Array.isArray(rawPayload.tools)
+        ? rawPayload.tools.length
+        : Number(event.data?.toolCount || 0),
       payload: rawPayload
     };
-    zion.events.emit("llm/requestPayload", requestPayload);
-    if (typeof zion.llmPayloads?.add === "function") {
-      zion.llmPayloads.add(requestPayload);
-    } else {
-      const queue = zion.__llmPayloadQueue || (zion.__llmPayloadQueue = []);
-      queue.push(requestPayload);
-      while (queue.length > 80) queue.shift();
-    }
+    registerLlmRequestPayload(zion, requestPayload);
     return;
   }
   if (event.type === "model.usage") {
@@ -269,7 +332,7 @@ export async function projectRunEventToSession(
     return;
   }
   if (event.type === "tool.requested") {
-    zion.events.emit("chat/toolCall", {
+    emit("chat/toolCall", {
       ...payload,
       toolCall: {
         id: event.data?.callId,
@@ -282,7 +345,7 @@ export async function projectRunEventToSession(
     return;
   }
   if (event.type === "tool.completed" || event.type === "tool.denied") {
-    zion.events.emit("chat/toolResult", {
+    emit("chat/toolResult", {
       ...payload,
       toolCallId: event.data?.callId,
       result: event.data?.result || event.data?.error || event.data?.reason || "",
@@ -295,7 +358,7 @@ export async function projectRunEventToSession(
     return;
   }
   if (event.type === "run.completed") {
-    finishRunReasoningProjections(zion, sessionId, event.runId);
+    finishRunReasoningProjections(zion, sessionId, event.runId, emit);
     zion.state?.set?.(`chat.runs.${sessionId}`, {
       runId: event.runId,
       streaming: false,
@@ -303,11 +366,11 @@ export async function projectRunEventToSession(
       awaiting: true,
       error: false
     });
-    zion.events.emit("chat/runFinished", payload);
+    emit("chat/runFinished", payload);
     return;
   }
   if (event.type === "run.failed") {
-    finishRunReasoningProjections(zion, sessionId, event.runId, { emit: false });
+    finishRunReasoningProjections(zion, sessionId, event.runId, emit, { emit: false });
     const error = event.data?.error || options.defaultError || "Programmatic run failed";
     zion.state?.set?.(`chat.runs.${sessionId}`, {
       runId: event.runId,
@@ -316,12 +379,12 @@ export async function projectRunEventToSession(
       awaiting: false,
       error: true
     });
-    zion.events.emit("chat/runError", { ...payload, error });
-    zion.events.emit("chat/runFinished", payload);
+    emit("chat/runError", { ...payload, error });
+    emit("chat/runFinished", payload);
     return;
   }
   if (event.type === "run.aborted") {
-    finishRunReasoningProjections(zion, sessionId, event.runId, { emit: false });
+    finishRunReasoningProjections(zion, sessionId, event.runId, emit, { emit: false });
     zion.state?.set?.(`chat.runs.${sessionId}`, {
       runId: event.runId,
       streaming: false,
@@ -329,11 +392,15 @@ export async function projectRunEventToSession(
       awaiting: false,
       error: false
     });
-    zion.events.emit("chat/aborted", {
+    emit("chat/aborted", {
       ...payload,
       reason: event.data?.reason || "user"
     });
-    zion.events.emit("chat/runFinished", payload);
+    emit("chat/runFinished", payload);
+  }
+  } finally {
+    await deliveries;
+    if (errors.length) throw errors[0];
   }
 }
 

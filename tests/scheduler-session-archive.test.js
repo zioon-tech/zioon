@@ -6,6 +6,7 @@ import {
   ensureScheduledSessionFolder,
   insertScheduledSessionTag,
   migrateScheduledSessions,
+  removeEmptyScheduledSessionFolder,
   rewriteScheduledSessionTag,
   scheduledSessionTagForDate,
   sessionTagForLocale,
@@ -491,5 +492,39 @@ describe("scheduled session archive helpers", () => {
       locale: "zh-CN"
     })).resolves.toBe(true);
     expect(fixture.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it("removes only an empty legacy Scheduler folder", async () => {
+    const store = new LocalSchedulerStore();
+    store.saveSessionArchiveState({ folderId: "scheduled-folder" });
+    const executeCommand = vi.fn(async (name, payload) => {
+      if (name === "zion.sessions.getTreeSnapshot") {
+        return {
+          id: "root",
+          type: "folder",
+          children: [{
+            id: "scheduled-folder",
+            type: "folder",
+            title: "定时任务",
+            children: []
+          }]
+        };
+      }
+      if (name === "zion.sessions.deleteFolder") {
+        return payload === "scheduled-folder";
+      }
+      return null;
+    });
+
+    await expect(removeEmptyScheduledSessionFolder({
+      zion: { commands: { executeCommand } },
+      store,
+      locale: "zh-CN"
+    })).resolves.toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith(
+      "zion.sessions.deleteFolder",
+      "scheduled-folder"
+    );
+    expect(store.getSessionArchiveState().folderId).toBeNull();
   });
 });

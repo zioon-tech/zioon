@@ -26,6 +26,7 @@ export type {
   CredentialRequest,
   EngineOutputEvent,
   EngineTurnRequest,
+  ExecutionTarget,
   MessageRole,
   ModelRef,
   ModelRequestOptions,

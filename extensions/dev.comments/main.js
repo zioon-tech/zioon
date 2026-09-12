@@ -2558,6 +2558,7 @@ function readChatBoolDefaultTrue(key) {
 // 以便评论线程重建思考/工具历史时采用与主编辑器相同的策略。
 async function resolveWidgetHistoryModelPolicy() {
   let preservedThinking = false;
+  let interleavedThinking = false;
   let forceReasoning = false;
   try {
     const active = window.zion?.state?.get?.("chat.activeModel") || null;
@@ -2566,6 +2567,7 @@ async function resolveWidgetHistoryModelPolicy() {
       const prov = window.zion?.models?.getProvider?.(active?.providerId);
       activeCfg = await prov?.resolve?.(active?.modelId);
       preservedThinking = !!activeCfg?.preservedThinking;
+      interleavedThinking = !!activeCfg?.interleavedThinking;
     } catch {}
     const mode = normalizeToolCallsReasoningContentMode(
       window.zion?.state?.get?.("chat.toolCallsReasoningContentMode")
@@ -2579,7 +2581,7 @@ async function resolveWidgetHistoryModelPolicy() {
       cfg: activeCfg
     });
   } catch {}
-  return { preservedThinking, forceReasoning };
+  return { preservedThinking, interleavedThinking, forceReasoning };
 }
 
 async function buildThreadContextMessages(thread) {
@@ -2615,11 +2617,16 @@ async function buildThreadContextMessages(thread) {
     try {
       const parentSessionId = thread?.parentSessionId || thread?.sessionId || "";
       const ann = parentSessionId ? getSessionAnnotations(parentSessionId) : {};
-      const { preservedThinking, forceReasoning } = await resolveWidgetHistoryModelPolicy();
+      const {
+        preservedThinking,
+        interleavedThinking,
+        forceReasoning
+      } = await resolveWidgetHistoryModelPolicy();
       upstreamMessages = reconstructWidgetHistoryMessages(upstreamMessages, upstreamText, ann, {
         includeToolHistory,
         includeThinkingHistory,
         preservedThinking,
+        interleavedThinking,
         forceReasoning,
         reasoningPlaceholder: DEFAULT_REASONING_CONTENT_PLACEHOLDER
       });
@@ -2824,7 +2831,10 @@ function createThreadEditor(container, thread, onSave, onRun, onLayoutChange, on
     folding: false
   });
   core.setSessionId(sessionId);
-    try { core.view.dom.dataset.sessionId = sessionId; } catch {}
+    try {
+      core.view.dom.dataset.sessionId = sessionId;
+      core.view.dom.dataset.zionSessionPersistence = "skip";
+    } catch {}
   const proxy = window.zion?.editor?.attachEditor?.(core, panelId) || null;
   try { proxy?.setSessionId?.(sessionId); } catch {}
   const view = core.view;
@@ -5225,6 +5235,7 @@ async function autoRenameThreadTitle(thread, transcriptText) {
       onError: (e) => { err = e || new Error("LLM error"); },
       runId: `comments-title-${id}-${Date.now()}`,
       sessionId: getThreadSessionId(thread),
+      requestSource: "comments-title",
       silentReasoning: true
     });
     if (err) throw err;
@@ -5577,6 +5588,7 @@ async function summarizeThreadAnswer(thread, transcriptText) {
       onError: (e) => { err = e || new Error("LLM error"); },
       runId: `comments-summary-${id}-${Date.now()}`,
       sessionId: getThreadSessionId(thread),
+      requestSource: "comments-summary",
       silentReasoning: true
     });
     if (err) throw err;
@@ -5609,6 +5621,9 @@ async function runThread(thread, handle) {
     } catch {}
     const contextMessages = await buildThreadContextMessages(thread);
     const threadLogTitle = getThreadLogTitle(thread);
+    // #region debug-point A:comment-parent-dispatch
+    void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "A", location: "extensions/dev.comments/main.js:runThread", msg: "[DEBUG] Comment run parent relationship at dispatch", data: { threadId: String(thread?.id || ""), threadSessionId, parentSessionId: String(thread?.parentSessionId || thread?.sessionId || ""), sourceSessionId: String(thread?.sessionId || ""), panelId: String(handle?.panelId || `comments:${thread.id}`), skipSessionPersistence: true }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
+    // #endregion
     await window.zion?.commands?.executeCommand?.("chat.run", {
       editor,
       sessionId: threadSessionId,
@@ -5691,6 +5706,25 @@ export async function activate(ctx) {
     signalCommentThreadLocated(id, "inspector-preview");
     return true;
   }));
+  disposables.push(window.zion.commands.registerCommand("comments.listThreadRelations", () =>
+    readAllThreads().map((thread) => ({
+      id: String(thread?.id || ""),
+      sessionId: String(thread?.sessionId || ""),
+      parentSessionId: String(thread?.parentSessionId || thread?.sessionId || ""),
+      threadSessionId: getThreadSessionId(thread),
+      title: String(thread?.title || ""),
+      summary: String(thread?.summary || ""),
+      quote: String(thread?.quote || ""),
+      anchorText: String(thread?.anchorText || ""),
+      startLine: Number(thread?.startLine),
+      from: Number(thread?.from),
+      resolved: thread?.resolved === true,
+      createdAt: Number(thread?.createdAt) || 0,
+      updatedAt: Number(thread?.updatedAt) || 0,
+      titleUpdatedAt: Number(thread?.titleUpdatedAt) || 0,
+      summaryUpdatedAt: Number(thread?.summaryUpdatedAt) || 0
+    }))
+  ));
   disposables.push(window.zion.commands.registerCommand("comments.getSourceAnchors", (opts = {}) => {
     const sessionId = String(opts?.sessionId || "");
     const sourceText = String(opts?.sourceText || "");

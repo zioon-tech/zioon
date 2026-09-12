@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createInteractiveRuntimeHandle,
   createInteractiveRuntimePolicy,
+  includeTerminalContextForRuntime,
   interactiveRuntimeEligibility,
   observeInteractiveRuntimeRun,
   persistInteractiveRuntimeProfileModel,
@@ -12,6 +13,7 @@ import {
   resolveInteractiveRuntimeModel,
   syncWorkbenchModelProfiles
 } from "../extensions/dev.langchain-chat/runtime-backend.js";
+import { reconstructWidgetHistoryMessages } from "../src/chat/widget-history.ts";
 
 async function collect(iterable) {
   const values = [];
@@ -20,6 +22,18 @@ async function collect(iterable) {
 }
 
 describe("interactive Runtime backend", () => {
+  it("enables Runtime terminal context unless the Workbench toggle is off", () => {
+    expect(includeTerminalContextForRuntime({
+      get: vi.fn(() => undefined)
+    })).toBe(true);
+    expect(includeTerminalContextForRuntime({
+      get: vi.fn(() => false)
+    })).toBe(false);
+    expect(includeTerminalContextForRuntime({
+      get: vi.fn(() => true)
+    })).toBe(true);
+  });
+
   it("applies Workbench pre/post contributors before creating a Runtime Run", async () => {
     const calls = [];
     const runContributors = vi.fn(async (messages, stage, context) => {
@@ -75,6 +89,63 @@ describe("interactive Runtime backend", () => {
       sessionId: "session-1",
       excludedContributorIds: []
     });
+  });
+
+  it("reconstructs historical thinking and tool messages before post contributors", async () => {
+    const stages = [];
+    const docText = [
+      "user inspect",
+      "assistant <!-- zion-assistant:id=run-1 --> Before",
+      "思考 <!-- zion-thinking:id=thinking-1 -->",
+      "调用 read <!-- zion-tool:id=tool-1 -->",
+      "After",
+      "user continue"
+    ].join("\n");
+    const prepared = await prepareInteractiveRuntimeMessages({
+      messages: [
+        { role: "user", content: "inspect" },
+        { role: "assistant", content: "Before\nAfter" },
+        { role: "user", content: "continue" }
+      ],
+      runContributors: async (messages, stage) => {
+        stages.push(stage);
+        if (stage === "post") {
+          expect(messages.some((message) => message.role === "tool")).toBe(true);
+        }
+        return messages;
+      },
+      transformMessages: (messages) => reconstructWidgetHistoryMessages(
+        messages,
+        docText,
+        {
+          thinking: [{ id: "thinking-1", text: "reasoning" }],
+          tools: [{
+            id: "tool-1",
+            name: "read",
+            args: { path: "a.txt" },
+            result: "contents"
+          }]
+        },
+        { preservedThinking: true }
+      )
+    });
+
+    expect(stages).toEqual(["pre", "post"]);
+    expect(prepared).toEqual([
+      { role: "user", content: "inspect" },
+      { role: "assistant", content: "Before", reasoning_content: "reasoning" },
+      {
+        role: "assistant",
+        tool_calls: [{
+          id: "tool-1",
+          type: "function",
+          function: { name: "read", arguments: "{\"path\":\"a.txt\"}" }
+        }]
+      },
+      { role: "tool", tool_call_id: "tool-1", content: "contents" },
+      { role: "assistant", content: "After" },
+      { role: "user", content: "continue" }
+    ]);
   });
 
   it("rejects contributor output that Runtime cannot serialize", async () => {
@@ -514,7 +585,7 @@ describe("interactive Runtime backend", () => {
     expect(fetchImpl.mock.calls.some(([url]) =>
       String(url).includes(
         "/projection/stream"
-        + "?after=0&reasoning=stream&max_delay_ms=50&max_chunk_chars=256"
+        + "?after=0&reasoning=stream&max_delay_ms=200&max_chunk_chars=1024"
       )
     )).toBe(true);
     const createCall = fetchImpl.mock.calls.find(
@@ -556,7 +627,7 @@ describe("interactive Runtime backend", () => {
       policy: { preset: "read-only", allowedTools: ["read"] },
       metadata: {
         source: "interactive-chat",
-        workbenchProtocolVersion: 2,
+        workbenchProtocolVersion: 4,
         interactionProfileId: "interactive.default",
         workbenchSessionId: "session-1",
         panelId: "panel-1",
@@ -566,6 +637,108 @@ describe("interactive Runtime backend", () => {
         runtimeUnsupportedTools: []
       }
     });
+  });
+
+  it("hydrates projected model request details for the LLM payload inspector", async () => {
+    const projectedRequest = {
+      schemaVersion: 1,
+      eventId: "projection-request",
+      runId: "runtime-chat-detail",
+      attemptId: "attempt-chat-detail",
+      sequence: 1,
+      type: "model.request",
+      timestamp: 100,
+      data: {
+        messageCount: 1,
+        toolCount: 1,
+        detailAvailable: true,
+        rawEventSequence: 1
+      }
+    };
+    const terminalEvent = {
+      schemaVersion: 1,
+      eventId: "event-completed",
+      runId: "runtime-chat-detail",
+      attemptId: "attempt-chat-detail",
+      sequence: 2,
+      type: "run.completed",
+      timestamp: 101,
+      data: { output: "done", usage: {} }
+    };
+    const fetchImpl = vi.fn(async (url, init = {}) => {
+      const value = String(url);
+      if (value.endsWith("/v1/models")) {
+        return new globalThis.Response(JSON.stringify({
+          activeProfileId: "runtime-profile",
+          profiles: [{
+            id: "runtime-profile",
+            providerId: "test",
+            providerType: "openai",
+            model: "test-model",
+            label: "Runtime Model"
+          }]
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (value.endsWith("/v1/runs") && init.method === "POST") {
+        return new globalThis.Response(JSON.stringify({
+          runId: "runtime-chat-detail",
+          attemptId: "attempt-chat-detail",
+          status: "accepted"
+        }), { status: 202, headers: { "Content-Type": "application/json" } });
+      }
+      if (value.includes("/projection/stream?after=0")) {
+        return new globalThis.Response(
+          [
+            `event: model.request\ndata: ${JSON.stringify(projectedRequest)}\n\n`,
+            `event: run.completed\ndata: ${JSON.stringify(terminalEvent)}\n\n`
+          ].join(""),
+          { status: 200, headers: { "Content-Type": "text/event-stream" } }
+        );
+      }
+      if (value.endsWith("/v1/runs/runtime-chat-detail/events/1")) {
+        return new globalThis.Response(JSON.stringify({
+          event: {
+            ...projectedRequest,
+            eventId: "raw-request",
+            data: {
+              modelId: "test-model",
+              payload: {
+                model: "test-model",
+                messages: [{ role: "user", content: "inspect this" }],
+                tools: [{ type: "function", function: { name: "webFetch" } }]
+              }
+            }
+          }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`Unexpected Runtime request: ${value}`);
+    });
+
+    const handle = await createInteractiveRuntimeHandle({
+      messages: [{ role: "user", content: "inspect this" }],
+      tools: [{ function: { name: "webFetch" } }],
+      selectedModel: { providerId: "test", modelId: "test-model" },
+      selectedModelConfig: {},
+      workbenchSessionId: "session-1",
+      baseUrl: "http://127.0.0.1:9876",
+      fetchImpl
+    });
+    const [events] = await Promise.all([
+      collect(handle.events),
+      handle.completion
+    ]);
+
+    expect(events[0]).toMatchObject({
+      type: "model.request",
+      data: {
+        payload: {
+          messages: [{ role: "user", content: "inspect this" }]
+        }
+      }
+    });
+    expect(fetchImpl.mock.calls.some(([url]) =>
+      String(url).endsWith("/v1/runs/runtime-chat-detail/events/1")
+    )).toBe(true);
   });
 
   it("rejects an unavailable selected model before creating a Run", async () => {
@@ -752,6 +925,72 @@ describe("interactive Runtime backend", () => {
         reason: "unsupported-provider"
       })
     ]);
+  });
+
+  it("updates an existing Runtime profile after its Workbench config changes", async () => {
+    const requests = [];
+    const fetchImpl = vi.fn(async (url, init = {}) => {
+      const value = String(url);
+      if (value.endsWith("/v1/models")) {
+        return new globalThis.Response(JSON.stringify({
+          profiles: [{
+            id: "workbench.deepseek.deepseek-v4-flash",
+            providerId: "deepseek",
+            sourceModelId: "deepseek-v4-flash",
+            providerType: "openai",
+            model: "deepseek-v4-flash",
+            credentialConfigured: true,
+            capabilities: {
+              preservedThinking: false,
+              interleavedThinking: false
+            }
+          }]
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (value.includes("/v1/model-profiles/") && init.method === "PUT") {
+        const body = JSON.parse(init.body);
+        requests.push(body);
+        return new globalThis.Response(JSON.stringify({
+          profile: {
+            ...body.profile,
+            credentialConfigured: true
+          }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`Unexpected Runtime request: ${value}`);
+    });
+
+    const result = await syncWorkbenchModelProfiles({
+      models: [{
+        providerId: "deepseek",
+        modelId: "deepseek-v4-flash",
+        label: "DeepSeek"
+      }],
+      baseUrl: "http://127.0.0.1:9876",
+      fetchImpl,
+      overwriteExisting: true,
+      resolveConfig: async () => ({
+        providerType: "openai",
+        url: "https://api.deepseek.com/chat/completions",
+        modelName: "deepseek-v4-flash",
+        _credentialConfigured: true,
+        preservedThinking: true,
+        interleavedThinking: true
+      })
+    });
+
+    expect(requests).toEqual([expect.objectContaining({
+      profile: expect.objectContaining({
+        id: "workbench.deepseek.deepseek-v4-flash",
+        credentialRequired: true,
+        capabilities: expect.objectContaining({
+          preservedThinking: true,
+          interleavedThinking: true
+        })
+      })
+    })]);
+    expect(requests[0].credential).toBeUndefined();
+    expect(result.imported).toHaveLength(1);
   });
 
   it("resolves the active Workbench model from the Runtime interaction profile", async () => {

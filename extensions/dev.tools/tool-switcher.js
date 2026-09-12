@@ -11,6 +11,53 @@ function t(key, fallback, values) {
   return fallback;
 }
 
+export function filterToolsForRuntime(tools, state = window.zion?.state) {
+  const list = Array.isArray(tools) ? tools : [];
+  const backend = String(
+    state?.get?.("runtime.connection")?.backend
+    || state?.get?.("runtime.mode")
+    || ""
+  ).toLowerCase();
+  const supported = new Set(
+    Array.isArray(state?.get?.("runtime.supportedToolNames"))
+      ? state.get("runtime.supportedToolNames").map(String)
+      : []
+  );
+  if (backend !== "runtime" || supported.size === 0) return list;
+  const capabilities = new Map(
+    (Array.isArray(state?.get?.("runtime.capabilityTools"))
+      ? state.get("runtime.capabilityTools")
+      : [])
+      .map((tool) => [String(tool?.name || ""), tool])
+      .filter(([name]) => !!name)
+  );
+  return list
+    .filter((tool) => supported.has(String(
+      tool?.function?.name || tool?.name || ""
+    )))
+    .map((tool) => {
+      const name = String(tool?.function?.name || tool?.name || "");
+      const capability = capabilities.get(name);
+      if (!capability) return tool;
+      return {
+        ...tool,
+        function: {
+          ...(tool?.function || {}),
+          name,
+          description: String(
+            capability.description
+            || tool?.function?.description
+            || ""
+          ),
+          parameters: capability.inputSchema
+            && typeof capability.inputSchema === "object"
+            ? capability.inputSchema
+            : tool?.function?.parameters
+        }
+      };
+    });
+}
+
 export function installToolSwitcher() {
   let root = document.getElementById("zion-tools-switcher-root");
   if (root) return createHandle(root);
@@ -110,7 +157,7 @@ export function installToolSwitcher() {
 
   function allTools() {
     const arr = window.zion?.state?.get("chat.tools") || [];
-    return arr
+    return filterToolsForRuntime(arr)
       .map(t => ({
         name: t?.function?.name || "",
         description: t?.function?.description || "",

@@ -16,7 +16,7 @@ class RuntimeSkillsContextProvider {
     this.state = state;
   }
 
-  async contribute(messages) {
+  async contribute(messages, context = {}) {
     if ((Array.isArray(messages) ? messages : []).some((message) =>
       typeof message?.content === "string"
       && message.content.includes("<available_skills>")
@@ -26,8 +26,19 @@ class RuntimeSkillsContextProvider {
     const snapshot = normalizeSkillsSnapshot(
       this.state.get(SKILLS_RUNTIME_SNAPSHOT_KEY) || {}
     );
-    if (!snapshot.enabled.length || !snapshot.catalog.length) return messages;
-    const content = buildAvailableSkillsContextXml(snapshot);
+    const sessionEnabled = context?.request?.metadata?.skills?.enabled;
+    const effectiveSnapshot = Array.isArray(sessionEnabled)
+      ? {
+          ...snapshot,
+          enabled: Array.from(new Set(
+            sessionEnabled.map(String).map((value) => value.trim()).filter(Boolean)
+          ))
+        }
+      : snapshot;
+    if (!effectiveSnapshot.enabled.length || !effectiveSnapshot.catalog.length) {
+      return messages;
+    }
+    const content = buildAvailableSkillsContextXml(effectiveSnapshot);
     return insertAfterLeadingSystem(messages, {
       role: "user",
       content

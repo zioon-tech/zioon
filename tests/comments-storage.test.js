@@ -302,6 +302,13 @@ describe("comments storage", () => {
       to: 12,
       active: false
     }]);
+    expect(commands.get("comments.listThreadRelations")()).toEqual([
+      expect.objectContaining({
+        id: "archived-1",
+        parentSessionId: "session-main",
+        threadSessionId: "comment:archived-1"
+      })
+    ]);
 
     activated?.dispose?.();
   });

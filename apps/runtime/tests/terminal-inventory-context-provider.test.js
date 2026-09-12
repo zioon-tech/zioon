@@ -118,6 +118,37 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("scopes inventory loading to the Run execution Node", async () => {
+    const service = {
+      listInventory: vi.fn(async () => ({
+        sessions: [],
+        machines: [],
+        nodes: [{
+          nodeId: "node:cloud-runtime",
+          label: "Cloud Runtime",
+          status: "online"
+        }]
+      }))
+    };
+    const provider = new LocalToolsTerminalInventoryContextProvider({
+      service
+    });
+
+    await provider.contribute([], context({
+      request: {
+        target: { nodeId: "node:cloud-runtime" },
+        policy: { allowedTerminalSessionIds: [] },
+        metadata: {}
+      }
+    }));
+
+    expect(service.listInventory).toHaveBeenCalledWith({
+      runContext: expect.objectContaining({
+        target: { nodeId: "node:cloud-runtime" }
+      })
+    });
+  });
+
   it("does not query terminal inventory when explicitly disabled", async () => {
     const fetchImpl = vi.fn();
     const provider = new LocalToolsTerminalInventoryContextProvider({ fetchImpl });
@@ -163,7 +194,7 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
     );
   });
 
-  it("registers the terminal inventory provider and Runtime tool through API v2", () => {
+  it("registers terminal inventory and management through API v2", () => {
     const providers = [];
     const tools = [];
     const contribution = activateRuntimePlugin({
@@ -186,16 +217,86 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
     expect(providers.map((provider) => provider.id)).toEqual([
       "dev.terminal-manager.inventory"
     ]);
-    expect(tools).toEqual([
+    expect(tools).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: "terminalInventory",
         policy: { minimumPreset: "read-only" }
+      }),
+      expect.objectContaining({
+        name: "terminalManage",
+        policy: { minimumPreset: "trusted-automation" }
       })
-    ]);
+    ]));
+    expect(tools).toHaveLength(2);
 
     contribution.dispose();
     expect(providers).toEqual([]);
     expect(tools).toEqual([]);
+  });
+
+  it("routes terminalManage through the Device service and enforces session scope", async () => {
+    const tools = [];
+    const service = {
+      listSessions: vi.fn(async () => [{
+        id: "allowed",
+        type: "local",
+        cwd: "/workspace/allowed",
+        active: true
+      }, {
+        id: "hidden",
+        type: "local",
+        cwd: "/workspace/hidden",
+        active: true
+      }]),
+      listMachines: vi.fn(async () => []),
+      closeSession: vi.fn(async ({ sessionId }) => ({
+        closed: true,
+        session_id: sessionId
+      }))
+    };
+    activateRuntimePlugin({
+      apiVersion: 2,
+      config: { terminalManagementService: service },
+      context: {
+        registerProvider() {
+          return { dispose() {} };
+        }
+      },
+      tools: {
+        registerTool(tool) {
+          tools.push(tool);
+          return { dispose() {} };
+        }
+      }
+    });
+    const terminalManage = tools.find((tool) => tool.name === "terminalManage");
+    const runContext = {
+      signal: new CancellationController().signal,
+      policy: { allowedTerminalSessionIds: ["allowed"] }
+    };
+
+    const listed = await terminalManage.invoke({ action: "list" }, runContext);
+    expect(JSON.parse(listed.content).sessions).toEqual([
+      expect.objectContaining({ session_id: "allowed" })
+    ]);
+
+    await expect(terminalManage.invoke({
+      action: "close",
+      session_id: "hidden"
+    }, runContext)).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("outside the active policy")
+    });
+    expect(service.closeSession).not.toHaveBeenCalled();
+
+    await expect(terminalManage.invoke({
+      action: "close",
+      session_id: "allowed"
+    }, runContext)).resolves.toMatchObject({ ok: true });
+    expect(service.closeSession).toHaveBeenCalledWith({
+      sessionId: "allowed",
+      runContext
+    });
   });
 
   it("returns filtered terminal inventory as a Runtime tool result", async () => {

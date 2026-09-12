@@ -24,6 +24,14 @@ function isPathWithinRoot(pathValue, rootValue) {
   return !!root && (path === root || path.startsWith(`${root}/`));
 }
 
+function platformForPath(pathValue) {
+  const path = normalizePath(pathValue);
+  if (/^[A-Za-z]:\//.test(path)) return "win32";
+  if (path === "/Users" || path.startsWith("/Users/")) return "darwin";
+  if (/^\/(?:home|root|var|opt|etc|usr|srv)(?:\/|$)/.test(path)) return "linux";
+  return "";
+}
+
 function assertRootAllowed(root, policy = {}) {
   const fileRoot = normalizePath(root);
   if (!isAbsolutePath(fileRoot)) {
@@ -80,6 +88,56 @@ function invocationId(prefix, toolName, key) {
   ].join(":");
 }
 
+function targetRoots(target) {
+  const resource = target?.resource || {};
+  return [
+    resource.root,
+    resource.path,
+    ...(Array.isArray(resource.roots) ? resource.roots : [])
+  ].map(normalizePath).filter(Boolean);
+}
+
+function selectTargetForFileRoot({ toolHost, toolName, fileRoot, runContext }) {
+  if (runContext.target?.nodeId || runContext.target?.resourceId) {
+    return null;
+  }
+  if (typeof toolHost?.registeredTargets !== "function") return null;
+  let targets = toolHost.registeredTargets(runContext.projectId || "", toolName);
+  if (typeof toolHost.isOnline === "function") {
+    const online = targets.filter(({ node }) => toolHost.isOnline(node));
+    if (online.length) targets = online;
+  }
+  if (targets.length <= 1) return null;
+
+  const root = normalizePath(fileRoot);
+  const rootMatches = targets.filter((target) =>
+    targetRoots(target).some((candidate) =>
+      isPathWithinRoot(root, candidate) || isPathWithinRoot(candidate, root)
+    )
+  );
+  if (rootMatches.length === 1) {
+    const target = rootMatches[0];
+    return {
+      nodeId: target.node.registration.nodeId,
+      instanceId: target.node.registration.instanceId,
+      resourceId: target.resource?.resourceId
+    };
+  }
+
+  const platform = platformForPath(root);
+  if (!platform) return null;
+  const platformMatches = targets.filter((target) =>
+    String(target.node.registration.platform || "") === platform
+  );
+  if (platformMatches.length !== 1) return null;
+  const target = platformMatches[0];
+  return {
+    nodeId: target.node.registration.nodeId,
+    instanceId: target.node.registration.instanceId,
+    resourceId: target.resource?.resourceId
+  };
+}
+
 export function createPluginFileService({
   toolHost,
   invocationPrefix = "plugin-file"
@@ -95,7 +153,25 @@ export function createPluginFileService({
     preset = "read-only"
   }) {
     const root = assertRootAllowed(fileRoot, runContext.policy);
-    const sessionId = String(args.session_id || runContext.sessionId || "").trim();
+    const parentSessionIds = [...new Set(
+      Array.isArray(runContext.policy?.allowedTerminalSessionIds)
+        ? runContext.policy.allowedTerminalSessionIds.map(String).filter(Boolean)
+        : []
+    )];
+    let sessionId = String(
+      args.session_id || runContext.terminalSessionId || ""
+    ).trim();
+    if (!sessionId && parentSessionIds.length === 1) {
+      [sessionId] = parentSessionIds;
+    }
+    if (parentSessionIds.length) {
+      if (!sessionId) {
+        throw new Error("session_id is required when the Runtime policy permits multiple terminals");
+      }
+      if (!parentSessionIds.includes(sessionId)) {
+        throw new Error("terminal session is outside the allowed Runtime policy");
+      }
+    }
     const policy = {
       preset,
       allowedTools: [toolName],
@@ -106,6 +182,12 @@ export function createPluginFileService({
       maxMailPerRun: 0,
       maxToolCalls: 100
     };
+    const target = sessionId ? null : selectTargetForFileRoot({
+      toolHost,
+      toolName,
+      fileRoot: root,
+      runContext
+    });
     const cancellation = new CancellationController();
     return await toolHost.invoke({
       invocationId: invocationId(invocationPrefix, toolName, key),
@@ -113,6 +195,9 @@ export function createPluginFileService({
       attemptId: runContext.attemptId || `${invocationPrefix}:attempt`,
       sessionId: runContext.sessionId || "",
       projectId: runContext.projectId || "",
+      ...(runContext.target || target ? {
+        target: { ...(runContext.target || target) }
+      } : {}),
       policy,
       toolCall: {
         id: invocationId(invocationPrefix, `${toolName}-call`, key),

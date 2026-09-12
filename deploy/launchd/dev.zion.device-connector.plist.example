@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.zion.device-connector</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_PATH__</string>
+    <string>__REPOSITORY_PATH__/apps/device-connector/src/main.mjs</string>
+    <string>--runtime-url</string>
+    <string>__RUNTIME_URL__</string>
+    <string>--local-tools-url</string>
+    <string>http://127.0.0.1:8765</string>
+    <string>--plugin-service-url</string>
+    <string>http://127.0.0.1:8767</string>
+    <string>--workspace-root</string>
+    <string>__WORKSPACE_PATH__</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPOSITORY_PATH__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME_PATH__</string>
+    <key>PATH</key>
+    <string>__NODE_BIN_DIR__:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>ZION_NODE_ADDITIONAL_ROOTS</key>
+    <string>__HOME_PATH__/.zion-next/skills,__HOME_PATH__/.zion-next/memory</string>
+    <key>ZION_DEVICE_ACCESS_SCOPE</key>
+    <string>selected-roots</string>
+    <key>ZION_DEVICE_ACCESS_POLICY</key>
+    <string>__HOME_PATH__/.zion-next/device-access.json</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>__HOME_PATH__/Library/Logs/Zion/device-connector.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME_PATH__/Library/Logs/Zion/device-connector-error.log</string>
+</dict>
+</plist>

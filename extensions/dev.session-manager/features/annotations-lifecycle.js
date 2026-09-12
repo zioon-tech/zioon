@@ -30,6 +30,8 @@ export function createAnnotationsLifecycle(opts) {
   function persistAnnotations(id, panelId = null) {
     try {
       if (!id) return;
+      if (getZion()?.state?.get(`sessions.summary.${id}`)
+        && !getZion()?.state?.get(`sessions.meta.${id}`)) return;
       snapshotSessionAnnotations(id, panelId);
       const meta = loadMeta(id);
       const ann = getAnnotationsState(id) || meta.annotations;
@@ -210,6 +212,8 @@ export function createAnnotationsLifecycle(opts) {
 
     const persist = async (id) => {
       try {
+        if (getZion()?.state?.get(`sessions.summary.${id}`)
+          && !getZion()?.state?.get(`sessions.meta.${id}`)) return;
         const ann = getAnnotationsState(id);
         if (!ann) return;
         let json = "";

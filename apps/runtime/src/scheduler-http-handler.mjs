@@ -50,11 +50,24 @@ function matchRunPath(pathname, suffix = "") {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+function limitRunEvents(run, requestedLimit) {
+  const limit = Math.max(0, Math.min(200, Number(requestedLimit) || 0));
+  if (!limit || !Array.isArray(run?.events)) return run;
+  return {
+    ...run,
+    eventCount: run.events.length,
+    events: run.events.slice(-limit),
+    eventsTruncated: run.events.length > limit
+  };
+}
+
 export function createSchedulerHttpHandler({
   scheduler,
   abortRun,
   wakeWorker,
-  availableTools
+  availableTools,
+  availableModels,
+  availableNodes
 }) {
   if (!scheduler?.listTasks || !scheduler?.claim) {
     throw new Error("Scheduler HTTP handler requires a Scheduler store");
@@ -63,6 +76,12 @@ export function createSchedulerHttpHandler({
   const refreshAvailableTools = () => {
     if (typeof availableTools === "function") {
       scheduler.setAvailableTools(availableTools());
+    }
+    if (typeof availableModels === "function") {
+      scheduler.setAvailableModels(availableModels());
+    }
+    if (typeof availableNodes === "function") {
+      scheduler.setAvailableNodes(availableNodes());
     }
   };
 
@@ -122,7 +141,10 @@ export function createSchedulerHttpHandler({
     }
     const runId = matchRunPath(path);
     if (runId != null && request.method === "GET") {
-      json(response, 200, scheduler.getRun(runId));
+      json(response, 200, limitRunEvents(
+        scheduler.getRun(runId),
+        url.searchParams.get("event_limit")
+      ));
       return true;
     }
 

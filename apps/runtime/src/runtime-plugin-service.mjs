@@ -294,16 +294,37 @@ async function loadManifest(pluginDirectory) {
   };
 }
 
+function normalizePluginRoot(configuredRoot) {
+  if (
+    configuredRoot
+    && typeof configuredRoot === "object"
+    && !Array.isArray(configuredRoot)
+  ) {
+    return {
+      path: resolve(String(configuredRoot.path || "")),
+      origin: String(configuredRoot.origin || "configured"),
+      optional: configuredRoot.optional === true
+    };
+  }
+  return {
+    path: resolve(String(configuredRoot || "")),
+    origin: "configured",
+    optional: false
+  };
+}
+
 export async function discoverRuntimePluginManifests(pluginRoots) {
   const plugins = [];
   const failures = [];
 
   for (const configuredRoot of pluginRoots || []) {
-    const root = resolve(String(configuredRoot));
+    const rootConfig = normalizePluginRoot(configuredRoot);
+    const root = rootConfig.path;
     let entries;
     try {
       entries = await readdir(root, { withFileTypes: true });
     } catch (error) {
+      if (rootConfig.optional && error?.code === "ENOENT") continue;
       failures.push(pluginFailure(basename(root), "discovery", error));
       continue;
     }
@@ -315,7 +336,12 @@ export async function discoverRuntimePluginManifests(pluginRoots) {
       const pluginDirectory = resolve(root, entry.name);
       try {
         const plugin = await loadManifest(pluginDirectory);
-        if (plugin) plugins.push(plugin);
+        if (plugin) {
+          plugins.push({
+            ...plugin,
+            origin: rootConfig.origin
+          });
+        }
       } catch (error) {
         if (error?.code === "ENOENT") continue;
         failures.push(pluginFailure(entry.name, "manifest", error));
@@ -359,6 +385,7 @@ export class RuntimePluginService {
   constructor({
     pluginRoots = [],
     enabledPluginIds = [],
+    externalizedPluginIds = [],
     configByPluginId = {},
     stateStore = null,
     importModule = importRuntimeModule,
@@ -368,6 +395,9 @@ export class RuntimePluginService {
     this.enabledPluginIds = [
       ...new Set(enabledPluginIds.map(String).filter(Boolean))
     ];
+    this.externalizedPluginIds = new Set(
+      externalizedPluginIds.map(String).filter(Boolean)
+    );
     this.configByPluginId = { ...configByPluginId };
     this.stateStore = stateStore;
     this.importModule = importModule;
@@ -413,7 +443,10 @@ export class RuntimePluginService {
     const documentProjectorOwners = new Map();
     const toolOwners = new Map();
     for (const pluginId of this.enabledPluginIds) {
-      const matches = candidates.get(pluginId) || [];
+      const discoveredMatches = candidates.get(pluginId) || [];
+      const matches = this.externalizedPluginIds.has(pluginId)
+        ? discoveredMatches.filter((plugin) => plugin.origin === "external")
+        : discoveredMatches;
       if (matches.length === 0) {
         if (discoveryFailureIds.has(pluginId)) {
           this.statuses.set(pluginId, {
@@ -424,6 +457,15 @@ export class RuntimePluginService {
             documentProjectorIds: [],
             toolNames: []
           });
+          continue;
+        }
+        if (
+          this.externalizedPluginIds.has(pluginId)
+          && discoveredMatches.length > 0
+        ) {
+          this.recordFailure(pluginId, "discovery", new Error(
+            `Externalized Runtime plugin ${pluginId} was not found in the external plugin root`
+          ));
           continue;
         }
         this.recordFailure(pluginId, "discovery", new Error(
@@ -737,6 +779,7 @@ export class RuntimePluginService {
         this.statuses.set(plugin.id, {
           id: plugin.id,
           version: plugin.version,
+          origin: plugin.origin,
           status: "active",
           capabilities: plugin.capabilities.map((capability) => ({
             ...capability,
@@ -746,6 +789,15 @@ export class RuntimePluginService {
           postProcessorIds: runPostProcessors.map((processor) => processor.id),
           documentProjectorIds: documentProjectors.map((projector) => projector.id),
           toolNames: toolContributions.map((tool) => tool.name)
+        });
+        this.logger({
+          level: "info",
+          pluginId: plugin.id,
+          message:
+            `activated v${plugin.version} from ${plugin.origin} `
+            + `(providers=${contextProviders.length}, `
+            + `postProcessors=${runPostProcessors.length}, `
+            + `tools=${toolContributions.length})`
         });
       } catch (error) {
         if (typeof contribution?.dispose === "function") {

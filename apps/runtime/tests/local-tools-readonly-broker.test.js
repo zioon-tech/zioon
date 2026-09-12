@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { CancellationController } from "../../../packages/runtime/src/index";
 import {
@@ -146,7 +147,10 @@ describe("LocalToolsReadOnlyBroker", () => {
           session_id: "terminal-1"
         }
       }
-    }), signal)).rejects.toThrow("outside allowed roots");
+    }), signal)).rejects.toThrow(
+      'file path "/workspace/project/../secret.txt" '
+      + "is outside allowed roots: /workspace/project"
+    );
 
     await expect(broker.invoke(invocation({
       toolCall: {
@@ -282,6 +286,136 @@ describe("LocalToolsReadOnlyBroker", () => {
 
     const [url] = fetchImpl.mock.calls[0];
     expect(url.searchParams.get("session_id")).toBe("terminal-1");
+  });
+
+  it("applies a hot Device access policy before the Runtime policy", async () => {
+    const fetchImpl = vi.fn(async () => response({
+      content: "dynamic project access"
+    }));
+    const accessPolicyProvider = vi.fn(async () => ({
+      fileRoots: ["/projects/dynamic"],
+      allowedTerminalSessionIds: ["terminal-dynamic"]
+    }));
+    const host = new LocalToolsDeviceHost({
+      fetchImpl,
+      accessPolicyProvider,
+      resourceBindings: {
+        "workspace:project": {
+          root: "/workspace/project",
+          allowedTerminalSessionIds: ["terminal-1"]
+        }
+      }
+    });
+
+    await expect(host.invoke(invocation({
+      policy: {
+        allowedTools: ["read"],
+        fileRoots: [],
+        allowedTerminalSessionIds: []
+      },
+      toolCall: {
+        id: "call:dynamic",
+        name: "read",
+        arguments: {
+          path: "/projects/dynamic/README.md",
+          session_id: "terminal-dynamic"
+        }
+      }
+    }), new CancellationController().signal, {
+      resourceId: "workspace:project"
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(accessPolicyProvider).toHaveBeenCalledWith(expect.objectContaining({
+      resourceId: "workspace:project",
+      invocation: expect.objectContaining({
+        toolCall: expect.objectContaining({ name: "read" })
+      })
+    }));
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url.searchParams.get("path")).toBe("/projects/dynamic/README.md");
+    expect(url.searchParams.get("session_id")).toBe("terminal-dynamic");
+  });
+
+  it("allows explicitly configured Skill roots without exposing the whole home directory", async () => {
+    const fetchImpl = vi.fn(async () => response({
+      content: "skill instructions"
+    }));
+    const host = new LocalToolsDeviceHost({
+      fetchImpl,
+      additionalRoots: ["/Users/test/.zion-next/skills"],
+      resourceBindings: {
+        "workspace:project": {
+          root: "/workspace/project",
+          allowedTerminalSessionIds: ["terminal-1"]
+        }
+      }
+    });
+
+    await expect(host.invoke(invocation({
+      policy: {
+        allowedTools: ["read"],
+        fileRoots: [],
+        allowedTerminalSessionIds: []
+      },
+      toolCall: {
+        id: "call:skill",
+        name: "read",
+        arguments: {
+          path: "/Users/test/.zion-next/skills/example/SKILL.md"
+        }
+      }
+    }), new CancellationController().signal, {
+      resourceId: "workspace:project"
+    })).resolves.toMatchObject({
+      ok: true,
+      content: expect.stringContaining("skill instructions")
+    });
+
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url.searchParams.get("path")).toBe(
+      "/Users/test/.zion-next/skills/example/SKILL.md"
+    );
+  });
+
+  it("expands home-relative paths before authorizing and forwarding them", async () => {
+    const fetchImpl = vi.fn(async () => response({
+      content: "home-relative skill instructions"
+    }));
+    const host = new LocalToolsDeviceHost({
+      fetchImpl,
+      additionalRoots: ["~/.zion-next/skills"],
+      resourceBindings: {
+        "workspace:project": {
+          root: "/workspace/project",
+          allowedTerminalSessionIds: ["terminal-1"]
+        }
+      }
+    });
+
+    await expect(host.invoke(invocation({
+      policy: {
+        allowedTools: ["read"],
+        fileRoots: [],
+        allowedTerminalSessionIds: []
+      },
+      toolCall: {
+        id: "call:home-relative",
+        name: "read",
+        arguments: {
+          path: "~/.zion-next/skills/example/SKILL.md"
+        }
+      }
+    }), new CancellationController().signal, {
+      resourceId: "workspace:project"
+    })).resolves.toMatchObject({
+      ok: true,
+      content: expect.stringContaining("home-relative skill instructions")
+    });
+
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url.searchParams.get("path")).toBe(
+      `${homedir()}/.zion-next/skills/example/SKILL.md`
+    );
   });
 
   it("rejects remote scopes that are not authorized by the Device", async () => {
@@ -442,6 +576,41 @@ describe("LocalToolsBroker", () => {
         arguments: { command: "rm -rf /" }
       }
     }, signal)).rejects.toThrow("outside allowed prefixes");
+  });
+
+  it("routes Bash through the sole terminal allowed by the Run policy", async () => {
+    const fetchImpl = vi.fn(async () => response({
+      ok: true,
+      exit_code: 0,
+      stdout: "/workspace/project\n"
+    }));
+    const broker = new LocalToolsBroker({ fetchImpl });
+
+    await expect(broker.invoke(invocation({
+      policy: {
+        preset: "trusted-automation",
+        allowedTools: ["Bash"],
+        fileRoots: ["/workspace/project"],
+        allowedCommandPrefixes: [],
+        allowedTerminalSessionIds: ["terminal-1"]
+      },
+      toolCall: {
+        id: "call-bash-default-session",
+        name: "Bash",
+        arguments: {
+          command: "pwd"
+        }
+      }
+    }), new CancellationController().signal)).resolves.toMatchObject({
+      ok: true
+    });
+
+    const [url, options] = fetchImpl.mock.calls[0];
+    expect(url.pathname).toBe("/sessions/terminal-1/exec");
+    expect(JSON.parse(options.body)).toEqual({
+      command: "pwd",
+      dangerouslyDisableSandbox: false
+    });
   });
 
   it("enforces the Runtime recipient allowlist before sending mail", async () => {

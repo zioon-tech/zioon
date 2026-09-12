@@ -34,7 +34,14 @@ describe("schedulerManage tool", () => {
     };
     const service = {
       listTasks: vi.fn(async () => []),
-      listRuns: vi.fn(async () => [])
+      listRuns: vi.fn(async () => []),
+      createTask: vi.fn(async (task) => ({
+        ...task,
+        id: "remote-command",
+        revision: 1,
+        enabled: true,
+        nextRun: Date.now() + 60_000
+      }))
     };
     const controller = new SchedulerController({
       store: new LocalSchedulerStore(),
@@ -54,6 +61,12 @@ describe("schedulerManage tool", () => {
     expect(tools).toEqual(expect.arrayContaining([
       expect.objectContaining({ function: expect.objectContaining({ name: "schedulerManage" }) })
     ]));
+    expect(tools.find((tool) => tool?.function?.name === "schedulerManage")
+      ?.function?.parameters?.properties?.task?.properties?.modelProfileId)
+      .toMatchObject({ type: "string" });
+    expect(tools.find((tool) => tool?.function?.name === "schedulerManage")
+      ?.function?.parameters?.properties?.task?.properties?.nodeId)
+      .toMatchObject({ type: "string" });
     expect(state.get("chat.enabledTools")).toContain("schedulerManage");
 
     const created = JSON.parse(await handler({
@@ -61,12 +74,18 @@ describe("schedulerManage tool", () => {
       task: {
         title: "Daily report",
         prompt: "Summarize the project",
+        modelProfileId: "workbench.deepseek.deepseek-v4-flash",
         schedule: { kind: "daily", time: "09:00" }
       }
     }));
     const taskId = created.created.id;
     expect(created).toMatchObject({ ok: true });
-    expect(created.created).toMatchObject({ title: "Daily report", executionMode: "local-only", enabled: true });
+    expect(created.created).toMatchObject({
+      title: "Daily report",
+      executionMode: "local-only",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
+      enabled: true
+    });
     expect(controller.getTask(taskId).sessionTag).toBe("scheduled_tasks");
 
     const listed = JSON.parse(await handler({ action: "list" }));
@@ -76,6 +95,8 @@ describe("schedulerManage tool", () => {
       action: "create",
       task: {
         taskType: "command",
+        executionMode: "service-backed",
+        nodeId: "node:macbook",
         title: "Parking monitor",
         command: "bash /tmp/parking_monitor.sh",
         cwd: "/tmp",
@@ -87,17 +108,42 @@ describe("schedulerManage tool", () => {
       ok: true,
       created: {
         taskType: "command",
+        nodeId: "node:macbook",
         title: "Parking monitor",
         command: "bash /tmp/parking_monitor.sh"
       }
     });
 
+    const commandWithoutNode = JSON.parse(await handler({
+      action: "create",
+      task: {
+        taskType: "command",
+        executionMode: "service-backed",
+        title: "Missing Node",
+        command: "/usr/bin/true",
+        schedule: { kind: "daily", time: "09:00" }
+      }
+    }));
+    expect(commandWithoutNode).toMatchObject({
+      ok: false,
+      code: "VALIDATION_FAILED",
+      error: expect.stringContaining("必须选择执行 Node")
+    });
+
     const updated = JSON.parse(await handler({
       action: "update",
       task_id: taskId,
-      patch: { title: "Weekday report", schedule: { kind: "weekdays", time: "10:00" } }
+      patch: {
+        title: "Weekday report",
+        modelProfileId: "workbench.kimi.k2",
+        schedule: { kind: "weekdays", time: "10:00" }
+      }
     }));
-    expect(updated.updated).toMatchObject({ title: "Weekday report", schedule: expect.objectContaining({ kind: "weekdays", time: "10:00" }) });
+    expect(updated.updated).toMatchObject({
+      title: "Weekday report",
+      modelProfileId: "workbench.kimi.k2",
+      schedule: expect.objectContaining({ kind: "weekdays", time: "10:00" })
+    });
     expect(controller.getTask(taskId).sessionTag).toBe("scheduled_tasks");
 
     const paused = JSON.parse(await handler({ action: "set_enabled", task_id: taskId, enabled: false }));

@@ -26,14 +26,15 @@ function createState(initial = {}) {
 }
 
 describe("tools Runtime interaction profile sync", () => {
-  it("applies Runtime tool enablement while preserving Workbench-only tools", async () => {
+  it("applies only Runtime-supported tool enablement in Runtime mode", async () => {
     const state = createState({
       "chat.tools": [
         { function: { name: "read" } },
         { function: { name: "Bash" } },
-        { function: { name: "modelsManage" } }
+        { function: { name: "modelsManage" } },
+        { function: { name: "browserOnly" } }
       ],
-      "chat.enabledTools": ["read", "modelsManage"],
+      "chat.enabledTools": ["read", "modelsManage", "browserOnly"],
       "runtime.mode": "runtime"
     });
     const fetchImpl = vi.fn(async (url) => {
@@ -92,6 +93,59 @@ describe("tools Runtime interaction profile sync", () => {
         function: expect.objectContaining({ name: "plugin.echo" })
       })
     ]));
+  });
+
+  it("does not overwrite a newer local selection with a stale Runtime read", async () => {
+    const state = createState({
+      "chat.tools": [
+        { function: { name: "webFetch" } },
+        { function: { name: "todoWrite" } },
+        { function: { name: "read" } },
+        { function: { name: "Bash" } }
+      ],
+      "chat.enabledTools": ["webFetch", "todoWrite", "read", "Bash"],
+      "runtime.mode": "runtime"
+    });
+    const applyEnabledTools = vi.fn();
+    const fetchImpl = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/capabilities/tools")) {
+        return jsonResponse(200, {
+          tools: ["webFetch", "todoWrite", "read", "Bash"]
+            .map((name) => ({ name, hostKinds: ["runtime"] }))
+        });
+      }
+      return jsonResponse(200, {
+        profile: {
+          id: "interactive.default",
+          policy: { allowedTools: ["webFetch", "todoWrite"] }
+        }
+      });
+    });
+
+    await expect(syncEnabledToolsFromRuntimeProfile({
+      state,
+      storage: localStorage,
+      fetchImpl,
+      shouldApplyEnabledTools: () => false,
+      applyEnabledTools
+    })).resolves.toMatchObject({
+      applied: false,
+      reason: "local-selection-changed"
+    });
+
+    expect(applyEnabledTools).not.toHaveBeenCalled();
+    expect(state.values.get("chat.enabledTools")).toEqual([
+      "webFetch",
+      "todoWrite",
+      "read",
+      "Bash"
+    ]);
+    expect(state.values.get("runtime.supportedToolNames")).toEqual([
+      "webFetch",
+      "todoWrite",
+      "read",
+      "Bash"
+    ]);
   });
 
   it("persists only Runtime-supported tool choices back to the profile", async () => {
@@ -185,6 +239,10 @@ describe("tools Runtime interaction profile sync", () => {
     expect(createRuntimeToolPolicyPatch(["read", "toolsManage"])).toMatchObject({
       preset: "trusted-automation",
       allowedTools: ["read", "toolsManage"]
+    });
+    expect(createRuntimeToolPolicyPatch(["read", "pluginsManage"])).toMatchObject({
+      preset: "trusted-automation",
+      allowedTools: ["read", "pluginsManage"]
     });
     expect(createRuntimeToolPolicyPatch(["read", "mailManage"])).toMatchObject({
       preset: "trusted-automation",

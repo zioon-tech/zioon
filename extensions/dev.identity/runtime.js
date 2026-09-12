@@ -31,6 +31,9 @@ import {
   parseBiographyEventsJsonl,
   parseDistillationResult
 } from "./identity-core.js";
+import {
+  createProjectAutomationRuntimeService
+} from "./project-automation-runtime-service.js";
 
 export const runtimePluginApiVersion = 2;
 
@@ -184,7 +187,7 @@ async function appendBiographyEventsToFiles({
   sourceSessionId,
   sourceRunId,
   sourceAt,
-  sessionId,
+  terminalSessionId,
   runContext
 }) {
   const loadedEvents = await fileService.readTextFiles({
@@ -192,7 +195,7 @@ async function appendBiographyEventsToFiles({
     files: {
       biographyEvents: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH
     },
-    sessionId,
+    sessionId: terminalSessionId,
     runContext
   });
   const update = buildBiographyEventsUpdate({
@@ -215,14 +218,14 @@ async function appendBiographyEventsToFiles({
           content: update.digest
         }
       },
-      sessionId,
+      sessionId: terminalSessionId,
       runContext
     });
   }
   const loaded = await fileService.readTextFiles({
     fileRoot: loadedEvents.fileRoot,
     files: IDENTITY_PROFILE_FILE_PATHS,
-    sessionId,
+    sessionId: terminalSessionId,
     runContext
   });
   const next = createIdentitySnapshot({
@@ -237,18 +240,52 @@ async function appendBiographyEventsToFiles({
 }
 
 class RuntimeIdentityContextProvider {
-  constructor({ state }) {
+  constructor({ state, fileService = null, memoryRoot = "" }) {
     this.id = "dev.identity.context";
     this.stage = "pre";
     this.order = 85;
     this.state = state;
+    this.fileService = fileService;
+    this.memoryRoot = String(memoryRoot || "").trim();
   }
 
-  async contribute(messages) {
-    if (hasIdentityContext(messages)) return messages;
-    const snapshot = normalizeIdentitySnapshot(
+  async loadSnapshot(runContext = {}) {
+    let snapshot = normalizeIdentitySnapshot(
       this.state.get(IDENTITY_RUNTIME_SNAPSHOT_KEY) || {}
     );
+    if (
+      snapshot.content.trim()
+      || !this.fileService?.readTextFiles
+      || !this.memoryRoot
+    ) {
+      return snapshot;
+    }
+    const loaded = await this.fileService.readTextFiles({
+      fileRoot: this.memoryRoot,
+      files: IDENTITY_PROFILE_FILE_PATHS,
+      runContext: {
+        runId: runContext.runId,
+        attemptId: runContext.attemptId,
+        sessionId: runContext.request?.sessionId,
+        projectId: runContext.request?.projectId,
+        signal: runContext.signal,
+        policy: {
+          ...(runContext.request?.policy || {}),
+          fileRoots: [this.memoryRoot]
+        }
+      }
+    });
+    snapshot = createIdentitySnapshot({
+      sourceRoot: loaded.fileRoot,
+      files: loaded.files
+    });
+    this.state.set(IDENTITY_RUNTIME_SNAPSHOT_KEY, snapshot);
+    return snapshot;
+  }
+
+  async contribute(messages, runContext = {}) {
+    if (hasIdentityContext(messages)) return messages;
+    const snapshot = await this.loadSnapshot(runContext);
     const content = buildIdentityContextFromSnapshot(snapshot);
     if (!content.trim()) return messages;
     return insertAfterLeadingSystem(messages, {
@@ -260,7 +297,23 @@ class RuntimeIdentityContextProvider {
 
 export function activateRuntimePlugin(context) {
   const state = context.state.namespace(IDENTITY_RUNTIME_STATE_NAMESPACE);
-  const projectAutomationService = context.config?.projectAutomationService || null;
+  const projectAutomationConfig = context.config?.projectAutomation || null;
+  const legacyProjectAutomationService =
+    context.config?.projectAutomationService || null;
+  const projectAutomationService = legacyProjectAutomationService || (
+    projectAutomationConfig
+      ? createProjectAutomationRuntimeService({
+          stateStore: projectAutomationConfig.stateStore,
+          fileService: context.config?.fileService,
+          runnerService: projectAutomationConfig.runnerService,
+          memoryRoot:
+            projectAutomationConfig.memoryRoot
+            || context.config?.biography?.memoryRoot,
+          pollIntervalMs: projectAutomationConfig.pollIntervalMs,
+          logger: projectAutomationConfig.logger
+        })
+      : null
+  );
   const snapshot = () => normalizeIdentitySnapshot(
     state.get(IDENTITY_RUNTIME_SNAPSHOT_KEY) || {}
   );
@@ -294,35 +347,59 @@ export function activateRuntimePlugin(context) {
         if (!exchange) return;
         const fileRoot = String(context.config?.biography?.memoryRoot || "").trim();
         if (!fileRoot) return;
+        context.log?.(
+          "info",
+          `biography distillation started for run ${run.runId}`
+        );
         const fileService = context.config.fileService;
-        const loadedEvents = await fileService.readTextFiles({
-          fileRoot,
-          files: {
-            biographyEvents: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH
-          },
-          sessionId: run.sessionId,
-          runContext: {
-            runId: run.runId,
-            attemptId: run.attemptId,
-            sessionId: run.sessionId,
-            projectId: run.projectId,
-            policy: {
-              preset: "workspace-write",
-              fileRoots: [fileRoot]
+        let loadedEvents;
+        try {
+          loadedEvents = await fileService.readTextFiles({
+            fileRoot,
+            files: {
+              biographyEvents: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH
+            },
+            runContext: {
+              runId: run.runId,
+              attemptId: run.attemptId,
+              sessionId: run.sessionId,
+              projectId: run.projectId,
+              policy: {
+                preset: "workspace-write",
+                fileRoots: [fileRoot]
+              }
             }
-          }
-        });
+          });
+        } catch (error) {
+          throw new Error(
+            `Biography event history read failed for run ${run.runId}: `
+            + `${error?.message || String(error)}`
+          );
+        }
         const existingEvents = parseBiographyEventsJsonl(loadedEvents.files.biographyEvents);
         const output = await context.config.modelService.generateText({
           model: run.model,
           timeoutMs: context.config?.biography?.timeoutMs || 30000,
+          requestContext: {
+            source: "identity-biography",
+            pluginId: context.plugin.id,
+            operation: "biography-distillation",
+            parentRunId: run.runId,
+            sessionId: run.sessionId
+          },
           messages: buildRuntimeDistillationMessages(exchange, {
             title: run.title || run.metadata?.title || run.metadata?.sessionTitle || "",
             ...biographyContextFromEvents(existingEvents, run.sessionId)
           })
         });
         const distilled = parseDistillationResult(output);
-        if (!distilled.length) return;
+        if (!distilled.length) {
+          context.log?.(
+            "info",
+            `biography distillation completed for run ${run.runId}: no durable events`
+          );
+          return;
+        }
         await appendBiographyEventsToFiles({
           fileService,
           state,
@@ -331,7 +408,6 @@ export function activateRuntimePlugin(context) {
           sourceSessionId: run.sessionId,
           sourceRunId: run.runId,
           sourceAt: new Date().toISOString(),
-          sessionId: run.sessionId,
           runContext: {
             runId: run.runId,
             attemptId: run.attemptId,
@@ -343,10 +419,19 @@ export function activateRuntimePlugin(context) {
             }
           }
         });
+        context.log?.(
+          "info",
+          `biography distillation completed for run ${run.runId}: `
+          + `${distilled.length} event(s)`
+        );
       }
     }));
   }
-  const provider = new RuntimeIdentityContextProvider({ state });
+  const provider = new RuntimeIdentityContextProvider({
+    state,
+    fileService: context.config?.fileService,
+    memoryRoot: context.config?.biography?.memoryRoot
+  });
   const providerRegistration = context.context.registerProvider(provider);
   const contextToolRegistration = context.tools.registerTool({
     name: "identityContext",
@@ -444,7 +529,7 @@ export function activateRuntimePlugin(context) {
             sourceSessionId: args.source_session_id,
             sourceRunId: args.source_run_id,
             sourceAt: args.source_at,
-            sessionId: args.session_id,
+            terminalSessionId: args.session_id,
             runContext: meta
           });
         } catch (error) {
@@ -626,8 +711,19 @@ export function activateRuntimePlugin(context) {
       }
     }
   });
+  projectAutomationConfig?.registerService?.(projectAutomationService);
+  context.log?.(
+    "info",
+    `activated v${context.plugin.version} `
+    + `(biography=${postProcessorDisposables.length ? "on" : "off"}, `
+    + `projectAutomation=${projectAutomationService ? "available" : "off"})`
+  );
   return {
-    dispose() {
+    async dispose() {
+      if (!legacyProjectAutomationService) {
+        await projectAutomationService?.stop?.();
+      }
+      projectAutomationConfig?.registerService?.(null);
       providerRegistration.dispose();
       contextToolRegistration.dispose();
       manageToolRegistration.dispose();

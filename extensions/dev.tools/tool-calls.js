@@ -277,10 +277,21 @@ function isCommentPanelId(panelId) {
   return String(panelId || "").startsWith("comments:");
 }
 
+// #region debug-point E:tool-card-performance
+const debugToolRestoreStarts = new Map();
+let debugToolDecorationReportedAt = 0;
 function debugChatCards(event, payload) {
-  void event;
-  void payload;
+  const now = globalThis.performance?.now?.() ?? Date.now();
+  const key = `${String(payload?.panelId || "")}:${String(payload?.sessionId || "")}`;
+  if (event === "restore.start") debugToolRestoreStarts.set(key, now);
+  if (event === "decorations.built" && now - debugToolDecorationReportedAt < 2_000) return;
+  if (!["restore.start", "restore.done", "decorations.built"].includes(event)) return;
+  if (event === "decorations.built") debugToolDecorationReportedAt = now;
+  const startedAt = debugToolRestoreStarts.get(key);
+  if (event === "restore.done") debugToolRestoreStarts.delete(key);
+  void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "E", location: `extensions/dev.tools/tool-calls.js:${event}`, msg: `[DEBUG] Tool cards ${event}`, data: { event, panelId: String(payload?.panelId || ""), sessionId: String(payload?.sessionId || ""), docLength: Number(payload?.docLength) || 0, itemCount: Number(payload?.itemCount ?? payload?.count) || 0, anchorCount: Number(payload?.anchorCount) || 0, decorationCount: Number(payload?.decorationCount) || 0, processedCount: Number(payload?.processed) || 0, durationMs: event === "restore.done" && Number.isFinite(startedAt) ? Math.round((now - startedAt) * 100) / 100 : Number(payload?.durationMs) || 0 }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
 }
+// #endregion
 
 function debugToolFieldStats(_view) {
   return {};
@@ -1247,8 +1258,10 @@ function getToolTerminalContext(name, args = {}, fallbackSessionId = "") {
   const sessionId = String(args?.session_id || fallbackSessionId || "").trim();
   if (!sessionId) {
     return {
-      inlineLabel: "session required",
-      fullLabel: "No terminal session recorded",
+      inlineLabel: isTerminalCommandTool(name) ? "session required" : "device root",
+      fullLabel: isTerminalCommandTool(name)
+        ? "No terminal session recorded"
+        : "Resolved by Device access policy",
       sessionId: ""
     };
   }
@@ -1270,8 +1283,10 @@ function getToolTerminalHeaderContext(name, args = {}, fallbackSessionId = "") {
   const sessionId = String(args?.session_id || fallbackSessionId || "").trim();
   if (!sessionId) {
     return {
-      label: "Session required",
-      tooltip: "No terminal session recorded",
+      label: isTerminalCommandTool(name) ? "Session required" : "Device root",
+      tooltip: isTerminalCommandTool(name)
+        ? "No terminal session recorded"
+        : "Resolved by Device access policy",
       sessionId: ""
     };
   }
@@ -1386,7 +1401,7 @@ function createTreeToolView(args = {}, result = null, ok = null) {
   const depth = typeof args?.max_depth === "number" ? args.max_depth : null;
   const session = findTerminalSession(sessionId);
   const machine = getTerminalMachineLabel(session);
-  const scope = sessionId ? (machine || "Local") : "Session required";
+  const scope = sessionId ? (machine || "Local") : "Device root";
   const status = result == null
     ? "running"
     : (ok === false || /^(\s*(tree error|http \d+|missing path))/i.test(String(result || "")) ? "failed" : "done");
@@ -1400,7 +1415,12 @@ function createTreeToolView(args = {}, result = null, ok = null) {
   const title = document.createElement("div");
   title.className = "zion-tool-tree-title";
   title.textContent = [scope, path].filter(Boolean).join(" · ");
-  title.title = [scope, path || "No terminal session selected"].filter(Boolean).join("\n");
+  title.title = [
+    scope,
+    path || (sessionId
+      ? "No path recorded"
+      : "Resolved by Device access policy")
+  ].filter(Boolean).join("\n");
   const meta = document.createElement("div");
   meta.className = "zion-tool-tree-meta";
   meta.textContent = status === "running" ? "loading" : (depth != null ? `depth ${depth}` : "");
@@ -2159,6 +2179,9 @@ class ToolInlineWidget extends WidgetType {
 }
 
 function buildToolDecorations(state, field) {
+  // #region debug-point E:tool-decoration-start
+  const debugStartedAt = globalThis.performance?.now?.() ?? Date.now();
+  // #endregion
   const decorations = [];
   let fieldVal = null;
   try { fieldVal = state.field(field, false); } catch {}
@@ -2209,6 +2232,9 @@ function buildToolDecorations(state, field) {
       }).range(anchor.to));
     }
   }
+  // #region debug-point E:tool-decoration-finish
+  debugChatCards("decorations.built", { docLength: docLen, itemCount: items?.size || 0, anchorCount: anchors.length, decorationCount: decorations.length, durationMs: (globalThis.performance?.now?.() ?? Date.now()) - debugStartedAt });
+  // #endregion
   return decorations;
 }
 
@@ -3641,12 +3667,35 @@ export function installToolCallCards() {
             }
           }
           const ann = getSessionAnnotations(sid);
-            const rawList = Array.isArray(ann.tools) ? ann.tools : [];
-              const anchors = buildToolAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
-              const deletedIds = reviveDeletedToolIdsForAnchors(sid, Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [], anchors);
-            const list = mergeToolItemsFromAnchors(this.view, rawList, deletedIds);
+          const rawList = Array.isArray(ann.tools) ? ann.tools : [];
+          const anchors = buildToolAnchors(this.view.state.doc.toString())
+            .filter((anchor) => anchor.markerId);
+          const deletedIds = reviveDeletedToolIdsForAnchors(
+            sid,
+            Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [],
+            anchors
+          );
+          const list = mergeToolItemsFromAnchors(
+            this.view,
+            rawList,
+            deletedIds,
+            anchors
+          );
           if (!list.length) return;
-          this.onRestore({ items: list, panelId: this.panelId, __fromToolsUpdated: true });
+          const anchorIds = new Set(
+            anchors.map((anchor) => String(anchor.markerId || "")).filter(Boolean)
+          );
+          const anchoredItems = list.filter((item) =>
+            anchorIds.has(String(item?.id || ""))
+          );
+          let fieldVal = null;
+          try { fieldVal = this.view.state.field(toolInlineField); } catch {}
+          if (!needsToolRestore(anchoredItems, fieldVal)) return;
+          this.onRestore({
+            items: anchoredItems,
+            panelId: this.panelId,
+            __fromToolsUpdated: true
+          });
         } catch {}
       });
     };
@@ -3893,7 +3942,7 @@ export function installToolCallCards() {
       } catch {}
 
       if (!skippedFallback) this.snapshot();
-      debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size });
+      debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size, itemCount: itemsToProcess.length, anchorCount: anchors.length, docLength: this.view.state.doc.length });
       requestAnimationFrame(() => {
         try {
           const fieldVal = this.view.state.field(toolInlineField);

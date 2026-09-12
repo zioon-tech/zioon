@@ -62,6 +62,86 @@ afterEach(() => {
 });
 
 describe("SqliteRunStore", () => {
+  it("updates mutable Session configuration without replacing identity", async () => {
+    const store = new SqliteRunStore(databasePath());
+    await store.createSession(sessionRecord());
+
+    await expect(store.updateSession("session-1", {
+      model: {
+        profileId: "model-next",
+        providerId: "provider",
+        modelId: "next"
+      },
+      policy: {
+        allowedTools: ["read"],
+        maxToolCalls: 20,
+        fileRoots: [],
+        allowedTerminalSessionIds: []
+      },
+      metadata: {
+        skills: {
+          enabled: ["writer"]
+        }
+      }
+    }, 2000)).resolves.toMatchObject({
+      id: "session-1",
+      createdAt: 1000,
+      updatedAt: 2000,
+      model: {
+        profileId: "model-next"
+      },
+      policy: {
+        allowedTools: ["read"]
+      },
+      metadata: {
+        skills: {
+          enabled: ["writer"]
+        }
+      }
+    });
+
+    const path = store.path;
+    store.close();
+    const reopened = new SqliteRunStore(path);
+    await expect(reopened.getSession("session-1")).resolves.toMatchObject({
+      id: "session-1",
+      model: {
+        profileId: "model-next"
+      },
+      policy: {
+        allowedTools: ["read"]
+      }
+    });
+    reopened.close();
+  });
+
+  it("notifies subscribers after persisted Runtime events", async () => {
+    const store = new SqliteRunStore(databasePath());
+    const observed = [];
+    const subscription = store.subscribeEvents((event) => {
+      observed.push(event);
+    });
+    await store.create(runRecord());
+
+    await store.append(runEvent(1, "model.request", {
+      payload: {
+        messages: [{ role: "user", content: "observe" }]
+      }
+    }));
+
+    expect(observed).toEqual([
+      expect.objectContaining({
+        eventId: "event-1",
+        runId: "run-1",
+        type: "model.request"
+      })
+    ]);
+    subscription.dispose();
+    await store.append(runEvent(2, "message.delta", { delta: "done" }));
+    expect(observed).toHaveLength(1);
+    store.close();
+  });
+
   it("persists tool invocation receipts and Runtime todo state", () => {
     const store = new SqliteRunStore(databasePath());
     const result = { ok: true, content: "done" };
@@ -387,6 +467,55 @@ describe("SqliteRunStore", () => {
     reopened.close();
   });
 
+  it("persists idempotent Session message command receipts", async () => {
+    const path = databasePath();
+    const store = new SqliteRunStore(path);
+    await store.createSession(sessionRecord());
+
+    expect(store.reserveSessionMessageCommand(
+      "session-1",
+      "mobile-request-1",
+      1100
+    )).toMatchObject({
+      reserved: true,
+      command: {
+        status: "submitting",
+        clientRequestId: "mobile-request-1"
+      }
+    });
+    expect(store.reserveSessionMessageCommand(
+      "session-1",
+      "mobile-request-1",
+      1200
+    )).toMatchObject({
+      reserved: false,
+      command: { status: "submitting" }
+    });
+
+    store.completeSessionMessageCommand(
+      "session-1",
+      "mobile-request-1",
+      { runId: "run-1", status: "accepted" },
+      1300
+    );
+    store.close();
+
+    const reopened = new SqliteRunStore(path);
+    expect(reopened.getSessionMessageCommand(
+      "session-1",
+      "mobile-request-1"
+    )).toMatchObject({
+      status: "accepted",
+      response: {
+        runId: "run-1",
+        status: "accepted"
+      },
+      createdAt: 1100,
+      updatedAt: 1300
+    });
+    reopened.close();
+  });
+
   it("forks a Session while sharing immutable Run transcript history", async () => {
     const store = new SqliteRunStore(databasePath());
     await store.createSession(sessionRecord());
@@ -590,6 +719,21 @@ describe("SqliteRunStore", () => {
       })
     ]);
     await expect(store.reconcileCompletedSessionMessages()).resolves.toEqual([]);
+    store.close();
+  });
+
+  it("finds an active Run by canonical Session id", async () => {
+    const store = new SqliteRunStore(databasePath());
+    await store.create({
+      ...runRecord("run-session"),
+      sessionId: "session-1"
+    });
+    await expect(store.getActiveRunForSession("session-1")).resolves.toMatchObject({
+      id: "run-session",
+      sessionId: "session-1",
+      status: "queued"
+    });
+    await expect(store.getActiveRunForSession("other")).resolves.toBeNull();
     store.close();
   });
 });
