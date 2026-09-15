@@ -475,16 +475,33 @@ const thinkingField = StateField.define({
         continue;
       }
       if (e.is(addInline)) {
-        const { from, to, id, sessionId, runId, segmentKey, assistantBlockId } = e.value;
-        items.set(id, {
+        const {
           from,
           to,
-          expanded: false,
-          text: "",
-          sessionId: sessionId || null,
-          runId: runId || null,
-          segmentKey: segmentKey || null,
-          assistantBlockId: assistantBlockId || null
+          id,
+          sessionId,
+          runId,
+          segmentKey,
+          assistantBlockId,
+          text,
+          expanded
+        } = e.value;
+        const current = items.get(id);
+        items.set(id, {
+          ...current,
+          from,
+          to,
+          expanded: current
+            ? current.expanded === true
+            : expanded === true,
+          text: typeof text === "string" && text
+            ? text
+            : String(current?.text || ""),
+          sessionId: sessionId || current?.sessionId || null,
+          runId: runId || current?.runId || null,
+          segmentKey: segmentKey || current?.segmentKey || null,
+          assistantBlockId:
+            assistantBlockId || current?.assistantBlockId || null
         });
       }
       if (e.is(toggleInline)) {
@@ -1371,7 +1388,6 @@ export function installThinkingCards() {
       const doc = this.view.state.doc;
       const docLen = doc.length;
       const batchedEffects = [];
-      const batchedToggles = [];
       const processedIds = new Set();
       let skippedFallback = false;
 
@@ -1389,9 +1405,17 @@ export function installThinkingCards() {
           return isThinkingAnchorForItem(doc.sliceString(it.from, it.to), it.id);
         },
         onMatch: (it, anchor) => {
-          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey, assistantBlockId: it.assistantBlockId || null }));
-          if (it?.text) batchedEffects.push(updateText.of({ id: it.id, text: it.text, replace: true }));
-          if (it.expanded) batchedToggles.push(it.id);
+          batchedEffects.push(addInline.of({
+            from: anchor.from,
+            to: anchor.to,
+            id: it.id,
+            sessionId: restoreSessionId,
+            runId: it.runId,
+            segmentKey: it.segmentKey,
+            assistantBlockId: it.assistantBlockId || null,
+            text: it.text,
+            expanded: it.expanded === true
+          }));
         }
       });
 
@@ -1404,9 +1428,17 @@ export function installThinkingCards() {
           (!anchor.markerId || anchor.markerId === String(it.id || ""))
           && hasMatchingAssistantParent(it, anchor),
         onMatch: (it, anchor) => {
-          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey, assistantBlockId: it.assistantBlockId || null }));
-          if (it?.text) batchedEffects.push(updateText.of({ id: it.id, text: it.text, replace: true }));
-          if (it.expanded) batchedToggles.push(it.id);
+          batchedEffects.push(addInline.of({
+            from: anchor.from,
+            to: anchor.to,
+            id: it.id,
+            sessionId: restoreSessionId,
+            runId: it.runId,
+            segmentKey: it.segmentKey,
+            assistantBlockId: it.assistantBlockId || null,
+            text: it.text,
+            expanded: it.expanded === true
+          }));
           it.from = anchor.from;
           it.to = anchor.to;
         }
@@ -1424,11 +1456,6 @@ export function installThinkingCards() {
             pos: lastPayload.to
           });
         }
-      }
-      if (batchedToggles.length) {
-        const eff2 = batchedToggles.map(id => toggleInline.of({ id }));
-        this.view.dispatch({ effects: eff2 });
-        scheduleRevealThinkingContent(this.view, { id: batchedToggles[batchedToggles.length - 1] });
       }
 
       // Phase 3: 兜底
@@ -1469,17 +1496,20 @@ export function installThinkingCards() {
         this.view.dispatch({
           changes: { from: plan.replaceFrom ?? plan.insertPos, to: plan.replaceTo ?? plan.insertPos, insert: plan.insertText },
           annotations: Transaction.userEvent.of("zion.cardRestore"),
-          effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: it.id, sessionId: restoreSessionId, runId: it.runId, segmentKey: it.segmentKey, assistantBlockId: it.assistantBlockId || null })]
+          effects: [addInline.of({
+            from: plan.markerFrom,
+            to: plan.markerTo,
+            id: it.id,
+            sessionId: restoreSessionId,
+            runId: it.runId,
+            segmentKey: it.segmentKey,
+            assistantBlockId: it.assistantBlockId || null,
+            text: it.text,
+            expanded: it.expanded === true
+          })]
         });
         scheduleRevealThinkingContent(this.view, { id: it.id, pos: plan.markerTo });
-        
-        if (it?.text) {
-          this.view.dispatch({ effects: [updateText.of({ id: it.id, text: it.text, replace: true })] });
-        }
-        if (it.expanded) {
-          this.view.dispatch({ effects: [toggleInline.of({ id: it.id })] });
-        }
-        
+
         it.from = plan.markerFrom;
         it.to = plan.markerTo;
         processedIds.add(it.id);
@@ -1562,13 +1592,11 @@ function ensureThinkingItemFromDoc(view, id) {
       to: anchor.to,
       id: wantId,
       sessionId: sid,
-      assistantBlockId: stored?.assistantBlockId || null
+      assistantBlockId: stored?.assistantBlockId || null,
+      text,
+      expanded
     })];
-    if (text) effects.push(updateText.of({ id: wantId, text, replace: true }));
     view.dispatch({ effects });
-    // The pill click toggles afterwards; align stored expanded state so the first
-    // click produces the expected open/closed result.
-    if (expanded) view.dispatch({ effects: [toggleInline.of({ id: wantId })] });
     return true;
   } catch {
     return false;

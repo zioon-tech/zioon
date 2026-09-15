@@ -18,7 +18,7 @@ export const IDENTITY_RUNTIME_STATE_NAMESPACE = "identity";
 export const IDENTITY_RUNTIME_SNAPSHOT_KEY = "snapshot";
 export const IDENTITY_RUNTIME_KV_KEY =
   `runtime.plugins.${IDENTITY_RUNTIME_PLUGIN_ID}.${IDENTITY_RUNTIME_STATE_NAMESPACE}.${IDENTITY_RUNTIME_SNAPSHOT_KEY}`;
-export const DEFAULT_IDENTITY_ROOT = "~/.zion-next/memory";
+export const DEFAULT_IDENTITY_ROOT = "~/.zion-next/data/plugins/dev.identity";
 export const IDENTITY_MANAGE_TOOL_NAME = "identityManage";
 export const IDENTITY_MANAGE_READONLY_ACTIONS = ["get"];
 export const IDENTITY_MANAGE_WRITE_ACTIONS = [
@@ -87,7 +87,7 @@ export function normalizeIdentitySnapshot(value = {}) {
   const source = objectValue(value);
   const files = normalizeFiles(source.files);
   const rendered = String(source.content || "").trim()
-    || buildIdentityContext(files);
+    || buildIdentityContext(files, { sourceRoot: source.sourceRoot });
   const savedAt = timestampMs(source.savedAt)
     || timestampMs(source.createdAt)
     || Date.now();
@@ -410,7 +410,7 @@ export function updateIdentitySnapshot(snapshot = {}, args = {}, timestamp = Dat
     savedAt: timestamp,
     lastChangedAt: timestamp,
     sourceRoot: String(args.sourceRoot || current.sourceRoot || DEFAULT_IDENTITY_ROOT),
-    content: content || buildIdentityContext(nextFiles),
+    content: content || buildIdentityContext(nextFiles, { sourceRoot: current.sourceRoot }),
     files: nextFiles
   });
 }
@@ -426,7 +426,7 @@ export function patchIdentityFiles(snapshot = {}, patch = {}, timestamp = Date.n
     savedAt: timestamp,
     lastChangedAt: timestamp,
     sourceRoot: String(patch.sourceRoot || current.sourceRoot || DEFAULT_IDENTITY_ROOT),
-    content: String(patch.content || "").trim() || buildIdentityContext(nextFiles),
+    content: String(patch.content || "").trim() || buildIdentityContext(nextFiles, { sourceRoot: current.sourceRoot }),
     files: nextFiles
   });
 }
@@ -467,10 +467,24 @@ export function buildBiographyEventsUpdate({
     index: event?.index ?? index
   }));
   const normalizedInput = normalizeBiographyEvents(candidates);
+  const timedIds = new Set(normalizeBiographyEvents(
+    candidates.filter((_candidate, index) => events[index]?.at)
+  ).map((event) => event.id));
   if (!normalizedInput.length) {
     throw new Error("valid biography events are required");
   }
   const existing = parseBiographyEventsJsonl(existingJsonl);
+  const byId = new Map(existing.map((event) => [event.id, event]));
+  for (const event of normalizedInput) {
+    const previous = byId.get(event.id);
+    if (!previous) continue;
+    // An omitted occurrence time on a retry keeps the original event time.
+    const suppliedTime = sourceAt || timedIds.has(event.id);
+    const comparable = suppliedTime ? event : { ...event, at: previous.at };
+    if (JSON.stringify(comparable) !== JSON.stringify(previous)) {
+      throw new Error(`Conflicting biography event id: ${event.id}`);
+    }
+  }
   const existingIds = new Set(existing.map((event) => event.id));
   const appended = normalizedInput.filter((event) => !existingIds.has(event.id));
   const skipped = normalizedInput.filter((event) => existingIds.has(event.id)).map((event) => event.id);

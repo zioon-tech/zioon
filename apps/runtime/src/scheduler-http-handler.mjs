@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
+import { parseByteSize, requestBodyLimitError } from "../../../packages/node-protocol/src/index.mjs";
 
-const MAX_REQUEST_BYTES = 1024 * 1024;
+const DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024;
 
 function json(response, status, value) {
   const body = JSON.stringify(value);
@@ -12,15 +13,22 @@ function json(response, status, value) {
   response.end(body);
 }
 
-async function readJson(request) {
+function errorPayload(error) {
+  const payload = { error: error?.message || String(error) };
+  if (error?.code) payload.code = String(error.code);
+  if (Number.isSafeInteger(error?.limitBytes)) payload.limitBytes = error.limitBytes;
+  if (error?.limit) payload.limit = String(error.limit);
+  if (Array.isArray(error?.hints)) payload.hints = error.hints.map(String);
+  return payload;
+}
+
+async function readJson(request, maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_REQUEST_BYTES) {
-      const error = new Error("Scheduler request exceeds 1 MiB");
-      error.statusCode = 413;
-      throw error;
+    if (size > maxRequestBytes) {
+      throw requestBodyLimitError("Scheduler request", maxRequestBytes);
     }
     chunks.push(chunk);
   }
@@ -67,11 +75,15 @@ export function createSchedulerHttpHandler({
   wakeWorker,
   availableTools,
   availableModels,
-  availableNodes
+  availableNodes,
+  maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES
 }) {
   if (!scheduler?.listTasks || !scheduler?.claim) {
     throw new Error("Scheduler HTTP handler requires a Scheduler store");
   }
+  const requestBodyLimit = parseByteSize(maxRequestBytes, {
+    label: "Scheduler request body limit"
+  });
 
   const refreshAvailableTools = () => {
     if (typeof availableTools === "function") {
@@ -86,69 +98,78 @@ export function createSchedulerHttpHandler({
   };
 
   return async (request, response, url) => {
-    const path = url.pathname;
-    if (!path.startsWith("/v1/scheduler")) return false;
+    try {
+      const path = url.pathname;
+      if (!path.startsWith("/v1/scheduler")) return false;
 
-    if (request.method === "GET" && path === "/v1/scheduler/tasks") {
-      json(response, 200, { tasks: scheduler.listTasks() });
-      return true;
-    }
-    if (request.method === "POST" && path === "/v1/scheduler/tasks") {
-      refreshAvailableTools();
-      json(response, 201, scheduler.createTask(await readJson(request)));
-      return true;
-    }
+      if (request.method === "GET" && path === "/v1/scheduler/tasks") {
+        json(response, 200, { tasks: scheduler.listTasks() });
+        return true;
+      }
+      if (request.method === "POST" && path === "/v1/scheduler/tasks") {
+        refreshAvailableTools();
+        json(response, 201, scheduler.createTask(await readJson(request, requestBodyLimit)));
+        return true;
+      }
 
-    const runNowTaskId = matchTaskPath(path, "/run");
-    if (runNowTaskId != null && request.method === "POST") {
-      const run = scheduler.runNow(runNowTaskId);
-      wakeWorker?.();
-      json(response, 200, run);
-      return true;
-    }
-    const taskId = matchTaskPath(path);
-    if (taskId != null && request.method === "GET") {
-      json(response, 200, scheduler.getTask(taskId));
-      return true;
-    }
-    if (taskId != null && request.method === "PUT") {
-      refreshAvailableTools();
-      json(response, 200, scheduler.updateTask(taskId, await readJson(request)));
-      return true;
-    }
-    if (taskId != null && request.method === "DELETE") {
-      scheduler.deleteTask(taskId);
-      response.writeHead(204, { "cache-control": "no-store" });
-      response.end();
-      return true;
-    }
+      const runNowTaskId = matchTaskPath(path, "/run");
+      if (runNowTaskId != null && request.method === "POST") {
+        const run = scheduler.runNow(runNowTaskId);
+        wakeWorker?.();
+        json(response, 200, run);
+        return true;
+      }
+      const taskId = matchTaskPath(path);
+      if (taskId != null && request.method === "GET") {
+        json(response, 200, scheduler.getTask(taskId));
+        return true;
+      }
+      if (taskId != null && request.method === "PUT") {
+        refreshAvailableTools();
+        json(response, 200, scheduler.updateTask(taskId, await readJson(request, requestBodyLimit)));
+        return true;
+      }
+      if (taskId != null && request.method === "DELETE") {
+        scheduler.deleteTask(taskId);
+        response.writeHead(204, { "cache-control": "no-store" });
+        response.end();
+        return true;
+      }
 
-    if (request.method === "GET" && path === "/v1/scheduler/runs") {
-      json(response, 200, scheduler.listRuns({
-        taskId: url.searchParams.get("task_id") || "",
-        limit: url.searchParams.get("limit"),
-        offset: url.searchParams.get("offset"),
-        includeDetails: url.searchParams.get("include_details") === "true"
-      }));
-      return true;
-    }
-    const cancelRunId = matchRunPath(path, "/cancel");
-    if (cancelRunId != null && request.method === "POST") {
-      const body = await readJson(request);
-      await abortRun?.(cancelRunId, body.reason || "user");
-      json(response, 200, scheduler.cancel(cancelRunId, body.reason || "user"));
-      return true;
-    }
-    const runId = matchRunPath(path);
-    if (runId != null && request.method === "GET") {
-      json(response, 200, limitRunEvents(
-        scheduler.getRun(runId),
-        url.searchParams.get("event_limit")
-      ));
-      return true;
-    }
+      if (request.method === "GET" && path === "/v1/scheduler/runs") {
+        json(response, 200, scheduler.listRuns({
+          taskId: url.searchParams.get("task_id") || "",
+          limit: url.searchParams.get("limit"),
+          offset: url.searchParams.get("offset"),
+          includeDetails: url.searchParams.get("include_details") === "true"
+        }));
+        return true;
+      }
+      const cancelRunId = matchRunPath(path, "/cancel");
+      if (cancelRunId != null && request.method === "POST") {
+        const body = await readJson(request, requestBodyLimit);
+        await abortRun?.(cancelRunId, body.reason || "user");
+        json(response, 200, scheduler.cancel(cancelRunId, body.reason || "user"));
+        return true;
+      }
+      const runId = matchRunPath(path);
+      if (runId != null && request.method === "GET") {
+        json(response, 200, limitRunEvents(
+          scheduler.getRun(runId),
+          url.searchParams.get("event_limit")
+        ));
+        return true;
+      }
 
-    json(response, 404, { error: "Scheduler endpoint not found" });
-    return true;
+      json(response, 404, { error: "Scheduler endpoint not found" });
+      return true;
+    } catch (error) {
+      if (!response.headersSent) {
+        json(response, Number(error?.statusCode || 500), errorPayload(error));
+      } else {
+        response.end();
+      }
+      return true;
+    }
   };
 }

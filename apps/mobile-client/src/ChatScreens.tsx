@@ -41,6 +41,7 @@ import {
   isValidElement,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -57,7 +58,7 @@ import {
   getSession,
   getSessionArtifacts,
   getSessionMessages,
-  getSkillsSnapshot,
+  skillsSnapshotQueryOptions,
   listCapabilityTools,
   listInteractionProfiles,
   listModels,
@@ -85,7 +86,8 @@ import {
   parseToolResult,
   summarizeToolCall,
   toolResultOk,
-  transcriptOutsideActiveRun,
+  projectionIsPersisted,
+  type ConversationBlock,
   type ConversationItem,
 } from "./conversation";
 import type {
@@ -102,7 +104,7 @@ import type {
 } from "./types";
 import {
   useRunProjection,
-  type ToolProjection,
+  type RunProjectionState,
 } from "./useRunProjection";
 
 type QuickPrompt = {
@@ -121,6 +123,7 @@ type UserHistoryItem = {
 };
 
 type SessionConfigTab = "model" | "tools" | "skills";
+type SessionListFilter = "all" | "running" | "scheduled" | "archived";
 
 function runtimeModelLabel(profile: RuntimeModelProfile): string {
   return profile.label || profile.model || profile.id;
@@ -181,7 +184,8 @@ function sessionSkillIds(
 }
 
 function sessionTitle(session?: SessionRecord): string {
-  return meaningfulSessionTitle(session?.title) || "未命名会话";
+  return meaningfulSessionTitle(session?.title, session?.id, session?.metadata)
+    || "未命名会话";
 }
 
 function formatTimestamp(timestamp?: number): string {
@@ -271,9 +275,11 @@ function artifactSummaryText({
 
 function SessionRow({ session }: { session: SessionSummary }) {
   const navigate = useNavigate();
-  const displayTitle = meaningfulSessionTitle(session.title)
+  const displayTitle = meaningfulSessionTitle(session.title, session.id, session.metadata)
     || session.lastMessage?.content.slice(0, 36)
     || "未命名会话";
+  const source = String(session.metadata?.source || session.metadata?.requestSource || "");
+  const scheduled = source.includes("scheduler") || source.includes("scheduled");
   return (
     <button
       className="session-row"
@@ -287,6 +293,9 @@ function SessionRow({ session }: { session: SessionSummary }) {
       <span className="row-main">
         <span className="row-title-line">
           <span className="row-title">{displayTitle}</span>
+          {session.activeRun ? <Badge tone="blue">运行中</Badge> : null}
+          {scheduled ? <Badge>定时</Badge> : null}
+          {session.status === "archived" ? <Badge tone="neutral">归档</Badge> : null}
         </span>
         <span className="row-preview">
           {session.activeRun
@@ -306,6 +315,7 @@ export function SessionsScreen() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<SessionListFilter>("all");
   const sessions = useQuery({
     queryKey: ["session-summaries"],
     queryFn: () => listSessionSummaries(50),
@@ -322,13 +332,26 @@ export function SessionsScreen() {
   });
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase();
-    if (!value) return sessions.data || [];
-    return (sessions.data || []).filter((session) => (
-      `${sessionTitle(session)} ${session.lastMessage?.content || ""}`
+    return (sessions.data || []).filter((session) => {
+      const source = String(session.metadata?.source || session.metadata?.requestSource || "");
+      const scheduled = source.includes("scheduler") || source.includes("scheduled");
+      const matchesFilter = filter === "all"
+        || (filter === "running" && Boolean(session.activeRun))
+        || (filter === "scheduled" && scheduled)
+        || (filter === "archived" && session.status === "archived");
+      if (!matchesFilter) return false;
+      return !value || `${sessionTitle(session)} ${session.lastMessage?.content || ""} ${source}`
         .toLowerCase()
-        .includes(value)
-    ));
-  }, [query, sessions.data]);
+        .includes(value);
+    });
+  }, [filter, query, sessions.data]);
+  const allSessions = sessions.data || [];
+  const runningCount = allSessions.filter((session) => session.activeRun).length;
+  const scheduledCount = allSessions.filter((session) => {
+    const source = String(session.metadata?.source || session.metadata?.requestSource || "");
+    return source.includes("scheduler") || source.includes("scheduled");
+  }).length;
+  const archivedCount = allSessions.filter((session) => session.status === "archived").length;
 
   return (
     <MobilePage
@@ -355,6 +378,16 @@ export function SessionsScreen() {
           />
         </label>
       </div>
+      <SegmentedControl
+        value={filter}
+        options={[
+          { value: "all", label: "全部", count: allSessions.length },
+          { value: "running", label: "运行中", count: runningCount },
+          { value: "scheduled", label: "定时", count: scheduledCount },
+          { value: "archived", label: "归档", count: archivedCount },
+        ]}
+        onChange={setFilter}
+      />
       {sessions.isLoading ? <LoadingState label="正在加载会话" /> : null}
       {sessions.isError ? (
         <ErrorState error={sessions.error} onRetry={() => void sessions.refetch()} />
@@ -553,7 +586,7 @@ function ReasoningCard({
         <Sparkles size={17} />
         <span>
           <strong>{live ? "思考中" : "思考过程"}</strong>
-          <small>{preview || "模型正在分析上下文"}</small>
+          <small>{preview || (live ? "模型正在分析上下文" : "本次思考未提供摘要")}</small>
         </span>
         {reasoningOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
@@ -576,36 +609,24 @@ function ToolActivityCard({
   call,
   result,
   status,
-  liveArguments,
-  liveDetail,
   onCopyText,
 }: {
   call: AssistantToolCall;
   result?: SessionMessage;
-  status?: ToolProjection["status"];
-  liveArguments?: unknown;
-  liveDetail?: string;
+  status?: Extract<ConversationBlock, { kind: "tool" }>["status"];
   onCopyText?: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const args = liveArguments && typeof liveArguments === "object"
-    ? liveArguments
-    : parseToolArguments(call);
-  const effectiveResult = result || (liveDetail != null
-    ? {
-        id: `${call.id}:live-result`,
-        sequence: 0,
-        role: "tool" as const,
-        toolCallId: call.id,
-        content: liveDetail,
-      }
-    : undefined);
+  const args = parseToolArguments(call);
+  const effectiveResult = result;
   const resultValue = effectiveResult ? parseToolResult(effectiveResult) : null;
   const inferredOk = effectiveResult ? toolResultOk(effectiveResult) : null;
   const state = status
     || (effectiveResult ? (inferredOk === false ? "failed" : "completed") : "running");
   const summary = state === "running"
     ? "正在执行"
+    : state === "interrupted"
+      ? "执行已结束，未收到工具结果"
     : state === "failed"
       ? toolDetailText(resultValue).replace(/\s+/g, " ").trim().slice(0, 110) || "执行失败"
       : effectiveResult
@@ -664,6 +685,85 @@ function ToolActivityCard({
   );
 }
 
+function AssistantBlockView({
+  block,
+  onCopyText,
+}: {
+  block: ConversationBlock;
+  onCopyText: (value: string) => void;
+}) {
+  return (
+    <div className={`assistant-block is-${block.kind}`} data-block-id={block.id}>
+      {block.kind === "text" ? (
+        <MarkdownMessage content={block.content} onCopyText={onCopyText} />
+      ) : block.kind === "reasoning" ? (
+        <ReasoningCard content={block.content} live={block.running} />
+      ) : (
+        <ToolActivityCard call={block.call} result={block.result} status={block.status} onCopyText={onCopyText} />
+      )}
+    </div>
+  );
+}
+
+function AssistantTimeline({
+  item,
+  live,
+  onCopyText,
+}: {
+  item: ConversationItem;
+  live: boolean;
+  onCopyText: (value: string) => void;
+}) {
+  const processId = useId();
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
+  const last = item.blocks.at(-1);
+  const finalBlock = last?.kind === "text" && last.id === item.finalBlockId ? last : undefined;
+  const processBlocks = finalBlock ? item.blocks.slice(0, -1) : item.blocks;
+  const collapsible = !!finalBlock && processBlocks.length > 0;
+  const expanded = !collapsible || expandedFor === finalBlock.id;
+  const toolCount = processBlocks.filter((block) => block.kind === "tool").length;
+  const reasoningCount = processBlocks.filter((block) => block.kind === "reasoning").length;
+  const textCount = processBlocks.filter((block) => block.kind === "text").length;
+  const hasFailure = processBlocks.some((block) =>
+    block.kind === "tool" && ["failed", "interrupted"].includes(block.status)
+  );
+  const summary = [
+    toolCount ? `${toolCount} 次工具调用` : "",
+    reasoningCount ? `${reasoningCount} 段思考` : "",
+    textCount ? `${textCount} 段说明` : "",
+  ].filter(Boolean).join(" · ");
+  return (
+    <div className="assistant-timeline">
+      <div className="assistant-process" hidden={!processBlocks.length}>
+        {collapsible ? (
+          <button
+            className={`assistant-process-toggle${hasFailure ? " has-failure" : ""}`}
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={processId}
+            onClick={() => setExpandedFor(expanded ? null : finalBlock.id)}
+          >
+            {hasFailure ? <CircleAlert size={16} /> : <CheckCircle2 size={16} />}
+            <span>
+              <strong>{hasFailure ? "执行过程包含异常" : "执行过程"}</strong>
+              <small>{summary}</small>
+            </span>
+            {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
+        ) : null}
+        <div id={processId} className="assistant-process-content" hidden={!expanded}>
+          {processBlocks.map((block) => (
+            <AssistantBlockView block={block} onCopyText={onCopyText} key={block.id} />
+          ))}
+        </div>
+      </div>
+      {finalBlock ? <AssistantBlockView block={finalBlock} onCopyText={onCopyText} key={finalBlock.id} /> : null}
+      {live && !item.blocks.length ? <div className="typing"><span /><span /><span /></div> : null}
+      {item.error ? <div className="inline-error">{item.error}</div> : null}
+    </div>
+  );
+}
+
 function TranscriptMessageView({
   item,
   searchMatch = false,
@@ -679,29 +779,11 @@ function TranscriptMessageView({
   onOpenActions: (item: ConversationItem) => void;
   onCopyText: (value: string) => void;
 }) {
-  const { message, toolResults } = item;
+  const { message } = item;
   const longPressTimer = useRef<number | null>(null);
-  const [activityOpen, setActivityOpen] = useState(false);
   const isUser = message.role === "user";
   const content = contentText(message.content);
-  const activityOnly = !content.trim()
-    && Boolean(message.reasoningContent || message.toolCalls?.length);
-  const toolNameCounts = new Map<string, number>();
-  for (const call of message.toolCalls || []) {
-    const name = call.function.name;
-    toolNameCounts.set(name, (toolNameCounts.get(name) || 0) + 1);
-  }
-  const activityPreview = [
-    message.reasoningContent ? "思考" : "",
-    ...Array.from(toolNameCounts, ([name, count]) =>
-      count > 1 ? `${name} ×${count}` : name
-    ),
-  ].filter(Boolean).join(" · ");
-  const activityStepCount = Number(Boolean(message.reasoningContent))
-    + (message.toolCalls?.length || 0);
-  const activityFailed = (message.toolCalls || []).some((call) =>
-    toolResultOk(toolResults[call.id]) === false
-  );
+  const live = !!item.status && ["connecting", "queued", "running"].includes(item.status);
   const clearLongPress = () => {
     if (longPressTimer.current != null) {
       window.clearTimeout(longPressTimer.current);
@@ -715,13 +797,14 @@ function TranscriptMessageView({
   return (
     <article
       ref={messageRef}
-      className={`message ${isUser ? "user" : "assistant"}${activityOnly ? " activity-message" : ""}${searchMatch ? " is-search-match" : ""}${focusMatch ? " is-history-focus" : ""}`}
+      className={`message ${isUser ? "user" : "assistant"}${searchMatch ? " is-search-match" : ""}${focusMatch ? " is-history-focus" : ""}`}
       onContextMenu={(event) => {
         event.preventDefault();
         openActions();
       }}
       onPointerDown={(event) => {
         if (event.pointerType === "mouse") return;
+        if ((event.target as HTMLElement).closest("button, a, pre")) return;
         clearLongPress();
         longPressTimer.current = window.setTimeout(openActions, 520);
       }}
@@ -735,7 +818,7 @@ function TranscriptMessageView({
             <span className="assistant-mark" aria-hidden="true">
               <Sparkles size={12} />
             </span>
-            <span>{activityOnly ? "执行记录" : "Zion"}</span>
+            <span>{live ? "Zion · 正在处理" : "Zion"}</span>
           </div>
           <button
             className="message-more-button"
@@ -762,112 +845,9 @@ function TranscriptMessageView({
           </div>
         </div>
       ) : null}
-      {!isUser && (message.reasoningContent || message.toolCalls?.length) ? (
-        <div className={`activity-stack completed${activityFailed ? " has-failure" : ""}`}>
-          <button
-            className="activity-stack-summary"
-            type="button"
-            aria-expanded={activityOpen}
-            onClick={() => setActivityOpen((value) => !value)}
-          >
-            {activityFailed ? <CircleAlert size={17} /> : <CheckCircle2 size={17} />}
-            <span>
-              <strong>
-                {activityFailed
-                  ? "执行过程包含异常"
-                  : `已完成 ${activityStepCount} 个步骤`}
-              </strong>
-              <small>{activityPreview}</small>
-            </span>
-            {activityOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-          </button>
-          {activityOpen ? (
-            <div className="activity-stack-items">
-              {message.reasoningContent ? (
-                <ReasoningCard content={message.reasoningContent} />
-              ) : null}
-              {message.toolCalls?.map((call) => (
-                <ToolActivityCard
-                  call={call}
-                  result={toolResults[call.id]}
-                  onCopyText={onCopyText}
-                  key={call.id}
-                />
-              ))}
-            </div>
-          ) : null}
-        </div>
+      {!isUser ? (
+        <AssistantTimeline item={item} live={live} onCopyText={onCopyText} />
       ) : null}
-      {!isUser && content.trim() ? (
-        <MarkdownMessage content={content} collapsible onCopyText={onCopyText} />
-      ) : null}
-    </article>
-  );
-}
-
-function LiveProjection({
-  output,
-  reasoning,
-  tools,
-  error,
-  onCopyText,
-}: {
-  output: string;
-  reasoning: string;
-  tools: ToolProjection[];
-  error: string;
-  onCopyText: (value: string) => void;
-}) {
-  if (!output && !reasoning && tools.length === 0 && !error) {
-    return (
-      <article className="message assistant">
-        <div className="message-label">
-          <span className="assistant-mark" aria-hidden="true">
-            <Sparkles size={12} />
-          </span>
-          <span>Zion · 正在处理</span>
-        </div>
-        <div className="typing"><span /><span /><span /></div>
-      </article>
-    );
-  }
-  return (
-    <article className="message assistant live-message">
-      <div className="message-label">
-        <span className="assistant-mark" aria-hidden="true">
-          <Sparkles size={12} />
-        </span>
-        <span>Zion · 正在处理</span>
-      </div>
-      {reasoning || tools.length ? (
-        <div className="activity-stack">
-          {reasoning ? (
-            <ReasoningCard content={reasoning} live />
-          ) : null}
-          {tools.map((tool) => {
-            const call: AssistantToolCall = {
-              id: tool.id,
-              type: "function",
-              function: {
-                name: tool.name,
-                arguments: toolDetailText(tool.arguments || {}),
-              },
-            };
-            return (
-              <ToolActivityCard
-                call={call}
-                status={tool.status}
-                liveArguments={tool.arguments}
-                liveDetail={tool.detail}
-                onCopyText={onCopyText}
-                key={tool.id}
-              />
-            );
-          })}
-        </div>
-      ) : null}
-      {output ? <MarkdownMessage content={output} onCopyText={onCopyText} /> : null}
-      {error ? <div className="inline-error">{error}</div> : null}
     </article>
   );
 }
@@ -1089,6 +1069,7 @@ export function ConversationScreen() {
     clientRequestId: string;
   } | null>(null);
   const [runId, setRunId] = useState("");
+  const [finishedRuns, setFinishedRuns] = useState<Array<{ sessionId: string; projection: RunProjectionState }>>([]);
   const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
   const [sessionConfigOpen, setSessionConfigOpen] = useState(false);
   const [sessionConfigTab, setSessionConfigTab] = useState<SessionConfigTab>("model");
@@ -1112,7 +1093,9 @@ export function ConversationScreen() {
   const messages = useQuery({
     queryKey: ["session-messages", decodedSessionId],
     queryFn: () => getSessionMessages(decodedSessionId),
-    refetchInterval: runId ? 4_000 : false,
+    refetchInterval: runId || finishedRuns.some((entry) =>
+      entry.sessionId === decodedSessionId && entry.projection.status === "completed"
+    ) ? 4_000 : false,
   });
   const activeRun = useQuery({
     queryKey: ["active-run", decodedSessionId],
@@ -1130,9 +1113,8 @@ export function ConversationScreen() {
     staleTime: 30_000,
   });
   const skills = useQuery({
-    queryKey: ["skills-snapshot"],
-    queryFn: getSkillsSnapshot,
-    staleTime: 30_000,
+    ...skillsSnapshotQueryOptions,
+    refetchInterval: sessionConfigOpen && sessionConfigTab === "skills" ? 3_000 : 5_000,
   });
   const models = useQuery({
     queryKey: ["models"],
@@ -1150,7 +1132,13 @@ export function ConversationScreen() {
   useEffect(() => {
     if (activeRun.data?.runId) setRunId(activeRun.data.runId);
   }, [activeRun.data?.runId]);
-  const handleTerminal = useCallback((terminal: { status: string }) => {
+  const handleTerminal = useCallback((terminal: RunProjectionState) => {
+    setFinishedRuns((current) => [
+      ...current.filter((entry) => entry.projection.runId !== terminal.runId),
+      { sessionId: decodedSessionId, projection: terminal },
+    ]);
+    setPendingUser("");
+    setRunId((current) => current === terminal.runId ? "" : current);
     if (
       document.hidden
       && localStorage.getItem("zion.mobile.notifications") === "on"
@@ -1159,20 +1147,26 @@ export function ConversationScreen() {
     ) {
       const label = terminal.status === "completed" ? "运行已完成" : `运行${terminal.status}`;
       new Notification("Zion Mobile", {
-        body: `${meaningfulSessionTitle(session.data?.title) || "会话"} · ${label}`,
+        body: `${meaningfulSessionTitle(session.data?.title, session.data?.id, session.data?.metadata) || "会话"} · ${label}`,
       });
     }
     void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["session", decodedSessionId] }),
       queryClient.invalidateQueries({ queryKey: ["session-messages", decodedSessionId] }),
       queryClient.invalidateQueries({ queryKey: ["active-run", decodedSessionId] }),
       queryClient.invalidateQueries({ queryKey: ["session-artifacts", decodedSessionId] }),
       queryClient.invalidateQueries({ queryKey: ["session-summaries"] }),
-    ]).finally(() => {
-      setPendingUser("");
-      setRunId("");
-    });
-  }, [decodedSessionId, queryClient, session.data?.title]);
+    ]);
+  }, [decodedSessionId, queryClient, session.data?.id, session.data?.metadata, session.data?.title]);
   const projection = useRunProjection(runId, handleTerminal);
+  useEffect(() => {
+    if (!messages.data) return;
+    setFinishedRuns((current) => {
+      const remaining = current.filter((entry) => entry.sessionId === decodedSessionId
+        && !projectionIsPersisted(messages.data!, entry.projection));
+      return remaining.length === current.length ? current : remaining;
+    });
+  }, [decodedSessionId, messages.data, finishedRuns]);
 
   const send = useMutation({
     mutationFn: async (command: {
@@ -1191,9 +1185,11 @@ export function ConversationScreen() {
     onSuccess(result) {
       setRetryCommand(null);
       setRunId(result.runId);
-      void queryClient.invalidateQueries({
-        queryKey: ["session-messages", decodedSessionId],
-      });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["session", decodedSessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["session-messages", decodedSessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["session-summaries"] }),
+      ]);
     },
     async onError(error, command) {
       setRetryCommand(command);
@@ -1208,8 +1204,8 @@ export function ConversationScreen() {
   const stop = useMutation({
     mutationFn: () => abortRun(runId),
     onSuccess() {
-      setRunId("");
       void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["session", decodedSessionId] }),
         queryClient.invalidateQueries({ queryKey: ["session-messages", decodedSessionId] }),
         queryClient.invalidateQueries({ queryKey: ["active-run", decodedSessionId] }),
         queryClient.invalidateQueries({ queryKey: ["session-summaries"] }),
@@ -1253,9 +1249,8 @@ export function ConversationScreen() {
   }, [
     messages.data?.length,
     pendingUser,
-    projection.output,
-    projection.reasoning,
-    projection.tools.length,
+    projection.cursor,
+    finishedRuns,
   ]);
 
   const submit = () => {
@@ -1270,7 +1265,7 @@ export function ConversationScreen() {
     send.mutate(command);
   };
   const firstUserMessage = messages.data?.find((message) => message.role === "user");
-  const title = meaningfulSessionTitle(session.data?.title)
+  const title = meaningfulSessionTitle(session.data?.title, session.data?.id, session.data?.metadata)
     || contentText(firstUserMessage?.content).replace(/\s+/g, " ").trim().slice(0, 36)
     || "新会话";
   const model = session.data?.model?.label
@@ -1339,8 +1334,20 @@ export function ConversationScreen() {
         || left.name.localeCompare(right.name)
       ))
   ), [configQuery, enabledSkillIds, skills.data?.catalog]);
+  const transcript = messages.data || [];
+  const pendingMessage: SessionMessage[] = pendingUser && !transcript.some((message) =>
+    message.role === "user" && !!runId && message.runId === runId
+      && contentText(message.content) === pendingUser
+  ) ? [{
+      id: "pending-user", role: "user", content: pendingUser,
+      sequence: (transcript.at(-1)?.sequence || 0) + 1, runId: runId || undefined,
+    }] : [];
   const displayMessages = buildConversationItems(
-    transcriptOutsideActiveRun(messages.data || [], runId),
+    [...transcript, ...pendingMessage],
+    [
+      ...finishedRuns.filter((entry) => entry.sessionId === decodedSessionId).map((entry) => entry.projection),
+      ...(runId ? [projection] : []),
+    ],
   );
   const artifactBundle = artifacts.data || { artifacts: [], changes: [] };
   const userHistoryItems = useMemo<UserHistoryItem[]>(() => {
@@ -1617,7 +1624,7 @@ export function ConversationScreen() {
             ? formatDateDivider(item.message.createdAt)
             : "";
           return (
-            <Fragment key={`${item.message.sequence}:${item.message.id}`}>
+            <Fragment key={item.key}>
               {dividerLabel ? <DateDivider label={dividerLabel} /> : null}
               <TranscriptMessageView
                 item={item}
@@ -1632,21 +1639,13 @@ export function ConversationScreen() {
             </Fragment>
           );
         })}
-        {pendingUser && !displayMessages.some(({ message }) =>
-          message.role === "user" && contentText(message.content) === pendingUser
-        ) ? (
-          <article className="message user pending">
-            <div className="user-bubble">{pendingUser}</div>
+        {send.isPending && !runId ? (
+          <article className="message assistant" role="status">
+            <div className="message-label">
+              <span>{send.isPaused ? "Zion · 等待网络" : "Zion · 正在提交"}</span>
+            </div>
+            <div className="typing" aria-hidden="true"><span /><span /><span /></div>
           </article>
-        ) : null}
-        {runId ? (
-          <LiveProjection
-            output={projection.output}
-            reasoning={projection.reasoning}
-            tools={projection.tools}
-            error={projection.error}
-            onCopyText={(value) => void copyAndToast(value)}
-          />
         ) : null}
         {send.isError ? (
           <div className="inline-error action-error">

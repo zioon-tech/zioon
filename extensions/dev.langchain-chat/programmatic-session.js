@@ -81,7 +81,10 @@ function bufferReasoningProjection(zion, sessionId, event, payload, emit) {
   buffered.fullText += String(event.data?.delta || "");
   state.reasoningBuffers.set(key, buffered);
   if (
-    buffered.token.length >= REASONING_BATCH_CHARS
+    // Runtime projection already batches deltas. Buffering again here can
+    // strand a short chunk until another event arrives.
+    payload.backend === "runtime"
+    || buffered.token.length >= REASONING_BATCH_CHARS
     || now - buffered.lastEmittedAt >= REASONING_BATCH_INTERVAL_MS
   ) {
     emitReasoningBuffer(zion, key, emit);
@@ -146,6 +149,11 @@ export async function projectRunEventToSession(
     panelId,
     requestSource,
     documentWriter,
+    projectionSequence: Number(
+      event.data?.projection?.sourceSequenceEnd
+      ?? event.sequence
+      ?? 0
+    ),
     ...(options.replay ? { replay: true } : {}),
     ...(Number.isFinite(Number(options.answerAnchorPos))
       ? { answerAnchorPos: Number(options.answerAnchorPos) }
@@ -164,9 +172,6 @@ export async function projectRunEventToSession(
         if (key.startsWith(prefix)) state.reasoningBuffers.delete(key);
       }
     }
-    // #region debug-point B:observer-run-start-document-write
-    globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"B",location:"extensions/dev.langchain-chat/programmatic-session.js:run.started",msg:"[DEBUG] Programmatic Run start evaluated document initialization",data:{runtimeSessionId:sessionId,runtimeRunId:String(event.runId||""),documentWriter:payload.documentWriter,assistantBlockReady,currentDocumentLength:String(zion.commands.executeCommand("zion.sessions.getDoc",sessionId)||"").length},ts:Date.now()}),keepalive:true}).catch(()=>{});
-    // #endregion
     if (documentWriter && !assistantBlockReady) {
       await zion.commands.executeCommand("zion.sessions.ensureAssistantBlock", {
         id: sessionId,

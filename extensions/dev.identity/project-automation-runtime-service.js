@@ -11,6 +11,7 @@ import {
 import {
   PROJECT_AUTOMATION_RUNTIME_KV_KEY
 } from "./identity-runtime-shared.js";
+import { dataLocationContext } from "../../packages/plugin-sdk/src/data-location.mjs";
 import {
   AGENTS_RUNTIME_KV_KEY,
   createAgentTask,
@@ -98,6 +99,7 @@ export function createProjectAutomationRuntimeService({
   fileService,
   runnerService,
   memoryRoot,
+  dataLocation = null,
   interactionProfileId = "interactive.default",
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   logger = () => {},
@@ -286,7 +288,7 @@ export function createProjectAutomationRuntimeService({
       return { status: "attention", projectKey: key, reason: readiness.reason };
     }
 
-    const prompt = buildAutomationTaskPrompt({
+    const prompt = (dataLocation ? `${dataLocationContext("dev.identity", dataLocation)}\n\n` : "") + buildAutomationTaskPrompt({
       project: { key, name: key },
       projectPath: paths.projectPath,
       indexPath: paths.indexPath,

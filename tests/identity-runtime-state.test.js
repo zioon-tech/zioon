@@ -33,10 +33,20 @@ function createState(initial = {}) {
   };
 }
 
+function appendToDisk(disk) {
+  return vi.fn(async ({ records }) => {
+    const existing = String(disk.get("biographyEvents") || "").split("\n").filter(Boolean).map(JSON.parse);
+    const ids = new Set(existing.map((event) => event.id));
+    const added = records.filter((record) => !ids.has(record.id));
+    disk.set("biographyEvents", [...existing, ...added].map(JSON.stringify).join("\n") + "\n");
+    return { appended: added.map((event) => event.id), skipped: records.filter((event) => ids.has(event.id)).map((event) => event.id) };
+  });
+}
+
 describe("Runtime-backed Identity state", () => {
   it("builds identity_context from snapshot files", () => {
     const snapshot = createIdentitySnapshot({
-      sourceRoot: "/Users/test/.zion-next/memory",
+      sourceRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
       files: {
         identity: "# Identity\nZion <agent>",
         user: "# User\nPrefers Runtime & CLI parity",
@@ -70,7 +80,7 @@ describe("Runtime-backed Identity state", () => {
       expect(init.method).toBe("PUT");
       expect(JSON.parse(init.body)).toMatchObject({
         value: {
-          sourceRoot: "/Users/test/.zion-next/memory",
+          sourceRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
           content: "<identity_context>cached</identity_context>"
         }
       });
@@ -84,14 +94,14 @@ describe("Runtime-backed Identity state", () => {
       state,
       fetchImpl,
       snapshot: createIdentitySnapshot({
-        sourceRoot: "/Users/test/.zion-next/memory",
+        sourceRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
         content: "<identity_context>cached</identity_context>",
         savedAt: 2000
       })
     })).resolves.toMatchObject({ synced: true });
     expect(state.values.get("runtime.identitySync")).toMatchObject({
       status: "synced",
-      sourceRoot: "/Users/test/.zion-next/memory"
+      sourceRoot: "/Users/test/.zion-next/data/plugins/dev.identity"
     });
   });
 
@@ -228,7 +238,7 @@ describe("Runtime-backed Identity state", () => {
       }))
     };
     stateBucket.set("snapshot", createIdentitySnapshot({
-      sourceRoot: "/Users/test/.zion-next/memory",
+      sourceRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
       content: "<identity_context><user_profile>Chinese first</user_profile></identity_context>",
       savedAt: 3000
     }));
@@ -292,7 +302,7 @@ describe("Runtime-backed Identity state", () => {
     const result = await toolByName.get("identityContext").invoke({ include_content: true });
     expect(result.ok).toBe(true);
     expect(JSON.parse(result.content)).toMatchObject({
-      sourceRoot: "/Users/test/.zion-next/memory",
+      sourceRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
       hasContext: true,
       content: expect.stringContaining("Chinese first")
     });
@@ -442,7 +452,7 @@ describe("Runtime-backed Identity state", () => {
       config: {
         fileService,
         biography: {
-          memoryRoot: "/Users/test/.zion-next/memory"
+          memoryRoot: "/Users/test/.zion-next/data/plugins/dev.identity"
         }
       },
       state: {
@@ -484,7 +494,7 @@ describe("Runtime-backed Identity state", () => {
       { role: "user", content: "hello" }
     ]);
     expect(fileService.readTextFiles).toHaveBeenCalledWith({
-      fileRoot: "/Users/test/.zion-next/memory",
+      fileRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
       files: IDENTITY_PROFILE_FILE_PATHS,
       runContext: expect.objectContaining({
         runId: "run-1",
@@ -492,7 +502,7 @@ describe("Runtime-backed Identity state", () => {
         sessionId: "chat-session-1",
         projectId: "project-1",
         policy: expect.objectContaining({
-          fileRoots: ["/Users/test/.zion-next/memory"]
+          fileRoots: ["/Users/test/.zion-next/data/plugins/dev.identity"]
         })
       })
     });
@@ -560,7 +570,7 @@ describe("Runtime-backed Identity state", () => {
 
     await expect(identityManage.invoke({
       action: "load_files",
-      file_root: "/Users/test/.zion-next/memory"
+      file_root: "/Users/test/.zion-next/data/plugins/dev.identity"
     }, {
       policy: { preset: "read-only" }
     })).resolves.toMatchObject({
@@ -570,7 +580,7 @@ describe("Runtime-backed Identity state", () => {
 
     const loaded = JSON.parse((await identityManage.invoke({
       action: "load_files",
-      file_root: "/Users/test/.zion-next/memory",
+      file_root: "/Users/test/.zion-next/data/plugins/dev.identity",
       session_id: "terminal-1"
     }, {
       runId: "run-1",
@@ -578,19 +588,19 @@ describe("Runtime-backed Identity state", () => {
       policy: { preset: "workspace-write", fileRoots: ["/Users/test"] }
     })).content);
     expect(loaded.loaded).toMatchObject({
-      sourceRoot: "/Users/test/.zion-next/memory",
+      sourceRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
       hasContext: true,
       content: expect.stringContaining("Runtime file user")
     });
     expect(fileService.readTextFiles).toHaveBeenCalledWith(expect.objectContaining({
-      fileRoot: "/Users/test/.zion-next/memory",
+      fileRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
       sessionId: "terminal-1",
       runContext: expect.objectContaining({ runId: "run-1" })
     }));
 
     const written = JSON.parse((await identityManage.invoke({
       action: "write_files",
-      file_root: "/Users/test/.zion-next/memory",
+      file_root: "/Users/test/.zion-next/data/plugins/dev.identity",
       files: {
         user: "# User\nUpdated from Runtime",
         ignored: "not written"
@@ -609,7 +619,7 @@ describe("Runtime-backed Identity state", () => {
     expect(written).toMatchObject({
       written: [{
         key: "user",
-        path: "/Users/test/.zion-next/memory/user.md"
+        path: "/Users/test/.zion-next/data/plugins/dev.identity/user.md"
       }],
       updated: {
         hasContext: true,
@@ -629,6 +639,7 @@ describe("Runtime-backed Identity state", () => {
       ["projectsAttention", ""]
     ]);
     const fileService = {
+      appendJsonl: appendToDisk(disk),
       readTextFiles: vi.fn(async ({ fileRoot, files }) => ({
         fileRoot,
         files: Object.fromEntries(
@@ -678,7 +689,7 @@ describe("Runtime-backed Identity state", () => {
 
     await expect(identityManage.invoke({
       action: "append_biography_events",
-      file_root: "/Users/test/.zion-next/memory",
+      file_root: "/Users/test/.zion-next/data/plugins/dev.identity",
       source_session_id: "session-1",
       source_run_id: "run-1",
       source_at: "2026-09-03T10:00:00.000Z",
@@ -697,7 +708,7 @@ describe("Runtime-backed Identity state", () => {
 
     const result = JSON.parse((await identityManage.invoke({
       action: "append_biography_events",
-      file_root: "/Users/test/.zion-next/memory",
+      file_root: "/Users/test/.zion-next/data/plugins/dev.identity",
       source_session_id: "session-1",
       source_run_id: "run-1",
       source_at: "2026-09-03T10:00:00.000Z",
@@ -720,12 +731,12 @@ describe("Runtime-backed Identity state", () => {
         content: expect.stringContaining("Runtime 持久化自传事件")
       }
     });
+    expect(fileService.appendJsonl).toHaveBeenCalledWith(expect.objectContaining({
+      relativePath: "biography/events.jsonl",
+      records: [expect.objectContaining({ id: "session-1:run-1:0" })]
+    }));
     expect(fileService.writeTextFiles).toHaveBeenCalledWith(expect.objectContaining({
       files: expect.objectContaining({
-        biographyEvents: expect.objectContaining({
-          relativePath: "biography/events.jsonl",
-          content: expect.stringContaining('"id":"session-1:run-1:0"')
-        }),
         biography: expect.objectContaining({
           relativePath: "biography/digest.md",
           content: expect.stringContaining("[[memory:session-1:run-1:0]]")
@@ -737,7 +748,7 @@ describe("Runtime-backed Identity state", () => {
     fileService.writeTextFiles.mockClear();
     const duplicate = JSON.parse((await identityManage.invoke({
       action: "append_biography_events",
-      file_root: "/Users/test/.zion-next/memory",
+      file_root: "/Users/test/.zion-next/data/plugins/dev.identity",
       source_session_id: "session-1",
       source_run_id: "run-1",
       events: [{
@@ -768,6 +779,7 @@ describe("Runtime-backed Identity state", () => {
       ["projectsAttention", ""]
     ]);
     const fileService = {
+      appendJsonl: appendToDisk(disk),
       readTextFiles: vi.fn(async ({ fileRoot, files }) => ({
         fileRoot,
         files: Object.fromEntries(
@@ -820,7 +832,7 @@ describe("Runtime-backed Identity state", () => {
         modelService,
         biography: {
           enabled: true,
-          memoryRoot: "/Users/test/.zion-next/memory"
+          memoryRoot: "/Users/test/.zion-next/data/plugins/dev.identity"
         }
       },
       state: {
@@ -871,16 +883,16 @@ describe("Runtime-backed Identity state", () => {
       })
     );
     expect(fileService.writeTextFiles).toHaveBeenCalledWith(expect.objectContaining({
-      fileRoot: "/Users/test/.zion-next/memory",
+      fileRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
       sessionId: undefined,
       files: expect.objectContaining({
-        biographyEvents: expect.objectContaining({
-          content: expect.stringContaining('"id":"session-1:run-1:0"')
-        }),
         biography: expect.objectContaining({
           content: expect.stringContaining("完成 Runtime post processor")
         })
       })
+    }));
+    expect(fileService.appendJsonl).toHaveBeenCalledWith(expect.objectContaining({
+      records: [expect.objectContaining({ id: "session-1:run-1:0" })]
     }));
     expect(stateBucket.get("snapshot").files.biography).toContain("完成 Runtime post processor");
   });

@@ -1,8 +1,11 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
+import { WebSocket, WebSocketServer } from "ws";
+import { parseByteSize, requestBodyLimitError } from "../../../packages/node-protocol/src/index.mjs";
+import { requirePluginDataCapability } from "./plugin-data-capability.mjs";
 
 const DEVICE_SERVICE_TOOL_NAME = "zion.internal.deviceService";
-const MAX_REQUEST_BYTES = 1024 * 1024;
+const DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024;
 const FORWARDED_HEADERS = [
   "accept",
   "content-type",
@@ -20,15 +23,22 @@ function json(response, status, value) {
   response.end(body);
 }
 
-async function readBody(request) {
+function errorPayload(error) {
+  const payload = { error: error?.message || String(error) };
+  if (error?.code) payload.code = String(error.code);
+  if (Number.isSafeInteger(error?.limitBytes)) payload.limitBytes = error.limitBytes;
+  if (error?.limit) payload.limit = String(error.limit);
+  if (Array.isArray(error?.hints)) payload.hints = error.hints.map(String);
+  return payload;
+}
+
+async function readBody(request, maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_REQUEST_BYTES) {
-      const error = new Error("Device service request exceeds 1 MiB");
-      error.statusCode = 413;
-      throw error;
+    if (size > maxRequestBytes) {
+      throw requestBodyLimitError("Device service request", maxRequestBytes);
     }
     chunks.push(chunk);
   }
@@ -80,6 +90,11 @@ function route(pathname) {
     : null;
 }
 
+function ptyWebSocketRoute(pathname) {
+  const match = String(pathname || "").match(/^\/sessions\/([^/]+)\/pty\/ws$/);
+  return match ? { sessionId: decodeURIComponent(match[1]) } : null;
+}
+
 function requestHeaders(request) {
   const headers = {};
   for (const name of FORWARDED_HEADERS) {
@@ -88,6 +103,113 @@ function requestHeaders(request) {
     headers[name] = Array.isArray(value) ? value.join(", ") : String(value);
   }
   return headers;
+}
+
+function writeUpgradeError(socket, status, message) {
+  const reason = message || "WebSocket upgrade failed";
+  socket.write(
+    `HTTP/1.1 ${status} ${reason}\r\n`
+    + "Connection: close\r\n"
+    + "Content-Type: text/plain; charset=utf-8\r\n"
+    + `Content-Length: ${Buffer.byteLength(reason)}\r\n`
+    + "\r\n"
+    + reason
+  );
+  socket.destroy();
+}
+
+function normalizeServiceBaseUrls(serviceBaseUrls = {}) {
+  return Object.fromEntries(
+    Object.entries(serviceBaseUrls || {})
+      .map(([service, value]) => [
+        service,
+        String(value || "").trim().replace(/\/+$/, "")
+      ])
+      .filter(([, value]) => value)
+  );
+}
+
+export function createDeviceServiceWebSocketHandler({
+  broker = null,
+  authorize = null,
+  serviceBaseUrls = {},
+  webSocketFactory = (url, options) => new WebSocket(url, options)
+} = {}) {
+  if (broker?.invoke) return null;
+  const directServiceUrls = normalizeServiceBaseUrls(serviceBaseUrls);
+  const localToolsUrl = directServiceUrls["local-tools"];
+  if (!localToolsUrl) return null;
+  const webSocketServer = new WebSocketServer({ noServer: true });
+
+  return async function handleDeviceServiceWebSocket(request, socket, head) {
+    const url = new URL(
+      request.url || "/",
+      `http://${request.headers.host || "127.0.0.1"}`
+    );
+    const matched = route(url.pathname);
+    if (matched?.service !== "local-tools") return false;
+    const pty = ptyWebSocketRoute(matched.path);
+    if (!pty) return false;
+
+    try {
+      await authorize?.(request, matched);
+    } catch (error) {
+      writeUpgradeError(socket, Number(error?.statusCode || 403), error?.message || "Forbidden");
+      return true;
+    }
+
+    const upstreamUrl = new URL(
+      `${matched.path}${url.search}`,
+      `${localToolsUrl}/`
+    );
+    upstreamUrl.protocol = upstreamUrl.protocol === "https:" ? "wss:" : "ws:";
+    const upstream = webSocketFactory(upstreamUrl, {
+      headers: requestHeaders(request)
+    });
+    let client = null;
+    const pending = [];
+    let upstreamOpen = false;
+    let closed = false;
+    const closeBoth = (code = 1000, reason = "") => {
+      if (closed) return;
+      closed = true;
+      try { client?.close(code, reason); } catch {}
+      try { upstream.close(code, reason); } catch {}
+    };
+
+    webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+      client = webSocket;
+      client.on("message", (data, isBinary) => {
+        if (upstreamOpen && upstream.readyState === WebSocket.OPEN) {
+          upstream.send(data, { binary: isBinary });
+          return;
+        }
+        pending.push({ data, isBinary });
+      });
+      client.on("close", () => closeBoth());
+      client.on("error", () => closeBoth(1011, "Client WebSocket failed"));
+      webSocketServer.emit("connection", client, request);
+    });
+
+    upstream.on("open", () => {
+      upstreamOpen = true;
+      while (pending.length && upstream.readyState === WebSocket.OPEN) {
+        const item = pending.shift();
+        upstream.send(item.data, { binary: item.isBinary });
+      }
+    });
+    upstream.on("message", (data, isBinary) => {
+      if (client?.readyState === WebSocket.OPEN) {
+        client.send(data, { binary: isBinary });
+      }
+    });
+    upstream.on("close", (code, reason) => closeBoth(code, reason.toString()));
+    upstream.on("error", (error) => {
+      if (!client) writeUpgradeError(socket, 502, error?.message || "Local terminal WebSocket failed");
+      else closeBoth(1011, error?.message || "Local terminal WebSocket failed");
+    });
+    return true;
+  };
 }
 
 function responsePayload(result) {
@@ -157,6 +279,29 @@ function pluginServiceFanoutKind(matched, method) {
   return "";
 }
 
+function localToolsFileDiscovery(matched, method, url) {
+  if (matched.service !== "local-tools" || method !== "GET") return false;
+  if (!["/files/read", "/files/entries"].includes(matched.path)) return false;
+  return !!String(url.searchParams.get("path") || "").trim()
+    && !url.searchParams.get("session_id");
+}
+
+function annotateNodePayload(payload, target) {
+  let body;
+  try {
+    body = JSON.parse(responseBodyFromPayload(payload).toString("utf8"));
+  } catch {
+    return payload;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return payload;
+  const registration = target.node.registration;
+  return jsonPayload(payload.status, {
+    ...body,
+    node_id: registration.nodeId,
+    node_label: registration.label || registration.nodeId
+  });
+}
+
 function mergePluginPayloads(items, kind = "list") {
   const merged = [];
   const seen = new Set();
@@ -208,16 +353,16 @@ export function createDeviceServiceHttpHandler({
   authorize = null,
   terminalService = null,
   serviceBaseUrls = {},
-  fetchImpl = globalThis.fetch
+  dataFiles = null,
+  fetchImpl = globalThis.fetch,
+  maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES
 } = {}) {
   const hasBroker = !!broker?.invoke;
+  const requestBodyLimit = parseByteSize(maxRequestBytes, {
+    label: "Device service request body limit"
+  });
   const directServiceUrls = Object.fromEntries(
-    Object.entries(serviceBaseUrls || {})
-      .map(([service, value]) => [
-        service,
-        String(value || "").trim().replace(/\/+$/, "")
-      ])
-      .filter(([, value]) => value)
+    Object.entries(normalizeServiceBaseUrls(serviceBaseUrls))
   );
   if (!hasBroker && !terminalService && !Object.keys(directServiceUrls).length) {
     throw new Error("Device service HTTP handler requires a Broker or local service");
@@ -232,7 +377,7 @@ export function createDeviceServiceHttpHandler({
       const method = String(request.method || "GET").toUpperCase();
       const body = ["GET", "HEAD"].includes(method)
         ? null
-        : await readBody(request);
+        : await readBody(request, requestBodyLimit);
       const cancellation = createCancellation(request, response);
       const runContext = {
         projectId: url.searchParams.get("project_id") || "",
@@ -265,6 +410,19 @@ export function createDeviceServiceHttpHandler({
         return true;
       }
       if (!hasBroker) {
+        if (dataFiles && matched.service === "local-tools") {
+          const payload = await dataFiles.handle(matched.path.replace(/^\/files\//, ""),
+            body ? JSON.parse(body.toString("utf8")) : Object.fromEntries(url.searchParams),
+            { signal: cancellation.signal });
+          if (payload) {
+            json(response, 200, payload);
+            return true;
+          }
+          if (url.searchParams.get("plugin_data_version") === "1") {
+            json(response, 400, { error: "Path is outside configured plugin data storage" });
+            return true;
+          }
+        }
         const baseUrl = directServiceUrls[matched.service];
         if (!baseUrl) {
           const error = new Error(
@@ -315,6 +473,9 @@ export function createDeviceServiceHttpHandler({
         }
         return true;
       }
+      if (url.searchParams.get("plugin_data_version") === "1") {
+        requirePluginDataCapability(broker, runContext);
+      }
       const invokeBroker = async (target = runContext.target) => {
         const invocationId = `device-service:${randomUUID()}`;
         const result = await broker.invoke({
@@ -344,12 +505,17 @@ export function createDeviceServiceHttpHandler({
       const fanoutKind = !runContext.target
         ? pluginServiceFanoutKind(matched, method)
         : "";
-      if (fanoutKind && typeof broker.availableTargets === "function") {
+      const discoverFileNode = !runContext.target
+        && localToolsFileDiscovery(matched, method, url);
+      if (
+        (fanoutKind || discoverFileNode)
+        && typeof broker.availableTargets === "function"
+      ) {
         const targets = broker.availableTargets(
           runContext.projectId,
           DEVICE_SERVICE_TOOL_NAME
         );
-        if (targets.length > 1) {
+        if (targets.length) {
           const payloads = [];
           let fallbackPayload = null;
           for (const target of targets) {
@@ -366,7 +532,33 @@ export function createDeviceServiceHttpHandler({
               continue;
             }
             fallbackPayload = fallbackPayload || payload;
-            if (payload.status !== 404) break;
+            if (!discoverFileNode && payload.status !== 404) break;
+          }
+          if (discoverFileNode) {
+            if (payloads.length === 1) {
+              writeDeviceServicePayload(
+                response,
+                method,
+                annotateNodePayload(payloads[0].payload, payloads[0].target)
+              );
+              return true;
+            }
+            if (payloads.length > 1) {
+              json(response, 409, {
+                error: "The path exists on multiple Nodes; select its source Node once.",
+                code: "ambiguous_file_node",
+                nodes: payloads.map(({ target }) => ({
+                  nodeId: target.node.registration.nodeId,
+                  label: target.node.registration.label
+                    || target.node.registration.nodeId
+                }))
+              });
+              return true;
+            }
+            if (fallbackPayload) {
+              writeDeviceServicePayload(response, method, fallbackPayload);
+              return true;
+            }
           }
           const payload = payloads.length
             ? mergePluginPayloads(payloads, fanoutKind)
@@ -385,7 +577,7 @@ export function createDeviceServiceHttpHandler({
           error?.statusCode
           || (/No online Node/.test(String(error?.message || "")) ? 503 : 500)
         );
-        json(response, status, { error: error?.message || String(error) });
+        json(response, status, errorPayload(error));
       } else {
         response.end();
       }

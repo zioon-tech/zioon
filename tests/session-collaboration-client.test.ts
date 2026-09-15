@@ -176,6 +176,54 @@ describe("Session collaboration client", () => {
     editor.dispose();
   });
 
+  it("does not claim document ownership before collaboration hydration", async () => {
+    vi.useFakeTimers();
+    const manager = createSessionCollaborationManager({
+      zion: {
+        state: {
+          get() {},
+          set() {}
+        }
+      },
+      clientId: "workbench-a",
+      runtimeConfig: {
+        mode: "runtime",
+        enabled: true,
+        baseUrl: "http://127.0.0.1:8766"
+      },
+      createProvider(options: any) {
+        return {
+          awareness: new Awareness(options.document),
+          destroy() {}
+        };
+      },
+      createPersistence() {
+        return {
+          whenSynced: new Promise(() => {}),
+          destroy() {}
+        };
+      }
+    });
+    const editor = editorHarness("");
+    const binding = manager.bindEditor(editor);
+    try {
+      expect(editor.getView().dom.dataset.zionCollaborationBound)
+        .toBeUndefined();
+
+      editor.setValue("snapshot fallback");
+      await vi.advanceTimersByTimeAsync(5_001);
+
+      expect(editor.getValue()).toBe("snapshot fallback");
+      expect(editor.getView().dom.dataset.zionCollaborationBound)
+        .toBeUndefined();
+    } finally {
+      binding.dispose();
+      manager.dispose();
+      editor.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("renders pending output before the collaboration provider is synced", () => {
     const events = eventBus();
     const neverSynced = new Promise(() => {});
@@ -229,6 +277,47 @@ describe("Session collaboration client", () => {
     binding.dispose();
     manager.dispose();
     editor.dispose();
+  });
+
+  it("shows and clears preparation status without writing the shared document", () => {
+    const events = eventBus();
+    const manager = createSessionCollaborationManager({
+      zion: { events, state: { get() {}, set() {} } },
+      clientId: "workbench-a",
+      runtimeConfig: { mode: "runtime", enabled: true, baseUrl: "http://127.0.0.1:8766" },
+      createProvider(options: any) {
+        return { awareness: new Awareness(options.document), destroy() {} };
+      }
+    });
+    const editor = editorHarness("user question");
+    const binding = manager.bindEditor(editor);
+    try {
+      events.emit("chat/preparing", {
+        sessionId: "session-1", submissionId: "pending-1",
+        status: "assistant preparing", answerAnchorPos: 13
+      });
+      expect(editor.parent.querySelector('[role="status"]')?.textContent).toBe("…");
+      expect(editor.parent.querySelector('[role="status"]')?.getAttribute("aria-label"))
+        .toBe("assistant preparing");
+      expect(editor.getValue()).toBe("user question");
+      events.emit("chat/preparing", {
+        sessionId: "session-1", submissionId: "pending-1",
+        assistantBlockId: "run-1", status: "waiting"
+      });
+      expect(editor.parent.querySelectorAll('[role="status"]')).toHaveLength(1);
+      expect(editor.parent.querySelector('[role="status"]')?.textContent).toBe("…");
+      expect(editor.parent.querySelector('[role="status"]')?.getAttribute("aria-label"))
+        .toBe("waiting");
+      events.emit("chat/prepared", { sessionId: "session-2", submissionId: "pending-1" });
+      expect(editor.parent.querySelector('[role="status"]')).not.toBeNull();
+      events.emit("chat/prepared", { sessionId: "session-1", submissionId: "pending-1" });
+      expect(editor.parent.querySelector('[role="status"]')).toBeNull();
+      expect(editor.getValue()).toBe("user question");
+    } finally {
+      binding.dispose();
+      manager.dispose();
+      editor.dispose();
+    }
   });
 
   it("places pending output at the document end when the runtime omits its anchor", () => {
@@ -294,7 +383,9 @@ describe("Session collaboration client", () => {
     const persistenceDestroy = vi.fn();
     const zion = {
       state: {
-        values: new Map<string, unknown>(),
+        values: new Map<string, unknown>([
+          ["sessions.doc.session-1", "hello"]
+        ]),
         get(key: string) {
           return this.values.get(key);
         },
@@ -372,10 +463,13 @@ describe("Session collaboration client", () => {
   it("renders streamed assistant output without mutating the Yjs document", async () => {
     let sharedDocument: Y.Doc | null = null;
     const events = eventBus();
+    const initial = "user hi\nassistant <!-- zion-assistant:id=run-1 --> ";
     const zion = {
       events,
       state: {
-        values: new Map<string, unknown>(),
+        values: new Map<string, unknown>([
+          ["sessions.doc.session-1", initial]
+        ]),
         get(key: string) {
           return this.values.get(key);
         },
@@ -411,7 +505,6 @@ describe("Session collaboration client", () => {
         };
       }
     });
-    const initial = "user hi\nassistant <!-- zion-assistant:id=run-1 --> ";
     const editor = editorHarness(initial);
     const binding = manager.bindEditor(editor);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -421,6 +514,7 @@ describe("Session collaboration client", () => {
       runId: "run-1",
       assistantBlockId: "run-1",
       backend: "runtime",
+      projectionSequence: 7,
       token: "streamed"
     });
 
@@ -430,14 +524,13 @@ describe("Session collaboration client", () => {
       editor.parent.querySelector(".zion-pending-assistant-output")?.textContent
     ).toBe("streamed");
 
-    events.emit("runtime/pendingAssistantCommitted", {
-      sessionId: "session-1",
-      runId: "run-1"
-    });
     sharedDocument?.getText("content").insert(
       sharedDocument.getText("content").length,
       "streamed"
     );
+    sharedDocument?.getMap("runProjection").set("run-1", {
+      lastSequence: 7
+    });
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(editor.getValue()).toBe(`${initial}streamed`);
@@ -456,11 +549,147 @@ describe("Session collaboration client", () => {
     editor.dispose();
   });
 
+  it("clears pending output when the Runtime projection sequence is acknowledged", async () => {
+    let sharedDocument: Y.Doc | null = null;
+    const events = eventBus();
+    const manager = createSessionCollaborationManager({
+      zion: {
+        events,
+        state: {
+          get() {},
+          set() {}
+        }
+      },
+      clientId: "workbench-a",
+      runtimeConfig: {
+        mode: "runtime",
+        enabled: true,
+        baseUrl: "http://127.0.0.1:8766"
+      },
+      createDocument() {
+        sharedDocument = new Y.Doc();
+        return sharedDocument;
+      },
+      createProvider(options: any) {
+        queueMicrotask(() => options.onSynced());
+        return {
+          awareness: new Awareness(options.document),
+          destroy() {}
+        };
+      }
+    });
+    const editor = editorHarness(
+      "user hi\nassistant <!-- zion-assistant:id=run-1 --> "
+    );
+    const binding = manager.bindEditor(editor);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    events.emit("chat/token", {
+      sessionId: "session-1",
+      runId: "run-1",
+      assistantBlockId: "run-1",
+      backend: "runtime",
+      documentWriter: false,
+      projectionSequence: 7,
+      token: "streamed text"
+    });
+    expect(
+      editor.parent.querySelector(".zion-pending-assistant-output")?.textContent
+    ).toBe("streamed text");
+
+    sharedDocument?.getMap("runProjection").set("run-1", {
+      lastSequence: 7
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      editor.parent.querySelector(".zion-pending-assistant-output")
+    ).toBeNull();
+
+    binding.dispose();
+    manager.dispose();
+    editor.dispose();
+  });
+
+  it("hydrates projected card payloads from the shared document", async () => {
+    const values = new Map<string, unknown>();
+    const executeCommand = vi.fn();
+    const manager = createSessionCollaborationManager({
+      zion: {
+        commands: { executeCommand },
+        state: {
+          get(key: string) {
+            return values.get(key);
+          },
+          set(key: string, value: unknown) {
+            values.set(key, value);
+          }
+        }
+      },
+      clientId: "workbench-a",
+      runtimeConfig: {
+        mode: "runtime",
+        enabled: true,
+        baseUrl: "http://127.0.0.1:8766"
+      },
+      createProvider(options: any) {
+        options.document.getText("content").insert(0, [
+          "user inspect",
+          "assistant <!-- zion-assistant:id=run-1 --> ",
+          "调用 read <!-- zion-tool:id=tool:run-1:call-1 -->"
+        ].join("\n"));
+        options.document.getMap("cards").set("tool:run-1:call-1", {
+          id: "tool:run-1:call-1",
+          kind: "tool",
+          runId: "run-1",
+          toolCallId: "call-1",
+          name: "read",
+          args: { path: "package.json" },
+          result: "contents",
+          ok: true,
+          assistantBlockId: "run-1"
+        });
+        queueMicrotask(() => options.onSynced());
+        return {
+          awareness: new Awareness(options.document),
+          destroy() {}
+        };
+      }
+    });
+    const editor = editorHarness("");
+    const binding = manager.bindEditor(editor);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(values.get("sessions.annotations.session-1")).toMatchObject({
+      tools: [
+        expect.objectContaining({
+          id: "tool:run-1:call-1",
+          result: "contents",
+          ok: true
+        })
+      ]
+    });
+    expect(executeCommand).toHaveBeenCalledWith(
+      "zion.chatCards.restoreSession",
+      expect.objectContaining({
+        sessionId: "session-1"
+      })
+    );
+
+    binding.dispose();
+    manager.dispose();
+    editor.dispose();
+  });
+
   it("streams the owner output into Yjs with stable block Markdown", async () => {
     let sharedDocument: Y.Doc | null = null;
     const events = eventBus();
+    const initial =
+      "user hi\nassistant <!-- zion-assistant:id=run-owner --> ";
     const values = new Map<string, unknown>([
-      ["chat.followLatest.session-1", true]
+      ["chat.followLatest.session-1", true],
+      ["sessions.doc.session-1", initial]
     ]);
     const manager = createSessionCollaborationManager({
       zion: {
@@ -498,8 +727,6 @@ describe("Session collaboration client", () => {
         };
       }
     });
-    const initial =
-      "user hi\nassistant <!-- zion-assistant:id=run-owner --> ";
     const editor = editorHarness(initial);
     const binding = manager.bindEditor(editor);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -537,8 +764,10 @@ describe("Session collaboration client", () => {
   it("shares one provider across split views and follows pending output in both", async () => {
     let sharedDocument: Y.Doc | null = null;
     const events = eventBus();
+    const initial = "user hi\nassistant <!-- zion-assistant:id=run-1 --> ";
     const values = new Map<string, unknown>([
-      ["chat.followLatest.session-1", true]
+      ["chat.followLatest.session-1", true],
+      ["sessions.doc.session-1", initial]
     ]);
     const createProvider = vi.fn((options: any) => {
       queueMicrotask(() => options.onSynced());
@@ -577,7 +806,6 @@ describe("Session collaboration client", () => {
         };
       }
     });
-    const initial = "user hi\nassistant <!-- zion-assistant:id=run-1 --> ";
     const first = editorHarness(initial);
     const second = editorHarness(initial);
     const firstBinding = manager.bindEditor(first);

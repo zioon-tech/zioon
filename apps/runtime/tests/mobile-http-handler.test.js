@@ -147,6 +147,67 @@ describe("Mobile HTTP handler", () => {
     });
   });
 
+  it("falls back to the first user message when Workbench only has a generated title", async () => {
+    const url = await harness({
+      sessions: {
+        async listSessions() {
+          return [{
+            id: "session_8cfd7337569f4d64",
+            title: "session_8cfd7337569f4d64",
+            status: "active"
+          }];
+        },
+        async getSessionMessages() {
+          return [{
+            id: "message-user",
+            sequence: 1,
+            role: "user",
+            content: "优化 mobile 对话自动命名",
+            runId: "run-1",
+            createdAt: 1
+          }];
+        }
+      },
+      presentationForSession: async () => ({
+        title: "Session 12",
+        titleAuto: true
+      })
+    });
+
+    const response = await fetch(`${url}/v1/mobile/sessions`);
+    await expect(response.json()).resolves.toMatchObject({
+      sessions: [{
+        id: "session_8cfd7337569f4d64",
+        title: "优化 mobile 对话自动命名"
+      }]
+    });
+  });
+
+  it("does not expose generated ids for empty placeholder Sessions", async () => {
+    const url = await harness({
+      sessions: {
+        async listSessions() {
+          return [{
+            id: "session_8cfd7337569f4d64",
+            title: "session_8cfd7337569f4d64",
+            status: "active"
+          }];
+        },
+        async getSessionMessages() {
+          return [];
+        }
+      }
+    });
+
+    const response = await fetch(`${url}/v1/mobile/sessions`);
+    await expect(response.json()).resolves.toMatchObject({
+      sessions: [{
+        id: "session_8cfd7337569f4d64",
+        title: "新会话"
+      }]
+    });
+  });
+
   it("keeps scheduled conversations out of the generic Mobile chat list", async () => {
     const url = await harness({
       sessions: {

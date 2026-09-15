@@ -11,6 +11,7 @@ import { createTerminalManagementService } from "../../src/terminal-management-s
 import { DeviceConnector } from "../../../device-connector/src/device-connector.mjs";
 import { DeviceServiceHost, DEVICE_SERVICE_CAPABILITY } from "../../../device-connector/src/device-service-host.mjs";
 import { LocalToolsDeviceHost, LOCAL_TOOLS_TOOL_DEFINITIONS } from "../../../../packages/local-tools-client/src/index.mjs";
+import { createPluginDataFileHost } from "../../../../packages/local-tools-client/src/plugin-data-files.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -38,7 +39,7 @@ async function listen(handler, servers) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-export async function startMultiNodeFixture() {
+export async function startMultiNodeFixture({ pluginData = false } = {}) {
   const servers = [];
   const root = await mkdtemp(join(tmpdir(), "zion-multi-node-"));
   const broker = new NodeBroker({ invocationLeaseMs: 5000 });
@@ -62,6 +63,10 @@ export async function startMultiNodeFixture() {
       const payload = request.method === "GET" ? Object.fromEntries(parsed.searchParams) : await body(request);
       calls.push({ path: parsed.pathname, method: request.method, payload });
       if (parsed.pathname === "/health") return json(response, 200, { ok: true });
+      if (pluginData && parsed.pathname === "/bash") {
+        const result = await execFileAsync("bash", ["-c", payload.command], { cwd: directory });
+        return json(response, 200, { output: result.stdout });
+      }
       if (parsed.pathname === "/machines") return json(response, 200, { machines: [] });
       if (parsed.pathname === "/sessions") {
         if (request.method === "POST") {
@@ -104,12 +109,15 @@ export async function startMultiNodeFixture() {
     const nodeId = `node:${name}`;
     const instanceId = `instance:${name}`;
     const resourceId = `workspace:${name}`;
+    const dataFiles = pluginData ? createPluginDataFileHost({ root: directory }) : null;
     const toolHost = new LocalToolsDeviceHost({
       baseUrl: localUrl,
-      resourceBindings: { [resourceId]: { root: directory, allowedTerminalSessionIds: ["same-terminal"] } }
+      dataFiles,
+      resourceBindings: { [resourceId]: { root: directory, allowedTerminalSessionIds: pluginData ? [] : ["same-terminal"] } }
     });
     const serviceHost = new DeviceServiceHost({
       localToolsUrl: localUrl,
+      dataFiles,
       deviceAccess: {
         state: async () => ({ allowedTerminalSessionIds: [...sessions.keys()] }),
         async authorizeInvocation(input) {
@@ -123,7 +131,9 @@ export async function startMultiNodeFixture() {
       pollWaitMs: 25,
       registration: {
         protocolVersion: 1, nodeId, instanceId, label: `Test ${name}`,
-        capabilities: [...LOCAL_TOOLS_TOOL_DEFINITIONS, DEVICE_SERVICE_CAPABILITY],
+        capabilities: [...LOCAL_TOOLS_TOOL_DEFINITIONS, {
+          ...DEVICE_SERVICE_CAPABILITY, version: pluginData ? "2" : "1"
+        }],
         resources: [{ resourceId, kind: "workspace", projectId: "fixture" }]
       }
     });

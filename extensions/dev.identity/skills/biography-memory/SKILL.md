@@ -9,10 +9,14 @@ Use this skill to recover details behind the short biography digest.
 
 ## Data Sources
 
-- Digest: `~/.zion-next/memory/biography/digest.md`
-- Full event stream: `~/.zion-next/memory/biography/events.jsonl`
-- Identity: `~/.zion-next/memory/identity.md`
-- User profile: `~/.zion-next/memory/user.md`
+Use the `dev.identity` plugin data location supplied in context: its `nodeId`
+selects the tool target and its absolute `root` is the base for all paths below.
+Do not use the active terminal, guess another Node, or read the legacy memory directory.
+
+- Digest: `<root>/biography/digest.md`
+- Full event stream: `<root>/biography/events.jsonl`
+- Identity: `<root>/identity.md`
+- User profile: `<root>/user.md`
 
 `events.jsonl` is the source of truth. Each line is a JSON object with fields such as:
 
@@ -42,15 +46,19 @@ Use this skill to recover details behind the short biography digest.
 
 ## Query Methods
 
-Run the script from this skill directory:
+Run Bash on the supplied data Node, from this skill's deployed directory.
+Set `EVENTS` to the supplied absolute `<root>/biography/events.jsonl` path with
+proper shell quoting; it is a shell variable, not a virtual filesystem URI.
+The Node must have Python and this script installed. If unavailable, report the
+missing dependency; do not silently switch Nodes.
 
 ```bash
-python3 scripts/query-biography.py index
-python3 scripts/query-biography.py project memory-panel --limit 20
-python3 scripts/query-biography.py topic observability --limit 20
-python3 scripts/query-biography.py event session-id:run-id:0
-python3 scripts/query-biography.py session session-id --limit 40
-python3 scripts/query-biography.py recent --limit 20
+python3 scripts/query-biography.py index --path "$EVENTS"
+python3 scripts/query-biography.py project memory-panel --limit 20 --path "$EVENTS"
+python3 scripts/query-biography.py topic observability --limit 20 --path "$EVENTS"
+python3 scripts/query-biography.py event session-id:run-id:0 --path "$EVENTS"
+python3 scripts/query-biography.py session session-id --limit 40 --path "$EVENTS"
+python3 scripts/query-biography.py recent --limit 20 --path "$EVENTS"
 ```
 
 When a matching record is used in the answer, copy its `id` into the Wiki link:
@@ -63,7 +71,7 @@ When a matching record is used in the answer, copy its `id` into the Wiki link:
 
 This retrieval workflow is read-only. Do not edit `identity.md`, `user.md`, or
 `biography/` while querying history. Project working-memory maintenance under
-`~/.zion-next/memory/projects/` is governed separately by the injected Identity
+`<root>/projects/` is governed separately by the injected Identity
 context and is outside this skill's retrieval workflow.
 
 Do not infer details absent from matching events. If the event stream is insufficient, say so and ask for the original session or additional context.

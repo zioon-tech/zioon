@@ -2276,19 +2276,45 @@ const toolInlineField = StateField.define({
       }
       if (e.is(addInline)) {
         debugEffects.addInline += 1;
-        const { from, to, id, name, args, userStartLine, sessionId, assistantBlockId, action } = e.value;
-        items.set(id, {
+        const {
           from,
           to,
+          id,
           name,
           args,
-          result: null,
-          ok: null,
-          action: normalizeToolAction(action),
-          expanded: false,
-          userStartLine: typeof userStartLine === "number" ? userStartLine : null,
-          sessionId: sessionId || null,
-          assistantBlockId: assistantBlockId || null
+          result,
+          ok,
+          expanded,
+          userStartLine,
+          sessionId,
+          assistantBlockId,
+          action
+        } = e.value;
+        const current = items.get(id);
+        items.set(id, {
+          ...current,
+          from,
+          to,
+          name: name || current?.name || "tool",
+          args: args === undefined ? current?.args : args,
+          result: Object.prototype.hasOwnProperty.call(e.value, "result")
+            ? result
+            : current?.result ?? null,
+          ok: Object.prototype.hasOwnProperty.call(e.value, "ok")
+            ? ok
+            : current?.ok ?? null,
+          action: normalizeToolAction(
+            action === undefined ? current?.action : action
+          ),
+          expanded: current
+            ? current.expanded === true
+            : expanded === true,
+          userStartLine: typeof userStartLine === "number"
+            ? userStartLine
+            : current?.userStartLine ?? null,
+          sessionId: sessionId || current?.sessionId || null,
+          assistantBlockId:
+            assistantBlockId || current?.assistantBlockId || null
         });
       }
       if (e.is(toggleInline)) {
@@ -3754,7 +3780,6 @@ export function installToolCallCards() {
       const doc = this.view.state.doc;
       const docLen = doc.length;
       const batchedEffects = [];
-      const batchedToggles = [];
       const actionFor = (it) => normalizeToolAction(it?.action) || this.toolActions.get(String(it?.id || ""))?.action || null;
       let skippedFallback = false;
       debugChatCards("restore.anchors", { panelId: this.panelId, sessionId: restoreSessionId, items: list.length, anchors: anchors.length });
@@ -3790,6 +3815,9 @@ export function installToolCallCards() {
                 id,
                 name: it.name,
                 args: it.args,
+                result: it.result,
+                ok: it.ok,
+                expanded: it.expanded === true,
                 action: actionFor(it),
                 userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null,
                 sessionId: restoreSessionId,
@@ -3802,9 +3830,6 @@ export function installToolCallCards() {
           const action = actionFor(it);
           if ((mounted.action || null) !== action) {
             batchedEffects.push(updateAction.of({ id, action }));
-          }
-            if (!!it.expanded && (!mounted.expanded || needsHydration)) {
-            batchedToggles.push(id);
           }
         }
       });
@@ -3823,9 +3848,20 @@ export function installToolCallCards() {
           return isToolAnchorForItem(doc.sliceString(it.from, it.to), it, it.id);
         },
         onMatch: (it, anchor) => {
-          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, name: it.name, args: it.args, action: actionFor(it), userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null, sessionId: restoreSessionId, assistantBlockId: it.assistantBlockId || null }));
-          if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
-          if (it.expanded) batchedToggles.push(it.id);
+          batchedEffects.push(addInline.of({
+            from: anchor.from,
+            to: anchor.to,
+            id: it.id,
+            name: it.name,
+            args: it.args,
+            result: it.result,
+            ok: it.ok,
+            expanded: it.expanded === true,
+            action: actionFor(it),
+            userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null,
+            sessionId: restoreSessionId,
+            assistantBlockId: it.assistantBlockId || null
+          }));
         }
       });
 
@@ -3839,9 +3875,20 @@ export function installToolCallCards() {
           && (!anchor.markerId || anchor.markerId === String(it.id || ""))
           && hasMatchingAssistantParent(it, anchor),
         onMatch: (it, anchor) => {
-          batchedEffects.push(addInline.of({ from: anchor.from, to: anchor.to, id: it.id, name: it.name, args: it.args, action: actionFor(it), userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null, sessionId: restoreSessionId, assistantBlockId: it.assistantBlockId || null }));
-          if (it.result != null) batchedEffects.push(updateResult.of({ id: it.id, result: it.result, ok: it.ok }));
-          if (it.expanded) batchedToggles.push(it.id);
+          batchedEffects.push(addInline.of({
+            from: anchor.from,
+            to: anchor.to,
+            id: it.id,
+            name: it.name,
+            args: it.args,
+            result: it.result,
+            ok: it.ok,
+            expanded: it.expanded === true,
+            action: actionFor(it),
+            userStartLine: typeof it.userStartLine === "number" ? it.userStartLine : null,
+            sessionId: restoreSessionId,
+            assistantBlockId: it.assistantBlockId || null
+          }));
           it.from = anchor.from;
           it.to = anchor.to;
         }
@@ -3853,7 +3900,6 @@ export function installToolCallCards() {
         sessionId: restoreSessionId,
         processedBeforeFallback: processedIds.size,
         batchedEffects: batchedEffects.length,
-        batchedToggles: batchedToggles.length,
         needFallback: itemsToProcess.filter(it => !processedIds.has(it.id)).map(it => String(it?.id || ""))
       });
       if (batchedEffects.length) this.view.dispatch({ effects: batchedEffects });
@@ -3866,11 +3912,6 @@ export function installToolCallCards() {
             pos: lastPayload.to
           });
         }
-      }
-      if (batchedToggles.length) {
-        const eff2 = batchedToggles.map(id => toggleInline.of({ id }));
-        this.view.dispatch({ effects: eff2 });
-        scheduleRevealToolContent(this.view, { id: batchedToggles[batchedToggles.length - 1] });
       }
 
       // Phase 3: 兜底 (创建新锚点)
@@ -3917,17 +3958,23 @@ export function installToolCallCards() {
         this.view.dispatch({
           changes: { from: plan.replaceFrom ?? plan.insertPos, to: plan.replaceTo ?? plan.insertPos, insert: plan.insertText },
           annotations: Transaction.userEvent.of("zion.cardRestore"),
-          effects: [addInline.of({ from: plan.markerFrom, to: plan.markerTo, id: it.id, name, args: it.args, action: actionFor(it), userStartLine, sessionId: restoreSessionId, assistantBlockId: it.assistantBlockId || null })]
+          effects: [addInline.of({
+            from: plan.markerFrom,
+            to: plan.markerTo,
+            id: it.id,
+            name,
+            args: it.args,
+            result: it.result,
+            ok: it.ok,
+            expanded: it.expanded === true,
+            action: actionFor(it),
+            userStartLine,
+            sessionId: restoreSessionId,
+            assistantBlockId: it.assistantBlockId || null
+          })]
         });
         scheduleRevealToolContent(this.view, { id: it.id, pos: plan.markerTo });
-        
-        if (it.result != null) {
-          this.view.dispatch({ effects: [updateResult.of({ id: it.id, result: it.result, ok: it.ok })] });
-        }
-        if (it.expanded) {
-          this.view.dispatch({ effects: [toggleInline.of({ id: it.id })] });
-        }
-        
+
         // 更新 item 位置
         it.from = plan.markerFrom;
         it.to = plan.markerTo;
@@ -4029,15 +4076,14 @@ function ensureToolItemFromDoc(view, id) {
       id: wantId,
       name: stored?.name || anchor.name || "tool",
       args: stored?.args,
+      result: stored?.result,
+      ok: stored?.ok,
+      expanded: stored?.expanded === true,
       action: stored?.action || null,
       sessionId: sid,
       assistantBlockId: stored?.assistantBlockId || null
     })];
-    if (stored && stored.result != null) {
-      effects.push(updateResult.of({ id: wantId, result: stored.result, ok: stored.ok }));
-    }
     view.dispatch({ effects });
-    if (stored?.expanded) view.dispatch({ effects: [toggleInline.of({ id: wantId })] });
     return true;
   } catch {
     return false;

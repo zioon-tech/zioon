@@ -297,6 +297,16 @@ export async function getRun(runId: string): Promise<RunRecord> {
   return body.run;
 }
 
+export async function getRunEvents(runId: string, after = 0): Promise<RunEvent[]> {
+  const query = new URLSearchParams({
+    after: String(Math.max(0, Number(after) || 0)),
+  });
+  const body = await requestJson<{ events?: RunEvent[] }>(
+    `/v1/runs/${encodeURIComponent(runId)}/events?${query}`,
+  );
+  return Array.isArray(body.events) ? body.events : [];
+}
+
 export async function abortRun(runId: string): Promise<void> {
   await requestJson(`/v1/runs/${encodeURIComponent(runId)}/abort`, {
     method: "POST",
@@ -330,7 +340,7 @@ export async function* subscribeRun(
 ): AsyncGenerator<RunEvent> {
   const query = new URLSearchParams({
     after: String(Math.max(0, afterSequence)),
-    reasoning: "summary",
+    reasoning: "stream",
     max_delay_ms: "100",
     max_chunk_chars: "512",
   });
@@ -558,11 +568,13 @@ export async function closeTerminalSession(sessionId: string): Promise<void> {
 export async function listFiles(
   sessionId: string,
   path: string,
+  nodeId?: string,
 ): Promise<FileEntry[]> {
   const query = new URLSearchParams({
     session_id: sessionId,
     path,
     max_depth: "1",
+    ...(nodeId ? { node_id: nodeId, plugin_data_version: "1" } : {}),
   });
   const body = await requestJson<
     { entries?: FileEntry[]; tree?: FileEntry[]; results?: string } | FileEntry[]
@@ -593,21 +605,50 @@ export async function listFiles(
 export async function readFile(
   sessionId: string,
   path: string,
-): Promise<{ content: string; size?: number; truncated?: boolean }> {
+  nodeId?: string,
+): Promise<{ content: string; size?: number; truncated?: boolean; content_hash?: string }> {
   const query = new URLSearchParams({
     session_id: sessionId,
     path,
+    ...(nodeId ? { node_id: nodeId, plugin_data_version: "1" } : {}),
   });
   const body = await requestJson<{
     content?: string;
     size?: number;
     truncated?: boolean;
+    content_hash?: string;
   }>(`${LOCAL_TOOLS_PREFIX}/files/read?${query}`);
   return {
     content: String(body.content || ""),
     size: body.size,
     truncated: body.truncated,
+    content_hash: body.content_hash,
   };
+}
+
+export async function getPluginDataLocation(pluginId: string): Promise<{ nodeId: string; root: string }> {
+  const body = await requestJson<{ data: { nodeId: string; root: string } }>(
+    `/v1/plugins/${encodeURIComponent(pluginId)}/locations`,
+  );
+  return body.data;
+}
+
+export async function writePluginDataFile(
+  location: { nodeId: string; root: string },
+  path: string,
+  content: string,
+  expectedHash: string,
+): Promise<void> {
+  if (!path.startsWith(`${location.root}/`) || path.split("/").includes("..")) {
+    throw new Error("Path is outside the plugin data directory");
+  }
+  const query = new URLSearchParams(location.nodeId ? { node_id: location.nodeId } : {});
+  query.set("plugin_data_version", "1");
+  const body = await requestJson<{ ok?: boolean; error?: string }>(`${LOCAL_TOOLS_PREFIX}/files/write?${query}`, {
+    method: "POST",
+    body: JSON.stringify({ path, content, expected_hash: expectedHash }),
+  });
+  if (body.ok === false || body.error) throw new Error(body.error || "File write failed");
 }
 
 export async function listPlugins(): Promise<PluginRecord[]> {
@@ -648,17 +689,40 @@ export async function writeWorkbenchKV<T>(key: string, value: T): Promise<T> {
   return body.value ?? value;
 }
 
-export async function getSkillsSnapshot(): Promise<SkillsSnapshot | null> {
-  return await readWorkbenchKV<SkillsSnapshot>(SKILLS_SNAPSHOT_KEY);
+export async function getSkillsSnapshot(
+  { signal }: { signal?: AbortSignal } = {},
+): Promise<SkillsSnapshot | null> {
+  const body = await requestJson<{ snapshot?: SkillsSnapshot }>(
+    "/v1/skills/snapshot",
+    { signal },
+  );
+  return body.snapshot || null;
 }
 
+export const skillsSnapshotQueryOptions = {
+  queryKey: ["skills-snapshot"],
+  queryFn: getSkillsSnapshot,
+  staleTime: 0,
+  refetchInterval: 5_000,
+  refetchIntervalInBackground: false,
+  refetchOnWindowFocus: "always" as const,
+  refetchOnReconnect: "always" as const,
+};
+
 export async function updateSkillsSnapshot(
-  snapshot: SkillsSnapshot,
+  change: SkillsSnapshot | { updates: Array<{ id: string; enabled: boolean }> },
 ): Promise<SkillsSnapshot> {
-  return await writeWorkbenchKV(SKILLS_SNAPSHOT_KEY, {
-    ...snapshot,
-    savedAt: Date.now(),
-  });
+  const body = await requestJson<{ snapshot?: SkillsSnapshot }>(
+    "/v1/skills/snapshot",
+    {
+      method: "PATCH",
+      body: JSON.stringify("updates" in change
+        ? { updates: change.updates }
+        : { enabled: change.enabled }),
+    },
+  );
+  if (!body.snapshot) throw new Error("Runtime did not acknowledge the Skills update");
+  return body.snapshot;
 }
 
 export function pairingFromLocation(): PairingInput | null {

@@ -1,4 +1,9 @@
 export const DEVICE_PROTOCOL_VERSION = 1;
+export {
+  formatByteSize,
+  parseByteSize,
+  requestBodyLimitError
+} from "./request-limits.mjs";
 
 const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/;
 const RISK_CLASSES = new Set([

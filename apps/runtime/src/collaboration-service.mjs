@@ -5,7 +5,21 @@ import * as Y from "yjs";
 
 export const COLLABORATION_PATH = "/v1/collaboration";
 export const COLLABORATION_TEXT_KEY = "content";
-export const COLLABORATION_PROTOCOL = "5";
+export const COLLABORATION_PROTOCOL = "6";
+const PROJECTABLE_RUN_EVENT_TYPES = new Set([
+  "run.started",
+  "reasoning.started",
+  "reasoning.delta",
+  "reasoning.completed",
+  "message.delta",
+  "message.completed",
+  "tool.requested",
+  "tool.completed",
+  "tool.denied",
+  "run.completed",
+  "run.failed",
+  "run.aborted"
+]);
 
 function collaborationDocumentName(value) {
   const name = String(value || "").trim();
@@ -65,7 +79,8 @@ export function createRuntimeCollaborationService({
   allowOrigin = loopbackOriginAllowed,
   debounceMs = 250,
   maxDebounceMs = 2_000,
-  checkpointDebounceMs = 1_000
+  checkpointDebounceMs = 1_000,
+  runProjectionDebounceMs = 40
 } = {}) {
   if (
     !store?.readCollaborationDocument
@@ -164,23 +179,23 @@ export function createRuntimeCollaborationService({
         const collaborationText = document
           .getText(COLLABORATION_TEXT_KEY)
           .toString();
-        // #region debug-point B:collaboration-load-candidates
-        globalThis.fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"B",location:"apps/runtime/src/collaboration-service.mjs:onLoadDocument",msg:"[DEBUG] Compared stored collaboration state with Workbench snapshot",data:{runtimeSessionId:sessionId,collaborationLength:collaborationText.length,collaborationRoles:Array.from(collaborationText.matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),collaborationMarkers:(collaborationText.match(/zion-assistant:id=/g)||[]).length,collaborationUpdatedAt:Number(stored.updatedAt||0),snapshotExists:!!session&&!session.deleted,snapshotLength:String(session?.text||"").length,snapshotRoles:Array.from(String(session?.text||"").matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),snapshotUpdatedAt:Number(session?.updated_at||0)},ts:Date.now()})}).catch(()=>{});
-        // #endregion
+        const snapshotText = session && !session.deleted
+          ? String(session.text || "")
+          : "";
         if (
           !session
           || session.deleted
-          || collaborationText === String(session.text || "")
-          || Number(stored.updatedAt || 0) >= Number(session.updated_at || 0)
+          || collaborationText === snapshotText
+          || (
+            collaborationText.length > 0
+            && Number(stored.updatedAt || 0) >= Number(session.updated_at || 0)
+          )
         ) {
           return document;
         }
       }
       const document = new Y.Doc();
       const text = session && !session.deleted ? String(session.text || "") : "";
-      // #region debug-point B:collaboration-bootstrap-source
-      globalThis.fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"B",location:"apps/runtime/src/collaboration-service.mjs:onLoadDocument-bootstrap",msg:"[DEBUG] Bootstrapping collaboration state from Workbench snapshot",data:{runtimeSessionId:sessionId,storedStateExists:!!stored?.state?.length,snapshotExists:!!session&&!session.deleted,snapshotLength:text.length,snapshotRoles:Array.from(text.matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1])},ts:Date.now()})}).catch(()=>{});
-      // #endregion
       if (text) document.getText(COLLABORATION_TEXT_KEY).insert(0, text);
       store.writeCollaborationDocument(
         sessionId,
@@ -198,9 +213,20 @@ export function createRuntimeCollaborationService({
       lastContext
     }) {
       const sessionId = collaborationDocumentName(documentName);
-      const state = Y.encodeStateAsUpdate(document);
       const sourceClientId = String(lastContext?.clientId || "");
-      const nextText = document.getText(COLLABORATION_TEXT_KEY).toString();
+      const ytext = document.getText(COLLABORATION_TEXT_KEY);
+      let nextText = ytext.toString();
+      const session = store.readSession(sessionId);
+      if (
+        !nextText
+        && session
+        && !session.deleted
+        && String(session.text || "")
+      ) {
+        replaceYText(ytext, session.text);
+        nextText = String(session.text);
+      }
+      const state = Y.encodeStateAsUpdate(document);
       const result = store.writeCollaborationDocument(sessionId, state, {
         text: nextText,
         sourceClientId,
@@ -215,26 +241,17 @@ export function createRuntimeCollaborationService({
   });
   const pendingRunProjections = new Map();
 
-  const hasConnectedClient = (documentName, clientId) => {
-    const expected = String(clientId || "");
-    if (!expected) return false;
-    const document = hocuspocus.documents.get(documentName);
-    if (!document?.getConnections) return false;
-    return document.getConnections().some((connection) =>
-      String(connection?.context?.clientId || "") === expected
-    );
-  };
-
   const flushRunProjection = async (key) => {
     const pending = pendingRunProjections.get(key);
     if (!pending || pending.flushing) return pending?.flushing || null;
-    const projectedSequence = pending.lastSequence;
-    const projectedOutput = pending.output;
-    const projectedStatus = pending.status;
-    const appendUserPrompt = pending.appendUserPrompt === true;
-    const writerConnected = hasConnectedClient(
-      pending.sessionId,
-      pending.writerClientId
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+      pending.timer = null;
+    }
+    const projectedEvents = pending.events.splice(0);
+    if (!projectedEvents.length) return null;
+    const projectedSequence = Math.max(
+      ...projectedEvents.map((event) => Number(event.sequence) || 0)
     );
     pending.flushing = (async () => {
       const connection = await hocuspocus.openDirectConnection(
@@ -243,37 +260,48 @@ export function createRuntimeCollaborationService({
       );
       try {
         await connection.transact((document) => {
+          if (
+            activeDocumentProjector?.projectEvents
+          ) {
+            activeDocumentProjector.projectEvents({
+              document,
+              runId: pending.runId,
+              events: projectedEvents,
+              includeReasoning: pending.includeReasoning
+            });
+            return;
+          }
           const runs = document.getMap("runs");
           const previous = runs.get(pending.runId) || {};
-          if (Number(previous.lastSequence || 0) >= projectedSequence) return;
-          if (!writerConnected) {
+          if (
+            Number(previous.lastSequence || 0) < projectedSequence
+          ) {
             activeDocumentProjector?.projectRun?.({
               document,
               runId: pending.runId,
-              output: projectedOutput,
-              status: projectedStatus,
+              output: pending.output,
+              status: pending.status,
               terminal: pending.terminal,
-              appendUserPrompt
+              appendUserPrompt: pending.appendUserPrompt
             });
           }
-          const debugProjectedText = document.getText(COLLABORATION_TEXT_KEY).toString();
-          // #region debug-point A:assistant-run-projection
-          globalThis.fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"A",location:"apps/runtime/src/collaboration-service.mjs:flushRunProjection",msg:"[DEBUG] Projected assistant output into collaboration document",data:{runtimeSessionId:pending.sessionId,runtimeRunId:pending.runId,sequence:projectedSequence,status:projectedStatus,writerConnected,appendUserPrompt,outputLength:projectedOutput.length,documentLength:debugProjectedText.length,documentRoles:Array.from(debugProjectedText.matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),documentMarkers:(debugProjectedText.match(/zion-assistant:id=/g)||[]).length},ts:Date.now()})}).catch(()=>{});
-          // #endregion
           runs.set(pending.runId, {
+            ...previous,
             lastSequence: projectedSequence,
-            output: projectedOutput,
-            status: projectedStatus,
-            writerClientId: pending.writerClientId || null
+            output: pending.output,
+            status: pending.status
           });
         });
       } finally {
         await connection.disconnect({ unloadImmediately: false });
       }
-    })().finally(() => {
+    })().catch((error) => {
+      pending.events.unshift(...projectedEvents);
+      throw error;
+    }).finally(() => {
       pending.flushing = null;
-      if (pending.lastSequence > projectedSequence) {
-        void flushRunProjection(key);
+      if (pending.events.length) {
+        return flushRunProjection(key);
       } else if (pending.terminal) {
         pendingRunProjections.delete(key);
       }
@@ -397,15 +425,10 @@ export function createRuntimeCollaborationService({
       });
       try {
         await connection.transact((document) => {
-          const debugTextBeforePrepare = document.getText(COLLABORATION_TEXT_KEY).toString();
           activeDocumentProjector.prepareRun({
             document,
             ...input
           });
-          const debugTextAfterPrepare = document.getText(COLLABORATION_TEXT_KEY).toString();
-          // #region debug-point A:prepare-run-document
-          globalThis.fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"A",location:"apps/runtime/src/collaboration-service.mjs:prepareRun",msg:"[DEBUG] Projected submitted user message into collaboration document",data:{runtimeSessionId:name,runtimeRunId:String(input.runId||""),beforeLength:debugTextBeforePrepare.length,beforeRoles:Array.from(debugTextBeforePrepare.matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),afterLength:debugTextAfterPrepare.length,afterRoles:Array.from(debugTextAfterPrepare.matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),afterMarkers:(debugTextAfterPrepare.match(/zion-assistant:id=/g)||[]).length,userContentLength:String(input.userContent||"").length},ts:Date.now()})}).catch(()=>{});
-          // #endregion
         });
       } finally {
         await connection.disconnect({ unloadImmediately: false });
@@ -455,6 +478,7 @@ export function createRuntimeCollaborationService({
       const runId = String(event.runId || "");
       const name = collaborationDocumentName(sessionId);
       if (!runId) return null;
+      if (!PROJECTABLE_RUN_EVENT_TYPES.has(event.type)) return null;
       const messageDelta = event.type === "message.delta"
         ? String(event.data?.delta || "")
         : "";
@@ -464,29 +488,26 @@ export function createRuntimeCollaborationService({
         : "";
       const terminal = ["run.completed", "run.failed", "run.aborted"]
         .includes(event.type);
-      if (!messageDelta && !messageCompleted && !terminal) return null;
       const key = `${name}:${runId}`;
       const pending = pendingRunProjections.get(key) || {
         key,
         sessionId: name,
         runId,
+        events: [],
         output: "",
         turnOutput: new Map(),
         status: "running",
         lastSequence: 0,
         messageCompleted: false,
         appendUserPrompt: false,
-        writerClientId: "",
+        includeReasoning: true,
         terminal: false,
+        timer: null,
         flushing: null
       };
       pending.appendUserPrompt = pending.appendUserPrompt
         || options.appendUserPrompt === true;
-      pending.writerClientId = String(
-        options.documentWriterClientId
-        || pending.writerClientId
-        || ""
-      );
+      if (options.includeReasoning === false) pending.includeReasoning = false;
       pending.lastSequence = Math.max(
         pending.lastSequence,
         Number(event.sequence) || 0
@@ -499,8 +520,8 @@ export function createRuntimeCollaborationService({
           String(pending.turnOutput.get(turn) || "") + messageDelta
         );
       }
+      pending.events.push(event);
       pendingRunProjections.set(key, pending);
-      if (messageDelta && !messageCompleted && !terminal) return null;
       if (messageCompleted) {
         const turn = String(event.data?.turn ?? "");
         const streamedTurn = String(pending.turnOutput.get(turn) || "");
@@ -524,12 +545,26 @@ export function createRuntimeCollaborationService({
           pending.output = String(event.data.output);
         }
       }
+      if (
+        event.type === "message.delta"
+        || event.type === "reasoning.delta"
+      ) {
+        if (!pending.timer) {
+          pending.timer = setTimeout(() => {
+            pending.timer = null;
+            void flushRunProjection(pending.key).catch(() => {});
+          }, Math.max(10, Number(runProjectionDebounceMs) || 40));
+        }
+        return null;
+      }
       return flushRunProjection(pending.key);
     },
     async close() {
       closing = true;
       storeSubscription?.dispose?.();
       for (const pending of pendingRunProjections.values()) {
+        if (pending.timer) clearTimeout(pending.timer);
+        pending.timer = null;
         await flushRunProjection(pending.key);
       }
       for (const sessionId of [...pendingDocumentCheckpoints.keys()]) {

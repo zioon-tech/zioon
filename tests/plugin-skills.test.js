@@ -127,7 +127,10 @@ describe("plugin skill contributions", () => {
       skillFiles: {
         "skills/biography-memory": {
           "SKILL.md": "---\nname: biography-memory\ndescription: ZIP skill\n---\n",
-          "scripts/query-biography.py": "print('ok')\n"
+          "scripts/query-biography.py": "print('ok')\n",
+          ".env": "API_KEY=must-not-sync\n",
+          "credentials.json": "{\"token\":\"must-not-sync\"}\n",
+          "private.pem": "must-not-sync\n"
         }
       }
     });
@@ -145,5 +148,7 @@ describe("plugin skill contributions", () => {
     expect(JSON.parse(requests[0].init.body).path).toBe("/Users/test/.zion-next/skills/.plugins/dev.identity/biography-memory/SKILL.md");
     expect(JSON.parse(requests[0].init.body).content).toContain("ZIP skill");
     expect(JSON.parse(requests[1].init.body).path).toBe("/Users/test/.zion-next/skills/.plugins/dev.identity/biography-memory/scripts/query-biography.py");
+    expect(requests.map(({ init }) => JSON.parse(init.body).path).join("\n"))
+      .not.toMatch(/\.env|credentials\.json|private\.pem/);
   });
 });

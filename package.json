@@ -22,6 +22,7 @@
     "runtime:cli": "npm --prefix apps/runtime run cli --",
     "remote:start": "node apps/runtime/src/remote-launcher.mjs",
     "deploy:configure": "node scripts/configure-runtime-deployment.mjs",
+    "deploy:patch": "node scripts/deploy-production-patch.mjs",
     "runtime:test": "npm --prefix packages/runtime test && npm --prefix packages/node-protocol test && npm --prefix apps/runtime test && npm --prefix apps/device-connector test && vitest run tests/runtime-zion-compatibility.test.ts",
     "runtime:serve": "npm run runtime:build && npm --prefix apps/runtime run start --",
     "device:connect": "node apps/device-connector/src/main.mjs",

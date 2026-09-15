@@ -685,6 +685,33 @@ describe("Runtime compatibility with current zion-next contracts", () => {
     expect(harness.emitted.at(-1)?.topic).toBe("chat/reasoningEnd");
   });
 
+  it("delivers short Runtime reasoning chunks without waiting for another event", async () => {
+    const harness = projectionHarness();
+    const options = { backend: "runtime", documentWriter: false };
+    await projectRunEventToSession(
+      harness.zion, "session-live",
+      toZionNextRunEvent(runtimeEvent("reasoning.delta", { turn: 1, delta: "First" })),
+      options
+    );
+    expect(harness.emitted.map(({ topic }) => topic)).toEqual([
+      "chat/reasoningStart", "chat/reasoningToken"
+    ]);
+    expect(harness.emitted.at(-1)?.payload.token).toBe("First");
+    await projectRunEventToSession(
+      harness.zion, "session-live",
+      toZionNextRunEvent(runtimeEvent("reasoning.delta", { turn: 1, delta: " second" })),
+      options
+    );
+    await projectRunEventToSession(
+      harness.zion, "session-live",
+      toZionNextRunEvent(runtimeEvent("reasoning.completed", { turn: 1 })),
+      options
+    );
+    expect(harness.emitted.filter(({ topic }) => topic === "chat/reasoningToken")
+      .map(({ payload }) => payload.token)).toEqual(["First", " second"]);
+    expect(harness.emitted.at(-1)?.topic).toBe("chat/reasoningEnd");
+  });
+
   it("routes message completion to the pending assistant projection hook", async () => {
     const harness = projectionHarness();
     const completeAssistantMessage = vi.fn(async () => undefined);

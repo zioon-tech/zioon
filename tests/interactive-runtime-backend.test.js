@@ -639,7 +639,7 @@ describe("interactive Runtime backend", () => {
     });
   });
 
-  it("hydrates projected model request details for the LLM payload inspector", async () => {
+  it("delivers projected previews and following text before registering eventual model request detail", async () => {
     const projectedRequest = {
       schemaVersion: 1,
       eventId: "projection-request",
@@ -660,11 +660,41 @@ describe("interactive Runtime backend", () => {
       eventId: "event-completed",
       runId: "runtime-chat-detail",
       attemptId: "attempt-chat-detail",
-      sequence: 2,
+      sequence: 4,
       type: "run.completed",
-      timestamp: 101,
+      timestamp: 103,
       data: { output: "done", usage: {} }
     };
+    const reasoningEvent = {
+      ...projectedRequest,
+      eventId: "reasoning-detail",
+      sequence: 2,
+      type: "reasoning.delta",
+      timestamp: 101,
+      data: { turn: 1, delta: "inspect first" }
+    };
+    const textEvent = {
+      ...projectedRequest,
+      eventId: "text-detail",
+      sequence: 3,
+      type: "message.delta",
+      timestamp: 102,
+      data: { delta: "done" }
+    };
+    const payload = {
+      model: "test-model",
+      messages: [{ role: "user", content: "inspect this" }],
+      tools: [{ type: "function", function: { name: "webFetch" } }]
+    };
+    const detailResponse = new globalThis.Response(JSON.stringify({
+      event: {
+        ...projectedRequest,
+        eventId: "raw-request",
+        data: { modelId: "test-model", payload }
+      }
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+    let releaseDetail;
+    const heldDetail = new Promise((resolve) => { releaseDetail = resolve; });
     const fetchImpl = vi.fn(async (url, init = {}) => {
       const value = String(url);
       if (value.endsWith("/v1/models")) {
@@ -690,55 +720,92 @@ describe("interactive Runtime backend", () => {
         return new globalThis.Response(
           [
             `event: model.request\ndata: ${JSON.stringify(projectedRequest)}\n\n`,
+            `event: reasoning.delta\ndata: ${JSON.stringify(reasoningEvent)}\n\n`,
+            `event: message.delta\ndata: ${JSON.stringify(textEvent)}\n\n`,
             `event: run.completed\ndata: ${JSON.stringify(terminalEvent)}\n\n`
           ].join(""),
           { status: 200, headers: { "Content-Type": "text/event-stream" } }
         );
       }
       if (value.endsWith("/v1/runs/runtime-chat-detail/events/1")) {
-        return new globalThis.Response(JSON.stringify({
-          event: {
-            ...projectedRequest,
-            eventId: "raw-request",
-            data: {
-              modelId: "test-model",
-              payload: {
-                model: "test-model",
-                messages: [{ role: "user", content: "inspect this" }],
-                tools: [{ type: "function", function: { name: "webFetch" } }]
-              }
-            }
-          }
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+        return heldDetail;
       }
       throw new Error(`Unexpected Runtime request: ${value}`);
     });
 
-    const handle = await createInteractiveRuntimeHandle({
-      messages: [{ role: "user", content: "inspect this" }],
-      tools: [{ function: { name: "webFetch" } }],
-      selectedModel: { providerId: "test", modelId: "test-model" },
-      selectedModelConfig: {},
-      workbenchSessionId: "session-1",
-      baseUrl: "http://127.0.0.1:9876",
-      fetchImpl
-    });
-    const [events] = await Promise.all([
-      collect(handle.events),
-      handle.completion
-    ]);
+    const previousZion = globalThis.window.zion;
+    const addPayload = vi.fn();
+    const emit = vi.fn();
+    const controller = new AbortController();
+    globalThis.window.zion = {
+      llmPayloads: { add: addPayload },
+      events: { emit }
+    };
+    let consumed;
+    try {
+      const handle = await createInteractiveRuntimeHandle({
+        messages: [{ role: "user", content: "inspect this" }],
+        tools: [{ function: { name: "webFetch" } }],
+        selectedModel: { providerId: "test", modelId: "test-model" },
+        selectedModelConfig: {},
+        workbenchSessionId: "session-1",
+        metadata: { panelId: "panel-detail" },
+        baseUrl: "http://127.0.0.1:9876",
+        signal: controller.signal,
+        fetchImpl
+      });
+      const events = [];
+      let streamFinished = false;
+      consumed = (async () => {
+        for await (const event of handle.events) events.push(event);
+        streamFinished = true;
+      })();
 
-    expect(events[0]).toMatchObject({
-      type: "model.request",
-      data: {
-        payload: {
-          messages: [{ role: "user", content: "inspect this" }]
-        }
-      }
-    });
-    expect(fetchImpl.mock.calls.some(([url]) =>
-      String(url).endsWith("/v1/runs/runtime-chat-detail/events/1")
-    )).toBe(true);
+      await vi.waitFor(() => expect(streamFinished).toBe(true), { timeout: 1000 });
+      await expect(handle.completion).resolves.toMatchObject({
+        status: "completed", output: "done"
+      });
+      expect(events.map(({ sequence, type }) => ({ sequence, type }))).toEqual([
+        { sequence: 1, type: "model.request" },
+        { sequence: 2, type: "reasoning.delta" },
+        { sequence: 3, type: "message.delta" },
+        { sequence: 4, type: "run.completed" }
+      ]);
+      expect(events[0].data).toEqual(projectedRequest.data);
+      expect(events[0].data.payload).toBeUndefined();
+      expect(events[1].data).toMatchObject({ delta: "inspect first", stepIndex: 1 });
+      expect(events[2].data).toEqual({ delta: "done" });
+      expect(addPayload).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+      expect(fetchImpl.mock.calls.filter(([url]) =>
+        String(url).endsWith("/v1/runs/runtime-chat-detail/events/1")
+      )).toHaveLength(1);
+
+      releaseDetail(detailResponse);
+      await vi.waitFor(() => expect(addPayload).toHaveBeenCalledOnce());
+      expect(addPayload.mock.calls[0][0]).toMatchObject({
+        id: "raw-request",
+        timestamp: 100,
+        runId: "runtime-chat-detail",
+        sessionId: "session-1",
+        panelId: "panel-detail",
+        source: "interactive-chat",
+        modelId: "test-model",
+        messageCount: 1,
+        toolCount: 1
+      });
+      expect(addPayload.mock.calls[0][0].payload).toEqual(payload);
+      expect(emit).toHaveBeenCalledOnce();
+      expect(emit).toHaveBeenCalledWith("llm/requestPayload", addPayload.mock.calls[0][0]);
+      expect(events).toHaveLength(4);
+      expect(events[0].data).toEqual(projectedRequest.data);
+    } finally {
+      releaseDetail(detailResponse);
+      controller.abort();
+      await consumed;
+      if (previousZion === undefined) delete globalThis.window.zion;
+      else globalThis.window.zion = previousZion;
+    }
   });
 
   it("rejects an unavailable selected model before creating a Run", async () => {

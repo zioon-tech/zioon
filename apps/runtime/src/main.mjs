@@ -11,7 +11,8 @@ import { RuntimeAccessControl } from "./access-control.mjs";
 import { createAgentRunnerPluginService } from "./agent-runner-plugin-service.mjs";
 import { createRuntimeCollaborationService } from "./collaboration-service.mjs";
 import {
-  createDeviceServiceHttpHandler
+  createDeviceServiceHttpHandler,
+  createDeviceServiceWebSocketHandler
 } from "./device-service-http-handler.mjs";
 import { EnvironmentCredentialProvider } from "./environment-credential-provider.mjs";
 import { createFetchModelTransport } from "./fetch-model-transport.mjs";
@@ -30,6 +31,7 @@ import {
   LOCAL_TOOLS_TOOL_DEFINITIONS,
   LocalToolsBroker
 } from "./local-tools-broker.mjs";
+import { formatByteSize, parseByteSize } from "../../../packages/node-protocol/src/index.mjs";
 import { createModelGatewayHttpHandler } from "./model-gateway-http-handler.mjs";
 import { FileModelProfileStore } from "./model-profile-store.mjs";
 import { createBuiltinModelRegistry } from "./model-registry.mjs";
@@ -40,6 +42,9 @@ import {
 import { NodeBroker } from "./node-broker.mjs";
 import { createNodeHttpHandler } from "./node-http-handler.mjs";
 import { createPluginFileService } from "./plugin-file-service.mjs";
+import { createDeviceServiceClient } from "./device-service-client.mjs";
+import { createPluginDataLocations, createPluginLocationsHttpHandler } from "./plugin-data-locations.mjs";
+import { createPluginDataFileHost } from "../../../packages/local-tools-client/src/plugin-data-files.mjs";
 import { createPluginHostService } from "./plugin-host-service.mjs";
 import { createPluginModelService } from "./plugin-model-service.mjs";
 import { createProjectAutomationHttpHandler } from "./project-automation-http-handler.mjs";
@@ -58,6 +63,7 @@ import {
 import { createSchedulerHttpHandler } from "./scheduler-http-handler.mjs";
 import { RuntimeSchedulerWorker } from "./scheduler-worker.mjs";
 import { createRuntimeServer } from "./server.mjs";
+import { createSkillsCatalogHttpHandler } from "./skills-catalog-http-handler.mjs";
 import { SqliteAccessStore } from "./sqlite-access-store.mjs";
 import { SqliteNodeStateStore } from "./sqlite-node-state-store.mjs";
 import { SqliteRunStore } from "./sqlite-run-store.mjs";
@@ -65,6 +71,10 @@ import { SqliteSchedulerStore } from "./sqlite-scheduler-store.mjs";
 import { SqliteWorkbenchStateStore } from "./sqlite-workbench-state-store.mjs";
 import { createWorkbenchStaticHttpHandler } from "./workbench-static-http-handler.mjs";
 import { createWorkbenchStateHttpHandler } from "./workbench-state-http-handler.mjs";
+import {
+  SKILLS_RUNTIME_KV_KEY,
+  SKILLS_RUNTIME_SOURCES_KV_KEY
+} from "../../../extensions/dev.skills/skills-runtime-shared.js";
 
 function readArg(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -379,6 +389,38 @@ const invocationLeaseMs = positiveInteger(
   ),
   "Runtime invocation lease"
 );
+const runtimeMaxRequestBytes = parseByteSize(
+  readArg(
+    "--max-request-bytes",
+    process.env.ZION_RUNTIME_MAX_REQUEST_BYTES || "1MiB"
+  ),
+  { label: "Runtime request body limit" }
+);
+const deviceServiceMaxRequestBytes = parseByteSize(
+  readArg(
+    "--device-service-max-request-bytes",
+    process.env.ZION_RUNTIME_DEVICE_SERVICE_MAX_REQUEST_BYTES
+      || process.env.ZION_RUNTIME_MAX_REQUEST_BYTES
+      || "1MiB"
+  ),
+  { label: "Runtime Device service request body limit" }
+);
+const schedulerMaxRequestBytes = parseByteSize(
+  readArg(
+    "--scheduler-max-request-bytes",
+    process.env.ZION_RUNTIME_SCHEDULER_MAX_REQUEST_BYTES
+      || process.env.ZION_RUNTIME_MAX_REQUEST_BYTES
+      || "1MiB"
+  ),
+  { label: "Runtime Scheduler request body limit" }
+);
+const nodeHttpMaxRequestBytes = parseByteSize(
+  readArg(
+    "--node-http-max-request-bytes",
+    process.env.ZION_RUNTIME_NODE_HTTP_MAX_REQUEST_BYTES || "8MiB"
+  ),
+  { label: "Runtime Node HTTP request body limit" }
+);
 const schedulerWorkerEnabled = enabledFlag(readArg(
   "--scheduler-worker",
   process.env.ZION_RUNTIME_SCHEDULER_WORKER || "1"
@@ -519,7 +561,9 @@ const listModelProfilesWithCredentialStatus = () => listModelProfiles()
     ...item,
     credentialConfigured: credentials.has(item.credentialRef)
   }));
-const localTools = new LocalToolsBroker({ baseUrl: localToolsUrl });
+const pluginDataRoot = readArg("--plugin-data-root", process.env.ZION_PLUGIN_DATA_ROOT || join(homedir(), ".zion-next", "data", "plugins"));
+const localDataFiles = toolMode === "local" ? createPluginDataFileHost({ root: pluginDataRoot }) : null;
+const localTools = new LocalToolsBroker({ baseUrl: localToolsUrl, dataFiles: localDataFiles });
 const nodeGatewayEnabled = toolMode === "node" || !!nodeToken;
 const nodeStateStore = nodeGatewayEnabled
   ? new SqliteNodeStateStore(dbPath)
@@ -713,12 +757,19 @@ function createMailManagementPluginService({
 let executor = null;
 let tools = null;
 let capabilityTools = () => [];
-const identityMemoryRoot = readArg(
-  "--identity-memory-root",
-  process.env.ZION_IDENTITY_MEMORY_ROOT || join(homedir(), ".zion-next", "memory")
-);
+const pluginDataLocations = createPluginDataLocations({
+  root: pluginDataRoot,
+  nodeId: readArg("--plugin-data-node-id", process.env.ZION_PLUGIN_DATA_NODE_ID || ""),
+  requireNode: toolMode === "node"
+});
 const identityFileService = createPluginFileService({
   toolHost: delegatedTools,
+  dataLocation: () => pluginDataLocations.forPlugin("dev.identity").data,
+  fileClient: createDeviceServiceClient({
+    service: "local-tools", baseUrl: localToolsUrl,
+    nodeBroker: toolMode === "node" ? nodeBroker : null,
+    dataFiles: localDataFiles
+  }),
   invocationPrefix: "dev.identity.file"
 });
 const publishModelRequest = createModelRequestPublisher({
@@ -755,6 +806,7 @@ const runtimePlugins = new RuntimePluginService({
   enabledPluginIds: enabledRuntimePluginIds,
   externalizedPluginIds: externalizedRuntimePluginIds,
   stateStore: workbenchState,
+  dataLocations: pluginDataLocations,
   configByPluginId: {
     "dev.terminal-manager": {
       baseUrl: localToolsUrl,
@@ -788,6 +840,10 @@ const runtimePlugins = new RuntimePluginService({
         interactionProfiles: interactionProfileStore
       })
     },
+    "dev.skills": {
+      availableNodes: () => nodeBroker?.snapshot().nodes || [],
+      localSourceAvailable: toolMode === "local"
+    },
     "dev.plugins": {
       pluginHostService
     },
@@ -813,7 +869,6 @@ const runtimePlugins = new RuntimePluginService({
       projectAutomation: {
         stateStore: workbenchState,
         runnerService: agentRunnerService,
-        memoryRoot: identityMemoryRoot,
         pollIntervalMs: projectAutomationPollIntervalMs,
         registerService(service) {
           projectAutomationService = service || null;
@@ -827,8 +882,7 @@ const runtimePlugins = new RuntimePluginService({
         }
       },
       biography: {
-        enabled: process.env.ZION_RUNTIME_IDENTITY_BIOGRAPHY_POSTPROCESSOR !== "0",
-        memoryRoot: identityMemoryRoot
+        enabled: process.env.ZION_RUNTIME_IDENTITY_BIOGRAPHY_POSTPROCESSOR !== "0"
       }
     },
     "dev.agents": {
@@ -924,12 +978,14 @@ const nodeHttpHandler = nodeBroker
   ? createNodeHttpHandler({
       broker: nodeBroker,
       token: accessControl ? "" : nodeToken,
+      maxRequestBytes: nodeHttpMaxRequestBytes,
       authorize: accessControl
         ? (input) => accessControl.authorizeNode(input)
         : null
     })
   : null;
 const deviceServiceHttpHandler = createDeviceServiceHttpHandler({
+  dataFiles: localDataFiles,
   broker: nodeBroker,
   terminalService: terminalManagementService,
   serviceBaseUrls: nodeBroker
@@ -937,6 +993,18 @@ const deviceServiceHttpHandler = createDeviceServiceHttpHandler({
     : {
         "local-tools": localToolsUrl,
         "plugin-service": pluginServiceUrl
+      },
+  authorize: accessControl
+    ? (request, route) => accessControl.authorizeDeviceService(request, route)
+    : null,
+  maxRequestBytes: deviceServiceMaxRequestBytes
+});
+const deviceServiceWebSocketHandler = createDeviceServiceWebSocketHandler({
+  broker: nodeBroker,
+  serviceBaseUrls: nodeBroker
+    ? {}
+    : {
+        "local-tools": localToolsUrl
       },
   authorize: accessControl
     ? (request, route) => accessControl.authorizeDeviceService(request, route)
@@ -1003,12 +1071,24 @@ if (legacyMigration.ok) {
   }
 }
 const serviceHttpHandlers = [
+  createPluginLocationsHttpHandler({ locations: pluginDataLocations }),
+  createSkillsCatalogHttpHandler({
+    store: workbenchState,
+    availableNodes: () => nodeBroker?.snapshot().nodes || [],
+    localSourceAvailable: toolMode === "local",
+    maxRequestBytes: runtimeMaxRequestBytes
+  }),
   createModelGatewayHttpHandler({
     profiles: listModelProfiles,
     credentials
   }),
   createWorkbenchStateHttpHandler({
     store: workbenchState,
+    readOnlyKeys: [
+      "runtime.plugins.dev.identity.identity.snapshot",
+      SKILLS_RUNTIME_KV_KEY,
+      SKILLS_RUNTIME_SOURCES_KV_KEY
+    ],
     reauthorize: accessControl
       ? (principal) => accessControl.reauthorize(principal, "runtime.read")
       : null
@@ -1019,7 +1099,8 @@ const serviceHttpHandlers = [
     wakeWorker: () => schedulerWorker?.wake(),
     availableTools: () => tools.supportedToolNames,
     availableModels: listModelProfilesWithCredentialStatus,
-    availableNodes: () => nodeBroker?.snapshot().nodes || []
+    availableNodes: () => nodeBroker?.snapshot().nodes || [],
+    maxRequestBytes: schedulerMaxRequestBytes
   }),
   ...(deviceServiceHttpHandler ? [deviceServiceHttpHandler] : []),
   ...(projectAutomationRuntimeAvailable
@@ -1050,9 +1131,13 @@ const runtime = createRuntimeServer({
     ...(workbenchStaticHandler ? [workbenchStaticHandler] : [])
   ],
   serviceHttpHandlers,
-  upgradeHandlers: [collaboration.handleUpgrade],
+  upgradeHandlers: [
+    collaboration.handleUpgrade,
+    ...(deviceServiceWebSocketHandler ? [deviceServiceWebSocketHandler] : [])
+  ],
   sessionEventStore: workbenchState,
   sessionDocumentService: collaboration,
+  maxRequestBytes: runtimeMaxRequestBytes,
   runPostProcessors: () => runtimePlugins.getRunPostProcessors(),
   onPostProcessorError: (error, meta = {}) => {
     process.stderr.write(
@@ -1081,6 +1166,24 @@ const runtime = createRuntimeServer({
     recoveredProjectBindings: restoredNodeState?.projectBindings.length || 0,
     durableInvocationReceipts:
       restoredNodeState?.durableReceiptCount || 0,
+    requestLimits: {
+      runtime: {
+        bytes: runtimeMaxRequestBytes,
+        label: formatByteSize(runtimeMaxRequestBytes)
+      },
+      deviceService: {
+        bytes: deviceServiceMaxRequestBytes,
+        label: formatByteSize(deviceServiceMaxRequestBytes)
+      },
+      scheduler: {
+        bytes: schedulerMaxRequestBytes,
+        label: formatByteSize(schedulerMaxRequestBytes)
+      },
+      nodeHttp: {
+        bytes: nodeHttpMaxRequestBytes,
+        label: formatByteSize(nodeHttpMaxRequestBytes)
+      }
+    },
     runtimePlugins: pluginSnapshot.plugins,
     runtimePluginFailures: pluginSnapshot.failures.length,
     externalizedRuntimePlugins: externalizedRuntimePluginIds,

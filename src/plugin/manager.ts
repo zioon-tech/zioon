@@ -23,6 +23,7 @@ import type {
   NormalizedPluginManifest
 } from './types';
 import { PluginLoader } from './loader';
+import { createPluginLocations } from './data-locations';
 import { EXTERNALIZED_BUILTIN_PLUGIN_IDS } from './externalized';
 import {
   createPluginModuleBlobUrl,
@@ -1169,6 +1170,7 @@ export class PluginManager extends EventEmitter {
     return {
       subscriptions: [],
       extensionPath: pluginInfo.path,
+      locations: createPluginLocations(pluginInfo.id),
       globalState: this.createMemento(`plugin.${pluginInfo.id}.global`),
       workspaceState: this.createMemento(`plugin.${pluginInfo.id}.workspace`),
       configuration: this.createConfigurationManager(pluginInfo.id),

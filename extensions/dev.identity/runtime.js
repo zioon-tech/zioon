@@ -26,11 +26,15 @@ import {
   updateIdentitySnapshot
 } from "./identity-runtime-shared.js";
 import {
+  buildBiographyDigest,
   buildBiographyFacets,
+  extractBiographyCitations,
   extractLatestExchange,
   parseBiographyEventsJsonl,
   parseDistillationResult
 } from "./identity-core.js";
+import { ensureIdentityFiles } from "./identity-files.js";
+import { dataLocationContext } from "../../packages/plugin-sdk/src/data-location.mjs";
 import {
   createProjectAutomationRuntimeService
 } from "./project-automation-runtime-service.js";
@@ -206,13 +210,26 @@ async function appendBiographyEventsToFiles({
     sourceAt
   });
   if (update.appended.length) {
+    if (!fileService.appendJsonl) throw new Error("Identity requires atomic JSONL append support");
+    const result = await fileService.appendJsonl({
+      fileRoot: loadedEvents.fileRoot,
+      relativePath: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH,
+      records: update.appended,
+      sessionId: terminalSessionId,
+      runContext
+    });
+    const refreshed = await fileService.readTextFiles({
+      fileRoot: loadedEvents.fileRoot,
+      files: { biographyEvents: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH },
+      sessionId: terminalSessionId, runContext
+    });
+    update.events = parseBiographyEventsJsonl(refreshed.files.biographyEvents);
+    update.digest = buildBiographyDigest(update.events);
+    update.appended = update.appended.filter((event) => result.appended.includes(event.id));
+    update.skipped.push(...(result.skipped || []));
     await fileService.writeTextFiles({
       fileRoot: loadedEvents.fileRoot,
       files: {
-        biographyEvents: {
-          relativePath: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH,
-          content: update.eventsJsonl
-        },
         biography: {
           relativePath: IDENTITY_PROFILE_FILE_PATHS.biography,
           content: update.digest
@@ -239,14 +256,16 @@ async function appendBiographyEventsToFiles({
   };
 }
 
-class RuntimeIdentityContextProvider {
-  constructor({ state, fileService = null, memoryRoot = "" }) {
+export class RuntimeIdentityContextProvider {
+  constructor({ state, fileService = null, memoryRoot = "", dataLocation = null }) {
     this.id = "dev.identity.context";
     this.stage = "pre";
     this.order = 85;
     this.state = state;
     this.fileService = fileService;
     this.memoryRoot = String(memoryRoot || "").trim();
+    this.dataLocation = dataLocation;
+    this.runSnapshots = new Map();
   }
 
   async loadSnapshot(runContext = {}) {
@@ -254,27 +273,39 @@ class RuntimeIdentityContextProvider {
       this.state.get(IDENTITY_RUNTIME_SNAPSHOT_KEY) || {}
     );
     if (
-      snapshot.content.trim()
-      || !this.fileService?.readTextFiles
+      !this.fileService?.readTextFiles
       || !this.memoryRoot
     ) {
       return snapshot;
     }
-    const loaded = await this.fileService.readTextFiles({
-      fileRoot: this.memoryRoot,
-      files: IDENTITY_PROFILE_FILE_PATHS,
-      runContext: {
-        runId: runContext.runId,
-        attemptId: runContext.attemptId,
-        sessionId: runContext.request?.sessionId,
-        projectId: runContext.request?.projectId,
-        signal: runContext.signal,
-        policy: {
-          ...(runContext.request?.policy || {}),
-          fileRoots: [this.memoryRoot]
-        }
+    const fileContext = {
+      runId: runContext.runId,
+      attemptId: runContext.attemptId,
+      sessionId: runContext.request?.sessionId,
+      projectId: runContext.request?.projectId,
+      target: runContext.request?.target,
+      signal: runContext.signal,
+      policy: {
+        ...(runContext.request?.policy || {}),
+        fileRoots: runContext.request?.policy?.fileRoots?.length
+          ? runContext.request.policy.fileRoots : [this.memoryRoot]
       }
-    });
+    };
+    const loaded = this.dataLocation
+      ? await ensureIdentityFiles(this.fileService, this.memoryRoot, fileContext)
+      : await this.fileService.readTextFiles({
+        fileRoot: this.memoryRoot,
+        files: IDENTITY_PROFILE_FILE_PATHS,
+        runContext: fileContext
+      });
+    if (this.dataLocation) {
+      const history = await this.fileService.readTextFiles({
+        fileRoot: this.memoryRoot,
+        files: { events: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH },
+        runContext: fileContext
+      });
+      loaded.files.biography = buildBiographyDigest(parseBiographyEventsJsonl(history.files.events));
+    }
     snapshot = createIdentitySnapshot({
       sourceRoot: loaded.fileRoot,
       files: loaded.files
@@ -284,18 +315,45 @@ class RuntimeIdentityContextProvider {
   }
 
   async contribute(messages, runContext = {}) {
-    if (hasIdentityContext(messages)) return messages;
-    const snapshot = await this.loadSnapshot(runContext);
+    if (!this.dataLocation && hasIdentityContext(messages)) return messages;
+    const clean = this.dataLocation
+      ? messages.filter((message) => !(message.role === "system"
+        && typeof message.content === "string" && message.content.includes("<identity_context>")))
+      : messages;
+    if (this.dataLocation) {
+      const request = runContext.request || {};
+      const roots = request.policy?.fileRoots || [];
+      const restricted = request.target?.nodeId && request.target.nodeId !== this.dataLocation.nodeId
+        || request.policy?.allowedTerminalSessionIds?.length
+        || roots.length && !roots.some((root) =>
+          this.memoryRoot === root || this.memoryRoot.startsWith(`${String(root).replace(/\/+$/, "")}/`));
+      if (restricted) return clean;
+    }
+    const key = runContext.runId && `${runContext.runId}:${runContext.attemptId || ""}`;
+    let pending = key && this.runSnapshots.get(key);
+    if (!pending) {
+      pending = this.loadSnapshot(runContext);
+      if (key) {
+        this.runSnapshots.set(key, pending);
+        pending.catch(() => this.runSnapshots.delete(key));
+        if (this.runSnapshots.size > 32) this.runSnapshots.delete(this.runSnapshots.keys().next().value);
+      }
+    }
+    const snapshot = await pending;
     const content = buildIdentityContextFromSnapshot(snapshot);
     if (!content.trim()) return messages;
-    return insertAfterLeadingSystem(messages, {
+    return insertAfterLeadingSystem(clean, {
       role: "system",
-      content
+      content: this.dataLocation
+        ? `${dataLocationContext("dev.identity", this.dataLocation)}\n\n${content}`
+        : content
     });
   }
 }
 
 export function activateRuntimePlugin(context) {
+  const dataLocation = context.locations?.data || null;
+  const memoryRoot = dataLocation?.root || context.config?.biography?.memoryRoot || "";
   const state = context.state.namespace(IDENTITY_RUNTIME_STATE_NAMESPACE);
   const projectAutomationConfig = context.config?.projectAutomation || null;
   const legacyProjectAutomationService =
@@ -306,9 +364,8 @@ export function activateRuntimePlugin(context) {
           stateStore: projectAutomationConfig.stateStore,
           fileService: context.config?.fileService,
           runnerService: projectAutomationConfig.runnerService,
-          memoryRoot:
-            projectAutomationConfig.memoryRoot
-            || context.config?.biography?.memoryRoot,
+          memoryRoot: dataLocation?.root || projectAutomationConfig.memoryRoot || memoryRoot,
+          dataLocation,
           pollIntervalMs: projectAutomationConfig.pollIntervalMs,
           logger: projectAutomationConfig.logger
         })
@@ -345,7 +402,7 @@ export function activateRuntimePlugin(context) {
         if (!eligibleRuntimeBiographyRun(run)) return;
         const exchange = extractLatestExchange(run.messages);
         if (!exchange) return;
-        const fileRoot = String(context.config?.biography?.memoryRoot || "").trim();
+        const fileRoot = String(memoryRoot).trim();
         if (!fileRoot) return;
         context.log?.(
           "info",
@@ -377,6 +434,21 @@ export function activateRuntimePlugin(context) {
           );
         }
         const existingEvents = parseBiographyEventsJsonl(loadedEvents.files.biographyEvents);
+        const validIds = new Set(existingEvents.map((event) => event.id));
+        const citations = extractBiographyCitations(exchange.assistant).filter((id) => validIds.has(id));
+        if (citations.length && fileService.appendJsonl) {
+          await fileService.appendJsonl({
+            fileRoot, relativePath: "biography/citations.jsonl",
+            records: citations.map((eventId) => ({
+              id: `${run.sessionId}:${run.runId}:${eventId}`, eventId, type: "cited",
+              source: "assistant-output", sessionId: run.sessionId, runId: run.runId
+            })),
+            runContext: {
+              runId: run.runId, sessionId: run.sessionId, projectId: run.projectId,
+              policy: { preset: "workspace-write", fileRoots: [fileRoot] }
+            }
+          });
+        }
         const output = await context.config.modelService.generateText({
           model: run.model,
           timeoutMs: context.config?.biography?.timeoutMs || 30000,
@@ -430,9 +502,15 @@ export function activateRuntimePlugin(context) {
   const provider = new RuntimeIdentityContextProvider({
     state,
     fileService: context.config?.fileService,
-    memoryRoot: context.config?.biography?.memoryRoot
+    memoryRoot,
+    dataLocation
   });
   const providerRegistration = context.context.registerProvider(provider);
+  const initialization = dataLocation
+    ? ensureIdentityFiles(context.config.fileService, memoryRoot, {
+      policy: { preset: "workspace-write", fileRoots: [memoryRoot] }
+    }).catch((error) => context.log?.("warn", `Identity data initialization deferred: ${error.message}`))
+    : Promise.resolve();
   const contextToolRegistration = context.tools.registerTool({
     name: "identityContext",
     description: "Read the Runtime-backed Zion identity and biography context snapshot.",
@@ -449,8 +527,9 @@ export function activateRuntimePlugin(context) {
     policy: {
       minimumPreset: "read-only"
     },
-    async invoke(args = {}) {
-      const current = snapshot();
+    async invoke(args = {}, meta = {}) {
+      const current = dataLocation
+        ? await provider.loadSnapshot({ ...meta, request: meta }) : snapshot();
       return {
         ok: true,
         content: JSON.stringify(summarizeIdentitySnapshot(current, {
@@ -470,8 +549,18 @@ export function activateRuntimePlugin(context) {
       minimumPreset: "read-only"
     },
     async invoke(args = {}, meta = {}) {
+      if (dataLocation) {
+        if (args.file_root && args.file_root !== dataLocation.root || args.session_id) {
+          return { ok: false, error: "Identity uses its bound plugin data location", content: "Identity uses its bound plugin data location" };
+        }
+        if (["update_snapshot", "patch_files", "clear"].includes(args.action)) {
+          return { ok: false, error: "Snapshot is a projection; use read/write/edit/Bash on the plugin data files", content: "Snapshot is a projection; use read/write/edit/Bash on the plugin data files" };
+        }
+        args = { ...args, file_root: dataLocation.root };
+      }
       const action = String(args.action || "").trim();
-      const current = snapshot();
+      const current = dataLocation && args.action === "get"
+        ? await provider.loadSnapshot({ ...meta, request: meta }) : snapshot();
       if (!IDENTITY_MANAGE_RUNTIME_ACTIONS.includes(action)) {
         return {
           ok: false,
@@ -720,6 +809,7 @@ export function activateRuntimePlugin(context) {
   );
   return {
     async dispose() {
+      await initialization;
       if (!legacyProjectAutomationService) {
         await projectAutomationService?.stop?.();
       }

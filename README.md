@@ -85,6 +85,8 @@ npm run remote:start -- --public-url https://zion.example.com
 
 详细生产部署和当前安全边界见
 [单租户远程部署](./docs/architecture/REMOTE-SINGLE-TENANT-DEPLOYMENT.md)。
+多 Node 从当前实现走向稳定身份、可靠投递、生命周期治理和规模化连接平面的执行顺序见
+[Node Control Plane 演进路线图](./docs/architecture/NODE-CONTROL-PLANE-ROADMAP.md)。
 当前阿里云实例、凭据位置、发布和排障交接见
 [远程部署运维交接](./docs/operations/REMOTE-DEPLOYMENT-RUNBOOK.md)。
 

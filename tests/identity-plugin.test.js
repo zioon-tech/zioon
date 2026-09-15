@@ -14,9 +14,16 @@ import {
   serializeBiographyEventsJsonl
 } from "../extensions/dev.identity/identity-core.js";
 import {
-  activate,
+  activate as activateIdentity,
   getLocalToolsBase
 } from "../extensions/dev.identity/main.js";
+
+const activate = (context) => activateIdentity({
+  ...context,
+  locations: { data: Promise.resolve({
+    nodeId: "cloud", root: "/Users/test/.zion-next/data/plugins/dev.identity"
+  }) }
+});
 
 describe("identity local-tools routing", () => {
   it("uses the authenticated Runtime Device Service gateway remotely", () => {
@@ -106,7 +113,7 @@ describe("identity context core", () => {
     expect(text).toContain("&lt;trusted&gt;");
     expect(text).toContain("A &amp; B");
     expect(text).not.toContain("Name: Zion <trusted>");
-    expect(text).toContain("~/.zion-next/memory/biography/events.jsonl");
+    expect(text).toContain("~/.zion-next/data/plugins/dev.identity/biography/events.jsonl");
     expect(text).toContain("user-owned read-only data");
     expect(text).toContain("model-maintained working memory");
     expect(text).toContain("Project working-memory routine");
@@ -442,10 +449,10 @@ describe("identity extension", () => {
       }
       if (requestUrl.pathname.endsWith("/files/entries")) {
         return new globalThis.Response(JSON.stringify({
-          path: "/Users/test/.zion-next/memory/projects",
+          path: "/Users/test/.zion-next/data/plugins/dev.identity/projects",
           results: [
             {
-              path: "/Users/test/.zion-next/memory/projects/zion-next",
+              path: "/Users/test/.zion-next/data/plugins/dev.identity/projects/zion-next",
               type: "dir"
             }
           ]
@@ -709,7 +716,7 @@ describe("identity extension", () => {
     )).toHaveLength(1);
     workingProject?.click();
     await vi.waitFor(() => expect(inspectorItem?.title).toBe("Zion Next"));
-    expect(inspectorItem.path).toBe("/Users/test/.zion-next/memory/projects/zion-next/project.md");
+    expect(inspectorItem.path).toBe("/Users/test/.zion-next/data/plugins/dev.identity/projects/zion-next/project.md");
     expect(inspectorItem.file?.content).toContain("M1 已完成");
     const documentActions = Array.from(host.querySelectorAll(".zion-biography-working-document-action"));
     documentActions.find((button) => button.textContent.includes("项目索引"))?.click();
@@ -748,7 +755,7 @@ describe("identity extension", () => {
 
   it("automatically initializes project memory files without overwriting existing profiles", async () => {
     const commands = new Map();
-    const root = "/Users/test/.zion-next/memory";
+    const root = "/Users/test/.zion-next/data/plugins/dev.identity";
     const files = new Map([
       [`${root}/identity.md`, "# Identity\nExisting"],
       [`${root}/user.md`, "# User\nExisting"],
@@ -1068,7 +1075,7 @@ describe("identity extension", () => {
 
     await vi.waitFor(() => expect(writes).toHaveLength(2));
     expect(writes[0].url).toContain("/files/append-jsonl");
-    expect(writes[0].body.path).toBe("/Users/test/.zion-next/memory/biography/events.jsonl");
+    expect(writes[0].body.path).toBe("/Users/test/.zion-next/data/plugins/dev.identity/biography/events.jsonl");
     expect(writes[0].body.records[0]).toEqual(expect.objectContaining({
       id: "session-1:run-1:0",
         summary: "完成身份注入和自动自传记录",
@@ -1088,7 +1095,7 @@ describe("identity extension", () => {
       expect(distillationMessages[1].content).toContain("确定使用 biography 事件记录");
       expect(distillationMessages[1].content).toContain("已有主题标签：agent-identity, storage");
     expect(writes[1].url).toContain("/files/write");
-    expect(writes[1].body.path).toBe("/Users/test/.zion-next/memory/biography/digest.md");
+    expect(writes[1].body.path).toBe("/Users/test/.zion-next/data/plugins/dev.identity/biography/digest.md");
       expect(writes[1].body.content).toContain("[project/memory-panel]");
     expect(writes[1].body.content).toContain("完成身份注入和自动自传记录");
     await vi.waitFor(() => {

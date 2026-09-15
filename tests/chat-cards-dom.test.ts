@@ -229,6 +229,86 @@ describe("chat cards DOM lifecycle", () => {
     }
   });
 
+  it("keeps locally expanded cards open during incremental projection restores", async () => {
+    const text = [
+      "user inspect",
+      "assistant <!-- zion-assistant:id=run-stable --> ",
+      "思考 <!-- zion-thinking:id=thinking:run-stable:1 -->",
+      "调用 read <!-- zion-tool:id=tool:run-stable:read -->",
+      ""
+    ].join("\n");
+    const h = createHarness({ "panel-a": "session-1" }, text);
+    const initialAnnotations = {
+      thinking: [{
+        id: "thinking:run-stable:1",
+        runId: "run-stable",
+        assistantBlockId: "run-stable",
+        text: "initial reasoning",
+        expanded: false
+      }],
+      tools: [{
+        id: "tool:run-stable:read",
+        runId: "run-stable",
+        assistantBlockId: "run-stable",
+        name: "read",
+        args: { path: "package.json" },
+        result: null,
+        expanded: false
+      }]
+    };
+    try {
+      window.zion.commands.executeCommand("zion.chatCards.setSessionAnnotations", {
+        sessionId: "session-1",
+        annotations: initialAnnotations
+      });
+      window.zion.commands.executeCommand("zion.chatCards.restoreSession", {
+        sessionId: "session-1",
+        panelId: "panel-a"
+      });
+      await wait(40);
+
+      const dom = h.cores.get("panel-a")!.view.dom;
+      (dom.querySelector(".zion-thinking-inline") as HTMLElement).click();
+      (dom.querySelector(".zion-tool-call-inline") as HTMLElement).click();
+      const thinkingCard = dom.querySelector(".zion-thinking-card");
+      expect(thinkingCard).not.toBeNull();
+      expect(dom.querySelector(".zion-tool-call-card")).not.toBeNull();
+
+      window.zion.commands.executeCommand("zion.chatCards.setSessionAnnotations", {
+        sessionId: "session-1",
+        annotations: {
+          thinking: [{
+            ...initialAnnotations.thinking[0],
+            text: "updated reasoning",
+            expanded: false
+          }],
+          tools: [{
+            ...initialAnnotations.tools[0],
+            result: "package contents",
+            ok: true,
+            expanded: false
+          }]
+        }
+      });
+      window.zion.commands.executeCommand("zion.chatCards.restoreSession", {
+        sessionId: "session-1",
+        panelId: "panel-a",
+        clearFirst: false
+      });
+      await wait(40);
+
+      expect(dom.querySelector(".zion-thinking-card")).toBe(thinkingCard);
+      expect(dom.querySelector(".zion-thinking-card-body")?.textContent)
+        .toContain("updated reasoning");
+      expect(dom.querySelector(".zion-tool-call-card")).not.toBeNull();
+      await wait(140);
+      expect(dom.querySelector(".zion-thinking-card")).not.toBeNull();
+      expect(dom.querySelector(".zion-tool-call-card")).not.toBeNull();
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("mirrors live tool and thinking widgets to another panel showing the same session", async () => {
     const assistantBlockId = "run-1";
     const h = createHarness(

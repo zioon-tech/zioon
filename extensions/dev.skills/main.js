@@ -2,16 +2,26 @@ import { materializePluginSkills } from "./plugin-skills.js";
 import {
   runtimeDeviceServiceBaseUrl
 } from "../../src/runtime/workbench-runtime-config.ts";
+import { createPluginLocations } from "../../src/plugin/data-locations.ts";
+import { normalizeDataLocation } from "../../packages/plugin-sdk/src/data-location.mjs";
 import {
   applySkillsSnapshotToState,
   buildAvailableSkillsContextXml,
+  captureSkillsSnapshotEdits,
+  disposeSkillsRuntimeState,
   insertAfterLeadingSystem as insertAfterLeadingSystemMessage,
+  isApplyingSkillsSnapshot,
+  isSyncableSkillFile,
   loadSkillsSnapshotFromRuntime,
+  mergeSkillsSourceSnapshots,
   normalizeSkillsSnapshot,
+  normalizeSkillsSourceSnapshot,
   persistSkillsSnapshot,
-  selectNewestSkillsSnapshot,
+  reconcileSkillsSourceSnapshots,
+  SKILLS_LOCAL_RUNTIME_NODE_ID,
   SKILLS_SNAPSHOT_STORAGE_KEY,
   skillsSnapshotFromState,
+  startSkillsSnapshotRefresh,
 } from "./skills-runtime-state.js";
 
 const DEFAULT_CONFIG = {
@@ -107,7 +117,29 @@ function loadSnapshot() {
 }
 
 let snapshotIdle = 0;
+let skillsScanPromise = null;
+let skillsDisposed = false;
+const removedSkillPaths = new Set();
+let writeRetryTimer = 0;
+let writeRetryDelay = 5000;
+let writeRetryNeeded = false;
+function scheduleWriteRetry() {
+  if (skillsDisposed) return;
+  writeRetryNeeded = true;
+  clearTimeout(writeRetryTimer);
+  if (document.hidden) return;
+  writeRetryTimer = setTimeout(() => {
+    writeRetryTimer = 0;
+    if (!document.hidden) saveSnapshotSoon();
+  }, writeRetryDelay);
+  writeRetryDelay = Math.min(30_000, writeRetryDelay * 2);
+}
+
 function saveSnapshotSoon() {
+  const state = getState();
+  if (skillsDisposed || !state || isApplyingSkillsSnapshot(state)) return;
+  captureSkillsSnapshotEdits({ state, sources: !skillsScanPromise });
+  if (skillsScanPromise) return;
   if (snapshotIdle) cancelIdleCallback(snapshotIdle);
   snapshotIdle = requestIdleCallback(
     () => {
@@ -117,8 +149,18 @@ function saveSnapshotSoon() {
         if (!state) return;
         const snap = skillsSnapshotFromState(state, DEFAULT_CONFIG);
         void persistSkillsSnapshot({ snapshot: snap, state })
+          .then(() => {
+            if (state.get("runtime.skillsSync")?.reason === "runtime-unacknowledged") {
+              scheduleWriteRetry();
+              return;
+            }
+            writeRetryNeeded = false;
+            writeRetryDelay = 5000;
+            clearTimeout(writeRetryTimer);
+          })
           .catch((error) => {
             console.warn("[skills] snapshot persistence failed", error);
+            scheduleWriteRetry();
           });
       } catch (error) {
         console.warn("[skills] snapshot creation failed", error);
@@ -153,36 +195,24 @@ function restoreFromSnapshotIfNeeded() {
   }
 }
 
-async function restoreFromRuntimeIfAvailable(localSnapshot = loadSnapshot()) {
+async function restoreFromRuntimeIfAvailable() {
   const state = getState();
   if (!state) return false;
   try {
     const runtimeSnapshot = await loadSkillsSnapshotFromRuntime({ state });
-    const selected = selectNewestSkillsSnapshot(
-      localSnapshot,
-      runtimeSnapshot?.catalog?.length ? runtimeSnapshot : null
-    );
-    if (!selected) return false;
-    if (selected.source === "local") {
-      await persistSkillsSnapshot({ snapshot: selected.snapshot, state });
-      return false;
-    }
-    applySkillsSnapshotToState(state, selected.snapshot);
+    if (!runtimeSnapshot) return false;
     try {
       localStorage.setItem(
         SKILLS_SNAPSHOT_STORAGE_KEY,
-        JSON.stringify(selected.snapshot)
+        JSON.stringify(normalizeSkillsSnapshot(skillsSnapshotFromState(state), {
+          includeContent: false
+        }))
       );
     } catch {}
-    state.set("runtime.skillsSync", {
-      status: "loaded",
-      syncedAt: Date.now(),
-      enabled: selected.snapshot.enabled.length,
-      total: selected.snapshot.catalog.length
-    });
     return true;
   } catch (error) {
     state.set("runtime.skillsSync", {
+      ...state.get("runtime.skillsSync"),
       status: "error",
       syncedAt: Date.now(),
       error: error?.message || String(error)
@@ -196,8 +226,10 @@ function ensureDefaults() {
   if (!state) return;
 
   if (!state.get("skills.paths")) state.set("skills.paths", []);
+  if (!state.get("skills.pathSources")) state.set("skills.pathSources", []);
   if (!state.get("skills.enabled")) state.set("skills.enabled", []);
   if (!state.get("skills.catalog")) state.set("skills.catalog", []);
+  if (!state.get("skills.sources")) state.set("skills.sources", []);
   if (!state.get("skills.cacheContent")) state.set("skills.cacheContent", {});
   if (!state.get("skills.usageHistory")) state.set("skills.usageHistory", {});
   if (!state.get("skills.tokenBudget")) state.set("skills.tokenBudget", DEFAULT_CONFIG.tokenBudget);
@@ -216,7 +248,165 @@ function getLocalToolsBase() {
   return String(raw || "http://127.0.0.1:8765").replace(/\/$/, "");
 }
 
+function usesRuntimeDeviceService() {
+  return !!runtimeDeviceServiceBaseUrl("local-tools");
+}
+
 let pluginSkillsRootPromise = null;
+let skillsDataLocationPromise = null;
+const MAX_SYNCED_SKILL_FILES = 128;
+const MAX_SYNCED_SKILL_BYTES = 8 * 1024 * 1024;
+const MAX_SYNCED_SKILL_DOCUMENT_BYTES = 4 * 1024 * 1024;
+const MAX_SYNCED_SKILL_AUXILIARY_FILE_BYTES = 512 * 1024;
+
+function localToolsUrl(base, endpoint, {
+  path,
+  nodeId,
+  ...params
+} = {}) {
+  const url = new URL(`${String(base || "").replace(/\/+$/, "")}${endpoint}`,
+    globalThis.location?.href || "http://localhost/");
+  if (path != null) url.searchParams.set("path", String(path));
+  if (nodeId && nodeId !== SKILLS_LOCAL_RUNTIME_NODE_ID) {
+    url.searchParams.set("node_id", String(nodeId));
+  }
+  for (const [key, value] of Object.entries(params)) {
+    if (value == null || value === "") continue;
+    url.searchParams.set(key, String(value));
+  }
+  return url.toString();
+}
+
+function normalizedNodeId(value) {
+  return String(value || "").trim();
+}
+
+function normalizeSkillFsPath(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+}
+
+function skillPathOverlaps(path, root) {
+  const target = normalizeSkillFsPath(path);
+  const base = normalizeSkillFsPath(root);
+  if (!target || !base) return false;
+  return target === base
+    || target.startsWith(`${base}/`)
+    || base.startsWith(`${target}/`);
+}
+
+function sourceFromKnownSkillPaths(path, state = getState()) {
+  const candidates = new Map();
+  const add = (root, nodeId, nodeLabel = "") => {
+    const normalizedNode = normalizedNodeId(nodeId);
+    if (!normalizedNode || !skillPathOverlaps(path, root)) return;
+    candidates.set(normalizedNode, {
+      path: normalizeSkillFsPath(path),
+      nodeId: normalizedNode,
+      nodeLabel: String(nodeLabel || normalizedNode)
+    });
+  };
+  for (const entry of Array.isArray(state?.get?.("skills.pathSources"))
+    ? state.get("skills.pathSources")
+    : []) {
+    add(entry?.path, entry?.nodeId || entry?.node_id, entry?.nodeLabel || entry?.node_label);
+  }
+  for (const source of Array.isArray(state?.get?.("skills.sources"))
+    ? state.get("skills.sources")
+    : []) {
+    const nodeId = source?.nodeId || source?.sourceNodeId;
+    const nodeLabel = source?.nodeLabel || source?.sourceNodeLabel || nodeId;
+    for (const root of Array.isArray(source?.paths) ? source.paths : []) {
+      add(root, nodeId, nodeLabel);
+    }
+    for (const skill of Array.isArray(source?.catalog) ? source.catalog : []) {
+      add(skill?.sourcePath || skill?.path, nodeId, nodeLabel);
+      add(skill?.sourceFile || skill?.file, nodeId, nodeLabel);
+    }
+  }
+  for (const skill of Array.isArray(state?.get?.("skills.catalog"))
+    ? state.get("skills.catalog")
+    : []) {
+    add(
+      skill?.sourcePath || skill?.path,
+      skill?.sourceNodeId || skill?.source_node_id,
+      skill?.sourceNodeLabel || skill?.source_node_label
+    );
+    add(
+      skill?.sourceFile || skill?.file,
+      skill?.sourceNodeId || skill?.source_node_id,
+      skill?.sourceNodeLabel || skill?.source_node_label
+    );
+  }
+  return candidates.size === 1 ? [...candidates.values()][0] : null;
+}
+
+function pathSourceFor(path, state = getState()) {
+  const normalizedPath = normalizeSkillFsPath(path);
+  const configured = state?.get?.("skills.pathSources");
+  const match = (Array.isArray(configured) ? configured : []).find((entry) =>
+    normalizeSkillFsPath(entry?.path) === normalizedPath
+  );
+  if (match) {
+    return {
+      path: normalizedPath,
+      nodeId: normalizedNodeId(match.nodeId || match.node_id),
+      nodeLabel: String(match.nodeLabel || match.node_label || "")
+    };
+  }
+  return { path: normalizedPath, nodeId: "", nodeLabel: "" };
+}
+
+function rememberPathSource(state, source) {
+  if (!source?.path) return;
+  const current = Array.isArray(state?.get?.("skills.pathSources"))
+    ? state.get("skills.pathSources")
+    : [];
+  const key = `${normalizedNodeId(source.nodeId)}\0${normalizeSkillFsPath(source.path)}`;
+  const next = [
+    ...current.filter((entry) =>
+      `${normalizedNodeId(entry?.nodeId)}\0${normalizeSkillFsPath(entry?.path)}` !== key
+      && normalizeSkillFsPath(entry?.path) !== normalizeSkillFsPath(source.path)
+    ),
+    {
+      path: normalizeSkillFsPath(source.path),
+      nodeId: normalizedNodeId(source.nodeId),
+      nodeLabel: String(source.nodeLabel || "")
+    }
+  ];
+  state?.set?.("skills.pathSources", next);
+}
+
+async function skillsDataLocation() {
+  if (!skillsDataLocationPromise) {
+    skillsDataLocationPromise = createPluginLocations("dev.skills").data
+      .then(normalizeDataLocation)
+      .catch((error) => {
+        skillsDataLocationPromise = null;
+        throw error;
+      });
+  }
+  return await skillsDataLocationPromise;
+}
+
+async function sha256Text(value) {
+  const bytes = new globalThis.TextEncoder().encode(String(value || ""));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function safeSkillSegment(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    || "skill";
+}
 
 function inferHomeDirectory(session) {
   const explicit = String(session?.home || session?.home_dir || session?.homeDirectory || "")
@@ -230,34 +420,136 @@ function inferHomeDirectory(session) {
   return windowsMatch ? windowsMatch[1] : "";
 }
 
-function pickLocalHome(sessions, activeSessionId = "") {
+function localHomeSources(sessions) {
   const list = Array.isArray(sessions) ? sessions : [];
-  const local = list.filter((session) => String(session?.type || "local").toLowerCase() !== "ssh");
-  const active = local.find((session) => String(session?.id || "") === String(activeSessionId || ""));
-  return inferHomeDirectory(active) || local.map(inferHomeDirectory).find(Boolean) || "";
+  return list
+    .filter((session) => String(session?.type || "local").toLowerCase() !== "ssh")
+    .map((session) => ({
+      home: normalizeSkillFsPath(inferHomeDirectory(session)),
+      nodeId: normalizedNodeId(session?.nodeId || session?.node_id)
+        || SKILLS_LOCAL_RUNTIME_NODE_ID,
+      nodeLabel: String(
+        session?.nodeLabel
+        || session?.node_label
+        || (session?.nodeId || session?.node_id ? "" : "This Runtime")
+      )
+    }))
+    .filter((entry) => entry.home);
+}
+
+function pickLocalHomeSource(sessions) {
+  const local = localHomeSources(sessions);
+  const unique = new Map(local.map((entry) => [
+    `${entry.nodeId}\0${entry.home}`,
+    entry
+  ]));
+  return unique.size === 1 ? [...unique.values()][0] : null;
+}
+
+function sourceFromSessionsForPath(path, sessions) {
+  const normalizedPath = normalizeSkillFsPath(path);
+  const matches = localHomeSources(sessions)
+    .filter((entry) => skillPathOverlaps(normalizedPath, entry.home));
+  if (!matches.length) return null;
+  const longestHome = matches.reduce(
+    (longest, entry) => Math.max(longest, entry.home.length),
+    0
+  );
+  const candidates = new Map(matches
+    .filter((entry) => entry.home.length === longestHome)
+    .map((entry) => [entry.nodeId, {
+      path: normalizedPath,
+      nodeId: entry.nodeId,
+      nodeLabel: entry.nodeLabel
+    }]));
+  return candidates.size === 1 ? [...candidates.values()][0] : null;
+}
+
+async function resolvePathSource(base, configured, state = getState()) {
+  const path = normalizeSkillFsPath(configured?.path || configured);
+  const explicit = {
+    path,
+    nodeId: normalizedNodeId(configured?.nodeId || configured?.node_id),
+    nodeLabel: String(configured?.nodeLabel || configured?.node_label || "")
+  };
+  if (!path || explicit.nodeId) return explicit;
+  const known = sourceFromKnownSkillPaths(path, state);
+  if (known) return known;
+  const stateSessionSource = sourceFromSessionsForPath(
+    path,
+    state?.get?.("terminal.sessions")
+  );
+  if (stateSessionSource) return stateSessionSource;
+  try {
+    const response = await fetch(`${base}/sessions`, { method: "GET" });
+    const data = await response.json().catch(() => null);
+    if (response.ok) {
+      const source = sourceFromSessionsForPath(path, data?.sessions);
+      if (source) return source;
+    }
+  } catch {}
+  return explicit;
+}
+
+function isDeviceAccessApprovalError(error) {
+  return String(error?.code || "") === "DEVICE_ACCESS_APPROVAL_REQUIRED"
+    || /Device access approval required/i.test(String(error?.message || ""));
 }
 
 async function resolvePluginSkillsRoot() {
   if (pluginSkillsRootPromise) return pluginSkillsRootPromise;
   pluginSkillsRootPromise = (async () => {
     const state = getState();
+    const base = getLocalToolsBase();
     const configured = String(state?.get("skills.pluginRootPath") || "").trim();
     if (configured && configured !== "~" && !configured.startsWith("~/")) {
-      return configured.replace(/\/+$/, "");
+      const source = await resolvePathSource(base, { path: configured }, state);
+      return {
+        root: source.path,
+        nodeId: source.nodeId,
+        nodeLabel: source.nodeLabel
+      };
     }
-    const activeSessionId = state?.get("terminal.activeSessionId") || "";
-    let home = pickLocalHome(state?.get("terminal.sessions"), activeSessionId);
-    if (!home) {
-      const response = await fetch(`${getLocalToolsBase()}/sessions`, { method: "GET" });
+    const pathSources = (Array.isArray(state?.get("skills.pathSources"))
+      ? state.get("skills.pathSources")
+      : [])
+      .map((entry) => ({
+        path: String(entry?.path || "").replace(/\/+$/, ""),
+        nodeId: normalizedNodeId(entry?.nodeId || entry?.node_id),
+        nodeLabel: String(entry?.nodeLabel || entry?.node_label || "")
+      }))
+      .filter((entry) => entry.path && entry.nodeId);
+    const uniquePathNodes = new Set(pathSources.map((entry) => entry.nodeId));
+    if (!configured && uniquePathNodes.size === 1) {
+      const defaultRoot = pathSources.find((entry) =>
+        /(?:^|\/)\.zion-next\/skills$/.test(entry.path)
+      );
+      if (defaultRoot) {
+        return {
+          root: `${defaultRoot.path}/.plugins`,
+          nodeId: defaultRoot.nodeId,
+          nodeLabel: defaultRoot.nodeLabel
+        };
+      }
+    }
+    let source = pickLocalHomeSource(state?.get("terminal.sessions"));
+    if (!source) {
+      const response = await fetch(`${base}/sessions`, { method: "GET" });
       const data = await response.json().catch(() => null);
-      if (response.ok) home = pickLocalHome(data?.sessions, activeSessionId);
+      if (response.ok) source = pickLocalHomeSource(data?.sessions);
     }
-    if (!home) throw new Error("Unable to resolve local home directory for plugin skills");
+    if (!source?.home) return null;
     const suffix = configured.startsWith("~/") ? configured.slice(2) : ".zion-next/skills/.plugins";
-    return `${home.replace(/\/+$/, "")}/${suffix.replace(/^\/+/, "")}`;
+    return {
+      root: `${source.home.replace(/\/+$/, "")}/${suffix.replace(/^\/+/, "")}`,
+      nodeId: source.nodeId,
+      nodeLabel: source.nodeLabel
+    };
   })();
   try {
-    return await pluginSkillsRootPromise;
+    const result = await pluginSkillsRootPromise;
+    if (!result) pluginSkillsRootPromise = null;
+    return result;
   } catch (error) {
     pluginSkillsRootPromise = null;
     throw error;
@@ -268,21 +560,42 @@ async function syncPluginSkills() {
   const state = getState();
   const manager = window.zion?.plugins;
   if (!state || !manager || typeof manager.getEnabledPlugins !== "function") {
-    return Array.isArray(state?.get("skills.pluginMaterialized")) ? state.get("skills.pluginMaterialized") : [];
+    return {
+      entries: Array.isArray(state?.get("skills.pluginMaterialized"))
+        ? state.get("skills.pluginMaterialized")
+        : [],
+      ready: false
+    };
   }
   const previous = Array.isArray(state.get("skills.pluginMaterialized"))
     ? state.get("skills.pluginMaterialized")
     : [];
-  const root = await resolvePluginSkillsRoot();
+  const location = await resolvePluginSkillsRoot();
+  if (!location?.root || (usesRuntimeDeviceService() && !location.nodeId)) {
+    return { entries: previous, ready: false };
+  }
   const materialized = await materializePluginSkills({
     base: getLocalToolsBase(),
-    root,
+    root: location.root,
+    nodeId: location.nodeId,
     previous,
     plugins: manager.getEnabledPlugins()
   });
-  state.set("skills.pluginMaterialized", materialized);
+  state.set("skills.pluginMaterialized", materialized.map((entry) => ({
+    ...entry,
+    sourceNodeId: location.nodeId,
+    sourceNodeLabel: location.nodeLabel
+  })));
   state.set("skills.pluginLastSync", Date.now());
-  return materialized;
+  return {
+    entries: materialized.map((entry) => ({
+      ...entry,
+      sourceNodeId: location.nodeId,
+      sourceNodeLabel: location.nodeLabel
+    })),
+    nodeId: location.nodeId,
+    ready: true
+  };
 }
 
 function getEnabledSet() {
@@ -297,55 +610,77 @@ function getCatalog() {
   return Array.isArray(catalog) ? catalog : [];
 }
 
-async function listDirEntries(base, dir) {
-  try {
-    const url = `${base}/files/entries?path=${encodeURIComponent(dir)}&max_depth=1`;
-    const res = await fetch(url, { method: "GET" });
-    if (!res.ok) return [];
-
-    const j = await res.json().catch(() => null);
-    const rootPath = String((j && j.path) ? j.path : dir).replace(/\/$/, "");
-    const raw = (j && typeof j === "object" && "results" in j) ? j.results : j;
-    const entries = [];
-    const seen = new Set();
-    const addEntry = (path, type) => {
-      const key = path + "|" + type;
-      if (seen.has(key)) return;
-      seen.add(key);
-      entries.push({ path, type });
-    };
-
-    if (Array.isArray(raw)) {
-      raw.forEach((it) => {
-        const p = String(it?.path || it?.full_path || it || "").trim();
-        if (!p) return;
-        const isDir = p.endsWith("/");
-        const type = String(it?.type || it?.kind || "").toLowerCase() || (isDir ? "dir" : "file");
-        addEntry(p.replace(/\/$/, ""), isDir ? "dir" : type);
-      });
-      return entries;
-    }
-
-    if (typeof raw === "string") {
-      raw.split(/\r?\n/).forEach((ln) => {
-        if (!/^-\s+/.test(ln)) return;
-        const name = ln.replace(/^-\s+/, "").trim();
-        if (!name) return;
-        const isDir = /\/$/.test(name);
-        const cleanName = name.replace(/\/$/, "");
-        addEntry(`${rootPath}/${cleanName}`, isDir ? "dir" : "file");
-      });
-    }
-
-    return entries;
-  } catch {
-    return [];
+async function listDirEntries(base, dir, nodeId = "") {
+  const url = localToolsUrl(base, "/files/entries", {
+    path: dir,
+    nodeId,
+    max_depth: 1
+  });
+  const res = await fetch(url, { method: "GET" });
+  const j = await res.json().catch(() => null);
+  if (!res.ok) {
+    const error = new Error(j?.error || `Skill directory scan failed: ${res.status}`);
+    error.statusCode = res.status;
+    if (j?.code) error.code = String(j.code);
+    if (j?.requestId) error.requestId = String(j.requestId);
+    throw error;
   }
+  const rootPath = String((j && j.path) ? j.path : dir).replace(/\/$/, "");
+  const raw = (j && typeof j === "object" && "results" in j) ? j.results : j;
+  const entries = [];
+  const seen = new Set();
+  const addEntry = (path, type) => {
+    const key = path + "|" + type;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push({ path, type });
+  };
+
+  if (Array.isArray(raw)) {
+    raw.forEach((it) => {
+      const p = String(it?.path || it?.full_path || it || "").trim();
+      if (!p) return;
+      const isDir = p.endsWith("/");
+      const type = String(it?.type || it?.kind || "").toLowerCase() || (isDir ? "dir" : "file");
+      addEntry(p.replace(/\/$/, ""), isDir || type === "directory" ? "dir" : type);
+    });
+    entries.nodeId = normalizedNodeId(j?.node_id || nodeId)
+      || SKILLS_LOCAL_RUNTIME_NODE_ID;
+    entries.nodeLabel = String(
+      j?.node_label
+      || (entries.nodeId === SKILLS_LOCAL_RUNTIME_NODE_ID ? "This Runtime" : "")
+    );
+    return entries;
+  }
+
+  if (typeof raw === "string") {
+    raw.split(/\r?\n/).forEach((ln) => {
+      if (!/^-\s+/.test(ln)) return;
+      const name = ln.replace(/^-\s+/, "").trim();
+      if (!name) return;
+      const isDir = /\/$/.test(name);
+      const cleanName = name.replace(/\/$/, "");
+      addEntry(`${rootPath}/${cleanName}`, isDir ? "dir" : "file");
+    });
+  }
+
+  entries.nodeId = normalizedNodeId(j?.node_id || nodeId)
+    || SKILLS_LOCAL_RUNTIME_NODE_ID;
+  entries.nodeLabel = String(
+    j?.node_label
+    || (entries.nodeId === SKILLS_LOCAL_RUNTIME_NODE_ID ? "This Runtime" : "")
+  );
+  return entries;
 }
 
-async function fileExists(base, path) {
+async function fileExists(base, path, nodeId = "") {
   try {
-    const url = `${base}/files/read?path=${encodeURIComponent(path)}&offset=0&limit=1`;
+    const url = localToolsUrl(base, "/files/read", {
+      path,
+      nodeId,
+      offset: 0,
+      limit: 1
+    });
     const res = await fetch(url, { method: "GET" });
     if (!res.ok) return false;
     const json = await res.json().catch(() => null);
@@ -355,17 +690,126 @@ async function fileExists(base, path) {
   }
 }
 
-async function readFile(base, path, { headOnly = false } = {}) {
+async function readFile(base, path, {
+  headOnly = false,
+  maxBytes = 0,
+  nodeId = ""
+} = {}) {
   try {
-    const url = `${base}/files/read?path=${encodeURIComponent(path)}`;
+    const url = localToolsUrl(base, "/files/read", { path, nodeId });
     const res = await fetch(url, { method: "GET" });
     if (!res.ok) return "";
+    const contentLength = Number(res.headers.get("content-length")) || 0;
+    if (maxBytes > 0 && contentLength > maxBytes * 2 + 4096) return "";
     const json = await res.json().catch(() => null);
     if (!json) return "";
-    const text = json.content || "";
+    const text = String(json.content || "");
+    if (
+      maxBytes > 0
+      && new globalThis.TextEncoder().encode(text).byteLength > maxBytes
+    ) {
+      return "";
+    }
     return headOnly ? text.slice(0, 6144) : text;
   } catch {
     return "";
+  }
+}
+
+async function readSkillBundle(base, skillRoot, nodeId) {
+  const skillBody = await readFile(base, `${skillRoot}/SKILL.md`, {
+    maxBytes: MAX_SYNCED_SKILL_DOCUMENT_BYTES,
+    nodeId
+  });
+  if (!skillBody) return {};
+  const files = { "SKILL.md": skillBody };
+  let totalBytes = new globalThis.TextEncoder().encode(skillBody).byteLength;
+  const queue = [{ path: skillRoot, depth: 0 }];
+  while (queue.length) {
+    const current = queue.shift();
+    const entries = await listDirEntries(base, current.path, nodeId);
+    for (const entry of entries) {
+      const relative = String(entry.path || "")
+        .slice(String(skillRoot).length)
+        .replace(/^\/+/, "");
+      if (!relative || relative.split("/").some((part) => part === "..")) continue;
+      if (entry.type === "dir") {
+        if (!isSyncableSkillFile(`${relative}/placeholder.md`)) continue;
+        if (current.depth < 6) {
+          queue.push({ path: entry.path, depth: current.depth + 1 });
+        }
+        continue;
+      }
+      if (relative === "SKILL.md") continue;
+      if (!isSyncableSkillFile(relative)) continue;
+      if (Object.keys(files).length >= MAX_SYNCED_SKILL_FILES) {
+        return files;
+      }
+      const content = await readFile(base, entry.path, {
+        maxBytes: MAX_SYNCED_SKILL_AUXILIARY_FILE_BYTES,
+        nodeId
+      });
+      if (!content) continue;
+      const contentBytes = new globalThis.TextEncoder().encode(content).byteLength;
+      if (totalBytes + contentBytes > MAX_SYNCED_SKILL_BYTES) return files;
+      totalBytes += contentBytes;
+      files[relative] = content;
+    }
+  }
+  return files;
+}
+
+async function cacheSkillBundleAtRuntime(skill, files) {
+  const body = String(files?.["SKILL.md"] || skill?.body || "");
+  if (!body.trim()) return skill;
+  const stableBundle = Object.entries(files || {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, content]) => `${path}\0${content}`)
+    .join("\0");
+  const contentHash = await sha256Text(stableBundle || body);
+  try {
+    const location = await skillsDataLocation();
+    const runtimePath = `${location.root}/cache/${safeSkillSegment(skill.id)}/${contentHash}`;
+    for (const [relativePath, content] of Object.entries(files || {})) {
+      const target = `${runtimePath}/${relativePath}`;
+      const response = await fetch(localToolsUrl(
+        getLocalToolsBase(),
+        "/files/write",
+        {
+          nodeId: location.nodeId,
+          plugin_data_version: 1
+        }
+      ), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          path: target,
+          content,
+          create_only: true
+        })
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || `Runtime Skill cache failed: ${response.status}`);
+      }
+    }
+    return {
+      ...skill,
+      body,
+      contentHash,
+      runtimeCached: true,
+      runtimeNodeId: location.nodeId,
+      runtimePath,
+      runtimeFile: `${runtimePath}/SKILL.md`
+    };
+  } catch (error) {
+    console.warn(`[skills] Runtime cache unavailable for ${skill.id}`, error);
+    return {
+      ...skill,
+      body,
+      contentHash,
+      runtimeCached: false
+    };
   }
 }
 
@@ -412,26 +856,16 @@ function parseSkillFrontMatter(text) {
   }
 }
 
-async function isLocalToolsHealthy(base) {
-  try {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 1500);
-    const res = await fetch(`${base}/health`, { method: "GET", signal: controller.signal });
-    clearTimeout(t);
-    return !!res && res.ok;
-  } catch {
-    return false;
-  }
-}
-
 async function buildPluginSkillCatalog(entries, base) {
   const catalog = [];
   for (const entry of Array.isArray(entries) ? entries : []) {
     if (!entry?.id || !entry?.file || !entry?.path) continue;
-    const headText = await readFile(base, entry.file, { headOnly: true });
-    if (!headText) continue;
-    const meta = parseSkillFrontMatter(headText);
-    catalog.push({
+    const nodeId = normalizedNodeId(entry.sourceNodeId);
+    const files = await readSkillBundle(base, entry.path, nodeId);
+    const body = String(files["SKILL.md"] || "");
+    if (!body) continue;
+    const meta = parseSkillFrontMatter(body.slice(0, 6144));
+    catalog.push(await cacheSkillBundleAtRuntime({
       id: entry.id,
       name: meta.name || entry.skillName || entry.id,
       description: meta.description || "",
@@ -443,66 +877,121 @@ async function buildPluginSkillCatalog(entries, base) {
       path: entry.path,
       file: entry.file,
       source: "plugin",
-      pluginId: entry.pluginId
-    });
+      pluginId: entry.pluginId,
+      sourceNodeId: nodeId,
+      sourceNodeLabel: String(entry.sourceNodeLabel || ""),
+      sourcePath: entry.path,
+      sourceFile: entry.file,
+      syncedAt: Date.now(),
+      body
+    }, files));
   }
   return catalog;
 }
 
-async function scanAllSkills() {
-  const state = getState();
-  if (!state) return [];
-
+async function scanAllSkillsWhileLocked(state) {
   const base = getLocalToolsBase();
   const prevCatalog = getCatalog();
-  const healthy = await isLocalToolsHealthy(base);
-  if (!healthy) {
-    // Avoid wiping previously scanned skills when the local service is temporarily unavailable
-    // (common during sleep/wake).
-    return prevCatalog;
-  }
   let paths = state.get("skills.paths") || [];
   if (!Array.isArray(paths) || paths.length === 0) {
     try {
       const response = await fetch(`${base}/sessions`, { method: "GET" });
       const data = await response.json().catch(() => null);
-      const home = response.ok
-        ? pickLocalHome(data?.sessions, state.get("terminal.activeSessionId"))
-        : "";
-      if (home) {
-        paths = [`${home}/.zion-next/skills`];
+      const source = response.ok
+        ? pickLocalHomeSource(data?.sessions)
+        : null;
+      if (source?.home) {
+        paths = [`${source.home}/.zion-next/skills`];
         state.set("skills.paths", paths);
+        rememberPathSource(state, {
+          path: paths[0],
+          nodeId: source.nodeId,
+          nodeLabel: source.nodeLabel
+        });
       }
     } catch {}
   }
   let pluginEntries = [];
+  let pluginSourceNodeId = "";
+  let pluginMaterializationReady = false;
   try {
-    pluginEntries = await syncPluginSkills();
+    const pluginResult = await syncPluginSkills();
+    pluginSourceNodeId = pluginResult?.nodeId || "";
+    pluginEntries = Array.isArray(pluginResult)
+      ? pluginResult
+      : Array.isArray(pluginResult?.entries)
+        ? pluginResult.entries
+        : [];
+    pluginMaterializationReady = Array.isArray(pluginResult)
+      ? true
+      : pluginResult?.ready === true;
   } catch (error) {
     console.warn("[skills] plugin skill sync failed", error);
     pluginEntries = Array.isArray(state.get("skills.pluginMaterialized"))
       ? state.get("skills.pluginMaterialized")
       : [];
   }
-  const pluginCatalog = await buildPluginSkillCatalog(pluginEntries, base);
-  let userCatalog = [];
+  let pluginCatalog = [];
+  let pluginCatalogReady = false;
+  try {
+    pluginCatalog = await buildPluginSkillCatalog(pluginEntries, base);
+    pluginCatalogReady = pluginMaterializationReady;
+  } catch (error) {
+    console.warn("[skills] plugin catalog scan failed", error);
+  }
+  const scannedByNode = new Map();
+  const successfulPaths = new Set();
+  const scanWarnings = [];
 
-  for (const dir of Array.isArray(paths) ? paths : []) {
+  for (const dirValue of Array.isArray(paths) ? paths : []) {
+    const rawConfigured = typeof dirValue === "string"
+      ? pathSourceFor(dirValue, state)
+      : {
+          path: normalizeSkillFsPath(dirValue?.path || ""),
+          nodeId: normalizedNodeId(dirValue?.nodeId || dirValue?.node_id),
+          nodeLabel: String(dirValue?.nodeLabel || dirValue?.node_label || "")
+        };
+    const configured = await resolvePathSource(base, rawConfigured, state);
+    const dir = configured.path;
+    if (!dir) continue;
+    if (configured.nodeId) {
+      rememberPathSource(state, configured);
+    } else if (usesRuntimeDeviceService()) {
+      scanWarnings.push({
+        path: dir,
+        code: "source-node-unresolved",
+        message: "Unable to resolve a source Node for this Skill directory"
+      });
+      continue;
+    }
     try {
-      const entries = await listDirEntries(base, dir);
+      const entries = await listDirEntries(base, dir, configured.nodeId);
+      const nodeId = normalizedNodeId(entries.nodeId || configured.nodeId)
+        || SKILLS_LOCAL_RUNTIME_NODE_ID;
+      const nodeLabel = String(entries.nodeLabel || configured.nodeLabel || nodeId);
+      rememberPathSource(state, { path: dir, nodeId, nodeLabel });
+      successfulPaths.add(`${nodeId}\0${dir}`);
+      const source = scannedByNode.get(nodeId) || {
+        nodeId,
+        nodeLabel,
+        syncedAt: Date.now(),
+        paths: [],
+        catalog: []
+      };
+      source.paths.push(dir);
       for (const entry of entries) {
         if (!entry || entry.type !== "dir") continue;
         const skillDir = String(entry.path || "").replace(/\/$/, "");
         if (!skillDir) continue;
         const skillMd = `${skillDir}/SKILL.md`;
-        if (!(await fileExists(base, skillMd))) continue;
-
-        const headText = await readFile(base, skillMd, { headOnly: true });
-        const meta = parseSkillFrontMatter(headText);
+        if (!(await fileExists(base, skillMd, nodeId))) continue;
+        const files = await readSkillBundle(base, skillDir, nodeId);
+        const body = String(files["SKILL.md"] || "");
+        if (!body) continue;
+        const meta = parseSkillFrontMatter(body.slice(0, 6144));
         const id = skillDir.split("/").filter(Boolean).pop();
         if (!id) continue;
-
-        userCatalog.push({
+        source.catalog.push(await cacheSkillBundleAtRuntime({
           id,
           name: meta.name || id,
           description: meta.description || "",
@@ -512,42 +1001,139 @@ async function scanAllSkills() {
           allowedTools: meta.allowedTools || [],
           dependencies: meta.dependencies || [],
           path: skillDir,
-          file: skillMd
-        });
+          file: skillMd,
+          source: "user",
+          sourceNodeId: nodeId,
+          sourceNodeLabel: nodeLabel,
+          sourcePath: skillDir,
+          sourceFile: skillMd,
+          syncedAt: source.syncedAt,
+          body
+        }, files));
       }
-    } catch {}
+      scannedByNode.set(nodeId, source);
+    } catch (error) {
+      if (isDeviceAccessApprovalError(error)) {
+        scanWarnings.push({
+          path: dir,
+          nodeId: configured.nodeId,
+          code: String(error?.code || "DEVICE_ACCESS_APPROVAL_REQUIRED"),
+          message: error?.message || String(error)
+        });
+      } else {
+        console.warn(`[skills] failed to scan ${dir}`, error);
+      }
+    }
   }
 
-  // If the service is healthy but nothing was found, allow wiping only when no paths are configured.
-  // This avoids "everything disappeared" when the directory mapping temporarily fails.
-  const pathList = Array.isArray(paths) ? paths : [];
-  const previousUserCatalog = prevCatalog.filter((skill) => skill?.source !== "plugin");
-  if (pathList.length > 0 && userCatalog.length === 0 && previousUserCatalog.length > 0) {
-    userCatalog = previousUserCatalog;
+  if (pluginCatalogReady) {
+    for (const skill of pluginCatalog) {
+      const nodeId = normalizedNodeId(skill.sourceNodeId);
+      if (!nodeId) continue;
+      const source = scannedByNode.get(nodeId) || {
+        nodeId,
+        nodeLabel: String(skill.sourceNodeLabel || nodeId),
+        syncedAt: Date.now(),
+        paths: [],
+        catalog: []
+      };
+      source.catalog.push(skill);
+      scannedByNode.set(nodeId, source);
+    }
   }
-  const catalogById = new Map();
-  for (const skill of [...userCatalog, ...pluginCatalog]) {
-    if (skill?.id) catalogById.set(skill.id, skill);
+
+  const activePaths = new Set(
+    (Array.isArray(paths) ? paths : [])
+      .map((entry) => String(typeof entry === "string" ? entry : entry?.path || "")
+        .replace(/\/+$/, ""))
+      .filter(Boolean)
+  );
+  state.set("skills.pathSources", (
+    Array.isArray(state.get("skills.pathSources"))
+      ? state.get("skills.pathSources")
+      : []
+  ).filter((entry) =>
+    activePaths.has(String(entry?.path || "").replace(/\/+$/, ""))
+  ));
+  const previousSources = (Array.isArray(state.get("skills.sources"))
+    ? state.get("skills.sources")
+    : []).map(normalizeSkillsSourceSnapshot);
+  const configuredSources = (Array.isArray(paths) ? paths : [])
+    .map((entry) => typeof entry === "string"
+      ? pathSourceFor(entry, state)
+      : {
+          path: String(entry?.path || "").replace(/\/+$/, ""),
+          nodeId: normalizedNodeId(entry?.nodeId || entry?.node_id),
+          nodeLabel: String(entry?.nodeLabel || entry?.node_label || "")
+        })
+    .filter((entry) => entry.path && entry.nodeId);
+  // A client's directory preferences do not delete other clients' sources.
+  // Only explicit local removals or successful scans establish deletions.
+  for (const source of previousSources) {
+    for (const path of source.paths) {
+      if (!removedSkillPaths.has(`${source.nodeId}\0${path}`)) {
+        configuredSources.push({ path, nodeId: source.nodeId });
+      }
+    }
   }
-  const catalog = Array.from(catalogById.values());
-
-  state.set("skills.catalog", catalog);
-  state.set("skills.lastScan", Date.now());
-  saveSnapshotSoon();
-
+  const nodeIds = new Set([...previousSources.map((source) => source.nodeId), ...scannedByNode.keys()]);
+  const nextSources = [...nodeIds].flatMap((nodeId) => reconcileSkillsSourceSnapshots({
+    previousSources: previousSources.filter((source) => source.nodeId === nodeId),
+    scannedSources: scannedByNode.has(nodeId) ? [scannedByNode.get(nodeId)] : [],
+    configuredSources,
+    successfulPaths: [...successfulPaths],
+    pluginCatalogReady: pluginCatalogReady && nodeId === pluginSourceNodeId,
+    now: Date.now()
+  }));
+  removedSkillPaths.clear();
+  const merged = mergeSkillsSourceSnapshots(nextSources, {
+    ...skillsSnapshotFromState(state, DEFAULT_CONFIG),
+    paths,
+    pathSources: state.get("skills.pathSources") || [],
+    savedAt: Date.now(),
+    lastScan: Date.now()
+  });
+  const catalog = merged.catalog;
   const enabled = state.get("skills.enabled") || [];
-  if (!Array.isArray(enabled) || enabled.length === 0) {
-    state.set("skills.enabled", catalog.map((s) => s.id));
+  let nextEnabled;
+  if (!Array.isArray(enabled) || (enabled.length === 0 && prevCatalog.length === 0)) {
+    nextEnabled = catalog.map((skill) => skill.id);
   } else {
     const previousIds = new Set(prevCatalog.map((skill) => skill?.id).filter(Boolean));
-    const nextEnabled = new Set(enabled);
-    for (const skill of pluginCatalog) {
-      if (!previousIds.has(skill.id)) nextEnabled.add(skill.id);
+    const catalogIds = new Set(catalog.map((skill) => skill.id));
+    const next = new Set(enabled.filter((id) => catalogIds.has(id)));
+    for (const skill of catalog) {
+      if (!previousIds.has(skill.id)) next.add(skill.id);
     }
-    if (nextEnabled.size !== enabled.length) state.set("skills.enabled", Array.from(nextEnabled));
+    nextEnabled = Array.from(next);
   }
-
+  state.set("skills.sources", nextSources);
+  state.set("skills.catalog", catalog);
+  state.set("skills.enabled", nextEnabled);
+  state.set("skills.lastScan", Date.now());
+  state.set("skills.scanWarnings", scanWarnings);
+  captureSkillsSnapshotEdits({
+    state,
+    sources: false,
+    scannedSources: nextSources.filter((source) =>
+      source.syncedAt !== previousSources.find((previous) => previous.nodeId === source.nodeId)?.syncedAt
+    )
+  });
   return catalog;
+}
+
+async function scanAllSkills() {
+  if (skillsScanPromise) return await skillsScanPromise;
+  const state = getState();
+  if (!state) return [];
+  const run = scanAllSkillsWhileLocked(state);
+  skillsScanPromise = run.finally(() => {
+    if (skillsScanPromise) {
+      skillsScanPromise = null;
+      saveSnapshotSoon();
+    }
+  });
+  return await skillsScanPromise;
 }
 
 async function getCatalogOrScan() {
@@ -586,7 +1172,14 @@ function skillSummary(skill, enabledSet) {
     source: skill.source || "directory",
     pluginId: skill.pluginId || "",
     path: skill.path || "",
-    file: skill.file || ""
+    file: skill.file || "",
+    sourceNodeId: skill.sourceNodeId || "",
+    sourceNodeLabel: skill.sourceNodeLabel || "",
+    sourcePath: skill.sourcePath || skill.path || "",
+    contentHash: skill.contentHash || "",
+    runtimeCached: skill.runtimeCached === true,
+    runtimeNodeId: skill.runtimeNodeId || "",
+    runtimeFile: skill.runtimeFile || ""
   };
 }
 
@@ -778,6 +1371,8 @@ function registerMessageContributor() {
         const availableSkillsXML = buildAvailableSkillsContextXml({
           catalog,
           enabled: Array.from(enabled)
+        }, {
+          detailTool: "skillManager"
         });
         const injectedMessage = { role: "user", content: availableSkillsXML };
         return insertAfterLeadingSystemMessage(messages, injectedMessage);
@@ -929,10 +1524,24 @@ function showModal(title, content) {
 
 async function loadSkillBody(skill) {
   const base = getLocalToolsBase();
-  const file = skill && (skill.file || (skill.path ? `${skill.path}/SKILL.md` : ""));
-  if (!file) return "";
-  const content = await readFile(base, file, { headOnly: false });
-  return content || "";
+  const runtimeFile = String(skill?.runtimeFile || "");
+  if (runtimeFile) {
+    const content = await readFile(base, runtimeFile, {
+      headOnly: false,
+      nodeId: skill?.runtimeNodeId
+    });
+    if (content) return content;
+  }
+  const file = skill && (skill.sourceFile || skill.file
+    || (skill.path ? `${skill.path}/SKILL.md` : ""));
+  if (file) {
+    const content = await readFile(base, file, {
+      headOnly: false,
+      nodeId: skill?.sourceNodeId
+    });
+    if (content) return content;
+  }
+  return String(skill?.body || "");
 }
 
 function renderSkillsList(container) {
@@ -1413,8 +2022,10 @@ function registerStateListeners() {
     disposers.push({ dispose: () => { try { skillsStatusDisp?.dispose?.(); skillsStatusDisp = null; } catch {} } });
     const keysToPersist = [
       "skills.paths",
+      "skills.pathSources",
       "skills.enabled",
       "skills.catalog",
+      "skills.sources",
       "skills.cacheContent",
       "skills.usageHistory",
       "skills.tokenBudget",
@@ -1424,8 +2035,23 @@ function registerStateListeners() {
       "skills.pluginLastSync",
       "skills.lastScan"
     ];
+    let previousPaths = window.zion.state.get("skills.paths") || [];
     for (const k of keysToPersist) {
-      try { disposers.push(window.zion.state.onDidChange(k, () => saveSnapshotSoon())); } catch {}
+      try { disposers.push(window.zion.state.onDidChange(k, () => {
+        if (k === "skills.paths") {
+          const paths = window.zion.state.get(k) || [];
+          if (!isApplyingSkillsSnapshot(window.zion.state)) {
+            for (const path of previousPaths) {
+              if (!paths.includes(path)) {
+                const source = pathSourceFor(path, window.zion.state);
+                removedSkillPaths.add(`${source.nodeId}\0${source.path}`);
+              }
+            }
+          }
+          previousPaths = paths;
+        }
+        saveSnapshotSoon();
+      })); } catch {}
     }
     let previousRuntimeBackend = String(
       window.zion.state.get("runtime.connection")?.backend || ""
@@ -1437,11 +2063,16 @@ function registerStateListeners() {
           nextRuntimeBackend === "runtime"
           && previousRuntimeBackend !== "runtime"
         ) {
-          void restoreFromRuntimeIfAvailable(loadSnapshot());
+          void restoreFromRuntimeIfAvailable();
         }
         previousRuntimeBackend = nextRuntimeBackend;
       }));
     } catch {}
+    for (const key of ["runtime.baseUrl", "runtime.mode"]) {
+      disposers.push(window.zion.state.onDidChange(key, () => {
+        void restoreFromRuntimeIfAvailable();
+      }));
+    }
   } catch {}
   return disposers;
 }
@@ -1493,14 +2124,15 @@ function registerPluginSkillListeners(ready = Promise.resolve()) {
 }
 
 export async function activate(ctx) {
+  skillsDisposed = false;
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) ctx.subscriptions.push(disp);
   } catch {}
 
   ensureDefaults();
-  const localSnapshot = restoreFromSnapshotIfNeeded();
-  const restorePromise = restoreFromRuntimeIfAvailable(localSnapshot);
+  restoreFromSnapshotIfNeeded();
+  const restorePromise = restoreFromRuntimeIfAvailable();
   void restorePromise.then((loaded) => {
     if (loaded) updateStatusBar();
   });
@@ -1677,24 +2309,33 @@ export async function activate(ctx) {
 
   updateStatusBar();
 
-  // When returning from sleep, the local tools service may restart later.
-  // Retry a scan when the page becomes visible again.
+  // Refresh only the Runtime catalog. Filesystem scans remain explicit or
+  // plugin-event driven, and failed writes retry independently of reads.
   try {
-    let retryTimer = 0;
-    const scheduleRetry = () => {
-      if (retryTimer) window.clearTimeout(retryTimer);
-      retryTimer = window.setTimeout(async () => {
-        retryTimer = 0;
-        try { await restoreFromRuntimeIfAvailable(loadSnapshot()); } catch {}
-        try { await scanAllSkills(); } catch {}
-        try { updateStatusBar(); } catch {}
-      }, 600);
-    };
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) scheduleRetry();
-      else saveSnapshotSoon();
+    const refresh = startSkillsSnapshotRefresh({
+      refresh: () => loadSkillsSnapshotFromRuntime({ state: getState() }),
+      isActive: () => !!document.getElementById("zion-skills-panel")
     });
-    window.addEventListener("focus", () => scheduleRetry(), { passive: true });
-    window.addEventListener("pagehide", () => saveSnapshotSoon(), { passive: true });
+    const retryWrites = () => {
+      if (document.hidden) clearTimeout(writeRetryTimer);
+      else if (writeRetryNeeded) saveSnapshotSoon();
+    };
+    document.addEventListener("visibilitychange", retryWrites);
+    window.addEventListener("online", retryWrites);
+    window.addEventListener("focus", retryWrites);
+    ctx.subscriptions.push(refresh, {
+      dispose() {
+        skillsDisposed = true;
+        removedSkillPaths.clear();
+        clearTimeout(writeRetryTimer);
+        writeRetryNeeded = false;
+        if (snapshotIdle) cancelIdleCallback(snapshotIdle);
+        snapshotIdle = 0;
+        document.removeEventListener("visibilitychange", retryWrites);
+        window.removeEventListener("online", retryWrites);
+        window.removeEventListener("focus", retryWrites);
+        disposeSkillsRuntimeState(getState());
+      }
+    });
   } catch {}
 }

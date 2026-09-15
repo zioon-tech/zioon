@@ -1,7 +1,8 @@
 import { Buffer } from "node:buffer";
 import { timingSafeEqual } from "node:crypto";
+import { parseByteSize, requestBodyLimitError } from "../../../packages/node-protocol/src/index.mjs";
 
-const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 
 function json(response, status, value) {
   const body = JSON.stringify(value);
@@ -13,6 +14,15 @@ function json(response, status, value) {
   response.end(body);
 }
 
+function errorPayload(error) {
+  const payload = { error: error?.message || String(error) };
+  if (error?.code) payload.code = String(error.code);
+  if (Number.isSafeInteger(error?.limitBytes)) payload.limitBytes = error.limitBytes;
+  if (error?.limit) payload.limit = String(error.limit);
+  if (Array.isArray(error?.hints)) payload.hints = error.hints.map(String);
+  return payload;
+}
+
 function noContent(response) {
   response.writeHead(204, {
     "cache-control": "no-store"
@@ -20,15 +30,13 @@ function noContent(response) {
   response.end();
 }
 
-async function readJson(request) {
+async function readJson(request, maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_REQUEST_BYTES) {
-      const error = new Error("Request body exceeds 1 MiB");
-      error.statusCode = 413;
-      throw error;
+    if (size > maxRequestBytes) {
+      throw requestBodyLimitError("Request body", maxRequestBytes);
     }
     chunks.push(chunk);
   }
@@ -78,7 +86,8 @@ export function createNodeHttpHandler({
   broker,
   token,
   authorize,
-  maxWaitMs = 25_000
+  maxWaitMs = 25_000,
+  maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES
 }) {
   const expectedToken = String(token || "");
   if (!broker?.registerNode || !broker?.nextCommand) {
@@ -87,6 +96,9 @@ export function createNodeHttpHandler({
   if (!expectedToken && typeof authorize !== "function") {
     throw new Error("Device node authentication is required");
   }
+  const requestBodyLimit = parseByteSize(maxRequestBytes, {
+    label: "Node HTTP request body limit"
+  });
 
   const authorizeRequest = async (request, nodeId, operation) => {
     if (
@@ -114,7 +126,7 @@ export function createNodeHttpHandler({
       }
 
       if (request.method === "POST" && url.pathname === "/v1/device-nodes/register") {
-        const body = await readJson(request);
+        const body = await readJson(request, requestBodyLimit);
         await authorizeRequest(request, body.nodeId, "connect");
         const node = broker.registerNode(body);
         json(response, 200, { node });
@@ -124,7 +136,7 @@ export function createNodeHttpHandler({
       const heartbeatNodeId = pathMatch(url.pathname, "/heartbeat");
       if (request.method === "POST" && heartbeatNodeId) {
         await authorizeRequest(request, heartbeatNodeId, "connect");
-        const body = await readJson(request);
+        const body = await readJson(request, requestBodyLimit);
         const node = broker.heartbeat(heartbeatNodeId, body.instanceId);
         json(response, 200, { node });
         return true;
@@ -163,7 +175,7 @@ export function createNodeHttpHandler({
       const resultPath = resultPathMatch(url.pathname);
       if (request.method === "POST" && resultPath) {
         await authorizeRequest(request, resultPath.nodeId, "connect");
-        const body = await readJson(request);
+        const body = await readJson(request, requestBodyLimit);
         const receipt = broker.completeInvocation(
           resultPath.nodeId,
           body.instanceId,
@@ -178,9 +190,7 @@ export function createNodeHttpHandler({
       return true;
     } catch (error) {
       if (!response.headersSent) {
-        json(response, Number(error?.statusCode || 500), {
-          error: error?.message || String(error)
-        });
+        json(response, Number(error?.statusCode || 500), errorPayload(error));
       } else {
         response.end();
       }

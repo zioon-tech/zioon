@@ -71,6 +71,30 @@ import {
 } from "./runtime-backend.js";
 import { inferToolResultError } from "./tool-result-diagnostics.js";
 
+function runtimeSkillsMetadata(state = globalThis.window?.zion?.state) {
+  const catalog = state?.get?.("skills.catalog");
+  const transientCatalog = (Array.isArray(catalog) ? catalog : [])
+    .filter((skill) =>
+      skill?.id
+      && skill?.body
+      && skill.transient === true
+    )
+    .map((skill) => ({
+      id: String(skill.id),
+      name: String(skill.name || skill.id),
+      description: String(skill.description || ""),
+      sourceNodeId: String(skill.sourceNodeId || ""),
+      sourceNodeLabel: String(skill.sourceNodeLabel || ""),
+      sourcePath: String(skill.sourcePath || skill.path || ""),
+      sourceFile: String(skill.sourceFile || skill.file || ""),
+      contentHash: String(skill.contentHash || ""),
+      body: String(skill.body || ""),
+      transient: true
+    }));
+  return {
+    ...(transientCatalog.length ? { transientCatalog } : {})
+  };
+}
 
 const I18N_NS = "dev.langchain-chat";
 const I18N_MESSAGES = {
@@ -1161,6 +1185,7 @@ export async function activate(ctx) {
     const programmaticRuns = new Map();
     const interactiveRuntimeObservers = new Map();
     const interactiveRuntimeOwnerRuns = new Set();
+    const interactivePreparations = new Map();
     const executeAndTrack = (request = {}) => {
       const handle = executeProgrammatic(request);
       const sessionId = request?.sessionId ? String(request.sessionId) : null;
@@ -1410,7 +1435,8 @@ export async function activate(ctx) {
     documentAnchor,
     reconstructHistory,
     autoScrollAssistant,
-    runFollowLatest
+    runFollowLatest,
+    preparation
   }) => {
     // Empty input placeholders are local editor affordances, not durable Yjs state.
     const appendUserPrompt = false;
@@ -1425,8 +1451,11 @@ export async function activate(ctx) {
         runId: `runtime-context-${Date.now().toString(36)}`
       };
       const provider = window.zion?.models?.getProvider?.(runModel?.providerId);
-      const providerModelConfig = await provider?.resolve?.(runModel?.modelId);
-      const runtimeProfiles = await loadRuntimeModelProfiles().catch(() => null);
+      const [providerModelConfig, runtimeProfiles] = await Promise.all([
+        provider?.resolve?.(runModel?.modelId),
+        loadRuntimeModelProfiles().catch(() => null)
+      ]);
+      preparation?.signal.throwIfAborted();
       const runtimeProfile = findRuntimeModelProfile(runtimeProfiles, runModel);
       const selectedModelConfig = mergeRuntimeModelProfileConfig(
         providerModelConfig,
@@ -1439,6 +1468,7 @@ export async function activate(ctx) {
         transformMessages: (prepared) =>
           reconstructHistory(prepared, selectedModelConfig)
       });
+      preparation?.signal.throwIfAborted();
       handle = await createInteractiveRuntimeHandle({
         messages: preparedMessages,
         sessionHistory: await reconstructHistory(
@@ -1448,6 +1478,8 @@ export async function activate(ctx) {
         tools,
         selectedModel: runModel,
         selectedModelConfig,
+        runtimeCatalog: runtimeProfiles ? { profiles: runtimeProfiles } : undefined,
+        signal: preparation?.signal,
         title: opts?.title || resolveSessionTitleForRun(sid),
         workbenchSessionId: sid,
         projectId: opts?.projectId || opts?.metadata?.projectId,
@@ -1459,7 +1491,13 @@ export async function activate(ctx) {
           includeTerminalContext: includeTerminalContextForRuntime(
             window.zion?.state
           ),
+          skills: {
+            ...runtimeSkillsMetadata(window.zion?.state),
+            ...(opts?.metadata?.skills || {})
+          },
           documentProjection: {
+            includeReasoning:
+              window.zion?.state?.get?.("chat.thinkingVisible") !== false,
             appendUserPrompt: !!appendUserPrompt,
             anchor: documentAnchor || null
           },
@@ -1469,7 +1507,13 @@ export async function activate(ctx) {
         },
         baseUrl: runtimeConfig.baseUrl
       });
+      if (preparation?.signal.aborted) {
+        try { await handle.abort("cancelled-during-preparation"); }
+        finally { handle.detach(); }
+        return { status: "aborted" };
+      }
     } catch (error) {
+      if (preparation?.signal.aborted) return { status: "aborted" };
       if (
         runtimeConfig.mode === "auto"
         && [
@@ -1485,6 +1529,7 @@ export async function activate(ctx) {
         );
         return { fallbackToBrowser: true };
       }
+      if (preparation) runtime.markError(sid, error, preparation.id);
       window.zion.events.emit("chat/runError", {
         error,
         sessionId: sid,
@@ -1498,6 +1543,9 @@ export async function activate(ctx) {
     }
 
     const runId = handle.runId;
+    interactiveRuntimeOwnerRuns.add(runId);
+    interactiveRuntimeObservers.get(runId)?.abort();
+    interactiveRuntimeObservers.delete(runId);
     const startedAt = Date.now();
     const insertLine = Math.max(0, Number(cursor?.line || 0) + 1);
     const anchor = {
@@ -1544,6 +1592,7 @@ export async function activate(ctx) {
       });
     } catch {}
 
+    preparation?.accept(runId);
     runtime.beginRun(sid, runId);
     setRunState(sid, { aborted: false, model: handle.model || null }, runId);
     try {
@@ -1564,6 +1613,7 @@ export async function activate(ctx) {
     runtime.setController(sid, {
       abortOnDispose: false,
       abort() {
+        preparation?.clearFeedback();
         void handle.abort("user").catch(() => {});
       },
       dispose() {
@@ -1588,14 +1638,8 @@ export async function activate(ctx) {
       panelId,
       assistantBlockId: runAnchorPayload.assistantBlockId,
       answerAnchorPos: runAnchorPayload.answerAnchorPos,
-      documentWriter: true,
+      documentWriter: false,
       assistantBlockReady: true,
-      completeAssistantMessage: async (payload) => {
-        window.zion?.events?.emit?.(
-          "runtime/pendingAssistantCommitted",
-          payload
-        );
-      },
       appendAssistantToken: async () => true
     };
     const recordRemoteEvent = (event) => {
@@ -1613,9 +1657,9 @@ export async function activate(ctx) {
     const consuming = (async () => {
       try {
         for await (const event of handle.events) {
-          // #region debug-point A:owner-projection-event
-          if (event?.type === "message.delta") void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "A", location: "extensions/dev.langchain-chat/main.js:owner-consumer", msg: "[DEBUG] Owner projected message delta", data: { consumer: "owner", sessionId: sid, runId, sequence: Number(event.sequence) || 0, sourceSequenceStart: Number(event.data?.projection?.sourceSequenceStart) || 0, sourceSequenceEnd: Number(event.data?.projection?.sourceSequenceEnd) || 0, sourceEventCount: Number(event.data?.projection?.sourceEventCount) || 0, tokenChars: String(event.data?.delta || "").length }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-          // #endregion
+          if (["reasoning.started", "reasoning.delta", "message.delta", "tool.started", "tool.requested"].includes(event.type)) {
+            preparation?.clearFeedback();
+          }
           recordRemoteEvent(event);
           await projectRunEventToSession(
             window.zion,
@@ -1718,6 +1762,10 @@ export async function activate(ctx) {
       : {};
     const runId = String(metadata.runtimeRunId || runRecord?.id || "");
     const sid = String(runRecord?.sessionId || "");
+    if (interactivePreparations.has(sid)) {
+      if (runId) pendingRecoveryRuns.set(runId, runRecord);
+      return null;
+    }
     if (!recoveryReady()) {
       if (runId && sid) pendingRecoveryRuns.set(runId, runRecord);
       return null;
@@ -1730,9 +1778,6 @@ export async function activate(ctx) {
       || interactiveRuntimeObservers.has(runId)
       || ownedLocally
     ) {
-      // #region debug-point A:observer-skipped-for-owner
-      if (ownedLocally) void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "A", location: "extensions/dev.langchain-chat/main.js:recover-skip-owner", msg: "[DEBUG] Recovery observer skipped for local owner", data: { sessionId: sid, runId, runStatus: String(runRecord?.status || "") }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-      // #endregion
       return null;
     }
 
@@ -1742,26 +1787,29 @@ export async function activate(ctx) {
       metadata.runtimeBaseUrl
       || readInteractiveRuntimeConfig().baseUrl
     );
-    const previousEvents = window.zion?.runs?.getEvents?.(runId) || [];
     // The persisted receive ledger is not an acknowledgement from UI consumers.
     const afterSequence = projectedSequences.get(runId) || 0;
     const observer = new AbortController();
+    const deferToSubmitter = () => {
+      if (!interactivePreparations.has(sid) && !interactiveRuntimeOwnerRuns.has(runId)) return false;
+      if (interactivePreparations.has(sid)) pendingRecoveryRuns.set(runId, runRecord);
+      observer.abort();
+      return true;
+    };
     interactiveRuntimeObservers.set(runId, observer);
-    // #region debug-point A:observer-start
-    void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "A", location: "extensions/dev.langchain-chat/main.js:recover-start", msg: "[DEBUG] Recovery observer started", data: { consumer: "observer", sessionId: sid, runId, afterSequence, previousEventCount: previousEvents.length, runStatus: String(runRecord?.status || ""), activeObserverCount: interactiveRuntimeObservers.size }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-    // #endregion
     let terminalProjected = false;
 
     try {
       await window.zion.commands.executeCommand("zion.sessions.getDocAsync", sid);
       await window.zion.commands.executeCommand("zion.sessions.getMetaAsync", sid);
-      if (observer.signal.aborted) return null;
+      if (observer.signal.aborted || deferToSubmitter()) return null;
       const observed = await observeInteractiveRuntimeRun({
         runtimeRunId: runId,
         afterSequence,
         baseUrl,
         signal: observer.signal,
         onRun: async (remoteRun) => {
+          if (deferToSubmitter()) return;
           if (!["queued", "running"].includes(remoteRun.status)) return;
           window.zion?.runs?.start?.({
             ...runRecord,
@@ -1806,6 +1854,7 @@ export async function activate(ctx) {
           }
         },
         onEvent: async (event) => {
+          if (deferToSubmitter()) return;
           window.zion?.runs?.recordEvent?.({
             runId,
             type: event.type,
@@ -1813,9 +1862,6 @@ export async function activate(ctx) {
             sequence: event.sequence,
             data: event.data || {}
           });
-          // #region debug-point A:observer-projection-event
-          if (event?.type === "message.delta") void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "A", location: "extensions/dev.langchain-chat/main.js:recovery-observer", msg: "[DEBUG] Observer projected message delta", data: { consumer: "observer", sessionId: sid, runId, sequence: Number(event.sequence) || 0, sourceSequenceStart: Number(event.data?.projection?.sourceSequenceStart) || 0, sourceSequenceEnd: Number(event.data?.projection?.sourceSequenceEnd) || 0, sourceEventCount: Number(event.data?.projection?.sourceEventCount) || 0, tokenChars: String(event.data?.delta || "").length }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-          // #endregion
           await projectRunEventToSession(window.zion, sid, event, {
             requestSource: "interactive",
             backend: "runtime",
@@ -1825,12 +1871,6 @@ export async function activate(ctx) {
             documentWriter: false,
             resetProjection: afterSequence === 0,
             replay: true,
-            completeAssistantMessage: async (payload) => {
-              await window.zion?.events?.emitAsync?.(
-                "runtime/pendingAssistantCommitted",
-                payload
-              );
-            },
             appendAssistantToken: async () => true
           });
           projectedSequences.set(runId, Number(event.sequence) || afterSequence);
@@ -1924,9 +1964,6 @@ export async function activate(ctx) {
   const runtimeSessionRunSubscription = window.zion?.events?.on?.(
     "runtime/sessionRunEvent",
     (event = {}) => {
-      // #region debug-point A:session-run-event
-      if (event?.type === "run.started") void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "A", location: "extensions/dev.langchain-chat/main.js:runtime-session-run-event", msg: "[DEBUG] Runtime session run event received", data: { sessionId: String(event.sessionId || ""), runId: String(event.runId || ""), ownEvent: event.ownEvent === true, sourceClientIdPresent: !!event.sourceClientId, discovered: event.data?.discovered === true, eventSequence: Number(event.sequence) || 0, alreadyObserved: interactiveRuntimeObservers.has(String(event.runId || "")), ownedLocally: interactiveRuntimeOwnerRuns.has(String(event.runId || "")) }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-      // #endregion
       if (
         event.type !== "run.started"
         || event.ownEvent === true
@@ -1955,7 +1992,7 @@ export async function activate(ctx) {
   }
 
   // 通用运行逻辑（含 Tool Calls 链式继续）
-  const doRun = async (opts = {}) => {
+  const performRun = async (opts = {}, preparation) => {
     const ed = getEd(opts);
     if (!ed) {
       console.log("[langchain-chat] no active editor");
@@ -1985,7 +2022,7 @@ export async function activate(ctx) {
     );
     const runModel = resolveActiveRunModel();
     const streaming = !!getRunState(sid)?.streaming;
-    if (streaming) {
+    if (streaming && getRunState(sid)?.runId !== preparation?.id) {
       console.log("[langchain-chat] already streaming in current session, abort");
       return; // 防止本会话并发；其他会话不受影响
     }
@@ -2032,6 +2069,7 @@ export async function activate(ctx) {
       console.log("[langchain-chat] no content, abort");
       return;
     }
+    preparation?.signal.throwIfAborted();
 
     const reconstructHistory = async (messages, resolvedConfig = null) => {
       const includeToolHistory = readChatBoolDefaultTrue("chat.includeToolHistory");
@@ -2097,6 +2135,7 @@ export async function activate(ctx) {
       interactiveRuntimeEligibilityResult.eligible
       && await shouldUseInteractiveRuntime(interactiveRuntimeConfig)
     ) {
+      preparation?.signal.throwIfAborted();
       try {
         await Promise.resolve(
           window.zion?.commands?.executeCommand?.(
@@ -2105,6 +2144,7 @@ export async function activate(ctx) {
           )
         );
       } catch {}
+      preparation?.signal.throwIfAborted();
       const insertionOffset = lines
         .slice(0, cursorLine)
         .reduce((total, line) => total + line.length + 1, 0)
@@ -2145,12 +2185,15 @@ export async function activate(ctx) {
         documentAnchor,
         reconstructHistory,
         autoScrollAssistant,
-        runFollowLatest
+        runFollowLatest,
+        preparation
       });
       if (!runtimeResult?.fallbackToBrowser) return runtimeResult;
     }
 
     // 3. 插入 assistant 块（用于承载输出）
+    preparation?.signal.throwIfAborted();
+    preparation?.release();
     const startedAt = Date.now();
     const runId = "run_" + Math.random().toString(36).slice(2);
     const { anchor, insertLine } = insertAssistantBlock(ed, {
@@ -2759,6 +2802,62 @@ export async function activate(ctx) {
       }
         if (runState?.error) return;
         reportRunError(e);
+    }
+  };
+
+  const doRun = async (opts = {}) => {
+    const ed = getEd(opts);
+    const panelId = opts?.panelId || ed?.panelId || null;
+    const sid = getSessionId({ ...opts, panelId });
+    if (!ed || !sid || getRunState(sid)?.streaming || interactivePreparations.has(sid)) return;
+    const id = `preparing-${crypto.randomUUID()}`;
+    const controller = new AbortController();
+    const cursor = ed.getCursor();
+    const lines = ed.getValue().split("\n");
+    const answerAnchorPos = lines.slice(0, cursor.line).reduce((n, line) => n + line.length + 1, 0)
+      + (lines[cursor.line]?.length || 0);
+    const clearFeedback = () => window.zion.events.emit("chat/prepared", { sessionId: sid, submissionId: id });
+    const showFeedback = (status, assistantBlockId = id) => window.zion.events.emit("chat/preparing", {
+      sessionId: sid, submissionId: id, assistantBlockId, answerAnchorPos, status
+    });
+    const release = () => {
+      clearFeedback();
+      runtime.clearController(sid, id);
+      if (runtime.isRunActive(sid, id)) runtime.markAwaiting(sid, id);
+      if (interactivePreparations.get(sid) === id) interactivePreparations.delete(sid);
+      for (const [runId, record] of [...pendingRecoveryRuns]) {
+        if (interactivePreparations.has(sid)) break;
+        if (record.sessionId !== sid) continue;
+        pendingRecoveryRuns.delete(runId);
+        void recoverInteractiveRuntimeRun(record);
+      }
+    };
+    interactivePreparations.set(sid, id);
+    runtime.beginRun(sid, id);
+    runtime.setController(sid, { abort() {
+      controller.abort();
+      clearFeedback();
+      if (interactivePreparations.get(sid) === id) interactivePreparations.delete(sid);
+    } }, id);
+    showFeedback(t("run.preparing", "assistant · 正在准备…"));
+    try {
+      return await performRun(opts, {
+        id, signal: controller.signal, clearFeedback, release,
+        accept(runId) {
+          // Transfer cancellation ownership without aborting the accepted run.
+          runtime.clearController(sid, id);
+          interactivePreparations.delete(sid);
+          pendingRecoveryRuns.delete(runId);
+          showFeedback(t("run.waiting", "等待响应…"), runId);
+        }
+      });
+    } catch (error) {
+      if (controller.signal.aborted) return { status: "aborted" };
+      runtime.markError(sid, error, id);
+      window.zion.events.emit("chat/runError", { error, sessionId: sid, panelId });
+      throw error;
+    } finally {
+      release();
     }
   };
 

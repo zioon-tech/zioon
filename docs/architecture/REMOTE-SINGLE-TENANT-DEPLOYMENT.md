@@ -13,6 +13,10 @@
 [部署模式指南](../operations/DEPLOYMENT-MODES.md)。只有公网 IP 和已有正式域名是两套
 不同流程，不应混用端口、证书地址或 Connector credential。
 
+本文描述当前可执行流程。Runtime/Node 安装产品化、稳定设备身份、可靠投递、生命周期
+治理和规模化连接平面的后续演进见
+[Node Control Plane 演进路线图](./NODE-CONTROL-PLANE-ROADMAP.md)。
+
 ## 拓扑
 
 ```text

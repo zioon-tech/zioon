@@ -31,6 +31,7 @@ import {
   createSchedulerTask,
   deleteSchedulerTask,
   getRun,
+  getRunEvents,
   getSchedulerRun,
   getSchedulerTask,
   listModels,
@@ -54,6 +55,7 @@ import {
 } from "./components";
 import type {
   ActiveRun,
+  RunEvent,
   RunRecord,
   RuntimeModelProfile,
   SchedulerTask,
@@ -61,7 +63,7 @@ import type {
   TodoItem,
 } from "./types";
 
-type WorkTab = "runs" | "tasks" | "schedules";
+type WorkTab = "overview" | "runs" | "tasks" | "schedules";
 
 function runTone(status: string): "blue" | "green" | "red" | "amber" | "neutral" {
   if (status === "running" || status === "queued" || status === "retrying") return "blue";
@@ -125,6 +127,64 @@ function runTriggerLabel(trigger?: string): string {
   if (trigger === "manual") return "手动运行";
   if (trigger === "schedule") return "按计划运行";
   return trigger || "运行";
+}
+
+function schedulerEventLabel(event: NonNullable<SchedulerRun["events"]>[number]): {
+  title: string;
+  detail: string;
+  tone: "green" | "blue" | "red" | "amber" | "neutral";
+} {
+  const type = String(event.type || "event");
+  const data = event.data || {};
+  const content = typeof data.content === "string" ? data.content : "";
+  const error = typeof data.error === "string" ? data.error : "";
+  if (type.includes("error") || error) {
+    return { title: "异常", detail: error || type, tone: "red" };
+  }
+  if (type.includes("tool")) {
+    const name = String(data.name || data.toolName || data.tool || "工具调用");
+    return { title: name, detail: content || type, tone: "blue" };
+  }
+  if (type.includes("message")) {
+    return { title: "模型输出", detail: content || type, tone: "green" };
+  }
+  if (type.includes("run") || type.includes("task")) {
+    return { title: runStatusLabel(String(data.status || type)), detail: type, tone: "neutral" };
+  }
+  return { title: type, detail: content || JSON.stringify(data).slice(0, 160), tone: "neutral" };
+}
+
+function eventTime(event: NonNullable<SchedulerRun["events"]>[number]): string {
+  return formatDateTime(event.timestamp || event.ts);
+}
+
+function runtimeEventLabel(event: RunEvent): {
+  title: string;
+  detail: string;
+  tone: "green" | "blue" | "red" | "amber" | "neutral";
+} {
+  const type = String(event.type || "event");
+  const data = event.data || {};
+  const content = typeof data.content === "string" ? data.content : "";
+  const error = typeof data.error === "string" ? data.error : "";
+  if (type.includes("error") || error) {
+    return { title: "异常", detail: error || type, tone: "red" };
+  }
+  if (type.includes("tool")) {
+    const name = String(data.name || data.toolName || data.tool || "工具调用");
+    return { title: name, detail: content || type, tone: "blue" };
+  }
+  if (type.includes("message") || type.includes("assistant")) {
+    return { title: "模型输出", detail: content || type, tone: "green" };
+  }
+  if (type.includes("run")) {
+    return { title: runStatusLabel(String(data.status || type)), detail: type, tone: "neutral" };
+  }
+  return { title: type, detail: content || JSON.stringify(data).slice(0, 160), tone: "neutral" };
+}
+
+function runtimeEventTime(event: RunEvent): string {
+  return formatDateTime(event.timestamp);
 }
 
 function schedulerRunOutput(run: SchedulerRun): string {
@@ -423,17 +483,194 @@ function SchedulesTab() {
   );
 }
 
+function OverviewTab() {
+  const navigate = useNavigate();
+  const sessions = useQuery({
+    queryKey: ["session-summaries"],
+    queryFn: () => listSessionSummaries(100),
+    refetchInterval: 10_000,
+  });
+  const tasks = useQuery({
+    queryKey: ["scheduler-tasks"],
+    queryFn: listSchedulerTasks,
+    refetchInterval: 10_000,
+  });
+  const runs = useQuery({
+    queryKey: ["scheduler-runs"],
+    queryFn: () => listSchedulerRuns("", 40),
+    refetchInterval: 10_000,
+  });
+  const todos = useQuery({
+    queryKey: ["todo-lists"],
+    queryFn: listTodoLists,
+    refetchInterval: 10_000,
+  });
+  const loading = sessions.isLoading || tasks.isLoading || runs.isLoading || todos.isLoading;
+  const error = sessions.error || tasks.error || runs.error || todos.error;
+  const activeSessions = (sessions.data || []).filter((session) => session.activeRun);
+  const failedRuns = (runs.data || []).filter((run) => isSchedulerRunFailure(run.status));
+  const activeSchedulerRuns = (runs.data || []).filter((run) => isSchedulerRunActive(run.status));
+  const enabledTasks = (tasks.data || []).filter((task) => task.enabled);
+  const activeTodos = (todos.data || []).filter((list) =>
+    list.todos.some((todo) => todo.status !== "completed")
+  );
+
+  if (loading) return <LoadingState label="正在汇总运行状态" />;
+  if (error) {
+    return (
+      <ErrorState
+        error={error}
+        onRetry={() => {
+          void sessions.refetch();
+          void tasks.refetch();
+          void runs.refetch();
+          void todos.refetch();
+        }}
+      />
+    );
+  }
+
+  return (
+    <>
+      <section className="work-command-center">
+        <div className="work-metric-grid">
+          <button type="button" onClick={() => navigate("/work?tab=runs")}>
+            <strong>{activeSessions.length + activeSchedulerRuns.length}</strong>
+            <span>运行中</span>
+          </button>
+          <button type="button" onClick={() => navigate("/work?tab=schedules")}>
+            <strong>{enabledTasks.length}</strong>
+            <span>自动化</span>
+          </button>
+          <button className={failedRuns.length ? "is-danger" : ""} type="button">
+            <strong>{failedRuns.length}</strong>
+            <span>异常</span>
+          </button>
+          <button type="button" onClick={() => navigate("/work?tab=tasks")}>
+            <strong>{activeTodos.length}</strong>
+            <span>待办</span>
+          </button>
+        </div>
+      </section>
+
+      <SectionLabel>正在运行</SectionLabel>
+      {!activeSessions.length && !activeSchedulerRuns.length ? (
+        <div className="work-empty-line">
+          <CheckCircle2 size={16} />当前没有运行中的任务
+        </div>
+      ) : (
+        <div className="list work-list">
+          {activeSessions.slice(0, 4).map((session) => (
+            <button
+              className="work-row"
+              type="button"
+              key={session.activeRun?.runId || session.id}
+              onClick={() => {
+                if (session.activeRun?.runId) navigate(`/run/${encodeURIComponent(session.activeRun.runId)}`);
+              }}
+            >
+              <span className="row-icon blue"><Activity size={19} /></span>
+              <span className="row-main">
+                <span className="row-title-line">
+                  <span className="row-title">{session.title || "未命名会话"}</span>
+                  <Badge tone="blue">{runStatusLabel(session.activeRun?.status || "running")}</Badge>
+                </span>
+                <span className="row-preview">会话 Run · {session.activeRun?.runId.slice(-8)}</span>
+              </span>
+              <ChevronRight size={17} />
+            </button>
+          ))}
+          {activeSchedulerRuns.slice(0, 4).map((run) => (
+            <button
+              className="work-row"
+              type="button"
+              key={run.id}
+              onClick={() => navigate(`/scheduler/${encodeURIComponent(run.taskId)}/runs/${encodeURIComponent(run.id)}`)}
+            >
+              <span className="row-icon blue"><CalendarClock size={19} /></span>
+              <span className="row-main">
+                <span className="row-title-line">
+                  <span className="row-title">{run.task?.title || run.taskId}</span>
+                  <Badge tone="blue">{runStatusLabel(run.status)}</Badge>
+                </span>
+                <span className="row-preview">{runTriggerLabel(run.trigger)} · {formatDateTime(run.startedAt || run.createdAt)}</span>
+              </span>
+              <ChevronRight size={17} />
+            </button>
+          ))}
+        </div>
+      )}
+
+      <SectionLabel>需要关注</SectionLabel>
+      {!failedRuns.length ? (
+        <div className="work-empty-line">
+          <CheckCircle2 size={16} />最近没有失败的自动化运行
+        </div>
+      ) : (
+        <div className="list work-list">
+          {failedRuns.slice(0, 6).map((run) => (
+            <button
+              className="work-alert-row"
+              type="button"
+              key={run.id}
+              onClick={() => navigate(`/scheduler/${encodeURIComponent(run.taskId)}/runs/${encodeURIComponent(run.id)}`)}
+            >
+              <span className="row-icon red"><CircleAlert size={19} /></span>
+              <span className="row-main">
+                <span className="row-title-line">
+                  <span className="row-title">{run.task?.title || run.taskId}</span>
+                  <Badge tone="red">{runStatusLabel(run.status)}</Badge>
+                </span>
+                <span className="row-preview">{run.error || "打开运行日志查看失败位置"}</span>
+              </span>
+              <ChevronRight size={17} />
+            </button>
+          ))}
+        </div>
+      )}
+
+      <SectionLabel>自动化</SectionLabel>
+      {!enabledTasks.length ? (
+        <div className="work-empty-line">
+          <CalendarClock size={16} />没有启用的定时任务
+        </div>
+      ) : (
+        <div className="list work-list">
+          {enabledTasks.slice(0, 4).map((task) => (
+            <button
+              className="work-row"
+              type="button"
+              key={task.id}
+              onClick={() => navigate(`/scheduler/${encodeURIComponent(task.id)}`)}
+            >
+              <span className="row-icon blue"><CalendarClock size={19} /></span>
+              <span className="row-main">
+                <span className="row-title">{task.title || "未命名任务"}</span>
+                <span className="row-preview">
+                  {scheduleLabel(task)}
+                  {task.nextRun ? ` · 下次 ${formatDateTime(task.nextRun)}` : ""}
+                </span>
+              </span>
+              <ChevronRight size={17} />
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 export function WorkScreen() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
-  const tab = (["runs", "tasks", "schedules"].includes(params.get("tab") || "")
+  const tab = (["overview", "runs", "tasks", "schedules"].includes(params.get("tab") || "")
     ? params.get("tab")
-    : "schedules") as WorkTab;
+    : "overview") as WorkTab;
   return (
     <MobilePage
       title="工作"
-      subtitle={tab === "runs" ? "当前运行" : tab === "tasks" ? "Agent 与 Todo" : "自动化"}
+      subtitle={tab === "overview" ? "运行中心" : tab === "runs" ? "当前运行" : tab === "tasks" ? "Agent 与 Todo" : "自动化"}
       className="work-page"
       action={tab === "schedules" ? (
         <IconButton icon={Plus} label="新建定时任务" onClick={() => navigate("/scheduler/new")} />
@@ -455,12 +692,14 @@ export function WorkScreen() {
       <SegmentedControl
         value={tab}
         options={[
+          { value: "overview", label: "概览" },
           { value: "schedules", label: "自动化" },
           { value: "tasks", label: "待办" },
           { value: "runs", label: "运行" },
         ]}
         onChange={(value) => setParams({ tab: value })}
       />
+      {tab === "overview" ? <OverviewTab /> : null}
       {tab === "runs" ? <RunsTab /> : null}
       {tab === "tasks" ? <TasksTab /> : null}
       {tab === "schedules" ? <SchedulesTab /> : null}
@@ -816,6 +1055,27 @@ export function SchedulerRunDetailScreen() {
         </dl>
       </section>
 
+      {record.events?.length ? (
+        <section className="detail-section">
+          <h2>运行日志</h2>
+          <div className="run-timeline">
+            {record.events.map((event, index) => {
+              const item = schedulerEventLabel(event);
+              return (
+                <article className={`run-timeline-item ${item.tone}`} key={event.eventId || `${event.type}:${index}`}>
+                  <span className="run-timeline-dot" />
+                  <div>
+                    <strong>{item.title}</strong>
+                    <small>{eventTime(event)}</small>
+                    {item.detail ? <p>{item.detail}</p> : null}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
       {record.usage ? (
         <section className="detail-section">
           <h2>模型消耗</h2>
@@ -877,10 +1137,18 @@ export function RunDetailScreen() {
       return value && ["queued", "running"].includes(value.status) ? 2_000 : false;
     },
   });
+  const events = useQuery({
+    queryKey: ["run-events", decoded],
+    queryFn: () => getRunEvents(decoded),
+    enabled: Boolean(decoded),
+    refetchInterval: () =>
+      run.data && ["queued", "running"].includes(run.data.status) ? 2_000 : false,
+  });
   const stop = useMutation({
     mutationFn: () => abortRun(decoded),
     onSuccess() {
       void queryClient.invalidateQueries({ queryKey: ["run", decoded] });
+      void queryClient.invalidateQueries({ queryKey: ["run-events", decoded] });
     },
   });
   if (run.isLoading) {
@@ -923,6 +1191,30 @@ export function RunDetailScreen() {
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{record.output}</ReactMarkdown>
           </article>
         </section>
+      ) : null}
+      {events.data?.length ? (
+        <section className="detail-section">
+          <h2>运行日志</h2>
+          <div className="run-timeline">
+            {events.data.map((event) => {
+              const item = runtimeEventLabel(event);
+              return (
+                <article className={`run-timeline-item ${item.tone}`} key={event.eventId}>
+                  <span className="run-timeline-dot" />
+                  <div>
+                    <strong>{item.title}</strong>
+                    <small>{runtimeEventTime(event)}</small>
+                    {item.detail ? <p>{item.detail}</p> : null}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      ) : events.isError ? (
+        <div className="inline-error page-error">
+          {events.error instanceof Error ? events.error.message : "运行日志加载失败"}
+        </div>
       ) : null}
       {record.usage ? (
         <section className="detail-section">

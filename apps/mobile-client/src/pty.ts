@@ -8,7 +8,7 @@ const ICE_SERVERS: RTCIceServer[] = [
 const SERVICE_BASE = `${runtimeBaseUrl}/v1/device-services/local-tools`;
 
 export type PtyTransportStatus = {
-  transport: "connecting" | "webrtc" | "relay" | "disconnected";
+  transport: "connecting" | "webrtc" | "relay" | "ws" | "disconnected";
   phase?: string;
   fallbackReason?: string;
   roundTripTimeMs?: number;
@@ -29,7 +29,7 @@ export type PtyConnection = {
 };
 
 type TransportConnection = {
-  transport: "webrtc" | "relay";
+  transport: "webrtc" | "relay" | "ws";
   ready: Promise<void>;
   send(data: string): void;
   resize(cols: number, rows: number): void;
@@ -446,6 +446,122 @@ function createRelayTransport(
   };
 }
 
+function ptyWebSocketUrl(sessionId: string): string {
+  const sid = encodeURIComponent(sessionId);
+  const url = new URL(
+    `${SERVICE_BASE}/sessions/${sid}/pty/ws`,
+    window.location.href,
+  );
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
+function createWebSocketTransport(
+  sessionId: string,
+  cols: number,
+  rows: number,
+): TransportConnection {
+  if (typeof WebSocket !== "function") {
+    throw new Error("WebSocket is unavailable");
+  }
+  const socket = new WebSocket(ptyWebSocketUrl(sessionId));
+  socket.binaryType = "arraybuffer";
+  const decoder = new TextDecoder();
+  let disposed = false;
+  let opened = false;
+  let dataHandler = (_data: string) => {};
+  let errorHandler = (_error: Error) => {};
+  let closeHandler = () => {};
+  let inputBuffer = "";
+  let pendingResize: { cols: number; rows: number } | null = { cols, rows };
+  let resolveReady = () => {};
+  let rejectReady = (_error: Error) => {};
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+
+  const flush = () => {
+    if (!opened || disposed || socket.readyState !== WebSocket.OPEN) return;
+    if (pendingResize) {
+      socket.send(JSON.stringify({ type: "resize", ...pendingResize }));
+      pendingResize = null;
+    }
+    if (inputBuffer) {
+      socket.send(inputBuffer);
+      inputBuffer = "";
+    }
+  };
+  const close = (error?: Error, notify = true) => {
+    if (disposed) return;
+    disposed = true;
+    if (!opened && error) rejectReady(error);
+    try { socket.close(); } catch {}
+    if (error && notify) errorHandler(error);
+    if (notify) closeHandler();
+  };
+
+  socket.onopen = () => {
+    opened = true;
+    flush();
+    resolveReady();
+  };
+  socket.onmessage = (event) => {
+    const value = event.data;
+    if (typeof value === "string") {
+      dataHandler(value);
+      return;
+    }
+    if (value instanceof ArrayBuffer) {
+      dataHandler(decoder.decode(new Uint8Array(value), { stream: true }));
+      return;
+    }
+    if (value instanceof Blob) {
+      void value.arrayBuffer().then((buffer) => {
+        if (!disposed) dataHandler(decoder.decode(new Uint8Array(buffer), { stream: true }));
+      });
+    }
+  };
+  socket.onerror = () => {
+    close(new Error("PTY WebSocket failed"));
+  };
+  socket.onclose = () => {
+    if (!disposed) close(opened ? undefined : new Error("PTY WebSocket closed"));
+  };
+
+  return {
+    transport: "ws",
+    ready,
+    send(data) {
+      if (disposed) return;
+      inputBuffer += data;
+      flush();
+    },
+    resize(nextCols, nextRows) {
+      pendingResize = {
+        cols: Math.max(1, nextCols),
+        rows: Math.max(1, nextRows),
+      };
+      flush();
+    },
+    onData(handler) {
+      dataHandler = handler;
+      return () => {
+        dataHandler = () => {};
+      };
+    },
+    onError(handler) {
+      errorHandler = handler;
+    },
+    onClose(handler) {
+      closeHandler = handler;
+    },
+    dispose() {
+      close(undefined, false);
+    },
+  };
+}
+
 export function connectPty(
   sessionId: string,
   cols = 80,
@@ -510,14 +626,35 @@ export function connectPty(
         phase: "relay",
         fallbackReason,
       });
-      attempt = createRelayTransport(sessionId, cols, rows);
-      wire(attempt);
-      await activate(attempt);
-      updateStatus({
-        transport: "relay",
-        phase: "connected",
-        fallbackReason,
-      });
+      try {
+        attempt = createRelayTransport(sessionId, cols, rows);
+        wire(attempt);
+        await activate(attempt);
+        updateStatus({
+          transport: "relay",
+          phase: "connected",
+          fallbackReason,
+        });
+      } catch (relayError) {
+        attempt?.dispose();
+        if (disposed) throw relayError;
+        const relayReason = relayError instanceof Error
+          ? relayError.message
+          : String(relayError);
+        updateStatus({
+          transport: "connecting",
+          phase: "ws",
+          fallbackReason: relayReason || fallbackReason,
+        });
+        attempt = createWebSocketTransport(sessionId, cols, rows);
+        wire(attempt);
+        await activate(attempt);
+        updateStatus({
+          transport: "ws",
+          phase: "connected",
+          fallbackReason: relayReason || fallbackReason,
+        });
+      }
     }
   })();
 

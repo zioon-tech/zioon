@@ -124,6 +124,9 @@ describe("Runtime Host", () => {
     expect(allowed.headers.get("access-control-allow-origin")).toBe(
       "http://localhost:5177"
     );
+    expect(allowed.headers.get("access-control-allow-credentials")).toBe(
+      "true"
+    );
 
     const preflight = await fetch(`${address.url}/v1/runs`, {
       method: "OPTIONS",
@@ -136,6 +139,9 @@ describe("Runtime Host", () => {
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-origin")).toBe(
       "http://127.0.0.1:5177"
+    );
+    expect(preflight.headers.get("access-control-allow-credentials")).toBe(
+      "true"
     );
 
     const rejected = await fetch(`${address.url}/health`, {
@@ -1195,6 +1201,55 @@ describe("Runtime Host", () => {
     ]);
   });
 
+  it("derives a readable title from the first message for placeholder Sessions", async () => {
+    const store = createStore();
+    const engine = {
+      id: "session-auto-title",
+      async *streamTurn() {
+        yield { type: "message.delta", delta: "ok" };
+      }
+    };
+    const server = createServer(engine, store);
+    resources.at(-1).server = server;
+    const address = await server.start();
+
+    const createdResponse = await fetch(`${address.url}/v1/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({})
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json();
+    expect(created.session).toMatchObject({
+      title: "",
+      metadata: { titleAuto: true }
+    });
+
+    const accepted = await fetch(
+      `${address.url}/v1/sessions/${created.session.id}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          content: "优化 mobile 对话自动命名\n顺便保留刷新后的标题"
+        })
+      }
+    ).then((response) => response.json());
+    const run = await waitForRun(address.url, accepted.runId, "completed");
+
+    const { session } = await fetch(
+      `${address.url}/v1/sessions/${created.session.id}`
+    ).then((response) => response.json());
+    expect(session).toMatchObject({
+      title: "优化 mobile 对话自动命名",
+      metadata: {
+        titleAuto: true,
+        titleSource: "first-user-message"
+      }
+    });
+    expect(run.title).toBe("优化 mobile 对话自动命名");
+  });
+
   it("binds direct Workbench Runs to Runtime-owned Session history", async () => {
     const store = createStore();
     const engine = {
@@ -1528,5 +1583,51 @@ describe("Runtime Host", () => {
       runs: store,
       host: "0.0.0.0"
     })).toThrow("may only bind to loopback");
+  });
+
+  it("uses the configured Runtime request body limit", async () => {
+    const body = JSON.stringify({
+      title: "x".repeat(1024 * 1024 + 1024)
+    });
+    const defaultStore = createStore();
+    const defaultServer = createServer({
+      id: "limit-default",
+      async *streamTurn() {
+        yield { type: "message.delta", delta: "ok" };
+      }
+    }, defaultStore);
+    resources.at(-1).server = defaultServer;
+    const defaultAddress = await defaultServer.start();
+
+    const rejected = await fetch(`${defaultAddress.url}/v1/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body
+    });
+    expect(rejected.status).toBe(413);
+    await expect(rejected.json()).resolves.toMatchObject({
+      error: "Request body exceeds 1 MiB",
+      code: "request_body_limit_exceeded",
+      limitBytes: 1024 * 1024
+    });
+
+    const configuredStore = createStore();
+    const configuredServer = createServer({
+      id: "limit-configured",
+      async *streamTurn() {
+        yield { type: "message.delta", delta: "ok" };
+      }
+    }, configuredStore, {
+      maxRequestBytes: "2MiB"
+    });
+    resources.at(-1).server = configuredServer;
+    const configuredAddress = await configuredServer.start();
+
+    const accepted = await fetch(`${configuredAddress.url}/v1/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body
+    });
+    expect(accepted.status).toBe(201);
   });
 });

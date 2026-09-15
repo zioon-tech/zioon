@@ -83,6 +83,7 @@ export type SessionMessage = {
   toolCallId?: string;
   toolCalls?: AssistantToolCall[];
   runId?: string;
+  turn?: number;
   createdAt?: number;
 };
 
@@ -198,6 +199,14 @@ export type SkillRecord = {
   file?: string;
   source?: string;
   pluginId?: string;
+  sourceNodeId?: string;
+  sourceNodeLabel?: string;
+  sourceStatus?: "online" | "offline" | string;
+  sourcePath?: string;
+  contentHash?: string;
+  runtimeCached?: boolean;
+  runtimeNodeId?: string;
+  runtimeFile?: string;
 };
 
 export type SkillsSnapshot = {
@@ -206,6 +215,11 @@ export type SkillsSnapshot = {
   enabled: string[];
   catalog: SkillRecord[];
   paths?: string[];
+  pathSources?: Array<{
+    path: string;
+    nodeId?: string;
+    nodeLabel?: string;
+  }>;
   lastScan?: number;
 };
 
@@ -341,8 +355,22 @@ export type TerminalSession = {
   active?: boolean;
   cwd?: string;
   initial_cwd?: string;
+  nodeId?: string;
+  node_id?: string;
+  nodeLabel?: string;
+  node_label?: string;
+  resourceId?: string;
+  resource_id?: string;
   machine_id?: string;
   workspace_id?: string;
+  projectRoot?: string;
+  project_root?: string;
+  projectName?: string;
+  project_name?: string;
+  ssh_user?: string;
+  ssh_host?: string;
+  ssh_port?: number;
+  last_activity?: string | number;
   created_at?: string | number;
   updated_at?: string | number;
 };

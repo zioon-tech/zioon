@@ -90,6 +90,7 @@ export const LOCAL_TOOLS_TOOL_DEFINITIONS = [
       properties: {
         path: { type: "string" },
         content: { type: "string" },
+        expected_hash: { type: "string", description: "content_hash from read, for conditional plugin-data writes." },
         prompt: { type: "string" },
         session_id: { type: "string" }
       },
@@ -108,6 +109,7 @@ export const LOCAL_TOOLS_TOOL_DEFINITIONS = [
         old_string: { type: "string" },
         new_string: { type: "string" },
         replace_all: { type: "boolean" },
+        expected_hash: { type: "string" },
         prompt: { type: "string" },
         session_id: { type: "string" }
       },
@@ -595,11 +597,13 @@ export class LocalToolsBroker {
     baseUrl = "http://127.0.0.1:8765",
     fetchImpl = globalThis.fetch,
     healthTimeoutMs = 5000,
+    dataFiles = null,
     maxResultChars = 30_000
   } = {}) {
     this.baseUrl = String(baseUrl).replace(/\/+$/, "");
     this.fetchImpl = fetchImpl;
     this.healthTimeoutMs = healthTimeoutMs;
+    this.dataFiles = dataFiles;
     this.maxResultChars = maxResultChars;
     this.supportedToolNames = LOCAL_TOOLS_TOOL_DEFINITIONS.map((tool) => tool.name);
   }
@@ -620,7 +624,22 @@ export class LocalToolsBroker {
       throw new Error(`Unsupported local-tools tool: ${call.name}`);
     }
     const args = { ...(call.arguments || {}) };
+    const explicitSessionId = Object.hasOwn(call.arguments || {}, "session_id")
+      && String(call.arguments?.session_id || "").trim();
     authorizeTool(call.name, args, invocation.policy || {});
+    if (this.dataFiles) {
+      signal.throwIfCancelled();
+      try {
+        const dataFileArgs = explicitSessionId ? args : { ...args, session_id: undefined };
+        const payload = await this.dataFiles.handle(call.name, dataFileArgs, { signal });
+        if (payload) return { ok: true, content: compactResult(payload, this.maxResultChars) };
+      } catch (error) {
+        return { ok: false, content: error.message, error: error.message };
+      }
+    }
+    if (args.expected_hash !== undefined) {
+      throw new Error("Conditional writes require a plugin-data path without a terminal session");
+    }
     const request = requestOptionsForTool(call.name, args);
 
     signal.throwIfCancelled();
@@ -722,6 +741,7 @@ export class LocalToolsDeviceHost {
     resourceBindings = {},
     additionalRoots = [],
     accessPolicyProvider = null,
+    dataFiles = null,
     fetchImpl = globalThis.fetch,
     healthTimeoutMs = 5000,
     maxResultChars = 30_000
@@ -730,6 +750,7 @@ export class LocalToolsDeviceHost {
       baseUrl,
       fetchImpl,
       healthTimeoutMs,
+      dataFiles,
       maxResultChars
     });
     this.accessPolicyProvider = typeof accessPolicyProvider === "function"

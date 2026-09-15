@@ -4,6 +4,10 @@ import {
 } from "../../src/runtime/http-runtime-client.ts";
 import { toZionNextRunEvent } from "../../src/runtime/zion-next-compatibility.ts";
 import {
+  llmRequestPayloadFromWorkbenchEvent,
+  registerLlmRequestPayload
+} from "../../src/runtime/llm-request-observability.ts";
+import {
   DEFAULT_WORKBENCH_RUNTIME_BASE_URL,
   probeWorkbenchRuntime,
   readWorkbenchRuntimeConfig,
@@ -313,37 +317,91 @@ export function interactiveRuntimeEligibility({
   };
 }
 
-async function projectEvent(event, resolveEventDetail = null) {
-  const projected = toZionNextRunEvent(event);
-  if (
-    projected.type === "model.request"
-    && !projected.data?.payload
-    && projected.data?.detailAvailable === true
-    && Number(projected.data?.rawEventSequence) > 0
-    && typeof resolveEventDetail === "function"
-  ) {
+function createEventDetailResolver({ baseUrl, fetchImpl, runtimeRunId, signal }) {
+  return async (sequence) => {
+    if (signal?.aborted) return null;
+    const controller = new AbortController();
+    let cancel;
+    const cancelled = new Promise((resolve) => {
+      cancel = () => {
+        controller.abort();
+        resolve(null);
+      };
+    });
+    const timer = setTimeout(cancel, 5_000);
+    signal?.addEventListener("abort", cancel, { once: true });
+    const client = createHttpRuntimeClient({
+      baseUrl,
+      fetchImpl: (input, init) => (fetchImpl || globalThis.fetch)(input, {
+        ...init,
+        signal: controller.signal
+      })
+    });
     try {
-      const detail = await resolveEventDetail(
-        Number(projected.data.rawEventSequence)
-      );
-      if (detail?.type === "model.request") {
-        return toZionNextRunEvent(detail);
-      }
-    } catch (error) {
-      console.warn(
-        "[langchain-chat] failed to load Runtime model request detail:",
-        error
-      );
+      return await Promise.race([
+        client.getEvent(runtimeRunId, sequence),
+        cancelled
+      ]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
     }
-  }
-  return projected;
+  };
 }
 
-function projectEvents(events, resolveEventDetail = null) {
+function createEventProjector(resolveEventDetail, { sessionId, metadata } = {}) {
+  const seen = new Set();
+  let hydrating = 0;
+  return (event) => {
+    const projected = toZionNextRunEvent(event);
+    const sequence = Number(projected.data?.rawEventSequence);
+    const key = `${projected.runId}:${sequence}`;
+    if (
+      projected.type === "model.request"
+      && !projected.data?.payload
+      && projected.data?.detailAvailable === true
+      && sequence > 0
+      && typeof resolveEventDetail === "function"
+      && !seen.has(key)
+      && hydrating < 4
+    ) {
+      seen.add(key);
+      if (seen.size > 256) seen.delete(seen.values().next().value);
+      hydrating += 1;
+      // Inspector enrichment must never delay or replay ordered chat events.
+      void Promise.resolve().then(() => resolveEventDetail(sequence)).then((detail) => {
+        if (detail?.type !== "model.request" || !detail.data?.payload) return;
+        const payload = llmRequestPayloadFromWorkbenchEvent({
+          ...projected,
+          type: "llm.request",
+          sessionId: sessionId || "",
+          data: {
+            ...projected.data,
+            ...detail.data,
+            id: detail.eventId || event.eventId,
+            timestamp: event.timestamp,
+            source: metadata?.requestSource || metadata?.source || "interactive-chat",
+            panelId: metadata?.panelId || "",
+            stepIndex: detail.data.turn
+          }
+        });
+        registerLlmRequestPayload(globalThis.window?.zion, payload);
+      }).catch(() => {
+        // Optional inspector detail may be unavailable, cancelled, or timed out.
+      }).finally(() => {
+        hydrating -= 1;
+      });
+    }
+    return projected;
+  };
+}
+
+function projectEvents(events, resolveEventDetail = null, context = {}) {
+  const projectEvent = createEventProjector(resolveEventDetail, context);
   return {
     async *[Symbol.asyncIterator]() {
       for await (const event of events) {
-        yield await projectEvent(event, resolveEventDetail);
+        yield projectEvent(event);
       }
     }
   };
@@ -485,13 +543,23 @@ function findRuntimeProfile(profiles, selectedModel) {
 export async function resolveInteractiveRuntimeModel(
   client,
   selectedModel,
-  selectedConfig
+  selectedConfig,
+  runtimeCatalog
 ) {
-  const catalog = await client.getModels();
+  const catalog = Array.isArray(runtimeCatalog?.profiles)
+    ? runtimeCatalog
+    : await client.getModels();
   const profiles = Array.isArray(catalog.profiles) ? catalog.profiles : [];
   const selectedProviderId = String(selectedModel?.providerId || "");
   const selectedModelId = String(selectedModel?.modelId || "");
   let profile = findRuntimeProfile(profiles, selectedModel);
+  if (!profile && catalog === runtimeCatalog) {
+    const freshCatalog = await client.getModels();
+    profile = findRuntimeProfile(
+      Array.isArray(freshCatalog.profiles) ? freshCatalog.profiles : [],
+      selectedModel
+    );
+  }
   const importable = importableProfile(selectedModel, selectedConfig);
   const credential = String(
     selectedConfig?.key || selectedConfig?.apiKey || ""
@@ -644,6 +712,8 @@ export async function createInteractiveRuntimeHandle({
   tools,
   selectedModel,
   selectedModelConfig,
+  runtimeCatalog,
+  signal,
   title,
   workbenchSessionId,
   projectId,
@@ -661,8 +731,10 @@ export async function createInteractiveRuntimeHandle({
   const runtimeModel = await resolveInteractiveRuntimeModel(
     client,
     selectedModel,
-    selectedModelConfig
+    selectedModelConfig,
+    runtimeCatalog
   );
+  signal?.throwIfAborted();
   const handle = await createRemoteRunHandle(client, {
     interactionProfileId,
     title: title || "",
@@ -738,7 +810,13 @@ export async function createInteractiveRuntimeHandle({
     ...handle,
     events: projectEvents(
       handle.events,
-      (sequence) => client.getEvent(handle.runId, sequence)
+      createEventDetailResolver({
+        baseUrl,
+        fetchImpl,
+        runtimeRunId: handle.runId,
+        signal
+      }),
+      { sessionId: workbenchSessionId, metadata }
     )
   };
 }
@@ -753,17 +831,19 @@ export async function observeInteractiveRuntimeRun({
   onEvent = async () => {}
 }) {
   const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
-  await onRun(await client.getRun(runtimeRunId));
+  const run = await client.getRun(runtimeRunId);
+  await onRun(run);
+  const projectEvent = createEventProjector(
+    createEventDetailResolver({ baseUrl, fetchImpl, runtimeRunId, signal }),
+    { sessionId: run.sessionId, metadata: run.metadata }
+  );
   let lastEventSequence = Math.max(0, Number(afterSequence) || 0);
   for await (const event of client.subscribe(runtimeRunId, {
     afterSequence: lastEventSequence,
     signal,
     ...INTERACTIVE_PROJECTION_OPTIONS
   })) {
-    const projected = await projectEvent(
-      event,
-      (sequence) => client.getEvent(runtimeRunId, sequence)
-    );
+    const projected = projectEvent(event);
     await onEvent(projected);
     lastEventSequence = Math.max(
       lastEventSequence,

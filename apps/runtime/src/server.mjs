@@ -3,15 +3,20 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
+import { parseByteSize, requestBodyLimitError } from "../../../packages/node-protocol/src/index.mjs";
 import { resolveInteractionRequest } from "./interaction-profile-store.mjs";
 import {
   createRunEventProjector,
   projectRunEvents
 } from "./run-event-projection.mjs";
 import { createMobileHttpHandler } from "./mobile-http-handler.mjs";
+import {
+  deriveSessionTitleFromContent,
+  isPlaceholderSessionTitle
+} from "./session-title.mjs";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted", "interrupted"]);
-const MAX_REQUEST_BYTES = 1024 * 1024;
+const DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024;
 const POLICY_PRESETS = new Set(["read-only", "workspace-write", "trusted-automation"]);
 const NODE_ID_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,199}$/i;
 const THINKING_MODES = new Set(["auto", "off", "on"]);
@@ -61,15 +66,22 @@ function json(response, status, value) {
   response.end(body);
 }
 
-async function readJson(request) {
+function errorPayload(error) {
+  const payload = { error: error?.message || String(error) };
+  if (error?.code) payload.code = String(error.code);
+  if (Number.isSafeInteger(error?.limitBytes)) payload.limitBytes = error.limitBytes;
+  if (error?.limit) payload.limit = String(error.limit);
+  if (Array.isArray(error?.hints)) payload.hints = error.hints.map(String);
+  return payload;
+}
+
+async function readJson(request, maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_REQUEST_BYTES) {
-      const error = new Error("Request body exceeds 1 MiB");
-      error.statusCode = 413;
-      throw error;
+    if (size > maxRequestBytes) {
+      throw requestBodyLimitError("Request body", maxRequestBytes);
     }
     chunks.push(chunk);
   }
@@ -425,6 +437,7 @@ function allowBrowserOrigin(request, response, accessControl) {
     return false;
   }
   response.setHeader("access-control-allow-origin", origin);
+  response.setHeader("access-control-allow-credentials", "true");
   response.setHeader("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   response.setHeader(
     "access-control-allow-headers",
@@ -502,7 +515,8 @@ export function createRuntimeServer({
   sessionEventStore = null,
   sessionDocumentService = null,
   runPostProcessors = [],
-  onPostProcessorError = () => {}
+  onPostProcessorError = () => {},
+  maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES
 }) {
   if (!executor?.execute) throw new Error("Runtime executor is required");
   if (!runs?.get || !runs?.getEvents) throw new Error("Runtime RunStore is required");
@@ -517,11 +531,15 @@ export function createRuntimeServer({
     throw new Error("Runtime SessionStore is required");
   }
   assertLocalBinding(host, allowRemote, accessControl);
+  const requestBodyLimit = parseByteSize(maxRequestBytes, {
+    label: "Runtime request body limit"
+  });
   const defaultModel = modelRefFromProfile(serviceInfo.modelProfile);
   const resolveRequestedModel = (requested) => {
     if (typeof resolveModel === "function") return resolveModel(requested || null);
     return requested || defaultModel || null;
   };
+  const readRequestJson = (request) => readJson(request, requestBodyLimit);
   const resolveRequest = (body) => resolveInteractionRequest({
     body,
     interactionProfiles,
@@ -539,6 +557,17 @@ export function createRuntimeServer({
 
   const handles = new Map();
   const sessionHandles = new Map();
+  const sessionAdmissions = new Set();
+  const reserveSessionAdmission = (sessionId) => {
+    if (!sessionId) return null;
+    if (sessionAdmissions.has(sessionId) || sessionHandles.has(sessionId)) {
+      const error = new Error("Session already has an active Run");
+      error.statusCode = 409;
+      throw error;
+    }
+    sessionAdmissions.add(sessionId);
+    return () => sessionAdmissions.delete(sessionId);
+  };
   const projectionFailures = new Map();
   const presentationForSession = async (sessionId) => {
     if (sessionEventStore?.readSessionMeta) {
@@ -551,6 +580,7 @@ export function createRuntimeServer({
     if (!session?.id) return session;
     const presentation = await presentationForSession(session.id);
     return presentation?.title
+      && !isPlaceholderSessionTitle(presentation.title, session.id, presentation)
       ? { ...session, title: String(presentation.title) }
       : session;
   };
@@ -604,6 +634,107 @@ export function createRuntimeServer({
       });
       return null;
     }
+  };
+  const maybeAutoTitleSession = async (session, {
+    history = [],
+    content = "",
+    timestamp = Date.now()
+  } = {}) => {
+    if (
+      !session?.id
+      || typeof sessions.updateSession !== "function"
+      || history.some((message) => message?.role === "user")
+      || !isPlaceholderSessionTitle(session.title, session.id, session.metadata)
+    ) {
+      return session;
+    }
+    let presentation = null;
+    try {
+      presentation = await presentationForSession(session.id);
+      if (
+        presentation?.title
+        && !isPlaceholderSessionTitle(presentation.title, session.id, presentation)
+      ) {
+        return {
+          ...session,
+          title: String(presentation.title)
+        };
+      }
+    } catch (error) {
+      onPostProcessorError(error, {
+        processorId: "runtime.session-auto-title-presentation",
+        sessionId: session.id
+      });
+    }
+    const title = deriveSessionTitleFromContent(content, 48);
+    if (!title) return session;
+    const metadata = {
+      ...(session.metadata || {}),
+      titleAuto: true,
+      titleSource: "first-user-message"
+    };
+    let updated = session;
+    try {
+      updated = await sessions.updateSession(session.id, {
+        title,
+        metadata
+      }, timestamp);
+    } catch (error) {
+      onPostProcessorError(error, {
+        processorId: "runtime.session-auto-title",
+        sessionId: session.id
+      });
+      return session;
+    }
+    try {
+      if (
+        sessionEventStore?.updateSession
+        && (!presentation?.title || isPlaceholderSessionTitle(
+          presentation.title,
+          session.id,
+          presentation
+        ))
+      ) {
+        await sessionEventStore.updateSession(session.id, {
+          title,
+          meta: {
+            ...(presentation && typeof presentation === "object"
+              ? presentation
+              : {}),
+            id: session.id,
+            title,
+            titleAuto: true,
+            updatedAt: timestamp
+          },
+          reason: "runtime-auto-title"
+        });
+      } else {
+        publishSessionEvent("session.updated", {
+          sessionId: session.id,
+          data: {
+            fields: ["title"],
+            reason: "auto-title"
+          }
+        });
+      }
+    } catch (error) {
+      onPostProcessorError(error, {
+        processorId: "runtime.session-auto-title-presentation-update",
+        sessionId: session.id
+      });
+      publishSessionEvent("session.updated", {
+        sessionId: session.id,
+        data: {
+          fields: ["title"],
+          reason: "auto-title"
+        }
+      });
+    }
+    return updated || {
+      ...session,
+      title,
+      metadata
+    };
   };
   const listRunPostProcessors = () => {
     const source = typeof runPostProcessors === "function"
@@ -716,9 +847,8 @@ export function createRuntimeServer({
         {
           appendUserPrompt:
             runRequest?.metadata?.documentProjection?.appendUserPrompt === true,
-          documentWriterClientId: String(
-            runRequest?.metadata?.workbenchClientId || ""
-          )
+          includeReasoning:
+            runRequest?.metadata?.documentProjection?.includeReasoning !== false
         }
       );
     }).catch((error) => {
@@ -748,9 +878,6 @@ export function createRuntimeServer({
             sessionId,
             await sessions.getSessionMessages(sessionId)
           );
-          // #region debug-point D:assistant-transcript-persisted
-          globalThis.fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"D",location:"apps/runtime/src/server.mjs:assistant-transcript-persisted",msg:"[DEBUG] Canonical assistant message persisted",data:{runtimeSessionId:sessionId,runtimeRunId:result.runId||handle.runId,messageCount:projectedMessages.length,roles:projectedMessages.map((item)=>String(item?.role||"")),sequences:projectedMessages.map((item)=>Number(item?.sequence)||0)},ts:Date.now()})}).catch(()=>{});
-          // #endregion
         }
         if (sessionId) {
           publishSessionEvent(`run.${result.status}`, {
@@ -800,6 +927,7 @@ export function createRuntimeServer({
       });
   };
   const server = createServer(async (request, response) => {
+    let releaseAdmission;
     try {
       const url = new URL(request.url || "/", `http://${request.headers.host || host}`);
       if (!allowBrowserOrigin(request, response, accessControl)) {
@@ -811,19 +939,6 @@ export function createRuntimeServer({
         response.end();
         return;
       }
-
-      // #region debug-point C:browser-debug-forwarder
-      if (request.method === "POST" && url.pathname === "/__trae_debug/event") {
-        const event = await readJson(request);
-        await globalThis.fetch("http://127.0.0.1:7777/event", {
-          method: "POST",
-          body: JSON.stringify(event)
-        }).catch(() => {});
-        response.writeHead(204, { "cache-control": "no-store" });
-        response.end();
-        return;
-      }
-      // #endregion
 
       for (const handler of publicHttpHandlers) {
         if (await handler(request, response, url)) return;
@@ -947,7 +1062,7 @@ export function createRuntimeServer({
           json(response, 501, { error: "Runtime interaction profile store is unavailable" });
           return;
         }
-        const body = await readJson(request);
+        const body = await readRequestJson(request);
         const profile = request.method === "PATCH"
           ? interactionProfiles.patch(interactionProfileId, body.profile || body)
           : interactionProfiles.upsert({
@@ -966,7 +1081,7 @@ export function createRuntimeServer({
           json(response, 501, { error: "Runtime model profile import is unavailable" });
           return;
         }
-        const body = await readJson(request);
+        const body = await readRequestJson(request);
         const result = await importModelProfile({
           profile: {
             ...(body.profile && typeof body.profile === "object"
@@ -994,7 +1109,7 @@ export function createRuntimeServer({
       }
 
       if (request.method === "POST" && url.pathname === "/v1/runs") {
-        const body = await readJson(request);
+        const body = await readRequestJson(request);
         if (
           body?.metadata?.source === "interactive-chat"
           && Number(body.metadata.workbenchProtocolVersion) !== 4
@@ -1033,10 +1148,7 @@ export function createRuntimeServer({
         let attachedSessionId = "";
         let createdSession = false;
         if (requestedSessionId && sessionUserContent.trim()) {
-          if (sessionHandles.has(requestedSessionId)) {
-            json(response, 409, { error: "Session already has an active Run" });
-            return;
-          }
+          releaseAdmission = reserveSessionAdmission(requestedSessionId);
           let session = await sessions.getSession(requestedSessionId);
           if (!session) {
             const timestamp = Date.now();
@@ -1057,6 +1169,19 @@ export function createRuntimeServer({
           if (session.status !== "active") {
             json(response, 409, { error: `Session is not active: ${session.status}` });
             return;
+          }
+          if (
+            !Array.isArray(runRequest.metadata?.skills?.enabled)
+            && session.metadata?.skills
+            && typeof session.metadata.skills === "object"
+          ) {
+            runRequest.metadata = {
+              ...runRequest.metadata,
+              skills: {
+                ...session.metadata.skills,
+                ...(runRequest.metadata?.skills || {})
+              }
+            };
           }
           attachedSessionId = requestedSessionId;
         }
@@ -1122,8 +1247,9 @@ export function createRuntimeServer({
       }
 
       if (request.method === "POST" && url.pathname === "/v1/sessions") {
-        const body = await readJson(request);
+        const body = await readRequestJson(request);
         const timestamp = Date.now();
+        const explicitTitle = String(body.title || "").trim();
         const resolved = body.interactionProfileId
           ? resolveRequest(body)
           : {
@@ -1133,14 +1259,18 @@ export function createRuntimeServer({
                 ? { ...body.metadata }
                 : {}
             };
+        const metadata = { ...(resolved.metadata || {}) };
+        if (!Object.hasOwn(metadata, "titleAuto")) {
+          metadata.titleAuto = !explicitTitle;
+        }
         const session = {
           id: createId("session"),
           status: "active",
-          title: String(body.title || ""),
+          title: explicitTitle,
           projectId: body.projectId ? String(body.projectId) : undefined,
           model: resolved.model || undefined,
           policy: resolved.policy,
-          metadata: resolved.metadata,
+          metadata,
           createdAt: timestamp,
           updatedAt: timestamp
         };
@@ -1154,16 +1284,7 @@ export function createRuntimeServer({
 
       const sendMessageSessionId = matchSessionPath(url.pathname, "/messages");
       if (request.method === "POST" && sendMessageSessionId) {
-        const session = await sessions.getSession(sendMessageSessionId);
-        if (!session) {
-          json(response, 404, { error: "Session not found" });
-          return;
-        }
-        if (session.status !== "active") {
-          json(response, 409, { error: `Session is not active: ${session.status}` });
-          return;
-        }
-        const body = await readJson(request);
+        const body = await readRequestJson(request);
         const clientRequestId = String(body.clientRequestId || "").trim();
         if (clientRequestId.length > 200) {
           json(response, 400, { error: "clientRequestId exceeds 200 characters" });
@@ -1191,8 +1312,14 @@ export function createRuntimeServer({
             return;
           }
         }
-        if (sessionHandles.has(sendMessageSessionId)) {
-          json(response, 409, { error: "Session already has an active Run" });
+        releaseAdmission = reserveSessionAdmission(sendMessageSessionId);
+        let session = await sessions.getSession(sendMessageSessionId);
+        if (!session) {
+          json(response, 404, { error: "Session not found" });
+          return;
+        }
+        if (session.status !== "active") {
+          json(response, 409, { error: `Session is not active: ${session.status}` });
           return;
         }
         await reconcileSessionProjections();
@@ -1208,6 +1335,11 @@ export function createRuntimeServer({
         if (projectionFailure) {
           throw projectionFailure[1];
         }
+        session = await maybeAutoTitleSession(session, {
+          history,
+          content: canonicalContent,
+          timestamp: Date.now()
+        });
         const runRequest = {
           messages: [
             ...history.map((message) => ({
@@ -1291,9 +1423,6 @@ export function createRuntimeServer({
             runId: handle.runId,
             createdAt: Date.now()
           }]);
-          // #region debug-point D:user-transcript-persisted
-          void sessions.getSessionTranscript(session.id).then((messages)=>globalThis.fetch("http://127.0.0.1:7777/event",{method:"POST",body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"D",location:"apps/runtime/src/server.mjs:user-transcript-persisted",msg:"[DEBUG] Canonical user message persisted before document projection",data:{runtimeSessionId:session.id,runtimeRunId:handle.runId,messageCount:messages.length,roles:messages.map((item)=>String(item?.role||"")),sequences:messages.map((item)=>Number(item?.sequence)||0)},ts:Date.now()})}).catch(()=>{})).catch(()=>{});
-          // #endregion
           await sessionDocumentService?.prepareRun?.(
             session.id,
             {
@@ -1303,13 +1432,16 @@ export function createRuntimeServer({
             }
           );
         } catch (error) {
-          await handle.abort("session-persistence-failed");
-          await handle.completion;
-          if (clientRequestId) {
-            sessions.releaseSessionMessageCommand?.(
-              session.id,
-              clientRequestId
-            );
+          try {
+            await handle.abort("session-persistence-failed");
+            await handle.completion;
+          } finally {
+            if (clientRequestId) {
+              sessions.releaseSessionMessageCommand?.(
+                session.id,
+                clientRequestId
+              );
+            }
           }
           throw error;
         }
@@ -1336,12 +1468,12 @@ export function createRuntimeServer({
 
       const forkSessionId = matchSessionPath(url.pathname, "/fork");
       if (request.method === "POST" && forkSessionId) {
-        if (sessionHandles.has(forkSessionId)) {
+        if (sessionHandles.has(forkSessionId) || sessionAdmissions.has(forkSessionId)) {
           json(response, 409, { error: "Cannot fork a Session with an active Run" });
           return;
         }
         await reconcileSessionProjections();
-        const body = await readJson(request);
+        const body = await readRequestJson(request);
         const result = await sessions.forkSession(forkSessionId, {
           id: String(body.id || createId("session")),
           title: body.title,
@@ -1420,7 +1552,7 @@ export function createRuntimeServer({
           json(response, 409, { error: `Session is not active: ${current.status}` });
           return;
         }
-        const body = await readJson(request);
+        const body = await readRequestJson(request);
         const configurationUpdate = ["model", "policy", "skills"].some(
           (field) => Object.hasOwn(body, field)
         );
@@ -1498,12 +1630,9 @@ export function createRuntimeServer({
           json(response, 409, { error: "Run already has a live Runtime owner" });
           return;
         }
-        const body = await readJson(request);
+        const body = await readRequestJson(request);
         const existingRun = await runs.get(resumeRunId);
-        if (existingRun?.sessionId && sessionHandles.has(existingRun.sessionId)) {
-          json(response, 409, { error: "Session already has an active Run" });
-          return;
-        }
+        releaseAdmission = reserveSessionAdmission(existingRun?.sessionId);
         const handle = await executor.resume(resumeRunId, {
           ...body,
           modelOptions: normalizeModelOptions(body.modelOptions)
@@ -1730,7 +1859,7 @@ export function createRuntimeServer({
           });
           return;
         }
-        const body = await readJson(request);
+        const body = await readRequestJson(request);
         await handle.abort(String(body.reason || "user"));
         json(response, 202, { ok: true, runId: abortRunId });
         return;
@@ -1753,9 +1882,10 @@ export function createRuntimeServer({
         response.end();
         return;
       }
-      json(response, Number(error?.statusCode || 500), {
-        error: error?.message || String(error)
-      });
+      json(response, Number(error?.statusCode || 500), errorPayload(error));
+    } finally {
+      // A successful admission is now protected by trackHandle until finalization.
+      releaseAdmission?.();
     }
   });
   const normalizedUpgradeHandlers = (Array.isArray(upgradeHandlers)

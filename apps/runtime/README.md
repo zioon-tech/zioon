@@ -91,13 +91,31 @@ Runtime-owned Scheduler store and does not require local-tools or an open
 Workbench for control-plane access. Tool calls still use the configured Tool
 Host.
 
-Project Automation uses `~/.zion-next/memory` by default and checks enabled
-project policies once per minute. Configure it with
-`ZION_IDENTITY_MEMORY_ROOT`, `ZION_RUNTIME_PROJECT_AUTOMATION_POLL_MS`, or the
-matching `--identity-memory-root` / `--project-automation-poll-ms` flags. Disable
-only its background heartbeat with `ZION_RUNTIME_PROJECT_AUTOMATION_WORKER=0`;
-manual `run_now` and `stop` remain available through the Runtime tool and
-control-plane endpoints.
+Runtime request body limits are configurable without code changes:
+
+```bash
+ZION_RUNTIME_MAX_REQUEST_BYTES=8MiB
+ZION_RUNTIME_DEVICE_SERVICE_MAX_REQUEST_BYTES=8MiB
+ZION_RUNTIME_SCHEDULER_MAX_REQUEST_BYTES=1MiB
+ZION_RUNTIME_NODE_HTTP_MAX_REQUEST_BYTES=8MiB
+ZION_DEVICE_SERVICE_MAX_REQUEST_BYTES=8MiB
+```
+
+`ZION_RUNTIME_MAX_REQUEST_BYTES` covers normal Runtime JSON requests such as
+chat and Session mutation. `ZION_RUNTIME_DEVICE_SERVICE_MAX_REQUEST_BYTES`
+covers Runtime-to-device service relay requests such as file writes.
+`ZION_DEVICE_SERVICE_MAX_REQUEST_BYTES` must be set on the Connector side when
+the device relay limit is raised. Values accept raw bytes or units such as
+`512KiB`, `8MiB`, or `10MB`. `/health` reports the effective limits under
+`serviceInfo.requestLimits`.
+
+Project Automation reads Identity project notes through the configured plugin
+data location. Configure plugin data with `ZION_PLUGIN_DATA_ROOT` and, in Node
+tool mode, `ZION_PLUGIN_DATA_NODE_ID`. Configure the heartbeat interval with
+`ZION_RUNTIME_PROJECT_AUTOMATION_POLL_MS` or `--project-automation-poll-ms`.
+Disable only its background heartbeat with
+`ZION_RUNTIME_PROJECT_AUTOMATION_WORKER=0`; manual `run_now` and `stop` remain
+available through the Runtime tool and control-plane endpoints.
 
 ```text
 GET  /v1/project-automation
@@ -684,11 +702,24 @@ plugins must not be enabled until an isolated host model exists.
 
 ## Skills context
 
-Workbench persists only Skills metadata, paths, and enabled IDs. Plugin source
-files and complete `SKILL.md` bodies remain on the filesystem. Browser storage
-and Runtime KV are written independently, and startup keeps the newer snapshot
-instead of allowing an older Runtime value to overwrite recent Workbench
-selections.
+Workbench scans each configured Skills directory on its recorded source Node,
+then synchronizes a source-aware snapshot through `POST /v1/skills/sync`.
+Runtime retains the last successful snapshot for every Node and resolves
+duplicate Skill IDs to one catalog entry. Conversations read that catalog from
+Runtime; they do not fan out to every Node.
+
+Runtime caches synchronized text files in `dev.skills` Plugin Data and retains
+the normalized `SKILL.md` body in its catalog. A source Node may therefore go
+offline without removing its instructions. The context provider reports the
+source status and explicitly prevents the model from assuming that source-local
+commands, credentials, login state, environment variables, or dependencies are
+available. Unsynchronized current-Workbench changes are attached to that Run as
+transient Skills.
+
+Browser storage contains metadata only. `.env`, credential, secret, key, token,
+machine-configuration, binary, `.git`, and `node_modules` files are not copied.
+See `docs/architecture/MULTI-NODE-SKILLS.md` for the merge, routing, cache, and
+failure contracts.
 
 ## Capability defaults
 

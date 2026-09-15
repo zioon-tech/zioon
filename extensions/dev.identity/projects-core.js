@@ -124,6 +124,7 @@ tags: []
 export const PROJECT_FILE_TEMPLATE = buildProjectTemplate();
 
 export function buildProjectContext(index, options = {}) {
+  const root = escapeXml(options.sourceRoot || "~/.zion-next/data/plugins/dev.identity");
   const indexContent = clipCharacters(
     index,
     options.maxChars ?? DEFAULT_PROJECT_INDEX_LIMIT
@@ -139,28 +140,29 @@ export function buildProjectContext(index, options = {}) {
   const fragments = [];
   if (indexContent) {
     fragments.push([
-      '<projects_index source="~/.zion-next/memory/projects/index.md">',
+      `<projects_index source="${root}/projects/index.md">`,
       `  <content>${escapeXml(indexContent)}</content>`,
       "</projects_index>"
     ].join("\n"));
   }
   if (inboxContent) {
     fragments.push([
-      '<projects_inbox source="~/.zion-next/memory/projects/inbox.md">',
+      `<projects_inbox source="${root}/projects/inbox.md">`,
       `  <content>${escapeXml(inboxContent)}</content>`,
       "</projects_inbox>"
     ].join("\n"));
   }
   if (attentionContent) {
     fragments.push([
-      '<projects_attention source="~/.zion-next/memory/projects/attention.md">',
+      `<projects_attention source="${root}/projects/attention.md">`,
       `  <content>${escapeXml(attentionContent)}</content>`,
       "</projects_attention>"
     ].join("\n"));
   }
   return {
     fragment: fragments.join("\n"),
-    instructions: [...PROJECT_MAINTENANCE_INSTRUCTIONS]
+    instructions: PROJECT_MAINTENANCE_INSTRUCTIONS.map((text) =>
+      text.replaceAll("~/.zion-next/memory", root))
   };
 }
 

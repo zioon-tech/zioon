@@ -1,13 +1,13 @@
 {
   "name": "dev.identity",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Maintain agent identity, user profile, and distilled biography context.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.identity",
     "name": "Identity",
-    "version": "0.1.9",
+    "version": "0.1.10",
     "main": "./main.js",
     "entries": {
       "ui": "./main.js",
@@ -47,8 +47,8 @@
         {
           "id": "local-files",
           "label": {
-            "zh-CN": "本地文件",
-            "en-US": "Local files"
+            "zh-CN": "插件数据文件",
+            "en-US": "Plugin data files"
           },
           "description": {
             "zh-CN": "读写身份、用户画像、项目工作记忆和自传记忆文件。",
@@ -73,7 +73,7 @@
             "zh-CN": "身份与自传",
             "en-US": "Identity and biography"
           },
-          "path": "~/.zion-next/memory"
+          "path": "~/.zion-next/data/plugins/dev.identity"
         }
       ],
       "entrypoints": [

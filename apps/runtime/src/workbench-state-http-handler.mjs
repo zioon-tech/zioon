@@ -70,12 +70,18 @@ function matchKVPath(pathname) {
 export function createWorkbenchStateHttpHandler({
   store,
   reauthorize = null,
+  readOnlyKeys = [],
   eventPollIntervalMs = DEFAULT_EVENT_POLL_INTERVAL_MS,
   eventHeartbeatMs = DEFAULT_EVENT_HEARTBEAT_MS
 }) {
   if (!store?.readSnapshot || !store?.updateSession) {
     throw new Error("Workbench state HTTP handler requires a state store");
   }
+  const protectedKeys = new Set(readOnlyKeys);
+  const writableSnapshot = (snapshot) => snapshot && ({
+    ...snapshot,
+    kv: Object.fromEntries(Object.entries(snapshot.kv || {}).filter(([key]) => !protectedKeys.has(key)))
+  });
 
   return async (request, response, url) => {
     const path = url.pathname;
@@ -173,7 +179,7 @@ export function createWorkbenchStateHttpHandler({
       if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
       json(response, 200, store.writeSnapshot(
-        body.snapshot,
+        writableSnapshot(body.snapshot),
         body.expected_revision ?? null,
         body.source_client_id ?? ""
       ));
@@ -198,7 +204,7 @@ export function createWorkbenchStateHttpHandler({
       const body = await readJson(request);
       json(response, 200, store.migrateBrowserStorage(
         body.source_id,
-        body.snapshot,
+        writableSnapshot(body.snapshot),
         body.fingerprint
       ));
       return true;
@@ -215,6 +221,10 @@ export function createWorkbenchStateHttpHandler({
       return true;
     }
     if (key != null && request.method === "PUT") {
+      if (protectedKeys.has(key)) {
+        json(response, 409, { error: "This key is a Runtime-owned projection; update its source files" });
+        return true;
+      }
       const body = await readJson(request);
       json(response, 200, store.writeKV(key, body.value, {
         sourceClientId: body.source_client_id ?? ""

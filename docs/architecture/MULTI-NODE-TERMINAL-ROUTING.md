@@ -201,6 +201,9 @@ Persistent `waiting_for_resource`, durable dispatch/Device receipts, resource
 replicas and revision-aware migration, full Project resource pickers, tenant Spaces,
 and a standalone node administration plugin are subsequent changes. The first
 milestone fails closed with actionable errors rather than claiming those features.
+Their staged implementation order, scale triggers, compatibility rules, and exit
+criteria are defined in
+[NODE-CONTROL-PLANE-ROADMAP.md](./NODE-CONTROL-PLANE-ROADMAP.md).
 
 Next acceptance sequence:
 

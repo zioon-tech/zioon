@@ -4,7 +4,6 @@ import { HocuspocusProvider } from "@hocuspocus/provider";
 import { yCollab } from "y-codemirror.next";
 import * as Y from "yjs";
 import {
-  assistantBlockHeaderText,
   findAssistantBlockEndOffsetById
 } from "../../src/chat/restore";
 import {
@@ -21,7 +20,9 @@ import {
 } from "./editor/pending-assistant-plugin.js";
 
 const COLLABORATION_TEXT_KEY = "content";
-const COLLABORATION_PROTOCOL = "5";
+const COLLABORATION_CARDS_KEY = "cards";
+const COLLABORATION_RUN_PROJECTION_KEY = "runProjection";
+const COLLABORATION_PROTOCOL = "6";
 const PENDING_COMMIT_GRACE_MS = 5_000;
 
 function websocketUrl(baseUrl, clientId) {
@@ -67,15 +68,39 @@ function collaborationState(zion, sessionId, patch = {}) {
   });
 }
 
-function containsCommittedPending(documentText, entry) {
-  const source = String(documentText || "");
-  const header = assistantBlockHeaderText(entry?.assistantBlockId);
-  const start = source.lastIndexOf(header);
-  if (start < 0) return false;
-  const tail = source.slice(start + header.length);
-  const nextRole = tail.search(/\n(?:system|user|assistant|tool)\s+/);
-  const block = nextRole < 0 ? tail : tail.slice(0, nextRole);
-  return !!entry?.text && block.includes(entry.text);
+function projectionAcknowledges(entry, projection) {
+  const expected = Number(entry?.projectionSequence || 0);
+  const actual = Number(projection?.lastSequence || 0);
+  return expected > 0 && actual >= expected;
+}
+
+function mergeProjectedCards(current, cards) {
+  const previous = current && typeof current === "object" ? current : {};
+  const tools = new Map(
+    (Array.isArray(previous.tools) ? previous.tools : [])
+      .map((item) => [String(item?.id || ""), item])
+      .filter(([id]) => id)
+  );
+  const thinking = new Map(
+    (Array.isArray(previous.thinking) ? previous.thinking : [])
+      .map((item) => [String(item?.id || ""), item])
+      .filter(([id]) => id)
+  );
+  for (const value of cards.values()) {
+    if (!value?.id) continue;
+    const target = value.kind === "tool" ? tools : thinking;
+    const previousItem = target.get(String(value.id)) || {};
+    target.set(String(value.id), {
+      ...previousItem,
+      ...value,
+      expanded: previousItem.expanded === true
+    });
+  }
+  return {
+    ...previous,
+    tools: [...tools.values()],
+    thinking: [...thinking.values()]
+  };
 }
 
 export function createSessionCollaborationManager({
@@ -87,12 +112,14 @@ export function createSessionCollaborationManager({
   }),
   createDocument = () => new Y.Doc(),
   createProvider,
-  createPersistence
+  createPersistence,
+  syncTimeoutMs = 5_000
 } = {}) {
   const records = new Map();
   const pendingBySession = new Map();
   const pendingClearTimers = new Map();
   const pendingFollowHandles = new Map();
+  const cardRestoreScheduled = new Set();
   const enabled = runtimeConfig.mode !== "browser" && !!runtimeConfig.baseUrl;
   const providerFactory = createProvider || ((options) =>
     new HocuspocusProvider(options));
@@ -191,6 +218,45 @@ export function createSessionCollaborationManager({
     }
   };
 
+  const clearAcknowledgedPending = (sessionId) => {
+    const record = records.get(sessionId);
+    const entries = pendingBySession.get(sessionId);
+    if (!record || !entries) return;
+    for (const entry of [...entries.values()]) {
+      if (
+        projectionAcknowledges(
+          entry,
+          record.runProjections.get(entry.runId)
+        )
+      ) {
+        clearPending(sessionId, entry.runId, { follow: true });
+      }
+    }
+  };
+
+  const syncProjectedCards = (sessionId) => {
+    const record = records.get(sessionId);
+    if (!record) return;
+    const key = `sessions.annotations.${sessionId}`;
+    const annotations = mergeProjectedCards(
+      zion?.state?.get?.(key),
+      record.cards
+    );
+    zion?.state?.set?.(key, annotations);
+    if (cardRestoreScheduled.has(sessionId)) return;
+    cardRestoreScheduled.add(sessionId);
+    globalThis.queueMicrotask(() => {
+      cardRestoreScheduled.delete(sessionId);
+      try {
+        zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
+          sessionId,
+          annotations,
+          clearFirst: false
+        });
+      } catch {}
+    });
+  };
+
   const commitPendingEntry = (sessionId, entry) => {
     const record = records.get(sessionId);
     if (!record?.ready || entry?.documentWriter !== true || !entry?.text) {
@@ -217,7 +283,12 @@ export function createSessionCollaborationManager({
     const entry = entries?.get(runId);
     if (!entry) return;
     entry.terminal = true;
-    if (containsCommittedPending(records.get(sessionId)?.text?.toString?.(), entry)) {
+    if (
+      projectionAcknowledges(
+        entry,
+        records.get(sessionId)?.runProjections?.get(runId)
+      )
+    ) {
       clearPending(sessionId, runId, { follow: true });
       return;
     }
@@ -232,6 +303,27 @@ export function createSessionCollaborationManager({
 
   const eventDisposables = [];
   if (enabled) {
+    eventDisposables.push(zion?.events?.on?.("chat/preparing", (payload = {}) => {
+      const sessionId = String(payload.sessionId || "");
+      const runId = String(payload.submissionId || "");
+      if (!sessionId || !runId) return;
+      const entries = pendingBySession.get(sessionId) || new Map();
+      const entry = {
+        runId,
+        assistantBlockId: String(payload.assistantBlockId || runId),
+        fallbackOffset: optionalDocumentOffset(payload.answerAnchorPos),
+        text: "",
+        status: String(payload.status || ""),
+        documentWriter: false
+      };
+      entries.set(runId, entry);
+      pendingBySession.set(sessionId, entries);
+      dispatchPending(sessionId, setPendingAssistant.of(entry));
+      schedulePendingFollow(sessionId, runId, entry);
+    }));
+    eventDisposables.push(zion?.events?.on?.("chat/prepared", (payload = {}) => {
+      clearPending(String(payload.sessionId || ""), String(payload.submissionId || ""));
+    }));
     eventDisposables.push(zion?.events?.on?.("chat/token", (payload = {}) => {
       if (payload.backend !== "runtime") return;
       const sessionId = String(payload.sessionId || "");
@@ -256,22 +348,35 @@ export function createSessionCollaborationManager({
           || runId
         ),
         fallbackOffset: nextFallbackOffset ?? previous.fallbackOffset,
+        projectionSequence: Math.max(
+          Number(previous.projectionSequence || 0),
+          Number(
+            payload.projectionSequence
+            ?? payload.sourceSequenceEnd
+            ?? payload.sequence
+            ?? 0
+          )
+        ),
         text: previous.text + token
       };
       entries.set(runId, entry);
       pendingBySession.set(sessionId, entries);
+      if (
+        !entry.documentWriter
+        && projectionAcknowledges(
+          entry,
+          records.get(sessionId)?.runProjections?.get(runId)
+        )
+      ) {
+        clearPending(sessionId, runId);
+        return;
+      }
       const committed = commitPendingEntry(sessionId, entry);
-      // #region debug-point A:pending-token-accumulation
-      void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "A", location: "extensions/dev.session-manager/collaboration-client.js:chat-token", msg: "[DEBUG] Collaboration pending token accumulated", data: { sessionId, runId, assistantBlockId: entry.assistantBlockId, documentWriter: entry.documentWriter === true, tokenChars: token.length, previousChars: previous.text.length, pendingChars: entry.text.length, recordReady: records.get(sessionId)?.ready === true, committed }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-      // #endregion
       if (committed) return;
       dispatchPending(sessionId, setPendingAssistant.of(entry));
       schedulePendingFollow(sessionId, runId, entry);
     }));
-    for (const topic of [
-      "runtime/pendingAssistantCommitted",
-      "chat/runFinished"
-    ]) {
+    for (const topic of ["chat/runFinished"]) {
       eventDisposables.push(zion?.events?.on?.(topic, completePending));
     }
     for (const topic of ["chat/runError", "chat/aborted"]) {
@@ -289,6 +394,10 @@ export function createSessionCollaborationManager({
     if (!record) return;
     records.delete(sessionId);
     try { record.text.unobserve(record.onTextChange); } catch {}
+    try { record.cards.unobserve(record.onCardsChange); } catch {}
+    try {
+      record.runProjections.unobserve(record.onRunProjectionChange);
+    } catch {}
     try { record.provider.destroy(); } catch {}
     try { record.persistence?.destroy?.(); } catch {}
     try { record.document.destroy(); } catch {}
@@ -309,6 +418,10 @@ export function createSessionCollaborationManager({
 
     const document = createDocument();
     const text = document.getText(COLLABORATION_TEXT_KEY);
+    const cards = document.getMap(COLLABORATION_CARDS_KEY);
+    const runProjections = document.getMap(
+      COLLABORATION_RUN_PROJECTION_KEY
+    );
     const persistenceName = [
       "zion-collaboration",
       encodeURIComponent(runtimeConfig.baseUrl),
@@ -352,24 +465,27 @@ export function createSessionCollaborationManager({
       }
     });
     const onTextChange = () => {
+      if (!record?.ready) return;
       const value = text.toString();
       zion?.state?.set?.(`sessions.doc.${sessionId}`, value);
-      const entries = pendingBySession.get(sessionId);
-      if (!entries) return;
-      for (const entry of [...entries.values()]) {
-        if (containsCommittedPending(value, entry)) {
-          clearPending(sessionId, entry.runId, { follow: true });
-        }
-      }
     };
+    const onCardsChange = () => syncProjectedCards(sessionId);
+    const onRunProjectionChange = () =>
+      clearAcknowledgedPending(sessionId);
     text.observe(onTextChange);
+    cards.observe(onCardsChange);
+    runProjections.observe(onRunProjectionChange);
     record = {
       document,
       text,
+      cards,
+      runProjections,
       provider,
       persistence,
       providerSynced,
       onTextChange,
+      onCardsChange,
+      onRunProjectionChange,
       views: new Set(),
       ready: false,
       references: 1
@@ -386,14 +502,8 @@ export function createSessionCollaborationManager({
   const bindEditor = (editor, { allowDeferred = true } = {}) => {
     const view = editor?.getView?.();
     const sessionId = sessionIdForEditor(editor);
-    // #region debug-point C:desktop-editor-binding
-    globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"C",location:"extensions/dev.session-manager/collaboration-client.js:bindEditor",msg:"[DEBUG] Desktop collaboration decorator evaluated an editor",data:{editorExists:!!editor,viewExists:!!view,enabled,allowDeferred,editorSessionId:sessionId,panelId:String(editor?.panelId||""),documentLength:String(editor?.getValue?.()||"").length},ts:Date.now()}),keepalive:true}).catch(()=>{});
-    // #endregion
     if (!enabled || !view) return { dispose() {} };
     if (view.dom?.dataset?.zionSessionPersistence === "skip") {
-      // #region debug-point C:comment-collaboration-skipped
-      void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "C", location: "extensions/dev.session-manager/collaboration-client.js:bindEditor", msg: "[DEBUG] Durable collaboration skipped a non-durable editor", data: { commentSessionId: sessionId, panelId: String(editor?.panelId || ""), persistenceMode: String(view.dom.dataset.zionSessionPersistence || "") }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-      // #endregion
       return { dispose() {} };
     }
     if (!sessionId && allowDeferred) {
@@ -411,7 +521,6 @@ export function createSessionCollaborationManager({
       };
     }
     if (!sessionId) return { dispose() {} };
-    try { view.dom.dataset.zionCollaborationBound = "true"; } catch {}
     const compartment = new Compartment();
     editor.addVisualExtension?.(
       compartment.of(
@@ -428,6 +537,7 @@ export function createSessionCollaborationManager({
     const timeout = globalThis.setTimeout(() => {
       if (disposed) return;
       timedOut = true;
+      try { delete view.dom.dataset.zionCollaborationBound; } catch {}
       view.dispatch({
         effects: compartment.reconfigure(pendingAssistantExtension())
       });
@@ -437,7 +547,7 @@ export function createSessionCollaborationManager({
         fallback: true,
         error: "Collaboration sync timed out"
       });
-    }, 5_000);
+    }, Math.max(1, Number(syncTimeoutMs) || 5_000));
 
     void Promise.all([
       record.providerSynced,
@@ -447,17 +557,18 @@ export function createSessionCollaborationManager({
       globalThis.clearTimeout(timeout);
       const remoteText = record.text.toString();
       const localText = String(editor.getValue?.() || "");
-      // #region debug-point C:desktop-hydration-input
-      globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"C",location:"extensions/dev.session-manager/collaboration-client.js:hydration-input",msg:"[DEBUG] Desktop collaboration hydration compared remote and local documents",data:{runtimeSessionId:sessionId,remoteLength:remoteText.length,remoteRoles:Array.from(remoteText.matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),remoteMarkers:(remoteText.match(/zion-assistant:id=/g)||[]).length,localLength:localText.length,localRoles:Array.from(localText.matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),willSeedRemote:!remoteText&&!!localText,willHydrateLocal:!!remoteText&&remoteText!==localText},ts:Date.now()}),keepalive:true}).catch(()=>{});
-      // #endregion
-      if (!remoteText && localText) {
+      const localSnapshot = zion?.state?.get?.(`sessions.doc.${sessionId}`);
+      if (
+        !remoteText
+        && localText
+        && typeof localSnapshot === "string"
+        && localSnapshot === localText
+      ) {
         record.text.insert(0, localText);
       } else if (remoteText !== localText) {
         editor.setValue?.(remoteText, { source: "collaboration-hydration" });
       }
-      // #region debug-point E:desktop-hydration-output
-      globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"E",location:"extensions/dev.session-manager/collaboration-client.js:hydration-output",msg:"[DEBUG] Desktop editor state after collaboration hydration",data:{runtimeSessionId:sessionId,editorLength:String(editor.getValue?.()||"").length,editorRoles:Array.from(String(editor.getValue?.()||"").matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),editorMarkers:(String(editor.getValue?.()||"").match(/zion-assistant:id=/g)||[]).length},ts:Date.now()}),keepalive:true}).catch(()=>{});
-      // #endregion
+      try { view.dom.dataset.zionCollaborationBound = "true"; } catch {}
       view.dispatch({
         effects: compartment.reconfigure(
           Prec.highest([
@@ -470,6 +581,9 @@ export function createSessionCollaborationManager({
         )
       });
       record.ready = true;
+      zion?.state?.set?.(`sessions.doc.${sessionId}`, record.text.toString());
+      syncProjectedCards(sessionId);
+      clearAcknowledgedPending(sessionId);
       for (const entry of pendingBySession.get(sessionId)?.values?.() || []) {
         if (!commitPendingEntry(sessionId, entry)) {
           view.dispatch({ effects: setPendingAssistant.of(entry) });
@@ -485,6 +599,7 @@ export function createSessionCollaborationManager({
         error: null
       });
     }).catch((error) => {
+      try { delete view.dom.dataset.zionCollaborationBound; } catch {}
       collaborationState(zion, sessionId, {
         connected: false,
         synced: false,

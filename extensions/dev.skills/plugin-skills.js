@@ -1,3 +1,5 @@
+import { isSyncableSkillFile } from "./skills-runtime-shared.js";
+
 const BUNDLED_PLUGIN_SKILLS = import.meta.glob([
   "/extensions/**/skills/**/SKILL.md",
   "!/extensions/dev.identity/skills/**/SKILL.md"
@@ -15,8 +17,6 @@ const BUNDLED_PLUGIN_SKILL_FILES = import.meta.glob(
     import: "default"
   }
 );
-
-const TEXT_SKILL_FILE_RE = /\.(md|mdx|txt|json|ya?ml|js|mjs|cjs|ts|tsx|jsx|py|sh|bash|zsh|xml|html|css|csv)$/i;
 
 function trimSlashes(value) {
   return String(value || "").replace(/^\/+|\/+$/g, "");
@@ -53,7 +53,7 @@ function normalizeSkillFilePath(value) {
   const parts = raw.split("/").filter(Boolean);
   if (!parts.length || parts.some((part) => part === "." || part === "..")) return "";
   const joined = parts.join("/");
-  return TEXT_SKILL_FILE_RE.test(joined) ? joined : "";
+  return isSyncableSkillFile(joined) ? joined : "";
 }
 
 function modernManifest(plugin) {
@@ -148,9 +148,26 @@ async function bundledSkillFiles(sourceDir, bundledSources = BUNDLED_PLUGIN_SKIL
   return files;
 }
 
-async function listLocalDirEntries(base, dir) {
+function localToolsUrl(base, endpoint, { path, nodeId, ...params } = {}) {
+  const url = new URL(
+    `${String(base || "").replace(/\/+$/, "")}${endpoint}`,
+    globalThis.location?.href || "http://localhost/"
+  );
+  if (path != null) url.searchParams.set("path", String(path));
+  if (nodeId) url.searchParams.set("node_id", String(nodeId));
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null && value !== "") url.searchParams.set(key, String(value));
+  }
+  return url.toString();
+}
+
+async function listLocalDirEntries(base, dir, nodeId) {
   try {
-    const url = `${base}/files/entries?path=${encodeURIComponent(dir)}&max_depth=1`;
+    const url = localToolsUrl(base, "/files/entries", {
+      path: dir,
+      nodeId,
+      max_depth: 1
+    });
     const res = await fetch(url, { method: "GET" });
     if (!res.ok) return [];
     const json = await res.json().catch(() => null);
@@ -169,9 +186,9 @@ async function listLocalDirEntries(base, dir) {
   }
 }
 
-async function readLocalTextFile(base, path) {
+async function readLocalTextFile(base, path, nodeId) {
   try {
-    const url = `${base}/files/read?path=${encodeURIComponent(path)}`;
+    const url = localToolsUrl(base, "/files/read", { path, nodeId });
     const res = await fetch(url, { method: "GET" });
     if (!res.ok) return "";
     const json = await res.json().catch(() => null);
@@ -182,12 +199,12 @@ async function readLocalTextFile(base, path) {
   }
 }
 
-async function localSkillFiles(base, sourceDir, relativePath, maxDepth = 6) {
+async function localSkillFiles(base, sourceDir, relativePath, nodeId, maxDepth = 6) {
   const skillRoot = joinFsPath(sourceDir, relativePath);
   const files = {};
   const walk = async (dir, depth) => {
     if (depth > maxDepth) return;
-    const entries = await listLocalDirEntries(base, dir);
+    const entries = await listLocalDirEntries(base, dir, nodeId);
     for (const entry of entries) {
       if (!entry?.path) continue;
       const relativeFile = normalizeSkillFilePath(entry.path.slice(skillRoot.length).replace(/^\/+/, ""));
@@ -196,7 +213,7 @@ async function localSkillFiles(base, sourceDir, relativePath, maxDepth = 6) {
         continue;
       }
       if (!relativeFile) continue;
-      const content = await readLocalTextFile(base, entry.path);
+      const content = await readLocalTextFile(base, entry.path, nodeId);
       if (content) files[relativeFile] = content;
     }
   };
@@ -223,7 +240,12 @@ async function resolveSkillFiles(base, declaration, options, skillContent) {
   }
 
   if (declaration.sourceDir) {
-    const local = await localSkillFiles(base, declaration.sourceDir, declaration.relativePath);
+    const local = await localSkillFiles(
+      base,
+      declaration.sourceDir,
+      declaration.relativePath,
+      options.nodeId
+    );
     if (Object.keys(local).length) {
       if (skillContent && !local["SKILL.md"]) local["SKILL.md"] = skillContent;
       return local;
@@ -233,8 +255,8 @@ async function resolveSkillFiles(base, declaration, options, skillContent) {
   return skillContent ? { "SKILL.md": skillContent } : {};
 }
 
-async function writeFile(base, path, content) {
-  const response = await fetch(`${base}/files/write`, {
+async function writeFile(base, path, content, nodeId) {
+  const response = await fetch(localToolsUrl(base, "/files/write", { nodeId }), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, content })
@@ -245,9 +267,9 @@ async function writeFile(base, path, content) {
   }
 }
 
-async function deleteFile(base, path) {
+async function deleteFile(base, path, nodeId) {
   try {
-    const response = await fetch(`${base}/files/delete`, {
+    const response = await fetch(localToolsUrl(base, "/files/delete", { nodeId }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path })
@@ -261,6 +283,7 @@ async function deleteFile(base, path) {
 export async function materializePluginSkills(options = {}) {
   const base = String(options.base || "").replace(/\/$/, "");
   const root = String(options.root || "").replace(/\/$/, "");
+  const nodeId = String(options.nodeId || "").trim();
   const previous = Array.isArray(options.previous) ? options.previous : [];
   const declarations = collectPluginSkillContributions(options.plugins);
   if (!base || !root) return previous;
@@ -289,7 +312,7 @@ export async function materializePluginSkills(options = {}) {
       const normalizedFile = normalizeSkillFilePath(relativeFile);
       if (!normalizedFile || typeof fileContent !== "string") continue;
       const targetFile = `${destinationDir}/${normalizedFile}`;
-      await writeFile(base, targetFile, fileContent);
+      await writeFile(base, targetFile, fileContent, nodeId);
       writtenFiles.push(targetFile);
     }
     materialized.push({
@@ -303,7 +326,7 @@ export async function materializePluginSkills(options = {}) {
   for (const entry of previous) {
     if (!entry?.id || desiredIds.has(entry.id)) continue;
     const files = Array.isArray(entry.files) && entry.files.length ? entry.files : [entry.file].filter(Boolean);
-    for (const file of files) await deleteFile(base, file);
+    for (const file of files) await deleteFile(base, file, nodeId);
   }
 
   return materialized;

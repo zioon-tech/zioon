@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { clearTimeout, setTimeout } from "node:timers";
 import { URL } from "node:url";
+import { formatByteSize, parseByteSize } from "../../../packages/node-protocol/src/index.mjs";
 import { normalizeLocalToolsUrl } from "./device-setup.mjs";
 import { PtyWebRtcHost } from "./pty-webrtc-host.mjs";
 
@@ -226,7 +227,8 @@ export class DeviceServiceHost {
     maxPtyQueueBytes = 1024 * 1024,
     ptyIdleTimeoutMs = 10 * 60_000,
     ptyWebRtcHost,
-    deviceAccess = null
+    deviceAccess = null,
+    dataFiles = null
   } = {}) {
     this.serviceUrls = new Map([
       ["local-tools", normalizeLocalToolsUrl(localToolsUrl)],
@@ -235,12 +237,15 @@ export class DeviceServiceHost {
     this.fetchImpl = fetchImpl;
     this.webSocketFactory = webSocketFactory;
     this.requestTimeoutMs = requestTimeoutMs;
-    this.maxRequestBytes = maxRequestBytes;
+    this.maxRequestBytes = parseByteSize(maxRequestBytes, {
+      label: "Device service request body limit"
+    });
     this.maxResponseBytes = maxResponseBytes;
     this.maxPtyChannels = maxPtyChannels;
     this.maxPtyQueueBytes = maxPtyQueueBytes;
     this.ptyIdleTimeoutMs = ptyIdleTimeoutMs;
     this.deviceAccess = deviceAccess;
+    this.dataFiles = dataFiles;
     this.ptyChannels = new Map();
     this.ptyWebRtcHost = ptyWebRtcHost || new PtyWebRtcHost({
       localToolsUrl: this.serviceUrls.get("local-tools"),
@@ -259,7 +264,7 @@ export class DeviceServiceHost {
       ? Buffer.from(String(input.bodyBase64), "base64")
       : null;
     if (body && body.length > this.maxRequestBytes) {
-      throw new Error("Device service request exceeds the size limit");
+      throw new Error(`Device service request exceeds ${formatByteSize(this.maxRequestBytes)}`);
     }
     if (service === "device-access") {
       assertAllowedRoute(service, method, path);
@@ -303,6 +308,23 @@ export class DeviceServiceHost {
     const relay = service === "local-tools" ? ptyRelayRoute(path) : null;
     if (relay) return this.invokePtyRelay(relay, method, body, signal);
     assertAllowedRoute(service, method, path);
+
+    if (service === "local-tools" && this.dataFiles && this.deviceAccess) {
+      const file = localFileInvocation(path, method, body, invocation);
+      if (file) {
+        try {
+          signal?.throwIfCancelled?.();
+          const operation = new URL(path, "http://device.invalid").pathname.split("/").at(-1);
+          const payload = await this.dataFiles.handle(operation, file.toolCall.arguments, { signal });
+          if (payload) return serviceResponse(200, payload);
+          if (new URL(path, "http://device.invalid").searchParams.get("plugin_data_version") === "1") {
+            return serviceResponse(400, { error: "Path is outside configured plugin data storage" });
+          }
+        } catch (error) {
+          return serviceResponse(error.statusCode || 500, { ok: false, error: error.message });
+        }
+      }
+    }
 
     const controller = new globalThis.AbortController();
     const cancellation = signal?.onCancel?.(() => controller.abort())

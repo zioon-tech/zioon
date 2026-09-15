@@ -1,13 +1,15 @@
 import { Buffer } from "node:buffer";
 import { createServer } from "node:http";
+import { WebSocket, WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  createDeviceServiceHttpHandler
+  createDeviceServiceHttpHandler,
+  createDeviceServiceWebSocketHandler
 } from "../src/device-service-http-handler.mjs";
 
 const servers = [];
 
-async function start(handler) {
+async function start(handler, upgradeHandler = null) {
   const server = createServer(async (request, response) => {
     const url = new URL(
       request.url || "/",
@@ -18,12 +20,50 @@ async function start(handler) {
       response.end();
     }
   });
+  if (upgradeHandler) {
+    server.on("upgrade", (request, socket, head) => {
+      void (async () => {
+        if (await upgradeHandler(request, socket, head)) return;
+        socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+      })().catch(() => socket.destroy());
+    });
+  }
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
   servers.push(server);
   return `http://127.0.0.1:${server.address().port}`;
+}
+
+async function startWebSocketUpstream() {
+  const server = createServer();
+  const webSocketServer = new WebSocketServer({ noServer: true });
+  const requests = [];
+  server.on("upgrade", (request, socket, head) => {
+    requests.push(request.url);
+    if (request.url !== "/sessions/local-session/pty/ws") {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+      webSocket.on("message", (data, isBinary) => {
+        webSocket.send(data, { binary: isBinary });
+      });
+      webSocket.send("connected");
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  servers.push(webSocketServer, server);
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    requests
+  };
 }
 
 afterEach(async () => {
@@ -248,6 +288,85 @@ describe("Device service HTTP handler", () => {
     });
   });
 
+  it("discovers the unique Node that owns a legacy unscoped file path", async () => {
+    const targets = [
+      {
+        node: { registration: { nodeId: "node:cloud", label: "Cloud" } },
+        resource: { resourceId: "workspace:cloud" }
+      },
+      {
+        node: { registration: { nodeId: "node:mac", label: "This Mac" } },
+        resource: { resourceId: "workspace:mac" }
+      }
+    ];
+    const invoke = vi.fn(async (invocation) => {
+      const found = invocation.target?.nodeId === "node:mac";
+      return {
+        ok: true,
+        content: JSON.stringify({
+          status: found ? 200 : 404,
+          headers: { "content-type": "application/json" },
+          bodyBase64: Buffer.from(JSON.stringify(found
+            ? { entries: [{ path: "/Users/me/.zion-next/skills/lark-doc", type: "directory" }] }
+            : { error: "not found" }))
+            .toString("base64")
+        })
+      };
+    });
+    const url = await start(createDeviceServiceHttpHandler({
+      broker: {
+        invoke,
+        availableTargets: vi.fn(() => targets)
+      }
+    }));
+
+    const response = await fetch(
+      `${url}/v1/device-services/local-tools/files/entries`
+        + "?path=%2FUsers%2Fme%2F.zion-next%2Fskills"
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      node_id: "node:mac",
+      node_label: "This Mac",
+      entries: [{
+        path: "/Users/me/.zion-next/skills/lark-doc"
+      }]
+    });
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a real file-path ambiguity when multiple Nodes own the path", async () => {
+    const targets = ["node:one", "node:two"].map((nodeId) => ({
+      node: { registration: { nodeId, label: nodeId } },
+      resource: { resourceId: `workspace:${nodeId}` }
+    }));
+    const invoke = vi.fn(async () => ({
+      ok: true,
+      content: JSON.stringify({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        bodyBase64: Buffer.from(JSON.stringify({ entries: [] })).toString("base64")
+      })
+    }));
+    const url = await start(createDeviceServiceHttpHandler({
+      broker: {
+        invoke,
+        availableTargets: vi.fn(() => targets)
+      }
+    }));
+
+    const response = await fetch(
+      `${url}/v1/device-services/local-tools/files/entries?path=%2Fshared%2Fskills`
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "ambiguous_file_node",
+      nodes: [{ nodeId: "node:one" }, { nodeId: "node:two" }]
+    });
+  });
+
   it("routes Owner Device access requests to the selected Resource project", async () => {
     const invoke = vi.fn(async () => ({
       ok: true,
@@ -389,5 +508,95 @@ describe("Device service HTTP handler", () => {
         body: expect.any(Buffer)
       })
     );
+  });
+
+  it("proxies local terminal WebSocket upgrades without a Node Broker", async () => {
+    const upstream = await startWebSocketUpstream();
+    const url = await start(
+      createDeviceServiceHttpHandler({
+        serviceBaseUrls: {
+          "local-tools": upstream.url
+        }
+      }),
+      createDeviceServiceWebSocketHandler({
+        serviceBaseUrls: {
+          "local-tools": upstream.url
+        }
+      })
+    );
+    const ws = new WebSocket(
+      `${url.replace(/^http/i, "ws")}/v1/device-services/local-tools`
+      + "/sessions/local-session/pty/ws"
+    );
+    const messages = [];
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("WebSocket probe timed out")), 1000);
+      ws.on("open", () => {
+        ws.send("pwd\r");
+      });
+      ws.on("message", (data) => {
+        messages.push(String(data));
+        if (messages.length === 2) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      ws.on("error", reject);
+    });
+    ws.close();
+
+    expect(upstream.requests).toEqual(["/sessions/local-session/pty/ws"]);
+    expect(messages).toEqual(["connected", "pwd\r"]);
+  });
+
+  it("uses the configured request body limit for local service relay", async () => {
+    const body = JSON.stringify({ content: "x".repeat(2 * 1024) });
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ ok: true }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }
+    ));
+    const smallLimitUrl = await start(createDeviceServiceHttpHandler({
+      serviceBaseUrls: {
+        "local-tools": "http://127.0.0.1:8765"
+      },
+      fetchImpl,
+      maxRequestBytes: "1KiB"
+    }));
+
+    const rejected = await fetch(
+      `${smallLimitUrl}/v1/device-services/local-tools/files/write`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body
+      }
+    );
+    expect(rejected.status).toBe(413);
+    await expect(rejected.json()).resolves.toMatchObject({
+      error: "Device service request exceeds 1 KiB",
+      code: "request_body_limit_exceeded",
+      limitBytes: 1024
+    });
+
+    const largerLimitUrl = await start(createDeviceServiceHttpHandler({
+      serviceBaseUrls: {
+        "local-tools": "http://127.0.0.1:8765"
+      },
+      fetchImpl,
+      maxRequestBytes: "4KiB"
+    }));
+    const accepted = await fetch(
+      `${largerLimitUrl}/v1/device-services/local-tools/files/write`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body
+      }
+    );
+    expect(accepted.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
   });
 });

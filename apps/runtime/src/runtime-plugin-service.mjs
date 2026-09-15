@@ -387,6 +387,7 @@ export class RuntimePluginService {
     enabledPluginIds = [],
     externalizedPluginIds = [],
     configByPluginId = {},
+    dataLocations = null,
     stateStore = null,
     importModule = importRuntimeModule,
     logger = () => {}
@@ -399,6 +400,7 @@ export class RuntimePluginService {
       externalizedPluginIds.map(String).filter(Boolean)
     );
     this.configByPluginId = { ...configByPluginId };
+    this.dataLocations = dataLocations;
     this.stateStore = stateStore;
     this.importModule = importModule;
     this.logger = logger;
@@ -512,6 +514,7 @@ export class RuntimePluginService {
           );
         }
 
+        const dataLocationsForPlugin = () => this.dataLocations.forPlugin(plugin.id).data;
         const pluginContext = {
           apiVersion: RUNTIME_PLUGIN_API_VERSION,
           plugin: Object.freeze({
@@ -530,6 +533,13 @@ export class RuntimePluginService {
           config: Object.freeze({
             ...(this.configByPluginId[plugin.id] || {})
           }),
+          locations: this.dataLocations
+            ? Object.freeze({
+                get data() {
+                  return dataLocationsForPlugin();
+                }
+              })
+            : Object.freeze({}),
           log: (level, message) => this.logger({
             level,
             pluginId: plugin.id,

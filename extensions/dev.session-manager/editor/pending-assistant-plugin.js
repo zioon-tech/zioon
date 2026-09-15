@@ -33,9 +33,19 @@ export const continuationBoundaryField = StateField.define({
   }
 });
 
-function renderPendingContent(element, text) {
+function renderPendingContent(element, text, status = "") {
   const content = element.querySelector(".zion-pending-assistant-markdown");
   if (!(content instanceof HTMLElement)) return false;
+  element.classList.toggle("is-status", !!status);
+  content.classList.toggle("is-status-indicator", !!status);
+  if (status) {
+    element.setAttribute("role", "status");
+    element.setAttribute("aria-label", status);
+    content.textContent = "…";
+    return true;
+  }
+  element.removeAttribute("role");
+  element.removeAttribute("aria-label");
   try {
     renderMarkdownInto(content, text);
   } catch {
@@ -52,7 +62,8 @@ class PendingAssistantWidget extends WidgetType {
 
   eq(other) {
     return other.entry.runId === this.entry.runId
-      && other.entry.text === this.entry.text;
+      && other.entry.text === this.entry.text
+      && other.entry.status === this.entry.status;
   }
 
   toDOM() {
@@ -65,14 +76,14 @@ class PendingAssistantWidget extends WidgetType {
     tail.className = "zion-pending-assistant-tail";
     tail.setAttribute("aria-hidden", "true");
     element.append(content, tail);
-    renderPendingContent(element, this.entry.text);
+    renderPendingContent(element, this.entry.text, this.entry.status);
     return element;
   }
 
   updateDOM(element) {
     if (!(element instanceof HTMLElement)) return false;
     element.dataset.runId = this.entry.runId;
-    return renderPendingContent(element, this.entry.text);
+    return renderPendingContent(element, this.entry.text, this.entry.status);
   }
 
   ignoreEvent() {
@@ -146,7 +157,7 @@ function decorationsFor(state, entries) {
   const source = state.doc.toString();
   const ranges = [];
   for (const entry of entries.values()) {
-    if (!entry.text) continue;
+    if (!entry.text && !entry.status) continue;
     const blockEnd = findAssistantBlockEndOffsetById(
       source,
       entry.assistantBlockId
@@ -204,6 +215,17 @@ export const pendingAssistantTheme = EditorView.baseTheme({
   ".zion-pending-assistant-output": {
     whiteSpace: "normal",
     overflowWrap: "anywhere"
+  },
+  ".zion-pending-assistant-output.is-status": {
+    display: "inline-block",
+    padding: "0 2px",
+    color: "var(--muted, #687078)",
+    fontSize: "15px",
+    fontStyle: "normal",
+    lineHeight: "1"
+  },
+  ".zion-pending-assistant-output.is-status .zion-pending-assistant-tail": {
+    display: "none"
   },
   ".zion-pending-assistant-markdown": {
     display: "inline"

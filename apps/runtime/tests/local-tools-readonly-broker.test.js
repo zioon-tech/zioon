@@ -1,6 +1,9 @@
-import { homedir } from "node:os";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir, homedir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { CancellationController } from "../../../packages/runtime/src/index";
+import { createPluginDataFileHost } from "../../../packages/local-tools-client/src/plugin-data-files.mjs";
 import {
   LocalToolsBroker,
   LocalToolsDeviceHost,
@@ -459,6 +462,73 @@ describe("LocalToolsReadOnlyBroker", () => {
 });
 
 describe("LocalToolsBroker", () => {
+  it("routes plugin data files through the adapter before forwarding auto-selected terminal sessions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zion-plugin-data-route-"));
+    try {
+      const fetchImpl = vi.fn(async () => response({ ok: true }));
+      const broker = new LocalToolsBroker({
+        fetchImpl,
+        dataFiles: createPluginDataFileHost({ root })
+      });
+      const signal = new CancellationController().signal;
+      const path = join(root, "dev.identity/projects/example/project.md");
+      const result = await broker.invoke(invocation({
+        policy: {
+          preset: "workspace-write",
+          allowedTools: ["write", "edit", "read"],
+          fileRoots: [root],
+          allowedTerminalSessionIds: ["terminal-1"]
+        },
+        toolCall: {
+          id: "call-plugin-data-write",
+          name: "write",
+          arguments: {
+            path,
+            content: "cloud profile"
+          }
+        }
+      }), signal);
+
+      expect(result).toMatchObject({ ok: true });
+      expect(await readFile(path, "utf8")).toBe("cloud profile");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects explicit terminal sessions for plugin data file tools", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zion-plugin-data-session-"));
+    try {
+      const broker = new LocalToolsBroker({
+        fetchImpl: vi.fn(async () => response({ ok: true })),
+        dataFiles: createPluginDataFileHost({ root })
+      });
+      await expect(broker.invoke(invocation({
+        policy: {
+          preset: "workspace-write",
+          allowedTools: ["write"],
+          fileRoots: [root],
+          allowedTerminalSessionIds: ["terminal-1"]
+        },
+        toolCall: {
+          id: "call-plugin-data-explicit-session",
+          name: "write",
+          arguments: {
+            path: join(root, "dev.identity/user.md"),
+            content: "profile",
+            session_id: "terminal-1"
+          }
+        }
+      }), new CancellationController().signal)).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("omit session_id")
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("executes writes only inside workspace-write roots", async () => {
     const fetchImpl = vi.fn(async () => response({ ok: true, bytes: 7 }));
     const broker = new LocalToolsBroker({ fetchImpl });

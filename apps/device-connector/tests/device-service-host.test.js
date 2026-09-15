@@ -80,6 +80,42 @@ describe("DeviceServiceHost", () => {
     ).toEqual({ sessions: [{ id: "terminal-1" }] });
   });
 
+  it("uses the configured request body limit", async () => {
+    const payload = Buffer.from(JSON.stringify({ content: "x".repeat(2 * 1024) }))
+      .toString("base64");
+    const smallHost = new DeviceServiceHost({
+      maxRequestBytes: "1KiB"
+    });
+
+    await expect(smallHost.invoke({
+      service: "local-tools",
+      method: "POST",
+      path: "/files/write",
+      bodyBase64: payload
+    }, signal())).rejects.toThrow("Device service request exceeds 1 KiB");
+
+    const fetchImpl = vi.fn(async () => new globalThis.Response(
+      JSON.stringify({ ok: true }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }
+    ));
+    const largerHost = new DeviceServiceHost({
+      fetchImpl,
+      maxRequestBytes: "4KiB"
+    });
+    const result = await largerHost.invoke({
+      service: "local-tools",
+      method: "POST",
+      path: "/files/write",
+      bodyBase64: payload
+    }, signal());
+
+    expect(JSON.parse(result.content)).toMatchObject({ status: 200 });
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
   it("filters terminal inventory and file access through the Device policy", async () => {
     const authorizeInvocation = vi.fn(async () => ({
       fileRoots: ["/workspace"],

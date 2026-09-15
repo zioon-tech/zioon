@@ -18,6 +18,7 @@ import {
   Plug,
   Plus,
   RefreshCw,
+  Search,
   Server,
   Settings,
   ShieldCheck,
@@ -36,13 +37,13 @@ import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { PluginDataFiles } from "./PluginDataFiles";
 import {
   createPairing,
   getAccessSession,
   getHealth,
   getSessionArtifacts,
-  getSkillsSnapshot,
-  IDENTITY_SNAPSHOT_KEY,
+  skillsSnapshotQueryOptions,
   listCapabilityTools,
   listDeviceNodes,
   listDevices,
@@ -59,7 +60,6 @@ import {
   readWorkbenchKV,
   revokeDevice,
   RuntimeApiError,
-  SKILLS_SNAPSHOT_KEY,
   updateSkillsSnapshot,
 } from "./api";
 import {
@@ -79,8 +79,6 @@ import type {
   ChangeSet,
   FileEntry,
   PluginRecord,
-  SkillRecord,
-  SkillsSnapshot,
   RuntimeModelProfile,
   TerminalSession,
 } from "./types";
@@ -451,8 +449,8 @@ export function CapabilitiesScreen() {
     queryFn: listInteractionProfiles,
   });
   const skills = useQuery({
-    queryKey: ["skills-snapshot"],
-    queryFn: getSkillsSnapshot,
+    ...skillsSnapshotQueryOptions,
+    refetchInterval: 3_000,
   });
   const [tab, setTab] = useState<"skills" | "tools">("skills");
   const [query, setQuery] = useState("");
@@ -498,21 +496,19 @@ export function CapabilitiesScreen() {
     },
   });
   const toggleSkill = useMutation({
-    mutationFn: async (skill: SkillRecord) => {
-      const snapshot: SkillsSnapshot = skills.data || {
-        enabled: [],
-        catalog: [],
-      };
-      const next = new Set(snapshot.enabled || []);
-      if (next.has(skill.id)) next.delete(skill.id);
-      else next.add(skill.id);
-      return await updateSkillsSnapshot({
-        ...snapshot,
-        enabled: [...next],
-      });
+    scope: { id: "skills-global-selection" },
+    mutationFn: (update: { id: string; enabled: boolean }) =>
+      updateSkillsSnapshot({ updates: [update] }),
+    async onMutate() {
+      await queryClient.cancelQueries({ queryKey: ["skills-snapshot"] });
     },
-    onSuccess() {
-      void queryClient.invalidateQueries({ queryKey: ["skills-snapshot"] });
+    async onSuccess(snapshot) {
+      // Discard any poll that started before this write was acknowledged.
+      await queryClient.cancelQueries({ queryKey: ["skills-snapshot"] });
+      queryClient.setQueryData(["skills-snapshot"], snapshot);
+    },
+    async onSettled() {
+      await queryClient.invalidateQueries({ queryKey: ["skills-snapshot"] });
     },
   });
   const subtitle = tab === "skills"
@@ -546,6 +542,11 @@ export function CapabilitiesScreen() {
         <>
           {skills.isLoading ? <LoadingState label="正在读取 Skills" /> : null}
           {skills.isError ? <ErrorState error={skills.error} onRetry={() => void skills.refetch()} /> : null}
+          {toggleSkill.isError ? (
+            <ErrorState error={toggleSkill.error} onRetry={() => {
+              if (toggleSkill.variables) toggleSkill.mutate(toggleSkill.variables);
+            }} />
+          ) : null}
           {!skills.isLoading && !filteredSkills.length ? (
             <EmptyState
               icon={Sparkles}
@@ -574,7 +575,7 @@ export function CapabilitiesScreen() {
                       aria-checked={enabled}
                       aria-label={`${enabled ? "停用" : "启用"} ${skill.name || skill.id}`}
                       disabled={toggleSkill.isPending}
-                      onClick={() => toggleSkill.mutate(skill)}
+                      onClick={() => toggleSkill.mutate({ id: skill.id, enabled: !enabled })}
                     >
                       <span />
                     </button>
@@ -834,71 +835,105 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 export function KnowledgeScreen() {
-  const keys = [
-    SKILLS_SNAPSHOT_KEY,
-    MEMORY_SNAPSHOT_KEY,
-    IDENTITY_SNAPSHOT_KEY,
-  ];
+  const [view, setView] = useState<"identity" | "memory">("identity");
+  const [memoryFilter, setMemoryFilter] = useState("");
   const queries = useQueries({
-    queries: keys.map((key) => ({
-      queryKey: ["workbench-kv", key],
-      queryFn: () => readWorkbenchKV(key),
+    queries: [{
+      ...skillsSnapshotQueryOptions,
+    }, {
+      queryKey: ["workbench-kv", MEMORY_SNAPSHOT_KEY],
+      queryFn: () => readWorkbenchKV(MEMORY_SNAPSHOT_KEY),
       staleTime: 30_000,
-    })),
+    }],
   });
   const skillsSnapshot = asRecord(queries[0].data);
   const memorySnapshot = asRecord(queries[1].data);
-  const identitySnapshot = asRecord(queries[2].data);
   const skills = asArray(skillsSnapshot.catalog);
   const enabledSkills = asArray(skillsSnapshot.enabled);
   const memories = asArray(memorySnapshot.items);
-  const identityFiles = Object.entries(asRecord(identitySnapshot.files))
-    .filter(([, content]) => String(content || "").trim())
-    .map(([id, content]) => ({
-      id: `identity:${id}`,
-      title: id,
-      content: String(content),
-      kind: "Identity",
-    }));
+  const filteredMemories = useMemo(() => {
+    const query = memoryFilter.trim().toLowerCase();
+    if (!query) return memories;
+    return memories.filter((item) => {
+      const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+      return [
+        record.title,
+        record.summary,
+        record.content,
+        record.detail,
+        record.kind,
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+    });
+  }, [memories, memoryFilter]);
   const loading = queries.some((query) => query.isLoading);
   const error = queries.find((query) => query.isError)?.error;
   return (
-    <MobilePage title="Identity 与 Memory" subtitle="已同步的上下文" back="更多">
-      {loading ? <LoadingState /> : null}
-      {error ? <ErrorState error={error} /> : null}
-      {!loading ? (
-        <>
-          <div className="knowledge-summary">
-            <div><strong>{enabledSkills.length}/{skills.length}</strong><span>Skills</span></div>
-            <div><strong>{memories.length}</strong><span>Memory</span></div>
-            <div><strong>{identityFiles.length}</strong><span>Identity</span></div>
-          </div>
-          <SectionLabel>最近知识</SectionLabel>
-          {!memories.length && !identityFiles.length ? (
-            <EmptyState
-              icon={MemoryStick}
-              title="还没有同步的知识"
-              description="Identity 与 Memory 更新后会自动显示在这里。"
-            />
-          ) : (
-            <div className="list">
-              {[...identityFiles.slice(0, 6), ...memories.slice(0, 10)].map((item, index) => {
-                const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
-                return (
-                  <div className="knowledge-row" key={String(record.id || index)}>
-                    <span className="row-icon"><MemoryStick size={18} /></span>
-                    <span className="row-main">
-                      <span className="row-title">{String(record.title || record.summary || "Knowledge item")}</span>
-                      <span className="row-preview">
-                        {String(record.content || record.detail || record.kind || "").replace(/\s+/g, " ").slice(0, 180)}
-                      </span>
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </>
+    <MobilePage title="Identity" subtitle="用户数据空间" back="更多" className="knowledge-page">
+      <section className="knowledge-overview">
+        <div className="knowledge-overview-title">
+          <span>User Space</span>
+          <strong>dev.identity</strong>
+        </div>
+        <div className="knowledge-summary">
+          <div><strong>{loading ? "-" : `${enabledSkills.length}/${skills.length}`}</strong><span>Skills</span></div>
+          <div><strong>{loading ? "-" : memories.length}</strong><span>旧 Memory</span></div>
+        </div>
+      </section>
+      <SegmentedControl
+        value={view}
+        onChange={setView}
+        options={[
+          { value: "identity", label: "Identity 数据" },
+          { value: "memory", label: "旧 Memory", count: memories.length },
+        ]}
+      />
+      {view === "identity" ? <PluginDataFiles pluginId="dev.identity" /> : null}
+      {view === "memory" ? (
+        <section className="legacy-memory-panel">
+          {loading ? <LoadingState label="正在读取 Memory" /> : null}
+          {error ? <ErrorState error={error} /> : null}
+          {!loading && !error ? (
+            <>
+              <label className="memory-search">
+                <Search size={16} aria-hidden="true" />
+                <input
+                  value={memoryFilter}
+                  onChange={(event) => setMemoryFilter(event.target.value)}
+                  placeholder="搜索"
+                />
+              </label>
+              <SectionLabel>{memoryFilter.trim() ? "搜索结果" : "最近知识"}</SectionLabel>
+              {!filteredMemories.length ? (
+                <EmptyState
+                  icon={MemoryStick}
+                  title={memoryFilter.trim() ? "没有匹配项" : "还没有同步的知识"}
+                />
+              ) : (
+                <div className="legacy-memory-list">
+                  {filteredMemories.slice(0, 30).map((item, index) => {
+                    const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+                    const title = String(record.title || record.summary || "Memory item");
+                    const preview = String(record.content || record.detail || record.kind || "")
+                      .replace(/\s+/g, " ")
+                      .trim();
+                    return (
+                      <article className="knowledge-row" key={String(record.id || index)}>
+                        <span className="row-icon amber"><MemoryStick size={18} /></span>
+                        <span className="row-main">
+                          <span className="row-title-line">
+                            <span className="row-title">{title}</span>
+                            {record.kind ? <Badge>{String(record.kind)}</Badge> : null}
+                          </span>
+                          {preview ? <span className="row-preview">{preview.slice(0, 220)}</span> : null}
+                        </span>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          ) : null}
+        </section>
       ) : null}
     </MobilePage>
   );

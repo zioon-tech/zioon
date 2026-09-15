@@ -1,4 +1,9 @@
 import { Buffer } from "node:buffer";
+import {
+  contentText,
+  deriveSessionTitleFromContent,
+  isPlaceholderSessionTitle
+} from "./session-title.mjs";
 
 function json(response, status, value) {
   const body = JSON.stringify(value);
@@ -10,17 +15,6 @@ function json(response, status, value) {
   response.end(body);
 }
 
-function contentText(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => (
-      part?.type === "text" ? String(part.text || "") : ""
-    ))
-    .filter(Boolean)
-    .join("\n");
-}
-
 function compact(value, max = 180) {
   const text = contentText(value).replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -28,11 +22,9 @@ function compact(value, max = 180) {
 
 function displayTitle(session, messages) {
   const title = String(session?.title || "").trim();
-  const placeholder = ["", "新会话", "未命名会话", "untitled", "new session"]
-    .includes(title.toLowerCase());
-  if (!placeholder) return title;
+  if (!isPlaceholderSessionTitle(title, session?.id, session?.metadata)) return title;
   const firstUser = messages.find((message) => message?.role === "user");
-  return compact(firstUser?.content, 48) || title;
+  return deriveSessionTitleFromContent(firstUser?.content, 48) || "新会话";
 }
 
 export function createMobileHttpHandler({
@@ -73,8 +65,10 @@ export function createMobileHttpHandler({
         ]);
         const latest = messages.at(-1) || null;
         const activeRun = await activeRunForSession?.(session.id) || null;
-        const presented = presentation?.title
-          ? { ...session, title: String(presentation.title) }
+        const presentationTitle = String(presentation?.title || "").trim();
+        const presented = presentationTitle
+          && !isPlaceholderSessionTitle(presentationTitle, session.id, presentation)
+          ? { ...session, title: presentationTitle }
           : session;
         return {
           ...presented,

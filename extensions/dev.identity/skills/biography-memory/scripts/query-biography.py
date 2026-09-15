@@ -9,9 +9,6 @@ from collections import Counter
 from pathlib import Path
 
 
-DEFAULT_PATH = "~/.zion-next/memory/biography/events.jsonl"
-
-
 def load_events(path):
     events = []
     try:
@@ -23,8 +20,8 @@ def load_events(path):
                     continue
                 if isinstance(value, dict) and value.get("id"):
                     events.append(value)
-    except FileNotFoundError:
-        return []
+    except FileNotFoundError as error:
+        raise SystemExit(f"Biography file is unavailable: {path}") from error
     return events
 
 
@@ -50,7 +47,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("index", "project", "topic", "event", "session", "recent"))
     parser.add_argument("value", nargs="?")
-    parser.add_argument("--path", default=DEFAULT_PATH)
+    parser.add_argument("--path", required=True, help="Absolute events.jsonl path from the plugin data location")
     parser.add_argument("--limit", type=int, default=20)
     args = parser.parse_args()
     events = load_events(args.path)

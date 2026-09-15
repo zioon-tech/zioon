@@ -128,16 +128,16 @@ development source: extensions/dev.identity
 local Runtime package target:
 /Users/bytedance/.zion-next/plugins/dev.identity
 published package:
-/Users/bytedance/.zion-local-tools/plugins/dev.identity/dev.identity-0.1.7.zip
-version: 0.1.7
+/Users/bytedance/.zion-local-tools/plugins/dev.identity/dev.identity-0.1.10.zip
+version: 0.1.10
 ZIP SHA-256:
-45ade805ee163837039b8345e42a362a07c94dd32eb003b889713c072250d0c6
+982cc82d34b170c04196adac948c2f93004c2a9ce1f087221e639da3f4450045
 ```
 
 ECS Runtime 外部插件目录为 `/var/lib/zion-next/plugins`。`dev.identity`
 采用 external-only 策略；该目录缺包时 Runtime 必须报告插件失败，不能回退到
-`/opt/zion-next/extensions/dev.identity`。截至 2026-09-09，本机 Plugin Host 已更新
-到 `0.1.7`，ECS 端仍需在获得当次阿里云授权后部署并验证。
+`/opt/zion-next/extensions/dev.identity`。截至 2026-09-15，本机 Plugin Host 已更新
+到 `0.1.10`，ECS 端仍需在获得当次阿里云授权后部署并验证。
 
 重要：当前线上是 `feature/core-observability` 未提交工作树的构建/源码快照，不是仅由
 上述 `HEAD` 可重现的发布。后续 Agent 部署前必须检查 `git status` 和
@@ -343,6 +343,14 @@ https://workbench-cli.oss-cn-hangzhou.aliyuncs.com/install.sh
 
 ## 9. 发布流程
 
+日常小步发布优先使用
+[`PRODUCTION-PATCH-RELEASE.md`](./PRODUCTION-PATCH-RELEASE.md) 中的
+`npm run deploy:patch`。它会生成窄发布包、通过 ECS Cloud Assistant 分片上传、远端
+sha256 校验、备份、原子替换 Workbench dist、按需重启 Runtime，并执行健康检查。
+
+本节保留完整发布和特殊迁移流程，适用于 systemd、Caddy、插件 zip、插件数据迁移或
+首次部署等不适合 patch 脚本的场景。
+
 ### 发布前
 
 ```bash
@@ -350,8 +358,7 @@ cd /Users/bytedance/Downloads/zion-next/.worktrees/core-observability
 git status --short
 git diff --check
 npm ci
-npm run build
-npm run build:mobile
+npm run build:all
 npm run plugin:package:identity
 npm run runtime:test
 ```
@@ -416,7 +423,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
   底栏位置不随内容滚动；iOS Safari 或内嵌 WebView 需额外检查地址栏收起和键盘弹出；
 - DeepSeek 对话可流式返回；
 - Skills 列表可见；
-- `/health` 中 `dev.identity` 为 `version=0.1.7`、`origin=external`、
+- `/health` 中 `dev.identity` 为 `version=0.1.10`、`origin=external`、
   `status=active`，且 `postProcessorIds` 包含 `dev.identity.biography`；
 - 完成一次正常会话后，“LLM 请求”出现
   `source=identity-biography`、`operation=biography-distillation`；

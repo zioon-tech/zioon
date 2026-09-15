@@ -1,22 +1,43 @@
 import type {
   AssistantToolCall,
+  RunStatus,
   SessionMessage,
   TranscriptContent,
 } from "./types";
 
-export type ConversationItem = {
-  message: SessionMessage;
-  toolResults: Record<string, SessionMessage>;
+export type ConversationBlock = (
+  | { kind: "text"; content: string }
+  | { kind: "reasoning"; content: string; running?: boolean }
+  | { kind: "tool"; call: AssistantToolCall; result?: SessionMessage; status: "running" | "completed" | "failed" | "interrupted" }
+) & { id: string; turn: number };
+
+export type ConversationProjection = {
+  runId: string;
+  blocks: ConversationBlock[];
+  status: RunStatus | "connecting";
+  error: string;
+  finalBlockId?: string;
 };
 
-export function transcriptOutsideActiveRun(
-  messages: SessionMessage[],
-  activeRunId: string,
-): SessionMessage[] {
-  if (!activeRunId) return messages;
-  return messages.filter((message) => (
-    message.role === "user" || message.runId !== activeRunId
-  ));
+export type ConversationItem = {
+  key: string;
+  message: SessionMessage;
+  toolResults: Record<string, SessionMessage>;
+  blocks: ConversationBlock[];
+  status?: ConversationProjection["status"];
+  error?: string;
+  finalBlockId?: string;
+};
+
+export function conversationBlockId(runId: string, turn: number, kind: string): string {
+  return `${runId}:turn:${turn}:${kind}`;
+}
+
+export function finalAnswerBlockId(blocks: ConversationBlock[]): string | undefined {
+  const last = blocks.at(-1);
+  return last?.kind === "text" && last.content.trim()
+    && !blocks.some((block) => block.kind === "tool" && block.turn === last.turn)
+    ? last.id : undefined;
 }
 
 function contentText(content: TranscriptContent): string {
@@ -27,63 +48,115 @@ function contentText(content: TranscriptContent): string {
     .join("\n");
 }
 
+function withBlocks(item: ConversationItem, blocks: ConversationBlock[]): ConversationItem {
+  const text = blocks.flatMap((block) => block.kind === "text" ? [block.content] : []);
+  const reasoning = blocks.flatMap((block) => block.kind === "reasoning" ? [block.content] : []);
+  const tools = blocks.flatMap((block) => block.kind === "tool" ? [block] : []);
+  return {
+    ...item,
+    blocks,
+    message: {
+      ...item.message,
+      content: text.join("\n\n"),
+      reasoningContent: reasoning.join("\n\n"),
+      toolCalls: tools.map((block) => block.call),
+    },
+    toolResults: Object.fromEntries(tools.flatMap((block) =>
+      block.result ? [[block.call.id, block.result]] : []
+    )),
+  };
+}
+
 export function buildConversationItems(
   messages: SessionMessage[],
+  projections: ConversationProjection[] = [],
 ): ConversationItem[] {
+  // Canonical messages are complete records, not cumulative text snapshots.
+  // Only repeated message identities may be replaced; identical text is valid.
+  const canonical = [...new Map(messages.map((message) => [message.id, message])).values()];
   const toolResults = new Map<string, SessionMessage>();
-  const assistantsByRun = new Map<string, SessionMessage[]>();
-  for (const message of messages) {
+  for (const message of canonical) {
     if (message.role === "tool" && message.toolCallId) {
-      toolResults.set(message.toolCallId, message);
-    }
-    if (message.role === "assistant" && message.runId) {
-      const group = assistantsByRun.get(message.runId) || [];
-      group.push(message);
-      assistantsByRun.set(message.runId, group);
+      toolResults.set(`${message.runId || ""}:${message.toolCallId}`, message);
     }
   }
-
-  const emittedRuns = new Set<string>();
-  return messages.flatMap((message) => {
-    if (message.role !== "user" && message.role !== "assistant") return [];
-    let visibleMessage = message;
-    if (message.role === "assistant" && message.runId) {
-      if (emittedRuns.has(message.runId)) return [];
-      emittedRuns.add(message.runId);
-      const runMessages = assistantsByRun.get(message.runId) || [message];
-      const finalMessage = [...runMessages].reverse().find((candidate) =>
-        contentText(candidate.content).trim() && !candidate.toolCalls?.length
-      ) || [...runMessages].reverse().find((candidate) =>
-        contentText(candidate.content).trim()
-      ) || runMessages[runMessages.length - 1];
-      const reasoningContent = runMessages
-        .map((candidate) => String(candidate.reasoningContent || "").trim())
-        .filter(Boolean)
-        .join("\n\n");
-      const toolCalls = runMessages.flatMap((candidate) =>
-        candidate.toolCalls || []
-      );
-      visibleMessage = {
-        ...finalMessage,
-        ...(reasoningContent ? { reasoningContent } : {}),
-        ...(toolCalls.length ? { toolCalls } : {}),
-      };
+  const items: ConversationItem[] = [];
+  const runs = new Map<string, ConversationItem>();
+  const turns = new Map<string, number>();
+  for (const message of canonical) {
+    if (message.role === "user") {
+      items.push({ key: message.id, message, toolResults: {}, blocks: [] });
+      continue;
     }
-    const hasVisibleAssistantContent = Boolean(
-      contentText(visibleMessage.content).trim()
-      || visibleMessage.reasoningContent?.trim()
-      || visibleMessage.toolCalls?.length,
-    );
-    if (visibleMessage.role === "assistant" && !hasVisibleAssistantContent) return [];
-    return [{
-      message: visibleMessage,
-      toolResults: Object.fromEntries(
-        (visibleMessage.toolCalls || []).flatMap((call) => {
-          const result = toolResults.get(call.id);
-          return result ? [[call.id, result]] : [];
-        }),
-      ),
-    }];
+    if (message.role !== "assistant") continue;
+    const scope = message.runId || message.id;
+    const turn = message.turn ?? (turns.get(scope) || 0) + 1;
+    turns.set(scope, turn);
+    const blocks: ConversationBlock[] = [];
+    if (message.reasoningContent?.trim()) {
+      blocks.push({ id: conversationBlockId(scope, turn, "reasoning"), turn, kind: "reasoning", content: message.reasoningContent });
+    }
+    if (contentText(message.content).trim()) {
+      blocks.push({ id: conversationBlockId(scope, turn, "text"), turn, kind: "text", content: contentText(message.content) });
+    }
+    for (const call of message.toolCalls || []) {
+      const result = toolResults.get(`${message.runId || ""}:${call.id}`);
+      blocks.push({
+        id: conversationBlockId(scope, turn, `tool:${call.id}`), turn, kind: "tool", call, result,
+        status: result ? toolResultOk(result) === false ? "failed" : "completed" : "interrupted",
+      });
+    }
+    let item = runs.get(scope);
+    if (!item) {
+      item = { key: `run:${scope}`, message, blocks: [], toolResults: {} };
+      runs.set(scope, item);
+      items.push(item);
+    }
+    item.blocks.push(...blocks);
+  }
+  for (const item of runs.values()) {
+    item.finalBlockId = finalAnswerBlockId(item.blocks);
+  }
+  for (const projection of projections) {
+    if (!projection.runId) continue;
+    let item = runs.get(projection.runId);
+    if (!item) {
+      const userIndex = items.findIndex(({ message }) => message.role === "user" && message.runId === projection.runId);
+      item = {
+        key: `run:${projection.runId}`,
+        message: { id: `run:${projection.runId}`, role: "assistant", sequence: 0, content: "", runId: projection.runId, createdAt: items[userIndex]?.message.createdAt },
+        blocks: [], toolResults: {},
+      };
+      items.splice(userIndex < 0 ? items.length : userIndex + 1, 0, item);
+    }
+    // Keep the live block order; canonical records enrich matching results.
+    const persisted = new Map(item.blocks.map((block) => [block.id, block]));
+    const liveIds = new Set(projection.blocks.map((block) => block.id));
+    item.blocks = [
+      ...projection.blocks.map((block) => {
+        const saved = persisted.get(block.id);
+        return saved && (saved.kind !== "tool" || saved.result) ? saved : block;
+      }),
+      ...item.blocks.filter((block) => !liveIds.has(block.id)),
+    ];
+    item.status = projection.status;
+    item.error = projection.error;
+    item.finalBlockId = projection.finalBlockId
+      || (projection.status === "completed" ? finalAnswerBlockId(item.blocks) : undefined);
+  }
+  return items.filter((item) => item.message.role === "user" || item.blocks.length || item.status)
+    .map((item) => item.message.role === "user" ? item : withBlocks(item, item.blocks));
+}
+
+export function projectionIsPersisted(messages: SessionMessage[], projection: ConversationProjection): boolean {
+  const item = buildConversationItems(messages).find((candidate) => candidate.message.runId === projection.runId && candidate.message.role === "assistant");
+  if (!item) return false;
+  const persisted = new Map(item.blocks.map((block) => [block.id, block]));
+  return projection.blocks.every((block) => {
+    const saved = persisted.get(block.id);
+    if (!saved || saved.kind !== block.kind) return false;
+    if (block.kind === "tool") return saved.kind === "tool" && !!saved.result;
+    return saved.kind !== "tool" && (!block.content || saved.content.trim() === block.content.trim());
   });
 }
 
@@ -180,10 +253,28 @@ export function summarizeToolCall(
   ) || "执行完成";
 }
 
-export function meaningfulSessionTitle(value?: string): string {
-  const title = String(value || "").trim();
-  return ["", "新会话", "未命名会话", "untitled", "new session"]
-    .includes(title.toLowerCase())
-    ? ""
-    : title;
+function generatedSessionTitle(value: string): boolean {
+  return /^session[_-][0-9a-f]{6,}(?:[_-][0-9a-f]{4,})*$/i.test(value)
+    || /^session\s+\d+$/i.test(value)
+    || /^session\s+session[_-][0-9a-f]{6,}(?:[_-][0-9a-f]{4,})*$/i.test(value);
+}
+
+export function meaningfulSessionTitle(
+  value?: string,
+  sessionId = "",
+  metadata: Record<string, unknown> = {},
+): string {
+  const title = String(value || "").replace(/\s+/g, " ").trim();
+  const normalizedSessionId = String(sessionId).replace(/\s+/g, " ").trim();
+  if (["", "新会话", "未命名会话", "untitled", "new session"]
+    .includes(title.toLowerCase())) {
+    return "";
+  }
+  if (normalizedSessionId && title.toLowerCase() === normalizedSessionId.toLowerCase()) {
+    return "";
+  }
+  if (metadata.titleAuto === false) return title;
+  if (generatedSessionTitle(title)) return "";
+  if (metadata.titleAuto === true && /^session\b/i.test(title)) return "";
+  return title;
 }

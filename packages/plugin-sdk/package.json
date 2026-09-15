@@ -7,6 +7,10 @@
     ".": {
       "types": "./src/manifest.d.ts",
       "default": "./src/manifest.mjs"
+    },
+    "./data-location": {
+      "types": "./src/data-location.d.mts",
+      "default": "./src/data-location.mjs"
     }
   },
   "scripts": {

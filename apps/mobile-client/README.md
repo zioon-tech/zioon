@@ -18,7 +18,7 @@ Start a Runtime, then run:
 ZION_MOBILE_RUNTIME_URL=http://127.0.0.1:8766 npm run dev:mobile
 ```
 
-Open `http://127.0.0.1:5180/mobile/`.
+Open `http://127.0.0.1:5182/mobile/`.
 
 ## Build
 

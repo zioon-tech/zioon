@@ -5,7 +5,8 @@ import {
   LOCAL_TOOLS_TOOL_DEFINITIONS,
   LocalToolsDeviceHost
 } from "../../../packages/local-tools-client/src/index.mjs";
-import { DEVICE_PROTOCOL_VERSION } from "../../../packages/node-protocol/src/index.mjs";
+import { DEVICE_PROTOCOL_VERSION, parseByteSize } from "../../../packages/node-protocol/src/index.mjs";
+import { createPluginDataFileHost } from "../../../packages/local-tools-client/src/plugin-data-files.mjs";
 import {
   DeviceConnector,
   exchangeDevicePairing
@@ -85,9 +86,21 @@ const resourceId = readArg(
   process.env.ZION_NODE_RESOURCE_ID
     || defaultDeviceResourceId(projectId)
 );
+const pluginDataRoot = readArg(
+  "--plugin-data-root",
+  process.env.ZION_PLUGIN_DATA_ROOT || `${homedir()}/.zion-next/data/plugins`
+);
+const deviceServiceMaxRequestBytes = parseByteSize(
+  readArg(
+    "--device-service-max-request-bytes",
+    process.env.ZION_DEVICE_SERVICE_MAX_REQUEST_BYTES || "1MiB"
+  ),
+  { label: "Device service request body limit" }
+);
 const builtInRoots = [
   `${homedir()}/.zion-next/skills`,
-  `${homedir()}/.zion-next/memory`
+  `${homedir()}/.zion-next/memory`,
+  pluginDataRoot
 ];
 const configuredRoots = parseList(readArg(
   "--additional-roots",
@@ -169,8 +182,12 @@ if (!token) {
     runtimeUrl
   });
 }
+const dataFiles = createPluginDataFileHost({
+  root: pluginDataRoot
+});
 const toolHost = new LocalToolsDeviceHost({
   baseUrl: localToolsUrl,
+  dataFiles,
   additionalRoots,
   accessPolicyProvider: ({ invocation }) =>
     deviceAccess.authorizeInvocation(invocation),
@@ -185,7 +202,9 @@ await toolHost.assertHealthy();
 const serviceHost = new DeviceServiceHost({
   localToolsUrl,
   pluginServiceUrl,
-  deviceAccess
+  deviceAccess,
+  dataFiles,
+  maxRequestBytes: deviceServiceMaxRequestBytes
 });
 
 const connector = new DeviceConnector({
@@ -212,7 +231,7 @@ const connector = new DeviceConnector({
         inputSchema: tool.inputSchema,
         hostKind: "local-tools"
       })),
-      DEVICE_SERVICE_CAPABILITY
+      { ...DEVICE_SERVICE_CAPABILITY, version: "2" }
     ],
     resources: [{
       resourceId,

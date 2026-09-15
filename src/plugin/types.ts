@@ -284,6 +284,7 @@ export interface PluginModule {
 export interface PluginContext {
   subscriptions: Disposable[];
   extensionPath: string;
+  locations: import("./data-locations").PluginLocations;
   globalState: Memento;
   workspaceState: Memento;
   configuration: PluginConfigurationManager;

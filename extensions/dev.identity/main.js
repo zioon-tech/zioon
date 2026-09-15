@@ -35,20 +35,19 @@ import {
 import {
   canSyncIdentitySnapshotToRuntime,
   controlRuntimeProjectAutomation,
-  createIdentitySnapshot,
   hasIdentityContext,
   insertAfterLeadingSystem as insertAfterLeadingSystemMessage,
-  loadIdentitySnapshotFromRuntime,
   loadProjectAutomationFromRuntime,
   projectAutomationRevision,
   projectAutomationSyncDirection,
-  syncIdentitySnapshotToRuntime,
   syncProjectAutomationToRuntime
 } from "./identity-runtime-state.js";
 import { isContinuationBoundaryLine } from "../../src/chat/session-document-format.js";
 import { runtimeDeviceServiceBaseUrl } from "../../src/runtime/workbench-runtime-config.ts";
+import { createPluginLocations } from "../../src/plugin/data-locations.ts";
+import { dataLocationContext, normalizeDataLocation } from "../../packages/plugin-sdk/src/data-location.mjs";
 
-const MEMORY_ROOT_DISPLAY = "~/.zion-next/memory";
+const MEMORY_ROOT_DISPLAY = "~/.zion-next/data/plugins/dev.identity";
 const BIOGRAPHY_VIEW_ID = "dev.identity.biography";
 const BIOGRAPHY_CACHE_DB = "zion.identity-cache";
 const BIOGRAPHY_CACHE_STORE = "biography-events";
@@ -57,7 +56,7 @@ const BIOGRAPHY_RENDER_PAGE_SIZE = 80;
 const IDENTITY_SNAPSHOT_VERSION = 3;
 const PROJECT_AUTOMATION_STORAGE_KEY = "projectAutomation.v1";
 const PROJECT_AUTOMATION_RUNTIME_RESTORE_INTERVAL_MS = 1000;
-let memoryRootPromise = null;
+let pluginLocations = null;
 let profileScaffoldReady = false;
 let profileScaffoldPromise = null;
 let projectCoordinatorPromise = null;
@@ -67,7 +66,7 @@ let projectAutomationRuntimeSyncQueue = Promise.resolve();
 let projectAutomationSyncGeneration = 0;
 let projectAutomationRuntimeRestoreTimer = 0;
 const identitySnapshotPromises = new Map();
-let localToolsSessionsCache = { at: 0, sessions: [] };
+const fileHashes = new Map();
 
 function fallbackParseMessages(content) {
   const messages = [];
@@ -208,25 +207,6 @@ export function getLocalToolsBase() {
   return "http://127.0.0.1:8765";
 }
 
-function inferHomeDirectory(session) {
-  const explicit = String(session?.home || session?.home_dir || session?.homeDirectory || "")
-    .trim()
-    .replace(/\/+$/, "");
-  if (explicit) return explicit;
-  const cwd = String(session?.cwd || session?.initial_cwd || "").trim().replace(/\\/g, "/");
-  const unixMatch = cwd.match(/^(\/Users\/[^/]+|\/home\/[^/]+|\/root)(?:\/|$)/);
-  if (unixMatch) return unixMatch[1];
-  const windowsMatch = cwd.match(/^([A-Za-z]:\/Users\/[^/]+)(?:\/|$)/i);
-  return windowsMatch ? windowsMatch[1] : "";
-}
-
-function pickLocalHome(sessions, activeSessionId = "") {
-  const list = Array.isArray(sessions) ? sessions : [];
-  const local = list.filter((session) => String(session?.type || "local").toLowerCase() !== "ssh");
-  const active = local.find((session) => String(session?.id || "") === String(activeSessionId || ""));
-  return inferHomeDirectory(active) || local.map(inferHomeDirectory).find(Boolean) || "";
-}
-
 function normalizeLocalPath(value) {
   const text = String(value || "").trim().replace(/\\/g, "/");
   const prefix = text.startsWith("/") ? "/" : /^[A-Za-z]:\//.test(text) ? text.slice(0, 3) : "";
@@ -246,45 +226,9 @@ function pathWithinRoot(pathValue, rootValue) {
   return !!path && !!root && (path === root || path.startsWith(`${root}/`));
 }
 
-async function listLocalToolSessions() {
-  const stateSessions = window.zion?.state?.get?.("terminal.sessions");
-  if (Array.isArray(stateSessions) && stateSessions.length) return stateSessions;
-  const now = Date.now();
-  if (now - localToolsSessionsCache.at < 5000 && localToolsSessionsCache.sessions.length) {
-    return localToolsSessionsCache.sessions;
-  }
-  const response = await fetch(`${getLocalToolsBase()}/sessions`, { method: "GET" });
-  const raw = await response.text().catch(() => "");
-  const data = parseResponseBody(raw);
-  const sessions = response.ok && Array.isArray(data?.sessions) ? data.sessions : [];
-  localToolsSessionsCache = { at: now, sessions };
-  return sessions;
-}
-
-async function resolveLocalToolsSessionId(path = "") {
-  try {
-    const sessions = await listLocalToolSessions();
-    const activeSessionId = String(window.zion?.state?.get?.("terminal.activeSessionId") || "");
-    const withHomes = sessions
-      .map((session) => ({
-        session,
-        id: String(session?.id || session?.session_id || "").trim(),
-        home: inferHomeDirectory(session)
-      }))
-      .filter((item) => item.id);
-    const active = withHomes.find((item) =>
-      item.id === activeSessionId
-      && (!path || pathWithinRoot(path, item.home))
-    );
-    if (active) return active.id;
-    const matched = withHomes
-      .filter((item) => path && pathWithinRoot(path, item.home))
-      .sort((left, right) => right.home.length - left.home.length);
-    if (matched.length) return matched[0].id;
-    return activeSessionId || "";
-  } catch {
-    return "";
-  }
+async function identityDataLocation() {
+  pluginLocations ||= createPluginLocations("dev.identity");
+  return normalizeDataLocation(await pluginLocations.data);
 }
 
 async function localToolsFileUrl(endpoint, path, params = {}) {
@@ -294,49 +238,22 @@ async function localToolsFileUrl(endpoint, path, params = {}) {
     if (value == null || value === "") continue;
     url.searchParams.set(key, String(value));
   }
-  const sessionId = await resolveLocalToolsSessionId(path);
-  if (sessionId) url.searchParams.set("session_id", sessionId);
+  const data = await identityDataLocation();
+  if (path && !pathWithinRoot(path, data.root)) throw new Error("Path is outside Identity data directory");
+  if (data.nodeId) url.searchParams.set("node_id", data.nodeId);
+  url.searchParams.set("plugin_data_version", "1");
   return url.toString();
 }
 
 async function localToolsFileBody(path, body = {}) {
-  const sessionId = await resolveLocalToolsSessionId(path);
   return {
     ...body,
-    path,
-    ...(sessionId ? { session_id: sessionId } : {})
+    path
   };
 }
 
 async function resolveMemoryRoot() {
-  if (memoryRootPromise) return memoryRootPromise;
-  memoryRootPromise = (async () => {
-    const configured = String(window.zion?.state?.get?.("identity.memoryRootPath") || "").trim();
-    if (configured && configured !== "~" && !configured.startsWith("~/")) {
-      return configured.replace(/\/+$/, "");
-    }
-
-    const activeSessionId = window.zion?.state?.get?.("terminal.activeSessionId") || "";
-    let home = pickLocalHome(window.zion?.state?.get?.("terminal.sessions"), activeSessionId);
-    if (!home) {
-      const response = await fetch(`${getLocalToolsBase()}/sessions`, { method: "GET" });
-      const raw = await response.text().catch(() => "");
-      const data = parseResponseBody(raw);
-      if (response.ok) home = pickLocalHome(data?.sessions, activeSessionId);
-    }
-    if (!home) {
-      memoryRootPromise = null;
-      throw new Error(`无法解析 ${MEMORY_ROOT_DISPLAY}；请先创建一个本地终端会话`);
-    }
-    const suffix = configured.startsWith("~/") ? configured.slice(2) : ".zion-next/memory";
-    return `${home.replace(/\/+$/, "")}/${suffix.replace(/^\/+/, "")}`;
-  })();
-  try {
-    return await memoryRootPromise;
-  } catch (error) {
-    memoryRootPromise = null;
-    throw error;
-  }
+  return (await identityDataLocation()).root;
 }
 
 async function getProfilePaths() {
@@ -377,19 +294,21 @@ function parseBiographyCitationRecords(content) {
 }
 
 function isMissingFile(status, data, raw) {
-  if (status === 404) return true;
   const message = String(data?.error || data?.detail || raw || "");
-  return /no such file|not found|enoent/i.test(message);
+  return /no such file|\bENOENT\b/i.test(message)
+    || (status === 404 && !/node|resource|route|session/i.test(message));
 }
 
 async function readLocalFileState(path) {
-  const response = await fetch(await localToolsFileUrl("/files/read", path), { method: "GET" });
+  const url = await localToolsFileUrl("/files/read", path);
+  const response = await fetch(url, { method: "GET" });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
   if (!response.ok || data?.error) {
     if (isMissingFile(response.status, data, raw)) return { exists: false, content: "" };
     throw new Error(String(data?.error || data?.detail || raw || `HTTP ${response.status}`));
   }
+  if (data.content_hash) fileHashes.set(url, data.content_hash);
   return {
     exists: true,
     content: typeof data?.content === "string" ? data.content : ""
@@ -411,7 +330,7 @@ async function readLocalDirectoryEntries(path) {
     if (isMissingFile(response.status, data, raw)) return [];
     throw new Error(String(data?.error || data?.detail || raw || `HTTP ${response.status}`));
   }
-  const results = data?.results ?? data;
+  const results = data?.entries ?? data?.results ?? data;
   if (Array.isArray(results)) {
     return results
       .map((entry) => {
@@ -458,13 +377,16 @@ async function readBiographyEventsPage(path, options = {}) {
   };
 }
 
-async function writeLocalFile(path, content) {
-  const base = getLocalToolsBase();
-  const response = await fetch(`${base}/files/write`, {
+async function writeLocalFile(path, content, options = {}) {
+  const readUrl = await localToolsFileUrl("/files/read", path);
+  const hash = fileHashes.get(readUrl);
+  const response = await fetch(await localToolsFileUrl("/files/write", path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(await localToolsFileBody(path, {
-      content: String(content || "")
+      content: String(content || ""),
+      ...(hash ? { expected_hash: hash } : {}),
+      ...options
     }))
   });
   const raw = await response.text().catch(() => "");
@@ -472,12 +394,12 @@ async function writeLocalFile(path, content) {
   if (!response.ok || data?.error) {
     throw new Error(String(data?.error || data?.detail || raw || `HTTP ${response.status}`));
   }
+  if (data.content_hash) fileHashes.set(readUrl, data.content_hash);
   return true;
 }
 
 async function appendLocalJsonl(path, records) {
-  const base = getLocalToolsBase();
-  const response = await fetch(`${base}/files/append-jsonl`, {
+  const response = await fetch(await localToolsFileUrl("/files/append-jsonl", path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(await localToolsFileBody(path, {
@@ -558,6 +480,7 @@ function openBiographyCacheDb() {
 }
 
 async function readBiographyEventsCache(key) {
+  key = `${getLocalToolsBase()}|${(await identityDataLocation()).nodeId}|${key}`;
   const db = await openBiographyCacheDb();
   if (!db) return null;
   return new Promise((resolve) => {
@@ -592,6 +515,7 @@ async function readBiographyEventsCache(key) {
 }
 
 async function writeBiographyEventsCache(key, events, complete = true) {
+  key = `${getLocalToolsBase()}|${(await identityDataLocation()).nodeId}|${key}`;
   const db = await openBiographyCacheDb();
   if (!db || !Array.isArray(events)) return false;
   return new Promise((resolve) => {
@@ -657,13 +581,8 @@ async function loadIdentityContext() {
       projects,
       projectsInbox,
       projectsAttention
-    });
+    }, { sourceRoot: await resolveMemoryRoot() });
   } catch (error) {
-    try {
-      const snapshot = await loadIdentitySnapshotFromRuntime();
-      const fallback = snapshot?.content || "";
-      if (fallback.trim()) return fallback;
-    } catch {}
     console.warn("[dev.identity] profile read failed", error);
     return "";
   }
@@ -745,34 +664,7 @@ async function buildFreshIdentitySnapshot(sessionId) {
     sourceRoot,
     content
   };
-  void syncIdentityContextSnapshotToRuntime(snapshot).catch(() => {});
   return snapshot;
-}
-
-async function syncIdentityContextSnapshotToRuntime(snapshot) {
-  if (!snapshot?.content) return false;
-  await syncIdentitySnapshotToRuntime({
-    snapshot: createIdentitySnapshot({
-      content: snapshot.content,
-      sourceRoot: snapshot.sourceRoot || MEMORY_ROOT_DISPLAY,
-      savedAt: Date.parse(snapshot.createdAt) || Date.now()
-    })
-  });
-  return true;
-}
-
-async function syncFreshIdentityContextSnapshotToRuntime() {
-  if (!canSyncIdentitySnapshotToRuntime()) return false;
-  const content = await loadIdentityContext();
-  if (!content) return false;
-  const paths = await getProfilePaths().catch(() => null);
-  return syncIdentityContextSnapshotToRuntime({
-    createdAt: new Date().toISOString(),
-    sourceRoot: paths?.identity
-      ? paths.identity.replace(/\/identity\.md$/, "")
-      : MEMORY_ROOT_DISPLAY,
-    content
-  });
 }
 
 async function loadIdentityContextForSession(sessionId, options = {}) {
@@ -1088,7 +980,6 @@ async function updateBiography(distilled, payload) {
   if (written) {
       const allEvents = await loadBiographyEvents();
       await writeLocalFile(paths.digest, buildBiographyDigest(allEvents));
-      void syncFreshIdentityContextSnapshotToRuntime().catch(() => {});
       void writeBiographyEventsCache(paths.events, allEvents, true);
       publishBiographySessionTags(allEvents);
     try {
@@ -1115,7 +1006,7 @@ async function initializeProfileFiles() {
   ];
   const states = await Promise.all(files.map(([path]) => readLocalFileState(path)));
   const missing = files.filter((_, index) => !states[index].exists);
-  await Promise.all(missing.map(([path, content]) => writeLocalFile(path, content)));
+  await Promise.all(missing.map(([path, content]) => writeLocalFile(path, content, { create_only: true })));
   return missing.map(([path]) => path);
 }
 
@@ -3456,6 +3347,7 @@ function renderBiographyView(container) {
 
 export async function activate(ctx) {
   const disposables = [];
+  pluginLocations = ctx?.locations || createPluginLocations("dev.identity");
   let disposed = false;
   let biographyQueue = Promise.resolve();
 
@@ -3488,9 +3380,7 @@ export async function activate(ctx) {
           scheduleProjectAutomationRuntimeRestore();
         }
       }),
-      ensureProfileFilesInitialized({ force: true }).then(() => {
-        if (!disposed) return syncFreshIdentityContextSnapshotToRuntime();
-      })
+      ensureProfileFilesInitialized({ force: true })
     ]).then((results) => {
       if (disposed) { resolveReady(); return; }
       const errors = results.filter((result) => result.status === "rejected")
@@ -3563,10 +3453,14 @@ export async function activate(ctx) {
     order: 85,
     stage: "pre",
     contribute: async (messages, runCtx = {}) => {
+      if (canSyncIdentitySnapshotToRuntime()) return messages;
       if (hasIdentityContext(messages)) return messages;
       const context = await loadIdentityContextForSession(resolveContextSessionId(runCtx));
       if (!context) return messages;
-      return insertAfterLeadingSystemMessage(messages, { role: "system", content: context });
+      const location = await identityDataLocation();
+      return insertAfterLeadingSystemMessage(messages, {
+        role: "system", content: `${dataLocationContext("dev.identity", location)}\n\n${context}`
+      });
     }
   });
   if (contributor) disposables.push(contributor);
@@ -3574,7 +3468,9 @@ export async function activate(ctx) {
     const runtimeConnectionDisposable = window.zion?.state?.onDidChange?.(
       "runtime.connection",
       () => {
-        void syncFreshIdentityContextSnapshotToRuntime().catch(() => {});
+        profileScaffoldReady = false;
+        fileHashes.clear();
+        identitySnapshotPromises.clear();
         void reconcileProjectAutomationRuntimeState({ emit: true })
           .then((result) => {
             if (hasActiveProjectAutomation(result.document)) {
@@ -3590,7 +3486,6 @@ export async function activate(ctx) {
   const initializeCommand = window.zion?.commands?.registerCommand?.("identity.initialize", async () => {
     try {
       const created = await ensureProfileFilesInitialized({ force: true });
-      void syncFreshIdentityContextSnapshotToRuntime().catch(() => {});
       const message = created.length
         ? `已创建 ${created.length} 个身份档案文件`
         : "身份档案文件已存在";

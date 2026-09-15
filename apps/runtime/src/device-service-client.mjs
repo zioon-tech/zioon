@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { CancellationController } from "../../../packages/runtime/dist/index.js";
+import { requirePluginDataCapability } from "./plugin-data-capability.mjs";
 
 const DEVICE_SERVICE_TOOL_NAME = "zion.internal.deviceService";
 
@@ -47,6 +48,7 @@ export function createDeviceServiceClient({
   service,
   baseUrl,
   nodeBroker = null,
+  dataFiles = null,
   fetchImpl = globalThis.fetch
 } = {}) {
   const serviceName = String(service || "").trim();
@@ -66,8 +68,19 @@ export function createDeviceServiceClient({
       const requestBody = body == null
         ? null
         : Buffer.from(JSON.stringify(body), "utf8");
+      const pluginDataRequest = new URL(path, "http://device.invalid").searchParams.get("plugin_data_version") === "1";
+
+      if (!nodeBroker && dataFiles && serviceName === "local-tools") {
+        cancellationSignal(runContext).throwIfCancelled();
+        const url = new URL(path, "http://device.invalid");
+        const payload = await dataFiles.handle(url.pathname.replace(/^\/files\//, ""),
+          body || Object.fromEntries(url.searchParams), { signal: cancellationSignal(runContext) });
+        if (payload) return payload;
+        if (pluginDataRequest) throw new Error("Path is outside configured plugin data storage");
+      }
 
       if (nodeBroker?.invoke) {
+        if (pluginDataRequest) requirePluginDataCapability(nodeBroker, runContext);
         const invocationId = `${serviceName}:${randomUUID()}`;
         const result = await nodeBroker.invoke({
           invocationId,

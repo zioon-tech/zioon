@@ -1,4 +1,5 @@
 import { CancellationController } from "../../../packages/runtime/dist/index.js";
+import { URLSearchParams } from "node:url";
 
 function normalizePath(value) {
   const raw = String(value || "").trim().replaceAll("\\", "/");
@@ -140,10 +141,60 @@ function selectTargetForFileRoot({ toolHost, toolName, fileRoot, runContext }) {
 
 export function createPluginFileService({
   toolHost,
+  dataLocation = null,
+  fileClient = null,
   invocationPrefix = "plugin-file"
 } = {}) {
   if (!toolHost?.invoke) {
     throw new Error("Plugin file service requires a tool host");
+  }
+
+  function boundRequest(fileRoot, sessionId, runContext = {}) {
+    const location = typeof dataLocation === "function" ? dataLocation() : dataLocation;
+    if (!location) return { fileRoot, sessionId, runContext };
+    const root = normalizePath(location.root);
+    if (fileRoot && normalizePath(fileRoot) !== root) {
+      throw new Error("file_root conflicts with the plugin data location");
+    }
+    if (sessionId || runContext.terminalSessionId
+      || runContext.policy?.allowedTerminalSessionIds?.length) {
+      throw new Error("Plugin data access cannot use a terminal-bound policy");
+    }
+    if (runContext.target?.nodeId && runContext.target.nodeId !== location.nodeId) {
+      throw new Error("Plugin data Node conflicts with the requested target");
+    }
+    assertRootAllowed(root, runContext.policy);
+    return {
+      fileRoot: root,
+      sessionId: "",
+      runContext: {
+        ...runContext,
+        ...(location.nodeId ? { target: { nodeId: location.nodeId } } : {})
+      }
+    };
+  }
+
+  async function requestFile(endpoint, { fileRoot, sessionId, runContext, body, query }) {
+    const root = assertRootAllowed(fileRoot, runContext.policy);
+    const params = new URLSearchParams(query || "");
+    if (dataLocation) params.set("plugin_data_version", "1");
+    const payload = await fileClient.request(`${endpoint}?${params}`, {
+      method: body ? "POST" : "GET",
+      body,
+      runContext: {
+        ...runContext,
+        policy: {
+          ...runContext.policy,
+          preset: body ? "workspace-write" : "read-only",
+          fileRoots: [root],
+          allowedTerminalSessionIds: sessionId ? [sessionId] : []
+        }
+      }
+    });
+    if (dataLocation && payload?.plugin_data_version !== 1) {
+      throw new Error("Plugin data file adapter is unavailable; update the data Node Connector");
+    }
+    return payload;
   }
 
   async function invokeTool(toolName, args, {
@@ -218,10 +269,28 @@ export function createPluginFileService({
       sessionId = "",
       runContext = {}
     } = {}) {
+      ({ fileRoot, sessionId, runContext } = boundRequest(fileRoot, sessionId, runContext));
       const root = assertRootAllowed(fileRoot, runContext.policy);
       const out = {};
+      const missing = [];
       for (const [key, relativePath] of Object.entries(files || {})) {
         const path = resolveRelativePath(root, relativePath);
+        if (fileClient) {
+          try {
+            const payload = await requestFile("/files/read", {
+              fileRoot, sessionId, runContext,
+              query: new URLSearchParams({ path, ...(sessionId ? { session_id: sessionId } : {}) })
+            });
+            if (payload?.ok === false || payload?.error) throw new Error(payload.error || "File read failed");
+            if (payload?.truncated || payload?.has_more) throw new Error("Plugin file read was truncated");
+            out[key] = String(payload?.content || "");
+          } catch (error) {
+            if (error.statusCode !== 404 && !/\bENOENT\b|no such file/i.test(error.message)) throw error;
+            out[key] = "";
+            missing.push(key);
+          }
+          continue;
+        }
         const result = await invokeTool("read", {
           path,
           session_id: sessionId
@@ -245,7 +314,8 @@ export function createPluginFileService({
       }
       return {
         fileRoot: root,
-        files: out
+        files: out,
+        ...(fileClient ? { missing } : {})
       };
     },
     async writeTextFiles({
@@ -254,6 +324,7 @@ export function createPluginFileService({
       sessionId = "",
       runContext = {}
     } = {}) {
+      ({ fileRoot, sessionId, runContext } = boundRequest(fileRoot, sessionId, runContext));
       const root = assertRootAllowed(fileRoot, runContext.policy);
       const written = [];
       for (const [key, spec] of Object.entries(files || {})) {
@@ -261,6 +332,20 @@ export function createPluginFileService({
         const content = typeof spec === "string" ? spec : spec?.content;
         if (content == null) continue;
         const path = resolveRelativePath(root, relativePath);
+        if (fileClient) {
+          const result = await requestFile("/files/write", {
+            fileRoot, sessionId, runContext,
+            body: {
+              path, content: String(content),
+              ...(sessionId ? { session_id: sessionId } : {}),
+              ...(spec.expected_hash !== undefined ? { expected_hash: spec.expected_hash } : {}),
+              ...(spec.create_only ? { create_only: true } : {})
+            }
+          });
+          if (result?.ok === false || result?.error) throw new Error(result.error || `Failed to write ${path}`);
+          written.push({ key, path });
+          continue;
+        }
         const result = await invokeTool("write", {
           path,
           content: String(content),
@@ -280,6 +365,20 @@ export function createPluginFileService({
         fileRoot: root,
         written
       };
+    },
+    async appendJsonl({ fileRoot, relativePath, records, sessionId = "", runContext = {} }) {
+      if (!fileClient) throw new Error("Atomic JSONL append requires a file client");
+      ({ fileRoot, sessionId, runContext } = boundRequest(fileRoot, sessionId, runContext));
+      const result = await requestFile("/files/append-jsonl", {
+        fileRoot, sessionId, runContext,
+        body: {
+          path: resolveRelativePath(fileRoot, relativePath),
+          records, dedupe_field: "id",
+          ...(sessionId ? { session_id: sessionId } : {})
+        }
+      });
+      if (result?.ok === false || result?.error) throw new Error(result.error || "JSONL append failed");
+      return result;
     }
   });
 }
