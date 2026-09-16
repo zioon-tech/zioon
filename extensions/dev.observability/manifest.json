@@ -1,0 +1,106 @@
+{
+  "name": "dev.observability",
+  "version": "0.1.0",
+  "description": "Discover and inspect sanitized Runtime diagnostics for Zion Runs.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.observability",
+    "name": "Observability",
+    "version": "0.1.0",
+    "manifestVersion": 2,
+    "entries": {
+      "runtime": "./runtime.js"
+    },
+    "hosts": {
+      "runtime": true
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "capabilities": [
+      {
+        "id": "observabilityInspect",
+        "kind": "tool",
+        "host": "runtime",
+        "risk": "read-only",
+        "requiredScopes": []
+      },
+      {
+        "id": "observabilityOverview",
+        "kind": "tool",
+        "host": "runtime",
+        "risk": "read-only",
+        "requiredScopes": []
+      },
+      {
+        "id": "run-diagnostics",
+        "kind": "skill",
+        "host": "runtime",
+        "risk": "read-only",
+        "requiredScopes": []
+      }
+    ],
+    "presentation": {
+      "displayName": {
+        "zh-CN": "运行诊断",
+        "en-US": "Run Diagnostics"
+      },
+      "description": {
+        "zh-CN": "结合 Run Ledger 与脱敏 Trace 分析运行耗时和失败阶段。",
+        "en-US": "Analyze Run latency and failures using Run Ledger and sanitized traces."
+      },
+      "icon": "pulse",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "按 Run 查询脱敏诊断摘要",
+          "发现近期异常和慢 Run",
+          "定位模型与工具耗时",
+          "区分未采样、运行中和后端不可用"
+        ],
+        "en-US": [
+          "Query sanitized diagnostics by Run",
+          "Discover recent abnormal and slow Runs",
+          "Identify model and tool latency",
+          "Distinguish unsampled, active, and unavailable traces"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "runtime-runs",
+          "label": {
+            "zh-CN": "运行记录",
+            "en-US": "Run Records"
+          },
+          "description": {
+            "zh-CN": "读取当前会话或项目中可见 Run 的脱敏诊断信息。",
+            "en-US": "Read sanitized diagnostics for Runs visible to the current session or project."
+          }
+        },
+        {
+          "id": "observability-backend",
+          "label": {
+            "zh-CN": "观测后端",
+            "en-US": "Observability Backend"
+          },
+          "description": {
+            "zh-CN": "通过 Runtime 管理的查询服务读取脱敏 Trace。",
+            "en-US": "Read sanitized traces through the Runtime-managed query service."
+          }
+        }
+      ]
+    },
+    "contributes": {
+      "skills": [
+        "./skills/run-diagnostics"
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

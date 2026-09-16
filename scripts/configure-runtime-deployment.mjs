@@ -34,6 +34,8 @@ Modes:
 
 Options:
   --runtime-port <port>  Loopback Runtime port (default: 8766)
+  --observability-port <port>
+                         Loopback Jaeger UI port; enables protected /observability/
   --https-port <port>    Public HTTPS port (default: 8443 for ip, 443 for domain)
   --legacy-origin <url>  Keep an existing HTTPS origin during migration; repeatable
   --caddyfile <path>     Caddy config path (default: /etc/caddy/Caddyfile)
@@ -126,16 +128,57 @@ function originFor(hostname, port) {
   return `https://${hostname}${port === 443 ? "" : `:${port}`}`;
 }
 
+function caddySite(origin, runtimePort, observabilityPort) {
+  const proxy = observabilityPort
+    ? `\t@observabilityMcp path /observability/api/ai/mcp/*
+\trespond @observabilityMcp 404
+
+\t@observabilityOtlp path /observability/api/otlp/*
+\trespond @observabilityOtlp 404
+
+\tredir /observability /observability/ 308
+
+\thandle_path /observability/* {
+\t\tforward_auth 127.0.0.1:${runtimePort} {
+\t\t\turi /v1/access/authorize/observability
+\t\t}
+\t\treverse_proxy 127.0.0.1:${observabilityPort} {
+\t\t\theader_up -Cookie
+\t\t\theader_up -Authorization
+\t\t}
+\t}
+
+\thandle {
+\t\treverse_proxy 127.0.0.1:${runtimePort}
+\t}`
+    : `\treverse_proxy 127.0.0.1:${runtimePort}`;
+  return `${origin} {
+\tencode zstd gzip
+${proxy}
+
+\theader {
+\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"
+\t\tX-Content-Type-Options "nosniff"
+\t\tReferrer-Policy "no-referrer"
+\t\tPermissions-Policy "camera=(), microphone=(), geolocation=()"
+\t}
+}`;
+}
+
 export function deploymentConfig({
   mode,
   publicIp = "",
   domain = "",
   runtimePort = 8766,
+  observabilityPort,
   httpsPort,
   legacyOrigins = []
 }) {
   const normalizedMode = String(mode || "").trim().toLowerCase();
   const port = validPort(runtimePort, "runtime-port");
+  const tracePort = observabilityPort === undefined || observabilityPort === ""
+    ? null
+    : validPort(observabilityPort, "observability-port");
   if (normalizedMode === "local") {
     return {
       mode: "local",
@@ -177,17 +220,9 @@ export function deploymentConfig({
     connectorOrigin,
     ...normalizedLegacy
   ])];
-  const caddyfile = `${sites.map((origin) => `${origin} {
-\tencode zstd gzip
-\treverse_proxy 127.0.0.1:${port}
-
-\theader {
-\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"
-\t\tX-Content-Type-Options "nosniff"
-\t\tReferrer-Policy "no-referrer"
-\t\tPermissions-Policy "camera=(), microphone=(), geolocation=()"
-\t}
-}`).join("\n\n")}\n`;
+  const caddyfile = `${sites.map((origin) =>
+    caddySite(origin, port, tracePort)
+  ).join("\n\n")}\n`;
   return {
     mode: normalizedMode,
     publicIp,
@@ -195,6 +230,7 @@ export function deploymentConfig({
     publicOrigin,
     connectorOrigin,
     allowedOrigins: sites,
+    observabilityPort: tracePort,
     caddyfile
   };
 }
@@ -299,6 +335,7 @@ export async function runDeploymentCli(argv = process.argv.slice(2)) {
     publicIp: args.value("--public-ip"),
     domain: args.value("--domain"),
     runtimePort: args.value("--runtime-port", "8766"),
+    observabilityPort: args.value("--observability-port"),
     httpsPort: args.value("--https-port", mode === "ip" ? "8443" : "443"),
     legacyOrigins: args.values("--legacy-origin")
   });
@@ -320,6 +357,9 @@ Or start the access-controlled local Runtime:
 Browser URL: ${config.publicOrigin}
 Connector URL: ${config.connectorOrigin}
 Runtime listen: 127.0.0.1:${args.value("--runtime-port", "8766")}
+Observability UI: ${config.observabilityPort
+    ? `127.0.0.1:${config.observabilityPort} via /observability/`
+    : "disabled"}
 Required inbound TCP ports: 80, ${args.value(
     "--https-port",
     mode === "ip" ? "8443" : "443"

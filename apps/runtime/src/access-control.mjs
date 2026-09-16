@@ -375,6 +375,14 @@ export class RuntimeAccessControl {
         return true;
       }
 
+      if (request.method === "GET" && url.pathname === "/v1/access/authorize/observability") {
+        const principal = this.authenticateRequest(request);
+        this.requireScope(principal, "device.manage");
+        response.writeHead(204, { "cache-control": "no-store" });
+        response.end();
+        return true;
+      }
+
       if (request.method === "POST" && url.pathname === "/v1/access/logout") {
         const principal = this.authenticateRequest(request);
         if (principal?.source === "cookie") {

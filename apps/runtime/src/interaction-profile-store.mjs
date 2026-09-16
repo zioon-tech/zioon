@@ -32,6 +32,8 @@ export const DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES = Object.freeze([
   "skillsList",
   "memoryList",
   "identityContext",
+  "observabilityInspect",
+  "observabilityOverview",
   "sessionList",
   "sessionGet"
 ]);

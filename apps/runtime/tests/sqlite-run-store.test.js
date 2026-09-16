@@ -62,6 +62,39 @@ afterEach(() => {
 });
 
 describe("SqliteRunStore", () => {
+  it("lists recent Runs by status with a stable bound", async () => {
+    const store = new SqliteRunStore(databasePath());
+    await store.create({
+      ...runRecord("run-old"),
+      status: "failed",
+      updatedAt: 1000
+    });
+    await store.create({
+      ...runRecord("run-completed"),
+      status: "completed",
+      updatedAt: 3000
+    });
+    await store.create({
+      ...runRecord("run-failed"),
+      status: "failed",
+      updatedAt: 4000
+    });
+
+    await expect(store.listRuns({
+      since: 2000,
+      statuses: ["failed", "completed"],
+      limit: 1
+    })).resolves.toEqual([
+      expect.objectContaining({ id: "run-failed", status: "failed" })
+    ]);
+    expect(store.db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'index' AND name = 'runtime_runs_status_updated'
+    `).get()).toEqual({ name: "runtime_runs_status_updated" });
+    store.close();
+  });
+
   it("updates mutable Session configuration without replacing identity", async () => {
     const store = new SqliteRunStore(databasePath());
     await store.createSession(sessionRecord());

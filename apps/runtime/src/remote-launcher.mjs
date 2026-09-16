@@ -251,7 +251,7 @@ export async function runRemoteLauncher({
     "--port", String(port),
     "--db", dbPath,
     "--workbench-dist", distPath,
-    "--runtime-plugins", "dev.session-manager,dev.skills,dev.tools,dev.plugins,dev.terminal-manager,dev.identity,dev.memory,dev.agents,dev.scheduler,dev.langchain-chat,dev.mail,dev.context-compression"
+    "--runtime-plugins", "dev.session-manager,dev.skills,dev.tools,dev.plugins,dev.terminal-manager,dev.identity,dev.memory,dev.agents,dev.scheduler,dev.langchain-chat,dev.mail,dev.context-compression,dev.observability"
   ], {
     cwd: REPOSITORY_ROOT,
     detached: process.platform !== "win32",

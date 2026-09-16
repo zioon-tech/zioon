@@ -1,6 +1,7 @@
 # Zion OpenTelemetry 可观测性演进路线图
 
-> Status: Proposed
+> Status: Runtime trace slice and Run diagnostics plugin implemented; production
+> rollout pending
 > Date: 2026-09-16
 > Scope: Runtime, Agent execution, model calls, Tool Broker, Device Connector,
 > local tools, Session projection, operational metrics, and correlated logs.
@@ -17,6 +18,8 @@
 > - [RUN-PROJECTION-PROTOCOL.md](./RUN-PROJECTION-PROTOCOL.md)
 > - [SESSION-PERSISTENCE.md](./SESSION-PERSISTENCE.md)
 > - [RUNTIME-LOCAL-TOOLS-BOUNDARY.md](./RUNTIME-LOCAL-TOOLS-BOUNDARY.md)
+> - [OTEL-CONSUMPTION-EXPERIENCE-AND-AGENT-DIAGNOSTICS-DESIGN-20260916.md](./OTEL-CONSUMPTION-EXPERIENCE-AND-AGENT-DIAGNOSTICS-DESIGN-20260916.md)
+> - [OTEL-JAEGER-ACCESS-CREDENTIAL-DESIGN-20260916.md](./OTEL-JAEGER-ACCESS-CREDENTIAL-DESIGN-20260916.md)
 >
 > External standards:
 >
@@ -47,6 +50,33 @@ checkpoint、tool receipt 和 projection，它们继续承担业务事实、恢�
 
 第一交付切片只覆盖 Runtime、模型和逻辑工具调用，不引入浏览器 telemetry、
 OTel Logs、完整 Device 传播或任何 prompt/result 内容采集。
+
+### 2026-09-16 交付状态
+
+已实现默认关闭的 Node SDK + OTLP HTTP/JSON 导出、Attempt 根 span、
+跨重启可读取的恢复链接元数据、模型流式生命周期和工具调用 span。
+同时实现 Jaeger 查询 adapter、Run-scoped 诊断 API、`dev.observability`
+只读 Tool 和内置 Skill。新增 59 个测试覆盖并发、恢复、失败、取消、内容过滤、
+真实 OTLP 收发、诊断状态、可见性和插件契约。
+完整 Runtime 回归通过；实际交付与启动步骤见
+[Runtime OTel 运维说明](../operations/RUNTIME-OPENTELEMETRY.md)。
+本地 `Runtime -> Collector 0.160 -> Jaeger 2.20 -> Query API/浏览器 UI`
+链路已通过，真实模型也已成功调用 `observabilityInspect` 分析历史 Run；
+生产 Backend、持久存储、认证和采样仍未部署。
+
+| 阶段 | 当前状态 | 下一步 |
+|---|---|---|
+| M0 | 语义、白名单、golden trace、初步微基准已完成 | 生产规模 CPU、启动、SSE 基线和后端决策 |
+| M1 | 可选 SDK、Resource、批量导出、故障隔离、关闭时限已完成 | HTTP/fetch 埋点、生产 Collector、性能门禁 |
+| M2 | Attempt、模型、工具、恢复链接、诊断 API 和 Agent Tool/Skill 已完成 | context/turn、projection、CLI 和诊断 UI 入口 |
+| M3 | 未开始 | Device command 上下文传播 |
+| M4 | 未开始 | 标准 metrics、dashboard、SLO |
+| M5 | 未开始 | 日志关联及临时探针清理 |
+| M6 | 基础 head sampling 和内容过滤已完成 | tail sampling、保留周期、责任人及生产治理 |
+
+首批仅启用手工语义 span；没有自动 HTTP、fetch、SQLite 或 Yjs 埋点，
+因此 health、SSE、poll 也不会产生自动 span。现阶段不能据此宣布 M1/M2 全部完成。
+高密度流式微基准未达到暂定 3% 开销目标，保持 opt-in，生产验收仍待完成。
 
 ## 1. Executive Summary
 
@@ -379,9 +409,9 @@ must not prevent resume.
 
 ### 7.2 HTTP request relationship
 
-`POST /v1/runs` returns before the Run completes. The long-running Agent span
-should therefore not be a normal child that depends on the short HTTP server
-span.
+`POST /v1/runs` returns before the Run completes. OpenTelemetry permits child
+spans to outlive their parents. Zion nevertheless chooses a separate Attempt
+root with a link, so background execution has its own sampling and lifetime.
 
 Recommended relationship:
 
@@ -390,8 +420,7 @@ HTTP server span: POST /v1/runs
   -> SpanLink from the new invoke_agent root span
 ```
 
-This preserves causality without creating an awkward child span that outlives
-its parent by minutes or hours.
+This preserves causality while making the background operation explicit.
 
 Scheduler-created Runs similarly link to the scheduler claim/execution span.
 
@@ -410,8 +439,16 @@ invoke_agent
 ├── turn 2
 │   └── chat deepseek-v4
 ├── checkpoint.save
-└── session.project
+
+zion.session.project
+  link -> invoke_agent
 ```
+
+This is the target tree. The first slice has `chat` and `execute_tool` directly
+under `invoke_agent`. Session projection and postprocessors run in `server.mjs`
+after executor completion; instrument that follow-up work with linked spans.
+Earlier projection work that actually occurs within an active operation can
+use child spans.
 
 Avoid spans for:
 
@@ -434,14 +471,15 @@ Those would add cost and noise without improving diagnosis.
 | `context.failed` | Error status on provider span; Run may continue |
 | `turn.started/completed` | `turn N` internal span |
 | Model transport call | GenAI `chat {model}` client span |
-| First model chunk | TTFT attribute/metric |
+| First parsed model SSE JSON chunk | Time-to-first-chunk attribute; metrics deferred |
 | Model stream completion | End model span with finish reason and usage |
-| `tool.requested` | Start `execute_tool {name}` span |
+| `tool.requested` | Model proposal only; does not start execution timing |
+| `RuntimeToolBroker.invoke` entry | Start logical `execute_tool` span, before receipt lookup |
 | Tool policy denial | End span as error or add policy-denied event |
 | Tool execution | Child span in selected host |
 | Receipt hit | Span attribute `zion.tool.receipt_hit=true` |
 | `checkpoint.created` | Span event, not a separate trace |
-| Session projection | `zion.session.project` child span |
+| Session projection after executor completion | Linked `zion.session.project` span |
 | Terminal Run event | Set root status and end Attempt trace |
 
 ### 7.5 GenAI semantic conventions
@@ -497,9 +535,9 @@ attributes.
 | `zion.run.count` | Counter | status, trigger |
 | `zion.run.active` | UpDownCounter | execution mode |
 | `zion.turn.count` | Histogram | status, model family |
-| `zion.model.duration` | Histogram | provider, model, status |
-| `zion.model.time_to_first_chunk` | Histogram | provider, model |
-| `zion.model.tokens` | Counter | provider, model, direction, token class |
+| `gen_ai.client.operation.duration` | Histogram | operation, provider, model, error type |
+| `gen_ai.client.operation.time_to_first_chunk` | Histogram | provider, model |
+| `gen_ai.client.token.usage` | Histogram | provider, model, token type |
 | `zion.tool.duration` | Histogram | tool name, host kind, status |
 | `zion.tool.invocations` | Counter | tool name, host kind, status |
 | `zion.tool.receipt_hits` | Counter | tool name |
@@ -662,8 +700,8 @@ Avoid a custom tracing framework.
 
 ### 12.2 Startup
 
-Instrumentation must initialize before Runtime imports HTTP/fetch modules.
-With the current Node 22 requirement, use a preload:
+HTTP/fetch auto-instrumentation must initialize before importing the modules it
+patches. When that phase is implemented, use a Node preload:
 
 ```text
 node --import ./src/telemetry/bootstrap.mjs src/main.mjs
@@ -677,12 +715,18 @@ a safe no-op.
 ```text
 OTEL_SERVICE_NAME=zion-runtime
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 OTEL_TRACES_SAMPLER=parentbased_traceidratio
 OTEL_TRACES_SAMPLER_ARG=0.1
-ZION_OTEL_CAPTURE_CONTENT=0
-ZION_OTEL_DEBUG=0
+ZION_DEPLOYMENT_ENVIRONMENT=development
+ZION_SERVICE_VERSION=0.1.0
 ```
+
+The first slice imports the bootstrap from `main.mjs` for all existing launch
+paths and performs manual tracing only. It supports HTTP/JSON and
+`parentbased_traceidratio`; unsupported settings fall back to disabled with one
+generic warning. There is no content-capture switch. Resource auto-detection,
+OTel Logs, metrics and baggage are disabled explicitly.
 
 Use separate service names:
 
@@ -731,18 +775,21 @@ Instrument inside
 [`packages/runtime/src/openai-compatible-engine.ts`](../../packages/runtime/src/openai-compatible-engine.ts)
 around credential acquisition, transport, stream consumption, and completion.
 
-The span should cover all automatic retries that belong to one logical model
-operation. Record:
+The current engine has no automatic model retry loop. One span covers credential
+acquisition, transport, response consumption and credential release. If retries
+are introduced later, include them in the logical operation and record their count.
+Target attributes:
 
 - provider and requested model at span creation;
 - stream flag and reasoning level;
 - credential acquisition duration without credential identity;
 - HTTP status and low-cardinality error type;
-- time to first response chunk;
+- time to first parsed SSE JSON chunk (seconds, measured from transport start;
+  not first rendered text, and absent for non-streaming JSON);
 - finish reason;
 - response model when available;
 - input, output, reasoning, cache-read, and cache-write usage;
-- retry count.
+- retry count when retries actually exist.
 
 The current `EngineOutputEvent` lacks an explicit model completion/failure event.
 OTel spans can initially be completed directly inside the engine. Add canonical
@@ -981,7 +1028,9 @@ Work:
 
 Exit criteria:
 
-- sampling retains all diagnostically important failures;
+- sampling retention expectations are explicit; Collector tail sampling cannot
+  recover spans dropped by SDK head sampling. Error retention across all traces
+  requires exporting all candidates to the tail sampler and enough capacity;
 - telemetry cost and retention are measurable;
 - GenAI convention upgrades require changes only in the adapter layer;
 - privacy tests fail the build on forbidden attributes;
@@ -995,7 +1044,7 @@ Exit criteria:
 - metric reader verifies allowed dimensions;
 - redaction tests inject secrets into every RunEvent field and assert absence;
 - model tests cover success, HTTP failure, incomplete stream, cancellation, no
-  usage event, and retry;
+  usage event, and credential cleanup; add retry tests when retries exist;
 - Tool tests cover denial, receipt hit, local execution, plugin execution, and
   remote execution;
 - resume tests verify a new trace linked to the prior Attempt.
@@ -1031,7 +1080,8 @@ the RunEvent commit path.
 1. Development only, console or local Collector exporter.
 2. Internal environment with 100% trace sampling and content disabled.
 3. Production shadow mode with low ratio sampling.
-4. Enable error and high-latency tail sampling.
+4. Enable error and high-latency tail sampling with a compatible head-sampling
+   policy; reducing head sampling also reduces the failures visible to tail sampling.
 5. Add dashboards and alerts only after metric cardinality is measured.
 6. Enable distributed Device context after compatibility tests.
 7. Remove superseded temporary probes.
@@ -1055,7 +1105,8 @@ The first implementation should remain deliberately small:
 3. Instrument one model span with TTFT and token usage.
 4. Instrument one logical Tool span.
 5. Add Runtime Resource attributes.
-6. Exclude SSE, health, heartbeat, and Device polling routes.
+6. Keep HTTP auto-instrumentation disabled in this slice; introduce explicit
+   SSE/health/heartbeat/Device-poll exclusions together with it later.
 7. Add in-memory exporter tests and a content-leak test.
 8. Run existing Runtime suites unchanged.
 9. Compare enabled and disabled performance with the M0 baseline.
@@ -1073,9 +1124,10 @@ Do not include in the first slice:
 This slice is enough to validate architecture and obtain immediate model-versus-
 tool latency visibility without coupling the product to a backend.
 
-## 18. Decisions Required Before Implementation
+## 18. Decisions Required Before Production Rollout
 
-The following decisions should be recorded before M1:
+Local implementation uses a loopback Collector, full trace sampling, and opaque
+internal Run/Attempt/tool-call IDs. The following remain production decisions:
 
 1. Initial Collector and backend deployment: local sidecar/systemd service or
    centrally hosted Collector.

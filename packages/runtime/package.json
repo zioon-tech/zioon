@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "DOM-free Zion Agent Runtime contracts and execution core",
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.1"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

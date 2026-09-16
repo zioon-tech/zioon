@@ -6,6 +6,12 @@ import {
   LOCAL_TOOLS_TOOL_DEFINITIONS
 } from "../../../packages/local-tools-client/src/index.mjs";
 import { enrichToolResultWithArtifacts } from "./run-artifact-service.mjs";
+import {
+  cancellationType,
+  failSpan,
+  runtimeTracer,
+  telemetryIdentifier
+} from "../../../packages/runtime/dist/telemetry.js";
 
 export const RUNTIME_NATIVE_TOOL_DEFINITIONS = [{
   name: "webFetch",
@@ -281,18 +287,53 @@ export class RuntimeToolBroker {
   }
 
   async invoke(invocation, signal) {
+    return runtimeTracer.startActiveSpan("execute_tool", {
+      attributes: {
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": telemetryIdentifier(invocation.toolCall?.name),
+        "gen_ai.tool.call.id": telemetryIdentifier(invocation.toolCall?.id),
+        "zion.run.id": telemetryIdentifier(invocation.runId),
+        "zion.attempt.id": telemetryIdentifier(invocation.attemptId),
+        "zion.tool.receipt_hit": false
+      }
+    }, async (span) => {
+      const observation = { failureType: "tool_error" };
+      try {
+        const result = await this.invokeObserved(invocation, signal, span, observation);
+        span.setAttribute("zion.tool.ok", result.ok === true);
+        if (!result.ok) failSpan(span, "tool_result_error");
+        return result;
+      } catch (error) {
+        if (signal?.cancelled) {
+          const reason = cancellationType(signal.reason);
+          span.setAttribute("zion.cancellation.reason", reason);
+          if (reason === "timeout") failSpan(span, reason);
+        } else {
+          failSpan(span, observation.failureType);
+        }
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  async invokeObserved(invocation, signal, span, observation) {
     const hash = requestHash(invocation);
     const existing = this.receipts.getToolReceipt(invocation.invocationId);
     if (existing) {
       if (existing.requestHash !== hash) {
+        observation.failureType = "receipt_conflict";
         throw new Error(
           `Tool invocation id was reused with different arguments: ${invocation.invocationId}`
         );
       }
+      span.setAttribute("zion.tool.receipt_hit", true);
       return existing.result;
     }
 
     const name = String(invocation.toolCall?.name || "");
+    observation.failureType = "policy_denied";
     if (!(invocation.policy?.allowedTools || []).includes(name)) {
       throw new Error("tool is not allowed by capability policy");
     }
@@ -310,16 +351,21 @@ export class RuntimeToolBroker {
       throw new Error("mail quota exceeded");
     }
 
+    observation.failureType = "tool_error";
     let result;
     if (name === "webFetch") {
+      span.setAttribute("zion.tool.host_kind", "runtime");
       result = await this.invokeWebFetch(invocation, signal);
     } else if (name === "todoWrite") {
+      span.setAttribute("zion.tool.host_kind", "runtime");
       result = this.invokeTodoWrite(invocation);
     } else if (this.pluginTools?.hasTool?.(name)) {
+      span.setAttribute("zion.tool.host_kind", "runtime-plugin");
       result = await this.pluginTools.invoke(invocation, signal);
     } else if (RUNTIME_NATIVE_TOOL_NAMES.has(name)) {
       throw new Error(`Unsupported Runtime-native tool: ${name}`);
     } else {
+      span.setAttribute("zion.tool.host_kind", "delegated");
       result = await this.localTools.invoke(invocation, signal);
     }
 
@@ -329,6 +375,8 @@ export class RuntimeToolBroker {
       result,
       completedAt
     );
+    span.setAttribute("zion.tool.artifact_count", enrichedResult.artifacts?.length || 0);
+    span.setAttribute("zion.tool.change_count", enrichedResult.changes?.length || 0);
     if (enrichedResult.artifacts?.length || enrichedResult.changes?.length) {
       this.receipts.saveRunArtifacts?.({
         runId: invocation.runId,

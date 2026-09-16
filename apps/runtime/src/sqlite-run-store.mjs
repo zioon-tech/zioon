@@ -142,6 +142,8 @@ export class SqliteRunStore {
 
       CREATE INDEX IF NOT EXISTS runtime_run_events_created
         ON runtime_run_events(run_id, created_at);
+      CREATE INDEX IF NOT EXISTS runtime_runs_status_updated
+        ON runtime_runs(status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS runtime_run_checkpoints_created
         ON runtime_run_checkpoints(run_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS runtime_run_transcript_created
@@ -231,7 +233,9 @@ export class SqliteRunStore {
       for (const listener of this.eventListeners) {
         try {
           Promise.resolve(listener(event)).catch(() => {});
-        } catch {}
+        } catch {
+          // Event observers cannot roll back an already committed Run event.
+        }
       }
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -254,6 +258,31 @@ export class SqliteRunStore {
       "SELECT payload_json FROM runtime_runs WHERE id = ?"
     ).get(runId);
     return row ? decode(row.payload_json) : null;
+  }
+
+  async listRuns({ since = 0, statuses, limit = 100 } = {}) {
+    const normalizedSince = Math.max(0, Number(since) || 0);
+    const normalizedLimit = Math.max(
+      1,
+      Math.min(500, Math.floor(Number(limit) || 100))
+    );
+    const normalizedStatuses = Array.isArray(statuses)
+      ? [...new Set(statuses.map((status) => String(status || "").trim()).filter(Boolean))]
+      : [];
+    const statusClause = normalizedStatuses.length
+      ? ` AND status IN (${normalizedStatuses.map(() => "?").join(", ")})`
+      : "";
+    return this.db.prepare(`
+      SELECT payload_json
+      FROM runtime_runs
+      WHERE updated_at >= ?${statusClause}
+      ORDER BY updated_at DESC, id DESC
+      LIMIT ?
+    `).all(
+      normalizedSince,
+      ...normalizedStatuses,
+      normalizedLimit
+    ).map((row) => decode(row.payload_json));
   }
 
   async getEvents(runId, afterSequence = 0) {

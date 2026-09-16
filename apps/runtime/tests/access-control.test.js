@@ -194,6 +194,37 @@ describe("RuntimeAccessControl", () => {
     expect(response.status).toBe(403);
   });
 
+  it("allows only Owner credentials through the observability auth endpoint", async () => {
+    const harness = await createHarness();
+    const ownerPairing = harness.store.createPairing({
+      kind: "owner",
+      delivery: "cookie"
+    });
+    const owner = harness.store.exchangePairing({
+      userCode: ownerPairing.userCode,
+      deviceId: "client:owner-observability"
+    });
+    const clientPairing = harness.store.createPairing({
+      kind: "client",
+      delivery: "bearer"
+    });
+    const client = harness.store.exchangePairing({
+      userCode: clientPairing.userCode,
+      deviceId: "client:readonly-observability"
+    });
+    const url = `${harness.url}/v1/access/authorize/observability`;
+
+    expect((await fetch(url)).status).toBe(401);
+    expect((await fetch(url, {
+      headers: { authorization: `Bearer ${client.credential}` }
+    })).status).toBe(403);
+    expect((await fetch(url, {
+      headers: {
+        cookie: `__Host-zion_session=${encodeURIComponent(owner.credential)}`
+      }
+    })).status).toBe(204);
+  });
+
   it("allows only Client credentials into collaboration rooms", async () => {
     const harness = await createHarness();
     const clientPairing = harness.store.createPairing({

@@ -1,5 +1,7 @@
 // @vitest-environment node
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   deploymentConfig,
@@ -33,6 +35,36 @@ describe("Runtime deployment configuration", () => {
     expect(config.publicOrigin).toBe("https://203-0-113-10.sslip.io:8443");
     expect(config.connectorOrigin).toBe("https://203-0-113-10.nip.io:8443");
     expect(config.caddyfile).toContain("reverse_proxy 127.0.0.1:8766");
+    expect(config.caddyfile).not.toContain("/observability/");
+  });
+
+  it("generates an authenticated observability route without exposing ingest paths", () => {
+    const config = deploymentConfig({
+      mode: "domain",
+      domain: "runtime.example.com",
+      runtimePort: 8766,
+      observabilityPort: 16686
+    });
+
+    expect(config.caddyfile).toContain(
+      "@observabilityMcp path /observability/api/ai/mcp/*"
+    );
+    expect(config.caddyfile).toContain("respond @observabilityMcp 404");
+    expect(config.caddyfile).toContain(
+      "@observabilityOtlp path /observability/api/otlp/*"
+    );
+    expect(config.caddyfile).toContain("respond @observabilityOtlp 404");
+    expect(config.caddyfile).toContain(
+      "uri /v1/access/authorize/observability"
+    );
+    expect(config.caddyfile).toContain(
+      "reverse_proxy 127.0.0.1:16686"
+    );
+    expect(config.caddyfile).toContain("header_up -Cookie");
+    expect(config.caddyfile).toContain("header_up -Authorization");
+    expect(config.caddyfile).toContain(
+      "handle {\n\t\treverse_proxy 127.0.0.1:8766"
+    );
   });
 
   it("keeps explicit legacy origins during domain migration", () => {
@@ -67,6 +99,30 @@ describe("Runtime deployment configuration", () => {
       + "SECRET=x\n"
       + "ZION_RUNTIME_ALLOWED_ORIGINS=https://runtime.example.com\n"
     );
+  });
+
+  it("pins persistent single-node Jaeger storage and a metadata-only pipeline", () => {
+    const compose = readFileSync(
+      resolve("deploy/otel-collector/compose.yaml"),
+      "utf8"
+    );
+    const jaeger = readFileSync(
+      resolve("deploy/otel-collector/jaeger.yaml"),
+      "utf8"
+    );
+    const collector = readFileSync(
+      resolve("deploy/otel-collector/config.yaml"),
+      "utf8"
+    );
+
+    expect(compose).toContain("jaeger:2.20.0");
+    expect(compose).toContain("jaeger-data:/badger");
+    expect(compose).toContain("127.0.0.1:16686:16686");
+    expect(compose).toContain("127.0.0.1:4318:4318");
+    expect(jaeger).toContain("ephemeral: false");
+    expect(jaeger).toContain("spans: 168h");
+    expect(collector).not.toContain("debug:");
+    expect(collector).toContain("exporters: [otlp_http/jaeger]");
   });
 });
 

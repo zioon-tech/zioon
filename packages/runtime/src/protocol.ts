@@ -384,9 +384,15 @@ export interface RunStore {
         | "model"
         | "output"
         | "usage"
+        | "metadata"
       >>
   ): Promise<void>;
   get(runId: string): Promise<RunRecord | null>;
+  listRuns(options?: {
+    since?: number;
+    statuses?: RunStatus[];
+    limit?: number;
+  }): Promise<RunRecord[]>;
   getEvents(runId: string, afterSequence?: number): Promise<RunEvent[]>;
   getEvent?(runId: string, sequence: number): Promise<RunEvent | null>;
   appendTranscript(entry: RunTranscriptEntry): Promise<void>;

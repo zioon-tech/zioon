@@ -1,0 +1,50 @@
+# Application-side filtering remains authoritative; this is defense in depth.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 128
+    spike_limit_mib: 32
+  transform/metadata:
+    error_mode: propagate
+    trace_statements:
+      - context: resource
+        statements:
+          - keep_keys(resource.attributes, ["service.name", "service.version", "service.instance.id", "deployment.environment.name"])
+      - context: span
+        statements:
+          - keep_keys(span.attributes, ["gen_ai.operation.name", "gen_ai.provider.name", "gen_ai.request.model", "gen_ai.response.model", "gen_ai.request.stream", "gen_ai.response.finish_reasons", "gen_ai.response.time_to_first_chunk", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_write.input_tokens", "gen_ai.tool.name", "gen_ai.tool.call.id", "zion.run.id", "zion.attempt.id", "zion.policy.preset", "zion.run.status", "zion.cancellation.reason", "zion.turn.number", "zion.model.credential.duration", "zion.model.consumer_wait.duration", "zion.tool.host_kind", "zion.tool.receipt_hit", "zion.tool.ok", "zion.tool.artifact_count", "zion.tool.change_count", "http.response.status_code", "error.type"])
+          - set(span.status.message, "")
+      - context: spanevent
+        statements:
+          - keep_keys(spanevent.attributes, ["zion.checkpoint.sequence", "zion.tool.denial"])
+  batch:
+    timeout: 1s
+    send_batch_size: 128
+    send_batch_max_size: 256
+
+exporters:
+  otlp_http/jaeger:
+    endpoint: "${env:ZION_OTEL_BACKEND_ENDPOINT:-http://jaeger:4318}"
+    timeout: 1s
+
+service:
+  telemetry:
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 18888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/metadata, batch]
+      exporters: [otlp_http/jaeger]

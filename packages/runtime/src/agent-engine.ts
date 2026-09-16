@@ -1,6 +1,15 @@
 import { AsyncQueue } from "./async-queue.js";
 import { CancellationController, RunCancelledError } from "./cancellation.js";
 import { normalizeCapabilityPolicy } from "./capability-policy.js";
+import { context, trace } from "@opentelemetry/api";
+import {
+  attemptMetadata,
+  cancellationType,
+  failSpan,
+  startAttempt,
+  storedAttemptContext,
+  telemetryIdentifier
+} from "./telemetry.js";
 import type {
   AgentCheckpoint,
   AgentEngine,
@@ -51,6 +60,7 @@ type RunPatch = Pick<RunRecord, "status" | "updatedAt"> &
     | "model"
     | "output"
     | "usage"
+    | "metadata"
   >>;
 
 type StartState = {
@@ -258,6 +268,14 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       defaultMaxTurns,
       policy.maxToolCalls
     );
+    const attemptSpan = startAttempt({
+      "zion.run.id": telemetryIdentifier(runId),
+      "zion.attempt.id": telemetryIdentifier(attemptId),
+      "zion.policy.preset": policy.preset
+    }, storedAttemptContext(existingRun?.metadata, existingRun?.attemptId));
+    const metadata = { ...(request.metadata || {}) };
+    delete metadata.zionTelemetry;
+    Object.assign(metadata, attemptMetadata(attemptSpan, attemptId));
     let terminal = false;
     let timeoutDisposable: { dispose(): void } | undefined;
     let resolveCompletion: (result: RunResult) => void = () => {};
@@ -323,6 +341,14 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         error?: string
       ) => {
         terminal = true;
+        attemptSpan.setAttribute("zion.run.status", status);
+        if (status === "failed") failSpan(attemptSpan, terminalReason === "persistence-failed"
+          ? "persistence_error" : "run_error");
+        if (status === "aborted") {
+          attemptSpan.setAttribute("zion.cancellation.reason", cancellationType(terminalReason));
+          if (terminalReason === "timeout") failSpan(attemptSpan, "timeout");
+        }
+        attemptSpan.end();
         resolveCompletion({
           runId,
           attemptId,
@@ -348,7 +374,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             model: request.model,
             modelOptions: request.modelOptions,
             policy,
-            metadata: { ...(request.metadata || {}) },
+            metadata,
             createdAt,
             updatedAt: createdAt
           });
@@ -378,6 +404,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           }, {
             status: "running",
             attemptId,
+            metadata,
             model: request.model,
             updatedAt: startedAt,
             completedAt: undefined,
@@ -554,6 +581,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             const call = calls[callIndex];
             cancellation.signal.throwIfCancelled();
             if (call.validationError) {
+              attemptSpan.addEvent("tool.denied", { "zion.tool.denial": "invalid_arguments" });
               const message = toolMessage(call, invalidToolResult(call));
               toolMessages.push(message);
               await appendTranscript(turn, callIndex + 1, message);
@@ -562,11 +590,13 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
 
             const decision = await authorizeTool(call, policy, counters);
             if (!decision.allowed) {
+              attemptSpan.addEvent("tool.denied", { "zion.tool.denial": "policy" });
               const reason = decision.reason || "tool call denied";
               await publish("tool.denied", {
                 turn,
                 callId: call.id,
                 name: call.name,
+                denialType: "policy",
                 reason
               });
               const message = toolMessage(call, deniedToolResult(reason));
@@ -639,6 +669,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             createdAt: now()
           };
           await runs.saveCheckpoint(checkpoint);
+          attemptSpan.addEvent("checkpoint.created", { "zion.checkpoint.sequence": checkpoint.sequence });
           await publish("checkpoint.created", {
             checkpointSequence: checkpoint.sequence,
             nextTurn: checkpoint.nextTurn
@@ -691,17 +722,11 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             }
           }
         } else {
-          terminal = true;
-          resolveCompletion({
-            runId,
-            attemptId,
-            status: cancelled ? "aborted" : "failed",
-            output,
-            usage,
-            ...(cancelled
-              ? { reason: cancellation.signal.reason || "user" }
-              : { error: errorMessage(error) })
-          });
+          settle(
+            cancelled ? "aborted" : "failed",
+            cancelled ? cancellation.signal.reason || "user" : "failed",
+            cancelled ? undefined : errorMessage(error)
+          );
         }
       } finally {
         timeoutDisposable?.dispose();
@@ -709,7 +734,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       }
     };
 
-    void run();
+    void context.with(trace.setSpan(context.active(), attemptSpan), run);
     return {
       runId,
       attemptId,
@@ -836,6 +861,7 @@ async function consumeEngineEvent(
       turn: consumer.turn,
       callId: call.id,
       name: call.name,
+      denialType: "invalid_arguments",
       reason: call.validationError
     });
     return;

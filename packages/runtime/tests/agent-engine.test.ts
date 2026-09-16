@@ -414,7 +414,61 @@ describe("standalone agent executor", () => {
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: "tool.denied",
-        data: expect.objectContaining({ callId: "invalid-1", reason: "query is required" })
+        data: expect.objectContaining({
+          callId: "invalid-1",
+          denialType: "invalid_arguments",
+          reason: "query is required"
+        })
+      })
+    ]));
+  });
+
+  it("records capability policy denials separately from invalid arguments", async () => {
+    const engine = new ScriptedEngine([
+      [{
+        type: "tool.call",
+        call: {
+          id: "denied-1",
+          name: "search",
+          arguments: { query: "status" }
+        }
+      }],
+      [{ type: "message.delta", delta: "denied" }]
+    ]);
+    const store = new MemoryRunStore();
+    const executor = createAgentExecutor({
+      engine,
+      tools: toolBroker({
+        list: async () => [{ name: "search" }]
+      }),
+      runs: store,
+      authorizeTool: async () => ({
+        allowed: false,
+        reason: "approval required"
+      }),
+      createId: ids(),
+      now: clock()
+    });
+
+    const handle = executor.execute({
+      prompt: "search",
+      policy: { allowedTools: ["search"] }
+    });
+    const eventsPromise = collect(handle.events);
+    await expect(handle.completion).resolves.toMatchObject({
+      status: "completed",
+      output: "denied"
+    });
+    const events = await eventsPromise;
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool.denied",
+        data: expect.objectContaining({
+          callId: "denied-1",
+          denialType: "policy",
+          reason: "approval required"
+        })
       })
     ]));
   });

@@ -2,6 +2,7 @@ import type {
   AgentCheckpoint,
   RunEvent,
   RunRecord,
+  RunStatus,
   RunStore,
   RunTranscriptEntry
 } from "./protocol.js";
@@ -37,6 +38,7 @@ export class MemoryRunStore implements RunStore {
         | "model"
         | "output"
         | "usage"
+        | "metadata"
       >>
   ): Promise<void> {
     const run = this.runs.get(event.runId);
@@ -64,6 +66,31 @@ export class MemoryRunStore implements RunStore {
   async get(runId: string): Promise<RunRecord | null> {
     const run = this.runs.get(runId);
     return run ? clone(run) : null;
+  }
+
+  async listRuns({
+    since = 0,
+    statuses,
+    limit = 100
+  }: {
+    since?: number;
+    statuses?: RunStatus[];
+    limit?: number;
+  } = {}): Promise<RunRecord[]> {
+    const normalizedSince = Math.max(0, Number(since) || 0);
+    const normalizedLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)));
+    const statusSet = Array.isArray(statuses) && statuses.length
+      ? new Set(statuses)
+      : null;
+    return clone(
+      [...this.runs.values()]
+        .filter((run) => run.updatedAt >= normalizedSince)
+        .filter((run) => !statusSet || statusSet.has(run.status))
+        .sort((left, right) =>
+          right.updatedAt - left.updatedAt || right.id.localeCompare(left.id)
+        )
+        .slice(0, normalizedLimit)
+    );
   }
 
   async getEvents(runId: string, afterSequence = 0): Promise<RunEvent[]> {

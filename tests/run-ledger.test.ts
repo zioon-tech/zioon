@@ -50,7 +50,12 @@ describe("core run ledger", () => {
       runId: run.id,
       type: "tool.denied",
       ts: clock,
-      data: { callId: "call-2", name: "Bash", reason: "tool call quota exceeded" }
+      data: {
+        callId: "call-2",
+        name: "Bash",
+        denialType: "policy",
+        reason: "tool call quota exceeded"
+      }
     });
     clock = 1300;
     ledger.recordUsage({
@@ -75,6 +80,13 @@ describe("core run ledger", () => {
       sessionId: "session-1",
       toolCalls: 2,
       deniedToolCalls: 1,
+      tools: expect.arrayContaining([
+        expect.objectContaining({
+          id: "call-2",
+          status: "denied",
+          denialType: "policy"
+        })
+      ]),
       usage: { input: 12, output: 5, total: 17 }
     });
     expect(ledger.getEvents(run.id).map((event) => event.type)).toEqual([

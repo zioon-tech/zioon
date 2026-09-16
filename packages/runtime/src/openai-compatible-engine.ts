@@ -1,3 +1,13 @@
+import { context, SpanKind, trace, type Span } from "@opentelemetry/api";
+import {
+  cancellationType,
+  failSpan,
+  MODEL_CONSUMER_WAIT_ATTRIBUTE,
+  recordModelResponse,
+  recordModelUsage,
+  runtimeTracer,
+  telemetryIdentifier
+} from "./telemetry.js";
 import type {
   AgentEngine,
   CancellationSignal,
@@ -320,6 +330,70 @@ export class OpenAICompatibleEngine implements AgentEngine {
   }
 
   async *streamTurn(request: EngineTurnRequest): AsyncIterable<EngineOutputEvent> {
+    const span = runtimeTracer.startSpan("chat", {
+      kind: SpanKind.CLIENT,
+      attributes: {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": telemetryIdentifier(request.model?.providerId || "openai"),
+        "gen_ai.request.model": telemetryIdentifier(request.model?.modelId || this.options.model),
+        "gen_ai.request.stream": true,
+        "zion.turn.number": request.turn
+      }
+    });
+    const active = trace.setSpan(context.active(), span);
+    const iterator = this.streamTurnInternal(request, span)[Symbol.asyncIterator]();
+    let completed = false;
+    let failed = false;
+    let consumerWaitMs = 0;
+    try {
+      while (true) {
+        // Async generators resume in the caller's context. Bind every pull and
+        // close; never make the model span active in the consuming executor.
+        const item = await context.with(active, () => iterator.next());
+        if (item.done) {
+          completed = true;
+          break;
+        }
+        if (item.value.type === "model.usage") recordModelUsage(span, item.value.usage);
+        const yieldedAt = performance.now();
+        try {
+          yield item.value;
+        } finally {
+          consumerWaitMs += Math.max(0, performance.now() - yieldedAt);
+        }
+      }
+    } catch (error) {
+      failed = true;
+      if (request.signal.cancelled) {
+        span.setAttribute("zion.cancellation.reason", cancellationType(request.signal.reason));
+        if (request.signal.reason === "timeout") failSpan(span, "timeout");
+      } else {
+        const type = (error as { code?: string })?.code === "incomplete_stream"
+          ? "incomplete_stream" : "model_error";
+        failSpan(span, type);
+      }
+      throw error;
+    } finally {
+      try {
+        if (!completed) await context.with(active, () => iterator.return?.());
+      } catch {
+        failSpan(span, "model_cleanup_error");
+      } finally {
+        if (!completed && !failed) {
+          const reason = cancellationType(request.signal.reason);
+          span.setAttribute("zion.cancellation.reason", request.signal.cancelled ? reason : "consumer_closed");
+          if (reason === "timeout") failSpan(span, "timeout");
+        }
+        span.setAttribute(MODEL_CONSUMER_WAIT_ATTRIBUTE, consumerWaitMs / 1000);
+        span.end();
+      }
+    }
+  }
+
+  private async *streamTurnInternal(
+    request: EngineTurnRequest,
+    span: Span
+  ): AsyncIterable<EngineOutputEvent> {
     request.signal.throwIfCancelled();
     const model = request.model?.modelId || this.options.model;
     const payload: Record<string, unknown> = {
@@ -352,6 +426,7 @@ export class OpenAICompatibleEngine implements AgentEngine {
       }
     };
 
+    const credentialStartedAt = Date.now();
     const credential = this.options.credentialProvider && this.options.credentialRef
       ? await this.options.credentialProvider.acquire({
           ref: this.options.credentialRef,
@@ -359,11 +434,13 @@ export class OpenAICompatibleEngine implements AgentEngine {
           modelId: model
         })
       : null;
+    span.setAttribute("zion.model.credential.duration", (Date.now() - credentialStartedAt) / 1000);
     if (this.options.credentialRequired && !credential && !this.options.apiKey) {
       throw new Error(`Credential is required: ${this.options.credentialRef || "model"}`);
     }
 
     try {
+      const transportStartedAt = Date.now();
       const response = await this.options.transport({
         url: this.options.endpoint,
         method: "POST",
@@ -378,6 +455,7 @@ export class OpenAICompatibleEngine implements AgentEngine {
         },
         body: JSON.stringify(payload)
       }, request.signal);
+      span.setAttribute("http.response.status_code", response.status);
       request.signal.throwIfCancelled();
 
       if (!response.ok) {
@@ -390,18 +468,26 @@ export class OpenAICompatibleEngine implements AgentEngine {
       const contentType = Object.entries(response.headers || {})
         .find(([name]) => name.toLowerCase() === "content-type")?.[1] || "";
       if (!response.body || !contentType.toLowerCase().includes("text/event-stream")) {
-        yield* this.consumeResponse(asRecord(await response.json()), request);
+        const body = asRecord(await response.json());
+        const choice = asRecord(Array.isArray(body.choices) ? body.choices[0] : null);
+        recordModelResponse(span, body.model, choice.finish_reason ?? choice.finishReason);
+        yield* this.consumeResponse(body, request);
         return;
       }
 
       const toolBuffers = new Map<number, ToolCallBuffer>();
       let sawCompletionSignal = false;
       let finishReason = "";
+      let firstChunk = true;
       for await (const chunk of parseSse(response.body)) {
         request.signal.throwIfCancelled();
         if (chunk.__zionSseDone === true) {
           sawCompletionSignal = true;
           continue;
+        }
+        if (firstChunk) {
+          firstChunk = false;
+          span.setAttribute("gen_ai.response.time_to_first_chunk", (Date.now() - transportStartedAt) / 1000);
         }
         if (chunk.usage) {
           yield { type: "model.usage", usage: mapUsage(chunk.usage) };
@@ -414,6 +500,7 @@ export class OpenAICompatibleEngine implements AgentEngine {
           sawCompletionSignal = true;
           finishReason = nextFinishReason;
         }
+        recordModelResponse(span, chunk.model, nextFinishReason);
         const delta = asRecord(choice.delta);
         const reasoning = contentText(delta.reasoning_content ?? delta.reasoning);
         const content = contentText(delta.content);

@@ -221,6 +221,14 @@ async function restoreFromRuntimeIfAvailable() {
   }
 }
 
+async function restoreAndRescanRuntimeSkills() {
+  const loaded = await restoreFromRuntimeIfAvailable();
+  if (!loaded) return false;
+  await scanAllSkills();
+  updateStatusBar();
+  return true;
+}
+
 function ensureDefaults() {
   const state = getState();
   if (!state) return;
@@ -2063,14 +2071,18 @@ function registerStateListeners() {
           nextRuntimeBackend === "runtime"
           && previousRuntimeBackend !== "runtime"
         ) {
-          void restoreFromRuntimeIfAvailable();
+          void restoreAndRescanRuntimeSkills().catch((error) => {
+            console.warn("[skills] Runtime reconnect scan failed", error);
+          });
         }
         previousRuntimeBackend = nextRuntimeBackend;
       }));
     } catch {}
     for (const key of ["runtime.baseUrl", "runtime.mode"]) {
       disposers.push(window.zion.state.onDidChange(key, () => {
-        void restoreFromRuntimeIfAvailable();
+        void restoreAndRescanRuntimeSkills().catch((error) => {
+          console.warn("[skills] Runtime configuration scan failed", error);
+        });
       }));
     }
   } catch {}

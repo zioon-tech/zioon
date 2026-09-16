@@ -77,7 +77,7 @@ export default defineConfig({
       includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png'],
       workbox: {
         importScripts: ["/sw-client-refresh.js"],
-        navigateFallbackDenylist: [/^\/mobile(?:\/|$)/],
+        navigateFallbackDenylist: [/^\/mobile(?:\/|$)/, /^\/observability(?:\/|$)/],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024
       },
       manifest: {

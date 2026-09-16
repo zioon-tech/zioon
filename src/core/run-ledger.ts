@@ -57,6 +57,7 @@ export type RunToolSummary = {
   durationMs?: number;
   error?: string;
   reason?: string;
+  denialType?: "policy" | "invalid_arguments" | "unknown";
   resultSize?: number;
 };
 
@@ -403,6 +404,11 @@ function normalizeToolSummary(input: any): RunToolSummary | null {
     durationMs: positiveInteger(input?.durationMs) || undefined,
     error: cleanString(input?.error || "", 500) || undefined,
     reason: cleanString(input?.reason || "", 500) || undefined,
+    denialType: ["policy", "invalid_arguments", "unknown"].includes(
+      String(input?.denialType || "")
+    )
+      ? input.denialType
+      : undefined,
     resultSize: positiveInteger(input?.resultSize) || undefined
   };
 }
@@ -498,10 +504,16 @@ function sanitizeEventData(type: string, data: any): Record<string, any> {
     };
   }
   if (type === "tool.denied") {
+    const denialType = ["policy", "invalid_arguments"].includes(
+      String(data?.denialType || "")
+    )
+      ? data.denialType
+      : "unknown";
     return {
       turn: positiveInteger(data?.turn),
       callId: cleanString(data?.callId || "", 180),
       name: cleanString(data?.name || "", 180),
+      denialType,
       reason: cleanString(data?.reason || "", 500)
     };
   }
@@ -728,6 +740,11 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
           name,
           status: "denied",
           completedAt: at,
+          denialType: ["policy", "invalid_arguments"].includes(
+            String(data.denialType || "")
+          )
+            ? data.denialType
+            : "unknown",
           reason: cleanString(data.reason || "", 500)
         });
         next = { ...next, tools, toolCalls: tools.length, deniedToolCalls: tools.filter((tool) => tool.status === "denied").length };
@@ -976,6 +993,7 @@ function upsertTool(tools: RunToolSummary[], patch: Partial<RunToolSummary> & { 
       durationMs: patch.durationMs,
       error: patch.error,
       reason: patch.reason,
+      denialType: patch.denialType,
       resultSize: patch.resultSize
     }];
   }

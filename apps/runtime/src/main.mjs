@@ -1,3 +1,4 @@
+import { shutdownTelemetry } from "./telemetry/bootstrap.mjs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -39,6 +40,9 @@ import {
   createModelRequestPublisher,
   observeRunModelRequests
 } from "./model-request-observability.mjs";
+import { createJaegerTraceReader } from "./observability/jaeger-trace-reader.mjs";
+import { createObservabilityHttpHandler } from "./observability/observability-http-handler.mjs";
+import { createRuntimeObservabilityService } from "./observability/observability-service.mjs";
 import { NodeBroker } from "./node-broker.mjs";
 import { createNodeHttpHandler } from "./node-http-handler.mjs";
 import { createPluginFileService } from "./plugin-file-service.mjs";
@@ -111,7 +115,7 @@ function enabledFlag(value) {
   );
 }
 
-const DEFAULT_PROFILE_TOOLSET_VERSION = 13;
+const DEFAULT_PROFILE_TOOLSET_VERSION = 15;
 const DEFAULT_SCHEDULED_READONLY_TOOLS = new Set([
   "read",
   "glob",
@@ -339,6 +343,14 @@ const pluginServiceUrl = readArg(
   "--plugin-service-url",
   process.env.ZION_PLUGIN_SERVICE_URL || "http://127.0.0.1:8767"
 );
+const observabilityQueryUrl = readArg(
+  "--observability-query-url",
+  process.env.ZION_OBSERVABILITY_QUERY_URL || ""
+);
+const observabilityQueryToken =
+  process.env.ZION_OBSERVABILITY_QUERY_TOKEN || "";
+const observabilityTraceUrlTemplate =
+  process.env.ZION_OTEL_TRACE_URL_TEMPLATE || "";
 const pluginRoot = readArg(
   "--plugin-root",
   process.env.ZION_RUNTIME_PLUGIN_ROOT
@@ -356,7 +368,7 @@ const externalizedRuntimePluginIds = parsePluginIds(readArg(
 const enabledRuntimePluginIds = parsePluginIds(readArg(
   "--runtime-plugins",
   process.env.ZION_RUNTIME_PLUGINS
-    || (toolMode === "node" ? "none" : "dev.terminal-manager,dev.skills,dev.memory,dev.identity,dev.context-compression,dev.scheduler,dev.session-manager,dev.langchain-chat,dev.tools,dev.plugins,dev.mail,dev.agents")
+    || (toolMode === "node" ? "none" : "dev.terminal-manager,dev.skills,dev.memory,dev.identity,dev.context-compression,dev.scheduler,dev.session-manager,dev.langchain-chat,dev.tools,dev.plugins,dev.mail,dev.agents,dev.observability")
 ));
 const nodeToken = process.env.ZION_RUNTIME_NODE_TOKEN || "";
 const accessControlEnabled = enabledFlag(readArg(
@@ -468,6 +480,19 @@ const accessControl = accessStore
       publicBaseUrl
     })
   : null;
+const observabilityTraceReader = observabilityQueryUrl
+  ? createJaegerTraceReader({
+      baseUrl: observabilityQueryUrl,
+      headers: observabilityQueryToken
+        ? { authorization: `Bearer ${observabilityQueryToken}` }
+        : {}
+    })
+  : null;
+const observabilityService = createRuntimeObservabilityService({
+  runs,
+  traceReader: observabilityTraceReader,
+  traceUrlTemplate: observabilityTraceUrlTemplate
+});
 const collaboration = createRuntimeCollaborationService({
   store: workbenchState,
   authenticate: accessControl
@@ -840,6 +865,9 @@ const runtimePlugins = new RuntimePluginService({
         interactionProfiles: interactionProfileStore
       })
     },
+    "dev.observability": {
+      observabilityService
+    },
     "dev.skills": {
       availableNodes: () => nodeBroker?.snapshot().nodes || [],
       localSourceAvailable: toolMode === "local"
@@ -1071,6 +1099,12 @@ if (legacyMigration.ok) {
   }
 }
 const serviceHttpHandlers = [
+  createObservabilityHttpHandler({
+    service: observabilityService,
+    canViewExternalTrace: (principal) => (
+      !accessControl || accessControl.hasScope?.(principal, "device.manage")
+    )
+  }),
   createPluginLocationsHttpHandler({ locations: pluginDataLocations }),
   createSkillsCatalogHttpHandler({
     store: workbenchState,
@@ -1186,6 +1220,7 @@ const runtime = createRuntimeServer({
     },
     runtimePlugins: pluginSnapshot.plugins,
     runtimePluginFailures: pluginSnapshot.failures.length,
+    observability: observabilityService.configuration(),
     externalizedRuntimePlugins: externalizedRuntimePluginIds,
     schedulerWorker: !!schedulerWorker,
     schedulerAvailableTools: schedulerWorker?.availableTools || [],
@@ -1256,8 +1291,8 @@ async function shutdown() {
 }
 
 process.on("SIGINT", () => {
-  void shutdown().finally(() => process.exit(0));
+  void shutdown().finally(shutdownTelemetry).finally(() => process.exit(0));
 });
 process.on("SIGTERM", () => {
-  void shutdown().finally(() => process.exit(0));
+  void shutdown().finally(shutdownTelemetry).finally(() => process.exit(0));
 });

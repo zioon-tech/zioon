@@ -439,11 +439,11 @@ Desktop PWA 的根作用域会覆盖整个 Origin，因此根 `vite.config.ts` �
 
 ```ts
 importScripts: ["/sw-client-refresh.js"],
-navigateFallbackDenylist: [/^\/mobile(?:\/|$)/]
+navigateFallbackDenylist: [/^\/mobile(?:\/|$)/, /^\/observability(?:\/|$)/]
 ```
 
-否则根 Service Worker 会把 `/mobile/` 导航回退到桌面 `index.html`。正确稳定态下，
-桌面由 `/sw.js` 控制，移动端由 `/mobile/sw.js` 控制。2026-09-08 发布后已在全新
+否则根 Service Worker 会把 `/mobile/` 或 `/observability/` 导航回退到桌面 `index.html`。正确稳定态下，
+桌面由 `/sw.js` 控制，移动端由 `/mobile/sw.js` 控制，观测页面走 Caddy 反代到 Jaeger。2026-09-08 发布后已在全新
 浏览器客户端验证 `/` 显示 `Zion Editor`，`/mobile/` 显示 `Zion Mobile`，两端均无
 控制台错误。`sw-client-refresh.js` 在新根 Worker 激活时主动重新导航既有桌面 Client，
 避免旧页面继续运行不兼容的 Runtime/协作协议；它明确排除 `/mobile/`。
