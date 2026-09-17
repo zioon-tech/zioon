@@ -46,6 +46,11 @@ import {
   insertAssistantBlock,
   parseMessages
 } from "../../src/chat/doc";
+import {
+  beginConversationViewportFollow,
+  isConversationViewportFollowing,
+  scheduleConversationViewportFollow
+} from "../../src/chat/conversation-viewport.js";
 import { createChatRuntime } from "../../src/chat/runtime";
 import { reconstructWidgetHistoryMessages } from "../../src/chat/widget-history";
 import { createToolCardId } from "../../src/chat/tool-card-id";
@@ -431,9 +436,16 @@ function ensureAssistantLatestVisible(editor, opts = {}) {
     const margin = opts.structuralRole
       ? getStructuralRoleScrollMargin(scrollDOM)
       : getEditorBottomSafeMargin(scrollDOM, 24);
+    if (
+      opts.initial === true
+      && block.top >= scrollDOM.scrollTop
+      && block.bottom <= scrollDOM.scrollTop + scrollDOM.clientHeight
+    ) {
+      return true;
+    }
     const visibleBottom = scrollDOM.scrollTop + scrollDOM.clientHeight - margin;
     if (block.bottom <= visibleBottom) {
-      return false;
+      return true;
     }
     const nextScrollTop = Math.max(0, block.bottom - scrollDOM.clientHeight + margin);
     try {
@@ -441,6 +453,10 @@ function ensureAssistantLatestVisible(editor, opts = {}) {
       if (sessionId) {
         window.zion?.state?.set?.(`chat.followSuppressUntil.${sessionId}`, Date.now() + 80);
       }
+      scrollDOM.__zionProgrammaticScrollUntil = Math.max(
+        Number(scrollDOM.__zionProgrammaticScrollUntil) || 0,
+        Date.now() + 80
+      );
     } catch {}
     scrollDOM.scrollTop = nextScrollTop;
     return true;
@@ -448,50 +464,19 @@ function ensureAssistantLatestVisible(editor, opts = {}) {
   return false;
 }
 
-const assistantLatestVisibleJobs = new WeakMap();
-
 function scheduleAssistantLatestVisible(editor, opts = {}) {
-  if (!editor || (typeof editor !== "object" && typeof editor !== "function")) return;
-  let job = assistantLatestVisibleJobs.get(editor);
-  if (!job) {
-    job = { rafId: 0, timerId: 0, opts };
-    assistantLatestVisibleJobs.set(editor, job);
-  } else {
-    job.opts = opts;
-  }
-
-  const run = (phase) => {
-    const latestOpts = job.opts || {};
-    const sessionId = latestOpts.sessionId || null;
-    let follow = true;
-    try {
-      follow = !sessionId || window.zion?.state?.get?.(`chat.followLatest.${sessionId}`) !== false;
-    } catch {}
-    if (follow) {
-      const traceId = latestOpts.traceId || `assistant-follow-${Date.now().toString(36)}`;
-      ensureAssistantLatestVisible(editor, { ...latestOpts, phase, traceId });
-    }
-  };
-
-  if (!job.rafId) {
-    try {
-      job.rafId = requestAnimationFrame(() => {
-        job.rafId = 0;
-        run("raf");
-      });
-    } catch {
-      job.rafId = setTimeout(() => {
-        job.rafId = 0;
-        run("timeout0");
-      }, 0);
-    }
-  }
-  if (job.timerId) clearTimeout(job.timerId);
-  job.timerId = setTimeout(() => {
-    job.timerId = 0;
-    run("trailing");
-    if (!job.rafId) assistantLatestVisibleJobs.delete(editor);
-  }, 100);
+  const view = editor?.getView?.();
+  if (!view) return false;
+  return scheduleConversationViewportFollow(view, {
+    sessionId: opts.sessionId || "",
+    state: window.zion?.state,
+    cycleId: opts.followCycleId || opts.traceId || "",
+    initial: opts.initial === true,
+    reveal: () => ensureAssistantLatestVisible(editor, {
+      ...opts,
+      phase: "animation-frame"
+    })
+  });
 }
 
 function findTrailingUserPromptLineFromDoc(text, startLineHint = 0) {
@@ -522,6 +507,13 @@ function ensureDocLineVisible(editor, lineIndex, opts = {}) {
     const bottomMargin = opts.structuralRole
       ? getStructuralRoleScrollMargin(scrollDOM)
       : topMargin;
+    if (
+      opts.initial === true
+      && block.top >= scrollDOM.scrollTop
+      && block.bottom <= scrollDOM.scrollTop + scrollDOM.clientHeight
+    ) {
+      return true;
+    }
     const visibleTop = scrollDOM.scrollTop + topMargin;
     const visibleBottom = scrollDOM.scrollTop + scrollDOM.clientHeight - bottomMargin;
     let nextScrollTop = null;
@@ -531,13 +523,17 @@ function ensureDocLineVisible(editor, lineIndex, opts = {}) {
       nextScrollTop = Math.max(0, block.top - topMargin);
     }
     if (nextScrollTop == null) {
-      return false;
+      return true;
     }
     try {
       const sessionId = opts.sessionId || null;
       if (sessionId) {
         window.zion?.state?.set?.(`chat.followSuppressUntil.${sessionId}`, Date.now() + 80);
       }
+      scrollDOM.__zionProgrammaticScrollUntil = Math.max(
+        Number(scrollDOM.__zionProgrammaticScrollUntil) || 0,
+        Date.now() + 80
+      );
     } catch {}
     scrollDOM.scrollTop = nextScrollTop;
     return true;
@@ -546,23 +542,18 @@ function ensureDocLineVisible(editor, lineIndex, opts = {}) {
 }
 
 function scheduleDocLineVisible(editor, lineIndex, opts = {}) {
-  let pass = 0;
-  const traceId = opts.traceId || `doc-line-follow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-  const run = (phase = "sync") => {
-    pass += 1;
-    ensureDocLineVisible(editor, lineIndex, { ...opts, phase, traceId });
-  };
-  run("sync");
-  try {
-    requestAnimationFrame(() => {
-      run("raf1");
-      requestAnimationFrame(() => run("raf2"));
-    });
-  } catch {
-    setTimeout(() => run("timeout0"), 0);
-  }
-  try { setTimeout(() => run("timeout80"), 80); } catch {}
-  try { setTimeout(() => run("timeout180"), 180); } catch {}
+  const view = editor?.getView?.();
+  if (!view) return false;
+  return scheduleConversationViewportFollow(view, {
+    sessionId: opts.sessionId || "",
+    state: window.zion?.state,
+    cycleId: opts.followCycleId || opts.traceId || "",
+    initial: opts.initial === true,
+    reveal: () => ensureDocLineVisible(editor, lineIndex, {
+      ...opts,
+      phase: "animation-frame"
+    })
+  });
 }
 
 function ensureTrailingUserPromptVisible(editor, opts = {}) {
@@ -1435,7 +1426,6 @@ export async function activate(ctx) {
     documentAnchor,
     reconstructHistory,
     autoScrollAssistant,
-    runFollowLatest,
     preparation
   }) => {
     // Empty input placeholders are local editor affordances, not durable Yjs state.
@@ -1596,7 +1586,6 @@ export async function activate(ctx) {
     runtime.beginRun(sid, runId);
     setRunState(sid, { aborted: false, model: handle.model || null }, runId);
     try {
-      window.zion?.state?.set?.(`chat.followLatest.${sid}`, runFollowLatest);
       window.zion?.state?.set?.(
         `chat.assistantBlockId.${sid}`,
         runAnchorPayload.assistantBlockId
@@ -1626,7 +1615,9 @@ export async function activate(ctx) {
         sessionId: sid,
         forceBottom: true,
         structuralRole: true,
-        traceId: runId
+        traceId: runId,
+        followCycleId: preparation?.id || runId,
+        initial: true
       });
     }
 
@@ -1638,6 +1629,8 @@ export async function activate(ctx) {
       panelId,
       assistantBlockId: runAnchorPayload.assistantBlockId,
       answerAnchorPos: runAnchorPayload.answerAnchorPos,
+      editorView: ed?.getView?.(),
+      followCycleId: preparation?.id || runId,
       documentWriter: false,
       assistantBlockReady: true,
       appendAssistantToken: async () => true
@@ -1724,19 +1717,22 @@ export async function activate(ctx) {
       if (
         appendUserPrompt
         && autoScrollAssistant
-        && window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false
+        && isConversationViewportFollowing(ed?.getView?.(), {
+          sessionId: sid,
+          state: window.zion?.state
+        })
         && isEditorShowingSession(ed, sid)
       ) {
-        const revealPrompt = () => {
-          ensureTrailingUserPromptVisible(ed, {
+        scheduleConversationViewportFollow(ed?.getView?.(), {
+          sessionId: sid,
+          state: window.zion?.state,
+          cycleId: preparation?.id || runId,
+          reveal: () => ensureTrailingUserPromptVisible(ed, {
             startLineHint: insertLine,
             sessionId: sid,
             traceId: runId
-          });
-        };
-        revealPrompt();
-        setTimeout(revealPrompt, 100);
-        setTimeout(revealPrompt, 300);
+          })
+        });
       }
       window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
     } else if (result.status === "failed") {
@@ -2016,7 +2012,6 @@ export async function activate(ctx) {
     const skipSessionPersistence = !!opts?.skipSessionPersistence;
       const autoScrollAssistant = opts?.autoScrollAssistant !== false;
       const moveSelectionToAssistant = opts?.moveSelectionToAssistant !== false;
-      const runFollowLatest = opts?.followLatest === false ? false : true;
     const resolveActiveRunModel = () => getResolvedModelSnapshot(
       runThinkingEffort === "auto" ? null : { ...window.zion.state.get("chat.activeModel"), thinkingEffort: runThinkingEffort }
     );
@@ -2185,7 +2180,6 @@ export async function activate(ctx) {
         documentAnchor,
         reconstructHistory,
         autoScrollAssistant,
-        runFollowLatest,
         preparation
       });
       if (!runtimeResult?.fallbackToBrowser) return runtimeResult;
@@ -2254,16 +2248,36 @@ export async function activate(ctx) {
     } catch {}
     runtime.beginRun(sid, runId);
     setRunState(sid, { aborted: false, model: runModel }, runId);
-    try { window.zion?.state?.set?.(`chat.followLatest.${sid}`, runFollowLatest); } catch {}
     recordRunEvent("run.started", {
       executionMode: "interactive",
       model: runModel
     });
-    window.zion.events.emit("chat/runStarted", { runId, sessionId: sid, panelId, model: runModel, ...runAnchorPayload });
+    window.zion.events.emit("chat/runStarted", {
+      runId,
+      sessionId: sid,
+      panelId,
+      model: runModel,
+      editorView: ed?.getView?.(),
+      followCycleId: preparation?.id || runId,
+      ...runAnchorPayload
+    });
       if (autoScrollAssistant && typeof anchor?.headLine === "number") {
-      scheduleDocLineVisible(ed, anchor.headLine, { sessionId: sid, forceBottom: true, structuralRole: true, traceId: runId });
+      scheduleDocLineVisible(ed, anchor.headLine, {
+        sessionId: sid,
+        forceBottom: true,
+        structuralRole: true,
+        traceId: runId,
+        followCycleId: preparation?.id || runId,
+        initial: true
+      });
       } else if (autoScrollAssistant) {
-      scheduleAssistantLatestVisible(ed, { startLineHint: insertLine, sessionId: sid, traceId: runId });
+      scheduleAssistantLatestVisible(ed, {
+        startLineHint: insertLine,
+        sessionId: sid,
+        traceId: runId,
+        followCycleId: preparation?.id || runId,
+        initial: true
+      });
     }
 
     // 工具调用收集（多步链式调用在每一步内局部收集）
@@ -2297,11 +2311,12 @@ export async function activate(ctx) {
       };
 
     // 通用 token 写入逻辑（写入同一个 assistant block，批量 flush 以降低刷新压力）
-    // TokenBuffer：80ms 批量写入，同一行追加，触底才自动滚动
+    // TokenBuffer：约两帧批量写入，同一行追加，触底才自动滚动
     const tokenBuffer = (() => {
       let acc = [];
       let timer = null;
-      const interval = 80; // ms
+      let hasAppendedToken = false;
+      const interval = 32; // ms
 
       const flushImpl = () => {
         timer = null;
@@ -2321,7 +2336,15 @@ export async function activate(ctx) {
               runId,
               assistantBlockId: runAnchorPayload.assistantBlockId
             });
-            window.zion.events.emit("chat/token", { runId, token: text, sessionId: sid, panelId });
+            window.zion.events.emit("chat/token", {
+              runId,
+              token: text,
+              sessionId: sid,
+              panelId,
+              editorView: ed?.getView?.(),
+              followCycleId: preparation?.id || runId
+            });
+            hasAppendedToken = true;
           } catch (e) {
             console.error("[langchain-chat] background append token error:", e);
           }
@@ -2338,14 +2361,35 @@ export async function activate(ctx) {
           if (!appended) {
             return;
           }
-          window.zion.events.emit("chat/token", { runId, token: text, sessionId: sid, panelId });
+          const initialToken = !hasAppendedToken;
+          hasAppendedToken = true;
+          window.zion.events.emit("chat/token", {
+            runId,
+            token: text,
+            sessionId: sid,
+            panelId,
+            editorView: ed?.getView?.(),
+            followCycleId: preparation?.id || runId
+          });
 
           // 触底才自动滚动（避免用户上拉时被抢滚）
           const scroller = ed?.getView?.()?.scrollDOM || document.querySelector(".cm-scroller");
           if (scroller) {
-            const followLatest = window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
+            const followLatest = isConversationViewportFollowing(
+              ed?.getView?.(),
+              {
+                sessionId: sid,
+                state: window.zion?.state
+              }
+            );
               if (autoScrollAssistant && followLatest) {
-              scheduleAssistantLatestVisible(ed, { startLineHint: insertLine, sessionId: sid, traceId: runId });
+              scheduleAssistantLatestVisible(ed, {
+                startLineHint: insertLine,
+                sessionId: sid,
+                traceId: runId,
+                followCycleId: preparation?.id || runId,
+                initial: initialToken
+              });
             }
           }
         } catch (e) {
@@ -2406,10 +2450,22 @@ export async function activate(ctx) {
             autoInsertUserPrompt: !!autoInsert,
             autoFocusUserPrompt: !!autoFocus
           });
-          const followLatest = window.zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
+          const followLatest = isConversationViewportFollowing(
+            ed?.getView?.(),
+            {
+              sessionId: sid,
+              state: window.zion?.state
+            }
+          );
             if (autoScrollAssistant && followLatest) {
             if (typeof finalized?.userLine === "number") {
-              scheduleDocLineVisible(ed, finalized.userLine, { sessionId: sid, forceBottom: true, structuralRole: true, traceId: runId });
+              scheduleDocLineVisible(ed, finalized.userLine, {
+                sessionId: sid,
+                forceBottom: true,
+                structuralRole: true,
+                traceId: runId,
+                followCycleId: preparation?.id || runId
+              });
             } else {
               ensureTrailingUserPromptVisible(ed, { startLineHint: insertLine, sessionId: sid, traceId: runId });
             }
@@ -2812,13 +2868,26 @@ export async function activate(ctx) {
     if (!ed || !sid || getRunState(sid)?.streaming || interactivePreparations.has(sid)) return;
     const id = `preparing-${crypto.randomUUID()}`;
     const controller = new AbortController();
+    const view = ed.getView?.();
+    beginConversationViewportFollow(view, {
+      sessionId: sid,
+      state: window.zion?.state,
+      cycleId: id,
+      followLatest: opts?.followLatest !== false
+    });
     const cursor = ed.getCursor();
     const lines = ed.getValue().split("\n");
     const answerAnchorPos = lines.slice(0, cursor.line).reduce((n, line) => n + line.length + 1, 0)
       + (lines[cursor.line]?.length || 0);
     const clearFeedback = () => window.zion.events.emit("chat/prepared", { sessionId: sid, submissionId: id });
     const showFeedback = (status, assistantBlockId = id) => window.zion.events.emit("chat/preparing", {
-      sessionId: sid, submissionId: id, assistantBlockId, answerAnchorPos, status
+      sessionId: sid,
+      submissionId: id,
+      assistantBlockId,
+      answerAnchorPos,
+      status,
+      editorView: view,
+      followCycleId: id
     });
     const release = () => {
       clearFeedback();

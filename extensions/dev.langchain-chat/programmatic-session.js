@@ -155,6 +155,10 @@ export async function projectRunEventToSession(
       ?? 0
     ),
     ...(options.replay ? { replay: true } : {}),
+    ...(options.editorView ? { editorView: options.editorView } : {}),
+    ...(options.followCycleId
+      ? { followCycleId: String(options.followCycleId) }
+      : {}),
     ...(Number.isFinite(Number(options.answerAnchorPos))
       ? { answerAnchorPos: Number(options.answerAnchorPos) }
       : {}),

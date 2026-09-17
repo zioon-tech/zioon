@@ -196,9 +196,6 @@ export async function listSessionSummaries(
     `/v1/mobile/sessions?${params}`,
   );
   const sessions = Array.isArray(body.sessions) ? body.sessions : [];
-  // #region debug-point A:mobile-session-titles
-  try { const probe = (globalThis as any).__zionScheduledSurfaceProbe; if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "pre-fix", hypothesisId: "A", location: "apps/mobile-client/src/api.ts:listSessionSummaries", msg: "[DEBUG] Mobile received Runtime session titles", data: { sessions: sessions.slice(0, 100).map((session) => ({ id: session.id, title: session.title, activeRunId: session.activeRun?.runId || null })) }, ts: Date.now() }) }).catch(() => {}); } catch {}
-  // #endregion
   return sessions;
 }
 
@@ -477,9 +474,6 @@ export async function getSchedulerRun(runId: string): Promise<SchedulerRun> {
   const run = await requestJson<SchedulerRun>(
     `/v1/scheduler/runs/${encodeURIComponent(runId)}?event_limit=50`,
   );
-  // #region debug-point B-D:mobile-scheduler-run
-  try { const probe = (globalThis as any).__zionScheduledSurfaceProbe; if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "pre-fix", hypothesisId: "B-D", location: "apps/mobile-client/src/api.ts:getSchedulerRun", msg: "[DEBUG] Mobile received Scheduler run detail", data: { schedulerRunId: run.id, status: run.status, sessionId: run.sessionId || null, chatRunId: run.chatRunId || null, eventCount: run.events?.length || run.eventCount || 0, outputLength: String(run.output || "").length }, ts: Date.now() }) }).catch(() => {}); } catch {}
-  // #endregion
   return run;
 }
 

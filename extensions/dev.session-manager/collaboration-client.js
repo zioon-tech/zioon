@@ -13,6 +13,11 @@ import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
 import {
+  cancelConversationViewportFollow,
+  initializeConversationViewport,
+  scheduleConversationViewportFollow
+} from "../../src/chat/conversation-viewport.js";
+import {
   clearPendingAssistant,
   pendingAssistantExtension,
   revealPendingAssistantInView,
@@ -118,7 +123,7 @@ export function createSessionCollaborationManager({
   const records = new Map();
   const pendingBySession = new Map();
   const pendingClearTimers = new Map();
-  const pendingFollowHandles = new Map();
+  const tokenFollowRuns = new Set();
   const cardRestoreScheduled = new Set();
   const enabled = runtimeConfig.mode !== "browser" && !!runtimeConfig.baseUrl;
   const providerFactory = createProvider || ((options) =>
@@ -133,73 +138,64 @@ export function createSessionCollaborationManager({
     }
   };
 
-  const cancelPendingFollow = (view) => {
-    const handle = pendingFollowHandles.get(view);
-    if (handle == null) return;
-    try {
-      if (typeof globalThis.cancelAnimationFrame === "function") {
-        globalThis.cancelAnimationFrame(handle);
-      } else {
-        globalThis.clearTimeout(handle);
-      }
-    } catch {}
-    pendingFollowHandles.delete(view);
-  };
-
-  const schedulePendingFollow = (sessionId, runId, entryHint = null) => {
+  const schedulePendingFollow = (
+    sessionId,
+    runId,
+    entryHint = null,
+    { initial = false } = {}
+  ) => {
     const record = records.get(sessionId);
     const entry = pendingBySession.get(sessionId)?.get(runId) || entryHint;
     if (!record) return;
-    for (const view of record.views) {
-      if (pendingFollowHandles.has(view)) continue;
-      const run = () => {
-        pendingFollowHandles.delete(view);
-        if (
-          zion?.state?.get?.(`chat.followLatest.${sessionId}`) === false
-          || !view?.scrollDOM
-        ) {
-          return;
-        }
-        try {
-          const revealed = revealPendingAssistantInView(view, {
-            runId: entry?.runId || runId,
-            sessionId
-          });
-          if (!revealed && entry?.assistantBlockId) {
-            const position = findAssistantBlockEndOffsetById(
-              view.state.doc.toString(),
-              entry.assistantBlockId
-            ) ?? view.state.doc.length;
-            const suppressUntil = Date.now() + 160;
-            zion?.state?.set?.(
-              `chat.followSuppressUntil.${sessionId}`,
-              suppressUntil
-            );
-            view.scrollDOM.__zionProgrammaticScrollUntil = Math.max(
-              Number(view.scrollDOM.__zionProgrammaticScrollUntil) || 0,
-              suppressUntil
-            );
-            view.dispatch({
-              effects: EditorView.scrollIntoView(position, {
-                y: "nearest",
-                yMargin: 24
-              })
+    const targetViews = entry?.sourceView && record.views.has(entry.sourceView)
+      ? [entry.sourceView]
+      : record.views;
+    for (const view of targetViews) {
+      scheduleConversationViewportFollow(view, {
+        sessionId,
+        state: zion?.state,
+        cycleId: entry?.followCycleId || entry?.runId || runId,
+        initial,
+        reveal: () => {
+          if (!view?.scrollDOM) return false;
+          try {
+            const revealed = revealPendingAssistantInView(view, {
+              runId: entry?.runId || runId,
+              sessionId,
+              preserveVisible: initial
             });
-          }
-        } catch {}
-      };
-      const handle = typeof globalThis.requestAnimationFrame === "function"
-        ? globalThis.requestAnimationFrame(run)
-        : globalThis.setTimeout(run, 16);
-      pendingFollowHandles.set(view, handle);
+            if (!revealed && entry?.assistantBlockId) {
+              const position = findAssistantBlockEndOffsetById(
+                view.state.doc.toString(),
+                entry.assistantBlockId
+              ) ?? view.state.doc.length;
+              const suppressUntil = Date.now() + 160;
+              zion?.state?.set?.(
+                `chat.followSuppressUntil.${sessionId}`,
+                suppressUntil
+              );
+              view.scrollDOM.__zionProgrammaticScrollUntil = Math.max(
+                Number(view.scrollDOM.__zionProgrammaticScrollUntil) || 0,
+                suppressUntil
+              );
+              view.dispatch({
+                effects: EditorView.scrollIntoView(position, {
+                  y: "nearest",
+                  yMargin: 24
+                })
+              });
+              return true;
+            }
+            return revealed;
+          } catch {}
+          return false;
+        }
+      });
     }
   };
 
   const scheduleSettledFollow = (sessionId, runId, entry) => {
-    schedulePendingFollow(sessionId, runId, entry);
-    globalThis.setTimeout(() => {
-      schedulePendingFollow(sessionId, runId, entry);
-    }, 120);
+    schedulePendingFollow(sessionId, runId, entry, { initial: true });
   };
 
   const clearPending = (sessionId, runId, { follow = false } = {}) => {
@@ -279,6 +275,7 @@ export function createSessionCollaborationManager({
     const sessionId = String(payload.sessionId || "");
     const runId = String(payload.runId || "");
     if (!sessionId || !runId) return;
+    tokenFollowRuns.delete(`${sessionId}:${runId}`);
     const entries = pendingBySession.get(sessionId);
     const entry = entries?.get(runId);
     if (!entry) return;
@@ -314,12 +311,14 @@ export function createSessionCollaborationManager({
         fallbackOffset: optionalDocumentOffset(payload.answerAnchorPos),
         text: "",
         status: String(payload.status || ""),
-        documentWriter: false
+        documentWriter: false,
+        sourceView: payload.editorView || null,
+        followCycleId: String(payload.followCycleId || runId)
       };
       entries.set(runId, entry);
       pendingBySession.set(sessionId, entries);
       dispatchPending(sessionId, setPendingAssistant.of(entry));
-      schedulePendingFollow(sessionId, runId, entry);
+      schedulePendingFollow(sessionId, runId, entry, { initial: true });
     }));
     eventDisposables.push(zion?.events?.on?.("chat/prepared", (payload = {}) => {
       clearPending(String(payload.sessionId || ""), String(payload.submissionId || ""));
@@ -330,13 +329,18 @@ export function createSessionCollaborationManager({
       const runId = String(payload.runId || "");
       const token = String(payload.token || "");
       if (!sessionId || !runId || !token) return;
+      const followRunKey = `${sessionId}:${runId}`;
+      const initialToken = !tokenFollowRuns.has(followRunKey);
+      tokenFollowRuns.add(followRunKey);
       const entries = pendingBySession.get(sessionId) || new Map();
       const previous = entries.get(runId) || {
         runId,
         assistantBlockId: String(payload.assistantBlockId || runId),
         fallbackOffset: optionalDocumentOffset(payload.answerAnchorPos),
         text: "",
-        terminal: false
+        terminal: false,
+        sourceView: payload.editorView || null,
+        followCycleId: String(payload.followCycleId || runId)
       };
       const nextFallbackOffset = optionalDocumentOffset(payload.answerAnchorPos);
       const entry = {
@@ -348,6 +352,12 @@ export function createSessionCollaborationManager({
           || runId
         ),
         fallbackOffset: nextFallbackOffset ?? previous.fallbackOffset,
+        sourceView: payload.editorView || previous.sourceView || null,
+        followCycleId: String(
+          payload.followCycleId
+          || previous.followCycleId
+          || runId
+        ),
         projectionSequence: Math.max(
           Number(previous.projectionSequence || 0),
           Number(
@@ -369,18 +379,26 @@ export function createSessionCollaborationManager({
         )
       ) {
         clearPending(sessionId, runId);
+        schedulePendingFollow(sessionId, runId, entry, {
+          initial: initialToken
+        });
         return;
       }
       const committed = commitPendingEntry(sessionId, entry);
       if (committed) return;
       dispatchPending(sessionId, setPendingAssistant.of(entry));
-      schedulePendingFollow(sessionId, runId, entry);
+      schedulePendingFollow(sessionId, runId, entry, {
+        initial: initialToken
+      });
     }));
     for (const topic of ["chat/runFinished"]) {
       eventDisposables.push(zion?.events?.on?.(topic, completePending));
     }
     for (const topic of ["chat/runError", "chat/aborted"]) {
       eventDisposables.push(zion?.events?.on?.(topic, (payload = {}) => {
+        tokenFollowRuns.delete(
+          `${String(payload.sessionId || "")}:${String(payload.runId || "")}`
+        );
         clearPending(
           String(payload.sessionId || ""),
           String(payload.runId || "")
@@ -401,7 +419,7 @@ export function createSessionCollaborationManager({
     try { record.provider.destroy(); } catch {}
     try { record.persistence?.destroy?.(); } catch {}
     try { record.document.destroy(); } catch {}
-    for (const view of record.views) cancelPendingFollow(view);
+    for (const view of record.views) cancelConversationViewportFollow(view);
     collaborationState(zion, sessionId, {
       connected: false,
       synced: false,
@@ -532,6 +550,10 @@ export function createSessionCollaborationManager({
     );
     const record = acquire(sessionId);
     record.views.add(view);
+    initializeConversationViewport(view, {
+      sessionId,
+      state: zion?.state
+    });
     let disposed = false;
     let timedOut = false;
     const timeout = globalThis.setTimeout(() => {
@@ -616,6 +638,7 @@ export function createSessionCollaborationManager({
         try {
           view.dispatch({ effects: compartment.reconfigure([]) });
         } catch {}
+        cancelConversationViewportFollow(view);
         record.views.delete(view);
         record.references -= 1;
         if (record.references <= 0) disposeRecord(sessionId);
@@ -661,9 +684,9 @@ export function createSessionCollaborationManager({
       for (const timer of pendingClearTimers.values()) {
         globalThis.clearTimeout(timer);
       }
-      for (const view of pendingFollowHandles.keys()) cancelPendingFollow(view);
       pendingClearTimers.clear();
       pendingBySession.clear();
+      tokenFollowRuns.clear();
       for (const sessionId of [...records.keys()]) disposeRecord(sessionId);
     }
   };

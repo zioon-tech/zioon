@@ -4478,6 +4478,18 @@ body.is-dragging-panel-tabs-scrollbar {
 .cm-editor .cm-cursor-secondary {
   border-left-color: color-mix(in srgb, var(--caret-color) 78%, var(--accent)) !important;
 }
+.cm-editor .cm-z-boundary-cursor {
+  position: absolute;
+  width: 0;
+  border-left: 1.2px solid var(--caret-color) !important;
+  margin-left: -0.6px;
+  background: transparent;
+  pointer-events: none;
+  z-index: 30;
+}
+.cm-editor.cm-focused .cm-z-boundary-cursor {
+  animation: steps(1) cm-blink 1.2s infinite;
+}
 .cm-editor .cm-selectionLayer {
   z-index: 12 !important;
   pointer-events: none;
@@ -4598,6 +4610,20 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
 
 .cm-z-hide-heading-marker {
   display: none;
+}
+
+.cm-z-caret-visible-syntax {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  display: inline-block !important;
+  width: 0 !important;
+  height: 1em !important;
+  font-size: inherit !important;
+  line-height: 0 !important;
+  vertical-align: baseline !important;
+  overflow: hidden !important;
+  opacity: 1;
+  caret-color: var(--fg) !important;
 }
 
 .cm-z-hide-syntax-fixed {
@@ -5172,6 +5198,13 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
   white-space: nowrap;
   margin-right: 0;
   color: var(--dim);
+}
+
+.cm-md-marker-selected {
+  background: var(--selection-bg);
+  border-radius: 2px;
+  color: var(--editor-text-fg);
+  -webkit-text-fill-color: var(--editor-text-fg);
 }
 
 /* Code fence block lines */

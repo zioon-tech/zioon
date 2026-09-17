@@ -466,6 +466,7 @@ fi
 ` : "";
   const sourceInstallBlock = includeSource ? `
 tar -xzf "$source_archive" -C "$root"
+find "$root" -type d -exec chmod 0755 {} +
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   target="$root/$file"
@@ -784,8 +785,25 @@ printf 'stage=ready\\n'
     const sent = await client.sendChunks(identityPluginArchive, remoteStage);
     console.log(`sent=${sent.file} parts=${sent.parts} bytes=${sent.bytes} sha256=${sent.sha256}`);
   }
+  {
+    const sent = await client.sendChunks(remoteScriptPath, remoteStage);
+    console.log(`sent=${sent.file} parts=${sent.parts} bytes=${sent.bytes} sha256=${sent.sha256}`);
+  }
 
-  result = await client.runScript(remoteScript, 600);
+  result = await client.runScript(`#!/usr/bin/env bash
+set -Eeuo pipefail
+stage=${sh(remoteStage)}
+script="$stage/remote-deploy.sh"
+shopt -s nullglob
+parts=("$script.part-"*)
+if [ "\${#parts[@]}" -eq 0 ]; then
+  printf 'missing uploaded parts for remote-deploy.sh\\n' >&2
+  exit 1
+fi
+cat "\${parts[@]}" >"$script"
+chmod 0700 "$script"
+bash "$script"
+`, 600);
   process.stdout.write(result.output);
   if (!["Success", "Finished"].includes(result.status) || result.exitCode !== 0) {
     fail(`remote deployment failed: ${result.status}/${result.exitCode}`);

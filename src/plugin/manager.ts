@@ -372,10 +372,6 @@ export class PluginManager extends EventEmitter {
       // 扫描插件目录（向后兼容）
       await this.scanPluginDirectories();
       await options.beforeActivate?.();
-
-      // #region debug-point A:workbench-reload
-      try { const probe = (globalThis as any).__zionReloadProbe; if (probe?.url) void fetch(probe.url, { method: 'POST', body: JSON.stringify({ sessionId: 'workbench-reload', runId: probe.phase || 'pre-fix', hypothesisId: 'A', msg: '[DEBUG] Plugin catalog before activation', data: { registered: Array.from(this.plugins.keys()), enabled: Array.from(this.enabledPlugins) }, ts: Date.now() }) }).catch(() => {}); } catch {}
-      // #endregion
       
       // 激活启用的插件
       await this.activateEnabledPlugins(options.deferActivation);
@@ -981,9 +977,6 @@ export class PluginManager extends EventEmitter {
 
   private async activatePlugin(pluginId: string, ancestors: string[]): Promise<void> {
     this.log('info', `激活插件: ${pluginId}`);
-    // #region debug-point B:workbench-reload
-    try { const probe = (globalThis as any).__zionReloadProbe; if (probe?.url) void fetch(probe.url, { method: 'POST', body: JSON.stringify({ sessionId: 'workbench-reload', runId: probe.phase || 'pre-fix', hypothesisId: 'B', msg: '[DEBUG] Plugin activation started', data: { pluginId, registered: this.plugins.has(pluginId) }, ts: Date.now() }) }).catch(() => {}); } catch {}
-    // #endregion
 
     let context: PluginContext | undefined;
     try {
@@ -1043,9 +1036,6 @@ export class PluginManager extends EventEmitter {
       await this.autoLoadStyles(pluginInfo);
       pluginInfo.state = 'active';
       pluginInfo.error = undefined;
-      // #region debug-point C:workbench-reload
-      try { const probe = (globalThis as any).__zionReloadProbe; if (probe?.url) void fetch(probe.url, { method: 'POST', body: JSON.stringify({ sessionId: 'workbench-reload', runId: probe.phase || 'pre-fix', hypothesisId: 'C', msg: '[DEBUG] Plugin activation completed', data: { pluginId }, ts: Date.now() }) }).catch(() => {}); } catch {}
-      // #endregion
 
       // 触发事件
       this.emit('activated', pluginInfo);

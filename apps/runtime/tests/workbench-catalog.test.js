@@ -30,12 +30,5 @@ describe("Workbench startup catalog", () => {
     await handler({ method: "GET" }, response, new URL("http://test/v1/workbench-state/catalog"));
     expect(status).toBe(200);
     expect(body.catalog.sessions).toHaveLength(82);
-    if (process.env.ZION_RELOAD_PROBE) {
-      await fetch(process.env.ZION_RELOAD_PROBE, { method: "POST", body: JSON.stringify({
-        sessionId: "workbench-reload", runId: "post-fix", hypothesisId: "B",
-        msg: "[DEBUG] Synthetic 82-session catalog comparison",
-        data: { snapshotBytes: Buffer.byteLength(JSON.stringify(snapshot)), catalogBytes: Buffer.byteLength(JSON.stringify(catalog)) }
-      }) });
-    }
   });
 });

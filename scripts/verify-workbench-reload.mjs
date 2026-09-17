@@ -38,15 +38,7 @@ const server = createServer(async (request, response) => {
     response.end(`
 localStorage.setItem("zion.runtime.mode","runtime");
 localStorage.setItem("zion.runtime.baseUrl",location.origin);
-window.__zionReloadProbe={url:"/reload-probe",phase:"post-fix-browser"};
 `);
-    return;
-  }
-  if (path === "/reload-probe") {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    await fetch("http://127.0.0.1:7777/event", { method: "POST", body: Buffer.concat(chunks) }).catch(() => {});
-    response.end("{}");
     return;
   }
   if (path === "/reload-recover") { failCatalog = false; response.end("ok"); return; }

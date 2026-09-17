@@ -90,9 +90,6 @@ export function createSessionAutoSavePlugin(opts) {
     const text = doc.toString();
     const meta = loadMeta(id);
     const newHash = hashString(text);
-    // #region debug-point B:comment-autosave-commit
-    if (String(id).startsWith("comment:")) void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "B", location: "extensions/dev.session-manager/editor/autosave-plugin.js:commit", msg: "[DEBUG] Global session autosave is evaluating a comment editor", data: { commentSessionId: String(id), textLength: text.length, previousHash: String(meta?.hash || ""), nextHash: String(newHash || ""), hashChanged: newHash !== (meta?.hash || ""), streaming: zion?.state?.get?.(`chat.runs.${id}`)?.streaming === true }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-    // #endregion
     if (newHash === (meta.hash || "")) return false;
     const collaborationSynced = zion?.state?.get?.(
       `sessions.collaboration.${id}`
@@ -191,18 +188,12 @@ export function createSessionAutoSavePlugin(opts) {
         if (update.docChanged) {
           if (isAutosaveIgnoredUpdate(update)) return;
           if (isSessionPersistenceDisabled(update.view)) {
-            // #region debug-point B:comment-autosave-skipped
-            void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "B", location: "extensions/dev.session-manager/editor/autosave-plugin.js:update", msg: "[DEBUG] Global session autosave skipped a non-durable editor", data: { commentSessionId: String(getCurrentId(update.view) || ""), panelId: String(update.view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || ""), editorId: String(update.view?.dom?.getAttribute?.("data-editor-id") || ""), persistenceMode: String(update.view?.dom?.dataset?.zionSessionPersistence || ""), docLength: Number(update.state?.doc?.length) || 0 }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-            // #endregion
             return;
           }
           const bucket = getBucket(update.view);
           bucket.pendingView = update.view;
           bucket.pendingId = getCurrentId(update.view);
           bucket.pendingDoc = update.state.doc;
-          // #region debug-point B:comment-autosave-scheduled
-          if (String(bucket.pendingId || "").startsWith("comment:")) void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "B", location: "extensions/dev.session-manager/editor/autosave-plugin.js:update", msg: "[DEBUG] Global session autosave scheduled a comment editor", data: { commentSessionId: String(bucket.pendingId || ""), panelId: String(update.view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || ""), editorId: String(update.view?.dom?.getAttribute?.("data-editor-id") || ""), docLength: Number(update.state?.doc?.length) || 0 }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-          // #endregion
           scheduleSave(bucket);
         }
       }

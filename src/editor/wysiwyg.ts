@@ -1,6 +1,8 @@
-import { Facet, RangeSetBuilder, StateEffect, StateField, type EditorState, type Extension, Transaction } from "@codemirror/state";
+import { EditorSelection, Facet, RangeSetBuilder, StateEffect, StateField, type EditorState, type Extension, Transaction } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type ViewUpdate } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
+import { insertNewlineAndIndent } from "@codemirror/commands";
+import { insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import katex from "katex";
 import mermaid from "mermaid";
 import { encode as encodePlantUML } from "plantuml-encoder";
@@ -31,7 +33,7 @@ const inViewport = (view: EditorView, from: number, to: number) =>
   view.viewport.to >= from && view.viewport.from <= to;
 
 /* Simple inline fallback regex (single-line, limited, executed only in visible ranges) */
-const INLINE_FALLBACK = /(\*\*([^*\n]+)\*\*)|(_([^_\n]+)_)|(`([^`\n]+)`)|(\[([^\]]+)\]\(([^)\n]+)\))|(!\[([^\]]*)\]\(([^)\n]+)\))|(\$([^\$\n]+)\$)|(~~([^~\n]+)~~)/g;
+const INLINE_FALLBACK = /(\*\*([^*\n]+)\*\*)|((?<![A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_]))|(`([^`\n]+)`)|(\[([^\]]+)\]\(([^)\n]+)\))|(!\[([^\]]*)\]\(([^)\n]+)\))|(\$([^\$\n]+)\$)|(~~([^~\n]+)~~)/g;
 const ROLE_HEAD_RE = /^\s*(system|user|assistant|tool)\s+/;
 const FENCE_START_RE = /^\s*`{3,}\s*([^\s`]*)?.*$/;
 const FENCE_CLOSE_RE = /^\s*`{3,}\s*$/;
@@ -479,40 +481,213 @@ const wysiwygKeepActiveLineRenderedFacet = Facet.define<boolean, boolean>({
   }
 });
 
-function addNestedInlineDecorations(add: AddDecoration, contentStart: number, content: string) {
+type RenderedInlineRange = {
+  from: number;
+  to: number;
+  contentFrom: number;
+  contentTo: number;
+};
+type RenderedLineBoundaries = {
+  start: number | null;
+  end: number | null;
+};
+
+function selectionTouchesRange(state: EditorState, from: number, to: number): boolean {
+  if (from > to) return false;
+  for (const range of state.selection.ranges) {
+    if (range.empty) {
+      const head = range.head;
+      if (head >= from && head <= to) return true;
+      continue;
+    }
+    if (range.from < to && range.to > from) return true;
+  }
+  return false;
+}
+
+function collapsedSelectionTouchesRange(state: EditorState, from: number, to: number): boolean {
+  if (from > to) return false;
+  for (const range of state.selection.ranges) {
+    if (!range.empty) continue;
+    const head = range.head;
+    if (head >= from && head <= to) return true;
+  }
+  return false;
+}
+
+function nonEmptySelectionOverlapsRange(state: EditorState, from: number, to: number): boolean {
+  if (from >= to) return false;
+  for (const range of state.selection.ranges) {
+    if (range.empty) continue;
+    if (range.from < to && range.to > from) return true;
+  }
+  return false;
+}
+
+function selectionInsideRange(state: EditorState, from: number, to: number): boolean {
+  if (from >= to) return false;
+  for (const range of state.selection.ranges) {
+    if (!range.empty) continue;
+    const head = range.head;
+    if (head > from && head < to) return true;
+  }
+  return false;
+}
+
+function hiddenSyntaxClass(state: EditorState, from: number, to: number, baseClass = "cm-z-hide-syntax"): string {
+  return selectionInsideRange(state, from, to)
+    ? `${baseClass} cm-z-caret-visible-syntax`
+    : baseClass;
+}
+
+function hiddenSyntaxDecoration(state: EditorState, from: number, to: number, baseClass = "cm-z-hide-syntax"): Decoration {
+  return Decoration.mark({ class: hiddenSyntaxClass(state, from, to, baseClass) });
+}
+
+function collectRenderedInlineRangesInLine(lineText: string, lineFrom: number, docLength: number): RenderedInlineRange[] {
+  const ranges: RenderedInlineRange[] = [];
+  INLINE_FALLBACK.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_FALLBACK.exec(lineText)) !== null) {
+    if (isEscapedAt(lineText, m.index)) continue;
+    const from = lineFrom + m.index;
+    const to = from + m[0].length;
+    if (m[1]) {
+      ranges.push({ from, to, contentFrom: from + 2, contentTo: to - 2 });
+      continue;
+    }
+    if (m[3]) {
+      const before = from > 0 && m.index > 0 ? lineText[m.index - 1] : "";
+      const afterIndex = m.index + m[0].length;
+      const after = to < docLength && afterIndex < lineText.length ? lineText[afterIndex] : "";
+      const isWordChar = (ch: string) => /[A-Za-z0-9_]/.test(ch);
+      if (!isWordChar(before) && !isWordChar(after)) {
+        ranges.push({ from, to, contentFrom: from + 1, contentTo: to - 1 });
+      }
+      continue;
+    }
+    if (m[5]) {
+      ranges.push({ from, to, contentFrom: from + 1, contentTo: to - 1 });
+      continue;
+    }
+    if (m[7]) {
+      const label = m[8] || "";
+      ranges.push({ from, to, contentFrom: from + 1, contentTo: from + 1 + label.length });
+      continue;
+    }
+    if (m[10]) {
+      ranges.push({ from, to, contentFrom: from, contentTo: to });
+      continue;
+    }
+    if (m[13]) {
+      if (isValidInlineMathCandidate(lineText, m.index, m.index + m[0].length)) {
+        ranges.push({ from, to, contentFrom: from + 1, contentTo: to - 1 });
+      }
+      continue;
+    }
+    if (m[15]) {
+      ranges.push({ from, to, contentFrom: from + 2, contentTo: to - 2 });
+    }
+  }
+  return ranges;
+}
+
+function getRenderedLineBoundaries(view: EditorView, lineNumber: number): RenderedLineBoundaries {
+  try {
+    if (!view.state.facet(wysiwygKeepActiveLineRenderedFacet)) return { start: null, end: null };
+    if (shouldRevealSourceForSelectionLine(view, lineNumber)) return { start: null, end: null };
+    const line = view.state.doc.line(lineNumber);
+    const text = view.state.doc.sliceString(line.from, line.to);
+    if (isToolOrThinkingLine(text)) return { start: null, end: null };
+
+    let visibleStart = line.from;
+    let blockPrefixOffset = 0;
+    const quotePrefix = /^[ \t]*(?:>[ \t]*)+/.exec(text);
+    if (quotePrefix) blockPrefixOffset = quotePrefix[0].length;
+    const afterQuote = text.slice(blockPrefixOffset);
+    const taskListPrefix = /^([ \t]*)(?:[-+*]|\d+[.)])([ \t]+)\[[ xX]\]([ \t]+)/.exec(afterQuote);
+    const listPrefix = /^([ \t]*)(?:[-+*]|\d+[.)])([ \t]+)/.exec(afterQuote);
+    if (taskListPrefix) {
+      blockPrefixOffset += taskListPrefix[0].length;
+    } else if (listPrefix) {
+      blockPrefixOffset += listPrefix[0].length;
+    }
+    const afterList = text.slice(blockPrefixOffset);
+    const heading = /^([ \t]*)(#{1,6})([ \t]+)/.exec(afterList);
+    if (heading) blockPrefixOffset += heading[0].length;
+    visibleStart = line.from + blockPrefixOffset;
+
+    const inlineRanges = collectRenderedInlineRangesInLine(text, line.from, view.state.doc.length);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const range = inlineRanges.find((item) => item.from === visibleStart && item.contentFrom > visibleStart);
+      if (range && range.contentFrom <= range.contentTo) {
+        visibleStart = range.contentFrom;
+        changed = true;
+      }
+    }
+
+    let visibleEnd = line.to;
+    changed = true;
+    while (changed) {
+      changed = false;
+      const range = inlineRanges.find((item) => item.to === visibleEnd && item.contentTo < visibleEnd);
+      if (range && range.contentFrom <= range.contentTo) {
+        visibleEnd = range.contentTo;
+        changed = true;
+      }
+    }
+
+    return {
+      start: visibleStart !== line.from ? visibleStart : null,
+      end: visibleEnd !== line.to ? visibleEnd : null
+    };
+  } catch {
+    return { start: null, end: null };
+  }
+}
+
+function addNestedInlineDecorations(add: AddDecoration, state: EditorState, contentStart: number, content: string) {
   const nested = /(`([^`\n]+)`)|(!\[([^\]]*)\]\(([^)\n]+)\))|(\[([^\]]+)\]\(([^)\n]+)\))|(\$([^\$\n]+)\$)/g;
   let m: RegExpExecArray | null;
   while ((m = nested.exec(content)) !== null) {
     const start = contentStart + m.index;
     const end = start + m[0].length;
     if (m[1]) {
-      add(start, start + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      add(start, start + 1, hiddenSyntaxDecoration(state, start, start + 1));
       add(start + 1, end - 1, Decoration.mark({ class: "cm-md-code" }));
-      add(end - 1, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+      add(end - 1, end, hiddenSyntaxDecoration(state, end - 1, end));
       continue;
     }
     if (m[3]) {
       const alt = m[4] || "";
       const src = m[5] || "";
-      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-      add(start, start, Decoration.widget({
-        widget: new SimpleImageWidget(alt, src, "inline", start, end),
-        side: 1
-      }));
+      if (!selectionTouchesRange(state, start, end)) {
+        add(start, end, hiddenSyntaxDecoration(state, start, end));
+        add(start, start, Decoration.widget({
+          widget: new SimpleImageWidget(alt, src, "inline", start, end),
+          side: 1
+        }));
+      }
       continue;
     }
     if (m[6]) {
       const label = m[7] || "";
       const url = m[8] || "";
-      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-      add(start, start, Decoration.widget({ widget: new SimpleLinkWidget(label, url), side: 1 }));
+      if (!selectionTouchesRange(state, start, end)) {
+        add(start, end, hiddenSyntaxDecoration(state, start, end));
+        add(start, start, Decoration.widget({ widget: new SimpleLinkWidget(label, url), side: 1 }));
+      }
       continue;
     }
     if (m[9]) {
       const expr = m[10] || "";
       if (!isValidInlineMathCandidate(content, m.index, m.index + m[0].length)) continue;
-      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-      add(start, start, Decoration.widget({ widget: new MathWidget(expr, false), side: 1 }));
+      if (!selectionTouchesRange(state, start, end)) {
+        add(start, end, hiddenSyntaxDecoration(state, start, end));
+        add(start, start, Decoration.widget({ widget: new MathWidget(expr, false), side: 1 }));
+      }
     }
   }
 }
@@ -1332,13 +1507,13 @@ class HeadingWidget extends WidgetType {
 }
 
 class TaskWidget extends WidgetType {
-  constructor(private checked: boolean, private label: string) { super(); }
+  constructor(private checked: boolean, private label: string, private selected = false) { super(); }
   eq(other: TaskWidget) {
-    return other.checked === this.checked && other.label === this.label;
+    return other.checked === this.checked && other.label === this.label && other.selected === this.selected;
   }
   toDOM(view: EditorView) {
     const container = document.createElement("span");
-    container.className = "cm-md-task";
+    container.className = this.selected ? "cm-md-task cm-md-marker-selected" : "cm-md-task";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = !!this.checked;
@@ -1995,11 +2170,13 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
     if (group.items.length !== 1) continue;
     const item = group.items[0];
     if (!inViewport(view, item.from, item.to) || activeLines.has(item.lineNumber)) continue;
-    add(item.from, item.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
-    add(item.from, item.from, Decoration.widget({
-      widget: new SimpleImageWidget(item.alt, item.src, "solo", item.from, item.to),
-      side: 1
-    }));
+    if (!selectionTouchesRange(view.state, item.from, item.to)) {
+      add(item.from, item.to, hiddenSyntaxDecoration(view.state, item.from, item.to));
+      add(item.from, item.from, Decoration.widget({
+        widget: new SimpleImageWidget(item.alt, item.src, "solo", item.from, item.to),
+        side: 1
+      }));
+    }
   }
 
   // 1) Block-level via syntax tree (only for nodes within viewport)
@@ -2027,7 +2204,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
             const markerEnd = line.from + m[1].length + m[2].length + m[3].length;
             const isActive = activeLines.has(line.number);
             if (!isActive) {
-              add(line.from, markerEnd, Decoration.mark({ class: "cm-z-hide-heading-marker" }));
+              add(line.from, markerEnd, hiddenSyntaxDecoration(view.state, line.from, markerEnd, "cm-z-hide-heading-marker"));
             }
             const cls = `cm-md-heading cm-md-h${level}`;
             add(markerEnd, line.to, Decoration.mark({ class: cls }));
@@ -2042,10 +2219,13 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           const markerText = doc.sliceString(node.from, node.to);
           const checked = /\bx\b/i.test(markerText);
           if (!isActive) {
-            add(node.from, node.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
-            const line = doc.lineAt(node.to);
-            const rest = doc.sliceString(node.to, line.to).trimStart();
-            add(node.from, node.from, Decoration.widget({ widget: new TaskWidget(checked, rest), side: 1 }));
+            if (!collapsedSelectionTouchesRange(view.state, node.from, node.to)) {
+              const selected = nonEmptySelectionOverlapsRange(view.state, node.from, node.to);
+              add(node.from, node.to, hiddenSyntaxDecoration(view.state, node.from, node.to));
+              const line = doc.lineAt(node.to);
+              const rest = doc.sliceString(node.to, line.to).trimStart();
+              add(node.from, node.from, Decoration.widget({ widget: new TaskWidget(checked, rest, selected), side: 1 }));
+            }
           }
           return;
         }
@@ -2077,21 +2257,23 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
                 }
               })
             );
+            if (collapsedSelectionTouchesRange(view.state, replaceFrom, replaceTo)) return;
+            const selected = nonEmptySelectionOverlapsRange(view.state, replaceFrom, replaceTo);
             add(
               replaceFrom,
               replaceTo,
               Decoration.replace({
                 widget: new (class extends WidgetType {
-                  constructor(private txt: string) { super(); }
-                  eq(other: any) { return other.txt === this.txt; }
+                  constructor(private txt: string, private selected: boolean) { super(); }
+                  eq(other: any) { return other.txt === this.txt && other.selected === this.selected; }
                   toDOM() {
                     const s = document.createElement("span");
-                    s.className = /^[\d]/.test(this.txt) ? "cm-md-ol-num" : "cm-md-ul-bullet";
+                    s.className = `${/^[\d]/.test(this.txt) ? "cm-md-ol-num" : "cm-md-ul-bullet"}${this.selected ? " cm-md-marker-selected" : ""}`;
                     s.textContent = /^[\d]/.test(this.txt) ? `${this.txt.replace(/\./g, "")}.\u00A0` : "•\u00A0";
                     return s;
                   }
                   ignoreEvent() { return true; }
-                })(markerText),
+                })(markerText, selected),
                 side: 1
               })
             );
@@ -2157,7 +2339,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
               // Content is already visually styled by the line decoration.
             } else {
               if (markerLen > 0) {
-                add(l.from, l.from + markerLen, Decoration.mark({ class: "cm-z-hide-quote-marker" }));
+                add(l.from, l.from + markerLen, hiddenSyntaxDecoration(view.state, l.from, l.from + markerLen, "cm-z-hide-quote-marker"));
               }
             }
           }
@@ -2173,9 +2355,9 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         if (name === "HorizontalRule") {
           const line = doc.lineAt(from);
           const isActive = activeLines.has(line.number);
-          if (!isActive) {
+          if (!isActive && !selectionTouchesRange(view.state, line.from, line.to)) {
             // Hide the original markers (keep mapping stable)
-            add(line.from, line.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
+            add(line.from, line.to, hiddenSyntaxDecoration(view.state, line.from, line.to));
             // Apply a line-level class so the line's padding/height can be controlled by CSS
             add(line.from, line.from, Decoration.line({ class: "cm-md-hr-line" }));
           }
@@ -2212,6 +2394,9 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
     for (let ln = fromLineNum; ln <= toLineNum; ln++) {
       if (activeLines.has(ln)) { anyActive = true; break; }
     }
+    if (!anyActive && selectionTouchesRange(view.state, block.from, block.to)) {
+      anyActive = true;
+    }
 
     const lang = block.lang;
     const isDiagram = lang === "mermaid" || lang === "plantuml" || lang === "puml" || lang === "svg";
@@ -2227,7 +2412,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         diagramType = "svg";
       }
       if (!expandedDiagrams.has(diagramFrom)) {
-        add(block.from, block.from + (firstLine.to - firstLine.from) + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
+        add(block.from, block.from + (firstLine.to - firstLine.from) + 1, hiddenSyntaxDecoration(view.state, block.from, block.from + (firstLine.to - firstLine.from) + 1));
         add(
           block.from,
           block.from,
@@ -2295,10 +2480,10 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           // active line: render content style, keep markers visible
           add(start + 2, end - 2, Decoration.mark({ class: "cm-md-strong" }));
         } else {
-          add(start, start + 2, Decoration.mark({ class: "cm-z-hide-syntax" }));
+          add(start, start + 2, hiddenSyntaxDecoration(view.state, start, start + 2));
           add(start + 2, end - 2, Decoration.mark({ class: "cm-md-strong" }));
-          addNestedInlineDecorations(add, start + 2, m[2] || "");
-          add(end - 2, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+          addNestedInlineDecorations(add, view.state, start + 2, m[2] || "");
+          add(end - 2, end, hiddenSyntaxDecoration(view.state, end - 2, end));
         }
         continue;
       }
@@ -2315,10 +2500,10 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         if (isActive) {
           add(start + 1, end - 1, Decoration.mark({ class: "cm-md-em" }));
         } else {
-          add(start, start + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
+          add(start, start + 1, hiddenSyntaxDecoration(view.state, start, start + 1));
           add(start + 1, end - 1, Decoration.mark({ class: "cm-md-em" }));
-          addNestedInlineDecorations(add, start + 1, m[4] || "");
-          add(end - 1, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+          addNestedInlineDecorations(add, view.state, start + 1, m[4] || "");
+          add(end - 1, end, hiddenSyntaxDecoration(view.state, end - 1, end));
         }
         continue;
       }
@@ -2327,9 +2512,9 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         if (isActive) {
           add(start + 1, end - 1, Decoration.mark({ class: "cm-md-code" }));
         } else {
-          add(start, start + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
+          add(start, start + 1, hiddenSyntaxDecoration(view.state, start, start + 1));
           add(start + 1, end - 1, Decoration.mark({ class: "cm-md-code" }));
-          add(end - 1, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+          add(end - 1, end, hiddenSyntaxDecoration(view.state, end - 1, end));
         }
         continue;
       }
@@ -2345,8 +2530,16 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
             add(labelStart, labelEnd, Decoration.mark({ class: "cm-md-link" }));
           }
         } else {
-          add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-          add(start, start, Decoration.widget({ widget: new SimpleLinkWidget(label, url), side: 1 }));
+          if (!selectionTouchesRange(view.state, start, end)) {
+            add(start, end, hiddenSyntaxDecoration(view.state, start, end));
+            add(start, start, Decoration.widget({ widget: new SimpleLinkWidget(label, url), side: 1 }));
+          } else {
+            const labelStart = start + 1;
+            const labelEnd = labelStart + label.length;
+            if (label.length > 0) {
+              add(labelStart, labelEnd, Decoration.mark({ class: "cm-md-link" }));
+            }
+          }
         }
         continue;
       }
@@ -2358,11 +2551,13 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         if (isActive) {
           // active line: keep raw markdown
         } else {
-          add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-          add(start, start, Decoration.widget({
-            widget: new SimpleImageWidget(alt, src, "inline", start, end),
-            side: 1
-          }));
+          if (!selectionTouchesRange(view.state, start, end)) {
+            add(start, end, hiddenSyntaxDecoration(view.state, start, end));
+            add(start, start, Decoration.widget({
+              widget: new SimpleImageWidget(alt, src, "inline", start, end),
+              side: 1
+            }));
+          }
         }
         continue;
       }
@@ -2373,8 +2568,10 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         if (isActive) {
           // active line: keep raw markdown (no widget to avoid duplication)
         } else {
-          add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-          add(start, start, Decoration.widget({ widget: new MathWidget(expr, false), side: 1 }));
+          if (!selectionTouchesRange(view.state, start, end)) {
+            add(start, end, hiddenSyntaxDecoration(view.state, start, end));
+            add(start, start, Decoration.widget({ widget: new MathWidget(expr, false), side: 1 }));
+          }
         }
         continue;
       }
@@ -2383,10 +2580,10 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         if (isActive) {
           add(start + 2, end - 2, Decoration.mark({ class: "cm-md-strike" }));
         } else {
-          add(start, start + 2, Decoration.mark({ class: "cm-z-hide-syntax" }));
+          add(start, start + 2, hiddenSyntaxDecoration(view.state, start, start + 2));
           add(start + 2, end - 2, Decoration.mark({ class: "cm-md-strike" }));
-          addNestedInlineDecorations(add, start + 2, m[16] || "");
-          add(end - 2, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
+          addNestedInlineDecorations(add, view.state, start + 2, m[16] || "");
+          add(end - 2, end, hiddenSyntaxDecoration(view.state, end - 2, end));
         }
         continue;
       }
@@ -2400,7 +2597,7 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       if (activeLines.has(line.number)) continue;
       if (isToolOrThinkingLine(doc.sliceString(line.from, line.to))) continue;
       if (ESCAPABLE_MARKDOWN_RE.test(m[1] || "")) {
-        add(start, start + 1, Decoration.mark({ class: "cm-z-hide-syntax" }));
+        add(start, start + 1, hiddenSyntaxDecoration(view.state, start, start + 1));
       }
     }
 
@@ -2412,8 +2609,10 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       const line = doc.lineAt(start);
       if (activeLines.has(line.number)) continue;
       if (isToolOrThinkingLine(doc.sliceString(line.from, line.to))) continue;
-      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-      add(start, start, Decoration.widget({ widget: new KbdWidget(m[1] || ""), side: 1 }));
+      if (!selectionTouchesRange(view.state, start, end)) {
+        add(start, end, hiddenSyntaxDecoration(view.state, start, end));
+        add(start, start, Decoration.widget({ widget: new KbdWidget(m[1] || ""), side: 1 }));
+      }
     }
 
     const footnoteRef = /\[\^([^\]\s]+)\](?!:)/g;
@@ -2424,8 +2623,10 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
       const line = doc.lineAt(start);
       if (activeLines.has(line.number)) continue;
       if (isToolOrThinkingLine(doc.sliceString(line.from, line.to))) continue;
-      add(start, end, Decoration.mark({ class: "cm-z-hide-syntax" }));
-      add(start, start, Decoration.widget({ widget: new FootnoteRefWidget(m[1] || ""), side: 1 }));
+      if (!selectionTouchesRange(view.state, start, end)) {
+        add(start, end, hiddenSyntaxDecoration(view.state, start, end));
+        add(start, start, Decoration.widget({ widget: new FootnoteRefWidget(m[1] || ""), side: 1 }));
+      }
     }
 
     // 2.2 line-level fallback decorations that are safe to keep viewport-local.
@@ -2444,8 +2645,10 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
         add(line.from, line.from, Decoration.line({ class: "cm-md-footnote-def-line" }));
         if (!activeLines.has(ln)) {
           const markerLen = footnoteDefMatch[0].length;
-          add(line.from, line.from + markerLen, Decoration.mark({ class: "cm-z-hide-syntax" }));
-          add(line.from, line.from, Decoration.widget({ widget: new FootnoteRefWidget(footnoteDefMatch[1] || ""), side: 1 }));
+          if (!selectionTouchesRange(view.state, line.from, line.from + markerLen)) {
+            add(line.from, line.from + markerLen, hiddenSyntaxDecoration(view.state, line.from, line.from + markerLen));
+            add(line.from, line.from, Decoration.widget({ widget: new FootnoteRefWidget(footnoteDefMatch[1] || ""), side: 1 }));
+          }
         }
         ln++;
         continue;
@@ -2516,12 +2719,16 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           for (let n = ln; n <= endFenceLn; n++) {
             if (activeLines.has(n)) { anyActive = true; break; }
           }
+          const blockTo = doc.line(endFenceLn).to;
+          if (!anyActive && selectionTouchesRange(view.state, line.from, blockTo)) {
+            anyActive = true;
+          }
 
           if (!anyActive) {
             // hide all lines and collapse middle lines
             for (let hideLn = ln; hideLn <= endFenceLn; hideLn++) {
               const hline = doc.line(hideLn);
-              add(hline.from, hline.to, Decoration.mark({ class: "cm-z-hide-syntax" }));
+              add(hline.from, hline.to, hiddenSyntaxDecoration(view.state, hline.from, hline.to));
               if (hideLn > ln) {
                 add(hline.from, hline.from, Decoration.line({ class: "cm-md-diagram-hiddenline" }));
               }
@@ -2600,11 +2807,119 @@ export function canMapWysiwygDecorations(update: ViewUpdate): boolean {
   return safe;
 }
 
+type WysiwygRect = { left: number; right: number; top: number; bottom: number };
+
+function validCaretRect(rect: WysiwygRect | null): WysiwygRect | null {
+  if (!rect) return null;
+  if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top) || !Number.isFinite(rect.bottom)) return null;
+  if (rect.bottom <= rect.top) return null;
+  return rect;
+}
+
+function getRenderedBoundaryCursorRect(view: EditorView): { rect: WysiwygRect; side: "start" | "end"; pos: number } | null {
+  try {
+    if (!view.hasFocus) return null;
+    if (!view.state.facet(wysiwygKeepActiveLineRenderedFacet)) return null;
+    const range = view.state.selection.main;
+    const line = view.state.doc.lineAt(range.head);
+    const boundaries = getRenderedLineBoundaries(view, line.number);
+    if (boundaries.start != null && (range.head === boundaries.start || range.head === line.from)) {
+      const rect = validCaretRect(view.coordsAtPos(boundaries.start, 1));
+      return rect ? { rect, side: "start", pos: boundaries.start } : null;
+    }
+    if (boundaries.end != null && (range.head === boundaries.end || range.head === line.to)) {
+      const visibleCharPos = Math.max(line.from, boundaries.end - 1);
+      const rect = validCaretRect(view.coordsAtPos(boundaries.end, -1))
+        || validCaretRect(view.coordsAtPos(visibleCharPos, 1));
+      return rect ? { rect, side: "end", pos: boundaries.end } : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getRenderedHorizontalMotionTarget(view: EditorView, direction: -1 | 1): { pos: number; assoc: -1 | 1 } | null {
+  try {
+    if (!view.state.facet(wysiwygKeepActiveLineRenderedFacet)) return null;
+    const { state } = view;
+    const range = state.selection.main;
+    const head = range.head;
+    const line = state.doc.lineAt(head);
+    const boundaries = getRenderedLineBoundaries(view, line.number);
+    const previousVisibleEnd = () => {
+      if (line.number <= 1) {
+        return boundaries.start != null ? { pos: boundaries.start, assoc: 1 as const } : null;
+      }
+      const previousLine = state.doc.line(line.number - 1);
+      const previousBoundaries = getRenderedLineBoundaries(view, previousLine.number);
+      return { pos: previousBoundaries.end ?? previousLine.to, assoc: -1 as const };
+    };
+    const nextVisibleStart = () => {
+      if (line.number >= state.doc.lines) {
+        return boundaries.end != null ? { pos: boundaries.end, assoc: -1 as const } : null;
+      }
+      const nextLine = state.doc.line(line.number + 1);
+      const nextBoundaries = getRenderedLineBoundaries(view, nextLine.number);
+      return { pos: nextBoundaries.start ?? nextLine.from, assoc: 1 as const };
+    };
+
+    if (direction > 0) {
+      if (boundaries.start != null && head < boundaries.start) {
+        return { pos: boundaries.start, assoc: 1 };
+      }
+      if (boundaries.end != null && head >= boundaries.end) {
+        return nextVisibleStart();
+      }
+      if (head >= line.to) {
+        const target = nextVisibleStart();
+        if (target && target.pos !== head) return target;
+      }
+      return null;
+    }
+
+    if (boundaries.end != null && head > boundaries.end) {
+      return { pos: boundaries.end, assoc: -1 };
+    }
+    if (boundaries.start != null && head <= boundaries.start) {
+      return previousVisibleEnd();
+    }
+    if (head <= line.from) {
+      const target = previousVisibleEnd();
+      if (target && target.pos !== head) return target;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getRenderedEnterSourcePos(view: EditorView): { pos: number; side: "start" | "end" } | null {
+  try {
+    if (!view.state.facet(wysiwygKeepActiveLineRenderedFacet)) return null;
+    const range = view.state.selection.main;
+    if (!range.empty) return null;
+    const line = view.state.doc.lineAt(range.head);
+    const boundaries = getRenderedLineBoundaries(view, line.number);
+    if (boundaries.start != null && range.head === boundaries.start) {
+      return { pos: line.from, side: "start" };
+    }
+    if (boundaries.end != null && range.head === boundaries.end) {
+      return { pos: line.to, side: "end" };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /* ViewPlugin: incremental rebuilds */
 const wysiwygPlugin = ViewPlugin.fromClass(class {
   decorations: any;
   expandedDiagrams = new Set<number>();
   rawTables = new Set<number>();
+  boundaryCursor: HTMLElement | null = null;
+  boundaryCursorFrame = 0;
 
   constructor(view: EditorView) {
     try {
@@ -2614,6 +2929,47 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
       this.decorations = Decoration.none;
     }
     this.bindEvents(view);
+    this.scheduleBoundaryCursor(view);
+  }
+
+  ensureBoundaryCursor(view: EditorView): HTMLElement {
+    if (this.boundaryCursor) return this.boundaryCursor;
+    const cursor = document.createElement("div");
+    cursor.className = "cm-cursor cm-cursor-primary cm-z-boundary-cursor";
+    cursor.setAttribute("aria-hidden", "true");
+    cursor.style.display = "none";
+    view.dom.appendChild(cursor);
+    this.boundaryCursor = cursor;
+    return cursor;
+  }
+
+  hideBoundaryCursor(): void {
+    if (this.boundaryCursor) this.boundaryCursor.style.display = "none";
+  }
+
+  scheduleBoundaryCursor(view: EditorView): void {
+    if (this.boundaryCursorFrame) cancelAnimationFrame(this.boundaryCursorFrame);
+    this.boundaryCursorFrame = requestAnimationFrame(() => {
+      this.boundaryCursorFrame = 0;
+      this.updateBoundaryCursor(view);
+    });
+  }
+
+  updateBoundaryCursor(view: EditorView): void {
+    const boundary = getRenderedBoundaryCursorRect(view);
+    if (!boundary) {
+      this.hideBoundaryCursor();
+      return;
+    }
+    const rootRect = view.dom.getBoundingClientRect();
+    const cursor = this.ensureBoundaryCursor(view);
+    const height = Math.max(12, boundary.rect.bottom - boundary.rect.top);
+    cursor.style.display = "block";
+    cursor.style.left = `${boundary.rect.left - rootRect.left}px`;
+    cursor.style.top = `${boundary.rect.top - rootRect.top}px`;
+    cursor.style.height = `${height}px`;
+    cursor.dataset.side = boundary.side;
+    cursor.dataset.pos = String(boundary.pos);
   }
 
   bindEvents(view: EditorView) {
@@ -2648,85 +3004,154 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
     };
     window.addEventListener("focus", onFocus);
 
-    const readHeadingClick = (ev: MouseEvent | PointerEvent) => {
+    const onEditorFocus = () => this.scheduleBoundaryCursor(view);
+    const onEditorBlur = () => this.hideBoundaryCursor();
+    view.dom.addEventListener("focusin", onEditorFocus, true);
+    view.dom.addEventListener("focusout", onEditorBlur, true);
+
+    const readRenderedBoundaryClick = (ev: MouseEvent | PointerEvent) => {
       const pos = view.posAtCoords({ x: ev.clientX, y: ev.clientY });
       if (pos == null) return null;
       const line = view.state.doc.lineAt(pos);
-      const text = view.state.doc.sliceString(line.from, line.to);
-      const match = /^([ \t]*#{1,6}[ \t]+)/.exec(text);
-      if (!match) return null;
-      const markerEnd = line.from + match[1].length;
+      const boundaries = getRenderedLineBoundaries(view, line.number);
+      const start = boundaries.start;
+      const end = boundaries.end;
+      if (start == null && end == null) return null;
+      let target: number | null = null;
+      let targetAssoc: -1 | 1 = 1;
+      if (start != null) {
+        const startRect = view.coordsAtPos(start);
+        const firstCharEndRect = start < line.to ? view.coordsAtPos(start + 1) : null;
+        const startX = startRect?.left ?? startRect?.right ?? null;
+        const firstCharEndX = firstCharEndRect?.left ?? firstCharEndRect?.right ?? null;
+        const firstCharMidX = startX != null && firstCharEndX != null ? (startX + firstCharEndX) / 2 : null;
+        if (pos < start || (pos === start + 1 && firstCharMidX != null && ev.clientX <= firstCharMidX)) {
+          target = start;
+          targetAssoc = 1;
+        }
+      }
+      if (target == null && end != null) {
+        const endRect = view.coordsAtPos(end);
+        const lastCharStartRect = end > line.from ? view.coordsAtPos(end - 1) : null;
+        const endX = endRect?.left ?? endRect?.right ?? null;
+        const lastCharStartX = lastCharStartRect?.left ?? lastCharStartRect?.right ?? null;
+        const lastCharMidX = endX != null && lastCharStartX != null ? (endX + lastCharStartX) / 2 : null;
+        if (pos > end || (pos === end - 1 && lastCharMidX != null && ev.clientX >= lastCharMidX)) {
+          target = end;
+          targetAssoc = -1;
+        }
+      }
+      if (target == null) return null;
       return {
         pos,
         line,
-        markerEnd,
-        markerEndRect: view.coordsAtPos(markerEnd),
-        firstCharEndRect: markerEnd < line.to ? view.coordsAtPos(markerEnd + 1) : null
+        target,
+        targetAssoc
       };
     };
-    const onHeadingPointerEvent = (ev: MouseEvent | PointerEvent) => {
+    const onRenderedBoundaryPointerEvent = (ev: MouseEvent | PointerEvent) => {
       try {
-        const hit = readHeadingClick(ev);
+        const hit = readRenderedBoundaryClick(ev);
         if (!hit) return;
         const keepRendered = view.state.facet(wysiwygKeepActiveLineRenderedFacet);
-        const markerEndX = hit.markerEndRect?.left ?? hit.markerEndRect?.right ?? null;
-        const firstCharEndX = hit.firstCharEndRect?.left ?? hit.firstCharEndRect?.right ?? null;
-        const firstCharMidX = markerEndX != null && firstCharEndX != null ? (markerEndX + firstCharEndX) / 2 : null;
-        const isBeforeOrLeftHalfOfFirstChar = hit.pos < hit.markerEnd
-          || (hit.pos === hit.markerEnd + 1 && firstCharMidX != null && ev.clientX <= firstCharMidX);
         const shouldNormalize = keepRendered
           && ev.button === 0
           && !ev.shiftKey
           && !ev.metaKey
           && !ev.ctrlKey
-          && !ev.altKey
-          && isBeforeOrLeftHalfOfFirstChar;
+          && !ev.altKey;
         if (shouldNormalize) {
           ev.preventDefault();
           ev.stopPropagation();
           view.focus();
-          view.dispatch({ selection: { anchor: hit.markerEnd } });
+          view.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(hit.target, hit.targetAssoc)]) });
           return;
         }
       } catch {}
     };
-    view.dom.addEventListener("pointerdown", onHeadingPointerEvent, true);
-    view.dom.addEventListener("mousedown", onHeadingPointerEvent, true);
-    view.dom.addEventListener("mouseup", onHeadingPointerEvent, true);
-    view.dom.addEventListener("click", onHeadingPointerEvent, true);
+    view.dom.addEventListener("pointerdown", onRenderedBoundaryPointerEvent, true);
+    view.dom.addEventListener("mousedown", onRenderedBoundaryPointerEvent, true);
+    view.dom.addEventListener("mouseup", onRenderedBoundaryPointerEvent, true);
+    view.dom.addEventListener("click", onRenderedBoundaryPointerEvent, true);
 
-    const onHeadingKeyDown = (ev: KeyboardEvent) => {
+    const onRenderedBoundaryKeyDown = (ev: KeyboardEvent) => {
       try {
-        if (ev.key !== " " || ev.metaKey || ev.ctrlKey || ev.altKey) return;
         if (!view.state.facet(wysiwygKeepActiveLineRenderedFacet)) return;
         const range = view.state.selection.main;
-        if (!range.empty) return;
         const line = view.state.doc.lineAt(range.head);
         const text = view.state.doc.sliceString(line.from, line.to);
-        const match = /^([ \t]*#{1,6}[ \t]+)/.exec(text);
-        if (!match) return;
-        const contentStart = line.from + match[1].length;
-        if (range.head !== contentStart) return;
+        if (ev.key === "Enter" && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+          const target = getRenderedEnterSourcePos(view);
+          if (!target) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          view.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(target.pos, target.side === "start" ? 1 : -1)]) });
+          insertNewlineContinueMarkup(view) || insertNewlineAndIndent(view);
+          return;
+        }
+        if (ev.key === " " && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+          if (!range.empty) return;
+          const match = /^([ \t]*#{1,6}[ \t]+)/.exec(text);
+          if (!match) return;
+          const contentStart = line.from + match[1].length;
+          if (range.head !== contentStart) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          view.dispatch({
+            changes: { from: range.head, to: range.head, insert: "\u00a0" },
+            selection: { anchor: range.head + 1 },
+            annotations: Transaction.userEvent.of("input.type")
+          });
+          return;
+        }
+        if (!range.empty && !ev.shiftKey) return;
+        const plainArrowKey = !ev.metaKey && !ev.ctrlKey && !ev.altKey && (ev.key === "ArrowLeft" || ev.key === "ArrowRight");
+        if (plainArrowKey) {
+          const target = getRenderedHorizontalMotionTarget(view, ev.key === "ArrowRight" ? 1 : -1);
+          if (!target) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          const nextRange = ev.shiftKey && range.anchor !== target.pos
+            ? EditorSelection.range(range.anchor, target.pos)
+            : EditorSelection.cursor(target.pos, target.assoc);
+          view.dispatch({ selection: EditorSelection.create([nextRange]) });
+          return;
+        }
+        const homeEndKey = ev.key === "Home" || ev.key === "End";
+        const commandArrowKey = ev.metaKey && !ev.ctrlKey && !ev.altKey && (ev.key === "ArrowLeft" || ev.key === "ArrowRight");
+        if (!homeEndKey && !commandArrowKey) return;
+        if (homeEndKey && (ev.metaKey || ev.ctrlKey || ev.altKey)) return;
+        const boundaries = getRenderedLineBoundaries(view, line.number);
+        const movesToStart = ev.key === "Home" || ev.key === "ArrowLeft";
+        const target = movesToStart ? boundaries.start : boundaries.end;
+        if (target == null) return;
+        const targetAssoc = movesToStart ? 1 : -1;
+        if (!ev.shiftKey && range.empty && target === range.head && range.assoc === targetAssoc) return;
         ev.preventDefault();
         ev.stopPropagation();
-        view.dispatch({
-          changes: { from: range.head, to: range.head, insert: "\u00a0" },
-          selection: { anchor: range.head + 1 },
-          annotations: Transaction.userEvent.of("input.type")
-        });
+        const nextRange = ev.shiftKey && range.anchor !== target
+          ? EditorSelection.range(range.anchor, target)
+          : EditorSelection.cursor(target, targetAssoc);
+        view.dispatch({ selection: EditorSelection.create([nextRange]) });
       } catch {}
     };
-    view.dom.addEventListener("keydown", onHeadingKeyDown, true);
+    view.dom.addEventListener("keydown", onRenderedBoundaryKeyDown, true);
 
     (view as any)._wysiwyg_cleanup = () => {
       try { mo.disconnect(); } catch {}
+      if (this.boundaryCursorFrame) cancelAnimationFrame(this.boundaryCursorFrame);
+      this.boundaryCursorFrame = 0;
+      this.boundaryCursor?.remove();
+      this.boundaryCursor = null;
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
-      view.dom.removeEventListener("pointerdown", onHeadingPointerEvent, true);
-      view.dom.removeEventListener("mousedown", onHeadingPointerEvent, true);
-      view.dom.removeEventListener("mouseup", onHeadingPointerEvent, true);
-      view.dom.removeEventListener("click", onHeadingPointerEvent, true);
-      view.dom.removeEventListener("keydown", onHeadingKeyDown, true);
+      view.dom.removeEventListener("focusin", onEditorFocus, true);
+      view.dom.removeEventListener("focusout", onEditorBlur, true);
+      view.dom.removeEventListener("pointerdown", onRenderedBoundaryPointerEvent, true);
+      view.dom.removeEventListener("mousedown", onRenderedBoundaryPointerEvent, true);
+      view.dom.removeEventListener("mouseup", onRenderedBoundaryPointerEvent, true);
+      view.dom.removeEventListener("click", onRenderedBoundaryPointerEvent, true);
+      view.dom.removeEventListener("keydown", onRenderedBoundaryKeyDown, true);
     };
   }
 
@@ -2787,6 +3212,7 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
     if (needRebuild || selectionOnly || collapsed) {
       if (update.docChanged && !refresh && !collapsed && canMapWysiwygDecorations(update)) {
         this.decorations = this.decorations.map(update.changes);
+        this.scheduleBoundaryCursor(update.view);
         return;
       }
       const activeLines = getSourceRevealLines(update.view);
@@ -2796,6 +3222,9 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
         console.error("[wysiwyg] buildDecorations (update) error", e);
         this.decorations = Decoration.none;
       }
+    }
+    if (update.selectionSet || update.geometryChanged || update.viewportChanged || update.docChanged) {
+      this.scheduleBoundaryCursor(update.view);
     }
   }
 
@@ -2826,40 +3255,79 @@ function isIncompleteMarkdownStructureLine(lineText: string): boolean {
     || /^(- \[[ xX]?\])\s*$/.test(text);
 }
 
-function hasUnfinishedInlineMarkdown(lineText: string): boolean {
+function maskClosedInlineCodeSpans(text: string): { text: string; hasUnclosedCodeSpan: boolean; tickCount: number } {
+  const chars = Array.from(text);
+  const tickCount = chars.filter((ch) => ch === "`").length;
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] !== "`") continue;
+    let runEnd = i + 1;
+    while (runEnd < chars.length && chars[runEnd] === "`") runEnd++;
+    const runLength = runEnd - i;
+    let closeStart = runEnd;
+    let found = false;
+    while (closeStart < chars.length) {
+      if (chars[closeStart] !== "`") {
+        closeStart++;
+        continue;
+      }
+      let closeEnd = closeStart + 1;
+      while (closeEnd < chars.length && chars[closeEnd] === "`") closeEnd++;
+      if (closeEnd - closeStart === runLength) {
+        for (let k = i; k < closeEnd; k++) chars[k] = " ";
+        i = closeEnd - 1;
+        found = true;
+        break;
+      }
+      closeStart = closeEnd;
+    }
+    if (!found) return { text: chars.join(""), hasUnclosedCodeSpan: true, tickCount };
+  }
+  return { text: chars.join(""), hasUnclosedCodeSpan: false, tickCount };
+}
+
+function getInlineMarkdownCompletionDiagnostics(lineText: string) {
   const withoutEscaped = lineText.replace(/\\./g, "");
-  const ticks = (withoutEscaped.match(/`/g) || []).length;
-  if (ticks % 2 === 1) return true;
-  if (/!?\[[^\]]*$/.test(withoutEscaped)) return true;
-  if (/!?\[[^\]]+\]\([^)]*$/.test(withoutEscaped)) return true;
-  const boldDelimiters = (withoutEscaped.match(/\*\*/g) || []).length;
-  if (boldDelimiters % 2 === 1) return true;
-  const strikeDelimiters = (withoutEscaped.match(/~~/g) || []).length;
-  if (strikeDelimiters % 2 === 1) return true;
-  return false;
+  const codeMasked = maskClosedInlineCodeSpans(withoutEscaped);
+  const markdownText = codeMasked.text;
+  const hasOpenBracket = /!?\[[^\]]*$/.test(markdownText);
+  const hasOpenLinkParen = /!?\[[^\]]+\]\([^)]*$/.test(markdownText);
+  const boldDelimiters = (markdownText.match(/\*\*/g) || []).length;
+  const strikeDelimiters = (markdownText.match(/~~/g) || []).length;
+  return {
+    tickCount: codeMasked.tickCount,
+    hasOddTicks: codeMasked.tickCount % 2 === 1,
+    hasUnclosedCodeSpan: codeMasked.hasUnclosedCodeSpan,
+    hasOpenBracket,
+    hasOpenLinkParen,
+    boldDelimiterCount: boldDelimiters,
+    hasOddBoldDelimiters: boldDelimiters % 2 === 1,
+    strikeDelimiterCount: strikeDelimiters,
+    hasOddStrikeDelimiters: strikeDelimiters % 2 === 1,
+    unfinished: codeMasked.hasUnclosedCodeSpan
+      || hasOpenBracket
+      || hasOpenLinkParen
+      || boldDelimiters % 2 === 1
+      || strikeDelimiters % 2 === 1
+  };
+}
+
+function hasUnfinishedInlineMarkdown(lineText: string): boolean {
+  return getInlineMarkdownCompletionDiagnostics(lineText).unfinished;
 }
 
 function shouldRevealSourceForSelectionLine(view: EditorView, lineNumber: number): boolean {
   const line = view.state.doc.line(lineNumber);
   const text = view.state.doc.sliceString(line.from, line.to);
   const incomplete = isIncompleteMarkdownStructureLine(text);
-  const unfinished = hasUnfinishedInlineMarkdown(text);
-  const reveal = incomplete || unfinished;
-  return reveal;
+  const inlineDiagnostics = getInlineMarkdownCompletionDiagnostics(text);
+  const unfinished = inlineDiagnostics.unfinished;
+  return incomplete || unfinished;
 }
 
 export function getRenderedLineVisibleCursorPos(view: EditorView, lineNumber: number): number | null {
   try {
-    if (!view.state.facet(wysiwygKeepActiveLineRenderedFacet)) return null;
-    if (shouldRevealSourceForSelectionLine(view, lineNumber)) return null;
-    const line = view.state.doc.line(lineNumber);
-    const text = view.state.doc.sliceString(line.from, line.to);
-    const heading = /^([ \t]*)(#{1,6})([ \t]+)/.exec(text);
-    if (heading) {
-      const pos = line.from + heading[0].length;
-      return pos <= line.to ? pos : line.to;
-    }
-    return null;
+    const boundary = getRenderedLineBoundaries(view, lineNumber);
+    return boundary.start;
   } catch {
     return null;
   }

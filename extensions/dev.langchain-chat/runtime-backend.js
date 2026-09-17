@@ -22,8 +22,8 @@ export const DEFAULT_INTERACTIVE_RUNTIME_PROFILE_ID = "interactive.default";
 const INTERACTIVE_PROJECTION_OPTIONS = Object.freeze({
   mode: "projection",
   reasoningMode: "stream",
-  maxDelayMs: 200,
-  maxChunkChars: 1_024
+  maxDelayMs: 50,
+  maxChunkChars: 256
 });
 
 const RUNTIME_SUPPORTED_TOOLS = new Set([

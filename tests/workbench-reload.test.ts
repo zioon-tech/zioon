@@ -36,16 +36,12 @@ function repoFixture(initial = {}, loader = vi.fn()) {
 afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
-  delete (globalThis as any).__zionReloadProbe;
 });
 
 describe("Workbench reload lifecycle", () => {
   it("registers the complete catalog before dependency-ordered activation", async () => {
     localStorage.setItem("zion.pluginStates", JSON.stringify({ enabled: ["chat", "sessions", "removed"], disabled: ["off"] }));
     const manager = new PluginManager({ pluginDir: "", logLevel: "error" });
-    if (process.env.ZION_RELOAD_PROBE) {
-      (globalThis as any).__zionReloadProbe = { url: process.env.ZION_RELOAD_PROBE, phase: "post-fix" };
-    }
     const activated: string[] = [];
     vi.spyOn((manager as any).loader, "loadModule").mockImplementation(async (info: any) => ({
       activate: () => {

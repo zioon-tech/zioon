@@ -761,9 +761,6 @@ function createPanel({
         if (runRow) {
           selectedRun = runRow.dataset.runId;
           selectedRunDetail = null;
-          // #region debug-point B:scheduler-history-selection
-          try { const probe = globalThis.__zionScheduledSurfaceProbe; const selected = store.getRun(selectedRun); if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "pre-fix", hypothesisId: "B", location: "extensions/dev.scheduler/main.js:history-click", msg: "[DEBUG] Scheduler history row selected", data: { selectedRun, found: !!selected, isSummary: selected?.isSummary === true, status: selected?.status || null, eventCount: selected?.events?.length || 0, outputLength: String(selected?.output || "").length }, ts: Date.now() }) }).catch(() => {}); } catch {}
-          // #endregion
           mode = "run";
           render();
           if (store.getRun(selectedRun)?.isSummary === true) {
@@ -825,9 +822,6 @@ function createPanel({
           const run = selectedRunDetail?.id === selectedRun
             ? selectedRunDetail
             : store.getRun(selectedRun);
-          // #region debug-point B:scheduler-history-render
-          try { const probe = globalThis.__zionScheduledSurfaceProbe; if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "pre-fix", hypothesisId: "B", location: "extensions/dev.scheduler/main.js:detail-render", msg: "[DEBUG] Scheduler detail render resolved store record", data: { selectedRun, found: !!run, isSummary: run?.isSummary === true, status: run?.status || null, eventCount: run?.events?.length || 0, outputLength: String(run?.output || "").length }, ts: Date.now() }) }).catch(() => {}); } catch {}
-          // #endregion
           if (!run) { mode = "list"; render(); return; }
           const status = run.status || "unknown";
           const loadingDetails = run.isSummary === true;
@@ -1087,9 +1081,6 @@ export async function activate(ctx) {
       events: []
     };
     store.saveRun(run);
-    // #region debug-point C:scheduled-run-owned-by-scheduler
-    try { const probe = globalThis.__zionScheduledSurfaceProbe; if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "post-fix", hypothesisId: "C", location: "extensions/dev.scheduler/main.js:runTask", msg: "[DEBUG] Browser Scheduler run remains outside the Workbench session tree", data: { schedulerRunId: run.id, schedulerTaskId: task.id, workbenchSessionId: null }, ts: Date.now() }) }).catch(() => {}); } catch {}
-    // #endregion
     emitChanged();
 
     const appendEvent = async (type, data = {}) => {

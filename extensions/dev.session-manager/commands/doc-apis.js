@@ -193,9 +193,6 @@ export function registerSessionDocCommands(opts) {
       return enqueueDocWrite(id, async () => {
         const doc = await loadDocAsync(id);
         const next = ensureAssistantBlockInDoc(doc, assistantBlockId);
-        // #region debug-point B:ensure-assistant-document-write
-        globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"B",location:"extensions/dev.session-manager/commands/doc-apis.js:ensureAssistantBlock",msg:"[DEBUG] Ensuring an assistant block will update the durable document",data:{runtimeSessionId:String(id),runtimeRunId:String(assistantBlockId),beforeLength:String(doc||"").length,beforeRoles:Array.from(String(doc||"").matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),afterLength:String(next||"").length,afterRoles:Array.from(String(next||"").matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]),changed:next!==doc},ts:Date.now()}),keepalive:true}).catch(()=>{});
-        // #endregion
         return applyDocText(id, next);
       });
     });

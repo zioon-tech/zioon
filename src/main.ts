@@ -3940,9 +3940,6 @@ async function bootstrap() {
   };
   ensureEditorSlotForSession = (panelId: string, sessionId: string, seedText = "") => {
     const existing = panelEditorSlots.get(panelId)?.get(sessionId) || null;
-    // #region debug-point C:ensure-editor-slot
-    void globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"C",location:"src/main.ts:ensureEditorSlotForSession",msg:"[DEBUG] Workbench ensured an editor slot for a Session",data:{panelId,editorSessionId:sessionId,existing:!!existing,seedLength:String(seedText||"").length,panelExists:!!panelManager.getPanel(panelId),activeTabId:panelManager.getPanel(panelId)?.activeTabId||null},ts:Date.now()}),keepalive:true}).catch(()=>{});
-    // #endregion
     if (existing) {
       activateCachedEditorSlot(panelId, sessionId);
       return existing;
@@ -4336,9 +4333,6 @@ async function bootstrap() {
       if (!activePanelId) return;
       const panel = panelManager.getPanel(activePanelId);
       if (!panel || !sessionId) return;
-      // #region debug-point C:current-session-changed
-      void globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"C",location:"src/main.ts:sessions.currentId",msg:"[DEBUG] Global current Session changed",data:{runtimeSessionId:sessionId,panelId:activePanelId,activeTabId:panel.activeTabId||null,tabIds:panel.tabs.map((tab:any)=>String(tab?.id||"")),editorExists:!!panelManager.getEditor(activePanelId),editorSessionId:String((panelManager.getEditor(activePanelId) as any)?.sessionId||"")},ts:Date.now()}),keepalive:true}).catch(()=>{});
-      // #endregion
       if (isFilePanelTabId(panel.activeTabId)) return;
       const editor = panelManager.getEditor(activePanelId);
       const editorSessionId = String(

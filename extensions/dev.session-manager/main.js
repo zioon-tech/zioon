@@ -655,9 +655,6 @@ async function flushRemoteMutations() {
                   .filter(([key]) => key !== "text")
               )
             : mutation.payload;
-          // #region debug-point B:remote-session-write
-          globalThis.fetch?.("/__trae_debug/event",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:"mobile-desktop-transcript",runId:"post-fix",hypothesisId:"B",location:"extensions/dev.session-manager/main.js:flushRemoteMutations",msg:"[DEBUG] Desktop prepared a Workbench Session write",data:{runtimeSessionId:String(mutation.id||""),collaborationSynced:collaborative,hasText:Object.prototype.hasOwnProperty.call(payload||{},"text"),textLength:Object.prototype.hasOwnProperty.call(payload||{},"text")?String(payload.text||"").length:null,textRoles:Object.prototype.hasOwnProperty.call(payload||{},"text")?Array.from(String(payload.text||"").matchAll(/^(user|assistant|system|tool)(?:\s|$)/gm),(match)=>match[1]):[]},ts:Date.now()}),keepalive:true}).catch(()=>{});
-          // #endregion
           if (!Object.keys(payload || {}).length) {
             pendingRemoteMutations.shift();
             for (const waiter of mutation.waiters || []) waiter.resolve({

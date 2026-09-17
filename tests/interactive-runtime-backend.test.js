@@ -585,7 +585,7 @@ describe("interactive Runtime backend", () => {
     expect(fetchImpl.mock.calls.some(([url]) =>
       String(url).includes(
         "/projection/stream"
-        + "?after=0&reasoning=stream&max_delay_ms=200&max_chunk_chars=1024"
+        + "?after=0&reasoning=stream&max_delay_ms=50&max_chunk_chars=256"
       )
     )).toBe(true);
     const createCall = fetchImpl.mock.calls.find(

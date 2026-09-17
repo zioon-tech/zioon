@@ -78,9 +78,6 @@ export class RuntimeSchedulerWorker {
   }
 
   async complete(runId, result) {
-    // #region debug-point D:runtime-scheduler-completion-link
-    try { const probe = globalThis.__zionScheduledSurfaceProbe; if (probe?.url) void fetch(probe.url, { method: "POST", body: JSON.stringify({ sessionId: "scheduled-session-surfaces", runId: probe.phase || "pre-fix", hypothesisId: "D", location: "apps/runtime/src/scheduler-worker.mjs:complete", msg: "[DEBUG] Runtime Scheduler completion linkage", data: { schedulerRunId: runId, chatRunId: result.runId || null, sessionId: result.sessionId || this.activeSessionId || null, status: result.status }, ts: Date.now() }) }).catch(() => {}); } catch {}
-    // #endregion
     return this.scheduler.complete(runId, this.workerId, {
       status: TERMINAL_STATUS[result.status] || "failed",
       sessionId: result.sessionId || this.activeSessionId || null,
@@ -144,9 +141,6 @@ export class RuntimeSchedulerWorker {
       });
       this.activeSessionId = sessionId;
     }
-    // #region debug-point A-B:scheduler-request
-    fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "scheduler-node-routing", runId: "post-fix", hypothesisId: "A-B", location: "apps/runtime/src/scheduler-worker.mjs:executeClaim", msg: "[DEBUG] Scheduler Agent request resolved", data: { schedulerRunId: claimedRun.id, schedulerTaskId: claimedRun.taskId, projectId: request.projectId || null, interactionProfileId, allowedTerminalSessionIds: resolved?.policy?.allowedTerminalSessionIds || request.policy?.allowedTerminalSessionIds || [], includeTerminalContext: resolved?.metadata?.includeTerminalContext, contextProviders: resolved?.metadata?.contextProviders || null }, ts: Date.now() }) }).catch(() => {});
-    // #endregion
     const handle = this.executor.execute({
       ...request,
       ...(sessionId ? { sessionId } : {}),
@@ -201,11 +195,6 @@ export class RuntimeSchedulerWorker {
             event.data?.error || "Tool call failed"
           );
         }
-        // #region debug-point C-D:tool-outcome
-        if (event.type === "tool.completed") {
-          fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "scheduler-node-routing", runId: "post-fix", hypothesisId: "C-D", location: "apps/runtime/src/scheduler-worker.mjs:forwarding", msg: "[DEBUG] Scheduler observed tool completion", data: { schedulerRunId: claimedRun.id, sequence: event.sequence, name: event.data?.name || null, ok: event.data?.ok, error: event.data?.error || null }, ts: Date.now() }) }).catch(() => {});
-        }
-        // #endregion
         try {
           await this.appendEvent(claimedRun.id, event);
         } catch (error) {
@@ -230,9 +219,6 @@ export class RuntimeSchedulerWorker {
           }`
         }
       : result;
-    // #region debug-point D:completion-mapping
-    fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "scheduler-node-routing", runId: "post-fix", hypothesisId: "D", location: "apps/runtime/src/scheduler-worker.mjs:executeClaim", msg: "[DEBUG] Scheduler mapping Agent completion", data: { schedulerRunId: claimedRun.id, agentStatus: result.status, schedulerStatus: TERMINAL_STATUS[finalResult.status] || "failed", toolOutcomes, output: String(result.output || "").slice(0, 240) }, ts: Date.now() }) }).catch(() => {});
-    // #endregion
     await this.complete(claimedRun.id, {
       ...finalResult,
       sessionId

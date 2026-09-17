@@ -6,6 +6,10 @@ import {
   findAssistantBlockRange,
   jumpToLine
 } from "../extensions/dev.langchain-chat/overview-rail.js";
+import {
+  isConversationViewportFollowing,
+  setConversationViewportFollowing
+} from "../src/chat/conversation-viewport.js";
 
 describe("chat overview rail", () => {
   it("finds the active assistant block from the preferred head line", () => {
@@ -227,6 +231,167 @@ describe("chat overview rail", () => {
       expect(lineBlockAt).toHaveBeenCalledWith(
         editor.view.state.doc.line(2).to
       );
+    } finally {
+      rail.dispose();
+      editor.dispose();
+      document.body.replaceChildren();
+      window.zion = previousZion;
+    }
+  });
+
+  it("keeps follow enabled after programmatic scroll and restores it from latest", async () => {
+    const previousZion = window.zion;
+    const values = new Map();
+    window.zion = {
+      state: {
+        get: (key) => values.get(key),
+        set: (key, value) => values.set(key, value),
+        onDidChange: () => ({ dispose() {} })
+      },
+      events: {
+        on: () => ({ dispose() {} })
+      },
+      panels: {
+        list: () => [{
+          id: "panel-follow",
+          activeTabId: "session-follow"
+        }]
+      }
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const editor = new EditorCore(
+      host,
+      "user question\nassistant <!-- zion-assistant:id=run-follow --> answer",
+      "panel-follow"
+    );
+    editor.setSessionId("session-follow");
+    values.set("chat.runs.session-follow", {
+      runId: "run-follow",
+      streaming: true
+    });
+    values.set("chat.assistantBlockId.session-follow", "run-follow");
+    Object.defineProperty(editor.view.scrollDOM, "scrollHeight", {
+      configurable: true,
+      value: 1_000
+    });
+    Object.defineProperty(editor.view.scrollDOM, "clientHeight", {
+      configurable: true,
+      value: 200
+    });
+
+    const rail = createChatOverviewRail({
+      panelId: "panel-follow",
+      getView: () => editor.view,
+      getSessionId: () => "session-follow",
+      addVisualExtension: (extension) =>
+        editor.addExternalExtension(extension)
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      editor.view.scrollDOM.scrollTop = 100;
+      editor.view.scrollDOM.dispatchEvent(new Event("scroll"));
+      expect(isConversationViewportFollowing(editor.view, {
+        sessionId: "session-follow",
+        state: window.zion.state
+      })).toBe(true);
+
+      editor.view.scrollDOM.dispatchEvent(new Event("wheel"));
+      expect(isConversationViewportFollowing(editor.view, {
+        sessionId: "session-follow",
+        state: window.zion.state
+      })).toBe(false);
+
+      editor.view.dom
+        .querySelector(".zion-chat-overview-nav-latest")
+        .click();
+      editor.view.scrollDOM.__zionProgrammaticScrollUntil = 0;
+      editor.view.scrollDOM.dispatchEvent(new Event("scroll"));
+      expect(isConversationViewportFollowing(editor.view, {
+        sessionId: "session-follow",
+        state: window.zion.state
+      })).toBe(true);
+    } finally {
+      rail.dispose();
+      editor.dispose();
+      document.body.replaceChildren();
+      window.zion = previousZion;
+    }
+  });
+
+  it("restores persistent follow after a double Option tap", async () => {
+    const previousZion = window.zion;
+    const values = new Map();
+    window.zion = {
+      state: {
+        get: (key) => values.get(key),
+        set: (key, value) => values.set(key, value),
+        onDidChange: () => ({ dispose() {} })
+      },
+      events: {
+        on: () => ({ dispose() {} })
+      },
+      panels: {
+        list: () => [{
+          id: "panel-option-follow",
+          activeTabId: "session-option-follow"
+        }]
+      }
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const editor = new EditorCore(
+      host,
+      "user question\nassistant <!-- zion-assistant:id=run-option --> answer",
+      "panel-option-follow"
+    );
+    editor.setSessionId("session-option-follow");
+    values.set("chat.runs.session-option-follow", {
+      runId: "run-option",
+      streaming: true
+    });
+    values.set("chat.assistantBlockId.session-option-follow", "run-option");
+    Object.defineProperty(editor.view.scrollDOM, "scrollHeight", {
+      configurable: true,
+      value: 1_000
+    });
+    Object.defineProperty(editor.view.scrollDOM, "clientHeight", {
+      configurable: true,
+      value: 200
+    });
+
+    const rail = createChatOverviewRail({
+      panelId: "panel-option-follow",
+      getView: () => editor.view,
+      getSessionId: () => "session-option-follow",
+      addVisualExtension: (extension) =>
+        editor.addExternalExtension(extension)
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      setConversationViewportFollowing(editor.view, false, {
+        sessionId: "session-option-follow",
+        state: window.zion.state
+      });
+      editor.view.contentDOM.focus();
+      expect(editor.view.dom.contains(document.activeElement)).toBe(true);
+      for (let count = 0; count < 2; count += 1) {
+        window.dispatchEvent(new window.KeyboardEvent("keydown", {
+          key: "Alt",
+          code: "AltLeft"
+        }));
+        window.dispatchEvent(new window.KeyboardEvent("keyup", {
+          key: "Alt",
+          code: "AltLeft"
+        }));
+      }
+      editor.view.scrollDOM.__zionProgrammaticScrollUntil = 0;
+      editor.view.scrollDOM.dispatchEvent(new Event("scroll"));
+
+      expect(isConversationViewportFollowing(editor.view, {
+        sessionId: "session-option-follow",
+        state: window.zion.state
+      })).toBe(true);
     } finally {
       rail.dispose();
       editor.dispose();

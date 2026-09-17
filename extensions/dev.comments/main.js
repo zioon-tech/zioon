@@ -5621,9 +5621,6 @@ async function runThread(thread, handle) {
     } catch {}
     const contextMessages = await buildThreadContextMessages(thread);
     const threadLogTitle = getThreadLogTitle(thread);
-    // #region debug-point A:comment-parent-dispatch
-    void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "A", location: "extensions/dev.comments/main.js:runThread", msg: "[DEBUG] Comment run parent relationship at dispatch", data: { threadId: String(thread?.id || ""), threadSessionId, parentSessionId: String(thread?.parentSessionId || thread?.sessionId || ""), sourceSessionId: String(thread?.sessionId || ""), panelId: String(handle?.panelId || `comments:${thread.id}`), skipSessionPersistence: true }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-    // #endregion
     await window.zion?.commands?.executeCommand?.("chat.run", {
       editor,
       sessionId: threadSessionId,

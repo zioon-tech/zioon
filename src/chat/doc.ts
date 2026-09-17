@@ -7,6 +7,7 @@ import {
   sanitizeCardMarkerId,
   stripAssistantBlockIdComment
 } from "./restore";
+import { isConversationViewportFollowing } from "./conversation-viewport.js";
 import { isContinuationBoundaryLine } from "./session-document-format.js";
 
 const ASSISTANT_ROLE_RE = /^\s*assistant\s+/;
@@ -404,7 +405,12 @@ export function appendAssistantToken(editor: EditorProxy, opts: AppendAssistantT
       let followLatest = true;
       try {
         const sid = opts.anchor?.sessionId;
-        if (sid) followLatest = (window as any).zion?.state?.get?.(`chat.followLatest.${sid}`) !== false;
+        if (sid) {
+          followLatest = isConversationViewportFollowing(view, {
+            sessionId: sid,
+            state: (window as any).zion?.state
+          });
+        }
       } catch {}
       const userHasSelection = !view.state.selection.main.empty;
       let userSelectionGestureActive = false;

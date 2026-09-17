@@ -7,8 +7,12 @@ import {
   createSessionCollaborationManager
 } from "../extensions/dev.session-manager/collaboration-client.js";
 import {
-  pendingAssistantField
+  pendingAssistantField,
+  revealPendingAssistantInView
 } from "../extensions/dev.session-manager/editor/pending-assistant-plugin.js";
+import {
+  setConversationViewportFollowing
+} from "../src/chat/conversation-viewport.js";
 
 function editorHarness(initialText = "hello") {
   const parent = document.createElement("div");
@@ -64,6 +68,80 @@ function eventBus() {
 }
 
 describe("Session collaboration client", () => {
+  it("keeps an already visible pending target stationary during initial reveal", () => {
+    const editor = editorHarness("user question");
+    const scrollDOM = editor.getView().scrollDOM;
+    const pending = document.createElement("span");
+    pending.className = "zion-pending-assistant-output";
+    pending.dataset.runId = "run-visible";
+    const tail = document.createElement("span");
+    tail.className = "zion-pending-assistant-tail";
+    pending.appendChild(tail);
+    editor.getView().dom.appendChild(pending);
+    scrollDOM.scrollTop = 120;
+    Object.defineProperty(scrollDOM, "scrollHeight", {
+      configurable: true,
+      value: 1_000
+    });
+    Object.defineProperty(scrollDOM, "clientHeight", {
+      configurable: true,
+      value: 200
+    });
+    Object.defineProperty(scrollDOM, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ top: 0, bottom: 200 })
+    });
+    Object.defineProperty(tail, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ top: 180, bottom: 195 })
+    });
+
+    expect(revealPendingAssistantInView(editor.getView(), {
+      runId: "run-visible",
+      preserveVisible: true
+    })).toBe(true);
+    expect(scrollDOM.scrollTop).toBe(120);
+
+    editor.dispose();
+  });
+
+  it("does not scroll on initial reveal when the pending tail reports a collapsed origin rect", () => {
+    const editor = editorHarness("user question");
+    const scrollDOM = editor.getView().scrollDOM;
+    const pending = document.createElement("span");
+    pending.className = "zion-pending-assistant-output";
+    pending.dataset.runId = "run-collapsed";
+    const tail = document.createElement("span");
+    tail.className = "zion-pending-assistant-tail";
+    pending.appendChild(tail);
+    editor.getView().dom.appendChild(pending);
+    scrollDOM.scrollTop = 120;
+    Object.defineProperty(scrollDOM, "scrollHeight", {
+      configurable: true,
+      value: 1_000
+    });
+    Object.defineProperty(scrollDOM, "clientHeight", {
+      configurable: true,
+      value: 200
+    });
+    Object.defineProperty(scrollDOM, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ top: 64, bottom: 264 })
+    });
+    Object.defineProperty(tail, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 })
+    });
+
+    expect(revealPendingAssistantInView(editor.getView(), {
+      runId: "run-collapsed",
+      preserveVisible: true
+    })).toBe(true);
+    expect(scrollDOM.scrollTop).toBe(120);
+
+    editor.dispose();
+  });
+
   it("does not open browser IndexedDB for Runtime-owned documents", async () => {
     const originalIndexedDb = globalThis.indexedDB;
     const indexedDb = { open: vi.fn() };
@@ -544,6 +622,34 @@ describe("Session collaboration client", () => {
       Number((editor.getView().scrollDOM as any).__zionProgrammaticScrollUntil)
     ).toBeGreaterThan(0);
 
+    (editor.getView().scrollDOM as any).__zionProgrammaticScrollUntil = 0;
+    zion.state.set("chat.followSuppressUntil.session-1", 0);
+    sharedDocument?.getText("content").insert(
+      sharedDocument.getText("content").length,
+      " more"
+    );
+    sharedDocument?.getMap("runProjection").set("run-1", {
+      lastSequence: 8
+    });
+    events.emit("chat/token", {
+      sessionId: "session-1",
+      runId: "run-1",
+      assistantBlockId: "run-1",
+      backend: "runtime",
+      documentWriter: false,
+      projectionSequence: 8,
+      token: " more"
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(editor.getValue()).toBe(`${initial}streamed more`);
+    expect(
+      editor.parent.querySelector(".zion-pending-assistant-output")
+    ).toBeNull();
+    expect(
+      Number((editor.getView().scrollDOM as any).__zionProgrammaticScrollUntil)
+    ).toBeGreaterThan(0);
+
     binding.dispose();
     manager.dispose();
     editor.dispose();
@@ -761,7 +867,7 @@ describe("Session collaboration client", () => {
     editor.dispose();
   });
 
-  it("shares one provider across split views and follows pending output in both", async () => {
+  it("shares one provider while split views keep independent follow state", async () => {
     let sharedDocument: Y.Doc | null = null;
     const events = eventBus();
     const initial = "user hi\nassistant <!-- zion-assistant:id=run-1 --> ";
@@ -877,7 +983,17 @@ describe("Session collaboration client", () => {
       expect(editor.getView().scrollDOM.scrollTop).toBe(324);
     }
 
-    values.set("chat.followLatest.session-1", false);
+    setConversationViewportFollowing(first.getView(), false, {
+      sessionId: "session-1",
+      state: {
+        get(key: string) {
+          return values.get(key);
+        },
+        set(key: string, value: unknown) {
+          values.set(key, value);
+        }
+      }
+    });
     for (const editor of [first, second]) {
       editor.getView().scrollDOM.scrollTop = 0;
     }
@@ -889,9 +1005,8 @@ describe("Session collaboration client", () => {
       token: " detached"
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
-    for (const editor of [first, second]) {
-      expect(editor.getView().scrollDOM.scrollTop).toBe(0);
-    }
+    expect(first.getView().scrollDOM.scrollTop).toBe(0);
+    expect(second.getView().scrollDOM.scrollTop).toBe(324);
 
     firstBinding.dispose();
     secondBinding.dispose();

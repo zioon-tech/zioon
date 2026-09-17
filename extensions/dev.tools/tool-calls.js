@@ -15,6 +15,9 @@ import {
   stripCardMarkerIdComment,
   toolMarkerText
 } from "../../src/chat/restore";
+import {
+  scheduleConversationViewportFollow
+} from "../../src/chat/conversation-viewport.js";
 import { resolveToolCardId } from "../../src/chat/tool-card-id";
 import { inlineWidgetSourceFacet } from "../../src/editor/inlineWidgets";
 
@@ -277,59 +280,50 @@ function isCommentPanelId(panelId) {
   return String(panelId || "").startsWith("comments:");
 }
 
-// #region debug-point E:tool-card-performance
-const debugToolRestoreStarts = new Map();
-let debugToolDecorationReportedAt = 0;
-function debugChatCards(event, payload) {
-  const now = globalThis.performance?.now?.() ?? Date.now();
-  const key = `${String(payload?.panelId || "")}:${String(payload?.sessionId || "")}`;
-  if (event === "restore.start") debugToolRestoreStarts.set(key, now);
-  if (event === "decorations.built" && now - debugToolDecorationReportedAt < 2_000) return;
-  if (!["restore.start", "restore.done", "decorations.built"].includes(event)) return;
-  if (event === "decorations.built") debugToolDecorationReportedAt = now;
-  const startedAt = debugToolRestoreStarts.get(key);
-  if (event === "restore.done") debugToolRestoreStarts.delete(key);
-  void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "E", location: `extensions/dev.tools/tool-calls.js:${event}`, msg: `[DEBUG] Tool cards ${event}`, data: { event, panelId: String(payload?.panelId || ""), sessionId: String(payload?.sessionId || ""), docLength: Number(payload?.docLength) || 0, itemCount: Number(payload?.itemCount ?? payload?.count) || 0, anchorCount: Number(payload?.anchorCount) || 0, decorationCount: Number(payload?.decorationCount) || 0, processedCount: Number(payload?.processed) || 0, durationMs: event === "restore.done" && Number.isFinite(startedAt) ? Math.round((now - startedAt) * 100) / 100 : Number(payload?.durationMs) || 0 }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-}
-// #endregion
-
-function debugToolFieldStats(_view) {
-  return {};
-}
-
 function scheduleRevealToolContent(view, { id, pos } = {}) {
   try {
     const sid = getViewSessionId(view);
     if (!sid) return;
-    if (window?.zion?.state?.get?.(`chat.followLatest.${sid}`) === false) return;
-    requestAnimationFrame(() => {
-      try {
-        const scrollDOM = view?.scrollDOM;
-        if (!scrollDOM) return;
-        const selectorId = String(id || "").replace(/"/g, '\\"');
-        const toolEl = selectorId
-          ? view.dom.querySelector(`.zion-tool-call-inline[data-tool-id="${selectorId}"], .zion-tool-call-card[data-tool-id="${selectorId}"]`)
-          : null;
-        const viewportRect = scrollDOM.getBoundingClientRect();
-        const margin = 24;
-        let nextScrollTop = null;
+    const runId = window?.zion?.state?.get?.(`chat.runs.${sid}`)?.runId || "";
+    scheduleConversationViewportFollow(view, {
+      sessionId: sid,
+      state: window?.zion?.state,
+      cycleId: runId,
+      reveal: () => {
+        try {
+          const scrollDOM = view?.scrollDOM;
+          if (!scrollDOM) return false;
+          const selectorId = String(id || "").replace(/"/g, '\\"');
+          const toolEl = selectorId
+            ? view.dom.querySelector(`.zion-tool-call-inline[data-tool-id="${selectorId}"], .zion-tool-call-card[data-tool-id="${selectorId}"]`)
+            : null;
+          const viewportRect = scrollDOM.getBoundingClientRect();
+          const margin = 24;
+          let nextScrollTop = null;
 
-        if (toolEl) {
-          const rect = toolEl.getBoundingClientRect();
-          if (rect.bottom > viewportRect.bottom - margin) {
-            nextScrollTop = scrollDOM.scrollTop + (rect.bottom - (viewportRect.bottom - margin));
+          if (toolEl) {
+            const rect = toolEl.getBoundingClientRect();
+            if (rect.bottom > viewportRect.bottom - margin) {
+              nextScrollTop = scrollDOM.scrollTop + (rect.bottom - (viewportRect.bottom - margin));
+            }
+          } else if (typeof pos === "number") {
+            const coords = view.coordsAtPos(Math.max(0, pos), 1);
+            if (coords?.bottom > viewportRect.bottom - margin) {
+              nextScrollTop = scrollDOM.scrollTop + (coords.bottom - (viewportRect.bottom - margin));
+            }
           }
-        } else if (typeof pos === "number") {
-          const coords = view.coordsAtPos(Math.max(0, pos), 1);
-          if (coords?.bottom > viewportRect.bottom - margin) {
-            nextScrollTop = scrollDOM.scrollTop + (coords.bottom - (viewportRect.bottom - margin));
-          }
-        }
 
-        if (nextScrollTop == null) return;
-        window?.zion?.state?.set?.(`chat.followSuppressUntil.${sid}`, Date.now() + 80);
-        scrollDOM.scrollTop = Math.max(0, nextScrollTop);
-      } catch {}
+          if (nextScrollTop == null) return !!toolEl || typeof pos === "number";
+          window?.zion?.state?.set?.(`chat.followSuppressUntil.${sid}`, Date.now() + 80);
+          scrollDOM.__zionProgrammaticScrollUntil = Math.max(
+            Number(scrollDOM.__zionProgrammaticScrollUntil) || 0,
+            Date.now() + 80
+          );
+          scrollDOM.scrollTop = Math.max(0, nextScrollTop);
+          return true;
+        } catch {}
+        return false;
+      }
     });
   } catch {}
 }
@@ -2179,9 +2173,6 @@ class ToolInlineWidget extends WidgetType {
 }
 
 function buildToolDecorations(state, field) {
-  // #region debug-point E:tool-decoration-start
-  const debugStartedAt = globalThis.performance?.now?.() ?? Date.now();
-  // #endregion
   const decorations = [];
   let fieldVal = null;
   try { fieldVal = state.field(field, false); } catch {}
@@ -2232,9 +2223,6 @@ function buildToolDecorations(state, field) {
       }).range(anchor.to));
     }
   }
-  // #region debug-point E:tool-decoration-finish
-  debugChatCards("decorations.built", { docLength: docLen, itemCount: items?.size || 0, anchorCount: anchors.length, decorationCount: decorations.length, durationMs: (globalThis.performance?.now?.() ?? Date.now()) - debugStartedAt });
-  // #endregion
   return decorations;
 }
 
@@ -2258,10 +2246,6 @@ const toolInlineField = StateField.define({
 
     // 1) 位置映射
     const items = new Map();
-    const debugEffects = { clearAll: 0, addInline: 0, toggleInline: 0, updateResult: 0, updateAction: 0, removeTool: 0 };
-    let debugRemovedIds = [];
-    let debugUserEvent = null;
-    try { debugUserEvent = tr?.annotation?.(Transaction.userEvent) || null; } catch {}
     val.items.forEach((it, id) => {
       const mappedFrom = tr.changes.mapPos(it.from, 1);
       const mappedTo = tr.changes.mapPos(it.to, -1);
@@ -2271,11 +2255,9 @@ const toolInlineField = StateField.define({
     // 2) 处理 effects
     for (const e of tr.effects) {
       if (e.is(clearAll)) {
-        debugEffects.clearAll += 1;
         items.clear();
       }
       if (e.is(addInline)) {
-        debugEffects.addInline += 1;
         const {
           from,
           to,
@@ -2318,7 +2300,6 @@ const toolInlineField = StateField.define({
         });
       }
       if (e.is(toggleInline)) {
-        debugEffects.toggleInline += 1;
         const id = e.value?.id;
         const it = id ? items.get(id) : null;
         if (!it) continue;
@@ -2329,7 +2310,6 @@ const toolInlineField = StateField.define({
         }
       }
       if (e.is(updateResult)) {
-        debugEffects.updateResult += 1;
         const { id, result, ok } = e.value || {};
         const it = id ? items.get(id) : null;
         if (!it) continue;
@@ -2338,7 +2318,6 @@ const toolInlineField = StateField.define({
         items.set(id, updated);
       }
       if (e.is(updateAction)) {
-        debugEffects.updateAction += 1;
         const { id, action } = e.value || {};
         const it = id ? items.get(id) : null;
         if (!it) continue;
@@ -2346,7 +2325,6 @@ const toolInlineField = StateField.define({
         items.set(id, updated);
       }
       if (e.is(removeTool)) {
-        debugEffects.removeTool += 1;
         const base = String(e.value?.id || "");
         const itemSessionId = items.get(base)?.sessionId || null;
         items.delete(base);
@@ -2379,7 +2357,6 @@ const toolInlineField = StateField.define({
           }
         });
       if (toRemove.length) {
-        debugRemovedIds = toRemove.map(id => String(id));
         const isSessionLoad = (() => {
           try {
             const userEvent = tr?.annotation?.(Transaction.userEvent);
@@ -2404,21 +2381,6 @@ const toolInlineField = StateField.define({
             }
           } catch {}
         }
-      }
-    } catch {}
-
-    try {
-      const effectCount = debugEffects.clearAll + debugEffects.addInline + debugEffects.toggleInline + debugEffects.updateResult + debugEffects.removeTool;
-      if (effectCount || debugRemovedIds.length || debugUserEvent === "zion.sessionLoad") {
-        debugChatCards("field.update", {
-          prevCount: val.items?.size || 0,
-          nextCount: items.size,
-          effects: debugEffects,
-          removedIds: debugRemovedIds,
-          docChanged: !!tr.docChanged,
-          userEvent: debugUserEvent,
-          docLength: tr.state?.doc?.length || 0
-        });
       }
     } catch {}
 
@@ -2497,7 +2459,6 @@ export function installToolCallCards() {
       try {
         this.sessionId = getViewSessionId(this.view);
       } catch {}
-      debugChatCards("plugin.init", { panelId: this.panelId, sessionId: this.sessionId, docLength: this.view.state.doc.length });
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRun));
       this.disps.push(window.zion.events.on("chat/runFinished", this.onFinish));
       this.disps.push(window.zion.events.on("chat/runError", this.onFinish));
@@ -2531,12 +2492,6 @@ export function installToolCallCards() {
               const anchors = buildToolAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
               const deletedIds = reviveDeletedToolIdsForAnchors(sid, Array.isArray(ann.deletedToolIds) ? ann.deletedToolIds : [], anchors);
             const list = mergeToolItemsFromAnchors(this.view, rawList, deletedIds, anchors);
-          debugChatCards("plugin.initialRestoreCheck", {
-            panelId: this.panelId,
-            sessionId: sid,
-            pending: Array.isArray(pending) ? pending.length : 0,
-            annotations: list.length
-          });
           if (Array.isArray(pending) && pending.length) {
             this.onRestore({ items: pending });
             return;
@@ -2621,15 +2576,6 @@ export function installToolCallCards() {
         const mountedSet = new Set(mountedIds);
         const listForAnchors = list.filter((it) => anchorIdSet.has(String(it?.id || "")));
         const missing = wantIds.some(id => !mountedSet.has(id)) || needsToolRestore(listForAnchors, fieldVal);
-        debugChatCards("visibility.checkAndRestore", {
-          panelId: this.panelId,
-          sessionId: sid,
-          annotations: list.length,
-          anchors: anchorIds.length,
-          mounted: mountedIds.length,
-          missing,
-          stats: debugToolFieldStats(this.view)
-        });
         if (missing) {
           this.onRestore({ items: listForAnchors });
         }
@@ -2672,8 +2618,6 @@ export function installToolCallCards() {
         }
       })();
       const isSessionReplace = !!sessionLoadEvent;
-      const debugBeforeSessionId = this.sessionId;
-      const debugBeforeVisibleSessionId = getViewSessionId(this.view);
       if (sessionLoadEvent === "zion.sessionLoad") {
         this.scheduleRestoreCheck(0);
       }
@@ -2700,16 +2644,6 @@ export function installToolCallCards() {
       )))) {
         this.scheduleSnapshot();
       }
-      debugChatCards("view.update", {
-        panelId: this.panelId,
-        sessionId: this.sessionId,
-        beforeSessionId: debugBeforeSessionId,
-        beforeVisibleSessionId: debugBeforeVisibleSessionId,
-        docChanged: !!update.docChanged,
-        viewportChanged: !!update.viewportChanged,
-        selectionSet: !!update.selectionSet,
-        transactions: update.transactions?.length || 0
-      });
       if (update.selectionSet || update.docChanged || update.viewportChanged) {
         this.syncSelectionHighlight();
       }
@@ -2771,12 +2705,6 @@ export function installToolCallCards() {
         updateSessionAnnotations(id, (prev) => {
           const prevTools = Array.isArray(prev.tools) ? prev.tools : [];
           if (!arr.length && prevTools.length) {
-            debugChatCards("snapshot.skipEmpty", {
-              panelId: this.panelId,
-              sessionId: id,
-              prevCount: prevTools.length,
-              docLength: this.view.state.doc.length
-            });
             return prev;
           }
             const prevById = new Map(prevTools.map((it) => [String(it?.id || ""), it]).filter(([key]) => !!key));
@@ -2794,13 +2722,6 @@ export function installToolCallCards() {
               nextTools.push(it);
             }
             return { ...prev, tools: nextTools };
-        });
-        debugChatCards("snapshot", {
-          panelId: this.panelId,
-          sessionId: id,
-          count: arr.length,
-          expanded: arr.filter(it => it.expanded).length,
-          ids: arr.map(it => it.id)
         });
         // 同步当前挂载的 widget id 列表与计数，供生命周期判定使用（避免依赖 DOM 计数）
         try {
@@ -2924,7 +2845,6 @@ export function installToolCallCards() {
 
       if (!this.isPrimaryWriterPayload(payload)) {
         const anchorCountBefore = buildToolAnchors(this.view.state.doc.toString()).length;
-        debugChatCards("toolCall.mirrorPending", { panelId: this.panelId, sourcePanelId: payload?.panelId, sessionId: this.sessionId, id: cardId, toolCallId: tc.id, name, anchorCountBefore });
         this.mirrorToolCalls.set(cardId, {
           ...tc,
           id: cardId,
@@ -3004,7 +2924,6 @@ export function installToolCallCards() {
           assistantBlockId
         })]
       });
-      debugChatCards("toolCall.inserted", { panelId: this.panelId, sessionId: this.sessionId, id: cardId, toolCallId: tc.id, name, from: plan.markerFrom, to: plan.markerTo });
       try {
         window.zion?.events?.emit("toolcards/inlineInserted", {
           panelId: this.panelId,
@@ -3034,13 +2953,6 @@ export function installToolCallCards() {
           const docString = doc.toString();
           const anchors = buildToolAnchors(docString);
         const entries = Array.from(this.mirrorToolCalls.entries());
-        debugChatCards("mirror.attach.scan", {
-          panelId: this.panelId,
-          sessionId: this.sessionId,
-          pending: entries.length,
-          anchors: anchors.length,
-          onlyId
-        });
         for (const [id, tc] of entries) {
           if (onlyId && id !== onlyId) continue;
           if (fieldVal?.items?.has?.(id)) {
@@ -3051,16 +2963,6 @@ export function installToolCallCards() {
           const anchorCountBefore = Math.max(0, Number(tc.anchorCountBefore || 0));
           const newAnchors = anchors.slice(anchorCountBefore);
           const candidates = newAnchors;
-          debugChatCards("mirror.attach.candidates", {
-            panelId: this.panelId,
-            sessionId: this.sessionId,
-            id,
-            name: tc.name,
-            attempts: tc.attempts,
-            anchorCountBefore,
-            totalAnchors: anchors.length,
-            candidateAnchors: candidates.length
-          });
           if (!candidates.length) continue;
           for (let i = candidates.length - 1; i >= 0; i--) {
             const anchor = candidates[i];
@@ -3074,7 +2976,6 @@ export function installToolCallCards() {
             this.view.dispatch({
               effects: [addInline.of({ from: anchor.from, to: anchor.to, id, name: tc.name, args: tc.args, userStartLine, sessionId: this.sessionId, assistantBlockId: tc.assistantBlockId || null })]
             });
-            debugChatCards("mirror.attach.matched", { panelId: this.panelId, sessionId: this.sessionId, id, name: tc.name, from: anchor.from, to: anchor.to });
             this.mirrorToolCalls.delete(id);
             attachedAny = true;
             break;
@@ -3107,16 +3008,6 @@ export function installToolCallCards() {
         const ranked = anchors
           .map((anchor) => ({ anchor, score: hintFrom == null ? 0 : Math.abs(anchor.from - hintFrom) }))
           .sort((a, b) => a.score - b.score);
-        debugChatCards("inlineInserted.hintScan", {
-          panelId: this.panelId,
-          sourcePanelId: payload.panelId,
-          sessionId: payload.sessionId,
-          id: payload.id,
-          name: payload.name,
-          hintFrom,
-          candidates: ranked.length,
-          bestScore: ranked[0]?.score ?? null
-        });
         const best = ranked[0]?.anchor;
         if (!best) return false;
         const userStartLine = findPrevRoleStartLine(this.view.state.doc, best.from, "user");
@@ -3124,15 +3015,6 @@ export function installToolCallCards() {
           effects: [addInline.of({ from: best.from, to: best.to, id: payload.id, name: payload.name, args: payload.args, userStartLine, sessionId: visibleSessionId || this.sessionId || payload.sessionId || null, assistantBlockId: payload.assistantBlockId || null })]
         });
         this.mirrorToolCalls.delete(String(payload.id));
-        debugChatCards("inlineInserted.hintMatched", {
-          panelId: this.panelId,
-          sourcePanelId: payload.panelId,
-          sessionId: payload.sessionId,
-          id: payload.id,
-          name: payload.name,
-          from: best.from,
-          to: best.to
-        });
         this.snapshot();
         return true;
       } catch {
@@ -3626,12 +3508,6 @@ export function installToolCallCards() {
     };
     onClear = (payload) => {
       if (payload?.panelId && payload.panelId !== this.panelId) {
-        debugChatCards("clear.skipPanel", {
-          panelId: this.panelId,
-          payloadPanelId: payload.panelId,
-          sessionId: payload?.sessionId,
-          stats: debugToolFieldStats(this.view)
-        });
         return;
       }
       if (!this.shouldHandleScopedPayload(payload)) return;
@@ -3640,12 +3516,6 @@ export function installToolCallCards() {
     };
     onSnapshot = (payload = {}) => {
       if (payload?.panelId && payload.panelId !== this.panelId) {
-        debugChatCards("snapshot.skipPanel", {
-          panelId: this.panelId,
-          payloadPanelId: payload.panelId,
-          sessionId: payload?.sessionId,
-          stats: debugToolFieldStats(this.view)
-        });
         return;
       }
       if (!this.shouldHandleScopedPayload(payload)) return;
@@ -3653,12 +3523,6 @@ export function installToolCallCards() {
     };
     onSessionChanged = () => {
       const boundSessionId = getViewSessionId(this.view);
-      debugChatCards("session.changed", {
-        panelId: this.panelId,
-        prevSessionId: this.sessionId,
-        boundSessionId,
-        stats: debugToolFieldStats(this.view)
-      });
       if (boundSessionId) {
         this.sessionId = boundSessionId;
         this.loadToolActions();
@@ -3684,11 +3548,6 @@ export function installToolCallCards() {
           if (this.mirrorToolCalls.size) {
             this.attachPendingMirrorToolCalls();
             if (this.mirrorToolCalls.size) {
-              debugChatCards("toolsUpdated.deferRestoreForPendingMirror", {
-                panelId: this.panelId,
-                sessionId: sid,
-                pending: this.mirrorToolCalls.size
-              });
               return;
             }
           }
@@ -3729,36 +3588,20 @@ export function installToolCallCards() {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
       if (payload?.panelId && payload.panelId !== this.panelId) {
-        debugChatCards("restore.skipPanel", { panelId: this.panelId, payloadPanelId: payload.panelId, sessionId: payload?.sessionId, count: list.length });
         return;
       }
       const visibleSessionId = this.getVisibleSessionId();
       if (!visibleSessionId) {
-        debugChatCards("restore.skipNoVisibleSession", {
-          panelId: this.panelId,
-          payloadPanelId: payload?.panelId,
-          payloadSessionId: payload?.sessionId,
-          count: list.length,
-          stats: debugToolFieldStats(this.view)
-        });
         return;
       }
       if (payload?.sessionId && payload.sessionId !== visibleSessionId) {
-        debugChatCards("restore.skipSession", { panelId: this.panelId, visibleSessionId, payloadSessionId: payload.sessionId, count: list.length });
         return;
       }
       const restoreSessionId = visibleSessionId;
       this.sessionId = restoreSessionId;
       this.loadToolActions();
-      debugChatCards("restore.start", { panelId: this.panelId, sessionId: restoreSessionId, count: list.length, docLength: this.view.state.doc.length, fromToolsUpdated: !!payload?.__fromToolsUpdated, stats: debugToolFieldStats(this.view) });
       let docString = this.view.state.doc.toString();
       if (!docString.trim()) {
-        debugChatCards("restore.skipEmptyDoc", {
-          panelId: this.panelId,
-          sessionId: restoreSessionId,
-          count: list.length,
-          stats: debugToolFieldStats(this.view)
-        });
         return;
       }
       let anchors = buildToolAnchors(docString);
@@ -3782,21 +3625,11 @@ export function installToolCallCards() {
       const batchedEffects = [];
       const actionFor = (it) => normalizeToolAction(it?.action) || this.toolActions.get(String(it?.id || ""))?.action || null;
       let skippedFallback = false;
-      debugChatCards("restore.anchors", { panelId: this.panelId, sessionId: restoreSessionId, items: list.length, anchors: anchors.length });
       let existingItems = new Map();
       try {
         const fieldVal = this.view.state.field(toolInlineField);
         if (fieldVal?.items) fieldVal.items.forEach((it, id) => existingItems.set(String(id), it));
       } catch {}
-      debugChatCards("restore.inputs", {
-        panelId: this.panelId,
-        sessionId: restoreSessionId,
-        incomingIds: list.map(it => it?.id).filter(Boolean).map(String),
-        deletedIds,
-        itemsToProcess: itemsToProcess.length,
-        existingIds: [...existingItems.keys()],
-        anchorPreview: anchors.slice(0, 8).map(a => ({ from: a.from, to: a.to, name: a.name }))
-      });
 
       // Phase 0: reconcile already-mounted items, avoid restoring or toggling them twice
       const processedIds = reconcileMountedItems({
@@ -3895,13 +3728,6 @@ export function installToolCallCards() {
       });
 
       // 批量应用 Phase 1 & 2 的效果
-      debugChatCards("restore.plan", {
-        panelId: this.panelId,
-        sessionId: restoreSessionId,
-        processedBeforeFallback: processedIds.size,
-        batchedEffects: batchedEffects.length,
-        needFallback: itemsToProcess.filter(it => !processedIds.has(it.id)).map(it => String(it?.id || ""))
-      });
       if (batchedEffects.length) this.view.dispatch({ effects: batchedEffects });
       if (batchedEffects.length) {
         const lastAddInline = [...batchedEffects].reverse().find((eff) => eff?.is?.(addInline));
@@ -3929,12 +3755,6 @@ export function installToolCallCards() {
         }
         if (isCommentPanelId(this.panelId)) {
           skippedFallback = true;
-          debugChatCards("restore.skipFallbackInComments", {
-            panelId: this.panelId,
-            sessionId: restoreSessionId,
-            id: it.id,
-            name: it.name || "tool"
-          });
           continue;
         }
 
@@ -3989,7 +3809,6 @@ export function installToolCallCards() {
       } catch {}
 
       if (!skippedFallback) this.snapshot();
-      debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size, itemCount: itemsToProcess.length, anchorCount: anchors.length, docLength: this.view.state.doc.length });
       requestAnimationFrame(() => {
         try {
           const fieldVal = this.view.state.field(toolInlineField);
@@ -3998,16 +3817,6 @@ export function installToolCallCards() {
           fieldVal?.items?.forEach?.((it) => {
             fieldCount += 1;
             if (it?.expanded) expandedCount += 1;
-          });
-          debugChatCards("restore.domCheck", {
-            panelId: this.panelId,
-            sessionId: restoreSessionId,
-            fieldCount,
-            expandedCount,
-            inlineDom: this.view.dom.querySelectorAll(".zion-tool-call-inline").length,
-            cardDom: this.view.dom.querySelectorAll(".zion-tool-call-card").length,
-            viewportFrom: this.view.viewport?.from,
-            viewportTo: this.view.viewport?.to
           });
         } catch {}
       });

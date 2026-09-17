@@ -12,6 +12,9 @@ import {
   stripCardMarkerIdComment,
   thinkingMarkerText
 } from "../../src/chat/restore";
+import {
+  scheduleConversationViewportFollow
+} from "../../src/chat/conversation-viewport.js";
 import { inlineWidgetSourceFacet } from "../../src/editor/inlineWidgets";
 
 function t(key, fallback, values) {
@@ -264,54 +267,48 @@ function isCommentPanelId(panelId) {
   return String(panelId || "").startsWith("comments:");
 }
 
-// #region debug-point E:thinking-card-performance
-const debugThinkingRestoreStarts = new Map();
-let debugThinkingDecorationReportedAt = 0;
-function debugChatCards(event, payload) {
-  const now = globalThis.performance?.now?.() ?? Date.now();
-  const key = `${String(payload?.panelId || "")}:${String(payload?.sessionId || "")}`;
-  if (event === "restore.start") debugThinkingRestoreStarts.set(key, now);
-  if (event === "decorations.built" && now - debugThinkingDecorationReportedAt < 2_000) return;
-  if (!["restore.start", "restore.done", "decorations.built"].includes(event)) return;
-  if (event === "decorations.built") debugThinkingDecorationReportedAt = now;
-  const startedAt = debugThinkingRestoreStarts.get(key);
-  if (event === "restore.done") debugThinkingRestoreStarts.delete(key);
-  void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "workbench-content-disorder", runId: "post-fix", hypothesisId: "E", location: `extensions/dev.thinking/thinking-cards.js:${event}`, msg: `[DEBUG] Thinking cards ${event}`, data: { event, panelId: String(payload?.panelId || ""), sessionId: String(payload?.sessionId || ""), docLength: Number(payload?.docLength) || 0, itemCount: Number(payload?.itemCount ?? payload?.count) || 0, anchorCount: Number(payload?.anchorCount) || 0, decorationCount: Number(payload?.decorationCount) || 0, processedCount: Number(payload?.processed) || 0, durationMs: event === "restore.done" && Number.isFinite(startedAt) ? Math.round((now - startedAt) * 100) / 100 : Number(payload?.durationMs) || 0 }, ts: Date.now() }), keepalive: true })?.catch?.(() => {});
-}
-
-// #endregion
-
 function scheduleRevealThinkingContent(view, { id, pos } = {}) {
   try {
     const sid = getViewSessionId(view);
     if (!sid) return;
-    if (window?.zion?.state?.get?.(`chat.followLatest.${sid}`) === false) return;
-    requestAnimationFrame(() => {
-      try {
-        const scrollDOM = view?.scrollDOM;
-        if (!scrollDOM) return;
-        const selectorId = String(id || "").replace(/"/g, '\\"');
-        const thinkingEl = selectorId
-          ? view.dom.querySelector(`.zion-thinking-inline[data-thinking-id="${selectorId}"], .zion-thinking-card[data-thinking-card-id="${selectorId}"]`)
-          : null;
-        const viewportRect = scrollDOM.getBoundingClientRect();
-        const margin = 24;
-        let nextScrollTop = null;
-        if (thinkingEl) {
-          const rect = thinkingEl.getBoundingClientRect();
-          if (rect.bottom > viewportRect.bottom - margin) {
-            nextScrollTop = scrollDOM.scrollTop + (rect.bottom - (viewportRect.bottom - margin));
+    const runId = window?.zion?.state?.get?.(`chat.runs.${sid}`)?.runId || "";
+    scheduleConversationViewportFollow(view, {
+      sessionId: sid,
+      state: window?.zion?.state,
+      cycleId: runId,
+      reveal: () => {
+        try {
+          const scrollDOM = view?.scrollDOM;
+          if (!scrollDOM) return false;
+          const selectorId = String(id || "").replace(/"/g, '\\"');
+          const thinkingEl = selectorId
+            ? view.dom.querySelector(`.zion-thinking-inline[data-thinking-id="${selectorId}"], .zion-thinking-card[data-thinking-card-id="${selectorId}"]`)
+            : null;
+          const viewportRect = scrollDOM.getBoundingClientRect();
+          const margin = 24;
+          let nextScrollTop = null;
+          if (thinkingEl) {
+            const rect = thinkingEl.getBoundingClientRect();
+            if (rect.bottom > viewportRect.bottom - margin) {
+              nextScrollTop = scrollDOM.scrollTop + (rect.bottom - (viewportRect.bottom - margin));
+            }
+          } else if (typeof pos === "number") {
+            const coords = view.coordsAtPos(Math.max(0, pos), 1);
+            if (coords?.bottom > viewportRect.bottom - margin) {
+              nextScrollTop = scrollDOM.scrollTop + (coords.bottom - (viewportRect.bottom - margin));
+            }
           }
-        } else if (typeof pos === "number") {
-          const coords = view.coordsAtPos(Math.max(0, pos), 1);
-          if (coords?.bottom > viewportRect.bottom - margin) {
-            nextScrollTop = scrollDOM.scrollTop + (coords.bottom - (viewportRect.bottom - margin));
-          }
-        }
-        if (nextScrollTop == null) return;
-        window?.zion?.state?.set?.(`chat.followSuppressUntil.${sid}`, Date.now() + 80);
-        scrollDOM.scrollTop = Math.max(0, nextScrollTop);
-      } catch {}
+          if (nextScrollTop == null) return !!thinkingEl || typeof pos === "number";
+          window?.zion?.state?.set?.(`chat.followSuppressUntil.${sid}`, Date.now() + 80);
+          scrollDOM.__zionProgrammaticScrollUntil = Math.max(
+            Number(scrollDOM.__zionProgrammaticScrollUntil) || 0,
+            Date.now() + 80
+          );
+          scrollDOM.scrollTop = Math.max(0, nextScrollTop);
+          return true;
+        } catch {}
+        return false;
+      }
     });
   } catch {}
 }
@@ -393,9 +390,6 @@ class ThinkingInlineWidget extends WidgetType {
 }
 
 function buildThinkingDecorations(state, field) {
-  // #region debug-point E:thinking-decoration-start
-  const debugStartedAt = globalThis.performance?.now?.() ?? Date.now();
-  // #endregion
   const decorations = [];
   let fieldVal = null;
   try { fieldVal = state.field(field, false); } catch {}
@@ -438,9 +432,6 @@ function buildThinkingDecorations(state, field) {
       decorations.push(Decoration.widget({ widget: new ThinkingCardWidget(id, it.text), side: 1 }).range(anchor.to));
     }
   }
-  // #region debug-point E:thinking-decoration-finish
-  debugChatCards("decorations.built", { docLength: docLen, itemCount: items?.size || 0, anchorCount: anchors.length, decorationCount: decorations.length, durationMs: (globalThis.performance?.now?.() ?? Date.now()) - debugStartedAt });
-  // #endregion
   return decorations;
 }
 
@@ -659,7 +650,6 @@ export function installThinkingCards() {
       try {
         this.sessionId = getViewSessionId(this.view);
       } catch {}
-      debugChatCards("plugin.init", { panelId: this.panelId, sessionId: this.sessionId, docLength: this.view.state.doc.length });
 
       this.disps.push(window.zion.events.on("chat/runStarted", this.onRunStarted));
       this.disps.push(window.zion.events.on("chat/reasoningStart", this.onReasoningStart));
@@ -691,12 +681,6 @@ export function installThinkingCards() {
             deletedIds,
             repair.repaired > 0 ? null : anchors
           );
-          debugChatCards("plugin.initialRestoreCheck", {
-            panelId: this.panelId,
-            sessionId: sid,
-            pending: Array.isArray(pending) ? pending.length : 0,
-            annotations: list.length
-          });
           if (Array.isArray(pending) && pending.length) {
             this.onRestore({ items: pending });
             return;
@@ -911,12 +895,6 @@ export function installThinkingCards() {
         updateSessionAnnotations(id, (prev) => {
           const prevThinking = Array.isArray(prev.thinking) ? prev.thinking : [];
           if (!arr.length && prevThinking.length) {
-            debugChatCards("snapshot.skipEmpty", {
-              panelId: this.panelId,
-              sessionId: id,
-              prevCount: prevThinking.length,
-              docLength: this.view.state.doc.length
-            });
             return prev;
           }
             const prevById = new Map(prevThinking.map((it) => [String(it?.id || ""), it]).filter(([key]) => !!key));
@@ -935,7 +913,6 @@ export function installThinkingCards() {
             }
             return { ...prev, thinking: nextThinking };
         });
-                debugChatCards("snapshot", { panelId: this.panelId, sessionId: id, count: arr.length, ids: arr.map(it => it.id) });
         // 同步当前挂载的 widget id 列表与计数，供生命周期判定使用（避免依赖 DOM 计数）
         try {
           const mountedIds = arr.map(it => it.id).filter(Boolean);
@@ -1340,18 +1317,15 @@ export function installThinkingCards() {
       const list = payload?.items || payload;
       if (!Array.isArray(list) || list.length === 0) return;
       if (payload?.panelId && payload.panelId !== this.panelId) {
-        debugChatCards("restore.skipPanel", { panelId: this.panelId, payloadPanelId: payload.panelId, sessionId: payload?.sessionId, count: list.length });
         return;
       }
       const visibleSessionId = this.getVisibleSessionId();
       if (!visibleSessionId) return;
       if (payload?.sessionId && payload.sessionId !== visibleSessionId) {
-        debugChatCards("restore.skipSession", { panelId: this.panelId, visibleSessionId, payloadSessionId: payload.sessionId, count: list.length });
         return;
       }
       const restoreSessionId = visibleSessionId;
       this.sessionId = restoreSessionId;
-      debugChatCards("restore.start", { panelId: this.panelId, sessionId: restoreSessionId, count: list.length, docLength: this.view.state.doc.length });
 
       this.suspendSnapshot = false;
       let docString = this.view.state.doc.toString();
@@ -1473,11 +1447,6 @@ export function installThinkingCards() {
         }
         if (isCommentPanelId(this.panelId)) {
           skippedFallback = true;
-          debugChatCards("restore.skipFallbackInComments", {
-            panelId: this.panelId,
-            sessionId: restoreSessionId,
-            id: it.id
-          });
           continue;
         }
 
@@ -1521,7 +1490,6 @@ export function installThinkingCards() {
         }
       } catch {}
       if (!skippedFallback) this.snapshot();
-      debugChatCards("restore.done", { panelId: this.panelId, sessionId: restoreSessionId, processed: processedIds.size, itemCount: itemsToProcess.length, anchorCount: anchors.length, docLength: this.view.state.doc.length });
     };
     destroy() {
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }

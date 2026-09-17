@@ -641,9 +641,6 @@ export function createSessionsListRendererFactory(deps) {
         ? { ...sourceTree, children: collectSessionNodes(sourceTree) }
         : sourceTree;
         const relatedChildren = getRelatedSessionChildren();
-        // #region debug-point D:comment-sidebar-shape
-        { const rawTreeCommentSessionIds = collectSessionNodes(rawSourceTree).map((node) => String(node?.id || "")).filter((id) => id.startsWith("comment:")); const treeCommentSessionIds = collectSessionNodes(sourceTree).map((node) => String(node?.id || "")).filter((id) => id.startsWith("comment:")); const relatedComments = Array.from(relatedChildren.entries()).flatMap(([parentSessionId, children]) => children.filter((child) => child?.type === "comment").map((child) => ({ parentSessionId: String(parentSessionId || ""), commentSessionId: String(child?.sessionId || ""), threadId: String(child?.id || "") }))); if (rawTreeCommentSessionIds.length || relatedComments.length) void globalThis.fetch?.("/__trae_debug/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "D", location: "extensions/dev.session-manager/ui/list-renderer.js:render", msg: "[DEBUG] Sidebar derived durable and related comment rows", data: { rawTreeCommentSessionIds, treeCommentSessionIds, relatedComments, flatSessionResults }, ts: Date.now() }), keepalive: true })?.catch?.(() => {}); }
-        // #endregion
         const collapsedSessionChildren = readCollapsedSessionChildren();
         const visibleOrder = [];
         const visibleStatusSessionIds = new Set();

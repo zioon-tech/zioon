@@ -40,6 +40,8 @@ import {
 } from "./project-automation-runtime-service.js";
 
 export const runtimePluginApiVersion = 2;
+const IDENTITY_RUNTIME_SESSION_SNAPSHOTS_KEY = "sessionSnapshots.v1";
+const MAX_IDENTITY_RUNTIME_SESSION_SNAPSHOTS = 128;
 
 function allowsWorkspaceWrite(policy = {}) {
   return ["workspace-write", "trusted-automation"].includes(String(policy?.preset || "read-only"));
@@ -66,6 +68,38 @@ function writableIdentityFiles(input = {}) {
     };
   }
   return out;
+}
+
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+}
+
+function normalizeRuntimeSessionId(value) {
+  const id = String(value || "").trim();
+  if (!id) return "";
+  if (/^(comment|scheduled|agent|task):/i.test(id)) return "";
+  return id;
+}
+
+function resolveRuntimeContextSessionId(runContext = {}) {
+  return normalizeRuntimeSessionId(
+    runContext?.request?.sessionId
+    || runContext?.sessionId
+  );
+}
+
+function normalizeSessionSnapshotEntry(value, fallbackSavedAt = Date.now()) {
+  const source = objectValue(value);
+  const snapshot = normalizeIdentitySnapshot(source.snapshot || source);
+  if (!String(snapshot.content || "").trim()) return null;
+  const savedAt = Number(source.savedAt || snapshot.savedAt || fallbackSavedAt)
+    || fallbackSavedAt;
+  return {
+    savedAt,
+    snapshot
+  };
 }
 
 function eligibleRuntimeBiographyRun(run = {}) {
@@ -268,7 +302,48 @@ export class RuntimeIdentityContextProvider {
     this.runSnapshots = new Map();
   }
 
-  async loadSnapshot(runContext = {}) {
+  storedSessionSnapshot(sessionId) {
+    const id = normalizeRuntimeSessionId(sessionId);
+    if (!id) return null;
+    const entry = normalizeSessionSnapshotEntry(
+      objectValue(this.state.get(IDENTITY_RUNTIME_SESSION_SNAPSHOTS_KEY))[id]
+    );
+    const snapshot = entry?.snapshot || null;
+    if (!snapshot) return null;
+    if (this.memoryRoot && String(snapshot.sourceRoot || "") !== this.memoryRoot) return null;
+    return snapshot;
+  }
+
+  saveSessionSnapshot(sessionId, snapshot) {
+    const id = normalizeRuntimeSessionId(sessionId);
+    const entry = normalizeSessionSnapshotEntry({ snapshot });
+    if (!id || !entry) return snapshot;
+    const records = new Map();
+    for (const [key, value] of Object.entries(
+      objectValue(this.state.get(IDENTITY_RUNTIME_SESSION_SNAPSHOTS_KEY))
+    )) {
+      const normalized = normalizeSessionSnapshotEntry(value);
+      if (normalized) records.set(key, normalized);
+    }
+    records.set(id, entry);
+    const ordered = Array.from(records.entries())
+      .sort((left, right) => right[1].savedAt - left[1].savedAt)
+      .slice(0, MAX_IDENTITY_RUNTIME_SESSION_SNAPSHOTS);
+    this.state.set(
+      IDENTITY_RUNTIME_SESSION_SNAPSHOTS_KEY,
+      Object.fromEntries(ordered)
+    );
+    return snapshot;
+  }
+
+  async loadSnapshot(runContext = {}, options = {}) {
+    const sessionId = normalizeRuntimeSessionId(
+      options.sessionId || resolveRuntimeContextSessionId(runContext)
+    );
+    if (sessionId && !options.force) {
+      const stored = this.storedSessionSnapshot(sessionId);
+      if (stored) return stored;
+    }
     let snapshot = normalizeIdentitySnapshot(
       this.state.get(IDENTITY_RUNTIME_SNAPSHOT_KEY) || {}
     );
@@ -276,6 +351,7 @@ export class RuntimeIdentityContextProvider {
       !this.fileService?.readTextFiles
       || !this.memoryRoot
     ) {
+      if (sessionId) this.saveSessionSnapshot(sessionId, snapshot);
       return snapshot;
     }
     const fileContext = {
@@ -311,6 +387,7 @@ export class RuntimeIdentityContextProvider {
       files: loaded.files
     });
     this.state.set(IDENTITY_RUNTIME_SNAPSHOT_KEY, snapshot);
+    if (sessionId) this.saveSessionSnapshot(sessionId, snapshot);
     return snapshot;
   }
 
@@ -329,14 +406,26 @@ export class RuntimeIdentityContextProvider {
           this.memoryRoot === root || this.memoryRoot.startsWith(`${String(root).replace(/\/+$/, "")}/`));
       if (restricted) return clean;
     }
-    const key = runContext.runId && `${runContext.runId}:${runContext.attemptId || ""}`;
+    const sessionId = resolveRuntimeContextSessionId(runContext);
+    const key = sessionId
+      ? `session:${sessionId}`
+      : runContext.runId && `run:${runContext.runId}:${runContext.attemptId || ""}`;
     let pending = key && this.runSnapshots.get(key);
     if (!pending) {
-      pending = this.loadSnapshot(runContext);
+      pending = this.loadSnapshot(runContext, { sessionId });
       if (key) {
         this.runSnapshots.set(key, pending);
-        pending.catch(() => this.runSnapshots.delete(key));
-        if (this.runSnapshots.size > 32) this.runSnapshots.delete(this.runSnapshots.keys().next().value);
+        pending.then(
+          () => {
+            if (sessionId && this.runSnapshots.get(key) === pending) {
+              this.runSnapshots.delete(key);
+            }
+          },
+          () => this.runSnapshots.delete(key)
+        );
+        if (!sessionId && this.runSnapshots.size > 32) {
+          this.runSnapshots.delete(this.runSnapshots.keys().next().value);
+        }
       }
     }
     const snapshot = await pending;

@@ -184,13 +184,7 @@ export function getLocalToolsBase() {
         state: window.zion?.state,
         storage: globalThis.localStorage
       });
-  // #region debug-point A-B:route-input
-  try { if (localStorage.getItem("zion.debug.identityCspFetch") === "1") fetch("http://127.0.0.1:7778/event", { method: "POST", body: JSON.stringify({ sessionId: "identity-csp-fetch", runId: "post-fix", hypothesisId: "A-B", location: "extensions/dev.identity/main.js:getLocalToolsBase", msg: "[DEBUG] Identity file route input", data: { backend: runtimeConnection?.backend || null, connectionBaseUrl: runtimeConnection?.baseUrl || null, runtimeMode: window.zion?.state?.get?.("runtime.mode") || localStorage.getItem("zion.runtime.mode") || null, runtimeBaseUrl: window.zion?.state?.get?.("runtime.baseUrl") || localStorage.getItem("zion.runtime.baseUrl") || null, pageOrigin: globalThis.location?.origin || null }, ts: Date.now() }) }).catch(() => {}); } catch {}
-  // #endregion
   if (runtimeRelayBase) {
-    // #region debug-point A-B:runtime-route
-    try { if (localStorage.getItem("zion.debug.identityCspFetch") === "1") fetch("http://127.0.0.1:7778/event", { method: "POST", body: JSON.stringify({ sessionId: "identity-csp-fetch", runId: "post-fix", hypothesisId: "A-B", location: "extensions/dev.identity/main.js:getLocalToolsBase", msg: "[DEBUG] Identity selected Runtime relay", data: { baseUrl: runtimeRelayBase }, ts: Date.now() }) }).catch(() => {}); } catch {}
-    // #endregion
     return runtimeRelayBase;
   }
   const stateValue = window.zion?.state?.get?.("localTools.baseUrl");
@@ -201,9 +195,6 @@ export function getLocalToolsBase() {
       || "";
     if (stored.trim()) return stored.trim().replace(/\/$/, "");
   } catch {}
-  // #region debug-point A-B-E:loopback-route
-  try { if (localStorage.getItem("zion.debug.identityCspFetch") === "1") fetch("http://127.0.0.1:7778/event", { method: "POST", body: JSON.stringify({ sessionId: "identity-csp-fetch", runId: "post-fix", hypothesisId: "A-B-E", location: "extensions/dev.identity/main.js:getLocalToolsBase", msg: "[DEBUG] Identity selected loopback fallback", data: { baseUrl: "http://127.0.0.1:8765" }, ts: Date.now() }) }).catch(() => {}); } catch {}
-  // #endregion
   return "http://127.0.0.1:8765";
 }
 

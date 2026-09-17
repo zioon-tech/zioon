@@ -54,6 +54,23 @@ function renderPendingContent(element, text, status = "") {
   return true;
 }
 
+function isCollapsedOriginRect(rect) {
+  if (!rect) return true;
+  const top = Number(rect.top);
+  const bottom = Number(rect.bottom);
+  if (!Number.isFinite(top) || !Number.isFinite(bottom)) return true;
+  const left = Number.isFinite(Number(rect.left)) ? Number(rect.left) : 0;
+  const right = Number.isFinite(Number(rect.right)) ? Number(rect.right) : 0;
+  const width = Number.isFinite(Number(rect.width)) ? Number(rect.width) : Math.abs(right - left);
+  const height = Number.isFinite(Number(rect.height)) ? Number(rect.height) : Math.abs(bottom - top);
+  return top === 0
+    && bottom === 0
+    && left === 0
+    && right === 0
+    && width === 0
+    && height === 0;
+}
+
 class PendingAssistantWidget extends WidgetType {
   constructor(entry) {
     super();
@@ -94,7 +111,8 @@ class PendingAssistantWidget extends WidgetType {
 export function revealPendingAssistantInView(view, {
   runId = "",
   sessionId = "",
-  margin = 24
+  margin = 24,
+  preserveVisible = false
 } = {}) {
   const pending = Array.from(
     view?.dom?.querySelectorAll?.(".zion-pending-assistant-output") || []
@@ -104,7 +122,14 @@ export function revealPendingAssistantInView(view, {
   const target = pending?.querySelector?.(".zion-pending-assistant-tail")
     || pending;
   const scrollDOM = view?.scrollDOM;
-  const targetRect = target?.getBoundingClientRect?.();
+  let targetRect = target?.getBoundingClientRect?.();
+  const pendingRect = target !== pending
+    ? pending?.getBoundingClientRect?.()
+    : null;
+  const tailRectCollapsedAtOrigin = isCollapsedOriginRect(targetRect);
+  if (tailRectCollapsedAtOrigin && !isCollapsedOriginRect(pendingRect)) {
+    targetRect = pendingRect;
+  }
   const rawViewportRect = scrollDOM?.getBoundingClientRect?.();
   if (!scrollDOM || !targetRect) {
     return false;
@@ -117,6 +142,19 @@ export function revealPendingAssistantInView(view, {
         bottom: Math.max(0, Number(scrollDOM.clientHeight) || 0)
       };
   const safeMargin = Math.max(0, Number(margin) || 0);
+  if (preserveVisible && isCollapsedOriginRect(targetRect)) {
+    // The empty tail can report a synthetic 0,0 rect before layout catches up.
+    // Treat that as "not measurable yet" during submit preservation, not as
+    // a real target above the viewport.
+    return true;
+  }
+  if (
+    preserveVisible
+    && targetRect.top >= viewportRect.top
+    && targetRect.bottom <= viewportRect.bottom
+  ) {
+    return true;
+  }
   let nextScrollTop = null;
   if (targetRect.bottom > viewportRect.bottom - safeMargin) {
     nextScrollTop = scrollDOM.scrollTop

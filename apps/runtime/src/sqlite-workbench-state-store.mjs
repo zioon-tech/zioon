@@ -1122,9 +1122,6 @@ export class SqliteWorkbenchStateStore {
         return { ok: false, conflict: true, revision: globalRevision };
       }
       const current = this.currentSession(id);
-      // #region debug-point C:comment-runtime-session-upsert
-      if (id.startsWith("comment:")) void globalThis.fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "comment-session-parenting", runId: "post-fix", hypothesisId: "C", location: "apps/runtime/src/sqlite-workbench-state-store.mjs:updateSession", msg: "[DEBUG] Runtime received a durable comment-session write", data: { commentSessionId: id, sessionAlreadyExists: current.exists === true, treeNodeAlreadyExists: !!findNodeAndParent(this.stateTree(), id)?.node, requestedParentId: String(input.parent_id || input.parentId || ""), effectiveNewParentId: String(input.parent_id || input.parentId || "root"), writesDocument: input.text != null, writesMetadata: input.meta != null, reason: String(input.reason || "update") }, ts: Date.now() }) }).catch(() => {});
-      // #endregion
       if (
         input.expected_session_revision != null
         && Number(input.expected_session_revision) !== current.revision

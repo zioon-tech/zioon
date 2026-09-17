@@ -57,7 +57,6 @@ describe("identity local-tools routing", () => {
   it("uses configured Runtime routing before runtime.connection is published", async () => {
     const previous = window.zion;
     try {
-      localStorage.setItem("zion.debug.identityCspFetch", "1");
       localStorage.setItem("zion.runtime.mode", "runtime");
       localStorage.setItem("zion.runtime.baseUrl", "https://runtime.zioon.tech");
       window.zion = {
@@ -73,7 +72,6 @@ describe("identity local-tools routing", () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 100));
     } finally {
-      localStorage.removeItem("zion.debug.identityCspFetch");
       localStorage.removeItem("zion.runtime.mode");
       localStorage.removeItem("zion.runtime.baseUrl");
       window.zion = previous;

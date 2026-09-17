@@ -4,6 +4,12 @@ import { isContinuationBoundaryLine } from "../../src/chat/session-document-form
 import {
   revealPendingAssistantInView
 } from "../dev.session-manager/editor/pending-assistant-plugin.js";
+import {
+  initializeConversationViewport,
+  isConversationViewportFollowing,
+  restoreConversationViewportStability,
+  setConversationViewportFollowing
+} from "../../src/chat/conversation-viewport.js";
 
 const ROLE_HEAD_RE = /^\s*(system|user|assistant|tool)\s+/;
 const ASSISTANT_HEAD_RE = /^\s*assistant\s+/;
@@ -34,27 +40,6 @@ function getEditorSessionId(editor) {
     return window.zion?.state?.get?.("sessions.currentId") || null;
   } catch {}
   return null;
-}
-
-function getFollowStateKey(sessionId) {
-  return sessionId ? `chat.followLatest.${sessionId}` : null;
-}
-
-function isFollowLatestEnabled(sessionId) {
-  const key = getFollowStateKey(sessionId);
-  if (!key) return false;
-  try {
-    return window.zion?.state?.get?.(key) !== false;
-  } catch {}
-  return true;
-}
-
-function setFollowLatest(sessionId, value) {
-  const key = getFollowStateKey(sessionId);
-  if (!key) return;
-  try {
-    window.zion?.state?.set?.(key, !!value);
-  } catch {}
 }
 
 function resolveAssistantHeadLine(lines, preferredHeadLine, assistantBlockId) {
@@ -474,6 +459,8 @@ export function createChatOverviewRail(editor) {
   let altTapStarted = false;
   let altTapUsedAsModifier = false;
   let lastAltTapAt = 0;
+  let userScrollIntentUntil = 0;
+  let scrollbarPointerActive = false;
   let userHistorySignature = "";
   let userHistoryOpenTimer = 0;
   let userHistoryPointerInside = false;
@@ -516,6 +503,18 @@ export function createChatOverviewRail(editor) {
     return false;
   };
 
+  const markUserScrollIntent = (durationMs = 900) => {
+    userScrollIntentUntil = Math.max(
+      userScrollIntentUntil,
+      Date.now() + Math.max(0, Number(durationMs) || 0)
+    );
+  };
+
+  const clearUserScrollIntent = () => {
+    userScrollIntentUntil = 0;
+    scrollbarPointerActive = false;
+  };
+
   navDock.addEventListener("mouseenter", () => {
     userHistoryPointerInside = true;
   });
@@ -550,7 +549,14 @@ export function createChatOverviewRail(editor) {
 
   const revealLatestAnswer = (sessionId, forceFollow = false) => {
     if (!scrollDOM) return;
-    if (forceFollow && sessionId) setFollowLatest(sessionId, true);
+    if (forceFollow && sessionId) {
+      clearUserScrollIntent();
+      setConversationViewportFollowing(view, true, {
+        sessionId,
+        state: window.zion?.state,
+        mirrorLegacy: true
+      });
+    }
     const activeRun = sessionId
       ? window.zion?.state?.get?.(`chat.runs.${sessionId}`)
       : null;
@@ -588,7 +594,17 @@ export function createChatOverviewRail(editor) {
         const maxScrollTop = Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight);
         const nextScrollTop = Math.max(0, Math.min(maxScrollTop, block.bottom - scrollDOM.clientHeight + margin));
         try {
-          if (sessionId) window.zion?.state?.set?.(`chat.followSuppressUntil.${sessionId}`, Date.now() + 120);
+          const suppressUntil = Date.now() + 120;
+          if (sessionId) {
+            window.zion?.state?.set?.(
+              `chat.followSuppressUntil.${sessionId}`,
+              suppressUntil
+            );
+          }
+          scrollDOM.__zionProgrammaticScrollUntil = Math.max(
+            Number(scrollDOM.__zionProgrammaticScrollUntil) || 0,
+            suppressUntil
+          );
         } catch {}
         window.requestAnimationFrame(() => {
           try {
@@ -610,7 +626,12 @@ export function createChatOverviewRail(editor) {
     const nav = computeUserNavState(view);
     if (nav.prevLine == null) return;
     const sessionId = getEditorSessionId(editor);
-    if (sessionId) setFollowLatest(sessionId, false);
+    if (sessionId) {
+      setConversationViewportFollowing(view, false, {
+        sessionId,
+        state: window.zion?.state
+      });
+    }
     jumpToLine(view, nav.prevLine);
     openUserHistoryNow();
     scheduleRender();
@@ -622,7 +643,12 @@ export function createChatOverviewRail(editor) {
     const nav = computeUserNavState(view);
     if (nav.nextLine == null) return;
     const sessionId = getEditorSessionId(editor);
-    if (sessionId) setFollowLatest(sessionId, false);
+    if (sessionId) {
+      setConversationViewportFollowing(view, false, {
+        sessionId,
+        state: window.zion?.state
+      });
+    }
     jumpToLine(view, nav.nextLine);
     openUserHistoryNow();
     scheduleRender();
@@ -658,7 +684,12 @@ export function createChatOverviewRail(editor) {
     for (const item of items) {
       const current = cursorLine >= item.line && cursorLine <= item.endLine;
       userHistoryList.appendChild(createUserHistoryItem(item, current, (line) => {
-        if (sessionId) setFollowLatest(sessionId, false);
+        if (sessionId) {
+          setConversationViewportFollowing(view, false, {
+            sessionId,
+            state: window.zion?.state
+          });
+        }
         jumpToLine(view, line);
         openUserHistoryNow();
         scheduleRender();
@@ -689,6 +720,9 @@ export function createChatOverviewRail(editor) {
 
   const onKeyDown = (event) => {
     if (disposed || !isThisEditorActive()) return;
+    if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key)) {
+      markUserScrollIntent(700);
+    }
     if (isAltKeyEvent(event) && !event.repeat && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
       altTapStarted = true;
       altTapUsedAsModifier = false;
@@ -763,7 +797,12 @@ export function createChatOverviewRail(editor) {
       assistantBlockId
     );
     const isStreaming = !!activeRun?.streaming;
-    const followLatest = sessionId ? isFollowLatestEnabled(sessionId) : false;
+    const followLatest = sessionId
+      ? isConversationViewportFollowing(view, {
+          sessionId,
+          state: window.zion?.state
+        })
+      : false;
     const userMessages = collectUserMessageItemsFromLines(lines);
     const userNav = computeUserNavState(view, userMessages);
     renderUserHistory(userMessages, cursorLine, sessionId);
@@ -818,6 +857,19 @@ export function createChatOverviewRail(editor) {
   try {
     editor.addVisualExtension(
       EditorView.updateListener.of((update) => {
+        const updateSessionId = getEditorSessionId(editor);
+        if (
+          updateSessionId
+          && userScrollIntentUntil <= Date.now()
+          && !scrollbarPointerActive
+          && (update.docChanged || update.geometryChanged || update.viewportChanged)
+        ) {
+          restoreConversationViewportStability(view, {
+            sessionId: updateSessionId,
+            state: window.zion?.state,
+            update
+          });
+        }
         if (update.docChanged) {
           scheduleRender(120);
         } else if (
@@ -839,12 +891,62 @@ export function createChatOverviewRail(editor) {
   } catch {}
 
   if (scrollDOM) {
+    const initialSessionId = getEditorSessionId(editor);
+    if (initialSessionId) {
+      initializeConversationViewport(view, {
+        sessionId: initialSessionId,
+        state: window.zion?.state
+      });
+    }
     const onWheel = () => {
+      markUserScrollIntent(900);
       const sessionId = getEditorSessionId(editor);
       if (!sessionId) return;
-      if (!isFollowLatestEnabled(sessionId)) return;
-      setFollowLatest(sessionId, false);
+      if (!isConversationViewportFollowing(view, {
+        sessionId,
+        state: window.zion?.state
+      })) return;
+      setConversationViewportFollowing(view, false, {
+        sessionId,
+        state: window.zion?.state
+      });
       scheduleRender();
+    };
+    const onTouchStart = () => {
+      markUserScrollIntent(1_500);
+    };
+    const onTouchMove = () => {
+      markUserScrollIntent(1_500);
+    };
+    const onTouchEnd = () => {
+      markUserScrollIntent(350);
+    };
+    const onPointerDown = (event) => {
+      if (event.target !== scrollDOM) return;
+      const rect = scrollDOM.getBoundingClientRect?.();
+      if (!rect) return;
+      const verticalScrollbarWidth = Math.max(
+        12,
+        Number(scrollDOM.offsetWidth || 0)
+          - Number(scrollDOM.clientWidth || 0)
+          + 4
+      );
+      const horizontalScrollbarHeight = Math.max(
+        12,
+        Number(scrollDOM.offsetHeight || 0)
+          - Number(scrollDOM.clientHeight || 0)
+          + 4
+      );
+      const onScrollbar = Number(event.clientX) >= rect.right - verticalScrollbarWidth
+        || Number(event.clientY) >= rect.bottom - horizontalScrollbarHeight;
+      if (!onScrollbar) return;
+      scrollbarPointerActive = true;
+      markUserScrollIntent(1_500);
+    };
+    const onPointerUp = () => {
+      if (!scrollbarPointerActive) return;
+      scrollbarPointerActive = false;
+      markUserScrollIntent(350);
     };
     const onScroll = () => {
       scheduleRender();
@@ -852,28 +954,57 @@ export function createChatOverviewRail(editor) {
       if (!sessionId || suppressScrollTracking) return;
       const isStreaming = !!window.zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming;
       if (!isStreaming) return;
-      if (!isFollowLatestEnabled(sessionId)) return;
-      const suppressUntil = Number(window.zion?.state?.get?.(`chat.followSuppressUntil.${sessionId}`) || 0);
+      if (!isConversationViewportFollowing(view, {
+        sessionId,
+        state: window.zion?.state
+      })) return;
       const domSuppressUntil = Number(scrollDOM.__zionProgrammaticScrollUntil || 0);
       const distanceToBottom = scrollDOM.scrollHeight - scrollDOM.scrollTop - scrollDOM.clientHeight;
-      if (Math.max(suppressUntil, domSuppressUntil) > Date.now()) return;
+      if (domSuppressUntil > Date.now()) return;
+      if (
+        !scrollbarPointerActive
+        && userScrollIntentUntil <= Date.now()
+        && restoreConversationViewportStability(view, {
+          sessionId,
+          state: window.zion?.state
+        })
+      ) {
+        return;
+      }
+      if (!scrollbarPointerActive && userScrollIntentUntil <= Date.now()) return;
       if (distanceToBottom > 12) {
-        setFollowLatest(sessionId, false);
+        setConversationViewportFollowing(view, false, {
+          sessionId,
+          state: window.zion?.state
+        });
         scheduleRender();
       }
     };
     scrollDOM.addEventListener("wheel", onWheel, { passive: true });
+    scrollDOM.addEventListener("touchstart", onTouchStart, { passive: true });
+    scrollDOM.addEventListener("touchmove", onTouchMove, { passive: true });
+    scrollDOM.addEventListener("touchend", onTouchEnd, { passive: true });
+    scrollDOM.addEventListener("pointerdown", onPointerDown, { passive: true });
     scrollDOM.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("pointerup", onPointerUp, { passive: true });
+    window.addEventListener("pointercancel", onPointerUp, { passive: true });
     subscriptions.push({
       dispose() {
         scrollDOM.removeEventListener("wheel", onWheel);
+        scrollDOM.removeEventListener("touchstart", onTouchStart);
+        scrollDOM.removeEventListener("touchmove", onTouchMove);
+        scrollDOM.removeEventListener("touchend", onTouchEnd);
+        scrollDOM.removeEventListener("pointerdown", onPointerDown);
         scrollDOM.removeEventListener("scroll", onScroll);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
       }
     });
   }
 
   const panelId = editor?.panelId || null;
   const rerenderEvents = [
+    "chat/preparing",
     "chat/runStarted",
     "chat/token",
     "chat/runFinished",
@@ -886,8 +1017,13 @@ export function createChatOverviewRail(editor) {
         window.zion.events.on(topic, (payload) => {
           const targetSessionId = getEditorSessionId(editor);
           if (!payload?.sessionId || !targetSessionId || payload.sessionId === targetSessionId) {
+            if (
+              (topic === "chat/preparing" || topic === "chat/runStarted")
+              && payload?.editorView === view
+            ) {
+              clearUserScrollIntent();
+            }
             if (topic === "chat/runStarted" && payload?.sessionId === targetSessionId) {
-              setFollowLatest(targetSessionId, true);
               const blockId = String(
                 payload?.assistantBlockId || payload?.runId || ""
               );

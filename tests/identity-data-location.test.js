@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -44,6 +44,37 @@ describe("Identity plugin data integration", () => {
     const second = await provider.contribute(first, { runId: "two" });
     expect(second[0].content).toContain("Updated outside Zion using Bash");
     expect(second.filter((item) => item.content.includes("<identity_context>"))).toHaveLength(1);
+  });
+
+  it("freezes Runtime identity context per chat session across Runs", async () => {
+    const { location, state, fileService, values } = await setup();
+    await mkdir(location.root, { recursive: true });
+    await writeFile(join(location.root, "user.md"), "# User\nSession original");
+    const provider = new RuntimeIdentityContextProvider({
+      state, fileService, memoryRoot: location.root, dataLocation: location
+    });
+    const messages = [{ role: "user", content: "hello" }];
+    const runContext = (runId, sessionId) => ({
+      runId,
+      attemptId: `${runId}-attempt`,
+      request: {
+        sessionId,
+        policy: { preset: "read-only", fileRoots: [] }
+      }
+    });
+
+    const first = await provider.contribute(messages, runContext("run-1", "chat-session"));
+    expect(first[0].content).toContain("Session original");
+
+    await writeFile(join(location.root, "user.md"), "# User\nSession updated");
+    const sameSession = await provider.contribute(messages, runContext("run-2", "chat-session"));
+    expect(sameSession[0].content).toContain("Session original");
+    expect(sameSession[0].content).not.toContain("Session updated");
+
+    const nextSession = await provider.contribute(messages, runContext("run-3", "next-session"));
+    expect(nextSession[0].content).toContain("Session updated");
+    expect(values.get("sessionSnapshots.v1")["chat-session"].snapshot.content)
+      .toContain("Session original");
   });
 
   it("appends concurrent completed runs without replacing either event", async () => {
