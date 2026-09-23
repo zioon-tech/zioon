@@ -1,0 +1,23 @@
+[Unit]
+Description=Zion Local Identity Provider
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zion
+Group=zion
+WorkingDirectory=/opt/zion-next
+EnvironmentFile=/etc/zion-next/runtime.env
+ExecStart=/usr/local/bin/node /opt/zion-next/apps/runtime/src/accounts/local-identity-service.mjs
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/zion-next
+
+[Install]
+WantedBy=multi-user.target

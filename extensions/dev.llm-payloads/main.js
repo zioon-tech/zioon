@@ -1,9 +1,21 @@
 import { getEditorCore } from "../dev.tools/editor-core.js";
+import {
+  hydrateLlmRequestWorkbenchEvent,
+  llmRequestPayloadFromWorkbenchEvent,
+  preferDetailedLlmRequestRecord
+} from "../../src/runtime/llm-request-observability.ts";
+import {
+  DEFAULT_WORKBENCH_RUNTIME_BASE_URL,
+  readWorkbenchRuntimeConfig
+} from "../../src/runtime/workbench-runtime-config.ts";
 import { extractRequestMessages } from "./request-messages.js";
 
 const VIEW_ID = "dev.llm-payloads.panel";
 const FILES_VIEW_ID = "dev.tools.files";
 const MAX_RECORDS = 80;
+const RECENT_EVENT_WINDOW = 5_000;
+const RECENT_EVENT_LIMIT = 2_000;
+const WORKBENCH_STATE_PROTOCOL = "5";
 const MAX_PAYLOAD_CHARS = 500_000;
 const MAX_INLINE_TEXT = 240;
 const MAX_MESSAGE_TEXT = 8_000;
@@ -32,6 +44,7 @@ const I18N_MESSAGES = {
     "empty.noRequests": "还没有 LLM 请求。",
     "empty.select": "选择一个请求查看详情。",
     "empty.noMessages": "这个请求里没有消息。",
+    "empty.summaryOnly": "完整消息详情未保留；这里只能显示请求摘要。",
     "mock.generated": "已生成 Mock 消息",
     "mock.noMessages": "没有生成 Mock 消息",
     "mock.label": "Mock",
@@ -76,6 +89,7 @@ const I18N_MESSAGES = {
     "empty.noRequests": "No LLM requests yet.",
     "empty.select": "Select a request to inspect.",
     "empty.noMessages": "No messages in this request.",
+    "empty.summaryOnly": "Full message details were not retained; only the request summary is available.",
     "mock.generated": "Mock messages generated",
     "mock.noMessages": "No mock messages generated",
     "mock.label": "Mock",
@@ -105,6 +119,7 @@ const records = [];
 const listeners = new Set();
 let selectedId = "";
 let activeDetailTab = "messages";
+let recentLoadPromise = null;
 
 function t(key, fallback, values) {
   const fullKey = `${I18N_NS}.${key}`;
@@ -144,6 +159,7 @@ try {
     const queued = Array.isArray(window.zion.__llmPayloadQueue) ? window.zion.__llmPayloadQueue.splice(0) : [];
     for (const item of queued) addRecord(item);
   } catch {}
+  void loadRecentRuntimeRequests();
 
   ctx.subscriptions.push(window.zion.commands.registerCommand("llmPayloads.open", openPanel));
   ctx.subscriptions.push(window.zion.commands.registerCommand("llmPayloads.clear", () => {
@@ -269,6 +285,7 @@ async function mockCurrentMessages() {
 }
 
 function openPanel() {
+  void loadRecentRuntimeRequests();
   try { window.zion?.bottomPanel?.setHeight?.(320); } catch {}
   try { window.zion?.bottomPanel?.activateView?.(VIEW_ID); } catch {}
   try { window.zion?.bottomPanel?.show?.(); } catch {}
@@ -278,7 +295,11 @@ function addRecord(payload) {
   const record = normalizeRecord(payload);
   const existingIndex = records.findIndex((item) => item.id === record.id);
   if (existingIndex >= 0) {
+    const existing = records[existingIndex];
     records.splice(existingIndex, 1);
+    records.unshift(preferDetailedLlmRequestRecord(existing, record));
+    emitChanged();
+    return records[0];
   }
   records.unshift(record);
   if (!selectedId || record.mock) selectedId = record.id;
@@ -305,6 +326,66 @@ function subscribe(fn) {
   return { dispose: () => listeners.delete(fn) };
 }
 
+async function runtimeJson(path) {
+  const config = readWorkbenchRuntimeConfig({
+    state: window.zion?.state,
+    storage: globalThis.localStorage
+  });
+  const baseUrl = config.baseUrl || DEFAULT_WORKBENCH_RUNTIME_BASE_URL;
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "GET",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Zion-Workbench-Protocol": WORKBENCH_STATE_PROTOCOL
+    }
+  });
+  if (!response.ok) throw new Error(`Runtime Workbench state HTTP ${response.status}`);
+  return response.json();
+}
+
+async function loadRecentRuntimeRequests() {
+  if (recentLoadPromise) return recentLoadPromise;
+  recentLoadPromise = (async () => {
+    try {
+      const status = await runtimeJson("/v1/workbench-state/status");
+      const latest = Math.max(0, Number(status?.event_cursor) || 0);
+      if (!latest) return;
+      const after = Math.max(0, latest - RECENT_EVENT_WINDOW);
+      const query = new URLSearchParams({
+        after: String(after),
+        limit: String(RECENT_EVENT_LIMIT)
+      });
+      const feed = await runtimeJson(`/v1/workbench-state/events?${query}`);
+      const events = Array.isArray(feed?.events) ? feed.events : [];
+      const requestEvents = events
+        .filter((event) => event?.type === "llm.request")
+        .slice(-MAX_RECORDS);
+      const hydratedEvents = await Promise.all(requestEvents.map(async (event) => {
+        try {
+          return await hydrateLlmRequestWorkbenchEvent(
+            event,
+            (runId, sequence) => runtimeJson(
+              `/v1/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(sequence)}`
+            )
+          );
+        } catch {
+          return event;
+        }
+      }));
+      for (const event of hydratedEvents) {
+        const payload = llmRequestPayloadFromWorkbenchEvent(event);
+        if (payload) addRecord(payload);
+      }
+    } catch (error) {
+      console.warn("[dev.llm-payloads] failed to load recent Runtime requests:", error);
+    }
+  })().finally(() => {
+    recentLoadPromise = null;
+  });
+  return recentLoadPromise;
+}
+
 function normalizeRecord(payload) {
   const rawPayload = payload?.payload ?? {};
   const payloadText = safeStringify(rawPayload, MAX_PAYLOAD_CHARS);
@@ -327,6 +408,7 @@ function normalizeRecord(payload) {
     url: String(payload?.url || ""),
     stream: payload?.stream !== false,
     retryWithReasoningContent: !!payload?.retryWithReasoningContent,
+    summaryOnly: payload?.summaryOnly === true,
     messageCount: Number(payload?.messageCount || messages.length || 0),
     toolCount: Number(payload?.toolCount || inferToolCount(rawPayload)),
     messageChars,
@@ -640,7 +722,9 @@ function renderPanel(container) {
     if (!item.messages.length) {
       const empty = document.createElement("div");
       empty.className = "zion-llm-payloads-empty";
-      empty.textContent = t("empty.noMessages", "No messages in this request.");
+      empty.textContent = item.summaryOnly
+        ? t("empty.summaryOnly", "Full message details were not retained; only the request summary is available.")
+        : t("empty.noMessages", "No messages in this request.");
       wrap.appendChild(empty);
       return wrap;
     }

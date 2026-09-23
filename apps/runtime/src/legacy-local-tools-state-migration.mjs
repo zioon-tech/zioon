@@ -87,7 +87,7 @@ export async function migrateLegacyLocalToolsState({
   if (workbenchState) {
     try {
       const source = `zion-local-tools:app-sessions:${normalizedBaseUrl}`;
-      if (workbenchState.hasMigrationSource?.(source)) {
+      if (await workbenchState.hasMigrationSource?.(source)) {
         result.workbenchState = { ok: true, duplicate: true };
       } else {
         const status = await fetchJson(
@@ -102,7 +102,7 @@ export async function migrateLegacyLocalToolsState({
             `${normalizedBaseUrl}/app-sessions/snapshot`,
             transferTimeoutMs
           );
-          const migration = workbenchState.migrateBrowserStorage(
+          const migration = await workbenchState.migrateBrowserStorage(
             source,
             payload?.snapshot || payload,
             sourceFingerprint
@@ -119,7 +119,7 @@ export async function migrateLegacyLocalToolsState({
 
   if (scheduler) {
     try {
-      if (scheduler.hasLegacyMigration?.()) {
+      if (await scheduler.hasLegacyMigration?.()) {
         result.scheduler = { ok: true, duplicate: true };
       } else if (!result.available) {
         result.scheduler = {
@@ -140,7 +140,7 @@ export async function migrateLegacyLocalToolsState({
             completedAt: run.completedAt
           }))
         });
-        result.scheduler = scheduler.importLegacySnapshot(
+        result.scheduler = await scheduler.importLegacySnapshot(
           payload,
           sourceFingerprint
         );

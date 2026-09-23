@@ -112,6 +112,35 @@ describe("modelsManage health queries", () => {
     expect(forced.set_active).toBe("test-provider:down");
   });
 
+  it("publishes active thinking changes after a built-in model update", async () => {
+    window.zion.state.set("chat.activeModel", {
+      providerId: "deepseek",
+      modelId: "deepseek-chat",
+      label: "DeepSeek"
+    });
+    const handler = window.zion.state.get("chat.toolHandlers").modelsManage;
+
+    await handler({
+      action: "update",
+      provider_id: "deepseek",
+      model_id: "deepseek-chat",
+      thinkingMode: "on",
+      thinkingEffort: "high"
+    });
+
+    expect(window.zion.state.get("chat.activeModel")).toMatchObject({
+      thinkingMode: "on",
+      thinkingEffort: "high"
+    });
+    expect(window.zion.events.emit).toHaveBeenCalledWith(
+      "models/configChanged",
+      expect.objectContaining({
+        providerId: "deepseek",
+        modelId: "deepseek-chat"
+      })
+    );
+  });
+
   it("writes user.dynamic model CRUD through Runtime Host when available", async () => {
     window.zion.state.set("runtime.mode", "runtime");
     window.zion.state.set("runtime.connection", {

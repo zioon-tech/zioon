@@ -224,12 +224,12 @@ local-tools 凭证或绕过 Resource Host policy。后续不信任 Relay 时：
 - `/health` 未认证响应只暴露最小存活信息。
 - 所有远程 Origin 使用精确 allowlist，不使用 `*`，不回显任意 Origin。
 - 配对、认证失败、设备吊销和高风险 Approval 写入安全审计事件。
-- Access 数据与 Runtime 业务数据可以先共用 SQLite，但使用独立表和模块。
+- Access 数据与 Runtime 业务数据可以先共用 PostgreSQL，但使用独立表和模块。
 
 ## 分阶段交付
 
 1. **Access foundation**
-   - SQLite device、credential 和 pairing store；
+   - PostgreSQL device、credential 和 pairing store；
    - 一次性 Owner/Client/Resource 配对；
    - 每设备 opaque credential、吊销和最小 scope；
    - Node gateway 从共享 token 迁移到 Resource credential；

@@ -19,7 +19,7 @@
 - 临时阿里云 AK/SK 必须由 Owner 针对当次操作明确授权；使用权限为 `0600` 的临时
   配置，完成后删除整个临时目录并确认不存在。
 - Owner/Client/Resource 配对码有效期短且只能使用一次，不应作为长期凭据保存。
-- 任何复制到备份介质的 `credentials.json` 或 SQLite 数据库都按 secret 处理，必须
+- 任何复制到备份介质的 `credentials.json` 或 PostgreSQL 数据库都按 secret 处理，必须
   加密并限制访问。
 
 ## 2. 当前资产
@@ -38,7 +38,8 @@
 | Runtime 服务 | systemd `zion-runtime.service` |
 | 服务器代码 | `/opt/zion-next` |
 | Workbench 静态文件 | `/var/lib/zion-next/workbench-dist` |
-| Runtime 数据库 | `/var/lib/zion-next/runtime.sqlite3` |
+| Runtime 数据库 | `/var/lib/zion-next/PostgreSQL database` |
+| Runtime 图片 Asset | `/var/lib/zion-next/runtime/assets` |
 | Runtime 模型凭据 | `/var/lib/zion-next/credentials.json` |
 | Runtime 环境文件 | `/etc/zion-next/runtime.env` |
 | Caddy 配置 | `/etc/caddy/Caddyfile` |
@@ -69,7 +70,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
 Phone/Desktop Browser
   -> HTTPS :443 or :8443 (Caddy)
     -> Runtime 127.0.0.1:8766
-      -> SQLite and model credential store
+      -> PostgreSQL and model credential store
       -> authenticated Node Broker
         <- outbound HTTPS long poll from Device Connector
 
@@ -115,10 +116,10 @@ terminal bundle:
 assets/extensions/dev.terminal-enhanced/main-yMeVDA1X.js
 ```
 
-2026-09-08 发布前的 Runtime SQLite 备份：
+2026-09-08 发布前的 Runtime PostgreSQL 备份：
 
 ```text
-/var/lib/zion-next/backups/runtime-20260907T192642Z.sqlite3
+/var/lib/zion-next/backups/runtime-20260907T192642Z.postgresql
 ```
 
 当前办公 Mac Plugin Host 已发布的外迁 Identity 插件：
@@ -152,7 +153,7 @@ systemd 单元模板位于
 ```text
 user/group: zion:zion
 working directory: /opt/zion-next
-database: /var/lib/zion-next/runtime.sqlite3
+database: /var/lib/zion-next/PostgreSQL database
 workbench dist: /var/lib/zion-next/workbench-dist
 runtime plugins: dev.session-manager,dev.skills,dev.tools,dev.plugins,
                  dev.terminal-manager,dev.identity,dev.memory,dev.agents,
@@ -275,7 +276,7 @@ Workbench 网页不影响它们，但退出承载进程的本地终端、Trae、
 | DeepSeek API Key | Runtime 模型请求 | Runtime `credentials.json` 中的 `model.deepseek`，或受控环境变量 | 只通过 `credentialConfigured` 检查，不读取明文 |
 | Owner/Client Cookie | 浏览器访问 Runtime | 浏览器 Host-only `Secure`、`HttpOnly` Cookie | JavaScript 和文档不可读取；按设备吊销 |
 | Resource credential | Connector 注册和轮询 | macOS Keychain `dev.zion.device-connector` | 已存在；绑定 Runtime Origin 和 `nodeId` |
-| Access credential 摘要 | 校验已配对设备 | `/var/lib/zion-next/runtime.sqlite3` | SQLite 只保存摘要、状态和设备绑定 |
+| Access credential 摘要 | 校验已配对设备 | `/var/lib/zion-next/PostgreSQL database` | PostgreSQL 只保存摘要、状态和设备绑定 |
 | 一次性配对 secret | 创建设备凭据 | 短时邀请；服务端只存摘要 | 使用一次或过期后失效 |
 | TLS 私钥 | Caddy HTTPS | Caddy 数据目录 | 由 Caddy 管理，不复制到仓库 |
 
@@ -290,7 +291,7 @@ sudo sed -E 's/^([A-Z0-9_]+)=.*$/\1=<redacted>/' \
 sudo stat -c '%A %U:%G %n' \
   /etc/zion-next/runtime.env \
   /var/lib/zion-next/credentials.json \
-  /var/lib/zion-next/runtime.sqlite3
+  /var/lib/zion-next/PostgreSQL database
 ```
 
 推荐权限：
@@ -298,7 +299,7 @@ sudo stat -c '%A %U:%G %n' \
 ```text
 /etc/zion-next/runtime.env          root:root 0600
 /var/lib/zion-next/credentials.json zion:zion 0600
-/var/lib/zion-next/runtime.sqlite3  zion:zion 0600
+/var/lib/zion-next/PostgreSQL database  zion:zion 0600
 ```
 
 如果需要轮换模型 Key，优先在 Workbench 模型设置中重新提交；Runtime 会覆盖
@@ -376,7 +377,7 @@ test -d node_modules/werift
 1. 将源码、`dist/` 和 `dev.identity-0.1.7.zip` 分别上传到服务器 `/tmp`
    下的新目录。
 2. 不要原地覆盖正在服务的 `workbench-dist`；先组装 next 目录。
-3. 保留 Runtime SQLite 和 credential store，不要随源码包覆盖。
+3. 保留 Runtime PostgreSQL 和 credential store，不要随源码包覆盖。
 4. 将源码安装到 `/opt/zion-next`，静态文件原子切换到
    `/var/lib/zion-next/workbench-dist`。
 5. 发布后同时验证桌面入口 `/` 与独立移动入口 `/mobile/`；两者共享同一 Runtime
@@ -404,7 +405,7 @@ test -d node_modules/werift
 node_modules/（应在服务器重新安装）
 .env
 credentials.json
-runtime.sqlite3
+PostgreSQL database
 个人 Keychain 或 Workbench CLI 配置
 ```
 
@@ -465,7 +466,7 @@ Owner 可在 Workbench 的“设置 -> 服务 -> 设备与远程访问”中：
 ```bash
 cd /opt/zion-next
 sudo -u zion env \
-  ZION_RUNTIME_DB=/var/lib/zion-next/runtime.sqlite3 \
+  ZION_DATABASE_URL="$ZION_DATABASE_URL" \
   ZION_RUNTIME_PUBLIC_URL=https://runtime.zioon.tech \
   npm run runtime:access -- devices list
 ```
@@ -474,12 +475,12 @@ sudo -u zion env \
 
 ```bash
 sudo -u zion env \
-  ZION_RUNTIME_DB=/var/lib/zion-next/runtime.sqlite3 \
+  ZION_DATABASE_URL="$ZION_DATABASE_URL" \
   ZION_RUNTIME_PUBLIC_URL=https://runtime.zioon.tech \
   npm run runtime:access -- pair create --kind owner --delivery cookie
 
 sudo -u zion env \
-  ZION_RUNTIME_DB=/var/lib/zion-next/runtime.sqlite3 \
+  ZION_DATABASE_URL="$ZION_DATABASE_URL" \
   npm run runtime:access -- devices revoke <device-id>
 ```
 
@@ -490,7 +491,8 @@ Browser Client 配对码不能启动 Connector；Resource 配对码也不能登�
 至少备份：
 
 ```text
-/var/lib/zion-next/runtime.sqlite3
+/var/lib/zion-next/PostgreSQL database
+/var/lib/zion-next/runtime/assets
 /var/lib/zion-next/credentials.json
 /etc/zion-next/runtime.env
 /etc/caddy/Caddyfile
@@ -501,7 +503,10 @@ Browser Client 配对码不能启动 Connector；Resource 配对码也不能登�
 ~/Library/LaunchAgents/dev.zion.device-connector.plist
 ```
 
-SQLite 备份应使用 SQLite backup API 或停服后的文件副本，避免复制到不一致状态。
+PostgreSQL 备份应使用 PostgreSQL backup API 或停服后的文件副本，避免复制到不一致状态。
+`runtime/assets` 必须与同一恢复点的 Asset metadata 一起备份；恢复后应抽样核对
+`runtime_assets.sha256` 与 filesystem CAS 内容。当前 filesystem backend 只能由一个
+Runtime 实例写入。
 包含 credentials 的备份必须加密。Keychain 中的 Resource credential不建议复制到
 另一台机器；恢复后重新生成 Resource 配对并吊销旧设备更安全。
 
@@ -594,5 +599,5 @@ sudo journalctl -u zion-runtime -n 300 --no-pager \
 4. 检查本机 `8765`、`8767` 和 Connector LaunchAgent。
 5. 只确认 credential 是否配置，不读取或打印 secret 值。
 6. 远程写操作前向 Owner 申请当次阿里云授权。
-7. 发布前备份 SQLite，发布后验证模型、插件、Skills 和终端。
+7. 发布前备份 PostgreSQL，发布后验证模型、插件、Skills 和终端。
 8. 删除所有临时凭据、CLI、归档和测试设备。

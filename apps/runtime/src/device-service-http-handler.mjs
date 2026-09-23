@@ -409,20 +409,24 @@ export function createDeviceServiceHttpHandler({
         json(response, 200, { session });
         return true;
       }
-      if (!hasBroker) {
-        if (dataFiles && matched.service === "local-tools") {
-          const payload = await dataFiles.handle(matched.path.replace(/^\/files\//, ""),
-            body ? JSON.parse(body.toString("utf8")) : Object.fromEntries(url.searchParams),
-            { signal: cancellation.signal });
-          if (payload) {
-            json(response, 200, payload);
-            return true;
-          }
-          if (url.searchParams.get("plugin_data_version") === "1") {
-            json(response, 400, { error: "Path is outside configured plugin data storage" });
-            return true;
-          }
+      if (
+        dataFiles
+        && matched.service === "local-tools"
+        && (url.searchParams.get("plugin_data_version") === "1" || !hasBroker)
+      ) {
+        const payload = await dataFiles.handle(matched.path.replace(/^\/files\//, ""),
+          body ? JSON.parse(body.toString("utf8")) : Object.fromEntries(url.searchParams),
+          { signal: cancellation.signal });
+        if (payload) {
+          json(response, 200, payload);
+          return true;
         }
+        if (url.searchParams.get("plugin_data_version") === "1") {
+          json(response, 400, { error: "Path is outside configured plugin data storage" });
+          return true;
+        }
+      }
+      if (!hasBroker) {
         const baseUrl = directServiceUrls[matched.service];
         if (!baseUrl) {
           const error = new Error(

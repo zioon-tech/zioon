@@ -519,7 +519,7 @@ type AttemptLease = {
 
 ### 8.1 必须加入 `space_id`
 
-当前 SQLite 表主要以 `session_id`、`run_id`、`node_id` 和 `project_id` 为主，没有
+当前 PostgreSQL 表主要以 `session_id`、`run_id`、`node_id` 和 `project_id` 为主，没有
 统一的租户键。多用户前必须给以下对象增加 `space_id`：
 
 - Session、Run、Event、Checkpoint；
@@ -580,7 +580,7 @@ GET  /v1/spaces/:spaceId/usage
 
 | 阶段 | 存储 |
 | --- | --- |
-| 单 Owner、多 Node alpha | 保留 SQLite，补 schema 和事务边界 |
+| 单 Owner、多 Node alpha | 保留 PostgreSQL，补 schema 和事务边界 |
 | 多 Space 单实例 beta | PostgreSQL + S3-compatible Artifact Store |
 | 多 Control Plane 实例 | PostgreSQL、durable queue、分布式 lease |
 | 跨区域 | 区域 Run Ledger、全局目录、Artifact replication |
@@ -745,7 +745,7 @@ Approval 必须绑定 canonical operation，而不是只绑定工具名：
 - tenant-level backup/restore；
 - SLA、计费和支持系统。
 
-在这个阶段，SQLite 应退出共享 Control Plane，但可以继续作为单 cell 的本地缓存。
+在这个阶段，PostgreSQL 应退出共享 Control Plane，但可以继续作为单 cell 的本地缓存。
 
 ### 10.4 Phase 4：Runtime Federation
 
@@ -888,7 +888,7 @@ Zion 的结构性优势可能来自：
 
 - `packages/node-protocol/src/index.mjs`
 - `apps/runtime/src/node-broker.mjs`
-- `apps/runtime/src/sqlite-node-state-store.mjs`
+- `apps/runtime/src/postgres-node-state-store.mjs`
 - `apps/device-connector/src/main.mjs`
 - Workbench Remote Access 设置页。
 

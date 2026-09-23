@@ -26,6 +26,7 @@ export function createPluginModelService({
   engine,
   resolveModel = null,
   defaultTimeoutMs = 30000,
+  authorizeRequest = null,
   onRequest = null,
   onRequestError = null
 } = {}) {
@@ -37,22 +38,28 @@ export function createPluginModelService({
       messages = [],
       model = null,
       timeoutMs = defaultTimeoutMs,
+      runContext = {},
       requestContext = {}
     } = {}) {
       const controller = new CancellationController();
       const timeout = timeoutSignal(controller, timeoutMs);
       let text = "";
       try {
+        await authorizeRequest?.(runContext);
         const requestedModel = typeof resolveModel === "function"
           ? resolveModel(model || null)
           : model;
         for await (const event of engine.streamTurn({
+          runId: runContext.runId,
+          attemptId: runContext.attemptId,
+          principal: runContext.principal,
           messages: normalizeMessages(messages),
           tools: [],
           model: requestedModel,
           signal: controller.signal
         })) {
           controller.signal.throwIfCancelled();
+          await authorizeRequest?.(runContext);
           if (event?.type === "model.request" && typeof onRequest === "function") {
             try {
               await onRequest({

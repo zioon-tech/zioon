@@ -7,7 +7,7 @@
 
 ## 背景
 
-Workbench Session 已由 Runtime SQLite 持久化，但客户端仍每 30 秒检查一次全局
+Workbench Session 已由 Runtime PostgreSQL 持久化，但客户端仍每 30 秒检查一次全局
 revision，并在变化后下载完整 snapshot。`BroadcastChannel` 只能覆盖相同 origin，
 不能覆盖 `localhost` 与 `127.0.0.1`、不同浏览器、CLI 或 Mobile。Run SSE 又只允许
 已经知道 `runId` 的客户端订阅。
@@ -36,7 +36,7 @@ flowchart LR
   PROJECTION[Client Run Projection Stream]
   COLLAB[Hocuspocus / Yjs]
   RUN[Canonical Raw Run Event Log]
-  DB[(SQLite)]
+  DB[(PostgreSQL)]
 
   WB -->|HTTP commands| RELAY
   MOB -->|HTTP commands| RELAY
@@ -198,7 +198,7 @@ WebSocket Provider 和服务端生态更直接。
 
 1. Durable Session Event Feed、SSE catch-up、Workbench 实时列表和文档失效。
 2. CLI `session watch/attach` 与运行中 Run 发现。
-3. Hocuspocus/Yjs Server、SQLite persistence 和 CodeMirror binding。
+3. Hocuspocus/Yjs Server、PostgreSQL persistence 和 CodeMirror binding。
 4. Runtime Client Projection Stream 与模型终态协同文档 transaction。
 5. Public Relay、Mobile 离线恢复和推送通知。
 6. annotations/tool cards 迁移到稳定 CRDT 锚点。
@@ -207,11 +207,11 @@ WebSocket Provider 和服务端生态更直接。
 
 本地 Runtime 已完成阶段 1-4：
 
-- SQLite durable Session Event Feed、JSON catch-up、SSE `Last-Event-ID` 和
+- PostgreSQL durable Session Event Feed、JSON catch-up、SSE `Last-Event-ID` 和
   cursor expiry reset；
 - Workbench 实时 Session 更新、活动 Run 自动 attach，以及 CLI
   `session attach/watch`；
-- Runtime 内嵌 Hocuspocus、Yjs SQLite state、CodeMirror 6 binding 和浏览器
+- Runtime 内嵌 Hocuspocus、Yjs PostgreSQL state、CodeMirror 6 binding 和浏览器
   IndexedDB 离线副本；
 - Runtime 合并原始 token 后向 Client 发送 projection，Workbench、CLI 和未来
   Mobile 使用同一共享协议；
@@ -223,7 +223,7 @@ WebSocket Provider 和服务端生态更直接。
   observer 等待 Yjs marker 后再渲染 thinking/tool card；
 - reasoning 按时间/字符合批，浏览器 Run Ledger 不保存 token 级事件；
 - Hocuspocus 更新在安静窗口后只发布一个 `document.checkpointed`；
-- 自动测试覆盖多客户端并发编辑、断线重连、Runtime 重启恢复和 SQLite 收敛。
+- 自动测试覆盖多客户端并发编辑、断线重连、Runtime 重启恢复和 PostgreSQL 收敛。
 
 阶段 5 已按
 [ADR-0003](./ADR-0003-REMOTE-ACCESS-AND-DEVICE-PAIRING.md)

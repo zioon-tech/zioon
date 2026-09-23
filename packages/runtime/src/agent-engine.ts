@@ -14,10 +14,13 @@ import type {
   AgentCheckpoint,
   AgentEngine,
   CapabilityPolicy,
+  CancellationSignal,
   ContextProvider,
   EngineOutputEvent,
   ModelRef,
   ResumeRunRequest,
+  RunAuthorizer,
+  RunAuthorizationPhase,
   RunEvent,
   RunHandle,
   RunRecord,
@@ -33,12 +36,32 @@ import type {
   Usage
 } from "./protocol.js";
 
+const TRANSIENT_STREAM_EVENT_TYPES = new Set([
+  "message.delta",
+  "reasoning.delta"
+]);
+const MODEL_REQUEST_CONFIG_KEYS = [
+  "frequency_penalty",
+  "max_completion_tokens",
+  "max_tokens",
+  "model",
+  "presence_penalty",
+  "reasoning_effort",
+  "seed",
+  "stop",
+  "stream",
+  "temperature",
+  "thinking",
+  "top_p"
+] as const;
+
 export type AgentExecutorDependencies = {
   engine: AgentEngine;
   tools: ToolBroker;
   runs: RunStore;
   contexts?: ContextProvider[];
   authorizeTool?: ToolAuthorizer;
+  authorizeRun?: RunAuthorizer;
   scheduleTimeout?: TimeoutScheduler;
   now?: () => number;
   createId?: (prefix: string) => string;
@@ -48,6 +71,13 @@ export type AgentExecutorDependencies = {
 export type AgentExecutor = {
   execute(request: RunRequest): RunHandle;
   resume(runId: string, request?: ResumeRunRequest): Promise<RunHandle>;
+  preview(request: RunRequest): Promise<{
+    runId: string;
+    attemptId: string;
+    turn: number;
+    request: Extract<EngineOutputEvent, { type: "model.request" }>["request"];
+    contextFailures: Array<{ providerId: string; stage: string; error: string }>;
+  }>;
 };
 
 type RunPatch = Pick<RunRecord, "status" | "updatedAt"> &
@@ -73,6 +103,7 @@ type StartState = {
   initialCounters: { toolCalls: number };
   startTurn: number;
   existingRun: RunRecord | null;
+  authorizeAdmission?: boolean;
   previousAttemptId?: string;
   resumedFromSequence?: number;
 };
@@ -121,6 +152,78 @@ function cloneMessages(messages: TranscriptMessage[]): TranscriptMessage[] {
   return JSON.parse(JSON.stringify(messages)) as TranscriptMessage[];
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, item]) =>
+      `${JSON.stringify(key)}:${canonicalJson(item)}`
+    ).join(",")}}`;
+  }
+  if (typeof value === "number" && !Number.isFinite(value)) return "null";
+  if (typeof value === "bigint") return JSON.stringify(String(value));
+  return JSON.stringify(value) ?? "null";
+}
+
+async function requestHash(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(canonicalJson(value));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function utf8Bytes(value: unknown): number {
+  return new TextEncoder().encode(canonicalJson(value)).byteLength;
+}
+
+function toolName(value: unknown): string {
+  const tool = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  const fn = tool.function && typeof tool.function === "object"
+    ? tool.function as Record<string, unknown>
+    : {};
+  return String(fn.name || tool.name || "").trim();
+}
+
+async function modelRequestSummary(request: Record<string, unknown>) {
+  const payload = request.payload && typeof request.payload === "object"
+    ? request.payload as Record<string, unknown>
+    : {};
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const tools = Array.isArray(payload.tools) ? payload.tools : [];
+  const toolNames = Array.from(new Set(tools.map(toolName).filter(Boolean)));
+  const config = Object.fromEntries(MODEL_REQUEST_CONFIG_KEYS
+    .filter((key) => payload[key] !== undefined)
+    .map((key) => [key, payload[key]]));
+  const [payloadHash, messagesHash, toolsHash] = await Promise.all([
+    requestHash(payload),
+    requestHash(messages),
+    requestHash(tools)
+  ]);
+  const {
+    payload: _payload,
+    ...requestMetadata
+  } = request;
+  return {
+    summaryVersion: 1,
+    ...requestMetadata,
+    messageCount: messages.length,
+    toolCount: tools.length,
+    toolNames,
+    payloadBytes: utf8Bytes(payload),
+    payloadHash,
+    messagesHash,
+    toolsHash,
+    config
+  };
+}
+
 function stringSet(value: unknown): Set<string> {
   return new Set(
     (Array.isArray(value) ? value : [])
@@ -145,6 +248,89 @@ function contextProviderEnabled(
   return enabled.size === 0 || enabled.has(providerId);
 }
 
+async function applyContextStage({
+  contexts,
+  stage,
+  messages,
+  request,
+  runId,
+  attemptId,
+  turn,
+  signal,
+  reauthorize,
+  onFailure
+}: {
+  contexts: ContextProvider[];
+  stage: "pre" | "post";
+  messages: TranscriptMessage[];
+  request: RunRequest;
+  runId: string;
+  attemptId: string;
+  turn?: number;
+  signal: CancellationSignal;
+  reauthorize: (phase: RunAuthorizationPhase) => void | Promise<void>;
+  onFailure: (
+    provider: ContextProvider,
+    error: unknown
+  ) => void | Promise<void>;
+}): Promise<TranscriptMessage[]> {
+  const selected = contexts
+    .map((provider, index) => ({ provider, index }))
+    .filter(({ provider }) => (provider.stage || "pre") === stage)
+    .filter(({ provider }) => contextProviderEnabled(provider, request))
+    .sort((left, right) =>
+      (left.provider.order ?? 50) - (right.provider.order ?? 50)
+      || left.index - right.index
+    )
+    .map(({ provider }) => provider);
+  let output = messages;
+
+  if (stage === "pre") {
+    const preparedMessages: TranscriptMessage[] = [];
+    for (const provider of selected.filter((item) => !item.contribute)) {
+      signal.throwIfCancelled();
+      await reauthorize("context");
+      try {
+        if (!provider.prepare) {
+          throw new Error("provider has no prepare or contribute implementation");
+        }
+        const prepared = await provider.prepare(request);
+        if (!Array.isArray(prepared)) {
+          throw new Error("provider returned an invalid result");
+        }
+        preparedMessages.push(...prepared);
+      } catch (error) {
+        await onFailure(provider, error);
+      }
+    }
+    output = [...preparedMessages, ...output];
+  }
+
+  for (const provider of selected.filter((item) => !!item.contribute)) {
+    signal.throwIfCancelled();
+    await reauthorize("context");
+    try {
+      const contributed = await provider.contribute?.(
+        cloneMessages(output),
+        {
+          runId,
+          attemptId,
+          ...(turn === undefined ? {} : { turn }),
+          request,
+          signal
+        }
+      );
+      if (!Array.isArray(contributed)) {
+        throw new Error("provider returned an invalid result");
+      }
+      output = cloneMessages(contributed);
+    } catch (error) {
+      await onFailure(provider, error);
+    }
+  }
+  return output;
+}
+
 function addUsage(current: Usage, patch: Partial<Usage>): Usage {
   return {
     inputTokens: current.inputTokens + positiveInteger(patch.inputTokens, 0),
@@ -157,6 +343,32 @@ function addUsage(current: Usage, patch: Partial<Usage>): Usage {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error || "Unknown runtime error");
+}
+
+function toolFailureCode(result: ToolResult | null, fallback = "tool_error"): string | undefined {
+  if (result?.ok !== false) return undefined;
+  const explicit = String(result.failureCode || "").trim();
+  if (explicit) return explicit;
+  const text = `${result.error || ""}\n${result.content || ""}`.toLowerCase();
+  if (/http\s+429|status\s+429/.test(text)) return "rate_limit";
+  if (/http\s+4\d\d|status\s+4\d\d/.test(text)) return "http_4xx";
+  if (/http\s+5\d\d|status\s+5\d\d/.test(text)) return "http_5xx";
+  if (/timeout|timed\s*out|und_err_connect_timeout|etimedout/.test(text)) return "timeout";
+  if (/enotfound|eai_again|getaddrinfo|dns/.test(text)) return "dns_error";
+  if (/resource_execution_denied|outside_grant|not allowed by capability policy|policy/.test(text)) return "policy_denied";
+  if (/permission denied|eacces|forbidden/.test(text)) return "permission_denied";
+  if (/cancelled|canceled|aborted/.test(text)) return "cancelled";
+  if (/fetch failed|network|econnreset|econnrefused|socket|connection/.test(text)) return "network_error";
+  return fallback;
+}
+
+function toolFailureCodeFromError(error: unknown): string {
+  const text = errorMessage(error).toLowerCase();
+  if (/timeout|timed\s*out|und_err_connect_timeout|etimedout/.test(text)) return "timeout";
+  if (/resource_execution_denied|outside_grant|not allowed by capability policy|policy/.test(text)) return "policy_denied";
+  if (/permission denied|eacces|forbidden/.test(text)) return "permission_denied";
+  if (/cancelled|canceled|aborted/.test(text)) return "cancelled";
+  return "tool_error";
 }
 
 function assistantToolCalls(calls: ToolCall[]) {
@@ -224,6 +436,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
     runs,
     contexts = [],
     authorizeTool = defaultAuthorizeTool,
+    authorizeRun,
     scheduleTimeout,
     now = () => Date.now(),
     createId = createDefaultId,
@@ -256,14 +469,28 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       initialCounters,
       startTurn,
       existingRun,
+      authorizeAdmission = false,
       previousAttemptId,
       resumedFromSequence
     } = state;
     const queue = new AsyncQueue<RunEvent>();
     const cancellation = new CancellationController();
     const policy = normalizeCapabilityPolicy(request.policy);
-    const effectiveRequest: RunRequest = { ...request, policy };
-    const maxTurns = resolveMaxTurns(
+    const effectiveRequest: RunRequest = {
+      ...request, policy,
+      ...(request.principal ? { principal: Object.freeze({ ...request.principal }) } : {})
+    };
+    const reauthorize = (phase: RunAuthorizationPhase): void | Promise<void> => {
+      if (!authorizeRun) return;
+      const authorized = authorizeRun(effectiveRequest, phase);
+      if (authorized && typeof (authorized as Promise<CapabilityPolicy>).then === "function") {
+        return Promise.resolve(authorized).then((resolved) => {
+          Object.assign(policy, normalizeCapabilityPolicy(resolved));
+        });
+      }
+      Object.assign(policy, normalizeCapabilityPolicy(authorized as CapabilityPolicy));
+    };
+    let maxTurns = resolveMaxTurns(
       request.maxTurns,
       defaultMaxTurns,
       policy.maxToolCalls
@@ -299,7 +526,8 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       const publish = async (
         type: string,
         data: Record<string, unknown> = {},
-        patch?: RunPatch
+        patch?: RunPatch,
+        detailData?: Record<string, unknown>
       ) => {
         const nextSequence = sequence + 1;
         const timestamp = now();
@@ -313,10 +541,18 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           timestamp,
           data
         };
-        await runs.append(event, patch);
+        if (TRANSIENT_STREAM_EVENT_TYPES.has(type)) {
+          sequence = nextSequence;
+          queue.push(event);
+          return event;
+        }
+        const detailEvent = detailData
+          ? { ...event, data: detailData }
+          : undefined;
+        await runs.append(event, patch, detailEvent);
         sequence = nextSequence;
-        queue.push(event);
-        return event;
+        queue.push(detailEvent || event);
+        return detailEvent || event;
       };
       const appendTranscript = async (
         turn: number,
@@ -361,6 +597,15 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       };
 
       try {
+        if (authorizeAdmission && authorizeRun) {
+          const authorization = reauthorize("admission");
+          if (authorization) await authorization;
+          maxTurns = resolveMaxTurns(
+            request.maxTurns,
+            defaultMaxTurns,
+            policy.maxToolCalls
+          );
+        }
         if (!existingRun) {
           const createdAt = now();
           await runs.create({
@@ -370,6 +615,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             title: String(request.title || ""),
             sessionId: request.sessionId,
             projectId: request.projectId,
+            principal: effectiveRequest.principal,
             target: request.target,
             model: request.model,
             modelOptions: request.modelOptions,
@@ -419,58 +665,17 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         );
 
         const applyContexts = async (stage: "pre" | "post", turn?: number) => {
-          const selected = contexts
-            .map((provider, index) => ({ provider, index }))
-            .filter(({ provider }) => (provider.stage || "pre") === stage)
-            .filter(({ provider }) => contextProviderEnabled(provider, effectiveRequest))
-            .sort((left, right) =>
-              (left.provider.order ?? 50) - (right.provider.order ?? 50)
-              || left.index - right.index
-            )
-            .map(({ provider }) => provider);
-
-          if (stage === "pre") {
-            const preparedMessages: TranscriptMessage[] = [];
-            for (const provider of selected.filter((item) => !item.contribute)) {
-              cancellation.signal.throwIfCancelled();
-              try {
-                if (!provider.prepare) {
-                  throw new Error("provider has no prepare or contribute implementation");
-                }
-                const prepared = await provider.prepare(effectiveRequest);
-                if (!Array.isArray(prepared)) {
-                  throw new Error("provider returned an invalid result");
-                }
-                preparedMessages.push(...prepared);
-              } catch (error) {
-                await publish("context.failed", {
-                  providerId: provider.id,
-                  stage,
-                  error: errorMessage(error)
-                });
-              }
-            }
-            messages = [...preparedMessages, ...messages];
-          }
-
-          for (const provider of selected.filter((item) => !!item.contribute)) {
-            cancellation.signal.throwIfCancelled();
-            try {
-              const contributed = await provider.contribute?.(
-                cloneMessages(messages),
-                {
-                  runId,
-                  attemptId,
-                  ...(turn === undefined ? {} : { turn }),
-                  request: effectiveRequest,
-                  signal: cancellation.signal
-                }
-              );
-              if (!Array.isArray(contributed)) {
-                throw new Error("provider returned an invalid result");
-              }
-              messages = cloneMessages(contributed);
-            } catch (error) {
+          messages = await applyContextStage({
+            contexts,
+            stage,
+            messages,
+            request: effectiveRequest,
+            runId,
+            attemptId,
+            turn,
+            signal: cancellation.signal,
+            reauthorize,
+            onFailure: async (provider, error) => {
               await publish("context.failed", {
                 providerId: provider.id,
                 stage,
@@ -478,7 +683,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
                 error: errorMessage(error)
               });
             }
-          }
+          });
         };
 
         if (!existingRun) {
@@ -504,12 +709,14 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           let turnOutput = "";
           let turnReasoning = "";
           let reasoningStarted = false;
+          await reauthorize("model");
           for await (const engineEvent of engine.streamTurn({
             runId,
             attemptId,
+            principal: effectiveRequest.principal,
             turn,
             messages,
-            tools: exposedTools,
+            tools: exposedTools.filter((tool) => policy.allowedTools.includes(tool.name)),
             model: request.model,
             modelOptions: request.modelOptions,
             signal: cancellation.signal
@@ -580,6 +787,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
             const call = calls[callIndex];
             cancellation.signal.throwIfCancelled();
+            await reauthorize("tool");
             if (call.validationError) {
               attemptSpan.addEvent("tool.denied", { "zion.tool.denial": "invalid_arguments" });
               const message = toolMessage(call, invalidToolResult(call));
@@ -615,6 +823,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
                 attemptId,
                 sessionId: request.sessionId,
                 projectId: request.projectId,
+                principal: effectiveRequest.principal,
                 target: request.target,
                 policy,
                 toolCall: call
@@ -623,15 +832,18 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
               result = {
                 ok: false,
                 content: `Tool "${call.name}" failed: ${errorMessage(error)}`,
-                error: errorMessage(error)
+                error: errorMessage(error),
+                failureCode: toolFailureCodeFromError(error)
               };
             }
+            const failureCode = toolFailureCode(result);
             await publish("tool.completed", {
               turn,
               callId: call.id,
               name: call.name,
               ok: result.ok,
               error: result.error || null,
+              ...(failureCode ? { failureCode } : {}),
               artifactIds: result.artifactIds || [],
               result: String(result.content || "").slice(0, 4000)
             });
@@ -745,6 +957,89 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
   };
 
   return {
+    async preview(request: RunRequest) {
+      const runId = createId("preview");
+      const attemptId = createId("attempt");
+      const cancellation = new CancellationController();
+      const policy = normalizeCapabilityPolicy(request.policy);
+      const effectiveRequest: RunRequest = {
+        ...request,
+        policy,
+        ...(request.principal
+          ? { principal: Object.freeze({ ...request.principal }) }
+          : {})
+      };
+      const reauthorize = async (phase: RunAuthorizationPhase) => {
+        if (!authorizeRun) return;
+        Object.assign(
+          policy,
+          normalizeCapabilityPolicy(await authorizeRun(effectiveRequest, phase))
+        );
+      };
+      const contextFailures: Array<{
+        providerId: string;
+        stage: string;
+        error: string;
+      }> = [];
+      await reauthorize("admission");
+      const availableTools = await tools.listTools(effectiveRequest);
+      const exposedTools = availableTools.filter((tool) =>
+        policy.allowedTools.includes(tool.name)
+      );
+      let messages = normalizeMessages(request);
+      const apply = async (stage: "pre" | "post", turn?: number) => {
+        messages = await applyContextStage({
+          contexts,
+          stage,
+          messages,
+          request: effectiveRequest,
+          runId,
+          attemptId,
+          turn,
+          signal: cancellation.signal,
+          reauthorize,
+          onFailure(provider, error) {
+            contextFailures.push({
+              providerId: provider.id,
+              stage,
+              error: errorMessage(error)
+            });
+          }
+        });
+      };
+      await apply("pre");
+      await apply("post", 1);
+      await reauthorize("model");
+      const iterator = engine.streamTurn({
+        runId,
+        attemptId,
+        principal: effectiveRequest.principal,
+        turn: 1,
+        messages,
+        tools: exposedTools.filter((tool) =>
+          policy.allowedTools.includes(tool.name)
+        ),
+        model: request.model,
+        modelOptions: request.modelOptions,
+        signal: cancellation.signal
+      })[Symbol.asyncIterator]();
+      try {
+        const first = await iterator.next();
+        if (first.done || first.value.type !== "model.request") {
+          throw new Error("Agent engine does not expose a previewable model request");
+        }
+        return {
+          runId,
+          attemptId,
+          turn: 1,
+          request: first.value.request,
+          contextFailures
+        };
+      } finally {
+        await iterator.return?.();
+      }
+    },
+
     execute(request: RunRequest): RunHandle {
       return startExecution(request, {
         runId: createId("run"),
@@ -755,13 +1050,17 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         initialUsage: { ...EMPTY_USAGE },
         initialCounters: { toolCalls: 0 },
         startTurn: 1,
-        existingRun: null
+        existingRun: null,
+        authorizeAdmission: true
       });
     },
 
     async resume(runId: string, request: ResumeRunRequest = {}): Promise<RunHandle> {
       const existingRun = await runs.get(runId);
       if (!existingRun) throw new Error(`Run not found: ${runId}`);
+      const policy = authorizeRun
+        ? await authorizeRun(existingRun, "resume")
+        : existingRun.policy;
       if (!["interrupted", "aborted", "failed"].includes(existingRun.status)) {
         throw new Error(`Run cannot be resumed from status: ${existingRun.status}`);
       }
@@ -776,10 +1075,11 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         title: existingRun.title,
         sessionId: existingRun.sessionId,
         projectId: existingRun.projectId,
+        principal: existingRun.principal,
         target: existingRun.target,
         model,
         modelOptions,
-        policy: existingRun.policy,
+        policy,
         metadata: existingRun.metadata,
         maxTurns: request.maxTurns ?? checkpoint.maxTurns,
         timeoutMs: request.timeoutMs
@@ -807,7 +1107,12 @@ type EngineEventConsumer = {
   appendText(delta: string): void;
   appendReasoning(delta: string): void;
   addUsage(usage: Partial<Usage>): void;
-  publish(type: string, data?: Record<string, unknown>): Promise<RunEvent>;
+  publish(
+    type: string,
+    data?: Record<string, unknown>,
+    patch?: RunPatch,
+    detailData?: Record<string, unknown>
+  ): Promise<RunEvent>;
 };
 
 async function consumeEngineEvent(
@@ -815,10 +1120,16 @@ async function consumeEngineEvent(
   consumer: EngineEventConsumer
 ): Promise<void> {
   if (event.type === "model.request") {
+    const summary = await modelRequestSummary(event.request);
     await consumer.publish("model.request", {
       turn: consumer.turn,
       model: consumer.model || null,
-      ...event.request
+      ...summary
+    }, undefined, {
+      turn: consumer.turn,
+      model: consumer.model || null,
+      ...summary,
+      payload: event.request.payload
     });
     return;
   }

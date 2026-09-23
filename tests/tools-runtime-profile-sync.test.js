@@ -81,6 +81,12 @@ describe("tools Runtime interaction profile sync", () => {
       "modelsManage",
       "plugin.echo"
     ]);
+    expect(state.values.get("runtime.injectableToolNames")).toEqual([
+      "read",
+      "Bash",
+      "modelsManage",
+      "plugin.echo"
+    ]);
     expect(state.values.get("runtime.enabledToolNames")).toEqual(["Bash", "modelsManage", "plugin.echo"]);
     expect(state.values.get("chat.enabledTools")).toEqual([
       "Bash",
@@ -146,6 +152,62 @@ describe("tools Runtime interaction profile sync", () => {
       "read",
       "Bash"
     ]);
+    expect(state.values.get("runtime.injectableToolNames")).toEqual([
+      "webFetch",
+      "todoWrite",
+      "read",
+      "Bash"
+    ]);
+  });
+
+  it("applies only Runtime-injectable tool enablement when catalog includes unavailable tools", async () => {
+    const state = createState({
+      "chat.tools": [
+        { function: { name: "webFetch" } },
+        { function: { name: "read" } },
+        { function: { name: "Bash" } }
+      ],
+      "chat.enabledTools": ["webFetch", "read", "Bash"],
+      "runtime.mode": "runtime"
+    });
+    const fetchImpl = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/capabilities/tools")) {
+        return jsonResponse(200, {
+          tools: [
+            { name: "webFetch", modelInjectable: true },
+            { name: "read", modelInjectable: false, unavailableReason: "device_unavailable" },
+            { name: "Bash", modelInjectable: false, unavailableReason: "device_unavailable" }
+          ]
+        });
+      }
+      return jsonResponse(200, {
+        profile: {
+          id: "interactive.default",
+          policy: { allowedTools: ["webFetch", "read", "Bash"] }
+        }
+      });
+    });
+
+    await expect(syncEnabledToolsFromRuntimeProfile({
+      state,
+      storage: localStorage,
+      fetchImpl
+    })).resolves.toMatchObject({
+      applied: true,
+      runtimeEnabledTools: ["webFetch"],
+      runtimeInjectableTools: ["webFetch"],
+      enabledTools: ["webFetch"]
+    });
+
+    expect(state.values.get("runtime.supportedToolNames")).toEqual([
+      "webFetch",
+      "read",
+      "Bash"
+    ]);
+    expect(state.values.get("runtime.injectableToolNames")).toEqual([
+      "webFetch"
+    ]);
+    expect(state.values.get("chat.enabledTools")).toEqual(["webFetch"]);
   });
 
   it("persists only Runtime-supported tool choices back to the profile", async () => {

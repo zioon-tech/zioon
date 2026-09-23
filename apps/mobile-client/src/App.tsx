@@ -23,6 +23,8 @@ const TerminalDetailScreen = lazy(() =>
   import("./TerminalScreens").then((module) => ({ default: module.TerminalDetailScreen })));
 const MoreScreen = lazy(() =>
   import("./MoreScreens").then((module) => ({ default: module.MoreScreen })));
+const AccountScreen = lazy(() =>
+  import("./MoreScreens").then((module) => ({ default: module.AccountScreen })));
 const FilesScreen = lazy(() =>
   import("./MoreScreens").then((module) => ({ default: module.FilesScreen })));
 const CapabilitiesScreen = lazy(() =>
@@ -56,6 +58,7 @@ export function App() {
           <Route path="/terminals" element={<TerminalsScreen />} />
           <Route path="/terminal/:sessionId" element={<TerminalDetailScreen />} />
           <Route path="/more" element={<MoreScreen />} />
+          <Route path="/account" element={<AccountScreen />} />
           <Route path="/files" element={<FilesScreen />} />
           <Route path="/capabilities" element={<CapabilitiesScreen />} />
           <Route path="/plugins" element={<PluginsScreen />} />

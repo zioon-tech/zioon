@@ -5,7 +5,7 @@ import {
 } from "../src/model-request-observability.mjs";
 
 describe("model request observability", () => {
-  it("publishes a complete request through the Workbench event feed", async () => {
+  it("publishes a content-free request summary through the Workbench event feed", async () => {
     const eventStore = {
       appendEvent: vi.fn(() => ({ sequence: 42 }))
     };
@@ -36,7 +36,7 @@ describe("model request observability", () => {
         payload: {
           model: "deepseek-v4",
           messages: [{ role: "user", content: "hello" }],
-          tools: [{ type: "function" }]
+          tools: [{ type: "function", function: { name: "read" } }]
         }
       }
     })).resolves.toEqual({ sequence: 42 });
@@ -56,15 +56,18 @@ describe("model request observability", () => {
         providerType: "openai",
         modelId: "deepseek-v4",
         modelLabel: "DeepSeek V4",
+        summaryVersion: 1,
         messageCount: 1,
         toolCount: 1,
-        payload: {
-          model: "deepseek-v4",
-          messages: [{ role: "user", content: "hello" }],
-          tools: [{ type: "function" }]
-        }
+        toolNames: ["read"],
+        payloadBytes: expect.any(Number),
+        payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        messagesHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        toolsHash: expect.stringMatching(/^[a-f0-9]{64}$/)
       })
     });
+    expect(JSON.stringify(eventStore.appendEvent.mock.calls[0][1]))
+      .not.toContain("hello");
   });
 
   it("observes every persisted Run model request with its source metadata", async () => {
@@ -95,16 +98,23 @@ describe("model request observability", () => {
       timestamp: 9000,
       data: {
         turn: 3,
-        payload: {
-          messages: [{ role: "user", content: "review" }]
-        }
+        summaryVersion: 1,
+        messageCount: 1,
+        toolCount: 0,
+        toolNames: ["read"],
+        payloadBytes: 128,
+        payloadHash: "a".repeat(64),
+        messagesHash: "b".repeat(64),
+        toolsHash: "c".repeat(64),
+        config: {}
       }
     });
 
     expect(publish).toHaveBeenCalledWith({
       request: expect.objectContaining({
         turn: 3,
-        payload: expect.any(Object)
+        summaryVersion: 1,
+        messageCount: 1
       }),
       requestContext: {
         source: "agent-task",
@@ -115,10 +125,6 @@ describe("model request observability", () => {
       },
       model: { modelId: "deepseek-v4" },
       observationId: "event-9",
-      detailReference: {
-        runId: "run-9",
-        sequence: 4
-      },
       timestamp: 9000
     });
     expect(subscription).toEqual(expect.objectContaining({
@@ -126,7 +132,7 @@ describe("model request observability", () => {
     }));
   });
 
-  it("stores only a detail pointer for Run-backed requests", async () => {
+  it("publishes the Run-backed detail pointer with a request summary", async () => {
     const eventStore = {
       appendEvent: vi.fn(() => ({ sequence: 43 }))
     };
@@ -141,9 +147,15 @@ describe("model request observability", () => {
       },
       request: {
         modelId: "deepseek-v4",
-        payload: {
-          messages: [{ role: "user", content: "large payload" }]
-        }
+        summaryVersion: 1,
+        messageCount: 1,
+        toolCount: 0,
+        toolNames: ["read"],
+        payloadBytes: 1024,
+        payloadHash: "a".repeat(64),
+        messagesHash: "b".repeat(64),
+        toolsHash: "c".repeat(64),
+        config: {}
       },
       detailReference: {
         runId: "run-10",
@@ -154,10 +166,14 @@ describe("model request observability", () => {
     const eventPayload = eventStore.appendEvent.mock.calls[0][1].payload;
     expect(eventPayload).toMatchObject({
       id: "event-10",
+      summaryVersion: 1,
+      messageCount: 1,
+      toolNames: ["read"],
+      payloadBytes: 1024,
+      payloadHash: "a".repeat(64),
       detailAvailable: true,
       rawRunId: "run-10",
-      rawEventSequence: 5,
-      messageCount: 1
+      rawEventSequence: 5
     });
     expect(eventPayload).not.toHaveProperty("payload");
   });

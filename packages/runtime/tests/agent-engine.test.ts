@@ -52,6 +52,151 @@ async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 }
 
 describe("standalone agent executor", () => {
+  it("previews the exact first model request without starting model transport", async () => {
+    const store = new MemoryRunStore();
+    let resumedAfterRequest = false;
+    const engine: AgentEngine = {
+      id: "preview",
+      async *streamTurn(request) {
+        yield {
+          type: "model.request",
+          request: {
+            url: "https://model.test/v1/chat/completions",
+            providerId: "test",
+            providerType: "openai",
+            modelId: "small",
+            stream: true,
+            payload: {
+              model: "small",
+              messages: request.messages,
+              tools: request.tools
+            }
+          }
+        };
+        resumedAfterRequest = true;
+        throw new Error("model transport must not start during preview");
+      }
+    };
+    const executor = createAgentExecutor({
+      engine,
+      tools: toolBroker({
+        list: async () => [{
+          name: "read",
+          description: "Read a file",
+          inputSchema: { type: "object", properties: {} }
+        }]
+      }),
+      contexts: [{
+        id: "identity",
+        stage: "pre",
+        async prepare() {
+          return [{ role: "system", content: "identity" }];
+        }
+      }, {
+        id: "memory",
+        stage: "post",
+        async contribute(messages) {
+          return [...messages, { role: "user", content: "memory" }];
+        }
+      }],
+      runs: store,
+      createId: ids(),
+      now: clock()
+    });
+
+    const preview = await executor.preview({
+      prompt: "hello",
+      model: { providerId: "test", modelId: "small" },
+      policy: { preset: "read-only", allowedTools: ["read"] }
+    });
+
+    expect(preview.request.payload).toEqual({
+      model: "small",
+      messages: [
+        { role: "system", content: "identity" },
+        { role: "user", content: "hello" },
+        { role: "user", content: "memory" }
+      ],
+      tools: [{
+        name: "read",
+        description: "Read a file",
+        inputSchema: { type: "object", properties: {} }
+      }]
+    });
+    expect(preview.contextFailures).toEqual([]);
+    expect(resumedAfterRequest).toBe(false);
+    await expect(store.get(preview.runId)).resolves.toBeNull();
+  });
+
+  it("keeps preview and executed first-turn provider payloads identical", async () => {
+    const store = new MemoryRunStore();
+    const engine: AgentEngine = {
+      id: "preview-parity",
+      async *streamTurn(request) {
+        yield {
+          type: "model.request",
+          request: {
+            url: "https://model.test/v1/chat/completions",
+            providerId: "test",
+            providerType: "openai",
+            modelId: "small",
+            stream: true,
+            payload: {
+              model: "small",
+              messages: request.messages,
+              tools: request.tools,
+              temperature: 0
+            }
+          }
+        };
+        yield { type: "message.delta", delta: "done" };
+      }
+    };
+    const executor = createAgentExecutor({
+      engine,
+      tools: toolBroker({
+        list: async () => [{
+          name: "read",
+          description: "Read a file",
+          inputSchema: { type: "object", properties: {} }
+        }]
+      }),
+      contexts: [{
+        id: "identity",
+        stage: "pre",
+        async prepare() {
+          return [{ role: "system", content: "identity" }];
+        }
+      }, {
+        id: "memory",
+        stage: "post",
+        async contribute(messages) {
+          return [...messages, { role: "user", content: "memory" }];
+        }
+      }],
+      runs: store,
+      createId: ids(),
+      now: clock()
+    });
+    const request: RunRequest = {
+      prompt: "hello",
+      model: { providerId: "test", modelId: "small" },
+      policy: { preset: "read-only", allowedTools: ["read"] }
+    };
+
+    const preview = await executor.preview(request);
+    const handle = executor.execute(request);
+    const [, liveEvents] = await Promise.all([
+      handle.completion,
+      collect(handle.events)
+    ]);
+    const actual = liveEvents.find((event) =>
+      event.type === "model.request"
+    );
+
+    expect(actual?.data.payload).toEqual(preview.request.payload);
+  });
+
   it("persists an ordered no-tool run without browser dependencies", async () => {
     const store = new MemoryRunStore();
     const engine = new ScriptedEngine([[
@@ -102,6 +247,15 @@ describe("standalone agent executor", () => {
       status: "completed",
       terminalReason: "completed"
     });
+    expect((await store.getEvents(handle.runId)).map((event) => event.type))
+      .toEqual([
+        "run.started",
+        "turn.started",
+        "model.usage",
+        "message.completed",
+        "turn.completed",
+        "run.completed"
+      ]);
     await expect(store.getTranscript(handle.runId)).resolves.toEqual([
       expect.objectContaining({
         turn: 1,
@@ -110,6 +264,76 @@ describe("standalone agent executor", () => {
         content: "hello world"
       })
     ]);
+  });
+
+  it("persists model request diagnostics without prompt or tool schema bodies", async () => {
+    const store = new MemoryRunStore();
+    const engine = new ScriptedEngine([[
+      {
+        type: "model.request",
+        request: {
+          url: "https://model.test/v1/chat/completions",
+          providerId: "test",
+          providerType: "openai",
+          modelId: "small",
+          stream: true,
+          payload: {
+            model: "small",
+            messages: [{ role: "user", content: "private prompt" }],
+            tools: [{
+              type: "function",
+              function: {
+                name: "read",
+                parameters: { type: "object", properties: { secret: { type: "string" } } }
+              }
+            }],
+            temperature: 0.2
+          }
+        }
+      },
+      { type: "message.delta", delta: "done" }
+    ]]);
+    const executor = createAgentExecutor({
+      engine,
+      tools: toolBroker(),
+      runs: store,
+      createId: ids(),
+      now: clock()
+    });
+
+    const handle = executor.execute({ prompt: "private prompt" });
+    const [, liveEvents] = await Promise.all([
+      handle.completion,
+      collect(handle.events)
+    ]);
+    const requestEvent = (await store.getEvents(handle.runId))
+      .find((event) => event.type === "model.request");
+    const liveRequestEvent = liveEvents.find((event) =>
+      event.type === "model.request"
+    );
+
+    expect(requestEvent?.data).toMatchObject({
+      summaryVersion: 1,
+      turn: 1,
+      modelId: "small",
+      stream: true,
+      messageCount: 1,
+      toolCount: 1,
+      toolNames: ["read"],
+      payloadBytes: expect.any(Number),
+      payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      messagesHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      toolsHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      config: {
+        temperature: 0.2
+      }
+    });
+    expect(JSON.stringify(requestEvent)).not.toContain("private prompt");
+    expect(JSON.stringify(requestEvent)).not.toContain("secret");
+    expect(requestEvent?.data).not.toHaveProperty("payload");
+    expect(liveRequestEvent?.data.payload).toMatchObject({
+      messages: [{ role: "user", content: "private prompt" }]
+    });
   });
 
   it("executes an allowed tool and gives its result to the next turn", async () => {
@@ -185,12 +409,10 @@ describe("standalone agent executor", () => {
       .filter((event) => event.type.startsWith("reasoning."));
     expect(reasoningEvents.map((event) => event.type)).toEqual([
       "reasoning.started",
-      "reasoning.delta",
       "reasoning.completed"
     ]);
     expect(reasoningEvents.map((event) => event.data)).toEqual([
       { turn: 1 },
-      { turn: 1, delta: "inspect first" },
       { turn: 1 }
     ]);
     await expect(store.getTranscript(handle.runId)).resolves.toEqual([
@@ -770,13 +992,17 @@ describe("standalone agent executor", () => {
       }
     });
     const allEvents = await store.getEvents(first.runId);
-    expect(allEvents.map((event) => event.sequence)).toEqual(
-      allEvents.map((_event, index) => index + 1)
-    );
+    expect(allEvents.every((event, index) =>
+      index === 0 || event.sequence > allEvents[index - 1].sequence
+    )).toBe(true);
+    expect(allEvents.some((event, index) =>
+      index > 0 && event.sequence > allEvents[index - 1].sequence + 1
+    )).toBe(true);
     await expect(store.get(first.runId)).resolves.toMatchObject({
       attemptId: resumed.attemptId,
       status: "completed"
     });
+    await expect(store.getLatestCheckpoint(first.runId)).resolves.toBeNull();
     expect(contextPrepare).toHaveBeenCalledTimes(1);
   });
 });

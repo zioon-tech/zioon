@@ -185,6 +185,31 @@ export function registerModelsTools() {
             return [];
           }
         };
+        const publishConfigChanged = (pid, mid, patch = {}) => {
+          const active = window.zion?.state?.get?.("chat.activeModel");
+          if (active?.providerId === pid && (!mid || active?.modelId === mid)) {
+            const activePatch = {};
+            for (const field of [
+              "label",
+              "supportsThinking",
+              "supportsThinkingEffort",
+              "thinkingMode",
+              "thinkingEffort"
+            ]) {
+              if (patch[field] !== undefined) activePatch[field] = patch[field];
+            }
+            window.zion?.state?.set?.("chat.activeModel", {
+              ...active,
+              ...activePatch
+            });
+          }
+          try {
+            window.zion?.events?.emit?.("models/configChanged", {
+              providerId: pid,
+              modelId: mid || undefined
+            });
+          } catch {}
+        };
 
         if (action === "list") {
           const models = await refresh({
@@ -341,7 +366,7 @@ export function registerModelsTools() {
             } else if (args?.max_tokens != null) {
               config.max_tokens = Number(args.max_tokens);
             }
-            saveProviderConfig(storageKey, config);
+            return saveProviderConfig(storageKey, config);
           };
 
           // 特殊处理：配置预定义 provider 的 API key
@@ -350,8 +375,9 @@ export function registerModelsTools() {
             if (args?.key) {
               localStorage.setItem("zion.claude.apiKey", String(args.key));
             }
-            updateBuiltinProviderConfig("zion.claude.config");
+            const config = updateBuiltinProviderConfig("zion.claude.config");
             await refresh({ checkHealth: true, force: true, pid, mid: modelId || undefined, invalidate: true });
+            publishConfigChanged(pid, modelId, config);
             return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "Claude API key configured" } }, null, 2);
           }
 
@@ -360,8 +386,9 @@ export function registerModelsTools() {
             if (args?.key) {
               localStorage.setItem("zion.gemini.apiKey", String(args.key));
             }
-            updateBuiltinProviderConfig("zion.gemini.config");
+            const config = updateBuiltinProviderConfig("zion.gemini.config");
             await refresh({ checkHealth: true, force: true, pid, mid: modelId || undefined, invalidate: true });
+            publishConfigChanged(pid, modelId, config);
             return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "Gemini API key configured" } }, null, 2);
           }
 
@@ -370,8 +397,9 @@ export function registerModelsTools() {
             if (args?.key) {
               localStorage.setItem("zion.deepseek.apiKey", String(args.key));
             }
-            updateBuiltinProviderConfig("zion.deepseek.config", { allowLabel: true, allowModel: true });
+            const config = updateBuiltinProviderConfig("zion.deepseek.config", { allowLabel: true, allowModel: true });
             await refresh({ checkHealth: true, force: true, pid, mid: modelId || undefined, invalidate: true });
+            publishConfigChanged(pid, modelId, config);
             return JSON.stringify({ saved: { providerId: pid, id: modelId, message: "DeepSeek API key configured" } }, null, 2);
           }
 
@@ -415,6 +443,7 @@ export function registerModelsTools() {
           const saved = await upsertDynamicModel({ modelId, config: next });
           ensureProvider();
           await refresh({ checkHealth: true, force: true, pid, mid: modelId, invalidate: true });
+          publishConfigChanged(pid, modelId, next);
           return JSON.stringify({
             saved: {
               providerId: pid,

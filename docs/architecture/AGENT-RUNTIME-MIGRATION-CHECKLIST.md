@@ -276,7 +276,7 @@ dev.tools
 - [x] `POST /v1/runs`；
 - [x] abort；
 - [x] SSE event resume；
-- [x] SQLite RunStore；
+- [x] PostgreSQL RunStore；
 - [x] local Model Registry 与 profile discovery；
 - [ ] credential vault；
 - [x] usage；
@@ -288,7 +288,7 @@ dev.tools
 - [x] standalone read-only validation gate；
 - [x] side-effect tools validation gate 与 durable invocation receipt。
 
-当前 checkpoint 已完成本地 SQLite RunStore，以及 loopback-only 的 Run 创建、查询、
+当前 checkpoint 已完成本地 PostgreSQL RunStore，以及 loopback-only 的 Run 创建、查询、
 abort、事件补拉和 SSE 骨架；已增加 OpenAI-compatible Engine adapter、只读
 local-tools Tool Broker 和 ownerless Run 的启动中断收敛。Echo Engine 仅用于协议烟测。
 已增加 allowlisted environment CredentialProvider、工具轮次后的持久 checkpoint，
@@ -330,15 +330,15 @@ contribution；插件仍是可信同进程代码，不等同于安全沙箱或�
 - [x] 普通交互 Chat 按 Browser Run Ledger 中的 Runtime identity 和 event
   sequence 重启续接；
 - [x] Workbench OpenAI-compatible Model Profile 与 Credential 自动迁移；
-- [x] Workbench Session 文档、树、KV 和修订历史迁入 Runtime SQLite；
-- [x] Runtime SQLite durable Session Event Feed、JSON catch-up、SSE cursor
+- [x] Workbench Session 文档、树、KV 和修订历史迁入 Runtime PostgreSQL；
+- [x] Runtime PostgreSQL durable Session Event Feed、JSON catch-up、SSE cursor
   resume 和 cursor expiry reset；
 - [x] raw Run Event Log 与 Client Projection Stream 分离，支持 delta 合批、
   `Last-Event-ID`、断线重连和慢消费者 backpressure；
 - [x] Workbench、CLI 默认消费 projection stream，raw stream 仅显式诊断；
 - [x] Workbench 跨页面/跨 origin 增量同步、活动 Run 发现与自动 attach；
 - [x] 30 秒全量 snapshot polling 降为断线和旧 Runtime 的兼容路径；
-- [x] Scheduler Task、occurrence、Run、lease 和触发时钟迁入 Runtime SQLite；
+- [x] Scheduler Task、occurrence、Run、lease 和触发时钟迁入 Runtime PostgreSQL；
 - [x] local-tools 旧控制面状态的一次性幂等导入；
 - [x] 浏览器模型兼容路径改走受限 Runtime Model Gateway；
 - [x] 普通交互 Chat 的多模态和完整 ContextProvider 对齐：Runtime
@@ -383,7 +383,7 @@ contribution；插件仍是可信同进程代码，不等同于安全沙箱或�
 - [x] Session 文档持久化与 Runtime Event 到 Workbench 的 projection；
 - [x] Hocuspocus/Yjs 协同文档、CodeMirror 6 binding 和浏览器 IndexedDB
   离线副本；
-- [x] Yjs state 与普通 Session 文本在 Runtime SQLite 中原子投影；
+- [x] Yjs state 与普通 Session 文本在 Runtime PostgreSQL 中原子投影；
 - [x] Runtime 作为最终模型输出 writer，生成中内容使用临时 Client
   projection，完成后再幂等提交协同文档；
 - [x] Workbench 使用 CodeMirror decoration 显示 pending assistant，不把

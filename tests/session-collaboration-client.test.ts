@@ -486,6 +486,7 @@ describe("Session collaboration client", () => {
       },
       createProvider(options: any) {
         providerOptions = options;
+        options.document.getText("content").insert(0, "hello");
         const awareness = new Awareness(options.document);
         queueMicrotask(() => options.onSynced());
         return {
@@ -538,6 +539,53 @@ describe("Session collaboration client", () => {
     expect(persistenceDestroy).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps an authoritative empty shared document empty after hydration", async () => {
+    let sharedDocument: Y.Doc | null = null;
+    const values = new Map<string, unknown>([
+      ["sessions.doc.session-1", "stale local snapshot"]
+    ]);
+    const manager = createSessionCollaborationManager({
+      zion: {
+        state: {
+          get(key: string) {
+            return values.get(key);
+          },
+          set(key: string, value: unknown) {
+            values.set(key, value);
+          }
+        }
+      },
+      clientId: "workbench-a",
+      runtimeConfig: {
+        mode: "runtime",
+        enabled: true,
+        baseUrl: "http://127.0.0.1:8766"
+      },
+      createDocument() {
+        sharedDocument = new Y.Doc();
+        return sharedDocument;
+      },
+      createProvider(options: any) {
+        queueMicrotask(() => options.onSynced());
+        return {
+          awareness: new Awareness(options.document),
+          destroy() {}
+        };
+      }
+    });
+    const editor = editorHarness("stale local snapshot");
+    const binding = manager.bindEditor(editor);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sharedDocument?.getText("content").toString()).toBe("");
+    expect(editor.getValue()).toBe("");
+    expect(values.get("sessions.doc.session-1")).toBe("");
+
+    binding.dispose();
+    manager.dispose();
+    editor.dispose();
+  });
+
   it("renders streamed assistant output without mutating the Yjs document", async () => {
     let sharedDocument: Y.Doc | null = null;
     const events = eventBus();
@@ -569,6 +617,7 @@ describe("Session collaboration client", () => {
         return sharedDocument;
       },
       createProvider(options: any) {
+        options.document.getText("content").insert(0, initial);
         const awareness = new Awareness(options.document);
         queueMicrotask(() => options.onSynced());
         return {
@@ -601,6 +650,10 @@ describe("Session collaboration client", () => {
     expect(
       editor.parent.querySelector(".zion-pending-assistant-output")?.textContent
     ).toBe("streamed");
+    expect(
+      editor.parent.querySelector(".zion-pending-assistant-output")
+        ?.classList.contains("is-plain-stream")
+    ).toBe(true);
 
     sharedDocument?.getText("content").insert(
       sharedDocument.getText("content").length,
@@ -820,6 +873,7 @@ describe("Session collaboration client", () => {
         return sharedDocument;
       },
       createProvider(options: any) {
+        options.document.getText("content").insert(0, initial);
         queueMicrotask(() => options.onSynced());
         return {
           awareness: new Awareness(options.document),
@@ -876,6 +930,7 @@ describe("Session collaboration client", () => {
       ["sessions.doc.session-1", initial]
     ]);
     const createProvider = vi.fn((options: any) => {
+      options.document.getText("content").insert(0, initial);
       queueMicrotask(() => options.onSynced());
       return {
         awareness: new Awareness(options.document),

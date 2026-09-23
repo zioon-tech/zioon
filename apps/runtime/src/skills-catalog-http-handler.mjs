@@ -4,6 +4,7 @@ import {
   normalizeSkillsSnapshot,
   normalizeSkillsSourceSnapshot,
   SKILLS_LOCAL_RUNTIME_NODE_ID,
+  SKILLS_RUNTIME_PLUGIN_NODE_ID,
   SKILLS_RUNTIME_KV_KEY,
   SKILLS_RUNTIME_SOURCES_KV_KEY
 } from "../../../extensions/dev.skills/skills-runtime-shared.js";
@@ -61,6 +62,7 @@ function nodeStatuses(availableNodes, localSourceAvailable) {
   const nodes = typeof availableNodes === "function" ? availableNodes() : [];
   return {
     ...(localSourceAvailable ? { [SKILLS_LOCAL_RUNTIME_NODE_ID]: "online" } : {}),
+    [SKILLS_RUNTIME_PLUGIN_NODE_ID]: "online",
     ...Object.fromEntries((Array.isArray(nodes) ? nodes : [])
     .map((node) => [String(node?.nodeId || ""), String(node?.status || "offline")])
     .filter(([nodeId]) => nodeId))
@@ -85,14 +87,24 @@ function withSourceStatuses(snapshot, availableNodes, localSourceAvailable) {
   };
 }
 
-function storedSources(store) {
-  const value = objectValue(store.readKV(SKILLS_RUNTIME_SOURCES_KV_KEY)?.value);
+async function storedSources(store) {
+  const value = objectValue(
+    (await store.readKV(SKILLS_RUNTIME_SOURCES_KV_KEY))?.value
+  );
   const sourceValues = Array.isArray(value.sources)
     ? value.sources
     : (() => {
-        const snapshot = objectValue(store.readKV(SKILLS_RUNTIME_KV_KEY)?.value);
+        const snapshot = objectValue(value.snapshot);
         return Array.isArray(snapshot.sources) ? snapshot.sources : [];
       })();
+  if (!Array.isArray(value.sources)) {
+    const snapshot = objectValue(
+      (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value
+    );
+    return (Array.isArray(snapshot.sources) ? snapshot.sources : [])
+      .map(normalizeSkillsSourceSnapshot)
+      .filter((source) => source.nodeId);
+  }
   return sourceValues
     .map(normalizeSkillsSourceSnapshot)
     .filter((source) => source.nodeId);
@@ -184,11 +196,11 @@ function reconcileEnabledWithCatalog(previous, catalog) {
   return [...enabled];
 }
 
-export function syncSkillsCatalog({ store, snapshot }) {
+export async function syncSkillsCatalog({ store, snapshot }) {
   const incomingSources = sourceSnapshotsFromBody({ snapshot });
-  const previousSourceSnapshots = storedSources(store);
+  const previousSourceSnapshots = await storedSources(store);
   if (!incomingSources.length) {
-    const storedSnapshot = store.readKV(SKILLS_RUNTIME_KV_KEY)?.value;
+    const storedSnapshot = (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value;
     const previous = normalizeSkillsSnapshot(storedSnapshot || {});
     const merged = mergeSkillsSourceSnapshots(
       previousSourceSnapshots,
@@ -198,7 +210,7 @@ export function syncSkillsCatalog({ store, snapshot }) {
       ...skill,
       runtimeCached: !!(skill.body || skill.runtimeFile)
     }));
-    store.writeKV(SKILLS_RUNTIME_KV_KEY, merged);
+    await store.writeKV(SKILLS_RUNTIME_KV_KEY, merged);
     return merged;
   }
   const sourceMap = new Map(previousSourceSnapshots.map((source) => [source.nodeId, source]));
@@ -209,7 +221,7 @@ export function syncSkillsCatalog({ store, snapshot }) {
     }
   }
 
-  const storedSnapshot = store.readKV(SKILLS_RUNTIME_KV_KEY)?.value;
+  const storedSnapshot = (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value;
   const previousHasEnabled = Object.prototype.hasOwnProperty.call(
     objectValue(storedSnapshot),
     "enabled"
@@ -233,11 +245,11 @@ export function syncSkillsCatalog({ store, snapshot }) {
     ...skill,
     runtimeCached: !!(skill.body || skill.runtimeFile)
   }));
-  store.writeKV(SKILLS_RUNTIME_SOURCES_KV_KEY, {
+  await store.writeKV(SKILLS_RUNTIME_SOURCES_KV_KEY, {
     version: 1,
     sources: [...sourceMap.values()]
   });
-  store.writeKV(SKILLS_RUNTIME_KV_KEY, merged);
+  await store.writeKV(SKILLS_RUNTIME_KV_KEY, merged);
   return merged;
 }
 
@@ -256,7 +268,7 @@ export function createSkillsCatalogHttpHandler({
     try {
       if (request.method === "GET" && url.pathname === "/v1/skills/snapshot") {
         const snapshot = normalizeSkillsSnapshot(
-          store.readKV(SKILLS_RUNTIME_KV_KEY)?.value || {}
+          (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value || {}
         );
         json(response, 200, {
           snapshot: withSourceStatuses(
@@ -269,7 +281,7 @@ export function createSkillsCatalogHttpHandler({
       }
       if (request.method === "POST" && url.pathname === "/v1/skills/sync") {
         const body = await readJson(request, maxRequestBytes);
-        const snapshot = syncSkillsCatalog({
+        const snapshot = await syncSkillsCatalog({
           store,
           snapshot: body.snapshot || body
         });
@@ -300,7 +312,7 @@ export function createSkillsCatalogHttpHandler({
         // Read and commit synchronously after parsing the body so concurrent
         // clients merge desired values against the latest committed selection.
         const current = normalizeSkillsSnapshot(
-          store.readKV(SKILLS_RUNTIME_KV_KEY)?.value || {}
+          (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value || {}
         );
         const enabled = new Set(current.enabled);
         const knownIds = new Set(current.catalog.map((skill) => skill.id));
@@ -316,7 +328,7 @@ export function createSkillsCatalogHttpHandler({
             : current.enabled,
           savedAt: Date.now()
         });
-        store.writeKV(SKILLS_RUNTIME_KV_KEY, next);
+        await store.writeKV(SKILLS_RUNTIME_KV_KEY, next);
         json(response, 200, {
           ok: true,
           snapshot: withSourceStatuses(

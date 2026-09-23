@@ -162,6 +162,25 @@ function localFileInvocation(path, method, body, invocation = {}) {
   };
 }
 
+function rewriteLocalFileRequest(path, method, body, fileInvocation) {
+  const args = fileInvocation?.toolCall?.arguments;
+  if (!args || !Object.hasOwn(args, "path")) return { path, body };
+  const normalizedPath = String(args.path || "").trim();
+  if (!normalizedPath) return { path, body };
+  if (["GET", "HEAD"].includes(method)) {
+    const url = new URL(path, "http://device.invalid");
+    url.searchParams.set("path", normalizedPath);
+    return { path: `${url.pathname}${url.search}`, body };
+  }
+  const payload = parseJsonBody(body);
+  if (!Object.hasOwn(payload, "path")) return { path, body };
+  payload.path = normalizedPath;
+  return {
+    path,
+    body: Buffer.from(JSON.stringify(payload), "utf8")
+  };
+}
+
 function localSessionRoute(path) {
   const pathname = new URL(path, "http://device.invalid").pathname;
   const match = pathname.match(/^\/sessions\/([^/]+)/);
@@ -259,8 +278,8 @@ export class DeviceServiceHost {
   async invoke(input = {}, signal, invocation = {}) {
     const service = String(input.service || "").trim();
     const method = String(input.method || "GET").trim().toUpperCase();
-    const path = normalizeServicePath(input.path);
-    const body = input.bodyBase64
+    let path = normalizeServicePath(input.path);
+    let body = input.bodyBase64
       ? Buffer.from(String(input.bodyBase64), "base64")
       : null;
     if (body && body.length > this.maxRequestBytes) {
@@ -290,6 +309,7 @@ export class DeviceServiceHost {
       const fileInvocation = localFileInvocation(path, method, body, invocation);
       if (fileInvocation) {
         await this.deviceAccess.authorizeInvocation(fileInvocation);
+        ({ path, body } = rewriteLocalFileRequest(path, method, body, fileInvocation));
       }
       const sessionId = localSessionRoute(path);
       if (sessionId) {

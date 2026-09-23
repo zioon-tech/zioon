@@ -30,10 +30,10 @@ function json(value) {
   return JSON.stringify(value, null, 2);
 }
 
-function mutationResultPayload(service, result) {
+async function mutationResultPayload(service, result) {
   const payload = { ...result };
   if (result?.id) {
-    const record = sessionPayloadFromRuntimeRecord(service.readSession(result.id), {
+    const record = sessionPayloadFromRuntimeRecord(await service.readSession(result.id), {
       includeDoc: true,
       includeMeta: true
     });
@@ -48,7 +48,7 @@ function normalizeExpectedSessionRevision(value) {
   return Number.isFinite(number) ? number : undefined;
 }
 
-function resolveUpdatePatch(service, args = {}) {
+async function resolveUpdatePatch(service, args = {}) {
   const id = String(args.id || "").trim();
   const updateType = String(args.update_type || "").trim();
   const patch = {
@@ -67,7 +67,7 @@ function resolveUpdatePatch(service, args = {}) {
       ? String(args.doc)
       : String(args.content ?? "");
     if (mode === "append") {
-      const current = service.readSession(id);
+      const current = await service.readSession(id);
       const currentText = String(current?.text || "");
       const separator = args.newline !== false && currentText && !currentText.endsWith("\n")
         ? "\n"
@@ -98,7 +98,7 @@ export function activateRuntimePlugin(context) {
     inputSchema: listDefinition.inputSchema,
     policy: { minimumPreset: "read-only" },
     async invoke(args = {}) {
-      const result = listSessionsFromSnapshot(service.readSnapshot(), args);
+      const result = listSessionsFromSnapshot(await service.readSnapshot(), args);
       if (!result.ok) {
         return {
           ok: false,
@@ -123,7 +123,7 @@ export function activateRuntimePlugin(context) {
       if (!id) {
         return { ok: false, content: "Missing id", error: "Missing id" };
       }
-      const payload = sessionPayloadFromRuntimeRecord(service.readSession(id), {
+      const payload = sessionPayloadFromRuntimeRecord(await service.readSession(id), {
         includeDoc: args.include_doc !== false,
         includeMeta: args.include_meta !== false
       });
@@ -143,7 +143,7 @@ export function activateRuntimePlugin(context) {
     inputSchema: createDefinition.inputSchema,
     policy: { minimumPreset: "workspace-write" },
     async invoke(args = {}) {
-      const result = service.createSession({
+      const result = await service.createSession({
         id: args.id,
         title: args.title,
         text: args.doc != null ? String(args.doc) : String(args.content ?? ""),
@@ -154,7 +154,7 @@ export function activateRuntimePlugin(context) {
       const ok = result?.ok === true;
       return {
         ok,
-        content: json(mutationResultPayload(service, result)),
+        content: json(await mutationResultPayload(service, result)),
         ...(ok ? {} : { error: result?.reason || "sessionCreate failed" })
       };
     }
@@ -168,11 +168,14 @@ export function activateRuntimePlugin(context) {
     async invoke(args = {}) {
       const id = String(args.id || "").trim();
       if (!id) return { ok: false, content: "Missing id", error: "Missing id" };
-      const result = service.updateSession(id, resolveUpdatePatch(service, args));
+      const result = await service.updateSession(
+        id,
+        await resolveUpdatePatch(service, args)
+      );
       const ok = result?.ok === true;
       return {
         ok,
-        content: json(mutationResultPayload(service, { ...result, id })),
+        content: json(await mutationResultPayload(service, { ...result, id })),
         ...(ok ? {} : { error: result?.reason || "sessionUpdate failed" })
       };
     }
@@ -189,7 +192,7 @@ export function activateRuntimePlugin(context) {
       if (args.confirm !== true) {
         return { ok: false, content: "confirm=true is required", error: "confirm=true is required" };
       }
-      const result = service.deleteSession(id, {
+      const result = await service.deleteSession(id, {
         expected_session_revision: normalizeExpectedSessionRevision(args.expected_session_revision),
         operation_id: args.operation_id
       });

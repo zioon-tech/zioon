@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { runStream } from "./chat-service.js";
+import { accountCan } from "../../packages/account-ui/src/client";
 import {
   DEFAULT_REASONING_CONTENT_PLACEHOLDER,
   normalizeToolCallsReasoningContentMode,
@@ -68,6 +69,7 @@ import {
   observeInteractiveRuntimeRun,
   persistInteractiveRuntimeProfileModel,
   prepareInteractiveRuntimeMessages,
+  previewInteractiveRuntimeRequest,
   probeInteractiveRuntime,
   readInteractiveRuntimeConfig,
   resolveInteractiveRuntimeProfileModel,
@@ -130,6 +132,12 @@ const I18N_MESSAGES = {
     "slash.model.label": "模型",
     "status.model": "模型：{label}",
     "status.runFinishedSound": "结束提示音",
+    "status.runtime": "Runtime",
+    "status.runtimeOffline": "Runtime 离线",
+    "status.browserRuntime": "浏览器模式",
+    "status.tooltip.runtime": "Runtime 已连接：{url}",
+    "status.tooltip.runtimeOffline": "Runtime 不可用：{url}",
+    "status.tooltip.browserRuntime": "当前使用浏览器兼容模式",
     "modelSwitcher.title": "选择模型",
     "modelSwitcher.add": "添加",
     "modelSwitcher.addModel": "添加模型",
@@ -197,7 +205,7 @@ const I18N_MESSAGES = {
     "status.tooltip.unknown": "未知",
     "status.tooltip.unconfirmed": "未确认",
     "status.tooltip.openSwitcher": "点击模型项打开模型切换器。",
-    "status.tooltip.cycleThinking": "点击直接切换思考强度：自动 → 低 → 中 → 高。"
+    "status.tooltip.cycleThinking": "点击切换思考开关；思考强度可在模型设置中调整。"
   },
   "en-US": {
     "category.chat": "Chat",
@@ -226,6 +234,12 @@ const I18N_MESSAGES = {
     "slash.model.label": "Model",
     "status.model": "Model: {label}",
     "status.runFinishedSound": "Run Finished Sound",
+    "status.runtime": "Runtime",
+    "status.runtimeOffline": "Runtime offline",
+    "status.browserRuntime": "Browser mode",
+    "status.tooltip.runtime": "Runtime connected: {url}",
+    "status.tooltip.runtimeOffline": "Runtime unavailable: {url}",
+    "status.tooltip.browserRuntime": "Using browser compatibility mode",
     "modelSwitcher.title": "Select Model",
     "modelSwitcher.add": "Add",
     "modelSwitcher.addModel": "Add Model",
@@ -293,7 +307,7 @@ const I18N_MESSAGES = {
     "status.tooltip.unknown": "Unknown",
     "status.tooltip.unconfirmed": "Unconfirmed",
     "status.tooltip.openSwitcher": "Click the model item to open the model switcher.",
-    "status.tooltip.cycleThinking": "Click to cycle thinking effort: Auto → Low → Medium → High."
+    "status.tooltip.cycleThinking": "Click to toggle thinking; adjust effort in model settings."
   }
 };
 
@@ -693,6 +707,25 @@ export async function activate(ctx) {
 
   let runtimeStatusDisposable = null;
   let runtimeModelSyncPromise = null;
+  let runtimeStatusConsecutiveFailures = 0;
+  let runtimeStatusLastSuccessAt = 0;
+  const runtimeStatusFailureThreshold = 3;
+  const runtimeStatusSuccessGraceMs = 90_000;
+  const markRuntimeReachable = (baseUrl = "") => {
+    runtimeStatusConsecutiveFailures = 0;
+    runtimeStatusLastSuccessAt = Date.now();
+    const config = readInteractiveRuntimeConfig();
+    window.zion?.state?.set?.("runtime.connection", {
+      ...(window.zion?.state?.get?.("runtime.connection") || {}),
+      available: true,
+      mode: config.mode,
+      backend: "runtime",
+      baseUrl: baseUrl || config.baseUrl,
+      checkedAt: runtimeStatusLastSuccessAt,
+      lastSuccessAt: runtimeStatusLastSuccessAt,
+      transientFailure: false
+    });
+  };
   const updateRuntimeStatus = async () => {
     const config = readInteractiveRuntimeConfig();
     const health = config.mode === "browser"
@@ -702,18 +735,47 @@ export async function activate(ctx) {
           checkedAt: Date.now()
         }
       : await probeInteractiveRuntime(config);
+    const checkedAt = Number(health.checkedAt || Date.now());
+    if (config.mode !== "browser") {
+      if (health.available) {
+        runtimeStatusConsecutiveFailures = 0;
+        runtimeStatusLastSuccessAt = checkedAt;
+      } else {
+        runtimeStatusConsecutiveFailures += 1;
+      }
+    }
+    const recentlyReachable = runtimeStatusLastSuccessAt > 0
+      && checkedAt - runtimeStatusLastSuccessAt <= runtimeStatusSuccessGraceMs;
+    const transientRuntimeFailure = config.mode === "runtime"
+      && !health.available
+      && (
+        runtimeStatusConsecutiveFailures < runtimeStatusFailureThreshold
+        || recentlyReachable
+      );
     const backend = config.mode === "browser"
       ? "browser"
-      : health.available
+      : health.available || transientRuntimeFailure
         ? "runtime"
         : config.mode === "runtime"
           ? "runtime-offline"
           : "browser";
-    window.zion?.state?.set?.("runtime.connection", {
+    const connection = {
       ...health,
+      available: health.available || transientRuntimeFailure,
+      healthAvailable: health.available,
       mode: config.mode,
       backend,
-      baseUrl: config.baseUrl
+      baseUrl: config.baseUrl,
+      consecutiveFailures: runtimeStatusConsecutiveFailures,
+      ...(runtimeStatusLastSuccessAt
+        ? { lastSuccessAt: runtimeStatusLastSuccessAt }
+        : {}),
+      ...(transientRuntimeFailure
+        ? { transientFailure: true }
+        : {})
+    };
+    window.zion?.state?.set?.("runtime.connection", {
+      ...connection
     });
     runtimeStatusDisposable?.dispose?.();
     const register = window.zion?.bottomStatusBar?.registerItem
@@ -721,17 +783,23 @@ export async function activate(ctx) {
     runtimeStatusDisposable = register?.({
       id: "dev.runtime.connection",
       text: backend === "runtime"
-        ? "$(server) Runtime"
+        ? `$(server) ${t("status.runtime", "Runtime")}`
         : backend === "runtime-offline"
-          ? "$(debug-disconnect) Runtime offline"
-          : "$(browser) Browser",
+          ? `$(debug-disconnect) ${t("status.runtimeOffline", "Runtime offline")}`
+          : `$(browser) ${t("status.browserRuntime", "Browser mode")}`,
       tooltip: backend === "runtime"
-        ? `Runtime connected: ${config.baseUrl}`
+        ? transientRuntimeFailure
+          ? `${t("status.tooltip.runtime", "Runtime connected: {url}", { url: config.baseUrl })}\nHealth probe is retrying: ${health.error || "unavailable"}`
+          : t("status.tooltip.runtime", "Runtime connected: {url}", { url: config.baseUrl })
         : backend === "runtime-offline"
-          ? `Runtime unavailable: ${config.baseUrl}`
-          : "Using browser compatibility runtime",
+          ? t("status.tooltip.runtimeOffline", "Runtime unavailable: {url}", { url: config.baseUrl })
+          : t("status.tooltip.browserRuntime", "Using browser compatibility mode"),
       priority: 74
     }) || null;
+    const statusElement = document.querySelector('[data-zion-status-id="dev.runtime.connection"]');
+    if (statusElement instanceof HTMLElement) {
+      statusElement.dataset.runtimeConnection = backend;
+    }
   };
   const syncRuntimeModelProfiles = ({
     overwriteExisting = false,
@@ -1109,6 +1177,95 @@ export async function activate(ctx) {
     if (!messages.length) throw new Error("No content to mock");
 
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
+    const runtimeConfig = readInteractiveRuntimeConfig({
+      state: window.zion?.state,
+      storage: globalThis.localStorage
+    });
+    if (runtimeConfig.mode !== "browser") {
+      const requestSource = opts?.requestSource || inferRequestSource({
+        sessionId: sid,
+        panelId
+      });
+      const runtimeConnection = window.zion?.state?.get?.("runtime.connection");
+      const contributorContext = {
+        editor: ed,
+        sessionId: sid,
+        panelId,
+        requestSource,
+        runtimeConnection,
+        runId: `runtime-preview-${Date.now().toString(36)}`
+      };
+      const provider = window.zion?.models?.getProvider?.(runModel?.providerId);
+      const [providerModelConfig, runtimeProfiles] = await Promise.all([
+        provider?.resolve?.(runModel?.modelId),
+        loadRuntimeModelProfiles().catch(() => null)
+      ]);
+      const runtimeProfile = findRuntimeModelProfile(runtimeProfiles, runModel);
+      const selectedModelConfig = mergeRuntimeModelProfileConfig(
+        providerModelConfig,
+        runtimeProfile
+      );
+      const preparedMessages = await prepareInteractiveRuntimeMessages({
+        messages,
+        runContributors: window.zion?.__runMessageContributors,
+        contributorContext,
+        transformMessages: (prepared) =>
+          reconstructHistory(prepared, selectedModelConfig)
+      });
+      const preview = await previewInteractiveRuntimeRequest({
+        messages: preparedMessages,
+        sessionHistory: await reconstructHistory(messages, selectedModelConfig),
+        tools,
+        selectedModel: runModel,
+        selectedModelConfig,
+        runtimeCatalog: runtimeProfiles ? { profiles: runtimeProfiles } : undefined,
+        title: resolveSessionTitleForRun(sid),
+        workbenchSessionId: sid,
+        projectId: opts?.projectId || opts?.metadata?.projectId,
+        metadata: {
+          ...(opts?.metadata && typeof opts.metadata === "object"
+            ? opts.metadata
+            : {}),
+          requestSource,
+          panelId,
+          workbenchContributorsApplied: true,
+          includeTerminalContext: includeTerminalContextForRuntime(
+            window.zion?.state
+          ),
+          skills: {
+            ...runtimeSkillsMetadata(window.zion?.state),
+            ...(opts?.metadata?.skills || {})
+          }
+        },
+        baseUrl: runtimeConfig.baseUrl
+      });
+      const request = preview.request || {};
+      const payload = request.payload && typeof request.payload === "object"
+        ? request.payload
+        : {};
+      return {
+        id: `llm_mock_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        mock: true,
+        timestamp: Date.now(),
+        runId: preview.runId || "mock",
+        sessionId: sid,
+        panelId,
+        providerId: request.providerId || runModel.providerId,
+        modelId: request.modelId || runModel.modelId,
+        modelLabel: request.modelLabel || runModel.label || runModel.modelId,
+        providerType: request.providerType || "",
+        url: request.url || "mock://runtime-preview",
+        stream: request.stream !== false,
+        messageCount: Array.isArray(payload.messages) ? payload.messages.length : 0,
+        toolCount: Array.isArray(payload.tools) ? payload.tools.length : 0,
+        contextFailures: preview.contextFailures || [],
+        payload: {
+          ...payload,
+          mock: true
+        }
+      };
+    }
+
     if (window.zion?.__runMessageContributors) {
       const contributorCtx = {
         editor: ed,
@@ -1497,6 +1654,7 @@ export async function activate(ctx) {
         },
         baseUrl: runtimeConfig.baseUrl
       });
+      markRuntimeReachable(runtimeConfig.baseUrl);
       if (preparation?.signal.aborted) {
         try { await handle.abort("cancelled-during-preparation"); }
         finally { handle.detach(); }
@@ -1650,6 +1808,7 @@ export async function activate(ctx) {
     const consuming = (async () => {
       try {
         for await (const event of handle.events) {
+          markRuntimeReachable(runtimeConfig.baseUrl);
           if (["reasoning.started", "reasoning.delta", "message.delta", "tool.started", "tool.requested"].includes(event.type)) {
             preparation?.clearFeedback();
           }
@@ -1912,6 +2071,11 @@ export async function activate(ctx) {
       if (remoteRun.status === "completed") {
         runtime.markAwaiting(sid, runId);
         window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
+        window.zion?.events?.emit?.("chat/runFinished", {
+          sessionId: sid,
+          runId,
+          recovered: true
+        });
       } else if (remoteRun.status === "aborted") {
         runtime.markAborted(sid, runId);
       } else if (["failed", "interrupted"].includes(remoteRun.status)) {
@@ -1920,6 +2084,12 @@ export async function activate(ctx) {
           new Error(remoteRun.error || "Runtime Run failed"),
           runId
         );
+        window.zion?.events?.emit?.("chat/runError", {
+          sessionId: sid,
+          runId,
+          recovered: true,
+          error: remoteRun.error || null
+        });
       }
       runtime.syncGlobalStreamingForActiveSession();
       return remoteRun;
@@ -2111,6 +2281,12 @@ export async function activate(ctx) {
         return messages;
       }
     };
+
+    try {
+      await Promise.resolve(
+        window.zion?.commands?.executeCommand?.("tools.syncRuntime")
+      );
+    } catch {}
 
     // 解析工具定义（委托给独立 tools 插件）
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
@@ -2862,6 +3038,7 @@ export async function activate(ctx) {
   };
 
   const doRun = async (opts = {}) => {
+    if (!accountCan("run.execute")) return;
     const ed = getEd(opts);
     const panelId = opts?.panelId || ed?.panelId || null;
     const sid = getSessionId({ ...opts, panelId });
@@ -3258,7 +3435,16 @@ export async function activate(ctx) {
     if (!active?.providerId || !active?.modelId) return;
     if (active.providerId === "user.dynamic") {
       const dict = loadLocalDynamicModelStore();
-      const prev = dict[active.modelId] || {};
+      let resolved = {};
+      try {
+        resolved = await window.zion.models
+          .getProvider(active.providerId)
+          ?.resolve?.(active.modelId) || {};
+      } catch {}
+      const prev = {
+        ...resolved,
+        ...(dict[active.modelId] || {})
+      };
       await upsertDynamicModel({
         modelId: active.modelId,
         config: { ...prev, ...patch }
@@ -3298,49 +3484,52 @@ export async function activate(ctx) {
     window.zion.commands.registerCommand("chat.setThinkingEffort.xhigh", () => setActiveThinkingEffort("xhigh")),
     window.zion.commands.registerCommand("chat.setThinkingEffort.max", () => setActiveThinkingEffort("max"))
   );
-  const cycleActiveThinkingEffort = async () => {
+  const toggleActiveThinkingMode = async () => {
     const active = window.zion.state.get("chat.activeModel");
     if (!active?.providerId || !active?.modelId) return;
     let cfg = null;
     try {
       cfg = await window.zion.models.getProvider(active.providerId)?.resolve?.(active.modelId);
     } catch {}
-    const current = normalizeThinkingEffort(cfg?.thinkingEffort);
-    const values = getSupportedThinkingEfforts({
-      providerId: active.providerId,
-      providerType: cfg?.providerType,
-      modelId: active.modelId,
-      modelName: cfg?.modelName,
-      cfg
-    });
-    const next = values[(Math.max(0, values.indexOf(current)) + 1) % values.length] || "auto";
+    const current = normalizeThinkingMode(
+      active.thinkingMode ?? cfg?.thinkingMode
+    );
+    const next = current === "on" ? "off" : "on";
     await saveActiveModelConfigPatch({
-      thinkingEffort: next,
-      thinkingMode: next === "auto" ? "auto" : "on"
+      thinkingMode: next
     });
   };
   const buildModelStatus = ({ active, cfg, activeItem }) => {
+    const effectiveCfg = {
+      ...(cfg || {}),
+      ...(active?.thinkingMode != null
+        ? { thinkingMode: active.thinkingMode }
+        : {}),
+      ...(active?.thinkingEffort != null
+        ? { thinkingEffort: active.thinkingEffort }
+        : {})
+    };
     const modelLabel = active?.label || activeItem?.label || active?.modelId || "unknown";
-    const providerId = active?.providerId || activeItem?.providerId || cfg?.providerId || "";
-    const modelId = active?.modelId || activeItem?.id || cfg?.id || "";
-    const modelName = cfg?.modelName || modelId;
-    const thinkingMode = normalizeThinkingMode(cfg?.thinkingMode);
-    const thinkingEffort = normalizeThinkingEffort(cfg?.thinkingEffort);
+    const providerId = active?.providerId || activeItem?.providerId || effectiveCfg.providerId || "";
+    const modelId = active?.modelId || activeItem?.id || effectiveCfg.id || "";
+    const modelName = effectiveCfg.modelName || modelId;
+    const thinkingMode = normalizeThinkingMode(effectiveCfg.thinkingMode);
+    const thinkingEffort = normalizeThinkingEffort(effectiveCfg.thinkingEffort);
     const thinkingCapability = inferThinkingCapability({
       providerId,
-      providerType: cfg?.providerType,
+      providerType: effectiveCfg.providerType,
       modelId,
       modelName,
-      cfg
+      cfg: effectiveCfg
     });
     const supportsThinkingEffort = inferThinkingEffortCapability({
       providerId,
-      providerType: cfg?.providerType,
+      providerType: effectiveCfg.providerType,
       modelId,
       modelName,
-      cfg
+      cfg: effectiveCfg
     });
-    const imageText = cfg?.supportsImage ? t("status.imageSupported", "image") : t("status.imageUnsupported", "no image");
+    const imageText = effectiveCfg.supportsImage ? t("status.imageSupported", "image") : t("status.imageUnsupported", "no image");
     let thinkingText = t("status.thinking.auto", "Thinking:auto");
     if (thinkingMode === "off") {
       thinkingText = t("status.thinking.off", "Thinking:off");
@@ -3373,7 +3562,7 @@ export async function activate(ctx) {
         value: supportsThinkingEffort ? t("status.tooltip.supported", "Supported") : t("status.tooltip.unconfirmed", "Unconfirmed")
       }),
       t("status.tooltip.imageInput", "Image input: {value}", {
-        value: cfg?.supportsImage ? t("status.tooltip.supported", "Supported") : t("status.tooltip.unsupported", "Unsupported")
+        value: effectiveCfg.supportsImage ? t("status.tooltip.supported", "Supported") : t("status.tooltip.unsupported", "Unsupported")
       }),
       t("status.tooltip.openSwitcher", "Click the model item to open the model switcher.")
     ];
@@ -3399,7 +3588,7 @@ export async function activate(ctx) {
     let label = active?.label || active?.modelId || "unknown";
     let tooltip = "Select Model (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)";
     let thinkingLabel = t("status.thinking.auto", "Thinking:auto");
-    let thinkingTooltip = t("status.tooltip.cycleThinking", "Click to cycle thinking effort: Auto -> Low -> Medium -> High.");
+    let thinkingTooltip = t("status.tooltip.cycleThinking", "Click to toggle thinking; adjust effort in model settings.");
     let cfg = null;
     try {
       const provider = active?.providerId ? window.zion.models.getProvider(active.providerId) : null;
@@ -3444,7 +3633,7 @@ export async function activate(ctx) {
       text: thinkingLabel,
       tooltip: thinkingTooltip,
       priority: 79,
-      onClick: () => cycleActiveThinkingEffort()
+      onClick: () => toggleActiveThinkingMode()
     });
   };
   updateModelBtn();

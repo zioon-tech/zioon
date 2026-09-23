@@ -78,6 +78,8 @@ export type ToolDefinition = {
   hostKinds?: string[];
   pluginId?: string;
   risk?: string;
+  modelInjectable?: boolean;
+  unavailableReason?: string;
   owner?: {
     kind: "runtime" | "plugin" | "device" | "client" | "mcp";
     id: string;
@@ -103,6 +105,7 @@ export type ToolInvocation = {
   attemptId: string;
   sessionId?: string;
   projectId?: string;
+  principal?: RunPrincipal;
   target?: ExecutionTarget;
   policy: CapabilityPolicy;
   toolCall: ToolCall;
@@ -112,6 +115,7 @@ export type ToolResult = {
   ok: boolean;
   content: string;
   error?: string;
+  failureCode?: string;
   artifactIds?: string[];
   artifacts?: Artifact[];
   changes?: ChangeSet[];
@@ -166,7 +170,18 @@ export type ExecutionTarget = {
   nodeId: string;
 };
 
+/** Assigned by the trusted Runtime admission layer, never by the model. */
+export type RunPrincipal = {
+  version: 1;
+  kind: "user" | "service";
+  userId: string;
+  spaceId: string;
+  grantId: string;
+  parentRunId?: string;
+};
+
 export type RunRequest = {
+  principal?: RunPrincipal;
   prompt?: string;
   messages?: TranscriptMessage[];
   sessionHistory?: TranscriptMessage[];
@@ -197,6 +212,7 @@ export type RunRecord = {
   title: string;
   sessionId?: string;
   projectId?: string;
+  principal?: RunPrincipal;
   target?: ExecutionTarget;
   model?: ModelRef;
   modelOptions?: ModelRequestOptions;
@@ -245,6 +261,8 @@ export type RunEvent = {
   eventId: string;
   runId: string;
   attemptId: string;
+  // Monotonic across live and durable events. Durable stores may contain gaps
+  // because high-frequency stream deltas are intentionally transient.
   sequence: number;
   type: string;
   timestamp: number;
@@ -271,6 +289,7 @@ export type CancellationSignal = {
 export type EngineTurnRequest = {
   runId: string;
   attemptId: string;
+  principal?: RunPrincipal;
   turn: number;
   messages: TranscriptMessage[];
   tools: ToolDefinition[];
@@ -372,6 +391,8 @@ export interface ContextProvider {
 
 export interface RunStore {
   create(record: RunRecord): Promise<void>;
+  // Persists semantic events. Callers must preserve increasing sequence, but
+  // contiguous values are not required.
   append(
     event: RunEvent,
     patch?: Pick<RunRecord, "status" | "updatedAt"> &
@@ -385,7 +406,8 @@ export interface RunStore {
         | "output"
         | "usage"
         | "metadata"
-      >>
+      >>,
+    detailEvent?: RunEvent
   ): Promise<void>;
   get(runId: string): Promise<RunRecord | null>;
   listRuns(options?: {
@@ -393,6 +415,7 @@ export interface RunStore {
     statuses?: RunStatus[];
     limit?: number;
   }): Promise<RunRecord[]>;
+  // Returns durable semantic events only; active stream replay is Runtime-owned.
   getEvents(runId: string, afterSequence?: number): Promise<RunEvent[]>;
   getEvent?(runId: string, sequence: number): Promise<RunEvent | null>;
   appendTranscript(entry: RunTranscriptEntry): Promise<void>;
@@ -425,6 +448,12 @@ export type ToolAuthorizer = (
   policy: CapabilityPolicy,
   counters: { toolCalls: number }
 ) => ToolAuthorization | Promise<ToolAuthorization>;
+
+export type RunAuthorizationPhase = "admission" | "resume" | "context" | "model" | "tool";
+export type RunAuthorizer = (
+  request: RunRequest,
+  phase: RunAuthorizationPhase
+) => CapabilityPolicy | Promise<CapabilityPolicy>;
 
 export type TimeoutScheduler = (
   callback: () => void,

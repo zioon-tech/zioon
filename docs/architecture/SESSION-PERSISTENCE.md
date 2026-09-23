@@ -3,13 +3,15 @@
 ## Source of truth
 
 Session documents, metadata, tree structure, index, and tag state are stored by
-Zion Runtime in SQLite. Browser memory is only the active view.
+Zion Runtime in the configured Runtime Store. PostgreSQL is authoritative in
+account deployments; PostgreSQL is the local/offline adapter. Browser memory is only
+the active view.
 The Yjs IndexedDB database is an offline replica for collaborative text, not a
-Session source of truth. Runtime SQLite remains authoritative for both the
+Session source of truth. The Runtime Store remains authoritative for both the
 encoded Yjs state and its plain-text Session projection.
 
 An HTTP save is durable only after the `/v1/workbench-state` API returns
-successfully after the Runtime SQLite transaction commits. Failed HTTP writes
+successfully after the Runtime database transaction commits. Failed HTTP writes
 remain queued in memory and the UI state stays marked as pending. Collaborative
 updates are batched by Hocuspocus and become durable when Runtime's store hook
 commits the encoded state and text projection.
@@ -46,7 +48,7 @@ Y.Doc(sessionId)
 ```
 
 Runtime stores the encoded state in `runtime_collaboration_documents` and
-updates the ordinary Session document in the same outer SQLite transaction.
+updates the ordinary Session document in the same outer database transaction.
 Concurrent Workbench edits therefore converge through CRDT updates rather than
 whole-document last-write-wins saves. Non-CRDT Session and metadata writes still
 use `expected_session_revision`.
@@ -122,10 +124,10 @@ On startup, Session Manager performs a read-only scan of the legacy
 The candidate data is sent to
 `/v1/workbench-state/migrate-browser-storage`:
 
-- Records missing from SQLite are imported.
-- Records identical to SQLite are verified and skipped.
+- Records missing from the Runtime Store are imported.
+- Records identical to the Runtime Store are verified and skipped.
 - Conflicting browser records are archived as recoverable revisions.
-- Existing SQLite records are never overwritten by migration.
+- Existing Runtime records are never overwritten by migration.
 - Tombstoned records are not silently resurrected.
 
 After the backend confirms that every candidate was imported, archived, or
@@ -134,14 +136,20 @@ records. The shared comments KV records are left untouched.
 
 ## Recovery
 
-SQLite keeps:
+The Runtime Store keeps:
 
 - A current document and metadata row for each session.
 - The latest encoded Yjs state and version for each collaborative Session.
 - A durable ordered Workbench event feed for cursor-based reconnect.
-- The latest 20 revisions per session. Old databases are pruned on Runtime
-  startup; SQLite reuses the freed pages, while physical file compaction remains
-  an explicit maintenance operation.
+- Sparse semantic revisions per session. Current document/Yjs state is still
+  persisted continuously, while collaborative autosaves create history only
+  after a five-minute interval or a 64 KiB text-size change.
+- Revision history is capped at 20 rows and 8 MiB per session. Repeated tool and
+  reasoning annotations are content-addressed outside revision rows and are
+  transparently hydrated during restore.
+- Local PostgreSQL databases are pruned by resumable background maintenance after
+  Runtime is serving. PostgreSQL physical compaction remains an explicit
+  maintenance-window operation; PostgreSQL uses normal server maintenance.
 - Explicit tombstones for deletions.
 - Idempotency records for retried operations.
 

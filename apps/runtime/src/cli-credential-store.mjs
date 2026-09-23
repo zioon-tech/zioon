@@ -47,16 +47,21 @@ export function createMacOsKeychainCredentialStore({
 
     async set(profileName, credential) {
       const serialized = JSON.stringify(credential);
-      await execFileImpl("security", [
-        "add-generic-password",
-        "-U",
-        "-s", service,
-        "-a", String(profileName),
-        "-w", serialized
-      ], {
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024
-      });
+      try {
+        await execFileImpl("security", [
+          "add-generic-password",
+          "-U",
+          "-s", service,
+          "-a", String(profileName),
+          "-w", serialized
+        ], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024
+        });
+      } catch {
+        // execFile errors include argv, which contains the credential.
+        throw new Error("Cannot save Runtime CLI credential to Keychain");
+      }
     },
 
     async delete(profileName) {

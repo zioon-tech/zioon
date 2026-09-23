@@ -63,6 +63,41 @@ body.zion-sessions-no-transitions .zion-session-row * {
   outline-offset: -2px;
 }
 
+.zion-sessions-root-drop-target {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  margin: 2px 6px 5px 0;
+  border: 1px dashed color-mix(in srgb, var(--fg) 24%, transparent);
+  border-radius: 6px;
+  color: var(--dim);
+  font-size: 12px;
+  pointer-events: none;
+}
+.zion-sessions-root-drop-target.is-visible {
+  display: flex;
+  pointer-events: auto;
+}
+.zion-sessions-root-drop-target.is-header-slot {
+  position: absolute;
+  inset: 2px 4px;
+  z-index: 1;
+  min-height: 0;
+  margin: 0;
+  background: var(--panel);
+}
+.zion-sessions-root-drop-target.is-drop-target {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 /* Sessions sidebar list scrollbar theming (consistent with editor/table) */
 .zion-sessions-list {
   scrollbar-color: transparent transparent;
@@ -1041,10 +1076,13 @@ body.zion-sessions-no-transitions .zion-session-row * {
    at the same height. No "会话" title here — the host sidebar header above
    already names the view; this row carries count + active filter chip. */
 .zion-sessions-list-header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+  min-height: 28px;
+  box-sizing: border-box;
   padding: 6px 8px 4px 8px;
 }
 .zion-sessions-list-header-count {

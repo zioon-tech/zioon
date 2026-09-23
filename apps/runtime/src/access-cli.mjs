@@ -1,8 +1,10 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { SqliteAccessStore } from "./sqlite-access-store.mjs";
+import pg from "pg";
+import { PostgresAccessStore } from "./postgres-access-store.mjs";
+import { initializePostgresRuntimeSchema } from "./postgres-runtime-schema.mjs";
+
+const { Pool } = pg;
 
 const USAGE = `Usage: npm run runtime:access -- <command> [options]
 
@@ -12,7 +14,7 @@ Commands:
   devices revoke <device-id> Revoke one device and all its credentials
 
 Options:
-  --db <path>                Runtime SQLite path
+  --space <id>               Runtime Space ID (or ZION_SPACE_ID)
   --kind <kind>              owner, client, or resource
   --delivery <delivery>      cookie or bearer
   --label <text>             Pairing/device label
@@ -22,7 +24,7 @@ Options:
 `;
 
 const VALUE_OPTIONS = new Set([
-  "--db",
+  "--space",
   "--kind",
   "--delivery",
   "--label",
@@ -72,14 +74,16 @@ export async function runRuntimeAccessCli({
     output.write(USAGE);
     return null;
   }
-  const dbPath = readArg(
-    argv,
-    "--db",
-    environment.ZION_RUNTIME_DB
-      || join(homedir(), ".zion-next", "runtime", "runtime.sqlite3")
-  );
-  const accessStore = store || new SqliteAccessStore(dbPath);
-  const closeStore = !store;
+  const databaseUrl = String(environment.ZION_DATABASE_URL || "").trim();
+  const spaceId = readArg(argv, "--space", environment.ZION_SPACE_ID || "");
+  if (!store && !databaseUrl) throw new Error("ZION_DATABASE_URL is required");
+  if (!store && !spaceId) throw new Error("ZION_SPACE_ID or --space is required");
+  const pool = store ? null : new Pool({
+    connectionString: databaseUrl,
+    application_name: "zion-runtime-access-cli"
+  });
+  if (pool) await initializePostgresRuntimeSchema(pool);
+  const accessStore = store || new PostgresAccessStore(pool, { spaceId });
   try {
     const positionals = positionalArgs(argv);
     const command = positionals[0];
@@ -94,7 +98,7 @@ export async function runRuntimeAccessCli({
         kind === "resource" ? "bearer" : "cookie"
       );
       const ttlSeconds = Number(readArg(argv, "--ttl", "300"));
-      const pairing = accessStore.createPairing({
+      const pairing = await accessStore.createPairing({
         kind,
         delivery,
         label: readArg(argv, "--label", ""),
@@ -127,7 +131,7 @@ export async function runRuntimeAccessCli({
     }
 
     if (command === "devices" && action === "list") {
-      const devices = accessStore.listDevices();
+      const devices = await accessStore.listDevices();
       if (json) printJson(output, { devices });
       else output.write(`${JSON.stringify(devices, null, 2)}\n`);
       return devices;
@@ -136,7 +140,7 @@ export async function runRuntimeAccessCli({
     if (command === "devices" && action === "revoke") {
       const deviceId = positionals[2];
       if (!deviceId) throw new Error("devices revoke requires a device id");
-      const revoked = accessStore.revokeDevice(deviceId);
+      const revoked = await accessStore.revokeDevice(deviceId);
       const result = { deviceId, revoked };
       if (json) printJson(output, result);
       else output.write(
@@ -149,7 +153,10 @@ export async function runRuntimeAccessCli({
 
     throw new Error(`Unknown Runtime access command: ${positionals.join(" ")}`);
   } finally {
-    if (closeStore) accessStore.close();
+    if (!store) {
+      await accessStore.close();
+      await pool.end();
+    }
   }
 }
 

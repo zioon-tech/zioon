@@ -298,9 +298,9 @@ describe("scheduler plugin", () => {
 
       const container = document.createElement("div");
       const mounted = views[0].component.render(container);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/scheduler/runs?"))).toBe(true);
+      await vi.waitFor(() => {
+        expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/scheduler/runs?"))).toBe(true);
+      });
       const initialRunRefreshes = fetchMock.mock.calls.filter(
         ([url]) => String(url).includes("/scheduler/runs?")
       ).length;

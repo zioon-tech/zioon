@@ -147,6 +147,7 @@ export function activateRuntimePlugin(context) {
           interactionProfileId: args.interaction_profile_id,
           parentRunId: meta.runId,
           parentAttemptId: meta.attemptId,
+          principal: meta.principal,
           projectId: meta.projectId,
           policy: meta.policy
         });

@@ -36,7 +36,7 @@ async function readJson(request) {
 
 function matchProjectAction(pathname) {
   const match = pathname.match(
-    /^\/v1\/project-automation\/projects\/([^/]+)\/(run|stop)$/
+    /^\/v1\/project-automation\/projects\/([^/]+)\/(run|stop|delegate)$/
   );
   return match
     ? {
@@ -56,7 +56,7 @@ export function createProjectAutomationHttpHandler({ service } = {}) {
 
     if (request.method === "GET" && url.pathname === "/v1/project-automation") {
       json(response, 200, {
-        automation: service.readDocument(),
+        automation: await service.readDocument(),
         running: service.running === true
       });
       return true;
@@ -65,8 +65,11 @@ export function createProjectAutomationHttpHandler({ service } = {}) {
     const target = matchProjectAction(url.pathname);
     if (target && request.method === "POST") {
       const body = await readJson(request);
-      const result = target.action === "run"
+      const result = target.action === "delegate"
+        ? await service.delegate(target.projectKey, request.zionPrincipal)
+        : target.action === "run"
         ? await service.runNow(target.projectKey, {
+            actor: request.zionPrincipal,
             interactionProfileId: body.interaction_profile_id
           })
         : await service.stopProject(target.projectKey, body.reason || "user");

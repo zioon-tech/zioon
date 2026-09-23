@@ -53,6 +53,7 @@ export function createSessionsPanelManager(opts) {
       header.style.display = "flex";
       header.style.alignItems = "center";
       header.style.justifyContent = "space-between";
+      header.style.position = "relative";
       header.style.marginBottom = "8px";
 
       const titleWrap = document.createElement("div");
@@ -210,6 +211,7 @@ export function createSessionsPanelManager(opts) {
       const render = createSessionsListRenderer({
         listEl: list,
         hostElement: panel,
+        rootDropHost: header,
         viewId: "panel",
         getQuery: () => "",
         getSort: () => sortSelect.value || "updated",

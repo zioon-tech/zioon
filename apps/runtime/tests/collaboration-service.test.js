@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import * as Y from "yjs";
 import { createAgentExecutor } from "../../../packages/runtime/src/index";
@@ -19,11 +19,21 @@ import {
   COLLABORATION_TEXT_KEY,
   createRuntimeCollaborationService
 } from "../src/collaboration-service.mjs";
+import { PostgresRunStore } from "../src/postgres-run-store.mjs";
+import { PostgresWorkbenchStateStore } from "../src/postgres-workbench-state-store.mjs";
 import { createRuntimeServer } from "../src/server.mjs";
-import { SqliteRunStore } from "../src/sqlite-run-store.mjs";
-import { SqliteWorkbenchStateStore } from "../src/sqlite-workbench-state-store.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 const resources = [];
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("collaboration");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 function createCollaboration(options) {
   return createRuntimeCollaborationService({
@@ -35,8 +45,8 @@ function createCollaboration(options) {
 function waitFor(predicate, timeoutMs = 3_000) {
   const startedAt = Date.now();
   return new Promise((resolve, reject) => {
-    const poll = () => {
-      if (predicate()) {
+    const poll = async () => {
+      if (await predicate()) {
         resolve();
         return;
       }
@@ -75,24 +85,24 @@ afterEach(async () => {
     try { resource.secondProvider?.destroy(); } catch {}
     try { await resource.collaboration?.close(); } catch {}
     try { await resource.server?.close(); } catch {}
-    try { resource.workbenchState?.close(); } catch {}
-    try { resource.runs?.close(); } catch {}
+    try { await resource.workbenchState?.close(); } catch {}
+    try { await resource.runs?.close(); } catch {}
     rmSync(resource.directory, { recursive: true, force: true });
   }
 });
 
 describe("Runtime collaboration service", () => {
-  it("recovers a non-empty Session snapshot from a newer empty Yjs checkpoint", async () => {
+  it("keeps a newer intentionally empty Yjs checkpoint authoritative", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-recovery-"));
-    const path = join(directory, "runtime.sqlite3");
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "recovery-session",
       title: "Recovery",
       text: "user preserved content"
     });
     const emptyDocument = new Y.Doc();
-    workbenchState.writeCollaborationDocument(
+    await workbenchState.writeCollaborationDocument(
       "recovery-session",
       Y.encodeStateAsUpdate(emptyDocument),
       { timestamp: Date.now() + 10_000 }
@@ -113,17 +123,19 @@ describe("Runtime collaboration service", () => {
       runId: "run-recovery",
       userContent: "next question"
     });
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(workbenchState.readSession("recovery-session").text).toContain(
-      "user preserved content"
-    );
+    expect((await workbenchState.readSession("recovery-session")).text)
+      .not.toContain("user preserved content");
+    expect((await workbenchState.readSession("recovery-session")).text)
+      .toContain("next question");
   });
 
-  it("rejects an unconfirmed empty collaboration update over non-empty content", async () => {
+  it("persists an intentional empty collaboration update", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-empty-"));
-    const path = join(directory, "runtime.sqlite3");
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "protected-session",
       title: "Protected",
       text: "user keep this"
@@ -149,23 +161,23 @@ describe("Runtime collaboration service", () => {
     await connection.disconnect({ unloadImmediately: false });
 
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(workbenchState.readSession("protected-session").text)
-      .toBe("user keep this");
-    const stored = workbenchState.readCollaborationDocument(
+    expect((await workbenchState.readSession("protected-session")).text)
+      .toBe("");
+    const stored = await workbenchState.readCollaborationDocument(
       "protected-session"
     );
     const restored = new Y.Doc();
     Y.applyUpdate(restored, stored.state);
     expect(restored.getText(COLLABORATION_TEXT_KEY).toString())
-      .toBe("user keep this");
+      .toBe("");
     restored.destroy();
   });
 
   it("rejects an outdated collaboration protocol before upgrading", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-protocol-"));
-    const path = join(directory, "runtime.sqlite3");
-    const runs = new SqliteRunStore(path);
-    const workbenchState = new SqliteWorkbenchStateStore(path);
+    const path = join(directory, "runtime");
+    const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
     const collaboration = createCollaboration({ store: workbenchState });
     const executor = createAgentExecutor({
       engine: {
@@ -217,10 +229,10 @@ describe("Runtime collaboration service", () => {
 
   it("reauthorizes every authenticated client message", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-auth-"));
-    const path = join(directory, "runtime.sqlite3");
-    const runs = new SqliteRunStore(path);
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "authenticated-session",
       title: "Authenticated",
       text: "hello"
@@ -282,10 +294,10 @@ describe("Runtime collaboration service", () => {
 
   it("syncs a Runtime-backed Session between Yjs clients", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-"));
-    const path = join(directory, "runtime.sqlite3");
-    const runs = new SqliteRunStore(path);
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "shared-session",
       title: "Shared",
       text: "hello"
@@ -339,13 +351,13 @@ describe("Runtime collaboration service", () => {
     await waitFor(() =>
       secondDocument.getText(COLLABORATION_TEXT_KEY).toString() === "hello world"
     );
-    await waitFor(() =>
-      workbenchState.readSession("shared-session").text === "hello world"
+    await waitFor(async () =>
+      (await workbenchState.readSession("shared-session")).text === "hello world"
     );
-    expect(workbenchState.readCollaborationDocument("shared-session"))
+    expect(await workbenchState.readCollaborationDocument("shared-session"))
       .toMatchObject({ version: 2 });
 
-    workbenchState.updateSession("shared-session", {
+    await workbenchState.updateSession("shared-session", {
       text: "updated through HTTP",
       source_client_id: "cli"
     });
@@ -372,7 +384,7 @@ describe("Runtime collaboration service", () => {
     expect(projectedDocument).toContain("user project output");
     expect(projectedDocument)
       .toContain(`assistant <!-- zion-assistant:id=${accepted.runId} -->`);
-    expect(workbenchState.listEvents(0).events).toEqual(
+    expect((await workbenchState.listEvents(0)).events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: "run.started",
@@ -388,10 +400,10 @@ describe("Runtime collaboration service", () => {
 
   it("keeps Runtime projection authoritative with a connected Workbench", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-writer-"));
-    const path = join(directory, "runtime.sqlite3");
-    const runs = new SqliteRunStore(path);
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "writer-session",
       title: "Writer",
       text: "user hello"
@@ -473,15 +485,15 @@ describe("Runtime collaboration service", () => {
 
   it("preserves the submitted user message without a connected Workbench", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-headless-"));
-    const path = join(directory, "runtime.sqlite3");
-    const runs = new SqliteRunStore(path);
-    const workbenchState = new SqliteWorkbenchStateStore(path);
+    const path = join(directory, "runtime");
+    const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
     const initialText = [
       "user earlier",
       "assistant previous answer",
       "user "
     ].join("\n");
-    workbenchState.createSession({
+    await workbenchState.createSession({
       id: "headless-session",
       title: "Headless",
       text: initialText
@@ -529,12 +541,12 @@ describe("Runtime collaboration service", () => {
         messages: [{ role: "user", content: "submitted while detached" }]
       })
     }).then((response) => response.json());
-    await waitFor(() =>
-      workbenchState.readSession("headless-session").text
+    await waitFor(async () =>
+      (await workbenchState.readSession("headless-session")).text
         .includes("final answer")
     );
 
-    const text = workbenchState.readSession("headless-session").text;
+    const text = (await workbenchState.readSession("headless-session")).text;
     expect(text).toContain("user earlier\nassistant previous answer");
     expect(text).toContain("user submitted while detached");
     expect(text).toContain(
@@ -544,10 +556,10 @@ describe("Runtime collaboration service", () => {
 
   it("converges and persists concurrent edits made across a reconnect", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-reconnect-"));
-    const path = join(directory, "runtime.sqlite3");
-    const runs = new SqliteRunStore(path);
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "reconnected-session",
       title: "Reconnected",
       text: "hello"
@@ -623,18 +635,18 @@ describe("Runtime collaboration service", () => {
       .toString();
     expect(converged).toContain("offline");
     expect(converged).toContain("online");
-    await waitFor(() =>
-      workbenchState.readSession("reconnected-session").text === converged
+    await waitFor(async () =>
+      (await workbenchState.readSession("reconnected-session")).text === converged
     );
-    expect(workbenchState.readCollaborationDocument("reconnected-session"))
+    expect(await workbenchState.readCollaborationDocument("reconnected-session"))
       .toMatchObject({ state: expect.any(Uint8Array) });
   });
 
   it("stores reasoning in a card while keeping it out of plain document text", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-gating-"));
-    const path = join(directory, "runtime.sqlite3");
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "reasoning-session",
       title: "Reasoning",
       text: "user hello"
@@ -659,8 +671,8 @@ describe("Runtime collaboration service", () => {
         data: { delta: "private reasoning" }
       });
     }
-    await waitFor(() => {
-      const stored = workbenchState.readCollaborationDocument(
+    await waitFor(async () => {
+      const stored = await workbenchState.readCollaborationDocument(
         "reasoning-session"
       );
       if (!stored?.state) return false;
@@ -676,7 +688,7 @@ describe("Runtime collaboration service", () => {
       }
     });
 
-    const storedReasoning = workbenchState.readCollaborationDocument(
+    const storedReasoning = await workbenchState.readCollaborationDocument(
       "reasoning-session"
     );
     const reasoningDocument = new Y.Doc();
@@ -702,9 +714,9 @@ describe("Runtime collaboration service", () => {
       type: "message.delta",
       data: { delta: "visible" }
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(workbenchState.readSession("reasoning-session").text)
-      .toContain("visible");
+    await waitFor(async () =>
+      (await workbenchState.readSession("reasoning-session")).text.includes("visible")
+    );
 
     await collaboration.applyRunEvent("reasoning-session", {
       runId: "run-reasoning",
@@ -712,31 +724,31 @@ describe("Runtime collaboration service", () => {
       type: "message.completed",
       data: { content: "visible" }
     });
-    await waitFor(() =>
-      workbenchState.readSession("reasoning-session").text.includes("visible")
+    await waitFor(async () =>
+      (await workbenchState.readSession("reasoning-session")).text.includes("visible")
     );
 
-    expect(workbenchState.listEvents(0).events.map((event) => event.type))
+    expect((await workbenchState.listEvents(0)).events.map((event) => event.type))
       .toContain("collaboration.updated");
   });
 
   it("coalesces durable document checkpoint events after collaboration settles", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-checkpoint-"));
-    const path = join(directory, "runtime.sqlite3");
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "checkpoint-session",
       title: "Checkpoint",
       text: "user hello"
     });
     const initial = new Y.Doc();
     initial.getText(COLLABORATION_TEXT_KEY).insert(0, "user hello");
-    workbenchState.writeCollaborationDocument(
+    await workbenchState.writeCollaborationDocument(
       "checkpoint-session",
       Y.encodeStateAsUpdate(initial),
       { text: "user hello" }
     );
-    const baseline = workbenchState.eventBounds().latestSequence;
+    const baseline = (await workbenchState.eventBounds()).latestSequence;
     const collaboration = createCollaboration({
       store: workbenchState,
       debounceMs: 25,
@@ -758,13 +770,13 @@ describe("Runtime collaboration service", () => {
       runId: "run-checkpoint",
       output: "second"
     });
-    await waitFor(() =>
-      workbenchState.listEvents(baseline).events.some((event) =>
+    await waitFor(async () =>
+      (await workbenchState.listEvents(baseline)).events.some((event) =>
         event.type === "document.checkpointed"
       )
     );
 
-    const events = workbenchState.listEvents(baseline).events;
+    const events = (await workbenchState.listEvents(baseline)).events;
     expect(events.filter((event) =>
       event.type === "document.checkpointed"
     )).toHaveLength(1);
@@ -860,9 +872,9 @@ describe("Runtime collaboration service", () => {
 
   it("projects reasoning, text, and tools in Runtime event order", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-order-"));
-    const path = join(directory, "runtime.sqlite3");
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "ordered-session",
       title: "Ordered",
       text: "user inspect the project"
@@ -914,12 +926,12 @@ describe("Runtime collaboration service", () => {
         data
       });
     }
-    await waitFor(() =>
-      workbenchState.readSession("ordered-session").text
+    await waitFor(async () =>
+      (await workbenchState.readSession("ordered-session")).text
         .includes("The answer is ready.")
     );
 
-    const stored = workbenchState.readCollaborationDocument("ordered-session");
+    const stored = await workbenchState.readCollaborationDocument("ordered-session");
     const document = new Y.Doc();
     Y.applyUpdate(document, stored.state);
     expect(document.getText(COLLABORATION_TEXT_KEY).toString()).toBe([
@@ -1122,15 +1134,37 @@ describe("Runtime collaboration service", () => {
     document.destroy();
   });
 
+  it("does not resurrect historical Runs removed from the editable document", () => {
+    const document = new Y.Doc();
+    const ytext = document.getText(COLLABORATION_TEXT_KEY);
+    ytext.insert(0, [
+      "user current question",
+      "assistant <!-- zion-assistant:id=run-current --> "
+    ].join("\n"));
+
+    expect(reconcileSessionMessagesInYText(ytext, [
+      { role: "user", runId: "run-removed", content: "removed question" },
+      { role: "assistant", runId: "run-removed", content: "removed answer" },
+      { role: "user", runId: "run-current", content: "current question" },
+      { role: "assistant", runId: "run-current", content: "current answer" }
+    ])).toBe(true);
+    expect(ytext.toString()).toBe([
+      "user current question",
+      "assistant <!-- zion-assistant:id=run-current --> current answer"
+    ].join("\n"));
+    expect(ytext.toString()).not.toContain("removed");
+    document.destroy();
+  });
+
   it("resolves a Yjs relative Run anchor before inserting the assistant block", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-anchor-"));
-    const path = join(directory, "runtime.sqlite3");
-    const workbenchState = new SqliteWorkbenchStateStore(path);
+    const path = join(directory, "runtime");
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
     const source = [
       "first question",
       "user later question"
     ].join("\n");
-    workbenchState.createSession({
+    await workbenchState.createSession({
       id: "anchor-session",
       title: "Anchor",
       text: source
@@ -1143,7 +1177,7 @@ describe("Runtime collaboration service", () => {
       "first question".length,
       1
     );
-    workbenchState.writeCollaborationDocument(
+    await workbenchState.writeCollaborationDocument(
       "anchor-session",
       Y.encodeStateAsUpdate(seeded),
       { text: source }
@@ -1175,11 +1209,11 @@ describe("Runtime collaboration service", () => {
         }
       }
     });
-    await waitFor(() =>
-      workbenchState.readSession("anchor-session").text.includes("run-anchor")
+    await waitFor(async () =>
+      (await workbenchState.readSession("anchor-session")).text.includes("run-anchor")
     );
 
-    expect(workbenchState.readSession("anchor-session").text).toBe([
+    expect((await workbenchState.readSession("anchor-session")).text).toBe([
       "first question",
       "assistant <!-- zion-assistant:id=run-anchor --> ",
       "user later question"
@@ -1188,9 +1222,9 @@ describe("Runtime collaboration service", () => {
 
   it("does not replace projected text with a terminal aggregate", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-final-"));
-    const path = join(directory, "runtime.sqlite3");
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const path = join(directory, "runtime");
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({
       id: "final-session",
       title: "Final",
       text: "user latest question"
@@ -1230,11 +1264,11 @@ describe("Runtime collaboration service", () => {
     }, {
       appendUserPrompt: true
     });
-    await waitFor(() =>
-      workbenchState.readSession("final-session").text.includes("final answer")
+    await waitFor(async () =>
+      (await workbenchState.readSession("final-session")).text.includes("final answer")
     );
 
-    const text = workbenchState.readSession("final-session").text;
+    const text = (await workbenchState.readSession("final-session")).text;
     expect(text).toContain("user latest question");
     expect(text).toContain("final answer");
     expect(text).not.toContain("intermediate text");

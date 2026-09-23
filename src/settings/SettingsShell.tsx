@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Search, X } from "lucide-react";
 import type {
   SettingContribution,
   SettingsCategory,
@@ -8,6 +9,7 @@ import { settingsRegistry } from "./registry";
 
 type SettingsShellProps = {
   onRequestClose: () => void;
+  initialPageId?: string;
 };
 
 type CategoryGroup = {
@@ -635,13 +637,13 @@ function SettingCard({ setting }: { setting: SettingContribution }) {
   );
 }
 
-export function SettingsShell({ onRequestClose }: SettingsShellProps) {
+export function SettingsShell({ onRequestClose, initialPageId = "" }: SettingsShellProps) {
   const pages = useSettingsPages();
   const [query, setQuery] = useState("");
   const normalizedQuery = normalizeText(query);
   const filteredPages = useMemo(() => filterPages(pages, normalizedQuery), [pages, normalizedQuery]);
   const categories = useMemo(() => buildCategories(filteredPages), [filteredPages]);
-  const [activePageId, setActivePageId] = useState("");
+  const [activePageId, setActivePageId] = useState(initialPageId);
 
   useEffect(() => {
     if (normalizedQuery) return;
@@ -667,20 +669,30 @@ export function SettingsShell({ onRequestClose }: SettingsShellProps) {
           <div className="zion-settings-eyebrow">{ui("偏好", "Preferences")}</div>
           <h2 className="zion-settings-title">{ui("设置", "Settings")}</h2>
         </div>
-        <button type="button" className="zion-settings-close" onClick={onRequestClose}>
-          {ui("关闭", "Close")}
+        <button
+          type="button"
+          className="zion-settings-close"
+          title={ui("关闭设置", "Close settings")}
+          aria-label={ui("关闭设置", "Close settings")}
+          onClick={onRequestClose}
+        >
+          <X size={15} aria-hidden="true" />
         </button>
       </div>
 
       <div className="zion-settings-toolbar">
-        <input
-          className="zion-settings-search"
-          type="text"
-          placeholder={ui("搜索设置", "Search settings")}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          autoFocus
-        />
+        <label className="zion-settings-search-wrap">
+          <Search size={14} aria-hidden="true" />
+          <input
+            className="zion-settings-search"
+            type="text"
+            aria-label={ui("搜索设置", "Search settings")}
+            placeholder={ui("搜索设置", "Search settings")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            autoFocus
+          />
+        </label>
         <div className="zion-settings-summary">
           {normalizedQuery ? ui(`${totalCount} 个结果`, `${totalCount} results`) : ui(`${totalCount} 个设置项`, `${totalCount} settings`)}
         </div>
@@ -698,17 +710,19 @@ export function SettingsShell({ onRequestClose }: SettingsShellProps) {
                 {category.pages.map((page) => {
                   const active = !normalizedQuery && activePageId === page.id;
                   const pageSettingCount = page.sections.reduce((sum, section) => sum + section.settings.length, 0);
+                  const standalone = isStandaloneCustomPage(page);
                   return (
                     <button
                       key={page.id}
                       type="button"
                       className={`zion-settings-nav ${active ? "is-active" : ""}`}
+                      aria-current={active ? "page" : undefined}
                       onClick={() => setActivePageId(page.id)}
                     >
                       <span className="zion-settings-nav-main">
                         <span className="zion-settings-nav-label">{pageTitle(page)}</span>
                       </span>
-                      <span className="zion-settings-nav-count">{pageSettingCount}</span>
+                      {!standalone ? <span className="zion-settings-nav-count">{pageSettingCount}</span> : null}
                     </button>
                   );
                 })}

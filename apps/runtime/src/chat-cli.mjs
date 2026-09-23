@@ -3,11 +3,14 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_INTERACTION_PROFILE_ID } from "./interaction-profile-store.mjs";
+import { resolveRuntimeCliHeaders } from "./accounts/cli-account-auth.mjs";
 
 const CHAT_USAGE = `Usage: npm run runtime:chat -- [options]
 
 Options:
   --url <url>                    Runtime URL
+  --runtime-profile <name>       Configured Runtime endpoint and authentication
+  --account                     Use account login for --url
   --session <id>                Reconnect to an existing Session
   --profile <id>                Runtime interaction profile for a new Session
   --title <text>                New Session title
@@ -61,11 +64,15 @@ async function responseJson(response) {
 export function createRuntimeChatClient({
   baseUrl,
   fetchImpl = globalThis.fetch,
+  headers = {},
   pollIntervalMs = 50
 }) {
   const url = String(baseUrl || "").replace(/\/+$/, "");
   if (!url) throw new Error("Runtime URL is required");
   if (!fetchImpl) throw new Error("fetch implementation is required");
+  const authenticatedFetch = (path, options = {}) => fetchImpl(path, {
+    ...options, headers: { ...headers, ...options.headers }
+  });
 
   return {
     async createSession({
@@ -76,7 +83,7 @@ export function createRuntimeChatClient({
       metadata,
       policy
     } = {}) {
-      const response = await fetchImpl(`${url}/v1/sessions`, {
+      const response = await authenticatedFetch(`${url}/v1/sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -92,14 +99,14 @@ export function createRuntimeChatClient({
     },
 
     async getSession(sessionId) {
-      const response = await fetchImpl(
+      const response = await authenticatedFetch(
         `${url}/v1/sessions/${encodeURIComponent(sessionId)}`
       );
       return (await responseJson(response)).session;
     },
 
     async getTranscript(sessionId, afterSequence = 0) {
-      const response = await fetchImpl(
+      const response = await authenticatedFetch(
         `${url}/v1/sessions/${encodeURIComponent(sessionId)}/transcript`
           + `?after=${Math.max(0, Number(afterSequence) || 0)}`
       );
@@ -107,7 +114,7 @@ export function createRuntimeChatClient({
     },
 
     async sendMessage(sessionId, content) {
-      const response = await fetchImpl(
+      const response = await authenticatedFetch(
         `${url}/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
         {
           method: "POST",
@@ -121,9 +128,9 @@ export function createRuntimeChatClient({
     async followRun(runId, onText = () => {}) {
       let cursor = 0;
       while (true) {
-        const runResponse = await fetchImpl(`${url}/v1/runs/${encodeURIComponent(runId)}`);
+        const runResponse = await authenticatedFetch(`${url}/v1/runs/${encodeURIComponent(runId)}`);
         const { run } = await responseJson(runResponse);
-        const eventResponse = await fetchImpl(
+        const eventResponse = await authenticatedFetch(
           `${url}/v1/runs/${encodeURIComponent(runId)}/events?after=${cursor}`
         );
         const { events } = await responseJson(eventResponse);
@@ -148,13 +155,17 @@ export async function runChatCli({
   input = process.stdin,
   output = process.stdout,
   fetchImpl = globalThis.fetch,
-  environment = process.env
+  environment = process.env,
+  credentialStore
 } = {}) {
   if (argv.includes("--help") || argv.includes("-h")) {
     output.write(CHAT_USAGE);
     return null;
   }
-  const baseUrl = readArg(argv, "--url", "http://127.0.0.1:8766");
+  const { resolveRuntimeCliTarget } = await import("./runtime-cli.mjs");
+  const target = resolveRuntimeCliTarget({ argv, environment });
+  const baseUrl = target.baseUrl;
+  const headers = await resolveRuntimeCliHeaders(target, { credentialStore, fetchImpl });
   const requestedSessionId = readArg(argv, "--session", "");
   const profileArg = readArg(
     argv,
@@ -226,7 +237,7 @@ export async function runChatCli({
       : {}),
     ...(maxToolCalls ? { maxToolCalls } : {})
   };
-  const client = createRuntimeChatClient({ baseUrl, fetchImpl });
+  const client = createRuntimeChatClient({ baseUrl, fetchImpl, headers });
   const session = requestedSessionId
     ? await client.getSession(requestedSessionId)
     : await client.createSession({

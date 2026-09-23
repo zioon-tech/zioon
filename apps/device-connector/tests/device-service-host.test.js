@@ -168,6 +168,51 @@ describe("DeviceServiceHost", () => {
     }));
   });
 
+  it("forwards the normalized Device file path after authorization", async () => {
+    const authorizeInvocation = vi.fn(async (request) => {
+      request.toolCall.arguments.path = request.toolCall.name === "write"
+        ? "/Users/test/gits/app/output.txt"
+        : "/Users/test/gits/app/README.md";
+      return { fileRoots: ["/"], allowedTerminalSessionIds: [] };
+    });
+    const fetchImpl = vi.fn(async () => new globalThis.Response(
+      JSON.stringify({ ok: true }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }
+    ));
+    const host = new DeviceServiceHost({
+      fetchImpl,
+      deviceAccess: {
+        authorizeInvocation,
+        state: vi.fn(async () => ({ allowedTerminalSessionIds: [] }))
+      }
+    });
+
+    await host.invoke({
+      service: "local-tools",
+      method: "GET",
+      path: "/files/read?path=~%2Fgits%2Fapp%2FREADME.md"
+    }, signal());
+    expect(fetchImpl.mock.calls[0][0].searchParams.get("path"))
+      .toBe("/Users/test/gits/app/README.md");
+
+    await host.invoke({
+      service: "local-tools",
+      method: "POST",
+      path: "/files/write",
+      bodyBase64: Buffer.from(JSON.stringify({
+        path: "~/gits/app/output.txt",
+        content: "ok"
+      })).toString("base64")
+    }, signal());
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body)).toMatchObject({
+      path: "/Users/test/gits/app/output.txt",
+      content: "ok"
+    });
+  });
+
   it("forwards plugin assets without exposing arbitrary local routes", async () => {
     const fetchImpl = vi.fn(async () => new globalThis.Response("export const ok = true;", {
       status: 200,

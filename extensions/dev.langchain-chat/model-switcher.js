@@ -53,8 +53,22 @@ export function installModelSwitcher() {
   function getActive() {
     return window.zion?.state?.get("chat.activeModel");
   }
-  function setActive(providerId, modelId, label) {
-    window.zion?.state?.set("chat.activeModel", { providerId, modelId, label: label || modelId });
+  function setActive(providerId, modelId, label, config = {}) {
+    const capabilities = {};
+    for (const field of [
+      "supportsThinking",
+      "supportsThinkingEffort",
+      "thinkingMode",
+      "thinkingEffort"
+    ]) {
+      if (config[field] !== undefined) capabilities[field] = config[field];
+    }
+    window.zion?.state?.set("chat.activeModel", {
+      providerId,
+      modelId,
+      label: label || modelId,
+      ...capabilities
+    });
   }
 
   let root = document.getElementById("zion-model-switcher-root");
@@ -1137,6 +1151,8 @@ export function installModelSwitcher() {
           currency: "USD"
         },
         supportsImage: !!cbImg.checked,
+        supportsThinking: selectedCfg.supportsThinking,
+        supportsThinkingEffort: selectedCfg.supportsThinkingEffort,
         thinkingMode: normalizeThinkingMode(selThinkingMode.value),
         thinkingEffort: normalizeThinkingEffort(selThinkingEffort.value),
         preservedThinking: !!cbPreservedThinking.checked,
@@ -1155,7 +1171,7 @@ export function installModelSwitcher() {
       try { window.zion?.events?.emit?.("models/configChanged", { providerId: DYNAMIC_PROVIDER_ID, modelId: id }); } catch {}
       const cat = catalog();
       const item = cat.find(x => x.providerId === DYNAMIC_PROVIDER_ID && x.id === id);
-      setActive(DYNAMIC_PROVIDER_ID, id, item?.label || id);
+      setActive(DYNAMIC_PROVIDER_ID, id, item?.label || id, cfg);
       status.textContent = saved?.warning
         ? t("modelSwitcher.savedLocalFallback", "Saved locally; Runtime sync failed")
         : t("modelSwitcher.saved", "Saved");

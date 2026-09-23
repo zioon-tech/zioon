@@ -102,6 +102,15 @@ describe("WYSIWYG rendered cursor boundaries", () => {
     expect(getRenderedLineVisibleCursorPos(view, 1)).toBe(source.indexOf("hello"));
   });
 
+  it("keeps list markers rendered when the caret lands in their source range", () => {
+    const source = "1. hello";
+    const { root } = render(source, 0);
+
+    expect(root.querySelector(".cm-line")?.className).toContain("cm-md-list-line");
+    expect(root.querySelector(".cm-md-ol-num")?.textContent).toBe("1.\u00a0");
+    expect(root.textContent).not.toContain("1. 1.");
+  });
+
   it("keeps active line rendered when inline code contains markdown delimiters", () => {
     const source = "1. QA uses `self._aclient.responses.create(**kwargs)` and **bold** text";
     const { view } = render(source, source.indexOf("kwargs"));

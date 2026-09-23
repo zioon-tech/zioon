@@ -21,7 +21,7 @@
 - 首次部署或重装服务器；
 - 修改 `/etc/zion-next/*.env` 或 `/etc/caddy/Caddyfile`；
 - 发布 `dev.identity` 之外的外部 Runtime 插件 zip，或执行插件数据迁移；
-- 需要 SQLite 结构迁移或批量数据修复。
+- 需要 PostgreSQL 结构迁移或批量数据修复。
 
 这些场景仍按完整运维 runbook 单独处理。
 

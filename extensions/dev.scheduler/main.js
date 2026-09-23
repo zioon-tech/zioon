@@ -909,12 +909,14 @@ function createPanel({
       render();
       const refreshRemoteState = async () => {
         try {
-          const [modelResult, nodeResult, taskResult, runResult] = await Promise.all([
+          const [modelResult, nodeResult, taskResult] = await Promise.all([
             Promise.resolve(refreshModels?.()),
             Promise.resolve(refreshNodes?.()),
-            Promise.resolve(refreshTasks?.()),
-            Promise.resolve(refreshRuns?.())
+            Promise.resolve(refreshTasks?.())
           ]);
+          // Run summaries reference Runtime task ids. Wait until tasks have
+          // been reconciled so the first panel render can map and retain them.
+          const runResult = await Promise.resolve(refreshRuns?.());
           const error = modelResult?.error
             || nodeResult?.error
             || taskResult?.error

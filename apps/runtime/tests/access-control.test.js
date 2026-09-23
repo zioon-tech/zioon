@@ -1,12 +1,24 @@
 import { createServer } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { RuntimeAccessControl } from "../src/access-control.mjs";
-import { SqliteAccessStore } from "../src/sqlite-access-store.mjs";
+import { PostgresAccessStore } from "../src/postgres-access-store.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 const resources = [];
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("access_control");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 async function createHarness() {
-  const store = new SqliteAccessStore(":memory:");
+  const store = new PostgresAccessStore(database.pool, {
+    spaceId: database.nextSpaceId()
+  });
   const access = new RuntimeAccessControl({
     store,
     allowedOrigins: ["https://workbench.test"],
@@ -49,26 +61,28 @@ function cookieFrom(response) {
 afterEach(async () => {
   for (const resource of resources.splice(0)) {
     await new Promise((resolve) => resource.server.close(resolve));
-    resource.store.close();
+    await resource.store.close();
   }
 });
 
 describe("RuntimeAccessControl", () => {
-  it("requires HTTPS for every non-loopback Browser Origin", () => {
-    const store = new SqliteAccessStore(":memory:");
+  it("requires HTTPS for every non-loopback Browser Origin", async () => {
+    const store = new PostgresAccessStore(database.pool, {
+      spaceId: database.nextSpaceId()
+    });
     try {
       expect(() => new RuntimeAccessControl({
         store,
         allowedOrigins: ["http://workbench.test"]
       })).toThrow("must use HTTPS");
     } finally {
-      store.close();
+      await store.close();
     }
   });
 
   it("pairs an Owner browser without exposing its credential to JavaScript", async () => {
     const harness = await createHarness();
-    const pairing = harness.store.createPairing({
+    const pairing = await harness.store.createPairing({
       kind: "owner",
       delivery: "cookie"
     });
@@ -113,11 +127,11 @@ describe("RuntimeAccessControl", () => {
 
   it("lets an Owner create a scoped Resource invitation", async () => {
     const harness = await createHarness();
-    const ownerPairing = harness.store.createPairing({
+    const ownerPairing = await harness.store.createPairing({
       kind: "owner",
       delivery: "cookie"
     });
-    const owner = harness.store.exchangePairing({
+    const owner = await harness.store.exchangePairing({
       userCode: ownerPairing.userCode,
       deviceId: "client:owner"
     });
@@ -172,11 +186,11 @@ describe("RuntimeAccessControl", () => {
 
   it("rejects cross-origin Owner mutations", async () => {
     const harness = await createHarness();
-    const ownerPairing = harness.store.createPairing({
+    const ownerPairing = await harness.store.createPairing({
       kind: "owner",
       delivery: "cookie"
     });
-    const owner = harness.store.exchangePairing({
+    const owner = await harness.store.exchangePairing({
       userCode: ownerPairing.userCode,
       deviceId: "client:owner"
     });
@@ -196,19 +210,19 @@ describe("RuntimeAccessControl", () => {
 
   it("allows only Owner credentials through the observability auth endpoint", async () => {
     const harness = await createHarness();
-    const ownerPairing = harness.store.createPairing({
+    const ownerPairing = await harness.store.createPairing({
       kind: "owner",
       delivery: "cookie"
     });
-    const owner = harness.store.exchangePairing({
+    const owner = await harness.store.exchangePairing({
       userCode: ownerPairing.userCode,
       deviceId: "client:owner-observability"
     });
-    const clientPairing = harness.store.createPairing({
+    const clientPairing = await harness.store.createPairing({
       kind: "client",
       delivery: "bearer"
     });
-    const client = harness.store.exchangePairing({
+    const client = await harness.store.exchangePairing({
       userCode: clientPairing.userCode,
       deviceId: "client:readonly-observability"
     });
@@ -227,15 +241,15 @@ describe("RuntimeAccessControl", () => {
 
   it("allows only Client credentials into collaboration rooms", async () => {
     const harness = await createHarness();
-    const clientPairing = harness.store.createPairing({
+    const clientPairing = await harness.store.createPairing({
       kind: "client",
       delivery: "bearer"
     });
-    const client = harness.store.exchangePairing({
+    const client = await harness.store.exchangePairing({
       userCode: clientPairing.userCode,
       deviceId: "client:collaboration"
     });
-    const context = harness.access.authenticateCollaboration({
+    const context = await harness.access.authenticateCollaboration({
       headers: {},
       token: client.credential
     });
@@ -244,52 +258,52 @@ describe("RuntimeAccessControl", () => {
         device: { deviceId: "client:collaboration" }
       }
     });
-    expect(() => harness.access.reauthorize(
+    await expect(harness.access.reauthorize(
       context.principal,
       "collaboration.write"
-    )).not.toThrow();
-    harness.store.revokeDevice("client:collaboration");
-    expect(() => harness.access.reauthorize(
+    )).resolves.toBeTruthy();
+    await harness.store.revokeDevice("client:collaboration");
+    await expect(harness.access.reauthorize(
       context.principal,
       "collaboration.write"
-    )).toThrow("no longer active");
+    )).rejects.toThrow("no longer active");
 
-    const resourcePairing = harness.store.createPairing({
+    const resourcePairing = await harness.store.createPairing({
       kind: "resource",
       delivery: "bearer"
     });
-    const resource = harness.store.exchangePairing({
+    const resource = await harness.store.exchangePairing({
       userCode: resourcePairing.userCode,
       deviceId: "node:collaboration"
     });
-    expect(() => harness.access.authenticateCollaboration({
+    await expect(harness.access.authenticateCollaboration({
       headers: {},
       token: resource.credential
-    })).toThrow("collaboration.write");
+    })).rejects.toThrow("collaboration.write");
   });
 
   it("lets paired Browser Clients use Device Services without management access", async () => {
     const harness = await createHarness();
-    const pairing = harness.store.createPairing({
+    const pairing = await harness.store.createPairing({
       kind: "client",
       delivery: "bearer"
     });
-    const client = harness.store.exchangePairing({
+    const client = await harness.store.exchangePairing({
       userCode: pairing.userCode,
       deviceId: "client:browser"
     });
-    const principal = harness.access.authenticateHeaders(
+    const principal = await harness.access.authenticateHeaders(
       { authorization: `Bearer ${client.credential}` }
     );
 
-    expect(() => harness.access.authorizeDeviceService({
+    await expect(harness.access.authorizeDeviceService({
       method: "GET",
       zionPrincipal: principal
-    })).not.toThrow();
-    expect(() => harness.access.authorizeDeviceService({
+    })).resolves.toBeTruthy();
+    await expect(harness.access.authorizeDeviceService({
       method: "POST",
       zionPrincipal: principal
-    })).not.toThrow();
+    })).resolves.toBeTruthy();
     expect(() => harness.access.authorizeDeviceService({
       method: "GET",
       zionPrincipal: principal
@@ -301,28 +315,28 @@ describe("RuntimeAccessControl", () => {
       "device.manage"
     )).toThrow("device.manage");
 
-    const ownerPairing = harness.store.createPairing({
+    const ownerPairing = await harness.store.createPairing({
       kind: "owner",
       delivery: "bearer"
     });
-    const owner = harness.store.exchangePairing({
+    const owner = await harness.store.exchangePairing({
       userCode: ownerPairing.userCode,
       deviceId: "client:owner-access"
     });
-    const ownerPrincipal = harness.access.authenticateHeaders(
+    const ownerPrincipal = await harness.access.authenticateHeaders(
       { authorization: `Bearer ${owner.credential}` }
     );
-    expect(() => harness.access.authorizeDeviceService({
+    await expect(harness.access.authorizeDeviceService({
       method: "PATCH",
       zionPrincipal: ownerPrincipal
     }, {
       service: "device-access"
-    })).not.toThrow();
+    })).resolves.toBeTruthy();
 
-    harness.store.revokeDevice("client:browser");
-    expect(() => harness.access.authorizeDeviceService({
+    await harness.store.revokeDevice("client:browser");
+    await expect(harness.access.authorizeDeviceService({
       method: "GET",
       zionPrincipal: principal
-    })).toThrow("no longer active");
+    })).rejects.toThrow("no longer active");
   });
 });

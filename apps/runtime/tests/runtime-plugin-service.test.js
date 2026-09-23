@@ -12,7 +12,6 @@ import {
   RuntimePluginService,
   discoverRuntimePluginManifests
 } from "../src/runtime-plugin-service.mjs";
-import { SqliteWorkbenchStateStore } from "../src/sqlite-workbench-state-store.mjs";
 
 const resources = [];
 
@@ -569,7 +568,16 @@ describe("RuntimePluginService", () => {
 
   it("persists Runtime plugin state namespaces through the provided state store", async () => {
     const root = createRoot();
-    const stateStore = new SqliteWorkbenchStateStore(":memory:");
+    const values = new Map();
+    const stateStore = {
+      async readKV(key) {
+        return values.has(key) ? { key, value: values.get(key) } : null;
+      },
+      async writeKV(key, value) {
+        values.set(key, structuredClone(value));
+        return { key, value: structuredClone(value) };
+      }
+    };
     createPlugin(root, {
       id: "dev.stateful",
       runtimeApiVersion: 2,
@@ -598,12 +606,13 @@ describe("RuntimePluginService", () => {
     await service.start();
     const [provider] = service.getContextProviders();
 
-    expect(stateStore.readKV("runtime.plugins.dev.stateful.skills.snapshot")?.value)
+    expect((await stateStore.readKV(
+      "runtime.plugins.dev.stateful.skills.snapshot"
+    ))?.value)
       .toEqual({ enabled: ["one"] });
     await expect(provider.prepare()).resolves.toEqual([
       { role: "user", content: "{\"enabled\":[\"one\"]}" }
     ]);
-    stateStore.close?.();
   });
 
   it("isolates a duplicate Provider and rolls back the rejected plugin", async () => {

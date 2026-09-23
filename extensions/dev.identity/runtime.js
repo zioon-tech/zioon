@@ -76,6 +76,28 @@ function objectValue(value) {
     : {};
 }
 
+function postProcessorFileContext(run = {}, fileRoot = "") {
+  const request = objectValue(run.request);
+  const policy = objectValue(run.policy || request.policy);
+  return {
+    runId: run.runId,
+    attemptId: run.attemptId,
+    principal: run.principal || request.principal,
+    sessionId: run.sessionId || request.sessionId,
+    projectId: run.projectId || request.projectId,
+    target: run.target || request.target,
+    interactionProfileId:
+      run.metadata?.interactionProfileId
+      || request.interactionProfileId
+      || request.metadata?.interactionProfileId,
+    policy: {
+      ...policy,
+      preset: "workspace-write",
+      fileRoots: [fileRoot]
+    }
+  };
+}
+
 function normalizeRuntimeSessionId(value) {
   const id = String(value || "").trim();
   if (!id) return "";
@@ -357,6 +379,7 @@ export class RuntimeIdentityContextProvider {
     const fileContext = {
       runId: runContext.runId,
       attemptId: runContext.attemptId,
+      principal: runContext.request?.principal || runContext.principal,
       sessionId: runContext.request?.sessionId,
       projectId: runContext.request?.projectId,
       target: runContext.request?.target,
@@ -456,7 +479,10 @@ export function activateRuntimePlugin(context) {
           memoryRoot: dataLocation?.root || projectAutomationConfig.memoryRoot || memoryRoot,
           dataLocation,
           pollIntervalMs: projectAutomationConfig.pollIntervalMs,
-          logger: projectAutomationConfig.logger
+          logger: projectAutomationConfig.logger,
+          authorizeExecution: projectAutomationConfig.authorizeExecution,
+          authorizeDelegation: projectAutomationConfig.authorizeDelegation,
+          revokeDelegation: projectAutomationConfig.revokeDelegation
         })
       : null
   );
@@ -498,6 +524,7 @@ export function activateRuntimePlugin(context) {
           `biography distillation started for run ${run.runId}`
         );
         const fileService = context.config.fileService;
+        const fileContext = postProcessorFileContext(run, fileRoot);
         let loadedEvents;
         try {
           loadedEvents = await fileService.readTextFiles({
@@ -505,16 +532,7 @@ export function activateRuntimePlugin(context) {
             files: {
               biographyEvents: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH
             },
-            runContext: {
-              runId: run.runId,
-              attemptId: run.attemptId,
-              sessionId: run.sessionId,
-              projectId: run.projectId,
-              policy: {
-                preset: "workspace-write",
-                fileRoots: [fileRoot]
-              }
-            }
+            runContext: fileContext
           });
         } catch (error) {
           throw new Error(
@@ -532,14 +550,12 @@ export function activateRuntimePlugin(context) {
               id: `${run.sessionId}:${run.runId}:${eventId}`, eventId, type: "cited",
               source: "assistant-output", sessionId: run.sessionId, runId: run.runId
             })),
-            runContext: {
-              runId: run.runId, sessionId: run.sessionId, projectId: run.projectId,
-              policy: { preset: "workspace-write", fileRoots: [fileRoot] }
-            }
+            runContext: fileContext
           });
         }
         const output = await context.config.modelService.generateText({
           model: run.model,
+          runContext: run,
           timeoutMs: context.config?.biography?.timeoutMs || 30000,
           requestContext: {
             source: "identity-biography",
@@ -569,16 +585,7 @@ export function activateRuntimePlugin(context) {
           sourceSessionId: run.sessionId,
           sourceRunId: run.runId,
           sourceAt: new Date().toISOString(),
-          runContext: {
-            runId: run.runId,
-            attemptId: run.attemptId,
-            sessionId: run.sessionId,
-            projectId: run.projectId,
-            policy: {
-              preset: "workspace-write",
-              fileRoots: [fileRoot]
-            }
-          }
+          runContext: fileContext
         });
         context.log?.(
           "info",
@@ -844,6 +851,7 @@ export function activateRuntimePlugin(context) {
             throw new Error("Runtime Project Automation coordinator is unavailable");
           }
           const result = await projectAutomationService.runNow(args.project_key, {
+            actor: meta.principal,
             parentRunId: meta.runId,
             parentAttemptId: meta.attemptId,
             interactionProfileId: meta.interactionProfileId
@@ -871,6 +879,13 @@ export function activateRuntimePlugin(context) {
         }
         const update = updateProjectAutomationDocument(current, args);
         saveProjectAutomationDocument(update.document);
+        if (projectAutomationConfig?.authorizeDelegation) {
+          for (const [key, policy] of Object.entries(update.document.projects || {})) {
+            if (JSON.stringify(policy) !== JSON.stringify(current.projects?.[key])) {
+              await projectAutomationService.delegate(key, meta.principal);
+            }
+          }
+        }
         return {
           ok: true,
           content: JSON.stringify({

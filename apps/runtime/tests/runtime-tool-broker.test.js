@@ -232,10 +232,39 @@ describe("RuntimeToolBroker", () => {
       new CancellationController().signal
     )).resolves.toMatchObject({
       ok: false,
+      failureCode: "timeout",
       error: expect.stringContaining(
         "r.jinaai.cn: fetch failed (UND_ERR_CONNECT_TIMEOUT)"
       ),
       content: expect.stringContaining("r.jina.ai: fetch failed")
+    });
+  });
+
+  it("classifies mixed webFetch proxy failures without exposing details in the code", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new globalThis.Response("blocked", { status: 403 }))
+      .mockRejectedValueOnce(
+        Object.assign(new TypeError("fetch failed"), {
+          cause: { code: "UND_ERR_CONNECT_TIMEOUT" }
+        })
+      );
+    const broker = new RuntimeToolBroker({
+      localTools: {
+        listTools: async () => [],
+        invoke: vi.fn()
+      },
+      receipts: receiptStore(),
+      fetchImpl,
+      lookupImpl: vi.fn(async () => [{ address: "93.184.216.34" }])
+    });
+
+    await expect(broker.invoke(
+      invocation("webFetch", { url: "https://example.com/page" }),
+      new CancellationController().signal
+    )).resolves.toMatchObject({
+      ok: false,
+      failureCode: "http_4xx",
+      error: expect.stringContaining("HTTP 403")
     });
   });
 

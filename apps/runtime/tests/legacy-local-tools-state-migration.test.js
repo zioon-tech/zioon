@@ -1,27 +1,32 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { migrateLegacyLocalToolsState } from "../src/legacy-local-tools-state-migration.mjs";
-import { SqliteSchedulerStore } from "../src/sqlite-scheduler-store.mjs";
-import { SqliteWorkbenchStateStore } from "../src/sqlite-workbench-state-store.mjs";
+import { PostgresSchedulerStore } from "../src/postgres-scheduler-store.mjs";
+import { PostgresWorkbenchStateStore } from "../src/postgres-workbench-state-store.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 const resources = [];
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("legacy_import");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 function stores() {
-  const directory = mkdtempSync(join(tmpdir(), "zion-legacy-migration-"));
-  const path = join(directory, "runtime.sqlite3");
-  const workbenchState = new SqliteWorkbenchStateStore(path);
-  const scheduler = new SqliteSchedulerStore(path);
-  resources.push({ directory, workbenchState, scheduler });
+  const spaceId = database.nextSpaceId();
+  const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId });
+  const scheduler = new PostgresSchedulerStore(database.pool, { spaceId });
+  resources.push({ workbenchState, scheduler });
   return { workbenchState, scheduler };
 }
 
-afterEach(() => {
+afterEach(async () => {
   for (const resource of resources.splice(0)) {
-    resource.scheduler.close();
-    resource.workbenchState.close();
-    rmSync(resource.directory, { recursive: true, force: true });
+    await resource.scheduler.close();
+    await resource.workbenchState.close();
   }
 });
 
@@ -83,8 +88,8 @@ describe("legacy local-tools state migration", () => {
       workbenchState: { duplicate: true },
       scheduler: { duplicate: true }
     });
-    expect(workbenchState.readSession("session-1").text).toBe("legacy");
-    expect(scheduler.listTasks()).toHaveLength(1);
+    expect((await workbenchState.readSession("session-1")).text).toBe("legacy");
+    expect(await scheduler.listTasks()).toHaveLength(1);
     expect(fetchImpl.mock.calls.filter(([url]) =>
       String(url).includes("/scheduler/")
     )).toHaveLength(2);

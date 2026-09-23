@@ -249,7 +249,9 @@ function pathWithinRoots(pathValue, roots) {
   if (!path) return false;
   return roots.some((rootValue) => {
     const root = normalizePath(rootValue);
-    return !!root && (path === root || path.startsWith(`${root}/`));
+    if (!root) return false;
+    if (root === "/") return path.startsWith("/");
+    return path === root || path.startsWith(`${root}/`);
   });
 }
 
@@ -369,7 +371,9 @@ function mailRecipients(args) {
   ].map((value) => String(value).trim().toLowerCase()).filter(Boolean);
 }
 
-function authorizeTool(name, args, policy) {
+function authorizeTool(name, args, policy, {
+  allowDangerousCommands = false
+} = {}) {
   if (!(policy.allowedTools || []).includes(name)) {
     throw new Error("tool is not allowed by capability policy");
   }
@@ -386,7 +390,10 @@ function authorizeTool(name, args, policy) {
     if (policy.preset !== "trusted-automation") {
       throw new Error("Bash requires trusted-automation capability");
     }
-    if (args.dangerouslyDisableSandbox === true) {
+    if (
+      args.dangerouslyDisableSandbox === true
+      && !allowDangerousCommands
+    ) {
       throw new Error("Runtime never disables the local-tools sandbox");
     }
     assertSessionAllowed(args, policy);
@@ -511,7 +518,9 @@ function requestForTool(name, args) {
   throw new Error(`Unsupported local-tools tool: ${name}`);
 }
 
-function requestOptionsForTool(name, args) {
+function requestOptionsForTool(name, args, {
+  allowDangerousCommands = false
+} = {}) {
   if (["read", "glob", "grep", "tree", "webSearch"].includes(name)) {
     return { path: requestForTool(name, args), method: "GET" };
   }
@@ -549,7 +558,7 @@ function requestOptionsForTool(name, args) {
       body: {
         command: String(args.command || ""),
         timeout: args.timeout,
-        dangerouslyDisableSandbox: false,
+        dangerouslyDisableSandbox: allowDangerousCommands,
         ...(sessionId ? {} : { cwd: args.cwd || undefined })
       }
     };
@@ -598,13 +607,15 @@ export class LocalToolsBroker {
     fetchImpl = globalThis.fetch,
     healthTimeoutMs = 5000,
     dataFiles = null,
-    maxResultChars = 30_000
+    maxResultChars = 30_000,
+    allowDangerousCommands = false
   } = {}) {
     this.baseUrl = String(baseUrl).replace(/\/+$/, "");
     this.fetchImpl = fetchImpl;
     this.healthTimeoutMs = healthTimeoutMs;
     this.dataFiles = dataFiles;
     this.maxResultChars = maxResultChars;
+    this.allowDangerousCommands = allowDangerousCommands === true;
     this.supportedToolNames = LOCAL_TOOLS_TOOL_DEFINITIONS.map((tool) => tool.name);
   }
 
@@ -626,7 +637,9 @@ export class LocalToolsBroker {
     const args = { ...(call.arguments || {}) };
     const explicitSessionId = Object.hasOwn(call.arguments || {}, "session_id")
       && String(call.arguments?.session_id || "").trim();
-    authorizeTool(call.name, args, invocation.policy || {});
+    authorizeTool(call.name, args, invocation.policy || {}, {
+      allowDangerousCommands: this.allowDangerousCommands
+    });
     if (this.dataFiles) {
       signal.throwIfCancelled();
       try {
@@ -640,7 +653,9 @@ export class LocalToolsBroker {
     if (args.expected_hash !== undefined) {
       throw new Error("Conditional writes require a plugin-data path without a terminal session");
     }
-    const request = requestOptionsForTool(call.name, args);
+    const request = requestOptionsForTool(call.name, args, {
+      allowDangerousCommands: this.allowDangerousCommands
+    });
 
     signal.throwIfCancelled();
     const controller = new globalThis.AbortController();
@@ -744,14 +759,16 @@ export class LocalToolsDeviceHost {
     dataFiles = null,
     fetchImpl = globalThis.fetch,
     healthTimeoutMs = 5000,
-    maxResultChars = 30_000
+    maxResultChars = 30_000,
+    allowDangerousCommands = false
   } = {}) {
     this.broker = new LocalToolsBroker({
       baseUrl,
       fetchImpl,
       healthTimeoutMs,
       dataFiles,
-      maxResultChars
+      maxResultChars,
+      allowDangerousCommands
     });
     this.accessPolicyProvider = typeof accessPolicyProvider === "function"
       ? accessPolicyProvider

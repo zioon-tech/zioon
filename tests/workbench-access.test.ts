@@ -107,4 +107,46 @@ describe("Workbench remote access bootstrap", () => {
       "runtime"
     );
   });
+
+  it("enters the Workbench directly after account login returns to the bridge route", async () => {
+    window.history.replaceState({}, "", "/account");
+    const identity = {
+      authenticated: true,
+      mode: "accounts-v1",
+      user: { id: "user:one", name: "Local User", email: "local@example.test" },
+      space: { id: "space:one", name: "Local", kind: "personal" },
+      membership: { role: "owner", status: "active" },
+      scopes: ["runtime.read", "runtime.write"],
+      sessionId: "session:one",
+      expiresAt: Date.now() + 60_000
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input), window.location.origin).pathname;
+      if (path === "/health") {
+        return new Response(JSON.stringify({
+          service: "zion-runtime",
+          authRequired: true,
+          authMode: "accounts-v1"
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (path === "/v1/account/me") {
+        return new Response(JSON.stringify(identity), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "setInterval").mockReturnValue(1);
+
+    await ensureWorkbenchRuntimeAccess(
+      document.getElementById("app") as HTMLElement
+    );
+
+    expect(window.location.pathname).toBe("/");
+    expect(document.getElementById("app")?.classList.contains("zion-account-gate")).toBe(false);
+    expect(fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/v1/account/me"))).toHaveLength(2);
+  });
 });

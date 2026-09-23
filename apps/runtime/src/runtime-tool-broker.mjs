@@ -78,11 +78,73 @@ const WEB_FETCH_PROXY_ORIGINS = [
   "https://r.jinaai.cn",
   "https://r.jina.ai"
 ];
+const FAILURE_CODE_PRIORITY = [
+  "rate_limit",
+  "http_4xx",
+  "http_5xx",
+  "http_status",
+  "timeout",
+  "dns_error",
+  "network_error",
+  "content_type",
+  "size_limit",
+  "truncated",
+  "permission_denied",
+  "policy_denied",
+  "cancelled",
+  "tool_error"
+];
 
 function errorDetail(error) {
   const message = String(error?.message || error || "unknown error");
   const cause = String(error?.cause?.code || error?.cause?.message || "").trim();
   return cause && !message.includes(cause) ? `${message} (${cause})` : message;
+}
+
+function httpFailureCode(status) {
+  const code = Number(status);
+  if (code === 429) return "rate_limit";
+  if (code >= 400 && code < 500) return "http_4xx";
+  if (code >= 500 && code < 600) return "http_5xx";
+  return "http_status";
+}
+
+function failureCodeFromText(value) {
+  const text = String(value || "").toLowerCase();
+  if (!text) return "";
+  if (/http\s+429|status\s+429/.test(text)) return "rate_limit";
+  if (/http\s+4\d\d|status\s+4\d\d/.test(text)) return "http_4xx";
+  if (/http\s+5\d\d|status\s+5\d\d/.test(text)) return "http_5xx";
+  if (/und_err_connect_timeout|timed?\s*out|timeout|etimedout/.test(text)) return "timeout";
+  if (/enotfound|eai_again|getaddrinfo|dns/.test(text)) return "dns_error";
+  if (/unsupported\s+content|content[-_\s]?type|media\s+type/.test(text)) return "content_type";
+  if (/too\s+large|size\s+limit|max(?:imum)?\s+(?:bytes|size)|exceeded.*limit/.test(text)) return "size_limit";
+  if (/truncated/.test(text)) return "truncated";
+  if (/resource_execution_denied|outside_grant|not allowed by capability policy|policy/.test(text)) return "policy_denied";
+  if (/permission denied|eacces|forbidden/.test(text)) return "permission_denied";
+  if (/cancelled|canceled|aborted/.test(text)) return "cancelled";
+  if (/fetch failed|network|econnreset|econnrefused|socket|connection/.test(text)) return "network_error";
+  return "";
+}
+
+function failureCodeFromError(error) {
+  return failureCodeFromText(`${error?.message || ""} ${error?.code || ""} ${error?.cause?.code || ""}`)
+    || "network_error";
+}
+
+function chooseFailureCode(codes) {
+  const set = new Set((Array.isArray(codes) ? codes : []).filter(Boolean));
+  return FAILURE_CODE_PRIORITY.find((code) => set.has(code)) || "tool_error";
+}
+
+function classifyToolResult(toolName, result) {
+  if (result?.ok !== false) return result;
+  if (String(result.failureCode || "").trim()) return result;
+  return {
+    ...result,
+    failureCode: failureCodeFromText(`${result.error || ""}\n${result.content || ""}`)
+      || (toolName === "webFetch" ? "network_error" : "tool_error")
+  };
 }
 
 function stableValue(value) {
@@ -204,6 +266,7 @@ export class RuntimeToolBroker {
     localTools,
     pluginTools = null,
     receipts,
+    authorizeInvocation = null,
     delegatedToolNames = null,
     fetchImpl = globalThis.fetch,
     lookupImpl = lookup,
@@ -219,6 +282,7 @@ export class RuntimeToolBroker {
     this.localTools = localTools;
     this.pluginTools = pluginTools;
     this.receipts = receipts;
+    this.authorizeInvocation = authorizeInvocation;
     this.fetchImpl = fetchImpl;
     this.lookupImpl = lookupImpl;
     this.maxWebResultChars = maxWebResultChars;
@@ -319,8 +383,13 @@ export class RuntimeToolBroker {
   }
 
   async invokeObserved(invocation, signal, span, observation) {
+    // Authorization precedes receipt lookup: revoked users cannot read cached
+    // results or skip a newly restricted policy by replaying an invocation ID.
+    if (this.authorizeInvocation) {
+      invocation = await this.authorizeInvocation(invocation);
+    }
     const hash = requestHash(invocation);
-    const existing = this.receipts.getToolReceipt(invocation.invocationId);
+    const existing = await this.receipts.getToolReceipt(invocation.invocationId);
     if (existing) {
       if (existing.requestHash !== hash) {
         observation.failureType = "receipt_conflict";
@@ -345,7 +414,7 @@ export class RuntimeToolBroker {
     }
     if (
       name === "sendMail"
-      && this.receipts.countToolReceipts(invocation.runId, "sendMail")
+      && await this.receipts.countToolReceipts(invocation.runId, "sendMail")
         >= Number(invocation.policy?.maxMailPerRun || 0)
     ) {
       throw new Error("mail quota exceeded");
@@ -358,7 +427,7 @@ export class RuntimeToolBroker {
       result = await this.invokeWebFetch(invocation, signal);
     } else if (name === "todoWrite") {
       span.setAttribute("zion.tool.host_kind", "runtime");
-      result = this.invokeTodoWrite(invocation);
+      result = await this.invokeTodoWrite(invocation);
     } else if (this.pluginTools?.hasTool?.(name)) {
       span.setAttribute("zion.tool.host_kind", "runtime-plugin");
       result = await this.pluginTools.invoke(invocation, signal);
@@ -370,15 +439,16 @@ export class RuntimeToolBroker {
     }
 
     const completedAt = Date.now();
-    const enrichedResult = enrichToolResultWithArtifacts(
+    const resultWithArtifacts = enrichToolResultWithArtifacts(
       invocation,
       result,
       completedAt
     );
+    const enrichedResult = classifyToolResult(name, resultWithArtifacts);
     span.setAttribute("zion.tool.artifact_count", enrichedResult.artifacts?.length || 0);
     span.setAttribute("zion.tool.change_count", enrichedResult.changes?.length || 0);
     if (enrichedResult.artifacts?.length || enrichedResult.changes?.length) {
-      this.receipts.saveRunArtifacts?.({
+      await this.receipts.saveRunArtifacts?.({
         runId: invocation.runId,
         invocationId: invocation.invocationId,
         artifacts: enrichedResult.artifacts || [],
@@ -386,14 +456,14 @@ export class RuntimeToolBroker {
         createdAt: completedAt
       });
     }
-    return this.receipts.saveToolReceipt({
+    return (await this.receipts.saveToolReceipt({
       invocationId: invocation.invocationId,
       runId: invocation.runId,
       toolName: name,
       requestHash: hash,
       result: enrichedResult,
       completedAt
-    }).result;
+    })).result;
   }
 
   async invokeWebFetch(invocation, signal) {
@@ -403,6 +473,7 @@ export class RuntimeToolBroker {
       this.lookupImpl
     );
     const failures = [];
+    const failureCodes = [];
     for (const origin of WEB_FETCH_PROXY_ORIGINS) {
       signal.throwIfCancelled();
       const controller = new globalThis.AbortController();
@@ -423,6 +494,7 @@ export class RuntimeToolBroker {
         });
         const content = await response.text();
         if (!response.ok) {
+          failureCodes.push(httpFailureCode(response.status));
           failures.push(`${proxy.hostname}: HTTP ${response.status}`);
           continue;
         }
@@ -435,6 +507,7 @@ export class RuntimeToolBroker {
         };
       } catch (error) {
         signal.throwIfCancelled();
+        failureCodes.push(failureCodeFromError(error));
         failures.push(`${proxy.hostname}: ${errorDetail(error)}`);
       } finally {
         globalThis.clearTimeout(timer);
@@ -444,17 +517,18 @@ export class RuntimeToolBroker {
     const error = `webFetch proxy attempts failed: ${failures.join("; ")}`;
     return {
       ok: false,
+      failureCode: chooseFailureCode(failureCodes),
       error,
       content: error
     };
   }
 
-  invokeTodoWrite(invocation) {
+  async invokeTodoWrite(invocation) {
     const args = invocation.toolCall?.arguments || {};
     const todos = normalizeTodoList(args.todos);
     const taskId = String(args.taskId || "").trim();
     const ownerId = invocation.sessionId || invocation.runId;
-    const saved = this.receipts.saveTodoList(ownerId, todos, Date.now(), {
+    const saved = await this.receipts.saveTodoList(ownerId, todos, Date.now(), {
       taskId,
       sessionId: invocation.sessionId || "",
       runId: invocation.runId

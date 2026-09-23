@@ -193,6 +193,7 @@ export class RuntimeObservabilityService {
     signal,
     requester = null,
     enforceVisibility = false,
+    includeLedger = true,
     includeStages = true,
     includeFindings = true,
     includeExternalUrl = false
@@ -204,7 +205,8 @@ export class RuntimeObservabilityService {
     if (!run || (enforceVisibility && !sameVisibilityBoundary(run, requester))) {
       return null;
     }
-    const eventProjection = await this.readRunEvents(run.id);
+    const eventProjection = includeLedger
+      ? await this.readRunEvents(run.id) : { events: [], eventsAvailable: false };
     const projectionOptions = {
       ...eventProjection,
       includeStages,

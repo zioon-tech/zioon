@@ -38,6 +38,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { PluginDataFiles } from "./PluginDataFiles";
+import { AccountPanel } from "../../../packages/account-ui/src/AccountPanel";
+import { accountCan, currentAccountSession } from "../../../packages/account-ui/src/client";
+import { runtimeBaseUrl } from "./api";
 import {
   createPairing,
   getAccessSession,
@@ -91,8 +94,19 @@ type MoreItem = {
   tone?: string;
 };
 
+const accountRoleLabel: Record<string, string> = {
+  owner: "所有者",
+  admin: "管理员",
+  member: "成员",
+  viewer: "只读"
+};
+
 export function MoreScreen() {
   const navigate = useNavigate();
+  const account = currentAccountSession();
+  const accountSummary = account?.space.kind === "team"
+    ? `${account.space.name} · ${accountRoleLabel[account.membership?.role || ""] || "成员"}`
+    : account?.user.email || "Zion 账号";
   const groups: Array<{ label: string; items: MoreItem[] }> = [
     {
       label: "内容与知识",
@@ -115,11 +129,24 @@ export function MoreScreen() {
   ];
   return (
     <MobilePage title="更多" subtitle="能力与设置" className="more-page">
+      {account ? (
+        <button className="mobile-account-row" type="button" onClick={() => navigate("/account")}>
+          <span className="mobile-account-avatar" aria-hidden="true">
+            {Array.from(account.user.name || "Z").slice(0, 2).join("").toUpperCase()}
+          </span>
+          <span className="row-main">
+            <span className="row-title">{account.user.name}</span>
+            <span className="row-preview">{accountSummary}</span>
+          </span>
+          <ChevronRight size={17} aria-hidden="true" />
+        </button>
+      ) : null}
       {groups.map((group) => (
         <section className="more-section" key={group.label}>
           <SectionLabel>{group.label}</SectionLabel>
           <div className="list more-directory">
-            {group.items.map((item) => {
+            {group.items.filter(item => accountCan("runtime.manage")
+              || !["/knowledge", "/plugins", "/files", "/comments"].includes(item.path)).map((item) => {
               const Icon = item.icon;
               return (
                 <button className="more-row" type="button" key={item.path} onClick={() => navigate(item.path)}>
@@ -135,6 +162,22 @@ export function MoreScreen() {
           </div>
         </section>
       ))}
+    </MobilePage>
+  );
+}
+
+export function AccountScreen() {
+  const account = currentAccountSession();
+  return (
+    <MobilePage
+      title="账号"
+      subtitle={account?.space.kind === "team"
+        ? account.space.name
+        : account?.user.email || "Zion 账号"}
+      back="更多"
+      className="account-page"
+    >
+      <AccountPanel baseUrl={runtimeBaseUrl} variant="mobile" />
     </MobilePage>
   );
 }
@@ -597,8 +640,12 @@ export function CapabilitiesScreen() {
                 {items.map((tool) => {
                   const enabled = enabledTools.includes(tool.name);
                   const risk = capabilityRisk(tool);
-                  const unavailable = tool.policy?.requiresApproval === true
+                  const unavailable = tool.modelInjectable === false
+                    || tool.policy?.requiresApproval === true
                     || tool.name === "sendMail";
+                  const unavailableText = tool.modelInjectable === false
+                    ? tool.unavailableReason || "当前 Runtime 不会注入此工具"
+                    : "需要额外审批或白名单";
                   return (
                     <div className="capability-row" key={tool.name}>
                       <span className="row-icon"><Wrench size={18} /></span>
@@ -607,7 +654,7 @@ export function CapabilitiesScreen() {
                           <span className="row-title">{tool.name}</span>
                           <Badge tone={risk.tone}>{risk.label}</Badge>
                         </span>
-                        <span className="row-preview">{tool.description || "Runtime 工具"}</span>
+                        <span className="row-preview">{unavailable ? unavailableText : tool.description || "Runtime 工具"}</span>
                       </span>
                       <button
                         className={`switch ${enabled ? "is-on" : ""}`}
@@ -615,7 +662,7 @@ export function CapabilitiesScreen() {
                         role="switch"
                         aria-checked={enabled}
                         aria-label={`${enabled ? "停用" : "启用"} ${tool.name}`}
-                        disabled={toggleTool.isPending || unavailable || !interactive}
+                        disabled={toggleTool.isPending || (unavailable && !enabled) || !interactive}
                         onClick={() => {
                           const elevated = tool.policy?.minimumPreset === "trusted-automation"
                             || tool.risk === "external-effect";
@@ -994,6 +1041,7 @@ export function DevicesScreen() {
     queryFn: getHealth,
   });
   const remoteAccess = health.data?.authRequired === true;
+  const accountMode = !!currentAccountSession();
   const access = useQuery({
     queryKey: ["access-session"],
     queryFn: getAccessSession,
@@ -1002,12 +1050,12 @@ export function DevicesScreen() {
   const devices = useQuery({
     queryKey: ["access-devices"],
     queryFn: listDevices,
-    enabled: remoteAccess,
+    enabled: remoteAccess && accountCan("device.manage"),
   });
   const nodes = useQuery({
     queryKey: ["device-nodes"],
     queryFn: listDeviceNodes,
-    enabled: remoteAccess,
+    enabled: remoteAccess && accountCan("device.manage"),
   });
   const create = useMutation({
     mutationFn: createPairing,
@@ -1024,7 +1072,7 @@ export function DevicesScreen() {
   return (
     <MobilePage
       title="设备与远程访问"
-      subtitle={remoteAccess ? access.data?.device.label || "Access Control" : "本机直连"}
+      subtitle={remoteAccess ? access.data?.device?.label || (accountMode ? "资源设备" : "访问控制") : "本机直连"}
       back="更多"
     >
       {health.isLoading || (remoteAccess && access.isLoading) ? <LoadingState /> : null}
@@ -1036,7 +1084,7 @@ export function DevicesScreen() {
         </div>
       ) : null}
       {remoteAccess && access.isError ? <ErrorState error={access.error} onRetry={() => void access.refetch()} /> : null}
-      {access.data ? (
+      {access.data?.device ? (
         <section className="detail-section">
           <h2>当前设备</h2>
           <dl className="kv">
@@ -1067,7 +1115,7 @@ export function DevicesScreen() {
                   </span>
                   <span className="row-preview">{device.platform || device.deviceId} · {formatRelativeTime(device.lastSeenAt)}</span>
                 </span>
-                {device.deviceId !== access.data?.device.deviceId ? (
+                {device.deviceId !== access.data?.device?.deviceId ? (
                   <IconButton
                     icon={Trash2}
                     label={`吊销 ${device.label}`}
@@ -1083,9 +1131,9 @@ export function DevicesScreen() {
             ))}
           </div>
           <div className="action-bar">
-            <button className="button flex" type="button" onClick={() => create.mutate("client")}>
+            {!accountMode && <button className="button flex" type="button" onClick={() => create.mutate("client")}>
               <Plus size={17} />Client
-            </button>
+            </button>}
             <button className="button primary flex" type="button" onClick={() => create.mutate("resource")}>
               <Plus size={17} />Resource
             </button>
@@ -1192,7 +1240,7 @@ export function SettingsScreen() {
           <dt>本地状态</dt><dd>草稿与 UI 偏好</dd>
         </dl>
       </section>
-      {health.data?.authRequired ? (
+      {health.data?.authRequired && !currentAccountSession() ? (
         <div className="action-bar">
           <button className="button danger flex" type="button" disabled={signOut.isPending} onClick={() => signOut.mutate()}>
             <LogOut size={17} />退出当前设备

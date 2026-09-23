@@ -199,14 +199,16 @@ function normalizePath(value: any): string {
     if (part === "..") parts.pop();
     else parts.push(part);
   }
-  return `${prefix}${parts.join("/")}`.replace(/\/+$/, "");
+  return `${prefix}${parts.join("/")}`.replace(/\/+$/, "") || prefix;
 }
 
 function isPathWithinRoots(value: any, roots: string[]): boolean {
   const path = normalizePath(value);
   return roots.some((rootValue) => {
     const root = normalizePath(rootValue);
-    return !!root && (path === root || path.startsWith(`${root}/`));
+    if (!root) return false;
+    if (root === "/") return path.startsWith("/");
+    return path === root || path.startsWith(`${root}/`);
   });
 }
 

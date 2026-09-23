@@ -1,7 +1,11 @@
 import { Buffer } from "node:buffer";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createPluginDataFileHost } from "../../../packages/local-tools-client/src/plugin-data-files.mjs";
 import {
   createDeviceServiceHttpHandler,
   createDeviceServiceWebSocketHandler
@@ -598,5 +602,39 @@ describe("Device service HTTP handler", () => {
     );
     expect(accepted.status).toBe(200);
     expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it("serves runtime-hosted plugin data locally even with a node broker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zion-plugin-data-http-"));
+    try {
+      const path = join(root, "dev.identity", "user.md");
+      const broker = {
+        invoke: vi.fn(async () => {
+          throw new Error("plugin data should not be delegated");
+        })
+      };
+      const url = await start(createDeviceServiceHttpHandler({
+        broker,
+        dataFiles: createPluginDataFileHost({ root })
+      }));
+      const response = await fetch(
+        `${url}/v1/device-services/local-tools/files/write?plugin_data_version=1`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path, content: "identity" })
+        }
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: true,
+        plugin_data_version: 1
+      });
+      expect(await readFile(path, "utf8")).toBe("identity");
+      expect(broker.invoke).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

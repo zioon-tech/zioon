@@ -49,7 +49,7 @@ The migration started from a system that mixed these concerns:
 | Tool enablement | Workbench `chat.enabledTools` and localStorage; CLI `--tool` flags | A Workbench checkbox does not automatically affect CLI. |
 | Message contributors | Browser `window.zion.messages.registerContributor`; Runtime context providers | Headless Runs lose browser-only contributors. |
 | Plugin lifecycle | Workbench PluginLoader; Runtime Plugin Service v1 allowlist | Installing a Workbench plugin does not mean Runtime can use it. |
-| Session and Run state | Runtime SQLite plus Workbench projection state | Mostly migrated, but client-local projections still need clear ownership. |
+| Session and Run state | Runtime PostgreSQL plus Workbench projection state | Mostly migrated, but client-local projections still need clear ownership. |
 
 This causes user-visible confusion:
 
@@ -93,7 +93,7 @@ Runtime Host is the local or service-side control plane. It owns:
 - Runtime Plugin Service.
 - Tool Broker composition.
 - Device Broker and project/resource bindings.
-- SQLite persistence for Runs, Sessions, Scheduler, workbench documents, events,
+- PostgreSQL persistence for Runs, Sessions, Scheduler, workbench documents, events,
   receipts, and state.
 - Scheduler Worker.
 - Project Automation coordinator and background heartbeat.
@@ -782,7 +782,7 @@ The migration is correct when:
   subsequent Runs diverge without losing reasoning or tool context.
 - [x] Persist Runtime file Artifacts and ChangeSets at the Tool Broker boundary.
   Successful `write/edit/apply_patch` invocations receive deterministic artifact
-  IDs, SQLite stores the bounded change payload beside the durable invocation
+  IDs, PostgreSQL stores the bounded change payload beside the durable invocation
   receipt, and Run/Session artifact APIs feed the existing Workbench Changes
   panel after reconnect.
 - [x] Standardize Runtime tool presentation metadata. `tool.requested`,
@@ -819,7 +819,7 @@ The migration is correct when:
   (`sessionList`, `sessionGet`) backed by Runtime workbench-state.
 - [x] Move Session Manager write primitives into Runtime Host-backed atomic
   state operations: `sessionCreate`, `sessionUpdate`, and `sessionDelete` are
-  now Runtime v2 workspace-write tools backed by SQLite workbench-state updates
+  now Runtime v2 workspace-write tools backed by PostgreSQL workbench-state updates
   that keep document, metadata, tree, index, revisions, tombstones, and
   operation-id idempotency in one transaction.
 - [x] Expose Runtime-native `todoWrite` state through Runtime Host todo-list

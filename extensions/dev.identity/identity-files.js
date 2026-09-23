@@ -58,7 +58,7 @@ export async function ensureIdentityFiles(fileService, fileRoot, runContext = {}
   const files = Object.fromEntries((loaded.missing || []).map((key) => [
     key, { ...initial[key], create_only: true }
   ]));
-  if (!Object.keys(files).length) return loaded;
+  if (!Object.keys(files).length || (runContext.principal && runContext.policy?.preset === "read-only")) return loaded;
   await fileService.writeTextFiles({ fileRoot, files, runContext });
   // create_only may lose a race; use the stored content, not assumed defaults.
   const refreshed = await fileService.readTextFiles({

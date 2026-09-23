@@ -31,9 +31,9 @@ import {
 } from "../../device-connector/src/device-setup.mjs";
 import { createCliCredentialStore } from "./cli-credential-store.mjs";
 import {
-  loginWithOAuthDeviceFlow,
-  resolveOAuthDeviceCredential
+  loginWithOAuthDeviceFlow
 } from "./oauth-device-flow.mjs";
+import { manageAccountLogin, resolveRuntimeCliHeaders } from "./accounts/cli-account-auth.mjs";
 import {
   subscribeEventSource
 } from "../../../packages/runtime-client/src/sse.mjs";
@@ -63,7 +63,7 @@ Commands:
   task cancel <run-id>         Cancel a scheduled task Run
   profile list                 List configured Runtime endpoints
   profile show [name]          Show a sanitized Runtime endpoint profile
-  auth login [profile]         Authenticate an OAuth device-code profile
+  auth login [profile]         Sign in with an account or OAuth device-code profile
   auth status [profile]        Show sanitized credential status
   auth logout [profile]        Delete the profile credential
   device connect               Run this CLI as an outbound Device Tool Host
@@ -71,6 +71,7 @@ Commands:
 Options:
   --url <url>                  Runtime URL (default http://127.0.0.1:8766)
   --runtime-profile <name>     Local/cloud endpoint profile from CLI config
+  --account                   Use account login for --url without a profile
   --jsonl                      Emit stable JSON Lines records
   --raw-events                 Consume uncoalesced diagnostic Run events
   --session <id>              Attach a new Run to a Session
@@ -238,6 +239,9 @@ export function resolveRuntimeCliTarget({
     "--url",
     environment.ZION_RUNTIME_URL || profile?.url || "http://127.0.0.1:8766"
   );
+  if (profile?.auth && profile.url && new URL(baseUrl).origin !== new URL(profile.url).origin) {
+    throw new Error("Authenticated profile URL cannot be overridden with a different origin");
+  }
   const headers = {};
   if (profile?.auth?.type === "bearer" || profile?.auth?.type === "workload") {
     const envName = String(profile.auth.env || "").trim();
@@ -266,7 +270,7 @@ export function resolveRuntimeCliTarget({
     baseUrl,
     profileName: String(profileName || ""),
     headers,
-    auth: profile?.auth && typeof profile.auth === "object"
+    auth: argv.includes("--account") ? { type: "account" } : profile?.auth && typeof profile.auth === "object"
       ? { ...profile.auth }
       : null,
     configPath,
@@ -727,7 +731,8 @@ export async function runRuntimeCli({
       input,
       output,
       fetchImpl,
-      environment
+      environment,
+      credentialStore
     });
   }
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -775,6 +780,24 @@ export async function runRuntimeCli({
   if (command === "auth") {
     const action = positionals[0] || "status";
     const profileName = positionals[1] || target.profileName;
+    if (target.auth?.type === "account") {
+      const result = await manageAccountLogin({
+        action, baseUrl, credentialStore: credentialStore || createCliCredentialStore(),
+        fetchImpl, signal, sleep,
+        emit(event) {
+          if (jsonl) writeRecord(output, event);
+          else if (event.type === "auth.deviceCode") output.write(
+            `Open ${event.verificationUri}\nCode: ${event.userCode}\n`
+          );
+          else output.write(`Authenticated ${baseUrl}\n`);
+        }
+      });
+      if (action !== "login") {
+        if (jsonl) writeRecord(output, { type: `auth.${action}`, ...result });
+        else printHumanValue(output, result);
+      }
+      return result;
+    }
     if (!profileName || !target.auth || target.auth.type !== "device_code") {
       throw new Error(
         `Runtime CLI profile does not use OAuth device flow: ${profileName || "(none)"}`
@@ -866,20 +889,7 @@ export async function runRuntimeCli({
     return host;
   }
 
-  let requestHeaders = target.headers;
-  if (target.auth?.type === "device_code") {
-    const store = credentialStore || createCliCredentialStore();
-    const credential = await resolveOAuthDeviceCredential({
-      profileName: target.profileName,
-      auth: target.auth,
-      credentialStore: store,
-      fetchImpl
-    });
-    requestHeaders = {
-      ...requestHeaders,
-      authorization: `${credential.tokenType || "Bearer"} ${credential.accessToken}`
-    };
-  }
+  const requestHeaders = await resolveRuntimeCliHeaders(target, { credentialStore, fetchImpl });
   const client = createRuntimeControlClient({
     baseUrl,
     fetchImpl,

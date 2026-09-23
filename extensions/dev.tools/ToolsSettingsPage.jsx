@@ -25,7 +25,9 @@ export function ToolsSettingsPage({ getTools, setEnabledTools, openSwitcher }) {
     refresh();
     const subs = [
       window.zion?.state?.onDidChange?.("chat.tools", refresh),
-      window.zion?.state?.onDidChange?.("chat.enabledTools", refresh)
+      window.zion?.state?.onDidChange?.("chat.enabledTools", refresh),
+      window.zion?.state?.onDidChange?.("runtime.supportedToolNames", refresh),
+      window.zion?.state?.onDidChange?.("runtime.injectableToolNames", refresh)
     ].filter(Boolean);
     return () => {
       subs.forEach((sub) => {

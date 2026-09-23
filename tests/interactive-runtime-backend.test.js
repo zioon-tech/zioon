@@ -7,6 +7,7 @@ import {
   observeInteractiveRuntimeRun,
   persistInteractiveRuntimeProfileModel,
   prepareInteractiveRuntimeMessages,
+  previewInteractiveRuntimeRequest,
   readInteractiveRuntimeConfig,
   runtimeBackedContributorIds,
   resolveInteractiveRuntimeProfileModel,
@@ -22,6 +23,76 @@ async function collect(iterable) {
 }
 
 describe("interactive Runtime backend", () => {
+  it("sends Mock through the Runtime request preview endpoint", async () => {
+    const fetchImpl = vi.fn(async (url, init = {}) => {
+      const value = String(url);
+      if (value.endsWith("/v1/models")) {
+        return new globalThis.Response(JSON.stringify({
+          activeProfileId: "runtime-profile",
+          profiles: [{
+            id: "runtime-profile",
+            providerId: "test",
+            providerType: "openai",
+            model: "test-model",
+            label: "Runtime Model"
+          }]
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (value.endsWith("/v1/runs/preview") && init.method === "POST") {
+        const request = JSON.parse(init.body);
+        return new globalThis.Response(JSON.stringify({
+          preview: {
+            runId: "preview-1",
+            attemptId: "attempt-1",
+            turn: 1,
+            request: {
+              url: "https://model.test/v1/chat/completions",
+              providerId: "test",
+              providerType: "openai",
+              modelId: "test-model",
+              stream: true,
+              payload: {
+                model: "test-model",
+                messages: request.messages,
+                tools: [{ type: "function", function: { name: "read" } }]
+              }
+            },
+            contextFailures: []
+          }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`Unexpected Runtime request: ${value}`);
+    });
+
+    const preview = await previewInteractiveRuntimeRequest({
+      messages: [{ role: "user", content: "inspect" }],
+      tools: [{ function: { name: "read" } }],
+      selectedModel: { providerId: "test", modelId: "test-model" },
+      selectedModelConfig: {},
+      workbenchSessionId: "session-1",
+      baseUrl: "http://127.0.0.1:9876",
+      fetchImpl
+    });
+
+    expect(preview).toMatchObject({
+      runId: "preview-1",
+      request: {
+        modelId: "test-model",
+        payload: {
+          messages: [{ role: "user", content: "inspect" }]
+        }
+      }
+    });
+    const previewCall = fetchImpl.mock.calls.find(
+      ([url]) => String(url).endsWith("/v1/runs/preview")
+    );
+    expect(JSON.parse(previewCall[1].body)).toMatchObject({
+      interactionProfileId: "interactive.default",
+      sessionId: "session-1",
+      messages: [{ role: "user", content: "inspect" }]
+    });
+  });
+
   it("enables Runtime terminal context unless the Workbench toggle is off", () => {
     expect(includeTerminalContextForRuntime({
       get: vi.fn(() => undefined)
@@ -376,6 +447,20 @@ describe("interactive Runtime backend", () => {
         preset: "read-only"
       },
       unsupportedTools: []
+    });
+    expect(createInteractiveRuntimePolicy([
+      { function: { name: "webFetch" } },
+      { function: { name: "read" } },
+      { function: { name: "Bash" } }
+    ], {
+      supportedToolNames: ["webFetch", "read", "Bash"],
+      injectableToolNames: ["webFetch"]
+    })).toMatchObject({
+      policy: {
+        allowedTools: ["webFetch"],
+        preset: "read-only"
+      },
+      unsupportedTools: ["read", "Bash"]
     });
     expect(createInteractiveRuntimePolicy([
       { function: { name: "toolsManage" } }
@@ -1041,6 +1126,10 @@ describe("interactive Runtime backend", () => {
         url: "https://api.deepseek.com/chat/completions",
         modelName: "deepseek-v4-flash",
         _credentialConfigured: true,
+        supportsThinking: true,
+        supportsThinkingEffort: true,
+        thinkingMode: "on",
+        thinkingEffort: "high",
         preservedThinking: true,
         interleavedThinking: true
       })
@@ -1051,6 +1140,10 @@ describe("interactive Runtime backend", () => {
         id: "workbench.deepseek.deepseek-v4-flash",
         credentialRequired: true,
         capabilities: expect.objectContaining({
+          supportsThinking: true,
+          supportsThinkingEffort: true,
+          thinkingMode: "on",
+          thinkingEffort: "high",
           preservedThinking: true,
           interleavedThinking: true
         })
@@ -1080,7 +1173,13 @@ describe("interactive Runtime backend", () => {
             sourceModelId: "kimi-k2.5",
             providerType: "openai",
             model: "moonshot-v1-kimi-k2.5",
-            label: "Kimi K2.5"
+            label: "Kimi K2.5",
+            capabilities: {
+              supportsThinking: true,
+              supportsThinkingEffort: true,
+              thinkingMode: "on",
+              thinkingEffort: "high"
+            }
           }]
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
@@ -1094,7 +1193,11 @@ describe("interactive Runtime backend", () => {
       profileId: "workbench.user.dynamic.kimi-k2.5",
       providerId: "user.dynamic",
       modelId: "kimi-k2.5",
-      label: "Kimi K2.5"
+      label: "Kimi K2.5",
+      supportsThinking: true,
+      supportsThinkingEffort: true,
+      thinkingMode: "on",
+      thinkingEffort: "high"
     });
   });
 

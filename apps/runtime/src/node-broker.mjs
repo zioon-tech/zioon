@@ -22,6 +22,12 @@ function statusError(statusCode, message) {
   return error;
 }
 
+function mapMaybePromise(value, mapper) {
+  return value && typeof value.then === "function"
+    ? value.then(mapper)
+    : mapper(value);
+}
+
 function removeQueuedInvocation(node, invocationId) {
   node.commands = node.commands.filter((command) =>
     command.invocationId !== invocationId
@@ -97,11 +103,34 @@ export class NodeBroker {
     this.projectBindings = new Map();
     this.pending = new Map();
     this.receipts = new Map();
+    this.durableReceiptCount = 0;
     this.closed = false;
 
     const restored = this.stateStore?.loadState?.({
       receiptLimit: this.maxReceipts
     });
+    this.initialization = restored && typeof restored.then === "function"
+      ? restored.then((state) => this.restoreState(state))
+      : Promise.resolve();
+    if (!restored || typeof restored.then !== "function") {
+      this.restoreState(restored);
+    }
+    const receiptCount = this.stateStore?.countReceipts?.();
+    if (receiptCount && typeof receiptCount.then === "function") {
+      this.initialization = this.initialization.then(async () => {
+        this.durableReceiptCount = Number(await receiptCount) || 0;
+      });
+    } else if (receiptCount != null) {
+      this.durableReceiptCount = Number(receiptCount) || 0;
+    }
+  }
+
+  async initialize() {
+    await this.initialization;
+    return this;
+  }
+
+  restoreState(restored) {
     for (const item of restored?.nodes || []) {
       const registration = normalizeNodeRegistration(item.registration);
       this.nodes.set(registration.nodeId, {
@@ -147,53 +176,56 @@ export class NodeBroker {
     };
     const observedAt = this.now();
 
-    this.stateStore?.registerNode?.(registration, observedAt);
-
-    if (reconnected) {
-      this.resolveWaiter(node, null);
-      for (const pending of this.pending.values()) {
-        if (
-          pending.nodeId === registration.nodeId
-          && previous.registration.instanceId !== registration.instanceId
-          && (
-            pending.referenceBound
-            || !["read", "glob", "grep", "tree"].includes(pending.command.invocation.toolCall.name)
-          )
-        ) {
-          this.pending.delete(pending.invocationId);
-          removeQueuedInvocation(node, pending.invocationId);
-          pending.cancellation.dispose();
-          pending.lease.dispose();
-          pending.reject(statusError(409,
-            "Node instance changed; refresh terminalInventory. The previous operation may have executed; do not blindly retry."
-          ));
-          continue;
-        }
-        if (
-          pending.nodeId === registration.nodeId
-          && pending.state === "delivered"
-        ) {
-          pending.state = "queued";
-          removeQueuedInvocation(node, pending.invocationId);
-          node.commands.push(pending.command);
+    const finish = () => {
+      if (reconnected) {
+        this.resolveWaiter(node, null);
+        for (const pending of this.pending.values()) {
+          if (
+            pending.nodeId === registration.nodeId
+            && previous.registration.instanceId !== registration.instanceId
+            && (
+              pending.referenceBound
+              || !["read", "glob", "grep", "tree"].includes(pending.command.invocation.toolCall.name)
+            )
+          ) {
+            this.pending.delete(pending.invocationId);
+            removeQueuedInvocation(node, pending.invocationId);
+            pending.cancellation.dispose();
+            pending.lease.dispose();
+            pending.reject(statusError(409,
+              "Node instance changed; refresh terminalInventory. The previous operation may have executed; do not blindly retry."
+            ));
+            continue;
+          }
+          if (
+            pending.nodeId === registration.nodeId
+            && pending.state === "delivered"
+          ) {
+            pending.state = "queued";
+            removeQueuedInvocation(node, pending.invocationId);
+            node.commands.push(pending.command);
+          }
         }
       }
-    }
 
-    node.registration = registration;
-    node.lastSeenAt = observedAt;
-    node.persistedLastSeenAt = observedAt;
-    node.connected = true;
-    this.nodes.set(registration.nodeId, node);
-    this.syncProjectBindings(registration, observedAt);
-    this.flushWaiter(node);
-    return this.nodeSummary(node);
+      node.registration = registration;
+      node.lastSeenAt = observedAt;
+      node.persistedLastSeenAt = observedAt;
+      node.connected = true;
+      this.nodes.set(registration.nodeId, node);
+      this.syncProjectBindings(registration, observedAt);
+      this.flushWaiter(node);
+      return this.nodeSummary(node);
+    };
+    return mapMaybePromise(
+      this.stateStore?.registerNode?.(registration, observedAt),
+      finish
+    );
   }
 
   heartbeat(nodeId, instanceId) {
     const node = this.requireConnection(nodeId, instanceId);
-    this.observeNode(node);
-    return this.nodeSummary(node);
+    return mapMaybePromise(this.observeNode(node), () => this.nodeSummary(node));
   }
 
   disconnectNode(nodeId, instanceId) {
@@ -214,7 +246,7 @@ export class NodeBroker {
 
   async nextCommand(nodeId, instanceId, waitMs = 0) {
     const node = this.requireConnection(nodeId, instanceId);
-    this.observeNode(node);
+    await this.observeNode(node);
     const immediate = this.takeCommand(node);
     if (immediate || waitMs <= 0) return immediate;
 
@@ -230,43 +262,52 @@ export class NodeBroker {
 
   completeInvocation(nodeId, instanceId, invocationId, input) {
     this.requireConnection(nodeId, instanceId);
-    const existing = this.findReceipt(invocationId);
-    if (existing) {
-      return { accepted: true, duplicate: true, result: existing };
-    }
+    return mapMaybePromise(this.findReceipt(invocationId), (existing) => {
+      if (existing) {
+        return { accepted: true, duplicate: true, result: existing };
+      }
 
-    const pending = this.pending.get(invocationId);
-    if (!pending || pending.nodeId !== nodeId) {
-      throw statusError(404, `Invocation not found: ${invocationId}`);
-    }
+      const pending = this.pending.get(invocationId);
+      if (!pending || pending.nodeId !== nodeId) {
+        throw statusError(404, `Invocation not found: ${invocationId}`);
+      }
 
-    let result;
-    try {
-      result = scopeServiceResult(
-        normalizeToolResult(input),
-        pending.command.invocation,
-        { node: pending.node, resource: pending.resource }
-      );
-    } catch (error) {
-      result = { ok: false, content: "Invalid Device resource response", error: String(error?.message || error) };
-    }
-    let duplicate = false;
-    if (this.stateStore?.saveReceipt) {
-      const receipt = this.stateStore.saveReceipt({
-        invocationId,
-        nodeId,
-        result,
-        completedAt: this.now()
-      });
-      result = normalizeToolResult(receipt.result);
-      duplicate = receipt.duplicate === true;
-    }
-    pending.cancellation.dispose();
-    pending.lease.dispose();
-    this.pending.delete(invocationId);
-    this.rememberReceipt(invocationId, result);
-    pending.resolve(result);
-    return { accepted: true, duplicate, result };
+      let result;
+      try {
+        result = scopeServiceResult(
+          normalizeToolResult(input),
+          pending.command.invocation,
+          { node: pending.node, resource: pending.resource }
+        );
+      } catch (error) {
+        result = {
+          ok: false,
+          content: "Invalid Device resource response",
+          error: String(error?.message || error)
+        };
+      }
+      const finish = (receipt = null) => {
+        const persistedResult = receipt
+          ? normalizeToolResult(receipt.result)
+          : result;
+        const duplicate = receipt?.duplicate === true;
+        if (receipt && !duplicate) this.durableReceiptCount += 1;
+        pending.cancellation.dispose();
+        pending.lease.dispose();
+        this.pending.delete(invocationId);
+        this.rememberReceipt(invocationId, persistedResult);
+        pending.resolve(persistedResult);
+        return { accepted: true, duplicate, result: persistedResult };
+      };
+      return this.stateStore?.saveReceipt
+        ? mapMaybePromise(this.stateStore.saveReceipt({
+            invocationId,
+            nodeId,
+            result,
+            completedAt: this.now()
+          }), finish)
+        : finish();
+    });
   }
 
   async listTools(request = {}) {
@@ -330,7 +371,8 @@ export class NodeBroker {
   async invoke(invocation, signal) {
     if (this.closed) throw new Error("Node Broker is closed");
     signal.throwIfCancelled();
-    const receipt = this.findReceipt(invocation.invocationId);
+    let receipt = this.findReceipt(invocation.invocationId);
+    if (receipt && typeof receipt.then === "function") receipt = await receipt;
     if (receipt) return receipt;
     const duplicate = this.pending.get(invocation.invocationId);
     if (duplicate) return await duplicate.completion;
@@ -474,8 +516,9 @@ export class NodeBroker {
         ),
       pendingInvocations: this.pending.size,
       receiptCount: this.receipts.size,
-      durableReceiptCount:
-        this.stateStore?.countReceipts?.() ?? this.receipts.size
+      durableReceiptCount: this.stateStore
+        ? this.durableReceiptCount
+        : this.receipts.size
     };
   }
 
@@ -612,9 +655,14 @@ export class NodeBroker {
       this.stateStore?.touchNode
       && observedAt - node.persistedLastSeenAt >= this.presencePersistenceMs
     ) {
-      this.stateStore.touchNode(node.registration.nodeId, observedAt);
-      node.persistedLastSeenAt = observedAt;
+      return mapMaybePromise(
+        this.stateStore.touchNode(node.registration.nodeId, observedAt),
+        () => {
+          node.persistedLastSeenAt = observedAt;
+        }
+      );
     }
+    return null;
   }
 
   nodeSummary(node) {
@@ -678,10 +726,12 @@ export class NodeBroker {
     const cached = this.receipts.get(invocationId);
     if (cached) return cached;
     const persisted = this.stateStore?.getReceipt?.(invocationId);
-    if (!persisted) return null;
-    const result = normalizeToolResult(persisted.result);
-    this.rememberReceipt(invocationId, result);
-    return result;
+    return mapMaybePromise(persisted, (receipt) => {
+      if (!receipt) return null;
+      const result = normalizeToolResult(receipt.result);
+      this.rememberReceipt(invocationId, result);
+      return result;
+    });
   }
 
   syncProjectBindings(registration, observedAt) {

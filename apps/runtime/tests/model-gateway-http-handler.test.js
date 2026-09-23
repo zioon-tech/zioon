@@ -1,17 +1,25 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAgentExecutor } from "../../../packages/runtime/src/index";
 import { createModelGatewayHttpHandler } from "../src/model-gateway-http-handler.mjs";
+import { PostgresRunStore } from "../src/postgres-run-store.mjs";
 import { createRuntimeServer } from "../src/server.mjs";
-import { SqliteRunStore } from "../src/sqlite-run-store.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 const resources = [];
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("model_gateway");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 async function startServer(handler) {
-  const directory = mkdtempSync(join(tmpdir(), "zion-model-gateway-"));
-  const store = new SqliteRunStore(join(directory, "runtime.sqlite3"));
+  const store = new PostgresRunStore(database.pool, {
+    spaceId: database.nextSpaceId()
+  });
   const executor = createAgentExecutor({
     engine: {
       id: "unused",
@@ -36,15 +44,14 @@ async function startServer(handler) {
     serviceHttpHandlers: [handler]
   });
   const address = await server.start();
-  resources.push({ directory, store, server });
+  resources.push({ store, server });
   return address.url;
 }
 
 afterEach(async () => {
   for (const resource of resources.splice(0)) {
     await resource.server.close();
-    resource.store.close();
-    rmSync(resource.directory, { recursive: true, force: true });
+    await resource.store.close();
   }
 });
 

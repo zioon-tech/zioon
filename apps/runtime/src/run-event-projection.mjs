@@ -48,6 +48,14 @@ function jsonSize(value) {
   }
 }
 
+function toolName(value) {
+  const tool = value && typeof value === "object" ? value : {};
+  const fn = tool.function && typeof tool.function === "object"
+    ? tool.function
+    : {};
+  return String(fn.name || tool.name || "").trim();
+}
+
 function resultText(value) {
   if (typeof value === "string") return value;
   try {
@@ -62,6 +70,7 @@ function projectedSemanticEvent(event) {
     ? event.data
     : {};
   if (event.type === "model.request") {
+    if (!data.payload || typeof data.payload !== "object") return event;
     const payload = data.payload && typeof data.payload === "object"
       ? data.payload
       : {};
@@ -76,6 +85,11 @@ function projectedSemanticEvent(event) {
         toolCount: Array.isArray(payload.tools)
           ? payload.tools.length
           : Number(data.toolCount || 0),
+        toolNames: Array.from(new Set(
+          (Array.isArray(payload.tools) ? payload.tools : [])
+            .map(toolName)
+            .filter(Boolean)
+        )),
         payloadBytes: jsonSize(payload),
         detailAvailable: true,
         rawEventSequence: event.sequence
@@ -119,7 +133,12 @@ function projectedSemanticEvent(event) {
 
 function projectedDelta(pending) {
   const { first, last, delta, count, reasoningMode } = pending;
-  const projection = projectionMetadata(first, last, count, delta.length);
+  const existing = last.data?.projection;
+  const projection = existing
+    && Number(existing.sourceSequenceStart) > 0
+    && Number(existing.sourceSequenceEnd) > 0
+    ? { ...existing }
+    : projectionMetadata(first, last, count, delta.length);
   if (first.type === "reasoning.delta" && reasoningMode === "none") {
     return {
       ...last,

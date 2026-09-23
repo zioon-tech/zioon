@@ -861,7 +861,18 @@ export function createSessionsSidebarViewManager(opts) {
       const wantSplit = !!tagSplitHeaderSink && tagSplitEnabled && bodyWidth >= TAG_SPLIT_BODY_MIN;
       const mode = wantSplit ? "split" : "stacked";
       publishTagSplitHeader({ visible: wantSplit, width: tagColumnWidth });
-      if (mode === appliedSplitMode) return;
+      const layoutIsValid = wantSplit
+        ? splitRow.parentElement === container
+          && tagColumn.parentElement === splitRow
+          && rightColumn.parentElement === splitRow
+          && listWrap.parentElement === rightColumn
+          && calendarHost.parentElement === tagColumn
+        : splitRow.parentElement !== container
+          && listHeader.parentElement === container
+          && listWrap.parentElement === container
+          && tagsHost.parentElement === container
+          && calendarHost.parentElement === container;
+      if (mode === appliedSplitMode && layoutIsValid) return;
       appliedSplitMode = mode;
       if (wantSplit) {
         tagsHost.style.display = "none";
@@ -877,6 +888,7 @@ export function createSessionsSidebarViewManager(opts) {
         if (splitRow.parentElement === container) container.removeChild(splitRow);
         calendarHost.classList.remove("is-in-tag-column");
         tagsHost.style.display = "";
+        container.appendChild(listHeader);
         container.appendChild(listWrap);
         container.appendChild(tagsHost);
         container.appendChild(calendarHost);
@@ -921,6 +933,7 @@ export function createSessionsSidebarViewManager(opts) {
       } catch {}
     };
 
+    container.appendChild(listHeader);
     container.appendChild(listWrap);
     container.appendChild(tagsHost);
     container.appendChild(calendarHost);
@@ -944,6 +957,7 @@ export function createSessionsSidebarViewManager(opts) {
       getViewMode: () => sessionViewMode,
       getFlatSessionResults: () => Boolean(selectedTag),
       getSessionTagRecords,
+      rootDropHost: listHeader,
       getQuery: () => "",
       getSort: () => "updated",
       getSessionFilter: () => {

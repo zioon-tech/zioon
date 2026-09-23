@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   CancellationController,
   createAgentExecutor,
@@ -8,7 +8,10 @@ import {
 import { RuntimeAccessControl } from "../../runtime/src/access-control.mjs";
 import { NodeBroker } from "../../runtime/src/node-broker.mjs";
 import { createNodeHttpHandler } from "../../runtime/src/node-http-handler.mjs";
-import { SqliteAccessStore } from "../../runtime/src/sqlite-access-store.mjs";
+import { PostgresAccessStore } from "../../runtime/src/postgres-access-store.mjs";
+import {
+  createPostgresTestDatabase
+} from "../../runtime/tests/helpers/postgres-test-database.mjs";
 import {
   DeviceConnector,
   exchangeDevicePairing
@@ -18,6 +21,15 @@ import {
 } from "../src/device-service-host.mjs";
 
 const resources = [];
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("device_connector");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 function registration(instanceId = "instance:connector") {
   return {
@@ -121,7 +133,7 @@ afterEach(async () => {
     await resource.connector.stop();
     resource.broker.close();
     await new Promise((resolve) => resource.server.close(resolve));
-    resource.accessStore?.close();
+    await resource.accessStore?.close();
   }
 });
 
@@ -217,7 +229,9 @@ describe("DeviceConnector", () => {
 
   it("pairs a Resource and completes an invocation with its bound credential", async () => {
     const broker = new NodeBroker();
-    const accessStore = new SqliteAccessStore(":memory:");
+    const accessStore = new PostgresAccessStore(database.pool, {
+      spaceId: database.nextSpaceId()
+    });
     const access = new RuntimeAccessControl({ store: accessStore });
     const handler = createNodeHttpHandler({
       broker,
@@ -238,7 +252,7 @@ describe("DeviceConnector", () => {
     });
     const address = server.address();
     const runtimeUrl = `http://127.0.0.1:${address.port}`;
-    const pairing = accessStore.createPairing({
+    const pairing = await accessStore.createPairing({
       kind: "resource",
       delivery: "bearer"
     });
@@ -276,7 +290,9 @@ describe("DeviceConnector", () => {
 
   it("stops polling when the Resource credential is revoked", async () => {
     const broker = new NodeBroker();
-    const accessStore = new SqliteAccessStore(":memory:");
+    const accessStore = new PostgresAccessStore(database.pool, {
+      spaceId: database.nextSpaceId()
+    });
     const access = new RuntimeAccessControl({ store: accessStore });
     const handler = createNodeHttpHandler({
       broker,
@@ -297,11 +313,11 @@ describe("DeviceConnector", () => {
     });
     const address = server.address();
     const runtimeUrl = `http://127.0.0.1:${address.port}`;
-    const pairing = accessStore.createPairing({
+    const pairing = await accessStore.createPairing({
       kind: "resource",
       delivery: "bearer"
     });
-    const paired = accessStore.exchangePairing({
+    const paired = await accessStore.exchangePairing({
       userCode: pairing.userCode,
       deviceId: "node:connector"
     });
@@ -318,7 +334,7 @@ describe("DeviceConnector", () => {
     resources.push({ broker, connector, server, accessStore });
     await connector.start();
 
-    accessStore.revokeDevice("node:connector");
+    await accessStore.revokeDevice("node:connector");
 
     await waitFor(
       () => connector.snapshot().state === "unauthorized",

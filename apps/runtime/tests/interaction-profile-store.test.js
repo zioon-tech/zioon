@@ -31,11 +31,16 @@ describe("InteractionProfile Context Providers", () => {
   it("seeds explicit provider ids for interactive and scheduled defaults", () => {
     const interactive = createDefaultInteractionProfile({
       modelProfileId: "model",
-      availableToolNames: ["read", "write", "Bash", "memoryList", "modelsManage"]
+      availableToolNames: [
+        "read", "write", "Bash", "memoryList", "modelsManage",
+        "observabilityQuery", "observabilityRawRead"
+      ]
     });
     expect(interactive.policy).toMatchObject({
       preset: "read-only",
-      allowedTools: ["read", "memoryList"]
+      allowedTools: [
+        "read", "memoryList", "observabilityQuery", "observabilityRawRead"
+      ]
     });
     expect(interactive.contextProviders).toEqual({
       enabled: [

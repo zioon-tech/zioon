@@ -103,4 +103,39 @@ describe("logical Tool telemetry", () => {
     expect(spans.slice(0, 3).every((span) => span.parentSpanContext?.spanId === root.spanContext().spanId)).toBe(true);
     expect(delegated).toHaveBeenCalledOnce();
   });
+
+  it("records stable failure codes on tool.completed events", async () => {
+    const runs = new MemoryRunStore();
+    const engine = {
+      id: "test.failure-code",
+      async *streamTurn(request) {
+        if (request.messages.some((message) => message.role === "tool")) {
+          yield { type: "message.delta", delta: "done" };
+          return;
+        }
+        yield {
+          type: "tool.call",
+          call: { id: "call-1", name: "webFetch", arguments: { url: "https://example.com" } }
+        };
+      }
+    };
+    const tools = {
+      listTools: async () => [{ name: "webFetch", description: "Fetch URL", inputSchema: {} }],
+      invoke: vi.fn(async () => ({
+        ok: false,
+        content: "webFetch proxy attempts failed: r.jinaai.cn: HTTP 403",
+        error: "webFetch proxy attempts failed: r.jinaai.cn: HTTP 403",
+        failureCode: "http_4xx"
+      }))
+    };
+    const executor = createAgentExecutor({ engine, tools, runs });
+    const handle = executor.execute({ prompt: "check", policy: { allowedTools: ["webFetch"] } });
+
+    for await (const event of handle.events) { /* drain */ }
+    await expect(handle.completion).resolves.toMatchObject({ status: "completed" });
+
+    const events = await runs.getEvents(handle.runId);
+    expect(events.find((event) => event.type === "tool.completed")?.data)
+      .toMatchObject({ name: "webFetch", ok: false, failureCode: "http_4xx" });
+  });
 });

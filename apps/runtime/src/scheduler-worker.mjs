@@ -52,8 +52,8 @@ export class RuntimeSchedulerWorker {
   }
 
   async claim() {
-    this.scheduler.tick();
-    return this.scheduler.claim({
+    await this.scheduler.tick();
+    return await this.scheduler.claim({
       workerId: this.workerId,
       workerKind: "runtime",
       leaseSeconds: this.leaseSeconds,
@@ -71,14 +71,14 @@ export class RuntimeSchedulerWorker {
   }
 
   async appendEvent(runId, event) {
-    this.scheduler.appendEvent(runId, this.workerId, {
+    await this.scheduler.appendEvent(runId, this.workerId, {
       ...event,
       ts: event.timestamp ?? event.ts ?? Date.now()
     });
   }
 
   async complete(runId, result) {
-    return this.scheduler.complete(runId, this.workerId, {
+    return await this.scheduler.complete(runId, this.workerId, {
       status: TERMINAL_STATUS[result.status] || "failed",
       sessionId: result.sessionId || this.activeSessionId || null,
       chatRunId: result.runId || null,
@@ -104,6 +104,7 @@ export class RuntimeSchedulerWorker {
         ? { model: { profileId: String(task.modelProfileId) } }
         : {}),
       projectId: task.projectId || undefined,
+      principal: task.executionPrincipal,
       ...(task.nodeId ? { target: { nodeId: String(task.nodeId) } } : {}),
       policy: task.capability || { preset: "read-only" },
       timeoutMs: Math.max(10, Number(task.timeoutSeconds) || 300) * 1000,
@@ -151,7 +152,7 @@ export class RuntimeSchedulerWorker {
     this.activeHandle = handle;
     this.activeSchedulerRunId = claimedRun.id;
     if (sessionId && this.scheduler?.linkSession) {
-      this.scheduler.linkSession(claimedRun.id, this.workerId, {
+      await this.scheduler.linkSession(claimedRun.id, this.workerId, {
         sessionId,
         chatRunId: handle.runId
       });
@@ -176,7 +177,9 @@ export class RuntimeSchedulerWorker {
     };
     const forwarding = (async () => {
       for await (const event of handle.events) {
-        if (event.type === "message.delta") continue;
+        if (event.type === "message.delta" || event.type === "reasoning.delta") {
+          continue;
+        }
         if (event.type === "tool.requested") {
           toolOutcomes.requested += 1;
         }
@@ -246,6 +249,7 @@ export class RuntimeSchedulerWorker {
       runId: claimedRun.id,
       attemptId: `scheduler:${claimedRun.id}`,
       projectId: task.projectId || undefined,
+      principal: task.executionPrincipal,
       ...(task.nodeId ? { target: { nodeId: String(task.nodeId) } } : {}),
       policy: task.capability || { preset: "trusted-automation" },
       toolCall: {

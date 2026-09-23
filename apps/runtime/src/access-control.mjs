@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { URL } from "node:url";
 
 export const RUNTIME_SESSION_COOKIE = "__Host-zion_session";
+export { bearerToken, cookieValue, headerValue, readJson, json, publicDevice };
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 const LOOPBACK_HOSTS = new Set([
@@ -15,6 +16,12 @@ function statusError(statusCode, message) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+function mapMaybePromise(value, mapper) {
+  return value && typeof value.then === "function"
+    ? value.then(mapper)
+    : mapper(value);
 }
 
 function headerValue(headers, name) {
@@ -203,7 +210,7 @@ export class RuntimeAccessControl {
     response.setHeader(
       "access-control-allow-headers",
       "content-type, authorization, last-event-id, x-zion-client, "
-      + "x-zion-workbench-protocol"
+      + "x-zion-file-name, x-zion-workbench-protocol"
     );
     response.setHeader("access-control-allow-credentials", "true");
     response.setHeader("vary", "Origin");
@@ -215,12 +222,12 @@ export class RuntimeAccessControl {
     const cookie = cookieValue(headers, RUNTIME_SESSION_COOKIE);
     const credential = bearer || cookie;
     if (!credential) return null;
-    const authenticated = this.store.authenticate(credential);
-    if (!authenticated) return null;
-    return {
-      ...authenticated,
-      source: bearer ? "bearer" : "cookie"
-    };
+    return mapMaybePromise(this.store.authenticate(credential), (authenticated) =>
+      authenticated ? {
+        ...authenticated,
+        source: bearer ? "bearer" : "cookie"
+      } : null
+    );
   }
 
   authenticateRequest(request) {
@@ -240,20 +247,21 @@ export class RuntimeAccessControl {
   }
 
   authorizeRuntimeRequest(request) {
-    const principal = this.authenticateRequest(request);
-    const method = String(request?.method || "GET").toUpperCase();
-    const scope = ["GET", "HEAD"].includes(method)
-      ? "runtime.read"
-      : "runtime.write";
-    this.requireScope(principal, scope);
-    if (
-      principal.source === "cookie"
-      && !["GET", "HEAD", "OPTIONS"].includes(method)
-      && !this.originAllowed(headerValue(request.headers, "origin"))
-    ) {
-      throw statusError(403, "Authenticated browser request has an invalid Origin");
-    }
-    return principal;
+    return mapMaybePromise(this.authenticateRequest(request), (principal) => {
+      const method = String(request?.method || "GET").toUpperCase();
+      const scope = ["GET", "HEAD"].includes(method)
+        ? "runtime.read"
+        : "runtime.write";
+      this.requireScope(principal, scope);
+      if (
+        principal.source === "cookie"
+        && !["GET", "HEAD", "OPTIONS"].includes(method)
+        && !this.originAllowed(headerValue(request.headers, "origin"))
+      ) {
+        throw statusError(403, "Authenticated browser request has an invalid Origin");
+      }
+      return principal;
+    });
   }
 
   authorizeDeviceService(request, route = {}) {
@@ -268,38 +276,46 @@ export class RuntimeAccessControl {
   }
 
   authenticateCollaboration({ headers, token }) {
-    const principal = this.authenticateHeaders(headers, token);
-    this.requireScope(principal, "collaboration.write");
-    return { principal };
+    return mapMaybePromise(this.authenticateHeaders(headers, token), (principal) => {
+      this.requireScope(principal, "collaboration.write");
+      return { principal };
+    });
   }
 
   reauthorize(principal, scope) {
     this.requireScope(principal, scope);
-    if (!this.store.isCredentialActive?.(
-      principal.credentialId,
-      principal.device.deviceId
-    )) {
-      throw statusError(401, "Credential is no longer active");
-    }
-    return principal;
+    return mapMaybePromise(
+      this.store.isCredentialActive?.(
+        principal.credentialId,
+        principal.device.deviceId
+      ),
+      (active) => {
+        if (!active) throw statusError(401, "Credential is no longer active");
+        return principal;
+      }
+    );
   }
 
   authorizeNode({ request, nodeId = "", operation = "connect" }) {
-    const principal = this.authenticateHeaders(request?.headers);
-    if (
-      operation === "inspect"
-      && this.hasScope(principal, "device.manage")
-    ) {
-      return principal;
-    }
-    this.requireScope(principal, "node.connect");
-    if (
-      principal.device.kind !== "resource"
-      || principal.device.deviceId !== String(nodeId || "")
-    ) {
-      throw statusError(403, "Resource credential is not bound to this Node");
-    }
-    return principal;
+    return mapMaybePromise(
+      this.authenticateHeaders(request?.headers),
+      (principal) => {
+        if (
+          operation === "inspect"
+          && this.hasScope(principal, "device.manage")
+        ) {
+          return principal;
+        }
+        this.requireScope(principal, "node.connect");
+        if (
+          principal.device.kind !== "resource"
+          || principal.device.deviceId !== String(nodeId || "")
+        ) {
+          throw statusError(403, "Resource credential is not bound to this Node");
+        }
+        return principal;
+      }
+    );
   }
 
   checkPairingRate(request) {
@@ -339,7 +355,7 @@ export class RuntimeAccessControl {
       if (request.method === "POST" && url.pathname === "/v1/access/pair") {
         this.checkPairingRate(request);
         const body = await readJson(request);
-        const result = this.store.exchangePairing({
+        const result = await this.store.exchangePairing({
           pairingId: body.pairingId,
           secret: body.secret,
           userCode: body.userCode,
@@ -365,7 +381,7 @@ export class RuntimeAccessControl {
       }
 
       if (request.method === "GET" && url.pathname === "/v1/access/session") {
-        const principal = this.authenticateRequest(request);
+        const principal = await this.authenticateRequest(request);
         this.requireScope(principal, "runtime.read");
         json(response, 200, {
           authenticated: true,
@@ -376,7 +392,7 @@ export class RuntimeAccessControl {
       }
 
       if (request.method === "GET" && url.pathname === "/v1/access/authorize/observability") {
-        const principal = this.authenticateRequest(request);
+        const principal = await this.authenticateRequest(request);
         this.requireScope(principal, "device.manage");
         response.writeHead(204, { "cache-control": "no-store" });
         response.end();
@@ -384,14 +400,14 @@ export class RuntimeAccessControl {
       }
 
       if (request.method === "POST" && url.pathname === "/v1/access/logout") {
-        const principal = this.authenticateRequest(request);
+        const principal = await this.authenticateRequest(request);
         if (principal?.source === "cookie") {
           const origin = headerValue(request.headers, "origin");
           if (!this.originAllowed(origin)) {
             throw statusError(403, "Authenticated browser request has an invalid Origin");
           }
         }
-        if (principal) this.store.revokeDevice(principal.device.deviceId);
+        if (principal) await this.store.revokeDevice(principal.device.deviceId);
         json(response, 200, { loggedOut: true }, {
           "set-cookie": clearCookieHeader()
         });
@@ -399,7 +415,7 @@ export class RuntimeAccessControl {
       }
 
       if (request.method === "POST" && url.pathname === "/v1/access/pairings") {
-        const principal = this.authenticateRequest(request);
+        const principal = await this.authenticateRequest(request);
         this.requireScope(principal, "pairing.manage");
         if (
           principal.source === "cookie"
@@ -408,7 +424,7 @@ export class RuntimeAccessControl {
           throw statusError(403, "Authenticated browser request has an invalid Origin");
         }
         const body = await readJson(request);
-        const pairing = this.store.createPairing(body);
+        const pairing = await this.store.createPairing(body);
         json(response, 201, {
           pairingId: pairing.pairingId,
           secret: pairing.secret,
@@ -423,17 +439,17 @@ export class RuntimeAccessControl {
       }
 
       if (request.method === "GET" && url.pathname === "/v1/access/devices") {
-        const principal = this.authenticateRequest(request);
+        const principal = await this.authenticateRequest(request);
         this.requireScope(principal, "device.manage");
         json(response, 200, {
-          devices: this.store.listDevices().map(publicDevice)
+          devices: (await this.store.listDevices()).map(publicDevice)
         });
         return true;
       }
 
       const revokeDeviceId = pairingPath(url.pathname);
       if (request.method === "POST" && revokeDeviceId) {
-        const principal = this.authenticateRequest(request);
+        const principal = await this.authenticateRequest(request);
         this.requireScope(principal, "device.manage");
         if (
           principal.source === "cookie"
@@ -441,7 +457,7 @@ export class RuntimeAccessControl {
         ) {
           throw statusError(403, "Authenticated browser request has an invalid Origin");
         }
-        const revoked = this.store.revokeDevice(revokeDeviceId);
+        const revoked = await this.store.revokeDevice(revokeDeviceId);
         if (!revoked) throw statusError(404, "Device not found");
         json(response, 200, { revoked: true, deviceId: revokeDeviceId });
         return true;

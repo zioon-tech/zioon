@@ -32,6 +32,7 @@ function includesOption(url, name, fallback = false) {
 
 export function createObservabilityHttpHandler({
   service,
+  projection = null,
   canViewExternalTrace = () => false
 } = {}) {
   if (!service?.diagnoseRun || !service?.status) {
@@ -42,7 +43,19 @@ export function createObservabilityHttpHandler({
       request.method === "GET"
       && url.pathname === "/v1/observability/status"
     ) {
-      json(response, 200, await service.status());
+      json(response, 200, {
+        ...await service.status(),
+        ...(projection ? { projection: await projection.status() } : {})
+      });
+      return true;
+    }
+    if (
+      request.method === "GET"
+      && ["/v1/observability/projection", "/v1/observability/manifest"]
+        .includes(url.pathname)
+      && projection
+    ) {
+      json(response, 200, await projection.status());
       return true;
     }
 
@@ -51,7 +64,7 @@ export function createObservabilityHttpHandler({
     const diagnostic = await service.diagnoseRun(runId, {
       includeStages: includesOption(url, "stages", false),
       includeFindings: includesOption(url, "findings", false),
-      includeExternalUrl: canViewExternalTrace(request.zionPrincipal)
+      includeExternalUrl: await canViewExternalTrace(request.zionPrincipal)
     });
     if (!diagnostic) {
       json(response, 404, { error: "Run not found" });

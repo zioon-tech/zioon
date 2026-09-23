@@ -259,9 +259,26 @@ export async function projectRunEventToSession(
       }
     }
     const detailData = detailEvent.data || {};
+    const summaryOnly = Number(detailData.summaryVersion) === 1
+      && !detailData.payload;
     const rawPayload = detailData.payload && typeof detailData.payload === "object"
       ? detailData.payload
-      : {};
+      : summaryOnly
+        ? {
+            model: String(detailData.modelId || ""),
+            ...(detailData.config && typeof detailData.config === "object"
+              ? detailData.config
+              : {}),
+            _zionSummary: {
+              messageCount: Number(detailData.messageCount || 0),
+              toolCount: Number(detailData.toolCount || 0),
+              payloadBytes: Number(detailData.payloadBytes || 0),
+              payloadHash: String(detailData.payloadHash || ""),
+              messagesHash: String(detailData.messagesHash || ""),
+              toolsHash: String(detailData.toolsHash || "")
+            }
+          }
+        : {};
     const requestPayload = {
       id: String(
         event.eventId
@@ -316,6 +333,7 @@ export async function projectRunEventToSession(
       toolCount: Array.isArray(rawPayload.tools)
         ? rawPayload.tools.length
         : Number(event.data?.toolCount || 0),
+      ...(summaryOnly ? { summaryOnly: true } : {}),
       payload: rawPayload
     };
     registerLlmRequestPayload(zion, requestPayload);

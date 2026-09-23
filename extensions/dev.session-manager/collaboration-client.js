@@ -358,6 +358,7 @@ export function createSessionCollaborationManager({
           || previous.followCycleId
           || runId
         ),
+        plainText: records.get(sessionId)?.ready === true,
         projectionSequence: Math.max(
           Number(previous.projectionSequence || 0),
           Number(
@@ -579,15 +580,7 @@ export function createSessionCollaborationManager({
       globalThis.clearTimeout(timeout);
       const remoteText = record.text.toString();
       const localText = String(editor.getValue?.() || "");
-      const localSnapshot = zion?.state?.get?.(`sessions.doc.${sessionId}`);
-      if (
-        !remoteText
-        && localText
-        && typeof localSnapshot === "string"
-        && localSnapshot === localText
-      ) {
-        record.text.insert(0, localText);
-      } else if (remoteText !== localText) {
+      if (remoteText !== localText) {
         editor.setValue?.(remoteText, { source: "collaboration-hydration" });
       }
       try { view.dom.dataset.zionCollaborationBound = "true"; } catch {}

@@ -24,7 +24,7 @@ function createRepo({ onLoad, onPersist, state, warnStorageIssue = vi.fn() }) {
 }
 
 describe("session storage durability", () => {
-  it("marks a document saved only after SQLite acknowledges the commit", async () => {
+  it("marks a document saved only after durable storage acknowledges the commit", async () => {
     const state = createState({ "sessions.doc.s1": "before" });
     const onPersist = vi.fn().mockResolvedValue({ ok: true, session_revision: 2 });
     const { repo } = createRepo({
@@ -38,7 +38,7 @@ describe("session storage durability", () => {
     expect(onPersist).toHaveBeenCalledWith("doc", "s1", "after");
   });
 
-  it("keeps the latest in-memory document when SQLite is offline", async () => {
+  it("keeps the latest in-memory document when durable storage is offline", async () => {
     const state = createState({ "sessions.doc.s1": "before" });
     const { repo, warnStorageIssue } = createRepo({
       state,
@@ -54,7 +54,7 @@ describe("session storage durability", () => {
     );
   });
 
-  it("loads an uncached document from SQLite", async () => {
+  it("loads an uncached document from durable storage", async () => {
     const state = createState();
     const onLoad = vi.fn().mockResolvedValue({
       id: "s1",

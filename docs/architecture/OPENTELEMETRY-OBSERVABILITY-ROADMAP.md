@@ -31,7 +31,7 @@
 
 ## 阅读摘要
 
-本文的核心决策是：保留 Zion 已有的 Run Ledger、RunEvent、SQLite、
+本文的核心决策是：保留 Zion 已有的 Run Ledger、RunEvent、PostgreSQL、
 checkpoint、tool receipt 和 projection，它们继续承担业务事实、恢复和产品展示；
 在这些执行边界之外接入 OpenTelemetry，负责跨服务 trace、聚合 metric、日志关联
 和标准 OTLP 导出。
@@ -74,7 +74,7 @@ OTel Logs、完整 Device 传播或任何 prompt/result 内容采集。
 | M5 | 未开始 | 日志关联及临时探针清理 |
 | M6 | 基础 head sampling 和内容过滤已完成 | tail sampling、保留周期、责任人及生产治理 |
 
-首批仅启用手工语义 span；没有自动 HTTP、fetch、SQLite 或 Yjs 埋点，
+首批仅启用手工语义 span；没有自动 HTTP、fetch、PostgreSQL 或 Yjs 埋点，
 因此 health、SSE、poll 也不会产生自动 span。现阶段不能据此宣布 M1/M2 全部完成。
 高密度流式微基准未达到暂定 3% 开销目标，保持 opt-in，生产验收仍待完成。
 
@@ -83,7 +83,7 @@ OTel Logs、完整 Device 传播或任何 prompt/result 内容采集。
 Zion already has a strong domain-level execution record:
 
 - canonical `Run`, `Attempt`, and ordered `RunEvent` identities;
-- durable Runtime SQLite storage;
+- durable Runtime PostgreSQL storage;
 - checkpoints, transcripts, tool receipts, artifacts, and change sets;
 - raw diagnostic streams and bounded client projection streams;
 - Workbench, Mobile, and CLI projections;
@@ -191,7 +191,7 @@ This lifecycle is the best source for Zion domain semantics.
 
 ### 4.2 Durable storage and recovery
 
-[`apps/runtime/src/sqlite-run-store.mjs`](../../apps/runtime/src/sqlite-run-store.mjs)
+[`apps/runtime/src/postgres-run-store.mjs`](../../apps/runtime/src/postgres-run-store.mjs)
 stores Runs, ordered events, checkpoints, transcripts, Session messages, tool
 receipts, artifacts, and change sets.
 
@@ -200,7 +200,7 @@ Important guarantees already implemented:
 - transactionally ordered event append;
 - strict per-Run sequence validation;
 - unique event IDs;
-- WAL and full synchronous SQLite durability;
+- WAL and full synchronous PostgreSQL durability;
 - startup reconciliation of ownerless Runs;
 - same-Run/new-Attempt resume;
 - idempotent tool receipts.
@@ -333,7 +333,7 @@ flowchart LR
   NODE[Node Broker]
   CONNECTOR[Device Connector]
   LOCAL[local-tools / plugin host]
-  STORE[(Runtime SQLite)]
+  STORE[(Runtime PostgreSQL)]
   OTEL[OpenTelemetry SDK]
   COLLECTOR[OTel Collector]
   TRACE[Trace Backend]
@@ -454,7 +454,7 @@ Avoid spans for:
 
 - individual text tokens;
 - individual reasoning tokens;
-- every SQLite event append;
+- every PostgreSQL event append;
 - every SSE frame;
 - every Device Connector long-poll request.
 
@@ -981,7 +981,7 @@ Runtime restart interruption rate
 
 Exit criteria:
 
-- dashboards explain a known injected failure without querying SQLite manually;
+- dashboards explain a known injected failure without querying PostgreSQL manually;
 - alerts are actionable and link to traces;
 - metric series counts remain within the agreed budget;
 - SLO definitions distinguish product failure from user cancellation and policy
@@ -1335,7 +1335,7 @@ on the trace model established by PRs 3 and 5.
 Zion should adopt OpenTelemetry incrementally with these invariants:
 
 1. RunEvent remains the canonical domain protocol.
-2. Runtime SQLite remains the canonical execution and recovery store.
+2. Runtime PostgreSQL remains the canonical execution and recovery store.
 3. Client projection remains the presentation protocol.
 4. OpenTelemetry observes operations; it does not control them.
 5. One Attempt maps to one trace and resumed Attempts use links.

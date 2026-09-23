@@ -2219,13 +2219,11 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
           const markerText = doc.sliceString(node.from, node.to);
           const checked = /\bx\b/i.test(markerText);
           if (!isActive) {
-            if (!collapsedSelectionTouchesRange(view.state, node.from, node.to)) {
-              const selected = nonEmptySelectionOverlapsRange(view.state, node.from, node.to);
-              add(node.from, node.to, hiddenSyntaxDecoration(view.state, node.from, node.to));
-              const line = doc.lineAt(node.to);
-              const rest = doc.sliceString(node.to, line.to).trimStart();
-              add(node.from, node.from, Decoration.widget({ widget: new TaskWidget(checked, rest, selected), side: 1 }));
-            }
+            const selected = nonEmptySelectionOverlapsRange(view.state, node.from, node.to);
+            add(node.from, node.to, hiddenSyntaxDecoration(view.state, node.from, node.to));
+            const line = doc.lineAt(node.to);
+            const rest = doc.sliceString(node.to, line.to).trimStart();
+            add(node.from, node.from, Decoration.widget({ widget: new TaskWidget(checked, rest, selected), side: 1 }));
           }
           return;
         }
@@ -2257,7 +2255,6 @@ function buildDecorations(view: EditorView, activeLines: Set<number>, expandedDi
                 }
               })
             );
-            if (collapsedSelectionTouchesRange(view.state, replaceFrom, replaceTo)) return;
             const selected = nonEmptySelectionOverlapsRange(view.state, replaceFrom, replaceTo);
             add(
               replaceFrom,
@@ -2945,6 +2942,9 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
 
   hideBoundaryCursor(): void {
     if (this.boundaryCursor) this.boundaryCursor.style.display = "none";
+    try {
+      delete this.boundaryCursor?.parentElement?.dataset.zionBoundaryCursor;
+    } catch {}
   }
 
   scheduleBoundaryCursor(view: EditorView): void {
@@ -2970,6 +2970,7 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
     cursor.style.height = `${height}px`;
     cursor.dataset.side = boundary.side;
     cursor.dataset.pos = String(boundary.pos);
+    view.dom.dataset.zionBoundaryCursor = "true";
   }
 
   bindEvents(view: EditorView) {
@@ -3230,6 +3231,8 @@ const wysiwygPlugin = ViewPlugin.fromClass(class {
 
   destroy() {
     // cleanup
+    this.hideBoundaryCursor();
+    try { this.boundaryCursor?.remove(); } catch {}
     try { (this as any)._wysiwyg_cleanup?.(); } catch {}
   }
 }, {

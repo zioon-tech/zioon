@@ -256,7 +256,7 @@ Laptop
   Control Plane
   Runtime Host
   Resource Host
-  SQLite
+  PostgreSQL
 ```
 
 适用：
@@ -735,7 +735,7 @@ Resource Identity
 | `zion-next` | 浏览器 UI + 部分执行 owner | Workbench Client |
 | `@zion/runtime` | 无 DOM Agent Core | Runtime Host Core |
 | `apps/runtime` | Runtime + 部分 Control Plane | Runtime Host composition root |
-| `SqliteRunStore` | Run/Session/Event store | Runtime durable store |
+| `PostgresRunStore` | Run/Session/Event store | Runtime durable store |
 | `NodeBroker` | Registry、Binding、路由、pending 调用 | 拆为 Control Plane Registry/Placement 与 Relay dispatch |
 | `node-protocol` | Device command protocol | Runtime ↔ Resource Host invocation contract |
 | `device-connector` | 出站设备连接 | Resource Host Connector |

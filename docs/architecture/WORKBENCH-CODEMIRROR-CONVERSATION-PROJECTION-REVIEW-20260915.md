@@ -129,7 +129,7 @@ Runtime `onLoadDocument` 用 `updatedAt` 比较决定返回哪一份。Workbench
 
 ### 4.1 历史数据已被清空
 
-当前 `.runtime-data/runtime.sqlite3` 中：
+当前 `.runtime-data/PostgreSQL database` 中：
 
 - `u1gfl7`（“界面科学”）revision 8 有 3,184 字符。
 - revision 9 的 reason 为 `collaboration`，正文变为 0。
@@ -145,7 +145,7 @@ Runtime `onLoadDocument` 用 `updatedAt` 比较决定返回哪一份。Workbench
 `collaboration-client.js:453-471` 在 5 秒超时后只恢复可编辑状态：
 
 - 不清除 `zionCollaborationBound`。
-- 不应用已经加载的 SQLite snapshot。
+- 不应用已经加载的 PostgreSQL snapshot。
 - provider 后续成功也因 `timedOut` 直接退出。
 
 而 `src/session/document-runtime.ts:70-75` 和 `src/editor/EditorCore.ts:578-604` 会因为 ownership 标记拒绝 `session-load`。因此 Runtime 暂时不可达时，一个有正文的新 slot 可以永久保持空白，直到销毁重建。
@@ -275,9 +275,9 @@ document snapshot + card payload snapshot + cursor boundary + model capabilities
 
 ### Phase 0：先止损和恢复
 
-1. 备份 `.runtime-data/runtime.sqlite3`。
+1. 备份 `.runtime-data/PostgreSQL database`。
 2. 禁止无明确 delete intent 的 non-empty -> empty collaboration checkpoint。
-3. collaboration 超时时撤销 ownership，并显示 SQLite snapshot。
+3. collaboration 超时时撤销 ownership，并显示 PostgreSQL snapshot。
 4. 提供 revision 恢复工具，先恢复已确认损坏的 `u1gfl7`；`icsn4v` 需确认 3 字符是否用户主动删除。
 
 ### Phase 1：统一 Run 投影
@@ -368,9 +368,9 @@ Workbench 现在只负责 Yjs/CodeMirror 绑定、marker decoration 和 transien
 
 ### 9.5 历史数据修复
 
-恢复前已创建会话级 SQLite 备份：
+恢复前已创建会话级 PostgreSQL 备份：
 
-`/.runtime-data/backups/workbench-sessions-u1gfl7-icsn4v-before-restore-20260915.sqlite3`
+`/.runtime-data/backups/workbench-sessions-u1gfl7-icsn4v-before-restore-20260915.postgresql`
 
 - `u1gfl7`：从最后一个非空 revision 8 恢复 3,184 字，生成 revision 15。
 - `icsn4v`：从最后一个非空 revision 540 恢复 3 字，生成 revision 546。

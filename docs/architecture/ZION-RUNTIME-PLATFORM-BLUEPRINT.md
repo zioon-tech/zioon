@@ -76,7 +76,7 @@ Included in standalone v0:
 - fake Model, Tool Host, Context, Credential, and Store adapters;
 - at least one real model adapter behind an injected transport;
 - a local-tools Tool Host adapter for a narrow read-only tool set;
-- ordered event persistence in a local SQLite Run Store;
+- ordered event persistence in a local PostgreSQL Run Store;
 - abort, timeout, restart recovery, and idempotent tool invocation;
 - a headless CLI or test harness that can create and attach to a Run.
 
@@ -109,7 +109,7 @@ The first standalone code checkpoint now exists under `packages/runtime`:
 - invalid-tool feedback to the next model turn;
 - deterministic invocation IDs for idempotent Tool Host execution;
 - an in-memory Run Store;
-- a Node 22 SQLite Run Store with atomic event and terminal-state commits;
+- a Node 22 PostgreSQL Run Store with atomic event and terminal-state commits;
 - a loopback-only Runtime Host with Run create, lookup, abort, event catch-up, and
   SSE endpoints;
 - an OpenAI-compatible Engine adapter with an injected Node transport;
@@ -133,7 +133,7 @@ The first standalone code checkpoint now exists under `packages/runtime`:
   credentials;
 - an explicit Echo Engine used only for protocol and process smoke tests;
 - Node-environment tests for completion, tools, invalid arguments, discovery
-  failure, abort, timeout, maximum-turn termination, SQLite reopen, HTTP requests,
+  failure, abort, timeout, maximum-turn termination, PostgreSQL reopen, HTTP requests,
   and SSE resume.
 - an end-to-end local smoke path covering OpenAI-compatible tool-call output,
   policy-scoped execution through the real `zion-local-tools` service, a second
@@ -144,7 +144,7 @@ The first standalone code checkpoint now exists under `packages/runtime`:
 - a real DeepSeek smoke path covering persisted multi-turn Session context,
   reasoning and usage events, Runtime restart, and a policy-scoped `read` call
   through the real `zion-local-tools` service.
-- a SQLite-backed Device registry, persistent project/resource bindings, and
+- a PostgreSQL-backed Device registry, persistent project/resource bindings, and
   completed invocation receipts, with restored Devices kept offline until they
   reconnect.
 
@@ -199,7 +199,7 @@ flowchart LR
   STATE[window.zion state and events]
   LEDGER[Browser Run Ledger]
   LT[zion-local-tools]
-  DB[(SQLite)]
+  DB[(PostgreSQL)]
   MODEL[Model APIs]
 
   WEB --> LOOP
@@ -217,10 +217,10 @@ Important current ownership:
 | Editor, cards, panels, interaction | `zion-next` |
 | Interactive and supported programmatic Agent loops | `apps/runtime` |
 | Runtime Tool Broker and policy | `@zion/runtime` plus Tool Host adapters |
-| Canonical Run/Event/Attempt ledger | Runtime SQLite |
+| Canonical Run/Event/Attempt ledger | Runtime PostgreSQL |
 | Model profiles and credentials | Runtime registry and credential store |
-| Session document and metadata durability | Runtime SQLite |
-| Scheduler Task, occurrence, Run, and lease | Runtime SQLite |
+| Session document and metadata durability | Runtime PostgreSQL |
+| Scheduler Task, occurrence, Run, and lease | Runtime PostgreSQL |
 | Scheduler Agent and command execution | Runtime worker |
 | Files, Bash, terminal, SSH, mail, and MCP | `zion-local-tools` |
 
@@ -429,7 +429,7 @@ Implementations do not need to originate inside Zion:
 
 - Agent execution can come from Claude Code, OpenCode, or a native engine.
 - Tools can come from local-tools, MCP, SaaS APIs, or device bridges.
-- Persistence can use SQLite, Postgres, or another compliant store.
+- Persistence can use PostgreSQL, Postgres, or another compliant store.
 - Clients can be first-party, third-party, CLI, or automation clients.
 
 ## 8. Agent Engine Integration
@@ -589,7 +589,7 @@ disjoint scope, or unauthorized tool before calling local-tools. Device-local
 paths are not advertised in registration. Delivered but unfinished invocations
 are redelivered when a new Node process instance registers, the stale Connector
 stops polling and cancels local work, and completed invocation IDs return their
-existing SQLite-backed Runtime receipt. Device registrations and project/resource
+existing PostgreSQL-backed Runtime receipt. Device registrations and project/resource
 bindings share the Runtime database and survive process restart; restored Devices
 remain offline until their Connector registers again. Every invocation also carries a Runtime-issued
 `leaseExpiresAt`: queued work is removed at expiry, delivered work receives a
@@ -956,7 +956,7 @@ fixtures and a headless harness rather than through Workbench integration.
 ### Phase 2: Build the independent Node Runtime
 
 - Add Runtime API and resumable event stream.
-- Add SQLite Run Store and checkpoint persistence.
+- Add PostgreSQL Run Store and checkpoint persistence.
 - Add Engine Registry and a native engine adapter.
 - Add a narrow local-tools Tool Host adapter.
 - Add a standalone command that creates, observes, aborts, and resumes Runs.
@@ -1143,7 +1143,7 @@ The following remain discussion items:
 
 1. Which exact responsibilities belong to Runtime Kernel versus a separate Control
    Plane service?
-2. Should the first Node Runtime own SQLite directly or use a persistence service
+2. Should the first Node Runtime own PostgreSQL directly or use a persistence service
    behind `RunRepository`?
 3. What is the first supported structured interface for Claude Code and OpenCode
    adapters?

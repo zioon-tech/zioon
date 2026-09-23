@@ -12,7 +12,7 @@ EnvironmentFile=/etc/zion-next/runtime.env
 ExecStart=/usr/local/bin/node /opt/zion-next/apps/runtime/src/main.mjs \
   --host 127.0.0.1 \
   --port 8766 \
-  --db /var/lib/zion-next/runtime.sqlite3 \
+  --data-dir /var/lib/zion-next/runtime \
   --workbench-dist /var/lib/zion-next/workbench-dist \
   --external-plugin-root /var/lib/zion-next/plugins \
   --external-runtime-plugins dev.identity \

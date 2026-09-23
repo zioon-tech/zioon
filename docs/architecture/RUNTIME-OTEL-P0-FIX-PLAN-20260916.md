@@ -187,7 +187,7 @@ Interpretation
 9. **对 Agent 精简**：不返回无助于解释的 trace/span/internal instance ID。
 10. **确定性**：相同记录产生相同结构化结果，模型只负责总结。
 
-`run_id` 缺省解析不需要新增索引或数据库表。当前 `SqliteRunStore` 已有
+`run_id` 缺省解析不需要新增索引或数据库表。当前 `PostgresRunStore` 已有
 `getSessionMessages(sessionId)`，可以：
 
 ```text
@@ -590,7 +590,7 @@ projection 事件和客户端状态。
 
 - `packages/runtime/src/protocol.ts`
 - `packages/runtime/src/memory-run-store.ts`
-- `apps/runtime/src/sqlite-run-store.mjs`
+- `apps/runtime/src/postgres-run-store.mjs`
 - `apps/runtime/src/observability/observability-service.mjs`
 - `apps/runtime/src/observability/run-diagnostic-projector.mjs`
 - `apps/runtime/src/observability/observability-http-handler.mjs`
@@ -847,7 +847,7 @@ Tool schema 不再要求 `run_id`。调用者明确传入时保持现有逻辑�
 Observability Service 选择当前 Session 中最近一个已终结、且不是当前诊断 Run 的
 Run。
 
-最小实现直接复用 `SqliteRunStore.getSessionMessages(sessionId)`：
+最小实现直接复用 `PostgresRunStore.getSessionMessages(sessionId)`：
 
 ```text
 session messages 倒序
@@ -871,7 +871,7 @@ listRuns({
 }): Promise<RunRecord[]>
 ```
 
-SQLite 使用已有 `status`、`updated_at` 列查询，并增加：
+PostgreSQL 使用已有 `status`、`updated_at` 列查询，并增加：
 
 ```sql
 CREATE INDEX IF NOT EXISTS runtime_runs_status_updated
@@ -1166,7 +1166,7 @@ P0 不引入 tail sampling。
 
 1. 在部署配置中显式设置采样率；
 2. 将环境标记为 `single-user-pilot`；
-3. 用真实 SQLite、两次模型调用和一次 Tool 调用跑 30 次；
+3. 用真实 PostgreSQL、两次模型调用和一次 Tool 调用跑 30 次；
 4. 同时比较 SDK disabled、Collector healthy、Collector unavailable；
 5. 如果绝对额外 p95 小于 20 ms 且 event-loop lag/RSS 可接受，可暂时保留 100%；
 6. 未通过则降采样，但明确 Agent 诊断可用率会同步下降。
@@ -1219,7 +1219,7 @@ observability.available
 
 包含工作包 A。
 
-回滚风险低：不修改 SQLite 业务字段或数据；唯一 DDL 是可删除的 Run 查询索引，
+回滚风险低：不修改 PostgreSQL 业务字段或数据；唯一 DDL 是可删除的 Run 查询索引，
 不影响 Run 执行。
 
 ### Commit 2：模型调用链耗时
@@ -1245,7 +1245,7 @@ observability.available
 | `packages/runtime/src/memory-run-store.ts` | 实现测试/嵌入场景的 `listRuns` |
 | `packages/runtime/src/openai-compatible-engine.ts` | 累计 consumer wait |
 | `packages/runtime/src/telemetry.ts` | 定义 consumer wait attribute |
-| `apps/runtime/src/sqlite-run-store.mjs` | 实现 `listRuns` 和查询索引 |
+| `apps/runtime/src/postgres-run-store.mjs` | 实现 `listRuns` 和查询索引 |
 | `apps/runtime/src/telemetry/export-policy.mjs` | allowlist 新数值字段 |
 | `apps/runtime/src/observability/observability-service.mjs` | 读取 events；最近 Run 解析；Overview；traceState |
 | `apps/runtime/src/observability/run-diagnostic-projector.mjs` | ledger facts、timeout、截断、准确文案 |
@@ -1265,7 +1265,7 @@ observability.available
 
 不修改：
 
-- SQLite 业务表及其已有字段；
+- PostgreSQL 业务表及其已有字段；
 - `packages/node-protocol`；
 - `apps/device-connector`；
 - Workbench/Mobile UI；

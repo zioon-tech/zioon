@@ -3,6 +3,7 @@ import {
   insertAfterLeadingSystem,
   normalizeSkillsSnapshot,
   SKILLS_LOCAL_RUNTIME_NODE_ID,
+  SKILLS_RUNTIME_PLUGIN_NODE_ID,
   SKILLS_RUNTIME_SNAPSHOT_KEY,
   SKILLS_RUNTIME_STATE_NAMESPACE
 } from "./skills-runtime-shared.js";
@@ -13,6 +14,7 @@ function sourceStatusByNode(availableNodes, localSourceAvailable = false) {
   const nodes = typeof availableNodes === "function" ? availableNodes() : [];
   return {
     ...(localSourceAvailable ? { [SKILLS_LOCAL_RUNTIME_NODE_ID]: "online" } : {}),
+    [SKILLS_RUNTIME_PLUGIN_NODE_ID]: "online",
     ...Object.fromEntries((Array.isArray(nodes) ? nodes : [])
     .map((node) => [String(node?.nodeId || ""), String(node?.status || "offline")])
     .filter(([nodeId]) => nodeId))

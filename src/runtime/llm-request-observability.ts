@@ -14,6 +14,26 @@ function objectValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? Array.from(new Set(
+        value.map((item) => String(item || "").trim()).filter(Boolean)
+      ))
+    : [];
+}
+
+function summaryTools(toolNames: string[]): Array<Record<string, unknown>> | undefined {
+  return toolNames.length
+    ? toolNames.map((name) => ({
+        type: "function",
+        function: {
+          name,
+          description: ""
+        }
+      }))
+    : undefined;
+}
+
 export function registerLlmRequestPayload(
   zion: ZionLlmRequestHost | null | undefined,
   payload: Record<string, unknown>
@@ -30,11 +50,41 @@ export function registerLlmRequestPayload(
   return payload;
 }
 
+export function preferDetailedLlmRequestRecord<
+  T extends { summaryOnly?: boolean }
+>(existing: T | null | undefined, incoming: T): T {
+  if (existing && existing.summaryOnly !== true && incoming.summaryOnly === true) {
+    return {
+      ...incoming,
+      ...existing
+    };
+  }
+  return incoming;
+}
+
 export function llmRequestPayloadFromWorkbenchEvent(event: unknown) {
   const workbenchEvent = objectValue(event);
   if (workbenchEvent.type !== "llm.request") return null;
   const data = objectValue(workbenchEvent.data);
-  const payload = objectValue(data.payload);
+  const persistedPayload = objectValue(data.payload);
+  const summaryOnly = Number(data.summaryVersion) === 1 && !data.payload;
+  const toolNames = stringList(data.toolNames);
+  const payload = summaryOnly
+    ? {
+        model: String(data.modelId || ""),
+        ...objectValue(data.config),
+        ...(toolNames.length ? { tools: summaryTools(toolNames) } : {}),
+        _zionSummary: {
+          messageCount: Number(data.messageCount || 0),
+          toolCount: Number(data.toolCount || 0),
+          toolNames,
+          payloadBytes: Number(data.payloadBytes || 0),
+          payloadHash: String(data.payloadHash || ""),
+          messagesHash: String(data.messagesHash || ""),
+          toolsHash: String(data.toolsHash || "")
+        }
+      }
+    : persistedPayload;
   return {
     id: String(
       data.id
@@ -63,6 +113,7 @@ export function llmRequestPayloadFromWorkbenchEvent(event: unknown) {
     stream: data.stream !== false,
     messageCount: Number(data.messageCount || 0),
     toolCount: Number(data.toolCount || 0),
+    ...(summaryOnly ? { summaryOnly: true } : {}),
     payload
   };
 }

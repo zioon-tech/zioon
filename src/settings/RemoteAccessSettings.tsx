@@ -24,7 +24,9 @@ type Pairing = {
 type AccessSession = {
   authenticated: boolean;
   expiresAt: number;
-  device: AccessDevice;
+  mode?: string;
+  scopes?: string[];
+  device?: AccessDevice;
 };
 
 type NodeSummary = {
@@ -165,7 +167,8 @@ export function RemoteAccessSettings() {
         "/v1/access/session"
       ) as unknown as AccessSession;
       setSession(nextSession);
-      if (!nextSession.device?.scopes?.includes("device.manage")) {
+      if (nextSession.mode === "accounts-v1") setPairKind("resource");
+      if (!(nextSession.scopes || nextSession.device?.scopes)?.includes("device.manage")) {
         setDevices([]);
         setNodesById({});
         setDeviceAccess(null);
@@ -388,7 +391,8 @@ export function RemoteAccessSettings() {
     }
   };
 
-  const isOwner = session?.device?.scopes?.includes("device.manage") === true;
+  const isAccount = session?.mode === "accounts-v1";
+  const isOwner = (session?.scopes || session?.device?.scopes)?.includes("device.manage") === true;
   const connectorCommand = pairing?.kind === "resource"
     ? `npm run device:connect -- --runtime-url ${shellQuote(config.baseUrl)} `
       + `--pairing-code ${shellQuote(pairing.userCode)}`
@@ -411,7 +415,7 @@ export function RemoteAccessSettings() {
         </div>
       </section>
 
-      {session ? (
+      {session?.device ? (
         <section className="zion-access-current">
           <span>{session.device.label || session.device.deviceId}</span>
           <span>{session.device.kind}</span>
@@ -645,7 +649,7 @@ export function RemoteAccessSettings() {
                 </div>
               </div>
               <div className="zion-access-segmented" role="group">
-                <button
+                {!isAccount && <button
                   type="button"
                   className={pairKind === "client" ? "is-active" : ""}
                   aria-pressed={pairKind === "client"}
@@ -655,7 +659,7 @@ export function RemoteAccessSettings() {
                   }}
                 >
                   {text("浏览器", "Browser")}
-                </button>
+                </button>}
                 <button
                   type="button"
                   className={pairKind === "resource" ? "is-active" : ""}
@@ -745,7 +749,7 @@ export function RemoteAccessSettings() {
             </div>
             <div className="zion-access-device-list">
               {devices.map((device) => {
-                const isCurrent = device.deviceId === session.device.deviceId;
+                const isCurrent = device.deviceId === session?.device?.deviceId;
                 const node = nodesById[device.deviceId];
                 const status = device.revokedAt
                   ? "revoked"

@@ -585,6 +585,9 @@ export function reconcileSessionMessagesInYText(ytext, messages = []) {
   let changed = false;
   for (const userMessage of source) {
     if (userMessage?.role !== "user" || !userMessage.runId) continue;
+    if (!assistantBlockRange(ytext.toString(), userMessage.runId)?.exists) {
+      continue;
+    }
     const assistantMessage = source.find((message) => (
       message?.role === "assistant"
       && message?.runId === userMessage.runId

@@ -1,21 +1,29 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createAgentExecutor } from "../../../packages/runtime/src/index";
 import {
   createHttpRuntimeClient,
   createRemoteRunHandle,
   RuntimeHttpError
 } from "../../../src/runtime/http-runtime-client.ts";
+import { PostgresRunStore } from "../src/postgres-run-store.mjs";
 import { createRuntimeServer } from "../src/server.mjs";
-import { SqliteRunStore } from "../src/sqlite-run-store.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 const resources = [];
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("http_client");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 function createHarness(engine) {
-  const directory = mkdtempSync(join(tmpdir(), "zion-http-runtime-client-"));
-  const store = new SqliteRunStore(join(directory, "runtime.sqlite3"));
+  const store = new PostgresRunStore(database.pool, {
+    spaceId: database.nextSpaceId()
+  });
   const executor = createAgentExecutor({
     engine,
     tools: {
@@ -34,7 +42,7 @@ function createHarness(engine) {
     port: 0,
     pollIntervalMs: 5
   });
-  resources.push({ directory, server, store });
+  resources.push({ server, store });
   return server;
 }
 
@@ -50,9 +58,8 @@ afterEach(async () => {
       await resource.server.close();
     } catch {}
     try {
-      resource.store.close();
+      await resource.store.close();
     } catch {}
-    rmSync(resource.directory, { recursive: true, force: true });
   }
 });
 

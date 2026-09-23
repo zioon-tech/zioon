@@ -62,6 +62,48 @@ describe("chat doc streaming", () => {
     ]);
   });
 
+  it("compiles canonical image Assets in document order", () => {
+    expect(parseMessages([
+      "user before",
+      "![screen](zion-asset://asset_123)",
+      "after"
+    ].join("\n"))).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "before" },
+        {
+          type: "image_url",
+          image_url: { url: "zion-asset://asset_123" }
+        },
+        { type: "text", text: "after" }
+      ]
+    }]);
+  });
+
+  it("does not compile fenced or assistant Markdown images as model image input", () => {
+    expect(parseMessages([
+      "user inspect",
+      "```md",
+      "![example](zion-asset://asset_fenced)",
+      "```",
+      "assistant ![answer](zion-asset://asset_assistant)"
+    ].join("\n"))).toEqual([
+      {
+        role: "user",
+        content: [
+          "inspect",
+          "```md",
+          "![example](zion-asset://asset_fenced)",
+          "```"
+        ].join("\n")
+      },
+      {
+        role: "assistant",
+        content: "![answer](zion-asset://asset_assistant)"
+      }
+    ]);
+  });
+
   it("appends by assistant id even when the stored line points at an older answer", () => {
     const editor = createMockEditor([
       "user old",

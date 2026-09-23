@@ -4,11 +4,12 @@ import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
 import { parseByteSize, requestBodyLimitError } from "../../../packages/node-protocol/src/index.mjs";
-import { resolveInteractionRequest } from "./interaction-profile-store.mjs";
+import { DEFAULT_INTERACTION_PROFILE_ID, resolveInteractionRequest } from "./interaction-profile-store.mjs";
 import {
   createRunEventProjector,
   projectRunEvents
 } from "./run-event-projection.mjs";
+import { createRunLiveHub } from "./run-live-hub.mjs";
 import { createMobileHttpHandler } from "./mobile-http-handler.mjs";
 import {
   deriveSessionTitleFromContent,
@@ -17,6 +18,7 @@ import {
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted", "interrupted"]);
 const DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024;
+const LIVE_RUN_REPLAY_RETENTION_MS = 30_000;
 const POLICY_PRESETS = new Set(["read-only", "workspace-write", "trusted-automation"]);
 const NODE_ID_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,199}$/i;
 const THINKING_MODES = new Set(["auto", "off", "on"]);
@@ -384,6 +386,10 @@ function normalizeCapabilityTool(tool) {
     hostKinds,
     ...(tool?.pluginId ? { pluginId: String(tool.pluginId) } : {}),
     ...(tool?.risk ? { risk: String(tool.risk) } : {}),
+    modelInjectable: tool?.modelInjectable !== false,
+    ...(tool?.unavailableReason
+      ? { unavailableReason: String(tool.unavailableReason) }
+      : {}),
     owner,
     availability: availabilityForTool(tool, owner),
     policy: {
@@ -514,8 +520,10 @@ export function createRuntimeServer({
   upgradeHandlers = [],
   sessionEventStore = null,
   sessionDocumentService = null,
+  runtimeHealth = null,
   runPostProcessors = [],
   onPostProcessorError = () => {},
+  validateRunRequest = null,
   maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES
 }) {
   if (!executor?.execute) throw new Error("Runtime executor is required");
@@ -546,6 +554,31 @@ export function createRuntimeServer({
     resolveModel: resolveRequestedModel,
     fallbackModel: defaultModel
   });
+  const admitRun = async (principal, runRequest) => {
+    let admitted;
+    if (!accessControl?.authorizeRunRequest) {
+      // Principal is reserved even on the legacy admission surface.
+      delete runRequest.principal;
+      admitted = runRequest;
+    } else {
+      const profileId = runRequest.interactionProfileId
+        || runRequest.metadata?.interactionProfileId || DEFAULT_INTERACTION_PROFILE_ID;
+      const profile = interactionProfiles?.get?.(profileId);
+      if (!profile) throw Object.assign(new Error("An administrator-configured interaction profile is required"), {
+        statusCode: 403
+      });
+      admitted = await accessControl.authorizeRunRequest(principal, {
+        ...runRequest,
+        interactionProfileId: profile.id,
+        metadata: { ...runRequest.metadata, interactionProfileId: profile.id }
+      }, profile.policy);
+    }
+    await validateRunRequest?.(admitted);
+    return admitted;
+  };
+  const authorizeExistingRun = async (principal, run, options) => {
+    await accessControl?.authorizeExistingRun?.(principal, run, options);
+  };
   const listCapabilityTools = () => {
     const source = typeof capabilityTools === "function"
       ? capabilityTools()
@@ -556,6 +589,8 @@ export function createRuntimeServer({
   };
 
   const handles = new Map();
+  const liveRuns = new Map();
+  const liveRunRetirements = new Map();
   const sessionHandles = new Map();
   const sessionAdmissions = new Set();
   const reserveSessionAdmission = (sessionId) => {
@@ -608,7 +643,7 @@ export function createRuntimeServer({
     activeRunForSession,
     presentationForSession
   });
-  const publishSessionEvent = (type, {
+  const publishSessionEvent = async (type, {
     sessionId = "",
     runId = "",
     attemptId = "",
@@ -617,7 +652,7 @@ export function createRuntimeServer({
   } = {}) => {
     if (!sessionEventStore?.appendEvent) return null;
     try {
-      return sessionEventStore.appendEvent(type, {
+      return await sessionEventStore.appendEvent(type, {
         sessionId,
         runId,
         sourceClientId,
@@ -709,7 +744,7 @@ export function createRuntimeServer({
           reason: "runtime-auto-title"
         });
       } else {
-        publishSessionEvent("session.updated", {
+        await publishSessionEvent("session.updated", {
           sessionId: session.id,
           data: {
             fields: ["title"],
@@ -722,7 +757,7 @@ export function createRuntimeServer({
         processorId: "runtime.session-auto-title-presentation-update",
         sessionId: session.id
       });
-      publishSessionEvent("session.updated", {
+      await publishSessionEvent("session.updated", {
         sessionId: session.id,
         data: {
           fields: ["title"],
@@ -759,6 +794,33 @@ export function createRuntimeServer({
     if (result.status !== "completed") return;
     const processors = listRunPostProcessors();
     if (!processors.length) return;
+    const runId = result.runId || handle.runId;
+    let storedRun = null;
+    try {
+      storedRun = await runs.get(runId);
+    } catch {}
+    const metadata = {
+      ...(storedRun?.metadata && typeof storedRun.metadata === "object"
+        ? storedRun.metadata
+        : {}),
+      ...(runRequest?.metadata && typeof runRequest.metadata === "object"
+        ? runRequest.metadata
+        : {})
+    };
+    const requestPrincipal = runRequest?.principal;
+    const storedPrincipal = storedRun?.principal;
+    const postProcessPrincipal = requestPrincipal?.version === 1 && requestPrincipal?.spaceId
+      ? requestPrincipal
+      : storedPrincipal;
+    const postProcessRequest = {
+      ...(storedRun || {}),
+      ...(runRequest || {}),
+      id: runId,
+      runId,
+      metadata,
+      policy: runRequest?.policy || storedRun?.policy || null,
+      principal: postProcessPrincipal
+    };
     const transcript = Array.isArray(messages) && messages.length
       ? messages
       : [
@@ -768,11 +830,11 @@ export function createRuntimeServer({
             : [])
         ];
     const context = Object.freeze({
-      runId: result.runId || handle.runId,
+      runId,
       attemptId: handle.attemptId,
-      sessionId: String(sessionId || runRequest?.sessionId || ""),
-      projectId: String(runRequest?.projectId || ""),
-      title: String(runRequest?.title || ""),
+      sessionId: String(sessionId || runRequest?.sessionId || storedRun?.sessionId || ""),
+      projectId: String(runRequest?.projectId || storedRun?.projectId || ""),
+      title: String(runRequest?.title || storedRun?.title || ""),
       status: result.status,
       output: String(result.output || ""),
       usage: result.usage || {},
@@ -790,14 +852,15 @@ export function createRuntimeServer({
           : {}),
         ...(message?.runId ? { runId: String(message.runId) } : {})
       })),
-      metadata: runRequest?.metadata && typeof runRequest.metadata === "object"
-        ? { ...runRequest.metadata }
-        : {},
-      model: runRequest?.model || null,
-      policy: runRequest?.policy || null
+      metadata,
+      model: runRequest?.model || storedRun?.model || null,
+      policy: postProcessRequest.policy,
+      principal: postProcessPrincipal,
+      request: postProcessRequest
     });
     for (const processor of processors) {
       try {
+        await accessControl?.authorizeRunExecution?.(postProcessRequest);
         await processor.process(context);
       } catch (error) {
         try {
@@ -818,12 +881,17 @@ export function createRuntimeServer({
     await sessions.reconcileCompletedSessionMessages();
     projectionFailures.clear();
   };
-  const trackHandle = (handle, sessionId, runRequest = {}) => {
+  const trackHandle = async (handle, sessionId, runRequest = {}) => {
+    const live = createRunLiveHub();
+    globalThis.clearTimeout(liveRunRetirements.get(handle.runId));
+    liveRunRetirements.delete(handle.runId);
     handles.set(handle.runId, handle);
+    liveRuns.set(handle.runId, live);
     if (sessionId) sessionHandles.set(sessionId, handle);
     let completedAssistantContent;
+    let terminalSessionEventPublished = false;
     if (sessionId) {
-      publishSessionEvent("run.started", {
+      await publishSessionEvent("run.started", {
         sessionId,
         runId: handle.runId,
         attemptId: handle.attemptId,
@@ -837,27 +905,55 @@ export function createRuntimeServer({
       });
     }
     const documentProjection = drainEvents(handle.events, async (event) => {
+      live.publish(event);
       if (event.type === "message.completed") {
         completedAssistantContent = String(event.data?.content || "");
       }
+      if (
+        sessionId
+        && ["run.completed", "run.failed", "run.aborted"].includes(event.type)
+      ) {
+        terminalSessionEventPublished = true;
+        await publishSessionEvent(event.type, {
+          sessionId,
+          runId: event.runId || handle.runId,
+          attemptId: event.attemptId || handle.attemptId,
+          sourceClientId: String(
+            runRequest?.metadata?.workbenchClientId || ""
+          ),
+          data: {
+            status: event.type.slice("run.".length),
+            reason: event.data?.reason || "",
+            error: event.data?.error || ""
+          }
+        });
+      }
       if (!sessionId || !sessionDocumentService?.applyRunEvent) return;
-      await sessionDocumentService.applyRunEvent(
-        sessionId,
-        event,
-        {
-          appendUserPrompt:
-            runRequest?.metadata?.documentProjection?.appendUserPrompt === true,
-          includeReasoning:
-            runRequest?.metadata?.documentProjection?.includeReasoning !== false
-        }
-      );
+      try {
+        await sessionDocumentService.applyRunEvent(
+          sessionId,
+          event,
+          {
+            appendUserPrompt:
+              runRequest?.metadata?.documentProjection?.appendUserPrompt === true,
+            includeReasoning:
+              runRequest?.metadata?.documentProjection?.includeReasoning !== false
+          }
+        );
+      } catch (error) {
+        onPostProcessorError(error, {
+          processorId: "runtime.collaboration-projection",
+          runId: handle.runId,
+          sessionId
+        });
+      }
     }).catch((error) => {
       onPostProcessorError(error, {
-        processorId: "runtime.collaboration-projection",
+        processorId: "runtime.live-events",
         runId: handle.runId,
         sessionId
       });
-    });
+    }).finally(() => live.close());
     void documentProjection;
     void handle.completion
       .then(async (result) => {
@@ -879,8 +975,8 @@ export function createRuntimeServer({
             await sessions.getSessionMessages(sessionId)
           );
         }
-        if (sessionId) {
-          publishSessionEvent(`run.${result.status}`, {
+        if (sessionId && !terminalSessionEventPublished) {
+          await publishSessionEvent(`run.${result.status}`, {
             sessionId,
             runId: result.runId || handle.runId,
             attemptId: handle.attemptId,
@@ -902,10 +998,10 @@ export function createRuntimeServer({
           messages: projectedMessages
         });
       })
-      .catch((error) => {
+      .catch(async (error) => {
         projectionFailures.set(handle.runId, error);
         if (sessionId) {
-          publishSessionEvent("run.failed", {
+          await publishSessionEvent("run.failed", {
             sessionId,
             runId: handle.runId,
             attemptId: handle.attemptId,
@@ -921,6 +1017,16 @@ export function createRuntimeServer({
       })
       .finally(() => {
         if (handles.get(handle.runId) === handle) handles.delete(handle.runId);
+        if (liveRuns.get(handle.runId) === live) {
+          const retirement = globalThis.setTimeout(() => {
+            liveRunRetirements.delete(handle.runId);
+            if (liveRuns.get(handle.runId) === live) {
+              liveRuns.delete(handle.runId);
+            }
+          }, LIVE_RUN_REPLAY_RETENTION_MS);
+          retirement.unref?.();
+          liveRunRetirements.set(handle.runId, retirement);
+        }
         if (sessionId && sessionHandles.get(sessionId) === handle) {
           sessionHandles.delete(sessionId);
         }
@@ -951,12 +1057,13 @@ export function createRuntimeServer({
       }
 
       if (request.method === "GET" && url.pathname === "/health") {
-        const principal = accessControl?.authenticateRequest?.(request);
-        if (accessControl && !accessControl.hasScope?.(principal, "runtime.read")) {
+        const principal = await accessControl?.authenticateRequest?.(request);
+        if (accessControl && !await accessControl.hasScope?.(principal, "runtime.read")) {
           json(response, 200, {
             ok: true,
             service: "zion-runtime",
-            authRequired: true
+            authRequired: true,
+            ...(accessControl.mode ? { authMode: accessControl.mode } : {})
           });
           return;
         }
@@ -970,11 +1077,35 @@ export function createRuntimeServer({
       }
 
       if (accessControl) {
-        request.zionPrincipal = accessControl.authorizeRuntimeRequest(request);
+        request.zionPrincipal = await accessControl.authorizeRuntimeRequest(request);
       }
       if (await mobileHttpHandler(request, response, url)) return;
       for (const handler of serviceHttpHandlers) {
         if (await handler(request, response, url)) return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/admin/runtime-health") {
+        if (typeof runtimeHealth !== "function") {
+          json(response, 501, { error: "Runtime health provider is unavailable" });
+          return;
+        }
+        try {
+          const health = await runtimeHealth();
+          json(response, 200, {
+            ok: health?.status !== "critical",
+            service: "zion-runtime",
+            ...(health && typeof health === "object" ? health : {})
+          });
+        } catch (error) {
+          json(response, 200, {
+            ok: false,
+            service: "zion-runtime",
+            status: "degraded",
+            generatedAt: Date.now(),
+            error: error?.message || String(error)
+          });
+        }
+        return;
       }
 
       if (request.method === "GET" && url.pathname === "/v1/models") {
@@ -998,7 +1129,7 @@ export function createRuntimeServer({
           return;
         }
         json(response, 200, {
-          todoLists: runs.listTodoLists({
+          todoLists: await runs.listTodoLists({
             limit: url.searchParams.get("limit"),
             updatedAfter: url.searchParams.get("updatedAfter")
           })
@@ -1015,7 +1146,7 @@ export function createRuntimeServer({
           json(response, 501, { error: "Runtime todo list store is unavailable" });
           return;
         }
-        const todoList = runs.getTodoList(todoListOwnerId);
+        const todoList = await runs.getTodoList(todoListOwnerId);
         if (!todoList) {
           json(response, 404, { error: "Runtime todo list not found" });
           return;
@@ -1108,6 +1239,41 @@ export function createRuntimeServer({
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/v1/runs/preview") {
+        if (typeof executor.preview !== "function") {
+          json(response, 501, { error: "Runtime request preview is unavailable" });
+          return;
+        }
+        const body = await readRequestJson(request);
+        const normalizedMessages = normalizeRunMessages(body.messages);
+        const resolved = body.interactionProfileId
+          ? resolveRequest(body)
+          : {
+              model: resolveRequestedModel(body.model),
+              policy: normalizePolicy(body.policy),
+              metadata: body.metadata && typeof body.metadata === "object"
+                ? { ...body.metadata }
+                : {}
+            };
+        const previewRequest = await admitRun(request.zionPrincipal, {
+          ...body,
+          target: normalizeExecutionTarget(body.target),
+          ...(normalizedMessages ? { messages: normalizedMessages } : {}),
+          ...(resolved.model ? { model: resolved.model } : {}),
+          modelOptions: normalizeModelOptions(body.modelOptions),
+          policy: resolved.policy,
+          metadata: resolved.metadata
+        });
+        try {
+          json(response, 200, {
+            preview: await executor.preview(previewRequest)
+          });
+        } finally {
+          await accessControl?.releaseRunPreview?.(previewRequest);
+        }
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/v1/runs") {
         const body = await readRequestJson(request);
         if (
@@ -1130,7 +1296,7 @@ export function createRuntimeServer({
                 ? { ...body.metadata }
                 : {}
             };
-        const runRequest = {
+        const runRequest = await admitRun(request.zionPrincipal, {
           ...body,
           target: normalizeExecutionTarget(body.target),
           ...(normalizedMessages ? { messages: normalizedMessages } : {}),
@@ -1138,7 +1304,7 @@ export function createRuntimeServer({
           modelOptions: normalizeModelOptions(body.modelOptions),
           policy: resolved.policy,
           metadata: resolved.metadata
-        };
+        });
         const requestedSessionId = String(body.sessionId || "").trim();
         const latestUserMessage = Array.isArray(normalizedMessages)
           ? normalizedMessages.slice().reverse().find((message) => message?.role === "user")
@@ -1158,7 +1324,7 @@ export function createRuntimeServer({
               title: String(body.title || resolved.metadata?.sessionTitle || ""),
               projectId: body.projectId ? String(body.projectId) : undefined,
               model: resolved.model || undefined,
-              policy: resolved.policy,
+              policy: runRequest.policy,
               metadata: resolved.metadata,
               createdAt: timestamp,
               updatedAt: timestamp
@@ -1223,13 +1389,13 @@ export function createRuntimeServer({
             throw error;
           }
         }
-        trackHandle(handle, attachedSessionId, runRequest);
+        await trackHandle(handle, attachedSessionId, runRequest);
         json(response, 202, {
           runId: handle.runId,
           attemptId: handle.attemptId,
           status: "accepted",
           model: resolved.model || null,
-          policy: resolved.policy,
+          policy: runRequest.policy,
           ...(resolved.profile ? { interactionProfile: resolved.profile } : {})
         });
         return;
@@ -1291,11 +1457,12 @@ export function createRuntimeServer({
           return;
         }
         if (clientRequestId && typeof sessions.getSessionMessageCommand === "function") {
-          const existing = sessions.getSessionMessageCommand(
+          const existing = await sessions.getSessionMessageCommand(
             sendMessageSessionId,
             clientRequestId
           );
           if (existing?.status === "accepted" && existing.response) {
+            await authorizeExistingRun(request.zionPrincipal, await runs.get(existing.response.runId));
             json(response, 202, {
               ...existing.response,
               clientRequestId,
@@ -1340,7 +1507,7 @@ export function createRuntimeServer({
           content: canonicalContent,
           timestamp: Date.now()
         });
-        const runRequest = {
+        const runRequest = await admitRun(request.zionPrincipal, {
           messages: [
             ...history.map((message) => ({
               role: message.role,
@@ -1370,12 +1537,12 @@ export function createRuntimeServer({
           },
           maxTurns: body.maxTurns,
           timeoutMs: body.timeoutMs
-        };
+        });
         if (
           clientRequestId
           && typeof sessions.reserveSessionMessageCommand === "function"
         ) {
-          const reservation = sessions.reserveSessionMessageCommand(
+          const reservation = await sessions.reserveSessionMessageCommand(
             session.id,
             clientRequestId,
             Date.now()
@@ -1383,6 +1550,7 @@ export function createRuntimeServer({
           if (!reservation.reserved) {
             const existing = reservation.command;
             if (existing?.status === "accepted" && existing.response) {
+              await authorizeExistingRun(request.zionPrincipal, await runs.get(existing.response.runId));
               json(response, 202, {
                 ...existing.response,
                 clientRequestId,
@@ -1403,7 +1571,7 @@ export function createRuntimeServer({
           handle = executor.execute(runRequest);
         } catch (error) {
           if (clientRequestId) {
-            sessions.releaseSessionMessageCommand?.(
+            await sessions.releaseSessionMessageCommand?.(
               session.id,
               clientRequestId
             );
@@ -1437,7 +1605,7 @@ export function createRuntimeServer({
             await handle.completion;
           } finally {
             if (clientRequestId) {
-              sessions.releaseSessionMessageCommand?.(
+              await sessions.releaseSessionMessageCommand?.(
                 session.id,
                 clientRequestId
               );
@@ -1445,7 +1613,7 @@ export function createRuntimeServer({
           }
           throw error;
         }
-        trackHandle(handle, session.id, runRequest);
+        await trackHandle(handle, session.id, runRequest);
         const accepted = {
           sessionId: session.id,
           message,
@@ -1455,7 +1623,7 @@ export function createRuntimeServer({
           ...(clientRequestId ? { clientRequestId } : {})
         };
         if (clientRequestId) {
-          sessions.completeSessionMessageCommand?.(
+          await sessions.completeSessionMessageCommand?.(
             session.id,
             clientRequestId,
             accepted,
@@ -1496,7 +1664,7 @@ export function createRuntimeServer({
           json(response, 404, { error: "Session not found" });
           return;
         }
-        json(response, 200, runs.listSessionArtifacts(sessionArtifactsId));
+        json(response, 200, await runs.listSessionArtifacts(sessionArtifactsId));
         return;
       }
       const transcriptSessionId =
@@ -1632,16 +1800,20 @@ export function createRuntimeServer({
         }
         const body = await readRequestJson(request);
         const existingRun = await runs.get(resumeRunId);
+        await authorizeExistingRun(request.zionPrincipal, existingRun);
         releaseAdmission = reserveSessionAdmission(existingRun?.sessionId);
         const handle = await executor.resume(resumeRunId, {
-          ...body,
+          model: body.model ? resolveRequestedModel(body.model) : undefined,
+          maxTurns: body.maxTurns,
+          timeoutMs: body.timeoutMs,
           modelOptions: normalizeModelOptions(body.modelOptions)
         });
-        trackHandle(handle, existingRun?.sessionId, {
+        await trackHandle(handle, existingRun?.sessionId, {
           sessionId: existingRun?.sessionId,
           projectId: existingRun?.projectId,
           model: existingRun?.model,
           policy: existingRun?.policy,
+          principal: existingRun?.principal,
           metadata: {
             resumed: true
           }
@@ -1677,11 +1849,36 @@ export function createRuntimeServer({
             || 0
           ) || 0
         );
+        const live = liveRuns.get(projectionStreamRunId);
+        if (live) {
+          const options = runProjectionOptions(url);
+          const liveAbort = new globalThis.AbortController();
+          const abortLive = () => liveAbort.abort();
+          request.once("close", abortLive);
+          try {
+            for await (const event of live.subscribe(cursor, {
+              signal: liveAbort.signal
+            })) {
+              await accessControl?.reauthorize?.(
+                request.zionPrincipal,
+                "runtime.read"
+              );
+              cursor = Math.max(cursor, Number(event.sequence) || 0);
+              for (const projected of projectRunEvents([event], options)) {
+                if (!await writeSseEvent(response, projected)) return;
+              }
+            }
+          } finally {
+            request.off("close", abortLive);
+          }
+          response.end();
+          return;
+        }
         const projector = createRunEventProjector(
           runProjectionOptions(url)
         );
         while (!closed) {
-          accessControl?.reauthorize?.(
+          await accessControl?.reauthorize?.(
             request.zionPrincipal,
             "runtime.read"
           );
@@ -1728,7 +1925,10 @@ export function createRuntimeServer({
           json(response, 404, { error: "Run not found" });
           return;
         }
-        const sourceEvents = await runs.getEvents(projectionRunId, after);
+        const live = liveRuns.get(projectionRunId);
+        const sourceEvents = live
+          ? live.eventsAfter(after)
+          : await runs.getEvents(projectionRunId, after);
         json(response, 200, {
           runId: projectionRunId,
           events: projectRunEvents(
@@ -1747,12 +1947,15 @@ export function createRuntimeServer({
           json(response, 404, { error: "Run not found" });
           return;
         }
-        const event = typeof runs.getEvent === "function"
+        const liveEvent = liveRuns.get(runEventPath.runId)
+          ?.eventsAfter(Math.max(0, runEventPath.sequence - 1))
+          .find((item) => item.sequence === runEventPath.sequence);
+        const event = liveEvent || (typeof runs.getEvent === "function"
           ? await runs.getEvent(runEventPath.runId, runEventPath.sequence)
           : (await runs.getEvents(
               runEventPath.runId,
               Math.max(0, runEventPath.sequence - 1)
-            )).find((item) => item.sequence === runEventPath.sequence);
+            )).find((item) => item.sequence === runEventPath.sequence));
         if (!event) {
           json(response, 404, { error: "Run event not found" });
           return;
@@ -1780,8 +1983,30 @@ export function createRuntimeServer({
             || 0
           ) || 0
         );
+        const live = liveRuns.get(streamRunId);
+        if (live) {
+          const liveAbort = new globalThis.AbortController();
+          const abortLive = () => liveAbort.abort();
+          request.once("close", abortLive);
+          try {
+            for await (const event of live.subscribe(cursor, {
+              signal: liveAbort.signal
+            })) {
+              await accessControl?.reauthorize?.(
+                request.zionPrincipal,
+                "runtime.read"
+              );
+              cursor = Math.max(cursor, Number(event.sequence) || 0);
+              if (!await writeSseEvent(response, event)) return;
+            }
+          } finally {
+            request.off("close", abortLive);
+          }
+          response.end();
+          return;
+        }
         while (!closed) {
-          accessControl?.reauthorize?.(
+          await accessControl?.reauthorize?.(
             request.zionPrincipal,
             "runtime.read"
           );
@@ -1813,9 +2038,12 @@ export function createRuntimeServer({
           json(response, 404, { error: "Run not found" });
           return;
         }
+        const live = liveRuns.get(eventsRunId);
         json(response, 200, {
           runId: eventsRunId,
-          events: await runs.getEvents(eventsRunId, after)
+          events: live
+            ? live.eventsAfter(after)
+            : await runs.getEvents(eventsRunId, after)
         });
         return;
       }
@@ -1845,12 +2073,17 @@ export function createRuntimeServer({
           json(response, 501, { error: "Runtime artifact store is unavailable" });
           return;
         }
-        json(response, 200, runs.listRunArtifacts(artifactsRunId));
+        json(response, 200, await runs.listRunArtifacts(artifactsRunId));
         return;
       }
 
       const abortRunId = matchRunPath(url.pathname, "/abort");
       if (request.method === "POST" && abortRunId) {
+        await authorizeExistingRun(
+          request.zionPrincipal,
+          await runs.get(abortRunId),
+          { allowRevoked: true }
+        );
         const handle = handles.get(abortRunId);
         if (!handle) {
           const run = await runs.get(abortRunId);
@@ -1939,6 +2172,12 @@ export function createRuntimeServer({
         await handle.abort("runtime-shutdown");
       }
       await Promise.allSettled(activeHandles.map((handle) => handle.completion));
+      for (const retirement of liveRunRetirements.values()) {
+        globalThis.clearTimeout(retirement);
+      }
+      liveRunRetirements.clear();
+      for (const live of liveRuns.values()) live.close();
+      liveRuns.clear();
       await new Promise((resolve, reject) => {
         if (!server.listening) {
           resolve();

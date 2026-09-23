@@ -8,14 +8,24 @@ import {
   pairingFromLocation,
 } from "./api";
 import type { AccessSession, RuntimeHealth } from "./types";
+import { AccountPanel } from "../../../packages/account-ui/src/AccountPanel";
+import { accountRequest, pendingInvitation, setAccountSession, type AccountSession } from "../../../packages/account-ui/src/client";
+import { runtimeBaseUrl } from "./api";
 
 type GateState =
   | { kind: "checking" }
   | { kind: "ready"; health: RuntimeHealth; access: AccessSession | null }
   | { kind: "pairing"; health: RuntimeHealth; error?: string }
+  | { kind: "account"; health: RuntimeHealth }
   | { kind: "offline"; error: string };
 
-export function AuthBoundary({ children }: { children: ReactNode }) {
+export function AuthBoundary({
+  children,
+  onLogin
+}: {
+  children: ReactNode;
+  onLogin?: (url: string) => void;
+}) {
   const [state, setState] = useState<GateState>({ kind: "checking" });
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -26,6 +36,15 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       const health = await getHealth();
       if (!health.authRequired) {
         setState({ kind: "ready", health, access: null });
+        return;
+      }
+      if ((health.authMode || health.accessControl) === "accounts-v1") {
+        const invitation = pendingInvitation();
+        const account = await accountRequest<AccountSession>(runtimeBaseUrl, "me").catch(() => null);
+        if (account) setAccountSession(account);
+        if (account?.membership?.status === "active" && !invitation) {
+          setState({ kind: "ready", health, access: account });
+        } else setState({ kind: "account", health });
         return;
       }
       const existing = await getAccessSession().catch(() => null);
@@ -63,6 +82,20 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
     void bootstrap();
   }, []);
 
+  useEffect(() => {
+    if (state.kind !== "ready" || state.access?.mode !== "accounts-v1") return;
+    const timer = window.setInterval(() => {
+      void accountRequest<AccountSession>(runtimeBaseUrl, "me").then(next => {
+        if (next.membership?.status !== "active"
+          || next.space.id !== state.access?.space?.id
+          || next.scopes.join() !== state.access?.scopes?.join()) {
+          location.reload();
+        }
+      }).catch((error) => { if (error.status === 401) location.reload(); });
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, [state]);
+
   const pair = async (event: FormEvent) => {
     event.preventDefault();
     if (state.kind !== "pairing" || !code.trim()) return;
@@ -82,6 +115,13 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   };
 
   if (state.kind === "ready") return children;
+  if (state.kind === "account") return <AccountPanel baseUrl={runtimeBaseUrl}
+    variant="gate"
+    onLogin={onLogin}
+    onContinue={account => {
+      setAccountSession(account);
+      setState({ kind: "ready", health: state.health, access: account });
+    }} />;
 
   if (state.kind === "checking") {
     return (

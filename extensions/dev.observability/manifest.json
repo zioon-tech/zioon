@@ -20,20 +20,6 @@
     },
     "capabilities": [
       {
-        "id": "observabilityInspect",
-        "kind": "tool",
-        "host": "runtime",
-        "risk": "read-only",
-        "requiredScopes": []
-      },
-      {
-        "id": "observabilityOverview",
-        "kind": "tool",
-        "host": "runtime",
-        "risk": "read-only",
-        "requiredScopes": []
-      },
-      {
         "id": "run-diagnostics",
         "kind": "skill",
         "host": "runtime",
@@ -47,23 +33,23 @@
         "en-US": "Run Diagnostics"
       },
       "description": {
-        "zh-CN": "结合 Run Ledger 与脱敏 Trace 分析运行耗时和失败阶段。",
-        "en-US": "Analyze Run latency and failures using Run Ledger and sanitized traces."
+        "zh-CN": "为模型提供可查询的脱敏 Runtime 运行事实和受控原始证据。",
+        "en-US": "Expose queryable sanitized Runtime facts and controlled raw evidence to models."
       },
       "icon": "pulse",
       "category": "ai",
       "features": {
         "zh-CN": [
-          "按 Run 查询脱敏诊断摘要",
-          "发现近期异常和慢 Run",
-          "定位模型与工具耗时",
-          "区分未采样、运行中和后端不可用"
+          "查询脱敏 Runtime 运行事实",
+          "按 Run 和事件关联历史记录",
+          "读取受控的原始工具证据",
+          "保留查询范围与证据来源"
         ],
         "en-US": [
-          "Query sanitized diagnostics by Run",
-          "Discover recent abnormal and slow Runs",
-          "Identify model and tool latency",
-          "Distinguish unsampled, active, and unavailable traces"
+          "Query sanitized Runtime facts",
+          "Correlate historical records by Run and event",
+          "Read controlled raw tool evidence",
+          "Preserve query scope and evidence provenance"
         ]
       },
       "permissions": [

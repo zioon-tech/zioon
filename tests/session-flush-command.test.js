@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { registerSessionFlushCommand } from "../extensions/dev.session-manager/commands/flush.js";
 
 describe("session flush command", () => {
-  it("waits for editor persistence before flushing the SQLite queue", async () => {
+  it("waits for editor persistence before flushing the durable queue", async () => {
     let handler = null;
     let resolveEditor;
     const editorPersisted = new Promise((resolve) => {
@@ -35,7 +35,7 @@ describe("session flush command", () => {
     expect(flushRemote).toHaveBeenCalledTimes(1);
   });
 
-  it("reports failure when the SQLite queue cannot be committed", async () => {
+  it("reports failure when the durable queue cannot be committed", async () => {
     let handler = null;
     registerSessionFlushCommand({
       zion: {

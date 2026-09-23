@@ -76,6 +76,7 @@ export function createRuntimeCollaborationService({
   path = COLLABORATION_PATH,
   authenticate = null,
   reauthorize = null,
+  authorizeOutbound = null,
   allowOrigin = loopbackOriginAllowed,
   debounceMs = 250,
   maxDebounceMs = 2_000,
@@ -99,14 +100,17 @@ export function createRuntimeCollaborationService({
   let closing = false;
 
   const pendingDocumentCheckpoints = new Map();
-  const flushDocumentCheckpoint = (sessionId) => {
+  const flushDocumentCheckpoint = async (sessionId) => {
     const pending = pendingDocumentCheckpoints.get(sessionId);
     if (!pending) return null;
     if (pending.timer) clearTimeout(pending.timer);
     pendingDocumentCheckpoints.delete(sessionId);
-    return store.appendEvent?.("document.checkpointed", {
+    await store.checkpointSessionRevision?.(sessionId, {
+      reason: "collaboration-checkpoint"
+    });
+    return await store.appendEvent?.("document.checkpointed", {
       sessionId,
-      revision: store.revision?.(),
+      revision: await store.revision?.(),
       sessionRevision: pending.sessionRevision,
       sourceClientId: pending.sourceClientId,
       payload: {
@@ -130,11 +134,13 @@ export function createRuntimeCollaborationService({
     };
     if (closing) {
       pendingDocumentCheckpoints.set(sessionId, pending);
-      flushDocumentCheckpoint(sessionId);
+      void flushDocumentCheckpoint(sessionId).catch(() => {});
       return;
     }
     pending.timer = setTimeout(
-      () => flushDocumentCheckpoint(sessionId),
+      () => {
+        void flushDocumentCheckpoint(sessionId).catch(() => {});
+      },
       Math.max(100, Number(checkpointDebounceMs) || 1_000)
     );
     pendingDocumentCheckpoints.set(sessionId, pending);
@@ -160,6 +166,8 @@ export function createRuntimeCollaborationService({
             clientId
           })
         : {};
+      if (authorization?.readOnly === true) input.connectionConfig.readOnly = true;
+      input.context?.authorizationState?.contexts.add(authorization);
       return {
         ...(input.context || {}),
         ...(authorization || {}),
@@ -171,8 +179,10 @@ export function createRuntimeCollaborationService({
     },
     async onLoadDocument({ documentName }) {
       const sessionId = collaborationDocumentName(documentName);
-      const stored = store.readCollaborationDocument(sessionId);
-      const session = store.readSession(sessionId);
+      const [stored, session] = await Promise.all([
+        store.readCollaborationDocument(sessionId),
+        store.readSession(sessionId)
+      ]);
       if (stored?.state?.length) {
         const document = new Y.Doc();
         Y.applyUpdate(document, stored.state);
@@ -186,10 +196,7 @@ export function createRuntimeCollaborationService({
           !session
           || session.deleted
           || collaborationText === snapshotText
-          || (
-            collaborationText.length > 0
-            && Number(stored.updatedAt || 0) >= Number(session.updated_at || 0)
-          )
+          || Number(stored.updatedAt || 0) >= Number(session.updated_at || 0)
         ) {
           return document;
         }
@@ -197,7 +204,7 @@ export function createRuntimeCollaborationService({
       const document = new Y.Doc();
       const text = session && !session.deleted ? String(session.text || "") : "";
       if (text) document.getText(COLLABORATION_TEXT_KEY).insert(0, text);
-      store.writeCollaborationDocument(
+      await store.writeCollaborationDocument(
         sessionId,
         Y.encodeStateAsUpdate(document),
         {
@@ -215,19 +222,9 @@ export function createRuntimeCollaborationService({
       const sessionId = collaborationDocumentName(documentName);
       const sourceClientId = String(lastContext?.clientId || "");
       const ytext = document.getText(COLLABORATION_TEXT_KEY);
-      let nextText = ytext.toString();
-      const session = store.readSession(sessionId);
-      if (
-        !nextText
-        && session
-        && !session.deleted
-        && String(session.text || "")
-      ) {
-        replaceYText(ytext, session.text);
-        nextText = String(session.text);
-      }
+      const nextText = ytext.toString();
       const state = Y.encodeStateAsUpdate(document);
-      const result = store.writeCollaborationDocument(sessionId, state, {
+      const result = await store.writeCollaborationDocument(sessionId, state, {
         text: nextText,
         sourceClientId,
         emitEvent: false
@@ -321,7 +318,7 @@ export function createRuntimeCollaborationService({
     } finally {
       await connection.disconnect();
     }
-    return store.readCollaborationDocument(name);
+    return await store.readCollaborationDocument(name);
   };
 
   const storeSubscription = store.subscribeEvents?.((event) => {
@@ -346,11 +343,13 @@ export function createRuntimeCollaborationService({
     ) {
       return;
     }
-    const session = store.readSession(sessionId);
-    if (!session || session.deleted) return;
-    void replaceDocument(sessionId, session.text, {
-      clientId: event.sourceClientId || "runtime-http"
-    });
+    void (async () => {
+      const session = await store.readSession(sessionId);
+      if (!session || session.deleted) return;
+      await replaceDocument(sessionId, session.text, {
+        clientId: event.sourceClientId || "runtime-http"
+      });
+    })().catch(() => {});
   }) || null;
 
   const handleUpgrade = (request, socket, head) => {
@@ -383,11 +382,27 @@ export function createRuntimeCollaborationService({
       return true;
     }
     webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+      const authorizationState = { contexts: new Set() };
+      if (authorizeOutbound) {
+        const send = webSocket.send.bind(webSocket);
+        let outbound = Promise.resolve();
+        webSocket.send = (...args) => {
+          outbound = outbound.then(async () => {
+            for (const context of authorizationState.contexts) {
+              await authorizeOutbound(context);
+            }
+            if (webSocket.readyState === 1) send(...args);
+          }).catch(() => {
+            webSocket.terminate();
+          });
+        };
+      }
       const connection = hocuspocus.handleConnection(
         webSocket,
         nodeRequestAsFetchRequest(request),
         {
-          clientId: String(requestUrl.searchParams.get("client_id") || "")
+          clientId: String(requestUrl.searchParams.get("client_id") || ""),
+          ...(authorizeOutbound ? { authorizationState } : {})
         }
       );
       webSocket.on("message", (data) => {
@@ -433,7 +448,7 @@ export function createRuntimeCollaborationService({
       } finally {
         await connection.disconnect({ unloadImmediately: false });
       }
-      return store.readCollaborationDocument(name);
+      return await store.readCollaborationDocument(name);
     },
     async projectAssistantOutput(sessionId, input = {}) {
       if (!activeDocumentProjector?.projectRun) return null;
@@ -454,7 +469,7 @@ export function createRuntimeCollaborationService({
       } finally {
         await connection.disconnect();
       }
-      return store.readCollaborationDocument(name);
+      return await store.readCollaborationDocument(name);
     },
     async reconcileTranscript(sessionId, messages = []) {
       if (!activeDocumentProjector?.reconcileTranscript) return null;
@@ -472,7 +487,7 @@ export function createRuntimeCollaborationService({
       } finally {
         await connection.disconnect({ unloadImmediately: false });
       }
-      return store.readCollaborationDocument(name);
+      return await store.readCollaborationDocument(name);
     },
     async applyRunEvent(sessionId, event = {}, options = {}) {
       const runId = String(event.runId || "");
@@ -568,7 +583,7 @@ export function createRuntimeCollaborationService({
         await flushRunProjection(pending.key);
       }
       for (const sessionId of [...pendingDocumentCheckpoints.keys()]) {
-        flushDocumentCheckpoint(sessionId);
+        await flushDocumentCheckpoint(sessionId);
       }
       hocuspocus.closeConnections();
       for (const client of webSocketServer.clients) client.terminate();
@@ -585,7 +600,7 @@ export function createRuntimeCollaborationService({
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
       for (const sessionId of [...pendingDocumentCheckpoints.keys()]) {
-        flushDocumentCheckpoint(sessionId);
+        await flushDocumentCheckpoint(sessionId);
       }
       await new Promise((resolve) => {
         try {

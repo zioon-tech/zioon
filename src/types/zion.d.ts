@@ -288,7 +288,7 @@ declare global {
       settings?: {
         registerPage(page: any): Disposable;
         registerItem(item: any): Disposable;
-        open(): void;
+        open(pageId?: string): void;
         close(): void;
       };
       memory?: {

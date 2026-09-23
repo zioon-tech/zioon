@@ -1,8 +1,9 @@
 # Runtime OpenTelemetry
 
 Date: 2026-09-17
-Status: P0 trace export, bounded diagnostics, protected access and persistent
-single-node storage implemented; production rollout remains opt-in.
+Status: trace export, bounded diagnostics, protected access, PostgreSQL
+projection, and local PostgreSQL fallback implemented; production rollout remains
+opt-in.
 
 ## Delivered behavior
 
@@ -36,30 +37,33 @@ their identifiers are attributes.
 - If an active initiator span exists, the Attempt links it. HTTP/scheduler spans
   themselves are not instrumented yet.
 
-RunEvent schemas, commit order, replay, tool receipts and document projection
-remain the existing business mechanisms. Telemetry never writes to Yjs.
+Semantic RunEvents, tool receipts and document projection remain the business
+mechanisms. Token and reasoning deltas are transient: Workbench receives them
+through the in-memory live hub, while the selected Runtime Store saves complete
+messages and semantic events only. Telemetry never writes to Yjs.
 
-Runtime also provides a bounded observability query layer when
-`ZION_OBSERVABILITY_QUERY_URL` is configured, while Run Ledger-only inspection
-continues to work without it:
+In PostgreSQL account mode Runtime maintains a bounded, sanitized projection in
+`obs_runs`, `obs_events`, and `obs_stages`, partitioned by Space with forced
+RLS. Local/offline mode maintains the same projection contract in
+`PostgreSQL observability tables`.
+Run Ledger facts remain available when `ZION_OBSERVABILITY_QUERY_URL` is not
+configured; the optional backend only enriches trace timing:
 
 - `GET /v1/observability/status` reports `queryBackend.available`, which checks
-  only the configured Jaeger Query API;
+  the configured Jaeger Query API, and reports projection coverage;
+- `GET /v1/observability/projection` reports projection coverage, limits,
+  counts, and health;
 - `GET /v1/runs/{runId}/diagnostics` joins Run Ledger state with a sanitized
   Trace projection and defaults to summary-only output;
-- built-in plugin `dev.observability` registers the read-only
-  `observabilityInspect` and `observabilityOverview` Tools;
-- `observabilityInspect` accepts an optional Run ID and otherwise resolves the
-  current Session's latest terminal Run;
-- `observabilityOverview` scans a bounded current-Project or current-Session
-  window for failed, timeout, interrupted, slow, stalled and trace-missing Runs
-  without issuing one Jaeger query per Run;
-- the plugin contributes `run-diagnostics`, which teaches the model to use the
-  Tool without exposing Jaeger, arbitrary queries or Backend credentials;
-- both Tools remain registered without a query Backend and limit output to
-  12 KiB;
-- Tool callers can inspect only the current Run or Runs in the same Session or
-  Project, while HTTP access remains behind the Runtime access-control boundary;
+- Runtime exposes `observabilityQuery` for bounded read-only SQL over
+  `obs_runs`, `obs_events`, and `obs_stages`;
+- Runtime exposes `observabilityRawRead` for exact, byte-bounded,
+  credential-redacted tool-call evidence;
+- built-in plugin `dev.observability` contributes the `run-diagnostics` Skill,
+  which documents the fact schema and evidence access without generating
+  conclusions itself;
+- every Tool call revalidates the current Space grant and
+  `observability.read`; query and raw evidence access are account-audited;
 - only callers with the owner-level `device.manage` scope receive an external
   Trace URL.
 
@@ -111,9 +115,8 @@ npm run runtime:serve
 Without an endpoint, telemetry is disabled. A configured endpoint enables traces
 with a default sample ratio of 1, suitable for local validation. The
 observability query URL is configured independently: omitting it leaves Runs
-and trace export intact; `observabilityInspect` remains available with
-RunRecord and safe RunEvent facts and reports `telemetry-disabled` for Trace
-availability.
+and trace export intact; `observabilityQuery` remains available with sanitized
+Run Ledger facts, while trace state reports `telemetry-disabled`.
 
 Generate a deterministic model-tool-model trace:
 
@@ -318,7 +321,7 @@ npm run runtime:test
 ## Performance baseline
 
 The representative mode executes five warm-ups and 30 measured Runs using a
-real SQLite RunStore, two model calls and one instrumented Tool call per Run.
+real PostgreSQL RunStore, two model calls and one instrumented Tool call per Run.
 The model transport and Tool body are deterministic, so the result measures
 Runtime overhead rather than provider latency.
 

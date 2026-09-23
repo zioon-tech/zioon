@@ -2,15 +2,25 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createAgentExecutor } from "../../../packages/runtime/src/index";
+import { PostgresRunStore } from "../src/postgres-run-store.mjs";
+import { PostgresWorkbenchStateStore } from "../src/postgres-workbench-state-store.mjs";
 import { runRuntimeCli } from "../src/runtime-cli.mjs";
 import { createRuntimeServer } from "../src/server.mjs";
-import { SqliteRunStore } from "../src/sqlite-run-store.mjs";
-import { SqliteWorkbenchStateStore } from "../src/sqlite-workbench-state-store.mjs";
 import { createWorkbenchStateHttpHandler } from "../src/workbench-state-http-handler.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 const resources = [];
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("runtime_cli");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 afterEach(async () => {
   for (const resource of resources.splice(0)) {
@@ -18,10 +28,10 @@ afterEach(async () => {
       await resource.server.close();
     } catch {}
     try {
-      resource.workbenchState?.close();
+      await resource.workbenchState?.close();
     } catch {}
     try {
-      resource.store.close();
+      await resource.store.close();
     } catch {}
     rmSync(resource.directory, { recursive: true, force: true });
   }
@@ -30,7 +40,9 @@ afterEach(async () => {
 describe("zion CLI Runtime fixture", () => {
   it("executes against a standalone Runtime Host and emits canonical JSONL", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-runtime-cli-e2e-"));
-    const store = new SqliteRunStore(join(directory, "runtime.sqlite3"));
+    const store = new PostgresRunStore(database.pool, {
+      spaceId: database.nextSpaceId()
+    });
     const executor = createAgentExecutor({
       engine: {
         id: "cli-fixture",
@@ -103,7 +115,9 @@ describe("zion CLI Runtime fixture", () => {
 
   it("attaches to the active Run by Session id", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-runtime-cli-attach-"));
-    const store = new SqliteRunStore(join(directory, "runtime.sqlite3"));
+    const store = new PostgresRunStore(database.pool, {
+      spaceId: database.nextSpaceId()
+    });
     let release;
     const gate = new Promise((resolve) => {
       release = resolve;
@@ -172,9 +186,11 @@ describe("zion CLI Runtime fixture", () => {
 
   it("watches durable Session events as JSONL", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-runtime-cli-watch-"));
-    const path = join(directory, "runtime.sqlite3");
-    const store = new SqliteRunStore(path);
-    const workbenchState = new SqliteWorkbenchStateStore(path);
+    const spaceId = database.nextSpaceId();
+    const store = new PostgresRunStore(database.pool, { spaceId });
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, {
+      spaceId
+    });
     const executor = createAgentExecutor({
       engine: {
         id: "cli-watch-fixture",
@@ -203,7 +219,7 @@ describe("zion CLI Runtime fixture", () => {
     });
     resources.push({ directory, store, workbenchState, server });
     const address = await server.start();
-    workbenchState.createSession({
+    await workbenchState.createSession({
       id: "watched-session",
       title: "Watched",
       text: "hello"

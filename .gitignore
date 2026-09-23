@@ -6,6 +6,11 @@ dev-dist/sw.js
 .env*.local
 node_modules/
 .runtime-data/
+.account-data/
+deploy/accounts/*.local.json
+.deploy-tmp/
+artifacts/
+tmp_patch/
 .aider*
 .trae/
 .worktrees/.dbg/

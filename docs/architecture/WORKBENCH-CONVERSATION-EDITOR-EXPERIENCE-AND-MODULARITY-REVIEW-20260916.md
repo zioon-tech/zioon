@@ -354,7 +354,7 @@ P1/P2 是代码审查严重度；排序同时考虑用户内容完整性。架�
 | E20 | 两套围栏规则不一致 | 波浪线围栏、长短反引号嵌套中的内容被错误富渲染 | 静态确认，P2 | 统一语法时修 |
 | E21 | UML 显示了实际不可用的导出按钮 | 复制 SVG、导出 PNG、新窗点击后无结果 | 静态确认，P2 | 随后 |
 | E22 | 活动行渲染设置未使现有装饰失效 | 切换设置后旧展示持续存在，重装后才变化 | 浏览器 DOM 与静态确认，P2 | 统一失效时修 |
-| E23 | 较新文本 snapshot 重建已有 Y.Doc | 合法离线文本更新后，服务端 cards/投影进度丢失 | 内存 SQLite + 真实 projector/Hocuspocus 探针确认，P1 | 先修 |
+| E23 | 较新文本 snapshot 重建已有 Y.Doc | 合法离线文本更新后，服务端 cards/投影进度丢失 | 内存 PostgreSQL + 真实 projector/Hocuspocus 探针确认，P1 | 先修 |
 | E24 | 隐藏 Markdown 源码仍参与字符、单词和行边界命令 | caret 可消失；非空选区可为零面积或千万像素异常矩形 | Chromium 几何与原生快捷键复现，P1 | 先修交互 |
 | E25 | 隐藏源码和富 Widget 重复进入无障碍树 | 读屏可能重复朗读 delimiter、源码和渲染结果 | Chromium AX Tree 确认，P1 | 先修交互 |
 | E26 | 选区工具栏无键盘进入/返回协议 | 键盘用户按 Tab 只会缩进正文，无法使用 AI with selection | Chromium 焦点复现，P1 | 先修交互 |
@@ -655,9 +655,9 @@ type SubmitPolicy = {
 
 ### 10.2 Yjs 与 snapshot 仍需唯一权威规则
 
-旧投影评审记录了“SQLite snapshot 只作派生 checkpoint”的目标，但当前 `collaboration-service` 加载时仍有时间戳比较，并可能从较新 snapshot 文本创建新 Y.Doc。[加载分支](../../apps/runtime/src/collaboration-service.mjs#L172-L208)
+旧投影评审记录了“PostgreSQL snapshot 只作派生 checkpoint”的目标，但当前 `collaboration-service` 加载时仍有时间戳比较，并可能从较新 snapshot 文本创建新 Y.Doc。[加载分支](../../apps/runtime/src/collaboration-service.mjs#L172-L208)
 
-由纯文本重建不能自动保留原 Y.Map cards、runProjection 和 CRDT 身份。跨组复核通过当前真实 `SqliteWorkbenchStateStore(:memory:)`、projector 和 Hocuspocus 的隔离探针确认了 E23：
+由纯文本重建不能自动保留原 Y.Map cards、runProjection 和 CRDT 身份。跨组复核通过当前真实 `PostgresWorkbenchStateStore(:memory:)`、projector 和 Hocuspocus 的隔离探针确认了 E23：
 
 1. 保存带一个思考卡、`lastSequence=2` 的 Y.Doc。
 2. 文档未驻留时，使用正确 expected revision 通过现有 session 更新接口修改文本。session head 更新，但 collaboration blob 没有同步。

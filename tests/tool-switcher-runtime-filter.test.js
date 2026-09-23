@@ -28,6 +28,24 @@ describe("tool switcher Runtime filtering", () => {
     ]);
   });
 
+  it("prefers Runtime injectable tools over the configurable catalog", () => {
+    expect(filterToolsForRuntime(tools, state({
+      "runtime.connection": { backend: "runtime" },
+      "runtime.supportedToolNames": ["webFetch", "read", "Bash"],
+      "runtime.injectableToolNames": ["webFetch"]
+    })).map((tool) => tool.function.name)).toEqual([
+      "webFetch"
+    ]);
+  });
+
+  it("does not fall back to all tools when Runtime reports no injectable tools", () => {
+    expect(filterToolsForRuntime(tools, state({
+      "runtime.connection": { backend: "runtime" },
+      "runtime.supportedToolNames": ["webFetch", "read", "Bash"],
+      "runtime.injectableToolNames": []
+    }))).toEqual([]);
+  });
+
   it("keeps the full catalog in browser mode", () => {
     expect(filterToolsForRuntime(tools, state({
       "runtime.mode": "browser",

@@ -97,7 +97,7 @@ sudo npm run deploy:configure -- \
 ```bash
 sudo -u zion env \
   PATH=/usr/local/bin:/usr/bin:/bin \
-  ZION_RUNTIME_DB=/var/lib/zion-next/runtime.sqlite3 \
+  ZION_DATABASE_URL="$ZION_DATABASE_URL" \
   ZION_RUNTIME_PUBLIC_URL=https://203-0-113-10.sslip.io:8443 \
   npm run runtime:access -- \
   pair create --kind owner --delivery cookie

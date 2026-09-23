@@ -830,7 +830,7 @@ Toolbar 只保留：
 ### 9.1 当前已实现
 
 - Machine 连接身份和 Session/Workspace 聚合由 Terminal Manager 派生。
-- Local Tools 通过 SQLite 持久化机器显示名称和描述。
+- Local Tools 通过 PostgreSQL 持久化机器显示名称和描述。
 - `GET /machines`、`GET /machines/{id}` 和 `PATCH /machines/{id}` 已提供。
 - 未填写描述时，Inventory 使用明确的待检测提示。
 - CPU、内存、GPU 和磁盘的自动采集仍属于下一阶段。

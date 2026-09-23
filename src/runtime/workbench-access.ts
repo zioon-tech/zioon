@@ -3,6 +3,9 @@ import {
   WORKBENCH_RUNTIME_BASE_URL_STORAGE_KEY,
   WORKBENCH_RUNTIME_MODE_STORAGE_KEY
 } from "./workbench-runtime-config";
+import {
+  accountRequest, pendingInvitation, setAccountSession, type AccountSession
+} from "../../packages/account-ui/src/client";
 
 const WORKBENCH_DEVICE_ID_KEY = "zion.access.deviceId";
 
@@ -15,6 +18,7 @@ type PairingInput = {
 type AccessHealth = {
   available: boolean;
   authRequired: boolean;
+  authMode?: string;
 };
 
 function pairingFromFragment(): PairingInput | null {
@@ -76,7 +80,8 @@ async function accessHealth(baseUrl: string): Promise<AccessHealth> {
     const body = await response.json().catch(() => null);
     return {
       available: response.ok && body?.service === "zion-runtime",
-      authRequired: body?.authRequired === true
+      authRequired: body?.authRequired === true,
+      authMode: body?.authMode || body?.accessControl
     };
   } catch {
     return { available: false, authRequired: false };
@@ -228,6 +233,48 @@ export async function ensureWorkbenchRuntimeAccess(
   if (!health.available || !health.authRequired) return;
   requireSameOrigin(config.baseUrl);
   persistRuntimeTarget(config.baseUrl);
+  if (health.authMode === "accounts-v1") {
+    const invitation = pendingInvitation();
+    const account = await accountRequest<AccountSession>(config.baseUrl, "me").catch(() => null);
+    if (account) setAccountSession(account);
+    if (account?.membership?.status === "active"
+      && !invitation
+      && location.pathname === "/account") {
+      history.replaceState(history.state, "", "/");
+    }
+    if (account?.membership?.status !== "active" || invitation) {
+      const [{ createRoot }, { createElement }, { AccountPanel }] = await Promise.all([
+        import("react-dom/client"), import("react"), import("../../packages/account-ui/src/AccountPanel")
+      ]);
+      host.classList.add("zion-account-gate");
+      const root = createRoot(host);
+      await new Promise<void>(resolve => {
+        root.render(createElement(AccountPanel, {
+          baseUrl: config.baseUrl,
+          variant: "gate",
+          onContinue: (session: AccountSession) => {
+            setAccountSession(session);
+            if (location.pathname === "/account") history.replaceState(history.state, "", "/");
+            resolve();
+          }
+        }));
+      });
+      root.unmount();
+      host.classList.remove("zion-account-gate");
+    }
+    // Re-enter the gate if membership or role changes. Backend checks remain
+    // authoritative between polls, including existing collaboration streams.
+    const identity = await accountRequest<AccountSession>(config.baseUrl, "me");
+    setAccountSession(identity);
+    window.setInterval(() => {
+      void accountRequest<AccountSession>(config.baseUrl, "me").then(next => {
+        if (next.user.id !== identity.user.id || next.space.id !== identity.space.id
+          || next.membership?.status !== identity.membership?.status
+          || next.membership?.role !== identity.membership?.role) location.reload();
+      }).catch((error) => { if (error.status === 401) location.reload(); });
+    }, 15_000);
+    return;
+  }
   if (await hasAccessSession(config.baseUrl)) return;
 
   const pairing = pairingFromFragment();

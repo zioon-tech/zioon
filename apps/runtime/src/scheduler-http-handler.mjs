@@ -76,6 +76,8 @@ export function createSchedulerHttpHandler({
   availableTools,
   availableModels,
   availableNodes,
+  authorizeTask = null,
+  onTaskChanged = null,
   maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES
 }) {
   if (!scheduler?.listTasks || !scheduler?.claim) {
@@ -103,41 +105,55 @@ export function createSchedulerHttpHandler({
       if (!path.startsWith("/v1/scheduler")) return false;
 
       if (request.method === "GET" && path === "/v1/scheduler/tasks") {
-        json(response, 200, { tasks: scheduler.listTasks() });
+        json(response, 200, { tasks: await scheduler.listTasks() });
         return true;
       }
       if (request.method === "POST" && path === "/v1/scheduler/tasks") {
         refreshAvailableTools();
-        json(response, 201, scheduler.createTask(await readJson(request, requestBodyLimit)));
+        const body = await readJson(request, requestBodyLimit);
+        delete body.executionPrincipal;
+        const input = authorizeTask ? await authorizeTask(request.zionPrincipal, body) : body;
+        json(response, 201, await scheduler.createTask(input));
         return true;
       }
 
       const runNowTaskId = matchTaskPath(path, "/run");
       if (runNowTaskId != null && request.method === "POST") {
-        const run = scheduler.runNow(runNowTaskId);
+        const run = await scheduler.runNow(runNowTaskId);
         wakeWorker?.();
         json(response, 200, run);
         return true;
       }
       const taskId = matchTaskPath(path);
       if (taskId != null && request.method === "GET") {
-        json(response, 200, scheduler.getTask(taskId));
+        json(response, 200, await scheduler.getTask(taskId));
         return true;
       }
       if (taskId != null && request.method === "PUT") {
         refreshAvailableTools();
-        json(response, 200, scheduler.updateTask(taskId, await readJson(request, requestBodyLimit)));
+        const body = await readJson(request, requestBodyLimit);
+        delete body.executionPrincipal;
+        const previous = await scheduler.getTask(taskId);
+        const input = authorizeTask ? await authorizeTask(request.zionPrincipal, {
+          ...previous, ...body,
+          capability: { ...previous.capability, ...body.capability }
+        }) : body;
+        const updated = await scheduler.updateTask(taskId, input);
+        await onTaskChanged?.(previous);
+        json(response, 200, updated);
         return true;
       }
       if (taskId != null && request.method === "DELETE") {
-        scheduler.deleteTask(taskId);
+        const previous = await scheduler.getTask(taskId);
+        await scheduler.deleteTask(taskId);
+        await onTaskChanged?.(previous);
         response.writeHead(204, { "cache-control": "no-store" });
         response.end();
         return true;
       }
 
       if (request.method === "GET" && path === "/v1/scheduler/runs") {
-        json(response, 200, scheduler.listRuns({
+        json(response, 200, await scheduler.listRuns({
           taskId: url.searchParams.get("task_id") || "",
           limit: url.searchParams.get("limit"),
           offset: url.searchParams.get("offset"),
@@ -149,13 +165,13 @@ export function createSchedulerHttpHandler({
       if (cancelRunId != null && request.method === "POST") {
         const body = await readJson(request, requestBodyLimit);
         await abortRun?.(cancelRunId, body.reason || "user");
-        json(response, 200, scheduler.cancel(cancelRunId, body.reason || "user"));
+        json(response, 200, await scheduler.cancel(cancelRunId, body.reason || "user"));
         return true;
       }
       const runId = matchRunPath(path);
       if (runId != null && request.method === "GET") {
         json(response, 200, limitRunEvents(
-          scheduler.getRun(runId),
+          await scheduler.getRun(runId),
           url.searchParams.get("event_limit")
         ));
         return true;

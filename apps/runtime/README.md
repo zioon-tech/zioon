@@ -2,13 +2,13 @@
 
 Local, standalone host for `@zion/runtime`.
 
-Requires Node.js 22.5 or newer because the current SQLite adapter uses the built-in
-`node:sqlite` module. Node 22 may print an experimental-module warning.
+Requires Node.js 22.5 or newer and PostgreSQL 16 or newer. PostgreSQL is the
+only authoritative Runtime backend in local, remote, and account deployments.
 
 The current checkpoint provides:
 
 - a loopback-only HTTP API;
-- SQLite-backed Run and ordered Event persistence;
+- PostgreSQL-backed Run and ordered Event persistence in every deployment;
 - Run creation, lookup, event catch-up, SSE streaming, and abort;
 - startup reconciliation for Runs left active without a live owner;
 - durable checkpoints after completed tool turns and explicit new-Attempt resume;
@@ -24,7 +24,7 @@ The current checkpoint provides:
   SSE streaming for Workbench, CLI, and future Mobile clients;
 - a cursor-preserving Client Run Projection Stream that coalesces raw model
   deltas and applies HTTP backpressure;
-- embedded Hocuspocus/Yjs collaboration rooms with SQLite persistence,
+- embedded Hocuspocus/Yjs collaboration rooms with transactional persistence,
   CodeMirror-compatible document state, and terminal model output commits;
 - one immutable Run per Session message and idempotent completion projection;
 - an interactive CLI that creates or reconnects to a Session;
@@ -42,7 +42,7 @@ The current checkpoint provides:
 - an opt-in Node Broker for authenticated Device Connector registration,
   capability discovery, invocation routing, cancellation, and reconnect
   redelivery;
-- SQLite-backed Device registry, project/resource bindings, and completed
+- durable Device registry, project/resource bindings, and completed
   invocation receipts;
 - a policy-scoped Terminal Inventory Context Provider compatible with the current
   Workbench XML format;
@@ -66,9 +66,11 @@ device-held proof-of-possession keys remain later milestones.
 
 ## Start
 
-From the repository root:
+From the repository root, provide a PostgreSQL database and an existing Space:
 
 ```bash
+ZION_DATABASE_URL='postgresql://zion:REDACTED@127.0.0.1:5432/zion' \
+ZION_SPACE_ID=space:example \
 npm run runtime:serve
 ```
 
@@ -76,7 +78,7 @@ Defaults:
 
 ```text
 listen: 127.0.0.1:8766
-database: ~/.zion-next/runtime/runtime.sqlite3
+data directory: ~/.zion-next/runtime
 model profiles: ~/.zion-next/runtime/model-profiles.json
 credentials: ~/.zion-next/runtime/credentials.json
 engine: zion.echo
@@ -84,6 +86,38 @@ scheduler worker: enabled
 project automation worker: enabled
 default interaction profile: read-only
 ```
+
+Production account mode uses one PostgreSQL database for account and Runtime
+state:
+
+```bash
+ZION_RUNTIME_AUTH_MODE=accounts \
+ZION_DATABASE_URL='postgresql://zion:REDACTED@db.example.com/zion?sslmode=require' \
+ZION_SPACE_ID=space:example \
+ZION_RUNTIME_PUBLIC_URL=https://zion.example.com \
+ZION_OIDC_ISSUER=https://accounts.example.com \
+ZION_OIDC_CLIENT_ID=zion \
+npm run runtime:serve
+```
+
+Run, Workbench, Scheduler, Access, Node, and observability stores share the
+PostgreSQL Pool and are partitioned by `ZION_SPACE_ID`. See
+[`POSTGRES-ACCOUNT-MIGRATION.md`](../../docs/operations/POSTGRES-ACCOUNT-MIGRATION.md)
+for the verified full-data migration procedure.
+
+Image Assets use a local filesystem content-addressed store under
+`$ZION_RUNTIME_DATA_DIR/assets`. PostgreSQL stores only Asset metadata. The
+directory must be on a persistent volume and backed up with PostgreSQL; it is
+not suitable for multiple Runtime replicas. Configure the initial per-image
+limit with:
+
+```bash
+ZION_RUNTIME_ASSET_MAX_IMAGE_BYTES=16MiB
+```
+
+The Workbench streams new images to `POST /v1/assets` and persists only a
+`zion-asset://...` reference. The S3-compatible BlobStore backend and multipart
+uploads are deferred until large media or multi-replica deployment is enabled.
 
 Disable Scheduler claiming for diagnostics with
 `ZION_RUNTIME_SCHEDULER_WORKER=0`. The worker claims directly from the
@@ -175,10 +209,10 @@ intermediate `0600` file. Remote deployments should inject model credentials
 from their secret manager; OS Keychain/Vault-backed imported credentials remain
 a follow-up.
 
-Override the local port or database:
+Override the local port or file data directory:
 
 ```bash
-npm run runtime:serve -- --port 8877 --db /tmp/zion-runtime.sqlite3
+npm run runtime:serve -- --port 8877 --data-dir /var/lib/zion-next/runtime
 ```
 
 ## Single-Space remote access
@@ -249,7 +283,8 @@ npm run runtime:access -- devices list
 npm run runtime:access -- devices revoke <device-id>
 ```
 
-Access Control keeps only credential and pairing-secret digests in SQLite.
+Access Control keeps only credential and pairing-secret digests in the selected
+Runtime store.
 Owner, Client, and Resource scopes are distinct, and revoking one device revokes
 all credentials issued to that device. Unauthenticated `/health` exposes only
 service liveness and `authRequired`.
@@ -294,7 +329,7 @@ GET  /v1/device-nodes
 Access-Control mode requires a paired Resource credential bound to the exact
 `nodeId`. Legacy static-token mode does not provide that isolation and must not
 be used on the public Internet. Device registrations, project/resource bindings,
-and completed Runtime-side invocation receipts use the Runtime SQLite database.
+and completed Runtime-side invocation receipts use the selected Runtime store.
 A restored Device is deliberately offline until its Connector registers again.
 Runtime restart still interrupts active remote invocations; pending command
 delivery and Device-side receipts are not durable. Each Connector must also
@@ -543,7 +578,7 @@ POST /v1/runs/{runId}/resume
 WS   /v1/collaboration
 ```
 
-Workbench state events are committed in the same SQLite transaction as the
+Workbench state events are committed in the same database transaction as the
 Session, tree, or KV mutation. Clients initialize from a snapshot and continue
 from its `event_cursor`. Expired cursors receive a `reset` event and reload the
 snapshot. The 30-second Workbench snapshot check remains only as a compatibility
@@ -728,6 +763,26 @@ command execution, model/tool control, and external effects must be explicitly
 enabled through the Workbench tool selector or an explicit request override.
 There is no asynchronous Approval Provider yet; explicit enablement is a local
 Run grant, not a production approval workflow.
+
+## Model request diagnostics
+
+`model.request` events keep only bounded metadata in the primary Run event
+stream. The exact provider payload is stored separately as gzip-compressed
+diagnostic detail and is fetched on demand by the Workbench LLM Requests panel.
+The default retention bounds are 30 days, 2,000 requests per Space, 8 MiB per
+uncompressed request, and 256 MiB of compressed detail per Space:
+
+```bash
+ZION_RUNTIME_MODEL_REQUEST_DETAIL_RETENTION_DAYS=30
+ZION_RUNTIME_MODEL_REQUEST_DETAIL_MAX_ROWS=2000
+ZION_RUNTIME_MODEL_REQUEST_DETAIL_MAX_BYTES=8MiB
+ZION_RUNTIME_MODEL_REQUEST_DETAIL_MAX_STORED_BYTES=256MiB
+```
+
+`POST /v1/runs/preview` executes the same first-turn tool selection, Context
+Provider pipeline, and provider request construction as a real Run, but closes
+the model iterator at `model.request` before credentials or network transport
+are used. Workbench Mock uses this endpoint in Runtime mode.
 
 ## Terminal inventory context
 

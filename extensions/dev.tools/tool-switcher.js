@@ -18,12 +18,17 @@ export function filterToolsForRuntime(tools, state = window.zion?.state) {
     || state?.get?.("runtime.mode")
     || ""
   ).toLowerCase();
+  const injectableNames = state?.get?.("runtime.injectableToolNames");
+  const supportedNames = state?.get?.("runtime.supportedToolNames");
+  const modelToolNames = Array.isArray(injectableNames)
+    ? injectableNames
+    : supportedNames;
   const supported = new Set(
-    Array.isArray(state?.get?.("runtime.supportedToolNames"))
-      ? state.get("runtime.supportedToolNames").map(String)
-      : []
+    Array.isArray(modelToolNames) ? modelToolNames.map(String) : []
   );
-  if (backend !== "runtime" || supported.size === 0) return list;
+  if (backend !== "runtime") return list;
+  if (!Array.isArray(modelToolNames)) return list;
+  if (supported.size === 0) return [];
   const capabilities = new Map(
     (Array.isArray(state?.get?.("runtime.capabilityTools"))
       ? state.get("runtime.capabilityTools")

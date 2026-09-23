@@ -19,7 +19,9 @@ const DEFAULT_SCHEDULED_TOOL_NAMES = new Set([
   "grep",
   "tree",
   "webSearch",
-  "webFetch"
+  "webFetch",
+  "observabilityQuery",
+  "observabilityRawRead"
 ]);
 export const DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES = Object.freeze([
   "read",
@@ -32,8 +34,8 @@ export const DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES = Object.freeze([
   "skillsList",
   "memoryList",
   "identityContext",
-  "observabilityInspect",
-  "observabilityOverview",
+  "observabilityQuery",
+  "observabilityRawRead",
   "sessionList",
   "sessionGet"
 ]);

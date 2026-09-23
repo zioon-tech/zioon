@@ -208,7 +208,7 @@ Gateway 的职责：
 Gateway 不应：
 
 - 写入 RunEvent；
-- 持久化完整 Trace 到 SQLite；
+- 持久化完整 Trace 到 PostgreSQL；
 - 根据 Trace 修复或恢复 Run；
 - 接受任意 TraceQL/SQL；
 - 将 Backend 响应原样传给客户端或模型；

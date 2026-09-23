@@ -5,15 +5,17 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
 import { afterEach, describe, expect, it } from "vitest";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 const resources = [];
 
-function startRuntime(directory, environment = {}) {
+async function startRuntime(directory, environment = {}) {
+  const database = await createPostgresTestDatabase("main_startup");
   const child = spawn(process.execPath, [
     resolve("src/main.mjs"),
     "--host", "127.0.0.1",
     "--port", "0",
-    "--db", join(directory, "runtime.sqlite3"),
+    "--data-dir", directory,
     "--runtime-plugins", "none"
   ], {
     cwd: resolve("."),
@@ -26,11 +28,13 @@ function startRuntime(directory, environment = {}) {
       ZION_RUNTIME_SCHEDULER_WORKER: "0",
       ZION_RUNTIME_PROJECT_AUTOMATION_WORKER: "0",
       ZION_RUNTIME_MIGRATE_LOCAL_TOOLS_STATE: "0",
+      ZION_SPACE_ID: database.nextSpaceId(),
+      ...database.childEnvironment,
       ...environment
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
-  resources.push({ child, directory });
+  resources.push({ child, database, directory });
   return new Promise((resolvePromise, reject) => {
     let output = "";
     const timeout = setTimeout(() => {
@@ -66,6 +70,7 @@ afterEach(async () => {
         resource.child.once("exit", resolvePromise);
       });
     }
+    await resource.database.close();
     rmSync(resource.directory, { recursive: true, force: true });
   }
 });

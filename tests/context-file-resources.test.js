@@ -7,7 +7,8 @@ import {
 import {
   buildBiographyContextSummary,
   buildFileTreeModel,
-  normalizeContextBiographyEvents
+  normalizeContextBiographyEvents,
+  readCatalogBackedContextFile
 } from "../extensions/dev.tools/context-panel.js";
 import {
   createTerminalToolExecutionContext,
@@ -98,6 +99,19 @@ describe("context file resources", () => {
     expect(isKnownFileToolFailure("Read error: ENOENT: no such file")).toBe(true);
     expect(isKnownFileToolFailure({ ok: false, error: "permission denied" })).toBe(true);
     expect(isKnownFileToolFailure("// File: /tmp/errors.txt (1-1)\n     1 | ENOENT is documented here")).toBe(false);
+  });
+
+  it("opens Runtime-cached skill files from the catalog snapshot", () => {
+    const path = "/srv/zion-plugin-data/plugins/dev.skills/cache/example/SKILL.md";
+    expect(readCatalogBackedContextFile(path, [{
+      id: "example",
+      runtimeFile: path,
+      body: "# Example\nCached instructions"
+    }])).toEqual({
+      kind: "text",
+      content: "# Example\nCached instructions",
+      size: 29
+    });
   });
 
   it("requires an explicit terminal session before creating execution context", () => {

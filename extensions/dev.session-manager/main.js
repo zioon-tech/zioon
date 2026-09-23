@@ -133,6 +133,7 @@ const I18N_MESSAGES = {
     "ui.deleteSessionConfirm": "确认删除会话？",
     "ui.newSessionHere": "在此新建会话",
     "ui.newFolderHere": "在此新建文件夹",
+    "ui.moveToRoot": "移到最外层",
     "ui.folderActions": "文件夹操作",
     "ui.folderName": "文件夹名称",
     "ui.sessionTitle": "会话标题",
@@ -267,6 +268,7 @@ const I18N_MESSAGES = {
     "ui.deleteSessionConfirm": "Delete session?",
     "ui.newSessionHere": "New session here",
     "ui.newFolderHere": "New folder here",
+    "ui.moveToRoot": "Move to top level",
     "ui.folderActions": "Folder actions",
     "ui.folderName": "Folder name",
     "ui.sessionTitle": "Session title",
@@ -450,7 +452,7 @@ function warnStorageIssue(where, error) {
   } catch {}
 }
 
-/** ======== Durable Workbench session storage (Zion Runtime SQLite) ======== */
+/** ======== Durable Workbench session storage (Zion Runtime PostgreSQL) ======== */
 const DB_NAME = "zion.sessions.db";
 let remoteSnapshotQueue = Promise.resolve();
 let remoteStorageOnline = false;
@@ -1198,7 +1200,7 @@ function hasBrowserSessionCandidate(candidate) {
     || Object.keys(snapshot.kv || {}).length > 0;
 }
 
-/** Recover browser-era data once, then use SQLite as the only session source. */
+/** Recover browser-era data once, then use Runtime as the only session source. */
 async function initSessionsStorage() {
   try {
     const candidate = await readBrowserSessionCandidate(DB_NAME);
@@ -2114,7 +2116,7 @@ export async function activate(ctx) {
     if (disp) ctx.subscriptions.push(disp);
   } catch {}
 
-  // Recover legacy browser data, then preload the authoritative SQLite snapshot.
+  // Recover legacy browser data, then preload the authoritative Runtime snapshot.
   const storageStatus = await initSessionsStorage();
   if (!storageStatus?.ok) {
     try { window.zion?.state?.set("sessions.storageUnavailable", true); } catch {}
@@ -2752,6 +2754,25 @@ export async function activate(ctx) {
         try { applyAnnotationsForSession(id); } catch {}
         ed?.focus?.();
       }
+      if (opts?.focus !== false) {
+        const focusCreatedEditor = () => {
+          const activeSessionId = targetPanelId
+            ? window.zion?.panels?.list?.().find((panel) => panel.id === targetPanelId)?.activeTabId
+            : window.zion?.state?.get?.("sessions.currentId");
+          if (String(activeSessionId || "") !== id) return;
+          const targetEditor = targetPanelId
+            ? window.zion?.panels?.getEditor?.(targetPanelId)
+            : window.zion?.window?.activeEditor;
+          try { targetEditor?.focus?.(); } catch {}
+          try { targetEditor?.getView?.()?.contentDOM?.focus?.({ preventScroll: true }); } catch {}
+        };
+        focusCreatedEditor();
+        globalThis.queueMicrotask(focusCreatedEditor);
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          focusCreatedEditor();
+          window.setTimeout(focusCreatedEditor, 60);
+        }));
+      }
     }
     refreshStatusBar();
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
@@ -3129,8 +3150,10 @@ export async function activate(ctx) {
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}
   });
-  const dispRunFinishedUI = window.zion.events.on("chat/runFinished", ({ sessionId }) => {
-    try { maybeTriggerChatAutoRename(sessionId); } catch {}
+  const dispRunFinishedUI = window.zion.events.on("chat/runFinished", ({ sessionId, recovered } = {}) => {
+    if (!recovered) {
+      try { maybeTriggerChatAutoRename(sessionId); } catch {}
+    }
     markSessionViewedIfVisible(sessionId);
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     try { refreshSessionsOverlayIfOpen(); } catch {}

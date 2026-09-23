@@ -143,11 +143,15 @@ export function createPluginFileService({
   toolHost,
   dataLocation = null,
   fileClient = null,
+  authorizeRequest = null,
   invocationPrefix = "plugin-file"
 } = {}) {
   if (!toolHost?.invoke) {
     throw new Error("Plugin file service requires a tool host");
   }
+  // An account-aware adapter authorizes the individual leaf path below. Its
+  // root may be a common container for several separately allowed files.
+  const requestRoot = (root, policy) => assertRootAllowed(root, authorizeRequest ? {} : policy);
 
   function boundRequest(fileRoot, sessionId, runContext = {}) {
     const location = typeof dataLocation === "function" ? dataLocation() : dataLocation;
@@ -163,7 +167,7 @@ export function createPluginFileService({
     if (runContext.target?.nodeId && runContext.target.nodeId !== location.nodeId) {
       throw new Error("Plugin data Node conflicts with the requested target");
     }
-    assertRootAllowed(root, runContext.policy);
+    requestRoot(root, runContext.policy);
     return {
       fileRoot: root,
       sessionId: "",
@@ -175,8 +179,10 @@ export function createPluginFileService({
   }
 
   async function requestFile(endpoint, { fileRoot, sessionId, runContext, body, query }) {
-    const root = assertRootAllowed(fileRoot, runContext.policy);
     const params = new URLSearchParams(query || "");
+    const operation = { write: !!body, path: body?.path || params.get("path"), fileRoot };
+    await authorizeRequest?.(runContext, operation);
+    const root = requestRoot(fileRoot, runContext.policy);
     if (dataLocation) params.set("plugin_data_version", "1");
     const payload = await fileClient.request(`${endpoint}?${params}`, {
       method: body ? "POST" : "GET",
@@ -191,6 +197,7 @@ export function createPluginFileService({
         }
       }
     });
+    await authorizeRequest?.(runContext, operation);
     if (dataLocation && payload?.plugin_data_version !== 1) {
       throw new Error("Plugin data file adapter is unavailable; update the data Node Connector");
     }
@@ -203,7 +210,11 @@ export function createPluginFileService({
     runContext = {},
     preset = "read-only"
   }) {
-    const root = assertRootAllowed(fileRoot, runContext.policy);
+    await authorizeRequest?.(
+      runContext,
+      { write: preset !== "read-only", path: args.path, fileRoot }
+    );
+    const root = requestRoot(fileRoot, runContext.policy);
     const parentSessionIds = [...new Set(
       Array.isArray(runContext.policy?.allowedTerminalSessionIds)
         ? runContext.policy.allowedTerminalSessionIds.map(String).filter(Boolean)
@@ -246,6 +257,7 @@ export function createPluginFileService({
       attemptId: runContext.attemptId || `${invocationPrefix}:attempt`,
       sessionId: runContext.sessionId || "",
       projectId: runContext.projectId || "",
+      ...(runContext.principal ? { principal: runContext.principal } : {}),
       ...(runContext.target || target ? {
         target: { ...(runContext.target || target) }
       } : {}),
@@ -270,7 +282,7 @@ export function createPluginFileService({
       runContext = {}
     } = {}) {
       ({ fileRoot, sessionId, runContext } = boundRequest(fileRoot, sessionId, runContext));
-      const root = assertRootAllowed(fileRoot, runContext.policy);
+      const root = requestRoot(fileRoot, runContext.policy);
       const out = {};
       const missing = [];
       for (const [key, relativePath] of Object.entries(files || {})) {
@@ -325,7 +337,7 @@ export function createPluginFileService({
       runContext = {}
     } = {}) {
       ({ fileRoot, sessionId, runContext } = boundRequest(fileRoot, sessionId, runContext));
-      const root = assertRootAllowed(fileRoot, runContext.policy);
+      const root = requestRoot(fileRoot, runContext.policy);
       const written = [];
       for (const [key, spec] of Object.entries(files || {})) {
         const relativePath = typeof spec === "string" ? key : spec?.relativePath;

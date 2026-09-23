@@ -4,28 +4,40 @@ import { join } from "node:path";
 import { EditorState, StateEffect, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { HocuspocusProvider } from "@hocuspocus/provider";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import {
   createRuntimeCollaborationService
 } from "../apps/runtime/src/collaboration-service.mjs";
-import { createRuntimeServer } from "../apps/runtime/src/server.mjs";
-import { SqliteRunStore } from "../apps/runtime/src/sqlite-run-store.mjs";
+import { PostgresRunStore } from "../apps/runtime/src/postgres-run-store.mjs";
 import {
-  SqliteWorkbenchStateStore
-} from "../apps/runtime/src/sqlite-workbench-state-store.mjs";
+  PostgresWorkbenchStateStore
+} from "../apps/runtime/src/postgres-workbench-state-store.mjs";
+import { createRuntimeServer } from "../apps/runtime/src/server.mjs";
+import {
+  createPostgresTestDatabase
+} from "../apps/runtime/tests/helpers/postgres-test-database.mjs";
 import { createAgentExecutor } from "../packages/runtime/src/index";
 import {
   createSessionCollaborationManager
 } from "../extensions/dev.session-manager/collaboration-client.js";
 
 const resources: Array<any> = [];
+let database: any;
 
-function waitFor(predicate: () => boolean, timeoutMs = 3_000) {
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("root_collaboration");
+});
+
+afterAll(async () => {
+  await database.close();
+});
+
+function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 3_000) {
   const startedAt = Date.now();
   return new Promise<void>((resolve, reject) => {
-    const poll = () => {
-      if (predicate()) {
+    const poll = async () => {
+      if (await predicate()) {
         resolve();
         return;
       }
@@ -82,19 +94,21 @@ afterEach(async () => {
     try { resource.editorB?.dispose(); } catch {}
     try { await resource.collaboration?.close(); } catch {}
     try { await resource.server?.close(); } catch {}
-    try { resource.workbenchState?.close(); } catch {}
-    try { resource.runs?.close(); } catch {}
+    try { await resource.workbenchState?.close(); } catch {}
+    try { await resource.runs?.close(); } catch {}
     rmSync(resource.directory, { recursive: true, force: true });
   }
 });
 
 describe("Workbench collaboration E2E", () => {
-  it("synchronizes two CodeMirror editors through Runtime and SQLite", async () => {
+  it("synchronizes two CodeMirror editors through Runtime and PostgreSQL", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-workbench-collab-e2e-"));
-    const path = join(directory, "runtime.sqlite3");
-    const runs = new SqliteRunStore(path);
-    const workbenchState = new SqliteWorkbenchStateStore(path);
-    workbenchState.createSession({
+    const spaceId = database.nextSpaceId();
+    const runs = new PostgresRunStore(database.pool, { spaceId });
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, {
+      spaceId
+    });
+    await workbenchState.createSession({
       id: "editor-session",
       title: "Editors",
       text: "shared"
@@ -187,8 +201,8 @@ describe("Workbench collaboration E2E", () => {
     });
 
     await waitFor(() => editorB.getValue() === "shared document");
-    await waitFor(() =>
-      workbenchState.readSession("editor-session").text === "shared document"
+    await waitFor(async () =>
+      (await workbenchState.readSession("editor-session")).text === "shared document"
     );
     expect(editorA.getValue()).toBe("shared document");
 
@@ -203,8 +217,17 @@ describe("Workbench collaboration E2E", () => {
       && editorA.getValue().includes("A")
       && editorA.getValue().includes("B")
     );
-    await waitFor(() =>
-      workbenchState.readSession("editor-session").text === editorA.getValue()
+    await waitFor(async () =>
+      (await workbenchState.readSession("editor-session")).text === editorA.getValue()
+    );
+
+    editorA.getView().dispatch({
+      changes: { from: 0, to: editorA.getValue().length, insert: "" }
+    });
+    await waitFor(async () =>
+      editorA.getValue() === ""
+      && editorB.getValue() === ""
+      && (await workbenchState.readSession("editor-session")).text === ""
     );
   });
 });

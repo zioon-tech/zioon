@@ -15,7 +15,7 @@
 当前最正确的决策不是某一个 Span，而是职责分层：
 
 ```text
-Runtime SqliteRunStore
+Runtime PostgresRunStore
   = 执行事实、顺序、恢复、回放、Transcript、Checkpoint、Tool Receipt
 
 Workbench Run Ledger
@@ -74,7 +74,7 @@ dev.observability Tool + Skill
 - [`packages/runtime/src/agent-engine.ts`](../../packages/runtime/src/agent-engine.ts)
 - [`packages/runtime/src/openai-compatible-engine.ts`](../../packages/runtime/src/openai-compatible-engine.ts)
 - [`packages/runtime/src/telemetry.ts`](../../packages/runtime/src/telemetry.ts)
-- [`apps/runtime/src/sqlite-run-store.mjs`](../../apps/runtime/src/sqlite-run-store.mjs)
+- [`apps/runtime/src/postgres-run-store.mjs`](../../apps/runtime/src/postgres-run-store.mjs)
 - [`apps/runtime/src/runtime-tool-broker.mjs`](../../apps/runtime/src/runtime-tool-broker.mjs)
 - [`apps/runtime/src/telemetry/bootstrap.mjs`](../../apps/runtime/src/telemetry/bootstrap.mjs)
 - [`apps/runtime/src/telemetry/export-policy.mjs`](../../apps/runtime/src/telemetry/export-policy.mjs)
@@ -128,7 +128,7 @@ Jaeger 链路可用。
 以一个 2～3 ms 的纯内存 Run 为分母计算百分比也不合理。正式门禁应同时看：
 
 - 每 Attempt 增加的绝对 CPU/墙钟时间；
-- 真实 SQLite 和 SSE 下的 p95/p99；
+- 真实 PostgreSQL 和 SSE 下的 p95/p99；
 - 并发 Run 的 event-loop lag；
 - exporter queue 丢弃量；
 - RSS 稳态和启动耗时；
@@ -143,7 +143,7 @@ flowchart LR
   EXEC[Agent Executor]
   MODEL[OpenAI-compatible Engine]
   BROKER[Runtime Tool Broker]
-  STORE[(SqliteRunStore)]
+  STORE[(PostgresRunStore)]
   SDK[OTel SDK]
   COLLECTOR[OTel Collector]
   JAEGER[(Jaeger)]
@@ -172,7 +172,7 @@ flowchart LR
 
 | 组件 | 位置 | 性质 |
 |---|---|---|
-| Runtime RunStore | `apps/runtime/src/sqlite-run-store.mjs` | 服务端持久事实源 |
+| Runtime RunStore | `apps/runtime/src/postgres-run-store.mjs` | 服务端持久事实源 |
 | Workbench Run Ledger | `src/core/run-ledger.ts` | 浏览器本地、有界、面向 UI 的索引 |
 
 后续文档建议统一称前者为“Canonical Run Journal / Runtime RunStore”，后者为
@@ -183,7 +183,7 @@ flowchart LR
 
 ### 4.1 RunStore 与 OTel 的职责没有混淆
 
-Runtime 事件先在 SQLite 事务中追加并更新 Run 快照，再通知订阅者：
+Runtime 事件先在 PostgreSQL 事务中追加并更新 Run 快照，再通知订阅者：
 
 - 每 Run 严格递增 sequence；
 - `runtime_run_events` 与 `runtime_runs` 在同一事务更新；
@@ -342,12 +342,12 @@ Observability 插件也不应增加修复或部署 Tool。它只提供结构化�
 + credential acquire/release
 + SSE 解析
 + 每次 yield 后的调用方等待
-+ 每个 delta 的 SQLite FULL 事务
++ 每个 delta 的 PostgreSQL FULL 事务
 + 其他 consumer backpressure
 ```
 
 诊断投影现在把整个 `chat` Span 标记为 `kind=model`，并用它判断
-`dominant_stage`。当 SQLite 或消费方变慢时，系统可能错误地告诉用户
+`dominant_stage`。当 PostgreSQL 或消费方变慢时，系统可能错误地告诉用户
 “模型阶段主导”。
 
 TTFC 属性相对可信，因为它从 transport 发起到首个解析 chunk 计算；但总
@@ -676,7 +676,7 @@ projector 优先按 `gen_ai.operation.name` 识别，Span name 只作为兼容�
 - “模型为什么慢”：只能看到 TTFC 和混有 consumer/persistence wait 的 wall time；
 - “为什么 429/401/5xx”：HTTP status 在 Trace 中，但 Agent projection 没有返回；
 - “为什么工具被拒绝”：主要 policy denial 路径没有进入 projection；
-- “为什么 Runtime 空转”：Context、SQLite、projection 没有独立 Span；
+- “为什么 Runtime 空转”：Context、PostgreSQL、projection 没有独立 Span；
 - “为什么远端工具慢”：Node/Device 子阶段未埋点；
 - “为什么界面晚出现/顺序错”：浏览器、Yjs 和文档投影未埋点；
 - “为什么这次和上次不同”：没有 Run 列表、Attempt 历史或聚合比较 API。

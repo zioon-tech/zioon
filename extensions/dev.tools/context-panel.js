@@ -147,6 +147,31 @@ function shouldTreatUnknownContextPathAsFolder(path) {
   return !/\.[^/.]+$/.test(name);
 }
 
+export function readCatalogBackedContextFile(path, catalog = window.zion?.state?.get?.("skills.catalog")) {
+  const target = stripLineSuffix(String(path || "").trim()).replace(/^file:\/\//, "");
+  if (!target) return null;
+  for (const skill of Array.isArray(catalog) ? catalog : []) {
+    const variants = [skill, ...(Array.isArray(skill?.sourceVariants) ? skill.sourceVariants : [])];
+    for (const variant of variants) {
+      const files = [
+        variant?.runtimeFile,
+        variant?.sourceFile,
+        variant?.file,
+        variant?.path ? `${String(variant.path).replace(/\/+$/, "")}/SKILL.md` : ""
+      ].map((value) => String(value || "").replace(/^file:\/\//, "")).filter(Boolean);
+      if (!files.includes(target)) continue;
+      const content = typeof variant?.body === "string"
+        ? variant.body
+        : typeof skill?.body === "string"
+          ? skill.body
+          : "";
+      if (!content) continue;
+      return { kind: "text", content, size: content.length };
+    }
+  }
+  return null;
+}
+
 function createContextPanel(container) {
   const root = document.createElement("div");
   root.className = "zion-context-panel";
@@ -505,7 +530,8 @@ function createContextPanel(container) {
       activeFileTabId = editorCore.getActiveTabId();
       renderPreviewOnly();
 
-      const file = await getProvider(sourceId).readFile(node);
+      const file = readCatalogBackedContextFile(path)
+        || await getProvider(sourceId).readFile(node);
 
       const latest = openFileTabs.get(tabId);
       if (!latest || latest.token !== token) {
@@ -547,7 +573,8 @@ function createContextPanel(container) {
       const sourceId = existingTab.sourceId || await ensureRevealSourceForPath(path, item?.sourceId || inferFileSource());
         const node = createContextFileNode(path, sourceId, existingTab.title || displayFileName(path));
 
-      const file = await getProvider(sourceId).readFile(node);
+      const file = readCatalogBackedContextFile(path)
+        || await getProvider(sourceId).readFile(node);
 
       const current = openFileTabs.get(tabId);
       if (!current || current.token !== token) {

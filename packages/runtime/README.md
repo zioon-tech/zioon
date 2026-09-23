@@ -43,6 +43,6 @@ npm test -- --run packages/runtime/tests/agent-engine.test.ts
 
 This is the host-neutral execution core. It includes protocol types, the Agent
 executor, cancellation, an OpenAI-compatible Engine adapter, and an in-memory Run
-Store. HTTP APIs, SQLite, concrete network transports, Runtime plugins, and
+Store. HTTP APIs, PostgreSQL, concrete network transports, Runtime plugins, and
 Workbench compatibility remain outside this package and are composed by
 `apps/runtime` or client adapters.

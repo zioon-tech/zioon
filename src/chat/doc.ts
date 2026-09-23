@@ -7,15 +7,19 @@ import {
   sanitizeCardMarkerId,
   stripAssistantBlockIdComment
 } from "./restore";
+import { parseStandaloneImageLine } from "../editor/image-model";
 import { isConversationViewportFollowing } from "./conversation-viewport.js";
 import { isContinuationBoundaryLine } from "./session-document-format.js";
 
 const ASSISTANT_ROLE_RE = /^\s*assistant\s+/;
 const ANY_ROLE_RE = /^\s*(system|user|assistant|tool)\s+/;
 const MESSAGE_ROLE_RE = /^(system|user|assistant)\s+(.*)$/;
-const IMAGE_LINE_RE = /^!\[.*\]\((.*)\)$/;
 const WIDGET_STUB_RE = /^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->$/i;
 const TOOL_WIDGET_STUB_RE = /^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?$/i;
+
+type ConversationInputPart =
+  | { type: "text-line"; text: string }
+  | { type: "image"; url: string };
 
 type StateLike = {
   set<T = unknown>(key: string, value: T): void;
@@ -189,20 +193,42 @@ export function ensureTrailingUserPromptInDocText(
   return { text: lines.join("\n"), userLine: plan.userLine, changed: true };
 }
 
-function buildMessageContent(textLines: string[], images: string[]): string | ChatMessagePart[] {
+function isSupportedImageInput(source: string): boolean {
+  return /^https?:\/\//i.test(source)
+    || source.startsWith("app://img/")
+    || source.startsWith("zion-asset://");
+}
+
+function buildMessageContent(parts: ConversationInputPart[]): string | ChatMessagePart[] {
   const content: ChatMessagePart[] = [];
-  if (textLines.length > 0) {
-    content.push({ type: "text", text: textLines.join("\n").trim() });
-  }
-  for (const img of images) {
-    if (img.startsWith("http") || img.startsWith("app://")) {
-      content.push({ type: "image_url", image_url: { url: img } });
+  let textLines: string[] = [];
+  const flushText = () => {
+    const text = textLines.join("\n").trim();
+    if (text) content.push({ type: "text", text });
+    textLines = [];
+  };
+  for (const part of parts) {
+    if (part.type === "text-line") {
+      textLines.push(part.text);
+    } else {
+      flushText();
+      content.push({ type: "image_url", image_url: { url: part.url } });
     }
   }
+  flushText();
   if (content.length === 1 && content[0]?.type === "text") {
     return (content[0] as { type: "text"; text: string }).text;
   }
   return content;
+}
+
+function fenceMarker(line: string): { character: "`" | "~"; length: number } | null {
+  const match = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+  if (!match) return null;
+  return {
+    character: match[1][0] as "`" | "~",
+    length: match[1].length
+  };
 }
 
 function focusUserPromptNoScroll(editor: EditorProxy, line: number, ch: number): boolean {
@@ -256,30 +282,49 @@ export function parseMessages(content: string): ChatMessage[] {
   const lines = String(content || "").split("\n");
   const messages: Array<{ role: string; content: string | ChatMessagePart[] }> = [];
   let currentRole = "user";
-  let currentContent: string[] = [];
-  let currentImages: string[] = [];
+  let currentParts: ConversationInputPart[] = [];
+  let activeFence: { character: "`" | "~"; length: number } | null = null;
+  const flushMessage = () => {
+    if (!currentParts.length) return;
+    const messageContent = buildMessageContent(currentParts);
+    if (typeof messageContent !== "string" && messageContent.length === 0) {
+      currentParts = [];
+      return;
+    }
+    messages.push({ role: currentRole, content: messageContent });
+    currentParts = [];
+  };
 
   for (const line of lines) {
-    const roleMatch = line.match(MESSAGE_ROLE_RE);
-    const imageMatch = line.match(IMAGE_LINE_RE);
     const trimmed = line.trim();
+    const marker = fenceMarker(line);
+    if (activeFence) {
+      currentParts.push({ type: "text-line", text: line });
+      if (
+        marker
+        && marker.character === activeFence.character
+        && marker.length >= activeFence.length
+      ) {
+        activeFence = null;
+      }
+      continue;
+    }
+    if (marker) {
+      activeFence = marker;
+      currentParts.push({ type: "text-line", text: line });
+      continue;
+    }
 
     if (WIDGET_STUB_RE.test(trimmed)) continue;
     if (TOOL_WIDGET_STUB_RE.test(trimmed)) continue;
 
     if (isContinuationBoundaryLine(line)) {
-      if (currentContent.length > 0 || currentImages.length > 0) {
-        messages.push({
-          role: currentRole,
-          content: buildMessageContent(currentContent, currentImages)
-        });
-        currentContent = [];
-        currentImages = [];
-      }
+      flushMessage();
       currentRole = "user";
       continue;
     }
 
+    const roleMatch = line.match(MESSAGE_ROLE_RE);
     if (roleMatch) {
       const contentPart = roleMatch[1] === "assistant"
         ? stripAssistantBlockIdComment(roleMatch[2])
@@ -287,33 +332,26 @@ export function parseMessages(content: string): ChatMessage[] {
       const body = contentPart.trim();
       if (/^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/i.test(body)) continue;
       if (/^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/i.test(body)) continue;
-      if (currentContent.length > 0 || currentImages.length > 0) {
-        messages.push({
-          role: currentRole,
-          content: buildMessageContent(currentContent, currentImages)
-        });
-        currentContent = [];
-        currentImages = [];
-      }
+      flushMessage();
       currentRole = roleMatch[1];
-      if (contentPart.trim()) currentContent.push(contentPart);
+      if (contentPart.trim()) {
+        currentParts.push({ type: "text-line", text: contentPart });
+      }
       continue;
     }
 
-    if (imageMatch) {
-      currentImages.push(imageMatch[1]);
+    const image = currentRole === "user"
+      ? parseStandaloneImageLine(line)
+      : null;
+    if (image && isSupportedImageInput(image.src)) {
+      currentParts.push({ type: "image", url: image.src });
       continue;
     }
 
-    currentContent.push(line);
+    currentParts.push({ type: "text-line", text: line });
   }
 
-  if (currentContent.length > 0 || currentImages.length > 0) {
-    messages.push({
-      role: currentRole,
-      content: buildMessageContent(currentContent, currentImages)
-    });
-  }
+  flushMessage();
 
   return messages;
 }

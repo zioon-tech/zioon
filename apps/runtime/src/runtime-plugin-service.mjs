@@ -72,22 +72,29 @@ function createPluginStateNamespace({
   pluginId,
   namespace,
   memory,
-  stateStore
+  stateStore,
+  persistentState,
+  trackWrite
 }) {
   if (stateStore?.readKV && stateStore?.writeKV) {
     const prefix = `${pluginStatePrefix(pluginId, namespace)}.`;
     return Object.freeze({
-      get: (stateKey) =>
-        stateStore.readKV(pluginStateKey(pluginId, namespace, stateKey))?.value,
+      get: (stateKey) => persistentState.get(
+        pluginStateKey(pluginId, namespace, stateKey)
+      ),
       set: (stateKey, value) => {
-        stateStore.writeKV(pluginStateKey(pluginId, namespace, stateKey), value);
+        const key = pluginStateKey(pluginId, namespace, stateKey);
+        persistentState.set(key, clone(value));
+        trackWrite(pluginId, () => stateStore.writeKV(key, value));
         return value;
       },
       delete: (stateKey) => {
-        stateStore.writeKV(pluginStateKey(pluginId, namespace, stateKey), null);
+        const key = pluginStateKey(pluginId, namespace, stateKey);
+        persistentState.set(key, null);
+        trackWrite(pluginId, () => stateStore.writeKV(key, null));
         return true;
       },
-      entries: () => Object.entries(stateStore.readSnapshot()?.snapshot?.kv || {})
+      entries: () => [...persistentState.entries()]
         .filter(([key]) => key.startsWith(prefix))
         .map(([key, value]) => [key.slice(prefix.length), value])
     });
@@ -285,6 +292,7 @@ async function loadManifest(pluginDirectory) {
     id: normalized.id,
     version: normalized.version,
     directory: pluginDirectory,
+    manifest,
     runtimeEntry,
     runtimeApiVersion: normalized.runtimeApiVersion,
     manifestVersion: normalized.manifestVersion,
@@ -414,6 +422,9 @@ export class RuntimePluginService {
     this.failures = [];
     this.statuses = new Map();
     this.namespacedState = new Map();
+    this.persistentState = new Map();
+    this.stateWrites = new Set();
+    this.stateWriteTail = Promise.resolve();
     this.eventHandlers = new Map();
   }
 
@@ -422,6 +433,15 @@ export class RuntimePluginService {
       throw new Error(`Runtime Plugin Service cannot start from ${this.state}`);
     }
     this.state = "starting";
+
+    if (this.stateStore?.readSnapshot) {
+      const persisted = await this.stateStore.readSnapshot();
+      for (const [key, value] of Object.entries(
+        persisted?.snapshot?.kv || {}
+      )) {
+        this.persistentState.set(key, clone(value));
+      }
+    }
 
     const discovery = await discoverRuntimePluginManifests(this.pluginRoots);
     const discoveryFailureIds = new Set();
@@ -606,7 +626,10 @@ export class RuntimePluginService {
               pluginId: plugin.id,
               namespace: name,
               memory: this.namespacedState,
-              stateStore: this.stateStore
+              stateStore: this.stateStore,
+              persistentState: this.persistentState,
+              trackWrite: (pluginId, write) =>
+                this.trackStateWrite(pluginId, write)
             })
           });
           pluginContext.events = Object.freeze({
@@ -868,6 +891,19 @@ export class RuntimePluginService {
     return this.tools.map(toolDefinition);
   }
 
+  getActivePluginInfos() {
+    if (this.state !== "started") {
+      throw new Error("Runtime Plugin Service is not started");
+    }
+    return this.activePlugins.map(({ plugin }) => ({
+      id: plugin.id,
+      version: plugin.version,
+      directory: plugin.directory,
+      origin: plugin.origin,
+      manifest: clone(plugin.manifest)
+    }));
+  }
+
   hasTool(name) {
     return this.toolByName.has(String(name || ""));
   }
@@ -913,6 +949,7 @@ export class RuntimePluginService {
         attemptId: invocation.attemptId,
         sessionId: invocation.sessionId,
         projectId: invocation.projectId,
+        principal: invocation.principal,
         policy: invocation.policy,
         toolCall: invocation.toolCall,
         signal
@@ -974,8 +1011,27 @@ export class RuntimePluginService {
     this.documentProjectors = [];
     this.tools = [];
     this.toolByName.clear();
+    if (this.stateWrites.size) {
+      await Promise.allSettled([...this.stateWrites]);
+    }
     this.state = "stopped";
     return this.snapshot();
+  }
+
+  trackStateWrite(pluginId, write) {
+    const pending = this.stateWriteTail.then(write)
+      .catch((error) => {
+        const failure = pluginFailure(pluginId, "state", error);
+        this.failures.push(failure);
+        this.logger({
+          level: "error",
+          pluginId,
+          message: `state: ${failure.message}`
+        });
+      })
+      .finally(() => this.stateWrites.delete(pending));
+    this.stateWriteTail = pending;
+    this.stateWrites.add(pending);
   }
 
   recordFailure(pluginId, phase, error) {

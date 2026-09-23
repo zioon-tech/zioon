@@ -128,7 +128,7 @@ export function createNodeHttpHandler({
       if (request.method === "POST" && url.pathname === "/v1/device-nodes/register") {
         const body = await readJson(request, requestBodyLimit);
         await authorizeRequest(request, body.nodeId, "connect");
-        const node = broker.registerNode(body);
+        const node = await broker.registerNode(body);
         json(response, 200, { node });
         return true;
       }
@@ -137,7 +137,7 @@ export function createNodeHttpHandler({
       if (request.method === "POST" && heartbeatNodeId) {
         await authorizeRequest(request, heartbeatNodeId, "connect");
         const body = await readJson(request, requestBodyLimit);
-        const node = broker.heartbeat(heartbeatNodeId, body.instanceId);
+        const node = await broker.heartbeat(heartbeatNodeId, body.instanceId);
         json(response, 200, { node });
         return true;
       }
@@ -176,7 +176,7 @@ export function createNodeHttpHandler({
       if (request.method === "POST" && resultPath) {
         await authorizeRequest(request, resultPath.nodeId, "connect");
         const body = await readJson(request, requestBodyLimit);
-        const receipt = broker.completeInvocation(
+        const receipt = await broker.completeInvocation(
           resultPath.nodeId,
           body.instanceId,
           resultPath.invocationId,

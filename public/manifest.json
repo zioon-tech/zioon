@@ -1,11 +1,12 @@
 {
-  "name": "Zion Next",
+  "name": "Zion",
   "short_name": "Zion",
-  "description": "Zion Next - A modern editor playground",
+  "description": "Zion AI Workbench",
+  "lang": "zh-CN",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#1e1e2e",
-  "theme_color": "#3a3a58",
+  "theme_color": "#222233",
   "orientation": "any",
   "icons": [
     {
@@ -15,22 +16,10 @@
       "purpose": "any"
     },
     {
-      "src": "/icon-192-v2.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "maskable"
-    },
-    {
       "src": "/icon-512-v2.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
-    },
-    {
-      "src": "/icon-512-v2.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable"
     }
   ],
   "categories": ["productivity", "utilities", "developer-tools"],

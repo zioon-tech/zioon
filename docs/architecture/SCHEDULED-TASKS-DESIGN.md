@@ -9,7 +9,7 @@
 > 用户创建的持久定时任务由 Zion Runtime 作为唯一控制面和执行 owner。插件只负责管理
 > 和观察，不是第二个 scheduler 或执行 worker。
 >
-> **v0.4 实施状态：** 已实现 `local-only` 与 `service-backed`。后者由 Runtime SQLite
+> **v0.4 实施状态：** 已实现 `local-only` 与 `service-backed`。后者由 Runtime PostgreSQL
 > 持久化 Task、occurrence、Run 和 claim lease，并由 Runtime worker 领取任务。
 > local-tools 只执行被 Runtime 策略授权的原子工具调用。
 >
@@ -230,7 +230,7 @@ OpenAI 用 Codex 从零构建百万行代码产品的核心原则：
 ┌──────────────────────────────────────────────────────────────────────┐
 │                       Zion Runtime：控制面 + 默认执行面                │
 │                                                                       │
-│  Task API + SQLite                Scheduler / owner lease             │
+│  Task API + PostgreSQL                Scheduler / owner lease             │
 │  ┌────────────────────┐           ┌─────────────────────────────┐   │
 │  │ Task revisions     │──occurrence│ timezone / DST / misfire /  │   │
 │  │ Run index/events   │           │ overlap / retry / idempotency│   │
@@ -987,8 +987,8 @@ local-only 任务在页面关闭或失去 leader 后不伪装为仍在运行。
 ## 11. 开放问题
 
 1. **Task 主存储与部署边界**
-   - 单用户 local-tools 默认 SQLite 是否足够，还是直接采用 Postgres？
-   - 建议：接口与迁移按 Postgres 设计；开发环境允许 SQLite，但 owner lease 与唯一
+   - 单用户 local-tools 默认 PostgreSQL 是否足够，还是直接采用 Postgres？
+   - 建议：接口与迁移按 Postgres 设计；开发环境允许 PostgreSQL，但 owner lease 与唯一
      occurrence 约束不能依赖进程内 map。
 
 2. **Thread 上下文的增长与冲突**

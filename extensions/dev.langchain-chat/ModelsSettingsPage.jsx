@@ -246,7 +246,7 @@ function saveProviderDraft(providerId, modelId, draft) {
   if (Object.keys(modelDescriptions).length) next.modelDescriptions = modelDescriptions;
   else delete next.modelDescriptions;
   localStorage.setItem(meta.apiKeyKey, String(draft.apiKey || "").trim());
-  saveProviderConfig(meta.configKey, next);
+  return saveProviderConfig(meta.configKey, next);
 }
 
 function emptyCustomDraft() {
@@ -972,6 +972,32 @@ export function ModelsSettingsPage() {
       return selectFallback(activeModel, nextBuiltins, nextCustomRows);
     });
   };
+  const publishConfigChanged = (providerId, modelId, config = {}) => {
+    const active = window.zion?.state?.get?.("chat.activeModel");
+    if (active?.providerId === providerId && active?.modelId === modelId) {
+      const patch = {};
+      for (const field of [
+        "supportsThinking",
+        "supportsThinkingEffort",
+        "thinkingMode",
+        "thinkingEffort",
+        "preservedThinking",
+        "interleavedThinking"
+      ]) {
+        if (config[field] !== undefined) patch[field] = config[field];
+      }
+      window.zion?.state?.set?.("chat.activeModel", {
+        ...active,
+        ...patch
+      });
+    }
+    try {
+      window.zion?.events?.emit?.("models/configChanged", {
+        providerId,
+        modelId
+      });
+    } catch {}
+  };
 
   const setProviderField = (providerId, modelId, field, value) => {
     const key = `${providerId}:${modelId}`;
@@ -1016,9 +1042,9 @@ export function ModelsSettingsPage() {
     }
     setSavingKey(`provider:${providerId}:${modelId}`);
     try {
-      saveProviderDraft(providerId, modelId, draft);
+      const savedConfig = saveProviderDraft(providerId, modelId, draft);
       await refresh();
-      try { window.zion?.events?.emit?.("models/configChanged", { providerId }); } catch {}
+      publishConfigChanged(providerId, modelId, savedConfig);
       setStatus(`${getProviderTitle(providerId)} 配置已保存`);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
@@ -1101,7 +1127,7 @@ export function ModelsSettingsPage() {
       if (customDraft.maxOutputTokens !== "") next.maxOutputTokens = Number(customDraft.maxOutputTokens);
       const saved = await upsertDynamicModel({ modelId: id, config: next });
       await refresh();
-      try { window.zion?.events?.emit?.("models/configChanged", { providerId: "user.dynamic", modelId: id }); } catch {}
+      publishConfigChanged("user.dynamic", id, next);
       setEditingCustomId(id);
       setCustomDraft(draftFromCustomRow({
         id,

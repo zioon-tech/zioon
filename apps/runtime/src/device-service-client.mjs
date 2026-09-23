@@ -70,13 +70,15 @@ export function createDeviceServiceClient({
         : Buffer.from(JSON.stringify(body), "utf8");
       const pluginDataRequest = new URL(path, "http://device.invalid").searchParams.get("plugin_data_version") === "1";
 
-      if (!nodeBroker && dataFiles && serviceName === "local-tools") {
+      if (dataFiles && serviceName === "local-tools" && (pluginDataRequest || !nodeBroker)) {
         cancellationSignal(runContext).throwIfCancelled();
         const url = new URL(path, "http://device.invalid");
         const payload = await dataFiles.handle(url.pathname.replace(/^\/files\//, ""),
           body || Object.fromEntries(url.searchParams), { signal: cancellationSignal(runContext) });
         if (payload) return payload;
-        if (pluginDataRequest) throw new Error("Path is outside configured plugin data storage");
+        if (pluginDataRequest || !nodeBroker) {
+          throw new Error("Path is outside configured plugin data storage");
+        }
       }
 
       if (nodeBroker?.invoke) {
@@ -88,6 +90,7 @@ export function createDeviceServiceClient({
           attemptId: runContext.attemptId || invocationId,
           sessionId: runContext.sessionId || "",
           projectId: runContext.projectId || "",
+          ...(runContext.principal ? { principal: runContext.principal } : {}),
           ...(runContext.target ? { target: runContext.target } : {}),
           policy: {
             preset: "trusted-automation",

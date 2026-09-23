@@ -22,10 +22,10 @@ The ownership rule is:
 | --- | --- | --- |
 | Model profiles and credentials | Runtime | `model-registry.mjs`, `model-profile-store.mjs`, `environment-credential-provider.mjs` |
 | Provider network transport | Runtime | `openai-compatible-engine.ts`, restricted `/v1/model-gateway/proxy` compatibility route |
-| Run, Attempt, Event, checkpoint | Runtime | `SqliteRunStore` |
+| Run, Attempt, Event, checkpoint | Runtime | `PostgresRunStore` |
 | Runtime conversation transcript | Runtime | `runtime_sessions`, `runtime_session_messages` |
-| Workbench session documents/tree/KV/revisions | Runtime | `SqliteWorkbenchStateStore`, `/v1/workbench-state/*` |
-| Scheduled Task, occurrence, Run, lease, clock | Runtime | `SqliteSchedulerStore`, `/v1/scheduler/*` |
+| Workbench session documents/tree/KV/revisions | Runtime | `PostgresWorkbenchStateStore`, `/v1/workbench-state/*` |
+| Scheduled Task, occurrence, Run, lease, clock | Runtime | `PostgresSchedulerStore`, `/v1/scheduler/*` |
 | Scheduled Agent and command execution | Runtime worker | `RuntimeSchedulerWorker` |
 | Files, search, Bash, terminal, SSH, mail, MCP | local-tools | private tool HTTP endpoints |
 | Device/resource discovery | local-tools or Device Connector | `/sessions`, `/machines`, Node protocol |
@@ -96,7 +96,7 @@ The rollout order is:
 4. Point Workbench at `zion.runtime.baseUrl`.
 5. Disable the legacy routes in local-tools.
 
-The old SQLite files are retained as rollback data and are never deleted by the
+The old PostgreSQL files are retained as rollback data and are never deleted by the
 automatic migration.
 
 ## Tool execution
@@ -117,7 +117,7 @@ boundary. Runtime stores a receipt keyed by deterministic `invocationId`, so
 restart or retry replays a completed result instead of repeating a side effect.
 
 `webFetch` is Runtime-native and rejects loopback, private, link-local, and
-metadata targets. `todoWrite` is persisted in Runtime SQLite. The remaining
+metadata targets. `todoWrite` is persisted in Runtime PostgreSQL. The remaining
 capabilities are delegated to local-tools or an authenticated Device Connector.
 
 `interactive.default` enables only read-oriented tools on a fresh or
@@ -127,7 +127,7 @@ the asynchronous Approval Provider required for remote unattended mutation remai
 a separate milestone.
 
 File Artifact and ChangeSet records currently store bounded metadata and text
-diffs in Runtime SQLite. They are queryable projections, not the future external
+diffs in Runtime PostgreSQL. They are queryable projections, not the future external
 binary Artifact Store.
 
 Workbench never claims service-backed Scheduler Runs. Browser-only UI commands

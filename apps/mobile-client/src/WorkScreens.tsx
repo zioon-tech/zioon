@@ -1,3 +1,4 @@
+import { accountCan } from "../../../packages/account-ui/src/client";
 import {
   Activity,
   Bot,
@@ -416,7 +417,7 @@ function SchedulesTab() {
         icon={CalendarClock}
         title="还没有定时任务"
         description="创建自动化后，即使离开页面也会按计划执行。"
-        action={
+        action={accountCan("runtime.manage") &&
           <button className="button primary" type="button" onClick={() => navigate("/scheduler/new")}>
             <Plus size={17} />新建任务
           </button>
@@ -467,6 +468,7 @@ function SchedulesTab() {
               </button>
               <button
                 className="schedule-quick-run"
+                hidden={!accountCan("runtime.manage")}
                 type="button"
                 aria-label={`立即运行 ${task.title}`}
                 disabled={runNow.isPending}
@@ -672,7 +674,7 @@ export function WorkScreen() {
       title="工作"
       subtitle={tab === "overview" ? "运行中心" : tab === "runs" ? "当前运行" : tab === "tasks" ? "Agent 与 Todo" : "自动化"}
       className="work-page"
-      action={tab === "schedules" ? (
+      action={tab === "schedules" && accountCan("runtime.manage") ? (
         <IconButton icon={Plus} label="新建定时任务" onClick={() => navigate("/scheduler/new")} />
       ) : (
         <IconButton
@@ -850,7 +852,7 @@ export function SchedulerTaskDetailScreen() {
       title={taskRecord.title || "定时任务"}
       subtitle={taskRecord.enabled ? "已启用" : "已暂停"}
       back="自动化"
-      action={(
+      action={accountCan("runtime.manage") && (
         <IconButton
           icon={Play}
           label="立即运行"
@@ -935,7 +937,7 @@ export function SchedulerTaskDetailScreen() {
         </div>
       )}
 
-      <div className="scheduler-actions">
+      <div className="scheduler-actions" hidden={!accountCan("runtime.manage")}>
         <button
           className="button"
           type="button"
@@ -1114,6 +1116,7 @@ export function SchedulerRunDetailScreen() {
           className="button flex"
           type="button"
           disabled={rerun.isPending || active}
+          hidden={!accountCan("runtime.manage")}
           onClick={() => rerun.mutate()}
         >
           <RotateCcw size={17} />再次运行
@@ -1238,6 +1241,7 @@ export function RunDetailScreen() {
           className="button danger flex"
           type="button"
           disabled={!running || stop.isPending}
+          hidden={!accountCan("run.execute")}
           onClick={() => stop.mutate()}
         >
           <Square size={15} />停止

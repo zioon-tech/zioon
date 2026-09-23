@@ -234,6 +234,7 @@ export function createSessionsListRendererFactory(deps) {
     getFlatSessionResults,
     getViewMode,
     getSessionTagRecords,
+    rootDropHost,
     onSwitchSession,
     onAfterChange,
     viewId = null
@@ -275,6 +276,7 @@ export function createSessionsListRendererFactory(deps) {
     const PENDING_INLINE_EDIT_KEY = "sessions.pendingInlineEdit";
     let pendingEdit = null; // { id, type: "session"|"folder", isNew?: boolean }
     let pendingConfirm = null; // { id, type: "session"|"folder" }
+    let externalRootDropTarget = null;
 
     const getCardTags = (sessionId) => {
       const byPath = new Map();
@@ -872,6 +874,73 @@ export function createSessionsListRendererFactory(deps) {
         try { clearSelection(); } catch {}
         if (rootContextMenu) showContextMenu(rootContextMenu, ev);
       };
+      const readDraggedItems = (ev) => {
+        const rawMulti = ev.dataTransfer?.getData("application/zion-nodes") || "";
+        const rawSingle = ev.dataTransfer?.getData("application/zion-node") || "";
+        if (rawMulti) {
+          const payload = JSON.parse(rawMulti);
+          return Array.isArray(payload.items) ? payload.items : [];
+        }
+        if (rawSingle) {
+          const payload = JSON.parse(rawSingle);
+          return payload?.id
+            ? [{ id: payload.id, type: payload.type || "session" }]
+            : [];
+        }
+        return [];
+      };
+      const moveDraggedItemsToRoot = (ev) => {
+        let moved = false;
+        try {
+          for (const item of readDraggedItems(ev)) {
+            if (item.id && item.id !== "root" && moveNode(item.id, "root")) {
+              moved = true;
+            }
+          }
+          if (moved) {
+            window.zion.state.set("sessions.catalog", getIndex());
+            render();
+            if (typeof onAfterChange === "function") onAfterChange();
+          }
+        } catch {}
+        return moved;
+      };
+      const rootDropTarget = rootDropHost?.querySelector?.(
+        ":scope > .zion-sessions-root-drop-target"
+      ) || document.createElement("div");
+      rootDropTarget.className = [
+        "zion-sessions-root-drop-target",
+        rootDropHost ? "is-header-slot" : ""
+      ].filter(Boolean).join(" ");
+      rootDropTarget.setAttribute("role", "button");
+      rootDropTarget.setAttribute("aria-label", t("ui.moveToRoot", "Move to top level"));
+      rootDropTarget.innerHTML = `${iconHtml("arrow-up", 13)}<span>${t("ui.moveToRoot", "Move to top level")}</span>`;
+      const setRootDropTargetVisible = (visible) => {
+        rootDropTarget.classList.toggle("is-visible", visible);
+        listEl.classList.toggle("is-dragging-nodes", visible);
+      };
+      rootDropTarget.ondragenter = (ev) => {
+        ev.preventDefault();
+        rootDropTarget.classList.add("is-drop-target");
+      };
+      rootDropTarget.ondragover = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        rootDropTarget.classList.add("is-drop-target");
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+      };
+      rootDropTarget.ondragleave = () => {
+        rootDropTarget.classList.remove("is-drop-target");
+      };
+      rootDropTarget.ondrop = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        rootDropTarget.classList.remove("is-drop-target");
+        setRootDropTargetVisible(false);
+        moveDraggedItemsToRoot(ev);
+      };
+      (rootDropHost || listEl).appendChild(rootDropTarget);
+      externalRootDropTarget = rootDropHost ? rootDropTarget : null;
 
       listEl.onclick = (ev) => {
         if (ev.target?.closest?.(".zion-session-row")) return;
@@ -889,6 +958,13 @@ export function createSessionsListRendererFactory(deps) {
           openRootContextMenu(ev);
         };
       }
+      listEl.ondragstart = () => {
+        setRootDropTargetVisible(true);
+      };
+      listEl.ondragend = () => {
+        setRootDropTargetVisible(false);
+        rootDropTarget.classList.remove("is-drop-target");
+      };
       listEl.ondragover = (ev) => {
         if (ev.target?.closest?.(".zion-session-row")) return;
         ev.preventDefault();
@@ -897,29 +973,9 @@ export function createSessionsListRendererFactory(deps) {
       listEl.ondrop = (ev) => {
         if (ev.target?.closest?.(".zion-session-row")) return;
         ev.preventDefault();
-        try {
-          const rawMulti = ev.dataTransfer?.getData("application/zion-nodes") || "";
-          const rawSingle = ev.dataTransfer?.getData("application/zion-node") || "";
-          let items = [];
-          if (rawMulti) {
-            const payload = JSON.parse(rawMulti);
-            items = Array.isArray(payload.items) ? payload.items : [];
-          } else if (rawSingle) {
-            const payload = JSON.parse(rawSingle);
-            if (payload && payload.id) items = [{ id: payload.id, type: payload.type || "session" }];
-          }
-          let moved = false;
-          for (const it of items) {
-            if (it.id && it.id !== "root") {
-              if (moveNode(it.id, "root")) moved = true;
-            }
-          }
-          if (moved) {
-            window.zion.state.set("sessions.catalog", getIndex());
-            render();
-            if (typeof onAfterChange === "function") onAfterChange();
-          }
-        } catch {}
+        setRootDropTargetVisible(false);
+        rootDropTarget.classList.remove("is-drop-target");
+        moveDraggedItemsToRoot(ev);
       };
 
       // restore transitions in next frame
@@ -1429,7 +1485,7 @@ export function createSessionsListRendererFactory(deps) {
           } catch {}
         }
 
-        if (depth < 0 || isFolderOpen(folder.id)) {
+        if (depth < 0 || query || sessionFilter || isFolderOpen(folder.id)) {
           const children = (folder.children || []).slice();
 
           const getSessionDisplayTitle = (node) => {
@@ -1905,6 +1961,8 @@ export function createSessionsListRendererFactory(deps) {
       render.dispose = () => {
         try { activeCommentDisposable?.dispose?.(); } catch {}
         try { window.removeEventListener("zion:comments-active-changed", updateActiveCommentChildRows); } catch {}
+        try { externalRootDropTarget?.remove(); } catch {}
+        externalRootDropTarget = null;
         disposeStatusSubscriptions();
       };
 

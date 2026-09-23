@@ -11,8 +11,11 @@ import {
   URL,
   URLSearchParams
 } from "node:url";
+import pg from "pg";
 import * as QRCode from "qrcode";
-import { SqliteAccessStore } from "./sqlite-access-store.mjs";
+import { PostgresAccessStore } from "./postgres-access-store.mjs";
+
+const { Pool } = pg;
 
 const REPOSITORY_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -29,7 +32,8 @@ Options:
   --public-url <https-url>  Use an existing HTTPS reverse proxy
   --local                   Run on this computer without a Tunnel
   --port <port>             Local Runtime port (default 8766)
-  --db <path>               Runtime SQLite path
+  --data-dir <path>         Runtime file data directory
+  --space <id>              Runtime Space ID (or ZION_SPACE_ID)
   --workbench-dist <path>   Use or create a specific Workbench build
   --skip-build              Reuse the current dist/
   --help                    Show this help
@@ -186,11 +190,10 @@ export async function runRemoteLauncher({
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
     throw new Error("Remote Runtime port must be between 1 and 65535");
   }
-  const dbPath = readArg(
+  const dataDirectory = readArg(
     argv,
-    "--db",
-    environment.ZION_RUNTIME_DB
-      || join(homedir(), ".zion-next", "runtime", "runtime.sqlite3")
+    "--data-dir",
+    environment.ZION_RUNTIME_DATA_DIR || join(homedir(), ".zion-next", "runtime")
   );
   const skipBuild = argv.includes("--skip-build");
   const configuredDist = readArg(argv, "--workbench-dist", "");
@@ -198,7 +201,7 @@ export async function runRemoteLauncher({
     configuredDist
     || (skipBuild
       ? join(REPOSITORY_ROOT, "dist")
-      : join(dirname(dbPath), "workbench-dist"))
+      : join(dataDirectory, "workbench-dist"))
   );
   if (!skipBuild) {
     output.write("Building Workbench...\n");
@@ -237,6 +240,10 @@ export async function runRemoteLauncher({
     publicUrl = parsed.origin;
   }
   await assertPortAvailable(port);
+  const databaseUrl = String(environment.ZION_DATABASE_URL || "").trim();
+  const spaceId = readArg(argv, "--space", environment.ZION_SPACE_ID || "");
+  if (!databaseUrl) throw new Error("ZION_DATABASE_URL is required");
+  if (!spaceId) throw new Error("ZION_SPACE_ID or --space is required");
   if (!publicUrl) {
     output.write("Creating secure public link...\n");
     tunnel = startTunnel(port, output);
@@ -249,7 +256,7 @@ export async function runRemoteLauncher({
     join(REPOSITORY_ROOT, "apps/runtime/src/main.mjs"),
     "--host", "127.0.0.1",
     "--port", String(port),
-    "--db", dbPath,
+    "--data-dir", dataDirectory,
     "--workbench-dist", distPath,
     "--runtime-plugins", "dev.session-manager,dev.skills,dev.tools,dev.plugins,dev.terminal-manager,dev.identity,dev.memory,dev.agents,dev.scheduler,dev.langchain-chat,dev.mail,dev.context-compression,dev.observability"
   ], {
@@ -261,7 +268,9 @@ export async function runRemoteLauncher({
       ZION_RUNTIME_PUBLIC_URL: publicUrl,
       ZION_RUNTIME_ALLOWED_ORIGINS: publicUrl,
       ZION_RUNTIME_ENGINE: environment.ZION_RUNTIME_ENGINE || "openai",
-      ZION_RUNTIME_TOOL_MODE: "node"
+      ZION_RUNTIME_TOOL_MODE: "node",
+      ZION_DATABASE_URL: databaseUrl,
+      ZION_SPACE_ID: spaceId
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -285,19 +294,24 @@ export async function runRemoteLauncher({
 
   try {
     await waitForRuntime(`http://127.0.0.1:${port}`, runtime);
-    const accessStore = new SqliteAccessStore(dbPath);
+    const pool = new Pool({
+      connectionString: databaseUrl,
+      application_name: "zion-remote-launcher"
+    });
+    const accessStore = new PostgresAccessStore(pool, { spaceId });
     let pairing;
     try {
-      const hasOwner = accessStore.listDevices().some(
+      const hasOwner = (await accessStore.listDevices()).some(
         (device) => device.kind === "owner" && !device.revokedAt
       );
-      pairing = accessStore.createPairing({
+      pairing = await accessStore.createPairing({
         kind: hasOwner ? "client" : "owner",
         delivery: "cookie",
         label: hasOwner ? "Browser" : "Owner browser"
       });
     } finally {
-      accessStore.close();
+      await accessStore.close();
+      await pool.end();
     }
     const url = pairingUrl(publicUrl, pairing);
     const mobileUrl = pairingUrl(`${publicUrl}/mobile/`, pairing);

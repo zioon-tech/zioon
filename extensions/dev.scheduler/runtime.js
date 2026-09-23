@@ -32,7 +32,7 @@ export function activateRuntimePlugin(context) {
     policy: {
       minimumPreset: "trusted-automation"
     },
-    async invoke(args = {}) {
+    async invoke(args = {}, meta = {}) {
       let action = "";
       try {
         action = String(args.action || "").trim();
@@ -46,13 +46,19 @@ export function activateRuntimePlugin(context) {
           };
         }
         if (action === "list") {
-          return { ok: true, content: ok({ tasks: service.listTasks().map(taskSummary) }) };
+          return {
+            ok: true,
+            content: ok({ tasks: (await service.listTasks()).map(taskSummary) })
+          };
         }
         if (action === "get") {
-          return { ok: true, content: ok({ task: taskDetail(service.getTask(args.task_id)) }) };
+          return {
+            ok: true,
+            content: ok({ task: taskDetail(await service.getTask(args.task_id)) })
+          };
         }
         if (action === "list_runs") {
-          const runs = service.listRuns({
+          const runs = await service.listRuns({
             taskId: String(args.task_id || ""),
             limit: normalizeLimit(args.limit),
             includeDetails: false
@@ -60,11 +66,15 @@ export function activateRuntimePlugin(context) {
           return { ok: true, content: ok({ runs: runs.map(runSummary) }) };
         }
         if (action === "create") {
-          const created = service.createTask(args.task || {});
+          const created = await service.createTask(args.task || {}, meta);
           return { ok: true, content: ok({ created: taskSummary(created) }) };
         }
         if (action === "update") {
-          const updated = service.updateTask(String(args.task_id || ""), args.patch || {});
+          const updated = await service.updateTask(
+            String(args.task_id || ""),
+            args.patch || {},
+            meta
+          );
           return { ok: true, content: ok({ updated: taskSummary(updated) }) };
         }
         if (action === "set_enabled") {
@@ -74,15 +84,21 @@ export function activateRuntimePlugin(context) {
               content: failure(action, "Missing enabled", { code: "VALIDATION_FAILED" })
             };
           }
-          const updated = service.setEnabled(String(args.task_id || ""), args.enabled);
+          const updated = await service.setEnabled(
+            String(args.task_id || ""),
+            args.enabled
+          );
           return { ok: true, content: ok({ updated: taskSummary(updated) }) };
         }
         if (action === "run_now") {
-          return { ok: true, content: ok({ run: service.runNow(String(args.task_id || "")) }) };
+          return {
+            ok: true,
+            content: ok({ run: await service.runNow(String(args.task_id || "")) })
+          };
         }
         if (action === "delete") {
           const id = String(args.task_id || "");
-          service.deleteTask(id);
+          await service.deleteTask(id);
           return { ok: true, content: ok({ id, deleted: true }) };
         }
         return {

@@ -78,7 +78,7 @@ CLOUDFLARE_API_TOKEN=... npx wrangler pages deploy <workbench-dist> \
   --branch <preview-branch>
 ```
 
-Pages 不能运行当前 Node Runtime、SQLite、SSE 或 Hocuspocus 服务。单独部署前端
+Pages 不能运行当前 Node Runtime、PostgreSQL、SSE 或 Hocuspocus 服务。单独部署前端
 只提供静态预览；完整远程访问仍需把 Runtime 部署到外部服务器，并让 Workbench 的
 `/health`、`/v1/*` 与 WebSocket 路径通过同一 HTTPS Origin 到达 Runtime。
 

@@ -13,6 +13,15 @@ describe("sessions tag split header", () => {
     expect(zionIconName("layout-grid")).toBe("layout-grid");
   });
 
+  it("uses dedicated account and Runtime icons instead of the file fallback", () => {
+    for (const name of ["account", "server"]) {
+      expect(hasZionIcon(name)).toBe(true);
+      expect(createZionIconFromCodicon(name).dataset.zionIcon).toBe(name);
+    }
+    expect(createZionIconFromCodicon("debug-disconnect").dataset.zionIcon)
+      .toBe("warning-triangle");
+  });
+
   it("keeps comments and sessions on distinct activity icons", () => {
     const commentsIcon = createZionIconFromCodicon("comment-discussion");
     expect(commentsIcon.classList.contains("codicon-comment-discussion")).toBe(true);

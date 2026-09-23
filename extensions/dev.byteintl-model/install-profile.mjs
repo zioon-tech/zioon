@@ -35,8 +35,8 @@ function defaultProfilePath(environment) {
   if (environment.ZION_RUNTIME_MODEL_PROFILES) {
     return resolve(environment.ZION_RUNTIME_MODEL_PROFILES);
   }
-  if (environment.ZION_RUNTIME_DB) {
-    return join(dirname(resolve(environment.ZION_RUNTIME_DB)), "model-profiles.json");
+  if (environment.ZION_RUNTIME_DATA_DIR) {
+    return join(resolve(environment.ZION_RUNTIME_DATA_DIR), "model-profiles.json");
   }
   return join(homedir(), ".zion-next", "runtime", "model-profiles.json");
 }

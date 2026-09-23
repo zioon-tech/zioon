@@ -127,6 +127,35 @@ describe("LocalToolsReadOnlyBroker", () => {
     expect(url.searchParams.get("session_id")).toBe("terminal-existing");
   });
 
+  it("treats the filesystem root as an unrestricted file root", async () => {
+    const fetchImpl = vi.fn(async () => response({
+      content: "ok",
+      path: "/Users/test/gits/app/file.txt"
+    }));
+    const broker = new LocalToolsBroker({ fetchImpl });
+
+    await expect(broker.invoke(invocation({
+      policy: {
+        preset: "workspace-write",
+        allowedTools: ["read"],
+        fileRoots: ["/"],
+        allowedTerminalSessionIds: []
+      },
+      toolCall: {
+        id: "call-root-file",
+        name: "read",
+        arguments: {
+          path: "/Users/test/gits/app/file.txt"
+        }
+      }
+    }), new CancellationController().signal)).resolves.toMatchObject({
+      ok: true
+    });
+
+    expect(fetchImpl.mock.calls[0][0].searchParams.get("path"))
+      .toBe("/Users/test/gits/app/file.txt");
+  });
+
   it("rejects tools, paths, and terminal sessions outside the Run policy", async () => {
     const fetchImpl = vi.fn();
     const broker = new LocalToolsReadOnlyBroker({ fetchImpl });
@@ -603,7 +632,7 @@ describe("LocalToolsBroker", () => {
     });
   });
 
-  it("enforces trusted Bash prefixes and never disables the sandbox", async () => {
+  it("enforces trusted Bash prefixes and keeps the sandbox by default", async () => {
     const fetchImpl = vi.fn(async () => response({
       ok: true,
       exit_code: 0,
@@ -646,6 +675,40 @@ describe("LocalToolsBroker", () => {
         arguments: { command: "rm -rf /" }
       }
     }, signal)).rejects.toThrow("outside allowed prefixes");
+  });
+
+  it("disables the local-tools sandbox only when explicitly configured", async () => {
+    const fetchImpl = vi.fn(async () => response({
+      ok: true,
+      exit_code: 0,
+      stdout: "passed"
+    }));
+    const broker = new LocalToolsBroker({
+      fetchImpl,
+      allowDangerousCommands: true
+    });
+    await broker.invoke(invocation({
+      policy: {
+        preset: "trusted-automation",
+        allowedTools: ["Bash"],
+        fileRoots: ["/"],
+        allowedCommandPrefixes: [],
+        allowedTerminalSessionIds: []
+      },
+      toolCall: {
+        id: "call-dangerous-bash",
+        name: "Bash",
+        arguments: {
+          command: "rm -f /tmp/zion-permissive-test",
+          cwd: "/tmp"
+        }
+      }
+    }), new CancellationController().signal);
+
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
+      command: "rm -f /tmp/zion-permissive-test",
+      dangerouslyDisableSandbox: true
+    });
   });
 
   it("routes Bash through the sole terminal allowed by the Run policy", async () => {

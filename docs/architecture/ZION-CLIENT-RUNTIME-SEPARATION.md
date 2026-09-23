@@ -164,8 +164,8 @@ Workbench 的选择是用户意图，Runtime 不得静默替换成默认模型�
 | Agent loop 和模型上下文 | Runtime |
 | 模型与服务凭证 | Runtime |
 | Tool execution receipt | Runtime 或 Tool Host |
-| Session 文档、Yjs state、树、KV 与修订历史 | Runtime SQLite |
-| Durable Session Event Feed | Runtime SQLite |
+| Session 文档、Yjs state、树、KV 与修订历史 | Runtime PostgreSQL |
+| Durable Session Event Feed | Runtime PostgreSQL |
 | Yjs 离线副本与 Awareness | Client 本地缓存；非权威 |
 | UI selection、scroll、panel layout | Workbench |
 | Event/Card projection | Workbench，可重建 |
@@ -191,7 +191,7 @@ lastEventSequence
 
 - DOM-free Agent Core；
 - HTTP/SSE；
-- SQLite Run/Event/Checkpoint；
+- PostgreSQL Run/Event/Checkpoint；
 - CLI；
 - abort、timeout 和 resume；
 - 只读 local-tools。
@@ -206,7 +206,7 @@ lastEventSequence
 - Run/Stop；
 - sequence 重连；
 - 页面卸载不终止远端 Run。
-- Workbench Session 状态与 Scheduler 控制面已迁入 Runtime SQLite；
+- Workbench Session 状态与 Scheduler 控制面已迁入 Runtime PostgreSQL；
 - Workbench 通过 durable Session SSE 即时发现外部 Session/Run 变化，并以
   snapshot cursor 断线续接；
 - Workbench、CLI 和未来 Mobile 默认消费 Runtime 合批的 Run projection；
@@ -280,7 +280,7 @@ zion.runtime.baseUrl = http://127.0.0.1:8766
 6. Client 只能投影状态，不能成为 Run owner；
 7. Runtime 可被 CLI 或其他 Client 独立使用；
 8. 多个 Workbench 可实时发现 Session 和 attach 活跃 Run；
-9. 多编辑器并发、离线和重连后 Yjs 文档收敛到 Runtime SQLite。
+9. 多编辑器并发、离线和重连后 Yjs 文档收敛到 Runtime PostgreSQL。
 
 ## 8. 模型配置迁移
 

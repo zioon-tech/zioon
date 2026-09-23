@@ -33,10 +33,11 @@ export const continuationBoundaryField = StateField.define({
   }
 });
 
-function renderPendingContent(element, text, status = "") {
+function renderPendingContent(element, text, status = "", plainText = false) {
   const content = element.querySelector(".zion-pending-assistant-markdown");
   if (!(content instanceof HTMLElement)) return false;
   element.classList.toggle("is-status", !!status);
+  element.classList.toggle("is-plain-stream", plainText && !status);
   content.classList.toggle("is-status-indicator", !!status);
   if (status) {
     element.setAttribute("role", "status");
@@ -46,6 +47,10 @@ function renderPendingContent(element, text, status = "") {
   }
   element.removeAttribute("role");
   element.removeAttribute("aria-label");
+  if (plainText) {
+    content.textContent = String(text || "");
+    return true;
+  }
   try {
     renderMarkdownInto(content, text);
   } catch {
@@ -80,7 +85,8 @@ class PendingAssistantWidget extends WidgetType {
   eq(other) {
     return other.entry.runId === this.entry.runId
       && other.entry.text === this.entry.text
-      && other.entry.status === this.entry.status;
+      && other.entry.status === this.entry.status
+      && other.entry.plainText === this.entry.plainText;
   }
 
   toDOM() {
@@ -93,14 +99,14 @@ class PendingAssistantWidget extends WidgetType {
     tail.className = "zion-pending-assistant-tail";
     tail.setAttribute("aria-hidden", "true");
     element.append(content, tail);
-    renderPendingContent(element, this.entry.text, this.entry.status);
+    renderPendingContent(element, this.entry.text, this.entry.status, this.entry.plainText);
     return element;
   }
 
   updateDOM(element) {
     if (!(element instanceof HTMLElement)) return false;
     element.dataset.runId = this.entry.runId;
-    return renderPendingContent(element, this.entry.text, this.entry.status);
+    return renderPendingContent(element, this.entry.text, this.entry.status, this.entry.plainText);
   }
 
   ignoreEvent() {
@@ -264,6 +270,9 @@ export const pendingAssistantTheme = EditorView.baseTheme({
   },
   ".zion-pending-assistant-output.is-status .zion-pending-assistant-tail": {
     display: "none"
+  },
+  ".zion-pending-assistant-output.is-plain-stream .zion-pending-assistant-markdown": {
+    whiteSpace: "pre-wrap"
   },
   ".zion-pending-assistant-markdown": {
     display: "inline"

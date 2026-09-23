@@ -51,6 +51,12 @@ function parseList(value) {
   )];
 }
 
+function enabledFlag(value) {
+  return ["1", "true", "yes", "on"].includes(
+    String(value || "").trim().toLowerCase()
+  );
+}
+
 const runtimeUrl = readArg(
   "--runtime-url",
   process.env.ZION_RUNTIME_URL || "http://127.0.0.1:8766"
@@ -189,6 +195,7 @@ const toolHost = new LocalToolsDeviceHost({
   baseUrl: localToolsUrl,
   dataFiles,
   additionalRoots,
+  allowDangerousCommands: enabledFlag(process.env.ZION_ALLOW_DANGEROUS),
   accessPolicyProvider: ({ invocation }) =>
     deviceAccess.authorizeInvocation(invocation),
   resourceBindings: {

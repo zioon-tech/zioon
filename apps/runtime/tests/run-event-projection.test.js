@@ -172,6 +172,7 @@ describe("Run event projection", () => {
       data: {
         messageCount: 1,
         toolCount: 1,
+        toolNames: ["read"],
         detailAvailable: true,
         rawEventSequence: 1
       }

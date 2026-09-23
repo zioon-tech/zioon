@@ -1,12 +1,22 @@
 import { createServer } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { CancellationController } from "../../../packages/runtime/src/index";
 import { RuntimeAccessControl } from "../src/access-control.mjs";
 import { NodeBroker } from "../src/node-broker.mjs";
 import { createNodeHttpHandler } from "../src/node-http-handler.mjs";
-import { SqliteAccessStore } from "../src/sqlite-access-store.mjs";
+import { PostgresAccessStore } from "../src/postgres-access-store.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 const resources = [];
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("node_http");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 async function startGateway(token = "device-secret") {
   const broker = new NodeBroker();
@@ -41,7 +51,9 @@ async function startGateway(token = "device-secret") {
 
 async function startPairedGateway() {
   const broker = new NodeBroker();
-  const accessStore = new SqliteAccessStore(":memory:");
+  const accessStore = new PostgresAccessStore(database.pool, {
+    spaceId: database.nextSpaceId()
+  });
   const access = new RuntimeAccessControl({ store: accessStore });
   const handler = createNodeHttpHandler({
     broker,
@@ -106,7 +118,7 @@ afterEach(async () => {
   for (const resource of resources.splice(0)) {
     resource.broker.close();
     await new Promise((resolve) => resource.server.close(resolve));
-    resource.accessStore?.close();
+    await resource.accessStore?.close();
   }
 });
 
@@ -246,11 +258,11 @@ describe("Device node HTTP handler", () => {
 
   it("binds a paired Resource credential to exactly one Node", async () => {
     const gateway = await startPairedGateway();
-    const pairing = gateway.accessStore.createPairing({
+    const pairing = await gateway.accessStore.createPairing({
       kind: "resource",
       delivery: "bearer"
     });
-    const paired = gateway.accessStore.exchangePairing({
+    const paired = await gateway.accessStore.exchangePairing({
       userCode: pairing.userCode,
       deviceId: "node:test"
     });

@@ -88,7 +88,7 @@ fetch the full event through `/events/{rawSequence}`.
 
 ## Persistence boundary
 
-- Raw Run events and canonical transcript are durable in Runtime SQLite.
+- Raw Run events and canonical transcript are durable in Runtime PostgreSQL.
 - Projected deltas are ephemeral and reconstructable.
 - Browser Run Ledger excludes `message.delta` and `reasoning.delta`.
 - Workbench renders pending assistant text as a CodeMirror decoration.

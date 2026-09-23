@@ -45,13 +45,13 @@ export class MemoryRunStore implements RunStore {
     if (!run) throw new Error(`Run not found: ${event.runId}`);
     const events = this.events.get(event.runId) || [];
     const previous = events.at(-1);
-    if (previous && event.sequence !== previous.sequence + 1) {
+    if (previous && event.sequence <= previous.sequence) {
       throw new Error(
-        `Run event sequence conflict: expected ${previous.sequence + 1}, received ${event.sequence}`
+        `Run event sequence conflict: expected greater than ${previous.sequence}, received ${event.sequence}`
       );
     }
-    if (!previous && event.sequence !== 1) {
-      throw new Error(`Run event sequence must start at 1, received ${event.sequence}`);
+    if (!previous && event.sequence < 1) {
+      throw new Error(`Run event sequence must be positive, received ${event.sequence}`);
     }
     events.push(clone(event));
     this.events.set(event.runId, events);
@@ -61,6 +61,9 @@ export class MemoryRunStore implements RunStore {
       updatedAt: event.timestamp,
       ...(patch || {})
     });
+    if (event.type === "run.completed") {
+      this.checkpoints.delete(event.runId);
+    }
   }
 
   async get(runId: string): Promise<RunRecord | null> {
@@ -127,6 +130,9 @@ export class MemoryRunStore implements RunStore {
   async saveCheckpoint(checkpoint: AgentCheckpoint): Promise<void> {
     if (!this.runs.has(checkpoint.runId)) {
       throw new Error(`Run not found: ${checkpoint.runId}`);
+    }
+    if (this.runs.get(checkpoint.runId)?.status === "completed") {
+      throw new Error(`Cannot save a checkpoint for completed Run: ${checkpoint.runId}`);
     }
     const current = this.checkpoints.get(checkpoint.runId);
     if (current && checkpoint.sequence < current.sequence) {

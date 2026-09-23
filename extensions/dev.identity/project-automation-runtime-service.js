@@ -90,6 +90,12 @@ function agentForPhase(phase) {
   return "implementer";
 }
 
+function mapMaybePromise(value, mapper) {
+  return value && typeof value.then === "function"
+    ? value.then(mapper)
+    : mapper(value);
+}
+
 export function createProjectAutomationRuntimeService({
   stateStore,
   readDocument,
@@ -101,6 +107,9 @@ export function createProjectAutomationRuntimeService({
   memoryRoot,
   dataLocation = null,
   interactionProfileId = "interactive.default",
+  authorizeExecution = null,
+  authorizeDelegation = null,
+  revokeDelegation = null,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   logger = () => {},
   now = () => Date.now(),
@@ -110,7 +119,9 @@ export function createProjectAutomationRuntimeService({
   const readState = typeof readDocument === "function"
     ? readDocument
     : stateStore?.readKV
-      ? () => stateStore.readKV(PROJECT_AUTOMATION_RUNTIME_KV_KEY)?.value
+      ? async () => (await stateStore.readKV(
+          PROJECT_AUTOMATION_RUNTIME_KV_KEY
+        ))?.value
       : null;
   const writeState = typeof writeDocument === "function"
     ? writeDocument
@@ -124,7 +135,7 @@ export function createProjectAutomationRuntimeService({
   const readAgentsState = typeof readAgentsDocument === "function"
     ? readAgentsDocument
     : stateStore?.readKV
-      ? () => stateStore.readKV(AGENTS_RUNTIME_KV_KEY)?.value
+      ? async () => (await stateStore.readKV(AGENTS_RUNTIME_KV_KEY))?.value
       : () => inMemoryAgentsDocument;
   const writeAgentsState = typeof writeAgentsDocument === "function"
     ? writeAgentsDocument
@@ -147,34 +158,60 @@ export function createProjectAutomationRuntimeService({
   let timer = null;
   let coordinatorPromise = null;
 
-  const loadDocument = () => normalizeAutomationDocument(readState() || {});
+  const loadDocument = () => mapMaybePromise(
+    readState(),
+    (value) => normalizeAutomationDocument(value || {})
+  );
   const saveDocument = (document) => {
     const normalized = normalizeAutomationDocument(document);
-    writeState(normalized);
-    return normalized;
+    return mapMaybePromise(writeState(normalized), () => normalized);
   };
-  const loadAgentsDocument = () => normalizeAgentsSnapshot(readAgentsState() || {});
+  const loadAgentsDocument = () => mapMaybePromise(
+    readAgentsState(),
+    (value) => normalizeAgentsSnapshot(value || {})
+  );
   const saveAgentsDocument = (document) => {
     const normalized = normalizeAgentsSnapshot(document);
-    writeAgentsState(normalized);
-    return normalized;
+    return mapMaybePromise(writeAgentsState(normalized), () => normalized);
   };
-  const fileRunContext = (projectKey) => ({
+  const approvedExecution = async (projectKey) => {
+    const project = (await loadDocument()).projects[projectKey]
+      || normalizeProjectPolicy();
+    const paths = executionPolicy(fileService, root, projectKey, project);
+    return await authorizeExecution?.({ projectKey, policy: paths.policy })
+      || { policy: paths.policy };
+  };
+  const fileRunContext = async (projectKey) => ({
     runId: `project-automation:${projectKey}`,
     attemptId: `project-automation:${projectKey}`,
     sessionId: `agent-project:${projectKey}`,
     projectId: projectKey,
-    policy: {
-      preset: "workspace-write",
-      fileRoots: [root]
-    }
+    ...(authorizeExecution
+      ? await approvedExecution(projectKey)
+      : { policy: { preset: "workspace-write", fileRoots: [root] } })
   });
+  async function delegate(projectKey, actor) {
+    const project = (await loadDocument()).projects[projectKey]
+      || normalizeProjectPolicy();
+    if (!project.enabled) {
+      await revokeDelegation?.({ projectKey, actor });
+      return { delegated: false, projectKey };
+    }
+    const paths = executionPolicy(fileService, root, projectKey, project);
+    return await authorizeDelegation?.({
+      projectKey,
+      actor,
+      policy: paths.policy,
+      interactionProfileId
+    })
+      || { delegated: false, projectKey };
+  }
 
   async function appendAttention(projectKey, reason, detail = "") {
     const loaded = await fileService.readTextFiles({
       fileRoot: root,
       files: { attention: PROJECT_ATTENTION_PATH },
-      runContext: fileRunContext(projectKey)
+      runContext: await fileRunContext(projectKey)
     });
     const entry = buildAttentionEntry({
       projectKey,
@@ -191,12 +228,15 @@ export function createProjectAutomationRuntimeService({
           content: replaceAttentionEntry(loaded.files.attention, entry)
         }
       },
-      runContext: fileRunContext(projectKey)
+      runContext: await fileRunContext(projectKey)
     });
   }
 
   async function finishProject(projectKey, taskId, completion) {
-    const agentsDocument = loadAgentsDocument();
+    let agentsDocument = loadAgentsDocument();
+    if (agentsDocument && typeof agentsDocument.then === "function") {
+      agentsDocument = await agentsDocument;
+    }
     const task = agentsDocument.tasks.find((item) => item.id === taskId);
     try {
       if (
@@ -213,18 +253,20 @@ export function createProjectAutomationRuntimeService({
           completion,
           now()
         );
-        saveAgentsDocument(finishedTask.snapshot);
+        const write = saveAgentsDocument(finishedTask.snapshot);
+        if (write && typeof write.then === "function") await write;
       }
     } catch (error) {
       logger("warn", `Project Automation Agent task completion failed: ${error.message}`);
     }
-    const current = loadDocument();
+    let current = loadDocument();
+    if (current && typeof current.then === "function") current = await current;
     const policy = current.projects[projectKey] || normalizeProjectPolicy();
     if (policy.activeTaskId !== taskId) return;
     const completedAt = now();
     const succeeded = completion?.status === "completed";
     const error = String(completion?.error || "自动推进失败").trim();
-    saveDocument(updateProjectPolicy(current, projectKey, {
+    const write = saveDocument(updateProjectPolicy(current, projectKey, {
       activeTaskId: "",
       lastCompletedAt: completedAt,
       lastStatus: succeeded ? "success" : "failed",
@@ -232,13 +274,14 @@ export function createProjectAutomationRuntimeService({
       failureCount: succeeded ? 0 : policy.failureCount + 1,
       nextEligibleAt: completedAt + policy.cadenceMinutes * 60_000
     }, completedAt));
+    if (write && typeof write.then === "function") await write;
     if (!succeeded) {
       await appendAttention(projectKey, "run-failed", error);
     }
   }
 
   async function launchProject(projectKey, options = {}) {
-    const current = loadDocument();
+    const current = await loadDocument();
     const key = String(projectKey || "").trim();
     const policy = current.projects[key] || normalizeProjectPolicy();
     if (!key) throw new Error("project_key is required");
@@ -247,7 +290,9 @@ export function createProjectAutomationRuntimeService({
     }
     if (policy.activeTaskId || activeRuns.has(key)) {
       const active = activeRuns.get(key);
-      const task = loadAgentsDocument().tasks.find((item) => item.id === policy.activeTaskId);
+      const task = (await loadAgentsDocument()).tasks.find(
+        (item) => item.id === policy.activeTaskId
+      );
       return {
         status: "running",
         projectKey: key,
@@ -256,6 +301,8 @@ export function createProjectAutomationRuntimeService({
       };
     }
 
+    if (options.actor && authorizeDelegation) await delegate(key, options.actor);
+    const approved = await approvedExecution(key);
     const paths = executionPolicy(fileService, root, key, policy);
     const loaded = await fileService.readTextFiles({
       fileRoot: root,
@@ -263,11 +310,11 @@ export function createProjectAutomationRuntimeService({
         project: projectRelativePath(key),
         index: PROJECT_INDEX_PATH
       },
-      runContext: fileRunContext(key)
+      runContext: await fileRunContext(key)
     });
     if (!String(loaded.files.project || "").trim()) {
       await appendAttention(key, "project-missing");
-      saveDocument(updateProjectPolicy(current, key, {
+      await saveDocument(updateProjectPolicy(current, key, {
         lastStatus: "attention",
         lastError: "Project file is missing",
         nextEligibleAt: now() + policy.cadenceMinutes * 60_000
@@ -279,7 +326,7 @@ export function createProjectAutomationRuntimeService({
     if (readiness.kind === "none") return { status: "idle", projectKey: key };
     if (readiness.kind === "attention") {
       await appendAttention(key, readiness.reason);
-      saveDocument(updateProjectPolicy(current, key, {
+      await saveDocument(updateProjectPolicy(current, key, {
         lastStatus: "attention",
         lastPhase: "",
         lastError: "",
@@ -297,7 +344,7 @@ export function createProjectAutomationRuntimeService({
       nextStep: readiness.nextStep
     });
     const taskId = `project-auto-${key.replace(/[^a-zA-Z0-9_-]+/g, "-")}-${now().toString(36)}`;
-    const created = createAgentTask(loadAgentsDocument(), {
+    const created = createAgentTask(await loadAgentsDocument(), {
       action: "create_task",
       task_id: taskId,
       session_id: `agent-project:${key}`,
@@ -312,7 +359,7 @@ export function createProjectAutomationRuntimeService({
       disallowedTools: [],
       maxTurns: Math.max(1, Math.ceil(policy.maxToolCalls / 4))
     });
-    saveAgentsDocument({
+    await saveAgentsDocument({
       ...created.snapshot,
       tasks: created.snapshot.tasks.map((item) => item.id === taskId ? task : item)
     });
@@ -323,18 +370,19 @@ export function createProjectAutomationRuntimeService({
         parentRunId: options.parentRunId || "",
         parentAttemptId: options.parentAttemptId || "",
         projectId: key,
-        policy: paths.policy
+        policy: approved.policy,
+        principal: approved.principal
       });
     } catch (error) {
       const failedAt = now();
       const message = error?.message || String(error);
-      saveAgentsDocument(finishAgentTaskRun(
-        loadAgentsDocument(),
+      await saveAgentsDocument(finishAgentTaskRun(
+        await loadAgentsDocument(),
         taskId,
         { status: "failed", error: message },
         failedAt
       ).snapshot);
-      saveDocument(updateProjectPolicy(loadDocument(), key, {
+      await saveDocument(updateProjectPolicy(await loadDocument(), key, {
         activeTaskId: "",
         lastCompletedAt: failedAt,
         lastStatus: "failed",
@@ -349,8 +397,8 @@ export function createProjectAutomationRuntimeService({
       }
       throw error;
     }
-    saveAgentsDocument(startAgentTaskRun(
-      loadAgentsDocument(),
+    await saveAgentsDocument(startAgentTaskRun(
+      await loadAgentsDocument(),
       taskId,
       {
         runId: handle.runId,
@@ -360,7 +408,7 @@ export function createProjectAutomationRuntimeService({
       now()
     ).snapshot);
     const startedAt = now();
-    saveDocument(updateProjectPolicy(loadDocument(), key, {
+    await saveDocument(updateProjectPolicy(await loadDocument(), key, {
       activeTaskId: taskId,
       lastRunAt: startedAt,
       lastStatus: "running",
@@ -405,8 +453,8 @@ export function createProjectAutomationRuntimeService({
     if (coordinatorPromise) return coordinatorPromise;
     if (activeRuns.size) return { status: "busy" };
     coordinatorPromise = (async () => {
-      let document = loadDocument();
-      let agentsDocument = loadAgentsDocument();
+      let document = await loadDocument();
+      let agentsDocument = await loadAgentsDocument();
       let agentsChanged = false;
       let documentChanged = false;
       const timestamp = now();
@@ -428,8 +476,8 @@ export function createProjectAutomationRuntimeService({
           agentsChanged = true;
         }
       }
-      if (documentChanged) saveDocument(document);
-      if (agentsChanged) saveAgentsDocument(agentsDocument);
+      if (documentChanged) await saveDocument(document);
+      if (agentsChanged) await saveAgentsDocument(agentsDocument);
       const projects = Object.keys(document.projects).map((key) => ({ key }));
       const candidate = selectAutomationCandidate(projects, document, timestamp, {
         projectKey: options.projectKey
@@ -464,13 +512,13 @@ export function createProjectAutomationRuntimeService({
     if (coordinatorPromise) {
       await coordinatorPromise.catch(() => {});
     }
-    const current = loadDocument();
+    const current = await loadDocument();
     const policy = current.projects[key] || normalizeProjectPolicy();
     if (!policy.activeTaskId && !activeRuns.has(key)) {
       return { status: "idle", projectKey: key, abortedRun: false };
     }
     const active = activeRuns.get(key);
-    const agentsDocument = loadAgentsDocument();
+    const agentsDocument = await loadAgentsDocument();
     const task = agentsDocument.tasks.find((item) => item.id === policy.activeTaskId);
     const runId = active?.handle?.runId || task?.activeRunId || "";
     const aborted = active
@@ -479,9 +527,11 @@ export function createProjectAutomationRuntimeService({
     if (active?.timeout) clearTimer(active.timeout);
     activeRuns.delete(key);
     if (task) {
-      saveAgentsDocument(stopAgentTaskRun(agentsDocument, task.id, reason, now()).snapshot);
+      await saveAgentsDocument(
+        stopAgentTaskRun(agentsDocument, task.id, reason, now()).snapshot
+      );
     }
-    saveDocument(updateProjectPolicy(loadDocument(), key, {
+    await saveDocument(updateProjectPolicy(await loadDocument(), key, {
       activeTaskId: "",
       lastStatus: "idle",
       lastError: reason === "disabled" ? "Disabled from Runtime projectAutomationManage" : ""
@@ -492,6 +542,7 @@ export function createProjectAutomationRuntimeService({
   return Object.freeze({
     readDocument: loadDocument,
     writeDocument: saveDocument,
+    delegate,
     runNow(projectKey, options = {}) {
       return pollOnce({ ...options, projectKey });
     },

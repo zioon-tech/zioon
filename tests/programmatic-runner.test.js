@@ -244,6 +244,10 @@ describe("programmatic chat runner", () => {
       { name: "write", args: { path: "/workspace/project/../secret.txt" } },
       { preset: "workspace-write", allowedTools: ["write"], fileRoots: ["/workspace/project"] }
     ).allowed).toBe(false);
+    expect(authorizeToolCall(
+      { name: "write", args: { path: "/Users/test/gits/app/file.txt" } },
+      { preset: "workspace-write", allowedTools: ["write"], fileRoots: ["/"] }
+    ).allowed).toBe(true);
     expect(filterToolsForPolicy([{ function: { name: "write" } }], {
       preset: "workspace-write",
       allowedTools: ["fsWrite"],

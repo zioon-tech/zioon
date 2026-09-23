@@ -139,7 +139,7 @@ const healthCache = new Map<string, {
 export async function probeWorkbenchRuntime({
   baseUrl,
   fetchImpl = globalThis.fetch,
-  timeoutMs = 800,
+  timeoutMs = 2500,
   cacheTtlMs = 2000
 }: {
   baseUrl: string;

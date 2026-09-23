@@ -10,7 +10,10 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
     "@opentelemetry/resources": "^2.11.0",
     "@opentelemetry/sdk-node": "^0.222.0",
-    "@opentelemetry/sdk-trace-base": "^2.11.0"
+    "@opentelemetry/sdk-trace-base": "^2.11.0",
+    "jose": "6.2.12",
+    "openid-client": "6.8.8",
+    "pg": "8.16.3"
   },
   "bin": {
     "zion": "bin/zion.mjs"
@@ -20,6 +23,7 @@
   },
   "scripts": {
     "access": "node src/access-cli.mjs",
+    "account": "node src/accounts/account-cli.mjs",
     "chat": "node src/chat-cli.mjs",
     "cli": "node src/runtime-cli.mjs",
     "remote": "node src/remote-launcher.mjs",

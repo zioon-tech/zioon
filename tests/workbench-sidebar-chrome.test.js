@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { initWorkbench } from "../src/ui/workbench/workbench";
 import { bindWorkbenchCore, sideBarRuntime } from "../src/ui/workbench/runtime";
+import { setAccountSession } from "../packages/account-ui/src/client";
 
 function createState() {
   const map = new Map();
@@ -41,6 +42,113 @@ function createState() {
 }
 
 describe("workbench sidebar chrome", () => {
+  it("opens the account Settings page from the Activity Bar and reacts to logout", () => {
+    const host = document.createElement("div");
+    host.id = "app";
+    host.style.height = "600px";
+    document.body.appendChild(host);
+    const opened = [];
+    const previousZion = window.zion;
+    window.zion = {
+      ...(previousZion || {}),
+      settings: {
+        ...(previousZion?.settings || {}),
+        open: (pageId) => opened.push(pageId)
+      }
+    };
+    setAccountSession({
+      authenticated: true,
+      mode: "accounts-v1",
+      user: { id: "user:alice", name: "Alice", email: "alice@example.test" },
+      space: { id: "space:team", name: "Zion Team", kind: "team" },
+      membership: { role: "member", status: "active" },
+      scopes: ["runtime.read", "runtime.write"],
+      sessionId: "login:alice",
+      expiresAt: Date.now() + 60_000
+    });
+    bindWorkbenchCore({
+      state: createState(),
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    const wb = initWorkbench(host);
+    const account = host.querySelector('[aria-label="账号：Alice"]');
+    const title = account?.getAttribute("title");
+    const icon = account?.querySelector('[data-zion-icon="account"]');
+    account?.click();
+    const page = opened[0];
+    setAccountSession({
+      authenticated: true,
+      mode: "accounts-v1",
+      user: { id: "user:alice", name: "Alice", email: "alice@example.test" },
+      space: { id: "space:personal", name: "My Local Space", kind: "personal" },
+      membership: { role: "owner", status: "active" },
+      scopes: ["runtime.read", "runtime.write"],
+      sessionId: "login:alice",
+      expiresAt: Date.now() + 60_000
+    });
+    const personalTitle = host.querySelector('[aria-label="账号：Alice"]')?.getAttribute("title");
+    setAccountSession(null);
+    const removedAfterLogout = !host.querySelector(".zion-activitybar-account");
+
+    wb.dispose();
+    host.remove();
+    window.zion = previousZion;
+
+    expect(title).toBe("Alice · Zion Team");
+    expect(icon).toBeTruthy();
+    expect(page).toBe("general.account");
+    expect(personalTitle).toBe("Alice · alice@example.test");
+    expect(removedAfterLogout).toBe(true);
+  });
+
+  it("mounts a newly activated view once across synchronous change events", async () => {
+    const host = document.createElement("div");
+    host.id = "app";
+    host.style.height = "600px";
+    document.body.appendChild(host);
+
+    bindWorkbenchCore({
+      state: createState(),
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    const wb = initWorkbench(host);
+    let renderCount = 0;
+    const view = sideBarRuntime.registerView({
+      id: "sessions.single-mount",
+      pluginId: "dev.session-manager",
+      title: "Sessions",
+      component: {
+        render: (container) => {
+          renderCount += 1;
+          const marker = document.createElement("div");
+          marker.className = "single-mount-marker";
+          container.appendChild(marker);
+          return { dispose: () => marker.remove() };
+        }
+      }
+    });
+
+    sideBarRuntime.show();
+    sideBarRuntime.activateView("sessions.single-mount");
+    sideBarRuntime.setWidth(440);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(renderCount).toBe(1);
+    expect(host.querySelectorAll(".single-mount-marker")).toHaveLength(1);
+
+    view.dispose();
+    wb.dispose();
+    host.remove();
+  });
+
   it("reflects active Sidebar header actions before and after click", async () => {
     const host = document.createElement("div");
     host.id = "app";

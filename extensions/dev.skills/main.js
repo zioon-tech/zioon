@@ -296,6 +296,35 @@ function normalizeSkillFsPath(value) {
     .replace(/\/+$/, "");
 }
 
+export function expandSkillHomePath(value, sessions, nodeId = "") {
+  const path = normalizeSkillFsPath(value);
+  if (path !== "~" && !path.startsWith("~/")) return null;
+  const requestedNodeId = normalizedNodeId(nodeId);
+  const candidates = new Map();
+  for (const session of Array.isArray(sessions) ? sessions : []) {
+    const home = normalizeSkillFsPath(inferHomeDirectory(session));
+    const sessionNodeId = normalizedNodeId(session?.nodeId || session?.node_id)
+      || (String(session?.type || "local").toLowerCase() === "ssh"
+        ? ""
+        : SKILLS_LOCAL_RUNTIME_NODE_ID);
+    if (!home || !sessionNodeId) continue;
+    if (requestedNodeId && sessionNodeId !== requestedNodeId) continue;
+    const key = `${sessionNodeId}\0${home}`;
+    candidates.set(key, {
+      path: `${home}${path === "~" ? "" : path.slice(1)}`,
+      nodeId: sessionNodeId,
+      nodeLabel: String(
+        session?.nodeLabel
+        || session?.node_label
+        || (sessionNodeId === SKILLS_LOCAL_RUNTIME_NODE_ID
+          ? "This Runtime"
+          : sessionNodeId)
+      )
+    });
+  }
+  return candidates.size === 1 ? [...candidates.values()][0] : null;
+}
+
 function skillPathOverlaps(path, root) {
   const target = normalizeSkillFsPath(path);
   const base = normalizeSkillFsPath(root);
@@ -474,25 +503,44 @@ function sourceFromSessionsForPath(path, sessions) {
 }
 
 async function resolvePathSource(base, configured, state = getState()) {
-  const path = normalizeSkillFsPath(configured?.path || configured);
-  const explicit = {
-    path,
+  const rawPath = normalizeSkillFsPath(configured?.path || configured);
+  let explicit = {
+    path: rawPath,
     nodeId: normalizedNodeId(configured?.nodeId || configured?.node_id),
     nodeLabel: String(configured?.nodeLabel || configured?.node_label || "")
   };
-  if (!path || explicit.nodeId) return explicit;
-  const known = sourceFromKnownSkillPaths(path, state);
+  if (!rawPath) return explicit;
+  const stateSessions = state?.get?.("terminal.sessions");
+  const expandedFromState = expandSkillHomePath(
+    rawPath,
+    stateSessions,
+    explicit.nodeId
+  );
+  if (expandedFromState) {
+    explicit = {
+      ...expandedFromState,
+      nodeLabel: explicit.nodeLabel || expandedFromState.nodeLabel
+    };
+  }
+  if (explicit.nodeId && !explicit.path.startsWith("~")) return explicit;
+  const known = sourceFromKnownSkillPaths(explicit.path, state);
   if (known) return known;
   const stateSessionSource = sourceFromSessionsForPath(
-    path,
-    state?.get?.("terminal.sessions")
+    explicit.path,
+    stateSessions
   );
   if (stateSessionSource) return stateSessionSource;
   try {
     const response = await fetch(`${base}/sessions`, { method: "GET" });
     const data = await response.json().catch(() => null);
     if (response.ok) {
-      const source = sourceFromSessionsForPath(path, data?.sessions);
+      const expanded = expandSkillHomePath(
+        rawPath,
+        data?.sessions,
+        explicit.nodeId
+      );
+      if (expanded) explicit = expanded;
+      const source = sourceFromSessionsForPath(explicit.path, data?.sessions);
       if (source) return source;
     }
   } catch {}
@@ -950,6 +998,7 @@ async function scanAllSkillsWhileLocked(state) {
   const scannedByNode = new Map();
   const successfulPaths = new Set();
   const scanWarnings = [];
+  const resolvedConfiguredPaths = [];
 
   for (const dirValue of Array.isArray(paths) ? paths : []) {
     const rawConfigured = typeof dirValue === "string"
@@ -962,6 +1011,7 @@ async function scanAllSkillsWhileLocked(state) {
     const configured = await resolvePathSource(base, rawConfigured, state);
     const dir = configured.path;
     if (!dir) continue;
+    resolvedConfiguredPaths.push(configured);
     if (configured.nodeId) {
       rememberPathSource(state, configured);
     } else if (usesRuntimeDeviceService()) {
@@ -977,6 +1027,8 @@ async function scanAllSkillsWhileLocked(state) {
       const nodeId = normalizedNodeId(entries.nodeId || configured.nodeId)
         || SKILLS_LOCAL_RUNTIME_NODE_ID;
       const nodeLabel = String(entries.nodeLabel || configured.nodeLabel || nodeId);
+      configured.nodeId = nodeId;
+      configured.nodeLabel = nodeLabel;
       rememberPathSource(state, { path: dir, nodeId, nodeLabel });
       successfulPaths.add(`${nodeId}\0${dir}`);
       const source = scannedByNode.get(nodeId) || {
@@ -1051,8 +1103,8 @@ async function scanAllSkillsWhileLocked(state) {
   }
 
   const activePaths = new Set(
-    (Array.isArray(paths) ? paths : [])
-      .map((entry) => String(typeof entry === "string" ? entry : entry?.path || "")
+    resolvedConfiguredPaths
+      .map((entry) => String(entry?.path || "")
         .replace(/\/+$/, ""))
       .filter(Boolean)
   );
@@ -1066,14 +1118,12 @@ async function scanAllSkillsWhileLocked(state) {
   const previousSources = (Array.isArray(state.get("skills.sources"))
     ? state.get("skills.sources")
     : []).map(normalizeSkillsSourceSnapshot);
-  const configuredSources = (Array.isArray(paths) ? paths : [])
-    .map((entry) => typeof entry === "string"
-      ? pathSourceFor(entry, state)
-      : {
-          path: String(entry?.path || "").replace(/\/+$/, ""),
-          nodeId: normalizedNodeId(entry?.nodeId || entry?.node_id),
-          nodeLabel: String(entry?.nodeLabel || entry?.node_label || "")
-        })
+  const configuredSources = resolvedConfiguredPaths
+    .map((entry) => ({
+      path: String(entry?.path || "").replace(/\/+$/, ""),
+      nodeId: normalizedNodeId(entry?.nodeId || entry?.node_id),
+      nodeLabel: String(entry?.nodeLabel || entry?.node_label || "")
+    }))
     .filter((entry) => entry.path && entry.nodeId);
   // A client's directory preferences do not delete other clients' sources.
   // Only explicit local removals or successful scans establish deletions.
@@ -2051,7 +2101,12 @@ function registerStateListeners() {
           if (!isApplyingSkillsSnapshot(window.zion.state)) {
             for (const path of previousPaths) {
               if (!paths.includes(path)) {
-                const source = pathSourceFor(path, window.zion.state);
+                const configured = pathSourceFor(path, window.zion.state);
+                const source = expandSkillHomePath(
+                  configured.path,
+                  window.zion.state.get("terminal.sessions"),
+                  configured.nodeId
+                ) || configured;
                 removedSkillPaths.add(`${source.nodeId}\0${source.path}`);
               }
             }
@@ -2321,16 +2376,31 @@ export async function activate(ctx) {
 
   updateStatusBar();
 
-  // Refresh only the Runtime catalog. Filesystem scans remain explicit or
-  // plugin-event driven, and failed writes retry independently of reads.
+  // Poll the lightweight Runtime snapshot and periodically rescan source
+  // directories while the Workbench is visible.
   try {
     const refresh = startSkillsSnapshotRefresh({
       refresh: () => loadSkillsSnapshotFromRuntime({ state: getState() }),
       isActive: () => !!document.getElementById("zion-skills-panel")
     });
+    let lastFilesystemScanAt = Date.now();
+    const refreshFilesystem = () => {
+      if (document.hidden) return;
+      const active = !!document.getElementById("zion-skills-panel");
+      const minimumInterval = active ? 5_000 : 15_000;
+      if (Date.now() - lastFilesystemScanAt < minimumInterval) return;
+      lastFilesystemScanAt = Date.now();
+      void scanAllSkills()
+        .then(() => updateStatusBar())
+        .catch((error) => console.warn("[skills] automatic rescan failed", error));
+    };
+    const filesystemRefreshTimer = window.setInterval(refreshFilesystem, 5_000);
     const retryWrites = () => {
       if (document.hidden) clearTimeout(writeRetryTimer);
-      else if (writeRetryNeeded) saveSnapshotSoon();
+      else {
+        if (writeRetryNeeded) saveSnapshotSoon();
+        refreshFilesystem();
+      }
     };
     document.addEventListener("visibilitychange", retryWrites);
     window.addEventListener("online", retryWrites);
@@ -2340,6 +2410,7 @@ export async function activate(ctx) {
         skillsDisposed = true;
         removedSkillPaths.clear();
         clearTimeout(writeRetryTimer);
+        window.clearInterval(filesystemRefreshTimer);
         writeRetryNeeded = false;
         if (snapshotIdle) cancelIdleCallback(snapshotIdle);
         snapshotIdle = 0;

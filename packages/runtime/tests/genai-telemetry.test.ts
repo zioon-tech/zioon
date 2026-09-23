@@ -65,7 +65,10 @@ describe("model operation telemetry", () => {
       span.attributes["zion.model.consumer_wait.duration"]
     ) * 1000;
 
-    expect(consumerWaitMs).toBeGreaterThanOrEqual(20);
+    // Transient text deltas no longer wait for durable storage. The remaining
+    // wait is caused by semantic events such as usage.
+    expect(consumerWaitMs).toBeGreaterThanOrEqual(10);
+    expect(consumerWaitMs).toBeLessThan(30);
     expect(wallMs).toBeGreaterThan(consumerWaitMs);
     expect(wallMs - consumerWaitMs).toBeGreaterThanOrEqual(0);
   });

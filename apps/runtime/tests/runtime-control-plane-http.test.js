@@ -1,25 +1,34 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createAgentExecutor } from "../../../packages/runtime/src/index";
+import { PostgresRunStore } from "../src/postgres-run-store.mjs";
+import { PostgresSchedulerStore } from "../src/postgres-scheduler-store.mjs";
+import { PostgresWorkbenchStateStore } from "../src/postgres-workbench-state-store.mjs";
 import { createProjectAutomationHttpHandler } from "../src/project-automation-http-handler.mjs";
 import { createRuntimeControlClient } from "../src/runtime-cli.mjs";
 import { createSchedulerHttpHandler } from "../src/scheduler-http-handler.mjs";
 import { createRuntimeServer } from "../src/server.mjs";
-import { SqliteRunStore } from "../src/sqlite-run-store.mjs";
-import { SqliteSchedulerStore } from "../src/sqlite-scheduler-store.mjs";
-import { SqliteWorkbenchStateStore } from "../src/sqlite-workbench-state-store.mjs";
 import { createWorkbenchStateHttpHandler } from "../src/workbench-state-http-handler.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 let resource;
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("control_plane");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 beforeEach(async () => {
-  const directory = mkdtempSync(join(tmpdir(), "zion-runtime-control-plane-"));
-  const path = join(directory, "runtime.sqlite3");
-  const runs = new SqliteRunStore(path);
-  const workbenchState = new SqliteWorkbenchStateStore(path);
-  const scheduler = new SqliteSchedulerStore(path);
+  const spaceId = database.nextSpaceId();
+  const runs = new PostgresRunStore(database.pool, { spaceId });
+  const workbenchState = await new PostgresWorkbenchStateStore(
+    database.pool,
+    { spaceId }
+  ).initialize();
+  const scheduler = new PostgresSchedulerStore(database.pool, { spaceId });
   let releaseHeldRun;
   const heldRun = new Promise((resolve) => {
     releaseHeldRun = resolve;
@@ -79,7 +88,7 @@ beforeEach(async () => {
   });
   const address = await server.start();
   resource = {
-    directory,
+    spaceId,
     runs,
     workbenchState,
     scheduler,
@@ -93,10 +102,9 @@ beforeEach(async () => {
 afterEach(async () => {
   resource.releaseHeldRun?.();
   await resource.server.close();
-  resource.scheduler.close();
-  resource.workbenchState.close();
-  resource.runs.close();
-  rmSync(resource.directory, { recursive: true, force: true });
+  await resource.scheduler.close();
+  await resource.workbenchState.close();
+  await resource.runs.close();
 });
 
 async function jsonRequest(path, options = {}) {
@@ -114,7 +122,7 @@ async function jsonRequest(path, options = {}) {
 
 describe("Runtime control plane HTTP", () => {
   it("rejects document writes from an outdated Workbench protocol", async () => {
-    resource.workbenchState.createSession({
+    await resource.workbenchState.createSession({
       id: "protected-session",
       title: "Protected",
       text: "user complete\nassistant complete"
@@ -137,7 +145,7 @@ describe("Runtime control plane HTTP", () => {
     await expect(response.json()).resolves.toMatchObject({
       expectedProtocol: "5"
     });
-    expect(resource.workbenchState.readSession("protected-session").text)
+    expect((await resource.workbenchState.readSession("protected-session")).text)
       .toBe("user complete\nassistant complete");
   });
 
@@ -181,13 +189,13 @@ describe("Runtime control plane HTTP", () => {
   });
 
   it("streams durable Workbench events with Last-Event-ID catch-up", async () => {
-    resource.workbenchState.createSession({
+    await resource.workbenchState.createSession({
       id: "streamed",
       title: "Streamed",
       text: "before"
     });
-    const firstCursor = resource.workbenchState.readStatus().event_cursor;
-    resource.workbenchState.updateSession("streamed", {
+    const firstCursor = (await resource.workbenchState.readStatus()).event_cursor;
+    await resource.workbenchState.updateSession("streamed", {
       text: "after",
       expected_session_revision: 1
     });
@@ -211,21 +219,23 @@ describe("Runtime control plane HTTP", () => {
   });
 
   it("asks SSE clients to reload when their cursor has expired", async () => {
-    const first = resource.workbenchState.appendEvent("session.updated", {
+    const first = await resource.workbenchState.appendEvent("session.updated", {
       sessionId: "expired",
       payload: { changed: ["document"] }
     });
-    const second = resource.workbenchState.appendEvent("session.updated", {
+    const second = await resource.workbenchState.appendEvent("session.updated", {
       sessionId: "expired",
       payload: { changed: ["document"] }
     });
-    const latest = resource.workbenchState.appendEvent("session.updated", {
+    const latest = await resource.workbenchState.appendEvent("session.updated", {
       sessionId: "expired",
       payload: { changed: ["document"] }
     });
-    resource.workbenchState.db.prepare(
-      "DELETE FROM runtime_workbench_events WHERE sequence <= ?"
-    ).run(second.sequence);
+    await database.pool.query(
+      `DELETE FROM runtime_workbench_events
+       WHERE space_id = $1 AND sequence <= $2`,
+      [resource.spaceId, second.sequence]
+    );
 
     const response = await fetch(
       `${resource.url}/v1/workbench-state/events/stream?after=${first.sequence}`
@@ -283,7 +293,17 @@ describe("Runtime control plane HTTP", () => {
       runId: created.body.runId,
       status: "running"
     });
-    expect(resource.workbenchState.listEvents(0).events).toContainEqual(
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const events = (await resource.workbenchState.listEvents(0)).events;
+      if (events.some((event) =>
+        event.type === "run.started"
+        && event.runId === created.body.runId
+      )) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect((await resource.workbenchState.listEvents(0)).events).toContainEqual(
       expect.objectContaining({
         type: "run.started",
         sessionId: "live-session",
@@ -293,7 +313,7 @@ describe("Runtime control plane HTTP", () => {
 
     resource.releaseHeldRun();
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      const events = resource.workbenchState.listEvents(0).events;
+      const events = (await resource.workbenchState.listEvents(0)).events;
       if (events.some((event) =>
         event.type === "run.completed"
         && event.runId === created.body.runId
@@ -307,7 +327,7 @@ describe("Runtime control plane HTTP", () => {
       "/v1/sessions/live-session/active-run"
     );
     expect(inactive.body.activeRun).toBeNull();
-    expect(resource.workbenchState.listEvents(0).events).toContainEqual(
+    expect((await resource.workbenchState.listEvents(0)).events).toContainEqual(
       expect.objectContaining({
         type: "run.completed",
         sessionId: "live-session",
@@ -392,13 +412,13 @@ describe("Runtime control plane HTTP", () => {
       status: "pending"
     });
 
-    resource.scheduler.claim({
+    await resource.scheduler.claim({
       workerId: "detail-test",
       workerKind: "runtime",
       availableTools: []
     });
     for (let index = 0; index < 60; index++) {
-      resource.scheduler.appendEvent(queued.body.id, "detail-test", {
+      await resource.scheduler.appendEvent(queued.body.id, "detail-test", {
         type: "tool.completed",
         sequence: index + 1,
         data: { name: `tool-${index}` }

@@ -159,7 +159,7 @@ with the Run messages.
   `tool.cancel` for expired delivered work, and rejects late results; Device
   Connector also rejects a command whose lease expired before local execution.
 - Device registrations, project/resource bindings, and accepted invocation
-  receipts are SQLite-backed. Restored Devices remain offline until they
+  receipts are PostgreSQL-backed. Restored Devices remain offline until they
   register again; pending command delivery and Device-side receipt caches remain
   process-local.
 - Device credentials use one development bearer token rather than pairing and
@@ -258,7 +258,7 @@ with the Run messages.
   for the file-backed credential implementation.
 - Claude/Gemini Runtime adapters, attachments, and an external binary Artifact
   Store are not implemented. File Artifact and ChangeSet metadata are persisted
-  in SQLite and projected into the Workbench Changes panel.
+  in PostgreSQL and projected into the Workbench Changes panel.
 
 ## Next implementation order
 

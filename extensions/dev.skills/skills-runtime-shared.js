@@ -7,6 +7,7 @@ export const SKILLS_RUNTIME_SOURCES_KEY = "sources";
 export const SKILLS_RUNTIME_SOURCES_KV_KEY =
   `runtime.plugins.${SKILLS_RUNTIME_PLUGIN_ID}.${SKILLS_RUNTIME_STATE_NAMESPACE}.${SKILLS_RUNTIME_SOURCES_KEY}`;
 export const SKILLS_LOCAL_RUNTIME_NODE_ID = "runtime:local";
+export const SKILLS_RUNTIME_PLUGIN_NODE_ID = "runtime:plugins";
 const MAX_SKILL_BODY_CHARS = 512 * 1024;
 const SYNCABLE_SKILL_TEXT_FILE_RE =
   /\.(md|mdx|txt|json|ya?ml|js|mjs|cjs|ts|tsx|jsx|py|sh|bash|zsh|xml|html|css|csv)$/i;

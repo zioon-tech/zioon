@@ -2,6 +2,7 @@ import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, getInspect
 import { createZionIcon, createZionIconFromCodicon, hasZionIcon, setZionIconOnly, zionIconName } from "../icons";
 import { applyInspectorMarkdownCommentRanges, createInspectorMarkdownPreviewView, createInspectorTextView, getInspectorMarkdownSelection, openInspectorSearch, renderInspectorMarkdown, setInspectorLineWrapping } from "./inspectorContent";
 import { createSelectionToolbarButton, createSelectionToolbarItemsContainer } from "../../editor/extensions/selection-toolbar";
+import { currentAccountSession } from "../../../packages/account-ui/src/client";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -866,6 +867,23 @@ export function initWorkbench(host: HTMLElement): {
       } catch {}
     };
     mobileBarActionsEl.appendChild(cmdBtn);
+    const account = currentAccountSession();
+    if (account) {
+      const accountBtn = el("button", "zion-mobilebar-action zion-mobilebar-account") as HTMLButtonElement;
+      const accountContext = account.space.kind === "team"
+        ? account.space.name
+        : account.user.email || "Zion 账号";
+      accountBtn.type = "button";
+      accountBtn.title = `${account.user.name} · ${accountContext}`;
+      accountBtn.setAttribute("aria-label", `账号：${account.user.name}`);
+      setCodiconOnly(accountBtn, "account");
+      accountBtn.onclick = () => {
+        try {
+          (window as any).zion?.settings?.open?.("general.account");
+        } catch {}
+      };
+      mobileBarActionsEl.appendChild(accountBtn);
+    }
     const settingsBtn = el("button", "zion-mobilebar-action") as HTMLButtonElement;
     settingsBtn.type = "button";
     settingsBtn.title = "设置";
@@ -924,6 +942,28 @@ export function initWorkbench(host: HTMLElement): {
     // Bottom actions area
     const bottom = el("div", "zion-activitybar-bottom");
 
+    const account = currentAccountSession();
+    if (account) {
+      const accountBtn = el("button", "zion-activitybar-item zion-activitybar-account") as HTMLButtonElement;
+      const accountContext = account.space.kind === "team"
+        ? account.space.name
+        : account.user.email || "Zion 账号";
+      accountBtn.type = "button";
+      accountBtn.title = `${account.user.name} · ${accountContext}`;
+      accountBtn.setAttribute("aria-label", `账号：${account.user.name}`);
+      accountBtn.classList.toggle(
+        "is-readonly",
+        !account.scopes.includes("runtime.write")
+      );
+      appendActivityBarContent(accountBtn, "$(account)", "账号");
+      accountBtn.onclick = () => {
+        try {
+          (window as any).zion?.settings?.open?.("general.account");
+        } catch {}
+      };
+      bottom.appendChild(accountBtn);
+    }
+
     const settingsBtn = el("button", "zion-activitybar-item zion-activitybar-settings") as HTMLButtonElement;
     settingsBtn.type = "button";
     settingsBtn.title = "设置";
@@ -942,6 +982,7 @@ export function initWorkbench(host: HTMLElement): {
   let mountedViewId: string | null = null;
   let mountedDisposable: { dispose?: () => void } | null = null;
   let resizeObs: ResizeObserver | null = null;
+  let sideBarMountGeneration = 0;
   let mountedHeaderLeadingViewId: string | null = null;
   let mountedHeaderLeadingDisposable: { dispose?: () => void } | null = null;
   let mountedHeaderLeadingGeneration: number | null = null;
@@ -3038,17 +3079,19 @@ export function initWorkbench(host: HTMLElement): {
   const unmountView = async (viewId: string | null) => {
     if (!viewId) return;
     const prev = sideBarRuntime.getView(viewId);
+    const disposable = mountedDisposable;
+    const observer = resizeObs;
+    mountedDisposable = null;
+    resizeObs = null;
     try {
       await prev?.onDeactivate?.();
     } catch {}
     try {
-      mountedDisposable?.dispose?.();
+      disposable?.dispose?.();
     } catch {}
-    mountedDisposable = null;
     try {
-      resizeObs?.disconnect();
+      observer?.disconnect();
     } catch {}
-    resizeObs = null;
   };
 
   const mountView = async (viewId: string | null, container: HTMLElement) => {
@@ -3176,10 +3219,17 @@ export function initWorkbench(host: HTMLElement): {
     }
 
     if (mountedViewId !== nextId) {
+      const generation = ++sideBarMountGeneration;
+      const previousViewId = mountedViewId;
+      mountedViewId = nextId;
       void (async () => {
-        await unmountView(mountedViewId);
-        mountedViewId = nextId;
-        await mountView(mountedViewId, content);
+        await unmountView(previousViewId);
+        if (
+          generation !== sideBarMountGeneration
+          || mountedViewId !== nextId
+          || !sideBarRuntime.isVisible()
+        ) return;
+        await mountView(nextId, content);
       })();
     }
 
@@ -3271,7 +3321,12 @@ export function initWorkbench(host: HTMLElement): {
     renderInspector();
     renderBottomPanel();
   };
+  const onAccountChanged = () => {
+    renderActivityBar();
+    renderMobileBar();
+  };
   window.addEventListener("resize", onResize);
+  window.addEventListener("zion-account-changed", onAccountChanged);
 
   renderActivityBar();
   renderSideBar();
@@ -3309,6 +3364,9 @@ export function initWorkbench(host: HTMLElement): {
       } catch {}
       try {
         window.removeEventListener("resize", onResize);
+      } catch {}
+      try {
+        window.removeEventListener("zion-account-changed", onAccountChanged);
       } catch {}
       try {
         disposeInspectorContent();

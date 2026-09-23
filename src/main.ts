@@ -25,6 +25,7 @@ import {
   initServiceBaseUrlConfig
 } from "./settings/serviceBaseUrl";
 import { registerRemoteAccessSettings } from "./settings/RemoteAccessSettings";
+import { registerAccountSettings } from "./settings/AccountSettings";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
 import { parseMessages } from "./chat/doc";
@@ -33,6 +34,7 @@ import { publishSessionDerivedTagSource, removeSessionDerivedTagSource } from ".
 import { createThemeManager } from "./theme/themeManager";
 import { createI18nManager } from "./i18n/i18nManager";
 import { ensureWorkbenchRuntimeAccess } from "./runtime/workbench-access";
+import { accountCan } from "../packages/account-ui/src/client";
 import {
   readWorkbenchRuntimeConfig,
   runtimeDeviceServiceBaseUrl
@@ -2136,6 +2138,7 @@ function mountEditorHeaderSplitMenuButton(pathEl: HTMLElement) {
 }
 
 function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, getEditor: () => any) {
+  if (!accountCan("run.execute")) return;
   try {
     const headerEl = pathEl.parentElement;
     if (!headerEl) return;
@@ -2235,7 +2238,6 @@ function mountPanelSessionTabsBar(
         try { window.zion.panels?.focus?.(panelId); } catch {}
         try { window.zion.commands.executeCommand("zion.sessions.new", { panelId }); } catch {}
       };
-      containerEl.insertBefore(newBtn, containerEl.firstChild);
     }
     if (!root) {
       root = document.createElement("div");
@@ -2269,6 +2271,9 @@ function mountPanelSessionTabsBar(
     }
     if (scrollbar.parentElement !== viewport) {
       try { viewport.appendChild(scrollbar); } catch {}
+    }
+    if (newBtn.parentElement !== containerEl || newBtn.previousElementSibling !== viewport) {
+      try { containerEl.insertBefore(newBtn, viewport.nextSibling); } catch {}
     }
 
     let dropdownMenu: HTMLDivElement | null = null;
@@ -4138,16 +4143,25 @@ async function bootstrap() {
       const commands = window.zion?.commands;
       const available = commands?.list?.() || [];
       if (available.includes("zion.sessions.prepareForReload")) {
-        const prepared = await Promise.resolve(
-          commands.executeCommand("zion.sessions.prepareForReload")
-        );
+        const timeout = Symbol("reload-timeout");
+        let timeoutId = 0;
+        const prepared = await Promise.race([
+          Promise.resolve(commands.executeCommand("zion.sessions.prepareForReload")),
+          new Promise((resolve) => {
+            timeoutId = window.setTimeout(() => resolve(timeout), 1800);
+          })
+        ]).finally(() => window.clearTimeout(timeoutId));
         if (prepared !== true) {
-          try { window.zion?.state?.set("sessions.reloadPreparing", false); } catch {}
-          notificationManager.show("会话尚未完成保存，已取消重新加载。", {
-            type: "warning",
-            duration: 3000
-          });
-          return false;
+          if (prepared === timeout) {
+            console.warn("[zion] reload persistence exceeded 1800ms; reloading with queued writes");
+          } else {
+            try { window.zion?.state?.set("sessions.reloadPreparing", false); } catch {}
+            notificationManager.show("会话尚未完成保存，已取消重新加载。", {
+              type: "warning",
+              duration: 3000
+            });
+            return false;
+          }
         }
       }
     } catch (error) {
@@ -4474,9 +4488,9 @@ async function bootstrap() {
   } catch {}
   try {
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) schedulePanelWorkspacePersist();
+      if (document.hidden) persistPanelWorkspaceNow();
     });
-    window.addEventListener("pagehide", () => schedulePanelWorkspacePersist(), { passive: true });
+    window.addEventListener("pagehide", () => persistPanelWorkspaceNow(), { passive: true });
   } catch {}
   const installInactivePanelFocusReturnScrollGuard = () => {
     try {
@@ -4568,6 +4582,11 @@ async function bootstrap() {
     registerRemoteAccessSettings();
   } catch (e) {
     console.warn("[zion] failed to register remote access settings", e);
+  }
+  try {
+    registerAccountSettings();
+  } catch (e) {
+    console.warn("[zion] failed to register account settings", e);
   }
 
   try {
@@ -5623,6 +5642,7 @@ async function bootstrap() {
       );
       for (const tabBar of tabBars) {
         tabBar.classList.remove("is-layout-controls-overlapped");
+        tabBar.style.removeProperty("--zion-editor-layout-controls-clearance");
       }
       if (!editorTarget || group.parentElement !== editorTarget) return;
       const groupRect = group.getBoundingClientRect();
@@ -5634,6 +5654,12 @@ async function bootstrap() {
           && rect.bottom > groupRect.top
           && rect.top < groupRect.bottom;
         tabBar.classList.toggle("is-layout-controls-overlapped", overlaps);
+        if (overlaps) {
+          tabBar.style.setProperty(
+            "--zion-editor-layout-controls-clearance",
+            `${Math.max(0, Math.ceil(rect.right - groupRect.left + 4))}px`
+          );
+        }
       }
     };
     const ensureEditorLayoutControls = () => {

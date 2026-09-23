@@ -3954,6 +3954,45 @@ button:disabled {
   font-size: 10px;
 }
 
+.mobile-account-row {
+  width: 100%;
+  min-height: 76px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  text-align: left;
+}
+
+.mobile-account-row:hover {
+  background: var(--surface-2);
+}
+
+.mobile-account-avatar {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 740;
+}
+
+.mobile-account-row > svg {
+  color: var(--text-3);
+}
+
+.account-page .app-content {
+  background: var(--surface);
+}
+
 .more-section {
   padding-top: 4px;
 }

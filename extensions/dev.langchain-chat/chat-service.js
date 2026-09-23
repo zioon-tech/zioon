@@ -1160,8 +1160,15 @@ export async function runStream({
                   if (c.text.trim().length > 0) out.push({ type: "text", text: c.text });
                 } else if (c.type === "image_url" && c.image_url?.url) {
                   let url = c.image_url.url;
-                  if (typeof url === "string" && url.startsWith("app://")) {
-                    const dataUrl = await resolveAppImage(url);
+                  const managedImage = typeof url === "string"
+                    && (
+                      url.startsWith("app://")
+                      || window.zion?.media?.isImageAssetUri?.(url)
+                    );
+                  if (managedImage) {
+                    const dataUrl = url.startsWith("app://")
+                      ? await resolveAppImage(url)
+                      : await window.zion?.media?.readImageDataUrl?.(url);
                     if (dataUrl) {
                       out.push({ type: "image_url", image_url: { url: dataUrl } });
                     } else {

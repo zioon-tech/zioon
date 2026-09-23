@@ -250,6 +250,149 @@ describe("sessions list renderer", () => {
     expect(listEl.querySelector('[data-session-id="nested-match"]')).toBeNull();
   });
 
+  it("toggles folder children without changing the selected folder state", () => {
+    const listEl = document.createElement("div");
+    const openFolders = new Map([["root", true], ["folder-a", true]]);
+    const tree = {
+      id: "root",
+      type: "folder",
+      title: "Root",
+      children: [{
+        id: "folder-a",
+        type: "folder",
+        title: "A",
+        children: [{ id: "session-a", type: "session", title: "Session A" }]
+      }]
+    };
+    const createRenderer = createSessionsListRendererFactory({
+      loadTree: () => tree,
+      ensureInitialTree: () => tree,
+      getIndex: () => [{ id: "session-a" }],
+      loadMeta: (id) => ({ id, title: id, updatedAt: 1 }),
+      truncate: (value) => value,
+      setSmallDragImage: () => {},
+      fmtTime: (value) => String(value),
+      now: () => 2,
+      getSelection: () => [],
+      setSelection: () => {},
+      clearSelection: () => {},
+      isSelected: () => false,
+      toggleSelection: () => {},
+      getLastSelectedId: () => null,
+      setLastSelectedId: () => {},
+      isFolderOpen: (id) => openFolders.get(id) === true,
+      setFolderOpen: (id, open) => openFolders.set(id, open),
+      moveNode: () => false
+    });
+    const render = createRenderer({
+      listEl,
+      hostElement: document.createElement("div"),
+      getQuery: () => "",
+      getSort: () => "updated"
+    });
+
+    render();
+    expect(listEl.querySelector('[data-session-id="session-a"]')).toBeTruthy();
+    listEl.querySelector('.zion-session-row.is-folder[data-depth="0"]').click();
+    expect(openFolders.get("folder-a")).toBe(false);
+    expect(listEl.querySelector('[data-session-id="session-a"]')).toBeNull();
+    listEl.querySelector('.zion-session-row.is-folder[data-depth="0"]').click();
+    expect(openFolders.get("folder-a")).toBe(true);
+    expect(listEl.querySelector('[data-session-id="session-a"]')).toBeTruthy();
+  });
+
+  it("offers a root drop target while dragging a nested session", () => {
+    const listEl = document.createElement("div");
+    const hostElement = document.createElement("div");
+    const rootDropHost = document.createElement("div");
+    rootDropHost.className = "zion-sessions-list-header";
+    hostElement.appendChild(listEl);
+    document.body.append(rootDropHost, hostElement);
+    const tree = {
+      id: "root",
+      type: "folder",
+      title: "Root",
+      children: [{
+        id: "folder-a",
+        type: "folder",
+        title: "A",
+        children: [{ id: "session-a", type: "session", title: "Session A" }]
+      }]
+    };
+    const moveNode = vi.fn(() => true);
+    const createRenderer = createSessionsListRendererFactory({
+      loadTree: () => tree,
+      ensureInitialTree: () => tree,
+      getIndex: () => [{ id: "session-a" }],
+      loadMeta: (id) => ({ id, title: id, updatedAt: 1 }),
+      truncate: (value) => value,
+      setSmallDragImage: () => {},
+      fmtTime: (value) => String(value),
+      now: () => 2,
+      getSelection: () => [],
+      setSelection: () => {},
+      clearSelection: () => {},
+      isSelected: () => false,
+      toggleSelection: () => {},
+      getLastSelectedId: () => null,
+      setLastSelectedId: () => {},
+      isFolderOpen: () => true,
+      setFolderOpen: () => {},
+      moveNode
+    });
+    const render = createRenderer({
+      listEl,
+      hostElement,
+      rootDropHost,
+      getQuery: () => "",
+      getSort: () => "updated"
+    });
+    render();
+
+    const data = new Map();
+    const dataTransfer = {
+      setData: (type, value) => data.set(type, value),
+      getData: (type) => data.get(type) || "",
+      setDragImage: () => {},
+      effectAllowed: "",
+      dropEffect: ""
+    };
+    const dragStart = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStart, "dataTransfer", { value: dataTransfer });
+    listEl.querySelector('[data-session-id="session-a"]').dispatchEvent(dragStart);
+
+    expect(listEl.classList.contains("is-dragging-nodes")).toBe(true);
+    const rootTarget = rootDropHost.querySelector(".zion-sessions-root-drop-target");
+    expect(rootTarget.classList.contains("is-visible")).toBe(true);
+    expect(rootTarget.classList.contains("is-header-slot")).toBe(true);
+
+    listEl.querySelector('[data-session-id="session-a"]').dispatchEvent(
+      new Event("dragend", { bubbles: true })
+    );
+    expect(rootTarget.classList.contains("is-visible")).toBe(false);
+
+    const folderDragStart = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(folderDragStart, "dataTransfer", { value: dataTransfer });
+    listEl.querySelector('.zion-session-row.is-folder[data-depth="0"]').dispatchEvent(folderDragStart);
+    expect(rootTarget.classList.contains("is-visible")).toBe(true);
+    expect(JSON.parse(data.get("application/zion-nodes"))).toEqual({
+      items: [{ id: "folder-a", type: "folder" }]
+    });
+    listEl.querySelector('.zion-session-row.is-folder[data-depth="0"]').dispatchEvent(
+      new Event("dragend", { bubbles: true })
+    );
+
+    listEl.querySelector('[data-session-id="session-a"]').dispatchEvent(dragStart);
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: dataTransfer });
+    rootTarget.dispatchEvent(drop);
+
+    expect(moveNode).toHaveBeenCalledWith("session-a", "root");
+    expect(rootTarget.classList.contains("is-visible")).toBe(false);
+    rootDropHost.remove();
+    hostElement.remove();
+  });
+
   it("does not open the session root menu from the tag column", () => {
     const listEl = document.createElement("div");
     const hostElement = document.createElement("div");

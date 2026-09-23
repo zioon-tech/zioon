@@ -55,7 +55,7 @@
 | --- | --- | --- |
 | `apps/runtime` | Runtime Host、部分 Control Plane、Access Gateway | 单机组合根，后续按压力拆分 |
 | `NodeBroker` | Node Registry、presence、binding、路由、内存队列 | Registry、Placement、Dispatch 三个逻辑模块 |
-| `SqliteNodeStateStore` | 注册、Project binding、完成 receipt | Node Registry 与 Invocation Ledger 的单机存储 |
+| `PostgresNodeStateStore` | 注册、Project binding、完成 receipt | Node Registry 与 Invocation Ledger 的单机存储 |
 | `node-http-handler` | 注册、poll、result HTTP transport | Connection Gateway adapter |
 | `device-connector` | 出站连接、命令执行、结果回传 | `zion-node-agent` 的当前实现 |
 | `zion-local-tools` | 文件、终端、SSH、邮件、MCP 等原子能力 | Resource Host implementation |
@@ -69,7 +69,7 @@
 flowchart LR
   C["Workbench / Mobile / CLI"] -->|HTTPS| G["Caddy / Access Gateway"]
   G --> R["apps/runtime"]
-  R --> DB[("SQLite")]
+  R --> DB[("PostgreSQL")]
   R --> B["NodeBroker"]
   N1["Mac / PC Connector"] -->|出站 long poll| B
   N2["Linux / Pi Connector"] -->|出站 long poll| B
@@ -88,7 +88,7 @@ Runtime：
 2. 构建 Workbench/Mobile 和 Runtime；
 3. 安装 `zion-runtime.service`，Runtime 只监听 `127.0.0.1`；
 4. 通过 Caddy 提供同源 HTTPS；
-5. 初始化 SQLite、Runtime 环境和插件；
+5. 初始化 PostgreSQL、Runtime 环境和插件；
 6. 创建首个 Owner 一次性配对链接；
 7. 验证 `/health` 可访问、匿名业务 API 返回 `401`。
 
@@ -131,7 +131,7 @@ Resource Node：
 | 连接 | 默认短周期 long poll，固定重试延迟 | 节点增长或 Runtime 重启时产生空闲负载和重连风暴 |
 | Inventory | 需要按 Node fan-out 查询终端和机器 | 离线 Node 增多后发现延迟线性增长 |
 | 背压 | 无统一 Node capacity、queue 和 per-tool concurrency | 热点 Node 可被大量 Run 压垮 |
-| 存储 | 同步 SQLite 与单进程内存 ownership | 无法直接水平扩容 Runtime |
+| 存储 | 同步 PostgreSQL 与单进程内存 ownership | 无法直接水平扩容 Runtime |
 | 协议 | 严格等于 v1，Capability 风险由 Node 自报 | 异构版本和不可信能力描述难以治理 |
 | 生命周期 | 缺少 retire/delete/tombstone/retention | 废弃注册和 binding 长期污染目录 |
 | 可观测性 | 只有 snapshot 和进程日志 | 无法回答抖动、排队、重复、版本漂移和容量问题 |
@@ -387,7 +387,7 @@ zion node uninstall
 - `node_sessions`、服务端 epoch、lease 和 takeover；
 - 持久化 `node_invocations` 状态机；
 - 显式 delivery ACK 和 running/result transition；
-- Connector 本地 SQLite receipt/outbox；
+- Connector 本地 PostgreSQL receipt/outbox；
 - `waiting_for_resource`、`unknown` 和人工 reconcile；
 - 指数退避、jitter、服务端建议 heartbeat/poll 周期；
 - credential 自动轮换，Node identity 与 access token 解耦；
@@ -470,7 +470,7 @@ zion node uninstall
 
 - 需要 Runtime/API 高可用，单进程重启窗口不可接受；
 - 稳态连接、重连风暴或 poll RPS 持续压高 event-loop lag；
-- SQLite 写延迟、busy time 或 invocation queue latency 违反已定义 SLO；
+- PostgreSQL 写延迟、busy time 或 invocation queue latency 违反已定义 SLO；
 - 单实例内存中的 connection ownership 阻碍部署和扩容；
 - 真实 fleet 规模进入数百长期在线 Node，而不是短期测试数据。
 
@@ -515,7 +515,7 @@ zion node uninstall
 
 | 规模 | 推荐形态 | 必需能力 |
 | --- | --- | --- |
-| 1-20 Node | 当前单 Runtime + SQLite | P1 安装身份 |
+| 1-20 Node | 当前单 Runtime + PostgreSQL | P1 安装身份 |
 | 20-100 Node | 强化后的单进程逻辑 Control Plane | P2、P3、分页、缓存、背压 |
 | 100-1000 Node | 视 SLO 拆 Connection Gateway | P4，必要时 P5 |
 | 1000+ Node | 分区 Gateway、共享 Ledger、Placement | P5，按产品需要进入 P6 |
@@ -534,7 +534,7 @@ Node 数量不是唯一触发器。应以连接 churn、dispatch latency、queue
 - inventory summary cache 和按需详情；
 - Node API 分页和事件增量；
 - receipt、event、retired Node 清理；
-- SQLite transaction、索引和 event-loop lag 压测；
+- PostgreSQL transaction、索引和 event-loop lag 压测；
 - Runtime restart 时分批重连建议。
 
 这些优化足以覆盖相当一段单用户和小型 fleet 生命周期。
@@ -547,15 +547,15 @@ Node 数量不是唯一触发器。应以连接 churn、dispatch latency、queue
 | Node identity/profile/labels | registration JSON | Node Registry |
 | Node session/epoch/lease | 内存 `connected`/`instanceId` | Session Store |
 | Capability/Resource snapshot | registration JSON | Registry versioned snapshot |
-| Project binding | SQLite binding | Resource Registry |
+| Project binding | PostgreSQL binding | Resource Registry |
 | queued/delivered invocation | NodeBroker 内存 | Invocation Ledger |
 | Device operation receipt | Connector Map | Device durable receipt store |
-| Runtime completed receipt | SQLite | Invocation Ledger |
+| Runtime completed receipt | PostgreSQL | Invocation Ledger |
 | presence | poll 派生 + lastSeen | lease + event + eventually consistent projection |
 | capacity/health | 未统一 | Agent heartbeat summary |
 | audit | 分散日志 | append-only Audit Event Store |
 
-单机阶段可以继续使用同一个 SQLite 文件，但表、事务边界和 owner 必须先明确。
+单机阶段可以继续使用同一个 PostgreSQL 文件，但表、事务边界和 owner 必须先明确。
 
 ## 11. 协议演进策略
 
@@ -655,7 +655,7 @@ requiredUpgrade
 
 - `packages/node-protocol`：v2 handshake、epoch、ACK；
 - `apps/runtime/src/node-broker.mjs`：抽出 Registry、Session、Dispatch 接口；
-- `apps/runtime/src/sqlite-node-state-store.mjs`：session/invocation schema；
+- `apps/runtime/src/postgres-node-state-store.mjs`：session/invocation schema；
 - `apps/runtime/src/node-http-handler.mjs`：v1/v2 transport adapter；
 - `apps/device-connector`：durable receipt/outbox、backoff/jitter。
 

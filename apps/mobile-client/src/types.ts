@@ -174,6 +174,8 @@ export type CapabilityTool = {
   hostKinds?: string[];
   pluginId?: string;
   risk?: string;
+  modelInjectable?: boolean;
+  unavailableReason?: string;
   availability?: {
     headless?: boolean;
     requiresWorkbench?: boolean;
@@ -407,8 +409,10 @@ export type AccessDevice = {
 
 export type AccessSession = {
   authenticated: true;
+  mode?: string;
+  scopes?: string[];
   expiresAt: number;
-  device: AccessDevice;
+  device?: AccessDevice;
 };
 
 export type PairingInput = {
@@ -430,6 +434,8 @@ export type RuntimeHealth = {
   ok: boolean;
   service: string;
   authRequired: boolean;
+  authMode?: string;
+  accessControl?: string;
   modelProfile?: {
     id: string;
     label?: string;

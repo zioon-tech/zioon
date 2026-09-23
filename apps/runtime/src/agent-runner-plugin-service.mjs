@@ -135,6 +135,7 @@ export function createAgentRunnerPluginService({
       interactionProfileId = DEFAULT_INTERACTION_PROFILE_ID,
       parentRunId = "",
       parentAttemptId = "",
+      principal,
       projectId = "",
       policy = {}
     } = {}) {
@@ -161,6 +162,7 @@ export function createAgentRunnerPluginService({
         interactionProfileId: profile.id,
         sessionId,
         projectId: projectId || task.projectId || undefined,
+        ...(principal ? { principal: { ...principal, parentRunId } } : {}),
         model,
         policy: runPolicy,
         maxTurns: Math.max(1, Number(task.maxTurns || 8)),

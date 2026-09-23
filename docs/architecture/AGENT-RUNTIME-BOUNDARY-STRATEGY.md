@@ -231,7 +231,7 @@ flowchart LR
   TB --> PY[Python Local Tools Host]
   TB --> BH[Browser Tool Host]
 
-  CP --> DB[(SQLite / Postgres)]
+  CP --> DB[(PostgreSQL / Postgres)]
   ES --> DB
   UI -->|Projection| SE[Session Editor]
 ```

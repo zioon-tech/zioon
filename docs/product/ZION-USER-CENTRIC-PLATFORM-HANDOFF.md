@@ -130,7 +130,7 @@ Agent Loop 通常是 I/O 密集型，不需要为每位用户分配 GPU。GPU �
 - Device Service HTTP relay；
 - Runtime Plugin；
 - Workbench state；
-- SQLite 持久化。
+- PostgreSQL 持久化。
 
 这适合单 Owner POC，不适合直接作为多用户服务。未来外部仍可只有一个 Zion URL，
 但内部应拆分逻辑职责：
@@ -365,7 +365,7 @@ Local ~/.zion-next/memory
 ```
 
 逻辑权威归属应是 User/Space 的 Control Plane Memory Service，不是某个会休眠或迁移的
-Runtime Cell。当前可先使用 Runtime 所在机器的 SQLite 实现接口，后续迁移 PostgreSQL，
+Runtime Cell。当前可先使用 Runtime 所在机器的 PostgreSQL 实现接口，后续迁移 PostgreSQL，
 但业务代码不能依赖具体数据库。
 
 核心约束：
@@ -743,7 +743,7 @@ Node。
 ### Phase A：持久记忆与跨端连续性
 
 1. 定义 `IdentityMemoryStore` 接口；
-2. 在当前 Runtime SQLite 中实现 profile/event/revision；
+2. 在当前 Runtime PostgreSQL 中实现 profile/event/revision；
 3. 将 `events.jsonl` 幂等导入；
 4. 切换为 Runtime-first 权威写入；
 5. 本地 Markdown 改为可选镜像和导出；
@@ -769,7 +769,7 @@ Node。
 
 验收：
 
-- `dev.identity` 不再理解 SQLite、S3 或 Node path；
+- `dev.identity` 不再理解 PostgreSQL、S3 或 Node path；
 - 同一套文件工具可操作 Memory、Project、Artifact 和 Device mount；
 - 设备离线返回可操作状态，而不是路径不存在；
 - 并发修改不会静默覆盖。
@@ -1073,8 +1073,8 @@ Memory 试点不需要先造全功能分布式文件系统。候选持久结构�
 - 后处理任务与投影进度：蒸馏状态、失败重试、digest/index 已处理的版本。
 - Resource 元数据：归属、挂载映射、授权和存储 provider 配置。
 
-首版可用当前 Runtime 环境里的 SQLite 适配器，但数据目录必须持久化并有独立备份。
-业务层只依赖服务接口，不依赖 Cell 本地文件路径。单机 SQLite 试点不等于已经具备
+首版可用当前 Runtime 环境里的 PostgreSQL 适配器，但数据目录必须持久化并有独立备份。
+业务层只依赖服务接口，不依赖 Cell 本地文件路径。单机 PostgreSQL 试点不等于已经具备
 主机故障下的高可用；面向正式托管承诺时需验证备份恢复、灾难恢复及数据库部署方案。
 
 Markdown 小文档可直接入库。大附件进入 Artifact/Object Store，数据库保存元数据和

@@ -1,21 +1,28 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAgentExecutor } from "../../../packages/runtime/src/index";
+import { PostgresRunStore } from "../src/postgres-run-store.mjs";
+import { PostgresSchedulerStore } from "../src/postgres-scheduler-store.mjs";
 import { RuntimeSchedulerWorker } from "../src/scheduler-worker.mjs";
-import { SqliteRunStore } from "../src/sqlite-run-store.mjs";
-import { SqliteSchedulerStore } from "../src/sqlite-scheduler-store.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
+
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("scheduler_worker");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 describe("RuntimeSchedulerWorker", () => {
   it("persists a scheduled Agent as a canonical Session conversation", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "zion-scheduler-session-"));
-    const path = join(directory, "runtime.sqlite3");
-    const runs = new SqliteRunStore(path);
-    const scheduler = new SqliteSchedulerStore(path);
+    const spaceId = database.nextSpaceId();
+    const runs = new PostgresRunStore(database.pool, { spaceId });
+    const scheduler = new PostgresSchedulerStore(database.pool, { spaceId });
     try {
       scheduler.setAvailableTools([]);
-      const task = scheduler.createTask({
+      const task = await scheduler.createTask({
         taskType: "agent",
         title: "Daily report",
         prompt: "Summarize",
@@ -23,7 +30,7 @@ describe("RuntimeSchedulerWorker", () => {
         schedule: { kind: "daily", time: "09:00" },
         capability: { preset: "read-only", allowedTools: [] }
       });
-      const queued = scheduler.runNow(task.id);
+      const queued = await scheduler.runNow(task.id);
       const executor = createAgentExecutor({
         engine: {
           id: "scheduler-session-test",
@@ -51,7 +58,7 @@ describe("RuntimeSchedulerWorker", () => {
 
       await worker.pollOnce();
 
-      const completed = scheduler.getRun(queued.id);
+      const completed = await scheduler.getRun(queued.id);
       expect(completed.error).toBeNull();
       expect(completed).toMatchObject({
         status: "success",
@@ -70,9 +77,8 @@ describe("RuntimeSchedulerWorker", () => {
         expect.objectContaining({ role: "assistant", content: "scheduled answer" })
       ]);
     } finally {
-      scheduler.close();
-      runs.close();
-      rmSync(directory, { recursive: true, force: true });
+      await scheduler.close();
+      await runs.close();
     }
   });
 

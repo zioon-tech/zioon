@@ -1,4 +1,5 @@
 import { createParser } from "eventsource-parser";
+import { accountCan } from "../../../packages/account-ui/src/client";
 import type {
   AccessDevice,
   AccessSession,
@@ -73,6 +74,10 @@ export async function requestJson<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
+  if (!["GET", "HEAD", "OPTIONS"].includes(options.method || "GET")
+    && !path.startsWith("/v1/access/") && !accountCan("runtime.write")) {
+    throw new RuntimeApiError(403, "当前空间为只读访问");
+  }
   const response = await fetch(apiUrl(path), {
     ...options,
     credentials: "include",

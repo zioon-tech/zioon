@@ -145,7 +145,7 @@ Run migration before initializing new profiles. Existing legacy
 `ZION_IDENTITY_MEMORY_ROOT` values are only useful for supplying `--source`;
 they no longer override the new directory layout.
 
-Back up the entire plugin data base, not just Runtime SQLite. Verify restoration
+Back up the entire plugin data base, not just Runtime PostgreSQL. Verify restoration
 of profiles, events and project subdirectories. This change does not implement
 backups, high availability, durable distillation retries or live migration.
 Do not re-enable an old writable directory after new data has been committed.

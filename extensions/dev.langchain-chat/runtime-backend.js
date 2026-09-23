@@ -198,13 +198,24 @@ export function includeTerminalContextForRuntime(
   return state?.get?.("chat.includeTerminalContext") !== false;
 }
 
+function configuredToolNameList(value) {
+  return Array.isArray(value)
+    ? selectedToolNames(value.map((name) => ({ name })))
+    : null;
+}
+
 function configuredRuntimeSupportedToolNames(options = {}) {
-  const configured = options.supportedToolNames
-    || options.state?.get?.("runtime.supportedToolNames")
-    || globalThis.window?.zion?.state?.get?.("runtime.supportedToolNames");
-  return Array.isArray(configured) && configured.length
-    ? selectedToolNames(configured.map((name) => ({ name })))
-    : Array.from(RUNTIME_SUPPORTED_TOOLS);
+  const state = options.state || globalThis.window?.zion?.state;
+  const injectable = configuredToolNameList(
+    Object.prototype.hasOwnProperty.call(options, "injectableToolNames")
+      ? options.injectableToolNames
+      : state?.get?.("runtime.injectableToolNames")
+  );
+  if (injectable) return injectable;
+  const configured = configuredToolNameList(
+    options.supportedToolNames || state?.get?.("runtime.supportedToolNames")
+  );
+  return configured || Array.from(RUNTIME_SUPPORTED_TOOLS);
 }
 
 export function listInteractiveRuntimeSupportedTools(options = {}) {
@@ -511,6 +522,9 @@ function importableProfile(selectedModel, selectedConfig) {
     capabilities: {
       supportsImage: !!selectedConfig?.supportsImage,
       supportsThinking: !!selectedConfig?.supportsThinking,
+      supportsThinkingEffort: !!selectedConfig?.supportsThinkingEffort,
+      thinkingMode: selectedConfig?.thinkingMode,
+      thinkingEffort: selectedConfig?.thinkingEffort,
       preservedThinking: !!selectedConfig?.preservedThinking,
       interleavedThinking: !!selectedConfig?.interleavedThinking
     }
@@ -674,6 +688,10 @@ export async function resolveInteractiveRuntimeProfileModel({
   const profiles = Array.isArray(catalog.profiles) ? catalog.profiles : [];
   const modelProfile = profiles.find((item) => item.id === modelProfileId);
   if (!modelProfile) return null;
+  const capabilities = modelProfile.capabilities
+    && typeof modelProfile.capabilities === "object"
+    ? modelProfile.capabilities
+    : {};
   return {
     profileId: modelProfile.id,
     providerId: String(modelProfile.providerId || profile?.model?.providerId || "runtime"),
@@ -683,7 +701,19 @@ export async function resolveInteractiveRuntimeProfileModel({
       || profile?.model?.modelId
       || modelProfile.id
     ),
-    label: String(modelProfile.label || modelProfile.model || modelProfile.id)
+    label: String(modelProfile.label || modelProfile.model || modelProfile.id),
+    ...(capabilities.supportsThinking !== undefined
+      ? { supportsThinking: capabilities.supportsThinking === true }
+      : {}),
+    ...(capabilities.supportsThinkingEffort !== undefined
+      ? { supportsThinkingEffort: capabilities.supportsThinkingEffort === true }
+      : {}),
+    ...(capabilities.thinkingMode !== undefined
+      ? { thinkingMode: capabilities.thinkingMode }
+      : {}),
+    ...(capabilities.thinkingEffort !== undefined
+      ? { thinkingEffort: capabilities.thinkingEffort }
+      : {})
   };
 }
 
@@ -706,7 +736,29 @@ export async function persistInteractiveRuntimeProfileModel({
   return { runtimeModel, profile };
 }
 
-export async function createInteractiveRuntimeHandle({
+function runtimeRequestMessage(message) {
+  return {
+    role: message.role,
+    content: message.content == null ? "" : message.content,
+    ...(message.reasoning_content
+      ? { reasoningContent: String(message.reasoning_content) }
+      : message.reasoningContent
+        ? { reasoningContent: String(message.reasoningContent) }
+        : {}),
+    ...(Array.isArray(message.tool_calls)
+      ? { toolCalls: message.tool_calls }
+      : Array.isArray(message.toolCalls)
+        ? { toolCalls: message.toolCalls }
+        : {}),
+    ...(message.tool_call_id
+      ? { toolCallId: String(message.tool_call_id) }
+      : message.toolCallId
+        ? { toolCallId: String(message.toolCallId) }
+        : {})
+  };
+}
+
+async function buildInteractiveRuntimeRequest({
   messages,
   sessionHistory = messages,
   tools,
@@ -735,51 +787,17 @@ export async function createInteractiveRuntimeHandle({
     runtimeCatalog
   );
   signal?.throwIfAborted();
-  const handle = await createRemoteRunHandle(client, {
+  return {
+    client,
+    request: {
     interactionProfileId,
     title: title || "",
     ...(workbenchSessionId ? { sessionId: String(workbenchSessionId) } : {}),
     ...((projectId || metadata?.projectId) ? {
       projectId: String(projectId || metadata.projectId)
     } : {}),
-    messages: messages.map((message) => ({
-      role: message.role,
-      content: message.content == null ? "" : message.content,
-      ...(message.reasoning_content
-        ? { reasoningContent: String(message.reasoning_content) }
-        : message.reasoningContent
-          ? { reasoningContent: String(message.reasoningContent) }
-          : {}),
-      ...(Array.isArray(message.tool_calls)
-        ? { toolCalls: message.tool_calls }
-        : Array.isArray(message.toolCalls)
-          ? { toolCalls: message.toolCalls }
-          : {}),
-      ...(message.tool_call_id
-        ? { toolCallId: String(message.tool_call_id) }
-        : message.toolCallId
-          ? { toolCallId: String(message.toolCallId) }
-          : {})
-    })),
-    sessionHistory: sessionHistory.map((message) => ({
-      role: message.role,
-      content: message.content == null ? "" : message.content,
-      ...(message.reasoning_content
-        ? { reasoningContent: String(message.reasoning_content) }
-        : message.reasoningContent
-          ? { reasoningContent: String(message.reasoningContent) }
-          : {}),
-      ...(Array.isArray(message.tool_calls)
-        ? { toolCalls: message.tool_calls }
-        : Array.isArray(message.toolCalls)
-          ? { toolCalls: message.toolCalls }
-          : {}),
-      ...(message.tool_call_id
-        ? { toolCallId: String(message.tool_call_id) }
-        : message.toolCallId
-          ? { toolCallId: String(message.toolCallId) }
-          : {})
-    })),
+    messages: messages.map(runtimeRequestMessage),
+    sessionHistory: sessionHistory.map(runtimeRequestMessage),
     model: runtimeModel,
     modelOptions: modelRequestOptions({
       ...selectedModelConfig,
@@ -801,7 +819,25 @@ export async function createInteractiveRuntimeHandle({
       runtimeEnabledTools: policy.allowedTools,
       runtimeUnsupportedTools: unsupportedTools
     }
-  }, {
+    }
+  };
+}
+
+export async function previewInteractiveRuntimeRequest(options) {
+  const { client, request } = await buildInteractiveRuntimeRequest(options);
+  return await client.previewRun(request);
+}
+
+export async function createInteractiveRuntimeHandle(options) {
+  const {
+    signal,
+    baseUrl,
+    fetchImpl,
+    workbenchSessionId,
+    metadata
+  } = options;
+  const { client, request } = await buildInteractiveRuntimeRequest(options);
+  const handle = await createRemoteRunHandle(client, request, {
     subscription: {
       ...INTERACTIVE_PROJECTION_OPTIONS
     }

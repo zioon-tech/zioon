@@ -88,15 +88,15 @@ export function createWorkbenchStateHttpHandler({
     if (!path.startsWith("/v1/workbench-state")) return false;
 
     if (request.method === "GET" && path === "/v1/workbench-state/status") {
-      json(response, 200, store.readStatus());
+      json(response, 200, await store.readStatus());
       return true;
     }
     if (request.method === "GET" && path === "/v1/workbench-state/catalog") {
-      json(response, 200, store.readCatalog());
+      json(response, 200, await store.readCatalog());
       return true;
     }
     if (request.method === "GET" && path === "/v1/workbench-state/snapshot") {
-      const snapshot = store.readSnapshot();
+      const snapshot = await store.readSnapshot();
       if (!snapshot) {
         response.writeHead(204, { "cache-control": "no-store" });
         response.end();
@@ -106,11 +106,11 @@ export function createWorkbenchStateHttpHandler({
       return true;
     }
     if (request.method === "GET" && path === "/v1/workbench-state/tree") {
-      json(response, 200, store.readTree());
+      json(response, 200, await store.readTree());
       return true;
     }
     if (request.method === "GET" && path === "/v1/workbench-state/events") {
-      json(response, 200, store.listEvents(
+      json(response, 200, await store.listEvents(
         url.searchParams.get("after"),
         {
           limit: url.searchParams.get("limit"),
@@ -145,8 +145,8 @@ export function createWorkbenchStateHttpHandler({
       const sessionId = String(url.searchParams.get("session_id") || "");
       let lastWriteAt = Date.now();
       while (!closed) {
-        if (reauthorize) reauthorize(request.zionPrincipal);
-        const feed = store.listEvents(cursor, {
+        if (reauthorize) await reauthorize(request.zionPrincipal);
+        const feed = await store.listEvents(cursor, {
           limit: 500,
           sessionId
         });
@@ -178,7 +178,7 @@ export function createWorkbenchStateHttpHandler({
     if (request.method === "PUT" && path === "/v1/workbench-state/snapshot") {
       if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
-      json(response, 200, store.writeSnapshot(
+      json(response, 200, await store.writeSnapshot(
         writableSnapshot(body.snapshot),
         body.expected_revision ?? null,
         body.source_client_id ?? ""
@@ -188,7 +188,7 @@ export function createWorkbenchStateHttpHandler({
     if (request.method === "PUT" && path === "/v1/workbench-state/tree") {
       if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
-      json(response, 200, store.writeTree(
+      json(response, 200, await store.writeTree(
         body.tree,
         body.index,
         body.expected_revision ?? null,
@@ -202,7 +202,7 @@ export function createWorkbenchStateHttpHandler({
     ) {
       if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
-      json(response, 200, store.migrateBrowserStorage(
+      json(response, 200, await store.migrateBrowserStorage(
         body.source_id,
         writableSnapshot(body.snapshot),
         body.fingerprint
@@ -212,7 +212,7 @@ export function createWorkbenchStateHttpHandler({
 
     const key = matchKVPath(path);
     if (key != null && request.method === "GET") {
-      const value = store.readKV(key);
+      const value = await store.readKV(key);
       if (!value) {
         json(response, 404, { error: "key not found" });
       } else {
@@ -226,7 +226,7 @@ export function createWorkbenchStateHttpHandler({
         return true;
       }
       const body = await readJson(request);
-      json(response, 200, store.writeKV(key, body.value, {
+      json(response, 200, await store.writeKV(key, body.value, {
         sourceClientId: body.source_client_id ?? ""
       }));
       return true;
@@ -236,7 +236,7 @@ export function createWorkbenchStateHttpHandler({
     if (revisionsSessionId != null && request.method === "GET") {
       json(response, 200, {
         session_id: revisionsSessionId,
-        revisions: store.listSessionRevisions(revisionsSessionId)
+        revisions: await store.listSessionRevisions(revisionsSessionId)
       });
       return true;
     }
@@ -244,7 +244,7 @@ export function createWorkbenchStateHttpHandler({
     if (restoreSessionId != null && request.method === "POST") {
       if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
-      json(response, 200, store.restoreSessionRevision(
+      json(response, 200, await store.restoreSessionRevision(
         restoreSessionId,
         body.revision,
         body.operation_id ?? null
@@ -254,7 +254,7 @@ export function createWorkbenchStateHttpHandler({
 
     const sessionId = matchSessionPath(path);
     if (sessionId != null && request.method === "GET") {
-      const session = store.readSession(sessionId);
+      const session = await store.readSession(sessionId);
       if (!session) {
         json(response, 404, { error: "session not found" });
       } else {
@@ -264,12 +264,12 @@ export function createWorkbenchStateHttpHandler({
     }
     if (sessionId != null && request.method === "PUT") {
       if (!requireWorkbenchStateProtocol(request, response)) return true;
-      json(response, 200, store.updateSession(sessionId, await readJson(request)));
+      json(response, 200, await store.updateSession(sessionId, await readJson(request)));
       return true;
     }
     if (sessionId != null && request.method === "DELETE") {
       if (!requireWorkbenchStateProtocol(request, response)) return true;
-      json(response, 200, store.deleteSession(sessionId, await readJson(request)));
+      json(response, 200, await store.deleteSession(sessionId, await readJson(request)));
       return true;
     }
 

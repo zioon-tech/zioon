@@ -29,7 +29,7 @@ local Tool Host, and returns normalized results.
 - cancellation propagation;
 - Runtime-issued invocation deadline validation before local execution;
 - in-process Device result receipts for duplicate delivery;
-- Runtime-side completed receipts and project bindings persisted in SQLite;
+- Runtime-side completed receipts and project bindings persisted in PostgreSQL;
 - reconnect redelivery within the same instance; reference-bound and mutating
   invocations fail closed when a replacement instance registers.
 

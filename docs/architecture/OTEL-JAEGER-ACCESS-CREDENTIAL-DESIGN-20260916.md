@@ -34,7 +34,7 @@ https://runtime.zioon.tech/observability/
 
 ### 2.1 凭证类型
 
-[`apps/runtime/src/sqlite-access-store.mjs`](../../apps/runtime/src/sqlite-access-store.mjs)
+[`apps/runtime/src/postgres-access-store.mjs`](../../apps/runtime/src/postgres-access-store.mjs)
 定义三类设备：
 
 | Kind | 默认 scopes | 用途 |
@@ -49,7 +49,7 @@ https://runtime.zioon.tech/observability/
 zion_v1.<credential-id>.<random-secret>
 ```
 
-SQLite 只保存：
+PostgreSQL 只保存：
 
 - credential ID；
 - secret 的 SHA-256 digest；
@@ -338,7 +338,7 @@ redirect allowlist 和独立 session store。现阶段不值得。
 ```bash
 cd /opt/zion-next
 sudo -u zion env \
-  ZION_RUNTIME_DB=/var/lib/zion-next/runtime.sqlite3 \
+  ZION_DATABASE_URL="$ZION_DATABASE_URL" \
   ZION_RUNTIME_PUBLIC_URL=https://runtime.zioon.tech \
   npm run runtime:access -- pair create \
     --kind owner \
@@ -352,11 +352,11 @@ Owner 打开一次性链接后，同一个 Browser Profile 即可访问 Workbenc
 
 ```bash
 sudo -u zion env \
-  ZION_RUNTIME_DB=/var/lib/zion-next/runtime.sqlite3 \
+  ZION_DATABASE_URL="$ZION_DATABASE_URL" \
   npm run runtime:access -- devices list
 
 sudo -u zion env \
-  ZION_RUNTIME_DB=/var/lib/zion-next/runtime.sqlite3 \
+  ZION_DATABASE_URL="$ZION_DATABASE_URL" \
   npm run runtime:access -- devices revoke <device-id>
 ```
 
@@ -364,7 +364,7 @@ sudo -u zion env \
 
 ### 8.3 备份
 
-访问凭证 digest 在 Runtime SQLite 中。备份 Runtime 数据库时必须加密；Jaeger 不应
+访问凭证 digest 在 Runtime PostgreSQL 中。备份 Runtime 数据库时必须加密；Jaeger 不应
 持有这些凭证。Credential raw secret 只存在于 Browser Cookie 或 Resource Host
 credential store。
 

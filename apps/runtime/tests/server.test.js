@@ -1,13 +1,20 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAgentExecutor } from "../../../packages/runtime/src/index";
 import { FileInteractionProfileStore } from "../src/interaction-profile-store.mjs";
+import { PostgresRunStore } from "../src/postgres-run-store.mjs";
 import { createRuntimeServer } from "../src/server.mjs";
-import { SqliteRunStore } from "../src/sqlite-run-store.mjs";
+import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
 const resources = [];
+let database;
+
+beforeAll(async () => {
+  database = await createPostgresTestDatabase("server");
+});
+
+afterAll(async () => {
+  await database.close();
+});
 
 async function waitForRun(url, runId, expectedStatus) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -32,9 +39,10 @@ async function waitForMessages(url, sessionId, expectedCount) {
 }
 
 function createStore() {
-  const directory = mkdtempSync(join(tmpdir(), "zion-runtime-server-"));
-  const store = new SqliteRunStore(join(directory, "runtime.sqlite3"));
-  resources.push({ directory, store });
+  const store = new PostgresRunStore(database.pool, {
+    spaceId: database.nextSpaceId()
+  });
+  resources.push({ store });
   return store;
 }
 
@@ -70,13 +78,79 @@ afterEach(async () => {
       await resource.server?.close();
     } catch {}
     try {
-      resource.store.close();
+      await resource.store.close();
     } catch {}
-    rmSync(resource.directory, { recursive: true, force: true });
   }
 });
 
 describe("Runtime Host", () => {
+  it("previews the provider request without creating a Run", async () => {
+    const store = createStore();
+    let transportStarted = false;
+    const server = createServer({
+      id: "request-preview",
+      async *streamTurn(request) {
+        yield {
+          type: "model.request",
+          request: {
+            url: "https://model.test/v1/chat/completions",
+            providerId: "test",
+            providerType: "openai",
+            modelId: "small",
+            stream: true,
+            payload: {
+              model: "small",
+              messages: request.messages,
+              tools: request.tools
+            }
+          }
+        };
+        transportStarted = true;
+      }
+    }, store, {
+      tools: {
+        async listTools() {
+          return [{
+            name: "read",
+            description: "Read a file",
+            inputSchema: { type: "object", properties: {} }
+          }];
+        },
+        async invoke() {
+          throw new Error("Preview must not invoke tools");
+        }
+      }
+    });
+    resources.at(-1).server = server;
+    const address = await server.start();
+
+    const response = await fetch(`${address.url}/v1/runs/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: "inspect",
+        model: { providerId: "test", modelId: "small" },
+        policy: { preset: "read-only", allowedTools: ["read"] }
+      })
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      preview: {
+        turn: 1,
+        request: {
+          modelId: "small",
+          payload: {
+            messages: [{ role: "user", content: "inspect" }],
+            tools: [{ name: "read" }]
+          }
+        },
+        contextFailures: []
+      }
+    });
+    expect(transportStarted).toBe(false);
+    await expect(store.listRuns()).resolves.toEqual([]);
+  });
+
   it("rejects interactive Runs from an outdated Workbench protocol", async () => {
     const store = createStore();
     const server = createServer({
@@ -148,6 +222,66 @@ describe("Runtime Host", () => {
       headers: { origin: "https://example.com" }
     });
     expect(rejected.status).toBe(403);
+  });
+
+  it("exposes bounded Runtime health without coupling it to core liveness", async () => {
+    const store = createStore();
+    const server = createServer({
+      id: "runtime-health",
+      async *streamTurn() {
+        yield { type: "message.delta", delta: "ok" };
+      }
+    }, store, {
+      runtimeHealth: vi.fn(async () => ({
+        status: "degraded",
+        checks: [{
+          id: "system-memory",
+          status: "warning",
+          message: "Host free memory is low"
+        }]
+      }))
+    });
+    resources.at(-1).server = server;
+    const address = await server.start();
+
+    const response = await fetch(`${address.url}/v1/admin/runtime-health`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      service: "zion-runtime",
+      status: "degraded",
+      checks: [{
+        id: "system-memory",
+        status: "warning"
+      }]
+    });
+  });
+
+  it("keeps Runtime health provider failures isolated", async () => {
+    const store = createStore();
+    const server = createServer({
+      id: "runtime-health-error",
+      async *streamTurn() {
+        yield { type: "message.delta", delta: "ok" };
+      }
+    }, store, {
+      runtimeHealth: vi.fn(async () => {
+        throw new Error("database probe timed out");
+      })
+    });
+    resources.at(-1).server = server;
+    const address = await server.start();
+
+    const response = await fetch(`${address.url}/v1/admin/runtime-health`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      service: "zion-runtime",
+      status: "degraded",
+      error: "database probe timed out"
+    });
   });
 
   it("exposes sanitized Model Registry profiles", async () => {
@@ -390,6 +524,7 @@ describe("Runtime Host", () => {
         description: "Read files",
         inputSchema: { type: "object" },
         hostKinds: ["local-tools"],
+        modelInjectable: true,
         owner: {
           kind: "device",
           id: "local-tools"
@@ -408,6 +543,7 @@ describe("Runtime Host", () => {
         description: "Run commands",
         inputSchema: { type: "object" },
         hostKinds: ["local-tools"],
+        modelInjectable: true,
         owner: {
           kind: "device",
           id: "local-tools"
@@ -427,6 +563,7 @@ describe("Runtime Host", () => {
         inputSchema: { type: "object" },
         hostKinds: ["runtime-plugin", "plugin:dev.scheduler"],
         pluginId: "dev.scheduler",
+        modelInjectable: true,
         owner: {
           kind: "plugin",
           id: "dev.scheduler"
@@ -559,7 +696,7 @@ describe("Runtime Host", () => {
 
   it("exposes Runtime todo lists for Workbench projection", async () => {
     const store = createStore();
-    store.saveTodoList("session-1", [{
+    await store.saveTodoList("session-1", [{
       id: "todo-1",
       content: "Run Runtime tests",
       status: "in_progress",
@@ -723,10 +860,17 @@ describe("Runtime Host", () => {
       `${address.url}/v1/runs/${accepted.runId}/projection`
         + "?after=0&max_chunk_chars=4096"
     ).then((response) => response.json());
+    const durable = await store.getEvents(accepted.runId);
 
+    expect(durable.some((event) =>
+      ["reasoning.delta", "message.delta"].includes(event.type)
+    )).toBe(false);
     expect(raw.events.filter((event) =>
       event.type === "reasoning.delta"
-    )).toHaveLength(100);
+    )).toHaveLength(1);
+    expect(raw.events.filter((event) =>
+      event.type === "message.delta"
+    )).toHaveLength(1);
     expect(projected.events.filter((event) =>
       event.type === "reasoning.delta"
     )).toHaveLength(1);
@@ -738,25 +882,27 @@ describe("Runtime Host", () => {
     );
     expect(projectedRequest).toMatchObject({
       data: {
+        summaryVersion: 1,
         messageCount: 1,
         toolCount: 1,
-        detailAvailable: true,
-        rawEventSequence: expect.any(Number)
+        payloadBytes: expect.any(Number),
+        payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/)
       }
     });
     expect(projectedRequest.data.payload).toBeUndefined();
     const eventDetail = await fetch(
       `${address.url}/v1/runs/${accepted.runId}/events/`
-      + projectedRequest.data.rawEventSequence
+      + projectedRequest.sequence
     ).then((response) => response.json());
     expect(eventDetail.event).toMatchObject({
       type: "model.request",
       data: {
-        payload: {
-          messages: [{ role: "user", content: "p".repeat(20_000) }]
-        }
+        summaryVersion: 1,
+        messageCount: 1,
+        toolCount: 1
       }
     });
+    expect(JSON.stringify(eventDetail.event)).not.toContain("p".repeat(1_000));
     expect(projected.events.find((event) =>
       event.type === "reasoning.delta"
     )).toMatchObject({
@@ -840,7 +986,7 @@ describe("Runtime Host", () => {
       runId: "artifact-run",
       createdAt: 1000
     }]);
-    store.saveRunArtifacts({
+    await store.saveRunArtifacts({
       runId: "artifact-run",
       invocationId: "artifact-invocation",
       artifacts: [{
@@ -1555,6 +1701,111 @@ describe("Runtime Host", () => {
         "user:capture this result",
         "assistant:runtime answer"
       ]);
+  });
+
+  it("passes the persisted Run grant to completed Run post-processors", async () => {
+    const processed = [];
+    const failures = [];
+    const store = createStore();
+    const runGrant = Object.freeze({
+      version: 1,
+      kind: "user",
+      userId: "user:owner",
+      spaceId: "space:one",
+      grantId: "grant:run"
+    });
+    const browserPrincipal = {
+      kind: "account",
+      user: { id: "user:owner" },
+      space: { id: "space:one" },
+      sessionId: "session:browser"
+    };
+    const policy = {
+      preset: "workspace-write",
+      allowedTools: [],
+      maxToolCalls: 1,
+      fileRoots: ["/var/lib/zion-next/runtime/plugins/dev.identity"],
+      allowedCommandPrefixes: [],
+      allowedTerminalSessionIds: [],
+      allowedRecipients: [],
+      maxMailPerRun: 0
+    };
+    const accessControl = {
+      mode: "accounts-v1",
+      async authenticateRequest() {
+        return browserPrincipal;
+      },
+      async hasScope() {
+        return true;
+      },
+      async authorizeRuntimeRequest() {
+        return browserPrincipal;
+      },
+      async authorizeRunRequest(_principal, request, ceiling) {
+        return {
+          ...request,
+          principal: runGrant,
+          policy: ceiling || request.policy
+        };
+      },
+      async authorizeRunExecution(request) {
+        if (request?.principal !== runGrant) {
+          throw new Error("post-processor did not receive the Run grant");
+        }
+        return request.policy;
+      }
+    };
+    const server = createServer({
+      id: "post-process-grant",
+      async *streamTurn() {
+        yield { type: "message.delta", delta: "runtime answer" };
+      }
+    }, store, {
+      accessControl,
+      interactionProfiles: {
+        get: () => ({ id: "interactive.default", policy })
+      },
+      runPostProcessors: [{
+        id: "capture",
+        async process(run) {
+          processed.push(run);
+        }
+      }],
+      onPostProcessorError(error, meta) {
+        failures.push({ error, meta });
+      }
+    });
+    resources.at(-1).server = server;
+    const address = await server.start();
+
+    const created = await fetch(`${address.url}/v1/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Biography grant" })
+    }).then((response) => response.json());
+
+    const response = await fetch(
+      `${address.url}/v1/sessions/${created.session.id}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "record this" })
+      }
+    );
+    expect(response.status).toBe(202);
+    const accepted = await response.json();
+    await waitForRun(address.url, accepted.runId, "completed");
+    for (let attempt = 0; attempt < 50 && !processed.length; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(failures).toHaveLength(0);
+    expect(processed).toHaveLength(1);
+    expect(processed[0]).toMatchObject({
+      runId: accepted.runId,
+      sessionId: created.session.id,
+      principal: runGrant,
+      policy
+    });
   });
 
   it("refuses unauthenticated non-loopback binding by default", () => {

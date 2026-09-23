@@ -22,6 +22,26 @@ export type AcceptedRuntimeRun = {
   interactionProfile?: RuntimeInteractionProfile;
 };
 
+export type RuntimeRequestPreview = {
+  runId: string;
+  attemptId: string;
+  turn: number;
+  request: {
+    url: string;
+    providerId?: string;
+    providerType?: string;
+    modelId: string;
+    modelLabel?: string;
+    stream: boolean;
+    payload: Record<string, unknown>;
+  };
+  contextFailures: Array<{
+    providerId: string;
+    stage: string;
+    error: string;
+  }>;
+};
+
 export type RuntimeModelProfile = {
   id: string;
   label?: string;
@@ -81,6 +101,7 @@ export type RuntimeEventSubscription = {
 
 export interface RuntimeClient {
   createRun(request: RunRequest): Promise<AcceptedRuntimeRun>;
+  previewRun(request: RunRequest): Promise<RuntimeRequestPreview>;
   getModels(): Promise<RuntimeModelCatalog>;
   getCapabilityTools(): Promise<ToolDefinition[]>;
   getInteractionProfiles(): Promise<RuntimeInteractionProfile[]>;
@@ -541,6 +562,22 @@ export function createHttpRuntimeClient(
           ? { interactionProfile: body.interactionProfile as RuntimeInteractionProfile }
           : {})
       };
+    },
+
+    async previewRun(request) {
+      const response = await fetchRequest(`${baseUrl}/v1/runs/preview`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request)
+      });
+      const body = await readJson(response);
+      if (!body.preview || typeof body.preview !== "object") {
+        throw new RuntimeHttpError(
+          response.status,
+          "Runtime response is missing request preview"
+        );
+      }
+      return body.preview as RuntimeRequestPreview;
     },
 
     async getCapabilityTools() {

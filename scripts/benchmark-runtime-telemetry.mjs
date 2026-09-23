@@ -1,6 +1,3 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import process from "node:process";
 import { setImmediate } from "node:timers";
@@ -26,12 +23,10 @@ let executor;
 let iterations = 120;
 let warmups = 20;
 if (representative) {
-  const [{ SqliteRunStore }, { RuntimeToolBroker }] = await Promise.all([
-    import("../apps/runtime/src/sqlite-run-store.mjs"),
+  const [{ RuntimeToolBroker }] = await Promise.all([
     import("../apps/runtime/src/runtime-tool-broker.mjs")
   ]);
-  const directory = mkdtempSync(join(tmpdir(), "zion-otel-benchmark-"));
-  const runs = new SqliteRunStore(join(directory, "runtime.sqlite3"));
+  const runs = new MemoryRunStore();
   const broker = new RuntimeToolBroker({
     localTools: {
       async listTools() {
@@ -97,10 +92,6 @@ if (representative) {
   executor = createAgentExecutor({ engine, tools: broker, runs });
   iterations = 35;
   warmups = 5;
-  cleanup = () => {
-    runs.close();
-    rmSync(directory, { recursive: true, force: true });
-  };
 } else {
   executor = createAgentExecutor({
     engine: {
@@ -147,7 +138,7 @@ await shutdownTelemetry();
 cleanup();
 process.stdout.write(`${JSON.stringify({
   configured: !!process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
-  mode: representative ? "sqlite-model-tool-model" : "memory-deltas",
+  mode: representative ? "model-tool-model" : "memory-deltas",
   runs: samples.length,
   ...(representative
     ? { modelCallsPerRun: 2, toolCallsPerRun: 1 }

@@ -1,3 +1,4 @@
+import { accountCan } from "../../../packages/account-ui/src/client";
 import {
   ArrowDown,
   ArrowUp,
@@ -357,7 +358,7 @@ export function SessionsScreen() {
     <MobilePage
       title="Zion"
       subtitle={`${sessions.data?.length || 0} 个会话`}
-      action={
+      action={accountCan("runtime.write") &&
         <IconButton
           icon={MessageCirclePlus}
           label="新建会话"
@@ -1556,7 +1557,7 @@ export function ConversationScreen() {
           <IconButton icon={Info} label="会话信息" onClick={() => setSessionInfoOpen(true)} />
         </div>
       }
-      footer={
+      footer={accountCan("run.execute") ?
         <Composer
           value={draft}
           running={running}
@@ -1575,7 +1576,7 @@ export function ConversationScreen() {
           onQuickPrompt={appendDraft}
           onSubmit={submit}
           onStop={() => stop.mutate()}
-        />
+        /> : <div className="zion-account-readonly">只读会话</div>
       }
       className="conversation-page"
     >
@@ -1896,8 +1897,12 @@ export function ConversationScreen() {
                   configTools.map((tool) => {
                     const enabled = enabledTools.includes(tool.name);
                     const risk = sessionCapabilityRisk(tool);
-                    const unavailable = tool.policy?.requiresApproval === true
+                    const unavailable = tool.modelInjectable === false
+                      || tool.policy?.requiresApproval === true
                       || tool.name === "sendMail";
+                    const unavailableText = tool.modelInjectable === false
+                      ? tool.unavailableReason || "当前 Runtime 不会注入此工具"
+                      : "需要额外审批或白名单";
                     return (
                       <div className="session-config-row" key={tool.name}>
                         <Wrench size={17} aria-hidden="true" />
@@ -1907,7 +1912,7 @@ export function ConversationScreen() {
                             <Badge tone={risk.tone}>{risk.label}</Badge>
                           </span>
                           <span className="row-preview">
-                            {unavailable ? "需要额外审批或白名单" : tool.description || "Runtime 工具"}
+                            {unavailable ? unavailableText : tool.description || "Runtime 工具"}
                           </span>
                         </span>
                         <button
@@ -1916,7 +1921,7 @@ export function ConversationScreen() {
                           role="switch"
                           aria-checked={enabled}
                           aria-label={`${enabled ? "停用" : "启用"} ${tool.name}`}
-                          disabled={running || updateConfiguration.isPending || unavailable}
+                          disabled={running || updateConfiguration.isPending || (unavailable && !enabled)}
                           onClick={() => {
                             const next = enabled
                               ? enabledTools.filter((name) => name !== tool.name)
