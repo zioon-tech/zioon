@@ -23,7 +23,7 @@ export default defineConfig({
     ]
   },
   server: {
-    port: 5177,
+    port: 5174,
     strictPort: false,
     host: true  // 允许局域网访问
   },
