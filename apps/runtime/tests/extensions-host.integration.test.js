@@ -216,7 +216,23 @@ describe("execution-side isolated persistent extension Host", () => {
           await new Promise(r=>setTimeout(r,10000)); return "real completion";
         }});return {};
       }`);
-    const result = await f.call(f.description.handlers[0].handle, "inv:forge");
+    const bridge = new ExtensionHostBridge({
+      tools: () => { throw new Error("Run Bash target must not be used"); },
+      hasNativeHost: () => true,
+      nativeInvoke: (invocation, signal) => f.host.invoke(invocation.toolCall.arguments, signal, invocation)
+    });
+    // The supervisor may terminate before or during the first poll. The
+    // production bridge must normalize both paths to the same unknown outcome.
+    const invocationContext = { runId: "run:fixture", invocationId: "inv:forge" };
+    await expect(bridge.invoke(f.binding, f.description, f.description.handlers[0], {},
+      { ...f.context, ...invocationContext }))
+      .rejects.toMatchObject({ code: "execution_outcome_unknown" });
+    await f.host.close();
+    f.replace();
+    const next = await f.invoke({ action: "ensure", artifact: f.artifact });
+    await f.invoke({ action: "invoke", hostEpoch: next.hostEpoch, handle: next.handlers[0].handle,
+      invocationId: "inv:forge", input: {}, context: invocationContext });
+    const result = await f.invoke({ action: "poll", hostEpoch: next.hostEpoch, invocationId: "inv:forge" });
     expect(result.error).toBe("execution_outcome_unknown");
     expect(JSON.stringify(result)).not.toContain("forged success");
   });
