@@ -25,7 +25,15 @@ Node 固定 22.18.0；Zioon 使用 npm 10.9.3，ADC 使用 pnpm 9.14.2，Memory 
 
 ## Release
 
-从成功的 CI run 选择制品，不在生产机器重新构建。发布 manifest 记录产品、组件、commit、CI run、制品 SHA256、时间和旧指针。生产发布在私有 `infra` 执行：核验来源和校验和，检查磁盘及依赖，切换指针，等待 HTTP readiness，失败时回滚并记录结果。
+从 main 的成功 CI run 选择制品，不在生产机器重新构建。在本产品仓库发起 `Production release`，调用固定 SHA 的共享发布工作流；私有 `infra` 管理生产配置、云权限和运行手册。发布 manifest 与 journal 记录产品、组件、commit、CI run、制品 SHA256、时间和旧指针。发布先核验来源和校验和，检查磁盘及依赖，再切换指针，等待 HTTP readiness，失败时回滚并记录结果。
+
+```sh
+gh workflow run release.yml --repo zioon-tech/zioon --ref main \
+  -f component=public-site -f ci-run=<successful-main-ci-run-id> -f check-only=true
+# 预检通过后，用相同 component 和 ci-run 将 check-only 改为 false。
+```
+
+可分别发布 `public-site`、`workbench`、`portals`、`marketplace` 和 `runtime`。CLI 下载包随官网制品发布；Mobile 与 Admin 静态资源由 `portals` 制品承载。
 
 官网与文档发布不能顺带重启 Runtime、ADC 后端或 Memory 服务。ADC 当前官网、文档和控制台共用前端构建，发布静态目录即可；Memory 公开网站制品不覆盖账户和控制台路由。
 
