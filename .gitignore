@@ -1,4 +1,7 @@
 .vercel
+.release-stage/
+.release-out/
+.release-tools/
 dist/*
 packages/*/dist/
 dev-dist/
