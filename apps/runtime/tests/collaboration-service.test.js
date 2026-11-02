@@ -411,6 +411,12 @@ describe("Runtime collaboration service", () => {
     expect(projectedDocument).toContain("user project output");
     expect(projectedDocument)
       .toContain(`assistant <!-- zion-assistant:id=${accepted.runId} -->`);
+    await waitFor(async () => {
+      const events = (await workbenchState.listEvents(0)).events;
+      return ["run.started", "run.completed"].every(type =>
+        events.some(event => event.type === type && event.runId === accepted.runId)
+      );
+    });
     expect((await workbenchState.listEvents(0)).events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
