@@ -61,6 +61,7 @@ export type RuntimeModelProfile = {
 
 export type RuntimeModelCatalog = {
   activeProfileId: string | null;
+  selectedProfileId?: string | null;
   profiles: RuntimeModelProfile[];
 };
 
@@ -102,7 +103,10 @@ export type RuntimeEventSubscription = {
 export interface RuntimeClient {
   createRun(request: RunRequest): Promise<AcceptedRuntimeRun>;
   previewRun(request: RunRequest): Promise<RuntimeRequestPreview>;
-  getModels(): Promise<RuntimeModelCatalog>;
+  getModels(interactionProfileId?: string): Promise<RuntimeModelCatalog>;
+  setModelSelection(profileId: string, interactionProfileId?: string): Promise<{
+    interactionProfileId: string; modelProfileId: string; selectedProfileId: string | null;
+  }>;
   getCapabilityTools(): Promise<ToolDefinition[]>;
   getInteractionProfiles(): Promise<RuntimeInteractionProfile[]>;
   getInteractionProfile(profileId: string): Promise<RuntimeInteractionProfile>;
@@ -526,8 +530,10 @@ export function createHttpRuntimeClient(
     `${baseUrl}/v1/interaction-profiles/${encodeURIComponent(profileId)}`;
 
   return {
-    async getModels() {
-      const response = await fetchRequest(`${baseUrl}/v1/models`, {
+    async getModels(interactionProfileId) {
+      const query = interactionProfileId && interactionProfileId !== "interactive.default"
+        ? `?${new URLSearchParams({ interactionProfileId })}` : "";
+      const response = await fetchRequest(`${baseUrl}/v1/models${query}`, {
         headers: { accept: "application/json" }
       });
       const body = await readJson(response);
@@ -535,10 +541,23 @@ export function createHttpRuntimeClient(
         activeProfileId: body.activeProfileId
           ? String(body.activeProfileId)
           : null,
+        ...("selectedProfileId" in body ? {
+          selectedProfileId: body.selectedProfileId ? String(body.selectedProfileId) : null
+        } : {}),
         profiles: Array.isArray(body.profiles)
           ? body.profiles as RuntimeModelProfile[]
           : []
       };
+    },
+
+    async setModelSelection(profileId, interactionProfileId) {
+      const response = await fetchRequest(`${baseUrl}/v1/models/selection`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ profileId, interactionProfileId })
+      });
+      const body = await readJson(response);
+      if (!body.selection?.modelProfileId) throw new RuntimeHttpError(response.status, "Runtime response is missing model selection");
+      return body.selection;
     },
 
     async createRun(request) {

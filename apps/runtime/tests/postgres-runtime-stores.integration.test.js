@@ -163,11 +163,24 @@ suite("PostgreSQL Runtime stores", () => {
     expect(await a.getEvents(run.id)).toHaveLength(2);
     expect(await a.getSessionMessages(session.id)).toHaveLength(1);
     expect(await a.countToolReceipts()).toBe(1);
+    expect(await a.findToolReceiptByRequestHash(
+      run.id,
+      "read",
+      "hash"
+    )).toMatchObject({
+      invocationId: "invocation:a",
+      result: { ok: true, content: "ok" }
+    });
     expect((await a.listRunArtifacts(run.id)).artifacts).toHaveLength(1);
     expect((await a.getTodoList(session.id)).todos).toHaveLength(1);
     expect(await b.get(run.id)).toBeNull();
     expect(await b.getSession(session.id)).toBeNull();
     expect(await b.getToolReceipt("invocation:a")).toBeNull();
+    expect(await b.findToolReceiptByRequestHash(
+      run.id,
+      "read",
+      "hash"
+    )).toBeNull();
   });
 
   it("stores model request details compressed outside the event payload", async () => {
@@ -273,6 +286,35 @@ suite("PostgreSQL Runtime stores", () => {
     expect(writes.filter((result) => result.ok)).toHaveLength(1);
     expect(writes.filter((result) => result.conflict)).toHaveLength(1);
     expect((await a.listEvents(0)).events.length).toBeGreaterThanOrEqual(2);
+
+    await a.createSession({ id: "session:preserved", title: "Preserved", text: "keep" });
+    await a.writeTree({
+      id: "root",
+      type: "folder",
+      title: "Sessions",
+      children: [{ id: "session:same", type: "session", title: "A" }]
+    }, []);
+    const afterTreeWrite = await a.readTree();
+    expect(afterTreeWrite.index.map((item) => item.id)).toEqual(
+      expect.arrayContaining(["session:same", "session:preserved"])
+    );
+
+    await a.writeSnapshot({
+      version: 1,
+      tree: {
+        id: "root",
+        type: "folder",
+        title: "Sessions",
+        children: [{ id: "session:preserved", type: "session", title: "Preserved" }]
+      },
+      index: [{ id: "session:preserved", title: "Preserved" }],
+      docs: [],
+      metas: []
+    });
+    const afterSnapshotWrite = await a.readTree();
+    expect(afterSnapshotWrite.index.map((item) => item.id)).toEqual(
+      expect.arrayContaining(["session:same", "session:preserved"])
+    );
   });
 
   it("claims Scheduler work once and preserves Space isolation", async () => {

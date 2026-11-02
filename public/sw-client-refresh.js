@@ -22,7 +22,7 @@ self.addEventListener("activate", (event) => {
       ) {
         return;
       }
-      void client.navigate(client.url).catch(() => {});
+      client.postMessage({ type: "ZION_WORKBENCH_UPDATE_AVAILABLE" });
     });
   })());
 });

@@ -14,6 +14,8 @@ function responseError(service, status, payload) {
   );
   const error = new Error(message);
   error.statusCode = status;
+  if (payload?.failureCode) error.failureCode = String(payload.failureCode);
+  if (typeof payload?.retryable === "boolean") error.retryable = payload.retryable;
   return error;
 }
 
@@ -121,11 +123,15 @@ export function createDeviceServiceClient({
           }
         }, cancellationSignal(runContext));
         if (!result?.ok) {
-          throw new Error(
+          const error = new Error(
             result?.error
             || result?.content
             || `${serviceName} request failed`
           );
+          error.statusCode = result?.failureCode === "stale_terminal_reference" ? 409 : 502;
+          if (result?.failureCode) error.failureCode = result.failureCode;
+          if (typeof result?.retryable === "boolean") error.retryable = result.retryable;
+          throw error;
         }
         let envelope;
         try {

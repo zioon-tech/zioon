@@ -1,0 +1,37 @@
+{
+  "name": "dev.adc-studio",
+  "version": "0.1.0",
+  "description": "ADC Studio 测试副本：设备、授权目录、实时工具表单、任务与回执。",
+  "zion": {
+    "manifestVersion": 2,
+    "id": "dev.adc-studio",
+    "name": "ADC Studio",
+    "version": "0.1.0",
+    "entries": { "workbench": "./workbench.mjs", "runtime": "./runtime.mjs", "skill": "./skills/adc-studio" },
+    "hosts": { "workbench": true, "runtime": true },
+    "runtime": { "apiVersion": 2 },
+    "capabilities": [
+      { "id": "adc_studio_status", "kind": "tool", "host": "runtime", "risk": "read" },
+      { "id": "adc_studio_discover", "kind": "tool", "host": "runtime", "risk": "read" },
+      { "id": "adc_studio_read", "kind": "tool", "host": "runtime", "risk": "read" },
+      { "id": "adc_studio_invoke", "kind": "tool", "host": "runtime", "risk": "external" },
+      { "id": "adc_studio_task", "kind": "tool", "host": "runtime", "risk": "read" },
+      { "id": "adc_studio_cancel", "kind": "tool", "host": "runtime", "risk": "external" }
+    ],
+    "presentation": {
+      "displayName": { "zh-CN": "ADC Studio · 测试", "en-US": "ADC Studio · Preview" },
+      "description": { "zh-CN": "浏览设备和授权目录，通过工具表单执行任务并查看回执。", "en-US": "Browse devices and authorized folders, run tools and inspect task receipts." },
+      "icon": "remote", "category": "ai",
+      "features": { "zh-CN": ["设备与授权目录", "动态工具表单", "任务状态与回执"], "en-US": ["Devices and authorized folders", "Dynamic tool forms", "Task status and receipts"] }
+    },
+    "contributes": {
+      "styles": ["./styles.css"],
+      "skills": ["./skills/adc-studio"],
+      "commands": [
+        { "id": "adc-studio.open", "title": "ADC Studio: 打开设备工作台" },
+        { "id": "adc-studio.refresh", "title": "ADC Studio: 刷新" }
+      ]
+    },
+    "activationEvents": ["onStartupFinished"]
+  }
+}

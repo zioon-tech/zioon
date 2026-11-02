@@ -16,6 +16,7 @@ import { createHttpRuntimeClient } from "../../src/runtime/http-runtime-client.t
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
+import { currentAccountSession } from "../../packages/account-ui/src/client";
 
 const I18N_NS = "dev.tools";
 const DEFAULT_RUNTIME_INTERACTION_PROFILE_ID = "interactive.default";
@@ -32,9 +33,12 @@ const RUNTIME_WORKSPACE_WRITE_TOOLS = new Set([
 ]);
 const RUNTIME_TRUSTED_AUTOMATION_TOOLS = new Set([
   "Bash",
+  "sandboxBash",
+  "sandboxWrite",
   "sendMail",
   "todoWrite",
   "mcpCall",
+  "extensionsCall",
   "schedulerManage",
   "modelsManage",
   "toolsManage",
@@ -755,6 +759,7 @@ export async function activate(ctx) {
   };
   const persistRuntimeToolSelection = (enabledTools) => {
     runtimeToolSelectionVersion += 1;
+    window.zion?.state?.set?.("runtime.toolSync", { status: "stale", reason: "local-selection-changed" });
     const selection = uniqueStrings(enabledTools);
     return enqueueRuntimeToolOperation(
       () => persistEnabledToolsToRuntimeProfile({ enabledTools: selection })
@@ -762,9 +767,22 @@ export async function activate(ctx) {
   };
   const syncRuntimeToolSelection = () => {
     if (runtimeToolSyncPromise) return runtimeToolSyncPromise;
+    const sync = window.zion?.state?.get?.("runtime.toolSync");
+    const config = readWorkbenchRuntimeConfig({
+      state: window.zion?.state, storage: globalThis.localStorage
+    });
+    const profileId = readRuntimeInteractionProfileId();
+    const identity = currentAccountSession();
+    const accountScope = JSON.stringify([identity?.user?.id, identity?.space?.id, identity?.membership?.role]);
+    if (sync?.status === "synced"
+      && sync.baseUrl === config.baseUrl && sync.profileId === profileId
+      && sync.accountScope === accountScope
+      && Date.now() - sync.syncedAt < 15_000) {
+      return Promise.resolve({ applied: true, cached: true });
+    }
     runtimeToolSyncPromise = enqueueRuntimeToolOperation(async () => {
       const selectionVersion = runtimeToolSelectionVersion;
-      return syncEnabledToolsFromRuntimeProfile({
+      const result = await syncEnabledToolsFromRuntimeProfile({
         shouldApplyEnabledTools: () =>
           selectionVersion === runtimeToolSelectionVersion,
         applyEnabledTools(enabledTools) {
@@ -776,6 +794,11 @@ export async function activate(ctx) {
           }
         }
       });
+      if (result.applied) {
+        const current = window.zion?.state?.get?.("runtime.toolSync");
+        window.zion?.state?.set?.("runtime.toolSync", { ...current, baseUrl: config.baseUrl, accountScope });
+      }
+      return result;
     })
       .finally(() => {
         runtimeToolSyncPromise = null;

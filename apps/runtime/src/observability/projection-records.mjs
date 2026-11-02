@@ -12,7 +12,8 @@ const FAILURE_CODES = new Set([
   "tool_outside_grant", "grant_profile_unavailable", "backend-unavailable",
   "rate_limit", "http_status", "http_4xx", "http_5xx", "dns_error",
   "network_error", "content_type", "size_limit", "truncated",
-  "cancelled", "runtime-shutdown", "max_turns", "unknown"
+  "cancelled", "execution_outcome_unknown", "runtime-shutdown", "max_turns",
+  "unknown"
 ]);
 const number = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 const id = (value) => /^[a-zA-Z0-9:_-]{1,160}$/.test(String(value || "")) ? value : undefined;

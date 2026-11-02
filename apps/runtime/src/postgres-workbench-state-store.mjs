@@ -114,6 +114,11 @@ const CATALOG_META_KEYS = [
   "language",
   "kind"
 ];
+// Select only summaries from PostgreSQL; annotations and previews can be
+// much larger than the document and must not cross the startup/search path.
+const CATALOG_META_SQL = `jsonb_strip_nulls(jsonb_build_object(${
+  CATALOG_META_KEYS.map(key => `'${key}', m.meta_json->'${key}'`).join(", ")
+}))`;
 
 function catalogSessionMeta(sessionId, meta = {}) {
   const current = isObject(meta) ? meta : {};
@@ -675,6 +680,13 @@ export class PostgresWorkbenchStateStore {
       );
       const existing = existingResult.rows[0];
       const current = await this.currentSession(id, client);
+      if (!current.exists) {
+        const tombstone = await this.readSession(id, client);
+        if (tombstone?.deleted) return {
+          ok: true, skipped: true, deleted: true, sessionId: id,
+          session_revision: tombstone.session_revision
+        };
+      }
       const nextText = text == null ? null : String(text);
       if (
         existing?.state_hash === stateHash
@@ -881,6 +893,35 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
+  async listSessionIndexEntries(client = this.pool) {
+    const result = await client.query(
+      `SELECT d.id,
+         CASE WHEN COALESCE(m.meta_json->>'hash', '') <> ''
+           AND m.meta_json->>'size' IS NOT NULL THEN '' ELSE d.text END AS text,
+         ${CATALOG_META_SQL} AS meta_json
+       FROM runtime_workbench_documents d
+       LEFT JOIN runtime_workbench_metadata m
+         ON m.space_id = d.space_id AND m.id = d.id
+       WHERE d.space_id = $1
+       ORDER BY d.updated_at DESC, d.id`,
+      [this.spaceId]
+    );
+    return result.rows.map((row) =>
+      this.sessionIndexEntry(
+        row.id,
+        jsonValue(row.meta_json, {}),
+        row.text
+      )
+    );
+  }
+
+  async completeTree(tree, client = this.pool) {
+    return appendMissingSessionsToTree(
+      tree,
+      await this.listSessionIndexEntries(client)
+    );
+  }
+
   async rebuildIndexFromTree(tree, client = this.pool) {
     const root = isObject(tree) ? tree : defaultTree();
     const ids = [];
@@ -902,7 +943,10 @@ export class PostgresWorkbenchStateStore {
     visit(root);
     if (!ids.length) return [];
     const result = await client.query(
-      `SELECT d.id, d.text, m.meta_json
+      `SELECT d.id,
+         CASE WHEN COALESCE(m.meta_json->>'hash', '') <> ''
+           AND m.meta_json->>'size' IS NOT NULL THEN '' ELSE d.text END AS text,
+         ${CATALOG_META_SQL} AS meta_json
        FROM runtime_workbench_documents d
        LEFT JOIN runtime_workbench_metadata m
          ON m.space_id = d.space_id AND m.id = d.id
@@ -1087,8 +1131,34 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
-  async readCatalog() {
+  async searchSessions({ query = "", limit = 50, offset = 0 } = {}) {
+    const take = Math.min(100, Math.max(1, Math.floor(Number(limit) || 50)));
+    const skip = Math.max(0, Math.floor(Number(offset) || 0));
+    const term = String(query).trim().slice(0, 200);
+    const result = await this.pool.query(
+      `SELECT d.id, ${CATALOG_META_SQL} AS meta_json,
+              substring(d.text FROM greatest(1, strpos(lower(d.text), lower($2)) - 80) FOR 240) AS snippet
+       FROM runtime_workbench_documents d
+       LEFT JOIN runtime_workbench_metadata m ON m.space_id = d.space_id AND m.id = d.id
+       WHERE d.space_id = $1 AND ($2 = '' OR strpos(lower(d.text), lower($2)) > 0
+         OR strpos(lower(COALESCE(m.meta_json->>'title', d.id)), lower($2)) > 0)
+       ORDER BY d.updated_at DESC, d.id
+       LIMIT $3 OFFSET $4`,
+      [this.spaceId, term, take + 1, skip]
+    );
+    return {
+      sessions: result.rows.slice(0, take).map((row) => ({
+        ...catalogSessionMeta(row.id, jsonValue(row.meta_json, {})),
+        snippet: row.snippet || ""
+      })),
+      hasMore: result.rows.length > take,
+      nextOffset: skip + take
+    };
+  }
+
+  async readCatalog({ metadataLimit = null } = {}) {
     const tree = await this.readTree();
+    const take = metadataLimit == null ? null : Math.min(100, Math.max(1, Number(metadataLimit) || 100));
     const [sessions, metas, kv] = await Promise.all([
       this.pool.query(
         `SELECT d.id, COALESCE(h.revision, 0) AS session_revision
@@ -1099,10 +1169,10 @@ export class PostgresWorkbenchStateStore {
         [this.spaceId]
       ),
       this.pool.query(
-        `SELECT id, meta_json
-         FROM runtime_workbench_metadata
-         WHERE space_id = $1 ORDER BY id`,
-        [this.spaceId]
+        `SELECT m.id, ${CATALOG_META_SQL} AS meta_json
+         FROM runtime_workbench_metadata m
+         WHERE space_id = $1 ORDER BY id LIMIT $2`,
+        [this.spaceId, take]
       ),
       this.pool.query(
         `SELECT key, value_json FROM runtime_workbench_kv
@@ -1113,6 +1183,7 @@ export class PostgresWorkbenchStateStore {
     return {
       ...tree,
       catalog: {
+        metadataPartial: take != null,
         tree: tree.tree,
         index: tree.index,
         sessions: sessions.rows.map((row) => ({
@@ -1288,14 +1359,16 @@ export class PostgresWorkbenchStateStore {
       );
     }
     const state = await this.state(client);
-    const revision = await this.bumpRevision(client, timestamp, {
-      version: Number(snapshot.version) || 1,
-      tree: isObject(snapshot.tree)
+    const completeTree = await this.completeTree(
+      isObject(snapshot.tree)
         ? snapshot.tree
         : jsonValue(state?.tree_json, defaultTree()),
-      index: Array.isArray(snapshot.index)
-        ? snapshot.index
-        : jsonValue(state?.index_json, [])
+      client
+    );
+    const revision = await this.bumpRevision(client, timestamp, {
+      version: Number(snapshot.version) || 1,
+      tree: completeTree,
+      index: await this.rebuildIndexFromTree(completeTree, client)
     });
     let eventSequence = 0;
     for (const id of changedIds) {
@@ -1327,7 +1400,7 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
-  async writeTree(tree, index = [], expectedRevision = null, sourceClientId = "") {
+  async writeTree(tree, _index = [], expectedRevision = null, sourceClientId = "") {
     if (!isObject(tree)) throw new Error("tree must be an object");
     return this.transaction(async (client, published) => {
       const currentRevision = await this.revision(client);
@@ -1335,9 +1408,10 @@ export class PostgresWorkbenchStateStore {
         return { ok: false, conflict: true, revision: currentRevision };
       }
       const timestamp = this.now();
+      const completeTree = await this.completeTree(tree, client);
       const revision = await this.bumpRevision(client, timestamp, {
-        tree,
-        index: Array.isArray(index) ? index : []
+        tree: completeTree,
+        index: await this.rebuildIndexFromTree(completeTree, client)
       });
       const event = await this.recordEvent("tree.updated", {
         revision,
@@ -1390,6 +1464,14 @@ export class PostgresWorkbenchStateStore {
       return { ok: false, conflict: true, revision: globalRevision };
     }
     const current = await this.currentSession(id, client);
+    if (!current.exists && input.reason !== "restore") {
+      const tombstone = await this.readSession(id, client);
+      if (tombstone?.deleted) {
+        const error = new Error("Session has been deleted");
+        error.statusCode = 410;
+        throw error;
+      }
+    }
     if (
       input.expected_session_revision != null
       && Number(input.expected_session_revision) !== current.revision
@@ -1650,12 +1732,19 @@ export class PostgresWorkbenchStateStore {
   }
 
   async writeKV(key, value, {
-    sourceClientId = ""
+    sourceClientId = "",
+    expectedValue
   } = {}) {
     const normalized = normalizeId(key, "key");
     return this.transaction(async (client, published) => {
       const timestamp = this.now();
       const existing = await this.readKV(normalized, client);
+      if (expectedValue !== undefined
+        && JSON.stringify(existing?.value ?? null) !== JSON.stringify(expectedValue)) {
+        throw Object.assign(new Error("State changed; read its current revision before updating"), {
+          statusCode: 409, code: "revision_conflict"
+        });
+      }
       if (
         existing
         && JSON.stringify(existing.value) === JSON.stringify(value)
@@ -1691,6 +1780,21 @@ export class PostgresWorkbenchStateStore {
         revision,
         event_sequence: event.sequence
       };
+    });
+  }
+
+  async deleteKV(key, { expectedValue } = {}) {
+    const normalized = normalizeId(key, "key");
+    if (expectedValue === undefined) throw new Error("KV deletion requires the previous value");
+    return this.transaction(async (client, published) => {
+      const result = await client.query(`DELETE FROM runtime_workbench_kv
+        WHERE space_id=$1 AND key=$2 AND value_json=$3::jsonb`,
+      [this.spaceId, normalized, JSON.stringify(expectedValue)]);
+      if (!result.rowCount) return false;
+      const timestamp = this.now();
+      const revision = await this.bumpRevision(client, timestamp);
+      await this.recordEvent("kv.updated", { revision, payload: { key: normalized }, timestamp }, client, published);
+      return true;
     });
   }
 

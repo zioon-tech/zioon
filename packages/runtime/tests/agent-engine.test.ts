@@ -403,7 +403,8 @@ describe("standalone agent executor", () => {
     expect(engine.requests[1].messages.at(-1)).toEqual({
       role: "tool",
       toolCallId: "call-1",
-      content: "three results"
+      content: "three results",
+      toolResultStatus: { ok: true }
     });
     const reasoningEvents = (await store.getEvents(handle.runId))
       .filter((event) => event.type.startsWith("reasoning."));
@@ -933,7 +934,8 @@ describe("standalone agent executor", () => {
         expect(request.messages.at(-1)).toEqual({
           role: "tool",
           toolCallId: "call-1",
-          content: "checkpoint result"
+          content: "checkpoint result",
+          toolResultStatus: { ok: true }
         });
         yield { type: "message.delta", delta: "resumed" };
       }

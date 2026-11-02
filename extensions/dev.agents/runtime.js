@@ -43,6 +43,7 @@ export function activateRuntimePlugin(context) {
     name: AGENTS_MANAGE_TOOL_NAME,
     description: definition.description,
     inputSchema: definition.inputSchema,
+    execution: { effect: "write" },
     policy: { minimumPreset: "read-only" },
     async invoke(args = {}, meta = {}) {
       const action = String(args.action || "").trim();

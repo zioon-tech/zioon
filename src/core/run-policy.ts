@@ -1,3 +1,5 @@
+import { AGENTFS_MCP_PREFIX, AGENTFS_MCP_READ_NAMES, AGENTFS_MCP_WRITE_TOOLS, agentFsMcpEffect } from "../../packages/plugin-sdk/src/agentfs-mcp-policy.mjs";
+
 export type RunPolicyPreset = "read-only" | "workspace-write" | "trusted-automation";
 
 export type CapabilityPolicy = {
@@ -53,6 +55,7 @@ const SAFE_TOOL_NAMES = new Set([
   "memoryManage",
   "agentsManage",
   "identityManage",
+  ...AGENTFS_MCP_READ_NAMES,
   "projectAutomationManage"
 ]);
 
@@ -89,6 +92,7 @@ const WRITE_AGENTS_ACTIONS = new Set([
   "stop_task"
 ]);
 const MUTATING_TOOL_NAMES = new Set([
+  ...AGENTFS_MCP_WRITE_TOOLS.map((name: string) => `${AGENTFS_MCP_PREFIX}${name}`),
   "write",
   "edit",
   "Bash",
@@ -113,6 +117,7 @@ const LEGACY_SCHEDULED_TOOL_ALIASES = new Map([
 
 export function isReadOnlyToolName(name: any): boolean {
   const normalized = String(name || "").trim();
+  if (normalized.startsWith(AGENTFS_MCP_PREFIX)) return agentFsMcpEffect(normalized.slice(AGENTFS_MCP_PREFIX.length)) === "read";
   return !!normalized && !WRITE_TOOL_PATTERN.test(normalized);
 }
 

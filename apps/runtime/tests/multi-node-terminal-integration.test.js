@@ -63,8 +63,18 @@ describe("multi-Node terminal HTTP and Connector integration", () => {
       runId: "integration:context", request: { policy: { allowedTerminalSessionIds: [cloud.id] } },
       signal: new CancellationController().signal
     });
-    expect(messages[0].content).toContain(cloud.id);
+    expect(messages[0].content).toContain("Call terminalInventory");
+    expect(messages[0].content).not.toContain(cloud.id);
     expect(messages[0].content).not.toContain(mac.id);
+    const inventoryResult = await provider.invokeInventoryTool({}, {
+      projectId: "fixture",
+      policy: { allowedTerminalSessionIds: [cloud.id] },
+      signal: new CancellationController().signal
+    });
+    const contextInventory = JSON.parse(inventoryResult.content);
+    expect(contextInventory.sessions.map((session) => session.id)).toEqual([
+      cloud.id
+    ]);
     const refreshed = await provider.contribute(messages, {
       runId: "integration:context", request: { policy: { allowedTerminalSessionIds: [cloud.id] } },
       signal: new CancellationController().signal

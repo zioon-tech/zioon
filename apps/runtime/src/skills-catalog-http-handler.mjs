@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { overlaySkills } from "./marketplace/service.mjs";
 import {
   mergeSkillsSourceSnapshots,
   normalizeSkillsSnapshot,
@@ -63,6 +64,7 @@ function nodeStatuses(availableNodes, localSourceAvailable) {
   return {
     ...(localSourceAvailable ? { [SKILLS_LOCAL_RUNTIME_NODE_ID]: "online" } : {}),
     [SKILLS_RUNTIME_PLUGIN_NODE_ID]: "online",
+    "runtime:marketplace": "online",
     ...Object.fromEntries((Array.isArray(nodes) ? nodes : [])
     .map((node) => [String(node?.nodeId || ""), String(node?.status || "offline")])
     .filter(([nodeId]) => nodeId))
@@ -136,6 +138,29 @@ function sourceSnapshotsFromBody(body) {
     byNode.set(nodeId, source);
   }
   return [...byNode.values()].map(normalizeSkillsSourceSnapshot);
+}
+
+function withoutRuntimePluginSource(value) {
+  const snapshot = objectValue(value);
+  return {
+    ...snapshot,
+    ...(Array.isArray(snapshot.sources) ? {
+      sources: snapshot.sources.filter((source) =>
+        String(source?.nodeId || source?.sourceNodeId || "") !== SKILLS_RUNTIME_PLUGIN_NODE_ID
+        && String(source?.nodeId || source?.sourceNodeId || "") !== "runtime:marketplace"
+      ).map((source) => ({ ...source,
+        catalog: (source.catalog || []).filter((skill) => !String(skill?.id || "").startsWith("marketplace:")) }))
+    } : {}),
+    ...(Array.isArray(snapshot.catalog) ? {
+      catalog: snapshot.catalog.filter((skill) =>
+        String(skill?.sourceNodeId || skill?.source_node_id || "") !== SKILLS_RUNTIME_PLUGIN_NODE_ID
+        && !String(skill?.id || "").startsWith("marketplace:")
+      )
+    } : {}),
+    ...(Array.isArray(snapshot.enabled) ? {
+      enabled: snapshot.enabled.filter((id) => !String(id).startsWith("marketplace:"))
+    } : {})
+  };
 }
 
 function settingsFromSnapshot(snapshot, previous = {}, {
@@ -255,6 +280,7 @@ export async function syncSkillsCatalog({ store, snapshot }) {
 
 export function createSkillsCatalogHttpHandler({
   store,
+  marketplace = null,
   availableNodes = () => [],
   localSourceAvailable = false,
   maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES
@@ -266,13 +292,16 @@ export function createSkillsCatalogHttpHandler({
   return async function handleSkillsCatalog(request, response, url) {
     if (!url.pathname.startsWith("/v1/skills")) return false;
     try {
+      const accountOverlay = async (snapshot) => marketplace
+        ? overlaySkills(snapshot, await marketplace.skillsFor({ principal: request.zionPrincipal }))
+        : snapshot;
       if (request.method === "GET" && url.pathname === "/v1/skills/snapshot") {
         const snapshot = normalizeSkillsSnapshot(
           (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value || {}
         );
         json(response, 200, {
           snapshot: withSourceStatuses(
-            snapshot,
+            await accountOverlay(snapshot),
             availableNodes,
             localSourceAvailable
           )
@@ -283,12 +312,12 @@ export function createSkillsCatalogHttpHandler({
         const body = await readJson(request, maxRequestBytes);
         const snapshot = await syncSkillsCatalog({
           store,
-          snapshot: body.snapshot || body
+          snapshot: withoutRuntimePluginSource(body.snapshot || body)
         });
         json(response, 200, {
           ok: true,
           snapshot: withSourceStatuses(
-            snapshot,
+            await accountOverlay(snapshot),
             availableNodes,
             localSourceAvailable
           )
@@ -316,6 +345,13 @@ export function createSkillsCatalogHttpHandler({
         );
         const enabled = new Set(current.enabled);
         const knownIds = new Set(current.catalog.map((skill) => skill.id));
+        if (marketplace && request.zionPrincipal?.kind === "account") {
+          const overlay = await marketplace.skillsFor({ principal: request.zionPrincipal });
+          const selection = hasUpdates ? body.updates : Array.isArray(body.enabled)
+            ? overlay.catalog.map((skill) => ({ id: skill.id, enabled: body.enabled.includes(skill.id) }))
+            : [];
+          await marketplace.selectSkills(request.zionPrincipal.user.id, selection);
+        }
         for (const update of hasUpdates ? body.updates : []) {
           const id = update.id.trim();
           if (!update.enabled) enabled.delete(id);
@@ -324,7 +360,7 @@ export function createSkillsCatalogHttpHandler({
         const next = normalizeSkillsSnapshot({
           ...current,
           enabled: hasUpdates ? [...enabled] : Array.isArray(body?.enabled)
-            ? body.enabled
+            ? body.enabled.filter((id) => !String(id).startsWith("marketplace:"))
             : current.enabled,
           savedAt: Date.now()
         });
@@ -332,7 +368,7 @@ export function createSkillsCatalogHttpHandler({
         json(response, 200, {
           ok: true,
           snapshot: withSourceStatuses(
-            next,
+            await accountOverlay(next),
             availableNodes,
             localSourceAvailable
           )

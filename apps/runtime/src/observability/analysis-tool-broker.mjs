@@ -179,6 +179,10 @@ export class AnalysisToolBroker {
       .filter((tool) => !replaced.has(tool.name)), ...available];
   }
 
+  resolveInvocation(invocation) {
+    return this.delegated.resolveInvocation?.(invocation) || invocation;
+  }
+
   async authority(request) {
     if (!this.accessControl) return { policy: request.policy || {}, scopes: [], spaceId: "legacy" };
     const policy = await this.accessControl.authorizeRunExecution(request);
@@ -213,9 +217,11 @@ export class AnalysisToolBroker {
     if (!authority.policy.allowedTools?.includes(name)) throw accountError(403, "tool_outside_grant");
     const workspace = this.workspaceEnabled && (
       (name === "Bash" && (args.execution_environment === "analysis"
-      || (this.accessControl && args.execution_environment !== "resource")))
+      || (this.accessControl && args.execution_environment !== "resource"
+        && !invocation.target?.nodeId)))
       || (FILE_TOOLS.has(name) && virtual(args.path))
-      || (READ_TOOLS.has(name) && this.accessControl && !args.path)
+      || (READ_TOOLS.has(name) && this.accessControl && !args.path
+        && !invocation.target?.nodeId)
     );
     if (
       !this.workspaceEnabled

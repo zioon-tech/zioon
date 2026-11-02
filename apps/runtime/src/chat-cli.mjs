@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { DEFAULT_INTERACTION_PROFILE_ID } from "./interaction-profile-store.mjs";
 import { resolveRuntimeCliHeaders } from "./accounts/cli-account-auth.mjs";
 
-const CHAT_USAGE = `Usage: npm run runtime:chat -- [options]
+const CHAT_USAGE = `Usage: zioon chat [options]
 
 Options:
   --url <url>                    Runtime URL
@@ -293,7 +293,7 @@ export async function runChatCli({
 }
 
 const entryPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
-if (import.meta.url === entryPath) {
+if (process.env.ZIOON_CLI_DISTRIBUTION !== "1" && import.meta.url === entryPath) {
   runChatCli().catch((error) => {
     process.stderr.write(`Runtime chat failed: ${error?.message || String(error)}\n`);
     process.exitCode = 1;

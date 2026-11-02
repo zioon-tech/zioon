@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { isIP } from "node:net";
 import { URL } from "node:url";
 
 export const RUNTIME_SESSION_COOKIE = "__Host-zion_session";
@@ -95,6 +96,7 @@ function normalizeOrigins(values) {
 }
 
 async function readJson(request) {
+  if (request.zionAccessBody !== undefined) return request.zionAccessBody;
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
@@ -106,7 +108,8 @@ async function readJson(request) {
   }
   if (!chunks.length) return {};
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    request.zionAccessBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return request.zionAccessBody;
   } catch {
     throw statusError(400, "Request body must be valid JSON");
   }
@@ -173,7 +176,9 @@ export class RuntimeAccessControl {
     allowedOrigins = [],
     publicBaseUrl = "",
     pairingRateLimit = 20,
+    loginRateLimit = 20,
     pairingRateWindowMs = 60_000,
+    trustedProxyAddresses = [],
     now = () => Date.now()
   } = {}) {
     if (!store?.authenticate || !store?.exchangePairing) {
@@ -187,9 +192,14 @@ export class RuntimeAccessControl {
       this.allowedOrigins.add(publicOrigin);
     }
     this.pairingRateLimit = pairingRateLimit;
+    this.loginRateLimit = loginRateLimit;
     this.pairingRateWindowMs = pairingRateWindowMs;
+    this.trustedProxyAddresses = new Set(trustedProxyAddresses.map(
+      (address) => String(address).replace(/^::ffff:(?=\d+\.)/, "")
+    ));
     this.now = now;
     this.pairingAttempts = new Map();
+    this.loginAttempts = new Map();
   }
 
   originAllowed(value) {
@@ -318,25 +328,56 @@ export class RuntimeAccessControl {
     );
   }
 
-  checkPairingRate(request) {
-    const address = String(
-      request?.socket?.remoteAddress
-      || request?.headers?.["x-real-ip"]
-      || "unknown"
-    );
+  clientAddress(request) {
+    const normalize = (address) => String(address || "").trim().replace(/^::ffff:(?=\d+\.)/, "");
+    let address = normalize(request?.socket?.remoteAddress) || "unknown";
+    if (!this.trustedProxyAddresses.has(address)) return address;
+    const forwarded = headerValue(request?.headers, "x-forwarded-for");
+    if (forwarded.length > 1024) return address;
+    const hops = forwarded.split(",");
+    for (let index = hops.length - 1; index >= 0; index--) {
+      const hop = normalize(hops[index]);
+      if (!isIP(hop)) break;
+      address = hop;
+      if (!this.trustedProxyAddresses.has(address)) break;
+    }
+    return address;
+  }
+
+  checkRate(request, attempts, keyPrefix, limit, message, code) {
+    const key = `${keyPrefix}${this.clientAddress(request)}`;
     const now = this.now();
-    const current = this.pairingAttempts.get(address);
+    const current = attempts.get(key);
     if (!current || current.resetAt <= now) {
-      this.pairingAttempts.set(address, {
+      if (attempts.size >= 4096) {
+        for (const [entry, value] of attempts) {
+          if (value.resetAt <= now) attempts.delete(entry);
+        }
+      }
+      if (attempts.size >= 50000 && !current) throw statusError(429, message);
+      attempts.set(key, {
         count: 1,
         resetAt: now + this.pairingRateWindowMs
       });
       return;
     }
     current.count += 1;
-    if (current.count > this.pairingRateLimit) {
-      throw statusError(429, "Too many pairing attempts");
+    if (current.count > limit) {
+      throw Object.assign(statusError(429, message), {
+        code, retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1000))
+      });
     }
+  }
+
+  checkPairingRate(request) {
+    this.checkRate(request, this.pairingAttempts, "", this.pairingRateLimit,
+      "Too many pairing attempts", "pairing_rate_limited");
+  }
+
+  checkLoginRate(request, operation = "login") {
+    const multiplier = operation === "page" ? 3 : operation === "device-poll" ? 6 : 1;
+    this.checkRate(request, this.loginAttempts, `${operation}:`, this.loginRateLimit * multiplier,
+      "登录请求过于频繁，请稍后重试。", "login_rate_limited");
   }
 
   pairingUrl(pairing) {

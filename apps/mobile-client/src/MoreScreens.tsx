@@ -1235,7 +1235,7 @@ export function SettingsScreen() {
       <section className="detail-section">
         <dl className="kv">
           <dt>应用</dt><dd>Zion Mobile</dd>
-          <dt>路径</dt><dd>/mobile/</dd>
+          <dt>路径</dt><dd>{import.meta.env.BASE_URL}</dd>
           <dt>数据源</dt><dd>Runtime API</dd>
           <dt>本地状态</dt><dd>草稿与 UI 偏好</dd>
         </dl>

@@ -96,6 +96,7 @@ export function activateRuntimePlugin(context) {
     name: SESSION_LIST_TOOL_NAME,
     description: listDefinition.description,
     inputSchema: listDefinition.inputSchema,
+    execution: { effect: "read" },
     policy: { minimumPreset: "read-only" },
     async invoke(args = {}) {
       const result = listSessionsFromSnapshot(await service.readSnapshot(), args);
@@ -117,6 +118,7 @@ export function activateRuntimePlugin(context) {
     name: SESSION_GET_TOOL_NAME,
     description: getDefinition.description,
     inputSchema: getDefinition.inputSchema,
+    execution: { effect: "read" },
     policy: { minimumPreset: "read-only" },
     async invoke(args = {}) {
       const id = String(args.id || "").trim();
@@ -141,6 +143,7 @@ export function activateRuntimePlugin(context) {
     name: SESSION_CREATE_TOOL_NAME,
     description: createDefinition.description,
     inputSchema: createDefinition.inputSchema,
+    execution: { effect: "write" },
     policy: { minimumPreset: "workspace-write" },
     async invoke(args = {}) {
       const result = await service.createSession({
@@ -164,6 +167,7 @@ export function activateRuntimePlugin(context) {
     name: SESSION_UPDATE_TOOL_NAME,
     description: updateDefinition.description,
     inputSchema: updateDefinition.inputSchema,
+    execution: { effect: "write" },
     policy: { minimumPreset: "workspace-write" },
     async invoke(args = {}) {
       const id = String(args.id || "").trim();
@@ -185,6 +189,7 @@ export function activateRuntimePlugin(context) {
     name: SESSION_DELETE_TOOL_NAME,
     description: deleteDefinition.description,
     inputSchema: deleteDefinition.inputSchema,
+    execution: { effect: "write" },
     policy: { minimumPreset: "workspace-write" },
     async invoke(args = {}) {
       const id = String(args.id || "").trim();

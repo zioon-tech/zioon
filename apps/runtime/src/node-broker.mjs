@@ -5,6 +5,9 @@ import {
   normalizeToolResult
 } from "../../../packages/node-protocol/src/index.mjs";
 import {
+  resolveToolExecutionTimeoutMs
+} from "../../../packages/plugin-sdk/src/tool-execution.mjs";
+import {
   isResourceReference,
   parseTerminalReference
 } from "../../../packages/node-protocol/src/resource-references.mjs";
@@ -15,10 +18,13 @@ import {
 } from "./node-service-routing.mjs";
 
 const INTERNAL_CAPABILITY_PREFIX = "zion.internal.";
+const MAX_TIMER_DELAY_MS = 2_147_000_000;
 
-function statusError(statusCode, message) {
+function statusError(statusCode, message, failureCode, retryable) {
   const error = new Error(message);
   error.statusCode = statusCode;
+  if (failureCode) error.failureCode = failureCode;
+  if (typeof retryable === "boolean") error.retryable = retryable;
   return error;
 }
 
@@ -79,6 +85,35 @@ function routedToolSchema(capability) {
   };
 }
 
+function expiredExecutionResult(invocationId, execution) {
+  if (execution.idempotency === "safe") {
+    const message = [
+      `Device execution timed out: ${invocationId}.`,
+      "This capability is declared safe to retry with a new invocation."
+    ].join(" ");
+    return {
+      ok: false,
+      content: message,
+      error: message,
+      failureCode: "timeout",
+      retryable: true
+    };
+  }
+  const message = [
+    `Device execution outcome is unknown: ${invocationId}.`,
+    "The Device accepted the operation, but no result arrived before its lease expired.",
+    "It may still be running or may already have completed.",
+    "Do not retry it until you have inspected its effects."
+  ].join(" ");
+  return {
+    ok: false,
+    content: message,
+    error: message,
+    failureCode: "execution_outcome_unknown",
+    retryable: false
+  };
+}
+
 export class NodeBroker {
   constructor({
     now = () => Date.now(),
@@ -86,19 +121,29 @@ export class NodeBroker {
     presencePersistenceMs = 10_000,
     maxReceipts = 1_000,
     invocationLeaseMs = 120_000,
+    invocationDeliveryGraceMs = 30_000,
     scheduleTimeout = defaultScheduleTimeout,
-    stateStore = null
+    stateStore = null,
+    authorizeTarget = null
   } = {}) {
     if (!Number.isSafeInteger(invocationLeaseMs) || invocationLeaseMs <= 0) {
       throw new Error("Invocation lease duration must be a positive integer");
+    }
+    if (
+      !Number.isSafeInteger(invocationDeliveryGraceMs)
+      || invocationDeliveryGraceMs < 0
+    ) {
+      throw new Error("Invocation delivery grace must be a non-negative integer");
     }
     this.now = now;
     this.offlineAfterMs = offlineAfterMs;
     this.presencePersistenceMs = presencePersistenceMs;
     this.maxReceipts = maxReceipts;
     this.invocationLeaseMs = invocationLeaseMs;
+    this.invocationDeliveryGraceMs = invocationDeliveryGraceMs;
     this.scheduleTimeout = scheduleTimeout;
     this.stateStore = stateStore;
+    this.authorizeTarget = authorizeTarget;
     this.nodes = new Map();
     this.projectBindings = new Map();
     this.pending = new Map();
@@ -177,6 +222,7 @@ export class NodeBroker {
     const observedAt = this.now();
 
     const finish = () => {
+      const receiptWrites = [];
       if (reconnected) {
         this.resolveWaiter(node, null);
         for (const pending of this.pending.values()) {
@@ -185,16 +231,37 @@ export class NodeBroker {
             && previous.registration.instanceId !== registration.instanceId
             && (
               pending.referenceBound
-              || !["read", "glob", "grep", "tree"].includes(pending.command.invocation.toolCall.name)
+              || pending.execution.idempotency !== "safe"
             )
           ) {
+            // #region debug-point E:instance-replacement
+            if (process.env.DEBUG_SESSION_ID === "terminal-session-churn") void fetch(process.env.DEBUG_SERVER_URL || "http://127.0.0.1:7778/event", { method: "POST", body: JSON.stringify({ sessionId: "terminal-session-churn", runId: process.env.DEBUG_RUN_ID || "pre-fix", hypothesisId: "E", location: "node-broker:registerNode", msg: "[DEBUG] Instance replacement interrupts invocation", data: { invocationId: pending.invocationId, state: pending.state, referenceBound: pending.referenceBound, idempotency: pending.execution.idempotency }, ts: Date.now() }) }).catch(() => {});
+            // #endregion
             this.pending.delete(pending.invocationId);
             removeQueuedInvocation(node, pending.invocationId);
             pending.cancellation.dispose();
             pending.lease.dispose();
-            pending.reject(statusError(409,
-              "Node instance changed; refresh terminalInventory. The previous operation may have executed; do not blindly retry."
-            ));
+            const delivered = pending.state === "delivered";
+            const message = delivered
+              ? "Node instance changed; refresh terminalInventory. Execution outcome is unknown. The previous operation may have executed; do not blindly retry."
+              : "Node instance changed; refresh terminalInventory. This invocation was not dispatched and did not execute.";
+            const result = {
+              ok: false,
+              content: message,
+              error: message,
+              failureCode: delivered ? "execution_outcome_unknown" : "stale_terminal_reference",
+              retryable: false
+            };
+            this.rememberReceipt(pending.invocationId, result);
+            if (this.stateStore?.saveReceipt) {
+              receiptWrites.push(this.stateStore.saveReceipt({
+                invocationId: pending.invocationId,
+                nodeId: pending.nodeId,
+                result,
+                completedAt: observedAt
+              }));
+            }
+            pending.reject(statusError(409, message, result.failureCode, false));
             continue;
           }
           if (
@@ -215,6 +282,9 @@ export class NodeBroker {
       this.nodes.set(registration.nodeId, node);
       this.syncProjectBindings(registration, observedAt);
       this.flushWaiter(node);
+      if (receiptWrites.length) {
+        return Promise.all(receiptWrites).then(() => this.nodeSummary(node));
+      }
       return this.nodeSummary(node);
     };
     return mapMaybePromise(
@@ -328,6 +398,12 @@ export class NodeBroker {
       throw statusError(503, `Node ${requestedNodeId} is offline`);
     }
     for (const target of registered.filter(({ node }) => this.isOnline(node))) {
+      try {
+        if (this.authorizeTarget) await this.authorizeExecutionTarget(request, target);
+      } catch (error) {
+        if (requestedNodeId || error?.code !== "platform_node_execution_denied") throw error;
+        continue;
+      }
       for (const capability of target.node.registration.capabilities) {
         if (!allowed.has(capability.name) || tools.has(capability.name)) continue;
         tools.set(capability.name, {
@@ -337,7 +413,8 @@ export class NodeBroker {
             request.policy
           ),
           inputSchema: routedToolSchema(capability),
-          hostKinds: [capability.hostKind]
+          hostKinds: [capability.hostKind],
+          execution: { ...capability.execution }
         });
       }
     }
@@ -359,7 +436,8 @@ export class NodeBroker {
           description: capability.description,
           inputSchema: routedToolSchema(capability),
           hostKinds: [capability.hostKind],
-          risk: capability.risk
+          risk: capability.risk,
+          execution: { ...capability.execution }
         });
       }
     }
@@ -439,6 +517,8 @@ export class NodeBroker {
           : `No online Node provides ${toolName}`
       );
     }
+    if (this.authorizeTarget) await this.authorizeExecutionTarget(invocation, target);
+    signal.throwIfCancelled();
     const policy = this.policyForTarget(invocation.policy, target, invocation.projectId);
     const nativeSessionId = reference.terminal?.sessionId || reference.sessionId;
     if (
@@ -449,6 +529,28 @@ export class NodeBroker {
       throw statusError(403, "Terminal session is outside the active Run policy");
     }
     const routedInvocation = translateInvocation(invocation, reference, policy);
+    const capability = target.node.registration.capabilities.find(
+      (item) => item.name === toolName
+    );
+    const execution = capability.execution;
+    const executionTimeoutMs = (
+      capability.executionDeclared
+      || execution.timeoutArgument
+    )
+      ? resolveToolExecutionTimeoutMs(
+          execution,
+          routedInvocation.toolCall?.arguments || {}
+        )
+      : 0;
+    const leaseDurationMs = Math.min(
+      MAX_TIMER_DELAY_MS,
+      Math.max(
+        this.invocationLeaseMs,
+        executionTimeoutMs > 0
+          ? executionTimeoutMs + this.invocationDeliveryGraceMs
+          : 0
+      )
+    );
 
     let resolveCompletion;
     let rejectCompletion;
@@ -461,7 +563,7 @@ export class NodeBroker {
       type: "tool.invoke",
       invocationId: invocation.invocationId,
       resourceId: target.resource?.resourceId,
-      leaseExpiresAt: this.now() + this.invocationLeaseMs,
+      leaseExpiresAt: this.now() + leaseDurationMs,
       invocation: routedInvocation
     };
     const pending = {
@@ -469,6 +571,7 @@ export class NodeBroker {
       nodeId: target.node.registration.nodeId,
       node: target.node,
       resource: target.resource,
+      execution,
       referenceBound: !!reference.terminal || !!explicit.instanceId,
       state: "queued",
       command,
@@ -498,7 +601,7 @@ export class NodeBroker {
     });
     pending.lease = this.scheduleTimeout(
       () => this.expireInvocation(invocation.invocationId),
-      this.invocationLeaseMs
+      leaseDurationMs
     );
     this.enqueueCommand(target.node, command);
     return await completion;
@@ -556,7 +659,7 @@ export class NodeBroker {
     }
     const target = targets[0];
     if (requested.instanceId && requested.instanceId !== target.node.registration.instanceId) {
-      throw statusError(409, "Stale terminal reference; refresh terminalInventory");
+      throw statusError(409, "Stale terminal reference; refresh terminalInventory. This invocation was not dispatched and did not execute.", "stale_terminal_reference", false);
     }
     if (!this.isOnline(target.node)) {
       throw statusError(503,
@@ -564,6 +667,10 @@ export class NodeBroker {
       );
     }
     return target;
+  }
+
+  async authorizeExecutionTarget(context, target) {
+    await this.authorizeTarget?.(context, target);
   }
 
   policyForTarget(policy = {}, target, projectId) {
@@ -633,11 +740,11 @@ export class NodeBroker {
   requireConnection(nodeId, instanceId) {
     const node = this.nodes.get(String(nodeId));
     if (!node) throw statusError(404, `Node not registered: ${nodeId}`);
-    if (!node.connected) {
-      throw statusError(409, `Node must register after Runtime restart: ${nodeId}`);
-    }
     if (node.registration.instanceId !== String(instanceId || "")) {
       throw statusError(409, `Node instance is stale: ${nodeId}`);
+    }
+    if (!node.connected) {
+      throw statusError(503, `Node must register after Runtime restart: ${nodeId}`, "node_registration_required", true);
     }
     return node;
   }
@@ -678,7 +785,8 @@ export class NodeBroker {
         name: item.name,
         version: item.version,
         risk: item.risk,
-        hostKind: item.hostKind
+        hostKind: item.hostKind,
+        execution: { ...item.execution }
       })),
       resources: node.registration.resources.map((item) => ({ ...item }))
     };
@@ -767,6 +875,14 @@ export class NodeBroker {
     }
     pending.cancellation.dispose();
     pending.lease.dispose();
-    pending.reject(new Error(`Tool invocation lease expired: ${invocationId}`));
+    if (pending.state === "delivered") {
+      const result = expiredExecutionResult(invocationId, pending.execution);
+      this.rememberReceipt(invocationId, result);
+      pending.resolve(result);
+      return;
+    }
+    pending.reject(new Error(
+      `Tool invocation lease expired before Device execution: ${invocationId}`
+    ));
   }
 }

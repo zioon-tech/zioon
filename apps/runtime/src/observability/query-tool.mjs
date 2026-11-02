@@ -39,5 +39,6 @@ export const OBSERVABILITY_QUERY_TOOL_DEFINITION = Object.freeze({
     required: ["sql", "purpose"],
     additionalProperties: false
   },
-  hostKinds: ["runtime-observability"]
+  hostKinds: ["runtime-observability"],
+  execution: { effect: "read" }
 });

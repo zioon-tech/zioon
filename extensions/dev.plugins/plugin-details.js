@@ -113,6 +113,9 @@ export function getPluginContributions(plugin, locale = "zh-CN") {
 
 export function getPluginStatus(plugin, locale = "zh-CN") {
   const zh = locale !== "en-US";
+  // #region debug-point A:workbench-plugin-state
+  if (globalThis.__zionDebugPluginActivationState === true) void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "plugin-activation-state", runId: globalThis.__zionDebugPluginActivationRunId || "pre-fix", hypothesisId: "A", location: "dev.plugins:plugin-details:getPluginStatus", msg: "[DEBUG] Workbench plugin state classified", data: { id: String(plugin?.id || ""), state: String(plugin?.state || ""), enabled: plugin?.enabled !== false, hasError: Boolean(plugin?.error), hasWorkbenchEntry: Boolean(plugin?.contract?.entries?.workbench || plugin?.manifest?.zion?.entries?.ui || plugin?.manifest?.zion?.main), hasRuntimeEntry: Boolean(plugin?.contract?.entries?.runtime || plugin?.manifest?.zion?.entries?.runtime), contributionKinds: Object.keys(plugin?.manifest?.zion?.contributes || {}) }, ts: Date.now() }) }).catch(() => {});
+  // #endregion
   if (plugin?.state === "error" || plugin?.error) {
     return { id: "error", label: zh ? "激活失败" : "Activation failed", tone: "error" };
   }
@@ -126,6 +129,59 @@ export function getPluginStatus(plugin, locale = "zh-CN") {
     return { id: "pending", label: zh ? "正在切换" : "Updating", tone: "warning" };
   }
   return { id: "enabled", label: zh ? "等待激活" : "Enabled", tone: "warning" };
+}
+
+function pluginHostEntries(plugin) {
+  const contractEntries = plugin?.contract?.entries || {};
+  const zion = plugin?.manifest?.zion || {};
+  const entries = zion.entries || {};
+  return {
+    workbench: Boolean(
+      contractEntries.workbench
+      || contractEntries.renderer
+      || entries.workbench
+      || entries.renderer
+      || entries.ui
+      || zion.main
+      || plugin?.manifest?.main
+    ),
+    runtime: Boolean(contractEntries.runtime || entries.runtime)
+  };
+}
+
+function runtimeHostStatus(runtimePlugin, locale) {
+  const zh = locale !== "en-US";
+  const status = String(runtimePlugin?.status || "");
+  if (status === "active") {
+    return { id: "active", label: zh ? "运行中" : "Running", tone: "success" };
+  }
+  if (status === "failed") {
+    return { id: "error", label: zh ? "激活失败" : "Activation failed", tone: "error" };
+  }
+  if (status === "stopped") {
+    return { id: "stopped", label: zh ? "已停止" : "Stopped", tone: "muted" };
+  }
+  return { id: "unavailable", label: zh ? "未连接" : "Unavailable", tone: "warning" };
+}
+
+export function getPluginHostStatus(plugin, runtimePlugin = null, locale = "zh-CN") {
+  const zh = locale !== "en-US";
+  const entries = pluginHostEntries(plugin);
+  const workbench = entries.workbench ? getPluginStatus(plugin, locale) : null;
+  const runtime = entries.runtime ? runtimeHostStatus(runtimePlugin, locale) : null;
+  const active = [workbench, runtime].some((status) => status?.id === "active");
+  const failed = [workbench, runtime].some((status) => status?.id === "error");
+  const labels = [
+    ...(workbench ? [`Workbench ${workbench.label}`] : []),
+    ...(runtime ? [`Runtime ${runtime.label}`] : [])
+  ];
+  return {
+    id: active && failed ? "partial" : failed ? "error" : active ? "active" : "pending",
+    label: labels.join(zh ? " · " : " · ") || (zh ? "未声明宿主" : "No host declared"),
+    tone: active && failed ? "warning" : failed ? "error" : active ? "success" : "warning",
+    workbench: { applicable: entries.workbench, ...(workbench || {}) },
+    runtime: { applicable: entries.runtime, ...(runtime || {}) }
+  };
 }
 
 export function getPluginOriginInfo(plugin, locale = "zh-CN") {
@@ -304,7 +360,7 @@ function createEnableAction(plugin, onToggle, locale, compact = false) {
 
 function createSummaryHeader(model) {
   const { plugin, presentation, locale } = model;
-  const status = getPluginStatus(plugin, locale);
+  const status = getPluginHostStatus(plugin, model.runtimePlugin, locale);
   const origin = getPluginOriginInfo(plugin, locale);
   const header = element("header", "zion-plugin-detail-summary");
   const pluginIcon = element("div", "zion-plugin-detail-icon");
@@ -344,7 +400,7 @@ function renderOverview(container, model) {
   const aside = element("aside", "zion-plugin-detail-properties");
   appendSectionTitle(aside, locale === "en-US" ? "Plugin information" : "插件信息");
   const fields = [
-    [locale === "en-US" ? "Status" : "状态", getPluginStatus(plugin, locale).label],
+    [locale === "en-US" ? "Host status" : "宿主状态", getPluginHostStatus(plugin, model.runtimePlugin, locale).label],
     [locale === "en-US" ? "Author" : "作者", plugin.author || plugin.manifest?.author || "Zion Developer"],
     [locale === "en-US" ? "License" : "许可", plugin.license || plugin.manifest?.license || "未声明"],
     [locale === "en-US" ? "Source" : "来源", origin.label],
@@ -383,22 +439,33 @@ function renderSettings(container, model) {
   appendDataLocations(data, model.presentation.dataLocations);
   section.appendChild(data);
 
+  const hostStatus = getPluginHostStatus(model.plugin, model.runtimePlugin, model.locale);
   const toggleRow = element("div", "zion-plugin-detail-setting-row is-bordered");
   const copy = element("div");
-  copy.appendChild(element("strong", "", model.plugin?.enabled
-    ? (model.locale === "en-US" ? "Plugin is enabled" : "插件已启用")
-    : (model.locale === "en-US" ? "Plugin is disabled" : "插件已停用")));
-  copy.appendChild(element("p", "", model.locale === "en-US"
-    ? "This setting persists across reloads."
-    : "该状态会持久化，重新加载后不会被覆盖。"));
-  toggleRow.append(copy, createEnableAction(model.plugin, model.onToggle, model.locale));
+  if (hostStatus.workbench.applicable) {
+    copy.appendChild(element("strong", "", model.plugin?.enabled
+      ? (model.locale === "en-US" ? "Workbench plugin is enabled" : "Workbench 插件已启用")
+      : (model.locale === "en-US" ? "Workbench plugin is disabled" : "Workbench 插件已停用")));
+    copy.appendChild(element("p", "", model.locale === "en-US"
+      ? "This setting controls the browser host and persists across reloads."
+      : "该设置控制浏览器宿主，并会跨重新加载持久化。"));
+    toggleRow.append(copy, createEnableAction(model.plugin, model.onToggle, model.locale));
+  } else {
+    copy.appendChild(element("strong", "", model.locale === "en-US"
+      ? "Runtime-managed plugin"
+      : "Runtime 托管插件"));
+    copy.appendChild(element("p", "", model.locale === "en-US"
+      ? "This plugin has no Workbench entry and is managed by the Runtime configuration."
+      : "该插件没有 Workbench 入口，由 Runtime 配置管理。"));
+    toggleRow.append(copy);
+  }
   section.appendChild(toggleRow);
   container.appendChild(section);
 }
 
 function renderLogs(container, model) {
   const section = element("section", "zion-plugin-detail-page-section");
-  appendSectionTitle(section, model.locale === "en-US" ? "Runtime diagnostics" : "运行诊断");
+  appendSectionTitle(section, model.locale === "en-US" ? "Host diagnostics" : "宿主诊断");
   if (model.plugin?.error) {
     appendError(section, model.plugin);
     if (model.plugin.error.stack) section.appendChild(element("pre", "zion-plugin-detail-log", model.plugin.error.stack));
@@ -416,12 +483,15 @@ function renderEditorContent(container, model) {
   container.classList.add("zion-plugin-detail-editor");
   const hero = createSummaryHeader(model);
   const actions = element("div", "zion-plugin-detail-hero-actions");
+  const hostStatus = getPluginHostStatus(model.plugin, model.runtimePlugin, model.locale);
   if (model.presentation.entrypoints[0]) {
     const entry = model.presentation.entrypoints[0];
     actions.appendChild(button(entry.title, entry.icon, () => model.runCommand?.(entry.command), true));
   }
-  actions.appendChild(createEnableAction(model.plugin, model.onToggle, model.locale, true));
-  actions.appendChild(button(model.locale === "en-US" ? "Reload" : "重新加载", "refresh", model.onReload));
+  if (hostStatus.workbench.applicable) {
+    actions.appendChild(createEnableAction(model.plugin, model.onToggle, model.locale, true));
+    actions.appendChild(button(model.locale === "en-US" ? "Reload" : "重新加载", "refresh", model.onReload));
+  }
   hero.appendChild(actions);
   container.appendChild(hero);
 

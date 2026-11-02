@@ -172,6 +172,14 @@ export type CapabilityTool = {
   name: string;
   description?: string;
   hostKinds?: string[];
+  execution?: {
+    effect?: "read" | "write" | "process" | "external";
+    timeoutMs?: number;
+    maxTimeoutMs?: number;
+    cancellation?: "cooperative" | "best-effort" | "none";
+    idempotency?: "safe" | "invocation" | "reconcile";
+    timeoutArgument?: string;
+  };
   pluginId?: string;
   risk?: string;
   modelInjectable?: boolean;

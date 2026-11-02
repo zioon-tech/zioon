@@ -264,6 +264,9 @@ export function scheduleConversationViewportFollow(
     }
 
     let resolved = false;
+    // A follow requested after document growth supersedes submit preservation.
+    // Otherwise its 350ms guard pulls the viewport back after every token.
+    if (!pending.initial) clearViewportStability(current);
     const scrollDOM = view?.scrollDOM;
     const beforeReveal = Number(scrollDOM?.scrollTop);
     try {

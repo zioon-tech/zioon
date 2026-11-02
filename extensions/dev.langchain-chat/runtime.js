@@ -66,9 +66,9 @@ function findProfile(profiles, args = {}) {
   const dynamicProfileId = providerId === DYNAMIC_PROVIDER_ID && modelId
     ? runtimeProfileIdForDynamicModel(modelId)
     : "";
-  return profiles.find((profile) =>
+  return (dynamicProfileId ? profiles.find((profile) =>
     profileMatches(profile, { profileId: dynamicProfileId })
-  ) || profiles.find((profile) =>
+  ) : null) || profiles.find((profile) =>
     profileMatches(profile, { providerId, modelId })
   ) || null;
 }
@@ -107,9 +107,10 @@ function requireDynamicProvider(args = {}) {
 }
 
 async function upsertDynamicModel(service, modelId, config, {
-  mergeWithExisting = true
+  mergeWithExisting = true,
+  principal
 } = {}) {
-  const profiles = service.listProfiles();
+  const profiles = await service.listProfiles({ principal });
   const existingProfile = profiles.find((profile) =>
     profile.id === runtimeProfileIdForDynamicModel(modelId)
   );
@@ -141,8 +142,9 @@ export function activateRuntimePlugin(context) {
     name: MODELS_MANAGE_TOOL_NAME,
     description: definition.description,
     inputSchema: definition.inputSchema,
+    execution: { effect: "write" },
     policy: { minimumPreset: "trusted-automation" },
-    async invoke(args = {}) {
+    async invoke(args = {}, invocationContext = {}) {
       try {
         const action = String(args.action || "").trim();
         if (!MODELS_MANAGE_ACTIONS.includes(action)) {
@@ -150,7 +152,7 @@ export function activateRuntimePlugin(context) {
         }
 
         if (action === "list" || action === "check") {
-          const profiles = service.listProfiles();
+          const profiles = await service.listProfiles(invocationContext);
           const models = filterSummaries(profiles, args);
           const summary = {};
           for (const model of filterSummaries(profiles)) {
@@ -161,7 +163,7 @@ export function activateRuntimePlugin(context) {
             ok: true,
             content: json({
               models,
-              active: service.getActiveModel(),
+              active: await service.getActiveModel({ principal: invocationContext.principal }),
               summary,
               note: action === "check"
                 ? "Runtime check reports stored profile and credential state; browser provider health probes are Workbench-only."
@@ -171,7 +173,7 @@ export function activateRuntimePlugin(context) {
         }
 
         if (action === "get") {
-          const profile = findProfile(service.listProfiles(), args);
+          const profile = findProfile(await service.listProfiles(invocationContext), args);
           if (!profile) return { ok: false, content: "Model not found", error: "Model not found" };
           return {
             ok: true,
@@ -187,19 +189,19 @@ export function activateRuntimePlugin(context) {
           if (providerId === DYNAMIC_PROVIDER_ID) {
             return {
               ok: true,
-              content: json(dynamicStoreFromProfiles(service.listProfiles()))
+              content: json(dynamicStoreFromProfiles(await service.listProfiles(invocationContext)))
             };
           }
           return {
             ok: true,
-            content: json(service.listProfiles().filter((profile) =>
+            content: json((await service.listProfiles(invocationContext)).filter((profile) =>
               !providerId || profile.providerId === providerId
             ))
           };
         }
 
         if (action === "set_active") {
-          const profile = findProfile(service.listProfiles(), args);
+          const profile = findProfile(await service.listProfiles(invocationContext), args);
           if (!profile) return { ok: false, content: "Model not found", error: "Model not found" };
           if (
             args.force !== true
@@ -215,8 +217,9 @@ export function activateRuntimePlugin(context) {
               error: "Model credential is not configured"
             };
           }
-          const active = service.setActiveProfile(profile.id, {
-            interactionProfileId: args.interaction_profile_id || DEFAULT_INTERACTIVE_PROFILE_ID
+          const active = await service.setActiveProfile(profile.id, {
+            interactionProfileId: args.interaction_profile_id || DEFAULT_INTERACTIVE_PROFILE_ID,
+            principal: invocationContext.principal
           });
           return {
             ok: true,
@@ -239,7 +242,7 @@ export function activateRuntimePlugin(context) {
             service,
             modelId,
             dynamicConfigPatchFromArgs(args),
-            { mergeWithExisting: action === "update" }
+            { mergeWithExisting: action === "update", principal: invocationContext.principal }
           );
           return {
             ok: true,
@@ -268,7 +271,7 @@ export function activateRuntimePlugin(context) {
           const results = [];
           for (const [id, config] of Object.entries(data)) {
             results.push(await upsertDynamicModel(service, id, config, {
-              mergeWithExisting: args.merge !== false
+              mergeWithExisting: args.merge !== false, principal: invocationContext.principal
             }));
           }
           return {

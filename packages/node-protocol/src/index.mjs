@@ -1,3 +1,5 @@
+import { normalizeToolExecution } from "../../plugin-sdk/src/tool-execution.mjs";
+
 export const DEVICE_PROTOCOL_VERSION = 1;
 export {
   formatByteSize,
@@ -41,10 +43,35 @@ function requirePositiveInteger(value, label) {
   return number;
 }
 
+function fallbackExecutionEffect(name) {
+  if (["write", "edit"].includes(name)) return "write";
+  if (name === "sendMail") return "external";
+  if (["Bash", "mcpCall"].includes(name)) return "process";
+  return "read";
+}
+
+function legacyExecutionPolicy(name, risk) {
+  if (name === "Bash") {
+    return normalizeToolExecution({
+      effect: "process",
+      timeoutMs: 120_000,
+      maxTimeoutMs: 600_000,
+      timeoutArgument: "timeout"
+    });
+  }
+  return normalizeToolExecution(null, {
+    risk,
+    fallbackEffect: fallbackExecutionEffect(name)
+  });
+}
+
 function normalizeCapability(input) {
   const capability = requireObject(input, "Node capability");
   const name = requireId(capability.name, "Node capability name");
   const risk = String(capability.risk || "read");
+  const executionDeclared = typeof capability.executionDeclared === "boolean"
+    ? capability.executionDeclared
+    : capability.execution != null;
   if (!RISK_CLASSES.has(risk)) {
     throw new Error(`Node capability ${name} has an invalid risk class`);
   }
@@ -65,7 +92,11 @@ function normalizeCapability(input) {
     risk,
     description: String(capability.description || ""),
     inputSchema: { ...inputSchema },
-    hostKind: String(capability.hostKind || "device")
+    hostKind: String(capability.hostKind || "device"),
+    execution: capability.execution == null
+      ? legacyExecutionPolicy(name, capability.risk == null ? "" : risk)
+      : normalizeToolExecution(capability.execution, { risk }),
+    executionDeclared
   };
 }
 
@@ -75,7 +106,11 @@ function normalizeResource(input) {
     resourceId: requireId(resource.resourceId, "Node resource id"),
     kind: requireId(resource.kind, "Node resource kind"),
     projectId: optionalText(resource.projectId),
-    label: optionalText(resource.label)
+    label: optionalText(resource.label),
+    ...(typeof resource.workspaceRoot === "string" && resource.workspaceRoot.length <= 4096
+      && !/[\0\r\n]/.test(resource.workspaceRoot)
+      && (resource.workspaceRoot.startsWith("/") || /^[A-Z]:[\\/]/i.test(resource.workspaceRoot))
+      ? { workspaceRoot: resource.workspaceRoot } : {})
   };
 }
 
@@ -131,6 +166,12 @@ export function normalizeToolResult(input) {
     ok: result.ok === true,
     content: String(result.content || ""),
     ...(result.error ? { error: String(result.error) } : {}),
+    ...(result.failureCode
+      ? { failureCode: String(result.failureCode) }
+      : {}),
+    ...(typeof result.retryable === "boolean"
+      ? { retryable: result.retryable }
+      : {}),
     ...(Array.isArray(result.artifactIds)
       ? {
           artifactIds: result.artifactIds

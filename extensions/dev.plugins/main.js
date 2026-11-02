@@ -1,5 +1,6 @@
 import {
   createPluginDetailModel,
+  getPluginHostStatus,
   getPluginOriginInfo,
   getPluginPresentation,
   getPluginStatus,
@@ -8,6 +9,7 @@ import {
 import {
   runtimeDeviceServiceBaseUrl
 } from "../../src/runtime/workbench-runtime-config.ts";
+import { openMarketplace } from "./marketplace.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8767";
 
@@ -38,7 +40,7 @@ const I18N_MESSAGES = {
     "ui.startDev": "启动开发",
     "ui.stopDev": "停止开发",
     "ui.statsUnavailable": "查看和切换已安装插件。",
-    "ui.stats": "共 {total} 个插件，已启用 {enabled} 个，活跃 {active} 个，异常 {errors} 个。",
+    "ui.stats": "共 {total} 个插件，已启用 {enabled} 个；Workbench 运行 {active} 个、异常 {errors} 个；Runtime 运行 {runtimeActive} 个。",
     "ui.systemUnavailable": "插件系统不可用",
     "ui.noMatching": "没有匹配的插件",
     "ui.noPlugins": "没有找到插件",
@@ -147,7 +149,7 @@ const I18N_MESSAGES = {
     "ui.startDev": "Start Dev",
     "ui.stopDev": "Stop Dev",
     "ui.statsUnavailable": "View and toggle installed plugins.",
-    "ui.stats": "{total} plugins, {enabled} enabled, {active} active, {errors} errors.",
+    "ui.stats": "{total} plugins, {enabled} enabled; Workbench {active} running, {errors} errors; Runtime {runtimeActive} running.",
     "ui.systemUnavailable": "Plugin system not available",
     "ui.noMatching": "No matching plugins",
     "ui.noPlugins": "No plugins found",
@@ -337,6 +339,11 @@ function mountPluginsSidebarViewInto(container) {
   const pluginInstaller = window.zion && window.zion.pluginInstaller;
 
   const root = h("div", { className: "zion-plugin-manager" });
+  const marketButton = h("button", { type: "button", className: "zion-plugin-marketplace-open" },
+    h("span", { className: "codicon codicon-extensions", "aria-hidden": "true" }), "扩展市场",
+    h("span", { className: "codicon codicon-arrow-right", "aria-hidden": "true" }));
+  marketButton.onclick = () => openMarketplace();
+  root.appendChild(marketButton);
   const statsText = h("div", { className: "zion-plugin-manager-summary" });
   root.appendChild(statsText);
 
@@ -505,15 +512,51 @@ function mountPluginsSidebarViewInto(container) {
       return;
     }
     const s = pluginManager.getStats();
-    statsText.textContent = t("ui.stats", "共 {total} 个插件，已启用 {enabled} 个，活跃 {active} 个，异常 {errors} 个。", s);
+    const runtimeActive = (
+      window.zion?.state?.get?.("runtime.connection")?.runtimePlugins || []
+    ).filter((plugin) => plugin?.status === "active").length;
+    statsText.textContent = t(
+      "ui.stats",
+      "共 {total} 个插件，已启用 {enabled} 个；Workbench 运行 {active} 个、异常 {errors} 个；Runtime 运行 {runtimeActive} 个。",
+      { ...s, runtimeActive }
+    );
   }
 
   let selectedPluginId = "";
   let activeFilter = "all";
 
+  const developmentEntries = () => window.zion?.state?.get?.("plugins.developmentEntries") || [];
+  const developmentStatuses = () => window.zion?.state?.get?.("plugins.development") || {};
+  const developmentStatusLabel = (id) => {
+    const status = developmentStatuses()[id]?.status;
+    const labels = getCurrentLocale() === "en-US"
+      ? { connecting: "Connecting to source", online: "Source online", offline: "Source offline",
+          "source-missing": "Source directory unavailable", "access-denied": "Source access denied", "load-error": "Development UI load failed" }
+      : { connecting: "正在连接源码设备", online: "源码设备在线", offline: "源码设备离线",
+          "source-missing": "源码目录不可用", "access-denied": "无权访问源码设备", "load-error": "开发插件加载失败" };
+    return labels[status] || "";
+  };
+  const allPlugins = () => {
+    const installed = pluginManager?.list?.() || [];
+    const known = new Set(installed.map((plugin) => plugin.id));
+    return [...installed, ...developmentEntries().filter((source) => !known.has(source.pluginId)).map((source) => ({
+      id: source.pluginId, name: source.name, version: source.version, origin: "dev",
+      sourceDir: source.directory, sourceNodeId: source.nodeId, devId: source.devId,
+      state: "installed", enabled: false, developmentPlaceholder: true,
+      manifest: { name: source.name, version: source.version,
+        zion: { id: source.pluginId, name: source.name, version: source.version } }
+    }))];
+  };
   const getPluginById = (pluginId) => {
     if (!pluginManager || typeof pluginManager.list !== "function") return null;
-    return pluginManager.list().find((candidate) => String(candidate?.id || "") === String(pluginId || "")) || null;
+    return allPlugins().find((candidate) => String(candidate?.id || "") === String(pluginId || "")) || null;
+  };
+
+  const getRuntimePluginById = (pluginId) => {
+    const plugins = window.zion?.state?.get?.("runtime.connection")?.runtimePlugins;
+    return Array.isArray(plugins)
+      ? plugins.find((plugin) => String(plugin?.id || "") === String(pluginId || "")) || null
+      : null;
   };
 
   const isDevelopmentPlugin = (plugin) => {
@@ -593,6 +636,7 @@ function mountPluginsSidebarViewInto(container) {
 
   const togglePlugin = async (plugin, enabled) => {
     if (!pluginManager) return;
+    if (plugin.developmentPlaceholder) return;
     try {
       if (enabled) await pluginManager.enable(String(plugin.id));
       else await pluginManager.disable(String(plugin.id));
@@ -608,6 +652,7 @@ function mountPluginsSidebarViewInto(container) {
   };
 
   const reloadPlugin = async (plugin) => {
+    if (plugin.developmentPlaceholder) return;
     try {
       if (typeof pluginManager?.hotReloadFromInfo === "function") {
         await pluginManager.hotReloadFromInfo(plugin, { enabled: !!plugin.enabled });
@@ -625,6 +670,7 @@ function mountPluginsSidebarViewInto(container) {
     locale: getCurrentLocale(),
     fallbackName: getPluginDisplayName(plugin),
     fallbackDescription: getPluginDescription(plugin),
+    runtimePlugin: getRuntimePluginById(plugin.id),
     runCommand: runPluginCommand,
     onToggle: (enabled) => togglePlugin(plugin, enabled),
     onReload: () => reloadPlugin(plugin)
@@ -663,6 +709,12 @@ function mountPluginsSidebarViewInto(container) {
     }, h("span", { className: "codicon codicon-kebab-vertical", "aria-hidden": "true" }));
     const body = h("div", { className: "zion-plugin-manager-row-menu-popover" });
     const isEnabled = !!plugin?.enabled;
+    if (plugin.developmentPlaceholder) {
+      body.appendChild(h("div", { className: "zion-plugin-manager-row-description" },
+        developmentStatusLabel(plugin.id) || t("ui.waitSource", "等待源码设备连接")));
+      menu.append(summary, body);
+      return menu;
+    }
 
     summary.onclick = (event) => {
       event.stopPropagation();
@@ -729,7 +781,7 @@ function mountPluginsSidebarViewInto(container) {
     }
 
     const q = (searchInput.value || "").trim().toLowerCase();
-    const filtered = pluginManager.list()
+    const filtered = allPlugins()
       .filter(matchesFilter)
       .filter((plugin) => {
         if (!q) return true;
@@ -757,7 +809,11 @@ function mountPluginsSidebarViewInto(container) {
         fallbackName: getPluginDisplayName(plugin),
         fallbackDescription: getPluginDescription(plugin)
       });
-      const status = getPluginStatus(plugin, getCurrentLocale());
+      const status = getPluginHostStatus(
+        plugin,
+        getRuntimePluginById(plugin.id),
+        getCurrentLocale()
+      );
       const origin = getDisplayOrigin(plugin);
       const row = h("div", {
         className: `zion-plugin-manager-row${selectedPluginId === plugin.id ? " is-selected" : ""}`,
@@ -785,7 +841,7 @@ function mountPluginsSidebarViewInto(container) {
         ),
         h("div", { className: "zion-plugin-manager-row-meta" }, `${origin.shortLabel} · ${plugin.id} · v${plugin.version || "0.0.0"}`),
         h("div", { className: "zion-plugin-manager-row-description" },
-          plugin?.error?.message || presentation.description || status.label
+          developmentStatusLabel(plugin.id) || plugin?.error?.message || presentation.description || status.label
         )
       );
       const controls = h("div", { className: "zion-plugin-manager-row-controls" });
@@ -1244,6 +1300,22 @@ function mountPluginsSidebarViewInto(container) {
       } catch {}
     }
   }
+  const runtimeConnectionDisposable = window.zion?.state?.onDidChange?.(
+    "runtime.connection",
+    () => {
+      try {
+        doRefresh();
+        if (selectedPluginId) refreshOpenDetails(selectedPluginId);
+      } catch {}
+    }
+  );
+  if (runtimeConnectionDisposable) {
+    disposers.push(() => runtimeConnectionDisposable.dispose?.());
+  }
+  for (const key of ["plugins.development", "plugins.developmentEntries"]) {
+    const subscription = window.zion?.state?.onDidChange?.(key, () => doRefresh());
+    if (subscription) disposers.push(() => subscription.dispose?.());
+  }
 
   return {
     dispose: () => {
@@ -1262,6 +1334,10 @@ function mountPluginsSidebarViewInto(container) {
 }
 
 export async function activate(ctx) {
+  ctx.subscriptions.push(window.zion.commands.registerCommand("zion.marketplace.show", openMarketplace));
+  if (new URLSearchParams(window.location.search).has("marketplace")) {
+    window.location.assign("https://marketplace.zioon.tech/");
+  }
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) ctx.subscriptions.push(disp);

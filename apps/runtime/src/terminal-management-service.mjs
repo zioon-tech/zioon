@@ -1,7 +1,10 @@
 import { createDeviceServiceClient } from "./device-service-client.mjs";
 import { CancellationController } from "../../../packages/runtime/dist/index.js";
 import { DEVICE_SERVICE_TOOL_NAME } from "./node-service-routing.mjs";
-import { machineReference } from "../../../packages/node-protocol/src/resource-references.mjs";
+import {
+  machineReference,
+  parseMachineReference
+} from "../../../packages/node-protocol/src/resource-references.mjs";
 import { buildTerminalInventory } from "../../../extensions/dev.terminal-manager/terminal-inventory.js";
 
 function text(value) {
@@ -21,6 +24,7 @@ function shellQuote(value) {
 export function createTerminalManagementService({
   baseUrl = "http://127.0.0.1:8765",
   nodeBroker = null,
+  managedSandbox = null,
   fetchImpl = globalThis.fetch,
   inventoryTimeoutMs = 3000
 } = {}) {
@@ -31,8 +35,9 @@ export function createTerminalManagementService({
     fetchImpl
   });
 
-  async function listInventory({ runContext = {} } = {}) {
+  async function listDeviceInventory({ runContext = {} } = {}) {
     if (!nodeBroker?.registeredTargets) {
+      if (managedSandbox) return { sessions: [], machines: [], nodes: [] };
       const [sessions, machines] = await Promise.all([
         request("/sessions", { runContext }),
         request("/machines", { runContext }).catch(() => null)
@@ -43,7 +48,7 @@ export function createTerminalManagementService({
         nodes: []
       };
     }
-    const targets = nodeBroker.registeredTargets(runContext.projectId, DEVICE_SERVICE_TOOL_NAME)
+    let targets = nodeBroker.registeredTargets(runContext.projectId, DEVICE_SERVICE_TOOL_NAME)
       .filter(({ node, resource }) =>
         (!runContext.target?.nodeId || node.registration.nodeId === runContext.target.nodeId)
         && (!runContext.target?.resourceId || resource?.resourceId === runContext.target.resourceId)
@@ -56,6 +61,18 @@ export function createTerminalManagementService({
           return false;
         }
       });
+    if (nodeBroker.authorizeExecutionTarget) {
+      const authorized = [];
+      for (const target of targets) {
+        try {
+          await nodeBroker.authorizeExecutionTarget(runContext, target);
+          authorized.push(target);
+        } catch (error) {
+          if (error?.code !== "platform_node_execution_denied") throw error;
+        }
+      }
+      targets = authorized;
+    }
     const results = [];
     let cursor = 0;
     async function worker() {
@@ -120,6 +137,38 @@ export function createTerminalManagementService({
     };
   }
 
+  async function listInventory({ runContext = {} } = {}) {
+    const requestedNodeId = String(runContext.target?.nodeId || "");
+    const managedSelected = managedSandbox && (
+      !requestedNodeId
+      || managedSandbox.isManagedNode(requestedNodeId, runContext.principal)
+    );
+    const deviceSelected = !requestedNodeId || !managedSelected;
+    const [managed, device] = await Promise.all([
+      managedSelected
+        ? managedSandbox.listInventory({ runContext })
+        : { sessions: [], machines: [], nodes: [] },
+      deviceSelected
+        ? listDeviceInventory({ runContext })
+        : { sessions: [], machines: [], nodes: [] }
+    ]);
+    const unique = (items) => [
+      ...new Map(items.map((item) => [item.id, item])).values()
+    ];
+    return {
+      sessions: unique([...managed.sessions, ...device.sessions]),
+      machines: unique([...managed.machines, ...device.machines]),
+      nodes: [
+        ...managed.nodes,
+        ...device.nodes.filter((item) =>
+          !managed.nodes.some((managedNode) =>
+            managedNode.nodeId === item.nodeId
+          )
+        )
+      ]
+    };
+  }
+
   return Object.freeze({
     listInventory,
     async listSessions(options = {}) {
@@ -131,6 +180,12 @@ export function createTerminalManagementService({
 
     async getSession({ sessionId, runContext = {} } = {}) {
       const id = requireValue(sessionId, "session_id");
+      if (managedSandbox?.isManagedSession(id, runContext.principal)) {
+        return await managedSandbox.getSession({
+          sessionId: id,
+          runContext
+        });
+      }
       const payload = await request(
         `/sessions/${encodeURIComponent(id)}`,
         { runContext }
@@ -148,6 +203,24 @@ export function createTerminalManagementService({
         || (resource_id && runContext.target?.resourceId && resource_id !== runContext.target.resourceId)
       ) {
         throw new Error("Terminal creation target conflicts with the request");
+      }
+      const requestedNodeId = String(
+        node_id || runContext.target?.nodeId || ""
+      );
+      if (
+        managedSandbox
+        && (
+          !requestedNodeId
+          || managedSandbox.isManagedNode(
+            requestedNodeId,
+            runContext.principal
+          )
+        )
+      ) {
+        return await managedSandbox.createSession({
+          payload,
+          runContext
+        });
       }
       const response = await request("/sessions", {
         method: "POST",
@@ -168,6 +241,12 @@ export function createTerminalManagementService({
 
     async closeSession({ sessionId, runContext = {} } = {}) {
       const id = requireValue(sessionId, "session_id");
+      if (managedSandbox?.isManagedSession(id, runContext.principal)) {
+        return await managedSandbox.closeSession({
+          sessionId: id,
+          runContext
+        });
+      }
       await request(`/sessions/${encodeURIComponent(id)}`, {
         method: "DELETE",
         runContext
@@ -177,6 +256,12 @@ export function createTerminalManagementService({
 
     async reactivateSession({ sessionId, runContext = {} } = {}) {
       const id = requireValue(sessionId, "session_id");
+      if (managedSandbox?.isManagedSession(id, runContext.principal)) {
+        return await managedSandbox.reactivateSession({
+          sessionId: id,
+          runContext
+        });
+      }
       const payload = await request(
         `/sessions/${encodeURIComponent(id)}/activate`,
         {
@@ -191,6 +276,13 @@ export function createTerminalManagementService({
     async setSessionCwd({ sessionId, cwd, runContext = {} } = {}) {
       const id = requireValue(sessionId, "session_id");
       const nextCwd = requireValue(cwd, "cwd");
+      if (managedSandbox?.isManagedSession(id, runContext.principal)) {
+        return await managedSandbox.setSessionCwd({
+          sessionId: id,
+          cwd: nextCwd,
+          runContext
+        });
+      }
       await request(`/sessions/${encodeURIComponent(id)}/exec`, {
         method: "POST",
         body: { command: `cd -- ${shellQuote(nextCwd)}` },
@@ -201,6 +293,19 @@ export function createTerminalManagementService({
 
     async getMachine({ machineId, runContext = {} } = {}) {
       const id = requireValue(machineId, "machine_id");
+      const reference = parseMachineReference(id);
+      if (
+        reference
+        && managedSandbox?.isManagedNode(
+          reference.nodeId,
+          runContext.principal
+        )
+      ) {
+        const inventory = await managedSandbox.listInventory({ runContext });
+        const machine = inventory.machines.find((item) => item.id === id);
+        if (!machine) throw new Error("Managed machine not found");
+        return machine;
+      }
       try {
         const payload = await request(
           `/machines/${encodeURIComponent(id)}`,
@@ -226,6 +331,16 @@ export function createTerminalManagementService({
       runContext = {}
     } = {}) {
       const id = requireValue(machineId, "machine_id");
+      const reference = parseMachineReference(id);
+      if (
+        reference
+        && managedSandbox?.isManagedNode(
+          reference.nodeId,
+          runContext.principal
+        )
+      ) {
+        throw new Error("Managed machine metadata is controlled by Runtime");
+      }
       const payload = await request(
         `/machines/${encodeURIComponent(id)}`,
         {
@@ -239,6 +354,10 @@ export function createTerminalManagementService({
         }
       );
       return payload?.machine || payload;
+    },
+
+    async handleRequest(input = {}) {
+      return await managedSandbox?.handleRequest?.(input) || null;
     }
   });
 }

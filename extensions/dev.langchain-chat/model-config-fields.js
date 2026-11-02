@@ -222,8 +222,9 @@ export function usesGeminiThinkingLevel(modelIdOrName) {
 }
 
 export function getSupportedThinkingEfforts(info = {}) {
-  if (info.cfg?.supportsThinkingEffort === false) return ["auto"];
   const { provider, model } = getThinkingModelInfo(info);
+  if (/^glm-5\.3(?:-flash)?$/.test(model)) return ["auto", "low", "high", "max"];
+  if (info.cfg?.supportsThinkingEffort === false) return ["auto"];
 
   if (isDeepSeekThinkingConfig(info)) return ["auto", "high", "max"];
 
@@ -266,6 +267,7 @@ export function getSupportedThinkingEfforts(info = {}) {
 }
 
 export function inferThinkingCapability({ providerId, providerType, modelId, modelName, cfg } = {}) {
+  if (/^glm-5\.3(?:-flash)?$/i.test(String(modelName || cfg?.modelName || modelId || ""))) return "supported";
   if (cfg?.supportsThinking === true) return "supported";
   if (cfg?.supportsThinking === false) return "unsupported";
   const provider = String(providerType || providerId || "").toLowerCase();
@@ -282,6 +284,7 @@ export function inferThinkingCapability({ providerId, providerType, modelId, mod
 
 export function inferThinkingEffortCapability(info = {}) {
   const { cfg } = info;
+  if (/^glm-5\.3(?:-flash)?$/.test(getThinkingModelInfo(info).model)) return true;
   if (cfg?.supportsThinkingEffort === true) return true;
   if (cfg?.supportsThinkingEffort === false) return false;
   return getSupportedThinkingEfforts(info).length > 1;

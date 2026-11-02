@@ -113,9 +113,11 @@ describe("Workbench PWA upgrade recovery", () => {
 
     expect(await coordinator.recoverFromProtocolMismatch("6")).toBe(true);
     expect(harness.serviceWorker.controller).not.toBe(previousController);
-    expect(harness.reload).toHaveBeenCalledTimes(1);
+    expect(harness.reload).not.toHaveBeenCalled();
     expect(harness.registration.unregister).not.toHaveBeenCalled();
-    expect(harness.replace).not.toHaveBeenCalled();
+    expect(harness.replace).toHaveBeenCalledWith(
+      "https://example.test/?zionSession=test&zionPwaProtocol=6"
+    );
     coordinator.dispose();
   });
 
@@ -142,6 +144,43 @@ describe("Workbench PWA upgrade recovery", () => {
 
     expect(await coordinator.checkForUpdate("test", true)).toBe(false);
     expect(harness.registration.update).not.toHaveBeenCalled();
+    coordinator.dispose();
+  });
+  it("keeps the page open when preparing a protocol reload cannot save drafts", async () => {
+    const harness = createHarness();
+    const coordinator = installWorkbenchPwaUpgradeRecovery({
+      ...harness, prepareForReload: async () => false
+    });
+    expect(await coordinator.recoverFromProtocolMismatch("6")).toBe(false);
+    expect(harness.reload).not.toHaveBeenCalled();
+    expect(harness.replace).not.toHaveBeenCalled();
+    expect(harness.registration.unregister).not.toHaveBeenCalled();
+    coordinator.dispose();
+  });
+  it("does not repeatedly navigate when the requested protocol still mismatches after recovery", async () => {
+    const harness = createHarness();
+    harness.windowObject.location.href += "&zionPwaProtocol=6";
+    const coordinator = installWorkbenchPwaUpgradeRecovery(harness);
+    expect(await coordinator.recoverFromProtocolMismatch("6")).toBe(false);
+    expect(harness.replace).not.toHaveBeenCalled();
+    coordinator.dispose();
+  });
+  it("checks newly typed drafts again after waiting for an updated controller", async () => {
+    const harness = createHarness();
+    harness.registration.update.mockImplementation(async () => {
+      queueMicrotask(() => {
+        harness.serviceWorker.controller = { scriptURL: "https://example.test/sw.js?v=next" };
+        harness.serviceWorker.dispatchEvent(new Event("controllerchange"));
+      });
+    });
+    const prepareForReload = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const coordinator = installWorkbenchPwaUpgradeRecovery({
+      ...harness, prepareForReload, controllerTimeoutMs: 100
+    });
+    expect(await coordinator.recoverFromProtocolMismatch("6")).toBe(false);
+    expect(prepareForReload).toHaveBeenCalledTimes(2);
+    expect(harness.replace).not.toHaveBeenCalled();
+    expect(harness.reload).not.toHaveBeenCalled();
     coordinator.dispose();
   });
 });

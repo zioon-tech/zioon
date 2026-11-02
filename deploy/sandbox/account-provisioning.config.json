@@ -1,0 +1,15 @@
+{
+  "region": "cn-shanghai",
+  "zone": "cn-shanghai-f",
+  "cloudAccountId": "1803625616810276",
+  "fileSystemId": "030pngfn34jnuh0y0mx",
+  "vpcId": "vpc-uf6x43ew3juslwjylna6r",
+  "vSwitchId": "vsw-uf6qjx33v7ksqu8blr2q9",
+  "securityGroupId": "sg-uf6d0rkzvmmo2eqfs73k",
+  "instanceRoleName": "ZionRuntimeSandboxProvisioner",
+  "sizeLimit": 10737418240,
+  "fileCountLimit": 10000,
+  "storageNetwork": {
+    "allowOut": ["10.88.1.0/24", "100.100.2.136/32", "100.100.2.138/32"]
+  }
+}

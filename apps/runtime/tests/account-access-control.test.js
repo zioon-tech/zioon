@@ -77,6 +77,8 @@ describe("AccountAccessControl", () => {
     expect(accountRequestScope("POST", "/v1/unknown-future-endpoint")).toBe("runtime.manage");
     expect(accountRequestScope("GET", "/v1/workbench-state/kv/runtime.secret")).toBe("runtime.manage");
     expect(accountRequestScope("GET", "/v1/device-services/local-tools/files")).toBe("runtime.manage");
+    expect(accountRequestScope("GET", "/v1/plugins/dev.identity/files/read")).toBe("resource.execute");
+    expect(accountRequestScope("POST", "/v1/plugins/dev.identity/files/write")).toBe("resource.execute");
   });
 
   it("canonicalizes loopback account login before setting a host-only cookie", async () => {

@@ -10,7 +10,6 @@ import {
   getTerminalMachine,
   getTerminalSession,
   listTerminalSessions,
-  publishTerminalSessions,
   reactivateTerminalSession,
   setTerminalSessionCwd,
   updateTerminalMachine
@@ -170,11 +169,7 @@ export async function activate(ctx) {
       stage: "pre",
       contribute: async (messages) => {
         if (window.zion?.state?.get?.("chat.includeTerminalContext") === false) return messages;
-        const sessions = await ensureTerminalSessions();
-        const inventory = window.zion?.state?.get?.("terminal.inventory")
-          || publishTerminalSessions(sessions);
-        if (!inventory?.machines?.length) return messages;
-        const content = buildTerminalInventoryContextXml(inventory);
+        const content = buildTerminalInventoryContextXml();
         return insertAfterLeadingSystem(messages, { role: "user", content });
       }
     });
@@ -199,14 +194,14 @@ export async function activate(ctx) {
             ssh_host: { type: "string", description: "SSH host (ssh sessions)" },
             ssh_port: { type: "number", description: "SSH port (default 22)" },
             initial_cwd: { type: "string", description: "Initial working directory" },
-            session_id: { type: "string", description: "Exact terminal session_id from terminal_inventory preferred_session_id or list sessions[].session_id; not machine_id, workspace_id, local, or ssh" },
+            session_id: { type: "string", description: "Exact terminal session_id returned by terminalInventory or terminalManage list; not machine_id, workspace_id, local, or ssh" },
             node_id: { type: "string", description: "Explicit execution Node for create when no machine/workspace is selected" },
             resource_id: { type: "string", description: "Explicit resource binding for create" },
             cwd: { type: "string", description: "New working directory (set_cwd)" },
-            machine_id: { type: "string", description: "Machine ID from terminal_inventory, for list/get_machine/update_machine filters; do not pass as session_id" },
+            machine_id: { type: "string", description: "Machine ID returned by terminalInventory or terminalManage list_machines; do not pass as session_id" },
             name: { type: "string", maxLength: 120, description: "Machine display name (update_machine)" },
             description: { type: "string", maxLength: 500, description: "Machine description and detected resource information (update_machine)" },
-            workspace_id: { type: "string", description: "Workspace ID from terminal_inventory, for list/create filters; do not pass as session_id" },
+            workspace_id: { type: "string", description: "Workspace ID returned by terminalInventory or terminalManage list; do not pass as session_id" },
             status: { type: "string", enum: ["connected", "disconnected", "stale"], description: "Optional list filter" },
             limit: { type: "number", minimum: 1, maximum: 200, description: "Maximum items returned by list or list_machines" }
           },

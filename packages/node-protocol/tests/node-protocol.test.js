@@ -39,7 +39,12 @@ describe("@zion/node-protocol", () => {
       capabilities: [{
         name: "read",
         version: "1",
-        risk: "read"
+        risk: "read",
+        execution: {
+          effect: "read",
+          idempotency: "safe",
+          cancellation: "cooperative"
+        }
       }],
       resources: [{
         resourceId: "workspace:test",
@@ -48,6 +53,41 @@ describe("@zion/node-protocol", () => {
       }]
     });
     expect(result.resources[0]).not.toHaveProperty("localRoot");
+  });
+
+  it("normalizes declared policies and keeps legacy Bash timeout behavior", () => {
+    const declared = normalizeNodeRegistration(registration({
+      capabilities: [{
+        name: "publish",
+        risk: "external-effect",
+        execution: {
+          effect: "external",
+          timeoutMs: 10_000,
+          maxTimeoutMs: 20_000
+        }
+      }]
+    })).capabilities[0];
+    expect(declared).toMatchObject({
+      executionDeclared: true,
+      execution: {
+        effect: "external",
+        timeoutMs: 10_000,
+        maxTimeoutMs: 20_000,
+        idempotency: "reconcile"
+      }
+    });
+
+    const legacyBash = normalizeNodeRegistration(registration({
+      capabilities: [{ name: "Bash", risk: "execute" }]
+    })).capabilities[0];
+    expect(legacyBash).toMatchObject({
+      executionDeclared: false,
+      execution: {
+        effect: "process",
+        timeoutArgument: "timeout",
+        maxTimeoutMs: 600_000
+      }
+    });
   });
 
   it("rejects incompatible versions and duplicate capabilities", () => {
@@ -108,10 +148,14 @@ describe("@zion/node-protocol", () => {
     expect(normalizeToolResult({
       ok: true,
       content: 42,
+      failureCode: "execution_outcome_unknown",
+      retryable: false,
       artifactIds: ["artifact:one", ""]
     })).toEqual({
       ok: true,
       content: "42",
+      failureCode: "execution_outcome_unknown",
+      retryable: false,
       artifactIds: ["artifact:one"]
     });
   });

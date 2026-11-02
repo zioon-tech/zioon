@@ -1,4 +1,5 @@
 import JSZip from "jszip";
+import { parse } from "acorn";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpPluginInstaller } from "../src/plugin/http-installer";
 
@@ -126,7 +127,9 @@ describe("HttpPluginInstaller", () => {
     const mainUrl = String((result.plugin?.manifest as any).zion.main || "");
     expect(mainUrl).toMatch(/^blob:/);
     const mainCode = await readBlobText(objectUrlBlobs.get(mainUrl));
-    expect(mainCode).toContain("from 'blob:test-plugin-1'");
+    const imports = parse(mainCode, { ecmaVersion: "latest", sourceType: "module" }).body
+      .filter((node) => node.type === "ImportDeclaration");
+    expect(imports.map((node) => node.source.value)).toEqual(["blob:test-plugin-1"]);
     expect(mainCode).not.toContain("from './dashboard-model.js'");
     expect(result.plugin?.sourceEntries).toEqual({
       workbench: "./main.js"

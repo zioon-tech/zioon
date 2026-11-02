@@ -230,7 +230,11 @@ export async function runLocalFullStack(argv = process.argv.slice(2)) {
     env: {
       ZION_ACCOUNT_ALLOW_RESOURCE_EXECUTION: "1",
       ZION_ALLOW_DANGEROUS: "1",
-      ZION_PLUGIN_DATA_NODE_ID: nodeId
+      ZION_PLUGIN_DATA_HOST: process.env.ZION_PLUGIN_DATA_HOST || "auto",
+      ZION_PLUGIN_DATA_NODE_ID: nodeId,
+      ZION_PLUGIN_DATA_SCOPE: process.env.ZION_PLUGIN_DATA_SCOPE || "legacy",
+      ZION_PLUGIN_DATA_LEGACY_READ_ACCOUNT_ID:
+        process.env.ZION_PLUGIN_DATA_LEGACY_READ_ACCOUNT_ID || ""
     }
   });
   await waitHttp(`${runtimeUrl}/health`, {

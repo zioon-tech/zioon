@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { zionExtensionsPlugin } from "./vite-plugin-extensions-fixed.js";
 import { VitePWA } from 'vite-plugin-pwa';
 import { createRequire } from "node:module";
+import { WORKBENCH_NAVIGATION_FALLBACK_DENYLIST } from "./src/pwa-navigation";
 
 const require = createRequire(import.meta.url);
 const reactPath = require.resolve("react");
@@ -23,7 +24,7 @@ export default defineConfig({
     ]
   },
   server: {
-    port: 5174,
+    port: 5177,
     strictPort: false,
     host: true  // 允许局域网访问
   },
@@ -77,10 +78,7 @@ export default defineConfig({
       includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png'],
       workbox: {
         importScripts: ["/sw-client-refresh.js"],
-        navigateFallbackDenylist: [
-          /^\/v1(?:\/|$)/, /^\/health(?:\/|$)/,
-          /^\/mobile(?:\/|$)/, /^\/observability(?:\/|$)/
-        ],
+        navigateFallbackDenylist: WORKBENCH_NAVIGATION_FALLBACK_DENYLIST,
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024
       },
       manifest: {

@@ -39,6 +39,8 @@ export async function startAccountRuntimeFixture({ directory, spaceId, idp, web 
       ...database.childEnvironment,
       PATH: process.env.PATH,
       ZION_RUNTIME_DATA_DIR: dataDirectory,
+      ZION_ARTIFACT_STORE: "local", ZION_ENV: "development",
+      ZION_ARTIFACT_DIRECTORY: join(dataDirectory, "artifacts"),
       ZION_RUNTIME_HOST: "127.0.0.1", ZION_RUNTIME_PORT: String(port),
       ZION_RUNTIME_PUBLIC_URL: url, ZION_RUNTIME_AUTH_MODE: "accounts",
       ZION_SPACE_ID: spaceId, ZION_OIDC_ISSUER: idp.issuer, ZION_OIDC_CLIENT_ID: "zion-account-test",

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("Desktop PWA update recovery", () => {
-  it("refreshes existing desktop clients without taking over Mobile", () => {
+  it("notifies existing desktop clients without navigating their drafts or taking over Mobile", () => {
     const source = readFileSync(
       resolve("public/sw-client-refresh.js"),
       "utf8"
@@ -13,11 +13,11 @@ describe("Desktop PWA update recovery", () => {
     expect(source).toContain('self.addEventListener("message"');
     expect(source).toContain("event.waitUntil(self.skipWaiting())");
     expect(source).toContain("upgradingExistingWorker");
-    expect(source).toContain("void client.navigate(client.url)");
-    expect(source).not.toContain("await client.navigate(client.url)");
+    expect(source).toContain('client.postMessage({ type: "ZION_WORKBENCH_UPDATE_AVAILABLE" })');
+    expect(source).not.toContain("client.navigate");
     expect(source).toContain('url.pathname.startsWith("/mobile/")');
     expect(source.indexOf("await self.clients.claim()")).toBeLessThan(
-      source.indexOf("client.navigate(client.url)")
+      source.indexOf("client.postMessage")
     );
   });
 });

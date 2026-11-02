@@ -25,6 +25,7 @@ export function activateRuntimePlugin(context) {
     name: definition.name,
     description: definition.description,
     inputSchema: definition.inputSchema,
+    execution: { effect: "process" },
     policy: { minimumPreset: "trusted-automation" },
     async invoke(args = {}, runContext = {}) {
       const action = String(args.action || "").trim();

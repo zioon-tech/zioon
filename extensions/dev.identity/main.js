@@ -43,11 +43,11 @@ import {
   syncProjectAutomationToRuntime
 } from "./identity-runtime-state.js";
 import { isContinuationBoundaryLine } from "../../src/chat/session-document-format.js";
-import { runtimeDeviceServiceBaseUrl } from "../../src/runtime/workbench-runtime-config.ts";
+import { readWorkbenchRuntimeConfig } from "../../src/runtime/workbench-runtime-config.ts";
 import { createPluginLocations } from "../../src/plugin/data-locations.ts";
 import { dataLocationContext, normalizeDataLocation } from "../../packages/plugin-sdk/src/data-location.mjs";
 
-const MEMORY_ROOT_DISPLAY = "~/.zion-next/data/plugins/dev.identity";
+const MEMORY_ROOT_DISPLAY = "/memory/dev.identity";
 const BIOGRAPHY_VIEW_ID = "dev.identity.biography";
 const BIOGRAPHY_CACHE_DB = "zion.identity-cache";
 const BIOGRAPHY_CACHE_STORE = "biography-events";
@@ -173,29 +173,17 @@ version: 1
 ## 边界
 `;
 
-export function getLocalToolsBase() {
+export function getIdentityFilesBase() {
   const runtimeConnection = window.zion?.state?.get?.("runtime.connection");
   const connectedRuntimeBase = runtimeConnection?.backend === "runtime"
-    ? String(runtimeConnection.baseUrl || "").trim().replace(/\/$/, "")
+    ? String(runtimeConnection.baseUrl || "").trim().replace(/\/+$/, "")
     : "";
-  const runtimeRelayBase = connectedRuntimeBase
-    ? `${connectedRuntimeBase}/v1/device-services/local-tools`
-    : runtimeDeviceServiceBaseUrl("local-tools", {
-        state: window.zion?.state,
-        storage: globalThis.localStorage
-      });
-  if (runtimeRelayBase) {
-    return runtimeRelayBase;
-  }
-  const stateValue = window.zion?.state?.get?.("localTools.baseUrl");
-  if (typeof stateValue === "string" && stateValue.trim()) return stateValue.trim().replace(/\/$/, "");
-  try {
-    const stored = localStorage.getItem("zion.localTools.baseUrl")
-      || localStorage.getItem("zion.localSearch.baseUrl")
-      || "";
-    if (stored.trim()) return stored.trim().replace(/\/$/, "");
-  } catch {}
-  return "http://127.0.0.1:8765";
+  const config = readWorkbenchRuntimeConfig({
+    state: window.zion?.state,
+    storage: globalThis.localStorage
+  });
+  const runtimeBase = connectedRuntimeBase || config.baseUrl;
+  return `${runtimeBase}/v1/plugins/dev.identity`;
 }
 
 function normalizeLocalPath(value) {
@@ -222,25 +210,32 @@ async function identityDataLocation() {
   return normalizeDataLocation(await pluginLocations.data);
 }
 
-async function localToolsFileUrl(endpoint, path, params = {}) {
-  const url = new URL(`${getLocalToolsBase()}${endpoint}`, globalThis.location?.href || "http://localhost/");
-  if (path != null) url.searchParams.set("path", String(path));
+function relativeIdentityPath(pathValue, rootValue) {
+  const path = normalizeLocalPath(pathValue);
+  const root = normalizeLocalPath(rootValue);
+  if (!pathWithinRoot(path, root)) {
+    throw new Error("Path is outside Identity data directory");
+  }
+  return path === root ? "." : path.slice(root.length + 1);
+}
+
+async function identityFileTarget(endpoint, path, params = {}) {
+  const data = await identityDataLocation();
+  const runtimeBase = getIdentityFilesBase();
+  if (!runtimeBase) {
+    throw new Error("Identity requires the authenticated Runtime memory API");
+  }
+  const url = new URL(
+    `${runtimeBase}${endpoint}`,
+    globalThis.location?.href || "http://localhost/"
+  );
+  const requestPath = relativeIdentityPath(path, data.root);
+  if (path != null) url.searchParams.set("path", requestPath);
   for (const [key, value] of Object.entries(params || {})) {
     if (value == null || value === "") continue;
     url.searchParams.set(key, String(value));
   }
-  const data = await identityDataLocation();
-  if (path && !pathWithinRoot(path, data.root)) throw new Error("Path is outside Identity data directory");
-  if (data.nodeId) url.searchParams.set("node_id", data.nodeId);
-  url.searchParams.set("plugin_data_version", "1");
-  return url.toString();
-}
-
-async function localToolsFileBody(path, body = {}) {
-  return {
-    ...body,
-    path
-  };
+  return { url: url.toString(), requestPath };
 }
 
 async function resolveMemoryRoot() {
@@ -291,15 +286,15 @@ function isMissingFile(status, data, raw) {
 }
 
 async function readLocalFileState(path) {
-  const url = await localToolsFileUrl("/files/read", path);
-  const response = await fetch(url, { method: "GET" });
+  const target = await identityFileTarget("/files/read", path);
+  const response = await fetch(target.url, { method: "GET" });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
   if (!response.ok || data?.error) {
     if (isMissingFile(response.status, data, raw)) return { exists: false, content: "" };
     throw new Error(String(data?.error || data?.detail || raw || `HTTP ${response.status}`));
   }
-  if (data.content_hash) fileHashes.set(url, data.content_hash);
+  if (data.content_hash) fileHashes.set(path, data.content_hash);
   return {
     exists: true,
     content: typeof data?.content === "string" ? data.content : ""
@@ -311,8 +306,13 @@ async function readLocalFileIfExists(path) {
 }
 
 async function readLocalDirectoryEntries(path) {
+  const target = await identityFileTarget(
+    "/files/entries",
+    path,
+    { max_depth: 1 }
+  );
   const response = await fetch(
-    await localToolsFileUrl("/files/entries", path, { max_depth: 1 }),
+    target.url,
     { method: "GET" }
   );
   const raw = await response.text().catch(() => "");
@@ -343,11 +343,12 @@ async function readLocalDirectoryEntries(path) {
 }
 
 async function readBiographyEventsPage(path, options = {}) {
-  const response = await fetch(await localToolsFileUrl("/files/read-jsonl", path, {
+  const target = await identityFileTarget("/files/read-jsonl", path, {
     limit: Math.max(1, Number(options.limit || BIOGRAPHY_RENDER_PAGE_SIZE)),
     ...(options.tail ? { tail: Math.max(1, Number(options.tail)) } : {}),
     ...(!options.tail && options.offset ? { offset: Math.max(1, Number(options.offset)) } : {})
-  }), { method: "GET" });
+  });
+  const response = await fetch(target.url, { method: "GET" });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
   if (response.status === 404) return null;
@@ -369,34 +370,37 @@ async function readBiographyEventsPage(path, options = {}) {
 }
 
 async function writeLocalFile(path, content, options = {}) {
-  const readUrl = await localToolsFileUrl("/files/read", path);
-  const hash = fileHashes.get(readUrl);
-  const response = await fetch(await localToolsFileUrl("/files/write", path), {
+  const target = await identityFileTarget("/files/write", path);
+  const hash = fileHashes.get(path);
+  const response = await fetch(target.url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(await localToolsFileBody(path, {
+    body: JSON.stringify({
+      path: target.requestPath,
       content: String(content || ""),
       ...(hash ? { expected_hash: hash } : {}),
       ...options
-    }))
+    })
   });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
   if (!response.ok || data?.error) {
     throw new Error(String(data?.error || data?.detail || raw || `HTTP ${response.status}`));
   }
-  if (data.content_hash) fileHashes.set(readUrl, data.content_hash);
+  if (data.content_hash) fileHashes.set(path, data.content_hash);
   return true;
 }
 
 async function appendLocalJsonl(path, records) {
-  const response = await fetch(await localToolsFileUrl("/files/append-jsonl", path), {
+  const target = await identityFileTarget("/files/append-jsonl", path);
+  const response = await fetch(target.url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(await localToolsFileBody(path, {
+    body: JSON.stringify({
+      path: target.requestPath,
       records,
       dedupe_field: "id"
-    }))
+    })
   });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
@@ -471,7 +475,8 @@ function openBiographyCacheDb() {
 }
 
 async function readBiographyEventsCache(key) {
-  key = `${getLocalToolsBase()}|${(await identityDataLocation()).nodeId}|${key}`;
+  const location = await identityDataLocation();
+  key = `${getIdentityFilesBase()}|${location.root}|${key}`;
   const db = await openBiographyCacheDb();
   if (!db) return null;
   return new Promise((resolve) => {
@@ -506,7 +511,8 @@ async function readBiographyEventsCache(key) {
 }
 
 async function writeBiographyEventsCache(key, events, complete = true) {
-  key = `${getLocalToolsBase()}|${(await identityDataLocation()).nodeId}|${key}`;
+  const location = await identityDataLocation();
+  key = `${getIdentityFilesBase()}|${location.root}|${key}`;
   const db = await openBiographyCacheDb();
   if (!db || !Array.isArray(events)) return false;
   return new Promise((resolve) => {
@@ -565,6 +571,7 @@ async function loadIdentityContext() {
         }
       }
     }
+    const location = await identityDataLocation();
     return buildIdentityContext({
       identity,
       user,
@@ -572,7 +579,12 @@ async function loadIdentityContext() {
       projects,
       projectsInbox,
       projectsAttention
-    }, { sourceRoot: await resolveMemoryRoot() });
+    }, {
+      sourceRoot: location.root,
+      accessMode: location.backend === "agent-fs"
+        ? location.accessMode === "cli" ? "cli" : "runtime-tools"
+        : "file-service"
+    });
   } catch (error) {
     console.warn("[dev.identity] profile read failed", error);
     return "";
@@ -1917,7 +1929,7 @@ function openBiographyDocumentInspector(kind, title, path, content) {
     ownerId: BIOGRAPHY_VIEW_ID,
     title,
     path,
-    displayPath: path.replace(/^.*\/memory\//, "~/.zion-next/memory/"),
+    displayPath: path,
     language: "markdown",
     file: {
       kind: "text",
@@ -2483,7 +2495,7 @@ function renderBiographyView(container) {
         }
         if (value === "overview") void loadCitationRecords();
         if (value === "working-projects") void loadWorkingProjects().catch(() => {});
-        if (value === "digest" || value === "profile") void loadProfileFiles();
+        if (value === "digest" || value === "profile") void loadProfileFiles().catch(() => {});
         render();
       };
       sectionTabs.appendChild(tab);
@@ -3069,7 +3081,7 @@ function renderBiographyView(container) {
           const heading = document.createElement("strong");
           heading.textContent = titleText;
           const pathText = document.createElement("span");
-          pathText.textContent = path ? path.replace(/^.*\/memory\//, "~/.zion-next/memory/") : "";
+          pathText.textContent = path || "";
           const description = document.createElement("p");
           description.textContent = kind === "digest"
             ? "自动整理的长期经历摘要，帮助快速回顾已经形成的上下文。"

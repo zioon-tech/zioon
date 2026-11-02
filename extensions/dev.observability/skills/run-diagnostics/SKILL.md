@@ -114,6 +114,9 @@ hashes, purpose, and redaction count.
 - `pending-index`, `backend-unavailable`, `unsampled`, `no-correlation`, and
   `telemetry-disabled` describe evidence availability.
 - Policy or grant denial is an authorization outcome recorded as a fact.
+- `failure_code = 'execution_outcome_unknown'` means an operation was
+  dispatched but Runtime could not prove whether it stopped or completed.
+  Treat an identical retry as unsafe until its effects are inspected.
 - `failure_code = 'unknown'` means only that no stable failure category was
   recorded. It is not a conclusion about the underlying cause.
 - Shared Space members with `observability.read` can query this Space's

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "zioon-memory",
+    "name": "Zioon Memory",
+    "redirectUris": ["https://memory.zioon.tech/account/callback"],
+    "loginUri": "https://memory.zioon.tech/account/login",
+    "scopes": ["openid", "profile", "email", "memory.read", "memory.write"]
+  },
+  {
+    "id": "zion-runtime",
+    "name": "Workbench",
+    "redirectUris": ["https://runtime.zioon.tech/v1/account/callback"],
+    "loginUri": "https://runtime.zioon.tech/account/login",
+    "scopes": ["openid", "profile", "email", "zion.api"]
+  },
+  {
+    "id": "zion-local",
+    "name": "Zion Local",
+    "redirectUris": ["http://127.0.0.1:18866/v1/account/callback"],
+    "loginUri": "http://127.0.0.1:18866/account/login",
+    "scopes": ["openid", "profile", "email", "zion.api"]
+  },
+  {
+    "id": "zion-runtime-local",
+    "name": "Zion Local",
+    "redirectUris": ["http://127.0.0.1:18891/v1/account/callback"],
+    "loginUri": "http://127.0.0.1:18891/account/login",
+    "scopes": ["openid", "profile", "email", "zion.api"]
+  }
+]

@@ -1,8 +1,82 @@
 import { describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createPluginFileService } from "../src/plugin-file-service.mjs";
+import { workspaceFileCommand } from "../src/sandbox/workspace-file-command.mjs";
 import { terminalReference } from "../../../packages/node-protocol/src/resource-references.mjs";
 
 describe("plugin file service", () => {
+  it("serializes parallel managed file calls and waits only for a proven non-dispatched busy result", async () => {
+    let active = 0;
+    let maximum = 0;
+    let calls = 0;
+    const toolHost = {
+      invoke: vi.fn(async (invocation) => {
+        calls += 1;
+        if (calls === 1) return {
+          ok: false,
+          content: "Workspace lifecycle maintenance is in progress",
+          failureCode: "sandbox_workspace_busy",
+          dispatched: false,
+          retryable: true
+        };
+        active += 1;
+        maximum = Math.max(maximum, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return {
+          ok: true,
+          content: JSON.stringify({ content: invocation.toolCall.arguments.path })
+        };
+      })
+    };
+    const service = createPluginFileService({
+      toolHost,
+      dataLocation: { nodeId: "managed:one", root: "/workspace/identity" },
+      serializeInvocations: true
+    });
+    const runContext = {
+      principal: { userId: "user:one", spaceId: "space:one" }
+    };
+    const loaded = await Promise.all(["identity.md", "user.md", "digest.md"].map((relativePath) =>
+      service.readTextFile({ relativePath, runContext })
+    ));
+    expect(maximum).toBe(1);
+    expect(toolHost.invoke).toHaveBeenCalledTimes(4);
+    expect(loaded.map((item) => item.content)).toEqual([
+      "/workspace/identity/identity.md",
+      "/workspace/identity/user.md",
+      "/workspace/identity/digest.md"
+    ]);
+  });
+
+  it("preserves unknown outcomes and never retries a possibly dispatched file write", async () => {
+    const toolHost = {
+      invoke: vi.fn(async () => ({
+        ok: false,
+        content: "Write outcome is unknown",
+        failureCode: "execution_outcome_unknown",
+        dispatched: true,
+        retryable: false
+      }))
+    };
+    const service = createPluginFileService({
+      toolHost,
+      dataLocation: { nodeId: "managed:one", root: "/workspace/identity" },
+      serializeInvocations: true
+    });
+    await expect(service.writeTextFile({
+      relativePath: "user.md",
+      content: "Updated"
+    })).rejects.toMatchObject({
+      failureCode: "execution_outcome_unknown",
+      retryable: false
+    });
+    expect(toolHost.invoke).toHaveBeenCalledTimes(1);
+  });
+
   it("reads text files through a file_root-scoped tool policy", async () => {
     const toolHost = {
       invoke: vi.fn(async (invocation) => ({
@@ -144,6 +218,67 @@ describe("plugin file service", () => {
       fileRoot: "/workspace/memory",
       files: { identity: "" }
     });
+  });
+
+  it("reads through a legacy fallback but writes only to the scoped location", async () => {
+    const requests = [];
+    const scopedRoot = "/srv/data/scopes/space%3Aone/accounts/user%3Aowner/dev.identity";
+    const legacyRoot = "/srv/data/dev.identity";
+    const fileClient = {
+      async request(endpoint, options = {}) {
+        requests.push({ endpoint, options });
+        const path = options.body?.path
+          || new URL(endpoint, "http://runtime").searchParams.get("path");
+        if (endpoint.startsWith("/files/read") && path.startsWith(scopedRoot)) {
+          const error = new Error("ENOENT");
+          error.statusCode = 404;
+          throw error;
+        }
+        if (endpoint.startsWith("/files/read") && path.startsWith(legacyRoot)) {
+          return {
+            plugin_data_version: 1,
+            content: "# User\nLegacy profile"
+          };
+        }
+        return { plugin_data_version: 1, ok: true };
+      }
+    };
+    const service = createPluginFileService({
+      toolHost: { invoke: vi.fn() },
+      dataLocation: (_runContext, { access }) => ({
+        data: { nodeId: "", root: scopedRoot },
+        readFallbacks: access === "read"
+          ? [{ nodeId: "", root: legacyRoot }]
+          : []
+      }),
+      fileClient
+    });
+
+    await expect(service.readTextFiles({
+      files: { user: "user.md" },
+      runContext: {
+        principal: { spaceId: "space:one", userId: "user:owner" },
+        policy: { fileRoots: [] }
+      }
+    })).resolves.toEqual({
+      fileRoot: scopedRoot,
+      files: { user: "# User\nLegacy profile" },
+      missing: []
+    });
+    await service.writeTextFiles({
+      files: {
+        user: { relativePath: "user.md", content: "# User\nScoped profile" }
+      },
+      runContext: {
+        principal: { spaceId: "space:one", userId: "user:owner" },
+        policy: { fileRoots: [] }
+      }
+    });
+
+    const write = requests.find(({ endpoint }) => endpoint.startsWith("/files/write"));
+    expect(write.options.body.path).toBe(`${scopedRoot}/user.md`);
+    expect(requests.filter(({ endpoint }) => endpoint.startsWith("/files/write")))
+      .toHaveLength(1);
   });
 
   it("does not treat a chat session id as a terminal session id", async () => {
@@ -368,5 +503,172 @@ describe("plugin file service", () => {
     expect(toolHost.invoke.mock.calls[0][0].target).toBeUndefined();
     expect(toolHost.invoke.mock.calls[0][0].toolCall.arguments.session_id)
       .toBe(explicitSession);
+  });
+
+  it("supports managed file hashes, directory entries and JSONL pages without a terminal", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "zion-managed-plugin-http-"));
+    const root = join(directory, "dev.identity");
+    const toolHost = {
+      invoke: vi.fn(async (invocation) => {
+        const command = workspaceFileCommand(
+          invocation.toolCall.name,
+          invocation.toolCall.arguments,
+          { fileRoots: invocation.policy.fileRoots }
+        );
+        try {
+          return {
+            ok: true,
+            content: execFileSync("/bin/bash", ["-c", command], {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "pipe"]
+            })
+          };
+        } catch (error) {
+          const message = String(error.stderr || error.message);
+          return { ok: false, content: message, error: message };
+        }
+      })
+    };
+    const service = createPluginFileService({
+      toolHost,
+      dataLocation: { nodeId: "managed:test", root }
+    });
+    const runContext = {
+      principal: { userId: "user:test", spaceId: "space:test" },
+      policy: { preset: "workspace-write", fileRoots: [root] }
+    };
+    try {
+      const first = await service.writeTextFile({
+        relativePath: "projects/zion-next/project.md",
+        content: "# Zion Next\n",
+        runContext
+      });
+      await expect(service.readTextFile({
+        relativePath: "projects/zion-next/project.md",
+        runContext
+      })).resolves.toMatchObject({
+        content: "# Zion Next\n",
+        contentHash: first.contentHash,
+        missing: false
+      });
+      await expect(service.writeTextFile({
+        relativePath: "projects/zion-next/project.md",
+        content: "# Zion Next\n\nUpdated\n",
+        expectedHash: first.contentHash,
+        runContext
+      })).resolves.toMatchObject({ written: true });
+
+      const listed = await service.listEntries({
+        relativePath: "projects",
+        runContext
+      });
+      expect(listed).toMatchObject({
+        missing: false,
+        entries: [{
+          name: "zion-next",
+          type: "directory"
+        }]
+      });
+      expect(listed.entries[0].path).toMatch(/\/projects\/zion-next$/);
+
+      await service.appendJsonl({
+        relativePath: "biography/events.jsonl",
+        records: [
+          { id: "event:1" },
+          { id: "event:2" },
+          { id: "event:3" }
+        ],
+        runContext
+      });
+      await expect(service.readJsonlPage({
+        relativePath: "biography/events.jsonl",
+        tail: 2,
+        limit: 2,
+        runContext
+      })).resolves.toMatchObject({
+        content: '{"id":"event:2"}\n{"id":"event:3"}',
+        startLine: 2,
+        endLine: 3,
+        hasPrevious: true,
+        hasMore: false
+      });
+
+      expect(toolHost.invoke.mock.calls.every(([invocation]) =>
+        !invocation.toolCall.arguments.session_id
+      )).toBe(true);
+      expect(toolHost.invoke.mock.calls.some(([invocation]) =>
+        invocation.toolCall.name === "tree"
+        && invocation.toolCall.arguments._plugin_entries === true
+      )).toBe(true);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("atomically appends JSONL through managed filesystem tools visible to Bash", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "zion-managed-plugin-data-"));
+    const root = join(directory, "dev.identity");
+    const toolHost = {
+      async invoke(invocation) {
+        const command = workspaceFileCommand(
+          invocation.toolCall.name,
+          invocation.toolCall.arguments,
+          { fileRoots: invocation.policy.fileRoots }
+        );
+        try {
+          return {
+            ok: true,
+            content: execFileSync("/bin/bash", ["-c", command], {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "pipe"]
+            })
+          };
+        } catch (error) {
+          const message = String(error.stderr || error.message);
+          return { ok: false, content: message, error: message };
+        }
+      }
+    };
+    const service = createPluginFileService({
+      toolHost,
+      dataLocation: { nodeId: "managed:test", root }
+    });
+    const runContext = {
+      principal: { userId: "user:test", spaceId: "space:test" },
+      policy: { preset: "workspace-write", fileRoots: [root] }
+    };
+    try {
+      const [first, second] = await Promise.all([
+        service.appendJsonl({
+          relativePath: "biography/events.jsonl",
+          records: [{ id: "event:one", summary: "first" }],
+          runContext
+        }),
+        service.appendJsonl({
+          relativePath: "biography/events.jsonl",
+          records: [{ id: "event:two", summary: "second" }],
+          runContext
+        })
+      ]);
+      expect([...first.appended, ...second.appended].sort()).toEqual([
+        "event:one",
+        "event:two"
+      ]);
+      const path = join(root, "biography/events.jsonl");
+      const records = (await readFile(path, "utf8"))
+        .trim()
+        .split("\n")
+        .map(JSON.parse);
+      expect(records.map((item) => item.id).sort()).toEqual([
+        "event:one",
+        "event:two"
+      ]);
+      expect(execFileSync("/bin/bash", [
+        "-c",
+        `grep -c '^{' '${path}'`
+      ], { encoding: "utf8" }).trim()).toBe("2");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

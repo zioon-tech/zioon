@@ -20,7 +20,7 @@ describe("terminal inventory", () => {
     expect(inventory.machines.filter((m) => m.kind === "local").map((m) => m.name).sort()).toEqual(["one", "two"]);
   });
 
-  it("preserves exact long global IDs in sessions and model context", () => {
+  it("preserves exact long global IDs in inventory without embedding them in context", () => {
     const id = terminalReference({
       nodeId: `node:${"n".repeat(100)}`,
       instanceId: `instance:${"i".repeat(100)}`,
@@ -33,17 +33,17 @@ describe("terminal inventory", () => {
     }]);
     expect(id.length).toBeGreaterThan(240);
     expect(inventory.sessions[0].id).toBe(id);
-    expect(buildTerminalInventoryContextXml(inventory)).toContain(`preferred_session_id="${id}"`);
+    expect(buildTerminalInventoryContextXml(inventory)).not.toContain(id);
   });
 
-  it("escapes node labels and describes offline nodes without inventing sessions", () => {
+  it("does not embed offline Node state in automatic context", () => {
     const xml = buildTerminalInventoryContextXml({
       ...buildTerminalInventory([]),
       nodes: [{ nodeId: "node:offline", label: '<run command="bad">', status: "offline" }]
     });
-    expect(xml).toContain('node_id="node:offline"');
-    expect(xml).toContain('status="offline"');
-    expect(xml).toContain("&lt;run");
+    expect(xml).not.toContain("node:offline");
+    expect(xml).not.toContain('status="offline"');
+    expect(xml).not.toContain("&lt;run");
     expect(xml).not.toContain('<run command=');
     expect(xml).not.toContain("preferred_session_id=");
   });
@@ -179,5 +179,14 @@ describe("terminal inventory", () => {
         status: "offline",
         sessionCount: 0
       });
+  });
+
+  it("preserves managed machine readiness without requiring an open terminal", () => {
+    const profile = { id: "machine:cloud", name: "Cloud workspace", kind: "local", managed: true };
+    const ready = buildTerminalInventory([], { machineProfiles: [{ ...profile, status: "ready", workspaceState: "paused" }] });
+    const online = buildTerminalInventory([], { machineProfiles: [{ ...profile, status: "online", workspaceState: "running" }] });
+    expect(ready.machines[0]).toMatchObject({ status: "ready", sessionCount: 0, managed: true, workspaceState: "paused" });
+    expect(online.machines[0]).toMatchObject({ status: "online", sessionCount: 0, workspaceState: "running" });
+    expect(ready.revision).not.toBe(online.revision);
   });
 });

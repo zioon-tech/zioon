@@ -374,7 +374,7 @@ describe("Session collaboration client", () => {
         sessionId: "session-1", submissionId: "pending-1",
         status: "assistant preparing", answerAnchorPos: 13
       });
-      expect(editor.parent.querySelector('[role="status"]')?.textContent).toBe("…");
+      expect(editor.parent.querySelector('[role="status"]')?.textContent).toBe("assistant preparing");
       expect(editor.parent.querySelector('[role="status"]')?.getAttribute("aria-label"))
         .toBe("assistant preparing");
       expect(editor.getValue()).toBe("user question");
@@ -383,7 +383,7 @@ describe("Session collaboration client", () => {
         assistantBlockId: "run-1", status: "waiting"
       });
       expect(editor.parent.querySelectorAll('[role="status"]')).toHaveLength(1);
-      expect(editor.parent.querySelector('[role="status"]')?.textContent).toBe("…");
+      expect(editor.parent.querySelector('[role="status"]')?.textContent).toBe("waiting");
       expect(editor.parent.querySelector('[role="status"]')?.getAttribute("aria-label"))
         .toBe("waiting");
       events.emit("chat/prepared", { sessionId: "session-2", submissionId: "pending-1" });
@@ -586,7 +586,158 @@ describe("Session collaboration client", () => {
     editor.dispose();
   });
 
-  it("renders streamed assistant output without mutating the Yjs document", async () => {
+  it.each([
+    { baseline: "", remote: "", insert: "new question", expected: "new question", late: false },
+    { baseline: "hello", remote: "remote hello", insert: "!", expected: "remote hello!", late: true },
+    { baseline: "stale", remote: "", insert: "!", expected: "!", late: false }
+  ])("replays only new input when syncing $baseline (late=$late)", async ({ baseline, remote, insert, expected, late }) => {
+    let sync: () => void = () => {};
+    let shared: Y.Doc;
+    const manager = createSessionCollaborationManager({
+      zion: { state: { get() {}, set() {} } },
+      runtimeConfig: { mode: "runtime", baseUrl: "http://127.0.0.1:8766" },
+      syncTimeoutMs: 1,
+      createProvider(options: any) {
+        shared = options.document;
+        sync = options.onSynced;
+        return { awareness: new Awareness(shared), destroy() {} };
+      }
+    });
+    const editor = editorHarness(baseline);
+    const binding = manager.bindEditor(editor);
+    expect(editor.getView().state.facet(EditorView.editable)).toBe(true);
+    editor.getView().dispatch({ changes: { from: baseline.length, insert } });
+    if (late) await new Promise(resolve => setTimeout(resolve, 5));
+    if (remote) shared!.getText("content").insert(0, remote);
+    sync();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(shared!.getText("content").toString()).toBe(expected);
+    expect(editor.getValue()).toBe(expected);
+    expect(editor.getView().dom.dataset.zionCollaborationBound).toBe("true");
+    binding.dispose();
+    manager.dispose();
+    editor.dispose();
+  });
+
+  it("preserves an overlapping local edit as a draft without replacing the server document", async () => {
+    let sync: () => void = () => {};
+    let shared: Y.Doc;
+    const values = new Map();
+    const manager = createSessionCollaborationManager({
+      zion: { state: { get: (key: string) => values.get(key), set: (key: string, value: unknown) => values.set(key, value) } },
+      runtimeConfig: { mode: "runtime", baseUrl: "http://127.0.0.1:8766" },
+      createProvider(options: any) {
+        shared = options.document;
+        sync = options.onSynced;
+        return { awareness: new Awareness(shared), destroy() {} };
+      }
+    });
+    const editor = editorHarness("hello");
+    const binding = manager.bindEditor(editor);
+    editor.getView().dispatch({ changes: { from: 0, to: 5, insert: "local" } });
+    shared!.getText("content").insert(0, "remote");
+    sync();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(editor.getValue()).toBe("local");
+    expect(shared!.getText("content").toString()).toBe("remote");
+    expect(values.get("sessions.collaborationDraft.session-1").text).toBe("local");
+    binding.dispose();
+    manager.dispose();
+    editor.dispose();
+  });
+  it("does not replay the same pre-sync split-view edit twice", async () => {
+    let sync: () => void = () => {};
+    let shared: Y.Doc;
+    const manager = createSessionCollaborationManager({
+      zion: { state: { get() {}, set() {} } },
+      runtimeConfig: { mode: "runtime", baseUrl: "http://127.0.0.1:8766" },
+      createProvider(options: any) {
+        shared = options.document;
+        sync = options.onSynced;
+        return { awareness: new Awareness(shared), destroy() {} };
+      }
+    });
+    const a = editorHarness("");
+    const b = editorHarness("");
+    const ba = manager.bindEditor(a);
+    const bb = manager.bindEditor(b);
+    a.getView().dispatch({ changes: { from: 0, insert: "question" } });
+    b.getView().dispatch({ changes: { from: 0, insert: "question" }, annotations: Transaction.userEvent.of("zion.sessionSync") });
+    sync();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(shared!.getText("content").toString()).toBe("question");
+    expect(a.getValue()).toBe("question");
+    expect(b.getValue()).toBe("question");
+    ba.dispose(); bb.dispose(); manager.dispose(); a.dispose(); b.dispose();
+  });
+  it("blocks a session flush while one split view retains an overlapping draft", async () => {
+    let sync: () => void = () => {};
+    let shared: Y.Doc;
+    const values = new Map();
+    const manager = createSessionCollaborationManager({
+      zion: { state: { get: (key: string) => values.get(key), set: (key: string, value: unknown) => values.set(key, value) } },
+      runtimeConfig: { mode: "runtime", baseUrl: "http://127.0.0.1:8766" },
+      createProvider(options: any) {
+        shared = options.document;
+        sync = options.onSynced;
+        return { awareness: new Awareness(shared), destroy() {} };
+      }
+    });
+    const a = editorHarness("hello");
+    const b = editorHarness("hello");
+    const ba = manager.bindEditor(a);
+    const bb = manager.bindEditor(b);
+    b.getView().dispatch({ changes: { from: 0, to: 5, insert: "local" } });
+    shared!.getText("content").insert(0, "remote");
+    sync();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(a.getValue()).toBe("remote");
+    expect(b.getValue()).toBe("local");
+    expect(manager.isSynced("session-1")).toBe(false);
+    expect(await manager.flush({ sessionId: "session-1", timeoutMs: 1 })).toBe(false);
+    bb.dispose();
+    expect(await manager.flush({ sessionId: "session-1", timeoutMs: 1 })).toBe(true);
+    ba.dispose(); manager.dispose(); a.dispose(); b.dispose();
+  });
+
+  it("retains offline edits until acknowledgement and does not save remote projections as drafts", async () => {
+    localStorage.clear();
+    let options: any;
+    let provider: any;
+    const manager = createSessionCollaborationManager({
+      zion: { state: { get() {}, set() {} } },
+      clientId: "draft-ack",
+      runtimeConfig: { mode: "runtime", baseUrl: "http://127.0.0.1:8766" },
+      createProvider(value: any) {
+        options = value;
+        value.document.getText("content").insert(0, "hello");
+        queueMicrotask(value.onSynced);
+        provider = { awareness: new Awareness(value.document), unsyncedChanges: 0, destroy() {} };
+        return provider;
+      }
+    });
+    const editor = editorHarness("hello");
+    const binding = manager.bindEditor(editor);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    options.onStatus({ status: "disconnected" });
+    provider.unsyncedChanges = 1;
+    editor.getView().dispatch({ changes: { from: 5, insert: "!" } });
+    const keys = () => Object.keys(localStorage).filter(key => key.startsWith("zion.collaboration.draft:"));
+    expect(keys()).toHaveLength(1);
+    options.onUnsyncedChanges({ number: 0 });
+    await Promise.resolve();
+    expect(keys()).toHaveLength(1);
+    options.onSynced();
+    provider.unsyncedChanges = 0;
+    options.onUnsyncedChanges({ number: 0 });
+    await Promise.resolve();
+    expect(keys()).toHaveLength(0);
+    options.document.getText("content").insert(0, "remote ");
+    expect(keys()).toHaveLength(0);
+    binding.dispose(); manager.dispose(); editor.dispose();
+  });
+
+  it("renders durable assistant output once without mutating the Yjs document from token events", async () => {
     let sharedDocument: Y.Doc | null = null;
     const events = eventBus();
     const initial = "user hi\nassistant <!-- zion-assistant:id=run-1 --> ";
@@ -641,6 +792,7 @@ describe("Session collaboration client", () => {
       runId: "run-1",
       assistantBlockId: "run-1",
       backend: "runtime",
+      documentWriter: false,
       projectionSequence: 7,
       token: "streamed"
     });
@@ -649,11 +801,7 @@ describe("Session collaboration client", () => {
     expect(sharedDocument?.getText("content").toString()).toBe(initial);
     expect(
       editor.parent.querySelector(".zion-pending-assistant-output")?.textContent
-    ).toBe("streamed");
-    expect(
-      editor.parent.querySelector(".zion-pending-assistant-output")
-        ?.classList.contains("is-plain-stream")
-    ).toBe(true);
+    ).toBeUndefined();
 
     sharedDocument?.getText("content").insert(
       sharedDocument.getText("content").length,
@@ -708,7 +856,7 @@ describe("Session collaboration client", () => {
     editor.dispose();
   });
 
-  it("clears pending output when the Runtime projection sequence is acknowledged", async () => {
+  it("does not render duplicate tokens when durable projection is enabled", async () => {
     let sharedDocument: Y.Doc | null = null;
     const events = eventBus();
     const manager = createSessionCollaborationManager({
@@ -754,7 +902,7 @@ describe("Session collaboration client", () => {
     });
     expect(
       editor.parent.querySelector(".zion-pending-assistant-output")?.textContent
-    ).toBe("streamed text");
+    ).toBeUndefined();
 
     sharedDocument?.getMap("runProjection").set("run-1", {
       lastSequence: 7

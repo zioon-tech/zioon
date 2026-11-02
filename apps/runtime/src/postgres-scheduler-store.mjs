@@ -545,7 +545,7 @@ export class PostgresSchedulerStore {
     this.availableNodes = normalizeNodes(nodes);
   }
 
-  async createTask(input) {
+  async createTask(input, { availableModels } = {}) {
     const timestamp = this.now();
     const task = {
       id: `sched_${randomUUID().replaceAll("-", "")}`,
@@ -553,13 +553,13 @@ export class PostgresSchedulerStore {
       ...taskPayload(input, null, timestamp),
       createdAt: timestamp
     };
-    this.assertTaskSupported(task);
+    this.assertTaskSupported(task, { availableModels });
     task.nextRun = task.enabled ? nextScheduledAt(task.schedule, timestamp) : null;
     await this.writeTaskRow(task);
     return clone(task);
   }
 
-  async updateTask(taskId, input) {
+  async updateTask(taskId, input, { availableModels } = {}) {
     return this.transaction(async (client) => {
       const current = await this.getTask(taskId, client, { forUpdate: true });
       if (Number(input?.revision) !== Number(current.revision)) {
@@ -572,7 +572,7 @@ export class PostgresSchedulerStore {
         revision: current.revision + 1,
         createdAt: current.createdAt
       };
-      this.assertTaskSupported(task);
+      this.assertTaskSupported(task, { availableModels });
       task.nextRun = task.enabled
         ? nextScheduledAt(task.schedule, timestamp)
         : null;
@@ -581,12 +581,13 @@ export class PostgresSchedulerStore {
     });
   }
 
-  assertTaskSupported(task) {
+  assertTaskSupported(task, { availableModels } = {}) {
+    const models = availableModels === undefined ? this.availableModels : normalizeModels(availableModels);
     if (task.nodeId && this.availableNodes && !this.availableNodes.has(task.nodeId)) {
       throw statusError(`Runtime Scheduler Node not found: ${task.nodeId}`, 422);
     }
-    if (task.taskType === "agent" && task.modelProfileId && this.availableModels) {
-      const profile = this.availableModels.get(task.modelProfileId);
+    if (task.taskType === "agent" && task.modelProfileId && models) {
+      const profile = models.get(task.modelProfileId);
       if (!profile) {
         throw statusError(
           `Runtime Scheduler model profile not found: ${task.modelProfileId}`,

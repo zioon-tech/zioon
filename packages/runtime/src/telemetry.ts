@@ -6,12 +6,21 @@ import {
   trace,
   type Attributes,
   type Span,
-  type SpanContext
+  type SpanContext,
+  type Tracer
 } from "@opentelemetry/api";
 
 // GenAI conventions are Development. Keep the mapping in this module and
 // never pass RunEvent.data, exceptions, URLs or content into the OTel API.
-export const runtimeTracer = trace.getTracer("@zion/runtime", "0.1.0");
+// Resolve after SDK registration. The host and this package can load separate
+// API copies; a proxy obtained before registration otherwise stays a no-op.
+export const runtimeTracer: Tracer = new Proxy({} as Tracer, {
+  get(_target, property) {
+    const tracer = trace.getTracer("@zion/runtime", "0.1.0");
+    const value = Reflect.get(tracer, property, tracer);
+    return typeof value === "function" ? value.bind(tracer) : value;
+  }
+});
 export const MODEL_CONSUMER_WAIT_ATTRIBUTE = "zion.model.consumer_wait.duration";
 
 export function telemetryIdentifier(value: unknown): string {

@@ -15,6 +15,7 @@ import {
   readRemoteSession,
   readRemoteSessionKV,
   readRemoteCatalog,
+  searchRemoteSessions,
   readRemoteStatus,
   subscribeRemoteEvents,
   updateRemoteRuntimeSession,
@@ -648,6 +649,12 @@ async function flushRemoteMutations() {
       const mutation = pendingRemoteMutations[0];
       mutation.attempted = true;
       try {
+        if (mutation.type === "session"
+          && window.zion?.state?.get(`sessions.deleted.${mutation.id}`)) {
+          pendingRemoteMutations.shift();
+          for (const waiter of mutation.waiters || []) waiter.resolve({ ok: true, skipped: true });
+          continue;
+        }
         let result = null;
         if (mutation.type === "session") {
           const collaborative = collaborationSynced(mutation.id);
@@ -709,6 +716,12 @@ async function flushRemoteMutations() {
         setRemoteStorageState(true);
         try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
       } catch (error) {
+        if (Number(error?.status) === 410 && mutation.type === "session") {
+          window.zion?.state?.set(`sessions.deleted.${mutation.id}`, true);
+          pendingRemoteMutations.shift();
+          for (const waiter of mutation.waiters || []) waiter.resolve({ ok: true, skipped: true });
+          continue;
+        }
         setRemoteStorageState(false, error);
         for (const waiter of mutation.waiters || []) waiter.reject(error);
         mutation.waiters = [];
@@ -727,6 +740,21 @@ async function flushRemoteMutations() {
   if (result === false) return false;
   if (pendingRemoteMutations.length) return flushRemoteMutations();
   return true;
+}
+
+async function flushSessionRemoteMutations(id) {
+  if (!id) return flushRemoteMutations();
+  const relevant = pendingRemoteMutations.filter(mutation =>
+    mutation.id === id || mutation.type === "tree"
+  );
+  if (!relevant.length) return true;
+  // Keep queue ordering (including new-session tree dependencies), but return
+  // once this session's existing writes are confirmed.
+  const barriers = relevant.map(mutation => new Promise((resolve, reject) => {
+    mutation.waiters.push({ resolve, reject });
+  }));
+  void flushRemoteMutations();
+  try { await Promise.all(barriers); return true; } catch { return false; }
 }
 
 function enqueueRemoteMutation(mutation) {
@@ -792,13 +820,24 @@ function scheduleRemoteDelete(id) {
 }
 
 async function purgeSessionData(id) {
+  // #region debug-point A:delete-queued
+  if (window.zion?.state?.get?.("debug.sessionStreamUrl")) void fetch(window.zion.state.get("debug.sessionStreamUrl"), { method: "POST", body: JSON.stringify({ sessionId: "session-stream-consistency", hypothesisId: "A", location: "purgeSessionData", ts: Date.now(), data: { id, queued: pendingRemoteMutations.filter(item => item.id === id).map(item => item.type) } }) }).catch(() => {});
+  // #endregion
+  const key = `sessions.deleted.${id}`;
+  window.zion?.state?.set(key, true);
+  window.zion?.events?.emit?.("session/deleting", { sessionId: id });
+  try {
+    await scheduleRemoteDelete(id);
+  } catch (error) {
+    window.zion?.state?.set(key, false);
+    throw error;
+  }
   try { localStorage.removeItem(docKey(id)); } catch {}
   try { localStorage.removeItem(metaKey(id)); } catch {}
   invalidateSession(id);
   try { window.zion?.state?.set(`sessions.summary.${id}`, undefined); } catch {}
   durableSessionIds.delete(String(id || ""));
   removeIndexedSessionTags(id);
-  void scheduleRemoteDelete(id).catch(() => {});
 }
 
 async function hydrateRemoteCatalogResponse(response) {
@@ -1084,6 +1123,8 @@ async function applyRemoteWorkbenchEvent(event, { ownEvent = false } = {}) {
     return;
   }
   if (event.type === "session.deleted") {
+    window.zion?.state?.set(`sessions.deleted.${sessionId}`, true);
+    window.zion?.events?.emit?.("session/deleting", { sessionId });
     durableSessionIds.delete(sessionId);
     remoteSessionRevisions.delete(sessionId);
     invalidateSession(sessionId);
@@ -1180,6 +1221,7 @@ const {
 });
 
 function saveDoc(id, text) {
+  if (window.zion?.state?.get(`sessions.deleted.${id}`)) return Promise.resolve(false);
   durableSessionIds.add(String(id || ""));
   const value = String(text || "");
   const result = persistSessionDoc(id, value);
@@ -1188,6 +1230,7 @@ function saveDoc(id, text) {
 }
 
 function saveMeta(id, meta) {
+  if (window.zion?.state?.get(`sessions.deleted.${id}`)) return Promise.resolve(false);
   durableSessionIds.add(String(id || ""));
   return persistSessionMeta(id, meta);
 }
@@ -2152,12 +2195,49 @@ export async function activate(ctx) {
     zion: window.zion,
     clientId: WORKBENCH_CLIENT_ID
   });
+  ctx.subscriptions.push(window.zion.commands.registerCommand("zion.sessions.restoreCollaborationDraft", async (id) => {
+    const sessionId = String(id || window.zion.state.get("sessions.currentId") || "");
+    const draft = window.zion.state.get(`sessions.collaborationDraft.${sessionId}`);
+    if (!draft?.text) return false;
+    return window.zion.commands.executeCommand("zion.sessions.new", {
+      content: draft.text, title: `${loadMeta(sessionId)?.title || "Session"} · 恢复草稿`
+    });
+  }));
+  ctx.subscriptions.push(window.zion.commands.registerCommand("zion.sessions.search", async (options = {}) => {
+    if (remoteStorageOnline) return searchRemoteSessions(options);
+    const query = String(options.query || "").trim().toLowerCase();
+    const offset = Math.max(0, Number(options.offset) || 0);
+    const limit = Math.min(100, Math.max(1, Number(options.limit) || 50));
+    const matches = [];
+    for (const entry of getIndex()) {
+      const text = query ? String(await loadDocAsync(entry.id) || "") : "";
+      const position = text.toLowerCase().indexOf(query);
+      if (query && !String(entry.title || "").toLowerCase().includes(query) && position < 0) continue;
+      matches.push({ ...entry, snippet: text.slice(Math.max(0, position - 80), Math.max(0, position - 80) + 240) });
+    }
+    return { sessions: matches.slice(offset, offset + limit), hasMore: matches.length > offset + limit, nextOffset: offset + limit };
+  }));
   const collaborationAnchorCommand = window.zion?.commands?.registerCommand?.(
     "zion.sessions.createCollaborationAnchor",
     ({ id, index, before, after } = {}) =>
       collaborationManager.createAnchor(id, index, { before, after })
   );
   if (collaborationAnchorCommand) ctx.subscriptions.push(collaborationAnchorCommand);
+  ctx.subscriptions.push(window.zion.commands.registerCommand("zion.sessions.flushCollaboration", (id) =>
+    collaborationManager.flush({ sessionId: String(id || "") })
+  ));
+  ctx.subscriptions.push(window.zion.commands.registerCommand("zion.sessions.flushRunInput", async (id) => {
+    const sessionId = String(id || "");
+    if (window.zion?.state?.get(`sessions.deleted.${sessionId}`)) return false;
+    if (!collaborationManager.isSynced(sessionId)) {
+      return window.zion.commands.executeCommand("zion.sessions.flushPendingSave", sessionId);
+    }
+    // The synchronized document owns run input. Metadata and sidebar writes
+    // continue through the autosave queue without delaying model admission.
+    plugin?.flush?.(sessionId);
+    void flushSessionRemoteMutations(sessionId);
+    return collaborationManager.flush({ sessionId });
+  }));
   if (collaborationManager.enabled) {
     const collaborationDecorator = window.zion?.editor?.registerDecorator?.({
       id: "dev.session-manager.collaboration",
@@ -2589,20 +2669,30 @@ export async function activate(ctx) {
   ctx.subscriptions.push(registerSessionFlushCommand({
     zion: window.zion,
     plugin,
-    flushRemote: flushRemoteMutations
+    flushRemote: flushSessionRemoteMutations
   }));
   ctx.subscriptions.push(window.zion.commands.registerCommand(
     "zion.sessions.prepareForReload",
     async () => {
       try {
         persistCurrentAnnotations();
-        await plugin.flushDurably();
-        const durable = await flushRemoteMutations();
-        if (durable === false || pendingRemoteMutations.length) {
-          throw new Error("session persistence queue is not empty");
+        const editorSnapshot = () => JSON.stringify(
+          (window.zion?.panels?.listEditors?.() || []).map(entry => [
+            entry.panelId, entry.sessionId,
+            window.zion?.panels?.getEditorBySession?.(entry.panelId, entry.sessionId)?.getValue?.()
+          ])
+        );
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const before = editorSnapshot();
+          if (!await collaborationManager.flush()) return false;
+          await plugin.flushDurably();
+          const durable = await flushRemoteMutations();
+          if (durable === false || pendingRemoteMutations.length) {
+            throw new Error("session persistence queue is not empty");
+          }
+          if (before === editorSnapshot() && !plugin.hasPendingDrafts()) return true;
         }
-        window.zion?.state?.set(INTENTIONAL_RELOAD_KEY, true);
-        return true;
+        return false;
       } catch (error) {
         console.error("[sessions] prepare for reload failed", error);
         return false;
@@ -2625,7 +2715,8 @@ export async function activate(ctx) {
     try {
       if (window.zion?.state?.get(INTENTIONAL_RELOAD_KEY) === true) return;
     } catch {}
-    if (!pendingRemoteMutations.length) return;
+    if (!pendingRemoteMutations.length
+      && !plugin.hasPendingDrafts()) return;
     event.preventDefault();
     event.returnValue = "";
   };

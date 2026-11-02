@@ -97,7 +97,18 @@ export function installWorkbenchPwaUpgradeRecovery({
   now = () => Date.now(),
   updateIntervalMs = DEFAULT_UPDATE_INTERVAL_MS,
   minCheckIntervalMs = DEFAULT_MIN_CHECK_INTERVAL_MS,
-  controllerTimeoutMs = DEFAULT_CONTROLLER_TIMEOUT_MS
+  controllerTimeoutMs = DEFAULT_CONTROLLER_TIMEOUT_MS,
+  prepareForReload = async () => {
+    const commands = globalThis.window?.zion?.commands;
+    if (!commands?.list?.().includes("zion.sessions.prepareForReload")) return true;
+    let timerId: ReturnType<typeof setTimeout>;
+    try {
+      return await Promise.race([
+        Promise.resolve(commands.executeCommand("zion.sessions.prepareForReload")).then((result) => result === true),
+        new Promise<boolean>((resolve) => { timerId = setTimeout(() => resolve(false), 5000); })
+      ]);
+    } finally { clearTimeout(timerId!); }
+  }
 }: {
   serviceWorker?: ServiceWorkerContainerLike;
   windowObject?: WindowLike;
@@ -106,6 +117,7 @@ export function installWorkbenchPwaUpgradeRecovery({
   updateIntervalMs?: number;
   minCheckIntervalMs?: number;
   controllerTimeoutMs?: number;
+  prepareForReload?: () => Promise<boolean>;
 } = {}): UpgradeCoordinator {
   if (activeCoordinator) return activeCoordinator;
   if (
@@ -160,6 +172,10 @@ export function installWorkbenchPwaUpgradeRecovery({
     if (disposed) return false;
     if (recoveryPromise) return recoveryPromise;
     recoveryPromise = (async () => {
+      if (new URL(windowObject.location.href).searchParams.get(PROTOCOL_UPGRADE_QUERY) === expectedProtocol) {
+        return false;
+      }
+      if (!await prepareForReload()) return false;
       const previousController = serviceWorker.controller;
       const registration = await serviceWorker.getRegistration("/");
       if (!registration) {
@@ -183,10 +199,15 @@ export function installWorkbenchPwaUpgradeRecovery({
       } catch {}
 
       if (updateStarted && await controllerChanged) {
-        windowObject.location.reload();
+        if (disposed || !await prepareForReload()) return false;
+        windowObject.location.replace(cacheBustedUpgradeUrl(
+          windowObject.location.href,
+          expectedProtocol
+        ));
         return true;
       }
 
+      if (disposed || !await prepareForReload()) return false;
       await registration.unregister().catch(() => false);
       windowObject.location.replace(cacheBustedUpgradeUrl(
         windowObject.location.href,

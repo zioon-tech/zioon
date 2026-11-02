@@ -77,6 +77,11 @@
     "contributes": {
       "commands": [
         {
+          "id": "zion.marketplace.show",
+          "title": "扩展市场",
+          "category": "Extensions"
+        },
+        {
           "id": "zion.plugins.show",
           "title": "Show Plugins",
           "titleKey": "dev.plugins.cmd.show",
@@ -84,7 +89,8 @@
         }
       ],
       "styles": [
-        "./styles.css"
+        "./styles.css",
+        "./marketplace.css"
       ]
     },
     "nameKey": "dev.plugins.pluginName.dev.plugins",

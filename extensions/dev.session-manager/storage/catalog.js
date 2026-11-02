@@ -7,6 +7,13 @@ export function hydrateSessionCatalog(catalog, {
   }
   const previousIds = new Set(durableIds);
   const refreshIds = [];
+  if (catalog.metadataPartial) {
+    for (const entry of catalog.index || []) {
+      if (!entry?.id || hasPending(entry.id)) continue;
+      const existing = state.get(`sessions.summary.${entry.id}`) || {};
+      state.set(`sessions.summary.${entry.id}`, { ...existing, ...entry });
+    }
+  }
   for (const item of catalog.sessions) {
     const id = String(item?.id || "");
     if (!id) continue;

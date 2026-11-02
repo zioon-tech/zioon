@@ -481,6 +481,37 @@ describe("DeviceConnector", () => {
     expect(connector.snapshot().receiptCount).toBe(1);
   });
 
+  it("logs an unknown outcome when Runtime rejects a completed result", async () => {
+    const logger = vi.fn();
+    const connector = new DeviceConnector({
+      runtimeUrl: "https://runtime.test",
+      token: "device-secret",
+      registration: registration(),
+      toolHost: { invoke: vi.fn() },
+      fetchImpl: vi.fn(async () => new globalThis.Response(
+        JSON.stringify({ error: "Invocation not found" }),
+        {
+          status: 404,
+          headers: { "content-type": "application/json" }
+        }
+      )),
+      logger
+    });
+    connector.state = "running";
+
+    await connector.postResultUntilAccepted(
+      "invocation:late",
+      { ok: true, content: "completed locally" }
+    );
+
+    expect(logger).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      message: expect.stringContaining(
+        "result rejected after local completion for invocation:late"
+      )
+    }));
+  });
+
   it("refuses to send Device credentials over remote plaintext HTTP", () => {
     expect(() => new DeviceConnector({
       runtimeUrl: "http://runtime.test",

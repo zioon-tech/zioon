@@ -20,8 +20,10 @@ import {
 } from '../../packages/plugin-sdk/src/manifest.mjs';
 import {
   createPluginModuleBlobUrl,
-  normalizePluginModulePath
+  normalizePluginModulePath,
+  pluginModuleSpecifiers
 } from './module-urls';
+import { developmentFileUrl, developmentRequestSignal } from '../../packages/runtime-client/src/plugin-development.mjs';
 
 /**
  * HTTP插件安装器选项
@@ -175,20 +177,27 @@ export class HttpPluginInstaller {
   async installFromDevBase(
     baseUrl: string,
     devId: string,
-    options: { sourceDir?: string } = {}
+    options: { sourceDir?: string; sourceNodeId?: string; signal?: AbortSignal;
+      accountInstallation?: PluginInfo['accountInstallation'] } = {}
   ): Promise<PluginInstallResult> {
+    const moduleUrls = new Map<string, string>();
+    let completed = false;
     try {
-      const manifestUrl = `${baseUrl}/manifest.json`;
+      const token = String(Date.now());
+      const manifestUrl = developmentFileUrl(baseUrl, 'manifest.json', token);
       console.log(`[HttpPluginInstaller] 开发模式安装: ${manifestUrl}`);
 
       const res = await fetch(manifestUrl, {
         method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        redirect: 'error',
         headers: {
           'Accept': 'application/json',
           'X-Zion-Dev-Id': devId,
           'X-Zion-Dev-Mode': 'true'
         },
-        signal: AbortSignal.timeout(this.options.timeout)
+        signal: developmentRequestSignal(options.signal, this.options.timeout)
       });
       if (!res.ok) {
         throw new Error(`读取开发清单失败: ${res.status} ${res.statusText}`);
@@ -196,13 +205,49 @@ export class HttpPluginInstaller {
       const manifest = await res.json() as PluginManifest;
       const contract = normalizePluginManifest(manifest);
       const entries = { ...contract.entries };
+      const sources: Record<string, string> = {};
+      const sourceEntries: PluginEntries = {};
+      let sourceBytes = 0;
+      const relativeEntry = (entry: string): string => {
+        const base = new URL(baseUrl, window.location.href);
+        const url = new URL(entry, `${base.origin}${base.pathname}/`);
+        if (url.origin !== base.origin || !url.pathname.startsWith(`${base.pathname}/`)) {
+          throw new Error('开发入口必须位于来源设备的开发目录');
+        }
+        return normalizePluginModulePath(url.pathname.slice(base.pathname.length + 1));
+      };
+      const readSource = async (path: string): Promise<string> => {
+        const response = await fetch(developmentFileUrl(baseUrl, path, token), {
+          cache: 'no-store', redirect: 'error', credentials: 'include',
+          signal: developmentRequestSignal(options.signal, this.options.timeout)
+        });
+        if (!response.ok) throw new Error(`开发文件读取失败: ${path} (HTTP ${response.status})`);
+        const text = await response.text();
+        sourceBytes += text.length;
+        if (sourceBytes > 4 * 1024 * 1024) throw new Error('开发插件源码超过 4 MiB，请先构建');
+        return text;
+      };
+      const visit = async (path: string): Promise<void> => {
+        if (Object.prototype.hasOwnProperty.call(sources, path)) return;
+        if (Object.keys(sources).length >= 64) throw new Error('开发模块超过 64 个，请先构建');
+        sources[path] = await readSource(path);
+        const specifiers = new Set(pluginModuleSpecifiers(sources[path]).map((item) => item.specifier));
+        for (const specifier of specifiers) {
+          const parent = path.slice(0, path.lastIndexOf('/') + 1);
+          await visit(normalizePluginModulePath(`${parent}${specifier}`));
+        }
+      };
       for (const kind of ['workbench', 'renderer'] as const) {
         const entry = entries[kind];
         if (!entry) continue;
-        const url = /^(blob:|data:|https?:)/i.test(entry)
-          ? entry
-          : `${baseUrl}/${String(entry).replace(/^\.\//, '')}`;
-        entries[kind] = this.withCacheBust(url, `zionDevTs=${Date.now()}`);
+        const path = relativeEntry(entry);
+        sourceEntries[kind] = entry;
+        await visit(path);
+        entries[kind] = createPluginModuleBlobUrl({ entryPath: path, sources, cache: moduleUrls });
+      }
+      const styleContents: Record<string, string> = {};
+      for (const style of manifest.zion?.contributes?.styles || []) {
+        styleContents[String(style).replace(/^\.\//, '')] = await readSource(relativeEntry(style));
       }
       const projectedContract: NormalizedPluginManifest = {
         ...contract,
@@ -234,9 +279,14 @@ export class HttpPluginInstaller {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         isLegacy: !manifest?.zion,
-        origin: 'dev',
-        devId,
+        origin: options.accountInstallation ? 'account' : 'dev',
+        ...(options.accountInstallation ? { accountInstallation: options.accountInstallation } : { devId }),
         sourceDir: options.sourceDir,
+        sourceNodeId: options.sourceNodeId,
+        sourceEntries,
+        scriptContents: sources,
+        scriptBlobUrls: Object.fromEntries(moduleUrls),
+        styleContents,
         contract: projectedContract
       };
 
@@ -266,11 +316,13 @@ export class HttpPluginInstaller {
             createdAt: cached.createdAt,
             updatedAt: Date.now()
           });
+          completed = true;
           return { success: true, plugin: this.cache.get(pluginInfo.id)!, warnings: validation.warnings };
         }
         this.cache.set(pluginInfo.id, pluginInfo);
       }
 
+      completed = true;
       return { success: true, plugin: pluginInfo, warnings: validation.warnings };
     } catch (error) {
       console.error(`[HttpPluginInstaller] 开发模式安装失败: ${baseUrl}`, error);
@@ -284,18 +336,10 @@ export class HttpPluginInstaller {
         },
         warnings: []
       };
-    }
-  }
-
-  private withCacheBust(inputUrl: string, token: string): string {
-    try {
-      const url = new URL(inputUrl, window.location.href);
-      const [key, value] = token.split('=');
-      url.searchParams.set(key || 't', value || String(Date.now()));
-      return url.toString();
-    } catch {
-      const separator = inputUrl.includes('?') ? '&' : '?';
-      return `${inputUrl}${separator}${token}`;
+    } finally {
+      if (!completed) for (const url of moduleUrls.values()) {
+        try { URL.revokeObjectURL(url); } catch {}
+      }
     }
   }
 
@@ -526,6 +570,7 @@ export class HttpPluginInstaller {
 
     const response = await fetch(url, {
       method: 'GET',
+      cache: 'no-store',
       headers: {
         'Accept': 'application/octet-stream'
       },
@@ -783,6 +828,12 @@ export class HttpPluginInstaller {
     if (cached) this.revokePluginEntryUrls(cached);
     this.cache.delete(pluginId);
     console.log(`[HttpPluginInstaller] 插件已从缓存移除: ${pluginId}`);
+  }
+
+  /** Release a fetched package that was superseded before manager adoption. */
+  releasePlugin(pluginInfo: PluginInfo): void {
+    if (this.cache.get(pluginInfo.id) === pluginInfo) this.cache.delete(pluginInfo.id);
+    this.revokePluginEntryUrls(pluginInfo);
   }
 
   private revokePluginEntryUrls(pluginInfo: PluginInfo): void {

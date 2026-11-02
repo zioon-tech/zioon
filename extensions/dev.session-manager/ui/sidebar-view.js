@@ -1607,7 +1607,7 @@ export function createSessionsSidebarViewManager(opts) {
         return;
       }
       try { if (openParents) openAncestors?.(sid); } catch {}
-      void clearSearch;
+      innerRender.reveal?.(sid);
       renderAll({ preserveListScroll: false });
       try {
         const row = Array.from(container.querySelectorAll("[data-session-id]")).find(el => el.dataset?.sessionId === sid) || container.querySelector(".zion-session-row.is-current");

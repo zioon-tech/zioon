@@ -21,6 +21,8 @@ import { CompressionSettingsPanel } from './ui/settings-panel.js';
 import { CompressionStatus } from './ui/compression-status.js';
 import { stripAssistantBlockIdComment } from '../../src/chat/restore.ts';
 import { isContinuationBoundaryLine } from '../../src/chat/session-document-format.js';
+import { readWorkbenchRuntimeConfig } from '../../src/runtime/workbench-runtime-config.ts';
+import { runtimePluginCommand } from '../../src/runtime/runtime-plugin-commands.ts';
 import {
   compressionSettingsSyncDirection,
   loadCompressionSettingsFromRuntime,
@@ -119,6 +121,26 @@ function t(key, fallback, values) {
 
 let __settingsPanelSingleton = null;
 let __runtimeSettingsSyncTimer = 0;
+
+function usesRuntimeCompression() {
+  const config = readWorkbenchRuntimeConfig({ state: window.zion?.state, storage: globalThis.localStorage });
+  return config.mode !== 'browser' && (config.mode === 'runtime'
+    || window.zion?.state?.get?.('runtime.connection')?.backend === 'runtime');
+}
+
+async function runtimeCompact() {
+  await window.zion?.commands?.executeCommand?.('zion.sessions.flushPendingSave');
+  const result = await runtimePluginCommand('dev.context-compression', { action: 'compact' });
+  window.zion?.state?.set?.('compression.runtimeStatus', result);
+  const status = await runtimePluginCommand('dev.context-compression', { action: 'status' });
+  if (status) window.zion.state.set('compression.stats', {
+    compressionCount: status.count, totalTokensSaved: status.tokensSaved,
+    lastCompressionTime: status.status?.at, runtimeStatus: status.status
+  });
+  window.zion.notification?.show?.(`上下文已压缩，预计节省 ${result.savedTokens} tokens。`, { type: 'success' });
+  window.zion?.events?.emit?.('compression/runtimeCompleted', result);
+  return { ok: true, ...result };
+}
 
 const __compressionMem = { kv: {}, versions: {} };
 
@@ -700,7 +722,15 @@ export async function activate(ctx) {
   );
 
   ctx.subscriptions.push(
-    window.zion.commands.registerCommand('compression.stats', () => {
+    window.zion.commands.registerCommand('compression.stats', async () => {
+      if (usesRuntimeCompression()) {
+        const result = await runtimePluginCommand('dev.context-compression', { action: 'status' });
+        window.zion.state.set('compression.runtimeStatus', result);
+        if (result) window.zion.state.set('compression.stats', {
+          compressionCount: result.count, totalTokensSaved: result.tokensSaved,
+          lastCompressionTime: result.status?.at, runtimeStatus: result.status
+        });
+      }
       showCompressionStats();
     })
   );
@@ -749,7 +779,10 @@ export async function activate(ctx) {
     })
   );
 
-  if (window.zion.slash?.registerCommand) {
+  let slashRegistered = false;
+  const registerSlashCommands = () => {
+    if (slashRegistered || !window.zion.slash?.registerCommand) return;
+    slashRegistered = true;
     ctx.subscriptions.push(
       window.zion.slash.registerCommand({
         id: 'compression.slash.compress',
@@ -757,7 +790,7 @@ export async function activate(ctx) {
         title: t('slash.compress.title', 'Compress'),
         description: t('slash.compress.description', 'Compress current editor conversation'),
         category: t('category.compression', 'compression'),
-        execute: () => window.zion.commands.executeCommand('compression.preview')
+        execute: () => window.zion.commands.executeCommand('compression.manual')
       }),
       window.zion.slash.registerCommand({
         id: 'compression.slash.settings',
@@ -776,8 +809,11 @@ export async function activate(ctx) {
         execute: () => window.zion.commands.executeCommand('compression.stats')
       })
     );
-  }
-  
+  };
+  registerSlashCommands();
+  const slashReady = window.zion.state?.onDidChange?.('workbench.pluginsReady', registerSlashCommands);
+  if (slashReady) ctx.subscriptions.push(slashReady);
+
   await ensureDefaultSettings(SETTINGS_KV_KEY);
 
   try {
@@ -827,6 +863,7 @@ export async function activate(ctx) {
               description: '决定自动压缩优先采用的方式',
               descriptionKey: 'dev.context-compression.settings.strategy.description',
               enumOptions: [
+                { value: 'handoff', label: 'Runtime 交接摘要（推荐）' },
                 { value: 'auto', label: '自动选择', labelKey: 'dev.context-compression.settings.strategy.auto' },
                 { value: 'opencode', label: 'OpenCode' },
                 { value: 'claude-code', label: 'Claude Code' },
@@ -908,6 +945,7 @@ export async function activate(ctx) {
     order: 90,
     stage: 'post',
     contribute: async (messages) => {
+      if (usesRuntimeCompression()) return messages;
       const settings = await getCompressionSettings();
       const debug = !!settings?.debugLogging;
       const safeLen = Array.isArray(messages) ? messages.length : 0;
@@ -1051,6 +1089,16 @@ export async function activate(ctx) {
   ctx.subscriptions.push({ dispose: () => { try { statusDisp?.dispose?.(); } catch {} } });
   ctx.subscriptions.push(window.zion.state.onDidChange('compression.stats', updateStatus));
   ctx.subscriptions.push(window.zion.events.on('i18n/changed', updateStatus));
+  const runtimeCompressionStatus = window.zion.events.on('runtime/sessionRunEvent', (event = {}) => {
+    if (!usesRuntimeCompression() || !['run.completed', 'run.failed', 'run.aborted'].includes(event.type)) return;
+    void runtimePluginCommand('dev.context-compression', { action: 'status' }).then(result => {
+      if (result) window.zion.state.set('compression.stats', {
+        compressionCount: result.count, totalTokensSaved: result.tokensSaved,
+        lastCompressionTime: result.status?.at, runtimeStatus: result.status
+      });
+    }).catch(() => {});
+  });
+  if (runtimeCompressionStatus) ctx.subscriptions.push(runtimeCompressionStatus);
   
   return {
     deactivate: () => {
@@ -1194,6 +1242,7 @@ async function computeCompressionPreview(compressionEngine, opts) {
 }
 
 async function applyCompressionToActiveEditor(compressionEngine, opts) {
+  if (usesRuntimeCompression()) return await runtimeCompact();
   const editor = window.zion.window.activeEditor;
   if (!editor) return { ok: false, error: 'no_editor' };
   const docText = editor.getValue();

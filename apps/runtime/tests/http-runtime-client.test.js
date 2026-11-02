@@ -484,7 +484,7 @@ describe("HttpRuntimeClient", () => {
     const client = createHttpRuntimeClient({ baseUrl: address.url });
     const accepted = await client.createRun({ prompt: "wait" });
 
-    while (!signal) await Promise.resolve();
+    await vi.waitFor(() => expect(signal).toBeTruthy());
     await client.abort(accepted.runId, "workbench-user");
 
     const events = await collect(client.subscribe(accepted.runId));

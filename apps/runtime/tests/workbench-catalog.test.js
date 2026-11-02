@@ -17,6 +17,27 @@ afterEach(async () => {
 });
 
 describe("Workbench startup catalog", () => {
+  it("pages summaries while keeping complete tree identities and searches content within the owning space", async () => {
+    const store = await new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() }).initialize();
+    const other = await new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() }).initialize();
+    stores.push(store, other);
+    for (let index = 0; index < 4; index++) {
+      await store.createSession({ id: `page-${index}`, text: `user needle 中文 ${index}`, meta: { title: `Session ${index}` } });
+    }
+    await other.createSession({ id: "private", text: "user needle", meta: { title: "Private" } });
+    const catalog = await store.readCatalog({ metadataLimit: 2 });
+    expect(catalog.catalog.metas).toHaveLength(2);
+    expect(catalog.catalog.sessions).toHaveLength(4);
+    expect(catalog.catalog.index).toHaveLength(4);
+    const first = await store.searchSessions({ query: "needle", limit: 2 });
+    const next = await store.searchSessions({ query: "needle", limit: 2, offset: first.nextOffset });
+    expect(first.hasMore).toBe(true);
+    expect(next.hasMore).toBe(false);
+    expect(new Set([...first.sessions, ...next.sessions].map(item => item.id)).size).toBe(4);
+    expect([...first.sessions, ...next.sessions].some(item => item.id === "private")).toBe(false);
+    expect((await store.searchSessions({ query: "%_" })).sessions).toEqual([]);
+    expect((await store.searchSessions({ query: "中文" })).sessions).toHaveLength(4);
+  });
   it("normalizes legacy leading prose as a user role block for display", async () => {
     const store = await new PostgresWorkbenchStateStore(database.pool, {
       spaceId: database.nextSpaceId()

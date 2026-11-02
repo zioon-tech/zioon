@@ -43,10 +43,15 @@ describe("account clients with signed OIDC and two Runtime processes", () => {
       allowLoopbackHttp: true, databaseUrl: databaseUrl.href
     }));
     const launcher = fileURLToPath(new URL("../../../deploy/accounts/start-space.mjs", import.meta.url));
+    const bridge = join(directory, "memory-bridge.key");
+    writeFileSync(bridge, "test-only-memory-bridge-secret-at-least-32-bytes");
     let logs = "";
     const launch = action => {
       const child = spawn(process.execPath, [launcher, config, action], {
-        env: { PATH: process.env.PATH },
+        env: { PATH: process.env.PATH, ZION_MEMORY_SERVICE_URL: idp.issuer,
+          ZION_ARTIFACT_STORE: "local", ZION_ENV: "development",
+          ZION_ARTIFACT_DIRECTORY: join(directory, "artifacts"),
+          ZION_MEMORY_BRIDGE_SECRET_FILE: bridge, ZION_MEMORY_MCP_ENABLED: "0" },
         stdio: ["ignore", "pipe", "pipe"]
       });
       child.stdout.on("data", chunk => { logs = (logs + chunk).slice(-5000); });

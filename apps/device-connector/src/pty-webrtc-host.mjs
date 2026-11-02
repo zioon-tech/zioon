@@ -162,15 +162,25 @@ export class PtyWebRtcHost {
     );
     socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
     const socket = this.webSocketFactory(socketUrl.toString());
+    socket.binaryType = "arraybuffer";
     channel.socket = socket;
     await this.waitForSocketOpen(channel);
     if (channel.closed) return;
+    let outputQueue = Promise.resolve();
+    const enqueueOutput = (operation) => {
+      outputQueue = outputQueue.then(operation).catch((error) => {
+        this.sendControl(channel, { type: "error", message: error?.message || "PTY output forwarding failed" });
+        this.close(channel.channelId);
+      });
+    };
     socket.addEventListener("message", (event) => {
-      void this.forwardPtyOutput(channel, event?.data);
+      enqueueOutput(() => this.forwardPtyOutput(channel, event?.data));
     });
     socket.addEventListener("close", () => {
-      this.sendControl(channel, { type: "close" });
-      this.close(channel.channelId);
+      enqueueOutput(() => {
+        this.sendControl(channel, { type: "close" });
+        this.close(channel.channelId);
+      });
     });
     socket.addEventListener("error", () => {
       this.sendControl(channel, {
@@ -248,7 +258,7 @@ export class PtyWebRtcHost {
     if (channel.closed || channel.dataChannel?.readyState !== "open") return;
     const body = toBuffer(value)
       || (value?.arrayBuffer ? Buffer.from(await value.arrayBuffer()) : null);
-    if (!body) return;
+    if (!body || channel.closed || channel.dataChannel?.readyState !== "open") return;
     channel.lastActivityAt = Date.now();
     if (
       channel.dataChannel.bufferedAmount + body.length

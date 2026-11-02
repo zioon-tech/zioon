@@ -46,6 +46,20 @@ function invocation(overrides = {}) {
 }
 
 describe("LocalToolsReadOnlyBroker", () => {
+  it.each([
+    [409, { ok: false, error: "Terminal session is busy", failureCode: "terminal_session_busy", retryable: true }, "terminal_session_busy", true],
+    [500, "Internal Server Error", "http_5xx", undefined],
+    [200, { ok: false, timeout: true, error: "timeout" }, "execution_outcome_unknown", false]
+  ])("preserves Bash failure classification for HTTP %s", async (status, payload, failureCode, retryable) => {
+    const broker = new LocalToolsBroker({ fetchImpl: async () => response(payload, status) });
+    const result = await broker.invoke(invocation({
+      policy: { preset: "trusted-automation", allowedTools: ["Bash"], allowedTerminalSessionIds: ["terminal-1"] },
+      toolCall: { id: "call-bash", name: "Bash", arguments: { command: "echo ok", session_id: "terminal-1" } }
+    }), new CancellationController().signal);
+    expect(result).toMatchObject({ ok: false, failureCode });
+    expect(result.retryable).toBe(retryable);
+  });
+
   it("advertises only allowed read-only tools after a health check", async () => {
     const fetchImpl = vi.fn(async () => response({ ok: true }));
     const broker = new LocalToolsReadOnlyBroker({ fetchImpl });
@@ -743,6 +757,39 @@ describe("LocalToolsBroker", () => {
     expect(JSON.parse(options.body)).toEqual({
       command: "pwd",
       dangerouslyDisableSandbox: false
+    });
+  });
+
+  it("marks Bash timeouts as an unknown execution outcome", async () => {
+    const fetchImpl = vi.fn(async () => response({
+      ok: false,
+      timeout: true,
+      stderr: "[timeout]",
+      duration_ms: 120_001
+    }));
+    const broker = new LocalToolsBroker({ fetchImpl });
+
+    await expect(broker.invoke(invocation({
+      policy: {
+        preset: "trusted-automation",
+        allowedTools: ["Bash"],
+        fileRoots: ["/workspace/project"],
+        allowedCommandPrefixes: [],
+        allowedTerminalSessionIds: ["terminal-1"]
+      },
+      toolCall: {
+        id: "call-bash-timeout",
+        name: "Bash",
+        arguments: {
+          command: "long-running-command",
+          session_id: "terminal-1"
+        }
+      }
+    }), new CancellationController().signal)).resolves.toMatchObject({
+      ok: false,
+      failureCode: "execution_outcome_unknown",
+      error: expect.stringContaining("may still be running"),
+      content: expect.stringContaining("Do not retry")
     });
   });
 

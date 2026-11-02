@@ -19,6 +19,9 @@ function baseUrl() {
 }
 
 async function request(path, options = {}) {
+  if (window.zion?.state?.get?.("workbench.accessChanged")) {
+    throw new Error("账户或访问权限已变化，请重新进入工作台");
+  }
   const { timeoutMs = 10000, ...fetchOptions } = options;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -61,7 +64,7 @@ export async function readRemoteSnapshot() {
 
 export async function readRemoteCatalog() {
   try {
-    return await request("/v1/workbench-state/catalog", { method: "GET" });
+    return await request("/v1/workbench-state/catalog?metadata_limit=100", { method: "GET" });
   } catch (error) {
     // Older Runtime hosts keep the complete snapshot contract.
     if (error?.status !== 404) throw error;
@@ -71,6 +74,13 @@ export async function readRemoteCatalog() {
 
 export async function readRemoteStatus() {
   return request("/v1/workbench-state/status", { method: "GET" });
+}
+
+export async function searchRemoteSessions({ query = "", limit = 50, offset = 0 } = {}) {
+  const params = new URLSearchParams({
+    q: String(query), limit: String(limit), offset: String(offset)
+  });
+  return request(`/v1/workbench-state/sessions?${params}`, { method: "GET" });
 }
 
 export async function readRemoteTree() {

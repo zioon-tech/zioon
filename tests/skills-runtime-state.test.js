@@ -314,6 +314,28 @@ describe("Runtime-backed Skills state", () => {
     expect(xml).not.toContain("Disabled");
   });
 
+  it("uses skillsList instead of an unreadable source Node for cached skills", () => {
+    const xml = buildAvailableSkillsContextXml({
+      enabled: ["dev.identity/agentfs-memory"],
+      catalog: [{
+        id: "dev.identity/agentfs-memory",
+        name: "agentfs-memory",
+        file: "/plugins/dev.identity/skills/agentfs-memory/SKILL.md",
+        sourceFile: "/plugins/dev.identity/skills/agentfs-memory/SKILL.md",
+        sourceNodeId: "runtime:plugins",
+        runtimeCached: true,
+        body: "---\nname: agentfs-memory\n---\n"
+      }]
+    });
+
+    expect(xml).toContain("<runtime_cached>true</runtime_cached>");
+    expect(xml).not.toContain("<location");
+    expect(xml).toContain(
+      "call skillsList with name and include_body=true"
+    );
+    expect(xml).toContain("Do not use Read or node_id");
+  });
+
   it("syncs a source-aware Workbench snapshot into the Runtime Skills API", async () => {
     const state = createState({
       "runtime.mode": "auto",
@@ -1059,6 +1081,14 @@ describe("Runtime-backed Skills state", () => {
         name: "Reviewer",
         description: "Review text",
         file: "/skills/reviewer/SKILL.md"
+      }, {
+        id: "dev.identity/agentfs-memory",
+        name: "agentfs-memory",
+        description: "Query biography",
+        sourceNodeId: "runtime:plugins",
+        sourceFile: "/plugins/dev.identity/skills/agentfs-memory/SKILL.md",
+        runtimeCached: true,
+        body: "# Agent-fs Memory\n\nUse mcp__agentfs__grep."
       }]
     });
     activateRuntimePlugin({
@@ -1168,6 +1198,26 @@ describe("Runtime-backed Skills state", () => {
     });
     expect(detail.ok).toBe(true);
     expect(detail.content).toContain("# Writer");
-    expect(detail.content).toContain("source Node is offline");
+    expect(detail.content).toContain(
+      "Use this Runtime-cached body as the Skill instructions"
+    );
+    const listed = JSON.parse((await tools[0].invoke({})).content);
+    expect(listed.skills.find((skill) =>
+      skill.name === "agentfs-memory"
+    )).toMatchObject({
+      runtimeCached: true,
+      retrieval: "Call skillsList with this name and include_body=true."
+    });
+    expect(listed.skills.find((skill) =>
+      skill.name === "agentfs-memory"
+    )).not.toHaveProperty("file");
+    const cachedDetail = JSON.parse((await tools[0].invoke({
+      name: "agentfs-memory",
+      include_body: true
+    })).content);
+    expect(cachedDetail.skill.body).toContain("Use mcp__agentfs__grep.");
+    expect(cachedDetail.skill.executionNotice).toContain(
+      "Do not read sourceFile or use sourceNodeId"
+    );
   });
 });

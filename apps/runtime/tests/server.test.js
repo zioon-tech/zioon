@@ -902,7 +902,8 @@ describe("Runtime Host", () => {
         toolCount: 1
       }
     });
-    expect(JSON.stringify(eventDetail.event)).not.toContain("p".repeat(1_000));
+    // The projection stays small; explicitly requested authorized detail retains the payload.
+    expect(eventDetail.event.data.payload.messages[0].content).toBe("p".repeat(20_000));
     expect(projected.events.find((event) =>
       event.type === "reasoning.delta"
     )).toMatchObject({
@@ -1053,7 +1054,7 @@ describe("Runtime Host", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prompt: "wait" })
     }).then((response) => response.json());
-    while (!signal) await Promise.resolve();
+    await vi.waitFor(() => expect(signal).toBeDefined());
 
     const abortResponse = await fetch(`${address.url}/v1/runs/${created.runId}/abort`, {
       method: "POST",
@@ -1090,7 +1091,7 @@ describe("Runtime Host", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prompt: "wait" })
     }).then((response) => response.json());
-    while (!signal) await Promise.resolve();
+    await vi.waitFor(() => expect(signal).toBeDefined());
 
     await server.close();
 
@@ -1102,7 +1103,7 @@ describe("Runtime Host", () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: "run.aborted",
-          data: { reason: "runtime-shutdown" }
+          data: expect.objectContaining({ reason: "runtime-shutdown" })
         })
       ])
     );

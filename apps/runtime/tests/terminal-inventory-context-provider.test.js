@@ -31,37 +31,10 @@ function context(overrides = {}) {
 }
 
 describe("LocalToolsTerminalInventoryContextProvider", () => {
-  it("injects the existing terminal inventory format after system messages", async () => {
-    const fetchImpl = vi.fn(async (url) => {
-      if (url.pathname === "/sessions") {
-        return response({
-          sessions: [{
-            id: "local-allowed",
-            type: "local",
-            cwd: "/workspace/zion-next",
-            active: true,
-            last_activity: 2
-          }, {
-            id: "local-hidden",
-            type: "local",
-            cwd: "/workspace/secret",
-            active: true,
-            last_activity: 3
-          }]
-        });
-      }
-      return response({
-        machines: [{
-          id: "machine:local",
-          name: "Development Mac",
-          kind: "local",
-          description: "Apple Silicon development machine"
-        }]
-      });
-    });
+  it("injects stable terminal guidance after system messages without loading inventory", async () => {
+    const fetchImpl = vi.fn();
     const provider = new LocalToolsTerminalInventoryContextProvider({
-      fetchImpl,
-      now: () => 4_000
+      fetchImpl
     });
 
     const result = await provider.contribute([
@@ -75,28 +48,17 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
       "user"
     ]);
     expect(result[1].content).toContain("<terminal_inventory");
-    expect(result[1].content).toContain('name="Development Mac"');
-    expect(result[1].content).toContain('name="zion-next"');
-    expect(result[1].content).toContain('preferred_session_id="local-allowed"');
+    expect(result[1].content).toContain("Call terminalInventory");
+    expect(result[1].content).toContain("terminal_session_busy");
+    expect(result[1].content).toContain("stale_terminal_reference");
+    expect(result[1].content).toContain("execution_outcome_unknown");
+    expect(result[1].content).not.toContain("revision=");
     expect(result[1].content).not.toContain("local-hidden");
-    expect(result[1].content).not.toContain("secret");
-    expect(fetchImpl.mock.calls.map(([url]) => url.pathname).sort()).toEqual([
-      "/machines",
-      "/sessions"
-    ]);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("injects every visible terminal when the Run allowlist is empty", async () => {
-    const fetchImpl = vi.fn(async (url) => url.pathname === "/sessions"
-      ? response({
-          sessions: [{
-            id: "local-visible",
-            type: "local",
-            cwd: "/workspace/visible",
-            active: true
-          }]
-        })
-      : response({ machines: [] }));
+  it("injects the same guidance when the Run allowlist is empty", async () => {
+    const fetchImpl = vi.fn();
     const provider = new LocalToolsTerminalInventoryContextProvider({
       fetchImpl,
       now: () => 4_000
@@ -111,14 +73,14 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
     }))).resolves.toEqual([
       expect.objectContaining({
         role: "user",
-        content: expect.stringContaining('preferred_session_id="local-visible"')
+        content: expect.stringContaining("Call terminalInventory")
       }),
       messages[0]
     ]);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("scopes inventory loading to the Run execution Node", async () => {
+  it("does not query the Device service while contributing guidance", async () => {
     const service = {
       listInventory: vi.fn(async () => ({
         sessions: [],
@@ -134,7 +96,7 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
       service
     });
 
-    await provider.contribute([], context({
+    const result = await provider.contribute([], context({
       request: {
         target: { nodeId: "node:cloud-runtime" },
         policy: { allowedTerminalSessionIds: [] },
@@ -142,11 +104,8 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
       }
     }));
 
-    expect(service.listInventory).toHaveBeenCalledWith({
-      runContext: expect.objectContaining({
-        target: { nodeId: "node:cloud-runtime" }
-      })
-    });
+    expect(result[0].content).not.toContain("node:cloud-runtime");
+    expect(service.listInventory).not.toHaveBeenCalled();
   });
 
   it("does not query terminal inventory when explicitly disabled", async () => {
@@ -163,7 +122,7 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("continues without machine profiles but surfaces a session-list failure", async () => {
+  it("keeps guidance available when the inventory service is unavailable", async () => {
     const sessions = [{
       id: "local-allowed",
       type: "local",
@@ -180,7 +139,7 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
     await expect(provider.contribute([], context())).resolves.toEqual([
       expect.objectContaining({
         role: "user",
-        content: expect.stringContaining('machine_id="machine:local"')
+        content: expect.stringContaining("Call terminalInventory")
       })
     ]);
 
@@ -189,7 +148,15 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
         ? response({ detail: "unavailable" }, 503)
         : response({ machines: [] })
     });
-    await expect(failing.contribute([], context())).rejects.toThrow(
+    await expect(failing.contribute([], context())).resolves.toEqual([
+      expect.objectContaining({
+        content: expect.stringContaining("Call terminalInventory")
+      })
+    ]);
+    await expect(failing.invokeInventoryTool({}, {
+      policy: { allowedTerminalSessionIds: [] },
+      signal: new CancellationController().signal
+    })).rejects.toThrow(
       "local-tools /sessions failed"
     );
   });
@@ -379,9 +346,9 @@ describe("LocalToolsTerminalInventoryContextProvider", () => {
     });
     const toolInventory = JSON.parse(toolResult.content);
 
-    expect(contributed[0].content).toContain('workspace_count="12"');
-    expect(contributed[0].content).toContain('total_workspace_count="30"');
-    expect(contributed[0].content).toContain('truncated="true"');
+    expect(contributed[0].content).toContain("Call terminalInventory");
+    expect(contributed[0].content).not.toContain("workspace_count=");
+    expect(contributed[0].content).not.toContain("local-0");
     expect(toolInventory.workspaces).toHaveLength(30);
     expect(toolInventory.sessions).toHaveLength(30);
   });

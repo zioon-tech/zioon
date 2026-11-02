@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import {
-  continuationBoundaryText
+  continuationBoundaryText,
+  appendUserMessageText
 } from "../../src/chat/session-document-format.js";
 
 export const SESSION_DOCUMENT_PROJECTOR_ID =
@@ -140,7 +141,8 @@ function assistantBlockRange(source, runId) {
   const blockEnd = endIndex < ranges.length
     ? ranges[endIndex].start
     : value.length;
-  const answerEnd = blockEnd > 0 && value.charAt(blockEnd - 1) === "\n"
+  const answerEnd = endIndex < ranges.length
+    && blockEnd > 0 && value.charAt(blockEnd - 1) === "\n"
     ? blockEnd - 1
     : blockEnd;
   const headerAnswerStart = ranges[startIndex].start + header.length;
@@ -471,13 +473,19 @@ function resolveRunAnchor(document, ytext, anchor = {}) {
 export function prepareRunInYText(ytext, {
   runId,
   userContent,
-  insertAt
+  insertAt,
+  forceNewUser = false
 } = {}) {
   const header = assistantBlockHeader(runId);
   const content = String(userContent || "");
   if (!header || !content.trim()) return false;
   const source = ytext.toString();
   const assistant = assistantBlockRange(source, runId);
+  if (forceNewUser) {
+    if (assistant?.exists) return false;
+    ytext.insert(source.length, `${appendUserMessageText(source, content)}\n${header}`);
+    return true;
+  }
   const boundary = assistant?.exists
     ? assistant.blockStart
     : insertAt != null && Number.isFinite(Number(insertAt))
@@ -613,12 +621,14 @@ export function createSessionDocumentProjector() {
       document,
       runId,
       userContent,
-      documentAnchor
+      documentAnchor,
+      forceNewUser
     } = {}) {
       const ytext = document.getText(SESSION_DOCUMENT_TEXT_KEY);
       return prepareRunInYText(ytext, {
         runId,
         userContent,
+        forceNewUser,
         insertAt: resolveRunAnchor(document, ytext, documentAnchor)
       });
     },

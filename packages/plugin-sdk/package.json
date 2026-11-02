@@ -8,6 +8,10 @@
       "types": "./src/manifest.d.ts",
       "default": "./src/manifest.mjs"
     },
+    "./runtime": {
+      "types": "./src/runtime.d.mts",
+      "default": "./src/runtime.mjs"
+    },
     "./data-location": {
       "types": "./src/data-location.d.mts",
       "default": "./src/data-location.mjs"

@@ -7,6 +7,8 @@ import { attachEditor, detachEditor, listAttachedEditorCores, setActiveEditorPan
 import type { Disposable } from "./types/zion";
 import { PluginManager } from "./plugin/manager";
 import { HttpPluginInstaller } from "./plugin/http-installer";
+import { syncDevelopmentPlugins } from "./plugin/development-sync";
+import { syncAccountPlugins } from "./plugin/account-sync";
 import type { PluginInfo } from "./plugin/types";
 import {
   EXTERNALIZED_BUILTIN_PLUGIN_IDS,
@@ -2603,6 +2605,9 @@ function mountPanelSessionTabsBar(
         const width = viewport.clientWidth || viewport.getBoundingClientRect().width || 0;
         const avg = count > 0 ? width / count : width;
         const density = avg < 82 ? "crowded" : avg < 132 ? "compact" : "comfortable";
+        // #region debug-point panel-tab-density
+        try { const debug = (globalThis as any).__zionPanelDebug; if (debug?.url) void fetch(debug.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: "panel-tab-flicker", runId: debug.runId, hypothesisId: "B", location: "main.updateTabDensity", message: "density", data: { count, width, density, previous: root.dataset.density } }) }).catch(() => {}); } catch {}
+        // #endregion
         root.dataset.density = density;
         root.dataset.tabCount = String(count);
       } catch {}
@@ -3923,7 +3928,7 @@ async function bootstrap() {
       editorContainer.appendChild(initialHost);
       initialHost.appendChild(core.view.dom);
     } catch {}
-    registerEditorSlot("panel-0", initialSessionId, core, initialProxy, initialHost, true);
+    registerEditorSlot("panel-0", initialSessionId, core, initialProxy, initialHost, !savedPanelWorkspace?.manager && !runtimeHostedWorkbench);
     showOnlyEditorSlot("panel-0", initialSessionId);
   }
   activateCachedEditorSlot = (panelId: string, sessionId: string, reuseAttachedProxy = false) => {
@@ -3940,7 +3945,9 @@ async function bootstrap() {
     if (panelManager.getPanel(panelId)?.activeTabId !== sessionId) {
       try { panelManager.activateTab(panelId, sessionId); } catch {}
     }
-    try { setActiveEditorPanel(panelId); } catch {}
+    try {
+      if (panelManager.getActivePanelId() === panelId) setActiveEditorPanel(panelId);
+    } catch {}
     return true;
   };
   ensureEditorSlotForSession = (panelId: string, sessionId: string, seedText = "") => {
@@ -4152,16 +4159,14 @@ async function bootstrap() {
           })
         ]).finally(() => window.clearTimeout(timeoutId));
         if (prepared !== true) {
-          if (prepared === timeout) {
-            console.warn("[zion] reload persistence exceeded 1800ms; reloading with queued writes");
-          } else {
             try { window.zion?.state?.set("sessions.reloadPreparing", false); } catch {}
-            notificationManager.show("会话尚未完成保存，已取消重新加载。", {
+            notificationManager.show(prepared === timeout
+              ? "会话仍在保存，请稍后重新加载。"
+              : "会话尚未完成保存，已取消重新加载。", {
               type: "warning",
               duration: 3000
             });
             return false;
-          }
         }
       }
     } catch (error) {
@@ -4177,9 +4182,20 @@ async function bootstrap() {
       window.zion?.state?.set("sessions.reloadPreparing", false);
       window.zion?.state?.set("sessions.intentionalReload", true);
     } catch {}
-    requestAnimationFrame(() => location.reload());
+    location.reload();
     return true;
   };
+  let updateNoticeShown = false;
+  navigator.serviceWorker?.addEventListener("message", (event) => {
+    if (event.data?.type !== "ZION_WORKBENCH_UPDATE_AVAILABLE" || updateNoticeShown) return;
+    updateNoticeShown = true;
+    window.zion?.state?.set("workbench.updateAvailable", true);
+    notificationManager.show("新版本已就绪，可在方便时使用“重新加载”更新。", {
+      type: "info",
+      duration: 8000,
+      actions: [{ label: "保存并更新", handler: () => { void reloadWindowPreservingWorkspace(); } }]
+    });
+  });
   const attachPanelScrollPersistence = (panelId: string) => {
     try { panelScrollPersistDisposers.get(panelId)?.(); } catch {}
     panelScrollPersistDisposers.delete(panelId);
@@ -4216,8 +4232,11 @@ async function bootstrap() {
     }
     const runRestore = async () => {
       try {
-        for (const panel of panelManager.listPanels()) {
-          if (!panel.activeTabId) continue;
+        const panelsToRestore = panelManager.listPanels()
+          .filter((panel) => !!panel.activeTabId)
+          .sort((left, right) =>
+            Number(right.id === panelManager.getActivePanelId()) - Number(left.id === panelManager.getActivePanelId()));
+        await Promise.all(panelsToRestore.map(async (panel) => {
           await Promise.resolve(
             window.zion.commands.executeCommand("zion.sessions.switch", {
               id: panel.activeTabId,
@@ -4229,7 +4248,7 @@ async function bootstrap() {
               pushUrl: false
             })
           );
-        }
+        }));
         for (const panel of panelManager.listPanels()) {
           if (!panel.activeTabId && panel.tabs.length === 0) showPanelEmptyState(panel.id);
         }
@@ -4413,7 +4432,7 @@ async function bootstrap() {
       try { nextCore.setValue(seedText, { source: "session-load" }); } catch {}
     }
     if (activeSessionId) {
-      registerEditorSlot(panelId, activeSessionId, nextCore, nextProxy, slotHost || undefined, seedFromSource !== false);
+      registerEditorSlot(panelId, activeSessionId, nextCore, nextProxy, slotHost || undefined, !restoringPanelWorkspace && seedFromSource !== false);
       if (!restoringPanelWorkspace) {
         panel.tabs = [{ id: activeSessionId, title: activeSessionId, isDirty: false }];
         panel.activeTabId = activeSessionId;
@@ -4444,7 +4463,9 @@ async function bootstrap() {
     mountEditorHeaderSettingsMenu(panel.pathEl);
     mountPanelHeaderRunStopButton(panel.pathEl, panelId, () => panelManager.getEditor(panelId));
     attachPanelScrollPersistence(panelId);
-    try { nextProxy.focus(); } catch {}
+    if (!restoringPanelWorkspace) {
+      try { nextProxy.focus(); } catch {}
+    }
     try { restoreSplitViewportFromSource(sourceEditor, nextProxy); } catch {}
     schedulePanelWorkspacePersist();
   });
@@ -5555,10 +5576,36 @@ async function bootstrap() {
           }
         }
       });
-    if (!runtimeHostedWorkbench) {
-      // Direct local development sessions can also restore their WebSockets.
-      void restoreDevSessions(pluginManager, pluginInstaller);
-    }
+    let legacyDevelopmentRestoreStarted = false;
+    const developmentSync = syncDevelopmentPlugins({
+      manager: pluginManager, installer: pluginInstaller,
+      baseUrl: readWorkbenchRuntimeConfig().baseUrl,
+      onEntries: (records) => (window as any).zion.state.set("plugins.developmentEntries", records),
+      onStatus: (pluginId, status, error: any) => {
+        const statuses = (window as any).zion.state.get("plugins.development") || {};
+        statuses[pluginId || "registry"] = { status, message: error?.message || "" };
+        (window as any).zion.state.set("plugins.development", statuses);
+        if (!runtimeHostedWorkbench && !legacyDevelopmentRestoreStarted
+          && error?.code === "development_upgrade_required") {
+          legacyDevelopmentRestoreStarted = true;
+          void restoreDevSessions(pluginManager, pluginInstaller);
+        }
+      }
+    });
+    (window as any).zion.pluginDevelopment = developmentSync;
+    const accountPluginSync = syncAccountPlugins({
+      manager: pluginManager, installer: pluginInstaller, baseUrl: readWorkbenchRuntimeConfig().baseUrl,
+      onStatus: (pluginId, status, error: any) => {
+        const statuses = (window as any).zion.state.get("plugins.account") || {};
+        statuses[pluginId || "registry"] = { status, message: error?.message || "" };
+        (window as any).zion.state.set("plugins.account", statuses);
+      }
+    });
+    (window as any).zion.pluginAccountSync = accountPluginSync;
+    window.addEventListener("pagehide", (event) => {
+      if (!event.persisted) { developmentSync.dispose(); accountPluginSync.dispose(); }
+    });
+    if (import.meta.hot) import.meta.hot.dispose(() => { developmentSync.dispose(); accountPluginSync.dispose(); });
     
   } catch (error) {
     console.error('[PluginManager] 插件系统初始化失败:', error);
@@ -6574,7 +6621,7 @@ function openPluginsPanel(pluginManager: PluginManager) {
     reloadBtn.style.borderRadius = "4px";
     reloadBtn.style.padding = "4px 8px";
     reloadBtn.style.fontSize = "12px";
-    reloadBtn.onclick = () => { void reloadWindowPreservingWorkspace(); };
+    reloadBtn.onclick = () => { void window.zion?.commands?.executeCommand("zion.reloadPlugins"); };
     leftButtons.appendChild(reloadBtn);
 
     const closeBtn = document.createElement("button");

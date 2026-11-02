@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_INTERACTION_PROFILE_ID } from "./interaction-profile-store.mjs";
 import { runChatCli } from "./chat-cli.mjs";
+import { EXTENSIONS_USAGE, LOCAL_EXTENSION_ACTIONS, parseExtensionsArgs, runExtensionsCli } from "./extensions-cli.mjs";
 import {
   LOCAL_TOOLS_TOOL_DEFINITIONS,
   LocalToolsDeviceHost
@@ -42,7 +43,7 @@ import {
   subscribeRunStream
 } from "../../../packages/runtime-client/src/run-stream.mjs";
 
-const USAGE = `Usage: npm run runtime:cli -- <command> [options]
+const USAGE = `Usage: zion <command> [options] (alias: zioon)
 
 Commands:
   chat                         Start the interactive Runtime chat shell
@@ -66,6 +67,7 @@ Commands:
   auth login [profile]         Sign in with an account or OAuth device-code profile
   auth status [profile]        Show sanitized credential status
   auth logout [profile]        Delete the profile credential
+  extensions <action>          Create, upload and manage account extensions
   device connect               Run this CLI as an outbound Device Tool Host
 
 Options:
@@ -222,13 +224,16 @@ export function resolveRuntimeCliTarget({
     || join(homedir(), ".zion-next", "cli.json")
 } = {}) {
   const config = loadCliConfig(configPath);
-  const profiles = config.profiles && typeof config.profiles === "object"
-    ? config.profiles
-    : {};
+  const distributed = environment.ZIOON_CLI_DISTRIBUTION === "1";
+  const profiles = {
+    ...(distributed ? { "zioon-cloud": { url: "https://runtime.zioon.tech", auth: { type: "account" } } } : {}),
+    ...(config.profiles && typeof config.profiles === "object" ? config.profiles : {})
+  };
   const profileName = readArg(
     argv,
     "--runtime-profile",
-    environment.ZION_RUNTIME_PROFILE || config.defaultProfile || ""
+    environment.ZION_RUNTIME_PROFILE
+      || (argv.includes("--url") || environment.ZION_RUNTIME_URL ? "" : config.defaultProfile || (distributed ? "zioon-cloud" : ""))
   );
   const profile = profileName ? profiles[profileName] : null;
   if (profileName && !profile) {
@@ -736,12 +741,16 @@ export async function runRuntimeCli({
     });
   }
   if (argv.includes("--help") || argv.includes("-h")) {
-    output.write(USAGE);
+    output.write(argv[0] === "extensions" ? EXTENSIONS_USAGE : USAGE);
     return null;
   }
 
   const command = argv[0];
   const args = argv.slice(1);
+  const extensions = command === "extensions" ? parseExtensionsArgs(args) : null;
+  if (extensions && LOCAL_EXTENSION_ACTIONS.has(extensions.action)) {
+    return runExtensionsCli({ parsed: extensions, output });
+  }
   const jsonl = argv.includes("--jsonl");
   const rawEvents = argv.includes("--raw-events");
   const positionals = positionalArgs(args);
@@ -895,6 +904,10 @@ export async function runRuntimeCli({
     fetchImpl,
     pollIntervalMs,
     headers: requestHeaders
+  });
+  if (extensions) return runExtensionsCli({
+    parsed: extensions, output, baseUrl, fetchImpl, headers: requestHeaders, signal,
+    controlClient: client, defaultProfile: DEFAULT_INTERACTION_PROFILE_ID
   });
 
   if (command === "run") {
@@ -1075,14 +1088,37 @@ export async function runRuntimeCli({
     return result;
   }
 
-  errorOutput.write(`Unknown command: ${command}\n\n${USAGE}`);
+  if (!jsonl) errorOutput.write(`Unknown command: ${command}\n\n${USAGE}`);
   throw new Error(`Unknown command: ${command}`);
 }
 
 const entryPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
-if (import.meta.url === entryPath) {
-  runRuntimeCli().catch((error) => {
-    process.stderr.write(`Runtime CLI failed: ${error?.message || String(error)}\n`);
+if (process.env.ZIOON_CLI_DISTRIBUTION !== "1" && import.meta.url === entryPath) {
+  await runRuntimeCliEntry();
+}
+
+export function runtimeCliExitCode(result) {
+  if (result?.status === "failed") return 1;
+  if (result?.status === "interrupted") return 2;
+  if (result?.status === "aborted") return 130;
+  return 0;
+}
+
+export async function runRuntimeCliEntry({
+  argv = process.argv.slice(2), output = process.stdout, errorOutput = process.stderr,
+  ...options
+} = {}) {
+  try {
+    const result = await runRuntimeCli({ argv, output, errorOutput, ...options });
+    process.exitCode = runtimeCliExitCode(result);
+    return result;
+  } catch (error) {
+    errorOutput.write(argv.includes("--jsonl")
+      ? `${JSON.stringify({ schemaVersion: 1, type: "cli.error", code: error.code || "cli_error",
+          ...(error.statusCode ? { statusCode: error.statusCode } : {}),
+          ...(error.runId ? { runId: error.runId } : {}), error: error.message || String(error) })}\n`
+      : `zion: ${error.message || String(error)}\n`);
     process.exitCode = 1;
-  });
+    return null;
+  }
 }

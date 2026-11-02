@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { parse } from "acorn";
 import { PluginManager } from "../src/plugin/manager";
 import type { PluginInfo } from "../src/plugin/types";
 
@@ -165,6 +166,73 @@ describe("PluginManager enabled state persistence", () => {
     expect(manager.getActivePlugins()).toEqual([]);
   });
 
+  it.each(["installed", "error"] as const)(
+    "replaces a same-version external package in %s state before activation",
+    async (existingState) => {
+      const manager = new PluginManager({
+        pluginDir: "",
+        extensionsDir: "",
+        logLevel: "error"
+      });
+      const sourceEntries = { workbench: "./dist/main.js" };
+      const scriptContents = {
+        "dist/main.js": "export function activate() {}"
+      };
+      const existing = {
+        ...pluginInfo(true),
+        id: "dev.identity",
+        name: "Identity",
+        origin: "external" as const,
+        path: "https://zion.example/v1/device-services/plugin-service/plugins/dev.identity/download",
+        state: existingState,
+        error: existingState === "error" ? {
+          type: "activation_failed" as const,
+          message: "stale relative URL",
+          timestamp: 1
+        } : undefined,
+        sourceEntries,
+        scriptContents,
+        contract: {
+          id: "dev.identity",
+          name: "Identity",
+          version: "1.0.0",
+          hosts: { workbench: true, runtime: false, renderer: false },
+          entries: { workbench: "./dist/main.js" }
+        }
+      };
+      existing.manifest.name = "dev.identity";
+      existing.manifest.zion!.id = "dev.identity";
+      existing.manifest.zion!.name = "Identity";
+      const incoming = {
+        ...existing,
+        state: "installed" as const,
+        error: undefined,
+        contract: {
+          ...existing.contract,
+          entries: { workbench: "blob:fresh-identity-entry" }
+        },
+        scriptBlobUrls: {
+          "dist/main.js": "blob:fresh-identity-entry"
+        }
+      };
+      (manager as any).plugins.set(existing.id, existing);
+      (manager as any).enabledPlugins.add(existing.id);
+      vi.spyOn((manager as any).loader, "loadModule").mockResolvedValue({
+        activate: vi.fn()
+      });
+
+      await manager.installFromInfo(incoming, { enabled: true });
+
+      expect(manager.get(existing.id)).toMatchObject({
+        state: "active",
+        error: undefined,
+        contract: {
+          entries: { workbench: "blob:fresh-identity-entry" }
+        }
+      });
+    }
+  );
+
   it("rehydrates persisted ZIP plugin modules with fresh blob URLs", async () => {
     const { blobs, restore } = stubBlobUrls("blob:rehydrated-plugin");
     try {
@@ -201,7 +269,10 @@ describe("PluginManager enabled state persistence", () => {
       const mainUrl = String(restored?.contract?.entries.workbench || "");
       expect(mainUrl).toMatch(/^blob:rehydrated-plugin-/);
       expect((restored?.manifest as any).zion.main).toBe(mainUrl);
-      expect(await readBlobText(blobs.get(mainUrl))).toContain("from 'blob:rehydrated-plugin-1'");
+      const code = await readBlobText(blobs.get(mainUrl));
+      const imports = parse(code, { ecmaVersion: "latest", sourceType: "module" }).body
+        .filter((node) => node.type === "ImportDeclaration");
+      expect(imports.map((node) => node.source.value)).toEqual(["blob:rehydrated-plugin-1"]);
 
       await (manager as any).savePluginStates();
       const saved = JSON.parse(localStorage.getItem("zion.installedPlugins") || "[]");

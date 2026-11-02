@@ -4,7 +4,7 @@ const DEFAULT_PROJECT_ATTENTION_LIMIT = 800;
 const TRUNCATION_MARKER = "\n[truncated]";
 
 const PROJECT_MAINTENANCE_INSTRUCTIONS = Object.freeze([
-  "Treat ~/.zion-next/memory/projects as model-maintained working memory.",
+  "Treat {{IDENTITY_ROOT}}/projects as model-maintained working memory.",
   "Project working-memory routine:",
   "Think of each project.md as the project's durable notebook: read it when resuming project work and leave it current for the next session.",
   "1. At the start of each non-trivial request, use semantic judgment to decide whether it is a one-off question, work on an existing managed project, a concrete new project, or an unformed idea. Do not force ordinary questions or passing mentions into a project.",
@@ -124,7 +124,7 @@ tags: []
 export const PROJECT_FILE_TEMPLATE = buildProjectTemplate();
 
 export function buildProjectContext(index, options = {}) {
-  const root = escapeXml(options.sourceRoot || "~/.zion-next/data/plugins/dev.identity");
+  const root = escapeXml(options.sourceRoot || "/memory/dev.identity");
   const indexContent = clipCharacters(
     index,
     options.maxChars ?? DEFAULT_PROJECT_INDEX_LIMIT
@@ -162,7 +162,7 @@ export function buildProjectContext(index, options = {}) {
   return {
     fragment: fragments.join("\n"),
     instructions: PROJECT_MAINTENANCE_INSTRUCTIONS.map((text) =>
-      text.replaceAll("~/.zion-next/memory", root))
+      text.replaceAll("{{IDENTITY_ROOT}}", root))
   };
 }
 

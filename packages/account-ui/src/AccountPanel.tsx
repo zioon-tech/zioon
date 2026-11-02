@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  accountAuthNotice, accountLoginUrl, accountRequest, AccountHttpError, clearInvitation,
+  accountLoginUrl, accountRequest, AccountHttpError, clearInvitation,
   pendingInvitation, setAccountSession, type AccountSession
 } from "./client";
 import { ZionMark } from "./ZionMark";
@@ -73,9 +73,7 @@ export function AccountPanel({
   const [page, setPage] = useState(0);
   const [notice, setNotice] = useState("");
   const [tab, setTab] = useState<AccountTab>("overview");
-  const [loginPhase, setLoginPhase] = useState<"redirecting" | "manual">(
-    () => accountAuthNotice() ? "manual" : "redirecting"
-  );
+  const [loginPhase, setLoginPhase] = useState<"redirecting" | "manual">("redirecting");
   const [loginError, setLoginError] = useState("");
   const loginStarted = useRef(false);
   const loginTimeout = useRef<number | null>(null);
@@ -93,7 +91,7 @@ export function AccountPanel({
     try {
       const url = accountLoginUrl(baseUrl, returnTo);
       if (onLogin) onLogin(url);
-      else location.assign(url);
+      else location.replace(url);
     } catch (reason) {
       if (loginTimeout.current !== null) window.clearTimeout(loginTimeout.current);
       loginTimeout.current = null;
@@ -144,9 +142,8 @@ export function AccountPanel({
     try {
       await request("logout", {});
       clearInvitation();
-      location.assign(returnTo.startsWith("/mobile")
-        ? "/mobile/?zionAuth=logged-out"
-        : "/account?zionAuth=logged-out");
+      setAccountSession(null);
+      beginLogin();
     } catch (reason) {
       setError(errorText(reason));
       setBusy(false);
@@ -173,32 +170,23 @@ export function AccountPanel({
   }
 
   if (!me) {
-    const authNotice = accountAuthNotice();
     const statusError = Boolean(error && !loginStarted.current);
     const redirecting = loginPhase === "redirecting" && !statusError;
     const title = statusError
       ? "无法确认登录状态"
       : redirecting
         ? "正在转到安全登录"
-        : authNotice === "logged-out"
-          ? "已退出登录"
-          : authNotice === "cancelled"
-            ? "登录已取消"
-            : "未能打开登录页";
+        : "未能打开登录页";
     const description = statusError
-      ? "Runtime 已连接，但账号服务暂时没有响应。"
+      ? "暂时无法检查账号状态，请稍后重试。"
       : redirecting
         ? invitation ? "正在保留邀请并打开登录页。" : "即将使用你的 Zion 账号继续。"
-        : authNotice === "logged-out"
-          ? "你已安全退出此 Zion。"
-          : authNotice === "cancelled"
-            ? "你仍处于未登录状态。"
-            : "浏览器没有完成跳转，请重试。";
+        : "浏览器没有完成跳转，请重试。";
     return <main className={`zion-account zion-account--${variant} is-gate`}>
       <div className="zion-account-gate-bar">
         <ZionMark className="zion-account-mark" />
         <strong>Zion</strong>
-        <span className="zion-account-gate-status">Runtime 已连接</span>
+        <span className="zion-account-gate-status">Workbench</span>
       </div>
       <div className={`zion-account-gate-content ${redirecting ? "is-redirecting" : ""}`}
         role="status" aria-live="polite">
@@ -217,7 +205,7 @@ export function AccountPanel({
           : !redirecting
             ? <button className="zion-account-button is-primary" disabled={busy} onClick={beginLogin}>
               <LogIn size={16} aria-hidden="true" />
-              {authNotice === "logged-out" ? "重新登录" : "继续登录"}
+              重新打开登录页
             </button>
             : null}
         {statusError || loginError
@@ -311,6 +299,16 @@ export function AccountPanel({
 
     <div className="zion-account-content">
       {tab === "overview" ? <>
+        <section className="zion-account-section">
+          <h2>登录方式</h2>
+          <div className="zion-account-security-row">
+            <ShieldCheck size={20} aria-hidden="true" />
+            <div><strong>邮箱与 GitHub</strong><p>{me.capabilities?.loginSettingsUrl
+              ? "查看关联状态或修改密码" : "使用统一账号登录 Zion 与 Memory"}</p></div>
+            {me.capabilities?.loginSettingsUrl ? <a className="zion-account-button"
+              href={new URL(me.capabilities.loginSettingsUrl, baseUrl || location.origin).href}>管理登录方式<ChevronRight size={15} aria-hidden="true" /></a> : null}
+          </div>
+        </section>
         {!personal ? <section className="zion-account-section">
           <h2>当前团队</h2>
           <div className="zion-account-list">

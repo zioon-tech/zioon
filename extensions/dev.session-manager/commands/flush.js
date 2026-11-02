@@ -11,10 +11,10 @@ export function registerSessionFlushCommand(opts) {
         saved = !!plugin?.flush?.(id);
       }
       if (typeof flushRemote === "function") {
-        const durable = await flushRemote();
+        const durable = await flushRemote(id);
         if (durable === false) return false;
       }
-      return saved;
+      return typeof flushRemote === "function" ? true : saved;
     } catch {
       return false;
     }

@@ -171,6 +171,21 @@ describe("programmatic chat runner", () => {
       reason: "unsupported agentsManage action"
     });
     expect(isReadOnlyToolCall({ name: "identityManage", args: { action: "get" } })).toBe(true);
+    expect(isReadOnlyToolCall({
+      name: "mcp__agentfs__grep",
+      args: { pattern: "memory", path: "/memory/dev.identity/biography" }
+    })).toBe(true);
+    expect(isReadOnlyToolCall({ name: "mcp__agentfs__append" })).toBe(false);
+    expect(isReadOnlyToolCall({ name: "mcp__agentfs__cp" })).toBe(false);
+    const nativeTools = ["cat", "grep", "append", "cp"].map((name) => ({
+      function: { name: `mcp__agentfs__${name}` }
+    }));
+    expect(filterToolsForPolicy(nativeTools, {
+      preset: "read-only", allowedTools: nativeTools.map((tool) => tool.function.name)
+    }).map((tool) => tool.function.name)).toEqual(["mcp__agentfs__cat", "mcp__agentfs__grep"]);
+    expect(filterToolsForPolicy(nativeTools, {
+      preset: "workspace-write", allowedTools: ["mcp__agentfs__append"]
+    }).map((tool) => tool.function.name)).toEqual(["mcp__agentfs__cat", "mcp__agentfs__grep", "mcp__agentfs__append"]);
     expect(isReadOnlyToolCall({ name: "identityManage", args: { action: "patch_files" } })).toBe(false);
     expect(authorizeToolCall(
       { name: "identityManage", args: { action: "patch_files", files: { user: "x" } } },

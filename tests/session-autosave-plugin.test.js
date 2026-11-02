@@ -3,6 +3,53 @@ import { EditorCore } from "../src/editor/EditorCore";
 import { createSessionAutoSavePlugin } from "../extensions/dev.session-manager/editor/autosave-plugin.js";
 
 describe("session autosave plugin", () => {
+  it("does not publish a connecting draft as a full remote document", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const saveDoc = vi.fn();
+    const core = new EditorCore(host, "", "panel-a");
+    const plugin = createSessionAutoSavePlugin({
+      zion: { state: { get: () => null } },
+      getCurrentId: () => "s",
+      loadMeta: () => ({ hash: "" }),
+      saveDoc, saveMeta: vi.fn(), hashString: text => text,
+      now: () => 1, upsertIndexEntry() {}
+    });
+    core.addExternalExtension(plugin.extension);
+    core.view.dom.dataset.zionCollaborationPending = "true";
+    core.view.dispatch({ changes: { from: 0, insert: "draft" } });
+    expect(plugin.hasPendingDrafts()).toBe(true);
+    expect(plugin.flush("s")).toBe(false);
+    expect(saveDoc).not.toHaveBeenCalled();
+    core.view.destroy();
+    host.remove();
+  });
+  it("retains edits from a disconnected shared editor until collaboration reconnects", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const values = new Map([["sessions.collaboration.s", { synced: false }]]);
+    const saveDoc = vi.fn();
+    const core = new EditorCore(host, "", "panel-a");
+    const plugin = createSessionAutoSavePlugin({
+      zion: { state: { get: key => values.get(key), set: (key, value) => values.set(key, value) } },
+      getCurrentId: () => "s",
+      loadMeta: () => ({ hash: "" }),
+      saveDoc, saveMeta: vi.fn(), hashString: text => text,
+      now: () => 1, upsertIndexEntry() {}
+    });
+    core.addExternalExtension(plugin.extension);
+    core.view.dom.dataset.zionCollaborationBound = "true";
+    core.view.dispatch({ changes: { from: 0, insert: "offline draft" } });
+    expect(plugin.hasPendingDrafts()).toBe(true);
+    expect(plugin.flush("s")).toBe(false);
+    expect(saveDoc).not.toHaveBeenCalled();
+    values.set("sessions.collaboration.s", { synced: true });
+    expect(plugin.flush("s")).toBe(true);
+    expect(values.get("sessions.doc.s")).toBe("offline draft");
+    expect(saveDoc).not.toHaveBeenCalled();
+    core.view.destroy();
+    host.remove();
+  });
   it("keeps pending saves isolated per panel editor", () => {
     const saved = [];
     const metas = new Map();

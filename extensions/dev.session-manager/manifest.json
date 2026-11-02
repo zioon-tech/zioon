@@ -66,6 +66,11 @@
     "contributes": {
       "commands": [
         {
+          "id": "zion.sessions.restoreCollaborationDraft",
+          "title": "恢复本地草稿为新会话",
+          "categoryKey": "dev.session-manager.category.sessions"
+        },
+        {
           "id": "zion.sessions.new",
           "title": "New Session",
           "titleKey": "dev.session-manager.cmd.new",

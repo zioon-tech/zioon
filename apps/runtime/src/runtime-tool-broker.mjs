@@ -5,7 +5,16 @@ import { URL } from "node:url";
 import {
   LOCAL_TOOLS_TOOL_DEFINITIONS
 } from "../../../packages/local-tools-client/src/index.mjs";
+import {
+  normalizeToolExecution,
+  toolExecutionForDefinition
+} from "../../../packages/plugin-sdk/src/tool-execution.mjs";
 import { enrichToolResultWithArtifacts } from "./run-artifact-service.mjs";
+import { executeWebSearch, WEB_SEARCH_TOOL_DEFINITION } from "./web-search.mjs";
+import {
+  applyToolRetryClassification,
+  ToolInvocationLifecycle
+} from "./tool-invocation-lifecycle.mjs";
 import {
   cancellationType,
   failSpan,
@@ -13,7 +22,7 @@ import {
   telemetryIdentifier
 } from "../../../packages/runtime/dist/telemetry.js";
 
-export const RUNTIME_NATIVE_TOOL_DEFINITIONS = [{
+export const RUNTIME_NATIVE_TOOL_DEFINITIONS = [WEB_SEARCH_TOOL_DEFINITION, {
   name: "webFetch",
   description: "Fetch a public HTTP(S) URL and return bounded markdown-like content.",
   inputSchema: {
@@ -25,7 +34,8 @@ export const RUNTIME_NATIVE_TOOL_DEFINITIONS = [{
     required: ["url"],
     additionalProperties: false
   },
-  hostKinds: ["runtime"]
+  hostKinds: ["runtime"],
+  execution: normalizeToolExecution({ effect: "read" })
 }, {
   name: "todoWrite",
   description: "Replace the durable todo list associated with this Runtime session or Run.",
@@ -62,11 +72,13 @@ export const RUNTIME_NATIVE_TOOL_DEFINITIONS = [{
     required: ["todos"],
     additionalProperties: false
   },
-  hostKinds: ["runtime"]
+  hostKinds: ["runtime"],
+  execution: normalizeToolExecution({ effect: "write" })
 }];
 
 export const RUNTIME_TOOL_DEFINITIONS = [
-  ...LOCAL_TOOLS_TOOL_DEFINITIONS,
+  ...LOCAL_TOOLS_TOOL_DEFINITIONS.filter((tool) =>
+    !RUNTIME_NATIVE_TOOL_DEFINITIONS.some((native) => native.name === tool.name)),
   ...RUNTIME_NATIVE_TOOL_DEFINITIONS
 ];
 
@@ -79,6 +91,7 @@ const WEB_FETCH_PROXY_ORIGINS = [
   "https://r.jina.ai"
 ];
 const FAILURE_CODE_PRIORITY = [
+  "execution_outcome_unknown",
   "rate_limit",
   "http_4xx",
   "http_5xx",
@@ -112,6 +125,9 @@ function httpFailureCode(status) {
 function failureCodeFromText(value) {
   const text = String(value || "").toLowerCase();
   if (!text) return "";
+  if (/execution outcome is unknown|may still be running|termination was not confirmed/.test(text)) {
+    return "execution_outcome_unknown";
+  }
   if (/http\s+429|status\s+429/.test(text)) return "rate_limit";
   if (/http\s+4\d\d|status\s+4\d\d/.test(text)) return "http_4xx";
   if (/http\s+5\d\d|status\s+5\d\d/.test(text)) return "http_5xx";
@@ -132,19 +148,27 @@ function failureCodeFromError(error) {
     || "network_error";
 }
 
+function toolFailureCodeFromError(error) {
+  return String(error?.failureCode || "").trim() || failureCodeFromText(
+    `${error?.message || ""} ${error?.code || ""} ${error?.cause?.code || ""}`
+  ) || "tool_error";
+}
+
 function chooseFailureCode(codes) {
   const set = new Set((Array.isArray(codes) ? codes : []).filter(Boolean));
   return FAILURE_CODE_PRIORITY.find((code) => set.has(code)) || "tool_error";
 }
 
-function classifyToolResult(toolName, result) {
+function classifyToolResult(toolName, result, execution) {
   if (result?.ok !== false) return result;
-  if (String(result.failureCode || "").trim()) return result;
-  return {
-    ...result,
-    failureCode: failureCodeFromText(`${result.error || ""}\n${result.content || ""}`)
-      || (toolName === "webFetch" ? "network_error" : "tool_error")
-  };
+  const classified = String(result.failureCode || "").trim()
+    ? result
+    : {
+        ...result,
+        failureCode: failureCodeFromText(`${result.error || ""}\n${result.content || ""}`)
+          || (toolName === "webFetch" ? "network_error" : "tool_error")
+      };
+  return applyToolRetryClassification(classified, execution);
 }
 
 function stableValue(value) {
@@ -160,9 +184,25 @@ function requestHash(invocation) {
     .update(JSON.stringify(stableValue({
       runId: invocation.runId,
       toolName: invocation.toolCall?.name,
-      arguments: invocation.toolCall?.arguments || {}
+      arguments: invocation.toolCall?.arguments || {},
+      ...(invocation.target ? { target: invocation.target } : {})
     })))
     .digest("hex");
+}
+
+function duplicateUnknownResult(toolName, receipt) {
+  const message = [
+    `Duplicate ${toolName} execution was blocked.`,
+    `Earlier invocation ${receipt.invocationId} has an unknown outcome and may still be running or already completed.`,
+    "Inspect its effects before issuing a deliberately different operation."
+  ].join(" ");
+  return {
+    ok: false,
+    content: message,
+    error: message,
+    failureCode: "execution_outcome_unknown",
+    retryable: false
+  };
 }
 
 function isPrivateIpv4(address) {
@@ -268,10 +308,12 @@ export class RuntimeToolBroker {
     receipts,
     authorizeInvocation = null,
     delegatedToolNames = null,
+    mcpEnabled = true,
     fetchImpl = globalThis.fetch,
     lookupImpl = lookup,
     maxWebResultChars = 30_000,
-    webTimeoutMs = 30_000
+    webTimeoutMs = 30_000,
+    invocationLifecycle = new ToolInvocationLifecycle()
   } = {}) {
     if (!localTools?.listTools || !localTools?.invoke) {
       throw new Error("Runtime Tool Broker requires a delegated Tool Broker");
@@ -283,10 +325,15 @@ export class RuntimeToolBroker {
     this.pluginTools = pluginTools;
     this.receipts = receipts;
     this.authorizeInvocation = authorizeInvocation;
+    this.mcpEnabled = mcpEnabled;
     this.fetchImpl = fetchImpl;
     this.lookupImpl = lookupImpl;
     this.maxWebResultChars = maxWebResultChars;
     this.webTimeoutMs = webTimeoutMs;
+    this.invocationLifecycle = invocationLifecycle;
+    this.activeInvocations = new Map();
+    this.activeRequests = new Map();
+    this.toolDefinitions = new Map();
     this.delegatedToolNames = Array.isArray(delegatedToolNames)
       ? delegatedToolNames.map(String)
       : null;
@@ -301,6 +348,59 @@ export class RuntimeToolBroker {
     if (conflict) {
       throw new Error(`Runtime plugin tool conflicts with built-in tool: ${conflict}`);
     }
+    this.rememberToolDefinitions([
+      ...LOCAL_TOOLS_TOOL_DEFINITIONS,
+      ...(this.localTools.getToolDefinitions?.() || []),
+      ...(this.pluginTools?.getToolDefinitions?.() || []),
+      ...RUNTIME_NATIVE_TOOL_DEFINITIONS
+    ]);
+  }
+
+  rememberToolDefinitions(definitions = []) {
+    for (const definition of definitions) {
+      const name = String(definition?.name || "");
+      if (!name || !this.isToolEnabled(name)) continue;
+      this.toolDefinitions.set(name, {
+        ...definition,
+        execution: toolExecutionForDefinition(definition)
+      });
+    }
+  }
+
+  isToolEnabled(name) {
+    return this.mcpEnabled || !/^mcp(?:__|ListTools$|Call$)/.test(String(name));
+  }
+
+  executionForTool(name) {
+    return this.toolDefinitions.get(String(name || ""))?.execution
+      || normalizeToolExecution(null);
+  }
+
+  getToolDefinitions() {
+    const supported = new Set(this.supportedToolNames);
+    return [...this.toolDefinitions.values()].filter((definition) =>
+      supported.has(definition.name)).map((definition) => ({
+      ...definition,
+      execution: { ...definition.execution }
+    }));
+  }
+
+  async authorizeForReplay(invocation) {
+    const authorized = this.authorizeInvocation
+      ? await this.authorizeInvocation(invocation)
+      : invocation;
+    const name = String(authorized.toolCall?.name || "");
+    if (!this.isToolEnabled(name)) throw new Error("MCP tools are disabled");
+    if (!(authorized.policy?.allowedTools || []).includes(name)) {
+      throw new Error("tool is not allowed by capability policy");
+    }
+    if (
+      name === "todoWrite"
+      && authorized.policy?.preset !== "trusted-automation"
+    ) {
+      throw new Error("todoWrite requires trusted-automation capability");
+    }
+    return authorized;
   }
 
   get supportedToolNames() {
@@ -321,7 +421,7 @@ export class RuntimeToolBroker {
         ...RUNTIME_NATIVE_TOOL_DEFINITIONS.map((tool) => tool.name),
         ...pluginNames
       ])
-    ];
+    ].filter((name) => this.isToolEnabled(name));
   }
 
   async listTools(request = {}) {
@@ -343,14 +443,53 @@ export class RuntimeToolBroker {
       ...RUNTIME_NATIVE_TOOL_DEFINITIONS.map((tool) => tool.name),
       ...plugin.map((tool) => tool.name)
     ]);
-    return [
+    const tools = [
       ...local.filter((tool) => !reserved.has(tool.name)),
       ...native,
       ...plugin
-    ];
+    ].filter((tool) => this.isToolEnabled(tool.name)).map((tool) => ({
+      ...tool,
+      execution: toolExecutionForDefinition(tool)
+    }));
+    this.rememberToolDefinitions(tools);
+    return tools;
   }
 
   async invoke(invocation, signal) {
+    if (!RUNTIME_NATIVE_TOOL_NAMES.has(invocation.toolCall?.name)) {
+      invocation = await (
+        this.localTools.resolveInvocation?.(invocation) || invocation
+      );
+    }
+    const invocationId = String(invocation?.invocationId || "");
+    const hash = requestHash(invocation);
+    const active = this.activeInvocations.get(invocationId);
+    if (active) {
+      await this.authorizeForReplay(invocation);
+      if (active.requestHash !== hash) {
+        throw new Error(
+          `Tool invocation id was reused with different arguments: ${invocationId}`
+        );
+      }
+      return await active.completion;
+    }
+
+    const completion = this.invokeTraced(invocation, signal);
+    this.activeInvocations.set(invocationId, {
+      requestHash: hash,
+      completion
+    });
+    try {
+      return await completion;
+    } finally {
+      const current = this.activeInvocations.get(invocationId);
+      if (current?.completion === completion) {
+        this.activeInvocations.delete(invocationId);
+      }
+    }
+  }
+
+  async invokeTraced(invocation, signal) {
     return runtimeTracer.startActiveSpan("execute_tool", {
       attributes: {
         "gen_ai.operation.name": "execute_tool",
@@ -365,7 +504,9 @@ export class RuntimeToolBroker {
       try {
         const result = await this.invokeObserved(invocation, signal, span, observation);
         span.setAttribute("zion.tool.ok", result.ok === true);
-        if (!result.ok) failSpan(span, "tool_result_error");
+        if (!result.ok) {
+          failSpan(span, result.failureCode || "tool_result_error");
+        }
         return result;
       } catch (error) {
         if (signal?.cancelled) {
@@ -385,9 +526,8 @@ export class RuntimeToolBroker {
   async invokeObserved(invocation, signal, span, observation) {
     // Authorization precedes receipt lookup: revoked users cannot read cached
     // results or skip a newly restricted policy by replaying an invocation ID.
-    if (this.authorizeInvocation) {
-      invocation = await this.authorizeInvocation(invocation);
-    }
+    observation.failureType = "policy_denied";
+    invocation = await this.authorizeForReplay(invocation);
     const hash = requestHash(invocation);
     const existing = await this.receipts.getToolReceipt(invocation.invocationId);
     if (existing) {
@@ -402,15 +542,31 @@ export class RuntimeToolBroker {
     }
 
     const name = String(invocation.toolCall?.name || "");
-    observation.failureType = "policy_denied";
-    if (!(invocation.policy?.allowedTools || []).includes(name)) {
-      throw new Error("tool is not allowed by capability policy");
-    }
+    const execution = this.executionForTool(name);
+    span.setAttribute("zion.tool.effect", execution.effect);
+    span.setAttribute("zion.tool.idempotency", execution.idempotency);
+    span.setAttribute("zion.tool.cancellation", execution.cancellation);
+    const priorUnknown = await this.receipts.findToolReceiptByRequestHash?.(
+      invocation.runId,
+      name,
+      hash
+    );
     if (
-      name === "todoWrite"
-      && invocation.policy?.preset !== "trusted-automation"
+      priorUnknown
+      && priorUnknown.invocationId !== invocation.invocationId
+      && priorUnknown.result?.failureCode === "execution_outcome_unknown"
+      && execution.idempotency !== "safe"
     ) {
-      throw new Error("todoWrite requires trusted-automation capability");
+      span.setAttribute("zion.tool.receipt_hit", true);
+      const result = duplicateUnknownResult(name, priorUnknown);
+      return (await this.receipts.saveToolReceipt({
+        invocationId: invocation.invocationId,
+        runId: invocation.runId,
+        toolName: name,
+        requestHash: hash,
+        result,
+        completedAt: Date.now()
+      })).result;
     }
     if (
       name === "sendMail"
@@ -421,49 +577,107 @@ export class RuntimeToolBroker {
     }
 
     observation.failureType = "tool_error";
-    let result;
-    if (name === "webFetch") {
-      span.setAttribute("zion.tool.host_kind", "runtime");
-      result = await this.invokeWebFetch(invocation, signal);
-    } else if (name === "todoWrite") {
-      span.setAttribute("zion.tool.host_kind", "runtime");
-      result = await this.invokeTodoWrite(invocation);
-    } else if (this.pluginTools?.hasTool?.(name)) {
-      span.setAttribute("zion.tool.host_kind", "runtime-plugin");
-      result = await this.pluginTools.invoke(invocation, signal);
-    } else if (RUNTIME_NATIVE_TOOL_NAMES.has(name)) {
-      throw new Error(`Unsupported Runtime-native tool: ${name}`);
-    } else {
-      span.setAttribute("zion.tool.host_kind", "delegated");
-      result = await this.localTools.invoke(invocation, signal);
+    const activeRequest = this.activeRequests.get(hash);
+    if (
+      activeRequest
+      && activeRequest.invocationId !== invocation.invocationId
+      && execution.idempotency !== "safe"
+    ) {
+      span.setAttribute("zion.tool.receipt_hit", true);
+      const result = duplicateUnknownResult(name, activeRequest);
+      return (await this.receipts.saveToolReceipt({
+        invocationId: invocation.invocationId,
+        runId: invocation.runId,
+        toolName: name,
+        requestHash: hash,
+        result,
+        completedAt: Date.now()
+      })).result;
     }
 
-    const completedAt = Date.now();
-    const resultWithArtifacts = enrichToolResultWithArtifacts(
-      invocation,
-      result,
-      completedAt
-    );
-    const enrichedResult = classifyToolResult(name, resultWithArtifacts);
-    span.setAttribute("zion.tool.artifact_count", enrichedResult.artifacts?.length || 0);
-    span.setAttribute("zion.tool.change_count", enrichedResult.changes?.length || 0);
-    if (enrichedResult.artifacts?.length || enrichedResult.changes?.length) {
-      await this.receipts.saveRunArtifacts?.({
-        runId: invocation.runId,
-        invocationId: invocation.invocationId,
-        artifacts: enrichedResult.artifacts || [],
-        changes: enrichedResult.changes || [],
-        createdAt: completedAt
-      });
-    }
-    return (await this.receipts.saveToolReceipt({
+    const invokeHost = async (executionSignal) => {
+      if (name === "webSearch") {
+        span.setAttribute("zion.tool.host_kind", "runtime");
+        return await executeWebSearch(invocation.toolCall?.arguments, {
+          fetchImpl: this.fetchImpl,
+          signal: executionSignal,
+          invocationId: invocation.invocationId,
+          timeoutMs: this.webTimeoutMs,
+          maxResultChars: this.maxWebResultChars
+        });
+      }
+      if (name === "webFetch") {
+        span.setAttribute("zion.tool.host_kind", "runtime");
+        return await this.invokeWebFetch(invocation, executionSignal);
+      }
+      if (name === "todoWrite") {
+        span.setAttribute("zion.tool.host_kind", "runtime");
+        return await this.invokeTodoWrite(invocation);
+      }
+      if (this.pluginTools?.hasTool?.(name)) {
+        span.setAttribute("zion.tool.host_kind", "runtime-plugin");
+        return await this.pluginTools.invoke(invocation, executionSignal);
+      }
+      if (RUNTIME_NATIVE_TOOL_NAMES.has(name)) {
+        throw new Error(`Unsupported Runtime-native tool: ${name}`);
+      }
+      span.setAttribute("zion.tool.host_kind", "delegated");
+      return await this.localTools.invoke(invocation, executionSignal);
+    };
+    const activeMarker = {
       invocationId: invocation.invocationId,
-      runId: invocation.runId,
-      toolName: name,
-      requestHash: hash,
-      result: enrichedResult,
-      completedAt
-    })).result;
+      requestHash: hash
+    };
+    this.activeRequests.set(hash, activeMarker);
+    try {
+      const result = await this.invocationLifecycle.execute({
+        invocation,
+        signal,
+        execution,
+        invoke: invokeHost,
+        failureCodeFromError: toolFailureCodeFromError
+      });
+      const completedAt = Date.now();
+      const resultWithArtifacts = enrichToolResultWithArtifacts(
+        invocation,
+        result,
+        completedAt
+      );
+      const enrichedResult = classifyToolResult(
+        name,
+        resultWithArtifacts,
+        execution
+      );
+      span.setAttribute(
+        "zion.tool.artifact_count",
+        enrichedResult.artifacts?.length || 0
+      );
+      span.setAttribute(
+        "zion.tool.change_count",
+        enrichedResult.changes?.length || 0
+      );
+      if (enrichedResult.artifacts?.length || enrichedResult.changes?.length) {
+        await this.receipts.saveRunArtifacts?.({
+          runId: invocation.runId,
+          invocationId: invocation.invocationId,
+          artifacts: enrichedResult.artifacts || [],
+          changes: enrichedResult.changes || [],
+          createdAt: completedAt
+        });
+      }
+      return (await this.receipts.saveToolReceipt({
+        invocationId: invocation.invocationId,
+        runId: invocation.runId,
+        toolName: name,
+        requestHash: hash,
+        result: enrichedResult,
+        completedAt
+      })).result;
+    } finally {
+      if (this.activeRequests.get(hash) === activeMarker) {
+        this.activeRequests.delete(hash);
+      }
+    }
   }
 
   async invokeWebFetch(invocation, signal) {

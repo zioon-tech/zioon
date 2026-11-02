@@ -10,7 +10,7 @@ export type AccountSession = {
     kind: "personal" | "team";
     membership: { role: string; status: string };
   }>;
-  capabilities?: { teamSpaces?: boolean };
+  capabilities?: { teamSpaces?: boolean; loginSettingsUrl?: string };
   scopes: string[];
   sessionId: string;
   expiresAt: number;

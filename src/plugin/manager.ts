@@ -23,8 +23,10 @@ import type {
   NormalizedPluginManifest
 } from './types';
 import { PluginLoader } from './loader';
+import { runtimePluginCommand } from '../runtime/runtime-plugin-commands';
 import { createPluginLocations } from './data-locations';
 import { EXTERNALIZED_BUILTIN_PLUGIN_IDS } from './externalized';
+import { developmentFileUrl } from '../../packages/runtime-client/src/plugin-development.mjs';
 import {
   createPluginModuleBlobUrl,
   normalizePluginModulePath
@@ -101,7 +103,7 @@ export class PluginManager extends EventEmitter {
 
   getPluginOrigin(plugin: PluginInfo | null | undefined): PluginOrigin {
     const explicit = plugin?.origin;
-    if (explicit === 'builtin' || explicit === 'dev' || explicit === 'external') return explicit;
+    if (explicit === 'builtin' || explicit === 'dev' || explicit === 'external' || explicit === 'account') return explicit;
     const path = String(plugin?.path || '');
     const manifest: any = plugin?.manifest || {};
     const main = String(
@@ -130,7 +132,8 @@ export class PluginManager extends EventEmitter {
           const baseUrl = String(info?.baseUrl || '').trim();
           const dir = String(info?.dir || '').trim();
           if (!pluginId || !devId || !baseUrl || !dir) continue;
-          records[pluginId] = { pluginId, devId, baseUrl, dir };
+          records[pluginId] = { pluginId, devId, baseUrl, dir,
+            ...(info?.nodeId ? { nodeId: String(info.nodeId) } : {}) };
         }
       }
 
@@ -163,7 +166,8 @@ export class PluginManager extends EventEmitter {
 
     try {
       const records = this.listDevSessionRecords();
-      records[pluginId] = { pluginId, devId, baseUrl, dir };
+      records[pluginId] = { pluginId, devId, baseUrl, dir,
+        ...(record.nodeId ? { nodeId: String(record.nodeId) } : {}) };
       localStorage.setItem(DEV_SESSIONS_STORAGE_KEY, JSON.stringify(records));
       localStorage.setItem(DEV_SESSIONS_MIGRATION_KEY, '1');
       return true;
@@ -615,8 +619,17 @@ export class PluginManager extends EventEmitter {
 
     const existing = this.plugins.get(pluginInfo.id);
     if (existing) {
+      const refreshInactivePackage = Boolean(
+        enabled
+        && !this.activePlugins.has(existing.id)
+        && pluginInfo.scriptContents
+        && pluginInfo.sourceEntries
+      );
       // 已安装：如果版本不同则更新，否则根据需要调整启用状态
-      if (this.shouldReplaceInstalledPlugin(existing, pluginInfo)) {
+      if (
+        this.shouldReplaceInstalledPlugin(existing, pluginInfo)
+        || refreshInactivePackage
+      ) {
         this.log('info', `检测到插件版本变化，准备更新: ${pluginInfo.id} ${existing.version} -> ${pluginInfo.version}`);
         return await this.updateFromInfo(pluginInfo, { enabled });
       } else {
@@ -677,6 +690,12 @@ export class PluginManager extends EventEmitter {
 
     const existingScripts = this.scriptSignature(existing);
     const incomingScripts = this.scriptSignature(pluginInfo);
+    const refreshInactivePackage = Boolean(
+      desiredEnabled
+      && !this.activePlugins.has(existing.id)
+      && pluginInfo.scriptContents
+      && pluginInfo.sourceEntries
+    );
     const isEffectivelySame =
       existing.version === pluginInfo.version &&
       existing.path === pluginInfo.path &&
@@ -685,7 +704,7 @@ export class PluginManager extends EventEmitter {
       existingScripts === incomingScripts &&
       !!existing.enabled === !!desiredEnabled;
 
-    if (isEffectivelySame) {
+    if (isEffectivelySame && !refreshInactivePackage) {
       const reuseRuntimeModuleUrls = Boolean(
         existing.scriptBlobUrls
         && pluginInfo.scriptBlobUrls
@@ -864,6 +883,7 @@ export class PluginManager extends EventEmitter {
       this.enabledPlugins.delete(pluginId);
       this.disabledPlugins.delete(pluginId);
       this.revokePluginEntryUrls(pluginInfo);
+      this.removePluginStyles(pluginId);
       await deletePluginScriptContents(pluginInfo.scriptStorageKey);
 
       // 保存状态
@@ -1142,6 +1162,7 @@ export class PluginManager extends EventEmitter {
 
       // 从激活插件列表中移除
       this.activePlugins.delete(pluginId);
+      this.removePluginStyles(pluginId);
 
       // 触发事件
       this.emit('deactivated', info);
@@ -1164,7 +1185,9 @@ export class PluginManager extends EventEmitter {
       globalState: this.createMemento(`plugin.${pluginInfo.id}.global`),
       workspaceState: this.createMemento(`plugin.${pluginInfo.id}.workspace`),
       configuration: this.createConfigurationManager(pluginInfo.id),
+      runtime: { command: (args) => runtimePluginCommand(pluginInfo.id, args, pluginInfo.accountInstallation) },
       asAbsolutePath: (relativePath: string) => {
+        if (pluginInfo.sourceNodeId) return developmentFileUrl(pluginInfo.path, relativePath);
         return `${pluginInfo.path}/${relativePath.replace(/^\.\//, '')}`;
       },
       log: (message: string, level: 'info' | 'warn' | 'error' = 'info') => {
@@ -1399,6 +1422,7 @@ export class PluginManager extends EventEmitter {
               ? Number(rec.scriptContentBytes)
               : undefined,
             sourceDir: typeof rec.sourceDir === 'string' ? rec.sourceDir : undefined,
+            sourceNodeId: typeof rec.sourceNodeId === 'string' ? rec.sourceNodeId : undefined,
             devId: typeof rec.devId === 'string' ? rec.devId : undefined,
             contract: rec.contract && typeof rec.contract === 'object'
               ? rec.contract
@@ -1431,7 +1455,9 @@ export class PluginManager extends EventEmitter {
    * 持久化已安装插件列表到本地存储
    */
   private shouldPersistInstalledPlugin(pluginInfo: PluginInfo): boolean {
-    return this.getPluginOrigin(pluginInfo) !== 'builtin';
+    // Account development code is rediscovered through the authenticated
+    // registry at startup; a previous account's browser cache cannot activate it.
+    return !['builtin', 'account'].includes(this.getPluginOrigin(pluginInfo)) && !pluginInfo.sourceNodeId;
   }
 
   private async createPersistablePluginRecord(
@@ -1486,6 +1512,7 @@ export class PluginManager extends EventEmitter {
       scriptStorageKey,
       scriptContentBytes,
       sourceDir: p.sourceDir,
+      sourceNodeId: p.sourceNodeId,
       devId: p.devId,
       contract: this.createPersistableContract(p)
     };

@@ -1,7 +1,34 @@
 import { describe, expect, it, vi } from "vitest";
 import { createPluginModelService } from "../src/plugin-model-service.mjs";
+import { CancellationController } from "../../../packages/runtime/src/index";
 
 describe("plugin model service", () => {
+  it("propagates parent cancellation and observes summary usage/output limits", async () => {
+    const parent = new CancellationController();
+    const usage = vi.fn();
+    const service = createPluginModelService({ engine: {
+      async *streamTurn(request) {
+        expect(request.maxOutputTokens).toBe(512);
+        expect(request.modelOptions).toEqual({ thinkingMode: "off" });
+        yield { type: "model.usage", usage: { inputTokens: 120, outputTokens: 10 } };
+        parent.cancel("user");
+        request.signal.throwIfCancelled();
+      }
+    }});
+    await expect(service.generateText({ messages: [{ role: "user", content: "summary" }],
+      signal: parent.signal, maxOutputTokens: 512, modelOptions: { thinkingMode: "off" }, onUsage: usage
+    })).rejects.toThrow("cancelled");
+    expect(usage).toHaveBeenCalledWith({ inputTokens: 120, outputTokens: 10 });
+  });
+
+  it("rejects oversized generated summaries", async () => {
+    const service = createPluginModelService({ engine: { async *streamTurn() {
+      yield { type: "message.delta", delta: "too much output" };
+    }}});
+    await expect(service.generateText({ messages: [{ role: "user", content: "summary" }], maxOutputChars: 3 }))
+      .rejects.toThrow("exceeded its budget");
+  });
+
   it("generates plain text through the configured Agent engine without tools", async () => {
     const onRequest = vi.fn();
     const engine = {

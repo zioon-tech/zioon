@@ -42,6 +42,9 @@ export type SessionRuntimeOptions = {
 };
 
 function debugSessionRuntime(_event: string, _payload?: any): void {
+  // #region debug-point panel-tab-switch
+  try { const debug = (globalThis as any).__zionPanelDebug; if (debug?.url) void fetch(debug.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: "panel-tab-flicker", runId: debug.runId, hypothesisId: "A", location: "SessionRuntime", message: _event, data: _payload }) }).catch(() => {}); } catch {}
+  // #endregion
 }
 
 export class SessionRuntime implements Disposable {
@@ -227,15 +230,15 @@ export class SessionRuntime implements Disposable {
       }
       return false;
     }
-    try {
-      (this.opts.getEditor(panelId) as any)?.setSessionId?.(sessionId);
-    } catch {}
     if (this.activeSwitches.get(panelId) !== switchToken) {
       return true;
     }
     if (this.opts.getPanel(panelId)?.activeTabId !== sessionId) {
       return true;
     }
+    try {
+      (this.opts.getEditor(panelId) as any)?.setSessionId?.(sessionId);
+    } catch {}
 
     try {
       this.opts.emit?.("session/afterSwitch", {

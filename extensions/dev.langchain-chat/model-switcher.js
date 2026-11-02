@@ -219,6 +219,7 @@ export function installModelSwitcher() {
     const next = { ...(config || {}) };
     if (!item?.runtimeProfileId) return next;
     for (const key of [
+      "stream",
       "supportsImage",
       "supportsThinking",
       "supportsThinkingEffort",
@@ -441,7 +442,7 @@ export function installModelSwitcher() {
       });
       // providerId 显示
       const provSpan = document.createElement("span");
-      provSpan.textContent = m.providerId;
+      provSpan.textContent = m.accountExtension ? "账户插件" : m.providerId;
       right.appendChild(provSpan);
 
       // 操作按钮

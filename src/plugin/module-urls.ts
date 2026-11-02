@@ -1,8 +1,23 @@
-const MODULE_SPECIFIER_PATTERNS = [
-  /\b(import\s+(?:[^'"]*?\s+from\s*)?["'])(\.{1,2}\/[^"']+)(["'])/gs,
-  /\b(export\s+(?:[^'"]*?\s+from\s*)["'])(\.{1,2}\/[^"']+)(["'])/gs,
-  /\b(import\s*\(\s*["'])(\.{1,2}\/[^"']+)(["']\s*\))/gs
-];
+import { parse } from 'acorn';
+
+export function pluginModuleSpecifiers(source: string): Array<{ specifier: string; start: number; end: number }> {
+  const tree = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const found: Array<{ specifier: string; start: number; end: number }> = [];
+  const walk = (node: any) => {
+    if (!node || typeof node !== 'object') return;
+    if (['ImportDeclaration', 'ExportAllDeclaration', 'ExportNamedDeclaration', 'ImportExpression'].includes(node.type)
+      && typeof node.source?.value === 'string' && /^\.\.?\//.test(node.source.value)) {
+      found.push({ specifier: node.source.value, start: node.source.start, end: node.source.end });
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (['type', 'start', 'end'].includes(key)) continue;
+      if (Array.isArray(child)) child.forEach(walk);
+      else if (child && typeof child === 'object') walk(child);
+    }
+  };
+  walk(tree);
+  return found;
+}
 
 export function normalizePluginModulePath(input: string): string {
   const parts: string[] = [];
@@ -43,19 +58,6 @@ function resolveModuleSpecifier(
   return match;
 }
 
-function replaceModuleSpecifiers(
-  source: string,
-  pattern: RegExp,
-  resolveUrl: (specifier: string) => string
-): string {
-  return source.replace(pattern, (
-    _full,
-    before: string,
-    specifier: string,
-    after: string
-  ) => `${before}${resolveUrl(specifier)}${after}`);
-}
-
 export function createPluginModuleBlobUrl({
   entryPath,
   sources,
@@ -90,8 +92,8 @@ export function createPluginModuleBlobUrl({
     });
   };
   let code = source;
-  for (const pattern of MODULE_SPECIFIER_PATTERNS) {
-    code = replaceModuleSpecifiers(code, pattern, resolveUrl);
+  for (const item of pluginModuleSpecifiers(source).sort((a, b) => b.start - a.start)) {
+    code = code.slice(0, item.start) + JSON.stringify(resolveUrl(item.specifier)) + code.slice(item.end);
   }
 
   const url = URL.createObjectURL(

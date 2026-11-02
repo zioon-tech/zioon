@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPluginDataFileHost } from "../packages/local-tools-client/src/plugin-data-files.mjs";
 import { createPluginFileService } from "../apps/runtime/src/plugin-file-service.mjs";
 import { createDeviceServiceClient } from "../apps/runtime/src/device-service-client.mjs";
+import { createPluginDataLocations } from "../apps/runtime/src/plugin-data-locations.mjs";
 import { RuntimeIdentityContextProvider, activateRuntimePlugin } from "../extensions/dev.identity/runtime.js";
 
 const roots = [];
@@ -46,6 +47,59 @@ describe("Identity plugin data integration", () => {
     expect(second.filter((item) => item.content.includes("<identity_context>"))).toHaveLength(1);
   });
 
+  it("directs agent-fs memory access through native MCP and its cached Skill", async () => {
+    const { location, state, fileService } = await setup();
+    const provider = new RuntimeIdentityContextProvider({
+      state,
+      fileService,
+      memoryRoot: location.root,
+      dataLocation: { ...location, backend: "agent-fs", apiUrl: "https://memory.example.test" }
+    });
+    const [context] = await provider.contribute(
+      [{ role: "user", content: "inspect memory" }],
+      { runId: "agentfs-context" }
+    );
+    expect(context.content).toContain("authoritative agent-fs memory service");
+    expect(context.content).toContain("mcp__agentfs__grep");
+    expect(context.content).toContain('name: "agentfs-memory", include_body: true');
+    expect(context.content).toContain("do not use a sandbox loopback address or a plugin-data mirror");
+    expect(context.content).not.toContain("biographyQuery");
+    expect(context.content).not.toContain("query-biography.py");
+  });
+
+  it("uses CLI instructions and exposes no MCP tools when MCP is disabled", async () => {
+    const { location, state, fileService } = await setup();
+    const tools = new Map();
+    const providers = [];
+    const disposable = activateRuntimePlugin({
+      plugin: { id: "dev.identity", version: "test" },
+      locations: { data: {
+        ...location, backend: "agent-fs", apiUrl: "https://memory.example.test", accessMode: "cli"
+      } },
+      config: { fileService, mcpService: null, memoryAccessMode: "cli" },
+      state: { namespace: () => state },
+      context: { registerProvider(provider) {
+        providers.push(provider);
+        return { dispose() {} };
+      } },
+      tools: { registerTool(tool) {
+        tools.set(tool.name, tool);
+        return { dispose() {} };
+      } }
+    });
+    try {
+      const [context] = await providers[0].contribute(
+        [{ role: "user", content: "inspect memory using CLI" }],
+        { runId: "agentfs-cli-context" }
+      );
+      expect(context.content).toContain("MCP tools are disabled");
+      expect(context.content).toContain("use Bash with the authenticated agent-fs CLI");
+      expect(context.content).toContain("agent-fs download");
+      expect(context.content).not.toContain("mcp__agentfs__");
+      expect([...tools.keys()].some((name) => name.startsWith("mcp__"))).toBe(false);
+    } finally { await disposable.dispose(); }
+  });
+
   it("freezes Runtime identity context per chat session across Runs", async () => {
     const { location, state, fileService, values } = await setup();
     await mkdir(location.root, { recursive: true });
@@ -77,6 +131,122 @@ describe("Identity plugin data integration", () => {
       .toContain("Session original");
   });
 
+  it("isolates Identity files and snapshot caches by Space and account", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zion-identity-scoped-"));
+    roots.push(root);
+    const values = new Map();
+    const state = {
+      get: (key) => values.get(key),
+      set: (key, value) => values.set(key, value)
+    };
+    const locations = createPluginDataLocations({
+      root,
+      scope: "account"
+    });
+    const fileService = createPluginFileService({
+      toolHost: { invoke: vi.fn(() => { throw new Error("No terminal should be used"); }) },
+      dataLocation: (runContext, options) =>
+        locations.forPlugin("dev.identity", runContext, options),
+      fileClient: createDeviceServiceClient({
+        service: "local-tools",
+        baseUrl: "http://fixture",
+        dataFiles: createPluginDataFileHost({ root })
+      })
+    });
+    const providers = [];
+    const tools = new Map();
+    const disposable = activateRuntimePlugin({
+      plugin: { id: "dev.identity", version: "test" },
+      locations: {
+        scopeMode: "account",
+        forRequest: (runContext, options) =>
+          locations.forPlugin("dev.identity", runContext, options).data
+      },
+      config: { fileService },
+      state: { namespace: () => state },
+      context: {
+        registerProvider(provider) {
+          providers.push(provider);
+          return { dispose() {} };
+        }
+      },
+      tools: {
+        registerTool(tool) {
+          tools.set(tool.name, tool);
+          return { dispose() {} };
+        }
+      }
+    });
+    const provider = providers[0];
+    const principal = (userId) => ({
+      version: 1,
+      kind: "user",
+      userId,
+      spaceId: "space:one"
+    });
+    const fileContext = (userId) => ({
+      principal: principal(userId),
+      policy: { preset: "workspace-write", fileRoots: [] }
+    });
+    await fileService.writeTextFiles({
+      files: {
+        user: {
+          relativePath: "user.md",
+          content: "# User\nAlice private profile"
+        }
+      },
+      runContext: fileContext("user:alice")
+    });
+    await fileService.writeTextFiles({
+      files: {
+        user: {
+          relativePath: "user.md",
+          content: "# User\nBob private profile"
+        }
+      },
+      runContext: fileContext("user:bob")
+    });
+    const runContext = (userId) => ({
+      runId: `run:${userId}`,
+      request: {
+        principal: principal(userId),
+        policy: { preset: "read-only", fileRoots: [] }
+      }
+    });
+
+    const alice = await provider.contribute(
+      [{ role: "user", content: "hello" }],
+      runContext("user:alice")
+    );
+    const bob = await provider.contribute(
+      [{ role: "user", content: "hello" }],
+      runContext("user:bob")
+    );
+    expect(alice[0].content).toContain("Alice private profile");
+    expect(alice[0].content).not.toContain("Bob private profile");
+    expect(bob[0].content).toContain("Bob private profile");
+    expect(bob[0].content).not.toContain("Alice private profile");
+    expect(values.has("snapshot")).toBe(false);
+    expect(values.has("sessionSnapshots.v1")).toBe(false);
+    const identityContext = JSON.parse((await tools.get("identityContext").invoke(
+      { include_content: true },
+      fileContext("user:alice")
+    )).content);
+    expect(identityContext.content).toContain("Alice private profile");
+    expect(await tools.get("projectAutomationManage").invoke(
+      { action: "get" },
+      fileContext("user:alice")
+    )).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("account-scoped")
+    });
+    await expect(provider.contribute(
+      [{ role: "user", content: "hello" }],
+      { runId: "missing-principal", request: { policy: { preset: "read-only" } } }
+    )).rejects.toThrow("Account-scoped plugin data requires spaceId");
+    await disposable.dispose();
+  });
+
   it("appends concurrent completed runs without replacing either event", async () => {
     const { location, state, fileService } = await setup();
     const tools = new Map();
@@ -103,6 +273,7 @@ describe("Identity plugin data integration", () => {
       });
       const records = loaded.files.events.trim().split("\n").map(JSON.parse);
       expect(records.map((event) => event.runId).sort()).toEqual(["first", "second"]);
+      expect(tools.has("biographyQuery")).toBe(false);
       expect(await manage.invoke({ action: "update_snapshot", content: "old browser" }, {
         policy: { preset: "workspace-write" }
       })).toMatchObject({ ok: false });

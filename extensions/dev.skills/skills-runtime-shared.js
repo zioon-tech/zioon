@@ -92,6 +92,7 @@ function normalizeSkill(skill, defaults = {}) {
     runtimePath: String(entry.runtimePath || entry.runtime_path || ""),
     runtimeFile: String(entry.runtimeFile || entry.runtime_file || ""),
     runtimeCached: entry.runtimeCached === true || entry.runtime_cached === true,
+    files: uniqueStrings(entry.files),
     ...(body ? { body } : {}),
     ...(entry.transient === true ? { transient: true } : {}),
     ...(Array.isArray(entry.sourceVariants) ? {
@@ -345,9 +346,11 @@ export function buildAvailableSkillsContextXml(snapshot, {
       const desc = skill.description
         ? `<description>${escapeXML(skill.description)}</description>`
         : "";
+      const cached = skill.runtimeCached || skill.body;
       const location = skill.runtimeFile
-        || skill.file
-        || (skill.path ? `${skill.path}/SKILL.md` : "");
+        || (!cached
+          ? skill.file || (skill.path ? `${skill.path}/SKILL.md` : "")
+          : "");
       const locationNodeId = skill.runtimeFile
         ? skill.runtimeNodeId
         : skill.sourceNodeId;
@@ -360,7 +363,7 @@ export function buildAvailableSkillsContextXml(snapshot, {
       const sourceXml = skill.sourceNodeId
         ? `<source node_id="${escapeXML(skill.sourceNodeId)}"${sourceStatus ? ` status="${escapeXML(sourceStatus)}"` : ""}>${escapeXML(skill.sourceFile || skill.sourcePath)}</source>`
         : "";
-      const cachedXml = skill.runtimeCached || skill.body
+      const cachedXml = cached
         ? "<runtime_cached>true</runtime_cached>"
         : "";
       const transientBody = skill.transient && skill.body
@@ -375,10 +378,10 @@ export function buildAvailableSkillsContextXml(snapshot, {
     skill.sourceNodeId && sourceStatusByNode?.[skill.sourceNodeId] === "offline"
   );
   const guidance = [
-    "When you need detailed instructions for a skill, use the Read tool with the location and node_id shown above.",
     hasCached
-      ? `If a cached location is unavailable, call ${detailTool} with name and include_body=true to read the Runtime-cached SKILL.md.`
+      ? `For Runtime-cached skills, call ${detailTool} with name and include_body=true. Do not use Read or node_id for their source metadata.`
       : "",
+    "Use the Read tool only for a non-cached skill that shows a location and node_id.",
     hasOfflineSource
       ? "A source Node is offline. Cached instructions remain usable for reasoning, but do not assume that source-local files, commands, credentials, login state, or environment variables are available."
       : ""

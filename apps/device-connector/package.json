@@ -12,6 +12,7 @@
     "test": "vitest run tests"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.27.1",
     "werift": "^0.24.4"
   }
 }

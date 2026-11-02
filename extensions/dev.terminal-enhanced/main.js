@@ -385,7 +385,10 @@ export function connectRuntimePtyWebRtc(
   });
   dataChannel.binaryType = "arraybuffer";
   const outputDecoder = new TextDecoder();
+  const controller = new AbortController();
   let channelId = "";
+  let releasedChannelId = "";
+  let readyTimer = 0;
   let disposed = false;
   let closed = false;
   let opened = false;
@@ -404,6 +407,7 @@ export function connectRuntimePtyWebRtc(
   const request = async (path, init = {}) => {
     const response = await fetch(`${base}${path}`, {
       ...init,
+      signal: controller.signal,
       headers: {
         accept: "application/json",
         ...(init.body ? { "content-type": "application/json" } : {}),
@@ -416,14 +420,23 @@ export function connectRuntimePtyWebRtc(
     }
     return payload;
   };
+  const releaseChannel = () => {
+    if (!channelId || releasedChannelId === channelId) return;
+    releasedChannelId = channelId;
+    fetch(`${base}/sessions/${sid}/pty/webrtc/${encodeURIComponent(channelId)}`,
+      { method: "DELETE", keepalive: true }).catch(() => {});
+  };
   const finish = (error, notify = true) => {
     if (closed) return;
     closed = true;
+    controller.abort();
+    clearTimeout(readyTimer);
     clearTimeout(inputTimer);
     socketState.readyState = WebSocket.CLOSED;
     if (!opened && error) readyReject(error);
     try { dataChannel.close(); } catch {}
     try { peer.close(); } catch {}
+    releaseChannel();
     if (error && notify) errorHandler(error);
     if (notify) closeHandler();
   };
@@ -494,8 +507,10 @@ export function connectRuntimePtyWebRtc(
 
   const ready = (async () => {
     const offer = await peer.createOffer();
+    if (disposed || closed) throw new Error("PTY connection cancelled");
     await peer.setLocalDescription(offer);
     await waitForIceGathering(peer);
+    if (disposed || closed) throw new Error("PTY connection cancelled");
     const local = peer.localDescription;
     if (!local?.sdp) throw new Error("PTY WebRTC offer is unavailable");
     const payload = await request(`/sessions/${sid}/pty/webrtc/offer`, {
@@ -507,6 +522,10 @@ export function connectRuntimePtyWebRtc(
       })
     });
     channelId = String(payload?.channelId || "");
+    if (disposed || closed) {
+      releaseChannel();
+      throw new Error("PTY connection cancelled");
+    }
     if (!channelId || !payload?.answer?.sdp) {
       throw new Error("PTY WebRTC answer is unavailable");
     }
@@ -514,12 +533,13 @@ export function connectRuntimePtyWebRtc(
     await Promise.race([
       transportReady,
       new Promise((_, reject) => {
-        setTimeout(
+        readyTimer = setTimeout(
           () => reject(new Error("PTY WebRTC connection timed out")),
           timeoutMs
         );
       })
     ]);
+    clearTimeout(readyTimer);
   })().catch((error) => {
     finish(null, false);
     throw error;
@@ -533,7 +553,7 @@ export function connectRuntimePtyWebRtc(
       return readSelectedIceRoute(peer);
     },
     send(data) {
-      if (disposed) return;
+      if (disposed || closed) return;
       inputBuffer += String(data || "");
       if (inputBuffer.length >= 4096) {
         clearTimeout(inputTimer);
@@ -567,12 +587,7 @@ export function connectRuntimePtyWebRtc(
       disposed = true;
       clearTimeout(inputTimer);
       socketState.readyState = WebSocket.CLOSING;
-      if (channelId) {
-        fetch(
-          `${base}/sessions/${sid}/pty/webrtc/${encodeURIComponent(channelId)}`,
-          { method: "DELETE", keepalive: true }
-        ).catch(() => {});
-      }
+      releaseChannel();
       finish(null, false);
     }
   };
@@ -768,12 +783,20 @@ export function connectRuntimePty(
   const transportHandlers = new Set();
 
   const wire = (connection) => {
-    connection.onData((chunk) => dataHandler(chunk));
+    connection.onData((chunk) => {
+      if (!disposed && (active === connection || attempt === connection)) dataHandler(chunk);
+    });
     connection.onError((error) => {
-      if (active === connection && !disposed) errorHandler(error);
+      if (active === connection && !disposed) {
+        socketState.readyState = WebSocket.CLOSED;
+        errorHandler(error);
+      }
     });
     connection.onClose(() => {
-      if (active === connection && !disposed) closeHandler();
+      if (active === connection && !disposed) {
+        socketState.readyState = WebSocket.CLOSED;
+        closeHandler();
+      }
     });
   };
   const setTransportStatus = (next) => {
@@ -787,8 +810,9 @@ export function connectRuntimePty(
     await connection.ready;
     if (disposed) {
       connection.dispose();
-      return;
+      throw new Error("PTY connection cancelled");
     }
+    if (connection.ws.readyState !== WebSocket.OPEN) throw new Error("PTY connection closed");
     socketState.readyState = WebSocket.OPEN;
     if (queuedResize) {
       connection.resize(queuedResize.cols, queuedResize.rows);
@@ -800,18 +824,20 @@ export function connectRuntimePty(
     }
   };
   const ready = (async () => {
+    let negotiationTimer = 0;
     try {
       attempt = connectRuntimePtyWebRtc(baseUrl, sessionId, cols, rows);
       wire(attempt);
       await Promise.race([
         attempt.ready,
         new Promise((_, reject) => {
-          setTimeout(
+          negotiationTimer = setTimeout(
             () => reject(new Error("PTY WebRTC negotiation timed out")),
             5000
           );
         })
       ]);
+      clearTimeout(negotiationTimer);
       await activate(attempt);
       setTransportStatus({ transport: "webrtc", phase: "connected" });
       void attempt.getDiagnostics?.().then((diagnostics) => {
@@ -825,6 +851,7 @@ export function connectRuntimePty(
       });
       console.info("[dev.terminal-enhanced] PTY transport: WebRTC");
     } catch (error) {
+      clearTimeout(negotiationTimer);
       try { attempt?.dispose?.(); } catch {}
       if (disposed) throw error;
       const fallbackReason = error?.message || String(error);
@@ -994,7 +1021,7 @@ export function connectCommandRelay(sessionId) {
  * Connect PTY via WebSocket for interactive terminal
  * - Returns { send(data), resize(cols, rows), dispose() }
  */
-function connectPty(sessionId, cols = 80, rows = 24) {
+export function connectPty(sessionId, cols = 80, rows = 24) {
   const base = readBaseUrl().replace(/\/$/, "");
   if (base.includes("/v1/device-services/")) {
     return connectRuntimePty(base, sessionId, cols, rows);
@@ -1002,6 +1029,8 @@ function connectPty(sessionId, cols = 80, rows = 24) {
   const wsUrl = base.replace(/^http/i, "ws") + `/sessions/${encodeURIComponent(sessionId)}/pty/ws`;
   const ws = new WebSocket(wsUrl);
   ws.binaryType = "arraybuffer";
+  const outputDecoder = new TextDecoder();
+  let dataHandler = () => {};
 
   let openResolve;
   let openReject;
@@ -1027,6 +1056,8 @@ function connectPty(sessionId, cols = 80, rows = 24) {
   };
 
   ws.onclose = () => {
+    const tail = outputDecoder.decode();
+    if (tail) dataHandler(tail);
     try {
       if (!opened) openReject?.(new Error("WebSocket closed"));
     } catch {}
@@ -1052,10 +1083,11 @@ function connectPty(sessionId, cols = 80, rows = 24) {
       } catch {}
     },
     onData(handler) {
+      dataHandler = handler;
       ws.onmessage = (ev) => {
         try {
           if (ev.data instanceof ArrayBuffer) {
-            const text = new TextDecoder().decode(new Uint8Array(ev.data));
+            const text = outputDecoder.decode(new Uint8Array(ev.data), { stream: true });
             handler(text);
           } else if (typeof ev.data === "string") {
             handler(ev.data);
@@ -1367,10 +1399,12 @@ export async function activate(ctx) {
 
   const onGlobalKeydown = (e) => {
     try {
-      if (e?.defaultPrevented || e?.isComposing) return;
+      if (e?.defaultPrevented || e?.isComposing || e?.keyCode === 229) return;
       if (!(e?.metaKey || e?.ctrlKey) || e?.altKey) return;
       if (String(e.key || "").toLowerCase() !== "j") return;
-      if (e.shiftKey) return;
+      const inTerminal = !!e.target?.closest?.(".zion-terminal-enhanced-root");
+      if (inTerminal && e.ctrlKey && !e.metaKey && !e.shiftKey) return;
+      if (e.shiftKey && !(inTerminal && e.ctrlKey && !e.metaKey)) return;
       e.preventDefault();
       e.stopPropagation();
       window.zion?.commands?.executeCommand?.("terminal.togglePanel");

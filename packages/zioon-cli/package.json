@@ -1,0 +1,11 @@
+{
+  "name": "@zioon/cli",
+  "version": "0.2.1",
+  "description": "Zioon account CLI for conversations, Runs, plugins and authenticated API requests.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": { "node": ">=22.5.0" },
+  "bin": { "zioon": "./bin/zioon.mjs", "zion": "./bin/zioon.mjs" },
+  "exports": { ".": "./dist/sdk.mjs" },
+  "files": ["bin", "dist", "skills", "README.md"]
+}

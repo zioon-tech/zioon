@@ -165,6 +165,20 @@ describe("Lazy session hydration", () => {
     expect(values.get("sessions.doc.unloaded")).toBeUndefined();
     expect(ids).toEqual(new Set(["s", "unloaded"]));
   });
+  it("hydrates a partial metadata catalog without requesting or deleting unseen sessions", () => {
+    const loader = vi.fn();
+    const { repo, values } = repoFixture({}, loader);
+    const ids = new Set(["unseen"]);
+    hydrateSessionCatalog({
+      metadataPartial: true,
+      sessions: [{ id: "seen", session_revision: 1 }, { id: "unseen", session_revision: 1 }],
+      metas: [{ id: "seen", meta: { title: "Seen" } }],
+      index: [{ id: "seen", title: "Seen" }, { id: "unseen", title: "Unseen", size: 12 }]
+    }, { state: values, durableIds: ids, revisions: new Map(), invalidate: repo.invalidate });
+    expect(repo.loadMeta("unseen")).toMatchObject({ title: "Unseen", size: 12 });
+    expect(ids.has("unseen")).toBe(true);
+    expect(loader).not.toHaveBeenCalled();
+  });
 
   it("hydrates before a transform and serializes metadata patches", async () => {
     const { repo, values, persist } = repoFixture({ "sessions.summary.s": { title: "s" } },

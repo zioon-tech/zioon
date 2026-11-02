@@ -24,8 +24,10 @@ import type {
   RunEvent,
   RunHandle,
   RunRecord,
+  RunController,
   RunRequest,
   RunResult,
+  RunOutboxEntry,
   RunStore,
   TimeoutScheduler,
   ToolAuthorizer,
@@ -60,6 +62,17 @@ export type AgentExecutorDependencies = {
   tools: ToolBroker;
   runs: RunStore;
   contexts?: ContextProvider[];
+  controllers?: RunController[];
+  bindRun?: (request: RunRequest, context: {
+    runId: string; attemptId: string; signal: CancellationSignal;
+    resumed: boolean; preview?: boolean;
+  }) => Promise<{
+    contexts?: ContextProvider[];
+    controllers?: RunController[];
+    metadata?: Record<string, unknown>;
+    terminalOutbox?: (result: RunResult) => RunOutboxEntry[];
+    dispose?: () => void | Promise<void>;
+  }>;
   authorizeTool?: ToolAuthorizer;
   authorizeRun?: RunAuthorizer;
   scheduleTimeout?: TimeoutScheduler;
@@ -236,6 +249,7 @@ function contextProviderEnabled(
   provider: ContextProvider,
   request: RunRequest
 ): boolean {
+  if (provider.required) return true;
   const selection = request.metadata?.contextProviders;
   if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
     return true;
@@ -257,6 +271,7 @@ async function applyContextStage({
   attemptId,
   turn,
   signal,
+  contextExtras = {},
   reauthorize,
   onFailure
 }: {
@@ -268,6 +283,7 @@ async function applyContextStage({
   attemptId: string;
   turn?: number;
   signal: CancellationSignal;
+  contextExtras?: Partial<import("./protocol.js").ContextProviderContext>;
   reauthorize: (phase: RunAuthorizationPhase) => void | Promise<void>;
   onFailure: (
     provider: ContextProvider,
@@ -301,6 +317,7 @@ async function applyContextStage({
         preparedMessages.push(...prepared);
       } catch (error) {
         await onFailure(provider, error);
+        if (provider.required) throw error;
       }
     }
     output = [...preparedMessages, ...output];
@@ -317,7 +334,8 @@ async function applyContextStage({
           attemptId,
           ...(turn === undefined ? {} : { turn }),
           request,
-          signal
+          signal,
+          ...contextExtras
         }
       );
       if (!Array.isArray(contributed)) {
@@ -326,6 +344,7 @@ async function applyContextStage({
       output = cloneMessages(contributed);
     } catch (error) {
       await onFailure(provider, error);
+      if (provider.required) throw error;
     }
   }
   return output;
@@ -350,6 +369,9 @@ function toolFailureCode(result: ToolResult | null, fallback = "tool_error"): st
   const explicit = String(result.failureCode || "").trim();
   if (explicit) return explicit;
   const text = `${result.error || ""}\n${result.content || ""}`.toLowerCase();
+  if (/execution outcome is unknown|may still be running|termination was not confirmed/.test(text)) {
+    return "execution_outcome_unknown";
+  }
   if (/http\s+429|status\s+429/.test(text)) return "rate_limit";
   if (/http\s+4\d\d|status\s+4\d\d/.test(text)) return "http_4xx";
   if (/http\s+5\d\d|status\s+5\d\d/.test(text)) return "http_5xx";
@@ -363,7 +385,14 @@ function toolFailureCode(result: ToolResult | null, fallback = "tool_error"): st
 }
 
 function toolFailureCodeFromError(error: unknown): string {
+  const explicit = error && typeof error === "object" && "failureCode" in error
+    ? String(error.failureCode || "").trim()
+    : "";
+  if (explicit) return explicit;
   const text = errorMessage(error).toLowerCase();
+  if (/execution outcome is unknown|may still be running|termination was not confirmed/.test(text)) {
+    return "execution_outcome_unknown";
+  }
   if (/timeout|timed\s*out|und_err_connect_timeout|etimedout/.test(text)) return "timeout";
   if (/resource_execution_denied|outside_grant|not allowed by capability policy|policy/.test(text)) return "policy_denied";
   if (/permission denied|eacces|forbidden/.test(text)) return "permission_denied";
@@ -375,9 +404,10 @@ function assistantToolCalls(calls: ToolCall[]) {
   return calls.map((call) => ({
     id: call.id,
     type: "function" as const,
+    ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
     function: {
       name: call.name,
-      arguments: JSON.stringify(call.arguments || {})
+      arguments: call.argumentsText ?? JSON.stringify(call.arguments || {})
     }
   }));
 }
@@ -386,7 +416,11 @@ function toolMessage(call: ToolCall, result: ToolResult): TranscriptMessage {
   return {
     role: "tool",
     toolCallId: call.id,
-    content: result.content || result.error || ""
+    content: result.content || result.error || "",
+    toolResultStatus: {
+      ok: result.ok,
+      ...(toolFailureCode(result) ? { failureCode: toolFailureCode(result) } : {})
+    }
   };
 }
 
@@ -435,6 +469,8 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
     tools,
     runs,
     contexts = [],
+    controllers = [],
+    bindRun,
     authorizeTool = defaultAuthorizeTool,
     authorizeRun,
     scheduleTimeout,
@@ -522,6 +558,9 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       let usage = { ...initialUsage };
       let messages = cloneMessages(initialMessages);
       const counters = { ...initialCounters };
+      let bindings: Awaited<ReturnType<NonNullable<AgentExecutorDependencies["bindRun"]>>> | undefined;
+      let runContexts = contexts;
+      let runControllers = controllers;
 
       const publish = async (
         type: string,
@@ -549,7 +588,14 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         const detailEvent = detailData
           ? { ...event, data: detailData }
           : undefined;
-        await runs.append(event, patch, detailEvent);
+        const outbox = ["run.completed", "run.failed", "run.aborted"].includes(type)
+          ? bindings?.terminalOutbox?.({
+              runId, attemptId, status: patch!.status as RunResult["status"],
+              output, usage: { ...usage },
+              ...(patch?.terminalReason ? { reason: patch.terminalReason } : {}),
+              ...(patch?.error ? { error: patch.error } : {})
+            }) : undefined;
+        await runs.append(event, patch, detailEvent, outbox);
         sequence = nextSequence;
         queue.push(detailEvent || event);
         return detailEvent || event;
@@ -591,7 +637,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           status,
           output,
           usage,
-          ...(status === "aborted" ? { reason: terminalReason } : {}),
+          ...(terminalReason !== "completed" ? { reason: terminalReason } : {}),
           ...(error ? { error } : {})
         });
       };
@@ -659,14 +705,35 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           });
         }
 
+        bindings = await bindRun?.(effectiveRequest, {
+          runId, attemptId, signal: cancellation.signal, resumed: !!existingRun
+        });
+        if (bindings) {
+          runContexts = [...contexts, ...(bindings.contexts || [])];
+          runControllers = [...controllers, ...(bindings.controllers || [])];
+          Object.assign(metadata, bindings.metadata || {});
+          effectiveRequest.metadata = metadata;
+          await publish("run.bindings", { bound: true }, {
+            status: existingRun ? "running" : "queued", updatedAt: now(), metadata
+          });
+        }
         const availableTools = await tools.listTools(effectiveRequest);
         const exposedTools = availableTools.filter((tool) =>
           policy.allowedTools.includes(tool.name)
         );
+        const controllerContext = (turn?: number) => ({
+          runId, attemptId, turn, request: effectiveRequest,
+          signal: cancellation.signal, messages: cloneMessages(messages),
+          usage: { ...usage }, tools: exposedTools, output
+        });
+        for (const controller of runControllers) {
+          await reauthorize("context");
+          await controller.beforeStart?.(controllerContext());
+        }
 
         const applyContexts = async (stage: "pre" | "post", turn?: number) => {
           messages = await applyContextStage({
-            contexts,
+            contexts: runContexts,
             stage,
             messages,
             request: effectiveRequest,
@@ -674,6 +741,11 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             attemptId,
             turn,
             signal: cancellation.signal,
+            contextExtras: {
+              tools: exposedTools,
+              usage: { ...usage },
+              recordUsage: (patch) => { usage = addUsage(usage, patch); }
+            },
             reauthorize,
             onFailure: async (provider, error) => {
               await publish("context.failed", {
@@ -702,12 +774,29 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
 
         for (let turn = startTurn; turn <= maxTurns; turn += 1) {
           cancellation.signal.throwIfCancelled();
+          for (const controller of runControllers) {
+            await reauthorize("context");
+            const reason = await controller.beforeTurn?.(controllerContext(turn));
+            if (reason) {
+              cancellation.cancel(reason);
+              cancellation.signal.throwIfCancelled();
+            }
+          }
           await publish("turn.started", { turn, model: request.model || null });
           await applyContexts("post", turn);
+          for (const controller of runControllers) {
+            await reauthorize("context");
+            const reason = await controller.beforeModel?.(controllerContext(turn));
+            if (reason) {
+              cancellation.cancel(reason);
+              cancellation.signal.throwIfCancelled();
+            }
+          }
 
           const calls: ToolCall[] = [];
           let turnOutput = "";
           let turnReasoning = "";
+          let turnMetadata: Record<string, unknown> | undefined;
           let reasoningStarted = false;
           await reauthorize("model");
           for await (const engineEvent of engine.streamTurn({
@@ -722,6 +811,10 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             signal: cancellation.signal
           })) {
             cancellation.signal.throwIfCancelled();
+            if (engineEvent.type === "message.metadata") {
+              turnMetadata = { ...turnMetadata, ...engineEvent.metadata };
+              continue;
+            }
             if (
               engineEvent.type === "reasoning.delta"
               && String(engineEvent.delta || "")
@@ -753,27 +846,53 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
 
           cancellation.signal.throwIfCancelled();
           if (calls.length === 0) {
-            await appendTranscript(turn, 0, {
+            const assistantMessage: TranscriptMessage = {
               role: "assistant",
               content: turnOutput,
+              ...(turnMetadata ? { providerMetadata: turnMetadata } : {}),
               ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
-            });
+            };
+            messages = [...messages, assistantMessage];
+            await appendTranscript(turn, 0, assistantMessage);
             await publish("message.completed", { turn, content: turnOutput });
             await publish("turn.completed", {
               turn,
               model: request.model || null,
               usage
             });
+            let continuation = "";
+            for (const controller of runControllers) {
+              await reauthorize("context");
+              const instruction = await controller.beforeStop?.(controllerContext(turn));
+              if (instruction) {
+                if (continuation) throw new Error("Multiple Run controllers requested continuation");
+                continuation = instruction;
+              }
+            }
+            cancellation.signal.throwIfCancelled();
+            if (continuation && turn < maxTurns) {
+              // A controller instruction is distinct from a trusted user message.
+              messages = [...messages, { role: "assistant", content: continuation }];
+              await runs.saveCheckpoint({
+                schemaVersion: 1, runId, attemptId, sequence,
+                nextTurn: turn + 1, messages: cloneMessages(messages),
+                output, usage: { ...usage }, counters: { ...counters },
+                maxTurns, createdAt: now()
+              });
+              await publish("run.continuing", { turn, controller: true });
+              continue;
+            }
+            const terminalReason = continuation ? "controller-yield" : "completed";
             const completedAt = now();
-            await publish("run.completed", { output, usage }, {
+            await publish("run.completed", { output, usage, reason: terminalReason }, {
               status: "completed",
               updatedAt: completedAt,
               completedAt,
-              terminalReason: "completed",
+              terminalReason,
               output,
               usage
             });
-            settle("completed", "completed");
+            settle("completed", terminalReason);
             return;
           }
 
@@ -781,6 +900,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           await appendTranscript(turn, 0, {
             role: "assistant",
             content: turnOutput,
+            ...(turnMetadata ? { providerMetadata: turnMetadata } : {}),
             ...(turnReasoning ? { reasoningContent: turnReasoning } : {}),
             toolCalls: assistantToolCalls(calls)
           });
@@ -815,19 +935,24 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
 
             counters.toolCalls += 1;
             const invocationId = `${runId}:turn:${turn}:tool:${callIndex}`;
+            const invocation = {
+              invocationId, runId, attemptId, sessionId: request.sessionId,
+              projectId: request.projectId, principal: effectiveRequest.principal,
+              target: request.target, policy, toolCall: call
+            };
             let result: ToolResult;
+            let intercepted = false;
+            for (const controller of runControllers) {
+              await reauthorize("context");
+              const retained = await controller.beforeTool?.(invocation, controllerContext(turn));
+              if (typeof retained === "string") {
+                cancellation.cancel(retained);
+                throw new RunCancelledError(retained);
+              }
+              if (retained) { result = retained; intercepted = true; break; }
+            }
             try {
-              result = await tools.invoke({
-                invocationId,
-                runId,
-                attemptId,
-                sessionId: request.sessionId,
-                projectId: request.projectId,
-                principal: effectiveRequest.principal,
-                target: request.target,
-                policy,
-                toolCall: call
-              }, cancellation.signal);
+              if (!intercepted) result = await tools.invoke(invocation, cancellation.signal);
             } catch (error) {
               result = {
                 ok: false,
@@ -835,6 +960,11 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
                 error: errorMessage(error),
                 failureCode: toolFailureCodeFromError(error)
               };
+            }
+            result = result!;
+            if (!intercepted) for (const controller of runControllers) {
+              await reauthorize("context");
+              await controller.afterTool?.(invocation, result, controllerContext(turn));
             }
             const failureCode = toolFailureCode(result);
             await publish("tool.completed", {
@@ -844,6 +974,9 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
               ok: result.ok,
               error: result.error || null,
               ...(failureCode ? { failureCode } : {}),
+              ...(typeof result.retryable === "boolean"
+                ? { retryable: result.retryable }
+                : {}),
               artifactIds: result.artifactIds || [],
               result: String(result.content || "").slice(0, 4000)
             });
@@ -857,6 +990,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             {
               role: "assistant",
               content: turnOutput,
+              ...(turnMetadata ? { providerMetadata: turnMetadata } : {}),
               ...(turnReasoning ? { reasoningContent: turnReasoning } : {}),
               toolCalls: assistantToolCalls(calls)
             },
@@ -888,6 +1022,29 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           });
         }
 
+        if (runControllers.length) {
+          let continuation = "";
+          let acceptedStop = false;
+          for (const controller of runControllers) {
+            await reauthorize("context");
+            const decision = await controller.beforeStop?.(controllerContext(maxTurns));
+            if (decision === null) acceptedStop = true;
+            else if (decision) {
+              if (continuation) throw new Error("Multiple Run controllers requested continuation");
+              continuation = decision;
+            }
+          }
+          if (continuation || acceptedStop) {
+            const reason = continuation ? "controller-yield" : "completed";
+            const completedAt = now();
+            await publish("run.completed", { output, usage, reason }, {
+              status: "completed", updatedAt: completedAt, completedAt,
+              terminalReason: reason, output, usage
+            });
+            settle("completed", reason);
+            return;
+          }
+        }
         throw new Error(
           `Maximum agent turn count exceeded: ${maxTurns} `
           + `(tool calls executed: ${counters.toolCalls}/${policy.maxToolCalls})`
@@ -899,11 +1056,11 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             const reason = cancellation.signal.reason || "user";
             try {
               const completedAt = now();
-              await publish("run.aborted", { reason }, {
+              await publish("run.aborted", { reason, output, usage }, {
                 status: "aborted",
                 updatedAt: completedAt,
                 completedAt,
-                terminalReason: reason
+                terminalReason: reason, output, usage
               });
               settle("aborted", reason);
             } catch (persistenceError) {
@@ -917,12 +1074,12 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             const message = errorMessage(error);
             try {
               const completedAt = now();
-              await publish("run.failed", { error: message }, {
+              await publish("run.failed", { error: message, output, usage }, {
                 status: "failed",
                 updatedAt: completedAt,
                 completedAt,
                 terminalReason: "failed",
-                error: message
+                error: message, output, usage
               });
               settle("failed", "failed", message);
             } catch (persistenceError) {
@@ -943,6 +1100,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       } finally {
         timeoutDisposable?.dispose();
         queue.close();
+        await bindings?.dispose?.();
       }
     };
 
@@ -982,6 +1140,11 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         error: string;
       }> = [];
       await reauthorize("admission");
+      const bindings = await bindRun?.(effectiveRequest, {
+        runId, attemptId, signal: cancellation.signal, resumed: false, preview: true
+      });
+      try {
+      if (bindings?.metadata) effectiveRequest.metadata = { ...request.metadata, ...bindings.metadata };
       const availableTools = await tools.listTools(effectiveRequest);
       const exposedTools = availableTools.filter((tool) =>
         policy.allowedTools.includes(tool.name)
@@ -989,7 +1152,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       let messages = normalizeMessages(request);
       const apply = async (stage: "pre" | "post", turn?: number) => {
         messages = await applyContextStage({
-          contexts,
+          contexts: [...contexts, ...(bindings?.contexts || [])],
           stage,
           messages,
           request: effectiveRequest,
@@ -997,6 +1160,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           attemptId,
           turn,
           signal: cancellation.signal,
+          contextExtras: { tools: exposedTools, preview: true },
           reauthorize,
           onFailure(provider, error) {
             contextFailures.push({
@@ -1021,7 +1185,9 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         ),
         model: request.model,
         modelOptions: request.modelOptions,
-        signal: cancellation.signal
+        signal: cancellation.signal,
+        preview: true,
+        metadata: effectiveRequest.metadata
       })[Symbol.asyncIterator]();
       try {
         const first = await iterator.next();
@@ -1037,6 +1203,9 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         };
       } finally {
         await iterator.return?.();
+      }
+      } finally {
+        await bindings?.dispose?.();
       }
     },
 
@@ -1119,6 +1288,11 @@ async function consumeEngineEvent(
   event: EngineOutputEvent,
   consumer: EngineEventConsumer
 ): Promise<void> {
+  if (event.type === "message.metadata") return;
+  if (event.type === "model.timing") {
+    await consumer.publish("model.timing", { turn: consumer.turn, ...event.timing });
+    return;
+  }
   if (event.type === "model.request") {
     const summary = await modelRequestSummary(event.request);
     await consumer.publish("model.request", {
@@ -1162,6 +1336,9 @@ async function consumeEngineEvent(
     id: String(event.call.id || ""),
     name: String(event.call.name || ""),
     arguments: { ...(event.call.arguments || {}) },
+    ...(typeof event.call.argumentsText === "string"
+      ? { argumentsText: event.call.argumentsText } : {}),
+    ...(event.call.providerMetadata ? { providerMetadata: event.call.providerMetadata } : {}),
     ...(event.call.validationError
       ? { validationError: String(event.call.validationError) }
       : {})

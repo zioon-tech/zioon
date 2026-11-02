@@ -1,6 +1,23 @@
 import { homedir } from "node:os";
 import { clearTimeout, setTimeout } from "node:timers";
 import { URL, URLSearchParams } from "node:url";
+import { normalizeToolExecution } from "../../plugin-sdk/src/tool-execution.mjs";
+
+export const LOCAL_TOOLS_BASH_DEFAULT_TIMEOUT_MS = 120_000;
+export const LOCAL_TOOLS_BASH_MAX_TIMEOUT_MS = 600_000;
+
+const TOOL_EXECUTION = Object.freeze({
+  read: normalizeToolExecution({ effect: "read" }),
+  write: normalizeToolExecution({ effect: "write" }),
+  process: normalizeToolExecution({ effect: "process" }),
+  external: normalizeToolExecution({ effect: "external" }),
+  bash: normalizeToolExecution({
+    effect: "process",
+    timeoutMs: LOCAL_TOOLS_BASH_DEFAULT_TIMEOUT_MS,
+    maxTimeoutMs: LOCAL_TOOLS_BASH_MAX_TIMEOUT_MS,
+    timeoutArgument: "timeout"
+  })
+});
 
 export const READ_ONLY_TOOL_DEFINITIONS = [
   {
@@ -17,7 +34,8 @@ export const READ_ONLY_TOOL_DEFINITIONS = [
       required: ["path"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.read
   },
   {
     name: "glob",
@@ -32,7 +50,8 @@ export const READ_ONLY_TOOL_DEFINITIONS = [
       required: ["pattern"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.read
   },
   {
     name: "grep",
@@ -61,7 +80,8 @@ export const READ_ONLY_TOOL_DEFINITIONS = [
       required: ["pattern"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.read
   },
   {
     name: "tree",
@@ -76,7 +96,8 @@ export const READ_ONLY_TOOL_DEFINITIONS = [
       required: ["path"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.read
   }
 ];
 
@@ -91,13 +112,15 @@ export const LOCAL_TOOLS_TOOL_DEFINITIONS = [
         path: { type: "string" },
         content: { type: "string" },
         expected_hash: { type: "string", description: "content_hash from read, for conditional plugin-data writes." },
+        create_only: { type: "boolean", description: "Create the file only when it does not already exist." },
         prompt: { type: "string" },
         session_id: { type: "string" }
       },
       required: ["path", "content"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.write
   },
   {
     name: "edit",
@@ -116,23 +139,31 @@ export const LOCAL_TOOLS_TOOL_DEFINITIONS = [
       required: ["path", "old_string", "new_string"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.write
   },
   {
     name: "Bash",
-    description: "Execute a command through local-tools under the Runtime command policy.",
+    description: "Execute a command through local-tools under the Runtime command policy. "
+      + "A timeout can leave the outcome unknown; inspect effects before retrying.",
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string" },
-        timeout: { type: "number" },
+        timeout: {
+          type: "integer",
+          minimum: 1,
+          maximum: LOCAL_TOOLS_BASH_MAX_TIMEOUT_MS,
+          default: LOCAL_TOOLS_BASH_DEFAULT_TIMEOUT_MS
+        },
         description: { type: "string" },
         session_id: { type: "string" }
       },
       required: ["command"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.bash
   },
   {
     name: "webSearch",
@@ -148,7 +179,8 @@ export const LOCAL_TOOLS_TOOL_DEFINITIONS = [
       required: ["query"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.read
   },
   {
     name: "sendMail",
@@ -179,7 +211,8 @@ export const LOCAL_TOOLS_TOOL_DEFINITIONS = [
       required: ["to", "subject", "body"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.external
   },
   {
     name: "mcpListTools",
@@ -189,7 +222,8 @@ export const LOCAL_TOOLS_TOOL_DEFINITIONS = [
       properties: {},
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.read
   },
   {
     name: "mcpCall",
@@ -212,7 +246,8 @@ export const LOCAL_TOOLS_TOOL_DEFINITIONS = [
       required: ["name", "arguments"],
       additionalProperties: false
     },
-    hostKinds: ["local-tools"]
+    hostKinds: ["local-tools"],
+    execution: TOOL_EXECUTION.process
   }
 ];
 
@@ -531,6 +566,10 @@ function requestOptionsForTool(name, args, {
       body: {
         path: args.path,
         content: String(args.content ?? ""),
+        ...(args.expected_hash !== undefined
+          ? { expected_hash: args.expected_hash }
+          : {}),
+        ...(args.create_only ? { create_only: true } : {}),
         session_id: args.session_id || undefined
       }
     };
@@ -544,6 +583,9 @@ function requestOptionsForTool(name, args, {
         old_string: String(args.old_string ?? ""),
         new_string: String(args.new_string ?? ""),
         replace_all: args.replace_all === true,
+        ...(args.expected_hash !== undefined
+          ? { expected_hash: args.expected_hash }
+          : {}),
         session_id: args.session_id || undefined
       }
     };
@@ -629,6 +671,14 @@ export class LocalToolsBroker {
     return selected;
   }
 
+  getToolDefinitions() {
+    return LOCAL_TOOLS_TOOL_DEFINITIONS.map((tool) => ({
+      ...tool,
+      inputSchema: { ...tool.inputSchema },
+      execution: { ...tool.execution }
+    }));
+  }
+
   async invoke(invocation, signal) {
     const call = invocation.toolCall || {};
     if (!TOOL_NAMES.has(call.name)) {
@@ -659,7 +709,21 @@ export class LocalToolsBroker {
 
     signal.throwIfCancelled();
     const controller = new globalThis.AbortController();
-    const cancellation = signal.onCancel(() => controller.abort());
+    const cancellation = signal.onCancel((reason) => {
+      // #region debug-point B:mac-local-tools-abort
+      void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "mac-command-sigkill", runId: "post-fix", hypothesisId: "B", location: "local-tools-client:index.mjs:invoke", msg: "[DEBUG] Mac local-tools request aborted", data: { invocationId: invocation.invocationId, toolName: call.name, reason: reason || signal.reason || null, abortedAt: Date.now() }, ts: Date.now() }) }).catch(() => {});
+      // #endregion
+      // #region debug-point A:local-tools-abort-requested
+      void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "command-timeout-duplicates", runId: "pre-fix", hypothesisId: "A", location: "local-tools-client:index.mjs:invoke", msg: "[DEBUG] Local-tools HTTP abort requested", data: { invocationId: invocation.invocationId, toolName: call.name, reason: reason || signal.reason || null, abortedAt: Date.now() }, ts: Date.now() }) }).catch(() => {});
+      // #endregion
+      controller.abort();
+    });
+    // #region debug-point A-D:mac-local-tools-request
+    void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "mac-command-sigkill", runId: "post-fix", hypothesisId: "A-D", location: "local-tools-client:index.mjs:invoke", msg: "[DEBUG] Mac local-tools HTTP request started", data: { invocationId: invocation.invocationId, toolName: call.name, requestPath: request.path, hasSessionId: Boolean(args.session_id), requestedTimeoutMs: request.body?.timeout ?? null, dangerousRequested: request.body?.dangerouslyDisableSandbox === true, startedAt: Date.now() }, ts: Date.now() }) }).catch(() => {});
+    // #endregion
+    // #region debug-point A:local-tools-request-started
+    void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "command-timeout-duplicates", runId: "pre-fix", hypothesisId: "A", location: "local-tools-client:index.mjs:invoke", msg: "[DEBUG] Local-tools HTTP request started", data: { invocationId: invocation.invocationId, toolName: call.name, requestPath: request.path, requestedTimeoutMs: request.body?.timeout ?? null, startedAt: Date.now() }, ts: Date.now() }) }).catch(() => {});
+    // #endregion
     try {
       const response = await this.fetchImpl(
         new URL(request.path, this.baseUrl),
@@ -689,20 +753,51 @@ export class LocalToolsBroker {
           || (payload.ok === false ? "local-tools request failed" : "")
           || (mcpResult?.isError ? "MCP tool returned an error" : "")
         : "";
+      // #region debug-point C:mac-local-tools-response
+      void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "mac-command-sigkill", runId: "post-fix", hypothesisId: "C", location: "local-tools-client:index.mjs:invoke", msg: "[DEBUG] Mac local-tools HTTP response received", data: { invocationId: invocation.invocationId, toolName: call.name, httpStatus: response.status, payloadOk: payload?.ok ?? null, exitCode: payload?.exit_code ?? null, payloadTimeout: payload?.timeout === true, durationMs: payload?.duration_ms ?? null, sandbox: payload?.sandbox ?? null, applicationError: Boolean(applicationError), receivedAt: Date.now() }, ts: Date.now() }) }).catch(() => {});
+      // #endregion
+      // #region debug-point E:local-tools-response
+      void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "command-timeout-duplicates", runId: "pre-fix", hypothesisId: "E", location: "local-tools-client:index.mjs:invoke", msg: "[DEBUG] Local-tools HTTP response received", data: { invocationId: invocation.invocationId, toolName: call.name, httpStatus: response.status, payloadOk: payload?.ok ?? null, payloadTimeout: payload?.timeout === true, durationMs: payload?.duration_ms ?? null, applicationError: Boolean(applicationError), receivedAt: Date.now() }, ts: Date.now() }) }).catch(() => {});
+      // #endregion
       if (!response.ok || applicationError) {
+        const executionOutcomeUnknown = call.name === "Bash"
+          && payload?.timeout === true;
+        const uncertaintyWarning = executionOutcomeUnknown
+          ? "Command execution timed out, but child-process termination was not confirmed. "
+            + "The command may still be running or may already have completed. "
+            + "Do not retry it until you have inspected its effects."
+          : "";
         const error = String(
-          applicationError || payload?.detail || raw || `HTTP ${response.status}`
+          uncertaintyWarning
+          || applicationError
+          || payload?.detail
+          || raw
+          || `HTTP ${response.status}`
         );
         return {
           ok: false,
-          content: compactResult(payload ?? error, this.maxResultChars),
-          error
+          content: [
+            uncertaintyWarning,
+            compactResult(payload ?? error, this.maxResultChars)
+          ].filter(Boolean).join("\n"),
+          error,
+          ...(executionOutcomeUnknown
+            ? { failureCode: "execution_outcome_unknown", retryable: false }
+            : {
+                failureCode: String(payload?.failureCode || (response.status >= 500 ? "http_5xx" : "http_4xx")),
+                ...(typeof payload?.retryable === "boolean" ? { retryable: payload.retryable } : {})
+              })
         };
       }
       return {
         ok: true,
         content: compactResult(mcpResult ?? payload, this.maxResultChars)
       };
+    } catch (error) {
+      // #region debug-point D:local-tools-request-error
+      void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "command-timeout-duplicates", runId: "pre-fix", hypothesisId: "D", location: "local-tools-client:index.mjs:invoke", msg: "[DEBUG] Local-tools HTTP request threw", data: { invocationId: invocation.invocationId, toolName: call.name, errorName: error?.name || "", errorMessage: String(error?.message || error), signalCancelled: signal.cancelled, cancelReason: signal.reason || null, failedAt: Date.now() }, ts: Date.now() }) }).catch(() => {});
+      // #endregion
+      throw error;
     } finally {
       cancellation.dispose();
     }
@@ -731,6 +826,14 @@ export class LocalToolsBroker {
 }
 
 export class LocalToolsReadOnlyBroker extends LocalToolsBroker {
+  getToolDefinitions() {
+    return READ_ONLY_TOOL_DEFINITIONS.map((tool) => ({
+      ...tool,
+      inputSchema: { ...tool.inputSchema },
+      execution: { ...tool.execution }
+    }));
+  }
+
   async listTools(request = {}) {
     const readOnlyAllowed = (request.policy?.allowedTools || [])
       .filter((name) => READ_ONLY_TOOL_DEFINITIONS.some((tool) => tool.name === name));

@@ -55,18 +55,35 @@ export type OpenAICompatibleEngineOptions = {
   temperature?: number;
   maxOutputTokens?: number;
   requestBody?: Readonly<Record<string, unknown>>;
+  supportsStreaming?: boolean;
+  observeTimings?: boolean;
 };
 
 type ToolCallBuffer = {
   id: string;
   name: string;
   argumentsText: string;
+  providerMetadata?: Record<string, unknown>;
 };
 
 function asRecord(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, any>
     : {};
+}
+
+// Provider extensions travel only within a message/tool call. They must never
+// override the Runtime's canonical role, function or dispatch fields.
+export function normalizeModelProviderMetadata(value: unknown): Record<string, unknown> | undefined {
+  const reserved = new Set([
+    "role", "content", "reasoning_content", "reasoning", "tool_calls", "tool_call_id",
+    "id", "index", "type", "function", "name", "arguments",
+    "providerMetadata", "reasoningContent", "toolCalls", "toolCallId",
+    "contextProviderId", "toolResultStatus", "__proto__", "constructor", "prototype"
+  ]);
+  const entries = Object.entries(asRecord(value)).filter(([key, item]) =>
+    !reserved.has(key) && item !== undefined);
+  return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
 function mapMessage(message: TranscriptMessage): Record<string, unknown> {
@@ -79,15 +96,23 @@ function mapMessage(message: TranscriptMessage): Record<string, unknown> {
   }
   if (message.role === "assistant" && message.toolCalls?.length) {
     return {
+      ...normalizeModelProviderMetadata(message.providerMetadata),
       role: "assistant",
       content: message.content || null,
       ...(message.reasoningContent
         ? { reasoning_content: message.reasoningContent }
         : {}),
-      tool_calls: message.toolCalls
+      tool_calls: message.toolCalls.map((call) => ({
+        ...normalizeModelProviderMetadata(call.providerMetadata),
+        id: call.id,
+        type: call.type,
+        function: call.function
+      }))
     };
   }
   return {
+    ...(message.role === "assistant"
+      ? normalizeModelProviderMetadata(message.providerMetadata) : {}),
     role: message.role,
     content: message.content,
     ...(message.role === "assistant" && message.reasoningContent
@@ -192,6 +217,9 @@ function completeToolCall(
     id: buffer.id || fallbackId,
     name: buffer.name,
     arguments: args,
+    ...(buffer.argumentsText !== JSON.stringify(args)
+      ? { argumentsText: buffer.argumentsText } : {}),
+    ...(buffer.providerMetadata ? { providerMetadata: buffer.providerMetadata } : {}),
     ...(validationError ? { validationError } : {})
   };
 }
@@ -275,6 +303,8 @@ function ingestToolCallDeltas(
     if (delta.id) current.id = String(delta.id);
     if (fn.name) current.name = String(fn.name);
     if (typeof fn.arguments === "string") current.argumentsText += fn.arguments;
+    const metadata = normalizeModelProviderMetadata(delta);
+    if (metadata) current.providerMetadata = { ...current.providerMetadata, ...metadata };
     buffers.set(index, current);
   }
 }
@@ -336,7 +366,7 @@ export class OpenAICompatibleEngine implements AgentEngine {
         "gen_ai.operation.name": "chat",
         "gen_ai.provider.name": telemetryIdentifier(request.model?.providerId || "openai"),
         "gen_ai.request.model": telemetryIdentifier(request.model?.modelId || this.options.model),
-        "gen_ai.request.stream": true,
+        "gen_ai.request.stream": this.options.supportsStreaming !== false,
         "zion.turn.number": request.turn
       }
     });
@@ -400,9 +430,10 @@ export class OpenAICompatibleEngine implements AgentEngine {
       ...(this.options.requestBody || {}),
       model,
       messages: request.messages.map(mapMessage),
-      stream: true,
-      stream_options: { include_usage: true }
+      stream: this.options.supportsStreaming !== false
     };
+    if (this.options.supportsStreaming !== false) payload.stream_options = { include_usage: true };
+    else delete payload.stream_options;
     if (request.tools.length) payload.tools = request.tools.map(mapTool);
     else delete payload.tools;
     if (Number.isFinite(this.options.temperature)) {
@@ -411,8 +442,13 @@ export class OpenAICompatibleEngine implements AgentEngine {
     if (Number.isFinite(this.options.maxOutputTokens)) {
       payload.max_tokens = this.options.maxOutputTokens;
     }
+    if (Number.isFinite(request.maxOutputTokens)) {
+      payload.max_tokens = Math.max(1, Math.floor(request.maxOutputTokens!));
+      delete payload.max_completion_tokens;
+    }
     applyModelRequestOptions(payload, request, this.options.endpoint);
 
+    const preparationStartedAt = Date.now();
     yield {
       type: "model.request",
       request: {
@@ -421,7 +457,7 @@ export class OpenAICompatibleEngine implements AgentEngine {
         providerType: "openai",
         modelId: model,
         modelLabel: request.model?.label,
-        stream: true,
+        stream: this.options.supportsStreaming !== false,
         payload
       }
     };
@@ -441,6 +477,7 @@ export class OpenAICompatibleEngine implements AgentEngine {
 
     try {
       const transportStartedAt = Date.now();
+      const credentialMs = transportStartedAt - credentialStartedAt;
       const response = await this.options.transport({
         url: this.options.endpoint,
         method: "POST",
@@ -456,6 +493,13 @@ export class OpenAICompatibleEngine implements AgentEngine {
         body: JSON.stringify(payload)
       }, request.signal);
       span.setAttribute("http.response.status_code", response.status);
+      const responseHeadersMs = Date.now() - transportStartedAt;
+      const timing = (phase: "first-chunk" | "first-reasoning" | "first-answer"): EngineOutputEvent => ({
+        type: "model.timing",
+        timing: { phase, requestStartedAt: transportStartedAt,
+          elapsedMs: Date.now() - transportStartedAt, credentialMs,
+          responseHeadersMs, preparationMs: transportStartedAt - preparationStartedAt }
+      });
       request.signal.throwIfCancelled();
 
       if (!response.ok) {
@@ -479,6 +523,8 @@ export class OpenAICompatibleEngine implements AgentEngine {
       let sawCompletionSignal = false;
       let finishReason = "";
       let firstChunk = true;
+      let firstReasoning = true;
+      let firstAnswer = true;
       for await (const chunk of parseSse(response.body)) {
         request.signal.throwIfCancelled();
         if (chunk.__zionSseDone === true) {
@@ -488,6 +534,7 @@ export class OpenAICompatibleEngine implements AgentEngine {
         if (firstChunk) {
           firstChunk = false;
           span.setAttribute("gen_ai.response.time_to_first_chunk", (Date.now() - transportStartedAt) / 1000);
+          if (this.options.observeTimings) yield timing("first-chunk");
         }
         if (chunk.usage) {
           yield { type: "model.usage", usage: mapUsage(chunk.usage) };
@@ -502,8 +549,18 @@ export class OpenAICompatibleEngine implements AgentEngine {
         }
         recordModelResponse(span, chunk.model, nextFinishReason);
         const delta = asRecord(choice.delta);
+        const metadata = normalizeModelProviderMetadata(delta);
+        if (metadata) yield { type: "message.metadata", metadata };
         const reasoning = contentText(delta.reasoning_content ?? delta.reasoning);
         const content = contentText(delta.content);
+        if (reasoning && firstReasoning) {
+          firstReasoning = false;
+          if (this.options.observeTimings) yield timing("first-reasoning");
+        }
+        if (content && firstAnswer) {
+          firstAnswer = false;
+          if (this.options.observeTimings) yield timing("first-answer");
+        }
         if (reasoning) yield { type: "reasoning.delta", delta: reasoning };
         if (content) yield { type: "message.delta", delta: content };
         ingestToolCallDeltas(toolBuffers, delta.tool_calls);
@@ -535,11 +592,16 @@ export class OpenAICompatibleEngine implements AgentEngine {
     payload: Record<string, any>,
     request: EngineTurnRequest
   ): AsyncIterable<EngineOutputEvent> {
+    if (!Array.isArray(payload.choices) || !payload.choices.length || !payload.choices[0]?.message) {
+      throw new Error("Model response contains no completion choice");
+    }
     const choice = asRecord(Array.isArray(payload.choices) ? payload.choices[0] : null);
     assertCompleteFinishReason(String(
       choice.finish_reason ?? choice.finishReason ?? ""
     ).trim());
     const message = asRecord(choice.message);
+    const metadata = normalizeModelProviderMetadata(message);
+    if (metadata) yield { type: "message.metadata", metadata };
     const reasoning = contentText(message.reasoning_content ?? message.reasoning);
     const content = contentText(message.content);
     if (reasoning) yield { type: "reasoning.delta", delta: reasoning };
@@ -551,7 +613,8 @@ export class OpenAICompatibleEngine implements AgentEngine {
       const buffer = {
         id: String(item.id || ""),
         name: String(fn.name || ""),
-        argumentsText: String(fn.arguments || "")
+        argumentsText: String(fn.arguments || ""),
+        providerMetadata: normalizeModelProviderMetadata(item)
       };
       yield {
         type: "tool.call",

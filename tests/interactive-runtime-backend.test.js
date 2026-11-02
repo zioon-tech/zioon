@@ -23,6 +23,29 @@ async function collect(iterable) {
 }
 
 describe("interactive Runtime backend", () => {
+  it("requests goal workflow tools automatically while preserving selected tool policy", async () => {
+    const fetchImpl = vi.fn(async (url, init) => {
+      if (String(url).endsWith("/v1/models")) return new globalThis.Response(JSON.stringify({
+        activeProfileId: "profile", profiles: [{ id: "profile", providerId: "test", providerType: "openai", model: "model" }]
+      }), { status: 200 });
+      if (String(url).endsWith("/v1/runs/preview")) {
+        const request = JSON.parse(init.body);
+        expect(request.policy).toMatchObject({ preset: "read-only", allowedTools: ["read", "goalManage", "compressionRecall"] });
+        expect(request.metadata.goal.objective).toBe("完成完整目标");
+        return new globalThis.Response(JSON.stringify({ preview: { runId: "preview" } }), { status: 200 });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    await previewInteractiveRuntimeRequest({
+      messages: [{ role: "user", content: "完成完整目标" }],
+      tools: [{ function: { name: "read" } }],
+      selectedModel: { providerId: "test", modelId: "model" },
+      selectedModelConfig: {}, workbenchSessionId: "session",
+      metadata: { goal: { action: "start", objective: "完成完整目标" } },
+      baseUrl: "http://runtime.test", fetchImpl
+    });
+  });
+
   it("sends Mock through the Runtime request preview endpoint", async () => {
     const fetchImpl = vi.fn(async (url, init = {}) => {
       const value = String(url);
@@ -1201,34 +1224,37 @@ describe("interactive Runtime backend", () => {
     });
   });
 
-  it("persists the selected Workbench model as the Runtime interaction profile default", async () => {
+  it.each([
+    ["workbench.user.dynamic.kimi-k2.5", "user.dynamic", "kimi-k2.5"],
+    ["extension.local-profile", "extension.provider", "intranet"]
+  ])("persists the selected %s model as the account default", async (profileId, providerId, modelId) => {
     const fetchImpl = vi.fn(async (url, init = {}) => {
       const value = String(url);
       if (value.endsWith("/v1/models")) {
         return new globalThis.Response(JSON.stringify({
           activeProfileId: null,
           profiles: [{
-            id: "workbench.user.dynamic.kimi-k2.5",
-            providerId: "user.dynamic",
-            sourceModelId: "kimi-k2.5",
+            id: profileId,
+            providerId,
+            sourceModelId: modelId,
             providerType: "openai",
-            model: "kimi-k2.5",
+            model: modelId,
             label: "Kimi K2.5",
             credentialConfigured: true
           }]
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (
-        value.endsWith("/v1/interaction-profiles/interactive.default")
-        && init.method === "PATCH"
+        value.endsWith("/v1/models/selection")
+        && init.method === "PUT"
       ) {
         expect(JSON.parse(init.body)).toEqual({
-          modelProfileId: "workbench.user.dynamic.kimi-k2.5"
+          profileId, interactionProfileId: "interactive.default"
         });
         return new globalThis.Response(JSON.stringify({
-          profile: {
-            id: "interactive.default",
-            modelProfileId: "workbench.user.dynamic.kimi-k2.5"
+          selection: {
+            interactionProfileId: "interactive.default",
+            modelProfileId: profileId, selectedProfileId: profileId
           }
         }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
@@ -1237,8 +1263,7 @@ describe("interactive Runtime backend", () => {
 
     await expect(persistInteractiveRuntimeProfileModel({
       selectedModel: {
-        providerId: "user.dynamic",
-        modelId: "kimi-k2.5",
+        profileId, providerId, modelId,
         label: "Kimi K2.5"
       },
       selectedModelConfig: {
@@ -1252,15 +1277,40 @@ describe("interactive Runtime backend", () => {
       fetchImpl
     })).resolves.toMatchObject({
       runtimeModel: {
-        profileId: "workbench.user.dynamic.kimi-k2.5",
-        providerId: "user.dynamic",
-        modelId: "kimi-k2.5"
+        profileId, providerId, modelId
       },
       profile: {
-        id: "interactive.default",
-        modelProfileId: "workbench.user.dynamic.kimi-k2.5"
+        interactionProfileId: "interactive.default",
+        modelProfileId: profileId, selectedProfileId: profileId
       }
     });
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/interaction-profiles"))).toBe(false);
+  });
+
+  it("restores the account plugin preference ahead of the administrator default", async () => {
+    const fetchImpl = vi.fn(async (url) => new Response(JSON.stringify(
+      String(url).endsWith("/v1/models") ? {
+        activeProfileId: "extension.selected", selectedProfileId: "extension.selected",
+        profiles: [{ id: "extension.selected", providerId: "extension.provider", model: "local", label: "Local" }]
+      } : { profile: { id: "interactive.default", modelProfileId: "platform.default" } }
+    ), { status: 200, headers: { "content-type": "application/json" } }));
+    expect(await resolveInteractiveRuntimeProfileModel({ baseUrl: "http://runtime.test", fetchImpl })).toEqual({
+      profileId: "extension.selected", providerId: "extension.provider", modelId: "local", label: "Local"
+    });
+  });
+
+  it("propagates a rejected account selection without writing the administrator profile", async () => {
+    const fetchImpl = vi.fn(async (url) => new Response(JSON.stringify(
+      String(url).endsWith("/v1/models") ? {
+        profiles: [{ id: "extension.selected", providerId: "extension.provider", model: "local" }]
+      } : { error: "model_profile_unavailable" }
+    ), { status: String(url).endsWith("/v1/models") ? 200 : 422,
+      headers: { "content-type": "application/json" } }));
+    await expect(persistInteractiveRuntimeProfileModel({
+      selectedModel: { profileId: "extension.selected", providerId: "extension.provider", modelId: "local" },
+      baseUrl: "http://runtime.test", fetchImpl
+    })).rejects.toThrow("model_profile_unavailable");
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/interaction-profiles"))).toBe(false);
   });
 
   it("reattaches from the last persisted Runtime event sequence", async () => {

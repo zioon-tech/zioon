@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAgentExecutor } from "../../../packages/runtime/src/index";
+import { createAgentExecutor, CancellationController } from "../../../packages/runtime/src/index";
 import { PostgresRunStore } from "../src/postgres-run-store.mjs";
 import { PostgresAccessStore } from "../src/postgres-access-store.mjs";
 import { AccountAccessControl } from "../src/accounts/account-access-control.mjs";
@@ -140,7 +140,7 @@ describe("account execution integration", () => {
       invocationId: "i:one", runId: "r:one", attemptId: "a:one",
       principal: h.principal, policy, toolCall: { id: "read1", name: "read", arguments: {} }
     };
-    const signal = { cancelled: false, throwIfCancelled() {} };
+    const signal = new CancellationController().signal;
     expect((await broker.invoke(input, signal)).content).toBe("private result");
     await h.accounts.revokeGrant(h.user.id, h.principal.grantId);
     await expect(broker.invoke(input, signal)).rejects.toThrow("grant_inactive");

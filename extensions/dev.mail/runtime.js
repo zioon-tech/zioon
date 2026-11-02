@@ -48,6 +48,7 @@ export function activateRuntimePlugin(context) {
     name: MAIL_MANAGE_TOOL_NAME,
     description: definition.description,
     inputSchema: definition.inputSchema,
+    execution: { effect: "write" },
     policy: { minimumPreset: "trusted-automation" },
     async invoke(args = {}) {
       try {

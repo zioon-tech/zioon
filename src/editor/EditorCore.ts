@@ -32,7 +32,6 @@ import { inlineWidgetDecorationsExtension } from "./inlineWidgets";
 import { obsidianSyntaxExtension } from "./extensions/obsidian";
 import { roleScopedFencedCode } from "./roleScopedMarkdown";
 import { imageInsertionExtension } from "./image-transactions";
-import { accountCan } from "../../packages/account-ui/src/client";
 
 function selectNextOccurrenceDown(view: EditorView): boolean {
   const { state } = view;
@@ -458,8 +457,6 @@ export class EditorCore {
       state: EditorState.create({
         doc: initialValue,
         extensions: [
-          EditorState.readOnly.of(!accountCan("collaboration.write")),
-          EditorView.editable.of(accountCan("collaboration.write")),
           EditorState.allowMultipleSelections.of(true),
             drawSelection(),
           Prec.highest(

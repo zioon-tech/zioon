@@ -68,7 +68,7 @@ describe("Runtime Context Compression provider", () => {
     expect(toRuntimeMessages(toCompressionMessages(source), source)).toEqual(source);
   });
 
-  it("compresses long Runtime tool output and records durable stats", async () => {
+  it("preserves context when no persistent Session is supplied", async () => {
     const bucket = new Map([
       ["settings", normalizeCompressionSettings({
         defaultStrategy: "progressive",
@@ -81,13 +81,17 @@ describe("Runtime Context Compression provider", () => {
     ]);
     const providers = [];
     const emit = vi.fn();
-    const disposable = activateRuntimePlugin({
+    activateRuntimePlugin({
+      config: {},
       state: {
         namespace: () => ({
           get: (key) => bucket.get(key),
-          set: (key, value) => bucket.set(key, value)
+          read: async (key) => bucket.get(key),
+          put: async (key, value) => bucket.set(key, value)
         })
       },
+      runs: { registerCommands: vi.fn() },
+      tools: { registerTool: vi.fn() },
       context: {
         registerProvider(provider) {
           providers.push(provider);
@@ -132,19 +136,9 @@ describe("Runtime Context Compression provider", () => {
       order: 90
     });
     expect(compressed.at(-1)).toEqual({ role: "user", content: "continue" });
-    expect(compressed.find((message) => message.role === "tool")?.content)
-      .toContain("Output pruned for context optimization");
-    expect(bucket.get("stats")).toMatchObject({
-      compressionCount: 1,
-      totalTokensSaved: expect.any(Number),
-      strategyUsage: { progressive: 1 }
-    });
-    expect(emit).toHaveBeenCalledWith("compression.completed", expect.objectContaining({
-      runId: "run-1",
-      turn: 2,
-      strategy: "progressive"
-    }));
-    disposable.dispose();
+    expect(compressed).toEqual(messages);
+    expect(bucket.get("stats")).toBeUndefined();
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it("synchronizes Workbench compression settings through Runtime KV", async () => {

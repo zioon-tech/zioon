@@ -1,0 +1,106 @@
+{
+  "name": "dev.agent-device-cloud",
+  "version": "0.1.2",
+  "description": "Connect authorized ADC devices, use live tools, and track tasks and approvals.",
+  "zion": {
+    "manifestVersion": 2,
+    "id": "dev.agent-device-cloud",
+    "name": "ADC",
+    "version": "0.1.2",
+    "entries": {
+      "workbench": "./workbench.mjs",
+      "runtime": "./runtime.mjs",
+      "skill": "./skills/adc"
+    },
+    "hosts": {
+      "workbench": true,
+      "runtime": true
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "capabilities": [
+      {
+        "id": "adc_status",
+        "kind": "tool",
+        "host": "runtime",
+        "risk": "read",
+        "requiredScopes": []
+      },
+      {
+        "id": "adc_discover",
+        "kind": "tool",
+        "host": "runtime",
+        "risk": "read",
+        "requiredScopes": []
+      },
+      {
+        "id": "adc_read",
+        "kind": "tool",
+        "host": "runtime",
+        "risk": "read",
+        "requiredScopes": []
+      },
+      {
+        "id": "adc_invoke",
+        "kind": "tool",
+        "host": "runtime",
+        "risk": "external",
+        "requiredScopes": []
+      },
+      {
+        "id": "adc_task",
+        "kind": "tool",
+        "host": "runtime",
+        "risk": "read",
+        "requiredScopes": []
+      },
+      {
+        "id": "adc_cancel",
+        "kind": "tool",
+        "host": "runtime",
+        "risk": "external",
+        "requiredScopes": []
+      }
+    ],
+    "presentation": {
+      "displayName": {
+        "zh-CN": "ADC",
+        "en-US": "ADC"
+      },
+      "description": {
+        "zh-CN": "连接已授权的 ADC 设备，调用工具并跟踪任务与审批。",
+        "en-US": "Connect authorized ADC devices, invoke tools, and track tasks and approvals."
+      },
+      "features": {
+        "zh-CN": ["发现已授权设备与工具", "查看任务状态和审批"],
+        "en-US": ["Discover authorized devices and tools", "Track tasks and approvals"]
+      },
+      "icon": "remote",
+      "category": "ai"
+    },
+    "contributes": {
+      "styles": [
+        "./styles.css"
+      ],
+      "skills": [
+        "./skills/adc",
+        "./skills/adc-setup",
+        "./skills/agent-device-cloud"
+      ],
+      "commands": [
+        {
+          "id": "adc.open",
+          "title": "ADC"
+        },
+        {
+          "id": "adc.refresh",
+          "title": "ADC: Refresh"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ]
+  }
+}

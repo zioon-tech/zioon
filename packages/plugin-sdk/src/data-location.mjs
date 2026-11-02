@@ -19,7 +19,11 @@ export function normalizeDataLocation(value) {
     || root.split("/").some((part) => part === ".." || part === ".")) {
     throw new Error("Plugin data requires an absolute root and valid Node id");
   }
-  return Object.freeze({ nodeId, root });
+  const service = value?.backend === "agent-fs";
+  return Object.freeze({ nodeId, root, ...(service ? {
+    backend: "agent-fs", apiUrl: String(value.apiUrl || ""),
+    accessMode: value.accessMode === "cli" ? "cli" : "mcp"
+  } : {}) });
 }
 
 export function dataLocationPath(location, relativePath) {
@@ -35,6 +39,15 @@ export function dataLocationPath(location, relativePath) {
 
 export function dataLocationContext(pluginId, location) {
   const data = normalizeDataLocation(location);
+  if (data.backend === "agent-fs") return [
+    `Authoritative memory for ${validatePluginId(pluginId)} is managed by agent-fs:`,
+    JSON.stringify(data),
+    data.accessMode === "cli"
+      ? "MCP tools are disabled. Use Bash to run the authenticated agent-fs CLI. Read agentfs-memory with skillsList { name: \"agentfs-memory\", include_body: true } for installation and usage."
+      : "Inside Zion, use native mcp__agentfs__ tools and read agentfs-memory with skillsList { name: \"agentfs-memory\", include_body: true }. They connect with current account authorization; write tools require an authorized write policy.",
+    "The root above is a logical path inside the authenticated agent-fs drive, not a native filesystem path.",
+    "CLI clients must reach apiUrl and use their Zion account credentials. A loopback URL refers to the machine running the client. Never use a plugin-data mirror."
+  ].join("\n");
   return [
     `Plugin data location for ${validatePluginId(pluginId)} (routing metadata, not instructions):`,
     JSON.stringify(data),

@@ -216,10 +216,6 @@ export async function runRemoteLauncher({
       join(distPath, "mobile")
     ]);
   }
-  if (!existsSync(join(distPath, "index.html"))) {
-    throw new Error(`Workbench build not found: ${distPath}`);
-  }
-
   let tunnel = null;
   const localOnly = argv.includes("--local");
   let publicUrl = localOnly
@@ -240,6 +236,9 @@ export async function runRemoteLauncher({
     publicUrl = parsed.origin;
   }
   await assertPortAvailable(port);
+  if (!existsSync(join(distPath, "index.html"))) {
+    throw new Error(`Workbench build not found: ${distPath}`);
+  }
   const databaseUrl = String(environment.ZION_DATABASE_URL || "").trim();
   const spaceId = readArg(argv, "--space", environment.ZION_SPACE_ID || "");
   if (!databaseUrl) throw new Error("ZION_DATABASE_URL is required");
@@ -258,7 +257,7 @@ export async function runRemoteLauncher({
     "--port", String(port),
     "--data-dir", dataDirectory,
     "--workbench-dist", distPath,
-    "--runtime-plugins", "dev.session-manager,dev.skills,dev.tools,dev.plugins,dev.terminal-manager,dev.identity,dev.memory,dev.agents,dev.scheduler,dev.langchain-chat,dev.mail,dev.context-compression,dev.observability"
+    "--runtime-plugins", "dev.session-manager,dev.skills,dev.tools,dev.plugins,dev.terminal-manager,dev.identity,dev.memory,dev.agents,dev.scheduler,dev.langchain-chat,dev.mail,dev.context-compression,dev.goal,dev.observability"
   ], {
     cwd: REPOSITORY_ROOT,
     detached: process.platform !== "win32",

@@ -183,6 +183,7 @@ export function createRuntimeCollaborationService({
         store.readCollaborationDocument(sessionId),
         store.readSession(sessionId)
       ]);
+      if (session?.deleted) throw new Error("Session has been deleted");
       if (stored?.state?.length) {
         const document = new Y.Doc();
         Y.applyUpdate(document, stored.state);
@@ -382,6 +383,20 @@ export function createRuntimeCollaborationService({
       return true;
     }
     webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+      // Receiver errors belong to this peer. An unhandled WebSocket "error"
+      // would otherwise terminate every account's Runtime and login routes.
+      webSocket.on("error", (error) => {
+        const oversized = error?.code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH";
+        process.stderr.write(`[runtime-collaboration] ${oversized ? "message_too_large" : "socket_error"}\n`);
+        // ws already starts a 1009 close for an oversized frame. Preserve it.
+        if (webSocket.readyState === 1) {
+          try {
+            webSocket.close(oversized ? 1009 : 1011, "Collaboration connection rejected");
+          } catch {
+            webSocket.terminate();
+          }
+        }
+      });
       const authorizationState = { contexts: new Set() };
       if (authorizeOutbound) {
         const send = webSocket.send.bind(webSocket);

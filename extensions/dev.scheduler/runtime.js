@@ -29,6 +29,7 @@ export function activateRuntimePlugin(context) {
     name: SCHEDULER_TOOL_NAME,
     description: `${schema.description} This Runtime headless tool does not support open_panel.`,
     inputSchema: schema.parameters,
+    execution: { effect: "write" },
     policy: {
       minimumPreset: "trusted-automation"
     },
@@ -86,7 +87,8 @@ export function activateRuntimePlugin(context) {
           }
           const updated = await service.setEnabled(
             String(args.task_id || ""),
-            args.enabled
+            args.enabled,
+            meta
           );
           return { ok: true, content: ok({ updated: taskSummary(updated) }) };
         }

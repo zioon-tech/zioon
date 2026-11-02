@@ -570,6 +570,22 @@
   font-size: 11px;
 }
 
+.zion-account-security-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 0;
+  color: var(--account-muted);
+}
+.zion-account-security-row > div { flex: 1; min-width: 0; }
+.zion-account-security-row strong { color: var(--account-fg); font-size: 13px; font-weight: 550; }
+.zion-account-security-row p { margin: 5px 0 0; font-size: 12px; }
+.zion-account-security-row a { min-height: 36px; border-radius: 8px; text-decoration: none; }
+@media(max-width:440px) {
+  .zion-account-security-row { flex-wrap: wrap; }
+  .zion-account-security-row a { margin-left: 34px; }
+}
+
 .zion-settings-form-scope .zion-account button.zion-account-button,
 .zion-settings-form-scope .zion-account button.zion-account-icon-button {
   min-height: 28px !important;

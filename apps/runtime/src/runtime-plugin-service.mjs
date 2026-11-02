@@ -9,6 +9,7 @@ import {
 } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  normalizeToolExecution,
   normalizePluginManifest,
   validateToolInput,
   validateToolInputSchema
@@ -82,11 +83,25 @@ function createPluginStateNamespace({
       get: (stateKey) => persistentState.get(
         pluginStateKey(pluginId, namespace, stateKey)
       ),
+      read: async (stateKey) => {
+        const key = pluginStateKey(pluginId, namespace, stateKey);
+        const stored = await stateStore.readKV(key);
+        const value = stored?.value;
+        if (value !== undefined) persistentState.set(key, clone(value));
+        return value;
+      },
       set: (stateKey, value) => {
         const key = pluginStateKey(pluginId, namespace, stateKey);
         persistentState.set(key, clone(value));
         trackWrite(pluginId, () => stateStore.writeKV(key, value));
         return value;
+      },
+      // Workflows must await durable writes before accepting or continuing work.
+      put: async (stateKey, value) => {
+        const key = pluginStateKey(pluginId, namespace, stateKey);
+        await stateStore.writeKV(key, clone(value));
+        persistentState.set(key, clone(value));
+        return clone(value);
       },
       delete: (stateKey) => {
         const key = pluginStateKey(pluginId, namespace, stateKey);
@@ -105,9 +120,14 @@ function createPluginStateNamespace({
   const bucket = memory.get(key);
   return Object.freeze({
     get: (stateKey) => bucket.get(String(stateKey)),
+    read: async (stateKey) => bucket.get(String(stateKey)),
     set: (stateKey, value) => {
       bucket.set(String(stateKey), value);
       return value;
+    },
+    put: async (stateKey, value) => {
+      bucket.set(String(stateKey), clone(value));
+      return clone(value);
     },
     delete: (stateKey) => bucket.delete(String(stateKey)),
     entries: () => Array.from(bucket.entries())
@@ -186,6 +206,12 @@ function normalizeToolResult(value) {
         ? value.content
         : JSON.stringify(value.content ?? value, null, 2),
       ...(value.error ? { error: String(value.error) } : {}),
+      ...(value.failureCode
+        ? { failureCode: String(value.failureCode) }
+        : {}),
+      ...(typeof value.retryable === "boolean"
+        ? { retryable: value.retryable }
+        : {}),
       ...(Array.isArray(value.artifactIds)
         ? { artifactIds: value.artifactIds.map(String).filter(Boolean) }
         : {})
@@ -231,6 +257,9 @@ function normalizeToolContribution(plugin, tool) {
     pluginId: plugin.id,
     minimumPreset,
     risk: declaration?.risk,
+    execution: normalizeToolExecution(tool.execution, {
+      risk: declaration?.risk
+    }),
     requiredScopes: declaration?.requiredScopes || [],
     invoke: tool.invoke
   };
@@ -248,6 +277,7 @@ function toolDefinition(tool) {
     inputSchema: clone(tool.inputSchema),
     hostKinds: [...tool.hostKinds],
     pluginId: tool.pluginId,
+    execution: { ...tool.execution },
     policy: {
       minimumPreset: tool.minimumPreset,
       ...(tool.requiredScopes.length
@@ -416,6 +446,9 @@ export class RuntimePluginService {
     this.activePlugins = [];
     this.providers = [];
     this.postProcessors = [];
+    this.controllers = [];
+    this.commandHandlers = new Map();
+    this.commandSessionRequirements = new Map();
     this.documentProjectors = [];
     this.tools = [];
     this.toolByName = new Map();
@@ -506,6 +539,9 @@ export class RuntimePluginService {
       let contribution;
       const registeredProviders = [];
       const registeredPostProcessors = [];
+      const registeredControllers = [];
+      let commandHandler = null;
+      let commandRequiresSession = true;
       const registeredDocumentProjectors = [];
       const registeredTools = [];
       const activationDisposables = [];
@@ -534,7 +570,8 @@ export class RuntimePluginService {
           );
         }
 
-        const dataLocationsForPlugin = () => this.dataLocations.forPlugin(plugin.id).data;
+        const dataLocationsForPlugin = (runContext, options) =>
+          this.dataLocations.forPlugin(plugin.id, runContext, options).data;
         const pluginContext = {
           apiVersion: RUNTIME_PLUGIN_API_VERSION,
           plugin: Object.freeze({
@@ -555,6 +592,9 @@ export class RuntimePluginService {
           }),
           locations: this.dataLocations
             ? Object.freeze({
+                scopeMode: this.dataLocations.scopeMode || "legacy",
+                forRequest: (runContext = {}, options = {}) =>
+                  dataLocationsForPlugin(runContext, options),
                 get data() {
                   return dataLocationsForPlugin();
                 }
@@ -598,6 +638,28 @@ export class RuntimePluginService {
             }
           });
           pluginContext.runs = Object.freeze({
+            registerController: (controller) => {
+              if (!controller?.id || !["beforeStart", "beforeTurn", "beforeModel", "beforeStop", "beforeTool", "afterTool", "afterRun"]
+                .some((key) => typeof controller[key] === "function")) {
+                throw new Error("Run controller requires an id and lifecycle hooks");
+              }
+              registeredControllers.push(controller);
+              return disposable(() => {
+                const index = registeredControllers.indexOf(controller);
+                if (index >= 0) registeredControllers.splice(index, 1);
+              });
+            },
+            registerCommands: (handler, options = {}) => {
+              if (commandHandler || typeof handler !== "function") {
+                throw new Error("A plugin may register one Runtime command handler");
+              }
+              if (options.requiresSession !== undefined && typeof options.requiresSession !== "boolean") {
+                throw new Error("Runtime command requiresSession must be boolean");
+              }
+              commandHandler = handler;
+              commandRequiresSession = options.requiresSession !== false;
+              return disposable(() => { commandHandler = null; });
+            },
             registerPostProcessor: (processor) => {
               validateRunPostProcessor(processor);
               registeredPostProcessors.push(processor);
@@ -789,6 +851,13 @@ export class RuntimePluginService {
         for (const toolName of toolNames) toolOwners.set(toolName, plugin.id);
 
         this.providers.push(...contextProviders);
+        this.controllers.push(...registeredControllers.map((controller) => ({
+          ...controller, pluginId: plugin.id
+        })));
+        if (commandHandler) {
+          this.commandHandlers.set(plugin.id, commandHandler);
+          this.commandSessionRequirements.set(plugin.id, commandRequiresSession);
+        }
         this.postProcessors.push(...runPostProcessors.map((processor) => ({
           ...processor,
           pluginId: plugin.id,
@@ -820,6 +889,7 @@ export class RuntimePluginService {
           })),
           contextProviderIds: contextProviders.map((provider) => provider.id),
           postProcessorIds: runPostProcessors.map((processor) => processor.id),
+          controllerIds: registeredControllers.map((controller) => controller.id),
           documentProjectorIds: documentProjectors.map((projector) => projector.id),
           toolNames: toolContributions.map((tool) => tool.name)
         });
@@ -869,6 +939,21 @@ export class RuntimePluginService {
     return [...this.postProcessors].sort((left, right) =>
       left.order - right.order || String(left.id).localeCompare(String(right.id))
     );
+  }
+
+  getRunControllers() {
+    if (this.state !== "started") throw new Error("Runtime Plugin Service is not started");
+    return [...this.controllers];
+  }
+
+  async invokeCommand(pluginId, args, context) {
+    const handler = this.commandHandlers.get(pluginId);
+    if (!handler) throw Object.assign(new Error("Plugin commands unavailable"), { statusCode: 404 });
+    return await handler(args, Object.freeze(context));
+  }
+
+  commandRequiresSession(pluginId) {
+    return this.commandSessionRequirements.get(pluginId) !== false;
   }
 
   getDocumentProjector(projectorId) {
@@ -1008,6 +1093,9 @@ export class RuntimePluginService {
     this.activePlugins = [];
     this.providers = [];
     this.postProcessors = [];
+    this.controllers = [];
+    this.commandHandlers.clear();
+    this.commandSessionRequirements.clear();
     this.documentProjectors = [];
     this.tools = [];
     this.toolByName.clear();

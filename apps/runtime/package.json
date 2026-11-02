@@ -5,6 +5,9 @@
   "type": "module",
   "description": "Standalone local Runtime Host for Zion",
   "dependencies": {
+    "@alicloud/nas20170626": "3.7.4",
+    "@alicloud/openapi-core": "1.0.8",
+    "@modelcontextprotocol/sdk": "1.27.1",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/core": "^2.11.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
@@ -16,7 +19,8 @@
     "pg": "8.16.3"
   },
   "bin": {
-    "zion": "bin/zion.mjs"
+    "zion": "bin/zion.mjs",
+    "zioon": "bin/zion.mjs"
   },
   "engines": {
     "node": ">=22.5"

@@ -1,3 +1,14 @@
+import { normalizePluginModels } from "./model-catalog.mjs";
+
+export {
+  TOOL_CANCELLATION_MODES,
+  TOOL_EXECUTION_EFFECTS,
+  TOOL_IDEMPOTENCY_MODES,
+  normalizeToolExecution,
+  resolveToolExecutionTimeoutMs,
+  toolExecutionForDefinition
+} from "./tool-execution.mjs";
+
 export const PLUGIN_MANIFEST_VERSION = 2;
 export const PLUGIN_ENTRY_KINDS = Object.freeze([
   "shared",
@@ -12,6 +23,9 @@ export const PLUGIN_CAPABILITY_KINDS = Object.freeze([
   "tool",
   "context",
   "post-processor",
+  "controller",
+  "model",
+  "job",
   "resource",
   "renderer",
   "skill",
@@ -345,6 +359,23 @@ export function validateToolInput(input, schema, path = "arguments") {
   return errors;
 }
 
+export function normalizePluginSettingsSchema(input) {
+  if (!isObject(input) || input.type !== "object" || input.additionalProperties !== false
+    || !isObject(input.properties) || Object.keys(input.properties).length > 20
+    || JSON.stringify(input).length > 16000 || validateToolInputSchema(input).length) {
+    throw new Error("settingsSchema must be a bounded object schema");
+  }
+  for (const [key, property] of Object.entries(input.properties)) {
+    if (!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(key)
+      || /token|secret|password|credential|authorization|api_?key/i.test(key)
+      || !isObject(property) || !["string", "number", "integer", "boolean"].includes(property.type)
+      || property.format || property.$ref || property.writeOnly) {
+      throw new Error("Settings contain public scalar values; credentials require a Node-local connection");
+    }
+  }
+  return JSON.parse(JSON.stringify(input));
+}
+
 export function validatePluginManifest(input, { host = "" } = {}) {
   const errors = [];
   const warnings = [];
@@ -472,6 +503,16 @@ export function validatePluginManifest(input, { host = "" } = {}) {
       errors.push(`capabilities[${index}] duplicates ${capabilityKey}`);
     }
     capabilityKeys.add(capabilityKey);
+    let models;
+    if (capability.required !== undefined && typeof capability.required !== "boolean") {
+      errors.push(`capabilities[${index}].required must be boolean`);
+    }
+    if (capability.models !== undefined) {
+      try {
+        if (kind !== "model") throw new Error("kind");
+        models = normalizePluginModels(capability.models);
+      } catch { errors.push(`capabilities[${index}].models is invalid`); }
+    }
     if (
       capability.requiredScopes != null
       && (
@@ -487,6 +528,8 @@ export function validatePluginManifest(input, { host = "" } = {}) {
       id: capabilityId,
       kind,
       host: capabilityHost,
+      ...(capability.required !== undefined ? { required: capability.required } : {}),
+      ...(models ? { models } : {}),
       ...(typeof capability.risk === "string" && capability.risk.trim()
         ? { risk: capability.risk.trim() }
         : {}),
@@ -509,6 +552,21 @@ export function validatePluginManifest(input, { host = "" } = {}) {
   if (!Number.isInteger(runtimeApiVersion) || runtimeApiVersion < 1) {
     errors.push("runtime.apiVersion must be a positive integer");
   }
+  let settingsSchema, connection;
+  if (product.settingsSchema !== undefined) {
+    try { settingsSchema = normalizePluginSettingsSchema(product.settingsSchema); }
+    catch (error) { errors.push(error.message); }
+  }
+  if (product.connection !== undefined) {
+    const value = product.connection;
+    if (!isObject(value) || Object.keys(value).some((k) => !["label", "envKeys", "required"].includes(k))
+      || typeof value.label !== "string" || !value.label.trim() || value.label.length > 128
+      || !Array.isArray(value.envKeys) || value.envKeys.length > 20
+      || value.envKeys.some((k) => typeof k !== "string" || !/^[A-Z][A-Z0-9_]{0,79}$/.test(k))
+      || (value.required !== undefined && typeof value.required !== "boolean")) {
+      errors.push("connection must declare a label and bounded credential environment keys");
+    } else connection = { label: value.label, envKeys: [...new Set(value.envKeys)], required: value.required === true };
+  }
 
   return {
     valid: errors.length === 0,
@@ -522,6 +580,8 @@ export function validatePluginManifest(input, { host = "" } = {}) {
       entries,
       hosts,
       capabilities,
+      ...(settingsSchema ? { settingsSchema } : {}),
+      ...(connection ? { connection } : {}),
       runtimeApiVersion,
       legacyEnvelope: isLegacyEnvelope
     }

@@ -15,6 +15,7 @@ function sourceStatusByNode(availableNodes, localSourceAvailable = false) {
   return {
     ...(localSourceAvailable ? { [SKILLS_LOCAL_RUNTIME_NODE_ID]: "online" } : {}),
     [SKILLS_RUNTIME_PLUGIN_NODE_ID]: "online",
+    "runtime:marketplace": "online",
     ...Object.fromEntries((Array.isArray(nodes) ? nodes : [])
     .map((node) => [String(node?.nodeId || ""), String(node?.status || "offline")])
     .filter(([nodeId]) => nodeId))
@@ -30,14 +31,28 @@ function findSkill(snapshot, name) {
   ) || null;
 }
 
+async function readSkillsSnapshot(state, marketplaceSkills, runContext) {
+  const value = state.read
+    ? await state.read(SKILLS_RUNTIME_SNAPSHOT_KEY)
+    : state.get(SKILLS_RUNTIME_SNAPSHOT_KEY);
+  const snapshot = normalizeSkillsSnapshot(value || {});
+  if (!marketplaceSkills) return snapshot;
+  const overlay = await marketplaceSkills(runContext);
+  const ids = new Set(overlay.catalog.map((skill) => skill.id));
+  return normalizeSkillsSnapshot({ ...snapshot,
+    catalog: [...snapshot.catalog.filter((skill) => !ids.has(skill.id) && !skill.id.startsWith("marketplace:")), ...overlay.catalog],
+    enabled: [...snapshot.enabled.filter((id) => !id.startsWith("marketplace:")), ...overlay.enabled] });
+}
+
 class RuntimeSkillsContextProvider {
-  constructor({ state, availableNodes, localSourceAvailable }) {
+  constructor({ state, availableNodes, localSourceAvailable, marketplaceSkills }) {
     this.id = "dev.skills.available";
     this.stage = "pre";
     this.order = 25;
     this.state = state;
     this.availableNodes = availableNodes;
     this.localSourceAvailable = localSourceAvailable === true;
+    this.marketplaceSkills = marketplaceSkills;
   }
 
   async contribute(messages, context = {}) {
@@ -47,13 +62,11 @@ class RuntimeSkillsContextProvider {
     )) {
       return messages;
     }
-    const snapshot = normalizeSkillsSnapshot(
-      this.state.get(SKILLS_RUNTIME_SNAPSHOT_KEY) || {}
-    );
+    const snapshot = await readSkillsSnapshot(this.state, this.marketplaceSkills, context);
     const requestSkills = context?.request?.metadata?.skills || {};
     const sessionEnabled = requestSkills.enabled;
     const transientCatalog = Array.isArray(requestSkills.transientCatalog)
-      ? requestSkills.transientCatalog.map((skill) => ({
+      ? requestSkills.transientCatalog.filter((skill) => !String(skill?.id || "").startsWith("marketplace:")).map((skill) => ({
           ...skill,
           transient: true
         }))
@@ -68,7 +81,8 @@ class RuntimeSkillsContextProvider {
           ...snapshot,
           catalog: [...catalogById.values()],
           enabled: Array.from(new Set(
-            sessionEnabled.map(String).map((value) => value.trim()).filter(Boolean)
+            sessionEnabled.map(String).map((value) => value.trim()).filter((id) =>
+              id && (!id.startsWith("marketplace:") || snapshot.enabled.includes(id)))
           ))
         }
       : {
@@ -96,15 +110,19 @@ export function activateRuntimePlugin(context) {
   const state = context.state.namespace(SKILLS_RUNTIME_STATE_NAMESPACE);
   const availableNodes = context.config?.availableNodes;
   const localSourceAvailable = context.config?.localSourceAvailable === true;
+  const marketplaceSkills = context.config?.marketplaceSkills;
+  const marketplaceSkillFile = context.config?.marketplaceSkillFile;
   const provider = new RuntimeSkillsContextProvider({
     state,
     availableNodes,
-    localSourceAvailable
+    localSourceAvailable,
+    marketplaceSkills
   });
   const providerRegistration = context.context.registerProvider(provider);
   const toolRegistration = context.tools.registerTool({
     name: "skillsList",
     description: "List enabled Agent skills from the Runtime-backed skills catalog.",
+    execution: { effect: "read" },
     inputSchema: {
       type: "object",
       properties: {
@@ -119,6 +137,14 @@ export function activateRuntimePlugin(context) {
         include_body: {
           type: "boolean",
           description: "Include the Runtime-cached SKILL.md body for the selected skill."
+        },
+        file: {
+          type: "string",
+          description: "Read one packaged reference or script from an installed marketplace Skill."
+        },
+        content_hash: {
+          type: "string",
+          description: "Require the contentHash from the previously retrieved Skill."
         }
       },
       additionalProperties: false
@@ -126,10 +152,8 @@ export function activateRuntimePlugin(context) {
     policy: {
       minimumPreset: "read-only"
     },
-    async invoke(args = {}) {
-      const snapshot = normalizeSkillsSnapshot(
-        state.get(SKILLS_RUNTIME_SNAPSHOT_KEY) || {}
-      );
+    async invoke(args = {}, runContext = {}) {
+      const snapshot = await readSkillsSnapshot(state, marketplaceSkills, runContext);
       const statuses = sourceStatusByNode(availableNodes, localSourceAvailable);
       const enabled = new Set(snapshot.enabled);
       if (args.name) {
@@ -144,6 +168,13 @@ export function activateRuntimePlugin(context) {
           };
         }
         const sourceStatus = statuses[skill.sourceNodeId] || "offline";
+        let attachment;
+        if (args.file) {
+          if (!marketplaceSkillFile || !skill.id.startsWith("marketplace:")) return {
+            ok: false, content: JSON.stringify({ error: "Packaged Skill file unavailable" })
+          };
+          attachment = await marketplaceSkillFile(runContext, skill.id, args.file, args.content_hash || skill.contentHash);
+        }
         return {
           ok: true,
           content: JSON.stringify({
@@ -158,9 +189,15 @@ export function activateRuntimePlugin(context) {
               runtimeCached: !!(skill.runtimeCached || skill.body),
               runtimeFile: skill.runtimeFile,
               runtimeNodeId: skill.runtimeNodeId,
+              contentHash: skill.contentHash, files: skill.files || [],
+              ...(attachment ? { attachment } : {}),
               ...(args.include_body ? { body: skill.body || "" } : {}),
-              executionNotice: sourceStatus === "online"
-                ? "The source Node is online, but commands, credentials, and dependencies must still be verified before execution."
+              executionNotice: skill.runtimeCached || skill.body
+                ? skill.id.startsWith("marketplace:")
+                  ? "Use this cached body as the Skill instructions. Read packaged files with skillsList(name, file, content_hash). Use extensionsCall workspace-prepare to materialize files on the authorized account workspace before running scripts."
+                  : "Use this Runtime-cached body as the Skill instructions. Do not read sourceFile or use sourceNodeId."
+                : sourceStatus === "online"
+                  ? "The source Node is online, but commands, credentials, and dependencies must still be verified before execution."
                 : "The source Node is offline. Cached instructions are available for reasoning, but source-local commands, files, credentials, login state, and environment variables are not available."
             }
           }, null, 2)
@@ -168,17 +205,24 @@ export function activateRuntimePlugin(context) {
       }
       const skills = snapshot.catalog
         .filter((skill) => !args.enabled_only || enabled.has(skill.id))
-        .map((skill) => ({
-          id: skill.id,
-          name: skill.name,
-          description: skill.description,
-          enabled: enabled.has(skill.id),
-          file: skill.runtimeFile || skill.file || (skill.path ? `${skill.path}/SKILL.md` : ""),
-          node_id: skill.runtimeNodeId || skill.sourceNodeId,
-          sourceNodeId: skill.sourceNodeId,
-          sourceStatus: statuses[skill.sourceNodeId] || "offline",
-          runtimeCached: !!(skill.runtimeCached || skill.body)
-        }));
+        .map((skill) => {
+          const cached = !!(skill.runtimeCached || skill.body);
+          return {
+            id: skill.id,
+            name: skill.name,
+            description: skill.description,
+            enabled: enabled.has(skill.id),
+            ...(!cached || skill.runtimeFile ? {
+              file: skill.runtimeFile || skill.file || (skill.path ? `${skill.path}/SKILL.md` : ""),
+              node_id: skill.runtimeNodeId || skill.sourceNodeId
+            } : {}),
+            sourceStatus: statuses[skill.sourceNodeId] || "offline",
+            runtimeCached: cached,
+            ...(cached ? {
+              retrieval: "Call skillsList with this name and include_body=true."
+            } : {})
+          };
+        });
       return {
         ok: true,
         content: JSON.stringify({

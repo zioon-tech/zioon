@@ -36,10 +36,11 @@ export async function loginWithAccount({
   const key = accountCredentialKey(baseUrl);
   const previous = await credentialStore.get(key);
   const flow = await accountCliRequest(baseUrl, "device/start", { body: {}, fetchImpl, signal });
-  if (!flow.flowToken || !flow.verificationUri || !Number.isFinite(flow.expiresAt)) {
+  const verificationUri = String(flow.verificationUriComplete || flow.verificationUri || "").trim();
+  if (!flow.flowToken || !verificationUri || !Number.isFinite(flow.expiresAt)) {
     throw new Error("Runtime returned an invalid device login flow");
   }
-  emit({ type: "auth.deviceCode", verificationUri: flow.verificationUri, userCode: flow.userCode });
+  emit({ type: "auth.deviceCode", verificationUri, userCode: flow.userCode });
   while (Date.now() < flow.expiresAt) {
     await sleep(Math.min(30, Math.max(5, flow.interval || 5)) * 1000);
     signal?.throwIfAborted();

@@ -10,11 +10,15 @@ const migration003 = fileURLToPath(
 const migration004 = fileURLToPath(
   new URL("./postgres/migrations/004_run_event_details.sql", import.meta.url)
 );
+const migration005 = fileURLToPath(
+  new URL("./postgres/migrations/005_run_outbox.sql", import.meta.url)
+);
 
 const migrations = [
   [2, migration002],
   [3, migration003],
-  [4, migration004]
+  [4, migration004],
+  [5, migration005]
 ];
 
 export async function initializePostgresRuntimeSchema(pool, {

@@ -9,6 +9,13 @@ function setup(mode = "local") {
   const receipts = new Map();
   const delegated = vi.fn(async () => {
     if (mode === "throw") throw new Error("SECRET_TOOL_ERROR");
+    if (mode === "unknown") {
+      return {
+        ok: false,
+        content: "The execution outcome is unknown",
+        failureCode: "execution_outcome_unknown"
+      };
+    }
     return { ok: mode !== "false", content: "SECRET_RESULT" };
   });
   const broker = new RuntimeToolBroker({
@@ -28,7 +35,7 @@ function setup(mode = "local") {
 }
 
 describe("logical Tool telemetry", () => {
-  it.each(["local", "plugin", "false", "throw", "denied", "cancelled"])(
+  it.each(["local", "plugin", "false", "unknown", "throw", "denied", "cancelled"])(
     "closes the %s invocation without recording arguments or results", async (mode) => {
       const { broker, invocation, delegated } = setup(mode);
       const cancellation = new CancellationController();
@@ -44,10 +51,18 @@ describe("logical Tool telemetry", () => {
       expect(spans).toHaveLength(1);
       expect(spans[0].name).toBe("execute_tool");
       expect(spans[0].parentSpanContext?.spanId).toBe(parent.spanContext().spanId);
-      expect(spans[0].status.code).toBe(["false", "throw", "denied"].includes(mode) ? SpanStatusCode.ERROR : SpanStatusCode.UNSET);
+      expect(spans[0].status.code).toBe(
+        ["false", "unknown", "throw", "denied"].includes(mode)
+          ? SpanStatusCode.ERROR
+          : SpanStatusCode.UNSET
+      );
       if (mode === "denied") {
         expect(spans[0].attributes["error.type"]).toBe("policy_denied");
         expect(delegated).not.toHaveBeenCalled();
+      }
+      if (mode === "unknown") {
+        expect(spans[0].attributes["error.type"])
+          .toBe("execution_outcome_unknown");
       }
       expect(JSON.stringify({ attrs: spans[0].attributes, status: spans[0].status, events: spans[0].events }))
         .not.toContain("SECRET");
@@ -125,7 +140,8 @@ describe("logical Tool telemetry", () => {
         ok: false,
         content: "webFetch proxy attempts failed: r.jinaai.cn: HTTP 403",
         error: "webFetch proxy attempts failed: r.jinaai.cn: HTTP 403",
-        failureCode: "http_4xx"
+        failureCode: "http_4xx",
+        retryable: false
       }))
     };
     const executor = createAgentExecutor({ engine, tools, runs });
@@ -136,6 +152,11 @@ describe("logical Tool telemetry", () => {
 
     const events = await runs.getEvents(handle.runId);
     expect(events.find((event) => event.type === "tool.completed")?.data)
-      .toMatchObject({ name: "webFetch", ok: false, failureCode: "http_4xx" });
+      .toMatchObject({
+        name: "webFetch",
+        ok: false,
+        failureCode: "http_4xx",
+        retryable: false
+      });
   });
 });

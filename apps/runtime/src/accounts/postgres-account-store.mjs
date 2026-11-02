@@ -1,18 +1,16 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import pg from "pg";
 import {
   accountError, accountRole, intersectAccountPolicy, requireAccountScope, roleScopes
 } from "./account-policy.mjs";
 
 const { Pool } = pg;
-const migration001 = fileURLToPath(
-  new URL("./postgres/migrations/001_account_control_plane.sql", import.meta.url)
-);
-const migration002 = fileURLToPath(
-  new URL("./postgres/migrations/002_space_scoped_audit.sql", import.meta.url)
-);
+const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+const migration001 = join(moduleDirectory, "postgres/migrations/001_account_control_plane.sql");
+const migration002 = join(moduleDirectory, "postgres/migrations/002_space_scoped_audit.sql");
 const DAY = 86_400_000;
 const MAX_TASK_GRANT_TTL_MS = 10 * 365 * DAY;
 const hash = (value) => createHash("sha256").update(String(value)).digest("hex");
@@ -171,6 +169,31 @@ export class PostgresAccountStore {
       [issuer, subject]
     );
     return userFromRow(result.rows[0]);
+  }
+
+  async identityForUser(userId, issuer) {
+    const result = await this.pool.query(
+      "SELECT issuer, subject FROM account_identities WHERE user_id=$1 AND issuer=$2",
+      [userId, issuer]
+    );
+    return result.rows[0] || null;
+  }
+
+  async linkIdentity(userId, spaceId, { issuer, subject }) {
+    text(issuer, "Issuer", 2048);
+    text(subject, "Subject");
+    return this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [JSON.stringify(["account-link", userId, issuer])]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [JSON.stringify([issuer, subject])]);
+      const existing = await this.findIdentity(issuer, subject, client);
+      if (existing && existing.id !== userId) throw accountError(409, "identity_already_linked");
+      const current = await client.query("SELECT subject FROM account_identities WHERE user_id=$1 AND issuer=$2", [userId, issuer]);
+      if (current.rows.some((row) => row.subject !== subject)) throw accountError(409, "account_already_linked");
+      if (existing) return { linked: true, changed: false };
+      await client.query("INSERT INTO account_identities (issuer,subject,user_id) VALUES ($1,$2,$3)", [issuer, subject, userId]);
+      await this.audit(userId, "account.identity_linked", userId, { issuer, subject }, { spaceId, client });
+      return { linked: true, changed: true };
+    });
   }
 
   async personalSpace(userId, client = this.pool) {
@@ -599,6 +622,19 @@ export class PostgresAccountStore {
         [hash(state), hash(browserSecret), JSON.stringify(payload), this.now() + ttlMs]
       );
     });
+  }
+
+  async readLoginTransaction(state, browserSecret, { attempt = false } = {}) {
+    const result = await this.pool.query(attempt
+      ? `UPDATE account_login_transactions SET payload_json=jsonb_set(
+          payload_json,'{attempts}',to_jsonb(COALESCE((payload_json->>'attempts')::int,0)+1))
+         WHERE state_hash=$1 AND browser_hash=$2 AND expires_at>$3
+           AND COALESCE((payload_json->>'attempts')::int,0)<10 RETURNING payload_json`
+      : `SELECT payload_json FROM account_login_transactions
+         WHERE state_hash=$1 AND browser_hash=$2 AND expires_at>$3`,
+    [hash(state), hash(browserSecret), this.now()]);
+    if (!result.rowCount) throw accountError(401, "invalid_login_transaction");
+    return jsonObject(result.rows[0].payload_json);
   }
 
   async consumeLoginTransaction(state, browserSecret) {

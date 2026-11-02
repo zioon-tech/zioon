@@ -136,6 +136,23 @@ export async function rebuildModelCatalog({ forceRuntime = false } = {}) {
     models.push(...resolvedModels.filter(Boolean));
   }
 
+  // Installed account model providers have no browser network client. Their
+  // immutable profiles are selected through the same Runtime dialog.
+  for (const profile of (runtimeProfiles || []).filter((p) => p.metadata?.source === "account-extension")) {
+    const config = mergeRuntimeModelProfileConfig(null, profile);
+    models.push(applyModelAvailability({
+      providerId: profile.providerId, id: profile.model, label: profile.label || profile.model,
+      runtimeProfileId: profile.id, accountExtension: true, stream: profile.supportsStreaming,
+      credentialConfigured: profile.credentialConfigured === true,
+      requiresConfig: profile.credentialConfigured !== true,
+      configReason: profile.credentialConfigured === true ? "" : "connection_required",
+      configHint: profile.credentialConfigured === true ? "" : "请在扩展详情中选择连接",
+      supportsImage: config.supportsImage === true,
+      detectedLimits: normalizeModelLimits(profile.limits || {}),
+      limits: normalizeModelLimits(config)
+    }));
+  }
+
   window.zion?.state?.set?.("models.catalog", models);
   return models;
 }

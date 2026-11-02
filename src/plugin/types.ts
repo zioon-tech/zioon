@@ -36,13 +36,14 @@ export type PluginState =
   | 'error'        // 错误状态
   | 'uninstalled'; // 已卸载
 
-export type PluginOrigin = 'builtin' | 'dev' | 'external';
+export type PluginOrigin = 'builtin' | 'dev' | 'external' | 'account';
 
 export interface PluginDevSessionRecord {
   pluginId: string;
   devId: string;
   baseUrl: string;
   dir: string;
+  nodeId?: string;
 }
 
 /**
@@ -243,6 +244,7 @@ export interface PluginInfo {
   isLegacy: boolean;
   /** 插件来源：内置扩展、开发目录或外部分发包 */
   origin?: PluginOrigin;
+  accountInstallation?: { accountId: string; listingId: string; digest: string; epoch: string };
   /** 是否启用（UI/管理器用） */
   enabled?: boolean;
   /** ZIP 插件中由 contributes.skills 声明的 SKILL.md 内容 */
@@ -263,6 +265,8 @@ export interface PluginInfo {
   scriptBlobUrls?: Record<string, string>;
   /** 开发模式插件的本地源码目录 */
   sourceDir?: string;
+  /** 开发目录所属设备，读取时不能自动切换设备 */
+  sourceNodeId?: string;
   /** 开发模式插件会话 ID */
   devId?: string;
   /** Shared Plugin SDK v2 normalization used by every host. */
@@ -288,6 +292,7 @@ export interface PluginContext {
   globalState: Memento;
   workspaceState: Memento;
   configuration: PluginConfigurationManager;
+  runtime: { command(args: Record<string, unknown>): Promise<any> };
   asAbsolutePath(path: string): string;
   log(message: string, level?: 'debug' | 'info' | 'warn' | 'error'): void;
 }

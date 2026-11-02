@@ -2,12 +2,27 @@ import {
   RuntimeAccessControl, bearerToken, cookieValue, headerValue, readJson, json, publicDevice
 } from "../access-control.mjs";
 import { accountError, roleScopes, intersectAccountPolicy } from "./account-policy.mjs";
+import { verifyMemoryDelegation } from "./memory-delegation.mjs";
 
 const writeMethod = (method) => !["GET", "HEAD", "OPTIONS"].includes(method);
 
 // Positive routing rules for non-admin writes. New service endpoints require an
 // explicit decision before ordinary members may mutate the control plane.
 export function accountRequestScope(method, pathname) {
+  if (/^\/v1\/workbench-state\/plugin-development(?:\/|$)/.test(pathname)) {
+    return writeMethod(method) ? "runtime.write" : "runtime.read";
+  }
+  if (/^\/v1\/marketplace(?:\/|$)/.test(pathname)) {
+    return writeMethod(method) ? "runtime.write" : "runtime.read";
+  }
+  if (method === "PUT" && pathname === "/v1/models/selection") return "runtime.write";
+  if (method === "PATCH" && pathname === "/v1/skills/snapshot") return "runtime.write";
+  if (method === "POST" && /^\/v1\/sandbox\/workspace\/(?:pause|release)$/.test(pathname)) return "resource.execute";
+  if (/^\/v1\/plugins\/[^/]+\/files(?:\/|$)/.test(pathname)) return "resource.execute";
+  if (method === "POST" && /^\/v1\/plugins\/[^/]+\/commands$/.test(pathname)) {
+    // The command router separately requires run.execute for every mutation/model call.
+    return "runtime.read";
+  }
   if (/^\/v1\/(?:model-gateway|device-services|plugins\/[^/]+\/locations)(?:\/|$)/.test(pathname)
     || pathname.startsWith("/v1/workbench-state/kv")) return "runtime.manage";
   if (!writeMethod(method)) return "runtime.read";
@@ -20,10 +35,16 @@ export function accountRequestScope(method, pathname) {
 }
 
 export class AccountAccessControl extends RuntimeAccessControl {
-  constructor({ accounts, oidc, resolveProfile = null, servedSpaceId = "", ...options }) {
+  constructor({ accounts, oidc, resolveProfile = null, servedSpaceId = "", memoryBridgeSecret = "",
+    memoryEnabled = !!memoryBridgeSecret, adcOrigin = "", sharedAccountIssuer = "", ...options }) {
     super(options);
+    this.memoryBridgeSecret = memoryBridgeSecret;
+    this.memoryEnabled = memoryEnabled;
     this.accounts = accounts;
     this.oidc = oidc;
+    this.adcOrigin = adcOrigin ? new URL(adcOrigin).origin : "";
+    this.sharedAccountIssuer = sharedAccountIssuer ? new URL(sharedAccountIssuer).origin : "";
+    if (this.adcOrigin && !this.adcOrigin.startsWith("https://")) throw new Error("ADC identity proof requires HTTPS");
     this.resolveProfile = resolveProfile;
     this.servedSpaceId = String(servedSpaceId || "");
     this.mode = "accounts-v1";
@@ -36,7 +57,16 @@ export class AccountAccessControl extends RuntimeAccessControl {
     const bearer = token || bearerToken(headers);
     const credential = bearer || cookieValue(headers, this.sessionCookie);
     const account = await this.accounts.authenticate(credential);
-    if (account) return { ...account, source: bearer ? "bearer" : "cookie", kind: "account" };
+    if (account) {
+      try { await this.oidc.validateSession?.(account, {
+        browser: !bearer, cookies: headerValue(headers, "cookie") || ""
+      }); }
+      catch (error) {
+        if (error.statusCode === 401) return null;
+        throw accountError(503, "account_service_unavailable");
+      }
+      return { ...account, source: bearer ? "bearer" : "cookie", kind: "account" };
+    }
     if (!bearer) return null;
     const resource = await super.authenticateHeaders({
       authorization: `Bearer ${bearer}`
@@ -124,7 +154,13 @@ export class AccountAccessControl extends RuntimeAccessControl {
     const principal = await this.requireLogin(request);
     this.requireServedSpace(principal);
     const url = new URL(request.url, this.publicBaseUrl);
-    await this.requireScope(principal, accountRequestScope(request.method, url.pathname));
+    const memoryFiles = this.memoryEnabled
+      && /^\/v1\/plugins\/dev\.identity\/files\//.test(url.pathname);
+    const memoryLocation = this.memoryEnabled
+      && url.pathname === "/v1/plugins/dev.identity/locations" && request.method === "GET";
+    await this.requireScope(principal, memoryFiles
+      ? (writeMethod(request.method) ? "runtime.write" : "runtime.read")
+      : memoryLocation ? "runtime.read" : accountRequestScope(request.method, url.pathname));
     return principal;
   }
 
@@ -264,8 +300,20 @@ export class AccountAccessControl extends RuntimeAccessControl {
 
   async handleHttp(request, response, url) {
     const path = url.pathname;
-    if (!path.startsWith("/v1/account/") && !path.startsWith("/v1/access/")) return false;
-    if (!this.oidc.secureCookies && request.method === "GET"
+    if (request.method === "GET" && ["/account", "/mobile", "/mobile/"].includes(path)
+      && ["logged-out", "cancelled"].includes(url.searchParams.get("zionAuth"))) {
+      const returnTo = path.startsWith("/mobile") ? "/mobile/" : "/account";
+      response.writeHead(303, {
+        location: `${this.publicBaseUrl}/v1/account/login?${new URLSearchParams({ returnTo })}`,
+        "cache-control": "no-store"
+      });
+      response.end();
+      return true;
+    }
+    if (path !== "/account/login" && !path.startsWith("/v1/account/") && !path.startsWith("/v1/access/")) return false;
+    // Canonicalize HTTPS aliases too: the login cookie is host-only, while
+    // the OIDC callback always returns to the configured public origin.
+    if (request.method === "GET"
       && ["/v1/account/login", "/v1/account/callback"].includes(path)) {
       const canonical = new URL(this.publicBaseUrl);
       const requestHost = headerValue(request.headers, "host").toLowerCase();
@@ -281,25 +329,44 @@ export class AccountAccessControl extends RuntimeAccessControl {
       }
     }
     try {
-      if (request.method === "GET" && path === "/v1/account/config") {
+      if (await this.oidc.handleHttp?.(this, request, response, url)) return true;
+      if (path === "/account/login") return false;
+      if (request.method === "POST" && path === "/v1/account/memory/verify") {
+        if (!this.memoryBridgeSecret) throw accountError(404, "memory_bridge_disabled");
+        const identity = await verifyMemoryDelegation(
+          this, this.memoryBridgeSecret, bearerToken(request.headers), await readJson(request)
+        );
+        json(response, 200, identity);
+      } else if (request.method === "GET" && path === "/v1/account/config") {
         json(response, 200, { mode: this.mode, loginUrl: "/v1/account/login" });
       } else if (request.method === "GET" && path === "/v1/account/login") {
-        this.checkPairingRate(request);
+        this.checkLoginRate(request, "page");
         const result = await this.oidc.begin(url.searchParams.get("returnTo"), {
-          uiTheme: url.searchParams.get("uiTheme")
+          uiTheme: url.searchParams.get("uiTheme"),
+          browser: cookieValue(request.headers, this.loginCookie)
         });
+        const bindingCookie = this.oidc.loginBindingCookie?.(this.loginCookie, result.state);
         response.writeHead(302, {
           location: result.url, "cache-control": "no-store",
-          "set-cookie": this.cookie(this.loginCookie, result.browser, { sameSite: "Lax" })
+          "set-cookie": [
+            this.cookie(this.loginCookie, result.browser, { sameSite: "Lax" }),
+            ...(bindingCookie ? [this.cookie(bindingCookie, result.browser, { sameSite: "Lax" })] : [])
+          ]
         });
         response.end();
       } else if (request.method === "GET" && path === "/v1/account/callback") {
-        this.checkPairingRate(request);
-        const result = await this.oidc.callback(url.searchParams, cookieValue(request.headers, this.loginCookie));
+        this.checkLoginRate(request, "callback");
+        const bindingCookie = this.oidc.loginBindingCookie?.(this.loginCookie, url.searchParams.get("state"));
+        const browser = bindingCookie && cookieValue(request.headers, bindingCookie)
+          || cookieValue(request.headers, this.loginCookie);
+        const result = await this.oidc.callback(url.searchParams, browser);
         response.writeHead(303, {
           location: result.returnTo, "cache-control": "no-store",
           "set-cookie": [
-            this.cookie(this.loginCookie, "", { maxAge: 0, sameSite: "Lax" }),
+            ...(bindingCookie ? [this.cookie(bindingCookie, "", { maxAge: 0, sameSite: "Lax" })] : []),
+            ...(this.oidc.keepLoginCookie ? [] : [
+              this.cookie(this.loginCookie, "", { maxAge: 0, sameSite: "Lax" })
+            ]),
             this.cookie(this.sessionCookie, result.token, {
               maxAge: Math.floor((result.expiresAt - this.now()) / 1000)
             })
@@ -307,14 +374,14 @@ export class AccountAccessControl extends RuntimeAccessControl {
         });
         response.end();
       } else if (request.method === "POST" && path === "/v1/account/device/start") {
-        this.checkPairingRate(request);
+        this.checkLoginRate(request, "device-start");
         json(response, 200, await this.oidc.beginDevice());
       } else if (request.method === "POST" && path === "/v1/account/device/poll") {
-        this.checkPairingRate(request);
+        this.checkLoginRate(request, "device-poll");
         const body = await readJson(request);
         json(response, 200, await this.oidc.pollDevice(body.flowToken));
       } else if (request.method === "POST" && path === "/v1/account/token/exchange") {
-        this.checkPairingRate(request);
+        this.checkLoginRate(request, "token-exchange");
         json(response, 200, await this.oidc.exchangeAccessToken(bearerToken(request.headers)));
       } else if (request.method === "POST" && path === "/v1/access/pair") {
         this.checkPairingRate(request);
@@ -339,6 +406,7 @@ export class AccountAccessControl extends RuntimeAccessControl {
         if (request.method === "GET" && ["/v1/account/me", "/v1/access/session"].includes(path)) {
           json(response, 200, {
             authenticated: true, mode: this.mode, user: principal.user, space: principal.space,
+            accountIdentity: await this.accounts.identityForUser?.(userId, this.sharedAccountIssuer || this.oidc.issuer) || null,
             membership: await this.accounts.membership(userId, spaceId), expiresAt: principal.expiresAt,
             sessionId: principal.sessionId,
             scopes: roleScopes((await this.accounts.membership(userId, spaceId))?.role),
@@ -346,18 +414,47 @@ export class AccountAccessControl extends RuntimeAccessControl {
               ? await this.accounts.listSpaces(userId)
               : [{ ...principal.space, membership: principal.membership }],
             capabilities: {
-              teamSpaces: typeof this.accounts.createTeamSpace === "function"
+              teamSpaces: typeof this.accounts.createTeamSpace === "function",
+              loginSettingsUrl: this.oidc.settingsUrl ?? "/idp/settings"
             }
           });
+        } else if (request.method === "POST" && path === "/v1/account/identity/link") {
+          if (!this.adcOrigin || !this.sharedAccountIssuer) throw accountError(404, "account_link_disabled");
+          const { adcToken } = await readJson(request);
+          if (typeof adcToken !== "string" || adcToken.length > 4096) throw accountError(400, "invalid_adc_proof");
+          const proof = await fetch(`${this.adcOrigin}/api/v1/me`, {
+            headers: { authorization: `Bearer ${adcToken}` }, redirect: "error", signal: AbortSignal.timeout(5000)
+          });
+          if (!proof.ok) throw accountError(proof.status === 401 ? 401 : 503, "adc_proof_failed");
+          const adc = await proof.json();
+          if (adc.kind !== "session" || !adc.user?.id) throw accountError(403, "adc_account_session_required");
+          json(response, 200, await this.accounts.linkIdentity(userId, spaceId, {
+            issuer: this.sharedAccountIssuer, subject: adc.user.id
+          }));
         } else if (request.method === "POST" && ["/v1/account/logout", "/v1/access/logout"].includes(path)) {
+          const sharedCookies = principal.source === "cookie"
+            ? await this.oidc.logoutBrowser?.(principal.sessionId, headerValue(request.headers, "cookie")) || []
+            : [];
           await this.accounts.revokeSession(userId, principal.sessionId);
+          await this.oidc.revokeSession?.(principal.sessionId);
           json(response, 200, { loggedOut: true }, {
-            "set-cookie": this.cookie(this.sessionCookie, "", { maxAge: 0 })
+            "set-cookie": [
+              ...sharedCookies,
+              this.cookie(this.sessionCookie, "", { maxAge: 0 }),
+              this.cookie(this.loginCookie, "", { maxAge: 0, sameSite: "Lax" }),
+              // Hosted identity has its own cookie under /idp. Leaving it
+              // behind silently signs the same user back in on the next visit.
+              `zion_local_identity=; Path=/idp; HttpOnly; SameSite=Lax; Max-Age=0${this.oidc.secureCookies ? "; Secure" : ""}`,
+              `zion_github=; Path=/idp; HttpOnly; SameSite=Lax; Max-Age=0${this.oidc.secureCookies ? "; Secure" : ""}`
+            ]
           });
         } else if (request.method === "GET" && path === "/v1/account/sessions") {
           json(response, 200, { sessions: await this.accounts.listSessions(userId) });
         } else if (request.method === "POST" && path === "/v1/account/sessions/revoke") {
-          await this.accounts.revokeSession(userId, (await readJson(request)).sessionId);
+          const sessionId = (await readJson(request)).sessionId;
+          const owned = (await this.accounts.listSessions(userId)).some((session) => session.id === sessionId);
+          await this.accounts.revokeSession(userId, sessionId);
+          if (owned) await this.oidc.revokeSession?.(sessionId);
           json(response, 200, { revoked: true });
         } else if (request.method === "GET" && path === "/v1/account/spaces") {
           json(response, 200, { spaces: await this.accounts.listSpaces(userId) });
@@ -449,6 +546,16 @@ export class AccountAccessControl extends RuntimeAccessControl {
       }
     } catch (error) {
       // Protocol/library failures may include upstream credentials or claims.
+      if (error.retryAfterSeconds) response.setHeader("retry-after", error.retryAfterSeconds);
+      if (request.method === "GET" && this.oidc.loginFailure
+        && ["/v1/account/login", "/v1/account/callback", "/v1/account/shared/login", "/account/login"].includes(path)) {
+        const bindingCookie = path === "/v1/account/callback"
+          && this.oidc.loginBindingCookie?.(this.loginCookie, url.searchParams.get("state"));
+        if (bindingCookie) response.setHeader("set-cookie",
+          this.cookie(bindingCookie, "", { maxAge: 0, sameSite: "Lax" }));
+        this.oidc.loginFailure(this, response, error);
+        return true;
+      }
       json(response, Number(error?.statusCode) || 401, {
         error: error?.statusCode ? error.message : "Account authentication failed",
         code: error?.statusCode ? error.code : "authentication_failed"

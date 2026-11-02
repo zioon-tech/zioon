@@ -25,6 +25,7 @@ const TRUSTED_AUTOMATION_TOOLS = new Set([
   "sendMail",
   "todoWrite",
   "mcpCall",
+  "extensionsCall",
   "schedulerManage",
   "modelsManage",
   "toolsManage",

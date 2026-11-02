@@ -20,6 +20,7 @@ import {
   normalizePluginManifest,
   validatePluginManifest
 } from '../../packages/plugin-sdk/src/manifest.mjs';
+import { createPluginModuleBlobUrl, normalizePluginModulePath } from './module-urls';
 
 /**
  * 插件加载器
@@ -258,11 +259,15 @@ export class PluginLoader {
     try {
       this.log(`Loading module for plugin: ${pluginInfo.id}`, 'debug');
 
+      await this.preparePackageEntries(pluginInfo);
       const contract = pluginInfo.contract || normalizePluginManifest(pluginInfo.manifest);
       if (!contract.hosts.workbench) {
         throw new Error(`Plugin ${pluginInfo.id} is not compatible with the workbench host`);
       }
       const entries = this.getWorkbenchEntries(contract);
+      // #region debug-point C:module-entry
+      if ((globalThis as any).__zionDebugPluginActivationState === true) void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "plugin-activation-state", runId: (globalThis as any).__zionDebugPluginActivationRunId || "pre-fix-3", hypothesisId: "C", location: "PluginLoader.loadModule", msg: "[DEBUG] Actual module entry before import", data: { id: pluginInfo.id, path: pluginInfo.path, entries, sourceEntries: pluginInfo.sourceEntries, scripts: Object.keys(pluginInfo.scriptContents || {}), hasStoredScripts: Boolean(pluginInfo.scriptStorageKey) }, ts: Date.now() }) }).catch(() => {});
+      // #endregion
       if (!entries.length) {
         throw new Error(`Plugin ${pluginInfo.id} has no Workbench or renderer entry`);
       }
@@ -286,6 +291,71 @@ export class PluginLoader {
       this.log(pluginError.message, 'error');
       throw pluginError;
     }
+  }
+
+  private async preparePackageEntries(pluginInfo: PluginInfo): Promise<void> {
+    const contract = pluginInfo.contract || normalizePluginManifest(pluginInfo.manifest);
+    const packageSource = Boolean(
+      pluginInfo.sourceEntries
+      || pluginInfo.scriptStorageKey
+      || /\/plugins\/[^/]+\/download(?:[?#]|$)/.test(pluginInfo.path)
+      || /^file:.*\.zip$/i.test(pluginInfo.path)
+    );
+    if (!packageSource) return;
+
+    if (!pluginInfo.scriptContents || !pluginInfo.sourceEntries) {
+      // A persisted ZIP URL is an archive, never a module directory.
+      if (!/^https?:/i.test(pluginInfo.path)) {
+        throw new Error(`ZIP plugin ${pluginInfo.id} has no stored scripts; reinstall its archive`);
+      }
+      const { HttpPluginInstaller } = await import('./http-installer');
+      const installer = new HttpPluginInstaller({
+        baseUrl: pluginInfo.path,
+        timeout: this.options.timeout,
+        cache: false
+      });
+      const result = await installer.installFromUrl(pluginInfo.path);
+      if (!result.success || !result.plugin) {
+        throw new Error(`Cannot restore ZIP plugin ${pluginInfo.id}: ${result.error?.message || 'download failed'}`);
+      }
+      const restored = result.plugin;
+      if (restored.id !== pluginInfo.id || restored.version !== pluginInfo.version) {
+        installer.removeFromCache(restored.id);
+        for (const url of Object.values(restored.scriptBlobUrls || {})) URL.revokeObjectURL(url);
+        throw new Error(`ZIP plugin package changed; synchronize ${pluginInfo.id} before activation`);
+      }
+      Object.assign(pluginInfo, {
+        manifest: restored.manifest,
+        contract: restored.contract,
+        scriptContents: restored.scriptContents,
+        sourceEntries: restored.sourceEntries,
+        scriptBlobUrls: restored.scriptBlobUrls,
+        styleContents: restored.styleContents
+      });
+      return;
+    }
+
+    // Regenerate module URLs from owned sources at the activation boundary.
+    // Installer caches or earlier activations may have revoked old Blob URLs.
+    const entries = { ...contract.entries };
+    const cache = new Map<string, string>();
+    try {
+      for (const kind of ['workbench', 'renderer'] as const) {
+        const source = pluginInfo.sourceEntries[kind];
+        if (!source) continue;
+        entries[kind] = createPluginModuleBlobUrl({
+          entryPath: normalizePluginModulePath(source),
+          sources: pluginInfo.scriptContents,
+          cache
+        });
+      }
+    } catch (error) {
+      for (const url of cache.values()) URL.revokeObjectURL(url);
+      throw error;
+    }
+    for (const url of Object.values(pluginInfo.scriptBlobUrls || {})) URL.revokeObjectURL(url);
+    pluginInfo.contract = { ...contract, entries };
+    pluginInfo.scriptBlobUrls = Object.fromEntries(cache);
   }
 
   normalizeManifest(
@@ -356,15 +426,17 @@ export class PluginLoader {
       if (path.startsWith('internal:')) {
         const key = path.slice('internal:'.length);
         const extensionModules = (import.meta as any).glob([
-          '/extensions/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/dev.identity/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/dev.byteintl-model/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/**/runtime.{js,ts,jsx,tsx}',
-          '!/extensions/**/runtime/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/**/tools-entry.{js,ts,jsx,tsx}',
-          '!/extensions/**/tools/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/**/cli.{js,ts,jsx,tsx}',
-          '!/extensions/**/cli/**/*.{js,ts,jsx,tsx}'
+          '/extensions/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.identity/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.byteintl-model/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.adc-studio/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/runtime.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/runtime/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/tools-entry.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/tools/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/cli.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/cli/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/skills/**/*.{js,mjs,ts,jsx,tsx}'
         ]) as Record<
           string,
           () => Promise<any>
@@ -386,15 +458,17 @@ export class PluginLoader {
       const normalizedExtensionPath = this.normalizeExtensionsPath(path);
       if (normalizedExtensionPath) {
         const extensionModules = (import.meta as any).glob([
-          '/extensions/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/dev.identity/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/dev.byteintl-model/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/**/runtime.{js,ts,jsx,tsx}',
-          '!/extensions/**/runtime/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/**/tools-entry.{js,ts,jsx,tsx}',
-          '!/extensions/**/tools/**/*.{js,ts,jsx,tsx}',
-          '!/extensions/**/cli.{js,ts,jsx,tsx}',
-          '!/extensions/**/cli/**/*.{js,ts,jsx,tsx}'
+          '/extensions/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.identity/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.byteintl-model/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.adc-studio/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/runtime.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/runtime/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/tools-entry.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/tools/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/cli.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/cli/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/skills/**/*.{js,mjs,ts,jsx,tsx}'
         ]) as Record<
           string,
           () => Promise<any>

@@ -1,0 +1,17 @@
+{
+  "name": "@zion/account-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify": "bun ../../apps/memory-service/scripts/verify-portal.ts"
+  },
+  "dependencies": {
+    "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "better-auth": "1.7.5",
+    "fastify": "5.6.1",
+    "pg": "8.16.3"
+  }
+}

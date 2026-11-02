@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildBiographyDigest,
   buildBiographyFacets,
@@ -15,7 +15,7 @@ import {
 } from "../extensions/dev.identity/identity-core.js";
 import {
   activate as activateIdentity,
-  getLocalToolsBase
+  getIdentityFilesBase
 } from "../extensions/dev.identity/main.js";
 
 const activate = (context) => activateIdentity({
@@ -25,8 +25,8 @@ const activate = (context) => activateIdentity({
   }) }
 });
 
-describe("identity local-tools routing", () => {
-  it("uses the authenticated Runtime Device Service gateway remotely", () => {
+describe("identity Runtime memory routing", () => {
+  it("uses the authenticated Runtime Identity API remotely", () => {
     const previous = window.zion;
     try {
       window.zion = {
@@ -46,8 +46,8 @@ describe("identity local-tools routing", () => {
         }
       };
 
-      expect(getLocalToolsBase()).toBe(
-        "https://zion.example.com/v1/device-services/local-tools"
+      expect(getIdentityFilesBase()).toBe(
+        "https://zion.example.com/v1/plugins/dev.identity"
       );
     } finally {
       window.zion = previous;
@@ -67,8 +67,8 @@ describe("identity local-tools routing", () => {
         }
       };
 
-      expect(getLocalToolsBase()).toBe(
-        "https://runtime.zioon.tech/v1/device-services/local-tools"
+      expect(getIdentityFilesBase()).toBe(
+        "https://runtime.zioon.tech/v1/plugins/dev.identity"
       );
       await new Promise((resolve) => setTimeout(resolve, 100));
     } finally {
@@ -111,7 +111,8 @@ describe("identity context core", () => {
     expect(text).toContain("&lt;trusted&gt;");
     expect(text).toContain("A &amp; B");
     expect(text).not.toContain("Name: Zion <trusted>");
-    expect(text).toContain("~/.zion-next/data/plugins/dev.identity/biography/events.jsonl");
+    expect(text).toContain("/memory/dev.identity/biography/events.jsonl");
+    expect(text).not.toContain("~/.zion-next/data/plugins/dev.identity");
     expect(text).toContain("user-owned read-only data");
     expect(text).toContain("model-maintained working memory");
     expect(text).toContain("Project working-memory routine");
@@ -364,10 +365,90 @@ describe("identity context core", () => {
 });
 
 describe("identity extension", () => {
+  beforeEach(() => {
+    localStorage.setItem("zion.runtime.mode", "browser");
+    localStorage.setItem("zion.runtime.baseUrl", "https://runtime.test");
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     localStorage.clear();
     delete window.zion;
+  });
+
+  it("uses authenticated Runtime plugin files without a terminal or absolute client path", async () => {
+    const stateValues = new Map([
+      ["runtime.mode", "runtime"],
+      ["runtime.baseUrl", "https://runtime.test"],
+      ["runtime.connection", {
+        backend: "runtime",
+        baseUrl: "https://runtime.test"
+      }]
+    ]);
+    const requests = [];
+    window.zion = {
+      state: {
+        get: vi.fn((key) => stateValues.get(key)),
+        set: vi.fn((key, value) => stateValues.set(key, value))
+      },
+      messages: {
+        registerContributor: vi.fn(() => ({ dispose: vi.fn() }))
+      },
+      commands: {
+        registerCommand: vi.fn(() => ({ dispose: vi.fn() }))
+      },
+      events: {
+        on: vi.fn(() => ({ dispose: vi.fn() })),
+        emit: vi.fn()
+      }
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url, options = {}) => {
+      const requestUrl = new URL(url);
+      requests.push({
+        url: requestUrl,
+        method: options.method || "GET",
+        body: options.body ? JSON.parse(options.body) : null
+      });
+      if (options.method === "POST") {
+        return new globalThis.Response(JSON.stringify({
+          ok: true,
+          written: true,
+          content_hash: "hash:created"
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      return new globalThis.Response(JSON.stringify({
+        error: "ENOENT: no such file"
+      }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" }
+      });
+    }));
+
+    const disposable = await activate({ subscriptions: [] });
+    await disposable.ready;
+
+    const fileRequests = requests.filter(({ url }) =>
+      url.pathname.includes("/files/")
+    );
+    expect(fileRequests.length).toBeGreaterThan(0);
+    expect(fileRequests.every(({ url }) =>
+      url.pathname.startsWith("/v1/plugins/dev.identity/files/")
+    )).toBe(true);
+    expect(fileRequests.every(({ url }) =>
+      !url.pathname.includes("/device-services/")
+      && !url.searchParams.has("node_id")
+      && !url.searchParams.has("session_id")
+    )).toBe(true);
+    expect(fileRequests.filter(({ method }) => method === "GET").every(({ url }) =>
+      !String(url.searchParams.get("path") || "").startsWith("/")
+    )).toBe(true);
+    expect(fileRequests.filter(({ method }) => method === "POST").every(({ body }) =>
+      body?.path && !String(body.path).startsWith("/")
+    )).toBe(true);
+    disposable.dispose();
   });
 
   it("injects profile files after leading system messages", async () => {
@@ -753,11 +834,10 @@ describe("identity extension", () => {
 
   it("automatically initializes project memory files without overwriting existing profiles", async () => {
     const commands = new Map();
-    const root = "/Users/test/.zion-next/data/plugins/dev.identity";
     const files = new Map([
-      [`${root}/identity.md`, "# Identity\nExisting"],
-      [`${root}/user.md`, "# User\nExisting"],
-      [`${root}/biography/digest.md`, "# 自传摘要\nExisting"]
+      ["identity.md", "# Identity\nExisting"],
+      ["user.md", "# User\nExisting"],
+      ["biography/digest.md", "# 自传摘要\nExisting"]
     ]);
     const writes = [];
 
@@ -822,31 +902,31 @@ describe("identity extension", () => {
     const disposable = await activate({ subscriptions: [] });
     const initialize = commands.get("identity.initialize");
     const expectedCreated = [
-      `${root}/projects/index.md`,
-      `${root}/projects/inbox.md`,
-      `${root}/projects/attention.md`,
-      `${root}/projects/_template.md`
+      "projects/index.md",
+      "projects/inbox.md",
+      "projects/attention.md",
+      "projects/_template.md"
     ];
     await disposable.ready;
     expect(writes.map((write) => write.path)).toEqual(expectedCreated);
 
     const first = await initialize();
     expect(first).toEqual({ ok: true, created: [] });
-    expect(files.get(`${root}/projects/index.md`)).toContain("# 项目索引");
-    expect(files.get(`${root}/projects/inbox.md`)).toContain("# 杂思收集箱");
-    expect(files.get(`${root}/projects/attention.md`)).toContain("# 待处理事项");
-    expect(files.get(`${root}/projects/_template.md`)).toContain("autonomy: none");
+    expect(files.get("projects/index.md")).toContain("# 项目索引");
+    expect(files.get("projects/inbox.md")).toContain("# 杂思收集箱");
+    expect(files.get("projects/attention.md")).toContain("# 待处理事项");
+    expect(files.get("projects/_template.md")).toContain("autonomy: none");
 
     const second = await initialize();
     expect(second).toEqual({ ok: true, created: [] });
     expect(writes).toHaveLength(4);
 
-    files.set(`${root}/projects/inbox.md`, "");
+    files.set("projects/inbox.md", "");
     const third = await initialize();
     expect(third).toEqual({ ok: true, created: [] });
     expect(writes).toHaveLength(4);
-    expect(files.get(`${root}/identity.md`)).toBe("# Identity\nExisting");
-    expect(files.get(`${root}/user.md`)).toBe("# User\nExisting");
+    expect(files.get("identity.md")).toBe("# Identity\nExisting");
+    expect(files.get("user.md")).toBe("# User\nExisting");
     disposable.dispose();
   });
 
@@ -1073,7 +1153,7 @@ describe("identity extension", () => {
 
     await vi.waitFor(() => expect(writes).toHaveLength(2));
     expect(writes[0].url).toContain("/files/append-jsonl");
-    expect(writes[0].body.path).toBe("/Users/test/.zion-next/data/plugins/dev.identity/biography/events.jsonl");
+    expect(writes[0].body.path).toBe("biography/events.jsonl");
     expect(writes[0].body.records[0]).toEqual(expect.objectContaining({
       id: "session-1:run-1:0",
         summary: "完成身份注入和自动自传记录",
@@ -1093,7 +1173,7 @@ describe("identity extension", () => {
       expect(distillationMessages[1].content).toContain("确定使用 biography 事件记录");
       expect(distillationMessages[1].content).toContain("已有主题标签：agent-identity, storage");
     expect(writes[1].url).toContain("/files/write");
-    expect(writes[1].body.path).toBe("/Users/test/.zion-next/data/plugins/dev.identity/biography/digest.md");
+    expect(writes[1].body.path).toBe("biography/digest.md");
       expect(writes[1].body.content).toContain("[project/memory-panel]");
     expect(writes[1].body.content).toContain("完成身份注入和自动自传记录");
     await vi.waitFor(() => {

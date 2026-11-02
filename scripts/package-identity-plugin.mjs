@@ -28,6 +28,18 @@ const IDENTITY_SOURCE_ROOT = join(
 );
 const FIXED_ZIP_DATE = new Date("2026-01-01T00:00:00.000Z");
 
+// Keep portable Skill resources sourced from the existing standalone helpers.
+// Every package refreshes these copies, so auth logic has one maintained source.
+export async function copyAgentFsSkillScripts(
+  skillDirectory = join(IDENTITY_SOURCE_ROOT, "skills", "agentfs-memory")
+) {
+  const destination = join(skillDirectory, "scripts");
+  await mkdir(destination, { recursive: true });
+  for (const name of ["agentfs-login.mjs", "install-agentfs-login.mjs"]) {
+    await cp(join(REPOSITORY_ROOT, "scripts", name), join(destination, name));
+  }
+}
+
 function readOption(args, name, fallback) {
   const index = args.indexOf(name);
   if (index < 0) return fallback;
@@ -119,6 +131,75 @@ async function replaceDirectory(source, target) {
   }
 }
 
+// Local development has two consumers: Runtime's installed directory and the
+// Plugin Host's registered ZIP. Writing a ZIP alone does not update its catalog.
+export async function publishIdentityPluginArchive({
+  archivePath,
+  serviceBaseUrl,
+  fetchImpl = globalThis.fetch
+} = {}) {
+  const service = new URL(String(serviceBaseUrl || ""));
+  if (service.protocol !== "http:"
+    || !["127.0.0.1", "localhost", "[::1]"].includes(service.hostname)
+    || service.username || service.password || service.search || service.hash) {
+    throw new Error("Identity development publishing requires a loopback HTTP Plugin Host");
+  }
+  const base = service.href.replace(/\/+$/, "");
+  const bytes = await readFile(archivePath);
+  const zip = await JSZip.loadAsync(bytes);
+  const manifest = JSON.parse(await zip.file("manifest.json").async("string"));
+  const id = String(manifest.zion?.id || "");
+  const version = String(manifest.zion?.version || manifest.version || "");
+  if (id !== "dev.identity" || !version) {
+    throw new Error("Expected a versioned dev.identity plugin archive");
+  }
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const options = () => ({
+    cache: "no-store",
+    redirect: "error",
+    signal: AbortSignal.timeout(20_000)
+  });
+  const catalog = await fetchImpl(`${base}/plugins/${id}`, options());
+  let registered = catalog.ok ? (await catalog.json()).data : null;
+  if (!catalog.ok && catalog.status !== 404) {
+    throw new Error(`Plugin Host catalog HTTP ${catalog.status}`);
+  }
+  let uploaded = false;
+  if (registered?.file_hash !== hash || registered?.metadata?.version !== version) {
+    const form = new FormData();
+    form.set("file", new Blob([bytes], { type: "application/zip" }), `dev.identity-${version}.zip`);
+    form.set("metadata", JSON.stringify({
+      id,
+      name: manifest.zion.name || "Identity",
+      version,
+      description: manifest.description || ""
+    }));
+    const response = await fetchImpl(`${base}/plugins/upload`, {
+      ...options(),
+      method: "POST",
+      body: form
+    });
+    const result = await response.json();
+    if (!response.ok || result.success !== true) {
+      throw new Error(`Plugin Host registration failed: ${result.error || result.detail || response.status}`);
+    }
+    registered = result.metadata;
+    uploaded = true;
+  }
+  if (registered?.file_hash !== hash || registered?.metadata?.version !== version) {
+    throw new Error("Plugin Host registered a different Identity archive");
+  }
+  const download = await fetchImpl(`${base}/plugins/${id}/download`, options());
+  if (!download.ok) throw new Error(`Identity download HTTP ${download.status}`);
+  const downloadedHash = createHash("sha256")
+    .update(Buffer.from(await download.arrayBuffer()))
+    .digest("hex");
+  if (downloadedHash !== hash) {
+    throw new Error("Plugin Host download does not match the built Identity archive");
+  }
+  return { serviceBaseUrl: base, version, archiveSha256: hash, uploaded, downloadVerified: true };
+}
+
 export async function packageIdentityPlugin({
   installDirectory = join(homedir(), ".zion-next", "plugins", "dev.identity"),
   archiveDirectory = join(
@@ -128,8 +209,12 @@ export async function packageIdentityPlugin({
     "dev.identity"
   ),
   install = true,
-  archive = true
+  archive = true,
+  publishServiceUrl = ""
 } = {}) {
+  if (publishServiceUrl && !archive) {
+    throw new Error("Publishing Identity requires archive output");
+  }
   const manifestSource = JSON.parse(
     await readFile(join(IDENTITY_SOURCE_ROOT, "manifest.json"), "utf8")
   );
@@ -167,6 +252,7 @@ export async function packageIdentityPlugin({
         }, null, 2)}\n`
       )
     ]);
+    await copyAgentFsSkillScripts(join(packageRoot, "skills", "agentfs-memory"));
 
     let installedAt = null;
     if (install) {
@@ -196,13 +282,17 @@ export async function packageIdentityPlugin({
       archiveSha256 = createHash("sha256").update(bytes).digest("hex");
     }
 
+    const published = publishServiceUrl
+      ? await publishIdentityPluginArchive({ archivePath, serviceBaseUrl: publishServiceUrl })
+      : null;
     return {
       id: String(manifest.zion.id),
       version,
       source: relative(REPOSITORY_ROOT, IDENTITY_SOURCE_ROOT),
       installDirectory: installedAt,
       archivePath,
-      archiveSha256
+      archiveSha256,
+      ...(published ? { published } : {})
     };
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -223,7 +313,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       join(homedir(), ".zion-local-tools", "plugins", "dev.identity")
     ),
     install: !args.includes("--no-install"),
-    archive: !args.includes("--no-archive")
+    archive: !args.includes("--no-archive"),
+    publishServiceUrl: args.includes("--publish-local") ? "http://127.0.0.1:8767" : ""
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }

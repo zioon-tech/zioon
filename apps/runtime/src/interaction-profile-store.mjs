@@ -6,6 +6,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { dirname } from "node:path";
+import { AGENTFS_MCP_READ_NAMES } from "../../../packages/plugin-sdk/src/agentfs-mcp-policy.mjs";
 
 export const DEFAULT_INTERACTION_PROFILE_ID = "interactive.default";
 export const DEFAULT_SCHEDULED_INTERACTION_PROFILE_ID = "scheduled.default";
@@ -34,10 +35,13 @@ export const DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES = Object.freeze([
   "skillsList",
   "memoryList",
   "identityContext",
+  ...AGENTFS_MCP_READ_NAMES,
   "observabilityQuery",
   "observabilityRawRead",
   "sessionList",
-  "sessionGet"
+  "sessionGet",
+  "goalManage",
+  "compressionRecall"
 ]);
 const CONTEXT_PROVIDER_ID_ALIASES = new Map([
   ["skills", "dev.skills.available"],
@@ -45,7 +49,8 @@ const CONTEXT_PROVIDER_ID_ALIASES = new Map([
   ["terminal-inventory", "dev.terminal-manager.inventory"],
   ["identity", "dev.identity.context"],
   ["project", "dev.identity.context"],
-  ["compression", "dev.context-compression"]
+  ["compression", "dev.context-compression"],
+  ["goal", "dev.goal.context"]
 ]);
 const DEFAULT_INTERACTIVE_CONTEXT_PROVIDERS = [
   "dev.skills.available",

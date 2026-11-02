@@ -15,6 +15,11 @@ It owns the device capability schemas, request mapping, and policy checks for:
 - `sendMail`
 - scoped MCP listing and calls
 
+Each definition includes the shared Tool execution traits consumed by Runtime
+and Node Broker. The adapter implements only host-specific request mapping and
+policy enforcement; Runtime owns deadlines, cancellation classification,
+duplicate fencing, and durable receipts.
+
 Both same-machine Runtime Host and Device Connector use this adapter. It is
 separate from `@zion/runtime` because local-tools endpoints, terminal session
 IDs, filesystem roots, and HTTP transport are host integration details.

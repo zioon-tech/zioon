@@ -488,7 +488,7 @@ describe("NodeBroker", () => {
       expire();
 
       await expect(observed).resolves.toMatchObject({
-        message: "Tool invocation lease expired: invocation:one"
+        message: "Tool invocation lease expired before Device execution: invocation:one"
       });
       expect(broker.snapshot().pendingInvocations).toBe(0);
       expect(leaseDisposed).toBe(true);
@@ -522,7 +522,6 @@ describe("NodeBroker", () => {
       invocation(),
       new CancellationController().signal
     );
-    const observed = completion.catch((error) => error);
 
     try {
       await expect(broker.nextCommand(
@@ -536,8 +535,11 @@ describe("NodeBroker", () => {
 
       expire();
 
-      await expect(observed).resolves.toMatchObject({
-        message: "Tool invocation lease expired: invocation:one"
+      await expect(completion).resolves.toMatchObject({
+        ok: false,
+        failureCode: "timeout",
+        retryable: true,
+        content: expect.stringContaining("safe to retry")
       });
       await expect(broker.nextCommand(
         "node:macbook",
@@ -548,6 +550,83 @@ describe("NodeBroker", () => {
         invocationId: "invocation:one",
         reason: "invocation-lease-expired"
       });
+      expect(broker.completeInvocation(
+        "node:macbook",
+        "instance:one",
+        "invocation:one",
+        { ok: true, content: "late result" }
+      )).toMatchObject({
+        accepted: true,
+        duplicate: true,
+        result: {
+          ok: false,
+          failureCode: "timeout",
+          retryable: true
+        }
+      });
+    } finally {
+      broker.close();
+    }
+  });
+
+  it.each([
+    [undefined, 150_000],
+    [600_000, 630_000]
+  ])("extends the Device lease past the Bash timeout %s", async (
+    timeout,
+    expectedLeaseMs
+  ) => {
+    let scheduledMs;
+    const broker = new NodeBroker({
+      now: () => 1_000,
+      invocationLeaseMs: 120_000,
+      invocationDeliveryGraceMs: 30_000,
+      scheduleTimeout(_callback, timeoutMs) {
+        scheduledMs = timeoutMs;
+        return { dispose() {} };
+      }
+    });
+    broker.registerNode(registration({
+      capabilities: [{
+        name: "Bash",
+        version: "1",
+        risk: "execute",
+        description: "Run a command",
+        inputSchema: { type: "object" },
+        hostKind: "local-tools"
+      }]
+    }));
+    const input = invocation({
+      policy: { allowedTools: ["Bash"], allowedTerminalSessionIds: [] },
+      toolCall: {
+        id: "call:bash",
+        name: "Bash",
+        arguments: {
+          command: "sleep 1",
+          ...(timeout === undefined ? {} : { timeout })
+        }
+      }
+    });
+    const completion = broker.invoke(
+      input,
+      new CancellationController().signal
+    );
+
+    try {
+      await expect(broker.nextCommand(
+        "node:macbook",
+        "instance:one"
+      )).resolves.toMatchObject({
+        leaseExpiresAt: 1_000 + expectedLeaseMs
+      });
+      expect(scheduledMs).toBe(expectedLeaseMs);
+      broker.completeInvocation(
+        "node:macbook",
+        "instance:one",
+        input.invocationId,
+        { ok: true, content: "done" }
+      );
+      await expect(completion).resolves.toMatchObject({ ok: true });
     } finally {
       broker.close();
     }

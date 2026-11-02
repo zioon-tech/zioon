@@ -139,9 +139,7 @@ describe("Runtime control plane HTTP", () => {
 
     expect(response.status).toBe(426);
     expect(response.headers.get("x-zion-workbench-protocol")).toBe("5");
-    expect(response.headers.get("clear-site-data")).toBe(
-      "\"executionContexts\""
-    );
+    expect(response.headers.get("clear-site-data")).toBeNull();
     await expect(response.json()).resolves.toMatchObject({
       expectedProtocol: "5"
     });

@@ -90,6 +90,7 @@ describe("Runtime schedulerManage tool", () => {
       })
     };
     const tool = activateWithService(service);
+    const meta = { principal: { userId: "account:scheduler" }, runId: "run:scheduler" };
 
     expect(tool.name).toBe("schedulerManage");
     expect(tool.policy).toEqual({ minimumPreset: "trusted-automation" });
@@ -108,7 +109,7 @@ describe("Runtime schedulerManage tool", () => {
         modelProfileId: "workbench.deepseek.deepseek-v4-flash",
         schedule: { kind: "daily", time: "09:00" }
       }
-    })).resolves.toMatchObject({
+    }, meta)).resolves.toMatchObject({
       ok: true,
       content: expect.stringContaining("\"created\"")
     });
@@ -116,7 +117,7 @@ describe("Runtime schedulerManage tool", () => {
       title: "Daily report",
       nodeId: "node:cloud-runtime",
       modelProfileId: "workbench.deepseek.deepseek-v4-flash"
-    }));
+    }), meta);
 
     const listed = JSON.parse((await tool.invoke({ action: "list" })).content);
     expect(listed.tasks).toEqual([
@@ -135,18 +136,22 @@ describe("Runtime schedulerManage tool", () => {
         title: "Updated report",
         modelProfileId: "workbench.kimi.k2"
       }
-    })).content);
+    }, meta)).content);
     expect(updated.updated).toMatchObject({
       title: "Updated report",
       modelProfileId: "workbench.kimi.k2"
     });
+    expect(service.updateTask).toHaveBeenCalledWith("sched_1", {
+      title: "Updated report", modelProfileId: "workbench.kimi.k2"
+    }, meta);
 
     const disabled = JSON.parse((await tool.invoke({
       action: "set_enabled",
       task_id: "sched_1",
       enabled: false
-    })).content);
+    }, meta)).content);
     expect(disabled.updated).toMatchObject({ enabled: false });
+    expect(service.setEnabled).toHaveBeenCalledWith("sched_1", false, meta);
 
     const runs = JSON.parse((await tool.invoke({
       action: "list_runs",

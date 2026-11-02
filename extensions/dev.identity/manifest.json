@@ -1,13 +1,13 @@
 {
   "name": "dev.identity",
-  "version": "0.1.10",
+  "version": "0.1.15",
   "description": "Maintain agent identity, user profile, and distilled biography context.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.identity",
     "name": "Identity",
-    "version": "0.1.10",
+    "version": "0.1.15",
     "main": "./main.js",
     "entries": {
       "ui": "./main.js",
@@ -45,14 +45,14 @@
       },
       "permissions": [
         {
-          "id": "local-files",
+          "id": "memory-service",
           "label": {
-            "zh-CN": "插件数据文件",
-            "en-US": "Plugin data files"
+            "zh-CN": "记忆服务",
+            "en-US": "Memory service"
           },
           "description": {
-            "zh-CN": "读写身份、用户画像、项目工作记忆和自传记忆文件。",
-            "en-US": "Read and write identity, profile, project, and biography memory files."
+            "zh-CN": "通过认证的 agent-fs 服务读写身份、用户画像、项目工作记忆和自传记忆。",
+            "en-US": "Read and write identity, profile, project, and biography memory through authenticated agent-fs."
           }
         },
         {
@@ -65,15 +65,6 @@
             "zh-CN": "在系统上下文中注入身份与经历摘要。",
             "en-US": "Inject identity and biography summaries into system context."
           }
-        }
-      ],
-      "dataLocations": [
-        {
-          "label": {
-            "zh-CN": "身份与自传",
-            "en-US": "Identity and biography"
-          },
-          "path": "~/.zion-next/data/plugins/dev.identity"
         }
       ],
       "entrypoints": [
@@ -109,7 +100,7 @@
         "./styles.css"
       ],
       "skills": [
-        "./skills/biography-memory"
+        "./skills/agentfs-memory"
       ]
     },
     "activationEvents": [

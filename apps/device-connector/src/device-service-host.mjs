@@ -28,7 +28,14 @@ export const DEVICE_SERVICE_CAPABILITY = Object.freeze({
     required: ["service", "method", "path"],
     additionalProperties: false
   },
-  hostKind: "device-service"
+  hostKind: "device-service",
+  execution: {
+    effect: "process",
+    timeoutMs: 120_000,
+    maxTimeoutMs: 600_000,
+    cancellation: "best-effort",
+    idempotency: "reconcile"
+  }
 });
 
 const LOCAL_TOOLS_ROUTES = Object.freeze([
@@ -461,6 +468,7 @@ export class DeviceServiceHost {
       }
       const events = channel.events.splice(0);
       channel.queuedBytes = 0;
+      if (channel.closed) this.closePtyChannel(route.channelId);
       return serviceResponse(200, {
         events,
         closed: channel.closed
@@ -482,6 +490,7 @@ export class DeviceServiceHost {
     );
     socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
     const socket = this.webSocketFactory(socketUrl.toString());
+    socket.binaryType = "arraybuffer";
     const channelId = randomUUID();
     const channel = {
       channelId,
@@ -491,17 +500,26 @@ export class DeviceServiceHost {
       queuedBytes: 0,
       waiters: new Set(),
       closed: false,
+      outputQueue: Promise.resolve(),
       lastActivityAt: Date.now()
     };
     this.ptyChannels.set(channelId, channel);
     try {
       await this.waitForPtyOpen(channel, signal);
+      const enqueueOutput = (operation) => {
+        channel.outputQueue = channel.outputQueue.then(operation).catch(() => {
+          channel.closed = true;
+          this.pushPtyEvent(channel, { type: "error", message: "PTY output forwarding failed" });
+        });
+      };
       socket.addEventListener("message", (event) => {
-        void this.acceptPtyMessage(channel, event?.data);
+        enqueueOutput(() => this.acceptPtyMessage(channel, event?.data));
       });
       socket.addEventListener("close", () => {
-        channel.closed = true;
-        this.pushPtyEvent(channel, { type: "close" });
+        enqueueOutput(() => {
+          channel.closed = true;
+          this.pushPtyEvent(channel, { type: "close" });
+        });
       });
       socket.addEventListener("error", () => {
         this.pushPtyEvent(channel, {
@@ -628,8 +646,7 @@ export class DeviceServiceHost {
   prunePtyChannels(now = Date.now()) {
     for (const [channelId, channel] of this.ptyChannels) {
       if (
-        channel.closed
-        || now - channel.lastActivityAt > this.ptyIdleTimeoutMs
+        now - channel.lastActivityAt > this.ptyIdleTimeoutMs
       ) {
         this.closePtyChannel(channelId);
       }

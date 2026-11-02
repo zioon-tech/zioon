@@ -363,7 +363,7 @@ class ThinkingInlineWidget extends WidgetType {
   eq(other) {
     return other.id === this.id;
   }
-  toDOM() {
+  toDOM(view) {
     const span = document.createElement("span");
     span.className = "zion-thinking-inline";
     const thinkingId = String(this.id).replace(/:inline$/, "");
@@ -384,6 +384,25 @@ class ThinkingInlineWidget extends WidgetType {
     txt.textContent = t("ui.thinking", "思考");
     span.appendChild(txt);
 
+    const renderedAt = Date.now();
+    const sessionId = getViewSessionId(view);
+    const state = window?.zion?.state;
+    const latency = sessionId ? state?.get?.(`chat.latency.${sessionId}`) : null;
+    if (latency?.runId && thinkingId.startsWith(`thinking:${latency.runId}:`)) {
+      requestAnimationFrame(() => {
+        if (!span.isConnected) return;
+        const current = state?.get?.(`chat.latency.${sessionId}`);
+        if (current?.runId !== latency.runId || current.stages?.firstThinkingCardVisible != null) return;
+        state?.set?.(`chat.latency.${sessionId}`, {
+          ...current,
+          stages: {
+            ...current.stages,
+            firstThinkingCardRendered: renderedAt - current.submittedAt,
+            firstThinkingCardVisible: Date.now() - current.submittedAt
+          }
+        });
+      });
+    }
     return span;
   }
   ignoreEvent() { return false; }

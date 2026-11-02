@@ -89,6 +89,7 @@ export function activateRuntimePlugin(context) {
   const toolRegistration = context.tools.registerTool({
     name: "memoryList",
     description: "List Runtime-backed Zion memory items and optionally search them.",
+    execution: { effect: "read" },
     inputSchema: {
       type: "object",
       properties: {
@@ -155,6 +156,7 @@ export function activateRuntimePlugin(context) {
     name: MEMORY_MANAGE_TOOL_NAME,
     description: manageDefinition.description,
     inputSchema: manageDefinition.inputSchema,
+    execution: { effect: "write" },
     policy: {
       minimumPreset: "read-only"
     },

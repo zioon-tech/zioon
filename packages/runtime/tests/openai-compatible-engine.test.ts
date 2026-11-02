@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CancellationController,
+  createAgentExecutor,
+  MemoryRunStore,
   OpenAICompatibleEngine,
   type EngineOutputEvent,
   type EngineTurnRequest,
@@ -83,6 +85,81 @@ function modelRequestEvent() {
 }
 
 describe("OpenAICompatibleEngine", () => {
+  it.each([false, true])("replays signed tool responses unchanged (stream=%s)", async (stream) => {
+    const argumentsText = '{ "query": "runtime" }';
+    const assistant = {
+      role: "assistant",
+      content: "",
+      signature: "message-signed-state",
+      extra_content: { provider: { token: "opaque-message-state" } },
+      tool_calls: [{
+        id: "call-signed",
+        type: "function",
+        signature: "tool-signed-state",
+        extra_content: { google: { thought_signature: "opaque-tool-state" } },
+        function: { name: "search", arguments: argumentsText }
+      }]
+    };
+    const requests: Array<Record<string, any>> = [];
+    const store = new MemoryRunStore();
+    let toolCheckpoint: Awaited<ReturnType<MemoryRunStore["getLatestCheckpoint"]>>;
+    const engine = new OpenAICompatibleEngine({
+      endpoint: "https://model.example/v1/chat/completions",
+      model: "test-model",
+      supportsStreaming: stream,
+      transport: async (request) => {
+        const payload = JSON.parse(request.body);
+        requests.push(payload);
+        if (requests.length === 1) {
+          if (stream) {
+            return response({
+              headers: { "content-type": "text/event-stream" },
+              chunks: [
+                `data: ${JSON.stringify({ choices: [{ delta: {
+                  ...assistant,
+                  tool_calls: [{ ...assistant.tool_calls[0], index: 0,
+                    function: { name: "search", arguments: '{ "query":' } }]
+                } }] })}\n\n`,
+                `data: ${JSON.stringify({ choices: [{ delta: {
+                  tool_calls: [{ index: 0, function: { arguments: ' "runtime" }' } }]
+                }, finish_reason: "tool_calls" }] })}\n\n`,
+                "data: [DONE]\n\n"
+              ]
+            });
+          }
+          return response({ payload: { choices: [{ message: assistant, finish_reason: "tool_calls" }] } });
+        }
+        toolCheckpoint = await store.getLatestCheckpoint(handle.runId);
+        expect(payload.messages.at(-2)).toEqual({ ...assistant, content: null });
+        expect(payload.messages.at(-1)).toEqual({ role: "tool", tool_call_id: "call-signed", content: "found it" });
+        return response({ payload: { choices: [{ message: { role: "assistant", content: "done" } }], usage: { prompt_tokens: 9, completion_tokens: 2 } } });
+      }
+    });
+    const invoke = vi.fn(async (invocation) => {
+      expect(invocation.toolCall.arguments).toEqual({ query: "runtime" });
+      return { ok: true, content: "found it" };
+    });
+    const executor = createAgentExecutor({
+      engine, runs: store,
+      tools: { listTools: async () => turnRequest().tools, invoke }
+    });
+    const handle = executor.execute({ prompt: "search", policy: { allowedTools: ["search"], maxToolCalls: 1 } });
+    await expect(handle.completion).resolves.toMatchObject({ status: "completed", output: "done", usage: { inputTokens: 9, outputTokens: 2 } });
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(2);
+    const transcript = await store.getTranscript(handle.runId);
+    expect(transcript[0].providerMetadata).toEqual({
+      signature: assistant.signature, extra_content: assistant.extra_content
+    });
+    expect(toolCheckpoint?.messages.at(-2)).toEqual(expect.objectContaining({
+      providerMetadata: transcript[0].providerMetadata,
+      toolCalls: [expect.objectContaining({
+        providerMetadata: { signature: "tool-signed-state", extra_content: assistant.tool_calls[0].extra_content },
+        function: { name: "search", arguments: argumentsText }
+      })]
+    }));
+  });
+
   it("applies per-Run thinking options without mutating the model profile", async () => {
     const requests: Array<Record<string, unknown>> = [];
     const engine = new OpenAICompatibleEngine({

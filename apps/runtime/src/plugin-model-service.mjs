@@ -39,12 +39,20 @@ export function createPluginModelService({
       model = null,
       timeoutMs = defaultTimeoutMs,
       runContext = {},
-      requestContext = {}
+      requestContext = {},
+      signal = null,
+      modelOptions = undefined,
+      maxOutputTokens = undefined,
+      maxOutputChars = 1000000,
+      onUsage = null
     } = {}) {
       const controller = new CancellationController();
       const timeout = timeoutSignal(controller, timeoutMs);
+      const parentCancellation = signal?.onCancel?.((reason) => controller.cancel(reason));
+      if (signal?.cancelled) controller.cancel(signal.reason || "parent");
       let text = "";
       try {
+        controller.signal.throwIfCancelled();
         await authorizeRequest?.(runContext);
         const requestedModel = typeof resolveModel === "function"
           ? resolveModel(model || null)
@@ -56,6 +64,8 @@ export function createPluginModelService({
           messages: normalizeMessages(messages),
           tools: [],
           model: requestedModel,
+          modelOptions,
+          maxOutputTokens,
           signal: controller.signal
         })) {
           controller.signal.throwIfCancelled();
@@ -83,11 +93,19 @@ export function createPluginModelService({
               }
             }
           }
-          if (event?.type === "message.delta") text += String(event.delta || "");
+          if (event?.type === "model.usage") onUsage?.(event.usage);
+          if (event?.type === "message.delta") {
+            text += String(event.delta || "");
+            if (text.length > maxOutputChars) {
+              controller.cancel("output-budget");
+              throw new Error("Plugin model output exceeded its budget");
+            }
+          }
         }
         return text;
       } finally {
         timeout.dispose();
+        parentCancellation?.dispose();
       }
     }
   });

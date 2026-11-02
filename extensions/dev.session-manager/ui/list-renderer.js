@@ -239,6 +239,37 @@ export function createSessionsListRendererFactory(deps) {
     onAfterChange,
     viewId = null
   }) {
+    let rowLimit = 100;
+    let lastFilter = "";
+    let revealedId = "";
+    let hasMoreRows = false;
+    let disposed = false;
+    let scrollFrame = 0;
+    let scrollHost = null;
+    const loadNextRows = () => {
+      if (disposed || !hasMoreRows || scrollFrame) return;
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = 0;
+        if (disposed || !hasMoreRows) return;
+        const scroller = scrollHost;
+        const position = scroller?.scrollTop || 0;
+        rowLimit += 100;
+        render();
+        if (scroller) scroller.scrollTop = position;
+      });
+    };
+    const onScroll = () => {
+      const scroller = scrollHost;
+      if (!scroller || scroller.clientHeight <= 0) return;
+      if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 240) loadNextRows();
+    };
+    const connectScroller = () => {
+      const next = listEl.closest(".zion-sessions-list") || listEl.parentElement;
+      if (next === scrollHost) return;
+      scrollHost?.removeEventListener("scroll", onScroll);
+      scrollHost = next;
+      scrollHost?.addEventListener("scroll", onScroll, { passive: true });
+    };
     const getEffectiveCurrentSessionId = () => {
       try {
         const panelId = window.zion?.panelManager?.getActivePanelId?.() || window.zion?.panels?.getActivePanelId?.() || null;
@@ -612,6 +643,8 @@ export function createSessionsListRendererFactory(deps) {
     };
 
     const render = () => {
+      if (disposed) return;
+      hasMoreRows = false;
       // prevent flicker
       document.body.classList.add("zion-sessions-no-transitions");
       const cardView = getViewMode?.() === "card";
@@ -626,6 +659,12 @@ export function createSessionsListRendererFactory(deps) {
         hostElement.classList.toggle("zion-selection-multiple", getSelection().length > 1);
       }
       const query = String(getQuery() || "").trim().toLowerCase();
+      if (query !== lastFilter) {
+        rowLimit = 100;
+        lastFilter = query;
+      }
+      let renderedSessions = 0;
+      let omittedSessions = 0;
       const sortBy = (getSort && getSort()) || "updated";
       const sessionFilter = typeof getSessionFilter === "function" ? getSessionFilter() : null;
       const matchesSessionFilter = (node) => {
@@ -1531,6 +1570,15 @@ export function createSessionsListRendererFactory(deps) {
             if (ch.type === "folder") {
               renderFolder(ch, depth + 1);
             } else {
+              if (renderedSessions >= rowLimit
+                && ch.id !== getEffectiveCurrentSessionId()
+                && ch.id !== revealedId
+                && ch.id !== getPendingEditForView()?.id
+                && !isSelected(ch.id)) {
+                omittedSessions += 1;
+                continue;
+              }
+              renderedSessions += 1;
               // session row
               const srow = document.createElement("div");
               srow.style.display = "flex";
@@ -1905,6 +1953,16 @@ export function createSessionsListRendererFactory(deps) {
       }
       try { setFolderOpen(root.id || "root", true); } catch {}
       renderFolder(root, -1);
+      hasMoreRows = omittedSessions > 0;
+      connectScroller();
+      if (omittedSessions) {
+        const more = document.createElement("div");
+        more.className = "zion-sessions-scroll-sentinel";
+        more.setAttribute("aria-hidden", "true");
+        more.style.height = "1px";
+        listEl.appendChild(more);
+        if (scrollHost?.clientHeight > 0 && scrollHost.scrollHeight <= scrollHost.clientHeight) loadNextRows();
+      }
         if (flatSessionResults && visibleOrder.length === 0) {
           const empty = document.createElement("div");
           empty.className = "zion-sessions-filter-empty";
@@ -1957,8 +2015,12 @@ export function createSessionsListRendererFactory(deps) {
       };
 
       render.syncCurrentSession = syncCurrentSession;
+      render.reveal = (id) => { revealedId = String(id || ""); render(); };
       render.syncSessionIndex = syncSessionIndex;
       render.dispose = () => {
+        disposed = true;
+        if (scrollFrame) cancelAnimationFrame(scrollFrame);
+        scrollHost?.removeEventListener("scroll", onScroll);
         try { activeCommentDisposable?.dispose?.(); } catch {}
         try { window.removeEventListener("zion:comments-active-changed", updateActiveCommentChildRows); } catch {}
         try { externalRootDropTarget?.remove(); } catch {}

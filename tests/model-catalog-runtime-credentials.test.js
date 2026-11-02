@@ -87,4 +87,23 @@ describe("model catalog Runtime credentials", () => {
     });
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
+  it("lists account plugin models without a browser provider or upstream URL", async () => {
+    const values = new Map();
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ profiles: [{
+      id: "extension.profile", providerId: "extension.provider", model: "local:model", label: "内网模型",
+      credentialConfigured: true, supportsStreaming: false,
+      metadata: { source: "account-extension", stream: false, contextWindowTokens: 32000 },
+      capabilities: { supportsImage: false }
+    }] }), { status: 200, headers: { "content-type": "application/json" } }));
+    window.zion = { models: { listProviders: () => [], getProvider: () => null }, state: {
+      get: (key) => key === "runtime.mode" ? "runtime" : key === "runtime.connection"
+        ? { backend: "runtime", baseUrl: "http://runtime.test" } : values.get(key),
+      set: (key, value) => values.set(key, value)
+    } };
+    expect(await rebuildModelCatalog()).toMatchObject([{
+      providerId: "extension.provider", id: "local:model", label: "内网模型", accountExtension: true,
+      runtimeProfileId: "extension.profile", stream: false, requiresConfig: false
+    }]);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
 });

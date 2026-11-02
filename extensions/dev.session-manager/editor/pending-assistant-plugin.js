@@ -42,7 +42,7 @@ function renderPendingContent(element, text, status = "", plainText = false) {
   if (status) {
     element.setAttribute("role", "status");
     element.setAttribute("aria-label", status);
-    content.textContent = "…";
+    content.textContent = status;
     return true;
   }
   element.removeAttribute("role");
@@ -57,6 +57,19 @@ function renderPendingContent(element, text, status = "", plainText = false) {
     content.textContent = String(text || "");
   }
   return true;
+}
+
+class SubmittedAssistantWidget extends WidgetType {
+  eq(other) { return other instanceof SubmittedAssistantWidget; }
+  toDOM() {
+    const element = document.createElement("div");
+    element.className = "zion-submitted-assistant";
+    const role = document.createElement("span");
+    role.className = "cm-role-token-head cm-role-token-assistant";
+    role.textContent = "assistant";
+    element.append(role);
+    return element;
+  }
 }
 
 function isCollapsedOriginRect(rect) {
@@ -201,6 +214,13 @@ function decorationsFor(state, entries) {
   const source = state.doc.toString();
   const ranges = [];
   for (const entry of entries.values()) {
+    if (entry.submittedHeader) {
+      const position = Math.max(0, Math.min(state.doc.length, Number(entry.fallbackOffset) || 0));
+      ranges.push(Decoration.widget({
+        widget: new SubmittedAssistantWidget(), block: true, side: 1
+      }).range(position));
+      continue;
+    }
     if (!entry.text && !entry.status) continue;
     const blockEnd = findAssistantBlockEndOffsetById(
       source,
@@ -266,7 +286,7 @@ export const pendingAssistantTheme = EditorView.baseTheme({
     color: "var(--muted, #687078)",
     fontSize: "15px",
     fontStyle: "normal",
-    lineHeight: "1"
+    lineHeight: "1.5"
   },
   ".zion-pending-assistant-output.is-status .zion-pending-assistant-tail": {
     display: "none"

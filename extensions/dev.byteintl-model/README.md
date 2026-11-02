@@ -1,5 +1,19 @@
 # ByteIntl Model Runtime Plugin
 
+The account plugin entry is `model-provider.js`. Package that entry and its
+relative dependency, and declare the `byteintl` model capability with
+`gpt-6-astra`, `supportsStreaming: false`, and `supportsTools: true`. Install the
+artifact in your account, then select the authorized intranet Node as its
+connection. The Run's tool Node can remain the account Sandbox.
+
+The Node-local connection JSON (mode 600) contains `listingId`, `accountId`,
+`endpoint` equal to `https://aidp.byteintl.net/api/modelhub/online/v2/crawl`,
+and `env.BYTEINTL_AK`. Configure only its file path in Zioon. The Host reads it
+on the Node, validates its ownership, forwards requests over the existing
+outbound Connector, and propagates cancellation. Runtime parses the original
+JSON response and usage. No listener or reverse SSH tunnel is needed for this
+entry. The following instructions describe the existing loopback adapter.
+
 `dev.byteintl-model` exposes ByteIntl ModelHub as a loopback
 OpenAI-compatible endpoint for Zion Runtime.
 

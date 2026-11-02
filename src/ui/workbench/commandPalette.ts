@@ -1415,6 +1415,19 @@ export function initCommandPalette() {
     contentSearchTimer = window.setTimeout(async () => {
       const snippets = sessionContentSnippets.get(q) || new Map<string, string>();
       let changed = false;
+      if (window.zion.commands.list().includes("zion.sessions.search")) {
+        if (sessionContentSnippets.has(q)) return;
+        try {
+          const result = await window.zion.commands.executeCommand("zion.sessions.search", { query: q, limit: 100 });
+          if (!open || token !== contentSearchToken) return;
+          for (const item of result?.sessions || []) {
+            snippets.set(item.id, makeContentSnippet(item.snippet || "", q) || item.snippet || "");
+          }
+          sessionContentSnippets.set(q, snippets);
+          render(input.value);
+        } catch {}
+        return;
+      }
       for (const it of sessionItems) {
         if (!open || token !== contentSearchToken) return;
         if (snippets.has(it.id)) continue;

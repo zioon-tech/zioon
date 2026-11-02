@@ -40,7 +40,6 @@ export class LocalToolsTerminalInventoryContextProvider {
   } = {}) {
     this.baseUrl = String(baseUrl).replace(/\/+$/, "");
     this.service = service;
-    if (service?.listInventory) this.stage = "post";
     this.fetchImpl = fetchImpl;
     this.now = now;
   }
@@ -50,23 +49,7 @@ export class LocalToolsTerminalInventoryContextProvider {
     if (context?.request?.metadata?.includeTerminalContext === false) {
       return baseMessages.length === messages.length ? messages : baseMessages;
     }
-    const preferredSessionIds =
-      context?.request?.policy?.allowedTerminalSessionIds;
-    const inventory = await this.loadInventory({
-      signal: context.signal,
-      allowedTerminalSessionIds: preferredSessionIds,
-      projectId: context?.request?.projectId
-        || context?.request?.metadata?.projectId,
-      target: context?.request?.target,
-      sessionId: context?.request?.sessionId
-        || context?.request?.metadata?.sessionId,
-      runId: context?.runId,
-      attemptId: context?.attemptId
-    });
-    if (!inventory.sessions.length && !inventory.nodes?.length) return baseMessages;
-    const content = buildTerminalInventoryContextXml(inventory, {
-      preferredSessionIds
-    });
+    const content = buildTerminalInventoryContextXml();
     return insertAfterLeadingSystem(baseMessages, {
       role: "user", content, contextProviderId: this.id
     });
@@ -80,7 +63,8 @@ export class LocalToolsTerminalInventoryContextProvider {
     target = null,
     sessionId = "",
     runId = "",
-    attemptId = ""
+    attemptId = "",
+    principal = null
   } = {}) {
     const allowedIds = new Set(allowedTerminalSessionIds || []);
     const runContext = {
@@ -89,6 +73,7 @@ export class LocalToolsTerminalInventoryContextProvider {
       sessionId,
       runId,
       attemptId,
+      ...(principal ? { principal } : {}),
       ...(target?.nodeId ? { target: { nodeId: String(target.nodeId) } } : {}),
       policy: { allowedTerminalSessionIds }
     };
@@ -142,6 +127,8 @@ export class LocalToolsTerminalInventoryContextProvider {
       sessionId: runContext.sessionId,
       runId: runContext.runId,
       attemptId: runContext.attemptId,
+      principal: runContext.principal,
+      target: runContext.target,
       filter: {
         machine_id: args.machine_id,
         workspace_id: args.workspace_id,
@@ -237,7 +224,9 @@ function runtimeFields(runContext = {}) {
     projectId: runContext.projectId,
     sessionId: runContext.sessionId,
     runId: runContext.runId,
-    attemptId: runContext.attemptId
+    attemptId: runContext.attemptId,
+    principal: runContext.principal,
+    target: runContext.target
   };
 }
 
@@ -457,7 +446,8 @@ export function activateRuntimePlugin(context) {
     const providerRegistration = context.context.registerProvider(provider);
     const inventoryToolRegistration = context.tools.registerTool({
       name: "terminalInventory",
-      description: "List terminal sessions, workspaces, and machine hints from the local tool host.",
+      description: "Query current terminal sessions, workspaces, machines, and Nodes when routing or availability is needed. Live state is not embedded in automatic context.",
+      execution: { effect: "read" },
       inputSchema: {
         type: "object",
         properties: {
@@ -486,6 +476,7 @@ export function activateRuntimePlugin(context) {
     const manageDefinition = terminalManageToolDefinition();
     const manageToolRegistration = context.tools.registerTool({
       ...manageDefinition,
+      execution: { effect: "process" },
       policy: {
         minimumPreset: "trusted-automation"
       },

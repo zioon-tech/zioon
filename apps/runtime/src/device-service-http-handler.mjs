@@ -326,7 +326,9 @@ function mergePluginPayloads(items, kind = "list") {
         || ""
       );
       const hash = String(plugin?.file_hash || "");
-      const key = `${id}\0${version}\0${hash}`;
+      const key = kind === "dev-list"
+        ? `${item.target.node.registration.nodeId}\0${plugin?.devId || version}`
+        : `${id}\0${version}\0${hash}`;
       if (seen.has(key)) continue;
       seen.add(key);
       merged.push({
@@ -373,7 +375,7 @@ export function createDeviceServiceHttpHandler({
     if (!matched) return false;
 
     try {
-      await authorize?.(request, matched);
+      const principal = await authorize?.(request, matched);
       const method = String(request.method || "GET").toUpperCase();
       const body = ["GET", "HEAD"].includes(method)
         ? null
@@ -382,10 +384,31 @@ export function createDeviceServiceHttpHandler({
       const runContext = {
         projectId: url.searchParams.get("project_id") || "",
         signal: cancellation.signal,
+        ...(principal ? { principal } : {}),
         ...(url.searchParams.get("node_id") ? {
           target: { nodeId: url.searchParams.get("node_id") }
         } : {})
       };
+      if (
+        terminalService?.handleRequest
+        && matched.service === "local-tools"
+      ) {
+        const handled = await terminalService.handleRequest({
+          path: `${matched.path}${url.search}`,
+          method,
+          body,
+          runContext
+        });
+        if (handled) {
+          if (handled.status === 204) {
+            response.writeHead(204, { "cache-control": "no-store" });
+            response.end();
+          } else {
+            json(response, handled.status, handled.body);
+          }
+          return true;
+        }
+      }
       if (
         terminalService
         && matched.service === "local-tools"
@@ -426,7 +449,11 @@ export function createDeviceServiceHttpHandler({
           return true;
         }
       }
-      if (!hasBroker) {
+      const centralPluginRequest = matched.service === "plugin-service"
+        && !runContext.target
+        && ["list", "download"].includes(pluginServiceFanoutKind(matched, method))
+        && Boolean(directServiceUrls["plugin-service"]);
+      if (!hasBroker || centralPluginRequest) {
         const baseUrl = directServiceUrls[matched.service];
         if (!baseUrl) {
           const error = new Error(
@@ -487,6 +514,7 @@ export function createDeviceServiceHttpHandler({
           runId: invocationId,
           attemptId: invocationId,
           projectId: runContext.projectId,
+          ...(principal ? { principal } : {}),
           ...(target ? { target } : {}),
           policy: {
             preset: "trusted-automation",
@@ -523,6 +551,14 @@ export function createDeviceServiceHttpHandler({
           const payloads = [];
           let fallbackPayload = null;
           for (const target of targets) {
+            if (broker.authorizeExecutionTarget) {
+              try {
+                await broker.authorizeExecutionTarget(runContext, target);
+              } catch (error) {
+                if (error?.code !== "platform_node_execution_denied") throw error;
+                continue;
+              }
+            }
             const payload = await invokeBroker({
               nodeId: target.node.registration.nodeId,
               resourceId: target.resource?.resourceId

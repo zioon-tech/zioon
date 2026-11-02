@@ -1142,7 +1142,9 @@ export async function activate(ctx) {
       await waitForNextFrame();
     }
 
-    cleanSlashTrigger();
+    // Some commands complete text in the editor and need the original input intact.
+    if (cmd.retainTrigger) slashStartPos = null;
+    else cleanSlashTrigger();
 
     try {
       if (typeof cmd.execute === 'function') {
@@ -1150,6 +1152,7 @@ export async function activate(ctx) {
       }
     } catch (e) {
       console.error(`[dev.slash-commands] Error executing command ${cmd.id}:`, e);
+      window.zion.notification?.show?.(e.message || String(e), { type: "error", duration: 6000 });
     }
 
     try {

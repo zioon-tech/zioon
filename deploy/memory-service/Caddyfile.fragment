@@ -1,0 +1,11 @@
+# Insert inside the existing https://runtime.zioon.tech site.
+# Keep the existing Runtime/ADC/legacy routes and OAuth callback bridges.
+@memoryRoot path /memory
+redir @memoryRoot /memory/ 308
+handle_path /memory/* {
+    @memoryMcp path /mcp /mcp/*
+    respond @memoryMcp 404
+    reverse_proxy 127.0.0.1:18991 {
+        header_up -Cookie
+    }
+}

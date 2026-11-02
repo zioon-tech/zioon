@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Zioon Memory · 为 AI 保存可读写的记忆</title>
+  <meta name="description" content="用 Markdown、JSON 和 JSONL 保存背景、偏好与项目进展。通过网页或 agent-fs CLI 查看、搜索和更新。">
+  <meta name="theme-color" content="#ffffff"><link rel="icon" href="/favicon.svg?v=20261024">
+  <link rel="stylesheet" href="/assets/site.css?v=20261024"><script defer src="/assets/site.js"></script>
+</head>
+<body class="memory-home">
+  <a class="home-skip" href="#main">跳到正文</a>
+  <header class="home-header">
+    <div class="home-width home-header-inner">
+      <a class="home-brand" href="/" aria-label="Zioon Memory 首页"><span class="home-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 7h-3a2 2 0 0 1-2-2V2"/><path d="M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 1-2 2Z"/><path d="M3 7.6v12.8A1.6 1.6 0 0 0 4.6 22h9.8"/></svg></span><span>Zioon <strong>Memory</strong></span></a>
+      <nav aria-label="主导航"><a href="#usage">CLI 用法</a><a href="/docs">文档</a><a class="home-nav-console" href="/account/login">控制台 <span aria-hidden="true">↗</span></a></nav>
+    </div>
+  </header>
+  <main id="main">
+    <section class="home-hero home-width" aria-labelledby="home-title">
+      <p class="home-kicker">PERSISTENT MEMORY FOR AI AGENTS</p>
+      <h1 id="home-title">给 AI 一份<br><span>可以读写的记忆。</span></h1>
+      <p class="home-intro">用文件保存你的背景、偏好和项目进展。<br class="home-desktop-break">在网页中查看和修正，让 Agent 通过 CLI 读取和更新。</p>
+      <div class="home-actions"><a class="home-button" href="/account/login">进入控制台 <span aria-hidden="true">↗</span></a><a class="home-button home-button-secondary" href="/docs#install">安装与登录</a></div>
+      <div class="home-terminal">
+        <div class="home-terminal-bar"><span>快速开始 <span class="home-terminal-hint">/ 已安装 CLI</span></span><button class="home-copy" type="button" data-copy="quickstart" aria-label="复制快速开始命令">复制</button></div>
+        <pre><code id="quickstart">agent-fs login --api-url https://memory.zioon.tech
+agent-fs ls /memory/dev.identity
+agent-fs cat /memory/dev.identity/profile.md</code></pre>
+      </div>
+      <p class="home-install-note">第一次使用？<a href="/docs#install">安装 Bun 和 CLI</a>。登录信息自动保存在本机，后续直接继续。</p>
+    </section>
+
+    <section class="home-section home-width" id="features" aria-labelledby="features-title">
+      <div class="home-section-heading"><p class="home-kicker">WHAT YOU CAN DO</p><h2 id="features-title">保存、查找、更新。</h2><p>一份记忆文件，可以在网页和命令行中使用。</p></div>
+      <div class="home-feature-grid">
+        <article><span class="home-feature-number">01</span><h3>跨会话保存</h3><p>背景、偏好和协作笔记保存在你的记忆目录。新的对话可以读取已有文件，继续之前的工作。</p></article>
+        <article><span class="home-feature-number">02</span><h3>按内容搜索</h3><p>在控制台搜索文件内容，或用 <code>agent-fs grep</code> 查找关键词，定位散落在不同文件里的信息。</p></article>
+        <article><span class="home-feature-number">03</span><h3>查看版本历史</h3><p>写入会留下版本记录。查看文件的修改时间和历史版本，了解记忆是如何更新的。</p></article>
+        <article><span class="home-feature-number">04</span><h3>直接编辑原文</h3><p>在控制台浏览目录、创建文件、编辑和下载。文件在其他地方更新后，保存会提示冲突并保留草稿。</p></article>
+      </div>
+    </section>
+
+    <section class="home-section home-width home-files-section" aria-labelledby="files-title">
+      <div class="home-files-copy"><p class="home-kicker">FILES YOU CAN READ</p><h2 id="files-title">记忆就是文件。</h2><p>Markdown 适合写背景和笔记，JSON 保存结构化信息，JSONL 记录连续发生的事件。用已有的文件格式，按你习惯的方式整理。</p><dl class="home-file-types"><div><dt>profile.md</dt><dd>你的背景、偏好和协作习惯</dd></div><div><dt>projects/</dt><dd>每个项目的上下文与进展</dd></div><div><dt>biography/events.jsonl</dt><dd>按时间积累的协作记录</dd></div></dl></div>
+      <div class="home-file-sample"><div class="home-sample-label">目录与文件内容示例</div><pre class="home-file-tree"><code>/memory/dev.identity/
+├── profile.md
+├── projects/
+│   └── zioon/notes.md
+└── biography/
+    └── events.jsonl</code></pre><div class="home-sample-path"><span class="home-file-dot" aria-hidden="true"></span>profile.md</div><pre class="home-profile-sample"><code><span># 关于我</span>
+
+交流语言：中文
+协作偏好：先读项目背景，再开始修改。
+
+<span>## 当前项目</span>
+Zioon — 记录决策、进展与下一步。</code></pre></div>
+    </section>
+
+    <section class="home-section home-width" id="usage" aria-labelledby="usage-title">
+      <div class="home-section-heading"><p class="home-kicker">WORK WITH YOUR AGENT</p><h2 id="usage-title">用几条命令，接上记忆。</h2><p>登录后，Agent 和你使用同一套文件路径与 CLI。</p></div>
+      <div class="home-command-list">
+        <article class="home-command-row"><div><h3>读取背景</h3><p>开始工作前，先读取已有的偏好和上下文。</p></div><div class="home-command-code"><pre><code id="read-command">agent-fs cat /memory/dev.identity/profile.md</code></pre><button class="home-copy" type="button" data-copy="read-command" aria-label="复制读取命令">复制</button></div></article>
+        <article class="home-command-row"><div><h3>写下进展</h3><p>把新的笔记保存成文件，留给下一次协作。</p></div><div class="home-command-code"><pre><code id="write-command">agent-fs write /memory/dev.identity/notes.md \
+  --content "项目进展与下一步"</code></pre><button class="home-copy" type="button" data-copy="write-command" aria-label="复制写入命令">复制</button></div></article>
+        <article class="home-command-row"><div><h3>搜索内容</h3><p>按关键词查找记忆，不必逐个打开文件。</p></div><div class="home-command-code"><pre><code id="search-command">agent-fs grep "项目" /memory/dev.identity</code></pre><button class="home-copy" type="button" data-copy="search-command" aria-label="复制搜索命令">复制</button></div></article>
+        <article class="home-command-row"><div><h3>查看历史</h3><p>检查某份记忆的写入记录与版本变化。</p></div><div class="home-command-code"><pre><code id="history-command">agent-fs log /memory/dev.identity/notes.md</code></pre><button class="home-copy" type="button" data-copy="history-command" aria-label="复制历史命令">复制</button></div></article>
+      </div>
+      <a class="home-inline-link" href="/docs">查看完整安装与使用文档 <span aria-hidden="true">↗</span></a>
+    </section>
+
+    <section class="home-section home-width home-questions" aria-labelledby="questions-title">
+      <div class="home-section-heading"><p class="home-kicker">GOOD TO KNOW</p><h2 id="questions-title">开始之前。</h2></div>
+      <div class="home-question-list">
+        <details><summary>如何开始使用？<span aria-hidden="true">+</span></summary><p>进入控制台，登录或注册后即可创建记忆文件。需要在终端中使用时，按文档安装 CLI 并登录。</p></details>
+        <details><summary>登录后还要重复配置环境变量吗？<span aria-hidden="true">+</span></summary><p>不需要。CLI 把凭据、服务地址和默认存储位置保存在 <code>~/.agent-fs/config.json</code>，后续可以直接使用；凭据过期或被撤销时重新登录。</p></details>
+        <details><summary>网页里能修改 Agent 写下的记忆吗？<span aria-hidden="true">+</span></summary><p>可以。网页和 CLI 读写同一份文件。控制台可以查看原文、搜索、编辑、下载和查看版本历史；并发修改发生冲突时，会保留编辑器中的草稿。</p></details>
+        <details><summary>Memory 和 agent-fs 是什么关系？<span aria-hidden="true">+</span></summary><p>Memory 基于 <a href="https://agent-fs.dev/">agent-fs</a> 的 CLI 和文件存储能力，提供 Zioon 账号登录与网页控制台。通过登录配置连接服务，使用 agent-fs 命令管理自己的记忆。</p></details>
+      </div>
+    </section>
+    <section class="home-bottom-cta home-width"><div><h2>开始整理你的记忆。</h2><p>在控制台新建文件，或按文档连接 CLI。</p></div><a class="home-button" href="/account/login">进入控制台 <span aria-hidden="true">↗</span></a></section>
+  </main>
+  <footer class="home-footer home-width"><div><a class="home-brand" href="/">Zioon <strong>Memory</strong></a><p>基于 <a href="https://agent-fs.dev/">agent-fs</a> 的持久化记忆服务</p></div><nav aria-label="页脚导航"><a href="/docs">文档</a><a href="/console">控制台</a></nav></footer>
+  <span id="copy-status" class="sr-only" role="status" aria-live="polite"></span>
+</body>
+</html>

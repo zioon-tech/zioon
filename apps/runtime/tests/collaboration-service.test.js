@@ -92,6 +92,34 @@ afterEach(async () => {
 });
 
 describe("Runtime collaboration service", () => {
+  it("rejects an oversized peer message without terminating Runtime HTTP", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-payload-"));
+    const spaceId = database.nextSpaceId();
+    const runs = new PostgresRunStore(database.pool, { spaceId });
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId });
+    const collaboration = createCollaboration({ store: workbenchState });
+    const executor = createAgentExecutor({
+      engine: { id: "payload-test", async *streamTurn() {} },
+      tools: { async listTools() { return []; }, async invoke() { throw new Error("No tools"); } },
+      runs
+    });
+    const server = createRuntimeServer({ executor, runs, port: 0,
+      upgradeHandlers: [collaboration.handleUpgrade] });
+    resources.push({ directory, runs, workbenchState, collaboration, server });
+    const { url } = await server.start();
+    const closed = await new Promise((resolve, reject) => {
+      const peer = new WebSocket(url.replace(/^http/, "ws") + "/v1/collaboration?protocol=6");
+      const timer = setTimeout(() => { peer.terminate(); reject(new Error("Oversized peer did not close")); }, 3000);
+      peer.once("error", reject);
+      peer.once("open", () => peer.send(Buffer.alloc(4 * 1024 * 1024 + 1)));
+      peer.once("close", (code) => { clearTimeout(timer); resolve(code); });
+    });
+    expect(closed).toBe(1009);
+    const health = await fetch(url + "/health");
+    expect(health.status).toBe(200);
+    expect((await health.json()).ok).toBe(true);
+  });
+
   it("keeps a newer intentionally empty Yjs checkpoint authoritative", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-recovery-"));
     const path = join(directory, "runtime");
@@ -160,9 +188,8 @@ describe("Runtime collaboration service", () => {
     });
     await connection.disconnect({ unloadImmediately: false });
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect((await workbenchState.readSession("protected-session")).text)
-      .toBe("");
+    await waitFor(async () => (await workbenchState.readSession("protected-session")).text === "");
+    expect((await workbenchState.readSession("protected-session")).text).toBe("");
     const stored = await workbenchState.readCollaborationDocument(
       "protected-session"
     );
@@ -1214,7 +1241,7 @@ describe("Runtime collaboration service", () => {
     );
 
     expect((await workbenchState.readSession("anchor-session")).text).toBe([
-      "first question",
+      "user first question",
       "assistant <!-- zion-assistant:id=run-anchor --> ",
       "user later question"
     ].join("\n"));

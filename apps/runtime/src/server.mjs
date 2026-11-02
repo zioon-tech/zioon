@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
+import { CancellationController, normalizeModelProviderMetadata } from "../../../packages/runtime/dist/index.js";
 import { parseByteSize, requestBodyLimitError } from "../../../packages/node-protocol/src/index.mjs";
 import { DEFAULT_INTERACTION_PROFILE_ID, resolveInteractionRequest } from "./interaction-profile-store.mjs";
 import {
@@ -71,6 +72,8 @@ function json(response, status, value) {
 function errorPayload(error) {
   const payload = { error: error?.message || String(error) };
   if (error?.code) payload.code = String(error.code);
+  if (error?.failureCode) payload.failureCode = String(error.failureCode);
+  if (typeof error?.retryable === "boolean") payload.retryable = error.retryable;
   if (Number.isSafeInteger(error?.limitBytes)) payload.limitBytes = error.limitBytes;
   if (error?.limit) payload.limit = String(error.limit);
   if (Array.isArray(error?.hints)) payload.hints = error.hints.map(String);
@@ -269,6 +272,8 @@ function normalizeRunMessages(value) {
       return {
         id,
         type: "function",
+        ...(normalizeModelProviderMetadata(call?.providerMetadata)
+          ? { providerMetadata: normalizeModelProviderMetadata(call.providerMetadata) } : {}),
         function: { name, arguments: argumentsText }
       };
     });
@@ -282,6 +287,8 @@ function normalizeRunMessages(value) {
     return {
       role,
       content,
+      ...(role === "assistant" && normalizeModelProviderMetadata(message?.providerMetadata)
+        ? { providerMetadata: normalizeModelProviderMetadata(message.providerMetadata) } : {}),
       ...(message?.reasoningContent || message?.reasoning_content
         ? {
             reasoningContent: String(
@@ -384,6 +391,9 @@ function normalizeCapabilityTool(tool) {
       ? cloneObject(tool.inputSchema)
       : tool?.inputSchema,
     hostKinds,
+    ...(tool?.execution && typeof tool.execution === "object"
+      ? { execution: cloneObject(tool.execution) }
+      : {}),
     ...(tool?.pluginId ? { pluginId: String(tool.pluginId) } : {}),
     ...(tool?.risk ? { risk: String(tool.risk) } : {}),
     modelInjectable: tool?.modelInjectable !== false,
@@ -508,6 +518,7 @@ export function createRuntimeServer({
   pollIntervalMs = 50,
   serviceInfo = {},
   modelProfiles = [],
+  modelSelection = null,
   resolveModel,
   importModelProfile,
   deleteModelProfile,
@@ -522,6 +533,9 @@ export function createRuntimeServer({
   sessionDocumentService = null,
   runtimeHealth = null,
   runPostProcessors = [],
+  runControllers = [],
+  pluginCommands = null,
+  pluginCommandRequiresSession = () => true,
   onPostProcessorError = () => {},
   validateRunRequest = null,
   maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES
@@ -543,17 +557,19 @@ export function createRuntimeServer({
     label: "Runtime request body limit"
   });
   const defaultModel = modelRefFromProfile(serviceInfo.modelProfile);
-  const resolveRequestedModel = (requested) => {
-    if (typeof resolveModel === "function") return resolveModel(requested || null);
+  const resolveRequestedModel = async (requested, principal) => {
+    if (!requested && modelSelection) return modelSelection.defaultModel(principal);
+    if (typeof resolveModel === "function") return resolveModel(requested || null, principal);
     return requested || defaultModel || null;
   };
   const readRequestJson = (request) => readJson(request, requestBodyLimit);
-  const resolveRequest = (body) => resolveInteractionRequest({
-    body,
-    interactionProfiles,
-    resolveModel: resolveRequestedModel,
-    fallbackModel: defaultModel
-  });
+  const resolveRequest = async (body, principal) => {
+    if (modelSelection) return modelSelection.resolveRequest(body, principal);
+    const resolved = resolveInteractionRequest({
+      body, interactionProfiles, fallbackModel: defaultModel
+    });
+    return { ...resolved, model: await resolveRequestedModel(resolved.model, principal) };
+  };
   const admitRun = async (principal, runRequest) => {
     let admitted;
     if (!accessControl?.authorizeRunRequest) {
@@ -589,12 +605,21 @@ export function createRuntimeServer({
   };
 
   const handles = new Map();
+  let closing = false;
   const liveRuns = new Map();
   const liveRunRetirements = new Map();
   const sessionHandles = new Map();
+  const sessionFinalizations = new Map();
   const sessionAdmissions = new Set();
-  const reserveSessionAdmission = (sessionId) => {
+  const reserveSessionAdmission = async (sessionId) => {
     if (!sessionId) return null;
+    const previous = sessionHandles.get(sessionId);
+    if (previous && !sessionAdmissions.has(sessionId)) {
+      const record = await runs.get(previous.runId);
+      if (record && TERMINAL_STATUSES.has(record.status)) {
+        await sessionFinalizations.get(sessionId);
+      }
+    }
     if (sessionAdmissions.has(sessionId) || sessionHandles.has(sessionId)) {
       const error = new Error("Session already has an active Run");
       error.statusCode = 409;
@@ -623,6 +648,7 @@ export function createRuntimeServer({
     const handle = sessionHandles.get(sessionId);
     if (handle) {
       const run = await runs.get(handle.runId);
+      if (run && TERMINAL_STATUSES.has(run.status)) return null;
       return {
         runId: handle.runId,
         attemptId: handle.attemptId,
@@ -841,6 +867,7 @@ export function createRuntimeServer({
       messages: transcript.map((message) => ({
         role: String(message?.role || ""),
         content: messageContentText(message?.content),
+        ...(message?.providerMetadata ? { providerMetadata: message.providerMetadata } : {}),
         ...(message?.reasoningContent
           ? { reasoningContent: String(message.reasoningContent) }
           : {}),
@@ -955,7 +982,7 @@ export function createRuntimeServer({
       });
     }).finally(() => live.close());
     void documentProjection;
-    void handle.completion
+    const finalization = handle.completion
       .then(async (result) => {
         await documentProjection;
         let projectedMessages = null;
@@ -997,6 +1024,69 @@ export function createRuntimeServer({
           sessionId,
           messages: projectedMessages
         });
+        // Yield the Session only after transcript/document persistence completes.
+        if (sessionId && sessionHandles.get(sessionId) === handle) sessionHandles.delete(sessionId);
+        const controllers = typeof runControllers === "function" ? runControllers() : runControllers;
+        for (const controller of controllers || []) {
+          if (!controller.afterRun) continue;
+          const next = await controller.afterRun({
+            runId: handle.runId, request: runRequest, result
+          });
+          if (!next) continue;
+          if (closing) {
+            await controller.continuationFailed?.({ request: runRequest, error: new Error("Runtime is shutting down") });
+            break;
+          }
+          let release;
+          let nextHandle;
+          try {
+            release = await reserveSessionAdmission(sessionId);
+            const session = await sessions.getSession(sessionId);
+            if (!session || session.status !== "active") throw new Error("Continuation Session is unavailable");
+            await accessControl?.authorizeRunExecution?.(runRequest);
+            const history = await sessions.getSessionTranscript(sessionId);
+            const continuationText = String(next.instruction || "继续当前已授权的持续工作；先检查已有结果和仍在运行的工具。");
+            const nextRequest = {
+              ...runRequest,
+              prompt: undefined,
+              messages: [
+                ...(runRequest.messages || []).filter((message) => message.role === "system"),
+                ...history.map(({ role, content, reasoningContent, providerMetadata, toolCalls, toolCallId, toolResultStatus }) => ({
+                  role, content, ...(toolCalls ? { toolCalls } : {}),
+                  ...(reasoningContent ? { reasoningContent } : {}),
+                  ...(providerMetadata ? { providerMetadata } : {}),
+                  ...(toolCallId ? { toolCallId } : {}),
+                  ...(toolResultStatus ? { toolResultStatus } : {})
+                })),
+                { role: "user", content: continuationText }
+              ],
+              metadata: { ...runRequest.metadata, ...next.metadata, workbenchClientId: "" }
+            };
+            await validateRunRequest?.(nextRequest);
+            nextHandle = executor.execute(nextRequest);
+            await sessions.appendSessionMessages(sessionId, [{
+              schemaVersion: 1, id: createId("message"), sessionId,
+              role: "user", content: continuationText, runId: nextHandle.runId,
+              createdAt: Date.now()
+            }]);
+            await sessionDocumentService?.prepareRun?.(sessionId, {
+              runId: nextHandle.runId,
+              userContent: continuationText,
+              forceNewUser: true
+            });
+            await trackHandle(nextHandle, sessionId, nextRequest);
+          } catch (error) {
+            if (nextHandle) {
+              await nextHandle.abort("continuation-admission-failed");
+              await nextHandle.completion;
+            }
+            await controller.continuationFailed?.({ request: runRequest, error, runId: nextHandle?.runId });
+            throw error;
+          } finally {
+            release?.();
+          }
+          break;
+        }
       })
       .catch(async (error) => {
         projectionFailures.set(handle.runId, error);
@@ -1030,9 +1120,18 @@ export function createRuntimeServer({
         if (sessionId && sessionHandles.get(sessionId) === handle) {
           sessionHandles.delete(sessionId);
         }
+        if (sessionId && sessionFinalizations.get(sessionId) === finalization) {
+          sessionFinalizations.delete(sessionId);
+        }
       });
+    if (sessionId) sessionFinalizations.set(sessionId, finalization);
+    void finalization.catch((error) => {
+      try {
+        onPostProcessorError(error, { processorId: "runtime.finalization", runId: handle.runId, sessionId });
+      } catch { /* Observation cannot create another unhandled rejection. */ }
+    });
   };
-  const server = createServer(async (request, response) => {
+  const handleRequest = async (request, response) => {
     let releaseAdmission;
     try {
       const url = new URL(request.url || "/", `http://${request.headers.host || host}`);
@@ -1079,6 +1178,120 @@ export function createRuntimeServer({
       if (accessControl) {
         request.zionPrincipal = await accessControl.authorizeRuntimeRequest(request);
       }
+      const pluginCommandPath = url.pathname.match(/^\/v1\/plugins\/([^/]+)\/commands$/);
+      if (request.method === "POST" && pluginCommandPath && pluginCommands) {
+        const body = await readRequestJson(request);
+        const pluginId = decodeURIComponent(pluginCommandPath[1]);
+        const requiresSession = body.action === "compact" || pluginCommandRequiresSession(pluginId) !== false;
+        const sessionId = String(body.sessionId || "").trim();
+        if (requiresSession && !sessionId) throw Object.assign(new Error("sessionId is required"), { statusCode: 400 });
+        const session = sessionId ? await sessions.getSession(sessionId) : null;
+        if (requiresSession && !session) throw Object.assign(new Error("Session not found"), { statusCode: 404 });
+        const readOnly = body.action === "status";
+        if (!readOnly) await accessControl?.requireScope?.(request.zionPrincipal, "run.execute");
+        let executionRequest = null;
+        const commandCancellation = new CancellationController();
+        const disconnected = () => {
+          if (!response.writableEnded) commandCancellation.cancel("client-disconnected");
+        };
+        response.on("close", disconnected);
+        try {
+          // Model commands use the same admission/authorization as normal Runs.
+          if (body.action === "compact") {
+            releaseAdmission = await reserveSessionAdmission(sessionId);
+            executionRequest = await admitRun(request.zionPrincipal, {
+              sessionId, projectId: session.projectId, model: await resolveRequestedModel(session.model, request.zionPrincipal),
+              policy: session.policy, metadata: session.metadata
+            });
+          }
+          const result = await pluginCommands(pluginId, body, {
+            sessionId,
+            principal: request.zionPrincipal,
+            origin: request.headers.origin,
+            request: executionRequest,
+            signal: commandCancellation.signal,
+            tools: executionRequest ? listCapabilityTools().filter((tool) => executionRequest.policy.allowedTools.includes(tool.name)) : [],
+            messages: body.action === "compact" ? await sessions.getSessionTranscript(sessionId) : undefined,
+            abort: async (reason) => sessionHandles.get(sessionId)?.abort(reason),
+            activeRunId: sessionHandles.get(sessionId)?.runId || null,
+            invokeToolRun: async (operation) => {
+              const profile = interactionProfiles?.get?.(DEFAULT_INTERACTION_PROFILE_ID);
+              const commandRequest = await admitRun(request.zionPrincipal, {
+                prompt: "Execute the installed plugin command",
+                sessionId: sessionId || undefined, projectId: session?.projectId,
+                policy: session?.policy || profile?.policy,
+                metadata: { extensionInvocation: operation, interactionProfileId: profile?.id }
+              });
+              const handle = executor.execute(commandRequest);
+              const subscription = commandCancellation.signal.onCancel((reason) => { void handle.abort(reason); });
+              try {
+                await trackHandle(handle, null, commandRequest);
+                const result = await handle.completion;
+                if (result.status !== "completed") throw Object.assign(
+                  new Error(result.error || result.reason || "extension_command_failed"),
+                  { statusCode: 422, code: "extension_command_failed", runId: handle.runId });
+                return JSON.parse(result.output).result;
+              } finally { subscription.dispose(); }
+            },
+            startRun: async ({ sourceRunId, instruction, metadata }) => {
+              const release = await reserveSessionAdmission(sessionId);
+              let handle;
+              let admitted;
+              try {
+                const currentSession = await sessions.getSession(sessionId);
+                if (currentSession?.status !== "active") throw Object.assign(new Error("Session is not active"), { statusCode: 409 });
+                const previous = await runs.get(String(sourceRunId || ""));
+                if (!previous || previous.sessionId !== sessionId) throw Object.assign(new Error("Source Run not found in this Session"), { statusCode: 404 });
+                // This is a new Run under the current user's freshly admitted grant.
+                await authorizeExistingRun(request.zionPrincipal, previous, { allowRevoked: true });
+                const history = await sessions.getSessionTranscript(sessionId);
+                const content = String(instruction || "").trim();
+                if (!content) throw Object.assign(new Error("Continuation instruction is required"), { statusCode: 400 });
+                const nextRequest = admitted = await admitRun(request.zionPrincipal, {
+                  sessionId, projectId: currentSession.projectId,
+                  model: await resolveRequestedModel(previous.model || currentSession.model, request.zionPrincipal),
+                  modelOptions: previous.modelOptions, target: previous.target,
+                  policy: previous.policy || currentSession.policy,
+                  messages: [
+                    ...(previous.messages || []).filter((message) => message.role === "system"),
+                    ...history,
+                    { role: "user", content }
+                  ],
+                  metadata: {
+                    ...previous.metadata, ...metadata, workbenchClientId: "",
+                    documentProjection: undefined
+                  }
+                });
+                commandCancellation.signal.throwIfCancelled();
+                handle = executor.execute(nextRequest);
+                await sessions.appendSessionMessages(sessionId, [{
+                  schemaVersion: 1, id: createId("message"), sessionId,
+                  role: "user", content, runId: handle.runId, createdAt: Date.now()
+                }]);
+                await sessionDocumentService?.prepareRun?.(sessionId, {
+                  runId: handle.runId, userContent: content, forceNewUser: true
+                });
+                await trackHandle(handle, sessionId, nextRequest);
+                return { runId: handle.runId, attemptId: handle.attemptId, status: "accepted" };
+              } catch (error) {
+                if (handle) {
+                  await handle.abort("continuation-admission-failed");
+                  await handle.completion;
+                  error.runId = handle.runId;
+                } else if (admitted) await accessControl?.releaseRunPreview?.(admitted);
+                throw error;
+              } finally {
+                release?.();
+              }
+            }
+          });
+          json(response, 200, { result });
+        } finally {
+          response.off("close", disconnected);
+          if (executionRequest) await accessControl?.releaseRunPreview?.(executionRequest);
+        }
+        return;
+      }
       if (await mobileHttpHandler(request, response, url)) return;
       for (const handler of serviceHttpHandlers) {
         if (await handler(request, response, url)) return;
@@ -1109,12 +1322,27 @@ export function createRuntimeServer({
       }
 
       if (request.method === "GET" && url.pathname === "/v1/models") {
+        const active = modelSelection ? await modelSelection.get(request.zionPrincipal,
+          url.searchParams.get("interactionProfileId") || DEFAULT_INTERACTION_PROFILE_ID) : null;
         json(response, 200, {
-          activeProfileId: serviceInfo.modelProfile?.id || null,
+          activeProfileId: active?.modelProfileId || serviceInfo.modelProfile?.id || null,
+          ...(active ? { selectedProfileId: active.selectedProfileId } : {}),
           profiles: typeof modelProfiles === "function"
-            ? modelProfiles()
+            ? await modelProfiles(request.zionPrincipal)
             : modelProfiles
         });
+        return;
+      }
+
+      if (request.method === "PUT" && url.pathname === "/v1/models/selection") {
+        if (!modelSelection) {
+          json(response, 501, { error: "Model selection is unavailable" });
+          return;
+        }
+        const body = await readRequestJson(request);
+        const selection = await modelSelection.set(request.zionPrincipal, body.profileId,
+          body.interactionProfileId || DEFAULT_INTERACTION_PROFILE_ID);
+        json(response, 200, { selection });
         return;
       }
 
@@ -1247,9 +1475,9 @@ export function createRuntimeServer({
         const body = await readRequestJson(request);
         const normalizedMessages = normalizeRunMessages(body.messages);
         const resolved = body.interactionProfileId
-          ? resolveRequest(body)
+          ? await resolveRequest(body, request.zionPrincipal)
           : {
-              model: resolveRequestedModel(body.model),
+              model: await resolveRequestedModel(body.model, request.zionPrincipal),
               policy: normalizePolicy(body.policy),
               metadata: body.metadata && typeof body.metadata === "object"
                 ? { ...body.metadata }
@@ -1275,6 +1503,7 @@ export function createRuntimeServer({
       }
 
       if (request.method === "POST" && url.pathname === "/v1/runs") {
+        const receivedAt = Date.now();
         const body = await readRequestJson(request);
         if (
           body?.metadata?.source === "interactive-chat"
@@ -1288,9 +1517,9 @@ export function createRuntimeServer({
         const normalizedMessages = normalizeRunMessages(body.messages);
         const normalizedSessionHistory = normalizeRunMessages(body.sessionHistory);
         const resolved = body.interactionProfileId
-          ? resolveRequest(body)
+          ? await resolveRequest(body, request.zionPrincipal)
           : {
-              model: resolveRequestedModel(body.model),
+              model: await resolveRequestedModel(body.model, request.zionPrincipal),
               policy: normalizePolicy(body.policy),
               metadata: body.metadata && typeof body.metadata === "object"
                 ? { ...body.metadata }
@@ -1305,6 +1534,10 @@ export function createRuntimeServer({
           policy: resolved.policy,
           metadata: resolved.metadata
         });
+        runRequest.metadata = {
+          ...runRequest.metadata,
+          chatAdmission: { receivedAt, admissionMs: Date.now() - receivedAt }
+        };
         const requestedSessionId = String(body.sessionId || "").trim();
         const latestUserMessage = Array.isArray(normalizedMessages)
           ? normalizedMessages.slice().reverse().find((message) => message?.role === "user")
@@ -1314,7 +1547,7 @@ export function createRuntimeServer({
         let attachedSessionId = "";
         let createdSession = false;
         if (requestedSessionId && sessionUserContent.trim()) {
-          releaseAdmission = reserveSessionAdmission(requestedSessionId);
+          releaseAdmission = await reserveSessionAdmission(requestedSessionId);
           let session = await sessions.getSession(requestedSessionId);
           if (!session) {
             const timestamp = Date.now();
@@ -1390,6 +1623,7 @@ export function createRuntimeServer({
           }
         }
         await trackHandle(handle, attachedSessionId, runRequest);
+        response.setHeader("Server-Timing", `admission;dur=${runRequest.metadata.chatAdmission.admissionMs},prepare;dur=${Date.now() - receivedAt}`);
         json(response, 202, {
           runId: handle.runId,
           attemptId: handle.attemptId,
@@ -1417,9 +1651,9 @@ export function createRuntimeServer({
         const timestamp = Date.now();
         const explicitTitle = String(body.title || "").trim();
         const resolved = body.interactionProfileId
-          ? resolveRequest(body)
+          ? await resolveRequest(body, request.zionPrincipal)
           : {
-              model: resolveRequestedModel(body.model),
+              model: await resolveRequestedModel(body.model, request.zionPrincipal),
               policy: normalizePolicy(body.policy),
               metadata: body.metadata && typeof body.metadata === "object"
                 ? { ...body.metadata }
@@ -1479,7 +1713,7 @@ export function createRuntimeServer({
             return;
           }
         }
-        releaseAdmission = reserveSessionAdmission(sendMessageSessionId);
+        releaseAdmission = await reserveSessionAdmission(sendMessageSessionId);
         let session = await sessions.getSession(sendMessageSessionId);
         if (!session) {
           json(response, 404, { error: "Session not found" });
@@ -1512,6 +1746,7 @@ export function createRuntimeServer({
             ...history.map((message) => ({
               role: message.role,
               content: message.content,
+              ...(message.providerMetadata ? { providerMetadata: message.providerMetadata } : {}),
               ...(message.reasoningContent
                 ? { reasoningContent: message.reasoningContent }
                 : {}),
@@ -1527,7 +1762,7 @@ export function createRuntimeServer({
           title: session.title,
           sessionId: session.id,
           projectId: session.projectId,
-          model: session.model,
+          model: await resolveRequestedModel(session.model, request.zionPrincipal),
           modelOptions: normalizeModelOptions(body.modelOptions),
           policy: session.policy,
           metadata: {
@@ -1738,7 +1973,7 @@ export function createRuntimeServer({
           patch.title = title;
         }
         if (Object.hasOwn(body, "model")) {
-          patch.model = resolveRequestedModel(body.model);
+          patch.model = await resolveRequestedModel(body.model, request.zionPrincipal);
         }
         if (Object.hasOwn(body, "policy")) {
           patch.policy = normalizePolicy({
@@ -1801,9 +2036,23 @@ export function createRuntimeServer({
         const body = await readRequestJson(request);
         const existingRun = await runs.get(resumeRunId);
         await authorizeExistingRun(request.zionPrincipal, existingRun);
-        releaseAdmission = reserveSessionAdmission(existingRun?.sessionId);
+        if (
+          accessControl?.mode === "accounts-v1"
+          && existingRun?.principal?.kind === "service"
+        ) {
+          throw Object.assign(
+            new Error("Scheduled service Runs must be started by their scheduler; a user must submit a new Run under their own grant"),
+            { statusCode: 403, code: "service_run_resume_denied" }
+          );
+        }
+        if (runs.getLatestCheckpoint && !await runs.getLatestCheckpoint(resumeRunId)) {
+          throw Object.assign(new Error("This Run has no recoverable checkpoint"), {
+            statusCode: 409, code: "run_checkpoint_unavailable"
+          });
+        }
+        releaseAdmission = await reserveSessionAdmission(existingRun?.sessionId);
         const handle = await executor.resume(resumeRunId, {
-          model: body.model ? resolveRequestedModel(body.model) : undefined,
+          model: body.model ? await resolveRequestedModel(body.model, request.zionPrincipal) : undefined,
           maxTurns: body.maxTurns,
           timeoutMs: body.timeoutMs,
           modelOptions: normalizeModelOptions(body.modelOptions)
@@ -2120,28 +2369,30 @@ export function createRuntimeServer({
       // A successful admission is now protected by trackHandle until finalization.
       releaseAdmission?.();
     }
-  });
+  };
+  const server = createServer(handleRequest);
   const normalizedUpgradeHandlers = (Array.isArray(upgradeHandlers)
     ? upgradeHandlers
     : []
   ).filter((handler) => typeof handler === "function");
-  if (normalizedUpgradeHandlers.length) {
-    server.on("upgrade", (request, socket, head) => {
-      void (async () => {
-        for (const handler of normalizedUpgradeHandlers) {
-          if (await handler(request, socket, head)) return;
-        }
-        socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
-        socket.destroy();
-      })().catch(() => {
-        socket.destroy();
-      });
-    });
-  }
+  const handleUpgrade = async (request, socket, head) => {
+    try {
+      for (const handler of normalizedUpgradeHandlers) {
+        if (await handler(request, socket, head)) return;
+      }
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+    } catch { socket.destroy(); }
+  };
+  if (normalizedUpgradeHandlers.length) server.on("upgrade", handleUpgrade);
 
   return {
+    handleRequest,
+    handleUpgrade,
+    isIdle: () => handles.size === 0 && sessionFinalizations.size === 0,
     async start() {
       if (server.listening) return this.address();
+      closing = false;
       await new Promise((resolve, reject) => {
         const onError = (error) => {
           server.off("listening", onListening);
@@ -2167,11 +2418,13 @@ export function createRuntimeServer({
       };
     },
     async close() {
+      closing = true;
       const activeHandles = Array.from(handles.values());
       for (const handle of activeHandles) {
         await handle.abort("runtime-shutdown");
       }
       await Promise.allSettled(activeHandles.map((handle) => handle.completion));
+      await Promise.allSettled([...sessionFinalizations.values()]);
       for (const retirement of liveRunRetirements.values()) {
         globalThis.clearTimeout(retirement);
       }

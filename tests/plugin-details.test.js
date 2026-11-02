@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createPluginDetailModel,
   getPluginContributions,
+  getPluginHostStatus,
   getPluginPresentation,
   getPluginStatus,
   localizePluginValue,
@@ -57,6 +58,42 @@ describe("plugin detail metadata", () => {
     expect(getPluginStatus({ enabled: true, state: "error" }, "zh-CN").tone).toBe("error");
   });
 
+  it("separates Workbench and Runtime host states", () => {
+    const identity = memoryPlugin();
+    identity.id = "dev.identity";
+    identity.state = "error";
+    identity.error = { message: "Workbench package unavailable" };
+    expect(getPluginHostStatus(identity, {
+      id: "dev.identity",
+      status: "active"
+    }, "zh-CN")).toMatchObject({
+      id: "partial",
+      tone: "warning",
+      label: "Workbench 激活失败 · Runtime 运行中"
+    });
+
+    const observability = {
+      ...memoryPlugin(),
+      id: "dev.observability",
+      state: "installed",
+      manifest: {
+        zion: {
+          entries: { runtime: "./runtime.js" }
+        }
+      }
+    };
+    expect(getPluginHostStatus(observability, {
+      id: "dev.observability",
+      status: "active"
+    }, "zh-CN")).toMatchObject({
+      id: "active",
+      tone: "success",
+      label: "Runtime 运行中",
+      workbench: { applicable: false },
+      runtime: { applicable: true }
+    });
+  });
+
   it("requires every built-in manifest to provide a complete bilingual presentation", () => {
     const manifests = fs.readdirSync(path.resolve("extensions"))
       .map((name) => path.resolve("extensions", name, "manifest.json"))
@@ -106,5 +143,27 @@ describe("plugin detail rendering", () => {
       .find((tab) => tab.textContent === "能力");
     capabilities?.click();
     expect(editor.querySelector(".zion-plugin-detail-page")?.textContent).toContain("manifest");
+  });
+
+  it("renders separate host status and hides Workbench controls for runtime-only plugins", () => {
+    const plugin = {
+      ...memoryPlugin(),
+      id: "dev.observability",
+      state: "installed",
+      manifest: {
+        zion: {
+          id: "dev.observability",
+          entries: { runtime: "./runtime.js" },
+          presentation: memoryPlugin().manifest.zion.presentation
+        }
+      }
+    };
+    const editor = document.createElement("div");
+    renderPluginEditor(editor, createPluginDetailModel(plugin, {
+      locale: "zh-CN",
+      runtimePlugin: { id: plugin.id, status: "active" }
+    }));
+    expect(editor.textContent).toContain("Runtime 运行中");
+    expect(editor.textContent).not.toContain("停用插件");
   });
 });

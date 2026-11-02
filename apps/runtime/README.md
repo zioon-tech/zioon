@@ -2,6 +2,9 @@
 
 Local, standalone host for `@zion/runtime`.
 
+Account extension development, isolated Hosts, model providers, lifecycle jobs
+and immutable builds are documented in [Unified plugins](../../docs/architecture/UNIFIED-PLUGINS.md).
+
 Requires Node.js 22.5 or newer and PostgreSQL 16 or newer. PostgreSQL is the
 only authoritative Runtime backend in local, remote, and account deployments.
 
@@ -37,6 +40,10 @@ The current checkpoint provides:
 - a policy-scoped local-tools broker for files, Bash, search, mail, and MCP;
 - Runtime-native `webFetch` and durable `todoWrite`;
 - durable invocation receipts that prevent replayed side effects;
+- account-private Skill, SDK tool-plugin and MCP extension packages, immutable
+  versions, installation state, configuration references and validated tool catalogs;
+- a shared Tool execution lifecycle for deadlines, cancellation, in-flight
+  fencing, retry classification, and unknown outcomes;
 - a manifest-driven Runtime Plugin Service with an explicit plugin allowlist,
   API-version validation, failure isolation, and reverse-order disposal;
 - an opt-in Node Broker for authenticated Device Connector registration,
@@ -61,8 +68,38 @@ It connects to `zion-next` through the HTTP/SSE RuntimeClient while preserving a
 temporary browser compatibility path. It never exposes `zion-local-tools` directly.
 Remote access is opt-in and uses the single-Space pairing boundary described
 below. The Runtime should still bind to loopback behind a same-origin HTTPS
-reverse proxy; isolated third-party plugin execution, remote Approval, and
+reverse proxy; full third-party plugin host APIs, remote Approval, and
 device-held proof-of-possession keys remain later milestones.
+
+## Private extensions
+
+The development CLI supports `zion` and `zioon extensions` with `init`, `validate`,
+`pack`, `upload`, `install`, `list`, `show`, `status`, `enable`, `disable`,
+`uninstall`, `configure`, `prepare`, `probe`, and `call`.
+
+`init --kind skill|plugin|mcp` produces an offline project. SDK tool plugins use
+runtime API 2 and built JavaScript. MCP supports stdio and Streamable HTTP tool
+discovery/calls. Code plugins must bundle their dependencies; MCP `prepare`
+installs the fixed SDK on the selected execution Node with lifecycle scripts
+disabled. Workbench/renderer entries and additional SDK hooks are not activated
+by the private tool host.
+
+Account installation is managed through `/v1/marketplace`. Configuration contains
+an explicit authorized Node ID, workspace root, and optional Node-local credential
+file path. Credential values stay on that Node. HTTP credential files bind both
+the listing ID and exact endpoint; redirects are rejected.
+
+Prepare/probe/call create ordinary `/v1/runs` requests. `extensionsCall` dispatches
+its staging writes and process execution through the same Tool Broker,
+authorization, cancellation, and durable receipts as other tools. It requires
+`trusted-automation`, `write`, and `Bash`; it never grants additional authority.
+Platform Nodes are rejected. In account mode, an unprovisioned workspace must use
+an explicitly authorized physical Node; no Runtime-local fallback exists.
+
+Changing versions, configuration or enable state clears validation. In-flight
+execution is cancelled on configuration changes, and uncertain outcomes retain
+receipts that block identical retries within the Run. Private packages are never
+imported into the Runtime process.
 
 ## Start
 
@@ -144,8 +181,45 @@ the device relay limit is raised. Values accept raw bytes or units such as
 `serviceInfo.requestLimits`.
 
 Project Automation reads Identity project notes through the configured plugin
-data location. Configure plugin data with `ZION_PLUGIN_DATA_ROOT` and, in Node
-tool mode, `ZION_PLUGIN_DATA_NODE_ID`. Configure the heartbeat interval with
+data location. Configure the physical host explicitly:
+
+- `ZION_PLUGIN_DATA_HOST=runtime` stores files on the Runtime filesystem and
+  rejects `ZION_PLUGIN_DATA_NODE_ID`.
+- `ZION_PLUGIN_DATA_HOST=node` delegates protected file operations to the
+  configured `ZION_PLUGIN_DATA_NODE_ID`; it requires `node` or `sandbox` tool
+  mode and does not initialize a local plugin-data directory.
+- `ZION_PLUGIN_DATA_HOST=managed` stores each account's plugin files on that
+  account's AgenticFS `/workspace` volume. It requires sandbox tool mode,
+  account scope, and no static Node id. Runtime resolves the account's Managed
+  Node for every request.
+- `ZION_PLUGIN_DATA_HOST=auto` preserves the historical behavior for migration:
+  files remain Runtime-local even when a Node id is published. Runtime logs a
+  warning for this ambiguous combination. Do not retain it in a production
+  release.
+
+`ZION_PLUGIN_DATA_ROOT` is interpreted on the selected host. Node-hosted data is
+an explicit transition mechanism, not the long-term account-data backend.
+
+Plugin-data scope is a separate, explicit migration switch:
+
+- `ZION_PLUGIN_DATA_SCOPE=legacy` keeps `{root}/{pluginId}` and remains the
+  default until data migration is approved.
+- `ZION_PLUGIN_DATA_SCOPE=account` resolves every request to
+  `{root}/scopes/{spaceId}/accounts/{accountId}/{pluginId}`. Missing Run or HTTP
+  account identity fails closed. With managed account volumes, storage isolation
+  already occurs at the volume binding, so the mounted path is
+  `/workspace/.zion/plugin-data/{pluginId}`.
+- `ZION_PLUGIN_DATA_LEGACY_READ_ACCOUNT_ID` optionally allows one named account
+  to read missing files from the old directory. Writes always target the scoped
+  directory; there is no dual write.
+
+Account scope currently covers Identity file access and its in-memory snapshot
+cache. Project Automation is disabled in this mode until its Runtime state and
+delegations are account-scoped. Enabling account scope does not migrate files.
+Structured file tools route Runtime-local plugin paths to the data adapter even
+in node or sandbox execution mode. Managed account volumes place structured
+file tools and `Bash` on the same persistent filesystem.
+Configure the heartbeat interval with
 `ZION_RUNTIME_PROJECT_AUTOMATION_POLL_MS` or `--project-automation-poll-ms`.
 Disable only its background heartbeat with
 `ZION_RUNTIME_PROJECT_AUTOMATION_WORKER=0`; manual `run_now` and `stop` remain
@@ -338,6 +412,10 @@ terminal-session allowlist. Device Host intersects those local grants with every
 Runtime policy before invoking local-tools.
 
 Every remote invocation has a Runtime-owned lease, 120 seconds by default.
+Declared Tool execution policy can extend that lease for long-running
+capabilities such as Bash. The same policy drives local and Runtime-plugin
+deadlines; see
+[`TOOL-EXECUTION-LIFECYCLE.md`](../../docs/architecture/TOOL-EXECUTION-LIFECYCLE.md).
 Queued work is removed at expiry; already delivered work receives a
 `tool.cancel` command. Device Connector also checks the absolute deadline before
 starting local execution. Override the positive millisecond duration with
@@ -665,6 +743,37 @@ executes only explicitly enabled plugin IDs. `dev.identity` is externalized by
 default: it must exist under the external root and never falls back to the
 repository copy. This makes the Workbench UI and Runtime Entry use the same
 published package version.
+
+Identity requires `ZION_MEMORY_SERVICE_URL`. A Runtime sharing the Memory
+service's account authority uses `ZION_MEMORY_BRIDGE_SECRET_FILE`. Runtime discovers the native agent-fs MCP
+schemas, exposes `mcp__agentfs__*` tools under the existing tool policy and
+receipt path, and contributes the `agentfs-memory` Skill. Panel and background
+file APIs use the same agent-fs service; no Identity plugin-data fallback is
+maintained. See [Memory service](../memory-service/README.md).
+
+For a local Runtime with a separate development account database, configure
+`ZION_MEMORY_ACCOUNT_CONNECTIONS_DIR` and `ZION_MEMORY_MCP_ENABLED=0`.
+Each local account/Space has an explicitly approved online account connection;
+every operation rechecks the local session or execution grant, current file
+policy, remote identity, membership and memory scopes. A remote login is never
+selected by email or shared as a global Runtime credential. Public endpoint
+prefixes such as `/memory` are preserved; bridge signatures bind the
+service-relative path after the reverse proxy strips that prefix.
+
+The local sandbox launcher can connect and migrate its current Identity files:
+
+```bash
+npm run memory:connect
+```
+
+The command backs up current files, prints a Zion login URL, waits for approval,
+imports only absent or identical online files, and verifies API/CLI bytes before
+persisting the endpoint and restarting the local Runtime. It keeps the existing
+sandbox/NAS binding. Different online file contents stop the migration without
+overwriting either copy. `--prepare` creates only a backup; `--resume` continues
+using an already saved, valid login. Run the command again to renew an expired
+connection. Saved credentials and account bindings use private per-account
+files; the installed sandbox CLI uses the same login and online drive.
 
 In local tool mode the default allowlist currently includes Terminal Manager,
 Skills, Memory, Identity, Context Compression, Scheduler, Session Manager, Chat

@@ -1,0 +1,44 @@
+{
+  "trustPolicy": {
+    "Version": "1",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": { "Service": ["fc.aliyuncs.com"] },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  },
+  "workspacePolicies": {
+    "ZionSandboxPocA": {
+      "Version": "1",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["nas:ClientMount", "nas:ClientWrite", "nas:ClientRootAccess"],
+          "Resource": "acs:nas:cn-shanghai:1803625616810276:filesystem/030pngfn34jnuh0y0mx",
+          "Condition": {
+            "StringEquals": {
+              "nas:AccessPointArn": "acs:nas:cn-shanghai:1803625616810276:accesspoint/ap-1xsz1qm78n7oudxv6"
+            }
+          }
+        }
+      ]
+    },
+    "ZionSandboxPocB": {
+      "Version": "1",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["nas:ClientMount", "nas:ClientWrite", "nas:ClientRootAccess"],
+          "Resource": "acs:nas:cn-shanghai:1803625616810276:filesystem/030pngfn34jnuh0y0mx",
+          "Condition": {
+            "StringEquals": {
+              "nas:AccessPointArn": "acs:nas:cn-shanghai:1803625616810276:accesspoint/ap-0pxgbpd5aaqqhwhmj"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

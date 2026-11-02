@@ -283,6 +283,63 @@ describe("Runtime Skills catalog HTTP handler", () => {
     });
   });
 
+  it("does not let a Workbench sync replace the Runtime-owned plugin source", async () => {
+    const store = memoryStore();
+    const pluginSource = {
+      nodeId: "runtime:plugins",
+      nodeLabel: "Runtime Plugins",
+      syncedAt: 20,
+      catalog: [{
+        id: "dev.identity/biography-memory",
+        name: "biography-memory",
+        body: "Use biographyQuery.",
+        runtimeCached: true,
+        sourceNodeId: "runtime:plugins"
+      }]
+    };
+    store.values.set(SKILLS_RUNTIME_SOURCES_KV_KEY, {
+      version: 1,
+      sources: [pluginSource]
+    });
+    store.values.set(SKILLS_RUNTIME_KV_KEY, {
+      savedAt: 20,
+      enabled: ["dev.identity/biography-memory"],
+      sources: [pluginSource],
+      catalog: pluginSource.catalog
+    });
+    const baseUrl = await start(createSkillsCatalogHttpHandler({ store }));
+
+    const sync = await fetch(`${baseUrl}/v1/skills/sync`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        snapshot: {
+          savedAt: 30,
+          sources: [{
+            nodeId: "runtime:plugins",
+            syncedAt: 30,
+            catalog: []
+          }, {
+            nodeId: "node:mac",
+            syncedAt: 30,
+            catalog: [{ id: "writer", name: "Writer" }]
+          }]
+        }
+      })
+    });
+    expect(sync.status).toBe(200);
+
+    const body = await fetch(`${baseUrl}/v1/skills/snapshot`).then((response) =>
+      response.json()
+    );
+    expect(body.snapshot.catalog.map((skill) => skill.id)).toEqual(
+      expect.arrayContaining(["dev.identity/biography-memory", "writer"])
+    );
+    expect(body.snapshot.sources.find((source) =>
+      source.nodeId === "runtime:plugins"
+    )?.catalog).toHaveLength(1);
+  });
+
   it("does not let a stale client overwrite a newer source snapshot", async () => {
     const store = memoryStore();
     const baseUrl = await start(createSkillsCatalogHttpHandler({ store }));

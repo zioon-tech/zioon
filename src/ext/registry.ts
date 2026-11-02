@@ -2557,7 +2557,7 @@ try { runLedger.reconcileActiveRuns([], "startup"); } catch {}
     settings: {
       registerPage: (page: any) => settingsRegistry.registerPage(page),
       registerItem: (item: any) => settingsRegistry.registerItem(item),
-      open: (pageId?: string) => openSettingsPanel(pageId),
+      open: () => openSettingsPanel(),
       close: () => closeSettingsPanel()
     },
     window: {

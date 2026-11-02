@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_REGION = "cn-shanghai";
 const DEFAULT_INSTANCE_ID = "i-uf6dkbxlai8d1zr81859";
-const DEFAULT_PUBLIC_URL = "https://47-101-150-8.nip.io:8443";
+const DEFAULT_PUBLIC_URL = "https://runtime.zioon.tech";
 const CHUNK_SIZE = 18 * 1024;
 
 function usage() {
@@ -162,7 +162,7 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8").trim();
 }
 
-async function credentials() {
+export async function credentials() {
   const explicitId = process.env.ALIYUN_ACCESS_KEY_ID;
   const explicitSecret = process.env.ALIYUN_ACCESS_KEY_SECRET;
   if (explicitId && explicitSecret) {
@@ -192,7 +192,7 @@ function canonicalQuery(params) {
     .join("&");
 }
 
-class EcsClient {
+export class EcsClient {
   constructor({ region, instanceId, accessKeyId, accessKeySecret }) {
     this.region = region;
     this.instanceId = instanceId;
@@ -810,6 +810,8 @@ bash "$script"
   }
 }
 
-main().catch((error) => {
-  fail(error?.message || String(error));
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    fail(error?.message || String(error));
+  });
+}

@@ -6,7 +6,7 @@ import {
 } from "../extensions/dev.terminal-manager/terminal-inventory.js";
 
 describe("terminal inventory context", () => {
-  it("injects machines, workspaces, and a usable session id per workspace", () => {
+  it("injects stable instructions without live terminal state", () => {
     const inventory = buildTerminalInventory([
       { id: "local-1", type: "local", cwd: "/workspace/zion-next", active: true },
       { id: "local-2", type: "local", cwd: "/workspace/zion-next", active: true },
@@ -31,33 +31,29 @@ describe("terminal inventory context", () => {
 
     const xml = buildTerminalInventoryContextXml(inventory);
 
-    expect(xml).toContain('machine_count="2"');
-    expect(xml).toContain('workspace_count="2"');
-    expect(xml).toContain('session_count="3"');
-    expect(xml).toContain('name="zion-next" sessions="2"');
-    expect(xml).toContain('name="video-generation" sessions="1"');
-    expect(xml).toContain('sessions="1" available="1" disconnected="0"');
-    expect(xml).toContain('machine_id="machine:local"');
-    expect(xml).toContain('workspace_id="');
-    expect(xml).toContain('preferred_session_id="local-1"');
-    expect(xml).toContain('preferred_session_id="ssh-1"');
-    expect(xml).toContain("<description>Apple Silicon development machine</description>");
+    expect(xml).toContain("<terminal_inventory>");
+    expect(xml).toContain("<instructions>");
+    expect(xml).toContain("Call terminalInventory");
     expect(xml).toContain("terminalManage action=list");
-    expect(xml).toContain("Do not use machine_id, workspace_id, or type values such as local/ssh as session_id");
-    expect(xml).not.toContain("active_session");
+    expect(xml).toContain("Never use machine_id, workspace_id, local, or ssh as session_id");
+    expect(xml).toContain("execution_outcome_unknown");
+    expect(xml).not.toContain("revision=");
+    expect(xml).not.toContain("<machine");
+    expect(xml).not.toContain("<workspace");
+    expect(xml).not.toContain("<node");
+    expect(xml).not.toContain("local-1");
+    expect(xml).not.toContain("zion-next");
   });
 
-  it("escapes workspace data and includes paths only for duplicate names", () => {
-    const inventory = buildTerminalInventory([
-      { id: "one", type: "local", cwd: "/one/a&b", active: true },
-      { id: "two", type: "local", cwd: "/two/a&b", active: true }
-    ], { now: 1000 });
+  it("returns identical context for different inventories", () => {
+    const first = buildTerminalInventoryContextXml(buildTerminalInventory([
+      { id: "one", type: "local", cwd: "/one", active: true }
+    ], { now: 1000 }));
+    const second = buildTerminalInventoryContextXml(buildTerminalInventory([
+      { id: "two", type: "ssh", ssh_host: "host", cwd: "/two", active: false }
+    ], { now: 9000 }));
 
-    const xml = buildTerminalInventoryContextXml(inventory);
-
-    expect(xml).toContain('name="a&amp;b"');
-    expect(xml).toContain('path="/one/a&amp;b"');
-    expect(xml).toContain('path="/two/a&amp;b"');
+    expect(second).toBe(first);
   });
 
   it("bounds automatic context by machine and workspace budgets", () => {
@@ -96,10 +92,9 @@ describe("terminal inventory context", () => {
       includedMachineCount: 6,
       includedWorkspaceCount: 24
     });
-    expect(xml).toContain('workspace_count="24"');
-    expect(xml).toContain('truncated="true"');
-    expect(xml).toContain('total_workspace_count="150"');
-    expect(xml).toContain("This is a bounded summary.");
+    expect(xml).not.toContain("workspace_count=");
+    expect(xml).not.toContain("truncated=");
+    expect(xml).not.toContain("150");
   });
 
   it("retains workspaces for explicitly preferred terminal sessions", () => {
@@ -141,7 +136,7 @@ describe("terminal inventory context", () => {
     expect(projection.workspaces.map((workspace) => workspace.name)).toEqual([
       "required"
     ]);
-    expect(xml).toContain('preferred_session_id="remote-required"');
-    expect(xml).not.toContain('preferred_session_id="local-new"');
+    expect(xml).not.toContain("remote-required");
+    expect(xml).not.toContain("local-new");
   });
 });

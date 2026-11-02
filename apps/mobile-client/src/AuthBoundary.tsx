@@ -84,16 +84,28 @@ export function AuthBoundary({
 
   useEffect(() => {
     if (state.kind !== "ready" || state.access?.mode !== "accounts-v1") return;
-    const timer = window.setInterval(() => {
+    const check = () => {
       void accountRequest<AccountSession>(runtimeBaseUrl, "me").then(next => {
         if (next.membership?.status !== "active"
+          || next.user.id !== (state.access as AccountSession)?.user?.id
+          || next.membership.role !== (state.access as AccountSession)?.membership?.role
           || next.space.id !== state.access?.space?.id
-          || next.scopes.join() !== state.access?.scopes?.join()) {
+          || [...next.scopes].sort().join() !== [...(state.access?.scopes || [])].sort().join()) {
           location.reload();
         }
       }).catch((error) => { if (error.status === 401) location.reload(); });
-    }, 15_000);
-    return () => clearInterval(timer);
+    };
+    const visible = () => { if (!document.hidden) check(); };
+    const timer = window.setInterval(check, 15_000);
+    window.addEventListener("focus", check);
+    window.addEventListener("online", check);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", check);
+      window.removeEventListener("online", check);
+      document.removeEventListener("visibilitychange", visible);
+    };
   }, [state]);
 
   const pair = async (event: FormEvent) => {

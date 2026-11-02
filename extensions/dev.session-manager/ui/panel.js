@@ -204,6 +204,24 @@ export function createSessionsPanelManager(opts) {
 
       controls.append(sortSelect, actions);
       panel.appendChild(controls);
+      const search = document.createElement("input");
+      search.type = "search";
+      search.placeholder = "搜索会话和内容…";
+      search.setAttribute("aria-label", "搜索会话和内容");
+      search.style.cssText = "width:100%;box-sizing:border-box;margin-bottom:8px;background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:5px 6px";
+      panel.appendChild(search);
+      const searchStatus = document.createElement("span");
+      searchStatus.setAttribute("role", "status");
+      panel.appendChild(searchStatus);
+      const moreSearch = document.createElement("button");
+      moreSearch.type = "button";
+      moreSearch.textContent = "更多搜索结果";
+      moreSearch.hidden = true;
+      panel.appendChild(moreSearch);
+      let searchMatches = null;
+      let searchToken = 0;
+      let searchTimer = 0;
+      let searchOffset = 0;
 
       const list = document.createElement("div");
       panel.appendChild(list);
@@ -213,7 +231,8 @@ export function createSessionsPanelManager(opts) {
         hostElement: panel,
         rootDropHost: header,
         viewId: "panel",
-        getQuery: () => "",
+        getQuery: () => searchMatches ? "" : search.value,
+        getSessionFilter: () => searchMatches ? (node) => searchMatches.has(String(node.id)) : null,
         getSort: () => sortSelect.value || "updated",
         onSwitchSession: (id) => {
           const result = zion.commands.executeCommand("zion.sessions.switch", id);
@@ -227,10 +246,45 @@ export function createSessionsPanelManager(opts) {
       });
 
       sortSelect.addEventListener("change", () => render());
+      const runSearch = async (token, append = false) => {
+        if (token !== searchToken) return;
+        searchStatus.textContent = "正在搜索…";
+        moreSearch.disabled = true;
+        try {
+          const result = await zion.commands.executeCommand("zion.sessions.search", {
+            query: search.value.trim(), limit: 100, offset: append ? searchOffset : 0
+          });
+          if (token !== searchToken) return;
+          searchMatches = new Set([...(append ? searchMatches || [] : []), ...(result?.sessions || []).map(item => item.id)]);
+          searchOffset = result?.nextOffset || 0;
+          moreSearch.hidden = !result?.hasMore;
+          searchStatus.textContent = searchMatches.size ? `找到 ${searchMatches.size} 个会话${result?.hasMore ? "，可继续加载" : ""}` : "没有找到匹配的会话";
+          render();
+        } catch {
+          if (token !== searchToken) return;
+          moreSearch.hidden = !append;
+          searchStatus.textContent = "内容搜索失败，请重试；当前仅显示已匹配的结果。";
+        } finally {
+          if (token === searchToken) moreSearch.disabled = false;
+        }
+      };
+      moreSearch.onclick = () => { void runSearch(searchToken, true); };
+      search.addEventListener("input", () => {
+        const token = ++searchToken;
+        clearTimeout(searchTimer);
+        searchMatches = null;
+        moreSearch.hidden = true;
+        moreSearch.disabled = false;
+        searchStatus.textContent = "";
+        render();
+        if (search.value.trim()) searchTimer = setTimeout(() => { void runSearch(token); }, 180);
+      });
       render();
 
         const originalRemove = overlay.remove.bind(overlay);
         overlay.remove = () => {
+          searchToken++;
+          clearTimeout(searchTimer);
           try { render?.dispose?.(); } catch {}
           originalRemove();
         };

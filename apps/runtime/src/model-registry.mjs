@@ -109,6 +109,7 @@ function normalizeProfile(value) {
     credentialRequired: profile.credentialRequired !== false,
     temperature: optionalFiniteNumber(profile.temperature),
     maxOutputTokens,
+    limits: clone(profile.limits || {}),
     requestBody,
     capabilities: profile.capabilities && typeof profile.capabilities === "object"
       ? clone(profile.capabilities)

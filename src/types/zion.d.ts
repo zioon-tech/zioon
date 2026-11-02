@@ -204,6 +204,7 @@ export interface SlashCommand {
   priority?: number;
   params?: SlashParamSchema[];
   submenu?: any;
+  retainTrigger?: boolean;
   execute: (params?: Record<string, any>, editor?: EditorProxy) => void | Promise<void>;
 }
 
@@ -288,7 +289,7 @@ declare global {
       settings?: {
         registerPage(page: any): Disposable;
         registerItem(item: any): Disposable;
-        open(pageId?: string): void;
+        open(): void;
         close(): void;
       };
       memory?: {

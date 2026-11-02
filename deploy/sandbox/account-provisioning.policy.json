@@ -1,0 +1,45 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "nas:CreateAgenticSpace",
+        "nas:DescribeAgenticSpaces"
+      ],
+      "Resource": "acs:nas:cn-shanghai:1803625616810276:filesystem/030pngfn34jnuh0y0mx"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "nas:GetAgenticSpace",
+        "nas:CreateAccessPoint",
+        "nas:DescribeAccessPoint",
+        "nas:ListAccessPoints"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ram:CreateRole", "ram:GetRole", "ram:ListPoliciesForRole", "ram:PassRole"],
+      "Resource": [
+        "acs:ram:*:1803625616810276:role/ZionManaged*",
+        "acs:ram:*:1803625616810276:role/zionmanaged*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ram:CreatePolicy", "ram:GetPolicy", "ram:GetPolicyVersion"],
+      "Resource": "acs:ram:*:1803625616810276:policy/ZionManaged*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ram:AttachPolicyToRole"],
+      "Resource": [
+        "acs:ram:*:1803625616810276:role/ZionManaged*",
+        "acs:ram:*:1803625616810276:role/zionmanaged*",
+        "acs:ram:*:1803625616810276:policy/ZionManaged*"
+      ]
+    }
+  ]
+}

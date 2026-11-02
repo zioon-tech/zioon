@@ -9,7 +9,7 @@ export {
   RunCancelledError
 } from "./cancellation.js";
 export { MemoryRunStore } from "./memory-run-store.js";
-export { OpenAICompatibleEngine } from "./openai-compatible-engine.js";
+export { OpenAICompatibleEngine, normalizeModelProviderMetadata } from "./openai-compatible-engine.js";
 export type {
   AgentEngine,
   AgentCheckpoint,
@@ -31,14 +31,14 @@ export type {
   ModelRef,
   ModelRequestOptions,
   RunEvent,
+  RunOutboxEntry,
   RunHandle,
   RunRecord,
+  RunController,
+  RunControllerContext,
   RunRequest,
   RunResult,
   RunPolicyPreset,
-  RunPrincipal,
-  RunAuthorizer,
-  RunAuthorizationPhase,
   RunStatus,
   RunTranscriptEntry,
   ResumeRunRequest,

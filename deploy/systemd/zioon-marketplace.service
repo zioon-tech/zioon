@@ -1,0 +1,29 @@
+[Unit]
+Description=Zioon standalone marketplace
+After=network-online.target zion-runtime.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zion
+Group=zion
+Environment=NODE_ENV=production
+Environment=PORT=8777
+Environment=ZIOON_MARKETPLACE_ORIGIN=https://marketplace.zioon.tech
+Environment=ZIOON_RUNTIME_ORIGIN=https://runtime.zioon.tech
+Environment=ZIOON_RUNTIME_TARGET=http://127.0.0.1:8766
+Environment=ZIOON_MARKETPLACE_DIST=/srv/zioon-marketplace/current
+Environment=ZIOON_MARKETPLACE_SESSION_KEY_FILE=/var/lib/zioon-marketplace/session.key
+ExecStart=/usr/local/bin/node /opt/zion-next/apps/marketplace/server/main.mjs
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/zioon-marketplace
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

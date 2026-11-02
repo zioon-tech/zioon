@@ -339,6 +339,11 @@ describe("RuntimePluginService", () => {
               required: ["text"],
               additionalProperties: false
             },
+            execution: {
+              effect: "read",
+              timeoutMs: 1500,
+              maxTimeoutMs: 3000
+            },
             policy: { minimumPreset: "read-only" },
             async invoke(args, runContext) {
               context.state.namespace("calls").set("lastRunId", runContext.runId);
@@ -435,6 +440,13 @@ describe("RuntimePluginService", () => {
         name: "dev.tool.echo",
         pluginId: "dev.tool",
         hostKinds: ["runtime-plugin", "plugin:dev.tool"],
+        execution: {
+          effect: "read",
+          timeoutMs: 1500,
+          maxTimeoutMs: 3000,
+          cancellation: "cooperative",
+          idempotency: "safe"
+        },
         policy: {
           minimumPreset: "read-only"
         }

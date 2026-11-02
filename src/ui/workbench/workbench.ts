@@ -3,6 +3,7 @@ import { createZionIcon, createZionIconFromCodicon, hasZionIcon, setZionIconOnly
 import { applyInspectorMarkdownCommentRanges, createInspectorMarkdownPreviewView, createInspectorTextView, getInspectorMarkdownSelection, openInspectorSearch, renderInspectorMarkdown, setInspectorLineWrapping } from "./inspectorContent";
 import { createSelectionToolbarButton, createSelectionToolbarItemsContainer } from "../../editor/extensions/selection-toolbar";
 import { currentAccountSession } from "../../../packages/account-ui/src/client";
+import { reconcileKeyedElements } from "../keyed-elements";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -2686,6 +2687,7 @@ export function initWorkbench(host: HTMLElement): {
   bottomPanelEl.style.position = "relative";
   const bottomHeader = el("div", "zion-bottompanel-header");
   const bottomTabs = el("div", "zion-bottompanel-tabs");
+  const bottomTabElements = new Map<string, { element: HTMLButtonElement }>();
   const bottomActions = el("div", "zion-bottompanel-actions");
   const bottomMaxBtn = el("button", "zion-bottompanel-action") as HTMLButtonElement;
   bottomMaxBtn.type = "button";
@@ -2712,16 +2714,18 @@ export function initWorkbench(host: HTMLElement): {
   bottomPanelEl.appendChild(bottomContent);
 
   let bottomMountedViewId: string | null = null;
+  let bottomMountGeneration = 0;
   let bottomMountedDisposable: { dispose?: () => void } | null = null;
   let bottomResizeObs: ResizeObserver | null = null;
   const bottomKeepContainers = new Map<string, { container: HTMLElement; disposable: { dispose?: () => void } | null; obs: ResizeObserver | null }>();
 
-  const bottomUnmountView = async (viewId: string | null) => {
+  const bottomUnmountView = async (viewId: string | null, generation = bottomMountGeneration) => {
     if (!viewId) return;
     const prev = bottomPanelRuntime.getView(viewId);
     try {
       await prev?.onDeactivate?.();
     } catch {}
+    if (generation !== bottomMountGeneration) return;
     const keep = !!prev?.keepWhenActive;
     if (keep) {
       const rec = bottomKeepContainers.get(viewId);
@@ -2737,11 +2741,17 @@ export function initWorkbench(host: HTMLElement): {
     } catch {}
     bottomResizeObs = null;
     try {
-      bottomContent.innerHTML = "";
+      for (const child of Array.from(bottomContent.children)) {
+        if (![...bottomKeepContainers.values()].some(rec => rec.container === child)) child.remove();
+      }
     } catch {}
   };
 
-  const bottomMountView = async (viewId: string | null) => {
+  const bottomMountView = async (viewId: string | null, generation = bottomMountGeneration) => {
+    // #region debug-point bottom-panel-mount
+    try { const debug = (globalThis as any).__zionPanelDebug; if (debug?.url) void fetch(debug.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: "panel-tab-flicker", runId: debug.runId, hypothesisId: "A", location: "workbench.bottomMountView", message: "mount", data: { viewId, bottomMountedViewId } }) }).catch(() => {}); } catch {}
+    // #endregion
+    if (generation !== bottomMountGeneration || bottomMountedViewId !== viewId) return;
     if (!viewId) {
       bottomContent.innerHTML = "";
       return;
@@ -2790,16 +2800,24 @@ export function initWorkbench(host: HTMLElement): {
       return;
     }
 
-    bottomContent.innerHTML = "";
+    for (const child of Array.from(bottomContent.children)) {
+      if (![...bottomKeepContainers.values()].some(rec => rec.container === child)) child.remove();
+    }
+    const transientContainer = el("div", "zion-bottompanel-view");
+    transientContainer.style.height = "100%";
+    transientContainer.style.width = "100%";
+    transientContainer.style.minHeight = "0";
+    bottomContent.appendChild(transientContainer);
     try {
-      const ret = view.component.render(bottomContent);
+      const ret = view.component.render(transientContainer);
       bottomMountedDisposable = (ret as any) || null;
     } catch {
-      bottomContent.innerHTML = "";
+      transientContainer.innerHTML = "";
     }
     try {
       await view.onActivate?.();
     } catch {}
+    if (generation !== bottomMountGeneration || bottomMountedViewId !== viewId) return;
     try {
       bottomResizeObs = new ResizeObserver(() => {
         try {
@@ -2859,8 +2877,10 @@ export function initWorkbench(host: HTMLElement): {
     }
     bottomPanelEl.style.display = visible ? "flex" : "none";
     if (!visible) {
-      void bottomUnmountView(bottomMountedViewId);
+      const previousId = bottomMountedViewId;
+      const generation = ++bottomMountGeneration;
       bottomMountedViewId = null;
+      void bottomUnmountView(previousId, generation);
       for (const rec of bottomKeepContainers.values()) {
         try {
           rec.container.style.display = "none";
@@ -2873,35 +2893,46 @@ export function initWorkbench(host: HTMLElement): {
     const nextId = activeViewId && bottomPanelRuntime.getView(activeViewId) ? activeViewId : views[0]?.id ?? null;
     if (nextId && nextId !== activeViewId) bottomPanelRuntime.activateView(nextId);
 
-    bottomTabs.innerHTML = "";
-    for (const v of views) {
-      const tab = el("button", "zion-bottompanel-tab") as HTMLButtonElement;
-      tab.type = "button";
-      const title = translatedTitle(v);
-      tab.title = title;
-      tab.setAttribute("aria-label", title);
-      tab.dataset.viewId = v.id;
-      tab.textContent = "";
-      const icon = String(v.icon || "").trim();
-      const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
-      if (codiconMatch) {
-        tab.appendChild(createZionIconFromCodicon(codiconMatch[1]));
-      } else if (hasZionIcon(icon)) {
-        tab.appendChild(createZionIcon(zionIconName(icon)));
-      } else if (icon) {
-        const span = document.createElement("span");
-        span.textContent = safeText(icon);
-        span.setAttribute("aria-hidden", "true");
-        tab.appendChild(span);
+    reconcileKeyedElements({
+      container: bottomTabs,
+      items: views,
+      entries: bottomTabElements,
+      getKey: (view) => view.id,
+      create: (v) => {
+        const tab = el("button", "zion-bottompanel-tab") as HTMLButtonElement;
+        tab.type = "button";
+        tab.dataset.viewId = v.id;
+        tab.onclick = () => bottomPanelRuntime.activateView(v.id);
+        installReorderableTab(tab, bottomTabs, v.id, (ids) => bottomPanelRuntime.setViewOrder(ids));
+        return { element: tab };
+      },
+      update: ({ element: tab }, v) => {
+        const title = translatedTitle(v);
+        tab.title = title;
+        tab.setAttribute("aria-label", title);
+        const signature = JSON.stringify([title, v.icon]);
+        if (tab.dataset.contentSignature !== signature) {
+          tab.dataset.contentSignature = signature;
+          tab.textContent = "";
+          const icon = String(v.icon || "").trim();
+          const codiconMatch = icon.match(/^\$\(([^)]+)\)$/);
+          if (codiconMatch) {
+            tab.appendChild(createZionIconFromCodicon(codiconMatch[1]));
+          } else if (hasZionIcon(icon)) {
+            tab.appendChild(createZionIcon(zionIconName(icon)));
+          } else if (icon) {
+            const span = document.createElement("span");
+            span.textContent = safeText(icon);
+            span.setAttribute("aria-hidden", "true");
+            tab.appendChild(span);
+          }
+          const label = document.createElement("span");
+          label.textContent = safeText(title);
+          tab.appendChild(label);
+        }
+        tab.classList.toggle("is-active", v.id === nextId);
       }
-      const label = document.createElement("span");
-      label.textContent = safeText(title);
-      tab.appendChild(label);
-      if (v.id === nextId) tab.classList.add("is-active");
-      tab.onclick = () => bottomPanelRuntime.activateView(v.id);
-      installReorderableTab(tab, bottomTabs, v.id, (ids) => bottomPanelRuntime.setViewOrder(ids));
-      bottomTabs.appendChild(tab);
-    }
+    });
 
     const activeView = nextId ? bottomPanelRuntime.getView(nextId) : null;
     bottomActions.querySelectorAll(".zion-bottompanel-plugin-action").forEach((node) => node.remove());
@@ -2962,13 +2993,16 @@ export function initWorkbench(host: HTMLElement): {
     }
 
     if (bottomMountedViewId !== nextId) {
+      const previousId = bottomMountedViewId;
+      const generation = ++bottomMountGeneration;
+      bottomMountedViewId = nextId;
       void (async () => {
-        await bottomUnmountView(bottomMountedViewId);
-        bottomMountedViewId = nextId;
+        await bottomUnmountView(previousId, generation);
+        if (generation !== bottomMountGeneration || bottomMountedViewId !== nextId) return;
         for (const [id, rec] of bottomKeepContainers.entries()) {
           if (id !== nextId) rec.container.style.display = "none";
         }
-        await bottomMountView(bottomMountedViewId);
+        await bottomMountView(nextId, generation);
       })();
     }
 

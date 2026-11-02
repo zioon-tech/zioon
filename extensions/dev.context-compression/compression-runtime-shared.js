@@ -8,8 +8,8 @@ export const COMPRESSION_RUNTIME_KV_KEY =
 export const DEFAULT_COMPRESSION_SETTINGS = Object.freeze({
   autoCompression: true,
   debugLogging: false,
-  defaultStrategy: "auto",
-  threshold: 0.95,
+  defaultStrategy: "handoff",
+  threshold: 0.85,
   contextLimitTokens: 128000,
   outputTokens: 4096,
   charsPerToken: 4,
@@ -26,6 +26,7 @@ export const DEFAULT_COMPRESSION_SETTINGS = Object.freeze({
 
 const KNOWN_STRATEGIES = new Set([
   "auto",
+  "handoff",
   "opencode",
   "claude-code",
   "cursor",
@@ -33,7 +34,7 @@ const KNOWN_STRATEGIES = new Set([
   "focus-agent",
   "progressive"
 ]);
-const RUNTIME_STRATEGIES = new Set(["auto", "opencode", "claude-code", "progressive"]);
+const RUNTIME_STRATEGIES = new Set(["handoff"]);
 
 function boundedNumber(value, fallback, min, max) {
   const number = Number(value);
@@ -57,8 +58,8 @@ export function normalizeCompressionSettings(value = {}) {
     ...DEFAULT_COMPRESSION_SETTINGS,
     autoCompression: source.autoCompression !== false,
     debugLogging: source.debugLogging === true,
-    defaultStrategy: KNOWN_STRATEGIES.has(strategy) ? strategy : "auto",
-    threshold: boundedNumber(source.threshold, 0.95, 0.5, 1),
+    defaultStrategy: KNOWN_STRATEGIES.has(strategy) ? strategy : "handoff",
+    threshold: boundedNumber(source.threshold, 0.85, 0.5, 1),
     contextLimitTokens: Math.floor(boundedNumber(
       source.contextLimitTokens,
       128000,
@@ -110,7 +111,7 @@ export function compressionSettingsRevision(value = {}) {
 
 export function runtimeCompressionStrategy(value) {
   const strategy = normalizeCompressionSettings(value).defaultStrategy;
-  return RUNTIME_STRATEGIES.has(strategy) ? strategy : "progressive";
+  return RUNTIME_STRATEGIES.has(strategy) ? strategy : "handoff";
 }
 
 export function compressionSettingsSyncDirection(localSettings, runtimeSettings) {

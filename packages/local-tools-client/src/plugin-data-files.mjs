@@ -81,7 +81,7 @@ async function atomicWrite(path, content) {
   }
 }
 
-function appendRecords(current, records, field) {
+export function mergeJsonlRecords(current, records, field = "id") {
   if (!Array.isArray(records) || !records.length) throw failure("records are required", 400);
   const existing = new Map();
   for (const line of (current || "").split(/\r?\n/).filter((value) => value.trim())) {
@@ -174,7 +174,11 @@ export function createPluginDataFileHost({ root }) {
         let content;
         let extra = {};
         if (operation === "append-jsonl") {
-          extra = appendRecords(current, args.records, args.dedupe_field || "id");
+          extra = mergeJsonlRecords(
+            current,
+            args.records,
+            args.dedupe_field || "id"
+          );
           content = extra.content;
           delete extra.content;
         } else if (operation === "edit") {

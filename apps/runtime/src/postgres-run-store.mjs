@@ -182,7 +182,8 @@ export class PostgresRunStore {
     }
   }
 
-  async append(inputEvent, patch, detailEvent = null) {
+  async append(inputEvent, patch, detailEvent = null, outbox = []) {
+    if (!Array.isArray(outbox) || outbox.length > 100) throw new Error("invalid_run_outbox");
     const rawDetailEvent = detailEvent || inputEvent;
     const rawEvent = rawDetailEvent?.type === "model.request"
       && rawDetailEvent?.data?.payload
@@ -291,6 +292,21 @@ export class PostgresRunStore {
          WHERE space_id = $4 AND id = $5`,
         [JSON.stringify(next), next.status, next.updatedAt, this.spaceId, event.runId]
       );
+      for (const entry of outbox) {
+        if (!/^[a-zA-Z0-9_.:-]{1,200}$/.test(entry.id || "")
+          || !/^[a-zA-Z0-9_.:-]{1,100}$/.test(entry.kind || "")
+          || Buffer.byteLength(JSON.stringify(entry.payload)) > 150000) throw new Error("invalid_run_outbox");
+        const inserted = await client.query(`INSERT INTO runtime_run_outbox
+          (space_id,id,run_id,attempt_id,kind,payload_json,available_at,created_at,updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$7) ON CONFLICT (space_id,id) DO NOTHING RETURNING id`,
+        [this.spaceId, entry.id, event.runId, event.attemptId, entry.kind, entry.payload, event.timestamp]);
+        if (!inserted.rowCount) {
+          const prior = (await client.query(`SELECT run_id,attempt_id,kind,payload_json FROM runtime_run_outbox
+            WHERE space_id=$1 AND id=$2`, [this.spaceId, entry.id])).rows[0];
+          if (prior.run_id !== event.runId || prior.attempt_id !== event.attemptId
+            || prior.kind !== entry.kind || hashJson(prior.payload_json) !== hashJson(entry.payload)) throw new Error("outbox_conflict");
+        }
+      }
       if (event.type === "run.completed") {
         await client.query(
           "DELETE FROM runtime_run_checkpoints WHERE space_id = $1 AND run_id = $2",
@@ -317,6 +333,24 @@ export class PostgresRunStore {
       [this.spaceId, String(runId)]
     );
     return payload(result.rows[0]);
+  }
+
+  // Goal inspectors need metadata, not every Run's prompt/output payload.
+  async getGoalRunSummaries(runIds, sessionId, userId) {
+    const result = await this.pool.query(
+      `SELECT jsonb_build_object(
+         'id', id, 'status', status, 'createdAt', payload_json->'createdAt',
+         'updatedAt', updated_at, 'usage', payload_json->'usage',
+         'terminalReason', left(payload_json->>'terminalReason', 1000),
+         'error', left(payload_json->>'error', 1000),
+         'preview', left(payload_json->>'output', 240)
+       ) AS payload_json FROM runtime_runs
+       WHERE space_id = $1 AND id = ANY($2::text[])
+         AND payload_json->>'sessionId' = $3
+         AND (payload_json->'principal'->>'userId') IS NOT DISTINCT FROM $4::text`,
+      [this.spaceId, runIds.slice(0, 32).map(String), String(sessionId), userId || null]
+    );
+    return result.rows.map(payload);
   }
 
   async listRuns({ since = 0, statuses, limit = 100 } = {}) {
@@ -1052,6 +1086,24 @@ export class PostgresRunStore {
     if (String(spaceId) !== this.spaceId) return null;
     const receipt = await this.getToolReceipt(invocationId);
     return receipt?.runId === String(runId) ? receipt : null;
+  }
+
+  async findToolReceiptByRequestHash(runId, toolName, requestHash) {
+    const result = await this.pool.query(
+      `SELECT invocation_id, run_id, tool_name, request_hash, result_json, completed_at
+       FROM runtime_tool_invocation_receipts
+       WHERE space_id = $1 AND run_id = $2 AND tool_name = $3
+         AND request_hash = $4
+       ORDER BY completed_at DESC
+       LIMIT 1`,
+      [
+        this.spaceId,
+        String(runId),
+        String(toolName),
+        String(requestHash)
+      ]
+    );
+    return receiptFromRow(result.rows[0]);
   }
 
   async saveToolReceipt({

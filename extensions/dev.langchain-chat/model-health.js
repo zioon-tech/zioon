@@ -169,7 +169,7 @@ export function invalidateModelAvailability({ providerId, modelId } = {}) {
 
 export function applyModelAvailability(item, health = getModelHealthSnapshot(), now = Date.now()) {
   if (!item || typeof item !== "object") return item;
-  if (item.credentialConfigured === true) {
+  if (item.credentialConfigured === true && !item.accountExtension) {
     return {
       ...item,
       availability: {

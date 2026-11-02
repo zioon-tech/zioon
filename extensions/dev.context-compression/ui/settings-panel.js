@@ -163,8 +163,8 @@ export class CompressionSettingsPanel {
       // General settings
       autoCompression: true,
       debugLogging: true,
-      defaultStrategy: 'auto',
-      threshold: 0.95,
+      defaultStrategy: 'handoff',
+      threshold: 0.85,
       contextLimitTokens: 128000,
       outputTokens: 4096,
       charsPerToken: 4,
@@ -310,6 +310,7 @@ export class CompressionSettingsPanel {
           <div class="setting-col">
             <label for="default-strategy" class="field-label">${this.t("label.strategy", "Strategy")}</label>
             <select id="default-strategy" class="field-input">
+              <option value="handoff" ${this.settings.defaultStrategy === 'handoff' ? 'selected' : ''}>Runtime 交接摘要</option>
               <option value="auto" ${this.settings.defaultStrategy === 'auto' ? 'selected' : ''}>${this.t("label.auto", "Auto (智能选择)")}</option>
               <option value="opencode" ${this.settings.defaultStrategy === 'opencode' ? 'selected' : ''}>OpenCode</option>
               <option value="claude-code" ${this.settings.defaultStrategy === 'claude-code' ? 'selected' : ''}>Claude Code</option>
@@ -626,6 +627,7 @@ export class CompressionSettingsPanel {
           <div class="setting-col">
             <label for="compress-strategy" class="field-label">${this.t("label.strategy", "Strategy")}</label>
             <select id="compress-strategy" class="field-input">
+              <option value="handoff" ${this.settings.defaultStrategy === 'handoff' ? 'selected' : ''}>Runtime 交接摘要</option>
               <option value="auto" ${this.settings.defaultStrategy === 'auto' ? 'selected' : ''}>${this.t("label.auto", "Auto (智能选择)")}</option>
               <option value="opencode" ${this.settings.defaultStrategy === 'opencode' ? 'selected' : ''}>OpenCode</option>
               <option value="claude-code" ${this.settings.defaultStrategy === 'claude-code' ? 'selected' : ''}>Claude Code</option>

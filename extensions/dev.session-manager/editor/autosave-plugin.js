@@ -18,7 +18,7 @@ export function createSessionAutoSavePlugin(opts) {
   const zion = opts?.zion || window.zion;
 
   const buckets = new Map();
-  const pendingPersistence = new Set();
+  const pendingPersistence = new Map();
   const autosaveQuietDelayMs = 700;
   const autosaveMaxDelayMs = 2000;
 
@@ -63,6 +63,10 @@ export function createSessionAutoSavePlugin(opts) {
       return false;
     }
   };
+  const waitsForCollaboration = (view, id) =>
+    view?.dom?.dataset?.zionCollaborationPending === "true"
+    || (view?.dom?.dataset?.zionCollaborationBound === "true"
+      && zion?.state?.get?.(`sessions.collaboration.${id}`)?.synced !== true);
 
   const clearQuietTimer = (bucket) => {
     try { if (bucket?.timer) cancelIdleCallback(bucket.timer); } catch {}
@@ -76,15 +80,16 @@ export function createSessionAutoSavePlugin(opts) {
     if (bucket) bucket.maxTimer = 0;
   };
 
-  const trackPersistence = (result) => {
+  const trackPersistence = (id, result) => {
     if (!result || typeof result.then !== "function") return;
     const pending = Promise.resolve(result).catch(() => false);
-    pendingPersistence.add(pending);
+    pendingPersistence.set(pending, id);
     void pending.finally(() => pendingPersistence.delete(pending));
   };
 
   const commit = (id, doc) => {
     if (!id || !doc) return false;
+    if (zion?.state?.get?.(`sessions.deleted.${id}`)) return false;
     if (zion?.state?.get?.(`sessions.summary.${id}`)
       && !zion?.state?.get?.(`sessions.meta.${id}`)) return false;
     const text = doc.toString();
@@ -97,7 +102,7 @@ export function createSessionAutoSavePlugin(opts) {
     if (collaborationSynced) {
       try { zion?.state?.set?.(`sessions.doc.${id}`, text); } catch {}
     } else {
-      trackPersistence(saveDoc(id, text));
+      trackPersistence(id, saveDoc(id, text));
     }
     meta.documentPreview = extractDocumentLeadPreview(text);
     meta.documentPreviewVersion = 1;
@@ -109,7 +114,7 @@ export function createSessionAutoSavePlugin(opts) {
         const ann = getAnnotationsState(id);
         if (ann) meta.annotations = ann;
       } catch {}
-      trackPersistence(saveMeta(id, meta));
+      trackPersistence(id, saveMeta(id, meta));
       try { onSaved(meta); } catch {}
       return true;
     }
@@ -120,7 +125,7 @@ export function createSessionAutoSavePlugin(opts) {
       const ann = getAnnotationsState(id);
       if (ann) meta.annotations = ann;
     } catch {}
-    trackPersistence(saveMeta(id, meta));
+    trackPersistence(id, saveMeta(id, meta));
     upsertIndexEntry({ id, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
     try { postSaved(id, meta.updatedAt, meta.hash); } catch {}
     try { onSaved(meta); } catch {}
@@ -134,7 +139,8 @@ export function createSessionAutoSavePlugin(opts) {
       clearTimers(bucket);
       const id = bucket.pendingId || getCurrentId(bucket.pendingView);
       if (!id || !bucket.pendingDoc) return;
-      const doc = bucket.pendingDoc;
+      const doc = bucket.pendingView?.state?.doc || bucket.pendingDoc;
+      if (waitsForCollaboration(bucket.pendingView, id)) return;
       bucket.pendingDoc = null;
       bucket.pendingId = null;
       bucket.pendingView = null;
@@ -161,7 +167,8 @@ export function createSessionAutoSavePlugin(opts) {
       if (!id || !bucket.pendingDoc) continue;
       const bucketId = bucket.pendingId || getCurrentId(bucket.pendingView);
       if (idOverride && bucketId !== idOverride) continue;
-      const doc = bucket.pendingDoc;
+      const doc = bucket.pendingView?.state?.doc || bucket.pendingDoc;
+      if (waitsForCollaboration(bucket.pendingView, id)) continue;
       bucket.pendingDoc = null;
       bucket.pendingId = null;
       bucket.pendingView = null;
@@ -173,19 +180,33 @@ export function createSessionAutoSavePlugin(opts) {
 
   const flushDurably = async (idOverride) => {
     const saved = flush(idOverride);
-    while (pendingPersistence.size) {
-      await Promise.allSettled([...pendingPersistence]);
+    while ([...pendingPersistence.values()].some(id => !idOverride || id === idOverride)) {
+      await Promise.allSettled([...pendingPersistence].filter(([, id]) =>
+        !idOverride || id === idOverride
+      ).map(([promise]) => promise));
     }
     return saved;
   };
 
   return {
+    hasPendingDrafts() {
+      return [...buckets.values()].some(bucket =>
+        bucket.pendingDoc && waitsForCollaboration(bucket.pendingView, bucket.pendingId)
+      );
+    },
     extension: ViewPlugin.fromClass(class {
       constructor(view) {
         this.view = view;
       }
       update(update) {
         if (update.docChanged) {
+          if (update.view?.dom?.dataset?.zionCollaborationPending === "true"
+            && update.transactions.some((tr) => tr.annotation(ySyncAnnotation) != null)) {
+            const bucket = getBucket(update.view);
+            clearTimers(bucket);
+            bucket.pendingDoc = null;
+            return;
+          }
           if (isAutosaveIgnoredUpdate(update)) return;
           if (isSessionPersistenceDisabled(update.view)) {
             return;

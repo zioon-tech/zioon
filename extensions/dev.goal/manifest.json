@@ -1,0 +1,39 @@
+{
+  "name": "dev.goal",
+  "version": "0.1.0",
+  "description": "Persistent, explicitly started goals with progress, evidence, pause and resume.",
+  "zion": {
+    "id": "dev.goal",
+    "name": "Goal",
+    "version": "0.1.0",
+    "manifestVersion": 2,
+    "main": "./main.js",
+    "entries": { "ui": "./main.js", "runtime": "./runtime.js" },
+    "hosts": { "workbench": true, "runtime": true },
+    "runtime": { "apiVersion": 2 },
+    "capabilities": [
+      { "id": "goalManage", "kind": "tool", "host": "runtime", "risk": "write", "requiredScopes": [] }
+    ],
+    "presentation": {
+      "displayName": { "zh-CN": "持续目标", "en-US": "Goal" },
+      "description": { "zh-CN": "显式启动持续目标，记录进展与验收证据，支持暂停和恢复。", "en-US": "Persistent goals with progress, completion evidence, pause and resume." },
+      "icon": "target",
+      "category": "ai",
+      "features": {
+        "zh-CN": ["显式启动、暂停和恢复目标", "查看进展与验收证据"],
+        "en-US": ["Start, pause, and resume explicit goals", "Inspect progress and completion evidence"]
+      }
+    },
+    "contributes": {
+      "commands": [
+        { "id": "goal.start", "title": "持续目标：开始", "category": "目标" },
+        { "id": "goal.status", "title": "持续目标：状态与证据", "category": "目标" },
+        { "id": "goal.pause", "title": "持续目标：暂停", "category": "目标" },
+        { "id": "goal.resume", "title": "持续目标：恢复", "category": "目标" },
+        { "id": "goal.cancel", "title": "持续目标：取消", "category": "目标" }
+      ]
+    },
+    "activationEvents": ["onStartupFinished"],
+    "engines": { "zion": ">=1.0.0" }
+  }
+}

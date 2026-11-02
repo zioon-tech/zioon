@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -12,13 +12,13 @@ import {
 } from "../apps/runtime/src/accounts/postgres-account-store.mjs";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
-const directory = join(repository, ".account-data/local");
+const directory = resolve(process.env.ZION_LOCAL_ACCOUNT_DIR || join(repository, ".account-data/local"));
 const configFile = join(directory, "space.local.json");
 const issuer = "http://127.0.0.1:18080";
 const runtimeUrl = "http://127.0.0.1:18866";
 const clientId = "zion-local";
 const interactionProfilesFile = join(directory, "runtime/interaction-profiles.json");
-const managedPostgresRoot = join(repository, ".account-data/postgres");
+const managedPostgresRoot = process.env.ZION_LOCAL_POSTGRES_ROOT || join(repository, ".account-data/postgres");
 const managedDatabaseUrl = "postgresql://zion@127.0.0.1:55432/zion?sslmode=disable";
 const help = `本地轻量账号体验（无需 Docker）
 
@@ -172,6 +172,7 @@ function migrateEchoInteractionProfilesForEngine(env) {
 
 function runtimeProcess(config) {
   const engineEnv = runtimeEngineEnv();
+  const sharedIssuer = process.env.ZIOON_ACCOUNT_ISSUER || config.sharedAccountIssuer || "";
   const databaseUrl = normalizeDatabaseUrl(
     process.env.ZION_DATABASE_URL || config.databaseUrl
   );
@@ -185,11 +186,23 @@ function runtimeProcess(config) {
       ZION_RUNTIME_HOST: "127.0.0.1",
       ZION_RUNTIME_PORT: "18866",
       ZION_RUNTIME_DATA_DIR: config.dataDirectory,
+      ZION_ENV: "development",
+      ZION_ARTIFACT_STORE: "local",
+      ZION_ARTIFACT_DIRECTORY: join(directory, "artifacts"),
       ZION_DATABASE_URL: databaseUrl,
       ZION_SPACE_ID: config.spaceId,
       ZION_RUNTIME_PUBLIC_URL: runtimeUrl,
       ZION_OIDC_ISSUER: issuer,
       ZION_OIDC_CLIENT_ID: clientId,
+      ZIOON_ACCOUNT_ISSUER: sharedIssuer,
+      ZIOON_ADC_ORIGIN: process.env.ZIOON_ADC_ORIGIN || config.adcOrigin || "",
+      ZIOON_ACCOUNT_SESSION_KEY_FILE: process.env.ZIOON_ACCOUNT_SESSION_KEY_FILE
+        || join(directory, "shared-account-session.key"),
+      ZION_MEMORY_SERVICE_URL: process.env.ZION_MEMORY_SERVICE_URL || config.memoryServiceUrl || "",
+      ZION_MEMORY_PUBLIC_URL: process.env.ZION_MEMORY_PUBLIC_URL || config.memoryPublicUrl || "",
+      ZION_MEMORY_ACCOUNT_CONNECTIONS_DIR: process.env.ZION_MEMORY_ACCOUNT_CONNECTIONS_DIR
+        || config.memoryAccountConnectionsDir || "",
+      ZION_MEMORY_MCP_ENABLED: process.env.ZION_MEMORY_MCP_ENABLED || config.memoryMcpEnabled || "0",
       ZION_ACCOUNT_ALLOW_LOOPBACK_HTTP: "1",
       ZION_RUNTIME_WORKBENCH_DIST: join(repository, "dist"),
       ...engineEnv,
@@ -198,7 +211,7 @@ function runtimeProcess(config) {
         || "dev.session-manager,dev.skills,dev.tools,dev.plugins,"
         + "dev.terminal-manager,dev.identity,dev.memory,dev.agents,"
         + "dev.scheduler,dev.langchain-chat,dev.mail,"
-        + "dev.context-compression,dev.observability",
+        + "dev.context-compression,dev.goal,dev.observability",
       ZION_RUNTIME_EXTERNAL_PLUGINS:
         process.env.ZION_RUNTIME_EXTERNAL_PLUGINS || "none",
       ZION_ACCOUNT_ALLOW_RESOURCE_EXECUTION:
@@ -206,9 +219,19 @@ function runtimeProcess(config) {
       ZION_RUNTIME_MIGRATE_LOCAL_TOOLS_STATE: "0",
       ...optionalRuntimeEnv([
         "ZION_DATABASE_POOL_SIZE",
+        "ZION_MARKETPLACE_REVIEWER_IDS",
         "ZION_DATABASE_SSL",
+        "ZION_PLUGIN_DATA_HOST",
         "ZION_PLUGIN_DATA_NODE_ID",
+        "ZION_PLUGIN_DATA_ROOT",
+        "ZION_PLUGIN_DATA_SCOPE",
+        "ZION_PLUGIN_DATA_LEGACY_READ_ACCOUNT_ID",
         "ZION_RUNTIME_EXTERNAL_PLUGIN_ROOT",
+        "ZION_MEMORY_SERVICE_URL",
+        "ZION_MEMORY_PUBLIC_URL",
+        "ZION_MEMORY_MCP_ENABLED",
+        "ZION_MEMORY_BRIDGE_SECRET_FILE",
+        "ZION_MEMORY_ACCOUNT_CONNECTIONS_DIR",
         "ZION_ALLOW_DANGEROUS"
       ])
     }
@@ -298,7 +321,8 @@ export async function runLocalAccounts(args = process.argv.slice(2)) {
   }
 
   mkdirSync(join(directory, "runtime"), { recursive: true, mode: 0o700 });
-  const identity = await createLocalDevOidc({
+  const sharedIssuer = process.env.ZIOON_ACCOUNT_ISSUER || config.sharedAccountIssuer || "";
+  const identity = sharedIssuer ? { close: async () => {} } : await createLocalDevOidc({
     databaseUrl,
     host: "127.0.0.1",
     port: 18080,
@@ -311,7 +335,7 @@ export async function runLocalAccounts(args = process.argv.slice(2)) {
   try {
     await waitForRuntime(runtime);
     if (runtimeError) throw runtimeError;
-    const registration = `${identity.registrationUrl}?${new URLSearchParams({
+    const registration = sharedIssuer ? `${runtimeUrl}/v1/account/login` : `${identity.registrationUrl}?${new URLSearchParams({
       ...(registrationEmail ? { email: registrationEmail } : {}),
       return_to: `${runtimeUrl}/v1/account/login?returnTo=/account`
     })}`;
@@ -320,7 +344,8 @@ export async function runLocalAccounts(args = process.argv.slice(2)) {
     console.log(`账号管理：${runtimeUrl}/account`);
     console.log(`工作台：${runtimeUrl}/`);
     console.log(`手机界面：${runtimeUrl}/mobile/`);
-    console.log("\n注册页面会直接显示本地验证码。按 Ctrl-C 停止，数据会保留。");
+    console.log(sharedIssuer ? "\n使用统一账号登录。按 Ctrl-C 停止，数据会保留。"
+      : "\n注册页面会直接显示本地验证码。按 Ctrl-C 停止，数据会保留。");
     await new Promise((resolve) => {
       const stop = () => resolve();
       process.once("SIGINT", stop);

@@ -23,13 +23,13 @@ const CONTENT_TYPES = new Map([
 const WORKBENCH_CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "base-uri 'self'",
-  "connect-src 'self'",
+  "connect-src 'self' https://auth.zioon.tech",
   "font-src 'self' data: https://cdn.jsdelivr.net",
   "frame-ancestors 'none'",
   "img-src 'self' data: blob:",
   "manifest-src 'self'",
   "object-src 'none'",
-  "script-src 'self' 'unsafe-eval' blob:",
+  "script-src 'self' 'unsafe-eval' blob: https://auth.zioon.tech",
   "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
   "worker-src 'self' blob:"
 ].join("; ");

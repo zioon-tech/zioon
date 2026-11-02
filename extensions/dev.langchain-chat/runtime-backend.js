@@ -13,6 +13,7 @@ import {
   readWorkbenchRuntimeConfig,
   shouldUseWorkbenchRuntime
 } from "../../src/runtime/workbench-runtime-config.ts";
+import { normalizeModelLimits } from "./model-limits.js";
 
 export const CHAT_RUNTIME_ENABLED_KEY = "zion.chat.runtime.enabled";
 export const CHAT_RUNTIME_BASE_URL_KEY = "zion.chat.runtime.baseUrl";
@@ -27,6 +28,11 @@ const INTERACTIVE_PROJECTION_OPTIONS = Object.freeze({
 });
 
 const RUNTIME_SUPPORTED_TOOLS = new Set([
+  "sandboxBash",
+  "sandboxRead",
+  "sandboxWrite",
+  "goalManage",
+  "compressionRecall",
   "read",
   "glob",
   "grep",
@@ -73,6 +79,8 @@ const RUNTIME_WORKSPACE_WRITE_TOOLS = new Set([
 ]);
 const RUNTIME_TRUSTED_AUTOMATION_TOOLS = new Set([
   "Bash",
+  "sandboxBash",
+  "sandboxWrite",
   "sendMail",
   "todoWrite",
   "mcpCall",
@@ -519,6 +527,7 @@ function importableProfile(selectedModel, selectedConfig) {
       ),
     temperature: selectedConfig?.temperature,
     maxOutputTokens: selectedConfig?.max_tokens,
+    limits: normalizeModelLimits(selectedConfig?.limits || selectedConfig || {}),
     capabilities: {
       supportsImage: !!selectedConfig?.supportsImage,
       supportsThinking: !!selectedConfig?.supportsThinking,
@@ -677,10 +686,11 @@ export async function resolveInteractiveRuntimeProfileModel({
   const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
   const [profile, catalog] = await Promise.all([
     client.getInteractionProfile(interactionProfileId),
-    client.getModels()
+    client.getModels(interactionProfileId)
   ]);
   const modelProfileId = String(
-    profile?.modelProfileId
+    catalog.selectedProfileId
+    || profile?.modelProfileId
     || profile?.model?.profileId
     || ""
   ).trim();
@@ -730,9 +740,7 @@ export async function persistInteractiveRuntimeProfileModel({
     selectedModel,
     selectedModelConfig
   );
-  const profile = await client.patchInteractionProfile(interactionProfileId, {
-    modelProfileId: runtimeModel.profileId
-  });
+  const profile = await client.setModelSelection(runtimeModel.profileId, interactionProfileId);
   return { runtimeModel, profile };
 }
 
@@ -779,6 +787,14 @@ async function buildInteractiveRuntimeRequest({
     selectedTools,
     unsupportedTools
   } = createInteractiveRuntimePolicy(tools);
+  const latestUser = messages.filter((message) => message.role === "user").at(-1);
+  const goalRequested = metadata?.goal
+    || globalThis.window?.zion?.state?.get?.(`goal.session.${workbenchSessionId}`)?.status === "active"
+    || (typeof latestUser?.content === "string" && /^\s*\/goal(?:\s|$)/.test(latestUser.content));
+  if (goalRequested) {
+    // Admission still intersects these workflow tools with the administrator's ceiling.
+    policy.allowedTools = Array.from(new Set([...policy.allowedTools, "goalManage", "compressionRecall"]));
+  }
   const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
   const runtimeModel = await resolveInteractiveRuntimeModel(
     client,
@@ -806,6 +822,11 @@ async function buildInteractiveRuntimeRequest({
         : {}),
       ...(selectedModel?.thinkingEffort != null
         ? { thinkingEffort: selectedModel.thinkingEffort }
+        : {}),
+      ...(/^glm-5\.3(?:-flash)?$/i.test(String(runtimeModel?.modelId || ""))
+        && (!selectedModel?.thinkingEffort || selectedModel.thinkingEffort === "auto")
+        && (!selectedModelConfig?.thinkingEffort || selectedModelConfig.thinkingEffort === "auto")
+        ? { thinkingMode: "on", thinkingEffort: "low" }
         : {})
     }),
     policy,
@@ -837,11 +858,21 @@ export async function createInteractiveRuntimeHandle(options) {
     metadata
   } = options;
   const { client, request } = await buildInteractiveRuntimeRequest(options);
+  if (request.metadata?.chatSubmission?.stages) {
+    request.metadata.chatSubmission.stages.requestSent =
+      Date.now() - request.metadata.chatSubmission.submittedAt;
+  }
+  // #region debug-point D:request-start
+  if (globalThis.window?.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "D", location: "createInteractiveRuntimeHandle:request-start", msg: "[DEBUG] request-start", ts: Date.now() }) }).catch(() => {});
+  // #endregion
   const handle = await createRemoteRunHandle(client, request, {
     subscription: {
       ...INTERACTIVE_PROJECTION_OPTIONS
     }
   });
+  // #region debug-point D:accepted
+  if (globalThis.window?.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "D", location: "createInteractiveRuntimeHandle:accepted", msg: "[DEBUG] accepted", ts: Date.now() }) }).catch(() => {});
+  // #endregion
   return {
     ...handle,
     events: projectEvents(

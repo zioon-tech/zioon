@@ -1205,16 +1205,22 @@ export async function activate(ctx) {
         providerModelConfig,
         runtimeProfile
       );
-      const preparedMessages = await prepareInteractiveRuntimeMessages({
-        messages,
-        runContributors: window.zion?.__runMessageContributors,
-        contributorContext,
-        transformMessages: (prepared) =>
-          reconstructHistory(prepared, selectedModelConfig)
-      });
+      // #region debug-point C:model-ready
+      if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "C", location: "runInteractiveThroughRuntime:model-ready", msg: "[DEBUG] model-ready", ts: Date.now() }) }).catch(() => {});
+      // #endregion
+      const [preparedMessages, sessionHistory] = await Promise.all([
+        prepareInteractiveRuntimeMessages({
+          messages,
+          runContributors: window.zion?.__runMessageContributors,
+          contributorContext,
+          transformMessages: (prepared) =>
+            reconstructHistory(prepared, selectedModelConfig)
+        }),
+        reconstructHistory(messages, selectedModelConfig)
+      ]);
       const preview = await previewInteractiveRuntimeRequest({
         messages: preparedMessages,
-        sessionHistory: await reconstructHistory(messages, selectedModelConfig),
+        sessionHistory,
         tools,
         selectedModel: runModel,
         selectedModelConfig,
@@ -1583,7 +1589,8 @@ export async function activate(ctx) {
     documentAnchor,
     reconstructHistory,
     autoScrollAssistant,
-    preparation
+    preparation,
+    modelPreparation
   }) => {
     // Empty input placeholders are local editor affordances, not durable Yjs state.
     const appendUserPrompt = false;
@@ -1598,30 +1605,38 @@ export async function activate(ctx) {
         runId: `runtime-context-${Date.now().toString(36)}`
       };
       const provider = window.zion?.models?.getProvider?.(runModel?.providerId);
-      const [providerModelConfig, runtimeProfiles] = await Promise.all([
+      const [providerModelConfig, runtimeProfiles] = await (modelPreparation || Promise.all([
         provider?.resolve?.(runModel?.modelId),
         loadRuntimeModelProfiles().catch(() => null)
-      ]);
+      ]));
       preparation?.signal.throwIfAborted();
+      preparation?.mark?.("modelConfigReady");
       const runtimeProfile = findRuntimeModelProfile(runtimeProfiles, runModel);
       const selectedModelConfig = mergeRuntimeModelProfileConfig(
         providerModelConfig,
         runtimeProfile
       );
-      const preparedMessages = await prepareInteractiveRuntimeMessages({
-        messages,
-        runContributors: window.zion?.__runMessageContributors,
-        contributorContext,
-        transformMessages: (prepared) =>
-          reconstructHistory(prepared, selectedModelConfig)
-      });
+      // #region debug-point C:model-ready
+      if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "C", location: "runInteractiveThroughRuntime:model-ready", msg: "[DEBUG] model-ready", ts: Date.now() }) }).catch(() => {});
+      // #endregion
+      const [preparedMessages, sessionHistory] = await Promise.all([
+        prepareInteractiveRuntimeMessages({
+          messages,
+          runContributors: window.zion?.__runMessageContributors,
+          contributorContext,
+          transformMessages: (prepared) =>
+            reconstructHistory(prepared, selectedModelConfig)
+        }),
+        reconstructHistory(messages, selectedModelConfig)
+      ]);
       preparation?.signal.throwIfAborted();
+      preparation?.mark?.("messagesReady");
+      // #region debug-point C:messages-ready
+      if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "C", location: "runInteractiveThroughRuntime:messages-ready", msg: "[DEBUG] messages-ready", ts: Date.now() }) }).catch(() => {});
+      // #endregion
       handle = await createInteractiveRuntimeHandle({
         messages: preparedMessages,
-        sessionHistory: await reconstructHistory(
-          messages,
-          selectedModelConfig
-        ),
+        sessionHistory,
         tools,
         selectedModel: runModel,
         selectedModelConfig,
@@ -1632,6 +1647,7 @@ export async function activate(ctx) {
         projectId: opts?.projectId || opts?.metadata?.projectId,
         metadata: {
           ...(opts?.metadata && typeof opts.metadata === "object" ? opts.metadata : {}),
+          chatSubmission: preparation?.timings,
           requestSource: "interactive",
           panelId,
           workbenchContributorsApplied: true,
@@ -1664,6 +1680,7 @@ export async function activate(ctx) {
       if (preparation?.signal.aborted) return { status: "aborted" };
       if (
         runtimeConfig.mode === "auto"
+        && !opts?.metadata?.goal
         && [
           "RUNTIME_MODEL_UNAVAILABLE",
           "RUNTIME_CONTEXT_UNSUPPORTED"
@@ -1691,6 +1708,8 @@ export async function activate(ctx) {
     }
 
     const runId = handle.runId;
+    preparation?.mark?.("runtimeAccepted");
+    window.zion?.state?.set?.(`chat.latency.${sid}`, { runId, ...preparation?.timings });
     interactiveRuntimeOwnerRuns.add(runId);
     interactiveRuntimeObservers.get(runId)?.abort();
     interactiveRuntimeObservers.delete(runId);
@@ -1811,6 +1830,18 @@ export async function activate(ctx) {
           markRuntimeReachable(runtimeConfig.baseUrl);
           if (["reasoning.started", "reasoning.delta", "message.delta", "tool.started", "tool.requested"].includes(event.type)) {
             preparation?.clearFeedback();
+          }
+          if (["reasoning.delta", "message.delta"].includes(event.type)) {
+            const key = event.type === "message.delta" ? "firstAnswerReceived" : "firstReasoningReceived";
+            preparation?.mark?.(key);
+            const previousLatency = window.zion?.state?.get?.(`chat.latency.${sid}`);
+            window.zion?.state?.set?.(`chat.latency.${sid}`, {
+              runId, ...preparation?.timings,
+              stages: {
+                ...(previousLatency?.runId === runId ? previousLatency.stages : {}),
+                ...preparation?.timings?.stages
+              }
+            });
           }
           recordRemoteEvent(event);
           await projectRunEventToSession(
@@ -2159,6 +2190,9 @@ export async function activate(ctx) {
 
   // 通用运行逻辑（含 Tool Calls 链式继续）
   const performRun = async (opts = {}, preparation) => {
+    // #region debug-point B:submit-entry
+    if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "B", location: "performRun:entry", msg: "[DEBUG] submit-entry", ts: Date.now() }) }).catch(() => {});
+    // #endregion
     const ed = getEd(opts);
     if (!ed) {
       console.log("[langchain-chat] no active editor");
@@ -2192,11 +2226,43 @@ export async function activate(ctx) {
       return; // 防止本会话并发；其他会话不受影响
     }
 
+    // Start independent network reads while the document is being confirmed.
+    const toolsPreparation = Promise.resolve().then(() =>
+      window.zion?.commands?.executeCommand?.("tools.syncRuntime")
+    ).catch(() => null).then(result => {
+      preparation?.mark?.("toolsReadCompleted");
+      return result;
+    });
+    const earlyRuntimeConfig = readInteractiveRuntimeConfig();
+    const modelPreparation = earlyRuntimeConfig.mode !== "browser"
+      ? Promise.all([
+          Promise.resolve().then(() =>
+            window.zion?.models?.getProvider?.(runModel?.providerId)?.resolve?.(runModel?.modelId)
+          ),
+          loadRuntimeModelProfiles().catch(() => null)
+        ]).then(result => {
+          preparation?.mark?.("modelReadCompleted");
+          return result;
+        })
+      : null;
+    // Attach a rejection handler immediately; the result is consumed below.
+    modelPreparation?.catch(() => {});
+
+    if (!skipSessionPersistence && window.zion?.commands?.list?.().includes("zion.sessions.flushCollaboration")) {
+      const confirmed = await window.zion.commands.executeCommand("zion.sessions.flushCollaboration", sid);
+      if (confirmed !== true) throw new Error("会话仍在同步，请稍后发送；当前输入已保留。");
+      preparation?.signal.throwIfAborted();
+    }
+    preparation?.mark?.("documentConfirmed");
+
     // 1. 获取当前光标位置
     const cursor = ed.getCursor();
 
     // 2. 组装 messages：从文档开始到光标位置的所有内容
     const fullDoc = ed.getValue();
+    // #region debug-point B:document-ready
+    if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "B", location: "performRun:document-ready", msg: "[DEBUG] document-ready", ts: Date.now() }) }).catch(() => {});
+    // #endregion
     const lines = fullDoc.split("\n");
     const cursorLine = cursor.line;
     const contentBeforeCursor = lines.slice(0, cursorLine + 1).join("\n");
@@ -2235,6 +2301,19 @@ export async function activate(ctx) {
       return;
     }
     preparation?.signal.throwIfAborted();
+    const savePreparation = !skipSessionPersistence
+      ? Promise.resolve().then(() =>
+          window.zion?.commands?.executeCommand?.(
+            window.zion?.commands?.list?.().includes("zion.sessions.flushRunInput")
+              ? "zion.sessions.flushRunInput"
+              : "zion.sessions.flushPendingSave",
+            sid
+          )
+        ).catch(() => false).then(result => {
+          preparation?.mark?.("inputPersistenceCompleted");
+          return result;
+        })
+      : Promise.resolve(true);
 
     const reconstructHistory = async (messages, resolvedConfig = null) => {
       const includeToolHistory = readChatBoolDefaultTrue("chat.includeToolHistory");
@@ -2282,11 +2361,16 @@ export async function activate(ctx) {
       }
     };
 
+    // #region debug-point A:tools-start
+    if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "A", location: "performRun:tools-start", msg: "[DEBUG] tools-start", ts: Date.now() }) }).catch(() => {});
+    // #endregion
     try {
-      await Promise.resolve(
-        window.zion?.commands?.executeCommand?.("tools.syncRuntime")
-      );
+      await toolsPreparation;
+      preparation?.mark?.("toolsReady");
     } catch {}
+    // #region debug-point A:tools-ready
+    if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "A", location: "performRun:tools-ready", msg: "[DEBUG] tools-ready", ts: Date.now() }) }).catch(() => {});
+    // #endregion
 
     // 解析工具定义（委托给独立 tools 插件）
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
@@ -2308,14 +2392,27 @@ export async function activate(ctx) {
     ) {
       preparation?.signal.throwIfAborted();
       try {
-        await Promise.resolve(
-          window.zion?.commands?.executeCommand?.(
-            "zion.sessions.flushPendingSave",
-            sid
-          )
-        );
-      } catch {}
+        const [saved, confirmed] = await Promise.all([
+          savePreparation,
+          window.zion?.commands?.list?.().includes("zion.sessions.flushCollaboration")
+            ? window.zion.commands.executeCommand("zion.sessions.flushCollaboration", sid)
+              .then(result => {
+                preparation?.mark?.("finalCollaborationConfirmed");
+                return result;
+              })
+            : Promise.resolve(true)
+        ]);
+        if (saved === false) throw new Error("会话尚未保存，请稍后发送。");
+        if (confirmed !== true) throw new Error("会话仍在同步，请稍后发送；当前输入已保留。");
+      } catch (error) { throw error; }
       preparation?.signal.throwIfAborted();
+      preparation?.mark?.("saveConfirmed");
+      if (ed.getValue() !== fullDoc) {
+        throw new Error("准备发送期间会话内容发生变化，请确认内容后重新发送。");
+      }
+      // #region debug-point B:save-ready
+      if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "B", location: "performRun:save-ready", msg: "[DEBUG] save-ready", ts: Date.now() }) }).catch(() => {});
+      // #endregion
       const insertionOffset = lines
         .slice(0, cursorLine)
         .reduce((total, line) => total + line.length + 1, 0)
@@ -2356,9 +2453,14 @@ export async function activate(ctx) {
         documentAnchor,
         reconstructHistory,
         autoScrollAssistant,
-        preparation
+        preparation,
+        modelPreparation
       });
       if (!runtimeResult?.fallbackToBrowser) return runtimeResult;
+    }
+    const latestUser = baseMessages.filter((message) => message.role === "user").at(-1);
+    if (opts?.metadata?.goal || (typeof latestUser?.content === "string" && /^\s*\/goal(?:\s|$)/.test(latestUser.content))) {
+      throw new Error("持续目标需要可用的 Zion Runtime，请检查 Runtime 连接和模型配置。");
     }
 
     // 3. 插入 assistant 块（用于承载输出）
@@ -3045,6 +3147,11 @@ export async function activate(ctx) {
     if (!ed || !sid || getRunState(sid)?.streaming || interactivePreparations.has(sid)) return;
     const id = `preparing-${crypto.randomUUID()}`;
     const controller = new AbortController();
+    const submittedAt = Date.now();
+    const timings = { submittedAt, stages: {} };
+    const mark = (stage) => {
+      if (timings.stages[stage] == null) timings.stages[stage] = Date.now() - submittedAt;
+    };
     const view = ed.getView?.();
     beginConversationViewportFollow(view, {
       sessionId: sid,
@@ -3052,20 +3159,7 @@ export async function activate(ctx) {
       cycleId: id,
       followLatest: opts?.followLatest !== false
     });
-    const cursor = ed.getCursor();
-    const lines = ed.getValue().split("\n");
-    const answerAnchorPos = lines.slice(0, cursor.line).reduce((n, line) => n + line.length + 1, 0)
-      + (lines[cursor.line]?.length || 0);
-    const clearFeedback = () => window.zion.events.emit("chat/prepared", { sessionId: sid, submissionId: id });
-    const showFeedback = (status, assistantBlockId = id) => window.zion.events.emit("chat/preparing", {
-      sessionId: sid,
-      submissionId: id,
-      assistantBlockId,
-      answerAnchorPos,
-      status,
-      editorView: view,
-      followCycleId: id
-    });
+    const clearFeedback = () => {};
     const release = () => {
       clearFeedback();
       runtime.clearController(sid, id);
@@ -3085,16 +3179,17 @@ export async function activate(ctx) {
       clearFeedback();
       if (interactivePreparations.get(sid) === id) interactivePreparations.delete(sid);
     } }, id);
-    showFeedback(t("run.preparing", "assistant · 正在准备…"));
     try {
+      if (window.zion?.state?.get?.("workbench.accessChanged")) {
+        throw new Error("账户或访问权限已变化，请重新进入工作台");
+      }
       return await performRun(opts, {
-        id, signal: controller.signal, clearFeedback, release,
+        id, signal: controller.signal, clearFeedback, release, timings, mark,
         accept(runId) {
           // Transfer cancellation ownership without aborting the accepted run.
           runtime.clearController(sid, id);
           interactivePreparations.delete(sid);
           pendingRecoveryRuns.delete(runId);
-          showFeedback(t("run.waiting", "等待响应…"), runId);
         }
       });
     } catch (error) {
@@ -3229,11 +3324,11 @@ export async function activate(ctx) {
   });
   const dispSelectModel = window.zion.commands.registerCommand("models.selectModel", (spec) => {
     if (!spec) return;
-    const [providerId, modelId] = String(spec).split(":");
-    if (!providerId || !modelId) return;
     const catalog = window.zion.state.get("models.catalog") || [];
-    const item = catalog.find(m => m.providerId === providerId && m.id === modelId);
-    window.zion.state.set("chat.activeModel", { providerId, modelId, label: item?.label || modelId });
+    const item = catalog.find(m => `${m.providerId}:${m.id}` === String(spec));
+    if (!item) return;
+    window.zion.state.set("chat.activeModel", { providerId: item.providerId, modelId: item.id,
+      ...(item.runtimeProfileId ? { profileId: item.runtimeProfileId } : {}), label: item.label || item.id });
   });
   const dispNextModel = window.zion.commands.registerCommand("models.selectNextModel", async () => {
     await refreshCatalog();
@@ -3499,6 +3594,24 @@ export async function activate(ctx) {
       thinkingMode: next
     });
   };
+  const cycleActiveThinkingEffort = async () => {
+    const active = window.zion.state.get("chat.activeModel");
+    if (!active?.providerId || !active?.modelId) return;
+    let cfg;
+    try { cfg = await window.zion.models.getProvider(active.providerId)?.resolve?.(active.modelId); } catch {}
+    const values = getSupportedThinkingEfforts({
+      providerId: active.providerId,
+      providerType: cfg?.providerType,
+      modelId: active.modelId,
+      modelName: cfg?.modelName,
+      cfg
+    }).filter(value => value !== "auto");
+    if (!values.length) return toggleActiveThinkingMode();
+    const configured = normalizeThinkingEffort(active.thinkingEffort ?? cfg?.thinkingEffort);
+    const current = configured === "auto" && /^glm-5\.3(?:-flash)?$/i.test(cfg?.modelName || active.modelId)
+      ? "low" : configured;
+    await setActiveThinkingEffort(values[(values.indexOf(current) + 1) % values.length]);
+  };
   const buildModelStatus = ({ active, cfg, activeItem }) => {
     const effectiveCfg = {
       ...(cfg || {}),
@@ -3513,8 +3626,11 @@ export async function activate(ctx) {
     const providerId = active?.providerId || activeItem?.providerId || effectiveCfg.providerId || "";
     const modelId = active?.modelId || activeItem?.id || effectiveCfg.id || "";
     const modelName = effectiveCfg.modelName || modelId;
-    const thinkingMode = normalizeThinkingMode(effectiveCfg.thinkingMode);
-    const thinkingEffort = normalizeThinkingEffort(effectiveCfg.thinkingEffort);
+    const thinkingMode = /^glm-5\.3(?:-flash)?$/i.test(modelName)
+      ? "on" : normalizeThinkingMode(effectiveCfg.thinkingMode);
+    const configuredEffort = normalizeThinkingEffort(effectiveCfg.thinkingEffort);
+    const thinkingEffort = configuredEffort === "auto" && /^glm-5\.3(?:-flash)?$/i.test(modelName)
+      ? "low" : configuredEffort;
     const thinkingCapability = inferThinkingCapability({
       providerId,
       providerType: effectiveCfg.providerType,
@@ -3573,6 +3689,8 @@ export async function activate(ctx) {
       t("status.tooltip.effortCapability", "Effort control: {value}", {
         value: supportsThinkingEffort ? t("status.tooltip.supported", "Supported") : t("status.tooltip.unconfirmed", "Unconfirmed")
       }),
+      getSupportedThinkingEfforts({ providerId, modelName, cfg: effectiveCfg })
+        .filter(value => value !== "auto").map(getThinkingEffortOptionLabel).join(" → "),
       t("status.tooltip.cycleThinking", "Click to cycle the thinking effort levels supported by this model.")
     ].join("\n");
     return { modelText, thinkingText, modelTooltip: tooltipLines.join("\n"), thinkingTooltip };
@@ -3633,7 +3751,7 @@ export async function activate(ctx) {
       text: thinkingLabel,
       tooltip: thinkingTooltip,
       priority: 79,
-      onClick: () => toggleActiveThinkingMode()
+      onClick: () => cycleActiveThinkingEffort()
     });
   };
   updateModelBtn();

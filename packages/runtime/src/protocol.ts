@@ -32,6 +32,10 @@ export type ToolCall = {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Original wire arguments when normalization would change their bytes. */
+  argumentsText?: string;
+  /** Opaque provider state, never used to authorize or dispatch a tool. */
+  providerMetadata?: Record<string, unknown>;
   validationError?: string;
 };
 
@@ -42,6 +46,7 @@ export type AssistantToolCall = {
     name: string;
     arguments: string;
   };
+  providerMetadata?: Record<string, unknown>;
 };
 
 export type TranscriptTextPart = {
@@ -65,10 +70,14 @@ export type TranscriptMessage = {
   role: MessageRole;
   content: TranscriptContent;
   reasoningContent?: string;
+  /** Opaque model state such as signatures, retained for subsequent turns. */
+  providerMetadata?: Record<string, unknown>;
   toolCallId?: string;
   toolCalls?: AssistantToolCall[];
   /** Runtime-generated context marker; not accepted from client messages. */
   contextProviderId?: string;
+  /** Observed result status; never inferred from result text. */
+  toolResultStatus?: { ok: boolean; failureCode?: string };
 };
 
 export type ToolDefinition = {
@@ -76,6 +85,14 @@ export type ToolDefinition = {
   description?: string;
   inputSchema?: Record<string, unknown>;
   hostKinds?: string[];
+  execution?: {
+    effect: "read" | "write" | "process" | "external";
+    timeoutMs: number;
+    maxTimeoutMs: number;
+    cancellation: "cooperative" | "best-effort" | "none";
+    idempotency: "safe" | "invocation" | "reconcile";
+    timeoutArgument?: string;
+  };
   pluginId?: string;
   risk?: string;
   modelInjectable?: boolean;
@@ -116,6 +133,7 @@ export type ToolResult = {
   content: string;
   error?: string;
   failureCode?: string;
+  retryable?: boolean;
   artifactIds?: string[];
   artifacts?: Artifact[];
   changes?: ChangeSet[];
@@ -279,6 +297,13 @@ export type RunResult = {
   reason?: string;
 };
 
+/** Intent committed atomically with its originating semantic Run event. */
+export type RunOutboxEntry = {
+  id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+};
+
 export type CancellationSignal = {
   readonly cancelled: boolean;
   readonly reason?: string;
@@ -296,6 +321,9 @@ export type EngineTurnRequest = {
   model?: ModelRef;
   modelOptions?: ModelRequestOptions;
   signal: CancellationSignal;
+  maxOutputTokens?: number;
+  preview?: boolean;
+  metadata?: RunRequest["metadata"];
 };
 
 export type CredentialRequest = {
@@ -354,8 +382,17 @@ export type EngineOutputEvent =
       };
     }
   | { type: "message.delta"; delta: string }
+  | { type: "message.metadata"; metadata: Record<string, unknown> }
   | { type: "reasoning.delta"; delta: string }
   | { type: "tool.call"; call: ToolCall }
+  | { type: "model.timing"; timing: {
+      phase: "first-chunk" | "first-reasoning" | "first-answer";
+      requestStartedAt: number;
+      elapsedMs: number;
+      credentialMs: number;
+      responseHeadersMs: number;
+      preparationMs: number;
+    } }
   | { type: "model.usage"; usage: Partial<Usage> };
 
 export interface AgentEngine {
@@ -376,10 +413,32 @@ export type ContextProviderContext = {
   turn?: number;
   request: RunRequest;
   signal: CancellationSignal;
+  tools?: ToolDefinition[];
+  usage?: Usage;
+  preview?: boolean;
+  recordUsage?: (usage: Partial<Usage>) => void;
 };
+
+export type RunControllerContext = ContextProviderContext & {
+  messages: TranscriptMessage[];
+  output?: string;
+};
+
+/** Workflow policy belongs to plugins; execution and admission stay in Runtime. */
+export interface RunController {
+  readonly id: string;
+  beforeStart?(context: RunControllerContext): Promise<void>;
+  beforeTurn?(context: RunControllerContext): Promise<string | void>;
+  beforeModel?(context: RunControllerContext): Promise<string | void>;
+  /** string continues, null accepts a boundary stop, undefined does not control it. */
+  beforeStop?(context: RunControllerContext): Promise<string | null | void>;
+  beforeTool?(invocation: ToolInvocation, context: RunControllerContext): Promise<ToolResult | string | void>;
+  afterTool?(invocation: ToolInvocation, result: ToolResult, context: RunControllerContext): Promise<void>;
+}
 
 export interface ContextProvider {
   readonly id: string;
+  readonly required?: boolean;
   readonly stage?: ContextStage;
   readonly order?: number;
   prepare?(request: RunRequest): Promise<TranscriptMessage[]>;
@@ -407,7 +466,8 @@ export interface RunStore {
         | "usage"
         | "metadata"
       >>,
-    detailEvent?: RunEvent
+    detailEvent?: RunEvent,
+    outbox?: RunOutboxEntry[]
   ): Promise<void>;
   get(runId: string): Promise<RunRecord | null>;
   listRuns(options?: {

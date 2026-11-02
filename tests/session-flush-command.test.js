@@ -33,6 +33,16 @@ describe("session flush command", () => {
     resolveEditor(true);
     await expect(pending).resolves.toBe(true);
     expect(flushRemote).toHaveBeenCalledTimes(1);
+    expect(flushRemote).toHaveBeenCalledWith("session-a");
+  });
+  it("reports a durable unchanged session as saved", async () => {
+    let handler;
+    registerSessionFlushCommand({
+      zion: { commands: { registerCommand: (_id, fn) => { handler = fn; return { dispose() {} }; } } },
+      plugin: { flushDurably: async () => false },
+      flushRemote: async () => true
+    });
+    expect(await handler("s")).toBe(true);
   });
 
   it("reports failure when the durable queue cannot be committed", async () => {

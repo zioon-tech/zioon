@@ -11,10 +11,11 @@ export default defineConfig(({ mode }) => {
   const environment = loadEnv(mode, process.cwd(), "");
   const runtimeTarget =
     environment.ZION_MOBILE_RUNTIME_URL || "http://127.0.0.1:8766";
+  const base = environment.ZION_MOBILE_BASE || "/mobile/";
 
   return {
     root: appRoot,
-    base: "/mobile/",
+    base,
     publicDir: "public",
     resolve: {
       dedupe: ["react", "react-dom"],
@@ -55,32 +56,32 @@ export default defineConfig(({ mode }) => {
         registerType: "autoUpdate",
         includeAssets: ["favicon.svg", "icon-192.png", "icon-512.png"],
         manifest: {
-          id: "/mobile/",
+          id: base,
           name: "Zion Mobile",
           short_name: "Zion",
           lang: "zh-CN",
           description: "Mobile client for Zion Runtime",
-          start_url: "/mobile/",
-          scope: "/mobile/",
+          start_url: base,
+          scope: base,
           display: "standalone",
           theme_color: "#ffffff",
           background_color: "#f6f7f7",
           icons: [
             {
-              src: "/mobile/icon-192.png",
+              src: `${base}icon-192.png`,
               sizes: "192x192",
               type: "image/png",
             },
             {
-              src: "/mobile/icon-512.png",
+              src: `${base}icon-512.png`,
               sizes: "512x512",
               type: "image/png",
             },
           ],
         },
         workbox: {
-          navigateFallback: "/mobile/index.html",
-          navigateFallbackAllowlist: [/^\/mobile\//],
+          navigateFallback: `${base}index.html`,
+          navigateFallbackAllowlist: base === "/" ? [/^\/(?!v1\/|api\/|health|readyz)/] : [/^\/mobile\//],
           maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         },
         devOptions: {

@@ -155,18 +155,24 @@ describe("local development OIDC", () => {
     expect((await post(`${issuer}/login`, {
       email: "alice@example.test", password: "correct horse battery staple"
     })).status).toBe(401);
-    expect((await post(`${issuer}/login`, {
+    const newLogin = await post(`${issuer}/login`, {
       email: "alice@example.test", password: "new correct horse password"
-    })).status).toBe(303);
+    });
+    expect(newLogin.status).toBe(303);
+    const newCookie = newLogin.headers.get("set-cookie").split(";")[0];
 
     const device = await post(`${issuer}/device`, {
       client_id: clientId, scope: "openid profile email"
     });
     const deviceFlow = await device.json();
     expect(deviceFlow.verification_uri_complete).toContain(deviceFlow.user_code);
-    const activation = await post(`${issuer}/activate`, {
+    const revokedActivation = await post(`${issuer}/activate`, {
       user_code: deviceFlow.user_code
     }, idpCookie);
+    expect(revokedActivation.status).toBe(303);
+    const activation = await post(`${issuer}/activate`, {
+      user_code: deviceFlow.user_code
+    }, newCookie);
     expect(await activation.text()).toContain("设备已授权");
     const deviceTokens = await post(`${issuer}/token`, {
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
@@ -209,7 +215,8 @@ describe("local development OIDC", () => {
       port,
       runtimeOrigin: `http://127.0.0.1:${runtimePort}`,
       clientId: "zion-runtime",
-      publicIssuer
+      publicIssuer,
+      sendMail: async () => {}
     });
     cleanup.push(() => provider.close());
     await seedLocalIdentityUser({

@@ -149,4 +149,48 @@ describe("Workbench remote access bootstrap", () => {
     expect(fetchMock.mock.calls.filter(([url]) =>
       String(url).endsWith("/v1/account/me"))).toHaveLength(2);
   });
+  it("preserves old-account editor content and waits for explicit reentry when scopes change", async () => {
+    const identity = {
+      user: { id: "old-user" }, space: { id: "old-space" },
+      membership: { role: "owner", status: "active" },
+      scopes: ["runtime.read", "runtime.write"]
+    };
+    let changed = false;
+    vi.stubGlobal("fetch", vi.fn(async input => {
+      const path = new URL(String(input), window.location.origin).pathname;
+      return new Response(JSON.stringify(path === "/health"
+        ? { service: "zion-runtime", authRequired: true, authMode: "accounts-v1" }
+        : { ...identity, scopes: changed ? ["runtime.read"] : identity.scopes }), {
+        status: 200, headers: { "content-type": "application/json" }
+      });
+    }));
+    let poll: () => void;
+    vi.spyOn(window, "setInterval").mockImplementation(handler => { poll = handler as () => void; return 1; });
+    const showModal = vi.fn();
+    const original = HTMLDialogElement.prototype.showModal;
+    HTMLDialogElement.prototype.showModal = showModal;
+    const set = vi.fn();
+    (window as any).zion = {
+      state: { set },
+      panels: {
+        listEditors: () => [{ panelId: "p", sessionId: "s" }],
+        getEditorBySession: () => ({ getValue: () => "unsaved input" })
+      }
+    };
+    try {
+      await ensureWorkbenchRuntimeAccess(document.getElementById("app") as HTMLElement);
+      changed = true;
+      poll!();
+      await vi.waitFor(() => expect(showModal).toHaveBeenCalledOnce());
+      expect(set).toHaveBeenCalledWith("workbench.accessChanged", true);
+      expect(JSON.parse(localStorage.getItem("zion.access.drafts:old-user:old-space")!))
+        .toEqual([{ sessionId: "s", text: "unsaved input" }]);
+      expect(document.querySelector("dialog")?.textContent).toContain("重新进入");
+      poll!();
+      await Promise.resolve();
+      expect(showModal).toHaveBeenCalledOnce();
+    } finally {
+      HTMLDialogElement.prototype.showModal = original;
+    }
+  });
 });

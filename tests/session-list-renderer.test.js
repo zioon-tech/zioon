@@ -61,6 +61,53 @@ describe("sessions list renderer", () => {
     expect(listEl.children).toHaveLength(1);
   });
 
+  it("loads another batch near the scroll bottom and cancels pending work on disposal", async () => {
+    const children = Array.from({ length: 250 }, (_, index) => ({ id: `s${index}`, type: "session", title: `Session ${index}` }));
+    const tree = { id: "root", type: "folder", children };
+    const listEl = document.createElement("div");
+    const scroller = document.createElement("div");
+    scroller.appendChild(listEl);
+    document.body.appendChild(scroller);
+    Object.defineProperties(scroller, {
+      clientHeight: { value: 500 },
+      scrollHeight: { get: () => listEl.querySelectorAll(".is-session").length * 30 }
+    });
+    const factory = createSessionsListRendererFactory({
+      loadTree: () => tree, ensureInitialTree: () => tree,
+      loadMeta: id => ({ id, title: id, updatedAt: 1 }),
+      truncate: value => value, fmtTime: String, now: () => 1,
+      getSelection: () => [], isSelected: () => false,
+      isFolderOpen: () => true, setFolderOpen() {}
+    });
+    let query = "";
+    const render = factory({ listEl, getQuery: () => query, getSort: () => "updated" });
+    render();
+    expect(listEl.querySelectorAll(".is-session")).toHaveLength(100);
+    expect(listEl.querySelector("button.zion-sessions-load-more")).toBeNull();
+    scroller.scrollTop = 200;
+    scroller.dispatchEvent(new Event("scroll"));
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    expect(listEl.querySelectorAll(".is-session")).toHaveLength(100);
+    scroller.scrollTop = 2400;
+    scroller.dispatchEvent(new Event("scroll"));
+    scroller.dispatchEvent(new Event("scroll"));
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    expect(listEl.querySelectorAll(".is-session")).toHaveLength(200);
+    expect(scroller.scrollTop).toBe(2400);
+    expect(tree.children).toHaveLength(250);
+    query = "s249";
+    render();
+    expect(listEl.querySelectorAll(".is-session")).toHaveLength(1);
+    expect(listEl.querySelector("[data-session-id='s249']")).toBeTruthy();
+    query = "";
+    render();
+    scroller.scrollTop = 2500;
+    scroller.dispatchEvent(new Event("scroll"));
+    render.dispose();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    expect(listEl.querySelectorAll(".is-session")).toHaveLength(100);
+  });
+
   it("renders balanced card details while preserving list mode", () => {
     let viewMode = "card";
     const listWrap = document.createElement("div");

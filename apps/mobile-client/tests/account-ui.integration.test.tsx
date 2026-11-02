@@ -69,6 +69,20 @@ function fixture(identity: AccountSession | null) {
 }
 
 describe("account UI integration", () => {
+  it.each([
+    ["workbench", "https://runtime.zioon.tech", "https://auth.zioon.tech/account", "https://auth.zioon.tech/account"],
+    ["mobile", "https://runtime.zioon.tech", "https://auth.zioon.tech/account", "https://auth.zioon.tech/account"],
+    ["workbench", "https://runtime.zioon.tech", "/idp/settings", "https://runtime.zioon.tech/idp/settings"],
+    ["mobile", "", "/idp/settings", `${location.origin}/idp/settings`]
+  ] as const)("resolves %s login settings against the Runtime only for relative paths",
+    async (variant, baseUrl, loginSettingsUrl, expected) => {
+      fixture({ ...viewer, capabilities: { loginSettingsUrl } });
+      await act(async () => root.render(<AccountPanel variant={variant} baseUrl={baseUrl} />));
+      const link = [...host.querySelectorAll<HTMLAnchorElement>("a")]
+        .find(anchor => anchor.textContent?.includes("管理登录方式"));
+      expect(link?.href).toBe(expected);
+    });
+
   it("starts account login automatically and preserves the mobile return route", async () => {
     history.replaceState({}, "", "/mobile/chats?view=recent#invite=one-time-login");
     fixture(null);
@@ -92,7 +106,7 @@ describe("account UI integration", () => {
     expect(host.querySelector('[name="pairing-code"], #pairingCode')).toBeNull();
   });
 
-  it("does not restart login after cancellation until the user asks", async () => {
+  it("opens login directly from a stale cancellation URL", async () => {
     document.documentElement.dataset.theme = "dark";
     history.replaceState({}, "", "/account?zionAuth=cancelled");
     fixture(null);
@@ -101,12 +115,10 @@ describe("account UI integration", () => {
       root.render(<AccountPanel variant="gate" onLogin={onLogin} />);
       await new Promise(resolve => setTimeout(resolve, 0));
     });
-    expect(onLogin).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("登录已取消");
-    const continueButton = [...host.querySelectorAll("button")]
-      .find(button => button.textContent?.trim() === "继续登录")!;
-    await act(async () => continueButton.click());
     expect(onLogin).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("正在转到安全登录");
+    expect(host.textContent).not.toContain("登录已取消");
+    expect(host.querySelector("button")).toBeNull();
     const loginUrl = new URL(onLogin.mock.calls[0][0]);
     expect(loginUrl.searchParams.get("returnTo")).toBe("/account");
     expect(loginUrl.searchParams.get("uiTheme")).toBe("dark");

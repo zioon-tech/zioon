@@ -18,7 +18,7 @@ export const IDENTITY_RUNTIME_STATE_NAMESPACE = "identity";
 export const IDENTITY_RUNTIME_SNAPSHOT_KEY = "snapshot";
 export const IDENTITY_RUNTIME_KV_KEY =
   `runtime.plugins.${IDENTITY_RUNTIME_PLUGIN_ID}.${IDENTITY_RUNTIME_STATE_NAMESPACE}.${IDENTITY_RUNTIME_SNAPSHOT_KEY}`;
-export const DEFAULT_IDENTITY_ROOT = "~/.zion-next/data/plugins/dev.identity";
+export const DEFAULT_IDENTITY_ROOT = "/memory/dev.identity";
 export const IDENTITY_MANAGE_TOOL_NAME = "identityManage";
 export const IDENTITY_MANAGE_READONLY_ACTIONS = ["get"];
 export const IDENTITY_MANAGE_WRITE_ACTIONS = [
@@ -125,7 +125,7 @@ export function identityManageToolDefinition({
 } = {}) {
   return {
     name: IDENTITY_MANAGE_TOOL_NAME,
-    description: "Inspect or update the Runtime-backed Identity snapshot. File actions use the Runtime Host file service and are scoped to the requested Identity file_root.",
+    description: "Read or update authoritative Identity memory through the Runtime-managed memory service. In Zion, use this tool instead of Bash, file tools, CLI, MCP, or plugin-data paths.",
     inputSchema: {
       type: "object",
       properties: {
@@ -148,11 +148,7 @@ export function identityManageToolDefinition({
         },
         file_root: {
           type: "string",
-          description: "Absolute Identity memory root for load_files/write_files, e.g. /Users/me/.zion-next/memory."
-        },
-        session_id: {
-          type: "string",
-          description: "Optional local-tools terminal session id used for file access."
+          description: "Bound Identity service root. Omit when Runtime supplies the authenticated account location."
         },
         files: {
           type: "object",

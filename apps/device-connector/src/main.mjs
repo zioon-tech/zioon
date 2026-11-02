@@ -20,6 +20,10 @@ import {
   deviceCredentialKey
 } from "./device-credential-store.mjs";
 import { DeviceAccessManager } from "./device-access-policy.mjs";
+import { ExtensionHost } from "./extension-host.mjs";
+import { EXTENSION_HOST_CAPABILITY } from "../../../packages/plugin-sdk/src/host-contract.mjs";
+import { relative, isAbsolute } from "node:path";
+import { realpath } from "node:fs/promises";
 import {
   defaultDeviceProjectId,
   defaultDeviceResourceId,
@@ -213,6 +217,31 @@ const serviceHost = new DeviceServiceHost({
   dataFiles,
   maxRequestBytes: deviceServiceMaxRequestBytes
 });
+const extensionHost = new ExtensionHost({
+  authorize: async (input, invocation) => {
+    const config = input.binding?.config;
+    if (!enabledFlag(process.env.ZION_ALLOW_DANGEROUS) || config?.nodeId !== nodeId
+      || invocation.policy?.preset !== "trusted-automation") throw Object.assign(
+        new Error("extension_device_denied"), { code: "extension_device_denied" });
+    for (const path of [config.workspaceRoot, config.credentialsFile].filter(Boolean)) {
+      const roots = await Promise.all((invocation.policy?.fileRoots || []).map((root) => realpath(root)));
+      if (!roots.some((root) => {
+        const r = relative(root, path);
+        return !r || (!isAbsolute(r) && r !== ".." && !r.startsWith("../"));
+      })) throw Object.assign(new Error("extension_path_denied"), { code: "extension_path_denied" });
+      await deviceAccess.authorizeInvocation({
+        ...invocation, toolCall: { ...invocation.toolCall, name: "read", arguments: { path } }
+      });
+    }
+    await deviceAccess.authorizeInvocation({
+      ...invocation, toolCall: { ...invocation.toolCall, name: "write",
+        arguments: { path: config.workspaceRoot } }
+    });
+    await deviceAccess.authorizeInvocation({
+      ...invocation, toolCall: { ...invocation.toolCall, name: "Bash", arguments: { command: "extension-host" } }
+    });
+  }
+});
 
 const connector = new DeviceConnector({
   runtimeUrl,
@@ -236,19 +265,23 @@ const connector = new DeviceConnector({
               : "read",
         description: tool.description,
         inputSchema: tool.inputSchema,
-        hostKind: "local-tools"
+        hostKind: "local-tools",
+        execution: tool.execution
       })),
-      { ...DEVICE_SERVICE_CAPABILITY, version: "2" }
+      { ...DEVICE_SERVICE_CAPABILITY, version: "2" },
+      EXTENSION_HOST_CAPABILITY
     ],
     resources: [{
       resourceId,
       kind: "workspace",
       projectId,
+      workspaceRoot,
       label: projectId
     }]
   },
   toolHost,
   serviceHost,
+  extensionHost,
   logger({ level, nodeId: sourceNodeId, message }) {
     process.stderr.write(
       `[device-connector:${sourceNodeId}] ${level}: ${message}\n`

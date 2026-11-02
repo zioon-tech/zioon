@@ -3755,9 +3755,8 @@ html, body {
 }
 
 .zion-panel-session-tabs-viewport {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
-  max-width: 100%;
   height: 100%;
   overflow: hidden;
   display: flex;
@@ -3801,8 +3800,8 @@ body.is-dragging-panel-tabs-scrollbar {
 }
 
 .zion-panel-session-tabs-viewport > .zion-editor-session-tabs {
-  width: max-content;
-  min-width: 0;
+  width: 100%;
+  min-width: 100%;
   max-width: none;
   height: 100%;
   flex: 0 0 auto;
@@ -3915,12 +3914,11 @@ body.is-dragging-panel-tabs-scrollbar {
 }
 
 .zion-editor-tabs-new-session-button {
-  margin-left: 2px;
+  margin-right: 2px;
 }
 
 .zion-editor-tabs-dropdown-button {
-  flex: 0 0 auto;
-  margin-left: auto;
+  margin-left: 2px;
 }
 
 .zion-editor-layout-controls {
@@ -4491,9 +4489,6 @@ body.is-dragging-panel-tabs-scrollbar {
 }
 .cm-editor.cm-focused .cm-z-boundary-cursor {
   animation: steps(1) cm-blink 1.2s infinite;
-}
-.cm-editor[data-zion-boundary-cursor="true"] .cm-cursor:not(.cm-z-boundary-cursor) {
-  visibility: hidden;
 }
 .cm-editor .cm-selectionLayer {
   z-index: 12 !important;
@@ -6046,36 +6041,6 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
   opacity: 0.78;
 }
 
-.zion-activitybar-account .zion-activitybar-icon {
-  position: relative;
-  width: 18px;
-  height: 18px;
-  overflow: visible;
-}
-
-.zion-activitybar-account .zion-icon-account,
-.zion-mobilebar-account .zion-icon-account {
-  width: 18px;
-  height: 18px;
-  opacity: 0.9;
-}
-
-.zion-activitybar-account .zion-activitybar-icon::after {
-  content: "";
-  position: absolute;
-  right: -1px;
-  bottom: -1px;
-  width: 5px;
-  height: 5px;
-  border: 1.5px solid var(--surface-panel);
-  border-radius: 50%;
-  background: var(--success, #2f9d71);
-}
-
-.zion-activitybar-account.is-readonly .zion-activitybar-icon::after {
-  background: var(--warning, #c58b2a);
-}
-
 .zion-activitybar-item:hover,
 .zion-mobilebar-item:hover,
 .zion-mobilebar-action:hover {
@@ -6104,24 +6069,6 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
   bottom: 7px;
   width: 2px;
   border-radius: var(--radius-pill);
-}
-
-#bottombar-status .bottombar-status-item[data-zion-status-id="dev.runtime.connection"] {
-  color: color-mix(in srgb, var(--fg) 72%, transparent);
-}
-
-#bottombar-status .bottombar-status-item[data-zion-status-id="dev.runtime.connection"] .zion-icon {
-  width: 13px;
-  height: 13px;
-  opacity: 0.9;
-}
-
-#bottombar-status .bottombar-status-item[data-runtime-connection="runtime"] .zion-icon {
-  color: var(--success, #2f9d71);
-}
-
-#bottombar-status .bottombar-status-item[data-runtime-connection="runtime-offline"] .zion-icon {
-  color: var(--danger, #d45b63);
 }
 
 .zion-sidebar,
@@ -6401,10 +6348,6 @@ body:not(.zion-gutter-actions-disabled) .zion-editor-slot .cm-editor .cm-scrolle
   padding: 0 6px;
   background: var(--editor-tabsbar-bg);
   border-bottom: 0;
-}
-
-.zion-editor-tabsbar.is-layout-controls-overlapped {
-  padding-right: var(--zion-editor-layout-controls-clearance, 94px);
 }
 
 .zion-panel-session-tabs-viewport > .zion-editor-session-tabs {

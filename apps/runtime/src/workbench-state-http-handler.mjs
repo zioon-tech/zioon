@@ -26,7 +26,6 @@ function requireWorkbenchStateProtocol(request, response) {
     error: "Workbench state protocol upgrade required",
     expectedProtocol: WORKBENCH_STATE_PROTOCOL
   }, {
-    "clear-site-data": "\"executionContexts\"",
     "x-zion-workbench-protocol": WORKBENCH_STATE_PROTOCOL
   });
   return false;
@@ -78,9 +77,16 @@ export function createWorkbenchStateHttpHandler({
     throw new Error("Workbench state HTTP handler requires a state store");
   }
   const protectedKeys = new Set(readOnlyKeys);
+  const privateKey = (key) => /^runtime\.plugins\..+\.private\./.test(key);
+  const publicSnapshot = (result) => result?.snapshot ? {
+    ...result, snapshot: {
+      ...result.snapshot,
+      kv: Object.fromEntries(Object.entries(result.snapshot.kv || {}).filter(([key]) => !privateKey(key)))
+    }
+  } : result;
   const writableSnapshot = (snapshot) => snapshot && ({
     ...snapshot,
-    kv: Object.fromEntries(Object.entries(snapshot.kv || {}).filter(([key]) => !protectedKeys.has(key)))
+    kv: Object.fromEntries(Object.entries(snapshot.kv || {}).filter(([key]) => !protectedKeys.has(key) && !privateKey(key)))
   });
 
   return async (request, response, url) => {
@@ -92,7 +98,17 @@ export function createWorkbenchStateHttpHandler({
       return true;
     }
     if (request.method === "GET" && path === "/v1/workbench-state/catalog") {
-      json(response, 200, await store.readCatalog());
+      json(response, 200, await store.readCatalog({
+        metadataLimit: url.searchParams.get("metadata_limit")
+      }));
+      return true;
+    }
+    if (request.method === "GET" && path === "/v1/workbench-state/sessions") {
+      json(response, 200, await store.searchSessions({
+        query: url.searchParams.get("q") || "",
+        limit: url.searchParams.get("limit"),
+        offset: url.searchParams.get("offset")
+      }));
       return true;
     }
     if (request.method === "GET" && path === "/v1/workbench-state/snapshot") {
@@ -101,7 +117,7 @@ export function createWorkbenchStateHttpHandler({
         response.writeHead(204, { "cache-control": "no-store" });
         response.end();
       } else {
-        json(response, 200, snapshot);
+        json(response, 200, publicSnapshot(snapshot));
       }
       return true;
     }
@@ -178,11 +194,11 @@ export function createWorkbenchStateHttpHandler({
     if (request.method === "PUT" && path === "/v1/workbench-state/snapshot") {
       if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
-      json(response, 200, await store.writeSnapshot(
+      json(response, 200, publicSnapshot(await store.writeSnapshot(
         writableSnapshot(body.snapshot),
         body.expected_revision ?? null,
         body.source_client_id ?? ""
-      ));
+      )));
       return true;
     }
     if (request.method === "PUT" && path === "/v1/workbench-state/tree") {
@@ -202,15 +218,19 @@ export function createWorkbenchStateHttpHandler({
     ) {
       if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
-      json(response, 200, await store.migrateBrowserStorage(
+      json(response, 200, publicSnapshot(await store.migrateBrowserStorage(
         body.source_id,
         writableSnapshot(body.snapshot),
         body.fingerprint
-      ));
+      )));
       return true;
     }
 
     const key = matchKVPath(path);
+    if (key != null && privateKey(key)) {
+      json(response, request.method === "GET" ? 404 : 409, { error: "Runtime workflow state is available only through scoped plugin commands" });
+      return true;
+    }
     if (key != null && request.method === "GET") {
       const value = await store.readKV(key);
       if (!value) {

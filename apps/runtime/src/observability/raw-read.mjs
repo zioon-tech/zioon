@@ -61,7 +61,8 @@ export const RAW_OBSERVABILITY_TOOL_DEFINITION = Object.freeze({
     required: ["run_id", "event_sequence", "purpose"],
     additionalProperties: false
   },
-  hostKinds: ["runtime-observability"]
+  hostKinds: ["runtime-observability"],
+  execution: { effect: "read" }
 });
 
 const RAW_EVENT_TYPES = new Set(["tool.requested", "tool.completed", "tool.denied"]);

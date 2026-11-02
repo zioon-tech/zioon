@@ -1,4 +1,5 @@
 import type { PluginInfo } from "../plugin/types";
+import { readWorkbenchRuntimeConfig } from "./workbench-runtime-config";
 
 const RUNTIME_HOSTED_LOCAL_PLUGIN_IDS = new Set([
   "dev.fs-manager",
@@ -68,7 +69,8 @@ export function runtimeHostedPluginActivationAllowed(
   const path = String(plugin?.path || "");
   try {
     const url = new URL(path, globalThis.location?.href);
-    return url.origin === globalThis.location?.origin
+    const runtimeOrigin = new URL(readWorkbenchRuntimeConfig().baseUrl, globalThis.location?.href).origin;
+    return (url.origin === runtimeOrigin || url.origin === globalThis.location?.origin)
       && url.pathname.startsWith("/v1/device-services/plugin-service/");
   } catch {
     return false;

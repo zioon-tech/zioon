@@ -65,13 +65,13 @@ describe("identity project memory core", () => {
     );
 
     expect(context.fragment).toContain(
-      '<projects_index source="~/.zion-next/data/plugins/dev.identity/projects/index.md">'
+      '<projects_index source="/memory/dev.identity/projects/index.md">'
     );
     expect(context.fragment).toContain(
-      '<projects_inbox source="~/.zion-next/data/plugins/dev.identity/projects/inbox.md">'
+      '<projects_inbox source="/memory/dev.identity/projects/inbox.md">'
     );
     expect(context.fragment).toContain(
-      '<projects_attention source="~/.zion-next/data/plugins/dev.identity/projects/attention.md">'
+      '<projects_attention source="/memory/dev.identity/projects/attention.md">'
     );
     expect(context.fragment).toContain("&lt;");
     expect(context.fragment).toContain("&amp;");

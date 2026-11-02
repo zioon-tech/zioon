@@ -91,9 +91,6 @@ export function createSchedulerHttpHandler({
     if (typeof availableTools === "function") {
       scheduler.setAvailableTools(availableTools());
     }
-    if (typeof availableModels === "function") {
-      scheduler.setAvailableModels(availableModels());
-    }
     if (typeof availableNodes === "function") {
       scheduler.setAvailableNodes(availableNodes());
     }
@@ -113,7 +110,9 @@ export function createSchedulerHttpHandler({
         const body = await readJson(request, requestBodyLimit);
         delete body.executionPrincipal;
         const input = authorizeTask ? await authorizeTask(request.zionPrincipal, body) : body;
-        json(response, 201, await scheduler.createTask(input));
+        json(response, 201, await scheduler.createTask(input, {
+          availableModels: availableModels ? await availableModels(request.zionPrincipal) : undefined
+        }));
         return true;
       }
 
@@ -138,7 +137,9 @@ export function createSchedulerHttpHandler({
           ...previous, ...body,
           capability: { ...previous.capability, ...body.capability }
         }) : body;
-        const updated = await scheduler.updateTask(taskId, input);
+        const updated = await scheduler.updateTask(taskId, input, {
+          availableModels: availableModels ? await availableModels(request.zionPrincipal) : undefined
+        });
         await onTaskChanged?.(previous);
         json(response, 200, updated);
         return true;
