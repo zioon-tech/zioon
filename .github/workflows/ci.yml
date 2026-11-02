@@ -32,7 +32,7 @@ jobs:
     uses: zioon-tech/workflows/.github/workflows/node-ci.yml@c393e2bb7646ec3e3ac889c5548f6c719d3ca2bc
     with:
       install: npm ci && npm ci --prefix apps/runtime && npm ci --prefix apps/device-connector
-      command: npm run runtime:build && npm run build && npm run runtime:test && npm exec vitest run -- --config packages/plugin-sdk/vitest.config.ts
+      command: npm run runtime:build && npm run build && npm run runtime:test && npm --prefix packages/plugin-sdk test
       release-component: runtime
       artifact-name: zioon-runtime-${{ github.sha }}
       artifact-path: .release-out/runtime
