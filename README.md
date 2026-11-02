@@ -1,4 +1,12 @@
-# Zion Next (CM6) — Developer Guide
+# Zioon
+
+[官网与文档](https://zioon.tech) · [工作台](https://workbench.zioon.tech) · [状态](https://status.zioon.tech) · [仓库与发布归属](docs/operations/REPOSITORY-AND-RELEASE.md)
+
+本仓库维护 Runtime、Workbench、Mobile、CLI、统一账户协议、Marketplace 和 Zioon 官网与文档。ADC 与 Memory 的服务、SDK、官网和文档分别位于独立产品仓库。
+
+当前开发使用 Node 22.18.0、npm 10.9.3 和 `npm ci`。具体服务入口与 CI 见 [仓库与发布归属](docs/operations/REPOSITORY-AND-RELEASE.md)。
+
+以下保留编辑器内核的原始开发说明。
 
 Zion Next 是一个基于 CodeMirror 6 的最小化脚手架，用于快速搭建“大模型交互编辑器”的核心与扩展体系验证。该工程提供：
 - CM6 编辑器内核（EditorCore）与安全代理（EditorProxy）

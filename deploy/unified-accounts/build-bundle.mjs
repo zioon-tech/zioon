@@ -4,13 +4,15 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
+// Historical account migration bundle. Memory sources now have one owner.
+const memoryRepository = resolve(process.env.ZIOON_MEMORY_REPOSITORY || join(repository, "../memory"));
 const output = resolve(process.argv[2] || "/tmp/zioon-memory-release-20261023");
 await mkdir(output, { recursive: true });
 if ((await readdir(output)).length) throw new Error("Build into an empty directory to avoid retaining files from older releases");
-async function copy(source, destination) {
+async function copy(source, destination, sourceRoot = repository) {
   const target = join(output, destination);
   await mkdir(dirname(target), { recursive: true });
-  await cp(join(repository, source), target, { recursive: true, dereference: true });
+  await cp(join(sourceRoot, source), target, { recursive: true, dereference: true });
 }
 for (const name of ["adc-register.mjs", "clients.json", "patch-sources.mjs", "adc-auth-ui-patch.mjs", "adc-auth-ui-patch.json",
   "release.mjs", "migration-check.mjs", "Caddyfile", "settings.json", "README.md"]) {
@@ -18,18 +20,15 @@ for (const name of ["adc-register.mjs", "clients.json", "patch-sources.mjs", "ad
 }
 await copy("packages/zioon-account/src/provider.mjs", "zioon-provider.mjs");
 for (const name of ["src", "web", "package.json"]) {
-  await copy(`apps/memory-service/${name}`, `memory/apps/memory-service/${name}`);
+  await copy(`apps/memory-service/${name}`, `memory/apps/memory-service/${name}`, memoryRepository);
 }
-await copy("packages/zioon-account/src/client.mjs", "memory/packages/zioon-account/src/client.mjs");
-// This new import needs a package-local dependency; keep the existing Memory
-// service's ali-oss and upstream modules in place.
-await copy("apps/memory-service/node_modules/jose", "memory/packages/zioon-account/node_modules/jose");
-await copy("packages/plugin-sdk/src/agentfs-mcp-policy.mjs", "memory/packages/plugin-sdk/src/agentfs-mcp-policy.mjs");
-await copy("packages/local-tools-client/src/plugin-data-files.mjs", "memory/packages/local-tools-client/src/plugin-data-files.mjs");
+await copy("packages/account-client", "memory/packages/account-client", memoryRepository);
+await copy("node_modules/jose", "memory/node_modules/jose", memoryRepository);
+await copy("packages/protocol", "memory/packages/protocol", memoryRepository);
 for (const name of ["agentfs-login.mjs", "install-agentfs-login.mjs"]) {
   await copy(`scripts/${name}`, `memory/scripts/${name}`);
 }
-const web = join(repository, "apps/memory-service/web");
+const web = join(memoryRepository, "apps/memory-service/web");
 const favicon = (await readFile(join(web, "favicon.svg"))).toString("base64");
 const css = await readFile(join(web, "site.css"), "utf8");
 const script = await readFile(join(web, "site.js"), "utf8");

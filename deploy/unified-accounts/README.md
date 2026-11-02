@@ -1,5 +1,9 @@
 # Zioon Memory 首版发布
 
+> 这是历史账户迁移工具。日常产品发布改用私有 `zioon-tech/infra`。
+> Memory 源码现位于独立 `zioon-tech/memory`；此工具通过
+> `ZIOON_MEMORY_REPOSITORY` 读取其检出目录，默认使用相邻 `../memory`。
+
 入口：`https://memory.zioon.tech`；文档 `/docs`，控制台 `/console`，登录 `/account/login`。
 首页、文档、控制台与登录页使用同一套深色样式，用户界面仅呈现 Memory。
 
@@ -28,7 +32,7 @@ CLI 登录使用 Memory 的 `/v1/account/device/start` 和 `device/poll`，
 
 ## 本地构建与验证
 
-在 zion-next 工作树运行（Bun 路径按本机实际安装位置填写）：
+以下 Memory 验证在独立 Memory 工作树运行；bundle 命令在 Zioon 工作树运行：
 
 ```sh
 ZIOON_ACCOUNT_TEST_DEPS_DIR=/ADC源码/apps/control-plane/node_modules \

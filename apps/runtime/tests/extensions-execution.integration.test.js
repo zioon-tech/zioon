@@ -16,6 +16,7 @@ import { createRuntimeControlClient } from "../src/runtime-cli.mjs";
 import { NodeBroker } from "../src/node-broker.mjs";
 import { RuntimeToolBroker } from "../src/runtime-tool-broker.mjs";
 import { MarketplaceService } from "../src/marketplace/service.mjs";
+import { createMemoryArtifactStore } from "../src/marketplace/artifact-store.mjs";
 import { createMarketplaceHttpHandler } from "../src/marketplace/http-handler.mjs";
 import { ExtensionExecutionService, withExtensionTools } from "../src/marketplace/execution-service.mjs";
 import { ExtensionInvocationEngine } from "../src/marketplace/invocation-engine.mjs";
@@ -34,7 +35,7 @@ describe("account code plugins and MCP through normal Runs and Node dispatch", (
     owner = await provisionTestTeam(db, { spaceId: "space:extension-execution" });
     bob = await db.accounts.resolveIdentity({ issuer: "https://identity.test", subject: "bob" });
     root = await realpath(await mkdtemp(join(tmpdir(), "zioon-extension-node-")));
-    market = await new MarketplaceService({ pool: db.pool,
+    market = await new MarketplaceService({ pool: db.pool, artifactStore: createMemoryArtifactStore(),
       defaultExecutionConfig: async () => ({ nodeId: "node:fixture", workspaceRoot: root }) }).initialize();
     runs = new PostgresRunStore(db.pool, { spaceId: "space:extension-execution" });
     access = new AccountAccessControl({ accounts: db.accounts, store: new PostgresAccessStore(db.pool, { spaceId: "space:extension-execution" }),

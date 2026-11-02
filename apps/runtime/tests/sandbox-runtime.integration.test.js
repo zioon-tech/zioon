@@ -170,6 +170,8 @@ describe("sandbox Runtime durable integration", () => {
       cwd: new URL("../", import.meta.url), stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env, ...h.db.childEnvironment,
+        ZION_ENV: "development", ZION_ARTIFACT_STORE: "local",
+        ZION_ARTIFACT_DIRECTORY: join(directory, "artifacts"),
         ZION_SPACE_ID: h.spaceId, ZION_RUNTIME_DATA_DIR: directory,
         ZION_RUNTIME_PORT: "18893", ZION_RUNTIME_ENGINE: "echo",
         ZION_RUNTIME_TOOL_MODE: "sandbox", ZION_RUNTIME_AUTH_MODE: "accounts",

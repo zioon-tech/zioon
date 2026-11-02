@@ -1,5 +1,9 @@
 # Zion 项目群与独立记忆服务
 
+> 历史实现记录（2026-10-22）。2026-11-03 起服务、官网、文档和 SDK 已迁至
+> [zioon-tech/memory](https://github.com/zioon-tech/memory)；当前仓库与发布归属见
+> [REPOSITORY-AND-RELEASE](../operations/REPOSITORY-AND-RELEASE.md)。
+
 2026-10-22。本次交付是 agent-fs 记忆试用代码与部署配置，网站域名与生产迁移尚未执行。
 
 Zion 可以作为总品牌与项目入口。Runtime、Identity、ADC、Workbench、Mobile
@@ -89,4 +93,4 @@ OSS 正文和本地 SQLite 都是 authoritative storage，必须分别持久化�
 目前未提供真实 OSS 凭据，因而没有宣称 OSS 已接通，也没有迁移旧文件
 或部署生产服务。完成探针、迁移核对与 ECS 容量评估后，再切换 OSS。
 
-完整启动、客户端、备份、迁移说明见 [Memory README](../../apps/memory-service/README.md)。
+完整启动、客户端、备份、迁移说明见 [Memory README](https://github.com/zioon-tech/memory#readme)。

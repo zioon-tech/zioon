@@ -9,6 +9,7 @@ import { createOidcProvider } from "../src/accounts/oidc-provider.mjs";
 import { AccountAccessControl } from "../src/accounts/account-access-control.mjs";
 import { PostgresAccessStore } from "../src/postgres-access-store.mjs";
 import { MarketplaceService } from "../src/marketplace/service.mjs";
+import { createMemoryArtifactStore } from "../src/marketplace/artifact-store.mjs";
 import { createMarketplaceHttpHandler } from "../src/marketplace/http-handler.mjs";
 import { loginWithAccount } from "../src/accounts/cli-account-auth.mjs";
 import { runRuntimeCli } from "../src/runtime-cli.mjs";
@@ -62,7 +63,8 @@ describe("account CLI device activation through real HTTP and local OIDC", () =>
       accounts: db.accounts, oidc, servedSpaceId: space.id, publicBaseUrl: runtimeOrigin,
       store: new PostgresAccessStore(db.pool, { spaceId: space.id })
     });
-    const marketplace = await new MarketplaceService({ pool: db.pool }).initialize();
+    const marketplace = await new MarketplaceService({ pool: db.pool,
+      artifactStore: createMemoryArtifactStore() }).initialize();
     const handler = createMarketplaceHttpHandler({ service: marketplace });
     await start(createServer(async (request, response) => {
       try {

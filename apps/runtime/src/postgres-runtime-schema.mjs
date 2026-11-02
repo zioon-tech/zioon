@@ -1,18 +1,12 @@
 import { readFile } from "node:fs/promises";
-import { fileURLToPath, URL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-const migration002 = fileURLToPath(
-  new URL("./postgres/migrations/002_runtime_data.sql", import.meta.url)
-);
-const migration003 = fileURLToPath(
-  new URL("./postgres/migrations/003_assets.sql", import.meta.url)
-);
-const migration004 = fileURLToPath(
-  new URL("./postgres/migrations/004_run_event_details.sql", import.meta.url)
-);
-const migration005 = fileURLToPath(
-  new URL("./postgres/migrations/005_run_outbox.sql", import.meta.url)
-);
+const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+const migration002 = join(moduleDirectory, "postgres/migrations/002_runtime_data.sql");
+const migration003 = join(moduleDirectory, "postgres/migrations/003_assets.sql");
+const migration004 = join(moduleDirectory, "postgres/migrations/004_run_event_details.sql");
+const migration005 = join(moduleDirectory, "postgres/migrations/005_run_outbox.sql");
 
 const migrations = [
   [2, migration002],

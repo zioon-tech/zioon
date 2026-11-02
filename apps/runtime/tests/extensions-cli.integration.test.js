@@ -10,6 +10,7 @@ import { AccountAccessControl } from "../src/accounts/account-access-control.mjs
 import { PostgresAccessStore } from "../src/postgres-access-store.mjs";
 import { PostgresWorkbenchStateStore } from "../src/postgres-workbench-state-store.mjs";
 import { MarketplaceService } from "../src/marketplace/service.mjs";
+import { createMemoryArtifactStore } from "../src/marketplace/artifact-store.mjs";
 import { createMarketplaceHttpHandler } from "../src/marketplace/http-handler.mjs";
 import { createSkillsCatalogHttpHandler } from "../src/skills-catalog-http-handler.mjs";
 import { normalizeSkillPackage } from "../../../packages/runtime-client/src/skill-package.mjs";
@@ -27,7 +28,7 @@ describe("private Skill CLI lifecycle through authenticated account HTTP", () =>
     await db.accounts.acceptInvitation(bob.id, (await db.accounts.invite(alice.id, {}, "space:extensions-cli")).token);
     tokens = new Map(await Promise.all([alice, bob].map(async (user) => [user.id,
       (await db.accounts.createSession(user.id, { activeSpaceId: "space:extensions-cli" })).token])));
-    market = await new MarketplaceService({ pool: db.pool }).initialize();
+    market = await new MarketplaceService({ pool: db.pool, artifactStore: createMemoryArtifactStore() }).initialize();
     workbench = await new PostgresWorkbenchStateStore(db.pool, { spaceId: "space:extensions-cli" }).initialize();
     const access = new AccountAccessControl({ accounts: db.accounts,
       store: new PostgresAccessStore(db.pool, { spaceId: "space:extensions-cli" }),
@@ -112,7 +113,7 @@ describe("private Skill CLI lifecycle through authenticated account HTTP", () =>
     await expect(cli(alice, "install", `${id}@9.0.0`)).rejects.toMatchObject({ code: 1 });
     expect((await cli(alice, "status", id))[0].version).toBe("0.2.0");
     await cli(alice, "install", `${id}@0.1.0`);
-    const restored = await new MarketplaceService({ pool: db.pool }).initialize();
+    const restored = await new MarketplaceService({ pool: db.pool, artifactStore: market.artifactStore }).initialize();
     expect((await restored.snapshot(alice.id)).entries.find((e) => e.id === id).installation.version).toBe("0.1.0");
     await cli(alice, "uninstall", id);
     expect(await cli(alice, "list")).toHaveLength(0);

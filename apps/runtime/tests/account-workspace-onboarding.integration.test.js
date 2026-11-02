@@ -115,6 +115,8 @@ AliyunAccountStorage.prototype.provision = async function({accountId,workspaceId
       cwd: new URL("../", import.meta.url), stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env, ...db.childEnvironment,
+        ZION_ENV: "development", ZION_ARTIFACT_STORE: "local",
+        ZION_ARTIFACT_DIRECTORY: join(directory, "artifacts"),
         ZION_SPACE_ID: db.defaultSpaceId, ZION_RUNTIME_DATA_DIR: join(directory, "runtime"),
         ZION_RUNTIME_PORT: "18895", ZION_RUNTIME_ENGINE: "openai", ZION_RUNTIME_MODEL_PROFILE: "",
         ZION_RUNTIME_DEFAULT_INTERACTION_MODEL_PROFILE: "",

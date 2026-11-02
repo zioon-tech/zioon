@@ -5,6 +5,7 @@ import { AccountAccessControl } from "../src/accounts/account-access-control.mjs
 import { PostgresAccessStore } from "../src/postgres-access-store.mjs";
 import { PostgresWorkbenchStateStore } from "../src/postgres-workbench-state-store.mjs";
 import { MarketplaceService } from "../src/marketplace/service.mjs";
+import { createMemoryArtifactStore } from "../src/marketplace/artifact-store.mjs";
 import { createMarketplaceHttpHandler } from "../src/marketplace/http-handler.mjs";
 import { createSkillsCatalogHttpHandler } from "../src/skills-catalog-http-handler.mjs";
 import { SKILLS_RUNTIME_KV_KEY } from "../../../extensions/dev.skills/skills-runtime-shared.js";
@@ -23,7 +24,8 @@ describe("Marketplace account and Runtime integration", () => {
     const tokens = new Map(await Promise.all([alice, bob].map(async (user) => [user.id,
       (await accounts.createSession(user.id, { activeSpaceId: "space:marketplace" })).token])));
     headers = (user) => ({ authorization: `Bearer ${tokens.get(user.id)}`, "content-type": "application/json" });
-    marketplace = await new MarketplaceService({ pool: database.pool, reviewerIds: [reviewer.id] }).initialize();
+    marketplace = await new MarketplaceService({ pool: database.pool,
+      artifactStore: createMemoryArtifactStore(), reviewerIds: [reviewer.id] }).initialize();
     workbench = await new PostgresWorkbenchStateStore(database.pool, { spaceId: "space:marketplace" }).initialize();
     access = new AccountAccessControl({
       accounts, store: new PostgresAccessStore(database.pool, { spaceId: "space:marketplace" }),
@@ -132,7 +134,8 @@ describe("Marketplace account and Runtime integration", () => {
     const result = await install(alice, "zion.github-mcp");
     expect(result.installation.status).toBe("configuration_required");
     await install(alice, "zion.document-kit");
-    const recreated = await new MarketplaceService({ pool: database.pool }).initialize();
+    const recreated = await new MarketplaceService({ pool: database.pool,
+      artifactStore: marketplace.artifactStore }).initialize();
     const entries = (await recreated.snapshot(alice.id)).entries;
     expect(entries.find((e) => e.id === "zion.document-kit").installation.status).toBe("partially_ready");
     expect(entries.find((e) => e.id === "zion.github-mcp").installation.components[0].requirements).toHaveLength(2);

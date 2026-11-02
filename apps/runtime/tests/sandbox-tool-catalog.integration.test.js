@@ -27,6 +27,8 @@ it("serves native search and actual sandbox capabilities before any Device regis
       cwd: resolve("."),
       env: {
         PATH: process.env.PATH, ...database.childEnvironment,
+        ZION_ENV: "development", ZION_ARTIFACT_STORE: "local",
+        ZION_ARTIFACT_DIRECTORY: join(directory, "artifacts"),
         ZION_SPACE_ID: database.defaultSpaceId, ZION_RUNTIME_DATA_DIR: directory,
         ZION_RUNTIME_HOST: "127.0.0.1", ZION_RUNTIME_PUBLIC_URL: "http://127.0.0.1:8766",
         ZION_RUNTIME_AUTH_MODE: "accounts", ZION_RUNTIME_TOOL_MODE: "sandbox", ZION_RUNTIME_ENGINE: "echo",
@@ -62,7 +64,8 @@ it("serves native search and actual sandbox capabilities before any Device regis
       "Bash", "read", "write", "edit", "glob", "grep", "tree", "webSearch", "webFetch", "todoWrite"
     ]));
     for (const name of ["sendMail", "mcpListTools", "mcpCall"]) {
-      expect(tools.find((tool) => tool.name === name)).toBeUndefined();
+      const delegated = tools.find((tool) => tool.name === name);
+      if (delegated) expect(delegated.availability.requiresDevice).toBe(true);
     }
     expect(tools.find((tool) => tool.name === "webSearch")).toMatchObject({
       hostKinds: ["runtime"], execution: { effect: "read", idempotency: "safe" }

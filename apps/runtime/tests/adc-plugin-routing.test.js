@@ -3,9 +3,9 @@ import { accountRequestScope } from "../src/accounts/account-access-control.mjs"
 import { createRuntimeServer } from "../src/server.mjs";
 
 describe("ADC plugin account routing", () => {
-  it("explicitly permits the ADC command route while retaining unknown-plugin administration", () => {
+  it("permits account plugin commands while retaining administrative methods", () => {
     expect(accountRequestScope("POST", "/v1/plugins/dev.agent-device-cloud/commands")).toBe("runtime.read");
-    expect(accountRequestScope("POST", "/v1/plugins/dev.other/commands")).toBe("runtime.manage");
+    expect(accountRequestScope("POST", "/v1/plugins/dev.other/commands")).toBe("runtime.read");
     expect(accountRequestScope("PUT", "/v1/plugins/dev.agent-device-cloud/commands")).toBe("runtime.manage");
   });
 

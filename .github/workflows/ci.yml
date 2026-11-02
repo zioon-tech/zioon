@@ -1,0 +1,81 @@
+name: Zioon CI
+on:
+  pull_request:
+  push:
+    branches: [main, "migration/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: zioon-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      runtime: ${{ steps.affected.outputs.runtime }}
+      workbench: ${{ steps.affected.outputs.workbench }}
+      portals: ${{ steps.affected.outputs.portals }}
+      marketplace: ${{ steps.affected.outputs.marketplace }}
+      site: ${{ steps.affected.outputs.site }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - id: affected
+        run: node scripts/ci/affected.mjs
+  secrets:
+    uses: zioon-tech/workflows/.github/workflows/secret-scan.yml@9615a5b74c604d6233dfb9f0d45099cf2e7929ff
+  runtime:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
+    uses: zioon-tech/workflows/.github/workflows/node-ci.yml@9615a5b74c604d6233dfb9f0d45099cf2e7929ff
+    with:
+      install: npm ci && npm ci --prefix apps/runtime && npm ci --prefix apps/device-connector
+      command: npm run runtime:build && npm run runtime:test && npm exec vitest run -- --config packages/plugin-sdk/vitest.config.ts
+  workbench:
+    needs: changes
+    if: needs.changes.outputs.workbench == 'true'
+    uses: zioon-tech/workflows/.github/workflows/node-ci.yml@9615a5b74c604d6233dfb9f0d45099cf2e7929ff
+    with:
+      install: npm ci && npm ci --prefix apps/runtime
+      command: npm run runtime:build && npm exec vitest run && npm run build
+      artifact-name: zioon-workbench-${{ github.sha }}
+      artifact-path: dist
+  portals:
+    needs: changes
+    if: needs.changes.outputs.portals == 'true'
+    uses: zioon-tech/workflows/.github/workflows/node-ci.yml@9615a5b74c604d6233dfb9f0d45099cf2e7929ff
+    with:
+      install: npm ci && npm ci --prefix apps/runtime
+      command: npm run runtime:build && npm run test:mobile && npm exec vitest run -- --config apps/admin/vitest.config.ts && node --test apps/client-portal/tests/*.test.mjs && npm run build:mobile && npm exec vite build -- --config apps/admin/vite.config.ts
+      artifact-name: zioon-portals-${{ github.sha }}
+      artifact-path: |
+        apps/mobile-client/dist
+        apps/admin/dist
+  marketplace:
+    needs: changes
+    if: needs.changes.outputs.marketplace == 'true'
+    uses: zioon-tech/workflows/.github/workflows/node-ci.yml@9615a5b74c604d6233dfb9f0d45099cf2e7929ff
+    with:
+      install: npm ci && npm ci --prefix apps/runtime && npm ci --prefix apps/marketplace
+      command: npm run runtime:build && npm --prefix apps/marketplace test && npm --prefix apps/marketplace run build
+      artifact-name: zioon-marketplace-${{ github.sha }}
+      artifact-path: apps/marketplace/dist
+  website:
+    needs: changes
+    if: needs.changes.outputs.site == 'true'
+    uses: zioon-tech/workflows/.github/workflows/node-ci.yml@9615a5b74c604d6233dfb9f0d45099cf2e7929ff
+    with:
+      command: node scripts/build-zioon-cli.mjs && node scripts/verify-zioon-cli-release.mjs && npm --prefix apps/public-site run build && npm --prefix apps/public-site run check
+      artifact-name: zioon-public-site-${{ github.sha }}
+      artifact-path: apps/public-site/dist
+  required:
+    name: CI
+    runs-on: ubuntu-24.04
+    if: always()
+    needs: [changes, secrets, runtime, workbench, portals, marketplace, website]
+    steps:
+      - env:
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: test "$FAILED" = false

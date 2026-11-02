@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "verify": "bun ../../apps/memory-service/scripts/verify-portal.ts"
+    "verify": "bun ../../tests/integration/memory/verify-portal.ts"
   },
   "dependencies": {
     "jose": "6.2.12"

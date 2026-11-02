@@ -20,7 +20,4 @@ const head = execFileSync("git", ["-C", destination, "rev-parse", "HEAD"], { enc
 const changes = execFileSync("git", ["-C", destination, "status", "--porcelain"], { encoding: "utf8" }).trim();
 if (head !== commit || changes) throw new Error("Existing upstream checkout must be clean and match the pinned commit");
 execFileSync(bun, ["install", "--frozen-lockfile"], { cwd: destination, stdio: "inherit" });
-execFileSync(bun, ["install", "--frozen-lockfile"], {
-  cwd: new URL("../apps/memory-service", import.meta.url), stdio: "inherit"
-});
 console.log(`agent-fs 0.18.5 ready at ${destination}`);
