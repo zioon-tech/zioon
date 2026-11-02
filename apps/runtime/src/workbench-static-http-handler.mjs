@@ -64,13 +64,26 @@ function responseHeaders(path) {
 
 export async function createWorkbenchStaticHttpHandler({
   root,
-  spaMounts = [{ pathname: "/mobile", directory: "mobile" }]
+  spaMounts = [{ pathname: "/mobile", directory: "mobile" }],
+  followReleasePointer = true
 } = {}) {
   const configuredRoot = String(root || "").trim();
   if (!configuredRoot) {
     throw new Error("Workbench static root is required");
   }
   const staticRoot = await realpath(resolve(configuredRoot));
+  if (followReleasePointer) {
+    let loadedRoot = staticRoot;
+    let handler = await createWorkbenchStaticHttpHandler({ root: loadedRoot, spaMounts, followReleasePointer: false });
+    return async (...args) => {
+      const currentRoot = await realpath(resolve(configuredRoot));
+      if (currentRoot !== loadedRoot) {
+        handler = await createWorkbenchStaticHttpHandler({ root: currentRoot, spaMounts, followReleasePointer: false });
+        loadedRoot = currentRoot;
+      }
+      return handler(...args);
+    };
+  }
   const indexPath = await existingFile(resolve(staticRoot, "index.html"));
   if (!indexPath) {
     throw new Error(`Workbench index.html not found in ${staticRoot}`);

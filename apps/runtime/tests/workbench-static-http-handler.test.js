@@ -2,7 +2,9 @@ import { createServer } from "node:http";
 import {
   mkdirSync,
   mkdtempSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +16,7 @@ import {
 
 const resources = [];
 
-async function createHarness() {
+async function createHarness(usePointer = false) {
   const directory = mkdtempSync(join(tmpdir(), "zion-workbench-static-"));
   mkdirSync(join(directory, "assets"));
   mkdirSync(join(directory, "mobile"));
@@ -35,7 +37,9 @@ async function createHarness() {
     "export {};\n",
     "utf8"
   );
-  const handler = await createWorkbenchStaticHttpHandler({ root: directory });
+  const root = usePointer ? join(directory, "current") : directory;
+  if (usePointer) symlinkSync(directory, root);
+  const handler = await createWorkbenchStaticHttpHandler({ root });
   const server = createServer(async (request, response) => {
     const url = new URL(
       request.url || "/",
@@ -68,6 +72,21 @@ afterEach(async () => {
 });
 
 describe("Workbench static HTTP handler", () => {
+  it("follows an atomic website release while the Runtime HTTP process stays running", async () => {
+    const harness = await createHarness(true);
+    const next = join(harness.directory, "release-next");
+    mkdirSync(join(next, "assets"), { recursive: true });
+    writeFileSync(join(next, "index.html"), "<title>Released Workbench</title>");
+    writeFileSync(join(next, "assets", "next.js"), "export const release = 'next';");
+    symlinkSync(next, join(harness.directory, "current.next"));
+    renameSync(join(harness.directory, "current.next"), join(harness.directory, "current"));
+    const document = await fetch(`${harness.url}/`);
+    expect(document.status).toBe(200);
+    expect(await document.text()).toContain("Released Workbench");
+    const asset = await fetch(`${harness.url}/assets/next.js`);
+    expect(asset.status).toBe(200);
+    expect(await asset.text()).toContain("next");
+  });
   it("serves Workbench and immutable assets with security headers", async () => {
     const harness = await createHarness();
 
